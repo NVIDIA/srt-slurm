@@ -526,6 +526,10 @@ class BenchmarkConfig:
     num_threads: int | None = None
     max_context_length: int | None = None
     categories: list[str] | None = None
+    num_shots: int | None = None  # GSM8K few-shot examples
+    temperature: float | None = None
+    top_p: float | None = None
+    top_k: int | None = None
     # Router benchmark fields
     num_requests: int | None = None
     concurrency: int | None = None
