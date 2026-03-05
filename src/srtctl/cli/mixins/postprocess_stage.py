@@ -194,7 +194,7 @@ class PostProcessStageMixin:
         # Fallback to raw output for legacy/failed rollups
         benchmark_out = self.runtime.log_dir / "benchmark.out"
         if benchmark_out.exists():
-            return {"benchmark_type": "unknown", "raw_output": benchmark_out.read_text()}
+            return {"benchmark_type": "unknown", "raw_output": benchmark_out.read_text(errors="replace")}
 
         return None
 

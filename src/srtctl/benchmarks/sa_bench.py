@@ -82,7 +82,7 @@ class SABenchRunner(BenchmarkRunner):
         # Tokenizer path: HF model ID or container mount path
         tokenizer_path = str(runtime.model_path) if runtime.is_hf_model else "/model"
 
-        return [
+        cmd = [
             "bash",
             self.script_path,
             endpoint,
@@ -96,4 +96,6 @@ class SABenchRunner(BenchmarkRunner):
             str(total_gpus),
             str(prefill_gpus),
             str(decode_gpus),
+            str(b.random_range_ratio) if b.random_range_ratio is not None else "0.8",
         ]
+        return cmd
