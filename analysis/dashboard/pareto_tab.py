@@ -51,7 +51,80 @@ def render(df: pd.DataFrame, selected_runs: list[str], run_legend_labels: dict, 
     pareto_fig.update_xaxes(showgrid=True)
     pareto_fig.update_yaxes(showgrid=True)
 
-    st.plotly_chart(pareto_fig, width="stretch", key="pareto_main")
+    # Use a key counter so we can reset the chart widget (clears selection)
+    if "pareto_chart_gen" not in st.session_state:
+        st.session_state.pareto_chart_gen = 0
+
+    event = st.plotly_chart(
+        pareto_fig,
+        on_select="rerun",
+        selection_mode=["points"],
+        key=f"pareto_main_{st.session_state.pareto_chart_gen}",
+    )
+
+    # Point comparison on selection (shift+click or box/lasso select 2 points)
+    points = event.selection.points if event and event.selection else []
+    if len(points) == 1:
+        st.info("Shift+click another point to compare performance.")
+    elif len(points) == 2:
+        # Track swap state so user can flip baseline
+        if "pareto_swapped" not in st.session_state:
+            st.session_state.pareto_swapped = False
+
+        if st.session_state.pareto_swapped:
+            a, b = points[1], points[0]
+        else:
+            a, b = points[0], points[1]
+
+        a_name, a_conc, a_tps_user, a_tps_gpu = a["customdata"]
+        b_name, b_conc, b_tps_user, b_tps_gpu = b["customdata"]
+
+        def _pct(base, comp):
+            if base == 0 or base is None:
+                return None
+            return ((comp - base) / base) * 100
+
+        pct_tps_user = _pct(a_tps_user, b_tps_user)
+        pct_tps_gpu = _pct(a_tps_gpu, b_tps_gpu)
+
+        def _fmt_delta(pct):
+            if pct is None:
+                return "N/A"
+            color = "green" if pct >= 0 else "red"
+            sign = "+" if pct >= 0 else ""
+            return f":{color}[{sign}{pct:.1f}%]"
+
+        col_a, col_swap, col_delta, col_b = st.columns([2, 0.5, 1, 2])
+        with col_a:
+            st.markdown("**Point A (baseline)**")
+            st.markdown(
+                f"**{a_name}** @ concurrency {a_conc}  \n"
+                f"TPS/User: `{a_tps_user:.2f}` · {y_axis_metric}: `{a_tps_gpu:.2f}`"
+            )
+        with col_swap:
+            st.markdown("&nbsp;", unsafe_allow_html=True)
+            if st.button("Swap", key="swap_pareto_points"):
+                st.session_state.pareto_swapped = not st.session_state.pareto_swapped
+                st.rerun()
+        with col_delta:
+            st.markdown("**% Change (A→B)**")
+            st.markdown(f"TPS/User: {_fmt_delta(pct_tps_user)}")
+            st.markdown(f"{y_axis_metric}: {_fmt_delta(pct_tps_gpu)}")
+        with col_b:
+            st.markdown("**Point B**")
+            st.markdown(
+                f"**{b_name}** @ concurrency {b_conc}  \n"
+                f"TPS/User: `{b_tps_user:.2f}` · {y_axis_metric}: `{b_tps_gpu:.2f}`"
+            )
+    elif len(points) > 2:
+        st.warning("Select exactly 2 points to compare. Clear selection and try again.")
+
+    # Clear selection button (visible when any points are selected)
+    if len(points) >= 1:
+        if st.button("Clear selection", key="clear_pareto_selection"):
+            st.session_state.pareto_chart_gen += 1
+            st.session_state.pareto_swapped = False
+            st.rerun()
 
     # Debug info for frontier
     if pareto_options["show_frontier"]:

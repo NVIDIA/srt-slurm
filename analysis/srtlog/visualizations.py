@@ -704,6 +704,12 @@ def create_pareto_graph(
                     for _, row in run_data.iterrows()
                 ],
                 hoverinfo="text",
+                customdata=[
+                    [legend_name, row["Concurrency"], row["Output TPS/User"], row[y_metric]]
+                    for _, row in run_data.iterrows()
+                ],
+                selected={"marker": {"size": 14}},
+                unselected={"marker": {"opacity": 0.4}},
             )
         )
 
