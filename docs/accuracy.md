@@ -1,6 +1,6 @@
 # Accuracy Benchmarks
 
-In srt-slurm, users can run different accuracy benchmarks by setting the benchmark section in the config yaml file. Supported benchmarks include `mmlu`, `gpqa` and `longbenchv2`.
+In srt-slurm, users can run different accuracy benchmarks by setting the benchmark section in the config yaml file. Supported benchmarks include `mmlu`, `gpqa`, `longbenchv2`, and `lm-eval`.
 
 ## Table of Contents
 
@@ -14,6 +14,7 @@ In srt-slurm, users can run different accuracy benchmarks by setting the benchma
   - [Example: Quick Validation](#example-quick-validation)
   - [Output](#output)
   - [Important Notes](#important-notes)
+- [lm-eval (InferenceX)](#lm-eval-inferencex)
 
 ---
 
@@ -191,3 +192,61 @@ The output includes per-category scores and aggregate metrics:
 4. **Categories**: Running specific categories is useful for targeted validation (e.g., just testing summarization capabilities)
 
 
+## lm-eval (InferenceX)
+
+The `lm-eval` benchmark runner integrates [EleutherAI/lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-harness) via InferenceX's `benchmark_lib.sh`. Unlike the built-in benchmarks above, this runner sources evaluation logic from an external InferenceX workspace mounted at `/infmax-workspace`.
+
+This is used by InferenceX CI to run graded QnA (gsm8k, gpqa) against multi-node deployments on GB200/GB300.
+
+### How it works
+
+1. The runner script (`benchmarks/scripts/lm-eval/bench.sh`) auto-discovers the served model name from `/v1/models`
+2. Sources `benchmark_lib.sh` from the InferenceX workspace
+3. Runs `run_eval` and `append_lm_eval_summary` from benchmark_lib
+4. Copies eval artifacts (`meta_env.json`, `results*.json`, `sample*.jsonl`) to `/logs/eval_results/`
+
+### EVAL_ONLY mode
+
+srt-slurm supports an `EVAL_ONLY` mode that skips the throughput benchmark entirely and runs only the lm-eval evaluation. This is controlled via environment variables:
+
+| Env var | Description |
+|---------|-------------|
+| `EVAL_ONLY` | Set to `true` to skip the throughput benchmark stage and run eval only |
+| `RUN_EVAL` | Set to `true` to run eval after the throughput benchmark completes |
+| `EVAL_CONC` | Concurrent requests for lm-eval (defaults to 256) |
+
+When `EVAL_ONLY=true`:
+- **Stage 4 (Benchmark)** is skipped entirely — no throughput test runs
+- **Health check** uses the full `wait_for_model()` check (polls for all prefill/decode workers to be ready) since the benchmark stage's health check was skipped
+- **Stage 5 (Eval)** runs `_run_post_eval()` which launches the lm-eval benchmark runner
+- Eval failure is **fatal** (non-zero exit) since eval is the only purpose of the job
+
+When `RUN_EVAL=true` (without `EVAL_ONLY`):
+- Throughput benchmark runs normally
+- After benchmark completes successfully, eval runs as a post-step
+- Eval failure is **non-fatal** — the job still succeeds if throughput passed
+
+### Environment variables
+
+The following env vars are passed through to the lm-eval runner container:
+
+`FRAMEWORK`, `PRECISION`, `MODEL_PREFIX`, `RUNNER_TYPE`, `RESULT_FILENAME`, `SPEC_DECODING`, `ISL`, `OSL`, `PREFILL_TP`, `PREFILL_EP`, `PREFILL_DP_ATTN`, `DECODE_TP`, `DECODE_EP`, `DECODE_DP_ATTN`, `MODEL_NAME`, `EVAL_CONC`, `EVAL_ONLY`, `RUN_EVAL`
+
+### Concurrency
+
+Eval concurrency is set via the `EVAL_CONCURRENT_REQUESTS` environment variable (read by `benchmark_lib.sh`). The runner script sets this from `EVAL_CONC`:
+
+```bash
+export EVAL_CONCURRENT_REQUESTS="${EVAL_CONC:-256}"
+```
+
+The InferenceX workflow derives `EVAL_CONC` from the highest value in the benchmark concurrency list.
+
+### Output
+
+Eval artifacts are written to `/logs/eval_results/` inside the container:
+- `meta_env.json` — metadata (TP, conc, framework, precision, etc.)
+- `results*.json` — lm-eval scores per task
+- `sample*.jsonl` — per-sample outputs
+
+These are collected by the InferenceX launch scripts (`launch_gb200-nv.sh`, `launch_gb300-nv.sh`) and uploaded as workflow artifacts.
