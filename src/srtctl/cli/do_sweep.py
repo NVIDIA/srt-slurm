@@ -240,6 +240,18 @@ class SweepOrchestrator(WorkerStageMixin, FrontendStageMixin, BenchmarkStageMixi
         env_to_set["MODEL_NAME"] = self.config.served_model_name
         logger.info("Eval MODEL_NAME: %s", env_to_set["MODEL_NAME"])
 
+        # Use EVAL_CONC from workflow (median chosen by InferenceX mark_eval_entries),
+        # falling back to max of benchmark concurrency list.
+        eval_conc = os.environ.get("EVAL_CONC")
+        if eval_conc:
+            env_to_set["EVAL_CONC"] = eval_conc
+            logger.info("Eval concurrency (from workflow): %s", eval_conc)
+        else:
+            conc_list = self.config.benchmark.get_concurrency_list()
+            if conc_list:
+                env_to_set["EVAL_CONC"] = str(max(conc_list))
+                logger.info("Eval concurrency (max of %s): %s", conc_list, env_to_set["EVAL_CONC"])
+
         proc = start_srun_process(
             command=cmd,
             nodelist=[self.runtime.nodes.head],

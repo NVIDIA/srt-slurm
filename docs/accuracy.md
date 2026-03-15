@@ -213,7 +213,7 @@ srt-slurm supports an `EVAL_ONLY` mode that skips the throughput benchmark entir
 |---------|-------------|
 | `EVAL_ONLY` | Set to `true` to skip the throughput benchmark stage and run eval only |
 | `RUN_EVAL` | Set to `true` to run eval after the throughput benchmark completes |
-| `EVAL_CONC` | Concurrent requests for lm-eval (defaults to 256) |
+| `EVAL_CONC` | Concurrent requests for lm-eval (set by InferenceX to median of conc list; defaults to 256 if unset) |
 
 When `EVAL_ONLY=true`:
 - **Stage 4 (Benchmark)** is skipped entirely — no throughput test runs
@@ -240,7 +240,7 @@ Eval concurrency is set via the `EVAL_CONCURRENT_REQUESTS` environment variable 
 export EVAL_CONCURRENT_REQUESTS="${EVAL_CONC:-256}"
 ```
 
-The InferenceX workflow derives `EVAL_CONC` from the highest value in the benchmark concurrency list.
+The InferenceX workflow sets `EVAL_CONC` to the median of the benchmark concurrency list (chosen in `mark_eval_entries`). If `EVAL_CONC` is not set in the environment, `do_sweep.py` falls back to the max of the benchmark concurrency list.
 
 ### Output
 

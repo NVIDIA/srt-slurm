@@ -39,10 +39,11 @@ cd "${INFMAX_WORKSPACE}"
 source "${INFMAX_WORKSPACE}/benchmarks/benchmark_lib.sh"
 
 # Run lm-eval via benchmark_lib
-EVAL_CONC=256
-EVAL_LIMIT="${EVAL_LIMIT:-100}"
-echo "Running lm-eval with concurrent-requests=${EVAL_CONC}, limit=${EVAL_LIMIT}..."
-run_eval --framework lm-eval --port "$PORT" --concurrent-requests "$EVAL_CONC" --limit "$EVAL_LIMIT"
+# EVAL_CONC is set by the InferenceX workflow (median of conc list).
+# benchmark_lib reads concurrency from EVAL_CONCURRENT_REQUESTS env var.
+export EVAL_CONCURRENT_REQUESTS="${EVAL_CONC:-256}"
+echo "Running lm-eval with concurrent-requests=${EVAL_CONCURRENT_REQUESTS}..."
+run_eval --framework lm-eval --port "$PORT"
 
 # Set metadata env vars needed by append_lm_eval_summary
 # These are passed through from the InferenceX environment
