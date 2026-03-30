@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import shlex
+import shutil
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -116,19 +117,42 @@ class PostProcessStageMixin:
             return config_value
         return os.environ.get(env_var)
 
+    def _copy_config_to_logs(self) -> None:
+        """Copy the job config YAML into the log directory so it's included in S3 uploads.
+
+        The config is saved to outputs/{job_id}/config.yaml at submit time,
+        but S3 syncs outputs/{job_id}/logs/. This copies it into logs/ so it
+        gets uploaded alongside benchmark results and worker logs.
+        """
+        output_dir = self.runtime.log_dir.parent
+        for name in ("config.yaml", "sbatch_script.sh"):
+            src = output_dir / name
+            if not src.exists():
+                continue
+            dst = self.runtime.log_dir / name
+            try:
+                shutil.copy2(src, dst)
+                logger.info("Copied %s to log directory", name)
+            except Exception as e:
+                logger.warning("Failed to copy %s to log directory: %s", name, e)
+
     def run_postprocess(self, exit_code: int) -> None:
         """Run post-processing after benchmark completion.
 
         Handles:
-        1. Rollup generation (benchmark-specific normalization)
-        2. Benchmark result extraction (reads rollup or falls back to raw)
-        3. srtlog parsing + S3 upload (if S3 configured)
-        4. Metrics reporting to dashboard (if status endpoint configured)
-        5. AI-powered failure analysis (only on failures, if enabled)
+        1. Copy config YAML into log directory (for S3 upload)
+        2. Rollup generation (benchmark-specific normalization)
+        3. Benchmark result extraction (reads rollup or falls back to raw)
+        4. srtlog parsing + S3 upload (if S3 configured)
+        5. Metrics reporting to dashboard (if status endpoint configured)
+        6. AI-powered failure analysis (only on failures, if enabled)
 
         Args:
             exit_code: Exit code from the benchmark run
         """
+        # Copy config into log directory so it's included in S3 upload
+        self._copy_config_to_logs()
+
         # Generate rollup first (benchmark-specific normalization)
         self._generate_rollup()
 
