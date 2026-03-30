@@ -149,6 +149,7 @@ class TestPostProcessStageMixin:
         from srtctl.cli.mixins.postprocess_stage import PostProcessStageMixin
 
         mixin = PostProcessStageMixin()
+        mixin._copy_config_to_logs = MagicMock()
         mixin._generate_rollup = MagicMock()
         mixin._extract_benchmark_results = MagicMock(return_value=None)
         mixin._run_postprocess_container = MagicMock(return_value=(None, None))
@@ -639,3 +640,63 @@ class TestS3UploadFaultTolerance:
 
         # Verify _report_metrics was still called (with None for s3_url, exit_code=0)
         mixin._report_metrics.assert_called_once_with(None, None, 0)
+
+
+class TestCopyConfigToLogs:
+    """Tests for copying config YAML to log directory."""
+
+    def _create_mixin_with_runtime(self, tmp_path):
+        """Create a mixin instance with runtime pointing to tmp_path/logs."""
+        from srtctl.cli.mixins.postprocess_stage import PostProcessStageMixin
+
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+
+        mixin = PostProcessStageMixin()
+        mixin.runtime = MagicMock()
+        mixin.runtime.log_dir = log_dir
+        return mixin, log_dir
+
+    def test_copies_config_yaml(self, tmp_path):
+        """Test config.yaml is copied from output dir to log dir."""
+        mixin, log_dir = self._create_mixin_with_runtime(tmp_path)
+
+        config_src = tmp_path / "config.yaml"
+        config_src.write_text("name: test-config\n")
+
+        mixin._copy_config_to_logs()
+
+        assert (log_dir / "config.yaml").exists()
+        assert (log_dir / "config.yaml").read_text() == "name: test-config\n"
+
+    def test_copies_sbatch_script(self, tmp_path):
+        """Test sbatch_script.sh is also copied."""
+        mixin, log_dir = self._create_mixin_with_runtime(tmp_path)
+
+        script_src = tmp_path / "sbatch_script.sh"
+        script_src.write_text("#!/bin/bash\necho hello\n")
+
+        mixin._copy_config_to_logs()
+
+        assert (log_dir / "sbatch_script.sh").exists()
+
+    def test_no_config_does_not_raise(self, tmp_path):
+        """Test graceful handling when config.yaml doesn't exist."""
+        mixin, log_dir = self._create_mixin_with_runtime(tmp_path)
+
+        mixin._copy_config_to_logs()
+
+        assert not (log_dir / "config.yaml").exists()
+
+    def test_copy_failure_does_not_raise(self, tmp_path):
+        """Test graceful handling when copy fails."""
+        mixin, log_dir = self._create_mixin_with_runtime(tmp_path)
+
+        config_src = tmp_path / "config.yaml"
+        config_src.write_text("name: test\n")
+
+        log_dir.chmod(0o444)
+        try:
+            mixin._copy_config_to_logs()  # Should not raise
+        finally:
+            log_dir.chmod(0o755)
