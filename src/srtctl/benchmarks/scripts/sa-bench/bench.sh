@@ -6,6 +6,31 @@
 # Expects: endpoint isl osl concurrencies req_rate model_name is_disaggregated total_gpus prefill_gpus decode_gpus
 
 set -e
+
+# Ensure benchmark dependencies are available.
+# Creates an isolated venv with --system-site-packages so container packages are
+# reused and only missing deps get installed — without touching system Python.
+SA_BENCH_VENV="/tmp/sa-bench-venv"
+SA_BENCH_DEPS=(aiohttp numpy pandas datasets Pillow tqdm transformers huggingface_hub)
+
+ensure_sa_bench_deps() {
+    # Quick check: if all deps import fine in current Python, skip venv entirely
+    if python3 -c "import aiohttp, numpy, pandas, datasets, PIL, tqdm, transformers, huggingface_hub" 2>/dev/null; then
+        echo "All sa-bench deps already available — skipping venv setup"
+        return
+    fi
+
+    echo "Missing sa-bench deps — installing into venv at $SA_BENCH_VENV ..."
+    if [ ! -d "$SA_BENCH_VENV" ]; then
+        python3 -m venv --system-site-packages "$SA_BENCH_VENV"
+    fi
+    source "$SA_BENCH_VENV/bin/activate"
+    pip install "${SA_BENCH_DEPS[@]}"
+    echo "sa-bench deps ready"
+}
+
+ensure_sa_bench_deps
+
 #
 # Optional profiling (via worker profiling endpoints):
 #   PROFILE_TYPE: "nsys" or "torch" to enable profiling (or "none" to disable)
@@ -93,7 +118,8 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
         --ignore-eos \
         --request-rate 250 \
         --percentile-metrics ttft,tpot,itl,e2el \
-        --max-concurrency "$concurrency"
+        --max-concurrency "$concurrency" \
+        --trust-remote-code
 
     num_prompts=$((concurrency * 10))
     
@@ -122,6 +148,7 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
         --request-rate "${REQ_RATE}" \
         --percentile-metrics ttft,tpot,itl,e2el \
         --max-concurrency "$concurrency" \
+        --trust-remote-code \
         --use-chat-template \
         --save-result --result-dir "$result_dir" --result-filename "$result_filename"
     set +x
