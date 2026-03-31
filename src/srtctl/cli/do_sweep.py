@@ -184,13 +184,36 @@ class SweepOrchestrator(WorkerStageMixin, FrontendStageMixin, BenchmarkStageMixi
         logger.info("")
 
     def _run_post_eval(self, stop_event: threading.Event) -> int:
-        """Run lm-eval after the main benchmark completes."""
+        """Run lm-eval after the main benchmark completes (or directly in eval-only mode)."""
         from srtctl.benchmarks import get_runner
+        from srtctl.core.health import wait_for_model
 
-        # Health check: verify server is still up
-        if not wait_for_port(self.runtime.nodes.head, 8000, timeout=30):
-            logger.error("Server health check failed before eval - skipping")
-            return 1
+        # In eval-only mode the benchmark health check was skipped, so do the
+        # full model-ready wait here.  In post-benchmark mode a quick port
+        # check is sufficient since the server already served traffic.
+        if os.environ.get("EVAL_ONLY", "false").lower() == "true":
+            r = self.config.resources
+            n_prefill = 0 if r.num_agg > 0 else r.num_prefill
+            n_decode = r.num_agg if r.num_agg > 0 else r.num_decode
+            hc = self.config.health_check
+            logger.info("EVAL_ONLY: Waiting for server health before eval...")
+            if not wait_for_model(
+                host=self.runtime.nodes.head,
+                port=8000,
+                n_prefill=n_prefill,
+                n_decode=n_decode,
+                poll_interval=float(hc.interval_seconds),
+                timeout=float(hc.max_attempts * hc.interval_seconds),
+                report_every=60.0,
+                frontend_type=self.config.frontend.type,
+                stop_event=stop_event,
+            ):
+                logger.error("Server did not become healthy for eval")
+                return 1
+        else:
+            if not wait_for_port(self.runtime.nodes.head, 8000, timeout=30):
+                logger.error("Server health check failed before eval - skipping")
+                return 1
 
         try:
             runner = get_runner("lm-eval")
