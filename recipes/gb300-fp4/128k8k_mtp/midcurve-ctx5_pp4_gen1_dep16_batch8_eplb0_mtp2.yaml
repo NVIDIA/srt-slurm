@@ -1,0 +1,143 @@
+# Config: ctx5_pp4_gen1_dep16_batch8_eplb0_mtp2
+# max global bs: 128, concurrency: 256
+
+name: "gb300-fp4-128k8k-ctx5_pp4_gen1_dep16_batch8_eplb0_mtp2"
+
+model:
+  path: "dsfp4"
+  container: "v0.5.7"
+  precision: "fp4"
+
+resources:
+  gpu_type: "gb300"
+  decode_nodes: 4
+  decode_workers: 1
+  gpus_per_node: 4
+  prefill_nodes: 5
+  prefill_workers: 5
+
+backend:
+
+  decode_environment:
+    TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: "7200"
+    PYTHONUNBUFFERED: "1"
+    DYN_SKIP_SGLANG_LOG_FORMATTING: "1"
+    SGLANG_NVFP4_CKPT_FP8_GEMM_IN_ATTN: "1"
+    SGLANG_PER_TOKEN_GROUP_QUANT_8BIT_V2: "1"
+    SGLANG_DISAGGREGATION_HEARTBEAT_MAX_FAILURE: "100000"
+    SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT: "100000"
+    SGLANG_DISAGGREGATION_WAITING_TIMEOUT: "100000"
+    SGLANG_HACK_SEQ_BOOTSTRAP_ROOM: "1"
+    MC_TE_METRIC: "true"
+    MC_FORCE_MNNVL: "1"
+    NCCL_MNNVL_ENABLE: "1"
+    NCCL_CUMEM_ENABLE: "1"
+    SGLANG_MOONCAKE_CUSTOM_MEM_POOL: "true"
+    SGLANG_USE_MESSAGE_QUEUE_BROADCASTER: "0"
+    SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK: "1"
+    SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK: "1024"  # DeepEP low_latency mode hard limit
+    SGLANG_MOE_NVFP4_DISPATCH: "1"
+    SGLANG_NVFP4_CKPT_FP8_NEXTN_MOE: "1"
+    SGLANG_FLASHINFER_FP4_GEMM_BACKEND: "cutlass"
+    # MTP environment variables
+    SGLANG_CUTEDSL_MOE_NVFP4_DISPATCH: "1"
+    SGLANG_ENABLE_SPEC_V2: "1"
+    SGLANG_NCCL_ALL_GATHER_IN_OVERLAP_SCHEDULER_SYNC_BATCH: "1"
+    FLASHINFER_DISABLE_VERSION_CHECK: "1"  # 3xfp4 & flashinfer_cutedsl cu130 support
+    FLASHINFER_WORKSPACE_BASE: /tmp/flashinfer-cache
+    SGLANG_DG_CACHE_DIR: /configs/deepgemm-cache
+
+  prefill_environment:
+    TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: "7200"
+    PYTHONUNBUFFERED: "1"
+    DYN_SKIP_SGLANG_LOG_FORMATTING: "1"
+    SGLANG_NVFP4_CKPT_FP8_GEMM_IN_ATTN: "1"
+    SGLANG_PER_TOKEN_GROUP_QUANT_8BIT_V2: "1"
+    SGLANG_DISAGGREGATION_HEARTBEAT_MAX_FAILURE: "100000"
+    SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT: "100000"
+    SGLANG_DISAGGREGATION_WAITING_TIMEOUT: "100000"
+    SGLANG_HACK_SEQ_BOOTSTRAP_ROOM: "1"
+    MC_TE_METRIC: "true"
+    MC_FORCE_MNNVL: "1"
+    NCCL_MNNVL_ENABLE: "1"
+    NCCL_CUMEM_ENABLE: "1"
+    SGLANG_MOONCAKE_CUSTOM_MEM_POOL: "true"
+    SGLANG_USE_MESSAGE_QUEUE_BROADCASTER: "0"
+    SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK: "1"
+    SGLANG_FLASHINFER_FP4_GEMM_BACKEND: "cutlass"
+    FLASHINFER_DISABLE_VERSION_CHECK: "1"  # 3xfp4 & flashinfer_cutedsl cu130 support
+    FLASHINFER_WORKSPACE_BASE: /tmp/flashinfer-cache
+    SGLANG_DG_CACHE_DIR: /configs/deepgemm-cache
+
+  sglang_config:
+    decode:
+      attention-backend: trtllm_mla
+      chunked-prefill-size: -1
+      context-length: 136001
+      cuda-graph-max-bs: 128
+      data-parallel-size: 16
+      disable-radix-cache: true
+      disaggregation-bootstrap-port: 30001
+      disaggregation-mode: decode
+      disaggregation-transfer-backend: nixl
+      enable-dp-attention: true
+      enable-dp-lm-head: true
+      enable-symm-mem: true
+      expert-parallel-size: 16
+      kv-cache-dtype: fp8_e4m3
+      max-running-requests: 128
+      mem-fraction-static: 0.75
+      moe-dense-tp-size: 1
+      moe-runner-backend: flashinfer_cutedsl
+      moe-a2a-backend: deepep
+      deepep-mode: low_latency
+      pipeline-parallel-size: 1
+      prefill-round-robin-balance: true
+      quantization: modelopt_fp4
+      scheduler-recv-interval: 1
+      served-model-name: deepseek-ai/DeepSeek-R1
+      stream-interval: 10
+      tensor-parallel-size: 16
+      trust-remote-code: true
+      watchdog-timeout: 1000000
+      # MTP
+      speculative-algorithm: "EAGLE"
+      speculative-num-steps: 2
+      speculative-eagle-topk: 1
+      speculative-num-draft-tokens: 3
+      speculative-moe-runner-backend: "deep_gemm"
+      speculative-moe-a2a-backend: "deepep"
+      enable-single-batch-overlap: false  # enable only when EP48
+    prefill:
+      attention-backend: trtllm_mla
+      chunked-prefill-size: -1
+      context-length: 136001
+      data-parallel-size: 1
+      disable-radix-cache: true
+      disaggregation-bootstrap-port: 30001
+      disaggregation-mode: prefill
+      disaggregation-transfer-backend: nixl
+      # enable-symm-mem: true
+      expert-parallel-size: 1
+      kv-cache-dtype: fp8_e4m3
+      load-balance-method: round_robin
+      max-running-requests: 32
+      mem-fraction-static: 0.72
+      moe-dense-tp-size: 1
+      moe-runner-backend: flashinfer_trtllm
+      # moe-runner-backend: flashinfer_cutlass
+      pipeline-parallel-size: 4
+      quantization: modelopt_fp4
+      scheduler-recv-interval: 1
+      served-model-name: deepseek-ai/DeepSeek-R1
+      stream-interval: 10
+      tensor-parallel-size: 1
+      trust-remote-code: true
+      watchdog-timeout: 1000000
+
+benchmark:
+  type: "sa-bench"
+  isl: 128000
+  osl: 8000
+  concurrencies: "256"
+  req_rate: "inf"
