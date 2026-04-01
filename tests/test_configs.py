@@ -127,7 +127,11 @@ class TestDynamoConfig:
         assert "git clone" in cmd
         assert "git checkout abc123" in cmd
         assert "maturin build" in cmd
-        assert "pip install -e" in cmd
+        assert "if [ -d /sgl-workspace ]" in cmd
+        assert "/tmp/dynamo_build" in cmd
+        assert "protobuf-compiler" in cmd
+        assert "if ! command -v cargo" in cmd
+        assert "if ! command -v maturin" in cmd
 
     def test_top_of_tree_install_command(self):
         """Top-of-tree config generates source install without checkout."""
@@ -140,6 +144,10 @@ class TestDynamoConfig:
         assert "git clone" in cmd
         assert "git checkout" not in cmd
         assert "maturin build" in cmd
+        assert "if [ -d /sgl-workspace ]" in cmd
+        assert "/tmp/dynamo_build" in cmd
+        assert "--break-system-packages" in cmd
+        assert "--force-reinstall" in cmd
 
     def test_hash_and_top_of_tree_not_allowed(self):
         """Cannot specify both hash and top_of_tree."""
