@@ -616,12 +616,17 @@ class ProfilingConfig:
     Per-phase start_step/stop_step are specified in the prefill/decode/aggregated sections.
     """
 
-    type: str = "none"  # "none", "nsys", or "torch"
+    type: str = "none"  # "none", "nsys", "nsys-time", or "torch"
 
-    # Phase-specific profiling step configs
+    # Phase-specific profiling step configs (not used for nsys-time)
     prefill: ProfilingPhaseConfig | None = None
     decode: ProfilingPhaseConfig | None = None
     aggregated: ProfilingPhaseConfig | None = None
+
+    # nsys-time fields: time-based capture window, same on all workers
+    delay_secs: int | None = None  # nsys --delay: seconds from worker launch before capture starts
+    duration_secs: int | None = None  # nsys --duration: seconds to capture after delay
+    benchmark_duration_secs: int = 300  # total traffic generation duration (must cover delay + duration)
 
     @property
     def enabled(self) -> bool:
@@ -630,8 +635,13 @@ class ProfilingConfig:
 
     @property
     def is_nsys(self) -> bool:
-        """Check if using NVIDIA Nsight Systems profiling."""
-        return self.type == "nsys"
+        """Check if using NVIDIA Nsight Systems profiling (includes nsys-time)."""
+        return self.type in ("nsys", "nsys-time")
+
+    @property
+    def is_nsys_time(self) -> bool:
+        """Check if using time-based nsys capture (--delay/--duration instead of cudaProfilerApi)."""
+        return self.type == "nsys-time"
 
     @property
     def is_torch(self) -> bool:
@@ -675,15 +685,75 @@ class ProfilingConfig:
         if self.is_torch:
             env["SGLANG_TORCH_PROFILER_DIR"] = f"{profile_dir}/{mode}"
 
+        if self.is_nsys_time:
+            env["PROFILE_BENCHMARK_DURATION_SECS"] = str(self.benchmark_duration_secs)
+        elif (
+            self.is_nsys and phase_config and phase_config.start_step is not None and phase_config.stop_step is not None
+        ):
+            # TRTLLM iteration-based nsys: PyExecutor triggers cudaProfilerStart/Stop at these boundaries.
+            # Harmless on SGLang workers (unknown env vars are ignored).
+            env["TLLM_PROFILE_START_STOP"] = f"{phase_config.start_step}-{phase_config.stop_step}"
+            env["TLLM_LLMAPI_ENABLE_NVTX"] = "1"
+
         return env
 
-    def get_nsys_prefix(self, output_file: str, *, frontend_type: str | None = None) -> list[str]:
+    def _get_nsys_prefix_trtllm(self, output_file: str) -> list[str]:
+        """Get nsys command prefix for TRTLLM workers.
+
+        Supports both iteration-based (cudaProfilerApi trigger via TLLM_PROFILE_START_STOP)
+        and time-based (--delay/--duration) capture modes.
+        """
+        if self.is_nsys_time:
+            cmd = [
+                "nsys",
+                "profile",
+                "-t",
+                "cuda,nvtx,ucx",
+                "--sample=none",
+                "--cuda-graph-trace=node",
+            ]
+            if self.delay_secs is not None:
+                cmd += ["--delay", str(self.delay_secs)]
+            if self.duration_secs is not None:
+                cmd += ["--duration", str(self.duration_secs)]
+        else:
+            # Iteration-based: TLLM_PROFILE_START_STOP env var triggers cudaProfilerStart/Stop
+            cmd = [
+                "nsys",
+                "profile",
+                "-t",
+                "cuda,nvtx,ucx",
+                "--sample=none",
+                "--cuda-graph-trace=node",
+                "-c",
+                "cudaProfilerApi",
+                "--capture-range-end",
+                "stop",
+            ]
+
+        cmd += [
+            "--kill",
+            "none",
+            "--wait",
+            "all",
+            "--force-overwrite",
+            "true",
+            "-o",
+            output_file,
+        ]
+        return cmd
+
+    def get_nsys_prefix(
+        self, output_file: str, *, frontend_type: str | None = None, backend_type: str | None = None
+    ) -> list[str]:
         """Get nsys profiling command prefix.
 
         Args:
             output_file: Path for nsys output file (without extension)
-            frontend_type: Frontend type (e.g., "dynamo", "sglangrouter"). When set to "dynamo",
-                add flags required for Dynamo's process model.
+            frontend_type: Frontend type (e.g., "dynamo", "sglang"). When set to "dynamo"
+                with a non-trtllm backend, adds --trace-fork-before-exec=true.
+            backend_type: Backend type (e.g., "trtllm", "sglang"). When set to "trtllm",
+                uses TRTLLM-specific nsys flags (ucx traces, --kill none, --wait all).
 
         Returns:
             Command prefix list for nsys profiling
@@ -691,6 +761,10 @@ class ProfilingConfig:
         if not self.is_nsys:
             return []
 
+        if backend_type == "trtllm":
+            return self._get_nsys_prefix_trtllm(output_file)
+
+        # SGLang / default path — keep existing behavior
         cmd = [
             "nsys",
             "profile",
@@ -935,6 +1009,24 @@ class SrtConfig:
         """Validate profiling configuration matches serving mode."""
         prof = self.profiling
         if not prof.enabled:
+            return
+
+        backend_type = self.backend.type
+
+        # torch profiling is SGLang-only (uses SGLANG_TORCH_PROFILER_DIR)
+        if prof.is_torch and backend_type == "trtllm":
+            raise ValidationError("torch profiling is not supported for the trtllm backend; use nsys instead")
+
+        # nsys-time is TRTLLM-only (time-based capture via nsys --delay/--duration)
+        if prof.is_nsys_time and backend_type != "trtllm":
+            raise ValidationError("nsys-time profiling is only supported for the trtllm backend")
+
+        # nsys-time uses top-level delay/duration — no per-phase step configs needed
+        if prof.is_nsys_time:
+            if prof.delay_secs is None or prof.duration_secs is None:
+                raise ValidationError(
+                    "profiling.delay_secs and profiling.duration_secs are required for nsys-time mode"
+                )
             return
 
         r = self.resources
