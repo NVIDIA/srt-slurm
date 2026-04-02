@@ -1,0 +1,51 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+name: Copyright check
+
+on:
+  pull_request:
+
+jobs:
+  copyright-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check SPDX copyright headers
+        run: |
+          set -euo pipefail
+
+          MISSING=()
+
+          # Check Python files (excluding auto-generated or vendored paths)
+          while IFS= read -r -d '' f; do
+            if ! head -5 "$f" | grep -q "SPDX-FileCopyrightText.*NVIDIA"; then
+              MISSING+=("$f")
+            fi
+          done < <(find src analysis configs -name "*.py" -print0 2>/dev/null)
+
+          # Check shell scripts
+          while IFS= read -r -d '' f; do
+            if ! head -5 "$f" | grep -q "SPDX-FileCopyrightText.*NVIDIA"; then
+              MISSING+=("$f")
+            fi
+          done < <(find src configs -name "*.sh" -print0 2>/dev/null)
+
+          # Check Jinja2 templates
+          while IFS= read -r -d '' f; do
+            if ! head -5 "$f" | grep -q "SPDX-FileCopyrightText.*NVIDIA"; then
+              MISSING+=("$f")
+            fi
+          done < <(find src -name "*.j2" -print0 2>/dev/null)
+
+          if [ ${#MISSING[@]} -gt 0 ]; then
+            echo "ERROR: The following files are missing an NVIDIA SPDX copyright header:"
+            printf '  %s\n' "${MISSING[@]}"
+            echo ""
+            echo "Add the following header to each file:"
+            echo "  # SPDX-FileCopyrightText: Copyright (c) $(date +%Y) NVIDIA CORPORATION & AFFILIATES. All rights reserved."
+            echo "  # SPDX-License-Identifier: Apache-2.0"
+            exit 1
+          fi
+
+          echo "All checked files have NVIDIA SPDX copyright headers."
