@@ -308,6 +308,13 @@ def run_interactive() -> int:
     console.print()
     display_config_summary(config, title=str(config_path))
 
+    # Ask for run name suffix before the action menu
+    console.print()
+    cancelled, run_name_suffix = ask_run_name_suffix(config_path)
+    if cancelled:
+        console.print("[yellow]Cancelled.[/]")
+        return 0
+
     # Action menu
     while True:
         console.print()
@@ -336,6 +343,11 @@ def run_interactive() -> int:
                 config = yaml.safe_load(f)
             is_sweep = "sweep" in config
             display_config_summary(config, title=str(config_path))
+            console.print()
+            cancelled, run_name_suffix = ask_run_name_suffix(config_path)
+            if cancelled:
+                console.print("[yellow]Cancelled.[/]")
+                return 0
 
         elif action == "preview":
             preview_sbatch(config_path, config)
@@ -362,12 +374,6 @@ def run_interactive() -> int:
                 submit_single(config_path=config_path, dry_run=True)
 
         elif action == "submit":
-            # Ask for suffix first, before confirmation
-            cancelled, run_name_suffix = ask_run_name_suffix(config_path)
-            if cancelled:
-                console.print("[yellow]Cancelled.[/]")
-                continue
-
             if not confirm_submission(config_path, config, is_sweep):
                 console.print("[yellow]Submission cancelled.[/]")
                 continue
