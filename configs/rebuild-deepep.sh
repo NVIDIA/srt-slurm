@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 set -eux
 
 echo "=== Rebuilding DeepEP with kNumMaxTopK=16 for Qwen3.5 (topk=10) ==="
