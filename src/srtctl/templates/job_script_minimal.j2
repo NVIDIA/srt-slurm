@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #SBATCH --job-name={{ job_name }}
 #SBATCH --nodes={{ total_nodes }}
 {% if backend_type == "trtllm" %}
