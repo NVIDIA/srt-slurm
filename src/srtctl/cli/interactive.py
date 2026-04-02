@@ -199,6 +199,25 @@ def confirm_submission(config_path: Path, config: dict, is_sweep: bool) -> bool:
     ).ask()
 
 
+def ask_run_name_suffix(config_path: Path) -> tuple[bool, str | None]:
+    """Prompt for optional run name suffix; suggest recipe stem (e.g. _agg4_dep8_batch8_nvfp4).
+
+    Returns:
+        (cancelled, suffix): cancelled is True if user pressed Ctrl+C, suffix is the value or None for no suffix
+    """
+    suggested = f"_{config_path.stem}" if config_path.stem else ""
+    answer = questionary.text(
+        "Run name suffix for output dir (e.g. _tep8x1_tep8x3 → outputs/12345_tep8x1_tep8x3). Leave empty for none:",
+        default=suggested,
+        style=STYLE,
+    ).ask()
+    if answer is None:
+        # User pressed Ctrl+C
+        return (True, None)
+    value = (answer or "").strip()
+    return (False, value if value else None)
+
+
 def preview_sbatch(config_path: Path, config: dict) -> None:
     """Preview the generated sbatch script."""
     from srtctl.cli.submit import generate_minimal_sbatch_script
@@ -343,6 +362,12 @@ def run_interactive() -> int:
                 submit_single(config_path=config_path, dry_run=True)
 
         elif action == "submit":
+            # Ask for suffix first, before confirmation
+            cancelled, run_name_suffix = ask_run_name_suffix(config_path)
+            if cancelled:
+                console.print("[yellow]Cancelled.[/]")
+                continue
+
             if not confirm_submission(config_path, config, is_sweep):
                 console.print("[yellow]Submission cancelled.[/]")
                 continue
@@ -351,9 +376,9 @@ def run_interactive() -> int:
 
             try:
                 if is_sweep:
-                    submit_sweep(config_path, dry_run=False)
+                    submit_sweep(config_path, dry_run=False, run_name_suffix=run_name_suffix)
                 else:
-                    submit_single(config_path=config_path, dry_run=False)
+                    submit_single(config_path=config_path, dry_run=False, run_name_suffix=run_name_suffix)
                 console.print("\n[bold green]✅ Submission complete![/]")
                 return 0
             except Exception as e:
