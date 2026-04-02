@@ -2,11 +2,6 @@
 
 Thank you for your interest in contributing to srt-slurm.
 
-## Before You Contribute
-
-All contributions to this project must follow the IP review process outlined at
-https://nv/ip_review_process before being submitted or merged.
-
 ## Developer Certificate of Origin (DCO)
 
 By contributing to this project, you agree to the Developer Certificate of Origin
