@@ -2,7 +2,7 @@ name: "kimi-vllm-disagg-gb200-1p4d-dep4-tep4"
 
 model:
   path: "kimi-k2.5-nvfp4"
-  container: "v0.18.0"
+  container: "vllm/vllm-openai:v0.18.0-cu130"
   precision: "fp4"
 
 dynamo:
