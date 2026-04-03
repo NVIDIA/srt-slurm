@@ -1,5 +1,5 @@
 # Qwen3.5-397B-A17B-FP8 Disagg 1P1D + MTP + Prefix Caching Accuracy Verification (GPQA)
-# TP4 Prefill + TP4 Decode with EAGLE speculative decoding
+# TP4 Prefill + TP4 Decode with NEXTN MTP speculative decoding
 # Prefill: extra_buffer + radix cache (prefix caching on prefill side)
 # IMPORTANT: sglang ratio calc bug when disable_radix_cache=True + extra_buffer + spec dec:
 #   ratio is hardcoded to 1, ignoring extra_buffer's ping-pong overhead (2 mamba slots/req).
@@ -23,6 +23,7 @@ backend:
 
   prefill_environment:
     TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: "1800"
+    SGLANG_ENABLE_SPEC_V2: "1"
     PYTHONUNBUFFERED: "1"
     NCCL_MNNVL_ENABLE: "1"
     NCCL_CUMEM_ENABLE: "1"
@@ -38,6 +39,7 @@ backend:
 
   decode_environment:
     TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: "1800"
+    SGLANG_ENABLE_SPEC_V2: "1"
     PYTHONUNBUFFERED: "1"
     NCCL_MNNVL_ENABLE: "1"
     NCCL_CUMEM_ENABLE: "1"
@@ -95,11 +97,10 @@ backend:
       mamba-ssm-dtype: "bfloat16"
       max-running-requests: 64
 
-      # MTP: EAGLE speculative decoding
-      speculative-algorithm: "EAGLE"
-      speculative-num-steps: 2
-      speculative-eagle-topk: 1
-      speculative-num-draft-tokens: 3
+      
+      speculative-algorithm: "NEXTN"
+      speculative-num-steps: 3
+      speculative-num-draft-tokens: 4
 
       disaggregation-mode: "decode"
 

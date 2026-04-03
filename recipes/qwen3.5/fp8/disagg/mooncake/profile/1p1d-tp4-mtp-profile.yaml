@@ -1,4 +1,4 @@
-# Qwen3.5-397B-A17B-FP8 Disaggregated 1P1D: TP4 Prefill + TP4 Decode + MTP (EAGLE spec dec)
+# Qwen3.5-397B-A17B-FP8 Disaggregated 1P1D: TP4 Prefill + TP4 Decode + MTP (NEXTN MTP spec dec)
 # Pure tensor parallel, no expert parallel, with speculative decoding
 # 1k1k sa-bench concurrency sweep
 
@@ -21,6 +21,7 @@ backend:
 
   prefill_environment:
     TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: "1800"
+    SGLANG_ENABLE_SPEC_V2: "1"
     PYTHONUNBUFFERED: "1"
     NCCL_MNNVL_ENABLE: "1"
     NCCL_CUMEM_ENABLE: "1"
@@ -35,6 +36,7 @@ backend:
 
   decode_environment:
     TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: "1800"
+    SGLANG_ENABLE_SPEC_V2: "1"
     PYTHONUNBUFFERED: "1"
     NCCL_MNNVL_ENABLE: "1"
     NCCL_CUMEM_ENABLE: "1"
@@ -89,10 +91,9 @@ backend:
       mamba-track-interval: 2048  # must be > isl+osl to avoid checkpointing
       mamba-ssm-dtype: "bfloat16"
 
-      speculative-algorithm: "EAGLE"
-      speculative-num-steps: 2
-      speculative-eagle-topk: 1
-      speculative-num-draft-tokens: 3
+      speculative-algorithm: "NEXTN"
+      speculative-num-steps: 3
+      speculative-num-draft-tokens: 4
 
       disaggregation-mode: "decode"
       disable-radix-cache: true
