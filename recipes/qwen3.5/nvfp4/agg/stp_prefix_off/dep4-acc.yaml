@@ -1,0 +1,74 @@
+# Qwen3.5-397B-A17B-NVFP4 Aggregated DEP4 Accuracy Verification (GSM8K)
+# Data Expert Parallel: DP4 + TP4 + EP4 with dp-attention
+#
+# TEMPORARY: uses patch-flashinfer-gdc-sm100.sh to apply GDC fix (flashinfer-ai/flashinfer#2780)
+# TODO: remove setup_script once flashinfer upstream ships the fix and container is updated.
+
+name: "coreai_comparch_trtllm-yangminl.nvfp4-agg-dep4-acc"
+
+setup_script: "patch-flashinfer-gdc-sm100.sh"
+
+model:
+  path: "qwen3.5-nvfp4"
+  container: "dev"
+  precision: "fp4"
+
+extra_mount:
+  - "/lustre/fsw/coreai_comparch_trtllm/yangminl/sglang:/sgl-workspace/sglang"
+
+dynamo:
+  hash: "7edb07b5a7976c1a5c8581d2e2f7fe548c83f2bb"
+
+resources:
+  gpu_type: "gb200"
+  gpus_per_node: 4
+  agg_nodes: 1
+  agg_workers: 1
+
+backend:
+  type: sglang
+
+  aggregated_environment:
+    PYTHONUNBUFFERED: "1"
+    NCCL_MNNVL_ENABLE: "1"
+    NCCL_CUMEM_ENABLE: "1"
+    SGLANG_DG_CACHE_DIR: "/configs/deepgemm-cache"
+    FLASHINFER_WORKSPACE_BASE: "/configs/flashinfer-gdc-cache"
+    SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK: "1"
+
+  sglang_config:
+    aggregated:
+      served-model-name: "nvidia/Qwen3.5-397B-A17B-NVFP4"
+      model-path: "/model/"
+      trust-remote-code: true
+
+      attention-backend: "trtllm_mha"
+      quantization: "modelopt_fp4"
+
+      # DEP4: DP4 + TP4 + EP4 with dp-attention
+      tensor-parallel-size: 4
+      data-parallel-size: 4
+      expert-parallel-size: 4
+      enable-dp-attention: true
+      enable-dp-lm-head: true
+      moe-dense-tp-size: 1
+
+      mamba-ssm-dtype: "bfloat16"
+      moe-runner-backend: "flashinfer_trtllm"
+
+      disable-radix-cache: true
+      max-running-requests: 128
+      mem-fraction-static: 0.8
+      chunked-prefill-size: 16384
+      max-prefill-tokens: 16384
+      cuda-graph-max-bs: 128
+
+      decode-log-interval: 1
+      stream-interval: 50
+
+benchmark:
+  type: "gsm8k"
+  num_examples: 1319
+  max_tokens: 16000
+  num_threads: 128
+  num_shots: 8

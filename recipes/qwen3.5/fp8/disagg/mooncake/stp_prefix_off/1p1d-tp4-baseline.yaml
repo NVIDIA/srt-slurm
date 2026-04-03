@@ -1,0 +1,113 @@
+# Qwen3.5-397B-A17B-FP8 1P1D Baseline (identical to 949062 server config)
+# Used to verify disaggregation still works with current sglang/srt-slurm
+# Server config is EXACTLY the same as recipies/qwen3.5/1p1d.yaml (949062)
+# Only difference: uses sa-bench instead of gpqa for faster validation
+
+name: "qwen3.5-1p1d-tp4-baseline"
+
+model:
+  path: "qwen3.5-fp8"
+  container: "dev"
+  precision: "fp8"
+
+extra_mount: ["/lustre/fsw/coreai_comparch_trtllm/yangminl/sglang:/sgl-workspace/sglang"]
+
+resources:
+  gpu_type: "gb200"
+  gpus_per_node: 4
+  prefill_nodes: 1
+  decode_nodes: 1
+  prefill_workers: 1
+  decode_workers: 1
+
+backend:
+
+  prefill_environment:
+    TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: "1800"
+    PYTHONUNBUFFERED: "1"
+    NCCL_MNNVL_ENABLE: "1"
+    NCCL_CUMEM_ENABLE: "1"
+    MC_FORCE_MNNVL: "1"
+    SGLANG_DG_CACHE_DIR: "/configs/deepgemm-cache"
+    FLASHINFER_WORKSPACE_BASE: "/configs/flashinfer-cache"
+    SGLANG_DISAGGREGATION_HEARTBEAT_MAX_FAILURE: "100000"
+    SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT: "100000"
+    SGLANG_DISAGGREGATION_WAITING_TIMEOUT: "100000"
+    SGLANG_MOONCAKE_CUSTOM_MEM_POOL: "True"
+    SGLANG_USE_MESSAGE_QUEUE_BROADCASTER: "0"
+    SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK: "1"
+
+  decode_environment:
+    TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: "1800"
+    PYTHONUNBUFFERED: "1"
+    NCCL_MNNVL_ENABLE: "1"
+    NCCL_CUMEM_ENABLE: "1"
+    MC_FORCE_MNNVL: "1"
+    SGLANG_DG_CACHE_DIR: "/configs/deepgemm-cache"
+    FLASHINFER_WORKSPACE_BASE: "/configs/flashinfer-cache"
+    SGLANG_DISAGGREGATION_HEARTBEAT_MAX_FAILURE: "100000"
+    SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT: "100000"
+    SGLANG_DISAGGREGATION_WAITING_TIMEOUT: "100000"
+    SGLANG_DECODE_BOOTSTRAP_TIMEOUT: "1000"
+    SGLANG_HACK_SEQ_BOOTSTRAP_ROOM: "1"
+    SGLANG_MOONCAKE_CUSTOM_MEM_POOL: "True"
+    SGLANG_USE_MESSAGE_QUEUE_BROADCASTER: "0"
+    SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK: "1"
+
+  sglang_config:
+    prefill:
+      served-model-name: "Qwen/Qwen3.5-397B-A17B-FP8"
+      model-path: "/model/"
+      trust-remote-code: true
+
+      tensor-parallel-size: 4
+      data-parallel-size: 1
+      expert-parallel-size: 1
+
+      mamba-scheduler-strategy: "extra_buffer"
+      mamba-track-interval: 128
+      mamba-ssm-dtype: "bfloat16"
+
+      disaggregation-mode: "prefill"
+      disable-radix-cache: true
+
+      mem-fraction-static: 0.75
+      chunked-prefill-size: 2048
+      context-length: 262144
+
+      load-balance-method: "round_robin"
+      watchdog-timeout: 1000000
+
+      disable-cuda-graph: true
+
+    decode:
+      served-model-name: "Qwen/Qwen3.5-397B-A17B-FP8"
+      model-path: "/model/"
+      trust-remote-code: true
+
+      tensor-parallel-size: 4
+      data-parallel-size: 1
+      expert-parallel-size: 1
+
+      mamba-scheduler-strategy: "extra_buffer"
+      mamba-track-interval: 128
+      mamba-ssm-dtype: "bfloat16"
+      max-mamba-cache-size: 750
+      max-running-requests: 250
+
+      disaggregation-mode: "decode"
+      disable-radix-cache: true
+
+      mem-fraction-static: 0.75
+      chunked-prefill-size: 2048
+      context-length: 262144
+
+      watchdog-timeout: 1000000
+
+benchmark:
+  type: "sa-bench"
+  isl: 1000
+  osl: 1000
+  random_range_ratio: 1.0
+  concurrencies: "8x32x128"
+  req_rate: "inf"
