@@ -71,7 +71,7 @@ ulimit -n 600000 2>/dev/null || ulimit -n 65536 2>/dev/null || true
 export AIPERF_HTTP_SO_RCVTIMEO=120
 
 # Optional: extra Prometheus endpoints for AIPerf server metrics
-SERVER_METRICS_ARGS=()
+SERVER_METRICS_ARGS=(--server-metrics-formats json jsonl)
 if [ -n "${AIPERF_SERVER_METRICS_URLS:-}" ]; then
     IFS=',' read -r -a server_metrics_urls <<< "${AIPERF_SERVER_METRICS_URLS}"
     if [ ${#server_metrics_urls[@]} -gt 0 ]; then
@@ -158,7 +158,8 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
         --export-http-trace \
         --goodput "time_to_first_token:${TTFT_THRESHOLD} inter_token_latency:${ITL_THRESHOLD}" \
         --ui dashboard \
-        --artifact-dir "${RUN_ARTIFACT_DIR}/concurrency_${concurrency}"
+        --artifact-dir "${RUN_ARTIFACT_DIR}/concurrency_${concurrency}" \
+        "${SERVER_METRICS_ARGS[@]}"
 done
 
 BENCH_EXIT_CODE=$?
