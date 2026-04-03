@@ -1,12 +1,7 @@
 # Qwen3.5-397B-A17B-NVFP4 Aggregated DEP4 on GB200
 # Data Expert Parallel: DP4 + TP4 + EP4 with dp-attention
-#
-# TEMPORARY: uses patch-flashinfer-gdc-sm100.sh to apply GDC fix (flashinfer-ai/flashinfer#2780)
-# TODO: remove setup_script once flashinfer upstream ships the fix and container is updated.
 
 name: "coreai_comparch_trtllm-yangminl.nvfp4-agg-dep4"
-
-setup_script: "patch-flashinfer-gdc-sm100.sh"
 
 model:
   path: "qwen3.5-nvfp4"

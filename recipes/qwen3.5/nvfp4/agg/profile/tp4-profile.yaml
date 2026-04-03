@@ -4,8 +4,6 @@
 
 name: "nvfp4-agg-tp4-profile"
 
-setup_script: "patch-flashinfer-gdc-sm100.sh"
-
 model:
   path: "qwen3.5-nvfp4"
   container: "dev-0318"

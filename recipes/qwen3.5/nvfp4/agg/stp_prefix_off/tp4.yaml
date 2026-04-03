@@ -1,12 +1,7 @@
 # Qwen3.5-397B-A17B-NVFP4 Aggregated TP4 on GB200
 # Pure tensor parallel, no expert parallel, symmetric memory enabled
-#
-# TEMPORARY: uses patch-flashinfer-gdc-sm100.sh to apply GDC fix (flashinfer-ai/flashinfer#2780)
-# TODO: remove setup_script once flashinfer upstream ships the fix and container is updated.
 
 name: "coreai_comparch_trtllm-yangminl.nvfp4-agg-tp4"
-
-setup_script: "patch-flashinfer-gdc-sm100.sh"
 
 model:
   path: "qwen3.5-nvfp4"
