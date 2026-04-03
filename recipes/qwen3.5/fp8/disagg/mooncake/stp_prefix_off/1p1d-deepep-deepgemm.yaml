@@ -8,8 +8,6 @@ model:
   container: "dev"
   precision: "fp8"
 
-extra_mount:
-  - "/lustre/fsw/coreai_comparch_trtllm/yangminl/sglang:/sgl-workspace/sglang"
   # - "/lustre/fsw/coreai_comparch_trtllm/yangminl/DeepEP:/sgl-workspace/DeepEP"
 
 setup_script: "rebuild-deepep.sh"
@@ -62,7 +60,6 @@ backend:
     prefill:
       served-model-name: "Qwen/Qwen3.5-397B-A17B-FP8"
       model-path: "/model/"
-      trust-remote-code: true
 
       # Parallelism: simple TP4 on 1 node, no EP
       tensor-parallel-size: 4
@@ -94,7 +91,6 @@ backend:
     decode:
       served-model-name: "Qwen/Qwen3.5-397B-A17B-FP8"
       model-path: "/model/"
-      trust-remote-code: true
 
       # Parallelism: TP8/EP8 across 2 GB200 nodes
       tp-size: 8
@@ -146,3 +142,4 @@ benchmark:
   max_tokens: 65536
   repeat: 8
   num_threads: 128
+

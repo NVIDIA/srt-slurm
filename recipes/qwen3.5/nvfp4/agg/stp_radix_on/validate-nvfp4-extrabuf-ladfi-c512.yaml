@@ -10,13 +10,9 @@ model:
   container: "dev-0318"
   precision: "fp4"
 
-extra_mount:
-  - "/lustre/fsw/coreai_comparch_trtllm/yangminl/sglang:/sgl-workspace/sglang"
-
 frontend:
   type: "sglang"
 
-dynamo:
   install: false
 
 resources:
@@ -45,7 +41,6 @@ backend:
     aggregated:
       served-model-name: "nvidia/Qwen3.5-397B-A17B-NVFP4"
       model-path: "/model/"
-      trust-remote-code: true
 
       tensor-parallel-size: 4
       ep-size: 1
@@ -82,3 +77,4 @@ benchmark:
   temperature: 0.6
   top_p: 0.95
   top_k: 20
+

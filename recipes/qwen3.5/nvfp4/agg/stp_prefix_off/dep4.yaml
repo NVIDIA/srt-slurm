@@ -13,9 +13,6 @@ model:
   container: "dev"
   precision: "fp4"
 
-extra_mount:
-  - "/lustre/fsw/coreai_comparch_trtllm/yangminl/sglang:/sgl-workspace/sglang"
-
 resources:
   gpu_type: "gb200"
   gpus_per_node: 4
@@ -37,7 +34,6 @@ backend:
     aggregated:
       served-model-name: "nvidia/Qwen3.5-397B-A17B-NVFP4"
       model-path: "/model/"
-      trust-remote-code: true
 
       attention-backend: "trtllm_mha"
       quantization: "modelopt_fp4"
@@ -60,7 +56,7 @@ backend:
       max-prefill-tokens: 16384
       context-length: 2020
       cuda-graph-max-bs: 1024
-      # enable-symm-mem: true  # optional: enable symmetric memory for NCCL
+      # enable-symm-mem: true
 
       decode-log-interval: 1
       stream-interval: 50
@@ -69,6 +65,6 @@ benchmark:
   type: "sa-bench"
   isl: 1000
   osl: 1000
-  random_range_ratio: 1.0
   concurrencies: "1x2x4x8x16x32x64x128x256x512x1024"
   req_rate: "inf"
+

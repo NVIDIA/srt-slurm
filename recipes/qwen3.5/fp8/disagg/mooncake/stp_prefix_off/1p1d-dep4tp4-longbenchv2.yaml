@@ -11,9 +11,6 @@ model:
   container: "dev"
   precision: "fp8"
 
-extra_mount:
-  - "/lustre/fsw/coreai_comparch_trtllm/yangminl/sglang:/sgl-workspace/sglang"
-
 resources:
   gpu_type: "gb200"
   gpus_per_node: 4
@@ -60,7 +57,6 @@ backend:
     prefill:
       served-model-name: "Qwen/Qwen3.5-397B-A17B-FP8"
       model-path: "/model/"
-      trust-remote-code: true
 
       attention-backend: "trtllm_mha"
       quantization: "fp8"
@@ -90,7 +86,6 @@ backend:
     decode:
       served-model-name: "Qwen/Qwen3.5-397B-A17B-FP8"
       model-path: "/model/"
-      trust-remote-code: true
 
       attention-backend: "trtllm_mha"
       quantization: "fp8"
@@ -119,3 +114,4 @@ benchmark:
   max_context_length: 128000
   num_threads: 32
   max_tokens: 16384
+

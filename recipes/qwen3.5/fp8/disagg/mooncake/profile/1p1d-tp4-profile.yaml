@@ -9,9 +9,6 @@ model:
   container: "dev"
   precision: "fp8"
 
-extra_mount:
-  - "/lustre/fsw/coreai_comparch_trtllm/yangminl/sglang:/sgl-workspace/sglang"
-
 resources:
   gpu_type: "gb200"
   gpus_per_node: 4
@@ -35,7 +32,6 @@ backend:
     SGLANG_DISAGGREGATION_WAITING_TIMEOUT: "100000"
     SGLANG_MOONCAKE_CUSTOM_MEM_POOL: "True"
     SGLANG_USE_MESSAGE_QUEUE_BROADCASTER: "0"
-    SGLANG_DEBUG_MEMORY_POOL: "1"
 
   decode_environment:
     TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: "1800"
@@ -52,13 +48,11 @@ backend:
     SGLANG_HACK_SEQ_BOOTSTRAP_ROOM: "1"
     SGLANG_MOONCAKE_CUSTOM_MEM_POOL: "True"
     SGLANG_USE_MESSAGE_QUEUE_BROADCASTER: "0"
-    SGLANG_DEBUG_MEMORY_POOL: "1"
 
   sglang_config:
     prefill:
       served-model-name: "Qwen/Qwen3.5-397B-A17B-FP8"
       model-path: "/model/"
-      trust-remote-code: true
 
       attention-backend: "trtllm_mha"
       kv-cache-dtype: "fp8_e4m3"
@@ -67,7 +61,6 @@ backend:
       data-parallel-size: 1
       expert-parallel-size: 1
 
-      # mamba-scheduler-strategy: "extra_buffer"
       mamba-scheduler-strategy: "no_buffer"
       disable-radix-cache: true
       mamba-track-interval: 2048
@@ -84,7 +77,6 @@ backend:
     decode:
       served-model-name: "Qwen/Qwen3.5-397B-A17B-FP8"
       model-path: "/model/"
-      trust-remote-code: true
 
       attention-backend: "trtllm_mha"
       quantization: "fp8"
@@ -93,7 +85,6 @@ backend:
 
       tp-size: 4
 
-      # mamba-scheduler-strategy: "extra_buffer"
       mamba-scheduler-strategy: "no_buffer"
       disable-radix-cache: true
       mamba-track-interval: 2048
@@ -122,6 +113,6 @@ benchmark:
   type: "sa-bench"
   isl: 1000
   osl: 1000
-  random_range_ratio: 1.0
   concurrencies: "1x2x4x8x16x32x64x128x256x512x1024"
   req_rate: "inf"
+

@@ -9,9 +9,6 @@ model:
   container: "dev"
   precision: "fp8"
 
-extra_mount:
-  - "/lustre/fsw/coreai_comparch_trtllm/yangminl/sglang:/sgl-workspace/sglang"
-
 resources:
   gpu_type: "gb200"
   gpus_per_node: 4
@@ -57,7 +54,6 @@ backend:
     prefill:
       served-model-name: "Qwen/Qwen3.5-397B-A17B-FP8"
       model-path: "/model/"
-      trust-remote-code: true
 
       attention-backend: "trtllm_mha"
       kv-cache-dtype: "fp8_e4m3"
@@ -66,7 +62,6 @@ backend:
       data-parallel-size: 1
       expert-parallel-size: 1
 
-      # mamba-scheduler-strategy: "extra_buffer"
       mamba-scheduler-strategy: "no_buffer"
       mamba-track-interval: 128
       mamba-ssm-dtype: "bfloat16"
@@ -83,7 +78,6 @@ backend:
     decode:
       served-model-name: nvidia/DeepSeek-R1-0528-NVFP4-v2
       model-path: "/model/"
-      trust-remote-code: true
 
       attention-backend: "trtllm_mha"
       quantization: "fp8"
@@ -117,6 +111,6 @@ benchmark:
   type: "sa-bench"
   isl: 1000
   osl: 1000
-  random_range_ratio: 1.0
   concurrencies: "1x2x4x8x16x32x64x128x256x512x1024"
   req_rate: "inf"
+
