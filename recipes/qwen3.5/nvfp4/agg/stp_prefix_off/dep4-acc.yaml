@@ -1,7 +1,7 @@
 # Qwen3.5-397B-A17B-NVFP4 Aggregated DEP4 Accuracy Verification (GSM8K)
 # Data Expert Parallel: DP4 + TP4 + EP4 with dp-attention
 
-name: "coreai_comparch_trtllm-yangminl.nvfp4-agg-dep4-acc"
+name: "nvfp4-agg-dep4-acc"
 
 model:
   path: "qwen3.5-nvfp4"

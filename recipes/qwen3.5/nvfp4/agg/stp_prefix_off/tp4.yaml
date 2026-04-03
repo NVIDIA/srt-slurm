@@ -1,7 +1,7 @@
 # Qwen3.5-397B-A17B-NVFP4 Aggregated TP4 on GB200
 # Pure tensor parallel, no expert parallel, symmetric memory enabled
 
-name: "coreai_comparch_trtllm-yangminl.nvfp4-agg-tp4"
+name: "nvfp4-agg-tp4"
 
 model:
   path: "qwen3.5-nvfp4"

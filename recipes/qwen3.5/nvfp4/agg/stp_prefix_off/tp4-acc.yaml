@@ -1,7 +1,7 @@
 # Qwen3.5-397B-A17B-NVFP4 Aggregated TP4 Accuracy Verification (GSM8K)
 # Pure tensor parallel, no expert parallel
 
-name: "coreai_comparch_trtllm-yangminl.nvfp4-agg-tp4-acc"
+name: "nvfp4-agg-tp4-acc"
 
 model:
   path: "qwen3.5-nvfp4"
