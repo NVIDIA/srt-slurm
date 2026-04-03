@@ -1,13 +1,13 @@
-# Qwen3.5-397B-A17B-FP8 1P1D Baseline (identical to 949062 server config)
-# Used to verify disaggregation still works with current sglang/srt-slurm
-# Server config is EXACTLY the same as recipies/qwen3.5/1p1d.yaml (949062)
-# Only difference: uses sa-bench instead of gpqa for faster validation
+# Qwen3.5-397B-A17B-FP8 Disaggregated 1P1D: TP4 Prefill + DEP4 Decode
+# Staging buffer + async scatter — nsys profiling v3
+# Push decode start_step to 200 to skip cold-start; keep OSL=128 (proven stable)
+# Workload: 1k input / 128 output, concurrency 128
 
-name: "qwen3.5-1p1d-tp4-baseline"
+name: "qwen3.5-1p1d-dep4-nsys-profile"
 
 model:
   path: "qwen3.5-fp8"
-  container: "dev"
+  container: "dev-0318"
   precision: "fp8"
 
 resources:
@@ -34,6 +34,9 @@ backend:
     SGLANG_MOONCAKE_CUSTOM_MEM_POOL: "True"
     SGLANG_USE_MESSAGE_QUEUE_BROADCASTER: "0"
     SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK: "1"
+    SGLANG_DISAGG_STAGING_BUFFER: "1"
+    SGLANG_DISAGG_STAGING_BUFFER_SIZE_MB: "128"
+    SGLANG_LOG_FORWARD_ITERS: "1"
 
   decode_environment:
     TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: "1800"
@@ -51,59 +54,79 @@ backend:
     SGLANG_MOONCAKE_CUSTOM_MEM_POOL: "True"
     SGLANG_USE_MESSAGE_QUEUE_BROADCASTER: "0"
     SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK: "1"
+    SGLANG_DISAGG_STAGING_BUFFER: "1"
+    SGLANG_DISAGG_STAGING_BUFFER_SIZE_MB: "128"
+    SGLANG_LOG_FORWARD_ITERS: "1"
 
   sglang_config:
     prefill:
       served-model-name: "Qwen/Qwen3.5-397B-A17B-FP8"
       model-path: "/model/"
+
+      attention-backend: "trtllm_mha"
       kv-cache-dtype: "fp8_e4m3"
 
       tensor-parallel-size: 4
       data-parallel-size: 1
       expert-parallel-size: 1
 
-      mamba-scheduler-strategy: "extra_buffer"
-      mamba-track-interval: 2048  # must be > isl+osl to avoid checkpointing
+      mamba-scheduler-strategy: "no_buffer"
+      disable-radix-cache: true
+      mamba-track-interval: 2048
       mamba-ssm-dtype: "bfloat16"
 
       disaggregation-mode: "prefill"
-      disable-radix-cache: true
 
-      mem-fraction-static: 0.75
+      mem-fraction-static: 0.80
       chunked-prefill-size: 16384
-      context-length: 2200
-
+      context-length: 2020
       load-balance-method: "round_robin"
       watchdog-timeout: 1000000
-
-      disable-cuda-graph: true
 
     decode:
       served-model-name: "Qwen/Qwen3.5-397B-A17B-FP8"
       model-path: "/model/"
+
+      attention-backend: "trtllm_mha"
+      quantization: "fp8"
       kv-cache-dtype: "fp8_e4m3"
+      moe-runner-backend: "flashinfer_trtllm"
 
+      # DEP4: DP4 + TP4 + EP4 with dp-attention
       tensor-parallel-size: 4
-      data-parallel-size: 1
-      expert-parallel-size: 1
+      data-parallel-size: 4
+      expert-parallel-size: 4
+      enable-dp-attention: true
+      enable-dp-lm-head: true
+      moe-dense-tp-size: 1
 
-      mamba-scheduler-strategy: "extra_buffer"
+      mamba-scheduler-strategy: "no_buffer"
+      disable-radix-cache: true
       mamba-track-interval: 2048  # must be > isl+osl to avoid checkpointing
       mamba-ssm-dtype: "bfloat16"
-      max-running-requests: 250
 
       disaggregation-mode: "decode"
-      disable-radix-cache: true
 
-      mem-fraction-static: 0.75
+      mem-fraction-static: 0.80
       chunked-prefill-size: 16384
-      context-length: 2200
-
+      context-length: 2020
+      cuda-graph-max-bs: 1024
+      decode-log-interval: 1
+      stream-interval: 50
       watchdog-timeout: 1000000
+
+profiling:
+  type: "nsys"
+  prefill:
+    start_step: 10
+    stop_step: 15
+  decode:
+    start_step: 200
+    stop_step: 400
 
 benchmark:
   type: "sa-bench"
   isl: 1000
-  osl: 1000
-  concurrencies: "8x32x128"
-  req_rate: "inf"
+  osl: 128
+  concurrencies: "128"
+  req_rate: "10"

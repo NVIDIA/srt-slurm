@@ -2,7 +2,7 @@
 # Base: sweep-nobuf-conc128.yaml
 # Goal: confirm which GEMM kernels are FP4 vs BF16 at conc=128
 
-name: "coreai_comparch_trtllm-yangminl.nvfp4-torch-profile-nobuf-conc64"
+name: "nvfp4-agg-tp4-profile"
 
 setup_script: "patch-flashinfer-gdc-sm100.sh"
 

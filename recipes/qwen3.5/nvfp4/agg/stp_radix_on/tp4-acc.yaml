@@ -1,7 +1,7 @@
 # FlashInfer GDN decode validation: NVFP4, linear-attn-decode-backend=flashinfer (ladfi),
-# extra_buffer Mamba scheduler (radix cache on), no MTP, concurrency 128.
+# extra_buffer Mamba scheduler (radix cache on), no MTP, concurrency 512.
 
-name: "coreai_comparch_trtllm-yangminl.val-nvfp4-eb-ladfi-c128"
+name: "nvfp4-agg-tp4-radix-acc"
 
 setup_script: "upgrade-flashinfer-v067.sh"
 
@@ -60,8 +60,8 @@ backend:
       chunked-prefill-size: 32768
       max-prefill-tokens: 32768
 
-      cuda-graph-max-bs: 128
-      max-running-requests: 128
+      cuda-graph-max-bs: 512
+      max-running-requests: 512
 
       scheduler-recv-interval: 30
       stream-interval: 30
@@ -72,7 +72,7 @@ benchmark:
   type: "gsm8k"
   num_examples: 1319
   max_tokens: 16000
-  num_threads: 128
+  num_threads: 512
   num_shots: 8
   temperature: 0.6
   top_p: 0.95
