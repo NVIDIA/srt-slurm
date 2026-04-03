@@ -65,11 +65,13 @@ backend:
       expert-parallel-size: 1
 
       attention-backend: "trtllm_mha"
+      quantization: "fp8"
       kv-cache-dtype: "fp8_e4m3"
 
       # prefix caching enabled: extra_buffer + radix cache (no disable-radix-cache)
       mamba-scheduler-strategy: "extra_buffer"
       mamba-track-interval: 2048
+      moe-runner-backend: "flashinfer_trtllm"
       mamba-ssm-dtype: "bfloat16"
 
       disaggregation-mode: "prefill"
@@ -91,9 +93,11 @@ backend:
       expert-parallel-size: 1
 
       attention-backend: "trtllm_mha"
+      quantization: "fp8"
       kv-cache-dtype: "fp8_e4m3"
       mamba-scheduler-strategy: "extra_buffer"
       mamba-track-interval: 2048
+      moe-runner-backend: "flashinfer_trtllm"
       mamba-ssm-dtype: "bfloat16"
       max-running-requests: 64
 
