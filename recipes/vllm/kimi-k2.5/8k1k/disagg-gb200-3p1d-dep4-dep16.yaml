@@ -65,7 +65,7 @@ backend:
       attention-backend: "FLASHINFER_MLA"
       block-size: 64
       attention-config: '{"use_trtllm_ragged_deepseek_prefill": true}'
-      all2all-backend: "allgather_reducescatter"
+      all2all-backend: "flashinfer_nvlink_one_sided"
       gpu-memory-utilization: 0.9
 
     decode:
@@ -87,7 +87,7 @@ backend:
       async-scheduling: true
       attention-backend: "FLASHINFER_MLA"
       block-size: 64
-      all2all-backend: "allgather_reducescatter"
+      all2all-backend: "flashinfer_nvlink_one_sided"
       compilation-config: '{"cudagraph_mode":"FULL_DECODE_ONLY","custom_ops":["+quant_fp8","+rms_norm","+rotary_embedding"],"pass_config":{"fuse_attn_quant":true,"fuse_allreduce_rms":true}}'
       gpu-memory-utilization: 0.9
       stream-interval: 50

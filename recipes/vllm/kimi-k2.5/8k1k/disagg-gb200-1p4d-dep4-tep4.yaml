@@ -65,7 +65,7 @@ backend:
       attention-backend: "FLASHINFER_MLA"
       block-size: 64
       attention-config: '{"use_trtllm_ragged_deepseek_prefill": true}'
-      all2all-backend: "allgather_reducescatter"
+      all2all-backend: "flashinfer_nvlink_one_sided"
       gpu-memory-utilization: 0.9
 
     decode:
