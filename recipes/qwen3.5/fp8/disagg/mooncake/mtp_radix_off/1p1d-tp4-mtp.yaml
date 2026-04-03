@@ -48,7 +48,6 @@ backend:
     SGLANG_HACK_SEQ_BOOTSTRAP_ROOM: "1"
     SGLANG_MOONCAKE_CUSTOM_MEM_POOL: "True"
     SGLANG_USE_MESSAGE_QUEUE_BROADCASTER: "0"
-    # SGLANG_ENABLE_SPEC_V2: "1"
 
   sglang_config:
     prefill:
@@ -63,7 +62,7 @@ backend:
       expert-parallel-size: 1
 
       mamba-scheduler-strategy: "no_buffer"
-      mamba-track-interval: 128
+      mamba-track-interval: 2048  # must be > isl+osl to avoid checkpointing
       mamba-ssm-dtype: "bfloat16"
 
       disaggregation-mode: "prefill"
@@ -84,10 +83,10 @@ backend:
       kv-cache-dtype: "fp8_e4m3"
       moe-runner-backend: "flashinfer_trtllm"
 
-      tp-size: 4
+      tensor-parallel-size: 4
 
       mamba-scheduler-strategy: "no_buffer"
-      mamba-track-interval: 128
+      mamba-track-interval: 2048  # must be > isl+osl to avoid checkpointing
       mamba-ssm-dtype: "bfloat16"
 
       speculative-algorithm: "EAGLE"
@@ -113,4 +112,3 @@ benchmark:
   osl: 1000
   concurrencies: "1x2x4x8x16x32x64x128x256x512x1024"
   req_rate: "inf"
-

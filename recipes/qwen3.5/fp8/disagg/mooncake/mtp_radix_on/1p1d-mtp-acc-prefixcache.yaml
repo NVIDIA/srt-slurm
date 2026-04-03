@@ -1,13 +1,8 @@
 # Qwen3.5-397B-A17B-FP8 Disagg 1P1D + MTP + Prefix Caching Accuracy Verification (GPQA)
 # TP4 Prefill + TP4 Decode with EAGLE speculative decoding
 # Prefill: extra_buffer + radix cache (prefix caching on prefill side)
-# Decode: extra_buffer + max-mamba-cache-size=2x (disagg forces disable_radix_cache=True)
-#
 # IMPORTANT: sglang ratio calc bug when disable_radix_cache=True + extra_buffer + spec dec:
 #   ratio is hardcoded to 1, ignoring extra_buffer's ping-pong overhead (2 mamba slots/req).
-#   Must explicitly set max-mamba-cache-size >= 2 * max-running-requests to compensate.
-#
-# Purpose: reproduce/investigate low accuracy (0.71/0.61 on GSM8K) in disagg + MTP + prefix caching
 
 name: "qwen3.5-1p1d-tp4-mtp-acc-prefixcache"
 
@@ -68,6 +63,7 @@ backend:
       expert-parallel-size: 1
 
       attention-backend: "trtllm_mha"
+      kv-cache-dtype: "fp8_e4m3"
 
       # prefix caching enabled: extra_buffer + radix cache (no disable-radix-cache)
       mamba-scheduler-strategy: "extra_buffer"
@@ -78,7 +74,7 @@ backend:
 
       mem-fraction-static: 0.75
       chunked-prefill-size: 16384
-      context-length: 262144
+      context-length: 2200
 
       load-balance-method: "round_robin"
       watchdog-timeout: 1000000
@@ -93,16 +89,11 @@ backend:
       expert-parallel-size: 1
 
       attention-backend: "trtllm_mha"
-
-      # Disagg decode forces disable_radix_cache=True (prefix caching is prefill-side only).
-      # extra_buffer + EAGLE spec dec = 2 mamba slots per request (1 main + 1 ping-pong).
-      # But sglang ratio calc uses ratio=1 for disable_radix_cache, not accounting for extra_buffer.
-      # So we MUST set max-mamba-cache-size >= 2 * max-running-requests to avoid pool exhaustion.
+      kv-cache-dtype: "fp8_e4m3"
       mamba-scheduler-strategy: "extra_buffer"
       mamba-track-interval: 2048
       mamba-ssm-dtype: "bfloat16"
       max-running-requests: 64
-      # max-mamba-cache-size: 128
 
       # MTP: EAGLE speculative decoding
       speculative-algorithm: "EAGLE"
@@ -114,7 +105,7 @@ backend:
 
       mem-fraction-static: 0.75
       chunked-prefill-size: 16384
-      context-length: 262144
+      context-length: 2200
 
       watchdog-timeout: 1000000
 
@@ -127,4 +118,3 @@ benchmark:
   max_tokens: 65536
   repeat: 1
   num_threads: 64
-

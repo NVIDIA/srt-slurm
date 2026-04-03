@@ -65,17 +65,18 @@ backend:
       expert-parallel-size: 1
 
       attention-backend: "trtllm_mha"
+      kv-cache-dtype: "fp8_e4m3"
 
       # prefix caching enabled: extra_buffer + radix cache (no disable-radix-cache)
       mamba-scheduler-strategy: "extra_buffer"
-      mamba-track-interval: 128
+      mamba-track-interval: 2048  # must be > isl+osl to avoid checkpointing
       mamba-ssm-dtype: "bfloat16"
 
       disaggregation-mode: "prefill"
 
       mem-fraction-static: 0.75
-      chunked-prefill-size: 2048
-      context-length: 262144
+      chunked-prefill-size: 16384
+      context-length: 2200
 
       load-balance-method: "round_robin"
       watchdog-timeout: 1000000
@@ -90,13 +91,12 @@ backend:
       expert-parallel-size: 1
 
       attention-backend: "trtllm_mha"
+      kv-cache-dtype: "fp8_e4m3"
 
       # prefix caching enabled: extra_buffer + radix cache (no disable-radix-cache)
       mamba-scheduler-strategy: "extra_buffer"
-      mamba-track-interval: 128
+      mamba-track-interval: 2048  # must be > isl+osl to avoid checkpointing
       mamba-ssm-dtype: "bfloat16"
-      # extra_buffer needs 3 mamba pool slots per request (1 main + 2 ping-pong)
-      max-mamba-cache-size: 750
       max-running-requests: 250
 
       # MTP: EAGLE speculative decoding
@@ -108,8 +108,8 @@ backend:
       disaggregation-mode: "decode"
 
       mem-fraction-static: 0.75
-      chunked-prefill-size: 2048
-      context-length: 262144
+      chunked-prefill-size: 16384
+      context-length: 2200
 
       watchdog-timeout: 1000000
 
@@ -122,4 +122,3 @@ benchmark:
   max_tokens: 65536
   repeat: 8
   num_threads: 128
-

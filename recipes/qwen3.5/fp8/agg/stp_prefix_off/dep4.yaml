@@ -63,4 +63,3 @@ benchmark:
   osl: 1000
   concurrencies: "1x2x4x8x16x32x64x128x256x512x1024"
   req_rate: "inf"
-

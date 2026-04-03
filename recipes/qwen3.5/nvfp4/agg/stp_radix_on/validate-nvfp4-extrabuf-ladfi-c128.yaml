@@ -43,7 +43,7 @@ backend:
       model-path: "/model/"
 
       tensor-parallel-size: 4
-      ep-size: 1
+      expert-parallel-size: 1
 
       quantization: modelopt_fp4
       kv-cache-dtype: fp8_e4m3
@@ -77,4 +77,3 @@ benchmark:
   temperature: 0.6
   top_p: 0.95
   top_k: 20
-

@@ -37,7 +37,6 @@ backend:
     SGLANG_DISAGG_STAGING_BUFFER: "1"
     SGLANG_DISAGG_STAGING_BUFFER_SIZE_MB: "256"
     SGLANG_STAGING_DEBUG: "1"
-    # SGLANG_STG_TRACE: "1"
 
   decode_environment:
     TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: "1800"
@@ -58,7 +57,6 @@ backend:
     SGLANG_DISAGG_STAGING_BUFFER: "1"
     SGLANG_DISAGG_STAGING_POOL_SIZE_MB: "4096"
     SGLANG_STAGING_DEBUG: "1"
-    # SGLANG_STG_TRACE: "1"
 
   sglang_config:
     prefill:
@@ -94,9 +92,9 @@ backend:
       moe-runner-backend: "flashinfer_trtllm"
 
       # DEP2: DP2 + TP4 + EP2 with dp-attention (atten_tpsize=2)
-      tp-size: 4
-      dp-size: 2
-      ep-size: 2
+      tensor-parallel-size: 4
+      data-parallel-size: 2
+      expert-parallel-size: 2
       enable-dp-attention: true
       enable-dp-lm-head: true
       moe-dense-tp-size: 1
@@ -118,8 +116,5 @@ backend:
 benchmark:
   type: "longbenchv2"
   max_context_length: 128000
-  # num_examples: 32
   num_threads: 32
-  # max_tokens: 1
   max_tokens: 16384
-

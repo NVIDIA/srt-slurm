@@ -45,7 +45,7 @@ backend:
       model-path: "/model/"
 
       tensor-parallel-size: 4
-      ep-size: 1
+      expert-parallel-size: 1
 
       quantization: modelopt_fp4
       kv-cache-dtype: fp8_e4m3
@@ -82,4 +82,3 @@ benchmark:
   osl: 128
   concurrencies: "64"
   req_rate: "10"
-

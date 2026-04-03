@@ -37,6 +37,7 @@ backend:
 
       attention-backend: "trtllm_mha"
       quantization: "modelopt_fp4"
+      kv-cache-dtype: "fp8_e4m3"
 
       # TEP4: TP4 + EP4, standard TP attention (no dp-attention)
       tensor-parallel-size: 4
@@ -64,4 +65,3 @@ benchmark:
   osl: 1000
   concurrencies: "1x2x4x8x16x32x64x128x256x512x1024"
   req_rate: "inf"
-

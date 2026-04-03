@@ -89,9 +89,9 @@ backend:
       moe-runner-backend: "flashinfer_trtllm"
 
       # DEP4: DP4 + TP4 + EP4 with dp-attention
-      tp-size: 4
-      dp-size: 4
-      ep-size: 4
+      tensor-parallel-size: 4
+      data-parallel-size: 4
+      expert-parallel-size: 4
       enable-dp-attention: true
       enable-dp-lm-head: true
       moe-dense-tp-size: 1
@@ -116,4 +116,3 @@ benchmark:
   max_context_length: 128000
   num_threads: 32
   max_tokens: 16384
-

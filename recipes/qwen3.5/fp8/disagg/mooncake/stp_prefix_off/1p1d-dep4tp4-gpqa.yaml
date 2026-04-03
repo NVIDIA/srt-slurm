@@ -64,9 +64,9 @@ backend:
       moe-runner-backend: "flashinfer_trtllm"
 
       # DEP4: DP4 + TP4 + EP4 with dp-attention (same layout as dep4dep4 prefill)
-      tp-size: 4
-      dp-size: 4
-      ep-size: 4
+      tensor-parallel-size: 4
+      data-parallel-size: 4
+      expert-parallel-size: 4
       enable-dp-attention: true
       enable-dp-lm-head: true
       moe-dense-tp-size: 1
@@ -93,7 +93,7 @@ backend:
       moe-runner-backend: "flashinfer_trtllm"
 
       # TP4: pure tensor parallel, no dp-attention
-      tp-size: 4
+      tensor-parallel-size: 4
 
       mamba-scheduler-strategy: "no_buffer"
       disable-radix-cache: true
@@ -115,4 +115,3 @@ benchmark:
   max_tokens: 65536
   repeat: 8
   num_threads: 128
-

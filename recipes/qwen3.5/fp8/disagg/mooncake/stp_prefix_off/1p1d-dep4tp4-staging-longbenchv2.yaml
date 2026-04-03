@@ -57,7 +57,6 @@ backend:
     SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK: "1"
     SGLANG_DISAGG_STAGING_BUFFER: "1"
     SGLANG_DISAGG_STAGING_POOL_SIZE_MB: "4096"
-    # SGLANG_STG_TRACE: "1"
 
   sglang_config:
     prefill:
@@ -70,9 +69,9 @@ backend:
       moe-runner-backend: "flashinfer_trtllm"
 
       # DEP4: DP4 + TP4 + EP4 with dp-attention (same layout as dep4dep4 prefill)
-      tp-size: 4
-      dp-size: 4
-      ep-size: 4
+      tensor-parallel-size: 4
+      data-parallel-size: 4
+      expert-parallel-size: 4
       enable-dp-attention: true
       enable-dp-lm-head: true
       moe-dense-tp-size: 1
@@ -99,7 +98,7 @@ backend:
       moe-runner-backend: "flashinfer_trtllm"
 
       # TP4: pure tensor parallel, no dp-attention
-      tp-size: 4
+      tensor-parallel-size: 4
 
       mamba-scheduler-strategy: "no_buffer"
       disable-radix-cache: true
@@ -119,7 +118,4 @@ benchmark:
   type: "longbenchv2"
   max_context_length: 128000
   num_threads: 32
-  # num_examples: 32
-  # max_tokens: 1
   max_tokens: 16384
-

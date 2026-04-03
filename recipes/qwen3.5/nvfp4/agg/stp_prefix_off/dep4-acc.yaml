@@ -37,6 +37,7 @@ backend:
 
       attention-backend: "trtllm_mha"
       quantization: "modelopt_fp4"
+      kv-cache-dtype: "fp8_e4m3"
 
       # DEP4: DP4 + TP4 + EP4 with dp-attention
       tensor-parallel-size: 4
@@ -65,4 +66,3 @@ benchmark:
   max_tokens: 16000
   num_threads: 128
   num_shots: 8
-

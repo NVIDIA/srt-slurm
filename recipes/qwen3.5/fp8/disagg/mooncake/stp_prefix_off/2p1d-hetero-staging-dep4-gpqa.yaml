@@ -94,9 +94,9 @@ backend:
         kv-cache-dtype: "fp8_e4m3"
         moe-runner-backend: "flashinfer_trtllm"
 
-        tp-size: 4
-        dp-size: 2
-        ep-size: 2
+        tensor-parallel-size: 4
+        data-parallel-size: 2
+        expert-parallel-size: 2
         enable-dp-attention: true
         enable-dp-lm-head: true
         moe-dense-tp-size: 1
@@ -123,9 +123,9 @@ backend:
       moe-runner-backend: "flashinfer_trtllm"
 
       # DEP4: DP4 + TP4 + EP4 with dp-attention (attn_tp=1)
-      tp-size: 4
-      dp-size: 4
-      ep-size: 4
+      tensor-parallel-size: 4
+      data-parallel-size: 4
+      expert-parallel-size: 4
       enable-dp-attention: true
       enable-dp-lm-head: true
       moe-dense-tp-size: 1
@@ -150,4 +150,3 @@ benchmark:
   max_tokens: 65536
   repeat: 1
   num_threads: 128
-

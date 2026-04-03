@@ -8,8 +8,6 @@ model:
   container: "dev"
   precision: "fp8"
 
-  # - "/lustre/fsw/coreai_comparch_trtllm/yangminl/DeepEP:/sgl-workspace/DeepEP"
-
 setup_script: "rebuild-deepep.sh"
 
 resources:
@@ -60,6 +58,7 @@ backend:
     prefill:
       served-model-name: "Qwen/Qwen3.5-397B-A17B-FP8"
       model-path: "/model/"
+      kv-cache-dtype: "fp8_e4m3"
 
       # Parallelism: simple TP4 on 1 node, no EP
       tensor-parallel-size: 4
@@ -68,7 +67,7 @@ backend:
 
       # Mamba hybrid model settings
       mamba-scheduler-strategy: "no_buffer"
-      mamba-track-interval: 128
+      mamba-track-interval: 2048  # must be > isl+osl to avoid checkpointing
       mamba-ssm-dtype: "bfloat16"
 
       # PD disaggregation
@@ -77,8 +76,8 @@ backend:
 
       # Memory: same as AGG/1p1d configs
       mem-fraction-static: 0.75
-      chunked-prefill-size: 2048
-      context-length: 262144
+      chunked-prefill-size: 16384
+      context-length: 2200
 
       # Tell prefill about decode's actual TP/DP sizes for correct KV transfer
       disaggregation-decode-tp: 8
@@ -91,16 +90,17 @@ backend:
     decode:
       served-model-name: "Qwen/Qwen3.5-397B-A17B-FP8"
       model-path: "/model/"
+      kv-cache-dtype: "fp8_e4m3"
 
       # Parallelism: TP8/EP8 across 2 GB200 nodes
-      tp-size: 8
-      dp-size: 8
-      ep-size: 8
+      tensor-parallel-size: 8
+      data-parallel-size: 8
+      expert-parallel-size: 8
       enable-dp-attention: true
 
       # Mamba hybrid model settings
       mamba-scheduler-strategy: "no_buffer"
-      mamba-track-interval: 128
+      mamba-track-interval: 2048  # must be > isl+osl to avoid checkpointing
       mamba-ssm-dtype: "bfloat16"
 
       # PD disaggregation
@@ -115,10 +115,9 @@ backend:
       #   extra_buffer needs 3 slots/req: 3*80 = 240, pool=400 → 67% headroom
       #   Reduced from 800 to 640 to avoid token pool exhaustion triggering retraction
       mem-fraction-static: 0.60
-      max-mamba-cache-size: 3200
       max-running-requests: 640
-      chunked-prefill-size: 2048
-      context-length: 262144
+      chunked-prefill-size: 16384
+      context-length: 2200
       cuda-graph-max-bs: 128
       watchdog-timeout: 1000000
 
@@ -142,4 +141,3 @@ benchmark:
   max_tokens: 65536
   repeat: 8
   num_threads: 128
-
