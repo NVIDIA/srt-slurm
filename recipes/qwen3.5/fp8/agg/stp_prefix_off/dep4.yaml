@@ -52,7 +52,7 @@ backend:
       max-prefill-tokens: 16384
       context-length: 2020
       cuda-graph-max-bs: 1024
-      # enable-symm-mem: true
+      # enable-symm-mem: true  # may improve perf in some scenarios, benchmark before enabling
 
       decode-log-interval: 1
       stream-interval: 50
