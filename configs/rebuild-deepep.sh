@@ -15,7 +15,7 @@ fi
 cd "$DEEPEP_SRC"
 
 # Find NVSHMEM
-NVSHMEM_DIR=$(find /usr/local -name "nvshmem" -type d 2>/dev/null | head -1)
+NVSHMEM_DIR=$(find /usr/local -name "nvshmem" -type d -not -path "*/flashinfer*" 2>/dev/null | head -1)
 if [ -z "${NVSHMEM_DIR:-}" ]; then
     echo "ERROR: NVSHMEM installation not found under /usr/local" >&2
     exit 1
