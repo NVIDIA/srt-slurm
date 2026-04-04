@@ -78,11 +78,13 @@ export SRTCTL_SOURCE_DIR="${SRTCTL_SOURCE}"
 echo ""
 echo "Preparing srtctl environment..."
 
+# Ensure ~/.local/bin is in PATH (uv installs here)
+export PATH="$HOME/.local/bin:$PATH"
+
 # Install uv if not present (single binary, no dependencies)
 if ! command -v uv &> /dev/null; then
     echo "Installing uv package manager..."
     curl -LsSf https://astral.sh/uv/install.sh | sh
-    export PATH="$HOME/.local/bin:$PATH"
 fi
 
 echo "Using uv with Python 3.12..."
