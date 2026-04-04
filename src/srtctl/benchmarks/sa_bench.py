@@ -97,5 +97,7 @@ class SABenchRunner(BenchmarkRunner):
             str(prefill_gpus),
             str(decode_gpus),
             str(b.random_range_ratio) if b.random_range_ratio is not None else "0.8",
+            str(b.num_prompts_mult) if b.num_prompts_mult is not None else "10",
+            str(b.num_warmup_mult) if b.num_warmup_mult is not None else "2",
         ]
         return cmd

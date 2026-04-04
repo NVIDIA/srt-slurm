@@ -60,6 +60,8 @@ TOTAL_GPUS=${9:-0}
 PREFILL_GPUS=${10:-0}
 DECODE_GPUS=${11:-0}
 RANDOM_RANGE_RATIO=${12:-0.8}
+NUM_PROMPTS_MULT=${13:-10}
+NUM_WARMUP_MULT=${14:-2}
 
 # Parse endpoint into host:port
 HOST=$(echo "$ENDPOINT" | sed 's|http://||' | cut -d: -f1)
@@ -104,7 +106,7 @@ start_all_profiling
 
 for concurrency in "${CONCURRENCY_LIST[@]}"; do
 
-    num_warmup_prompts=$((concurrency * 2))
+    num_warmup_prompts=$((concurrency * NUM_WARMUP_MULT))
     python3 -u "${WORK_DIR}/benchmark_serving.py" \
         --model "${MODEL_NAME}" --tokenizer "${MODEL_PATH}" \
         --host "$HOST" --port "$PORT" \
@@ -121,7 +123,7 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
         --max-concurrency "$concurrency" \
         --trust-remote-code
 
-    num_prompts=$((concurrency * 10))
+    num_prompts=$((concurrency * NUM_PROMPTS_MULT))
     
     # Generate result filename based on mode
     if [ "$IS_DISAGGREGATED" = "true" ]; then

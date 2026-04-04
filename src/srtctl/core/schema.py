@@ -539,6 +539,8 @@ class BenchmarkConfig:
     ttft_threshold_ms: int | None = None  # Goodput TTFT threshold in ms (default: 2000)
     itl_threshold_ms: int | None = None  # Goodput ITL threshold in ms (default: 25)
     random_range_ratio: float | None = None  # Random input/output length range ratio (default: 0.8)
+    num_prompts_mult: int | None = None  # Multiplier for num_prompts = concurrency * mult (default: 10)
+    num_warmup_mult: int | None = None  # Multiplier for warmup prompts = concurrency * mult (default: 2)
 
     def get_concurrency_list(self) -> list[int]:
         if self.concurrencies is None:
