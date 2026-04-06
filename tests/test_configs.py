@@ -1081,6 +1081,8 @@ class TestVLLMDataParallelMode:
 
     def test_vllm_get_process_environment(self):
         """Test vLLM sets port environment variables from process."""
+        from unittest.mock import patch
+
         from srtctl.backends import VLLMProtocol
         from srtctl.core.topology import Process
 
@@ -1099,10 +1101,12 @@ class TestVLLMDataParallelMode:
             nixl_port=6550,
         )
 
-        env = backend.get_process_environment(process)
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            env = backend.get_process_environment(process)
 
         assert env["DYN_VLLM_KV_EVENT_PORT"] == "5550"
         assert env["VLLM_NIXL_SIDE_CHANNEL_PORT"] == "6550"
+        assert env["VLLM_NIXL_SIDE_CHANNEL_HOST"] == "10.0.0.1"
 
     def test_vllm_get_process_environment_none_ports(self):
         """Test vLLM handles None ports gracefully."""
