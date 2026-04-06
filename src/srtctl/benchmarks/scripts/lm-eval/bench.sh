@@ -41,20 +41,26 @@ source "${INFMAX_WORKSPACE}/benchmarks/benchmark_lib.sh"
 # Run lm-eval via benchmark_lib
 # EVAL_CONC is set by the InferenceX workflow (median of conc list).
 # benchmark_lib reads concurrency from EVAL_CONCURRENT_REQUESTS env var.
-export EVAL_CONCURRENT_REQUESTS="${EVAL_CONC:-256}"
+export EVAL_CONCURRENT_REQUESTS="${EVAL_CONC:-${EVAL_CONCURRENT_REQUESTS:-256}}"
 echo "Running lm-eval with concurrent-requests=${EVAL_CONCURRENT_REQUESTS}..."
-run_eval --framework lm-eval --port "$PORT"
+eval_rc=0
+run_eval --framework lm-eval --port "$PORT" || eval_rc=$?
 
 # Set metadata env vars needed by append_lm_eval_summary
 # These are passed through from the InferenceX environment
+export IS_MULTINODE="${IS_MULTINODE:-true}"
 export TP="${TP:-${PREFILL_TP:-1}}"
-export CONC="${CONC:-${EVAL_CONC}}"
-export EP_SIZE="${EP_SIZE:-1}"
-if [[ "${PREFILL_EP:-false}" == "true" ]]; then
-    EP_SIZE="${PREFILL_TP:-1}"
-fi
-export EP_SIZE
+export CONC="${CONC:-${EVAL_CONC:-${EVAL_CONCURRENT_REQUESTS:-1}}}"
+export EP_SIZE="${EP_SIZE:-${PREFILL_EP:-1}}"
+export PREFILL_TP="${PREFILL_TP:-${TP:-1}}"
+export PREFILL_EP="${PREFILL_EP:-${EP_SIZE:-1}}"
+export PREFILL_NUM_WORKERS="${PREFILL_NUM_WORKERS:-1}"
+export DECODE_TP="${DECODE_TP:-${TP:-1}}"
+export DECODE_EP="${DECODE_EP:-${EP_SIZE:-1}}"
+export DECODE_NUM_WORKERS="${DECODE_NUM_WORKERS:-1}"
 export DP_ATTENTION="${DP_ATTENTION:-${PREFILL_DP_ATTN:-false}}"
+export PREFILL_DP_ATTENTION="${PREFILL_DP_ATTENTION:-${PREFILL_DP_ATTN:-${DP_ATTENTION:-false}}}"
+export DECODE_DP_ATTENTION="${DECODE_DP_ATTENTION:-${DECODE_DP_ATTN:-${DP_ATTENTION:-false}}}"
 export ISL="${ISL:-}"
 export OSL="${OSL:-}"
 export FRAMEWORK="${FRAMEWORK:-}"
@@ -65,7 +71,7 @@ export RESULT_FILENAME="${RESULT_FILENAME:-}"
 
 # Generate the lm-eval summary
 echo "Generating lm-eval summary..."
-append_lm_eval_summary
+append_lm_eval_summary || true
 
 # Copy eval artifacts to /logs/eval_results/
 mkdir -p /logs/eval_results
@@ -73,5 +79,10 @@ echo "Copying eval artifacts to /logs/eval_results/..."
 cp -v meta_env.json /logs/eval_results/ 2>/dev/null || true
 cp -v results*.json /logs/eval_results/ 2>/dev/null || true
 cp -v sample*.jsonl /logs/eval_results/ 2>/dev/null || true
+
+if [[ "$eval_rc" -ne 0 ]]; then
+    echo "lm-eval evaluation failed with exit code ${eval_rc}"
+    exit "$eval_rc"
+fi
 
 echo "lm-eval evaluation complete"

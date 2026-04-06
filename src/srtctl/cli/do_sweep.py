@@ -227,12 +227,34 @@ class SweepOrchestrator(WorkerStageMixin, FrontendStageMixin, BenchmarkStageMixi
         logger.info("Eval command: %s", " ".join(cmd))
         logger.info("Eval log: %s", eval_log)
 
-        # Pass through eval-related env vars
+        # Pass through eval-related env vars. InferenceX writes multi-node
+        # metadata from these variables in append_lm_eval_summary().
         env_to_set = {}
-        for var in ["RUN_EVAL", "FRAMEWORK", "PRECISION", "MODEL_PREFIX", "RUNNER_TYPE",
-                    "RESULT_FILENAME", "SPEC_DECODING", "ISL", "OSL",
-                    "PREFILL_TP", "PREFILL_EP", "PREFILL_DP_ATTN",
-                    "DECODE_TP", "DECODE_EP", "DECODE_DP_ATTN"]:
+        for var in [
+            "RUN_EVAL",
+            "EVAL_ONLY",
+            "IS_MULTINODE",
+            "FRAMEWORK",
+            "PRECISION",
+            "MODEL_PREFIX",
+            "RUNNER_TYPE",
+            "RESULT_FILENAME",
+            "SPEC_DECODING",
+            "ISL",
+            "OSL",
+            "MODEL",
+            "MODEL_PATH",
+            "MAX_MODEL_LEN",
+            "EVAL_MAX_MODEL_LEN",
+            "PREFILL_TP",
+            "PREFILL_EP",
+            "PREFILL_DP_ATTN",
+            "PREFILL_NUM_WORKERS",
+            "DECODE_TP",
+            "DECODE_EP",
+            "DECODE_DP_ATTN",
+            "DECODE_NUM_WORKERS",
+        ]:
             val = os.environ.get(var)
             if val:
                 env_to_set[var] = val
@@ -318,18 +340,27 @@ class SweepOrchestrator(WorkerStageMixin, FrontendStageMixin, BenchmarkStageMixi
 
             self._print_connection_info()
 
-            # Stage 4: Benchmark (status reported AFTER health check passes)
-            exit_code = self.run_benchmark(registry, stop_event, reporter)
-
-            # Stage 5: Post-benchmark eval (optional, non-fatal)
-            if os.environ.get("RUN_EVAL", "false").lower() == "true" and exit_code == 0:
-                reporter.report(JobStatus.BENCHMARK, JobStage.BENCHMARK, "Running post-benchmark evaluation")
-                logger.info("RUN_EVAL=true: Running post-benchmark lm-eval evaluation...")
-                eval_exit = self._run_post_eval(stop_event)
-                if eval_exit != 0:
-                    logger.warning("Eval failed with exit code %d (benchmark result is still valid)", eval_exit)
+            if os.environ.get("EVAL_ONLY", "false").lower() == "true":
+                reporter.report(JobStatus.BENCHMARK, JobStage.BENCHMARK, "Running eval-only evaluation")
+                logger.info("EVAL_ONLY=true: Skipping benchmark stage and running lm-eval evaluation...")
+                exit_code = self._run_post_eval(stop_event)
+                if exit_code != 0:
+                    logger.error("Eval-only evaluation failed with exit code %d", exit_code)
                 else:
-                    logger.info("Post-benchmark eval completed successfully")
+                    logger.info("Eval-only evaluation completed successfully")
+            else:
+                # Stage 4: Benchmark (status reported AFTER health check passes)
+                exit_code = self.run_benchmark(registry, stop_event, reporter)
+
+                # Stage 5: Post-benchmark eval (optional, non-fatal)
+                if os.environ.get("RUN_EVAL", "false").lower() == "true" and exit_code == 0:
+                    reporter.report(JobStatus.BENCHMARK, JobStage.BENCHMARK, "Running post-benchmark evaluation")
+                    logger.info("RUN_EVAL=true: Running post-benchmark lm-eval evaluation...")
+                    eval_exit = self._run_post_eval(stop_event)
+                    if eval_exit != 0:
+                        logger.warning("Eval failed with exit code %d (benchmark result is still valid)", eval_exit)
+                    else:
+                        logger.info("Post-benchmark eval completed successfully")
 
         except Exception as e:
             logger.exception("Error during sweep: %s", e)
