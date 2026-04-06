@@ -1,6 +1,6 @@
 # NVFP4 Qwen3.5-397B aggregated TP4 — torch profiler trace (no_buffer mode)
-# Base: sweep-nobuf-conc128.yaml
-# Goal: confirm which GEMM kernels are FP4 vs BF16 at conc=128
+# Base: sweep-nobuf-conc64.yaml
+# Goal: confirm which GEMM kernels are FP4 vs BF16 at conc=64
 
 name: "nvfp4-agg-tp4-profile"
 
@@ -11,8 +11,6 @@ model:
 
 frontend:
   type: "sglang"
-
-  install: false
 
 resources:
   gpu_type: "gb200"

@@ -115,4 +115,3 @@ benchmark:
   num_shots: 20
   max_tokens: 512
   num_threads: 256
-  use_chat_api: true

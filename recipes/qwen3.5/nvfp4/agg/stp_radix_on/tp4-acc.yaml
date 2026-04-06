@@ -13,8 +13,6 @@ model:
 frontend:
   type: "sglang"
 
-  install: false
-
 resources:
   gpu_type: "gb200"
   gpus_per_node: 4

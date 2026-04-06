@@ -77,7 +77,7 @@ backend:
       watchdog-timeout: 1000000
 
     decode:
-      served-model-name: nvidia/DeepSeek-R1-0528-NVFP4-v2
+      served-model-name: "Qwen/Qwen3.5-397B-A17B-FP8"
       model-path: "/model/"
 
       attention-backend: "trtllm_mha"
