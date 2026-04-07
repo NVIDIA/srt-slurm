@@ -721,9 +721,10 @@ class DynamoConfig:
         git_ref = self.hash if self.hash else "HEAD"
         checkout_cmd = f"git checkout {self.hash}" if self.hash else ""
 
-        # Original SGLang container path, UNCHANGED
+        # Original SGLang container path
         sglang = (
-            "apt-get update -qq && apt-get install -y -qq libclang-dev > /dev/null 2>&1 && "
+            "apt-get update -qq && apt-get install -y -qq libclang-dev curl > /dev/null 2>&1 && "
+            "if ! command -v cargo &>/dev/null; then curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable -q && source $HOME/.cargo/env; fi && "
             "cd /sgl-workspace/ && "
             "git clone https://github.com/ai-dynamo/dynamo.git && "
             "cd dynamo && "
