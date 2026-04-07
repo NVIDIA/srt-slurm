@@ -1,11 +1,7 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: Apache-2.0
-
 """lm-eval benchmark runner for InferenceX evals."""
 
 from __future__ import annotations
 
-import os
 from typing import TYPE_CHECKING
 
 from srtctl.benchmarks.base import SCRIPTS_DIR, BenchmarkRunner, register_benchmark

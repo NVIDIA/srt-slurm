@@ -1,7 +1,4 @@
 #!/bin/bash
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: Apache-2.0
-
 # lm-eval accuracy evaluation using InferenceX benchmark_lib
 # Expects: endpoint [infmax_workspace]
 
@@ -46,28 +43,16 @@ echo "Running lm-eval with concurrent-requests=${EVAL_CONCURRENT_REQUESTS}..."
 eval_rc=0
 run_eval --framework lm-eval --port "$PORT" || eval_rc=$?
 
-# Set metadata env vars needed by append_lm_eval_summary
-# These are passed through from the InferenceX environment
+# Derive metadata env vars that append_lm_eval_summary needs but do_sweep.py
+# does not pass directly (it passes PREFILL_TP/EP/etc, not TP/EP_SIZE/CONC).
 export IS_MULTINODE="${IS_MULTINODE:-true}"
 export TP="${TP:-${PREFILL_TP:-1}}"
 export CONC="${CONC:-${EVAL_CONC:-${EVAL_CONCURRENT_REQUESTS:-1}}}"
 export EP_SIZE="${EP_SIZE:-${PREFILL_EP:-1}}"
-export PREFILL_TP="${PREFILL_TP:-${TP:-1}}"
-export PREFILL_EP="${PREFILL_EP:-${EP_SIZE:-1}}"
-export PREFILL_NUM_WORKERS="${PREFILL_NUM_WORKERS:-1}"
-export DECODE_TP="${DECODE_TP:-${TP:-1}}"
-export DECODE_EP="${DECODE_EP:-${EP_SIZE:-1}}"
-export DECODE_NUM_WORKERS="${DECODE_NUM_WORKERS:-1}"
 export DP_ATTENTION="${DP_ATTENTION:-${PREFILL_DP_ATTN:-false}}"
+# Remap srt-slurm's DP_ATTN names to InferenceX's DP_ATTENTION names
 export PREFILL_DP_ATTENTION="${PREFILL_DP_ATTENTION:-${PREFILL_DP_ATTN:-${DP_ATTENTION:-false}}}"
 export DECODE_DP_ATTENTION="${DECODE_DP_ATTENTION:-${DECODE_DP_ATTN:-${DP_ATTENTION:-false}}}"
-export ISL="${ISL:-}"
-export OSL="${OSL:-}"
-export FRAMEWORK="${FRAMEWORK:-}"
-export PRECISION="${PRECISION:-}"
-export MODEL_PREFIX="${MODEL_PREFIX:-}"
-export RUNNER_TYPE="${RUNNER_TYPE:-}"
-export RESULT_FILENAME="${RESULT_FILENAME:-}"
 
 # Generate the lm-eval summary
 echo "Generating lm-eval summary..."
