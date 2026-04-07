@@ -16,7 +16,6 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from srtctl.core.config import get_srtslurm_setting
 from srtctl.core.health import wait_for_model
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
 from srtctl.core.status import JobStage, JobStatus, StatusReporter
@@ -137,15 +136,15 @@ class BenchmarkStageMixin:
 
         logger.info("Running %s benchmark", runner.name)
 
-        # Start gweperf on all worker nodes (non-fatal if it fails)
-        perf_procs = self._start_gweperf()
+        # Start perf monitoring on all worker nodes (non-fatal if it fails)
+        perf_procs = self._start_perf_monitor()
 
         # Run the benchmark script
         benchmark_log = self.runtime.log_dir / "benchmark.out"
         exit_code = self._run_benchmark_script(runner, benchmark_log, stop_event)
 
-        # Stop gweperf regardless of benchmark outcome
-        self._stop_gweperf(perf_procs)
+        # Stop monitoring regardless of benchmark outcome
+        self._stop_perf_monitor(perf_procs)
 
         if exit_code != 0:
             logger.error("Benchmark failed with exit code %d", exit_code)
@@ -154,8 +153,8 @@ class BenchmarkStageMixin:
 
         return exit_code
 
-    def _start_gweperf(self) -> list[tuple[str, "subprocess.Popen"]]:
-        """Start one gweperf process per worker node (excluding head node).
+    def _start_perf_monitor(self) -> list[tuple[str, "subprocess.Popen"]]:
+        """Start one perfmon process per worker node (excluding head node).
 
         Failures are non-fatal: a warning is logged and that node is skipped.
 
@@ -166,44 +165,24 @@ class BenchmarkStageMixin:
         if m is None or not m.enabled:
             return []
 
-        gweperf_dir_str = get_srtslurm_setting("gweperf_path")
-        if not gweperf_dir_str:
-            logger.warning("monitoring.enabled=true but gweperf_path not set in srtslurm.yaml - skipping")
-            return []
-
-        gweperf_path = Path(gweperf_dir_str)
-        if not gweperf_path.exists():
-            logger.warning("gweperf directory not found: %s - skipping monitoring", gweperf_path)
-            return []
-
         # All worker nodes except the head (head runs nginx/benchmark client, not GPU workloads)
         worker_nodes = [n for n in self.runtime.nodes.worker if n != self.runtime.nodes.head]
         if not worker_nodes:
             logger.warning("No worker nodes to monitor (all nodes are head node)")
             return []
 
+        perfmon_script = Path(__file__).parent.parent.parent / "monitor" / "perfmon.py"
         mounts = dict(self.runtime.container_mounts)
-        mounts[gweperf_path.resolve()] = Path("/gweperf")
+        mounts[perfmon_script] = Path("/tmp/srt_perfmon.py")
 
         procs: list[tuple[str, subprocess.Popen]] = []
         for node in worker_nodes:
             cmd = [
-                "python3",
-                "/gweperf/gweperfmon.py",
-                "--sampleOutput", f"/logs/perf_samples_{node}.csv",
-                "--cumReportOutput", f"/logs/perf_summary_{node}.json",
-                "--sampleIntervalSec", str(m.sample_interval),
-                "--lifeTimeSec", "86400",
+                "python3", "/tmp/srt_perfmon.py",
+                "--output-csv", f"/logs/perf_samples_{node}.csv",
+                "--output-json", f"/logs/perf_summary_{node}.json",
+                "--interval", str(m.sample_interval),
             ]
-            if m.features.dcgm:
-                cmd.append("--dcgm")
-            if m.features.rapl:
-                cmd.append("--rapl")
-            if m.features.ipmi:
-                cmd.append("--ipmi")
-            if m.features.cpu_pmu:
-                cmd.append("--cpuPmu")
-
             perf_log = self.runtime.log_dir / f"perf_monitor_{node}.out"
             try:
                 proc = start_srun_process(
@@ -214,36 +193,36 @@ class BenchmarkStageMixin:
                     container_mounts=mounts,
                 )
                 procs.append((node, proc))
-                logger.info("gweperf started on %s (interval=%.1fs)", node, m.sample_interval)
+                logger.info("perf monitor started on %s (interval=%.1fs)", node, m.sample_interval)
             except Exception as e:
-                logger.warning("Failed to start gweperf on %s: %s - monitoring skipped for this node", node, e)
+                logger.warning("Failed to start perf monitor on %s: %s - monitoring skipped for this node", node, e)
 
         return procs
 
-    def _stop_gweperf(self, procs: list[tuple[str, "subprocess.Popen"]]) -> None:
-        """Stop all gweperf processes, allowing each to write its cumulative report.
+    def _stop_perf_monitor(self, procs: list[tuple[str, "subprocess.Popen"]]) -> None:
+        """Stop all perfmon processes, allowing each to write its summary JSON.
 
-        Sends SIGINT (triggering gweperf's cleanup handler) and waits up to 30s.
+        Sends SIGINT (triggers perfmon's exit handler) and waits up to 30s.
         Falls back to SIGKILL if the process does not exit cleanly.
         """
         if not procs:
             return
 
-        logger.info("Stopping gweperf monitoring on %d node(s)", len(procs))
+        logger.info("Stopping perf monitoring on %d node(s)", len(procs))
         for node, proc in procs:
             if proc.poll() is not None:
-                logger.warning("gweperf on %s already exited (code %d)", node, proc.returncode)
+                logger.warning("perf monitor on %s already exited (code %d)", node, proc.returncode)
                 continue
             try:
                 proc.send_signal(signal.SIGINT)
             except ProcessLookupError:
-                logger.warning("gweperf on %s vanished before SIGINT", node)
+                logger.warning("perf monitor on %s vanished before SIGINT", node)
                 continue
             try:
                 proc.wait(timeout=30)
-                logger.info("gweperf on %s stopped cleanly", node)
+                logger.info("perf monitor on %s stopped cleanly", node)
             except subprocess.TimeoutExpired:
-                logger.warning("gweperf on %s did not stop within 30s, killing", node)
+                logger.warning("perf monitor on %s did not stop within 30s, killing", node)
                 proc.kill()
                 proc.wait()
 
