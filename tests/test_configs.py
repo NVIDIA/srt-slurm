@@ -1239,6 +1239,46 @@ class TestVLLMDataParallelMode:
         dp_ranks = [p.node_rank for p in processes]
         assert dp_ranks == list(range(16))
 
+    def test_dp_mode_allocates_unique_ports_for_multiple_endpoints_per_node(self):
+        """Test DP endpoints sharing a node get non-colliding coordination ports."""
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Endpoint
+
+        backend = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                decode={"data-parallel-size": 4, "enable-expert-parallel": True},
+            )
+        )
+
+        endpoints = [
+            Endpoint(
+                mode="decode",
+                index=0,
+                nodes=("node0",),
+                gpu_indices=frozenset(range(4)),
+                gpus_per_node=8,
+            ),
+            Endpoint(
+                mode="decode",
+                index=1,
+                nodes=("node0",),
+                gpu_indices=frozenset(range(4, 8)),
+                gpus_per_node=8,
+            ),
+        ]
+
+        processes = backend.endpoints_to_processes(endpoints)
+
+        first_endpoint = [p for p in processes if p.endpoint_index == 0]
+        second_endpoint = [p for p in processes if p.endpoint_index == 1]
+
+        assert {p.dp_rpc_port for p in first_endpoint} == {13345}
+        assert {p.dp_rpc_port for p in second_endpoint} == {13346}
+        assert {p.nixl_port for p in first_endpoint} == {6550}
+        assert {p.nixl_port for p in second_endpoint} == {6554}
+        assert [p.node_rank for p in first_endpoint] == list(range(4))
+        assert [p.node_rank for p in second_endpoint] == list(range(4))
+
     def test_dp_mode_command_includes_dp_flags(self):
         """Test that DP mode command includes correct DP flags instead of TP flags."""
         from pathlib import Path

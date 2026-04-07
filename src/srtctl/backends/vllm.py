@@ -253,6 +253,11 @@ class VLLMProtocol:
                 dp_rank = 0
                 # Allocate a unique DP RPC port for this endpoint's leader node
                 dp_rpc_port = port_allocator.next_dp_rpc_port(endpoint.leader_node)
+                # Allocate a single NIXL base port for this endpoint.
+                # vLLM internally computes: actual_port = base + data_parallel_rank
+                # so all DP ranks in the endpoint share the same base port.
+                dp_size = self._get_dp_size(endpoint.mode) or len(endpoint.gpu_indices)
+                nixl_base_port = port_allocator.next_nixl_port_block(dp_size)
                 for _node_rank, node in enumerate(endpoint.nodes):
                     for gpu_idx in sorted(endpoint.gpu_indices):
                         is_leader = dp_rank == 0
@@ -263,7 +268,7 @@ class VLLMProtocol:
                             else None
                         )
                         kv_events_port = port_allocator.next_kv_events_port()
-                        nixl_port = port_allocator.next_nixl_port()
+                        nixl_port = nixl_base_port
 
                         processes.append(
                             Process(
