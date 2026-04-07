@@ -196,6 +196,7 @@ class ClusterConfig:
     # Applied to all jobs on this cluster, useful for cluster-specific paths
     default_mounts: dict[str, str] | None = None
     reporting: ReportingConfig | None = None
+    gweperf_path: str | None = None  # Path to gweperf directory on this cluster
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -802,6 +803,38 @@ class OutputConfig:
 
 
 @dataclass(frozen=True)
+class MonitoringFeaturesConfig:
+    """Optional gweperf feature flags (all require elevated privileges or specific hardware)."""
+
+    dcgm: bool = False      # GPU SM/tensor/engine activity (requires nv-hostengine)
+    rapl: bool = False      # CPU package power (requires root + MSR module)
+    ipmi: bool = False      # System-level sensors (requires root + ipmi-sensors)
+    cpu_pmu: bool = False   # CPU performance counters (requires root + Intel CPU)
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
+class MonitoringConfig:
+    """gweperf performance monitoring during benchmark execution.
+
+    When enabled, one gweperf process runs per worker node (excluding the head node)
+    and writes per-node output files to the job log directory:
+      - perf_samples_{node}.csv   per-second time-series (GPU/CPU/memory/network)
+      - perf_summary_{node}.json  aggregate statistics over the benchmark window
+
+    Requires gweperf_path to be set in srtslurm.yaml.
+    Failures are non-fatal: monitoring is skipped for affected nodes, benchmark continues.
+    """
+
+    enabled: bool = True
+    sample_interval: float = 1.0
+    features: MonitoringFeaturesConfig = field(default_factory=MonitoringFeaturesConfig)
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
 class HealthCheckConfig:
     """Health check configuration."""
 
@@ -871,6 +904,9 @@ class SrtConfig:
 
     # Reporting configuration (status API, future: logs to S3, etc.)
     reporting: ReportingConfig | None = None
+
+    # gweperf monitoring (runs on all worker nodes during benchmark)
+    monitoring: MonitoringConfig | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 
