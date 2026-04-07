@@ -62,6 +62,20 @@ DECODE_GPUS=${11:-0}
 RANDOM_RANGE_RATIO=${12:-0.8}
 NUM_PROMPTS_MULT=${13:-10}
 NUM_WARMUP_MULT=${14:-2}
+CUSTOM_TOKENIZER=${15:-}
+USE_CHAT_TEMPLATE=${16:-true}
+
+# Build optional custom tokenizer args
+CUSTOM_TOKENIZER_ARGS=()
+if [ -n "$CUSTOM_TOKENIZER" ]; then
+    CUSTOM_TOKENIZER_ARGS=(--custom-tokenizer "$CUSTOM_TOKENIZER")
+fi
+
+# Build optional chat template args
+CHAT_TEMPLATE_ARGS=()
+if [ "$USE_CHAT_TEMPLATE" = "true" ]; then
+    CHAT_TEMPLATE_ARGS=(--use-chat-template)
+fi
 
 # Parse endpoint into host:port
 HOST=$(echo "$ENDPOINT" | sed 's|http://||' | cut -d: -f1)
@@ -121,7 +135,8 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
         --request-rate 250 \
         --percentile-metrics ttft,tpot,itl,e2el \
         --max-concurrency "$concurrency" \
-        --trust-remote-code
+        --trust-remote-code \
+        "${CUSTOM_TOKENIZER_ARGS[@]}"
 
     num_prompts=$((concurrency * NUM_PROMPTS_MULT))
     
@@ -151,7 +166,8 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
         --percentile-metrics ttft,tpot,itl,e2el \
         --max-concurrency "$concurrency" \
         --trust-remote-code \
-        --use-chat-template \
+        "${CHAT_TEMPLATE_ARGS[@]}" \
+        "${CUSTOM_TOKENIZER_ARGS[@]}" \
         --save-result --result-dir "$result_dir" --result-filename "$result_filename"
     set +x
 

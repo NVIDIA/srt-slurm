@@ -544,6 +544,8 @@ class BenchmarkConfig:
     num_warmup_mult: int | None = None  # Multiplier for warmup prompts = concurrency * mult (default: 2)
     # Trace replay benchmark fields (uses aiperf with mooncake_trace dataset type)
     trace_file: str | None = None  # Path to trace JSONL file (container path, e.g., /traces/dataset.jsonl)
+    custom_tokenizer: str | None = None  # Custom tokenizer class (e.g., "module.path.ClassName")
+    use_chat_template: bool = True  # Pass --use-chat-template to benchmark (default: true)
 
     def get_concurrency_list(self) -> list[int]:
         if self.concurrencies is None:
