@@ -47,6 +47,38 @@ class TestProfilingConfig:
         prefix_router = profiling.get_nsys_prefix("/output/test", frontend_type="sglangrouter")
         assert "--trace-fork-before-exec=true" not in prefix_router
 
+    def test_nsys_profiling_with_extra_args(self):
+        """Test nsys profiling with custom nsys_args."""
+        from srtctl.core.schema import ProfilingConfig
+
+        profiling = ProfilingConfig(
+            type="nsys",
+            nsys_args=["--stats=true", "--trace=osrt"],
+        )
+
+        prefix = profiling.get_nsys_prefix("/output/test")
+        assert "nsys" in prefix
+        assert "profile" in prefix
+        assert "/output/test" in prefix
+        assert "--stats=true" in prefix
+        assert "--trace=osrt" in prefix
+        # Extra args appear before -o output
+        o_idx = prefix.index("-o")
+        stats_idx = prefix.index("--stats=true")
+        assert stats_idx < o_idx
+
+    def test_nsys_trtllm_prefix_includes_extra_args(self):
+        """TRTLLM nsys wrap should honor nsys_args (same ordering as default path: before -o)."""
+        from srtctl.core.schema import ProfilingConfig
+
+        profiling = ProfilingConfig(
+            type="nsys",
+            nsys_args=["--stats=true"],
+        )
+        prefix = profiling.get_nsys_prefix("/out/rank", backend_type="trtllm")
+        assert "--stats=true" in prefix
+        assert prefix.index("--stats=true") < prefix.index("-o")
+
     def test_torch_profiling(self):
         """Test torch profiling configuration."""
         from srtctl.core.schema import ProfilingConfig, ProfilingPhaseConfig
