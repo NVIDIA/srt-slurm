@@ -96,6 +96,20 @@ class NodePortAllocator:
         self._next_nixl_port += 1
         return port
 
+    def next_nixl_port_block(self, size: int) -> int:
+        """Reserve a block of consecutive NIXL ports, return the base port.
+
+        Used in DP mode where vLLM computes:
+            actual_port = VLLM_NIXL_SIDE_CHANNEL_PORT + data_parallel_rank
+        All DP ranks within an endpoint share the same base port, so we
+        must reserve `size` ports to avoid collisions with other endpoints.
+        """
+        if self._next_nixl_port == 0:
+            self._next_nixl_port = self.base_nixl_port
+        port = self._next_nixl_port
+        self._next_nixl_port += size
+        return port
+
     def next_dp_rpc_port(self, node: str) -> int:
         """Get next available DP RPC port for a node.
 
