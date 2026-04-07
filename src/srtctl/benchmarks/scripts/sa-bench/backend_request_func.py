@@ -515,6 +515,7 @@ def get_tokenizer(
     pretrained_model_name_or_path: str,
     tokenizer_mode: str = "auto",
     trust_remote_code: bool = False,
+    custom_tokenizer: str = None,
     **kwargs,
 ) -> PreTrainedTokenizer | PreTrainedTokenizerFast:
     if pretrained_model_name_or_path is not None and not os.path.exists(pretrained_model_name_or_path):
@@ -533,6 +534,25 @@ def get_tokenizer(
                 "to use mistral tokenizer mode."
             ) from e
         return MistralTokenizer.from_pretrained(str(pretrained_model_name_or_path))
+    if custom_tokenizer:
+        from tensorrt_llm.llmapi.llm_args import TOKENIZER_ALIASES
+
+        tokenizer_path = TOKENIZER_ALIASES.get(custom_tokenizer,
+                                               custom_tokenizer)
+        from importlib import import_module
+        try:
+            module_path, class_name = tokenizer_path.rsplit('.', 1)
+            module = import_module(module_path)
+            tokenizer_class = getattr(module, class_name)
+            return tokenizer_class.from_pretrained(
+                pretrained_model_name_or_path,
+                trust_remote_code=trust_remote_code,
+                **kwargs,
+            )
+        except (ValueError, ImportError, AttributeError) as e:
+            raise ValueError(
+                f"Failed to load custom_tokenizer '{custom_tokenizer}'. "
+                "Expected alias or 'module.path.ClassName'.") from e
     else:
         return AutoTokenizer.from_pretrained(
             pretrained_model_name_or_path,

@@ -837,6 +837,7 @@ def main(args: argparse.Namespace):
         tokenizer_id,
         tokenizer_mode=tokenizer_mode,
         trust_remote_code=args.trust_remote_code,
+        custom_tokenizer=args.custom_tokenizer,
     )
 
     if args.dataset is not None:
@@ -1277,6 +1278,14 @@ if __name__ == "__main__":
         "always use the slow tokenizer. \n* "
         '"mistral" will always use the `mistral_common` tokenizer. \n*'
         '"custom" will use --tokenizer to select the preregistered tokenizer.',
+    )
+
+    parser.add_argument(
+        "--custom-tokenizer",
+        type=str,
+        default=None,
+        help="Custom tokenizer class to use (e.g., 'module.path.ClassName'). "
+        "When set, overrides the default tokenizer loading.",
     )
 
     parser.add_argument(

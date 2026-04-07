@@ -167,6 +167,7 @@ class BenchmarkStageMixin:
             container_image=str(self.runtime.container_image),
             container_mounts=self.runtime.container_mounts,
             env_to_set=env_to_set,
+            mpi="pmix",
         )
 
         # Wait for benchmark to complete
