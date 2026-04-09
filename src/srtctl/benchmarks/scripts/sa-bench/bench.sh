@@ -61,6 +61,16 @@ PREFILL_GPUS=${10:-0}
 DECODE_GPUS=${11:-0}
 RANDOM_RANGE_RATIO=${12:-0.8}
 
+# Resolve HF hub cache structure: if MODEL_PATH has a snapshots/ dir,
+# use the first snapshot so that config.json / tokenizer.json are found.
+if [ -d "${MODEL_PATH}/snapshots" ]; then
+    SNAPSHOT_DIR=$(find "${MODEL_PATH}/snapshots" -mindepth 1 -maxdepth 1 -type d | head -1)
+    if [ -n "$SNAPSHOT_DIR" ]; then
+        echo "Resolved HF hub cache snapshot: ${SNAPSHOT_DIR}"
+        MODEL_PATH="${SNAPSHOT_DIR}"
+    fi
+fi
+
 # Parse endpoint into host:port
 HOST=$(echo "$ENDPOINT" | sed 's|http://||' | cut -d: -f1)
 PORT=$(echo "$ENDPOINT" | sed 's|http://||' | cut -d: -f2 | cut -d/ -f1)

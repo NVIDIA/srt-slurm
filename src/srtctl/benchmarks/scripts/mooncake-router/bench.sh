@@ -17,6 +17,16 @@ TTFT_THRESHOLD=${4:-2000}
 ITL_THRESHOLD=${5:-25}
 TOKENIZER_PATH=${6:-"/model"}
 
+# Resolve HF hub cache structure: if TOKENIZER_PATH has a snapshots/ dir,
+# use the first snapshot so that config.json / tokenizer.json are found.
+if [ -d "${TOKENIZER_PATH}/snapshots" ]; then
+    SNAPSHOT_DIR=$(find "${TOKENIZER_PATH}/snapshots" -mindepth 1 -maxdepth 1 -type d | head -1)
+    if [ -n "$SNAPSHOT_DIR" ]; then
+        echo "Resolved HF hub cache snapshot: ${SNAPSHOT_DIR}"
+        TOKENIZER_PATH="${SNAPSHOT_DIR}"
+    fi
+fi
+
 # Optional: extra Prometheus endpoints for AIPerf server metrics
 SERVER_METRICS_ARGS=()
 if [ -n "${AIPERF_SERVER_METRICS_URLS:-}" ]; then
