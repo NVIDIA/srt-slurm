@@ -322,6 +322,81 @@ class TestTraceReplayRunner:
         assert cmd[6] == "2000"  # default ttft
         assert cmd[7] == "25"  # default itl
 
+    def test_build_command_with_aiperf_args(self):
+        """aiperf_args are passed through as CLI flags."""
+        from unittest.mock import MagicMock
+
+        from srtctl.benchmarks.trace_replay import TraceReplayRunner
+
+        runner = TraceReplayRunner()
+        runtime = MagicMock()
+        runtime.frontend_port = 8000
+        runtime.is_hf_model = False
+
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model/kimi", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="gb200"),
+            benchmark=BenchmarkConfig(
+                type="trace-replay",
+                trace_file="/traces/dataset.jsonl",
+                concurrencies=[4],
+                aiperf_args={
+                    "benchmark-duration": 600,
+                    "workers-max": 200,
+                    "request-timeout-seconds": 1200,
+                    "profile-export-level": "raw",
+                },
+            ),
+        )
+
+        cmd = runner.build_command(config, runtime)
+
+        # Positional args come first (9 of them)
+        assert cmd[8] == "/model"  # tokenizer path
+
+        # aiperf_args appended after positional args
+        extra = cmd[9:]
+        assert "--benchmark-duration" in extra
+        assert extra[extra.index("--benchmark-duration") + 1] == "600"
+        assert "--workers-max" in extra
+        assert extra[extra.index("--workers-max") + 1] == "200"
+        assert "--request-timeout-seconds" in extra
+        assert "--profile-export-level" in extra
+        assert extra[extra.index("--profile-export-level") + 1] == "raw"
+
+    def test_build_command_aiperf_args_bool(self):
+        """Boolean aiperf_args are passed as flags without values."""
+        from unittest.mock import MagicMock
+
+        from srtctl.benchmarks.trace_replay import TraceReplayRunner
+
+        runner = TraceReplayRunner()
+        runtime = MagicMock()
+        runtime.frontend_port = 8000
+        runtime.is_hf_model = False
+
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model/test", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="gb200"),
+            benchmark=BenchmarkConfig(
+                type="trace-replay",
+                trace_file="/traces/dataset.jsonl",
+                concurrencies=[1],
+                aiperf_args={"export-http-trace": True, "disabled-flag": False},
+            ),
+        )
+
+        cmd = runner.build_command(config, runtime)
+        extra = cmd[9:]
+        assert "--export-http-trace" in extra
+        assert "--disabled-flag" not in extra
+
     def test_config_roundtrip(self):
         """Config with trace-replay loads correctly from YAML."""
         import tempfile

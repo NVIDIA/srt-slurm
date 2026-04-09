@@ -6,9 +6,14 @@
 # Replays a user-provided JSONL trace dataset at configurable concurrency levels.
 # Uses aiperf with --custom-dataset-type mooncake_trace.
 #
-# Usage: bench.sh ENDPOINT MODEL_NAME TRACE_FILE CONCURRENCIES [TTFT_THRESHOLD] [ITL_THRESHOLD] [TOKENIZER_PATH]
+# Usage: bench.sh ENDPOINT MODEL_NAME TRACE_FILE CONCURRENCIES [TTFT_THRESHOLD] [ITL_THRESHOLD] [TOKENIZER_PATH] [EXTRA_ARGS]
+#
+# EXTRA_ARGS: JSON-encoded string of additional aiperf flags (passed from Python)
 
 set -e
+
+# Ensure Python output is unbuffered for real-time logging
+export PYTHONUNBUFFERED=1
 
 ENDPOINT=$1
 MODEL_NAME=${2:-"test-model"}
@@ -17,6 +22,9 @@ CONCURRENCIES=${4:-"1"}
 TTFT_THRESHOLD=${5:-2000}
 ITL_THRESHOLD=${6:-25}
 TOKENIZER_PATH=${7:-"/model"}
+# Remaining args are extra aiperf flags
+shift 7 2>/dev/null || true
+EXTRA_ARGS=("$@")
 
 # Optional: extra Prometheus endpoints for AIPerf server metrics
 SERVER_METRICS_ARGS=()
@@ -32,6 +40,9 @@ BASE_DIR="${BASE_DIR:-/logs}"
 ARTIFACT_DIR="${ARTIFACT_DIR:-${BASE_DIR}/artifacts}"
 mkdir -p "${ARTIFACT_DIR}"
 
+# Increase file descriptor limit for high concurrency
+ulimit -n 600000 2>/dev/null || ulimit -n 65536 2>/dev/null || true
+
 # Increase aiperf HTTP timeout
 export AIPERF_HTTP_SO_RCVTIMEO=120
 
@@ -45,6 +56,9 @@ echo "Concurrencies: ${CONCURRENCIES}"
 echo "TTFT Threshold: ${TTFT_THRESHOLD}ms"
 echo "ITL Threshold: ${ITL_THRESHOLD}ms"
 echo "Tokenizer Path: ${TOKENIZER_PATH}"
+if [ ${#EXTRA_ARGS[@]} -gt 0 ]; then
+    echo "Extra Args: ${EXTRA_ARGS[*]}"
+fi
 echo "=============================================="
 
 # Validate trace file exists
@@ -53,23 +67,40 @@ if [ ! -f "${TRACE_FILE}" ]; then
     exit 1
 fi
 
-# Install aiperf if not present
-if ! command -v aiperf &> /dev/null; then
-    echo "Installing aiperf..."
-    pip install aiperf
+# Create isolated aiperf environment (avoids polluting container packages)
+# AIPERF_PACKAGE env var controls the version (e.g., "aiperf>=0.7.0")
+AIPERF_SPEC="${AIPERF_PACKAGE:-aiperf}"
+AIPERF_VENV="/tmp/aiperf-${SLURM_JOB_ID:-$$}"
+
+echo "Setting up aiperf environment: ${AIPERF_SPEC}"
+
+# Install uv if not in container
+if ! command -v uv &> /dev/null; then
+    echo "Installing uv..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.local/bin:$PATH"
 fi
+
+uv venv "${AIPERF_VENV}"
+uv pip install -p "${AIPERF_VENV}" "${AIPERF_SPEC}" tiktoken
+export PATH="${AIPERF_VENV}/bin:${PATH}"
+echo "aiperf $(aiperf --version 2>/dev/null || echo 'installed') in ${AIPERF_VENV}"
 
 # Run small benchmark for warmup
 echo "Running warmup..."
+WARMUP_DIR="${ARTIFACT_DIR}/warmup"
+mkdir -p "${WARMUP_DIR}"
 aiperf profile \
     -m "${MODEL_NAME}" \
     --tokenizer "${TOKENIZER_PATH}" \
+    --tokenizer-trust-remote-code \
     --url "${ENDPOINT}" \
     --streaming \
     --ui simple \
     --extra-inputs ignore_eos:true \
     --concurrency 1 \
-    --request-count 5
+    --request-count 5 \
+    --artifact-dir "${WARMUP_DIR}"
 echo "Warmup complete"
 
 # Setup artifact directory
@@ -92,6 +123,7 @@ for C in "${CONCURRENCY_LIST[@]}"; do
     aiperf profile \
         -m "${MODEL_NAME}" \
         --tokenizer "${TOKENIZER_PATH}" \
+        --tokenizer-trust-remote-code \
         --input-file "${TRACE_FILE}" \
         --custom-dataset-type mooncake_trace \
         --url "${ENDPOINT}" \
@@ -102,7 +134,8 @@ for C in "${CONCURRENCY_LIST[@]}"; do
         --ui simple \
         --artifact-dir "${RUN_ARTIFACT_DIR}" \
         "${SERVER_METRICS_ARGS[@]}" \
-        --goodput "time_to_first_token:${TTFT_THRESHOLD} inter_token_latency:${ITL_THRESHOLD}"
+        --goodput "time_to_first_token:${TTFT_THRESHOLD} inter_token_latency:${ITL_THRESHOLD}" \
+        "${EXTRA_ARGS[@]}"
 
     echo "$(date '+%Y-%m-%d %H:%M:%S') - Concurrency ${C} complete"
 
