@@ -1,0 +1,38 @@
+# Mocker smoke test - Aggregated mode
+# Validates full srt-slurm pipeline (SLURM, container, mounts, tokenizer,
+# discovery, frontend, benchmark) without loading model weights.
+#
+# Usage:
+#   srtctl apply -f recipes/smoke-test/agg.yaml
+#   srtctl dry-run -f recipes/smoke-test/agg.yaml
+
+name: "smoke-test-agg"
+
+slurm:
+  time_limit: "00:15:00"
+
+model:
+  path: "hf:Qwen/Qwen3-0.6B"
+  container: "dynamo-sglang"
+  precision: "fp16"
+
+resources:
+  gpu_type: "gb200"
+  gpus_per_node: 4
+  agg_nodes: 1
+  agg_workers: 1
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+
+backend:
+  type: mocker
+  speedup_ratio: 100
+  engine_type: vllm
+
+benchmark:
+  type: "sa-bench"
+  isl: 128
+  osl: 128
+  concurrencies: "4"
