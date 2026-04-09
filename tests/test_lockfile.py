@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for lockfile generation, aggregation, and loading."""
+"""Tests for lockfile generation, per-worker fingerprint collection, and loading."""
 
 import json
 from pathlib import Path
@@ -9,10 +9,10 @@ from pathlib import Path
 import yaml
 
 from srtctl.core.lockfile import (
-    aggregate_fingerprints,
     build_lockfile,
     collect_slurm_context,
-    load_lockfile_fingerprint,
+    collect_worker_fingerprints,
+    load_lockfile_fingerprints,
     write_lockfile,
 )
 
@@ -42,56 +42,71 @@ def _make_minimal_config():
 
 
 # ============================================================================
-# Aggregation
+# Per-worker fingerprint collection
 # ============================================================================
 
 
-class TestAggregateFingerprints:
+class TestCollectWorkerFingerprints:
     def test_single_file(self, tmp_path):
         _write_fingerprint(tmp_path / "fingerprint_prefill_w0.json")
-        result = aggregate_fingerprints(tmp_path)
+        result = collect_worker_fingerprints(tmp_path)
 
         assert result is not None
-        assert result["hostname"] == "node-001"
-        assert result["pip_packages"] == ["numpy==1.26.4", "torch==2.6.0"]
+        assert "prefill_w0" in result
+        assert result["prefill_w0"]["hostname"] == "node-001"
 
-    def test_multiple_files_merge_packages(self, tmp_path):
-        """pip packages are unioned and sorted across workers."""
+    def test_multiple_workers_kept_separate(self, tmp_path):
+        """Each worker's fingerprint is stored independently."""
         _write_fingerprint(
             tmp_path / "fingerprint_prefill_w0.json",
+            hostname="prefill-node",
             pip_packages=["numpy==1.26.4", "torch==2.6.0"],
         )
         _write_fingerprint(
             tmp_path / "fingerprint_decode_w0.json",
+            hostname="decode-node",
             pip_packages=["sglang==0.4.6", "torch==2.6.0"],
         )
 
-        result = aggregate_fingerprints(tmp_path)
+        result = collect_worker_fingerprints(tmp_path)
 
         assert result is not None
-        assert result["pip_packages"] == ["numpy==1.26.4", "sglang==0.4.6", "torch==2.6.0"]
+        assert len(result) == 2
+        assert result["prefill_w0"]["hostname"] == "prefill-node"
+        assert result["decode_w0"]["hostname"] == "decode-node"
+        assert result["prefill_w0"]["pip_packages"] != result["decode_w0"]["pip_packages"]
+
+    def test_keys_sorted_by_filename(self, tmp_path):
+        """Worker keys appear in sorted order."""
+        _write_fingerprint(tmp_path / "fingerprint_decode_w1.json")
+        _write_fingerprint(tmp_path / "fingerprint_decode_w0.json")
+        _write_fingerprint(tmp_path / "fingerprint_prefill_w0.json")
+
+        result = collect_worker_fingerprints(tmp_path)
+
+        assert list(result.keys()) == ["decode_w0", "decode_w1", "prefill_w0"]
 
     def test_empty_dir_returns_none(self, tmp_path):
-        assert aggregate_fingerprints(tmp_path) is None
+        assert collect_worker_fingerprints(tmp_path) is None
 
     def test_corrupted_files_skipped(self, tmp_path):
-        """Bad JSON files are skipped, good ones still aggregate."""
+        """Bad JSON files are skipped, good ones still collected."""
         (tmp_path / "fingerprint_bad.json").write_text("not json")
         _write_fingerprint(tmp_path / "fingerprint_good.json")
 
-        result = aggregate_fingerprints(tmp_path)
+        result = collect_worker_fingerprints(tmp_path)
         assert result is not None
-        assert result["hostname"] == "node-001"
+        assert "good" in result
 
     def test_all_corrupted_returns_none(self, tmp_path):
         (tmp_path / "fingerprint_bad1.json").write_text("nope")
         (tmp_path / "fingerprint_bad2.json").write_text("{invalid")
 
-        assert aggregate_fingerprints(tmp_path) is None
+        assert collect_worker_fingerprints(tmp_path) is None
 
 
 # ============================================================================
-# Build lockfile
+# SLURM context
 # ============================================================================
 
 
@@ -121,26 +136,31 @@ class TestCollectSlurmContext:
         ctx = collect_slurm_context()
         assert "job_id" not in ctx
         assert "cluster" not in ctx
-        # user and cwd still present
         assert "user" in ctx
 
 
+# ============================================================================
+# Build lockfile
+# ============================================================================
+
+
 class TestBuildLockfile:
-    def test_structure(self):
+    def test_structure_with_per_worker_fingerprints(self):
         config = _make_minimal_config()
-        lockfile = build_lockfile(config, {"pip_packages": ["a==1.0"]})
+        fps = {"prefill_w0": {"pip_packages": ["a==1.0"]}}
+        lockfile = build_lockfile(config, fps)
 
         assert "_meta" in lockfile
         assert "config" in lockfile
-        assert "fingerprint" in lockfile
+        assert "fingerprints" in lockfile
         assert lockfile["_meta"]["version"] == 1
-        assert lockfile["fingerprint"]["pip_packages"] == ["a==1.0"]
+        assert lockfile["fingerprints"]["prefill_w0"]["pip_packages"] == ["a==1.0"]
 
-    def test_no_fingerprint(self):
+    def test_no_fingerprints(self):
         config = _make_minimal_config()
         lockfile = build_lockfile(config)
 
-        assert lockfile["fingerprint"] is None
+        assert lockfile["fingerprints"] is None
         assert lockfile["config"]["name"] == "test-job"
 
     def test_config_section_has_model_fields(self):
@@ -166,7 +186,7 @@ class TestBuildLockfile:
 
 class TestWriteLockfile:
     def test_initial_write_without_fingerprints(self, tmp_path):
-        """Phase 1: write at job start with config + SLURM context, no fingerprint."""
+        """Phase 1: write at job start with config + SLURM context, no fingerprints."""
         config = _make_minimal_config()
 
         assert write_lockfile(tmp_path, config) is True
@@ -174,102 +194,103 @@ class TestWriteLockfile:
         data = yaml.safe_load((tmp_path / "recipe.lock.yaml").read_text())
         assert data["_meta"]["version"] == 1
         assert data["config"]["name"] == "test-job"
-        assert data["fingerprint"] is None
+        assert data["fingerprints"] is None
 
-    def test_rewrite_with_fingerprints(self, tmp_path):
-        """Phase 2: rewrite at job end with aggregated fingerprint."""
+    def test_rewrite_with_per_worker_fingerprints(self, tmp_path):
+        """Phase 2: rewrite at job end with per-worker fingerprints."""
         config = _make_minimal_config()
         log_dir = tmp_path / "logs"
         log_dir.mkdir()
-        _write_fingerprint(log_dir / "fingerprint_prefill_w0.json")
+        _write_fingerprint(log_dir / "fingerprint_prefill_w0.json", hostname="p-node")
+        _write_fingerprint(log_dir / "fingerprint_decode_w0.json", hostname="d-node")
 
-        # Phase 1: initial write
         write_lockfile(tmp_path, config)
-        # Phase 2: rewrite with fingerprints
         assert write_lockfile(tmp_path, config, log_dir) is True
 
         data = yaml.safe_load((tmp_path / "recipe.lock.yaml").read_text())
         assert data["config"]["name"] == "test-job"
-        assert "numpy==1.26.4" in data["fingerprint"]["pip_packages"]
-
-    def test_creates_valid_yaml_with_fingerprints(self, tmp_path):
-        config = _make_minimal_config()
-        log_dir = tmp_path / "logs"
-        log_dir.mkdir()
-        _write_fingerprint(log_dir / "fingerprint_prefill_w0.json")
-
-        assert write_lockfile(tmp_path, config, log_dir) is True
-
-        lockfile_path = tmp_path / "recipe.lock.yaml"
-        assert lockfile_path.exists()
-
-        data = yaml.safe_load(lockfile_path.read_text())
-        assert data["_meta"]["version"] == 1
-        assert data["config"]["name"] == "test-job"
-        assert "numpy==1.26.4" in data["fingerprint"]["pip_packages"]
+        assert data["fingerprints"]["prefill_w0"]["hostname"] == "p-node"
+        assert data["fingerprints"]["decode_w0"]["hostname"] == "d-node"
 
     def test_never_raises_on_failure(self):
-        """Writing to an impossible path returns False, never raises."""
         config = _make_minimal_config()
         result = write_lockfile(Path("/proc/nonexistent"), config, Path("/proc/nonexistent"))
         assert result is False
 
 
 # ============================================================================
-# Load lockfile fingerprint
+# Load lockfile fingerprints
 # ============================================================================
 
 
-class TestLoadLockfileFingerprint:
+class TestLoadLockfileFingerprints:
     def test_from_lockfile_yaml(self, tmp_path):
         lockfile = tmp_path / "recipe.lock.yaml"
         lockfile.write_text(yaml.dump({
             "_meta": {"version": 1},
             "config": {},
-            "fingerprint": {"pip_packages": ["a==1.0"], "python_version": "3.11"},
+            "fingerprints": {
+                "prefill_w0": {"pip_packages": ["a==1.0"]},
+                "decode_w0": {"pip_packages": ["b==2.0"]},
+            },
         }))
 
-        result = load_lockfile_fingerprint(lockfile)
+        result = load_lockfile_fingerprints(lockfile)
         assert result is not None
-        assert result["pip_packages"] == ["a==1.0"]
+        assert "prefill_w0" in result
+        assert "decode_w0" in result
 
     def test_from_output_dir(self, tmp_path):
-        """Passing a directory finds recipe.lock.yaml inside."""
         lockfile = tmp_path / "recipe.lock.yaml"
         lockfile.write_text(yaml.dump({
             "_meta": {"version": 1},
             "config": {},
-            "fingerprint": {"pip_packages": ["b==2.0"]},
+            "fingerprints": {"prefill_w0": {"pip_packages": ["b==2.0"]}},
         }))
 
-        result = load_lockfile_fingerprint(tmp_path)
+        result = load_lockfile_fingerprints(tmp_path)
         assert result is not None
-        assert result["pip_packages"] == ["b==2.0"]
+        assert result["prefill_w0"]["pip_packages"] == ["b==2.0"]
 
     def test_from_raw_json(self, tmp_path):
-        fp_file = tmp_path / "fingerprint.json"
+        fp_file = tmp_path / "fingerprint_prefill_w0.json"
         fp_file.write_text(json.dumps({"pip_packages": ["c==3.0"]}))
 
-        result = load_lockfile_fingerprint(fp_file)
+        result = load_lockfile_fingerprints(fp_file)
         assert result is not None
-        assert result["pip_packages"] == ["c==3.0"]
+        assert "prefill_w0" in result
+        assert result["prefill_w0"]["pip_packages"] == ["c==3.0"]
 
     def test_from_dir_with_raw_fingerprints(self, tmp_path):
-        """Directory without lockfile falls back to aggregating fingerprint files."""
+        """Directory without lockfile falls back to collecting fingerprint files."""
         logs_dir = tmp_path / "logs"
         logs_dir.mkdir()
         _write_fingerprint(logs_dir / "fingerprint_prefill_w0.json")
 
-        result = load_lockfile_fingerprint(tmp_path)
+        result = load_lockfile_fingerprints(tmp_path)
         assert result is not None
-        assert "torch==2.6.0" in result["pip_packages"]
+        assert "prefill_w0" in result
 
     def test_missing_path_returns_none(self, tmp_path):
-        assert load_lockfile_fingerprint(tmp_path / "nonexistent") is None
+        assert load_lockfile_fingerprints(tmp_path / "nonexistent") is None
 
-    def test_lockfile_without_fingerprint_returns_none(self, tmp_path):
+    def test_lockfile_without_fingerprints_returns_none(self, tmp_path):
         lockfile = tmp_path / "recipe.lock.yaml"
         lockfile.write_text(yaml.dump({"_meta": {"version": 1}, "config": {}}))
 
-        result = load_lockfile_fingerprint(lockfile)
+        result = load_lockfile_fingerprints(lockfile)
         assert result is None
+
+    def test_backward_compat_single_fingerprint(self, tmp_path):
+        """Old lockfiles with single 'fingerprint' key still load."""
+        lockfile = tmp_path / "recipe.lock.yaml"
+        lockfile.write_text(yaml.dump({
+            "_meta": {"version": 1},
+            "config": {},
+            "fingerprint": {"pip_packages": ["old==1.0"]},
+        }))
+
+        result = load_lockfile_fingerprints(lockfile)
+        assert result is not None
+        assert "worker" in result
+        assert result["worker"]["pip_packages"] == ["old==1.0"]

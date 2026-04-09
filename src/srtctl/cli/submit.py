@@ -42,7 +42,7 @@ from srtctl.core.config import (
     resolve_config_with_defaults,
 )
 from srtctl.core.fingerprint import check_against_fingerprint, diff_fingerprints, format_check_results, format_diff
-from srtctl.core.lockfile import load_lockfile_fingerprint
+from srtctl.core.lockfile import load_lockfile_fingerprints
 from srtctl.core.schema import SrtConfig
 from srtctl.core.status import create_job_record
 from srtctl.core.validation import run_validations_background
@@ -933,38 +933,58 @@ def main():
 
     # Handle diff and check commands first (they don't use -f/config)
     if args.command == "diff":
-        fp_a = load_lockfile_fingerprint(args.path_a)
-        fp_b = load_lockfile_fingerprint(args.path_b)
-        if fp_a is None or fp_b is None:
+        fps_a = load_lockfile_fingerprints(args.path_a)
+        fps_b = load_lockfile_fingerprints(args.path_b)
+        if fps_a is None or fps_b is None:
             missing = []
-            if fp_a is None:
+            if fps_a is None:
                 missing.append(str(args.path_a))
-            if fp_b is None:
+            if fps_b is None:
                 missing.append(str(args.path_b))
-            console.print(f"[bold red]Could not load fingerprint from:[/] {', '.join(missing)}")
+            console.print(f"[bold red]Could not load fingerprints from:[/] {', '.join(missing)}")
             sys.exit(1)
-        diff = diff_fingerprints(fp_a, fp_b)
-        console.print(format_diff(diff, verbose=args.verbose))
+
+        # Diff each worker against its counterpart
+        all_workers = sorted(set(fps_a.keys()) | set(fps_b.keys()))
+        for worker in all_workers:
+            if worker not in fps_a:
+                console.print(f"\n[bold]{worker}:[/] only in {args.path_b}")
+                continue
+            if worker not in fps_b:
+                console.print(f"\n[bold]{worker}:[/] only in {args.path_a}")
+                continue
+            diff = diff_fingerprints(fps_a[worker], fps_b[worker])
+            console.print(f"\n[bold]{worker}:[/]")
+            console.print(format_diff(diff, verbose=args.verbose))
         return
 
     if args.command == "check":
         import json as json_mod
 
-        ref = load_lockfile_fingerprint(args.path)
-        if ref is None:
-            console.print(f"[bold red]Could not load fingerprint from:[/] {args.path}")
+        fps = load_lockfile_fingerprints(args.path)
+        if fps is None:
+            console.print(f"[bold red]Could not load fingerprints from:[/] {args.path}")
             sys.exit(1)
-        results = check_against_fingerprint(ref)
-        if args.json_output:
-            console.print(
-                json_mod.dumps(
-                    [{"field": r.field, "status": r.status.value, "message": r.message} for r in results],
-                    indent=2,
-                )
-            )
-        else:
-            console.print(format_check_results(results))
-        sys.exit(1 if results else 0)
+
+        # Check each worker's fingerprint against current environment
+        all_results = []
+        for worker in sorted(fps.keys()):
+            results = check_against_fingerprint(fps[worker])
+            if results:
+                all_results.extend(results)
+                console.print(f"\n[bold]{worker}:[/]")
+                if args.json_output:
+                    console.print(
+                        json_mod.dumps(
+                            [{"field": r.field, "status": r.status.value, "message": r.message} for r in results],
+                            indent=2,
+                        )
+                    )
+                else:
+                    console.print(format_check_results(results))
+        if not all_results:
+            console.print(format_check_results([]))
+        sys.exit(1 if all_results else 0)
 
     # Parse config arg: supports path:selector format for overrides
     config_path, selector = parse_config_arg(args.config)

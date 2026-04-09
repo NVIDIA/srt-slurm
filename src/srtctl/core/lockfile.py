@@ -13,6 +13,7 @@ All operations are fault-tolerant — lockfile writing never blocks or fails a j
 
 from __future__ import annotations
 
+import contextlib
 import getpass
 import logging
 import os
@@ -61,10 +62,8 @@ def collect_slurm_context() -> dict[str, Any]:
             ctx[key] = val
 
     # User and working directory (always available)
-    try:
+    with contextlib.suppress(Exception):
         ctx["user"] = getpass.getuser()
-    except Exception:
-        pass
 
     ctx["cwd"] = str(Path.cwd())
 
@@ -76,12 +75,13 @@ def collect_slurm_context() -> dict[str, Any]:
     return ctx
 
 
-def aggregate_fingerprints(log_dir: Path) -> dict[str, Any] | None:
-    """Aggregate per-worker fingerprint files into a single fingerprint.
+def collect_worker_fingerprints(log_dir: Path) -> dict[str, Any] | None:
+    """Load per-worker fingerprint files into a dict keyed by worker name.
 
-    Reads all fingerprint_*.json files from the log directory. Scalar fields
-    are taken from the first file. pip_packages are merged (sorted union).
+    Returns a dict like:
+        {"prefill_w0": {...}, "decode_w0": {...}, "decode_w1": {...}}
 
+    The key is derived from the filename: fingerprint_prefill_w0.json -> "prefill_w0".
     Returns None if no fingerprint files are found or all fail to load.
     """
     try:
@@ -93,38 +93,27 @@ def aggregate_fingerprints(log_dir: Path) -> dict[str, Any] | None:
     if not fp_files:
         return None
 
-    fingerprints = []
+    result: dict[str, Any] = {}
     for fp_file in fp_files:
         fp = load_fingerprint(fp_file)
         if fp is not None:
-            fingerprints.append(fp)
+            # fingerprint_prefill_w0.json -> prefill_w0
+            worker_key = fp_file.stem.removeprefix("fingerprint_")
+            result[worker_key] = fp
 
-    if not fingerprints:
-        return None
-
-    # Use first fingerprint as base for scalar fields
-    result = {k: v for k, v in fingerprints[0].items() if k != "pip_packages"}
-
-    # Merge pip packages: sorted union across all workers
-    all_packages: set[str] = set()
-    for fp in fingerprints:
-        for pkg in fp.get("pip_packages", []):
-            all_packages.add(pkg)
-    result["pip_packages"] = sorted(all_packages, key=lambda s: s.lower())
-
-    return result
+    return result if result else None
 
 
 def build_lockfile(
     config: SrtConfig,
-    runtime_fingerprint: dict[str, Any] | None = None,
+    worker_fingerprints: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build the lockfile dict from a resolved config and optional fingerprint.
+    """Build the lockfile dict from a resolved config and optional per-worker fingerprints.
 
     Returns a dict with:
     - _meta: lockfile version, timestamp, SLURM context
     - config: the full resolved config as a dict
-    - fingerprint: the aggregated runtime fingerprint (or None)
+    - fingerprints: per-worker fingerprints keyed by worker name (or None)
     """
     from srtctl.core.schema import SrtConfig
 
@@ -137,7 +126,7 @@ def build_lockfile(
             "slurm": collect_slurm_context(),
         },
         "config": config_dict,
-        "fingerprint": runtime_fingerprint,
+        "fingerprints": worker_fingerprints,
     }
 
 
@@ -149,14 +138,14 @@ def write_lockfile(
     """Write recipe.lock.yaml to the output directory.
 
     Called twice per job:
-    1. At job start (log_dir=None) — writes config + SLURM context, fingerprint=null
-    2. At job end (log_dir set) — rewrites with aggregated runtime fingerprint
+    1. At job start (log_dir=None) — writes config + SLURM context, fingerprints=null
+    2. At job end (log_dir set) — rewrites with per-worker fingerprints
 
     Returns True on success, False on any failure. Never raises.
     """
     try:
-        fingerprint = aggregate_fingerprints(log_dir) if log_dir else None
-        lockfile_data = build_lockfile(config, fingerprint)
+        fingerprints = collect_worker_fingerprints(log_dir) if log_dir else None
+        lockfile_data = build_lockfile(config, fingerprints)
 
         lockfile_path = output_dir / "recipe.lock.yaml"
         lockfile_path.write_text(yaml.dump(lockfile_data, default_flow_style=False, sort_keys=False))
@@ -167,48 +156,59 @@ def write_lockfile(
         return False
 
 
-def load_lockfile_fingerprint(path: Path) -> dict[str, Any] | None:
-    """Load a fingerprint from a lockfile, output directory, or raw JSON.
+def load_lockfile_fingerprints(path: Path) -> dict[str, Any] | None:
+    """Load per-worker fingerprints from a lockfile, output directory, or raw JSON.
 
     Accepts:
-    - Path to recipe.lock.yaml → reads the 'fingerprint' section
-    - Path to an output directory → looks for recipe.lock.yaml inside
-    - Path to a fingerprint JSON file → loads directly
+    - Path to recipe.lock.yaml → reads the 'fingerprints' section (per-worker dict)
+    - Path to an output directory → looks for recipe.lock.yaml or raw fingerprint files
+    - Path to a single fingerprint JSON → wraps as {"worker": fingerprint}
 
-    Returns None if the fingerprint cannot be loaded.
+    Returns a dict keyed by worker name, e.g.:
+        {"prefill_w0": {...}, "decode_w0": {...}}
+    Returns None if no fingerprints can be loaded.
     """
     try:
-        # If it's a directory, look for lockfile or fingerprint files
         if path.is_dir():
             lockfile = path / "recipe.lock.yaml"
             if lockfile.exists():
-                return _load_fingerprint_from_lockfile(lockfile)
-            # Fall back to aggregating raw fingerprint files from logs/
+                return _load_fingerprints_from_lockfile(lockfile)
+            # Fall back to collecting raw fingerprint files
             logs_dir = path / "logs"
             if logs_dir.is_dir():
-                return aggregate_fingerprints(logs_dir)
-            return aggregate_fingerprints(path)
+                return collect_worker_fingerprints(logs_dir)
+            return collect_worker_fingerprints(path)
 
-        # If it's a YAML file, try loading as lockfile
         if path.suffix in (".yaml", ".yml"):
-            return _load_fingerprint_from_lockfile(path)
+            return _load_fingerprints_from_lockfile(path)
 
-        # Otherwise try loading as raw fingerprint JSON
         if path.suffix == ".json":
-            return load_fingerprint(path)
+            fp = load_fingerprint(path)
+            if fp is not None:
+                # Single file — derive worker key from filename
+                worker_key = path.stem.removeprefix("fingerprint_") or "worker"
+                return {worker_key: fp}
+            return None
 
         return None
     except Exception as e:
-        logger.debug("Failed to load fingerprint from %s: %s", path, e)
+        logger.debug("Failed to load fingerprints from %s: %s", path, e)
         return None
 
 
-def _load_fingerprint_from_lockfile(path: Path) -> dict[str, Any] | None:
-    """Extract the fingerprint section from a lockfile YAML."""
+def _load_fingerprints_from_lockfile(path: Path) -> dict[str, Any] | None:
+    """Extract the per-worker fingerprints from a lockfile YAML."""
     try:
         data = yaml.safe_load(path.read_text())
-        if isinstance(data, dict):
-            return data.get("fingerprint")
+        if not isinstance(data, dict):
+            return None
+        # Support both 'fingerprints' (new, per-worker) and 'fingerprint' (old, single)
+        fps = data.get("fingerprints")
+        if isinstance(fps, dict):
+            return fps
+        fp = data.get("fingerprint")
+        if isinstance(fp, dict):
+            return {"worker": fp}
         return None
     except Exception as e:
         logger.debug("Failed to parse lockfile %s: %s", path, e)
