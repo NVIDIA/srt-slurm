@@ -1,8 +1,8 @@
-name: "glm5_nvfp4_ISL1K_OSL1K_ctx1dep4_gen1dep32_batch32_eplb0_mtp0"
+name: "glm5_nvfp4_ISL1K_OSL1K_ctx1dep4_gen1dep16_batch32_eplb0_mtp2"
 
 # ctx: 1 prefill worker, TP4/EP4
-# gen: 1 decode worker, TP32/EP32, enable_attention_dp=true, max_batch=32
-# concurrency: 1229
+# gen: 1 decode worker, TP16/EP16, enable_attention_dp=true, max_batch=32
+# concurrency: 666
 
 model:
   path: "/mnt/lustre01/models/glm-5-nvfp4"
@@ -17,8 +17,8 @@ resources:
   gpus_per_prefill: 4
 
   decode_workers: 1
-  decode_nodes: 8
-  gpus_per_decode: 32
+  decode_nodes: 4
+  gpus_per_decode: 16
 
   gpus_per_node: 4
 
@@ -66,17 +66,20 @@ backend:
       cache_transceiver_config:
         backend: UCX
         max_tokens_in_buffer: 16384
+      speculative_config:
+        decoding_type: MTP
+        num_nextn_predict_layers: 2
 
     decode:
-      tensor_parallel_size: 32
-      moe_expert_parallel_size: 32
+      tensor_parallel_size: 16
+      moe_expert_parallel_size: 16
       pipeline_parallel_size: 1
       enable_attention_dp: true
-      enable_lm_head_tp_in_adp: false
+      enable_lm_head_tp_in_adp: true
       trust_remote_code: true
       custom_tokenizer: "glm_moe_dsa"
       max_batch_size: 32
-      max_num_tokens: 32
+      max_num_tokens: 96
       max_seq_len: 2088
       print_iter_log: true
       stream_interval: 100
@@ -107,12 +110,15 @@ backend:
           - cublaslt
           - cutedsl
           - cuda_core
+      speculative_config:
+        decoding_type: MTP
+        num_nextn_predict_layers: 2
 
 benchmark:
   type: "sa-bench"
   isl: 1024
   osl: 1024
-  concurrencies: "1229"
+  concurrencies: "666"
   req_rate: "inf"
   custom_tokenizer: "glm_moe_dsa"
   use_chat_template: false

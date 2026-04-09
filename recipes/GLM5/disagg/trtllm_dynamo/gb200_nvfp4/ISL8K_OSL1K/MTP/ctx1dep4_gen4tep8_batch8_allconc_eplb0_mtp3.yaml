@@ -1,8 +1,8 @@
-name: "glm5_nvfp4_ISL1K_OSL1K_ctx1dep4_gen1dep32_batch32_eplb0_mtp0"
+name: "glm5_nvfp4_ISL8K_OSL1K_ctx1dep4_gen4tep8_batch8_allconc_eplb0_mtp3"
 
 # ctx: 1 prefill worker, TP4/EP4
-# gen: 1 decode worker, TP32/EP32, enable_attention_dp=true, max_batch=32
-# concurrency: 1229
+# gen: 4 decode workers, TP8/EP8, max_batch=8
+# concurrencies: 4 (batch1), 48 (batch8)
 
 model:
   path: "/mnt/lustre01/models/glm-5-nvfp4"
@@ -16,9 +16,9 @@ resources:
   prefill_workers: 1
   gpus_per_prefill: 4
 
-  decode_workers: 1
+  decode_workers: 4
   decode_nodes: 8
-  gpus_per_decode: 32
+  gpus_per_decode: 8
 
   gpus_per_node: 4
 
@@ -52,9 +52,9 @@ backend:
       disable_overlap_scheduler: true
       trust_remote_code: true
       custom_tokenizer: "glm_moe_dsa"
-      max_batch_size: 16
-      max_num_tokens: 16384
-      max_seq_len: 1064
+      max_batch_size: 2
+      max_num_tokens: 16640
+      max_seq_len: 8232
       print_iter_log: true
       cuda_graph_config: null
       moe_config:
@@ -66,18 +66,22 @@ backend:
       cache_transceiver_config:
         backend: UCX
         max_tokens_in_buffer: 16384
+      speculative_config:
+        decoding_type: MTP
+        num_nextn_predict_layers: 3
 
     decode:
-      tensor_parallel_size: 32
-      moe_expert_parallel_size: 32
+      allreduce_strategy: MNNVL
+      tensor_parallel_size: 8
+      moe_expert_parallel_size: 8
       pipeline_parallel_size: 1
-      enable_attention_dp: true
+      enable_attention_dp: false
       enable_lm_head_tp_in_adp: false
       trust_remote_code: true
       custom_tokenizer: "glm_moe_dsa"
-      max_batch_size: 32
+      max_batch_size: 8
       max_num_tokens: 32
-      max_seq_len: 2088
+      max_seq_len: 9256
       print_iter_log: true
       stream_interval: 100
       num_postprocess_workers: 4
@@ -88,16 +92,13 @@ backend:
           - 2
           - 4
           - 8
-          - 16
-          - 24
-          - 32
       moe_config:
-        backend: CUTEDSL
+        backend: TRTLLM
         use_low_precision_moe_combine: true
       kv_cache_config:
         dtype: fp8
         enable_block_reuse: false
-        free_gpu_memory_fraction: 0.7
+        free_gpu_memory_fraction: 0.9
       cache_transceiver_config:
         backend: UCX
         max_tokens_in_buffer: 16384
@@ -107,12 +108,15 @@ backend:
           - cublaslt
           - cutedsl
           - cuda_core
+      speculative_config:
+        decoding_type: MTP
+        num_nextn_predict_layers: 3
 
 benchmark:
   type: "sa-bench"
-  isl: 1024
+  isl: 8192
   osl: 1024
-  concurrencies: "1229"
+  concurrencies: "4x48"
   req_rate: "inf"
   custom_tokenizer: "glm_moe_dsa"
   use_chat_template: false

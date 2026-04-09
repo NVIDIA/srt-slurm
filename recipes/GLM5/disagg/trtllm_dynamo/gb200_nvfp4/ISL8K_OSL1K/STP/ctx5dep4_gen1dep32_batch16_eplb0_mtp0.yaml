@@ -5,8 +5,8 @@ name: "glm5_nvfp4_ISL8K_OSL1K_ctx5dep4_gen1dep32_batch16_eplb0_mtp0"
 # concurrency: 615
 
 model:
-  path: "/lustre/fsw/infra_rd_gsw/users/yeswanthk/srt-slurm/models/GLM-5-NVFP4"
-  container: "/lustre/fsw/infra_rd_gsw/users/yeswanthk/srt-slurm/squash/trtllm-glm5-xqiao-main3-aarch64-20260402.sqsh"
+  path: "/mnt/lustre01/models/glm-5-nvfp4"
+  container: "/mnt/lustre01/users/slurm-shared/yeswanthk/squashs/dynamo-trtllm-rihuo-glm5-2.0-arm64.sqsh"
   precision: "fp4"
 
 resources:
@@ -112,6 +112,8 @@ benchmark:
   osl: 1024
   concurrencies: "615"
   req_rate: "inf"
+  custom_tokenizer: "glm_moe_dsa"
+  use_chat_template: false
 
 frontend:
   type: "dynamo"

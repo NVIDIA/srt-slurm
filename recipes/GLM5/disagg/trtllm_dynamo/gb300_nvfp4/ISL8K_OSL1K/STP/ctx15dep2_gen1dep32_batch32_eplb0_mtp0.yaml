@@ -1,6 +1,6 @@
-name: "glm5_nvfp4_ISL1K_OSL1K_ctx1dep4_gen1dep32_batch32_eplb0_mtp0"
+name: "glm5_nvfp4_ISL8K_OSL1K_ctx15dep2_gen1dep32_batch32_eplb0_mtp0"
 
-# ctx: 1 prefill worker, TP4/EP4
+# ctx: 15 prefill workers, TP2/EP2
 # gen: 1 decode worker, TP32/EP32, enable_attention_dp=true, max_batch=32
 # concurrency: 1229
 
@@ -10,11 +10,11 @@ model:
   precision: "fp4"
 
 resources:
-  gpu_type: "gb200"
+  gpu_type: "gb300"
 
-  prefill_nodes: 1
-  prefill_workers: 1
-  gpus_per_prefill: 4
+  prefill_nodes: 8
+  prefill_workers: 15
+  gpus_per_prefill: 2
 
   decode_workers: 1
   decode_nodes: 8
@@ -45,16 +45,16 @@ backend:
 
   trtllm_config:
     prefill:
-      tensor_parallel_size: 4
-      moe_expert_parallel_size: 4
+      tensor_parallel_size: 2
+      moe_expert_parallel_size: 2
       pipeline_parallel_size: 1
       enable_attention_dp: true
       disable_overlap_scheduler: true
       trust_remote_code: true
       custom_tokenizer: "glm_moe_dsa"
-      max_batch_size: 16
-      max_num_tokens: 16384
-      max_seq_len: 1064
+      max_batch_size: 2
+      max_num_tokens: 16640
+      max_seq_len: 8232
       print_iter_log: true
       cuda_graph_config: null
       moe_config:
@@ -77,7 +77,7 @@ backend:
       custom_tokenizer: "glm_moe_dsa"
       max_batch_size: 32
       max_num_tokens: 32
-      max_seq_len: 2088
+      max_seq_len: 9256
       print_iter_log: true
       stream_interval: 100
       num_postprocess_workers: 4
@@ -97,7 +97,7 @@ backend:
       kv_cache_config:
         dtype: fp8
         enable_block_reuse: false
-        free_gpu_memory_fraction: 0.7
+        free_gpu_memory_fraction: 0.75
       cache_transceiver_config:
         backend: UCX
         max_tokens_in_buffer: 16384
@@ -110,7 +110,7 @@ backend:
 
 benchmark:
   type: "sa-bench"
-  isl: 1024
+  isl: 8192
   osl: 1024
   concurrencies: "1229"
   req_rate: "inf"
