@@ -1,0 +1,3 @@
+{"session_id":"test-sess-001","input_length":1200,"output_length":50,"hash_ids":[0,1,2],"timestamp":0.0,"group_id":0}
+{"session_id":"test-sess-001","input_length":512,"output_length":30,"hash_ids":[3],"delay":100.0}
+{"session_id":"test-sess-002","input_length":1500,"output_length":40,"hash_ids":[4,5,6],"timestamp":0.5,"group_id":1}
