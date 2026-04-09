@@ -3,8 +3,8 @@
 # discovery, frontend, benchmark) without loading model weights.
 #
 # Usage:
-#   srtctl apply -f recipes/smoke-test/agg.yaml
-#   srtctl dry-run -f recipes/smoke-test/agg.yaml
+#   srtctl apply -f recipes/mocker/agg.yaml
+#   srtctl dry-run -f recipes/mocker/agg.yaml
 
 name: "smoke-test-agg"
 

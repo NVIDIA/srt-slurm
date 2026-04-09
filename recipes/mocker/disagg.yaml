@@ -1,9 +1,10 @@
 # Mocker smoke test - Disaggregated mode
-# Validates prefill/decode disaggregation pipeline with bootstrap rendezvous.
+# Validates prefill/decode disaggregation pipeline with separate nodes
+# and bootstrap rendezvous.
 #
 # Usage:
-#   srtctl apply -f recipes/smoke-test/disagg.yaml
-#   srtctl dry-run -f recipes/smoke-test/disagg.yaml
+#   srtctl apply -f recipes/mocker/disagg.yaml
+#   srtctl dry-run -f recipes/mocker/disagg.yaml
 
 name: "smoke-test-disagg"
 
@@ -19,7 +20,7 @@ resources:
   gpu_type: "gb200"
   gpus_per_node: 4
   prefill_nodes: 1
-  decode_nodes: 0
+  decode_nodes: 1
   prefill_workers: 1
   decode_workers: 1
   gpus_per_prefill: 1
