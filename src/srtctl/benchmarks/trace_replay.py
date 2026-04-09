@@ -82,7 +82,7 @@ class TraceReplayRunner(AIPerfBenchmarkRunner):
 
         tokenizer_path = str(runtime.model_path) if runtime.is_hf_model else "/model"
 
-        return [
+        cmd = [
             "bash",
             self.script_path,
             endpoint,
@@ -93,3 +93,13 @@ class TraceReplayRunner(AIPerfBenchmarkRunner):
             str(itl_threshold),
             tokenizer_path,
         ]
+
+        # Pass through extra aiperf CLI flags from config
+        for key, value in b.aiperf_args.items():
+            if isinstance(value, bool):
+                if value:
+                    cmd.append(f"--{key}")
+            else:
+                cmd.extend([f"--{key}", str(value)])
+
+        return cmd
