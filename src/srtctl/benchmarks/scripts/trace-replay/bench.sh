@@ -79,8 +79,6 @@ TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
 # Parse concurrencies (comma-separated)
 IFS=',' read -r -a CONCURRENCY_LIST <<< "${CONCURRENCIES}"
 
-OVERALL_EXIT_CODE=0
-
 for C in "${CONCURRENCY_LIST[@]}"; do
     echo ""
     echo "=============================================="
@@ -91,9 +89,6 @@ for C in "${CONCURRENCY_LIST[@]}"; do
     RUN_ARTIFACT_DIR="${ARTIFACT_DIR}/${MODEL_BASE_NAME}_trace_c${C}_${TIMESTAMP}"
     mkdir -p "${RUN_ARTIFACT_DIR}"
 
-    # Disable set -e for aiperf so a failure at one concurrency level
-    # doesn't abort the entire sweep — we want to try all levels.
-    set +e
     aiperf profile \
         -m "${MODEL_NAME}" \
         --tokenizer "${TOKENIZER_PATH}" \
@@ -108,14 +103,8 @@ for C in "${CONCURRENCY_LIST[@]}"; do
         --artifact-dir "${RUN_ARTIFACT_DIR}" \
         "${SERVER_METRICS_ARGS[@]}" \
         --goodput "time_to_first_token:${TTFT_THRESHOLD} inter_token_latency:${ITL_THRESHOLD}"
-    BENCH_EXIT_CODE=$?
-    set -e
 
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - Concurrency ${C} complete (exit code: ${BENCH_EXIT_CODE})"
-
-    if [ $BENCH_EXIT_CODE -ne 0 ]; then
-        OVERALL_EXIT_CODE=$BENCH_EXIT_CODE
-    fi
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - Concurrency ${C} complete"
 
     # List artifacts
     ls -la "${RUN_ARTIFACT_DIR}" 2>/dev/null || true
@@ -126,5 +115,3 @@ echo "=============================================="
 echo "Trace Replay Benchmark Complete"
 echo "Results saved to: ${ARTIFACT_DIR}"
 echo "=============================================="
-
-exit $OVERALL_EXIT_CODE
