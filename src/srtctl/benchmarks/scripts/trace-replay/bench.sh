@@ -67,6 +67,7 @@ aiperf profile \
     --url "${ENDPOINT}" \
     --streaming \
     --ui simple \
+    --extra-inputs ignore_eos:true \
     --concurrency 1 \
     --request-count 5
 echo "Warmup complete"
@@ -97,6 +98,7 @@ for C in "${CONCURRENCY_LIST[@]}"; do
         --custom-dataset-type mooncake_trace \
         --url "${ENDPOINT}" \
         --streaming \
+        --extra-inputs ignore_eos:true \
         --concurrency "${C}" \
         --random-seed 42 \
         --ui simple \
