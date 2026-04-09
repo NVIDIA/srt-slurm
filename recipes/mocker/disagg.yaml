@@ -35,6 +35,17 @@ backend:
   speedup_ratio: 100
   engine_type: vllm
 
+  mocker_config:
+    prefill:
+      num-gpu-blocks-override: 8192
+      max-num-seqs: 128
+      max-num-batched-tokens: 16384
+      enable-chunked-prefill: true
+    decode:
+      num-gpu-blocks-override: 16384
+      max-num-seqs: 512
+      max-num-batched-tokens: 4096
+
 benchmark:
   type: "sa-bench"
   isl: 128
