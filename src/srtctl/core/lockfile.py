@@ -13,7 +13,9 @@ All operations are fault-tolerant — lockfile writing never blocks or fails a j
 
 from __future__ import annotations
 
+import getpass
 import logging
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -29,6 +31,49 @@ logger = logging.getLogger(__name__)
 
 # Lockfile format version — bump when the structure changes
 _LOCKFILE_VERSION = 1
+
+# SLURM environment variables to capture in the lockfile.
+# Each entry is (yaml_key, env_var).
+_SLURM_ENV_KEYS = [
+    ("job_id", "SLURM_JOB_ID"),
+    ("job_name", "SLURM_JOB_NAME"),
+    ("cluster", "SLURM_CLUSTER_NAME"),
+    ("account", "SLURM_JOB_ACCOUNT"),
+    ("partition", "SLURM_JOB_PARTITION"),
+    ("nodelist", "SLURM_JOB_NODELIST"),
+    ("num_nodes", "SLURM_JOB_NUM_NODES"),
+    ("gpus_per_node", "SLURM_GPUS_PER_NODE"),
+    ("time_limit", "SLURM_TIMELIMIT"),
+]
+
+
+def collect_slurm_context() -> dict[str, Any]:
+    """Collect SLURM job context from environment variables.
+
+    Captures job ID, account, partition, nodelist, etc. — everything needed
+    to understand where and how the job ran. Returns an empty dict outside SLURM.
+    """
+    ctx: dict[str, Any] = {}
+
+    for key, env_var in _SLURM_ENV_KEYS:
+        val = os.environ.get(env_var)
+        if val is not None:
+            ctx[key] = val
+
+    # User and working directory (always available)
+    try:
+        ctx["user"] = getpass.getuser()
+    except Exception:
+        pass
+
+    ctx["cwd"] = str(Path.cwd())
+
+    # srtctl installation root (where the tool was invoked from)
+    srtctl_root = os.environ.get("SRTCTL_ROOT")
+    if srtctl_root:
+        ctx["srtctl_root"] = srtctl_root
+
+    return ctx
 
 
 def aggregate_fingerprints(log_dir: Path) -> dict[str, Any] | None:
@@ -70,15 +115,17 @@ def aggregate_fingerprints(log_dir: Path) -> dict[str, Any] | None:
     return result
 
 
-def build_lockfile(config: SrtConfig, runtime_fingerprint: dict[str, Any] | None) -> dict[str, Any]:
-    """Build the lockfile dict from a resolved config and aggregated fingerprint.
+def build_lockfile(
+    config: SrtConfig,
+    runtime_fingerprint: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the lockfile dict from a resolved config and optional fingerprint.
 
     Returns a dict with:
-    - _meta: lockfile version and generation timestamp
+    - _meta: lockfile version, timestamp, SLURM context
     - config: the full resolved config as a dict
     - fingerprint: the aggregated runtime fingerprint (or None)
     """
-    # Dump config to dict via marshmallow schema
     from srtctl.core.schema import SrtConfig
 
     config_dict = SrtConfig.Schema().dump(config)
@@ -87,19 +134,28 @@ def build_lockfile(config: SrtConfig, runtime_fingerprint: dict[str, Any] | None
         "_meta": {
             "version": _LOCKFILE_VERSION,
             "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "slurm": collect_slurm_context(),
         },
         "config": config_dict,
         "fingerprint": runtime_fingerprint,
     }
 
 
-def write_lockfile(output_dir: Path, config: SrtConfig, log_dir: Path) -> bool:
-    """Aggregate fingerprints and write recipe.lock.yaml to the output directory.
+def write_lockfile(
+    output_dir: Path,
+    config: SrtConfig,
+    log_dir: Path | None = None,
+) -> bool:
+    """Write recipe.lock.yaml to the output directory.
+
+    Called twice per job:
+    1. At job start (log_dir=None) — writes config + SLURM context, fingerprint=null
+    2. At job end (log_dir set) — rewrites with aggregated runtime fingerprint
 
     Returns True on success, False on any failure. Never raises.
     """
     try:
-        fingerprint = aggregate_fingerprints(log_dir)
+        fingerprint = aggregate_fingerprints(log_dir) if log_dir else None
         lockfile_data = build_lockfile(config, fingerprint)
 
         lockfile_path = output_dir / "recipe.lock.yaml"

@@ -11,6 +11,7 @@ import yaml
 from srtctl.core.lockfile import (
     aggregate_fingerprints,
     build_lockfile,
+    collect_slurm_context,
     load_lockfile_fingerprint,
     write_lockfile,
 )
@@ -94,6 +95,36 @@ class TestAggregateFingerprints:
 # ============================================================================
 
 
+class TestCollectSlurmContext:
+    def test_captures_slurm_vars(self, monkeypatch):
+        monkeypatch.setenv("SLURM_JOB_ID", "12345")
+        monkeypatch.setenv("SLURM_JOB_ACCOUNT", "myaccount")
+        monkeypatch.setenv("SLURM_JOB_PARTITION", "gpu")
+        monkeypatch.setenv("SLURM_JOB_NODELIST", "node-[001-004]")
+
+        ctx = collect_slurm_context()
+        assert ctx["job_id"] == "12345"
+        assert ctx["account"] == "myaccount"
+        assert ctx["partition"] == "gpu"
+        assert ctx["nodelist"] == "node-[001-004]"
+
+    def test_always_has_user_and_cwd(self):
+        ctx = collect_slurm_context()
+        assert "user" in ctx
+        assert "cwd" in ctx
+
+    def test_missing_slurm_vars_omitted(self, monkeypatch):
+        """Outside SLURM, SLURM keys are simply absent."""
+        for _, env_var in [("job_id", "SLURM_JOB_ID"), ("cluster", "SLURM_CLUSTER_NAME")]:
+            monkeypatch.delenv(env_var, raising=False)
+
+        ctx = collect_slurm_context()
+        assert "job_id" not in ctx
+        assert "cluster" not in ctx
+        # user and cwd still present
+        assert "user" in ctx
+
+
 class TestBuildLockfile:
     def test_structure(self):
         config = _make_minimal_config()
@@ -107,17 +138,25 @@ class TestBuildLockfile:
 
     def test_no_fingerprint(self):
         config = _make_minimal_config()
-        lockfile = build_lockfile(config, None)
+        lockfile = build_lockfile(config)
 
         assert lockfile["fingerprint"] is None
         assert lockfile["config"]["name"] == "test-job"
 
     def test_config_section_has_model_fields(self):
         config = _make_minimal_config()
-        lockfile = build_lockfile(config, None)
+        lockfile = build_lockfile(config)
 
         assert lockfile["config"]["model"]["path"] == "/model"
         assert lockfile["config"]["model"]["precision"] == "fp8"
+
+    def test_meta_includes_slurm_context(self, monkeypatch):
+        monkeypatch.setenv("SLURM_JOB_ID", "99999")
+        config = _make_minimal_config()
+        lockfile = build_lockfile(config)
+
+        assert lockfile["_meta"]["slurm"]["job_id"] == "99999"
+        assert "user" in lockfile["_meta"]["slurm"]
 
 
 # ============================================================================
@@ -126,7 +165,34 @@ class TestBuildLockfile:
 
 
 class TestWriteLockfile:
-    def test_creates_valid_yaml(self, tmp_path):
+    def test_initial_write_without_fingerprints(self, tmp_path):
+        """Phase 1: write at job start with config + SLURM context, no fingerprint."""
+        config = _make_minimal_config()
+
+        assert write_lockfile(tmp_path, config) is True
+
+        data = yaml.safe_load((tmp_path / "recipe.lock.yaml").read_text())
+        assert data["_meta"]["version"] == 1
+        assert data["config"]["name"] == "test-job"
+        assert data["fingerprint"] is None
+
+    def test_rewrite_with_fingerprints(self, tmp_path):
+        """Phase 2: rewrite at job end with aggregated fingerprint."""
+        config = _make_minimal_config()
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        _write_fingerprint(log_dir / "fingerprint_prefill_w0.json")
+
+        # Phase 1: initial write
+        write_lockfile(tmp_path, config)
+        # Phase 2: rewrite with fingerprints
+        assert write_lockfile(tmp_path, config, log_dir) is True
+
+        data = yaml.safe_load((tmp_path / "recipe.lock.yaml").read_text())
+        assert data["config"]["name"] == "test-job"
+        assert "numpy==1.26.4" in data["fingerprint"]["pip_packages"]
+
+    def test_creates_valid_yaml_with_fingerprints(self, tmp_path):
         config = _make_minimal_config()
         log_dir = tmp_path / "logs"
         log_dir.mkdir()
@@ -141,16 +207,6 @@ class TestWriteLockfile:
         assert data["_meta"]["version"] == 1
         assert data["config"]["name"] == "test-job"
         assert "numpy==1.26.4" in data["fingerprint"]["pip_packages"]
-
-    def test_works_without_fingerprints(self, tmp_path):
-        config = _make_minimal_config()
-        log_dir = tmp_path / "logs"
-        log_dir.mkdir()
-
-        assert write_lockfile(tmp_path, config, log_dir) is True
-
-        data = yaml.safe_load((tmp_path / "recipe.lock.yaml").read_text())
-        assert data["fingerprint"] is None
 
     def test_never_raises_on_failure(self):
         """Writing to an impossible path returns False, never raises."""

@@ -24,6 +24,7 @@ from pathlib import Path
 from srtctl.cli.mixins import BenchmarkStageMixin, FrontendStageMixin, PostProcessStageMixin, WorkerStageMixin
 from srtctl.core.config import load_config
 from srtctl.core.health import wait_for_port
+from srtctl.core.lockfile import write_lockfile
 from srtctl.core.processes import (
     ManagedProcess,
     ProcessRegistry,
@@ -194,6 +195,9 @@ class SweepOrchestrator(WorkerStageMixin, FrontendStageMixin, BenchmarkStageMixi
         logger.info("Worker nodes: %s", ", ".join(self.runtime.nodes.worker))
         if self.config.profiling.enabled:
             logger.info("Profiling: %s", self.config.profiling.type)
+
+        # Write initial lockfile with config + SLURM context (fingerprint added after run)
+        write_lockfile(self.runtime.log_dir.parent, self.config)
 
         registry = ProcessRegistry(job_id=self.runtime.job_id)
         stop_event = threading.Event()
