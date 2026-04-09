@@ -94,12 +94,6 @@ class TraceReplayRunner(AIPerfBenchmarkRunner):
             tokenizer_path,
         ]
 
-        # Pass through extra aiperf CLI flags from config
-        for key, value in b.aiperf_args.items():
-            if isinstance(value, bool):
-                if value:
-                    cmd.append(f"--{key}")
-            else:
-                cmd.extend([f"--{key}", str(value)])
+        self.append_aiperf_args(cmd, config)
 
         return cmd

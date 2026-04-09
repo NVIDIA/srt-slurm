@@ -101,7 +101,7 @@ class MooncakeRouterRunner(AIPerfBenchmarkRunner):
         # For HF models, use the model ID directly so transformers downloads it
         tokenizer_path = str(runtime.model_path) if runtime.is_hf_model else "/model"
 
-        return [
+        cmd = [
             "bash",
             self.script_path,
             endpoint,
@@ -111,3 +111,7 @@ class MooncakeRouterRunner(AIPerfBenchmarkRunner):
             str(itl_threshold),
             tokenizer_path,
         ]
+
+        self.append_aiperf_args(cmd, config)
+
+        return cmd

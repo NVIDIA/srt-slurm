@@ -67,14 +67,24 @@ if [ ! -f "${TRACE_FILE}" ]; then
     exit 1
 fi
 
-# Install aiperf if not present
-if ! command -v aiperf &> /dev/null; then
-    echo "Installing aiperf..."
-    pip install aiperf
+# Create isolated aiperf environment (avoids polluting container packages)
+# AIPERF_PACKAGE env var controls the version (e.g., "aiperf>=0.7.0")
+AIPERF_SPEC="${AIPERF_PACKAGE:-aiperf}"
+AIPERF_VENV="/tmp/aiperf-${SLURM_JOB_ID:-$$}"
+
+echo "Setting up aiperf environment: ${AIPERF_SPEC}"
+
+# Install uv if not in container
+if ! command -v uv &> /dev/null; then
+    echo "Installing uv..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.local/bin:$PATH"
 fi
 
-# Install tiktoken if not present (needed for custom tokenizers like Kimi)
-python3 -c "import tiktoken" 2>/dev/null || pip install tiktoken
+uv venv "${AIPERF_VENV}"
+uv pip install -p "${AIPERF_VENV}" "${AIPERF_SPEC}" tiktoken
+export PATH="${AIPERF_VENV}/bin:${PATH}"
+echo "aiperf $(aiperf --version 2>/dev/null || echo 'installed') in ${AIPERF_VENV}"
 
 # Run small benchmark for warmup
 echo "Running warmup..."
