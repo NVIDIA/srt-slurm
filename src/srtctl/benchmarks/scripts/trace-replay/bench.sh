@@ -91,6 +91,9 @@ for C in "${CONCURRENCY_LIST[@]}"; do
     RUN_ARTIFACT_DIR="${ARTIFACT_DIR}/${MODEL_BASE_NAME}_trace_c${C}_${TIMESTAMP}"
     mkdir -p "${RUN_ARTIFACT_DIR}"
 
+    # Disable set -e for aiperf so a failure at one concurrency level
+    # doesn't abort the entire sweep — we want to try all levels.
+    set +e
     aiperf profile \
         -m "${MODEL_NAME}" \
         --tokenizer "${TOKENIZER_PATH}" \
@@ -105,8 +108,8 @@ for C in "${CONCURRENCY_LIST[@]}"; do
         --artifact-dir "${RUN_ARTIFACT_DIR}" \
         "${SERVER_METRICS_ARGS[@]}" \
         --goodput "time_to_first_token:${TTFT_THRESHOLD} inter_token_latency:${ITL_THRESHOLD}"
-
     BENCH_EXIT_CODE=$?
+    set -e
 
     echo "$(date '+%Y-%m-%d %H:%M:%S') - Concurrency ${C} complete (exit code: ${BENCH_EXIT_CODE})"
 
