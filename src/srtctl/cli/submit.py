@@ -41,8 +41,11 @@ from srtctl.core.config import (
     load_config,
     resolve_config_with_defaults,
 )
+from srtctl.core.fingerprint import check_against_fingerprint, diff_fingerprints, format_check_results, format_diff
+from srtctl.core.lockfile import load_lockfile_fingerprint
 from srtctl.core.schema import SrtConfig
 from srtctl.core.status import create_job_record
+from srtctl.core.validation import run_validations_background
 
 console = Console()
 logger = logging.getLogger(__name__)
@@ -399,6 +402,10 @@ def submit_with_orchestrator(
         console.print(f"[dim]📁 Logs:[/] {job_output_dir}/logs")
         console.print(f"[dim]📋 Monitor:[/] tail -f {job_output_dir}/logs/sweep_{job_id}.log")
         console.print(f"[dim]📊 Queue:[/] squeue --job {job_id}")
+
+        # Background validation (non-blocking, fire-and-forget)
+        run_validations_background(config)
+
         return job_id
 
     except subprocess.CalledProcessError as e:
@@ -911,7 +918,53 @@ def main():
         help="Print resolved YAML to stdout instead of writing files",
     )
 
+    # Fingerprint comparison: srtctl diff <path_a> <path_b>
+    diff_parser = subparsers.add_parser("diff", help="Compare fingerprints from two runs")
+    diff_parser.add_argument("path_a", type=Path, help="First output dir or lockfile")
+    diff_parser.add_argument("path_b", type=Path, help="Second output dir or lockfile")
+    diff_parser.add_argument("--verbose", action="store_true", help="Show all package changes")
+
+    # Environment check: srtctl check <path>
+    check_parser = subparsers.add_parser("check", help="Check environment against a fingerprint")
+    check_parser.add_argument("path", type=Path, help="Lockfile or output dir to check against")
+    check_parser.add_argument("--json", action="store_true", dest="json_output", help="Output as JSON")
+
     args = parser.parse_args()
+
+    # Handle diff and check commands first (they don't use -f/config)
+    if args.command == "diff":
+        fp_a = load_lockfile_fingerprint(args.path_a)
+        fp_b = load_lockfile_fingerprint(args.path_b)
+        if fp_a is None or fp_b is None:
+            missing = []
+            if fp_a is None:
+                missing.append(str(args.path_a))
+            if fp_b is None:
+                missing.append(str(args.path_b))
+            console.print(f"[bold red]Could not load fingerprint from:[/] {', '.join(missing)}")
+            sys.exit(1)
+        diff = diff_fingerprints(fp_a, fp_b)
+        console.print(format_diff(diff, verbose=args.verbose))
+        return
+
+    if args.command == "check":
+        import json as json_mod
+
+        ref = load_lockfile_fingerprint(args.path)
+        if ref is None:
+            console.print(f"[bold red]Could not load fingerprint from:[/] {args.path}")
+            sys.exit(1)
+        results = check_against_fingerprint(ref)
+        if args.json_output:
+            console.print(
+                json_mod.dumps(
+                    [{"field": r.field, "status": r.status.value, "message": r.message} for r in results],
+                    indent=2,
+                )
+            )
+        else:
+            console.print(format_check_results(results))
+        sys.exit(1 if results else 0)
 
     # Parse config arg: supports path:selector format for overrides
     config_path, selector = parse_config_arg(args.config)

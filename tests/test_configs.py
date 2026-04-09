@@ -93,6 +93,65 @@ class TestSrtConfigStructure:
         assert total_needed <= total_available
 
 
+class TestModelConfigIdentity:
+    """Tests for optional virtual identity fields on ModelConfig."""
+
+    def test_optional_fields_default_to_none(self):
+        """All identity fields are None when not specified."""
+        from srtctl.core.schema import ModelConfig
+
+        config = ModelConfig(path="/model", container="/c.sqsh", precision="fp8")
+        assert config.name is None
+        assert config.revision is None
+        assert config.container_image is None
+        assert config.container_digest is None
+
+    def test_optional_fields_when_specified(self):
+        """Identity fields are set when provided."""
+        from srtctl.core.schema import ModelConfig
+
+        config = ModelConfig(
+            path="/model",
+            container="/c.sqsh",
+            precision="fp4",
+            name="deepseek-ai/DeepSeek-R1",
+            revision="e4e908c07378",
+            container_image="lmsysorg/sglang:v0.4.6.post1",
+            container_digest="sha256:abc123",
+        )
+        assert config.name == "deepseek-ai/DeepSeek-R1"
+        assert config.revision == "e4e908c07378"
+        assert config.container_image == "lmsysorg/sglang:v0.4.6.post1"
+        assert config.container_digest == "sha256:abc123"
+
+    def test_marshmallow_roundtrip(self):
+        """Schema dump/load preserves identity fields."""
+        from srtctl.core.schema import ModelConfig
+
+        original = ModelConfig(
+            path="/model",
+            container="/c.sqsh",
+            precision="fp4",
+            name="deepseek-ai/DeepSeek-R1",
+            revision="abc123",
+        )
+        schema = ModelConfig.Schema()
+        dumped = schema.dump(original)
+        loaded = schema.load(dumped)
+        assert loaded.name == "deepseek-ai/DeepSeek-R1"
+        assert loaded.revision == "abc123"
+        assert loaded.container_image is None  # was not set
+
+    def test_marshmallow_load_ignores_missing_optional(self):
+        """Loading YAML without identity fields still works."""
+        from srtctl.core.schema import ModelConfig
+
+        data = {"path": "/model", "container": "/c.sqsh", "precision": "fp8"}
+        loaded = ModelConfig.Schema().load(data)
+        assert loaded.name is None
+        assert loaded.revision is None
+
+
 class TestDynamoConfig:
     """Tests for DynamoConfig."""
 

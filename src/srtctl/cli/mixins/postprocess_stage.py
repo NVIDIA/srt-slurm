@@ -28,6 +28,7 @@ import requests
 
 from srtctl.benchmarks.base import SCRIPTS_DIR
 from srtctl.core.config import load_cluster_config
+from srtctl.core.lockfile import write_lockfile
 from srtctl.core.schema import AIAnalysisConfig, S3Config
 from srtctl.core.slurm import start_srun_process
 
@@ -150,6 +151,9 @@ class PostProcessStageMixin:
         Args:
             exit_code: Exit code from the benchmark run
         """
+        # Write lockfile (non-fatal — never blocks job completion)
+        write_lockfile(self.runtime.log_dir.parent, self.config, self.runtime.log_dir)
+
         # Copy config into log directory so it's included in S3 upload
         self._copy_config_to_logs()
 
