@@ -61,7 +61,20 @@ class BenchmarkRunner(ABC):
 
 
 class AIPerfBenchmarkRunner(BenchmarkRunner):
-    """Marker base class for AIPerf-driven benchmarks."""
+    """Base class for AIPerf-driven benchmarks.
+
+    Provides shared aiperf_args handling for subclasses.
+    """
+
+    def append_aiperf_args(self, cmd: list[str], config: SrtConfig) -> list[str]:
+        """Append aiperf_args from config as CLI flags."""
+        for key, value in config.benchmark.aiperf_args.items():
+            if isinstance(value, bool):
+                if value:
+                    cmd.append(f"--{key}")
+            else:
+                cmd.extend([f"--{key}", str(value)])
+        return cmd
 
 
 # Registry of benchmark runners

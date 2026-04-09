@@ -546,6 +546,11 @@ class BenchmarkConfig:
     trace_file: str | None = None  # Path to trace JSONL file (container path, e.g., /traces/dataset.jsonl)
     custom_tokenizer: str | None = None  # Custom tokenizer class (e.g., "module.path.ClassName")
     use_chat_template: bool = True  # Pass --use-chat-template to benchmark (default: true)
+    # aiperf pip install spec (e.g., "aiperf>=0.7.0", "aiperf @ git+https://...@commit")
+    # If set, runs pip install <spec> before benchmarking. Upgrades if already installed.
+    aiperf_package: str | None = None
+    # Extra aiperf CLI flags passed through to bench.sh (e.g., benchmark-duration: 600, workers-max: 200)
+    aiperf_args: dict[str, Any] = field(default_factory=dict)
 
     def get_concurrency_list(self) -> list[int]:
         if self.concurrencies is None:
