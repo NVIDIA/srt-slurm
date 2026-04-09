@@ -151,6 +151,33 @@ def show_config_details(config: SrtConfig) -> None:
         console.print(f"[dim]srun options:[/] {opts}")
 
 
+def validate_setup(srtctl_source: Path) -> None:
+    """Validate that make setup has been run and required binaries exist.
+
+    Checks for NATS, etcd, and compute-arch uv binaries. Raises SystemExit
+    with a clear error message if anything is missing.
+    """
+    missing = []
+
+    configs_dir = srtctl_source / "configs"
+    if not (configs_dir / "nats-server").exists():
+        missing.append("configs/nats-server")
+    if not (configs_dir / "etcd").exists():
+        missing.append("configs/etcd")
+    if not (srtctl_source / "bin" / "uv").exists():
+        missing.append("bin/uv (compute-arch uv)")
+
+    if missing:
+        console.print(f"\n[red bold]ERROR:[/] Required binaries not found in {srtctl_source}:")
+        for m in missing:
+            console.print(f"  [red]✗[/] {m}")
+        console.print("\nRun [bold]make setup ARCH=<compute_arch>[/] first:")
+        console.print(f"  cd {srtctl_source}")
+        console.print("  make setup ARCH=aarch64  [dim]# for GB200/Grace compute nodes[/]")
+        console.print("  make setup ARCH=x86_64   [dim]# for x86_64 compute nodes[/]\n")
+        raise SystemExit(1)
+
+
 def generate_minimal_sbatch_script(
     config: SrtConfig,
     config_path: Path,
@@ -299,6 +326,11 @@ def submit_with_orchestrator(
         console.print()
         show_config_details(config)
         return
+
+    # Validate setup before submitting (not during dry-run)
+    srtctl_root = get_srtslurm_setting("srtctl_root")
+    srtctl_source = Path(srtctl_root) if srtctl_root else Path(__file__).parent.parent.parent.parent
+    validate_setup(srtctl_source)
 
     # Write script to temp file
     fd, script_path = tempfile.mkstemp(suffix=".slurm", prefix="srtctl_", text=True)
