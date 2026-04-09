@@ -78,6 +78,8 @@ python3 -c "import tiktoken" 2>/dev/null || pip install tiktoken
 
 # Run small benchmark for warmup
 echo "Running warmup..."
+WARMUP_DIR="${ARTIFACT_DIR}/warmup"
+mkdir -p "${WARMUP_DIR}"
 aiperf profile \
     -m "${MODEL_NAME}" \
     --tokenizer "${TOKENIZER_PATH}" \
@@ -87,7 +89,8 @@ aiperf profile \
     --ui simple \
     --extra-inputs ignore_eos:true \
     --concurrency 1 \
-    --request-count 5
+    --request-count 5 \
+    --artifact-dir "${WARMUP_DIR}"
 echo "Warmup complete"
 
 # Setup artifact directory
