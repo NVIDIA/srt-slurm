@@ -1,7 +1,7 @@
 name: "gb200-fp4-1k1k-mid-curve"
 
 dynamo:
-  version: 0.8.1
+  hash: 3ad7b7c88ac91f18225824fdc8394f066c9607b6
 
 frontend:
   type: dynamo
@@ -82,6 +82,7 @@ backend:
 
       # Other flags
       stream-interval: 50
+      incremental-streaming-output: true
       decode-log-interval: 1000
       watchdog-timeout: 1000000
       context-length: 2176

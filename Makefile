@@ -49,7 +49,7 @@ setup:
 		aarch64) ARCH_SHORT="arm64" ;; \
 		*) echo "❌ Unsupported architecture: $(ARCH)"; exit 1 ;; \
 	esac; \
-	echo "ℹ️  Dynamo 0.8.0 will be installed from PyPI when workers start"; \
+	echo "ℹ️  Dynamo will be installed from PyPI when workers start"; \
 	echo "⬇️  Downloading NATS ($(NATS_VERSION)) for $$ARCH_SHORT..."; \
 	NATS_DEB="nats-server-$(NATS_VERSION)-$$ARCH_SHORT.deb"; \
 	NATS_URL="https://github.com/nats-io/nats-server/releases/download/$(NATS_VERSION)/$$NATS_DEB"; \
