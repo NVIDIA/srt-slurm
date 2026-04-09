@@ -6,8 +6,8 @@ name: "kimi_k25_nvfp4_ISL1K_OSL1K_ctx1dep4_gen4tep8_batch128_allconc_eplb0_mtp0"
 # Covers all gen4tep8 concurrencies: 4, 192, 360, 668
 
 model:
-  path: "/lustre/fsw/infra_rd_gsw/users/yeswanthk/srt-slurm/models/Kimi-K2.5-NVFP4"
-  container: "/lustre/fsw/infra_rd_gsw/users/yeswanthk/srt-slurm/squash/trtllm-main_aarch-46939060.sqsh"
+  path: "/mnt/lustre01/models/kimi-k2.5-nvfp4"
+  container: "/mnt/lustre01/users/slurm-shared/yeswanthk/squashs/tensorrtllm-runtime-1.1.0-dev.2.sqsh"
   precision: "fp4"
 
 resources:
@@ -33,7 +33,6 @@ backend:
     TRTLLM_ENABLE_PDL: "1"
     TRTLLM_SERVER_DISABLE_GC: "1"
     TRTLLM_WORKER_DISABLE_GC: "1"
-    HF_HOME: "/lustre/fsw/coreai_comparch_infbench/common/hf_cache"
 
   decode_environment:
     ENROOT_ALLOW_DEV: "yes"
@@ -43,7 +42,6 @@ backend:
     TRTLLM_ENABLE_PDL: "1"
     TRTLLM_SERVER_DISABLE_GC: "1"
     TRTLLM_WORKER_DISABLE_GC: "1"
-    HF_HOME: "/lustre/fsw/coreai_comparch_infbench/common/hf_cache"
 
   trtllm_config:
     prefill:
@@ -125,7 +123,7 @@ benchmark:
   type: "sa-bench"
   isl: 1024
   osl: 1024
-  concurrencies: "4 192 360 668"
+  concurrencies: "4x192x360x668"
   req_rate: "inf"
 
 frontend:
