@@ -435,6 +435,45 @@ def submit_with_orchestrator(
         console.print(f"[dim]📋 Monitor:[/] tail -f {job_output_dir}/logs/sweep_{job_id}.log")
         console.print(f"[dim]📊 Queue:[/] squeue --job {job_id}")
 
+        # Show what's being run
+        console.print()
+        console.print("[bold]Running:[/]")
+        console.print(f"  Model:     {config.model.path}")
+        console.print(f"  Container: {config.model.container}")
+        console.print(f"  Backend:   {config.backend_type}")
+        console.print(f"  Benchmark: {config.benchmark.type}")
+
+        # Prompt to add identity if missing
+        has_identity = (
+            hasattr(config, "identity")
+            and config.identity
+            and (
+                (config.identity.model and (config.identity.model.repo or config.identity.model.revision))
+                or config.identity.frameworks
+            )
+        )
+        if has_identity:
+            id_fields = []
+            if config.identity.model and config.identity.model.repo:
+                id_fields.append(f"model={config.identity.model.repo}")
+            if config.identity.model and config.identity.model.revision:
+                id_fields.append(f"rev={config.identity.model.revision[:12]}")
+            for name, ver in (config.identity.frameworks or {}).items():
+                id_fields.append(f"{name}={ver}")
+            console.print(f"  Identity:  {', '.join(id_fields)}")
+        else:
+            console.print()
+            console.print("[yellow]Tip:[/] Add an [bold]identity:[/] block to your recipe for runtime verification.")
+            console.print("[yellow]     This checks that the model, revision, and framework versions")
+            console.print("[yellow]     match what's actually running inside the container.[/]")
+            console.print("[dim]     Example:[/]")
+            console.print("[dim]       identity:[/]")
+            console.print("[dim]         model:[/]")
+            console.print('[dim]           repo: "nvidia/Kimi-K2.5-NVFP4"[/]')
+            console.print('[dim]           revision: "c0285e649c34..."[/]')
+            console.print("[dim]         frameworks:[/]")
+            console.print('[dim]           tensorrt_llm: "1.3.0rc9"[/]')
+
         # Background validation (non-blocking, fire-and-forget)
         run_validations_background(config)
 
