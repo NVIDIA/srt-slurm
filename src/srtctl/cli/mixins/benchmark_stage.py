@@ -101,7 +101,14 @@ class BenchmarkStageMixin:
         self._identity_verification = None
         try:
             fingerprints = collect_worker_fingerprints(self.runtime.log_dir)
-            if fingerprints and self.config.identity:
+            has_identity = self.config.identity and (
+                (
+                    self.config.identity.model
+                    and (self.config.identity.model.repo or self.config.identity.model.revision)
+                )
+                or self.config.identity.frameworks
+            )
+            if fingerprints and has_identity:
                 self._identity_verification = verify_identity(self.config.identity, fingerprints)
                 banner = format_identity_verification(self._identity_verification, self.config.identity)
                 for line in banner.splitlines():
