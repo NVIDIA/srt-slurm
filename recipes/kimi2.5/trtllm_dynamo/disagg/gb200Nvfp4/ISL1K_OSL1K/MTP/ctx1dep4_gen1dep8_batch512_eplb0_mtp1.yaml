@@ -175,7 +175,7 @@ backend:
         speculative_model_dir: "/eagle-model"
 
 extra_mount:
-  - "/mnt/lustre01/users/slurm-shared/yeswanthk/models/Kimi-K2.5-Thinking-Eagle3:/eagle-model"
+  - "kimi-k2.5-eagle3:/eagle-model"
 
 benchmark:
   type: "sa-bench"
