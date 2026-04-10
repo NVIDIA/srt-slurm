@@ -262,6 +262,47 @@ def generate_minimal_sbatch_script(
     return rendered
 
 
+def _print_running_summary(config: SrtConfig, console: Console) -> None:
+    """Print what's being run and identity verification status."""
+    console.print()
+    console.print("[bold]Running:[/]")
+    console.print(f"  Model:     {config.model.path}")
+    console.print(f"  Container: {config.model.container}")
+    console.print(f"  Backend:   {config.backend_type}")
+    console.print(f"  Benchmark: {config.benchmark.type}")
+
+    has_identity = (
+        hasattr(config, "identity")
+        and config.identity
+        and (
+            (config.identity.model and (config.identity.model.repo or config.identity.model.revision))
+            or config.identity.frameworks
+        )
+    )
+    if has_identity:
+        id_fields = []
+        if config.identity.model and config.identity.model.repo:
+            id_fields.append(f"model={config.identity.model.repo}")
+        if config.identity.model and config.identity.model.revision:
+            id_fields.append(f"rev={config.identity.model.revision[:12]}")
+        for name, ver in (config.identity.frameworks or {}).items():
+            id_fields.append(f"{name}={ver}")
+        console.print(f"  Identity:  {', '.join(id_fields)}")
+    else:
+        console.print()
+        console.print("[yellow]Tip:[/] Add an [bold]identity:[/] block to your recipe for runtime verification.")
+        console.print("[yellow]     At job start, srtctl checks that what's inside the container")
+        console.print("[yellow]     matches what you declared. Mismatches produce warnings.[/]")
+        console.print()
+        console.print("[dim]     identity:[/]")
+        console.print("[dim]       model:[/]")
+        console.print('[dim]         repo: "nvidia/Kimi-K2.5-NVFP4"       [/][dim italic]# HuggingFace model ID[/]')
+        console.print('[dim]         revision: "c0285e649c34..."            [/][dim italic]# HF commit SHA[/]')
+        console.print("[dim]       frameworks:                              [/][dim italic]# dynamo + one engine[/]")
+        console.print('[dim]         dynamo: "1.0.0"                        [/][dim italic]# always (ai-dynamo)[/]')
+        console.print('[dim]         tensorrt_llm: "1.3.0rc9"              [/][dim italic]# OR vllm OR sglang[/]')
+
+
 def submit_with_orchestrator(
     config_path: Path,
     config: SrtConfig | None = None,
@@ -328,6 +369,9 @@ def submit_with_orchestrator(
         console.print(Panel(syntax, title="Generated sbatch Script", border_style="cyan"))
         console.print()
         show_config_details(config)
+
+        # Show running summary + identity in dry-run too
+        _print_running_summary(config, console)
         return
 
     # Validate setup before submitting (not during dry-run)
@@ -435,47 +479,7 @@ def submit_with_orchestrator(
         console.print(f"[dim]📋 Monitor:[/] tail -f {job_output_dir}/logs/sweep_{job_id}.log")
         console.print(f"[dim]📊 Queue:[/] squeue --job {job_id}")
 
-        # Show what's being run
-        console.print()
-        console.print("[bold]Running:[/]")
-        console.print(f"  Model:     {config.model.path}")
-        console.print(f"  Container: {config.model.container}")
-        console.print(f"  Backend:   {config.backend_type}")
-        console.print(f"  Benchmark: {config.benchmark.type}")
-
-        # Prompt to add identity if missing
-        has_identity = (
-            hasattr(config, "identity")
-            and config.identity
-            and (
-                (config.identity.model and (config.identity.model.repo or config.identity.model.revision))
-                or config.identity.frameworks
-            )
-        )
-        if has_identity:
-            id_fields = []
-            if config.identity.model and config.identity.model.repo:
-                id_fields.append(f"model={config.identity.model.repo}")
-            if config.identity.model and config.identity.model.revision:
-                id_fields.append(f"rev={config.identity.model.revision[:12]}")
-            for name, ver in (config.identity.frameworks or {}).items():
-                id_fields.append(f"{name}={ver}")
-            console.print(f"  Identity:  {', '.join(id_fields)}")
-        else:
-            console.print()
-            console.print("[yellow]Tip:[/] Add an [bold]identity:[/] block to your recipe for runtime verification.")
-            console.print("[yellow]     At job start, srtctl checks that what's inside the container")
-            console.print("[yellow]     matches what you declared. Mismatches produce warnings.[/]")
-            console.print()
-            console.print("[dim]     identity:[/]")
-            console.print("[dim]       model:[/]")
-            console.print('[dim]         repo: "nvidia/Kimi-K2.5-NVFP4"       [/][dim italic]# HuggingFace model ID[/]')
-            console.print('[dim]         revision: "c0285e649c34..."            [/][dim italic]# HF commit SHA[/]')
-            console.print(
-                "[dim]       frameworks:                              [/][dim italic]# dynamo + one engine[/]"
-            )
-            console.print('[dim]         dynamo: "1.0.0"                        [/][dim italic]# always (ai-dynamo)[/]')
-            console.print('[dim]         tensorrt_llm: "1.3.0rc9"              [/][dim italic]# OR vllm OR sglang[/]')
+        _print_running_summary(config, console)
 
         # Background validation (non-blocking, fire-and-forget)
         run_validations_background(config)
