@@ -199,25 +199,6 @@ def confirm_submission(config_path: Path, config: dict, is_sweep: bool) -> bool:
     ).ask()
 
 
-def ask_run_name_suffix(config_path: Path) -> tuple[bool, str | None]:
-    """Prompt for optional run name suffix; suggest recipe stem (e.g. _agg4_dep8_batch8_nvfp4).
-
-    Returns:
-        (cancelled, suffix): cancelled is True if user pressed Ctrl+C, suffix is the value or None for no suffix
-    """
-    suggested = f"_{config_path.stem}" if config_path.stem else ""
-    answer = questionary.text(
-        "Run name suffix for output dir (e.g. _tep8x1_tep8x3 → outputs/12345_tep8x1_tep8x3). Leave empty for none:",
-        default=suggested,
-        style=STYLE,
-    ).ask()
-    if answer is None:
-        # User pressed Ctrl+C
-        return (True, None)
-    value = (answer or "").strip()
-    return (False, value if value else None)
-
-
 def preview_sbatch(config_path: Path, config: dict) -> None:
     """Preview the generated sbatch script."""
     from srtctl.cli.submit import generate_minimal_sbatch_script
@@ -308,13 +289,6 @@ def run_interactive() -> int:
     console.print()
     display_config_summary(config, title=str(config_path))
 
-    # Ask for run name suffix before the action menu
-    console.print()
-    cancelled, run_name_suffix = ask_run_name_suffix(config_path)
-    if cancelled:
-        console.print("[yellow]Cancelled.[/]")
-        return 0
-
     # Action menu
     while True:
         console.print()
@@ -343,11 +317,6 @@ def run_interactive() -> int:
                 config = yaml.safe_load(f)
             is_sweep = "sweep" in config
             display_config_summary(config, title=str(config_path))
-            console.print()
-            cancelled, run_name_suffix = ask_run_name_suffix(config_path)
-            if cancelled:
-                console.print("[yellow]Cancelled.[/]")
-                return 0
 
         elif action == "preview":
             preview_sbatch(config_path, config)
@@ -382,9 +351,9 @@ def run_interactive() -> int:
 
             try:
                 if is_sweep:
-                    submit_sweep(config_path, dry_run=False, run_name_suffix=run_name_suffix)
+                    submit_sweep(config_path, dry_run=False)
                 else:
-                    submit_single(config_path=config_path, dry_run=False, run_name_suffix=run_name_suffix)
+                    submit_single(config_path=config_path, dry_run=False)
                 console.print("\n[bold green]✅ Submission complete![/]")
                 return 0
             except Exception as e:
