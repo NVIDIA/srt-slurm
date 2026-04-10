@@ -470,22 +470,12 @@ def submit_with_orchestrator(
             console.print("[dim]     identity:[/]")
             console.print("[dim]       model:[/]")
             console.print('[dim]         repo: "nvidia/Kimi-K2.5-NVFP4"       [/][dim italic]# HuggingFace model ID[/]')
+            console.print('[dim]         revision: "c0285e649c34..."            [/][dim italic]# HF commit SHA[/]')
             console.print(
-                '[dim]         revision: "c0285e649c34..."            [/][dim italic]# HF commit SHA (from .cache/huggingface/download/*.metadata)[/]'
+                "[dim]       frameworks:                              [/][dim italic]# dynamo + one engine[/]"
             )
-            console.print(
-                "[dim]       frameworks:                              [/][dim italic]# exact version strings from importlib.metadata[/]"
-            )
-            console.print(
-                '[dim]         dynamo: "1.0.0"                        [/][dim italic]# pip package: ai-dynamo[/]'
-            )
-            console.print(
-                '[dim]         tensorrt_llm: "1.3.0rc9"              [/][dim italic]# pip package: tensorrt-llm[/]'
-            )
-            console.print('[dim]         vllm: "0.8.1"                          [/][dim italic]# pip package: vllm[/]')
-            console.print(
-                '[dim]         sglang: "0.4.6.post1"                  [/][dim italic]# pip package: sglang[/]'
-            )
+            console.print('[dim]         dynamo: "1.0.0"                        [/][dim italic]# always (ai-dynamo)[/]')
+            console.print('[dim]         tensorrt_llm: "1.3.0rc9"              [/][dim italic]# OR vllm OR sglang[/]')
 
         # Background validation (non-blocking, fire-and-forget)
         run_validations_background(config)
