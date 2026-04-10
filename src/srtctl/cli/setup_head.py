@@ -119,11 +119,13 @@ def setup_logging():
     )
 
 
-def start_nats(binary_path: str = "/configs/nats-server") -> subprocess.Popen:
+def start_nats(binary_path: str = "/configs/nats-server", max_payload_mb: int | None = None) -> subprocess.Popen:
     """Start NATS server.
 
     Args:
         binary_path: Path to nats-server binary
+        max_payload_mb: Maximum message payload size in MB, or None for NATS default (1MB).
+            Set to 24+ for disaggregated serving with long ISL (65K+ tokens).
 
     Returns:
         Popen object for the NATS process
@@ -132,14 +134,24 @@ def start_nats(binary_path: str = "/configs/nats-server") -> subprocess.Popen:
         raise FileNotFoundError(f"NATS binary not found: {binary_path}")
 
     # Use /tmp for JetStream storage - avoids "Temporary storage directory" warning
-    # and ensures we're using fast local storage'
+    # and ensures we're using fast local storage
     if os.path.exists("/tmp/nats"):
         shutil.rmtree("/tmp/nats")
     nats_store_dir = "/tmp/nats"
     os.makedirs(nats_store_dir, exist_ok=True)
 
-    logger.info("Starting NATS server...")
-    cmd = [binary_path, "-js", "-sd", nats_store_dir]
+    if max_payload_mb is not None:
+        # Write NATS config with custom max_payload
+        nats_config_path = "/tmp/nats.conf"
+        max_payload_bytes = max_payload_mb * 1024 * 1024
+        with open(nats_config_path, "w") as f:
+            f.write(f"max_payload: {max_payload_bytes}\n")
+            f.write(f"jetstream {{ store_dir: \"{nats_store_dir}\" }}\n")
+        logger.info("Starting NATS server (max_payload: %dMB)...", max_payload_mb)
+        cmd = [binary_path, "-c", nats_config_path]
+    else:
+        logger.info("Starting NATS server...")
+        cmd = [binary_path, "-js", "-sd", nats_store_dir]
 
     proc = subprocess.Popen(
         cmd,
@@ -246,6 +258,12 @@ def main():
         default="/configs/etcd",
         help="Path to etcd binary",
     )
+    parser.add_argument(
+        "--nats-max-payload-mb",
+        type=int,
+        default=None,
+        help="NATS max message payload in MB (default: NATS default 1MB)",
+    )
 
     args = parser.parse_args()
 
@@ -264,7 +282,7 @@ def main():
     etcd_proc = None
 
     try:
-        nats_proc = start_nats(args.nats_binary)
+        nats_proc = start_nats(args.nats_binary, max_payload_mb=args.nats_max_payload_mb)
         etcd_proc = start_etcd(host_ip, args.etcd_binary, log_dir)
 
         # Wait for services
