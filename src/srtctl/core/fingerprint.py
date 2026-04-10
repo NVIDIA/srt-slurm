@@ -246,16 +246,21 @@ def probe_nccl_version() -> ProbeResult:
 
 
 def probe_frameworks() -> ProbeResult:
-    """Get versions of inference frameworks (only detected ones)."""
+    """Get versions of inference frameworks (only detected ones).
+
+    Uses importlib.metadata instead of importing modules directly to avoid
+    loading native CUDA extensions (tensorrt_llm, torch) which fail without
+    GPU context.
+    """
     versions: dict[str, str] = {}
-    for name, cmd in [
-        ("vllm", 'python3 -c "import vllm; print(vllm.__version__)"'),
-        ("sglang", 'python3 -c "import sglang; print(sglang.__version__)"'),
-        ("tensorrt_llm", 'python3 -c "import tensorrt_llm; print(tensorrt_llm.__version__)"'),
-        ("dynamo", "python3 -c \"import importlib.metadata; print(importlib.metadata.version('ai-dynamo'))\""),
-        ("torch", 'python3 -c "import torch; print(torch.__version__)"'),
+    for name, pkg in [
+        ("vllm", "vllm"),
+        ("sglang", "sglang"),
+        ("tensorrt_llm", "tensorrt-llm"),
+        ("torch", "torch"),
+        ("dynamo", "ai-dynamo"),
     ]:
-        v = _run_cmd(cmd)
+        v = _run_cmd(f"python3 -c \"import importlib.metadata; print(importlib.metadata.version('{pkg}'))\"")
         if v:
             versions[name] = v
     return ProbeResult.success(versions)
@@ -779,20 +784,19 @@ def gpu_info():
     return {{'available': True, 'driver': gpus[0]['driver'] if gpus else 'unknown', 'gpus': gpus}}
 
 def framework_versions():
+    # Use importlib.metadata for all packages — avoids loading native CUDA
+    # extensions (tensorrt_llm, torch) which fail without GPU context.
     versions = {{}}
-    for name, mod in [
+    for name, pkg in [
         ('vllm', 'vllm'),
         ('sglang', 'sglang'),
-        ('tensorrt_llm', 'tensorrt_llm'),
+        ('tensorrt_llm', 'tensorrt-llm'),
         ('torch', 'torch'),
+        ('dynamo', 'ai-dynamo'),
     ]:
-        v = run(f'{{PY}} -c "import {{mod}}; print({{mod}}.__version__)"'.format(PY=PY, mod=mod))
+        v = run(f"{{PY}} -c \\"import importlib.metadata; print(importlib.metadata.version('{{pkg}}'))\\"".format(PY=PY, pkg=pkg))
         if v:
             versions[name] = v
-    # dynamo uses ai-dynamo package name
-    v = run(f"{{PY}} -c \\"import importlib.metadata; print(importlib.metadata.version('ai-dynamo'))\\"".format(PY=PY))
-    if v:
-        versions['dynamo'] = v
     return versions
 
 def model_identity(model_path):
