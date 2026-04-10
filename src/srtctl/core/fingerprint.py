@@ -612,6 +612,58 @@ def framework_versions():
             versions[name] = v
     return versions
 
+def container_identity():
+    info = {{}}
+    # Pyxis/enroot: /etc/enroot stores import metadata
+    for p in ['/etc/enroot/image.env', '/etc/enroot/.env']:
+        if Path(p).exists():
+            for line in Path(p).read_text().splitlines():
+                if '=' in line:
+                    k, _, v = line.partition('=')
+                    info[k.strip()] = v.strip().strip('"')
+            break
+    # Docker: inspect labels via /proc/1/cpuset or /.dockerenv
+    if not info and Path('/.dockerenv').exists():
+        info['runtime'] = 'docker'
+    # OCI image digest from /etc/enroot/image-digest if available
+    for p in ['/etc/enroot/image-digest', '/etc/enroot/.image-digest']:
+        if Path(p).exists():
+            info['digest'] = Path(p).read_text().strip()
+            break
+    return info or None
+
+def model_identity(model_path):
+    info = {{}}
+    mp = Path(model_path) if model_path else None
+    if not mp or not mp.exists():
+        return None
+    # HuggingFace: check refs/main for commit SHA
+    for refs_path in [mp / '.huggingface' / 'refs' / 'main', mp / 'refs' / 'main']:
+        if refs_path.exists():
+            info['hf_revision'] = refs_path.read_text().strip()
+            break
+    # HuggingFace: check .huggingface/download_metadata.json
+    meta = mp / '.huggingface' / 'download_metadata.json'
+    if meta.exists():
+        try:
+            m = json.loads(meta.read_text())
+            if 'commit_hash' in m:
+                info['hf_revision'] = m['commit_hash']
+            if 'repo_id' in m:
+                info['hf_repo'] = m['repo_id']
+        except Exception:
+            pass
+    # config.json often has _name_or_path
+    config_json = mp / 'config.json'
+    if config_json.exists():
+        try:
+            cfg = json.loads(config_json.read_text())
+            if '_name_or_path' in cfg:
+                info['model_id'] = cfg['_name_or_path']
+        except Exception:
+            pass
+    return info or None
+
 fp = {{
     'hostname': socket.gethostname(),
     'timestamp': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
@@ -623,6 +675,8 @@ fp = {{
     'torch_version': run('python3 -c "import torch; print(torch.__version__)"') or 'unavailable',
     'nccl_version': run('python3 -c "import torch; print(torch.cuda.nccl.version())"') or 'unavailable',
     'frameworks': framework_versions(),
+    'container': container_identity(),
+    'model': model_identity('/model'),
     'pip_packages': pip_pkgs(),
 }}
 Path('{output_path}').parent.mkdir(parents=True, exist_ok=True)
