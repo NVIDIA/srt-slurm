@@ -644,8 +644,10 @@ class ProfilingConfig:
             phase_key = mode.upper() if mode != "agg" else "AGG"
             if phase_config.start_step is not None:
                 env[f"PROFILE_{phase_key}_START_STEP"] = str(phase_config.start_step)
+                env["VLLM_PROFILER_DELAY_ITERS"] = str(phase_config.start_step)
             if phase_config.stop_step is not None:
                 env[f"PROFILE_{phase_key}_STOP_STEP"] = str(phase_config.stop_step)
+                env["VLLM_PROFILER_MAX_ITERS"] = str(phase_config.stop_step - phase_config.start_step)
 
         if self.is_torch:
             env["SGLANG_TORCH_PROFILER_DIR"] = f"{profile_dir}/{mode}"
