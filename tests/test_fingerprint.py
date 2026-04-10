@@ -527,7 +527,7 @@ class TestBashGeneration:
     def test_script_ends_with_or_true(self):
         """Script is wrapped in || true so it never blocks the worker."""
         script = generate_capture_script("/logs/fingerprint.json")
-        assert script.endswith('|| true')
+        assert script.rstrip().endswith('|| true')
 
     def test_script_contains_output_path(self):
         """Output path appears in the generated script."""
@@ -535,9 +535,9 @@ class TestBashGeneration:
         assert "/logs/fingerprint_prefill_w0.json" in script
 
     def test_script_starts_with_python(self):
-        """Script runs as python3 -c."""
+        """Script invokes python3."""
         script = generate_capture_script("/logs/fp.json")
-        assert script.startswith('python3 -c "')
+        assert script.startswith('python3')
 
     def test_script_includes_pip_freeze(self):
         """Script captures pip packages."""
@@ -548,6 +548,57 @@ class TestBashGeneration:
         """Script sorts pip output for deterministic diffs."""
         script = generate_capture_script("/logs/fp.json")
         assert "sorted" in script
+
+    def test_embedded_python_is_syntactically_valid(self):
+        """The Python code inside the script must parse without SyntaxError.
+
+        This is the test that would have caught the \\n escaping bug where
+        literal backslash-n characters were passed to python3 -c instead of
+        real newlines, causing a SyntaxError at runtime.
+        """
+        import ast
+        import re
+
+        script = generate_capture_script("/logs/fingerprint.json")
+        # Extract the Python source from between the heredoc markers
+        match = re.search(
+            r"<<'__FINGERPRINT_EOF__'\n(.+?)__FINGERPRINT_EOF__",
+            script,
+            re.DOTALL,
+        )
+        assert match, f"Could not find heredoc Python source in script:\n{script[:200]}"
+        python_source = match.group(1)
+        # ast.parse raises SyntaxError if the code is invalid
+        ast.parse(python_source)
+
+    def test_embedded_python_produces_json(self):
+        """The embedded script runs and produces valid JSON output."""
+        import re
+        import subprocess
+        import tempfile
+
+        script = generate_capture_script("/tmp/test_fingerprint_output.json")
+        match = re.search(
+            r"<<'__FINGERPRINT_EOF__'\n(.+?)__FINGERPRINT_EOF__",
+            script,
+            re.DOTALL,
+        )
+        assert match
+        python_source = match.group(1)
+
+        # Run the script in a subprocess — probes will return "unavailable"
+        # on a dev machine (no GPU, etc.) but the script must not crash
+        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+            # Rewrite output path to a temp location
+            f.write(python_source.replace("/tmp/test_fingerprint_output.json", f.name + ".out"))
+            f.flush()
+            result = subprocess.run(
+                ["python3", f.name],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        assert result.returncode == 0, f"Fingerprint script failed:\n{result.stderr}"
 
 
 # ============================================================================

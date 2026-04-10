@@ -434,14 +434,10 @@ def diff_fingerprints(a: dict[str, Any], b: dict[str, Any]) -> FingerprintDiff:
                 )
         elif in_a and not in_b:
             removed += 1
-            package_diffs.append(
-                PackageDiff(package=pkg, status=CheckStatus.MISSING, version_a=pkgs_a[pkg])
-            )
+            package_diffs.append(PackageDiff(package=pkg, status=CheckStatus.MISSING, version_a=pkgs_a[pkg]))
         else:
             added += 1
-            package_diffs.append(
-                PackageDiff(package=pkg, status=CheckStatus.EXTRA, version_b=pkgs_b[pkg])
-            )
+            package_diffs.append(PackageDiff(package=pkg, status=CheckStatus.EXTRA, version_b=pkgs_b[pkg]))
 
     return FingerprintDiff(
         field_changes=field_changes,
@@ -573,51 +569,54 @@ def generate_capture_script(output_path: str) -> str:
     Returns:
         Bash command string safe for inclusion in a preamble chain.
     """
-    # We inline the capture as a Python -c script to avoid depending on
-    # srtctl being installed inside the container
-    return (
-        f'python3 -c "'
-        "import json, subprocess, platform, socket, sys;"
-        "from pathlib import Path;"
-        "from datetime import datetime, timezone;"
-        ""
-        "def run(cmd, timeout=5):\\n"
-        "    try:\\n"
-        "        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)\\n"
-        "        return r.stdout.strip() if r.returncode == 0 else None\\n"
-        "    except Exception:\\n"
-        "        return None\\n"
-        ""
-        "def pip_pkgs():\\n"
-        "    out = run('pip freeze')\\n"
-        "    if not out: return []\\n"
-        "    return sorted([l.strip() for l in out.splitlines() if l.strip()], key=lambda s: s.lower())\\n"
-        ""
-        "def gpu_info():\\n"
-        "    out = run('nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader')\\n"
-        "    if not out: return {'available': False}\\n"
-        "    gpus = []\\n"
-        "    for line in out.splitlines():\\n"
-        "        parts = [p.strip() for p in line.split(',')]\\n"
-        "        if len(parts) >= 3: gpus.append({'name': parts[0], 'driver': parts[1], 'memory': parts[2]})\\n"
-        "    return {'available': True, 'driver': gpus[0]['driver'] if gpus else 'unknown', 'gpus': gpus}\\n"
-        ""
-        "fp = {"
-        "'hostname': socket.gethostname(),"
-        "'timestamp': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),"
-        "'arch': platform.machine(),"
-        "'os': next((l.split('=',1)[1].strip('\\\"') for l in Path('/etc/os-release').read_text().splitlines() if l.startswith('PRETTY_NAME=')), platform.platform()) if Path('/etc/os-release').exists() else platform.platform(),"
-        "'gpu': gpu_info(),"
-        "'python_version': platform.python_version(),"
-        "'cuda_version': run('nvcc --version 2>/dev/null | grep release') or 'unavailable',"
-        "'torch_version': run('python3 -c \\\"import torch; print(torch.__version__)\\\"') or 'unavailable',"
-        "'nccl_version': run('python3 -c \\\"import torch; print(torch.cuda.nccl.version())\\\"') or 'unavailable',"
-        "'pip_packages': pip_pkgs(),"
-        "};"
-        f"Path('{output_path}').parent.mkdir(parents=True, exist_ok=True);"
-        f"Path('{output_path}').write_text(json.dumps(fp, indent=2) + '\\n')"
-        f'" || true'
-    )
+    # We write a temp Python script and execute it, rather than using
+    # python3 -c with inline code. This avoids escaping nightmares when
+    # the command passes through bash → srun → bash → python.
+    script = f"""\
+import json, subprocess, platform, socket, sys
+from pathlib import Path
+from datetime import datetime, timezone
+
+def run(cmd, timeout=5):
+    try:
+        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+        return r.stdout.strip() if r.returncode == 0 else None
+    except Exception:
+        return None
+
+def pip_pkgs():
+    out = run('pip freeze')
+    if not out: return []
+    return sorted([l.strip() for l in out.splitlines() if l.strip()], key=lambda s: s.lower())
+
+def gpu_info():
+    out = run('nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader')
+    if not out: return {{'available': False}}
+    gpus = []
+    for line in out.splitlines():
+        parts = [p.strip() for p in line.split(',')]
+        if len(parts) >= 3:
+            gpus.append({{'name': parts[0], 'driver': parts[1], 'memory': parts[2]}})
+    return {{'available': True, 'driver': gpus[0]['driver'] if gpus else 'unknown', 'gpus': gpus}}
+
+fp = {{
+    'hostname': socket.gethostname(),
+    'timestamp': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+    'arch': platform.machine(),
+    'os': next((l.split('=',1)[1].strip('"') for l in Path('/etc/os-release').read_text().splitlines() if l.startswith('PRETTY_NAME=')), platform.platform()) if Path('/etc/os-release').exists() else platform.platform(),
+    'gpu': gpu_info(),
+    'python_version': platform.python_version(),
+    'cuda_version': run('nvcc --version 2>/dev/null | grep release') or 'unavailable',
+    'torch_version': run('python3 -c "import torch; print(torch.__version__)"') or 'unavailable',
+    'nccl_version': run('python3 -c "import torch; print(torch.cuda.nccl.version())"') or 'unavailable',
+    'pip_packages': pip_pkgs(),
+}}
+Path('{output_path}').parent.mkdir(parents=True, exist_ok=True)
+Path('{output_path}').write_text(json.dumps(fp, indent=2) + '\\n')
+"""
+    # Use a heredoc to write the script to a temp file, then execute it.
+    # This is immune to quoting/escaping issues in the bash → srun chain.
+    return f"python3 <(cat <<'__FINGERPRINT_EOF__'\n{script}__FINGERPRINT_EOF__\n) || true"
 
 
 # ============================================================================
