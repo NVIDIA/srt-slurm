@@ -72,6 +72,22 @@ def collect_slurm_context() -> dict[str, Any]:
     if srtctl_root:
         ctx["srtctl_root"] = srtctl_root
 
+    # srt-slurm git commit (what version of the tool generated this lockfile)
+    try:
+        import subprocess
+
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            cwd=srtctl_root or None,
+        )
+        if result.returncode == 0:
+            ctx["srtctl_commit"] = result.stdout.strip()
+    except Exception:
+        pass
+
     return ctx
 
 
