@@ -361,6 +361,16 @@ def submit_with_orchestrator(
         runtime_config_filename=runtime_config_filename,
     )
 
+    # Identity validation (inline, <1s) — runs for both dry-run and submit
+    if hasattr(config, "identity") and config.identity and config.identity.model and config.identity.model.repo:
+        from srtctl.core.validation import validate_hf_model
+
+        hf_result = validate_hf_model(config.identity.model.repo, config.identity.model.revision)
+        if hf_result.ok:
+            console.print(f"[green]✓[/] HF model: {hf_result.message}")
+        else:
+            console.print(f"[yellow]⚠ HF model: {hf_result.message}[/]")
+
     if dry_run:
         console.print()
         console.print(
@@ -390,16 +400,6 @@ def submit_with_orchestrator(
     with os.fdopen(fd, "w") as f:
         f.write(script_content)
     os.chmod(script_path, 0o755)
-
-    # Pre-submit identity validation (inline, <1s)
-    if hasattr(config, "identity") and config.identity and config.identity.model and config.identity.model.repo:
-        from srtctl.core.validation import validate_hf_model
-
-        hf_result = validate_hf_model(config.identity.model.repo, config.identity.model.revision)
-        if hf_result.ok:
-            console.print(f"[green]✓[/] HF model: {hf_result.message}")
-        else:
-            console.print(f"[yellow]⚠ HF model: {hf_result.message}[/]")
 
     console.print(f"[bold cyan]🚀 Submitting:[/] {config.name}")
     logging.debug(f"Script: {script_path}")
