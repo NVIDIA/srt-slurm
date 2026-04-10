@@ -599,6 +599,19 @@ def gpu_info():
             gpus.append({{'name': parts[0], 'driver': parts[1], 'memory': parts[2]}})
     return {{'available': True, 'driver': gpus[0]['driver'] if gpus else 'unknown', 'gpus': gpus}}
 
+def framework_versions():
+    versions = {{}}
+    for name, cmd in [
+        ('vllm', 'python3 -c "import vllm; print(vllm.__version__)"'),
+        ('sglang', 'python3 -c "import sglang; print(sglang.__version__)"'),
+        ('tensorrt_llm', 'python3 -c "import tensorrt_llm; print(tensorrt_llm.__version__)"'),
+        ('dynamo', 'python3 -c "import dynamo; print(dynamo.__version__)"'),
+    ]:
+        v = run(cmd)
+        if v:
+            versions[name] = v
+    return versions
+
 fp = {{
     'hostname': socket.gethostname(),
     'timestamp': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
@@ -609,6 +622,7 @@ fp = {{
     'cuda_version': run('nvcc --version 2>/dev/null | grep release') or 'unavailable',
     'torch_version': run('python3 -c "import torch; print(torch.__version__)"') or 'unavailable',
     'nccl_version': run('python3 -c "import torch; print(torch.cuda.nccl.version())"') or 'unavailable',
+    'frameworks': framework_versions(),
     'pip_packages': pip_pkgs(),
 }}
 Path('{output_path}').parent.mkdir(parents=True, exist_ok=True)

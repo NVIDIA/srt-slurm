@@ -1,0 +1,50 @@
+name: "kimi-k25-mocker-trace-agg"
+
+slurm:
+  time_limit: "00:15:00"
+
+model:
+  path: "kimi-k25-nvfp4"
+  name: "nvidia/Kimi-K2.5-NVFP4"  # HuggingFace model ID (virtual identity for reproducibility)
+  container: "trtllm-runtime"
+  container_image: "gitlab-master.nvidia.com:5005/dl/ai-dynamo/dynamo:56f877977-trtllm-arm64"  # pullable Docker URI
+  precision: "fp4"
+
+resources:
+  gpu_type: "gb200"
+  gpus_per_node: 4
+  agg_nodes: 1
+  agg_workers: 1
+
+extra_mount:
+  - "/lustre/fsw/coreai_tritoninference_triton3/aflowers/srt-slurm/traces:/traces"
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+
+backend:
+  type: mocker
+  speedup_ratio: 100
+  engine_type: vllm
+
+  mocker_config:
+    aggregated:
+      num-gpu-blocks-override: 8192
+      max-num-seqs: 128
+      max-num-batched-tokens: 16384
+
+benchmark:
+  type: trace-replay
+  trace_file: /traces/together-ai-basic-no-delays_119k/dataset.jsonl
+  concurrencies: [4]
+  ttft_threshold_ms: 3000
+  itl_threshold_ms: 7
+  aiperf_package: "aiperf>=0.7.0"
+
+health_check:
+  max_attempts: 60
+  interval_seconds: 5
+
+dynamo:
+  install: false
