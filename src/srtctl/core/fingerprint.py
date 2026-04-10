@@ -580,21 +580,30 @@ def check_against_fingerprint(
 # ============================================================================
 
 
+@dataclass
+class IdentityCheckResult:
+    """Result of a single identity check."""
+
+    field: str
+    passed: bool
+    message: str
+
+
 def verify_identity(
     identity: Any,
     fingerprints: dict[str, Any],
-) -> list[str]:
+) -> list[IdentityCheckResult]:
     """Compare recipe identity block against collected runtime fingerprints.
 
-    Returns a list of warning messages. Empty list means everything matches.
+    Returns a list of check results (both passes and failures).
 
     Args:
         identity: IdentityConfig from the recipe (has .model and .frameworks)
         fingerprints: dict of worker_name -> fingerprint dict
     """
-    warnings: list[str] = []
+    results: list[IdentityCheckResult] = []
     if not fingerprints:
-        return warnings
+        return results
 
     # Use the first worker's fingerprint for verification (they all run in the same container)
     fp = next(iter(fingerprints.values()))
@@ -605,73 +614,97 @@ def verify_identity(
 
         if identity.model.repo:
             fp_repo = fp_model.get("hf_repo") or fp_model.get("model_id")
-            if fp_repo and identity.model.repo != fp_repo:
-                warnings.append(f"Model repo mismatch: recipe says '{identity.model.repo}', runtime has '{fp_repo}'")
-            elif not fp_repo:
-                warnings.append(
-                    f"Model repo '{identity.model.repo}' declared in recipe but "
-                    f"could not be verified (no HF metadata found at /model)"
+            if fp_repo and identity.model.repo == fp_repo:
+                results.append(IdentityCheckResult("model.repo", True, f"{identity.model.repo}"))
+            elif fp_repo:
+                results.append(
+                    IdentityCheckResult(
+                        "model.repo",
+                        False,
+                        f"expected '{identity.model.repo}', got '{fp_repo}'",
+                    )
+                )
+            else:
+                results.append(
+                    IdentityCheckResult(
+                        "model.repo",
+                        False,
+                        f"'{identity.model.repo}' declared but no HF metadata found at /model",
+                    )
                 )
 
         if identity.model.revision:
             fp_rev = fp_model.get("hf_revision")
-            if fp_rev and not fp_rev.startswith(identity.model.revision):
-                warnings.append(
-                    f"Model revision mismatch: recipe says '{identity.model.revision[:12]}', "
-                    f"runtime has '{fp_rev[:12]}'"
+            if fp_rev and fp_rev.startswith(identity.model.revision):
+                results.append(IdentityCheckResult("model.revision", True, f"{fp_rev[:12]}"))
+            elif fp_rev:
+                results.append(
+                    IdentityCheckResult(
+                        "model.revision",
+                        False,
+                        f"expected '{identity.model.revision[:12]}', got '{fp_rev[:12]}'",
+                    )
                 )
-            elif not fp_rev:
-                warnings.append(
-                    f"Model revision '{identity.model.revision[:12]}' declared in recipe but "
-                    f"could not be verified (no HF revision found at /model)"
+            else:
+                results.append(
+                    IdentityCheckResult(
+                        "model.revision",
+                        False,
+                        f"'{identity.model.revision[:12]}' declared but no HF revision found at /model",
+                    )
                 )
 
     # --- Framework versions ---
     fp_frameworks = fp.get("frameworks") or {}
     for name, expected_version in (identity.frameworks or {}).items():
         actual_version = fp_frameworks.get(name)
-        if actual_version and actual_version != expected_version:
-            warnings.append(f"Framework mismatch: {name} expected '{expected_version}', got '{actual_version}'")
-        elif not actual_version:
-            warnings.append(
-                f"Framework '{name}' version '{expected_version}' declared in recipe but not detected in runtime"
+        if actual_version and actual_version == expected_version:
+            results.append(IdentityCheckResult(f"frameworks.{name}", True, f"{actual_version}"))
+        elif actual_version:
+            results.append(
+                IdentityCheckResult(
+                    f"frameworks.{name}",
+                    False,
+                    f"expected '{expected_version}', got '{actual_version}'",
+                )
+            )
+        else:
+            results.append(
+                IdentityCheckResult(
+                    f"frameworks.{name}",
+                    False,
+                    f"'{expected_version}' declared but not detected in runtime",
+                )
             )
 
-    return warnings
+    return results
 
 
-def format_identity_verification(warnings: list[str], identity: Any) -> str:
-    """Format identity verification results as a banner for the sweep log.
-
-    Args:
-        warnings: list of warning strings from verify_identity
-        identity: IdentityConfig from the recipe
-    """
+def format_identity_verification(results: list[IdentityCheckResult], identity: Any) -> str:
+    """Format identity verification results as a banner for the sweep log."""
     lines: list[str] = []
     lines.append("=" * 60)
     lines.append("Identity Verification")
     lines.append("=" * 60)
 
-    if not warnings:
-        # Show what was checked
-        checks = []
-        if identity.model and identity.model.repo:
-            checks.append(f"  model.repo: {identity.model.repo}")
-        if identity.model and identity.model.revision:
-            checks.append(f"  model.revision: {identity.model.revision[:12]}")
-        for name, ver in (identity.frameworks or {}).items():
-            checks.append(f"  {name}: {ver}")
-        if checks:
-            lines.append("All checks passed:")
-            lines.extend(checks)
-        else:
-            lines.append("No identity fields declared — nothing to verify.")
-    else:
-        lines.append(f"WARNING: {len(warnings)} mismatch(es) detected!")
-        lines.append("")
-        for w in warnings:
-            lines.append(f"  ⚠ {w}")
+    if not results:
+        lines.append("No identity fields declared — nothing to verify.")
+        lines.append("=" * 60)
+        return "\n".join(lines)
 
+    passes = [r for r in results if r.passed]
+    fails = [r for r in results if not r.passed]
+
+    for r in passes:
+        lines.append(f"  OK  {r.field}: {r.message}")
+    for r in fails:
+        lines.append(f"  !!  {r.field}: {r.message}")
+
+    lines.append("")
+    if fails:
+        lines.append(f"Result: {len(passes)} passed, {len(fails)} FAILED")
+    else:
+        lines.append(f"Result: {len(passes)} passed, all OK")
     lines.append("=" * 60)
     return "\n".join(lines)
 
@@ -766,12 +799,25 @@ def model_identity(model_path):
     mp = Path(model_path) if model_path else None
     if not mp or not mp.exists():
         return None
-    # HuggingFace: check refs/main for commit SHA
+    # HuggingFace snapshot_download: refs/main has commit SHA
     for refs_path in [mp / '.huggingface' / 'refs' / 'main', mp / 'refs' / 'main']:
         if refs_path.exists():
             info['hf_revision'] = refs_path.read_text().strip()
             break
-    # HuggingFace: check .huggingface/download_metadata.json
+    # HuggingFace hf download --local-dir: .cache/huggingface/download/*.metadata
+    # Line 1 of each .metadata file is the commit hash
+    if 'hf_revision' not in info:
+        cache_dl = mp / '.cache' / 'huggingface' / 'download'
+        if cache_dl.is_dir():
+            for meta_file in sorted(cache_dl.glob('*.metadata')):
+                try:
+                    first_line = meta_file.read_text().splitlines()[0].strip()
+                    if len(first_line) == 40 and all(c in '0123456789abcdef' for c in first_line):
+                        info['hf_revision'] = first_line
+                        break
+                except Exception:
+                    pass
+    # HuggingFace: check .huggingface/download_metadata.json (older format)
     meta = mp / '.huggingface' / 'download_metadata.json'
     if meta.exists():
         try:

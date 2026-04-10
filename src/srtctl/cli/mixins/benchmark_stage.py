@@ -100,8 +100,8 @@ class BenchmarkStageMixin:
         try:
             fingerprints = collect_worker_fingerprints(self.runtime.log_dir)
             if fingerprints and hasattr(self.config, "identity"):
-                id_warnings = verify_identity(self.config.identity, fingerprints)
-                banner = format_identity_verification(id_warnings, self.config.identity)
+                results = verify_identity(self.config.identity, fingerprints)
+                banner = format_identity_verification(results, self.config.identity)
                 for line in banner.splitlines():
                     logger.info(line)
         except Exception as e:
