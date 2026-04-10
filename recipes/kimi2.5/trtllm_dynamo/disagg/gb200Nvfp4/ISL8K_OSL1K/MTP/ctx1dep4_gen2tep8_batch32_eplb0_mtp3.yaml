@@ -6,8 +6,8 @@ name: "kimi_k25_nvfp4_ISL8K_OSL1K_ctx1dep4_gen2tep8_batch32_eplb0_mtp3"
 # concurrency: 90
 
 model:
-  path: "/mnt/lustre01/models/kimi-k2.5-nvfp4"
-  container: "/mnt/lustre01/users/slurm-shared/yeswanthk/squashs/tensorrtllm-runtime-1.1.0-dev.2.sqsh"
+  path: "kimi-k2.5-nvfp4"
+  container: "tensorrtllm-runtime:1.1.0-dev.2"
   precision: "fp4"
 
 resources:
