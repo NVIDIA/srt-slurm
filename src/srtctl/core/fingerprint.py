@@ -647,7 +647,7 @@ def verify_identity(
                     )
                 )
 
-        if identity.model.revision:
+        if identity.model.revision and len(identity.model.revision) >= 7:
             fp_rev = fp_model.get("hf_revision")
             if fp_rev and fp_rev.startswith(identity.model.revision):
                 results.append(IdentityCheckResult("model.revision", True, f"{fp_rev[:12]}"))
@@ -878,8 +878,10 @@ fp = {{
 Path('{output_path}').parent.mkdir(parents=True, exist_ok=True)
 Path('{output_path}').write_text(json.dumps(fp, indent=2) + '\\n')
 """
-    # Use a heredoc to write the script to a temp file, then execute it.
+    # Use a heredoc via process substitution to pass the script to python3.
     # This is immune to quoting/escaping issues in the bash → srun chain.
+    # NOTE: <(...) requires bash (not POSIX sh/dash). srun containers use bash.
+    # The || true suffix means non-bash shells silently skip fingerprinting.
     return f"python3 <(cat <<'__FINGERPRINT_EOF__'\n{script}__FINGERPRINT_EOF__\n) || true"
 
 

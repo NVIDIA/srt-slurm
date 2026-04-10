@@ -41,7 +41,13 @@ from srtctl.core.config import (
     load_config,
     resolve_config_with_defaults,
 )
-from srtctl.core.fingerprint import check_against_fingerprint, diff_fingerprints, format_check_results, format_diff
+from srtctl.core.fingerprint import (
+    capture_fingerprint,
+    check_against_fingerprint,
+    diff_fingerprints,
+    format_check_results,
+    format_diff,
+)
 from srtctl.core.lockfile import load_lockfile_fingerprints
 from srtctl.core.schema import SrtConfig
 from srtctl.core.status import create_job_record
@@ -1053,10 +1059,11 @@ def main():
             console.print(f"[bold red]Could not load fingerprints from:[/] {args.path}")
             sys.exit(1)
 
-        # Check each worker's fingerprint against current environment
+        # Capture current environment once, reuse for all worker checks
+        current_fp = capture_fingerprint()
         all_results = []
         for worker in sorted(fps.keys()):
-            results = check_against_fingerprint(fps[worker])
+            results = check_against_fingerprint(fps[worker], current_fp)
             if results:
                 all_results.extend(results)
                 console.print(f"\n[bold]{worker}:[/]")

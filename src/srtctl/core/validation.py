@@ -43,9 +43,13 @@ def validate_local_path(name: str, path: str) -> ValidationResult:
         if not p.exists():
             return ValidationResult(name, False, f"not found: {path}")
         if p.is_dir():
-            file_count = sum(1 for _ in p.rglob("*") if _.is_file())
-            total_gb = sum(f.stat().st_size for f in p.rglob("*") if f.is_file()) / 1e9
-            return ValidationResult(name, True, f"{file_count} files, {total_gb:.1f}GB")
+            file_count = 0
+            total_bytes = 0
+            for f in p.rglob("*"):
+                if f.is_file():
+                    file_count += 1
+                    total_bytes += f.stat().st_size
+            return ValidationResult(name, True, f"{file_count} files, {total_bytes / 1e9:.1f}GB")
         size_gb = p.stat().st_size / 1e9
         return ValidationResult(name, True, f"{size_gb:.1f}GB")
     except Exception as e:
