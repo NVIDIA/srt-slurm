@@ -200,10 +200,11 @@ class TestRunAllValidations:
                 "path": "/nonexistent",
                 "container": "/nonexistent.sqsh",
                 "precision": "fp8",
-                "name": "some/model",
-                "container_image": "some/image:tag",
             },
             "resources": {"gpu_type": "h100", "gpus_per_node": 8, "prefill_nodes": 1, "decode_nodes": 1},
+            "identity": {
+                "model": {"repo": "some/model"},
+            },
         })
 
         with patch("srtctl.core.validation.requests.head", side_effect=requests.ConnectionError()):
@@ -213,7 +214,6 @@ class TestRunAllValidations:
         assert "model_path" in check_names
         assert "container_path" in check_names
         assert "hf_model" in check_names
-        assert "docker_image" in check_names
 
 
 # ============================================================================

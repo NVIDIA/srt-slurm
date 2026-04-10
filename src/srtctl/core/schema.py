@@ -385,12 +385,6 @@ class ModelConfig:
     container: str
     precision: str
 
-    # Virtual identity (optional, for reproducibility and lockfile)
-    name: str | None = None  # HuggingFace model ID, e.g. "deepseek-ai/DeepSeek-R1"
-    revision: str | None = None  # HuggingFace git commit SHA
-    container_image: str | None = None  # Docker image tag, e.g. "lmsysorg/sglang:v0.4.6"
-    container_digest: str | None = None  # Docker manifest digest, e.g. "sha256:abc..."
-
     Schema: ClassVar[type[Schema]] = Schema
 
 

@@ -93,63 +93,53 @@ class TestSrtConfigStructure:
         assert total_needed <= total_available
 
 
-class TestModelConfigIdentity:
-    """Tests for optional virtual identity fields on ModelConfig."""
+class TestIdentityConfig:
+    """Tests for the identity block (virtual identity for runtime verification)."""
 
-    def test_optional_fields_default_to_none(self):
-        """All identity fields are None when not specified."""
-        from srtctl.core.schema import ModelConfig
+    def test_defaults_to_empty(self):
+        """IdentityConfig has empty defaults."""
+        from srtctl.core.schema import IdentityConfig
 
-        config = ModelConfig(path="/model", container="/c.sqsh", precision="fp8")
-        assert config.name is None
-        assert config.revision is None
-        assert config.container_image is None
-        assert config.container_digest is None
+        config = IdentityConfig()
+        assert config.model.repo is None
+        assert config.model.revision is None
+        assert config.frameworks == {}
 
-    def test_optional_fields_when_specified(self):
-        """Identity fields are set when provided."""
-        from srtctl.core.schema import ModelConfig
+    def test_with_values(self):
+        """IdentityConfig stores model and framework info."""
+        from srtctl.core.schema import IdentityConfig, IdentityModelConfig
 
-        config = ModelConfig(
-            path="/model",
-            container="/c.sqsh",
-            precision="fp4",
-            name="deepseek-ai/DeepSeek-R1",
-            revision="e4e908c07378",
-            container_image="lmsysorg/sglang:v0.4.6.post1",
-            container_digest="sha256:abc123",
+        config = IdentityConfig(
+            model=IdentityModelConfig(repo="nvidia/Kimi-K2.5-NVFP4", revision="abc123"),
+            frameworks={"dynamo": "1.0.0", "tensorrt_llm": "1.3.0rc9"},
         )
-        assert config.name == "deepseek-ai/DeepSeek-R1"
-        assert config.revision == "e4e908c07378"
-        assert config.container_image == "lmsysorg/sglang:v0.4.6.post1"
-        assert config.container_digest == "sha256:abc123"
+        assert config.model.repo == "nvidia/Kimi-K2.5-NVFP4"
+        assert config.model.revision == "abc123"
+        assert config.frameworks["dynamo"] == "1.0.0"
+        assert config.frameworks["tensorrt_llm"] == "1.3.0rc9"
 
     def test_marshmallow_roundtrip(self):
         """Schema dump/load preserves identity fields."""
-        from srtctl.core.schema import ModelConfig
+        from srtctl.core.schema import IdentityConfig, IdentityModelConfig
 
-        original = ModelConfig(
-            path="/model",
-            container="/c.sqsh",
-            precision="fp4",
-            name="deepseek-ai/DeepSeek-R1",
-            revision="abc123",
+        original = IdentityConfig(
+            model=IdentityModelConfig(repo="nvidia/Kimi-K2.5-NVFP4", revision="abc123"),
+            frameworks={"dynamo": "1.0.0"},
         )
-        schema = ModelConfig.Schema()
+        schema = IdentityConfig.Schema()
         dumped = schema.dump(original)
         loaded = schema.load(dumped)
-        assert loaded.name == "deepseek-ai/DeepSeek-R1"
-        assert loaded.revision == "abc123"
-        assert loaded.container_image is None  # was not set
+        assert loaded.model.repo == "nvidia/Kimi-K2.5-NVFP4"
+        assert loaded.frameworks["dynamo"] == "1.0.0"
 
-    def test_marshmallow_load_ignores_missing_optional(self):
-        """Loading YAML without identity fields still works."""
+    def test_model_config_is_clean(self):
+        """ModelConfig has no virtual identity fields (moved to IdentityConfig)."""
         from srtctl.core.schema import ModelConfig
 
-        data = {"path": "/model", "container": "/c.sqsh", "precision": "fp8"}
-        loaded = ModelConfig.Schema().load(data)
-        assert loaded.name is None
-        assert loaded.revision is None
+        config = ModelConfig(path="/model", container="/c.sqsh", precision="fp8")
+        assert not hasattr(config, "name")
+        assert not hasattr(config, "container_image")
+        assert not hasattr(config, "container_digest")
 
 
 class TestDynamoConfig:

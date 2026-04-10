@@ -5,9 +5,7 @@ slurm:
 
 model:
   path: "kimi-k25-nvfp4"
-  name: "nvidia/Kimi-K2.5-NVFP4"  # HuggingFace model ID (virtual identity for reproducibility)
   container: "trtllm-runtime"
-  container_image: "gitlab-master.nvidia.com:5005/dl/ai-dynamo/dynamo:56f877977-trtllm-arm64"  # pullable Docker URI
   precision: "fp4"
 
 resources:
