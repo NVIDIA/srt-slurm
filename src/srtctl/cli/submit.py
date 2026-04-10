@@ -290,9 +290,12 @@ def _print_running_summary(config: SrtConfig, console: Console) -> None:
         console.print(f"  Identity:  {', '.join(id_fields)}")
     else:
         console.print()
-        console.print("[yellow]Tip:[/] Add an [bold]identity:[/] block to your recipe for runtime verification.")
-        console.print("[yellow]     At job start, srtctl checks that what's inside the container")
-        console.print("[yellow]     matches what you declared. Mismatches produce warnings.[/]")
+        console.print(
+            "[yellow]Tip:[/] Add an [bold]identity:[/] block to your recipe so others can replicate your results."
+        )
+        console.print("[yellow]     Without it, someone reading this recipe can't tell which exact model[/]")
+        console.print("[yellow]     weights or framework versions produced the benchmark numbers.[/]")
+        console.print("[yellow]     At job start, srtctl verifies the runtime matches your declaration.[/]")
         console.print()
         console.print("[dim]     identity:[/]")
         console.print("[dim]       model:[/]")
