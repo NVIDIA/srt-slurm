@@ -45,7 +45,6 @@ from srtctl.core.fingerprint import check_against_fingerprint, diff_fingerprints
 from srtctl.core.lockfile import load_lockfile_fingerprints
 from srtctl.core.schema import SrtConfig
 from srtctl.core.status import create_job_record
-from srtctl.core.validation import run_validations_background
 
 console = Console()
 logger = logging.getLogger(__name__)
@@ -487,9 +486,6 @@ def submit_with_orchestrator(
         console.print(f"[dim]📊 Queue:[/] squeue --job {job_id}")
 
         _print_running_summary(config, console)
-
-        # Background validation (non-blocking, fire-and-forget)
-        run_validations_background(config)
 
         return job_id
 
