@@ -1,0 +1,82 @@
+srt-slurm
+Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This product includes software developed at NVIDIA Corporation.
+
+Licensed under the Apache License, Version 2.0. See LICENSE for details.
+
+===============================================================================
+THIRD-PARTY SOFTWARE NOTICES AND INFORMATION
+===============================================================================
+
+This project incorporates components from the following third-party projects.
+Their licenses are reproduced in THIRD_PARTY_LICENSES.md.
+
+-------------------------------------------------------------------------------
+PyYAML (>= 6.0)
+Copyright (c) 2017-2021 Ingy dot Net
+Copyright (c) 2006-2016 Kirill Simonov
+License: MIT
+https://github.com/yaml/pyyaml
+
+-------------------------------------------------------------------------------
+Jinja2 (>= 3.1.0)
+Copyright (c) 2007 Pallets
+License: BSD-3-Clause
+https://github.com/pallets/jinja
+
+-------------------------------------------------------------------------------
+marshmallow (>= 3.20.0)
+Copyright (c) 2013-2023 Steven Loria and contributors
+License: MIT
+https://github.com/marshmallow-code/marshmallow
+
+-------------------------------------------------------------------------------
+marshmallow-dataclass (>= 8.6.0)
+Copyright (c) 2019 Tal Einat
+License: MIT
+https://github.com/lovasoa/marshmallow_dataclass
+
+-------------------------------------------------------------------------------
+Pydantic (>= 2.5.0)
+Copyright (c) 2017-2024 Pydantic Services Inc. and individual contributors
+License: MIT
+https://github.com/pydantic/pydantic
+
+-------------------------------------------------------------------------------
+Requests (>= 2.31.0)
+Copyright (c) 2019 Kenneth Reitz
+License: Apache-2.0
+https://github.com/psf/requests
+
+-------------------------------------------------------------------------------
+Rich (>= 13.0.0)
+Copyright (c) 2020 Will McGugan
+License: MIT
+https://github.com/Textualize/rich
+
+-------------------------------------------------------------------------------
+questionary (>= 2.0.0)
+Copyright (c) 2019 Tom Bocklisch
+License: MIT
+https://github.com/tmbo/questionary
+
+-------------------------------------------------------------------------------
+ruamel.yaml (>= 0.18.0)
+Copyright (c) 2014-2023 Anthon van der Neut, Ruamel bvba
+License: MIT
+https://sourceforge.net/p/ruamel-yaml/
+
+-------------------------------------------------------------------------------
+NATS Server (v2.10.28) [infrastructure dependency, not distributed]
+Copyright (c) 2012-2024 Synadia Communications, Inc.
+License: Apache-2.0
+https://github.com/nats-io/nats-server
+
+-------------------------------------------------------------------------------
+etcd (v3.5.21) [infrastructure dependency, not distributed]
+Copyright (c) 2015 The etcd Authors
+License: Apache-2.0
+https://github.com/etcd-io/etcd
+
+===============================================================================

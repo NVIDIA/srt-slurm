@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 BRANCH="fastdg"
 
 # v0.5.8 + cherry-pick https://github.com/sgl-project/sglang/pull/18111

@@ -719,8 +719,8 @@ class DynamoConfig:
         git_ref = self.hash if self.hash else "HEAD"
         checkout_cmd = f"git checkout {self.hash}" if self.hash else ""
 
-        return (
-            f"echo 'Installing dynamo from source ({git_ref})...' && "
+        # Original SGLang container path, UNCHANGED
+        sglang = (
             "apt-get update -qq && apt-get install -y -qq libclang-dev > /dev/null 2>&1 && "
             "cd /sgl-workspace/ && "
             "git clone https://github.com/ai-dynamo/dynamo.git && "
@@ -734,6 +734,34 @@ class DynamoConfig:
             "pip install -e . && "
             "cd /sgl-workspace/sglang/ && "
             f"echo 'Dynamo installed from source ({git_ref})'"
+        )
+
+        # Portable path for non-SGLang containers (vLLM, etc.)
+        portable = (
+            "if ! command -v cargo &> /dev/null || ! command -v maturin &> /dev/null; then "
+            "apt-get update -qq && apt-get install -y -qq git curl libclang-dev protobuf-compiler > /dev/null 2>&1 && "
+            "if ! command -v cargo &> /dev/null; then "
+            "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && source $HOME/.cargo/env; fi && "
+            "if ! command -v maturin &> /dev/null; then "
+            "pip install --break-system-packages maturin; fi; fi && "
+            "ORIG_DIR=$(pwd) && rm -rf /tmp/dynamo_build && mkdir -p /tmp/dynamo_build && cd /tmp/dynamo_build && "
+            "git clone https://github.com/ai-dynamo/dynamo.git && "
+            "cd dynamo && "
+            f"{checkout_cmd + ' && ' if checkout_cmd else ''}"
+            "cd lib/bindings/python/ && "
+            'export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native --cfg tokio_unstable" && '
+            "rm -f /tmp/ai_dynamo_runtime*.whl && "
+            "maturin build -o /tmp && "
+            "pip install --break-system-packages /tmp/ai_dynamo_runtime*.whl --force-reinstall && "
+            "cd /tmp/dynamo_build/dynamo/ && "
+            "pip install --break-system-packages -e . && "
+            "cd $ORIG_DIR && "
+            f"echo 'Dynamo installed from source ({git_ref})'"
+        )
+
+        return (
+            f"echo 'Installing dynamo from source ({git_ref})...' && "
+            f"if [ -d /sgl-workspace ]; then {sglang}; else {portable}; fi"
         )
 
     Schema: ClassVar[type[Schema]] = Schema

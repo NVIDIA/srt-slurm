@@ -4,7 +4,7 @@ on:
   push:
     branches: [main, master]
   pull_request:
-    branches: [main, master]
+    branches: [main, master, sa-submission-q2-2026]
 
 jobs:
   lint:
@@ -119,3 +119,4 @@ jobs:
               exit(1)
           print(f'\nAll {len(recipes)} recipes valid')
           "
+

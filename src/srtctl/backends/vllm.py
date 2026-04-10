@@ -132,12 +132,16 @@ class VLLMProtocol:
         vLLM with dynamo requires unique ports for each worker:
         - DYN_VLLM_KV_EVENT_PORT: ZMQ port for KV events publishing
         - VLLM_NIXL_SIDE_CHANNEL_PORT: Port for NIXL side channel transfers
+        - VLLM_NIXL_SIDE_CHANNEL_HOST: Routable IP for NIXL side channel (not 0.0.0.0/localhost)
         """
+        from srtctl.core.slurm import get_hostname_ip
+
         env: dict[str, str] = {}
         if process.kv_events_port is not None:
             env["DYN_VLLM_KV_EVENT_PORT"] = str(process.kv_events_port)
         if process.nixl_port is not None:
             env["VLLM_NIXL_SIDE_CHANNEL_PORT"] = str(process.nixl_port)
+            env["VLLM_NIXL_SIDE_CHANNEL_HOST"] = get_hostname_ip(process.node)
         return env
 
     def get_served_model_name(self, default: str) -> str:
