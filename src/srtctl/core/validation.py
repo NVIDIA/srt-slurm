@@ -143,15 +143,26 @@ def run_all_validations(config: SrtConfig) -> list[ValidationResult]:
     except Exception as e:
         results.append(ValidationResult("container_path", False, f"check failed: {e}"))
 
-    # HuggingFace model (if virtual identity is set)
+    # HuggingFace model — check identity block first, fall back to model config
     try:
-        results.append(validate_hf_model(config.model.name, config.model.revision))
+        hf_repo = None
+        hf_rev = None
+        if hasattr(config, "identity") and config.identity and config.identity.model:
+            hf_repo = config.identity.model.repo
+            hf_rev = config.identity.model.revision
+        if not hf_repo and hasattr(config.model, "name"):
+            hf_repo = config.model.name
+        if not hf_rev and hasattr(config.model, "revision"):
+            hf_rev = config.model.revision
+        results.append(validate_hf_model(hf_repo, hf_rev))
     except Exception as e:
         results.append(ValidationResult("hf_model", False, f"check failed: {e}"))
 
-    # Docker image (if virtual identity is set)
+    # Docker image (if set on model config)
     try:
-        results.append(validate_docker_image(config.model.container_image, config.model.container_digest))
+        container_image = getattr(config.model, "container_image", None)
+        container_digest = getattr(config.model, "container_digest", None)
+        results.append(validate_docker_image(container_image, container_digest))
     except Exception as e:
         results.append(ValidationResult("docker_image", False, f"check failed: {e}"))
 
