@@ -108,11 +108,13 @@ def build_lockfile(
     config: SrtConfig,
     worker_fingerprints: dict[str, Any] | None = None,
     resolved_log_dir: Path | None = None,
+    verification: list[Any] | None = None,
 ) -> dict[str, Any]:
     """Build the lockfile dict from a resolved config and optional per-worker fingerprints.
 
-    Returns a dict with:
+    Returns a dict with (in order):
     - _meta: lockfile version, timestamp, SLURM context
+    - verification: identity check results (pass/fail for each declared field)
     - config: the full resolved config as a dict
     - fingerprints: per-worker fingerprints keyed by worker name (or None)
 
@@ -122,6 +124,7 @@ def build_lockfile(
         resolved_log_dir: The actual resolved log directory path. If provided,
             overrides the template string in config.output.log_dir so the lockfile
             records where logs actually went (not the unresolved template).
+        verification: List of IdentityCheckResult from verify_identity().
     """
     from srtctl.core.schema import SrtConfig
 
@@ -131,12 +134,27 @@ def build_lockfile(
     if resolved_log_dir is not None and "output" in config_dict:
         config_dict["output"]["log_dir"] = str(resolved_log_dir)
 
+    # Build verification summary
+    verification_dict = None
+    if verification:
+        passes = [r for r in verification if r.passed]
+        fails = [r for r in verification if not r.passed]
+        verification_dict = {
+            "result": "all OK" if not fails else f"{len(fails)} FAILED",
+            "passed": len(passes),
+            "failed": len(fails),
+            "checks": [
+                {"field": r.field, "status": "OK" if r.passed else "FAIL", "message": r.message} for r in verification
+            ],
+        }
+
     return {
         "_meta": {
             "version": _LOCKFILE_VERSION,
             "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "slurm": collect_slurm_context(),
         },
+        "verification": verification_dict,
         "config": config_dict,
         "fingerprints": worker_fingerprints,
     }
@@ -146,18 +164,19 @@ def write_lockfile(
     output_dir: Path,
     config: SrtConfig,
     log_dir: Path | None = None,
+    verification: list[Any] | None = None,
 ) -> bool:
     """Write recipe.lock.yaml to the output directory.
 
     Called twice per job:
     1. At job start (log_dir=None) — writes config + SLURM context, fingerprints=null
-    2. At job end (log_dir set) — rewrites with per-worker fingerprints
+    2. At job end (log_dir set) — rewrites with per-worker fingerprints + verification
 
     Returns True on success, False on any failure. Never raises.
     """
     try:
         fingerprints = collect_worker_fingerprints(log_dir) if log_dir else None
-        lockfile_data = build_lockfile(config, fingerprints, resolved_log_dir=log_dir)
+        lockfile_data = build_lockfile(config, fingerprints, resolved_log_dir=log_dir, verification=verification)
 
         lockfile_path = output_dir / "recipe.lock.yaml"
         lockfile_path.write_text(yaml.dump(lockfile_data, default_flow_style=False, sort_keys=False))

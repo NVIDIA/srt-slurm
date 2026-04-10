@@ -151,8 +151,9 @@ class PostProcessStageMixin:
         Args:
             exit_code: Exit code from the benchmark run
         """
-        # Write lockfile (non-fatal — never blocks job completion)
-        write_lockfile(self.runtime.log_dir.parent, self.config, self.runtime.log_dir)
+        # Write lockfile with verification results (non-fatal — never blocks job completion)
+        verification = getattr(self, "_identity_verification", None)
+        write_lockfile(self.runtime.log_dir.parent, self.config, self.runtime.log_dir, verification=verification)
 
         # Copy config into log directory so it's included in S3 upload
         self._copy_config_to_logs()

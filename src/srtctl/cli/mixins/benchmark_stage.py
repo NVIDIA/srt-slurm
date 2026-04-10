@@ -97,11 +97,13 @@ class BenchmarkStageMixin:
         logger.info("Server is healthy - starting benchmark")
 
         # Identity verification: compare recipe identity against runtime fingerprints
+        # Store results on self so postprocess can include them in the lockfile
+        self._identity_verification = None
         try:
             fingerprints = collect_worker_fingerprints(self.runtime.log_dir)
             if fingerprints and hasattr(self.config, "identity"):
-                results = verify_identity(self.config.identity, fingerprints)
-                banner = format_identity_verification(results, self.config.identity)
+                self._identity_verification = verify_identity(self.config.identity, fingerprints)
+                banner = format_identity_verification(self._identity_verification, self.config.identity)
                 for line in banner.splitlines():
                     logger.info(line)
         except Exception as e:
