@@ -387,11 +387,16 @@ def _parse_pip_packages(packages: list[str] | dict[str, list[str]]) -> dict[str,
         torch==2.6.0  ->  {"torch": "2.6.0"}
         foo @ file:///... -> {"foo": "file:///..."}
     """
+    # Handle missing/failed pip data
+    if not packages or isinstance(packages, str):
+        return {}
+
     # Normalize: flatten labeled dict into a single list
     if isinstance(packages, dict):
         flat: list[str] = []
         for pkg_list in packages.values():
-            flat.extend(pkg_list)
+            if isinstance(pkg_list, list):
+                flat.extend(pkg_list)
         packages = flat
 
     result = {}

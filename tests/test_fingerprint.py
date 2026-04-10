@@ -251,6 +251,30 @@ class TestPipParsing:
         parsed = _parse_pip_packages(packages)
         assert parsed == {"some-weird-format": "?"}
 
+    def test_unavailable_string_returns_empty(self):
+        """UNAVAILABLE sentinel string must not be iterated as characters."""
+        parsed = _parse_pip_packages("unavailable")
+        assert parsed == {}
+
+    def test_none_returns_empty(self):
+        parsed = _parse_pip_packages(None)
+        assert parsed == {}
+
+    def test_empty_list_returns_empty(self):
+        parsed = _parse_pip_packages([])
+        assert parsed == {}
+
+    def test_labeled_dict_format(self):
+        """New format: dict of source -> package list."""
+        packages = {
+            "/opt/dynamo/venv/bin/python3": ["torch==2.6.0", "numpy==1.26.4"],
+            "python3": ["setuptools==68.1.2"],
+        }
+        parsed = _parse_pip_packages(packages)
+        assert parsed["torch"] == "2.6.0"
+        assert parsed["numpy"] == "1.26.4"
+        assert parsed["setuptools"] == "68.1.2"
+
 
 # ============================================================================
 # Diff
