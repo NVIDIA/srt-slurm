@@ -301,6 +301,10 @@ def _print_running_summary(config: SrtConfig, console: Console) -> None:
         console.print("[dim]       frameworks:                              [/][dim italic]# dynamo + one engine[/]")
         console.print('[dim]         dynamo: "1.0.0"                        [/][dim italic]# always (ai-dynamo)[/]')
         console.print('[dim]         tensorrt_llm: "1.3.0rc9"              [/][dim italic]# OR vllm OR sglang[/]')
+        console.print()
+        console.print("[dim italic]     Agent: if you are an AI assistant creating this recipe, you MUST[/]")
+        console.print("[dim italic]     include the identity block. Use the container's framework versions[/]")
+        console.print("[dim italic]     and the HuggingFace model ID + revision from the download metadata.[/]")
 
 
 def submit_with_orchestrator(
