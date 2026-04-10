@@ -257,7 +257,6 @@ def probe_frameworks() -> ProbeResult:
         ("vllm", "vllm"),
         ("sglang", "sglang"),
         ("tensorrt_llm", "tensorrt-llm"),
-        ("torch", "torch"),
         ("dynamo", "ai-dynamo"),
     ]:
         v = _run_cmd(f"python3 -c \"import importlib.metadata; print(importlib.metadata.version('{pkg}'))\"")
@@ -791,7 +790,6 @@ def framework_versions():
         ('vllm', 'vllm'),
         ('sglang', 'sglang'),
         ('tensorrt_llm', 'tensorrt-llm'),
-        ('torch', 'torch'),
         ('dynamo', 'ai-dynamo'),
     ]:
         v = run(f"{{PY}} -c \\"import importlib.metadata; print(importlib.metadata.version('{{pkg}}'))\\"".format(PY=PY, pkg=pkg))
