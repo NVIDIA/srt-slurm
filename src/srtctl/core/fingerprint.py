@@ -841,6 +841,21 @@ def model_identity(model_path):
             pass
     return info or None
 
+def env_vars():
+    import os
+    prefixes = ('CUDA_', 'TORCH_', 'PYTORCH_', 'NCCL_', 'VLLM_', 'SGLANG_', 'SGL_',
+                'TRTLLM_', 'TRT_LLM_', 'TENSORRT_', 'HF_', 'TRANSFORMERS_', 'DYN_',
+                'NVIDIA_', 'OMPI_', 'UCX_', 'NVSHMEM_')
+    secrets = ('TOKEN', 'KEY', 'SECRET', 'PASSWORD', 'CREDENTIAL', 'AUTH')
+    result = {{}}
+    for k, v in sorted(os.environ.items()):
+        if any(k.startswith(p) for p in prefixes):
+            if any(s in k.upper() for s in secrets):
+                result[k] = '***REDACTED***'
+            else:
+                result[k] = v
+    return result
+
 fp = {{
     'hostname': socket.gethostname(),
     'timestamp': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
@@ -852,6 +867,7 @@ fp = {{
     'nccl_version': run(f'{{PY}} -c "import torch; print(torch.cuda.nccl.version())"'.format(PY=PY)) or 'unavailable',
     'frameworks': framework_versions(),
     'model': model_identity('/model'),
+    'env': env_vars(),
     'pip_packages': pip_pkgs(),
 }}
 Path('{output_path}').parent.mkdir(parents=True, exist_ok=True)
