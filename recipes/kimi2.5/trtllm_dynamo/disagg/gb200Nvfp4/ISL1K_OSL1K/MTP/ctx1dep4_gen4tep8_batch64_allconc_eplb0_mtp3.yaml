@@ -6,8 +6,8 @@ name: "kimi_k25_nvfp4_ISL1K_OSL1K_ctx1dep4_gen4tep8_batch64_allconc_eplb0_mtp3"
 # Covers all gen4tep8 concurrencies: 8, 48, 92, 192, 336
 
 model:
-  path: "kimi-k2.5-nvfp4"
-  container: "tensorrtllm-runtime:1.1.0-dev.2"
+  path: "nvidia/Kimi-K2.5-NVFP4"
+  container: "nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:1.1.0-dev.2"
   precision: "fp4"
 
 resources:
@@ -120,7 +120,7 @@ backend:
         speculative_model_dir: "/eagle-model"
 
 extra_mount:
-  - "kimi-k2.5-eagle3:/eagle-model"
+  - "nvidia/Kimi-K2.5-Thinking-Eagle3:/eagle-model"
 
 benchmark:
   type: "sa-bench"

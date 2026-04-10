@@ -5,8 +5,8 @@ name: "kimi_k25_nvfp4_ISL8K_OSL1K_ctx3dep4_gen1dep16_batch32_eplb0_mtp0"
 # concurrency: 615
 
 model:
-  path: "kimi-k2.5-nvfp4"
-  container: "tensorrtllm-runtime:1.1.0-dev.2"
+  path: "nvidia/Kimi-K2.5-NVFP4"
+  container: "nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:1.1.0-dev.2"
   precision: "fp4"
 
 resources:
