@@ -262,16 +262,22 @@ def probe_frameworks() -> ProbeResult:
 
 
 def probe_pip_packages() -> ProbeResult:
-    """Get installed pip packages, sorted alphabetically (case-insensitive)."""
-    out = _run_cmd("python3 -m pip freeze 2>/dev/null") or _run_cmd("pip freeze")
-    if out is None:
-        return ProbeResult.failure("pip freeze failed")
-
-    packages = sorted(
-        [line.strip() for line in out.splitlines() if line.strip()],
-        key=lambda s: s.lower(),
-    )
-    return ProbeResult.success(packages)
+    """Get installed pip packages from multiple sources, labeled by source."""
+    result: dict[str, list[str]] = {}
+    for label, cmd in [
+        ("python3", "python3 -m pip freeze 2>/dev/null"),
+        ("pip", "pip freeze 2>/dev/null"),
+        ("uv", "uv pip freeze 2>/dev/null"),
+    ]:
+        out = _run_cmd(cmd)
+        if out:
+            pkgs = sorted(
+                [line.strip() for line in out.splitlines() if line.strip() and not line.startswith("#")],
+                key=lambda s: s.lower(),
+            )
+            if pkgs:
+                result[label] = pkgs
+    return ProbeResult.success(result) if result else ProbeResult.failure("all pip freeze variants failed")
 
 
 # ============================================================================
@@ -363,13 +369,23 @@ _DIFF_FIELDS = [
 ]
 
 
-def _parse_pip_packages(packages: list[str]) -> dict[str, str]:
+def _parse_pip_packages(packages: list[str] | dict[str, list[str]]) -> dict[str, str]:
     """Parse pip freeze output into {package_name: version} dict.
+
+    Accepts either a flat list (legacy) or a labeled dict of lists (new format).
+    When given a dict, merges all sources (later sources overwrite earlier).
 
     Handles both == and @ formats:
         torch==2.6.0  ->  {"torch": "2.6.0"}
         foo @ file:///... -> {"foo": "file:///..."}
     """
+    # Normalize: flatten labeled dict into a single list
+    if isinstance(packages, dict):
+        flat: list[str] = []
+        for pkg_list in packages.values():
+            flat.extend(pkg_list)
+        packages = flat
+
     result = {}
     for line in packages:
         if "==" in line:
@@ -603,20 +619,19 @@ def find_python():
 PY = find_python()
 
 def pip_pkgs():
-    pkgs = set()
-    for cmd in [
-        f'{{PY}} -m pip freeze 2>/dev/null'.format(PY=PY),
-        'python3 -m pip freeze 2>/dev/null',
-        'pip freeze 2>/dev/null',
-        'uv pip freeze 2>/dev/null',
+    result = {{}}
+    for label, cmd in [
+        (PY, f'{{PY}} -m pip freeze 2>/dev/null'.format(PY=PY)),
+        ('python3', 'python3 -m pip freeze 2>/dev/null'),
+        ('pip', 'pip freeze 2>/dev/null'),
+        ('uv', 'uv pip freeze 2>/dev/null'),
     ]:
         out = run(cmd)
         if out:
-            for line in out.splitlines():
-                line = line.strip()
-                if line and not line.startswith('#'):
-                    pkgs.add(line)
-    return sorted(pkgs, key=lambda s: s.lower())
+            pkgs = sorted([l.strip() for l in out.splitlines() if l.strip() and not l.startswith('#')], key=lambda s: s.lower())
+            if pkgs:
+                result[label] = pkgs
+    return result
 
 def gpu_info():
     out = run('nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader')
