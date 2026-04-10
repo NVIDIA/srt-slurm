@@ -53,6 +53,7 @@ dynamo:
 identity:
   model:
     repo: "nvidia/Kimi-K2.5-NVFP4"
+    revision: "c0285e649c34d4386b01e38abca642c06cbe014e"
   frameworks:
     dynamo: "1.0.0"
     torch: "2.10.0a0+b4e4ee81d3.nv25.12"
