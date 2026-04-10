@@ -117,8 +117,11 @@ _FIELD_ORDER = [
     # Core versions
     "python_version",
     "cuda_version",
-    "torch_version",
     "nccl_version",
+    # Frameworks (vllm, sglang, trtllm, dynamo, torch)
+    "frameworks",
+    # Model identity (HF repo, revision)
+    "model",
     # Full package list (always last)
     "pip_packages",
 ]
@@ -234,14 +237,6 @@ def probe_cuda_version() -> ProbeResult:
     return ProbeResult.failure("nvcc not found")
 
 
-def probe_torch_version() -> ProbeResult:
-    """Get PyTorch version."""
-    out = _run_cmd('python3 -c "import torch; print(torch.__version__)"')
-    if out:
-        return ProbeResult.success(out)
-    return ProbeResult.failure("torch not importable")
-
-
 def probe_nccl_version() -> ProbeResult:
     """Get NCCL version via PyTorch."""
     out = _run_cmd('python3 -c "import torch; print(torch.cuda.nccl.version())"')
@@ -250,9 +245,25 @@ def probe_nccl_version() -> ProbeResult:
     return ProbeResult.failure("nccl version unavailable")
 
 
+def probe_frameworks() -> ProbeResult:
+    """Get versions of inference frameworks (only detected ones)."""
+    versions: dict[str, str] = {}
+    for name, cmd in [
+        ("vllm", 'python3 -c "import vllm; print(vllm.__version__)"'),
+        ("sglang", 'python3 -c "import sglang; print(sglang.__version__)"'),
+        ("tensorrt_llm", 'python3 -c "import tensorrt_llm; print(tensorrt_llm.__version__)"'),
+        ("dynamo", "python3 -c \"import importlib.metadata; print(importlib.metadata.version('ai-dynamo'))\""),
+        ("torch", 'python3 -c "import torch; print(torch.__version__)"'),
+    ]:
+        v = _run_cmd(cmd)
+        if v:
+            versions[name] = v
+    return ProbeResult.success(versions)
+
+
 def probe_pip_packages() -> ProbeResult:
     """Get installed pip packages, sorted alphabetically (case-insensitive)."""
-    out = _run_cmd("pip freeze")
+    out = _run_cmd("python3 -m pip freeze 2>/dev/null") or _run_cmd("pip freeze")
     if out is None:
         return ProbeResult.failure("pip freeze failed")
 
@@ -276,8 +287,8 @@ _PROBES: dict[str, Any] = {
     "gpu": probe_gpu,
     "python_version": probe_python_version,
     "cuda_version": probe_cuda_version,
-    "torch_version": probe_torch_version,
     "nccl_version": probe_nccl_version,
+    "frameworks": probe_frameworks,
     "pip_packages": probe_pip_packages,
 }
 
@@ -348,7 +359,6 @@ _DIFF_FIELDS = [
     "os",
     "python_version",
     "cuda_version",
-    "torch_version",
     "nccl_version",
 ]
 
@@ -605,32 +615,16 @@ def framework_versions():
         ('vllm', 'python3 -c "import vllm; print(vllm.__version__)"'),
         ('sglang', 'python3 -c "import sglang; print(sglang.__version__)"'),
         ('tensorrt_llm', 'python3 -c "import tensorrt_llm; print(tensorrt_llm.__version__)"'),
-        ('dynamo', 'python3 -c "import dynamo; print(dynamo.__version__)"'),
+        ('dynamo', 'python3 -c "import importlib.metadata; print(importlib.metadata.version(\\\"ai-dynamo\\\"))"'),
     ]:
         v = run(cmd)
         if v:
             versions[name] = v
+    # torch embeds a git hash in the version string (e.g. 2.10.0a0+b4e4ee81d3.nv25.12)
+    torch_v = run('python3 -c "import torch; print(torch.__version__)"')
+    if torch_v:
+        versions['torch'] = torch_v
     return versions
-
-def container_identity():
-    info = {{}}
-    # Pyxis/enroot: /etc/enroot stores import metadata
-    for p in ['/etc/enroot/image.env', '/etc/enroot/.env']:
-        if Path(p).exists():
-            for line in Path(p).read_text().splitlines():
-                if '=' in line:
-                    k, _, v = line.partition('=')
-                    info[k.strip()] = v.strip().strip('"')
-            break
-    # Docker: inspect labels via /proc/1/cpuset or /.dockerenv
-    if not info and Path('/.dockerenv').exists():
-        info['runtime'] = 'docker'
-    # OCI image digest from /etc/enroot/image-digest if available
-    for p in ['/etc/enroot/image-digest', '/etc/enroot/.image-digest']:
-        if Path(p).exists():
-            info['digest'] = Path(p).read_text().strip()
-            break
-    return info or None
 
 def model_identity(model_path):
     info = {{}}
@@ -672,10 +666,8 @@ fp = {{
     'gpu': gpu_info(),
     'python_version': platform.python_version(),
     'cuda_version': run('nvcc --version 2>/dev/null | grep release') or 'unavailable',
-    'torch_version': run('python3 -c "import torch; print(torch.__version__)"') or 'unavailable',
     'nccl_version': run('python3 -c "import torch; print(torch.cuda.nccl.version())"') or 'unavailable',
     'frameworks': framework_versions(),
-    'container': container_identity(),
     'model': model_identity('/model'),
     'pip_packages': pip_pkgs(),
 }}

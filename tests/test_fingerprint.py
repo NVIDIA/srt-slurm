@@ -52,8 +52,8 @@ def _make_fingerprint(**overrides) -> dict:
         "gpu": {"available": True, "driver": "570.86.15", "gpus": [{"name": "GB200", "driver": "570.86.15", "memory": "192 GiB"}]},
         "python_version": "3.11.9",
         "cuda_version": "12.8",
-        "torch_version": "2.6.0+cu128",
         "nccl_version": "2.25.1",
+        "frameworks": {"torch": "2.6.0+cu128", "sglang": "0.4.6.post1", "dynamo": "0.8.1"},
         "pip_packages": [
             "ai-dynamo==0.8.1",
             "numpy==1.26.4",
@@ -85,8 +85,8 @@ class TestOrdering:
             "gpu": {},
             "os": "Ubuntu",
             "cuda_version": "12.8",
-            "torch_version": "2.6.0",
             "nccl_version": "2.25",
+            "frameworks": {"torch": "2.6.0"},
         }
         ordered = _ordered_fingerprint(data)
         keys = list(ordered.keys())
@@ -157,8 +157,8 @@ class TestProbes:
             "gpu": lambda: ProbeResult.success({"available": False}),
             "python_version": lambda: ProbeResult.success("3.11.9"),
             "cuda_version": lambda: ProbeResult.success("12.8"),
-            "torch_version": lambda: ProbeResult.success("2.6.0"),
             "nccl_version": lambda: ProbeResult.success("2.25.1"),
+            "frameworks": lambda: ProbeResult.success({"torch": "2.6.0", "dynamo": "0.8.1"}),
             "pip_packages": lambda: ProbeResult.success(["numpy==1.0", "torch==2.6.0"]),
         }
 
@@ -273,14 +273,14 @@ class TestDiff:
         assert diff.packages_removed == 0
 
     def test_scalar_field_change(self):
-        """Changed torch version shows up in field_changes."""
-        a = _make_fingerprint(torch_version="2.6.0+cu128")
-        b = _make_fingerprint(torch_version="2.7.0+cu128")
+        """Changed CUDA version shows up in field_changes."""
+        a = _make_fingerprint(cuda_version="12.8")
+        b = _make_fingerprint(cuda_version="13.1")
 
         diff = diff_fingerprints(a, b)
 
-        assert "torch_version" in diff.field_changes
-        assert diff.field_changes["torch_version"] == ("2.6.0+cu128", "2.7.0+cu128")
+        assert "cuda_version" in diff.field_changes
+        assert diff.field_changes["cuda_version"] == ("12.8", "13.1")
 
     def test_gpu_driver_change(self):
         """GPU driver change detected from nested structure."""
@@ -372,17 +372,17 @@ class TestCheck:
         assert results == []
 
     def test_version_mismatch_reported(self):
-        """Torch version change appears in results."""
-        ref = _make_fingerprint(torch_version="2.6.0")
-        cur = _make_fingerprint(torch_version="2.7.0")
+        """CUDA version change appears in results."""
+        ref = _make_fingerprint(cuda_version="12.8")
+        cur = _make_fingerprint(cuda_version="13.1")
 
         results = check_against_fingerprint(ref, cur)
 
-        torch_results = [r for r in results if r.field == "torch_version"]
-        assert len(torch_results) == 1
-        assert torch_results[0].status == CheckStatus.MISMATCH
-        assert torch_results[0].expected == "2.6.0"
-        assert torch_results[0].actual == "2.7.0"
+        cuda_results = [r for r in results if r.field == "cuda_version"]
+        assert len(cuda_results) == 1
+        assert cuda_results[0].status == CheckStatus.MISMATCH
+        assert cuda_results[0].expected == "12.8"
+        assert cuda_results[0].actual == "13.1"
 
     def test_missing_package_reported(self):
         """Package in reference but not current is MISSING."""
@@ -429,8 +429,8 @@ class TestCheck:
             "gpu": lambda: ProbeResult.success({"available": True, "driver": "570.86.15", "gpus": []}),
             "python_version": lambda: ProbeResult.success("3.11.9"),
             "cuda_version": lambda: ProbeResult.success("12.8"),
-            "torch_version": lambda: ProbeResult.success("2.6.0+cu128"),
             "nccl_version": lambda: ProbeResult.success("2.25.1"),
+            "frameworks": lambda: ProbeResult.success(ref["frameworks"]),
             "pip_packages": lambda: ProbeResult.success(ref["pip_packages"]),
         }
 
@@ -620,8 +620,8 @@ class TestFormatting:
 
     def test_format_diff_with_changes(self):
         """Changes are clearly shown."""
-        a = _make_fingerprint(torch_version="2.6.0", pip_packages=["torch==2.6.0"])
-        b = _make_fingerprint(torch_version="2.7.0", pip_packages=["torch==2.7.0"])
+        a = _make_fingerprint(cuda_version="12.8", pip_packages=["torch==2.6.0"])
+        b = _make_fingerprint(cuda_version="13.1", pip_packages=["torch==2.7.0"])
 
         diff = diff_fingerprints(a, b)
         output = format_diff(diff)
@@ -664,11 +664,11 @@ class TestFormatting:
         """Mismatches are clearly reported."""
         results = [
             CheckResult(
-                field="torch_version",
+                field="cuda_version",
                 status=CheckStatus.MISMATCH,
-                message="torch_version: 2.6.0 -> 2.7.0",
-                expected="2.6.0",
-                actual="2.7.0",
+                message="cuda_version: 12.8 -> 13.1",
+                expected="12.8",
+                actual="13.1",
             ),
             CheckResult(
                 field="pip:sglang",
@@ -680,5 +680,5 @@ class TestFormatting:
         output = format_check_results(results)
 
         assert "2 mismatches" in output
-        assert "torch_version" in output
+        assert "cuda_version" in output
         assert "sglang" in output
