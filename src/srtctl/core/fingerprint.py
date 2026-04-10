@@ -576,6 +576,107 @@ def check_against_fingerprint(
 
 
 # ============================================================================
+# Identity verification — compare recipe identity against runtime fingerprint
+# ============================================================================
+
+
+def verify_identity(
+    identity: Any,
+    fingerprints: dict[str, Any],
+) -> list[str]:
+    """Compare recipe identity block against collected runtime fingerprints.
+
+    Returns a list of warning messages. Empty list means everything matches.
+
+    Args:
+        identity: IdentityConfig from the recipe (has .model and .frameworks)
+        fingerprints: dict of worker_name -> fingerprint dict
+    """
+    warnings: list[str] = []
+    if not fingerprints:
+        return warnings
+
+    # Use the first worker's fingerprint for verification (they all run in the same container)
+    fp = next(iter(fingerprints.values()))
+
+    # --- Model identity ---
+    if identity.model:
+        fp_model = fp.get("model") or {}
+
+        if identity.model.repo:
+            fp_repo = fp_model.get("hf_repo") or fp_model.get("model_id")
+            if fp_repo and identity.model.repo != fp_repo:
+                warnings.append(f"Model repo mismatch: recipe says '{identity.model.repo}', runtime has '{fp_repo}'")
+            elif not fp_repo:
+                warnings.append(
+                    f"Model repo '{identity.model.repo}' declared in recipe but "
+                    f"could not be verified (no HF metadata found at /model)"
+                )
+
+        if identity.model.revision:
+            fp_rev = fp_model.get("hf_revision")
+            if fp_rev and not fp_rev.startswith(identity.model.revision):
+                warnings.append(
+                    f"Model revision mismatch: recipe says '{identity.model.revision[:12]}', "
+                    f"runtime has '{fp_rev[:12]}'"
+                )
+            elif not fp_rev:
+                warnings.append(
+                    f"Model revision '{identity.model.revision[:12]}' declared in recipe but "
+                    f"could not be verified (no HF revision found at /model)"
+                )
+
+    # --- Framework versions ---
+    fp_frameworks = fp.get("frameworks") or {}
+    for name, expected_version in (identity.frameworks or {}).items():
+        actual_version = fp_frameworks.get(name)
+        if actual_version and actual_version != expected_version:
+            warnings.append(f"Framework mismatch: {name} expected '{expected_version}', got '{actual_version}'")
+        elif not actual_version:
+            warnings.append(
+                f"Framework '{name}' version '{expected_version}' declared in recipe but not detected in runtime"
+            )
+
+    return warnings
+
+
+def format_identity_verification(warnings: list[str], identity: Any) -> str:
+    """Format identity verification results as a banner for the sweep log.
+
+    Args:
+        warnings: list of warning strings from verify_identity
+        identity: IdentityConfig from the recipe
+    """
+    lines: list[str] = []
+    lines.append("=" * 60)
+    lines.append("Identity Verification")
+    lines.append("=" * 60)
+
+    if not warnings:
+        # Show what was checked
+        checks = []
+        if identity.model and identity.model.repo:
+            checks.append(f"  model.repo: {identity.model.repo}")
+        if identity.model and identity.model.revision:
+            checks.append(f"  model.revision: {identity.model.revision[:12]}")
+        for name, ver in (identity.frameworks or {}).items():
+            checks.append(f"  {name}: {ver}")
+        if checks:
+            lines.append("All checks passed:")
+            lines.extend(checks)
+        else:
+            lines.append("No identity fields declared — nothing to verify.")
+    else:
+        lines.append(f"WARNING: {len(warnings)} mismatch(es) detected!")
+        lines.append("")
+        for w in warnings:
+            lines.append(f"  ⚠ {w}")
+
+    lines.append("=" * 60)
+    return "\n".join(lines)
+
+
+# ============================================================================
 # Bash preamble generation — for injection into worker startup
 # ============================================================================
 

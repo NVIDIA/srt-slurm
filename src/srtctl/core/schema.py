@@ -395,6 +395,31 @@ class ModelConfig:
 
 
 @dataclass(frozen=True)
+class IdentityModelConfig:
+    """Virtual model identity for runtime verification."""
+
+    repo: str | None = None  # HuggingFace model ID, e.g. "nvidia/Kimi-K2.5-NVFP4"
+    revision: str | None = None  # HuggingFace git commit SHA
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
+class IdentityConfig:
+    """Virtual identity for runtime verification.
+
+    These fields declare what *should* be running. They are not used for
+    launching — only for verifying the runtime fingerprint matches expectations.
+    Mismatches produce warnings, not failures.
+    """
+
+    model: IdentityModelConfig = field(default_factory=IdentityModelConfig)
+    frameworks: dict[str, str] = field(default_factory=dict)  # e.g. {"dynamo": "1.0.0", "tensorrt_llm": "1.3.0rc9"}
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
 class ResourceConfig:
     """Resource allocation configuration."""
 
@@ -895,6 +920,9 @@ class SrtConfig:
     # Custom setup script (runs before dynamo install and worker startup)
     # e.g. "custom-setup.sh" -> runs /configs/custom-setup.sh
     setup_script: str | None = None
+
+    # Virtual identity — declares what *should* be running (verified against fingerprint)
+    identity: IdentityConfig = field(default_factory=IdentityConfig)
 
     # Reporting configuration (status API, future: logs to S3, etc.)
     reporting: ReportingConfig | None = None

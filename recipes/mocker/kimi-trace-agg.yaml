@@ -48,3 +48,11 @@ health_check:
 
 dynamo:
   install: false
+
+# Virtual identity — verified against runtime fingerprint (warnings, not failures)
+identity:
+  model:
+    repo: "nvidia/Kimi-K2.5-NVFP4"
+  frameworks:
+    dynamo: "1.0.0"
+    torch: "2.10.0a0+b4e4ee81d3.nv25.12"
