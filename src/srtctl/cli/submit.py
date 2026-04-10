@@ -270,13 +270,9 @@ def _print_running_summary(config: SrtConfig, console: Console) -> None:
     console.print(f"  Backend:   {config.backend_type}")
     console.print(f"  Benchmark: {config.benchmark.type}")
 
-    has_identity = (
-        hasattr(config, "identity")
-        and config.identity
-        and (
-            (config.identity.model and (config.identity.model.repo or config.identity.model.revision))
-            or config.identity.frameworks
-        )
+    has_identity = config.identity and (
+        (config.identity.model and (config.identity.model.repo or config.identity.model.revision))
+        or config.identity.frameworks
     )
     if has_identity:
         id_fields = []
@@ -362,7 +358,7 @@ def submit_with_orchestrator(
     )
 
     # Identity validation (inline, <1s) — runs for both dry-run and submit
-    if hasattr(config, "identity") and config.identity and config.identity.model and config.identity.model.repo:
+    if config.identity and config.identity.model and config.identity.model.repo:
         from srtctl.core.validation import validate_hf_model
 
         hf_result = validate_hf_model(config.identity.model.repo, config.identity.model.revision)

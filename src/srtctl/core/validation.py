@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_HTTP_TIMEOUT = 5.0
+_HTTP_TIMEOUT = 2.0  # Fast enough for live networks, doesn't block long on air-gapped clusters
 
 
 @dataclass(frozen=True)
@@ -147,7 +147,7 @@ def run_all_validations(config: SrtConfig) -> list[ValidationResult]:
     try:
         hf_repo = None
         hf_rev = None
-        if hasattr(config, "identity") and config.identity and config.identity.model:
+        if config.identity and config.identity.model:
             hf_repo = config.identity.model.repo
             hf_rev = config.identity.model.revision
         results.append(validate_hf_model(hf_repo, hf_rev))

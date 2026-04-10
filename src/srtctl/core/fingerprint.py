@@ -40,6 +40,15 @@ _CMD_TIMEOUT = 5
 # Sentinel for probes that failed
 UNAVAILABLE = "unavailable"
 
+# Framework name -> pip package name mapping.
+# Used in both native Python probes and the bash capture script.
+FRAMEWORK_PACKAGES: dict[str, str] = {
+    "vllm": "vllm",
+    "sglang": "sglang",
+    "tensorrt_llm": "tensorrt-llm",
+    "dynamo": "ai-dynamo",
+}
+
 
 # ============================================================================
 # Data Types
@@ -253,12 +262,7 @@ def probe_frameworks() -> ProbeResult:
     GPU context.
     """
     versions: dict[str, str] = {}
-    for name, pkg in [
-        ("vllm", "vllm"),
-        ("sglang", "sglang"),
-        ("tensorrt_llm", "tensorrt-llm"),
-        ("dynamo", "ai-dynamo"),
-    ]:
+    for name, pkg in FRAMEWORK_PACKAGES.items():
         v = _run_cmd(f"python3 -c \"import importlib.metadata; print(importlib.metadata.version('{pkg}'))\"")
         if v:
             versions[name] = v
@@ -584,7 +588,7 @@ def check_against_fingerprint(
 # ============================================================================
 
 
-@dataclass
+@dataclass(frozen=True)
 class IdentityCheckResult:
     """Result of a single identity check."""
 
@@ -742,7 +746,7 @@ import json, subprocess, platform, socket, sys
 from pathlib import Path
 from datetime import datetime, timezone
 
-def run(cmd, timeout=5):
+def run(cmd, timeout=3):
     try:
         r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
         return r.stdout.strip() if r.returncode == 0 else None
@@ -750,8 +754,8 @@ def run(cmd, timeout=5):
         return None
 
 def find_python():
-    for p in ['/opt/dynamo/venv/bin/python3', '/opt/venv/bin/python3', 'python3']:
-        if run(f'command -v {{0}} || test -x {{0}}'.format(p)):
+    for p in ['/opt/dynamo/venv/bin/python3', '/opt/venv/bin/python3']:
+        if Path(p).exists():
             return p
     return 'python3'
 
@@ -786,12 +790,7 @@ def framework_versions():
     # Use importlib.metadata for all packages — avoids loading native CUDA
     # extensions (tensorrt_llm, torch) which fail without GPU context.
     versions = {{}}
-    for name, pkg in [
-        ('vllm', 'vllm'),
-        ('sglang', 'sglang'),
-        ('tensorrt_llm', 'tensorrt-llm'),
-        ('dynamo', 'ai-dynamo'),
-    ]:
+    for name, pkg in [{", ".join(f"('{n}', '{p}')" for n, p in FRAMEWORK_PACKAGES.items())}]:
         v = run(f"{{PY}} -c \\"import importlib.metadata; print(importlib.metadata.version('{{pkg}}'))\\"".format(PY=PY, pkg=pkg))
         if v:
             versions[name] = v
