@@ -540,9 +540,9 @@ class TestBashGeneration:
         assert script.startswith('python3')
 
     def test_script_includes_pip_freeze(self):
-        """Script captures pip packages via python3 -m pip freeze."""
+        """Script captures pip packages via pip freeze."""
         script = generate_capture_script("/logs/fp.json")
-        assert "python3 -m pip freeze" in script
+        assert "pip freeze" in script
 
     def test_script_includes_sorted(self):
         """Script sorts pip output for deterministic diffs."""

@@ -594,10 +594,29 @@ def run(cmd, timeout=5):
     except Exception:
         return None
 
+def find_python():
+    for p in ['/opt/dynamo/venv/bin/python3', '/opt/venv/bin/python3', 'python3']:
+        if run(f'command -v {{0}} || test -x {{0}}'.format(p)):
+            return p
+    return 'python3'
+
+PY = find_python()
+
 def pip_pkgs():
-    out = run('python3 -m pip freeze 2>/dev/null') or run('pip freeze')
-    if not out: return []
-    return sorted([l.strip() for l in out.splitlines() if l.strip()], key=lambda s: s.lower())
+    pkgs = set()
+    for cmd in [
+        f'{{PY}} -m pip freeze 2>/dev/null'.format(PY=PY),
+        'python3 -m pip freeze 2>/dev/null',
+        'pip freeze 2>/dev/null',
+        'uv pip freeze 2>/dev/null',
+    ]:
+        out = run(cmd)
+        if out:
+            for line in out.splitlines():
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    pkgs.add(line)
+    return sorted(pkgs, key=lambda s: s.lower())
 
 def gpu_info():
     out = run('nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader')
@@ -611,19 +630,19 @@ def gpu_info():
 
 def framework_versions():
     versions = {{}}
-    for name, cmd in [
-        ('vllm', 'python3 -c "import vllm; print(vllm.__version__)"'),
-        ('sglang', 'python3 -c "import sglang; print(sglang.__version__)"'),
-        ('tensorrt_llm', 'python3 -c "import tensorrt_llm; print(tensorrt_llm.__version__)"'),
-        ('dynamo', 'python3 -c "import importlib.metadata; print(importlib.metadata.version(\\\"ai-dynamo\\\"))"'),
+    for name, mod in [
+        ('vllm', 'vllm'),
+        ('sglang', 'sglang'),
+        ('tensorrt_llm', 'tensorrt_llm'),
+        ('torch', 'torch'),
     ]:
-        v = run(cmd)
+        v = run(f'{{PY}} -c "import {{mod}}; print({{mod}}.__version__)"'.format(PY=PY, mod=mod))
         if v:
             versions[name] = v
-    # torch embeds a git hash in the version string (e.g. 2.10.0a0+b4e4ee81d3.nv25.12)
-    torch_v = run('python3 -c "import torch; print(torch.__version__)"')
-    if torch_v:
-        versions['torch'] = torch_v
+    # dynamo uses ai-dynamo package name
+    v = run(f"{{PY}} -c \\"import importlib.metadata; print(importlib.metadata.version('ai-dynamo'))\\"".format(PY=PY))
+    if v:
+        versions['dynamo'] = v
     return versions
 
 def model_identity(model_path):
@@ -666,7 +685,7 @@ fp = {{
     'gpu': gpu_info(),
     'python_version': platform.python_version(),
     'cuda_version': run('nvcc --version 2>/dev/null | grep release') or 'unavailable',
-    'nccl_version': run('python3 -c "import torch; print(torch.cuda.nccl.version())"') or 'unavailable',
+    'nccl_version': run(f'{{PY}} -c "import torch; print(torch.cuda.nccl.version())"'.format(PY=PY)) or 'unavailable',
     'frameworks': framework_versions(),
     'model': model_identity('/model'),
     'pip_packages': pip_pkgs(),
