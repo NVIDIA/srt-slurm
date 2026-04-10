@@ -585,7 +585,7 @@ def run(cmd, timeout=5):
         return None
 
 def pip_pkgs():
-    out = run('pip freeze')
+    out = run('python3 -m pip freeze 2>/dev/null') or run('pip freeze')
     if not out: return []
     return sorted([l.strip() for l in out.splitlines() if l.strip()], key=lambda s: s.lower())
 

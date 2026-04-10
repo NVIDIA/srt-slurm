@@ -107,6 +107,7 @@ def collect_worker_fingerprints(log_dir: Path) -> dict[str, Any] | None:
 def build_lockfile(
     config: SrtConfig,
     worker_fingerprints: dict[str, Any] | None = None,
+    resolved_log_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Build the lockfile dict from a resolved config and optional per-worker fingerprints.
 
@@ -114,10 +115,21 @@ def build_lockfile(
     - _meta: lockfile version, timestamp, SLURM context
     - config: the full resolved config as a dict
     - fingerprints: per-worker fingerprints keyed by worker name (or None)
+
+    Args:
+        config: The SrtConfig to serialize.
+        worker_fingerprints: Per-worker fingerprints keyed by worker name.
+        resolved_log_dir: The actual resolved log directory path. If provided,
+            overrides the template string in config.output.log_dir so the lockfile
+            records where logs actually went (not the unresolved template).
     """
     from srtctl.core.schema import SrtConfig
 
     config_dict = SrtConfig.Schema().dump(config)
+
+    # Replace template log_dir with the resolved path
+    if resolved_log_dir is not None and "output" in config_dict:
+        config_dict["output"]["log_dir"] = str(resolved_log_dir)
 
     return {
         "_meta": {
@@ -145,7 +157,7 @@ def write_lockfile(
     """
     try:
         fingerprints = collect_worker_fingerprints(log_dir) if log_dir else None
-        lockfile_data = build_lockfile(config, fingerprints)
+        lockfile_data = build_lockfile(config, fingerprints, resolved_log_dir=log_dir)
 
         lockfile_path = output_dir / "recipe.lock.yaml"
         lockfile_path.write_text(yaml.dump(lockfile_data, default_flow_style=False, sort_keys=False))

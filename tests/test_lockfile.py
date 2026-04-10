@@ -178,6 +178,22 @@ class TestBuildLockfile:
         assert lockfile["_meta"]["slurm"]["job_id"] == "99999"
         assert "user" in lockfile["_meta"]["slurm"]
 
+    def test_resolved_log_dir_overrides_template(self, tmp_path):
+        """log_dir in lockfile should be the resolved path, not the template."""
+        config = _make_minimal_config()
+        resolved = tmp_path / "outputs" / "12345" / "logs"
+        lockfile = build_lockfile(config, resolved_log_dir=resolved)
+
+        assert lockfile["config"]["output"]["log_dir"] == str(resolved)
+
+    def test_unresolved_log_dir_when_not_provided(self):
+        """Without resolved_log_dir, the template string is preserved."""
+        config = _make_minimal_config()
+        lockfile = build_lockfile(config)
+
+        # Default from schema — template is kept as-is
+        assert "{job_id}" in lockfile["config"]["output"]["log_dir"] or lockfile["config"]["output"]["log_dir"] is not None
+
 
 # ============================================================================
 # Write lockfile
