@@ -119,7 +119,10 @@ def setup_logging():
     )
 
 
-def start_nats(binary_path: str = "/configs/nats-server", max_payload_mb: int | None = None) -> subprocess.Popen:
+def start_nats(
+    binary_path: str = "/configs/nats-server",
+    max_payload_mb: int | None = None,
+) -> subprocess.Popen:
     """Start NATS server.
 
     Args:
@@ -146,7 +149,7 @@ def start_nats(binary_path: str = "/configs/nats-server", max_payload_mb: int | 
         max_payload_bytes = max_payload_mb * 1024 * 1024
         with open(nats_config_path, "w") as f:
             f.write(f"max_payload: {max_payload_bytes}\n")
-            f.write(f"jetstream {{ store_dir: \"{nats_store_dir}\" }}\n")
+            f.write(f'jetstream {{ store_dir: "{nats_store_dir}" }}\n')
         logger.info("Starting NATS server (max_payload: %dMB)...", max_payload_mb)
         cmd = [binary_path, "-c", nats_config_path]
     else:
