@@ -840,9 +840,13 @@ class InfraConfig:
         etcd_nats_dedicated_node: If True, run etcd and nats on a dedicated node
             instead of the head node. This reserves the first node exclusively
             for infrastructure services. Default: False.
+        nats_max_payload_mb: Maximum NATS message payload in MB. Default: None (uses
+            NATS default of 1MB). Set to 24+ for disaggregated serving with long ISL
+            (e.g. 65K+ tokens where prompt data exceeds 1MB in NATS messages).
     """
 
     etcd_nats_dedicated_node: bool = False
+    nats_max_payload_mb: int | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 
