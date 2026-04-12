@@ -108,6 +108,8 @@ class SweepOrchestrator(WorkerStageMixin, FrontendStageMixin, BenchmarkStageMixi
             "--log-dir",
             str(self.runtime.log_dir),
         ]
+        if self.config.infra.nats_max_payload_mb is not None:
+            cmd += ["--nats-max-payload-mb", str(self.config.infra.nats_max_payload_mb)]
 
         mounts = dict(self.runtime.container_mounts)
         mounts[setup_script] = setup_script_container
