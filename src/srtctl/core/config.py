@@ -21,6 +21,7 @@ from typing import Any
 import yaml
 from ruamel.yaml.comments import CommentedMap
 
+from .lockfile import verify_lock_integrity
 from .schema import ClusterConfig, SrtConfig
 
 logger = logging.getLogger(__name__)
@@ -533,6 +534,16 @@ def load_config(path: Path | str) -> SrtConfig:
     with open(path) as f:
         user_config = yaml.safe_load(f)
 
+    # Strip lock: section if present (lockfiles are valid recipes)
+    # Preserved for comparison after the new run completes
+    lock_data = user_config.pop("lock", None)
+    if lock_data:
+        if verify_lock_integrity(lock_data):
+            logger.info("Loaded lockfile — integrity verified, will compare after benchmark")
+        else:
+            logger.warning("Loaded lockfile — integrity check FAILED (lock section may have been edited)")
+            logger.warning("Comparison results may not reflect the original run")
+
     # Load cluster defaults (optional)
     cluster_config = load_cluster_config()
 
@@ -545,6 +556,11 @@ def load_config(path: Path | str) -> SrtConfig:
         config = schema.load(resolved_config)
         assert isinstance(config, SrtConfig)
         logger.info(f"Loaded config: {config.name}")
+        # Attach lock data for post-run comparison. Uses object.__setattr__
+        # because SrtConfig is frozen — this is the standard Python pattern for
+        # adding metadata to frozen dataclasses without modifying the schema.
+        # Retrieved via getattr(config, "_lock_data", None) in postprocess.
+        object.__setattr__(config, "_lock_data", lock_data)
         return config
     except Exception as e:
         raise ValueError(f"Invalid config in {path}: {e}") from e

@@ -106,6 +106,7 @@ class BenchmarkStageMixin:
                     self.config.identity.model
                     and (self.config.identity.model.repo or self.config.identity.model.revision)
                 )
+                or (self.config.identity.container and self.config.identity.container.image)
                 or self.config.identity.frameworks
             )
             if fingerprints and has_identity:

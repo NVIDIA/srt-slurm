@@ -28,7 +28,7 @@ import requests
 
 from srtctl.benchmarks.base import SCRIPTS_DIR
 from srtctl.core.config import load_cluster_config
-from srtctl.core.lockfile import write_lockfile
+from srtctl.core.lockfile import collect_worker_fingerprints, generate_reproduction_report, write_lockfile
 from srtctl.core.schema import AIAnalysisConfig, S3Config
 from srtctl.core.slurm import start_srun_process
 
@@ -152,10 +152,6 @@ class PostProcessStageMixin:
         Args:
             exit_code: Exit code from the benchmark run
         """
-        # Write lockfile with verification results (non-fatal — never blocks job completion)
-        verification = getattr(self, "_identity_verification", None)
-        write_lockfile(self.runtime.log_dir.parent, self.config, self.runtime.log_dir, verification=verification)
-
         # Copy config into log directory so it's included in S3 upload
         self._copy_config_to_logs()
 
@@ -164,6 +160,21 @@ class PostProcessStageMixin:
 
         # Extract benchmark results (reads rollup if available)
         benchmark_results = self._extract_benchmark_results()
+
+        # Write lockfile with verification
+        # TODO: include benchmark results once rollup format is standardized across
+        # sa-bench, trace-replay, and mooncake-router (currently only sa-bench has
+        # a structured rollup with runs[].throughput_toks etc.)
+        verification = getattr(self, "_identity_verification", None)
+        write_lockfile(
+            self.runtime.log_dir.parent,
+            self.config,
+            self.runtime.log_dir,
+            verification=verification,
+        )
+
+        # Compare against previous lockfile if this was a lockfile re-run
+        self._compare_against_previous_lock()
 
         # Run srtlog + S3 upload in single container (if S3 configured)
         parquet_path, s3_url = self._run_postprocess_container()
@@ -227,6 +238,42 @@ class PostProcessStageMixin:
             return {"benchmark_type": "unknown", "raw_output": benchmark_out.read_text(errors="replace")}
 
         return None
+
+    def _compare_against_previous_lock(self) -> None:
+        """If this run was from a lockfile, compare against previous run."""
+        try:
+            lock_data = getattr(self.config, "_lock_data", None)
+            if not lock_data:
+                return
+
+            new_fps = collect_worker_fingerprints(self.runtime.log_dir)
+            if not new_fps:
+                return
+
+            # TODO: pass benchmark results once rollup format is standardized
+            summary_lines, report_lines, issues = generate_reproduction_report(
+                lock_data,
+                new_fps,
+            )
+
+            # Log summary to sweep log
+            if summary_lines:
+                logger.info("")
+                logger.info("=" * 60)
+                logger.info("Comparison against previous lockfile run")
+                logger.info("=" * 60)
+                for line in summary_lines:
+                    logger.info(line)
+                logger.info("=" * 60)
+
+            # Write full report to file
+            if report_lines:
+                report_path = self.runtime.log_dir / "reproduction-report.txt"
+                report_path.write_text("\n".join(report_lines) + "\n")
+                logger.info(f"Reproduction report: {report_path}")
+
+        except Exception as e:
+            logger.debug("Lockfile comparison skipped: %s", e)
 
     def _run_postprocess_container(self) -> tuple[Path | None, str | None]:
         """Run srtlog and upload entire log directory to S3.

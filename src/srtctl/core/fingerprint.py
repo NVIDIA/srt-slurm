@@ -668,6 +668,16 @@ def verify_identity(
                     )
                 )
 
+    # --- Container identity (recorded, not verified — Pyxis strips provenance) ---
+    if hasattr(identity, "container") and identity.container and identity.container.image:
+        results.append(
+            IdentityCheckResult(
+                "container.image",
+                True,
+                f"{identity.container.image} (declared, not verifiable at runtime)",
+            )
+        )
+
     # --- Framework versions ---
     fp_frameworks = fp.get("frameworks") or {}
     for name, expected_version in (identity.frameworks or {}).items():
@@ -709,16 +719,25 @@ def format_identity_verification(results: list[IdentityCheckResult], identity: A
     passes = [r for r in results if r.passed]
     fails = [r for r in results if not r.passed]
 
-    for r in passes:
+    verified = [r for r in passes if "not verifiable" not in r.message]
+    declared = [r for r in passes if "not verifiable" in r.message]
+
+    for r in verified:
         lines.append(f"  OK  {r.field}: {r.message}")
+    for r in declared:
+        lines.append(f"  --  {r.field}: {r.message}")
     for r in fails:
         lines.append(f"  !!  {r.field}: {r.message}")
 
     lines.append("")
+    parts = []
+    if verified:
+        parts.append(f"{len(verified)} verified")
+    if declared:
+        parts.append(f"{len(declared)} declared")
     if fails:
-        lines.append(f"Result: {len(passes)} passed, {len(fails)} FAILED")
-    else:
-        lines.append(f"Result: {len(passes)} passed, all OK")
+        parts.append(f"{len(fails)} FAILED")
+    lines.append(f"Result: {', '.join(parts)}")
     lines.append("=" * 60)
     return "\n".join(lines)
 

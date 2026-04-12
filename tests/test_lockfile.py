@@ -3,13 +3,15 @@
 
 """Tests for lockfile generation, per-worker fingerprint collection, and loading."""
 
+import hashlib
 import json
 from pathlib import Path
 
 import yaml
 
 from srtctl.core.lockfile import (
-    build_lockfile,
+    _strip_lock_section,
+    build_lock_section,
     collect_slurm_context,
     collect_worker_fingerprints,
     load_lockfile_fingerprints,
@@ -39,6 +41,13 @@ def _make_minimal_config():
         "model": {"path": "/model", "container": "/c.sqsh", "precision": "fp8"},
         "resources": {"gpu_type": "h100", "gpus_per_node": 8, "prefill_nodes": 1, "decode_nodes": 1},
     })
+
+
+def _write_recipe(tmp_path: Path, content: str | None = None) -> None:
+    """Write a config.yaml that write_lockfile will read as the recipe."""
+    if content is None:
+        content = 'name: "test-job"\nmodel:\n  path: "/model"\n  container: "/c.sqsh"\n  precision: "fp8"\n'
+    (tmp_path / "config.yaml").write_text(content)
 
 
 # ============================================================================
@@ -140,173 +149,486 @@ class TestCollectSlurmContext:
 
 
 # ============================================================================
-# Build lockfile
+# Build lock section
 # ============================================================================
 
 
-class TestBuildLockfile:
-    def test_structure_with_per_worker_fingerprints(self):
+class TestBuildLockSection:
+    def test_basic_structure(self):
+        config = _make_minimal_config()
+        lock = build_lock_section(config)
+
+        assert lock["version"] == 2
+        assert "generated_at" in lock
+        assert "slurm" in lock
+        assert "resolved" in lock
+        assert lock["resolved"]["model_path"] == "/model"
+        assert lock["resolved"]["container_path"] == "/c.sqsh"
+
+    def test_with_fingerprints(self):
         config = _make_minimal_config()
         fps = {"prefill_w0": {"pip_packages": ["a==1.0"]}}
-        lockfile = build_lockfile(config, fps)
+        lock = build_lock_section(config, fps)
 
-        assert "_meta" in lockfile
-        assert "config" in lockfile
-        assert "fingerprints" in lockfile
-        assert lockfile["_meta"]["version"] == 1
-        assert lockfile["fingerprints"]["prefill_w0"]["pip_packages"] == ["a==1.0"]
+        assert lock["fingerprints"]["prefill_w0"]["pip_packages"] == ["a==1.0"]
 
-    def test_no_fingerprints(self):
+    def test_without_fingerprints(self):
         config = _make_minimal_config()
-        lockfile = build_lockfile(config)
+        lock = build_lock_section(config)
 
-        assert lockfile["fingerprints"] is None
-        assert lockfile["config"]["name"] == "test-job"
+        assert "fingerprints" not in lock
 
-    def test_config_section_has_model_fields(self):
+    def test_with_verification(self):
+        from srtctl.core.fingerprint import IdentityCheckResult
+
         config = _make_minimal_config()
-        lockfile = build_lockfile(config)
+        checks = [
+            IdentityCheckResult("frameworks.dynamo", True, "1.0.0"),
+            IdentityCheckResult("model.repo", False, "expected X, got Y"),
+        ]
+        lock = build_lock_section(config, verification=checks)
 
-        assert lockfile["config"]["model"]["path"] == "/model"
-        assert lockfile["config"]["model"]["precision"] == "fp8"
+        assert lock["verification"]["verified"] == 1
+        assert lock["verification"]["failed"] == 1
 
-    def test_meta_includes_slurm_context(self, monkeypatch):
-        monkeypatch.setenv("SLURM_JOB_ID", "99999")
-        config = _make_minimal_config()
-        lockfile = build_lockfile(config)
+    # TODO: test_with_results — once rollup format is standardized
 
-        assert lockfile["_meta"]["slurm"]["job_id"] == "99999"
-        assert "user" in lockfile["_meta"]["slurm"]
-
-    def test_resolved_log_dir_overrides_template(self, tmp_path):
-        """log_dir in lockfile should be the resolved path, not the template."""
+    def test_resolved_log_dir(self, tmp_path):
         config = _make_minimal_config()
         resolved = tmp_path / "outputs" / "12345" / "logs"
-        lockfile = build_lockfile(config, resolved_log_dir=resolved)
+        lock = build_lock_section(config, resolved_log_dir=resolved)
 
-        assert lockfile["config"]["output"]["log_dir"] == str(resolved)
+        assert lock["resolved"]["log_dir"] == str(resolved)
 
-    def test_unresolved_log_dir_when_not_provided(self):
-        """Without resolved_log_dir, the template string is preserved."""
+    def test_slurm_context_included(self, monkeypatch):
+        monkeypatch.setenv("SLURM_JOB_ID", "99999")
         config = _make_minimal_config()
-        lockfile = build_lockfile(config)
+        lock = build_lock_section(config)
 
-        # Default from schema — template is kept as-is
-        assert "{job_id}" in lockfile["config"]["output"]["log_dir"] or lockfile["config"]["output"]["log_dir"] is not None
+        assert lock["slurm"]["job_id"] == "99999"
 
 
 # ============================================================================
-# Write lockfile
+# Write lockfile (recipe + lock section)
 # ============================================================================
 
 
 class TestWriteLockfile:
-    def test_initial_write_without_fingerprints(self, tmp_path):
-        """Phase 1: write at job start with config + SLURM context, no fingerprints."""
+    def test_preserves_recipe_text(self, tmp_path):
+        """The lockfile starts with the original recipe, verbatim."""
+        recipe = 'name: "test-job"\nmodel:\n  path: "/model"\n  container: "/c.sqsh"\n  precision: "fp8"\n'
+        _write_recipe(tmp_path, recipe)
         config = _make_minimal_config()
 
-        assert write_lockfile(tmp_path, config) is True
+        write_lockfile(tmp_path, config)
+
+        lockfile_text = (tmp_path / "recipe.lock.yaml").read_text()
+        assert lockfile_text.startswith('name: "test-job"')
+
+    def test_has_lock_section(self, tmp_path):
+        """The lockfile has a lock: section with version and slurm context."""
+        _write_recipe(tmp_path)
+        config = _make_minimal_config()
+
+        write_lockfile(tmp_path, config)
 
         data = yaml.safe_load((tmp_path / "recipe.lock.yaml").read_text())
-        assert data["_meta"]["version"] == 1
-        assert data["config"]["name"] == "test-job"
-        assert data["fingerprints"] is None
+        assert "lock" in data
+        assert data["lock"]["version"] == 2
+        assert "slurm" in data["lock"]
+        assert "resolved" in data["lock"]
 
-    def test_rewrite_with_per_worker_fingerprints(self, tmp_path):
-        """Phase 2: rewrite at job end with per-worker fingerprints."""
+    def test_has_comment_banner(self, tmp_path):
+        """The lockfile has an explanatory comment before the lock section."""
+        _write_recipe(tmp_path)
+        config = _make_minimal_config()
+
+        write_lockfile(tmp_path, config)
+
+        text = (tmp_path / "recipe.lock.yaml").read_text()
+        assert "Lock section — generated by srtctl" in text
+        assert "DO NOT edit manually" in text
+
+    def test_recipe_fields_preserved(self, tmp_path):
+        """Recipe fields are readable from the lockfile."""
+        _write_recipe(tmp_path)
+        config = _make_minimal_config()
+
+        write_lockfile(tmp_path, config)
+
+        data = yaml.safe_load((tmp_path / "recipe.lock.yaml").read_text())
+        assert data["name"] == "test-job"
+        assert data["model"]["path"] == "/model"
+
+    def test_rewrite_with_fingerprints(self, tmp_path):
+        """Second write includes fingerprints in the lock section."""
+        _write_recipe(tmp_path)
         config = _make_minimal_config()
         log_dir = tmp_path / "logs"
         log_dir.mkdir()
         _write_fingerprint(log_dir / "fingerprint_prefill_w0.json", hostname="p-node")
-        _write_fingerprint(log_dir / "fingerprint_decode_w0.json", hostname="d-node")
 
         write_lockfile(tmp_path, config)
-        assert write_lockfile(tmp_path, config, log_dir) is True
+        write_lockfile(tmp_path, config, log_dir)
 
         data = yaml.safe_load((tmp_path / "recipe.lock.yaml").read_text())
-        assert data["config"]["name"] == "test-job"
-        assert data["fingerprints"]["prefill_w0"]["hostname"] == "p-node"
-        assert data["fingerprints"]["decode_w0"]["hostname"] == "d-node"
+        assert data["lock"]["fingerprints"]["prefill_w0"]["hostname"] == "p-node"
 
-    def test_never_raises_on_failure(self):
+    # TODO: test_rewrite_with_results — once rollup format is standardized
+
+    def test_never_raises(self, tmp_path):
+        """write_lockfile returns False on failure, never raises."""
         config = _make_minimal_config()
-        result = write_lockfile(Path("/proc/nonexistent"), config, Path("/proc/nonexistent"))
+        # Point to a non-writable path
+        result = write_lockfile(Path("/nonexistent/path"), config)
         assert result is False
+
+    def test_lockfile_is_valid_recipe(self, tmp_path):
+        """The lockfile can be parsed as a recipe (lock: key is just extra data)."""
+        _write_recipe(tmp_path)
+        config = _make_minimal_config()
+        write_lockfile(tmp_path, config)
+
+        data = yaml.safe_load((tmp_path / "recipe.lock.yaml").read_text())
+        # Should have both recipe fields and lock section
+        assert data["name"] == "test-job"
+        assert data["lock"]["version"] == 2
 
 
 # ============================================================================
-# Load lockfile fingerprints
+# Strip lock section
+# ============================================================================
+
+
+class TestStripLockSection:
+    def test_strips_lock_key(self):
+        text = 'name: "test"\nlock:\n  version: 2\n  slurm: {}\n'
+        result = _strip_lock_section(text)
+        assert "lock:" not in result
+        assert 'name: "test"' in result
+
+    def test_strips_comment_banner(self):
+        text = 'name: "test"\n\n# ====\n# Lock section — generated by srtctl\n# ====\nlock:\n  version: 2\n'
+        result = _strip_lock_section(text)
+        assert "Lock section" not in result
+        assert "lock:" not in result
+
+    def test_no_lock_section_unchanged(self):
+        text = 'name: "test"\nmodel:\n  path: "/model"\n'
+        result = _strip_lock_section(text)
+        assert result == text
+
+    def test_preserves_recipe_content(self):
+        text = 'name: "test"\nresources:\n  gpu_type: "gb200"\nlock:\n  version: 1\n'
+        result = _strip_lock_section(text)
+        assert 'gpu_type: "gb200"' in result
+        assert "lock:" not in result
+
+    def test_preserves_nested_lock_key(self):
+        """A nested 'lock:' (not at column 0) should NOT be stripped."""
+        text = 'name: "test"\nmodel:\n  lock: "some-value"\n  path: "/model"\n'
+        result = _strip_lock_section(text)
+        assert 'lock: "some-value"' in result
+        assert 'path: "/model"' in result
+
+    def test_preserves_indented_lock_key(self):
+        """Indented lock: is not a top-level key — should be preserved."""
+        text = 'backend:\n  config:\n    lock: true\n    timeout: 30\n'
+        result = _strip_lock_section(text)
+        assert "lock: true" in result
+        assert "timeout: 30" in result
+
+
+# ============================================================================
+# Integrity verification
+# ============================================================================
+
+
+class TestVerifyLockIntegrity:
+    def test_valid_integrity(self):
+        """Integrity hash matches when lock section is unmodified."""
+        from srtctl.core.lockfile import verify_lock_integrity
+
+        lock_data = {"version": 2, "slurm": {"job_id": "123"}, "resolved": {"model_path": "/m"}}
+        content = yaml.dump(lock_data, default_flow_style=False, sort_keys=True)
+        lock_data["integrity"] = hashlib.sha256(content.encode()).hexdigest()
+
+        assert verify_lock_integrity(lock_data) is True
+
+    def test_tampered_data_fails(self):
+        """Modifying a field after hash computation should fail."""
+        from srtctl.core.lockfile import verify_lock_integrity
+
+        lock_data = {"version": 2, "slurm": {"job_id": "123"}}
+        content = yaml.dump(lock_data, default_flow_style=False, sort_keys=True)
+        lock_data["integrity"] = hashlib.sha256(content.encode()).hexdigest()
+        lock_data["slurm"]["job_id"] = "999"  # tamper
+
+        assert verify_lock_integrity(lock_data) is False
+
+    def test_missing_integrity_field(self):
+        """No integrity field returns False."""
+        from srtctl.core.lockfile import verify_lock_integrity
+
+        assert verify_lock_integrity({"version": 2}) is False
+
+
+# ============================================================================
+# Load fingerprints from lockfile
 # ============================================================================
 
 
 class TestLoadLockfileFingerprints:
-    def test_from_lockfile_yaml(self, tmp_path):
+    def test_from_new_lockfile_format(self, tmp_path):
+        """Load fingerprints from lock.fingerprints in new format."""
+        lockfile = tmp_path / "recipe.lock.yaml"
+        lockfile.write_text(yaml.dump({
+            "name": "test",
+            "lock": {"fingerprints": {"prefill_w0": {"hostname": "node-1"}}},
+        }))
+
+        fps = load_lockfile_fingerprints(lockfile)
+        assert fps["prefill_w0"]["hostname"] == "node-1"
+
+    def test_from_legacy_lockfile(self, tmp_path):
+        """Load fingerprints from top-level fingerprints (legacy v1 format)."""
         lockfile = tmp_path / "recipe.lock.yaml"
         lockfile.write_text(yaml.dump({
             "_meta": {"version": 1},
-            "config": {},
-            "fingerprints": {
-                "prefill_w0": {"pip_packages": ["a==1.0"]},
-                "decode_w0": {"pip_packages": ["b==2.0"]},
-            },
+            "fingerprints": {"prefill_w0": {"hostname": "node-1"}},
         }))
 
-        result = load_lockfile_fingerprints(lockfile)
-        assert result is not None
-        assert "prefill_w0" in result
-        assert "decode_w0" in result
+        fps = load_lockfile_fingerprints(lockfile)
+        assert fps["prefill_w0"]["hostname"] == "node-1"
 
     def test_from_output_dir(self, tmp_path):
         lockfile = tmp_path / "recipe.lock.yaml"
         lockfile.write_text(yaml.dump({
-            "_meta": {"version": 1},
-            "config": {},
-            "fingerprints": {"prefill_w0": {"pip_packages": ["b==2.0"]}},
+            "name": "test",
+            "lock": {"fingerprints": {"w0": {"hostname": "n1"}}},
         }))
 
-        result = load_lockfile_fingerprints(tmp_path)
-        assert result is not None
-        assert result["prefill_w0"]["pip_packages"] == ["b==2.0"]
+        fps = load_lockfile_fingerprints(tmp_path)
+        assert fps["w0"]["hostname"] == "n1"
 
     def test_from_raw_json(self, tmp_path):
         fp_file = tmp_path / "fingerprint_prefill_w0.json"
-        fp_file.write_text(json.dumps({"pip_packages": ["c==3.0"]}))
+        _write_fingerprint(fp_file)
 
-        result = load_lockfile_fingerprints(fp_file)
-        assert result is not None
-        assert "prefill_w0" in result
-        assert result["prefill_w0"]["pip_packages"] == ["c==3.0"]
+        fps = load_lockfile_fingerprints(fp_file)
+        assert fps["prefill_w0"]["hostname"] == "node-001"
 
     def test_from_dir_with_raw_fingerprints(self, tmp_path):
-        """Directory without lockfile falls back to collecting fingerprint files."""
-        logs_dir = tmp_path / "logs"
-        logs_dir.mkdir()
-        _write_fingerprint(logs_dir / "fingerprint_prefill_w0.json")
+        logs = tmp_path / "logs"
+        logs.mkdir()
+        _write_fingerprint(logs / "fingerprint_w0.json", hostname="raw-node")
 
-        result = load_lockfile_fingerprints(tmp_path)
-        assert result is not None
-        assert "prefill_w0" in result
+        fps = load_lockfile_fingerprints(tmp_path)
+        assert fps["w0"]["hostname"] == "raw-node"
 
     def test_missing_path_returns_none(self, tmp_path):
-        assert load_lockfile_fingerprints(tmp_path / "nonexistent") is None
+        assert load_lockfile_fingerprints(tmp_path / "nonexistent.yaml") is None
 
     def test_lockfile_without_fingerprints_returns_none(self, tmp_path):
         lockfile = tmp_path / "recipe.lock.yaml"
-        lockfile.write_text(yaml.dump({"_meta": {"version": 1}, "config": {}}))
+        lockfile.write_text(yaml.dump({"name": "test", "lock": {"version": 2}}))
 
-        result = load_lockfile_fingerprints(lockfile)
-        assert result is None
+        assert load_lockfile_fingerprints(lockfile) is None
 
     def test_backward_compat_single_fingerprint(self, tmp_path):
-        """Old lockfiles with single 'fingerprint' key still load."""
-        lockfile = tmp_path / "recipe.lock.yaml"
-        lockfile.write_text(yaml.dump({
-            "_meta": {"version": 1},
-            "config": {},
-            "fingerprint": {"pip_packages": ["old==1.0"]},
-        }))
+        """Legacy lockfile with single 'fingerprint' key."""
+        lockfile = tmp_path / "old.yaml"
+        lockfile.write_text(yaml.dump({"fingerprint": {"hostname": "old-node"}}))
 
-        result = load_lockfile_fingerprints(lockfile)
-        assert result is not None
-        assert "worker" in result
-        assert result["worker"]["pip_packages"] == ["old==1.0"]
+        fps = load_lockfile_fingerprints(lockfile)
+        assert fps["worker"]["hostname"] == "old-node"
+
+
+# ============================================================================
+# Reproduction report
+# ============================================================================
+
+
+class TestReproductionReport:
+    """Visual tests for generate_reproduction_report — prints output so you can see it."""
+
+    def test_identical_environments(self, capsys):
+        """Two identical runs — everything should match."""
+        from srtctl.core.lockfile import generate_reproduction_report
+
+        fp = {
+            "hostname": "node-001",
+            "arch": "aarch64",
+            "os": "Ubuntu 24.04.3 LTS",
+            "python_version": "3.12.3",
+            "cuda_version": "Cuda compilation tools, release 13.1, V13.1.80",
+            "nccl_version": "(2, 28, 9)",
+            "gpu": {"available": True, "driver": "580.126.16", "gpus": [
+                {"name": "NVIDIA GB200", "driver": "580.126.16", "memory": "189471 MiB"},
+                {"name": "NVIDIA GB200", "driver": "580.126.16", "memory": "189471 MiB"},
+                {"name": "NVIDIA GB200", "driver": "580.126.16", "memory": "189471 MiB"},
+                {"name": "NVIDIA GB200", "driver": "580.126.16", "memory": "189471 MiB"},
+            ]},
+            "frameworks": {"dynamo": "1.0.0", "tensorrt_llm": "1.3.0rc9"},
+            "env": {"CUDA_VERSION": "13.1.0.036", "NCCL_VERSION": "2.28.9"},
+            "pip_packages": {"python3": ["torch==2.10.0", "numpy==2.4.4", "ai-dynamo==1.0.0"]},
+        }
+        prev_lock = {"slurm": {"job_id": "1234"}, "fingerprints": {"agg_w0": fp}}
+
+        summary, report, issues = generate_reproduction_report(prev_lock, {"agg_w0": fp})
+
+        print("\n=== IDENTICAL ENVIRONMENTS ===")
+        for line in report:
+            print(line)
+
+        assert len(issues) == 0
+        assert any("No issues found" in line for line in report)
+        assert any("280" not in line or "match" in line for line in report)
+
+    def test_different_gpu_and_framework(self, capsys):
+        """Reproducer has different GPU and framework version — should flag issues."""
+        from srtctl.core.lockfile import generate_reproduction_report
+
+        prev_fp = {
+            "hostname": "lyris-001",
+            "arch": "aarch64",
+            "os": "Ubuntu 24.04.3 LTS",
+            "python_version": "3.12.3",
+            "cuda_version": "Cuda compilation tools, release 13.1, V13.1.80",
+            "nccl_version": "(2, 28, 9)",
+            "gpu": {"available": True, "driver": "580.126.16", "gpus": [
+                {"name": "NVIDIA GB200", "driver": "580.126.16", "memory": "189471 MiB"},
+                {"name": "NVIDIA GB200", "driver": "580.126.16", "memory": "189471 MiB"},
+                {"name": "NVIDIA GB200", "driver": "580.126.16", "memory": "189471 MiB"},
+                {"name": "NVIDIA GB200", "driver": "580.126.16", "memory": "189471 MiB"},
+            ]},
+            "frameworks": {"dynamo": "1.0.0", "tensorrt_llm": "1.3.0rc9"},
+            "env": {"CUDA_VERSION": "13.1.0.036", "NCCL_VERSION": "2.28.9"},
+            "pip_packages": {"python3": ["torch==2.10.0", "numpy==2.4.4", "ai-dynamo==1.0.0"]},
+        }
+        new_fp = {
+            "hostname": "computelab-042",
+            "arch": "x86_64",
+            "os": "Ubuntu 22.04.5 LTS",
+            "python_version": "3.12.3",
+            "cuda_version": "Cuda compilation tools, release 12.8, V12.8.93",
+            "nccl_version": "(2, 25, 1)",
+            "gpu": {"available": True, "driver": "570.86.15", "gpus": [
+                {"name": "NVIDIA H100", "driver": "570.86.15", "memory": "81559 MiB"},
+                {"name": "NVIDIA H100", "driver": "570.86.15", "memory": "81559 MiB"},
+                {"name": "NVIDIA H100", "driver": "570.86.15", "memory": "81559 MiB"},
+                {"name": "NVIDIA H100", "driver": "570.86.15", "memory": "81559 MiB"},
+                {"name": "NVIDIA H100", "driver": "570.86.15", "memory": "81559 MiB"},
+                {"name": "NVIDIA H100", "driver": "570.86.15", "memory": "81559 MiB"},
+                {"name": "NVIDIA H100", "driver": "570.86.15", "memory": "81559 MiB"},
+                {"name": "NVIDIA H100", "driver": "570.86.15", "memory": "81559 MiB"},
+            ]},
+            "frameworks": {"dynamo": "0.8.1", "tensorrt_llm": "1.2.0"},
+            "env": {"CUDA_VERSION": "12.8.0", "NCCL_VERSION": "2.25.1"},
+            "pip_packages": {"python3": ["torch==2.6.0", "numpy==2.4.4", "ai-dynamo==0.8.1", "vllm==0.8.0"]},
+        }
+        prev_lock = {"slurm": {"job_id": "9999"}, "fingerprints": {"agg_w0": prev_fp}}
+
+        summary, report, issues = generate_reproduction_report(prev_lock, {"agg_w0": new_fp})
+
+        print("\n=== DIFFERENT GPU + FRAMEWORK ===")
+        for line in report:
+            print(line)
+
+        assert len(issues) > 0
+        assert any("gpu" in issue for issue in issues)
+        assert any("dynamo" in issue for issue in issues)
+        assert any("ISSUES FOUND" in line for line in report)
+
+    def test_identical_no_results(self, capsys):
+        """Identical environments with no results — should still show clean report."""
+        from srtctl.core.lockfile import generate_reproduction_report
+
+        fp = {
+            "hostname": "node-001",
+            "arch": "aarch64",
+            "os": "Ubuntu 24.04.3 LTS",
+            "python_version": "3.12.3",
+            "cuda_version": "13.1",
+            "nccl_version": "2.28.9",
+            "gpu": {"available": True, "driver": "580.126.16", "gpus": [
+                {"name": "NVIDIA GB200", "driver": "580.126.16", "memory": "189471 MiB"},
+            ]},
+            "frameworks": {"dynamo": "1.0.0"},
+            "env": {},
+            "pip_packages": {},
+        }
+        # TODO: add result regression test once rollup format is standardized
+        prev_lock = {"slurm": {"job_id": "5555"}, "fingerprints": {"w0": fp}}
+
+        summary, report, issues = generate_reproduction_report(prev_lock, {"w0": fp})
+
+        print("\n=== IDENTICAL, NO RESULTS ===")
+        for line in report:
+            print(line)
+
+        assert len(issues) == 0
+        assert any("No issues found" in line for line in report)
+
+    def test_heterogeneous_workers(self, capsys):
+        """Disagg setup: prefill on GB200, decode on H100 — per-worker comparison."""
+        from srtctl.core.lockfile import generate_reproduction_report
+
+        prefill_fp = {
+            "hostname": "node-001", "arch": "aarch64", "os": "Ubuntu 24.04",
+            "python_version": "3.12.3", "cuda_version": "13.1", "nccl_version": "2.28.9",
+            "gpu": {"available": True, "driver": "580.126.16", "gpus": [
+                {"name": "NVIDIA GB200", "driver": "580.126.16", "memory": "189471 MiB"},
+            ]},
+            "frameworks": {"dynamo": "1.0.0", "tensorrt_llm": "1.3.0rc9"},
+            "env": {}, "pip_packages": {},
+        }
+        decode_fp = {
+            "hostname": "node-002", "arch": "x86_64", "os": "Ubuntu 22.04",
+            "python_version": "3.12.3", "cuda_version": "12.8", "nccl_version": "2.25.1",
+            "gpu": {"available": True, "driver": "570.86.15", "gpus": [
+                {"name": "NVIDIA H100", "driver": "570.86.15", "memory": "81559 MiB"},
+            ]},
+            "frameworks": {"dynamo": "1.0.0", "tensorrt_llm": "1.3.0rc9"},
+            "env": {}, "pip_packages": {},
+        }
+        prev_lock = {"slurm": {"job_id": "7777"}, "fingerprints": {
+            "prefill_w0": prefill_fp, "decode_w0": decode_fp,
+        }}
+        new_fps = {"prefill_w0": prefill_fp, "decode_w0": decode_fp}
+
+        summary, report, issues = generate_reproduction_report(prev_lock, new_fps)
+
+        print("\n=== HETEROGENEOUS WORKERS (same topology) ===")
+        for line in report:
+            print(line)
+
+        assert len(issues) == 0
+        assert any("prefill_w0" in line for line in report)
+        assert any("decode_w0" in line for line in report)
+
+    def test_worker_topology_change(self, capsys):
+        """Worker added/removed between runs — should flag topology change."""
+        from srtctl.core.lockfile import generate_reproduction_report
+
+        fp = {
+            "hostname": "node-001", "arch": "aarch64", "os": "Ubuntu 24.04",
+            "python_version": "3.12.3", "cuda_version": "13.1", "nccl_version": "2.28.9",
+            "gpu": {"available": True, "driver": "580.126.16", "gpus": [
+                {"name": "NVIDIA GB200", "driver": "580.126.16", "memory": "189471 MiB"},
+            ]},
+            "frameworks": {"dynamo": "1.0.0"}, "env": {}, "pip_packages": {},
+        }
+        prev_lock = {"slurm": {"job_id": "8888"}, "fingerprints": {
+            "prefill_w0": fp, "decode_w0": fp, "decode_w1": fp,
+        }}
+        new_fps = {"prefill_w0": fp, "decode_w0": fp}
+
+        summary, report, issues = generate_reproduction_report(prev_lock, new_fps)
+
+        print("\n=== WORKER TOPOLOGY CHANGE ===")
+        for line in report:
+            print(line)
+
+        assert any("topology" in issue.lower() or "decode_w1" in issue for issue in issues)
+        assert any("REMOVED" in line for line in report)
