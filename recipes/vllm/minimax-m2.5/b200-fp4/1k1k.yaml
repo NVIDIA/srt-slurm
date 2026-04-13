@@ -1,0 +1,103 @@
+# MiniMax-M2.5 NVFP4 B200 — 1K/1K ISL/OSL
+# Aggregated vLLM, single-node 
+# requires github.com/NVIDIA/srt-slurm, branch sa-submission-q2-2026
+# usage examples: 
+# srtctl apply -f 1k1k.yaml     # run all variants
+# srtctl apply -f 1k1k.yaml:zip_override_lowlat    # full lowlat sweep
+# srtctl apply -f 1k1k.yaml:zip_override_lowlat[2] # lowlat, tep2 variant only
+# srtctl apply -f 1k1k.yaml:zip_override_hightput   # full high tput sweep
+# srtctl dry-run -f 1k1k.yaml   # preview
+
+base:
+  name: "minimax-m2.5-nvfp4-b200-1k1k"
+
+  model:
+    path: "minimax_m2.5_fp4"
+    container: "vllm/vllm-openai:v0.19.0-cu130"
+    precision: "fp4"
+
+  resources:
+    gpu_type: "b200"
+    gpus_per_node: 8
+    agg_nodes: 1
+    agg_workers: 1
+    gpus_per_agg: 1
+
+  frontend:
+    type: dynamo
+    enable_multiple_frontends: false
+
+  dynamo:
+    install: true
+    top_of_tree: true # currently need ToT for vllm 0.19.0
+
+  setup_script: vllm-container-deps.sh
+
+  backend:
+    type: vllm
+
+    aggregated_environment:
+      DYN_HEALTH_CHECK_ENABLED: "false"
+      PYTHONUNBUFFERED: "1"
+
+    vllm_config:
+      aggregated:
+        tensor-parallel-size: 1
+        gpu-memory-utilization: 0.90
+        max-model-len: 2248
+        max-num-batched-tokens: 2048
+        kv-cache-dtype: fp8
+        max-cudagraph-capture-size: 2048
+        stream-interval: 20
+        no-enable-prefix-caching: true
+        trust-remote-code: true
+
+  benchmark:
+    type: "sa-bench"
+    isl: 1024
+    osl: 1024
+    req_rate: "inf"
+
+
+zip_override_lowlat:
+  name:
+    - "minimax-m2.5-nvfp4-b200-1k1k-lowlat-tp1"
+    - "minimax-m2.5-nvfp4-b200-1k1k-lowlat-tp2"
+    - "minimax-m2.5-nvfp4-b200-1k1k-lowlat-tep2"
+  resources:
+    gpus_per_agg: [1, 2, 2]
+  backend:
+    vllm_config:
+      aggregated:
+        tensor-parallel-size: [1, 2, 2]
+        enable-expert-parallel: [false, false, true]
+  benchmark:
+    concurrencies: ["4","4x8x16x32x64x128x256x512","128x256"]
+
+override_maxtput:
+  name: "minimax-m2.5-nvfp4-b200-1k1k-maxtput-dep2"
+  resources:
+    gpus_per_agg: 2
+  backend:
+    vllm_config:
+      aggregated:
+        tensor-parallel-size: 1
+        enable-expert-parallel: true
+        data-parallel-size: 2
+  benchmark:
+    concurrencies: "512"
+
+zip_override_hightput:
+  name:
+    - "minimax-m2.5-nvfp4-b200-1k1k-hightput-tp4"
+    - "minimax-m2.5-nvfp4-b200-1k1k-hightput-tep4"
+    - "minimax-m2.5-nvfp4-b200-1k1k-hightput-tp8"
+  resources:
+    gpus_per_agg: [4, 4, 8]
+  backend:
+    vllm_config:
+      aggregated:
+        tensor-parallel-size: [4, 4, 8]
+        enable-expert-parallel: [false, true, false]
+  benchmark:
+    concurrencies: ["4x8x16x32x64x128x256x512", "32x64x128", "4"]
