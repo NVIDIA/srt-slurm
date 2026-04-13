@@ -113,17 +113,17 @@ class TestStartPerfMonitor:
     def test_returns_empty_when_disabled(self):
         assert _make_orchestrator(monitoring=MonitoringConfig(enabled=False))._start_perf_monitor() == []
 
-    def test_starts_one_proc_per_worker_node_excluding_head(self):
-        """Starts perfmon on node1 and node2 (not node0=head)."""
+    def test_starts_one_proc_per_worker_node_including_head(self):
+        """Starts perfmon on all worker nodes including head (node0)."""
         orch = _make_orchestrator(monitoring=MonitoringConfig())
         mock_proc = MagicMock()
 
         with patch("srtctl.cli.mixins.benchmark_stage.start_srun_process", return_value=mock_proc) as mock_srun:
             result = orch._start_perf_monitor()
 
-        assert len(result) == 2
+        assert len(result) == 3
         nodes = [node for node, _ in result]
-        assert "node0" not in nodes
+        assert "node0" in nodes
         assert "node1" in nodes
         assert "node2" in nodes
 
@@ -135,7 +135,7 @@ class TestStartPerfMonitor:
             orch._start_perf_monitor()
 
         all_cmds = [c.kwargs["command"] for c in mock_srun.call_args_list]
-        for node in ("node1", "node2"):
+        for node in ("node0", "node1", "node2"):
             node_cmds = [cmd for cmd in all_cmds if any(node in arg for arg in cmd)]
             assert any(f"perf_samples_{node}.csv" in arg for arg in node_cmds[0])
             assert any(f"perf_summary_{node}.json" in arg for arg in node_cmds[0])
@@ -163,8 +163,10 @@ class TestStartPerfMonitor:
         with patch("srtctl.cli.mixins.benchmark_stage.start_srun_process", side_effect=srun_side_effect):
             result = orch._start_perf_monitor()
 
-        assert len(result) == 1
-        assert result[0][0] == "node2"
+        assert len(result) == 2
+        nodes = [node for node, _ in result]
+        assert "node0" in nodes
+        assert "node2" in nodes
 
 
 class TestStopPerfMonitor:
