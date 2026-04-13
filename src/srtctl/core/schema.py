@@ -611,6 +611,9 @@ class BenchmarkConfig:
     aiperf_package: str | None = None
     # Extra aiperf CLI flags passed through to bench.sh (e.g., benchmark-duration: 600, workers-max: 200)
     aiperf_args: dict[str, Any] = field(default_factory=dict)
+    # SA-Bench: optional SGLang /slow_down on decode workers (sglang frontend only; see benchmark_stage)
+    slow_down_sleep_time: float | None = None  # forward_sleep_time (seconds); unset = feature off
+    slow_down_wait_time: float | None = None  # seconds until POST clears slow_down; unset = feature off
 
     def get_concurrency_list(self) -> list[int]:
         if self.concurrencies is None:
