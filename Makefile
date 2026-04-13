@@ -45,43 +45,66 @@ setup:
 	@mkdir -p logs
 	@echo "🖥️  Using architecture: $(ARCH)"
 	@case "$(ARCH)" in \
-		x86_64)  ARCH_SHORT="amd64" ;; \
-		aarch64) ARCH_SHORT="arm64" ;; \
+		x86_64)  ARCH_SHORT="amd64"; ARCH_FILE_PATTERN="x86-64" ;; \
+		aarch64) ARCH_SHORT="arm64"; ARCH_FILE_PATTERN="aarch64" ;; \
 		*) echo "❌ Unsupported architecture: $(ARCH)"; exit 1 ;; \
 	esac; \
-	echo "ℹ️  Dynamo 0.8.0 will be installed from PyPI when workers start"; \
-	echo "⬇️  Downloading NATS ($(NATS_VERSION)) for $$ARCH_SHORT..."; \
-	NATS_DEB="nats-server-$(NATS_VERSION)-$$ARCH_SHORT.deb"; \
-	NATS_URL="https://github.com/nats-io/nats-server/releases/download/$(NATS_VERSION)/$$NATS_DEB"; \
-	wget -q --show-progress --tries=3 --waitretry=5 "$$NATS_URL" -O "configs/$$NATS_DEB"; \
-	echo "📁 Extracting NATS binary..."; \
-	TMP_DIR=$$(mktemp -d); \
-	dpkg-deb -x "configs/$$NATS_DEB" "$$TMP_DIR"; \
-	if [ -f "$$TMP_DIR/usr/local/bin/nats-server" ]; then \
-		cp "$$TMP_DIR/usr/local/bin/nats-server" configs/; \
-	elif [ -f "$$TMP_DIR/usr/bin/nats-server" ]; then \
-		cp "$$TMP_DIR/usr/bin/nats-server" configs/; \
-	else \
-		echo "❌ Could not find nats-server binary inside the .deb package"; \
-		ls -R "$$TMP_DIR" | head -n 50; \
-		exit 1; \
-	fi; \
-	chmod +x configs/nats-server; \
-	rm -rf "$$TMP_DIR" "configs/$$NATS_DEB"; \
-	echo "⬇️  Downloading ETCD ($(ETCD_VERSION)) for $$ARCH_SHORT..."; \
-	ETCD_TAR="etcd-$(ETCD_VERSION)-linux-$$ARCH_SHORT.tar.gz"; \
-	ETCD_URL="https://github.com/etcd-io/etcd/releases/download/$(ETCD_VERSION)/$$ETCD_TAR"; \
-	wget -q --show-progress --tries=3 --waitretry=5 "$$ETCD_URL" -O "configs/$$ETCD_TAR"; \
-	echo "📁 Extracting ETCD binaries..."; \
-	tar -xzf "configs/$$ETCD_TAR" --strip-components=1 -C configs etcd-$(ETCD_VERSION)-linux-$$ARCH_SHORT/etcd etcd-$(ETCD_VERSION)-linux-$$ARCH_SHORT/etcdctl; \
-	chmod +x configs/etcd configs/etcdctl; \
-	rm "configs/$$ETCD_TAR"; \
-	echo "✅ Done. Contents of configs directory:"; \
-	ls -lh configs/; \
 	echo ""; \
-	echo "⚙️  Setting up srtslurm.yaml..."; \
+	echo "--- NATS $(NATS_VERSION) ---"; \
+	if [ -f configs/nats-server ] && file configs/nats-server | grep -q "$$ARCH_FILE_PATTERN"; then \
+		echo "✅ NATS already installed at configs/nats-server ($(ARCH))"; \
+	else \
+		echo "⬇️  Downloading NATS ($(NATS_VERSION)) for $$ARCH_SHORT..."; \
+		NATS_DEB="nats-server-$(NATS_VERSION)-$$ARCH_SHORT.deb"; \
+		NATS_URL="https://github.com/nats-io/nats-server/releases/download/$(NATS_VERSION)/$$NATS_DEB"; \
+		wget -q --show-progress --tries=3 --waitretry=5 "$$NATS_URL" -O "configs/$$NATS_DEB"; \
+		echo "📁 Extracting NATS binary..."; \
+		TMP_DIR=$$(mktemp -d); \
+		dpkg-deb -x "configs/$$NATS_DEB" "$$TMP_DIR"; \
+		if [ -f "$$TMP_DIR/usr/local/bin/nats-server" ]; then \
+			cp "$$TMP_DIR/usr/local/bin/nats-server" configs/; \
+		elif [ -f "$$TMP_DIR/usr/bin/nats-server" ]; then \
+			cp "$$TMP_DIR/usr/bin/nats-server" configs/; \
+		else \
+			echo "❌ Could not find nats-server binary inside the .deb package"; \
+			ls -R "$$TMP_DIR" | head -n 50; \
+			exit 1; \
+		fi; \
+		chmod +x configs/nats-server; \
+		rm -rf "$$TMP_DIR" "configs/$$NATS_DEB"; \
+		echo "✅ NATS installed to configs/nats-server"; \
+	fi; \
+	echo ""; \
+	echo "--- ETCD $(ETCD_VERSION) ---"; \
+	if [ -f configs/etcd ] && [ -f configs/etcdctl ] && file configs/etcd | grep -q "$$ARCH_FILE_PATTERN"; then \
+		echo "✅ ETCD already installed at configs/etcd ($(ARCH))"; \
+	else \
+		echo "⬇️  Downloading ETCD ($(ETCD_VERSION)) for $$ARCH_SHORT..."; \
+		ETCD_TAR="etcd-$(ETCD_VERSION)-linux-$$ARCH_SHORT.tar.gz"; \
+		ETCD_URL="https://github.com/etcd-io/etcd/releases/download/$(ETCD_VERSION)/$$ETCD_TAR"; \
+		wget -q --show-progress --tries=3 --waitretry=5 "$$ETCD_URL" -O "configs/$$ETCD_TAR"; \
+		echo "📁 Extracting ETCD binaries..."; \
+		tar -xzf "configs/$$ETCD_TAR" --strip-components=1 -C configs etcd-$(ETCD_VERSION)-linux-$$ARCH_SHORT/etcd etcd-$(ETCD_VERSION)-linux-$$ARCH_SHORT/etcdctl; \
+		chmod +x configs/etcd configs/etcdctl; \
+		rm "configs/$$ETCD_TAR"; \
+		echo "✅ ETCD installed to configs/etcd"; \
+	fi; \
+	echo ""; \
+	echo "--- uv (compute node arch: $(ARCH)) ---"; \
+	if [ -f bin/uv ] && file bin/uv | grep -q "$$ARCH_FILE_PATTERN"; then \
+		echo "✅ uv already installed at bin/uv ($(ARCH))"; \
+	else \
+		echo "⬇️  Downloading uv for $(ARCH)..."; \
+		mkdir -p bin; \
+		UV_URL="https://github.com/astral-sh/uv/releases/latest/download/uv-$(ARCH)-unknown-linux-gnu.tar.gz"; \
+		curl -LsSf "$$UV_URL" | tar -xz --strip-components=1 -C bin; \
+		chmod +x bin/uv bin/uvx 2>/dev/null; \
+		echo "✅ uv installed to bin/uv ($$(file bin/uv | grep -o 'ARM aarch64\|x86-64'))"; \
+	fi; \
+	echo ""; \
+	echo "--- srtslurm.yaml ---"; \
 	if [ -f srtslurm.yaml ]; then \
-		echo "ℹ️  srtslurm.yaml already exists, skipping..."; \
+		echo "✅ srtslurm.yaml already exists"; \
 	else \
 		echo "Creating srtslurm.yaml with your cluster settings..."; \
 		echo ""; \

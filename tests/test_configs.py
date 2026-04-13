@@ -93,6 +93,55 @@ class TestSrtConfigStructure:
         assert total_needed <= total_available
 
 
+class TestIdentityConfig:
+    """Tests for the identity block (virtual identity for runtime verification)."""
+
+    def test_defaults_to_empty(self):
+        """IdentityConfig has empty defaults."""
+        from srtctl.core.schema import IdentityConfig
+
+        config = IdentityConfig()
+        assert config.model.repo is None
+        assert config.model.revision is None
+        assert config.frameworks == {}
+
+    def test_with_values(self):
+        """IdentityConfig stores model and framework info."""
+        from srtctl.core.schema import IdentityConfig, IdentityModelConfig
+
+        config = IdentityConfig(
+            model=IdentityModelConfig(repo="nvidia/Kimi-K2.5-NVFP4", revision="abc123"),
+            frameworks={"dynamo": "1.0.0", "tensorrt_llm": "1.3.0rc9"},
+        )
+        assert config.model.repo == "nvidia/Kimi-K2.5-NVFP4"
+        assert config.model.revision == "abc123"
+        assert config.frameworks["dynamo"] == "1.0.0"
+        assert config.frameworks["tensorrt_llm"] == "1.3.0rc9"
+
+    def test_marshmallow_roundtrip(self):
+        """Schema dump/load preserves identity fields."""
+        from srtctl.core.schema import IdentityConfig, IdentityModelConfig
+
+        original = IdentityConfig(
+            model=IdentityModelConfig(repo="nvidia/Kimi-K2.5-NVFP4", revision="abc123"),
+            frameworks={"dynamo": "1.0.0"},
+        )
+        schema = IdentityConfig.Schema()
+        dumped = schema.dump(original)
+        loaded = schema.load(dumped)
+        assert loaded.model.repo == "nvidia/Kimi-K2.5-NVFP4"
+        assert loaded.frameworks["dynamo"] == "1.0.0"
+
+    def test_model_config_is_clean(self):
+        """ModelConfig has no virtual identity fields (moved to IdentityConfig)."""
+        from srtctl.core.schema import ModelConfig
+
+        config = ModelConfig(path="/model", container="/c.sqsh", precision="fp8")
+        assert not hasattr(config, "name")
+        assert not hasattr(config, "container_image")
+        assert not hasattr(config, "container_digest")
+
+
 class TestDynamoConfig:
     """Tests for DynamoConfig."""
 
@@ -1022,6 +1071,7 @@ class TestVLLMDataParallelMode:
         # Mock runtime context
         mock_runtime = MagicMock()
         mock_runtime.model_path = Path("/model")
+        mock_runtime.is_hf_model = False
 
         with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
             cmd = backend.build_worker_command(
@@ -1177,6 +1227,7 @@ class TestVLLMDataParallelMode:
 
         mock_runtime = MagicMock()
         mock_runtime.model_path = Path("/model")
+        mock_runtime.is_hf_model = False
 
         with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
             cmd = backend.build_worker_command(
@@ -1239,6 +1290,7 @@ class TestVLLMDataParallelMode:
 
         mock_runtime = MagicMock()
         mock_runtime.model_path = Path("/model")
+        mock_runtime.is_hf_model = False
 
         with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
             cmd = backend.build_worker_command(
@@ -1378,3 +1430,179 @@ class TestVLLMDataParallelMode:
         assert "--disaggregation-mode" not in cmd
         assert "--is-prefill-worker" not in cmd
         assert "--is-decode-worker" not in cmd
+
+
+class TestHuggingFaceModelSupport:
+    """Tests for HuggingFace model (hf:prefix) support across all backends."""
+
+    @staticmethod
+    def _make_process(mode="agg"):
+        from srtctl.core.topology import Process
+
+        return Process(
+            node="node0",
+            gpu_indices=frozenset([0, 1, 2, 3]),
+            sys_port=8081,
+            http_port=30000,
+            endpoint_mode=mode,
+            endpoint_index=0,
+            node_rank=0,
+        )
+
+    @staticmethod
+    def _make_runtime(*, is_hf: bool):
+        from pathlib import Path
+        from unittest.mock import MagicMock
+
+        runtime = MagicMock()
+        if is_hf:
+            runtime.model_path = Path("facebook/opt-125m")
+            runtime.is_hf_model = True
+        else:
+            runtime.model_path = Path("/models/my-model")
+            runtime.is_hf_model = False
+        return runtime
+
+    # --- vLLM ---
+
+    def test_vllm_hf_model_uses_model_id(self):
+        """vLLM passes HF model ID when is_hf_model=True."""
+        from unittest.mock import patch
+
+        from srtctl.backends import VLLMProtocol
+
+        backend = VLLMProtocol(connector=None)
+        process = self._make_process()
+        runtime = self._make_runtime(is_hf=True)
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            cmd = backend.build_worker_command(process=process, endpoint_processes=[process], runtime=runtime)
+
+        idx = cmd.index("--model")
+        assert cmd[idx + 1] == "facebook/opt-125m"
+
+    def test_vllm_local_model_uses_container_mount(self):
+        """vLLM passes /model when is_hf_model=False."""
+        from unittest.mock import patch
+
+        from srtctl.backends import VLLMProtocol
+
+        backend = VLLMProtocol(connector=None)
+        process = self._make_process()
+        runtime = self._make_runtime(is_hf=False)
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            cmd = backend.build_worker_command(process=process, endpoint_processes=[process], runtime=runtime)
+
+        idx = cmd.index("--model")
+        assert cmd[idx + 1] == "/model"
+
+    # --- SGLang ---
+
+    def test_sglang_hf_model_uses_model_id(self):
+        """SGLang passes HF model ID when is_hf_model=True."""
+        from unittest.mock import patch
+
+        from srtctl.backends import SGLangProtocol
+
+        backend = SGLangProtocol()
+        process = self._make_process()
+        runtime = self._make_runtime(is_hf=True)
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            cmd = backend.build_worker_command(process=process, endpoint_processes=[process], runtime=runtime)
+
+        idx = cmd.index("--model-path")
+        assert cmd[idx + 1] == "facebook/opt-125m"
+
+    def test_sglang_local_model_uses_container_mount(self):
+        """SGLang passes /model when is_hf_model=False."""
+        from unittest.mock import patch
+
+        from srtctl.backends import SGLangProtocol
+
+        backend = SGLangProtocol()
+        process = self._make_process()
+        runtime = self._make_runtime(is_hf=False)
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            cmd = backend.build_worker_command(process=process, endpoint_processes=[process], runtime=runtime)
+
+        idx = cmd.index("--model-path")
+        assert cmd[idx + 1] == "/model"
+
+    def test_sglang_model_path_not_duplicated_from_config(self):
+        """SGLang does not duplicate --model-path when user provides it in sglang_config."""
+        from unittest.mock import patch
+
+        from srtctl.backends import SGLangProtocol, SGLangServerConfig
+
+        backend = SGLangProtocol(
+            sglang_config=SGLangServerConfig(aggregated={"model-path": "/custom/model"}),
+        )
+        process = self._make_process()
+        runtime = self._make_runtime(is_hf=False)
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            cmd = backend.build_worker_command(process=process, endpoint_processes=[process], runtime=runtime)
+
+        count = cmd.count("--model-path")
+        assert count == 1, f"--model-path appears {count} times: {cmd}"
+
+    def test_sglang_served_model_name_not_duplicated(self):
+        """SGLang does not duplicate --served-model-name when user provides it in sglang_config."""
+        from unittest.mock import patch
+
+        from srtctl.backends import SGLangProtocol, SGLangServerConfig
+
+        backend = SGLangProtocol(
+            sglang_config=SGLangServerConfig(aggregated={"served-model-name": "MyModel"}),
+        )
+        process = self._make_process()
+        runtime = self._make_runtime(is_hf=False)
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            cmd = backend.build_worker_command(process=process, endpoint_processes=[process], runtime=runtime)
+
+        count = cmd.count("--served-model-name")
+        assert count == 1, f"--served-model-name appears {count} times: {cmd}"
+
+    # --- TRTLLM ---
+
+    def test_trtllm_hf_model_uses_model_id(self):
+        """TRTLLM passes HF model ID when is_hf_model=True."""
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from srtctl.backends import TRTLLMProtocol
+
+        backend = TRTLLMProtocol()
+        process = self._make_process()
+        runtime = self._make_runtime(is_hf=True)
+        runtime.log_dir = Path("/tmp/test-logs")
+
+        with patch("pathlib.Path.write_text"):
+            with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+                cmd = backend.build_worker_command(process=process, endpoint_processes=[process], runtime=runtime)
+
+        idx = cmd.index("--model-path")
+        assert cmd[idx + 1] == "facebook/opt-125m"
+
+    def test_trtllm_local_model_uses_container_mount(self):
+        """TRTLLM passes /model when is_hf_model=False."""
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from srtctl.backends import TRTLLMProtocol
+
+        backend = TRTLLMProtocol()
+        process = self._make_process()
+        runtime = self._make_runtime(is_hf=False)
+        runtime.log_dir = Path("/tmp/test-logs")
+
+        with patch("pathlib.Path.write_text"):
+            with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+                cmd = backend.build_worker_command(process=process, endpoint_processes=[process], runtime=runtime)
+
+        idx = cmd.index("--model-path")
+        assert cmd[idx + 1] == "/model"

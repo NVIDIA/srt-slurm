@@ -1,0 +1,65 @@
+# Qwen3.5-397B-A17B-NVFP4 Aggregated DEP4 on GB200
+# Data Expert Parallel: DP4 + TP4 + EP4 with dp-attention
+
+name: "nvfp4-agg-dep4"
+
+model:
+  path: "qwen3.5-nvfp4"
+  container: "dev"
+  precision: "fp4"
+
+resources:
+  gpu_type: "gb200"
+  gpus_per_node: 4
+  agg_nodes: 1
+  agg_workers: 1
+
+backend:
+  type: sglang
+
+  aggregated_environment:
+    PYTHONUNBUFFERED: "1"
+    NCCL_MNNVL_ENABLE: "1"
+    NCCL_CUMEM_ENABLE: "1"
+    SGLANG_DG_CACHE_DIR: "/configs/deepgemm-cache"
+    FLASHINFER_WORKSPACE_BASE: "/configs/flashinfer-gdc-cache"
+    SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK: "1"
+
+  sglang_config:
+    aggregated:
+      served-model-name: "nvidia/Qwen3.5-397B-A17B-NVFP4"
+      model-path: "/model/"
+
+      attention-backend: "trtllm_mha"
+      quantization: "modelopt_fp4"
+      kv-cache-dtype: "fp8_e4m3"
+
+      # DEP4: DP4 + TP4 + EP4 with dp-attention
+      tensor-parallel-size: 4
+      data-parallel-size: 4
+      expert-parallel-size: 4
+      enable-dp-attention: true
+      enable-dp-lm-head: true
+      moe-dense-tp-size: 1
+
+      mamba-ssm-dtype: "bfloat16"
+      moe-runner-backend: "flashinfer_trtllm"
+
+      disable-radix-cache: true
+      max-running-requests: 1024
+      mem-fraction-static: 0.8
+      chunked-prefill-size: 16384
+      max-prefill-tokens: 16384
+      context-length: 2020
+      cuda-graph-max-bs: 1024
+      # enable-symm-mem: true  # may improve perf in some scenarios, benchmark before enabling
+
+      decode-log-interval: 1
+      stream-interval: 50
+
+benchmark:
+  type: "sa-bench"
+  isl: 1000
+  osl: 1000
+  concurrencies: "1x2x4x8x16x32x64x128x256x512x1024"
+  req_rate: "inf"

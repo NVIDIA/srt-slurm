@@ -10,12 +10,13 @@ Supported backends:
 """
 
 from .base import BackendProtocol, BackendType, SrunConfig
+from .mocker import MockerProtocol, MockerServerConfig
 from .sglang import SGLangProtocol, SGLangServerConfig
 from .trtllm import TRTLLMProtocol, TRTLLMServerConfig
 from .vllm import VLLMProtocol, VLLMServerConfig
 
 # Union type for all backend configs
-BackendConfig = SGLangProtocol | TRTLLMProtocol | VLLMProtocol
+BackendConfig = SGLangProtocol | TRTLLMProtocol | VLLMProtocol | MockerProtocol
 
 __all__ = [
     # Base types
@@ -32,4 +33,7 @@ __all__ = [
     # vLLM
     "VLLMProtocol",
     "VLLMServerConfig",
+    # Mocker
+    "MockerProtocol",
+    "MockerServerConfig",
 ]

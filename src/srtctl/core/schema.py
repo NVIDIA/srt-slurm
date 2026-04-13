@@ -32,6 +32,7 @@ from marshmallow_dataclass import dataclass
 
 from srtctl.backends import (
     BackendConfig,
+    MockerProtocol,
     SGLangProtocol,
     TRTLLMProtocol,
     VLLMProtocol,
@@ -223,6 +224,7 @@ class BenchmarkType(str, Enum):
     SA_BENCH = "sa-bench"
     ROUTER = "router"
     MOONCAKE_ROUTER = "mooncake-router"
+    TRACE_REPLAY = "trace-replay"
     MMLU = "mmlu"
     GPQA = "gpqa"
     LONGBENCHV2 = "longbenchv2"
@@ -254,7 +256,7 @@ class BackendConfigField(fields.Field):
             # Default to SGLang
             return SGLangProtocol()
 
-        if isinstance(value, SGLangProtocol | TRTLLMProtocol | VLLMProtocol):
+        if isinstance(value, SGLangProtocol | TRTLLMProtocol | VLLMProtocol | MockerProtocol):
             return value
 
         if not isinstance(value, dict):
@@ -272,8 +274,13 @@ class BackendConfigField(fields.Field):
         elif backend_type == "vllm":
             schema = VLLMProtocol.Schema()
             return schema.load(value)
+        elif backend_type == "mocker":
+            schema = MockerProtocol.Schema()
+            return schema.load(value)
         else:
-            raise ValidationError(f"Unknown backend type: {backend_type!r}. Supported types: sglang, trtllm, vllm")
+            raise ValidationError(
+                f"Unknown backend type: {backend_type!r}. Supported types: sglang, trtllm, vllm, mocker"
+            )
 
     def _serialize(self, value: Any | None, attr: str | None, obj: Any, **kwargs) -> Any:
         """Serialize backend config to dict."""
@@ -285,6 +292,8 @@ class BackendConfigField(fields.Field):
             return TRTLLMProtocol.Schema().dump(value)
         if isinstance(value, VLLMProtocol):
             return VLLMProtocol.Schema().dump(value)
+        if isinstance(value, MockerProtocol):
+            return MockerProtocol.Schema().dump(value)
         return value
 
 
@@ -375,6 +384,31 @@ class ModelConfig:
     path: str
     container: str
     precision: str
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
+class IdentityModelConfig:
+    """Virtual model identity for runtime verification."""
+
+    repo: str | None = None  # HuggingFace model ID, e.g. "nvidia/Kimi-K2.5-NVFP4"
+    revision: str | None = None  # HuggingFace git commit SHA
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
+class IdentityConfig:
+    """Virtual identity for runtime verification.
+
+    These fields declare what *should* be running. They are not used for
+    launching — only for verifying the runtime fingerprint matches expectations.
+    Mismatches produce warnings, not failures.
+    """
+
+    model: IdentityModelConfig = field(default_factory=IdentityModelConfig)
+    frameworks: dict[str, str] = field(default_factory=dict)  # e.g. {"dynamo": "1.0.0", "tensorrt_llm": "1.3.0rc9"}
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -539,6 +573,17 @@ class BenchmarkConfig:
     ttft_threshold_ms: int | None = None  # Goodput TTFT threshold in ms (default: 2000)
     itl_threshold_ms: int | None = None  # Goodput ITL threshold in ms (default: 25)
     random_range_ratio: float | None = None  # Random input/output length range ratio (default: 0.8)
+    num_prompts_mult: int | None = None  # Multiplier for num_prompts = concurrency * mult (default: 10)
+    num_warmup_mult: int | None = None  # Multiplier for warmup prompts = concurrency * mult (default: 2)
+    # Trace replay benchmark fields (uses aiperf with mooncake_trace dataset type)
+    trace_file: str | None = None  # Path to trace JSONL file (container path, e.g., /traces/dataset.jsonl)
+    custom_tokenizer: str | None = None  # Custom tokenizer class (e.g., "module.path.ClassName")
+    use_chat_template: bool = True  # Pass --use-chat-template to benchmark (default: true)
+    # aiperf pip install spec (e.g., "aiperf>=0.7.0", "aiperf @ git+https://...@commit")
+    # If set, runs pip install <spec> before benchmarking. Upgrades if already installed.
+    aiperf_package: str | None = None
+    # Extra aiperf CLI flags passed through to bench.sh (e.g., benchmark-duration: 600, workers-max: 200)
+    aiperf_args: dict[str, Any] = field(default_factory=dict)
 
     def get_concurrency_list(self) -> list[int]:
         if self.concurrencies is None:
@@ -711,7 +756,7 @@ class DynamoConfig:
         if self.version is not None:
             return (
                 f"echo 'Installing dynamo {self.version}...' && "
-                f"pip install --break-system-packages --quiet ai-dynamo-runtime=={self.version} ai-dynamo=={self.version} && "
+                f"pip install --break-system-packages --quiet --extra-index-url https://pypi.nvidia.com ai-dynamo-runtime=={self.version} ai-dynamo=={self.version} && "
                 f"echo 'Dynamo {self.version} installed'"
             )
 
@@ -719,9 +764,10 @@ class DynamoConfig:
         git_ref = self.hash if self.hash else "HEAD"
         checkout_cmd = f"git checkout {self.hash}" if self.hash else ""
 
-        # Original SGLang container path, UNCHANGED
+        # Original SGLang container path
         sglang = (
-            "apt-get update -qq && apt-get install -y -qq libclang-dev > /dev/null 2>&1 && "
+            "apt-get update -qq && apt-get install -y -qq libclang-dev curl > /dev/null 2>&1 && "
+            "if ! command -v cargo &>/dev/null; then curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable -q && source $HOME/.cargo/env; fi && "
             "cd /sgl-workspace/ && "
             "git clone https://github.com/ai-dynamo/dynamo.git && "
             "cd dynamo && "
@@ -819,9 +865,13 @@ class InfraConfig:
         etcd_nats_dedicated_node: If True, run etcd and nats on a dedicated node
             instead of the head node. This reserves the first node exclusively
             for infrastructure services. Default: False.
+        nats_max_payload_mb: Maximum NATS message payload in MB. Default: None (uses
+            NATS default of 1MB). Set to 24+ for disaggregated serving with long ISL
+            (e.g. 65K+ tokens where prompt data exceeds 1MB in NATS messages).
     """
 
     etcd_nats_dedicated_node: bool = False
+    nats_max_payload_mb: int | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -868,6 +918,9 @@ class SrtConfig:
     # Custom setup script (runs before dynamo install and worker startup)
     # e.g. "custom-setup.sh" -> runs /configs/custom-setup.sh
     setup_script: str | None = None
+
+    # Virtual identity — declares what *should* be running (verified against fingerprint)
+    identity: IdentityConfig = field(default_factory=IdentityConfig)
 
     # Reporting configuration (status API, future: logs to S3, etc.)
     reporting: ReportingConfig | None = None

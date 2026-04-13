@@ -144,11 +144,24 @@ class TestClusterConfigIntegration:
 class TestPostProcessStageMixin:
     """Tests for PostProcessStageMixin."""
 
-    def _create_mixin_with_mocks(self):
+    def _create_mixin_with_mocks(self, tmp_path=None):
         """Create a mixin instance with all post-processing methods mocked."""
         from srtctl.cli.mixins.postprocess_stage import PostProcessStageMixin
 
         mixin = PostProcessStageMixin()
+
+        # Mock runtime and config for lockfile writing
+        if tmp_path is None:
+            import tempfile
+            from pathlib import Path
+
+            tmp_path = Path(tempfile.mkdtemp())
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        mixin.runtime = MagicMock()
+        mixin.runtime.log_dir = log_dir
+        mixin.config = MagicMock()
+
         mixin._copy_config_to_logs = MagicMock()
         mixin._generate_rollup = MagicMock()
         mixin._extract_benchmark_results = MagicMock(return_value=None)

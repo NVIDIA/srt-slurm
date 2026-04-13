@@ -12,6 +12,7 @@ import shlex
 from collections import defaultdict
 from typing import TYPE_CHECKING, Any
 
+from srtctl.core.fingerprint import generate_capture_script
 from srtctl.core.processes import ManagedProcess, NamedProcesses
 from srtctl.core.slurm import start_srun_process
 
@@ -157,8 +158,10 @@ class WorkerStageMixin:
         if profiling.enabled:
             logger.info("Profiling: %s mode", profiling.type)
 
-        # Build bash preamble (setup script + dynamo install)
+        # Build bash preamble (setup script + dynamo install + fingerprint)
         bash_preamble = self._build_worker_preamble()
+        fp_cmd = generate_capture_script(f"/logs/fingerprint_{mode}_w{index}.json")
+        bash_preamble = f"{bash_preamble} && {fp_cmd}" if bash_preamble else fp_cmd
 
         proc = start_srun_process(
             command=cmd,
@@ -258,8 +261,10 @@ class WorkerStageMixin:
         if profiling.enabled:
             logger.info("Profiling: %s mode", profiling.type)
 
-        # Build bash preamble (setup script + dynamo install)
+        # Build bash preamble (setup script + dynamo install + fingerprint)
         bash_preamble = self._build_worker_preamble()
+        fp_cmd = generate_capture_script(f"/logs/fingerprint_{mode}_w{index}.json")
+        bash_preamble = f"{bash_preamble} && {fp_cmd}" if bash_preamble else fp_cmd
 
         # Get srun config from backend
         srun_config = self.backend.get_srun_config()

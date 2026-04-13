@@ -22,6 +22,8 @@ class BackendType(str, Enum):
 
     SGLANG = "sglang"
     TRTLLM = "trtllm"
+    VLLM = "vllm"
+    MOCKER = "mocker"
 
 
 @dataclass

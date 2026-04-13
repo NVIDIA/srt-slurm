@@ -20,6 +20,7 @@ venv/
 env/
 ENV/
 .venv/
+.venv-compute/
 
 # uv
 .uv/
@@ -39,6 +40,9 @@ Thumbs.db
 # Cluster and cloud config (contains credentials and cluster-specific settings)
 srtslurm.yaml
 srtslurm.toml
+
+# Compute-arch uv binary (installed by make setup)
+bin/
 
 # Configs - ignore downloaded files but keep deepep_config.json
 configs/nats-server

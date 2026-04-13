@@ -391,6 +391,7 @@ class TestSubmitOverride:
                 patch("subprocess.run", return_value=mock_result) as mock_run,
                 patch("srtctl.cli.submit.get_srtslurm_setting", return_value=None),
                 patch("srtctl.cli.submit.create_job_record"),
+                patch("srtctl.cli.submit.validate_setup"),
             ):
                 submit_override(cfg, selector=selector, output_dir=tmp_path)
             return sum(1 for c in mock_run.call_args_list if c[0][0][0] == "sbatch")
@@ -417,6 +418,7 @@ class TestSubmitOverride:
             patch("subprocess.run", return_value=mock_result),
             patch("srtctl.cli.submit.get_srtslurm_setting", return_value=None),
             patch("srtctl.cli.submit.create_job_record"),
+            patch("srtctl.cli.submit.validate_setup"),
         ):
             submit_override(cfg, selector="zip_override_tp[1]", output_dir=tmp_path)
 
@@ -467,6 +469,7 @@ class TestSubmitOverride:
             patch("subprocess.run", return_value=mock_result),
             patch("srtctl.cli.submit.get_srtslurm_setting", return_value=None),
             patch("srtctl.cli.submit.create_job_record"),
+            patch("srtctl.cli.submit.validate_setup"),
         ):
             submit_override(cfg, selector="override_lowmem", output_dir=tmp_path)
 
@@ -489,6 +492,7 @@ class TestSubmitSingleCompatibility:
             patch("subprocess.run", return_value=mock_result),
             patch("srtctl.cli.submit.get_srtslurm_setting", return_value=None),
             patch("srtctl.cli.submit.create_job_record"),
+            patch("srtctl.cli.submit.validate_setup"),
         ):
             submit_single(config_path=cfg, output_dir=tmp_path)
 

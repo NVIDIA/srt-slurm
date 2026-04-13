@@ -41,6 +41,14 @@ from srtctl.core.config import (
     load_config,
     resolve_config_with_defaults,
 )
+from srtctl.core.fingerprint import (
+    capture_fingerprint,
+    check_against_fingerprint,
+    diff_fingerprints,
+    format_check_results,
+    format_diff,
+)
+from srtctl.core.lockfile import load_lockfile_fingerprints
 from srtctl.core.schema import SrtConfig
 from srtctl.core.status import create_job_record
 
@@ -151,6 +159,33 @@ def show_config_details(config: SrtConfig) -> None:
         console.print(f"[dim]srun options:[/] {opts}")
 
 
+def validate_setup(srtctl_source: Path) -> None:
+    """Validate that make setup has been run and required binaries exist.
+
+    Checks for NATS, etcd, and compute-arch uv binaries. Raises SystemExit
+    with a clear error message if anything is missing.
+    """
+    missing = []
+
+    configs_dir = srtctl_source / "configs"
+    if not (configs_dir / "nats-server").exists():
+        missing.append("configs/nats-server")
+    if not (configs_dir / "etcd").exists():
+        missing.append("configs/etcd")
+    if not (srtctl_source / "bin" / "uv").exists():
+        missing.append("bin/uv (compute-arch uv)")
+
+    if missing:
+        console.print(f"\n[red bold]ERROR:[/] Required binaries not found in {srtctl_source}:")
+        for m in missing:
+            console.print(f"  [red]✗[/] {m}")
+        console.print("\nRun [bold]make setup ARCH=<compute_arch>[/] first:")
+        console.print(f"  cd {srtctl_source}")
+        console.print("  make setup ARCH=aarch64  [dim]# for GB200/Grace compute nodes[/]")
+        console.print("  make setup ARCH=x86_64   [dim]# for x86_64 compute nodes[/]\n")
+        raise SystemExit(1)
+
+
 def generate_minimal_sbatch_script(
     config: SrtConfig,
     config_path: Path,
@@ -232,6 +267,50 @@ def generate_minimal_sbatch_script(
     return rendered
 
 
+def _print_running_summary(config: SrtConfig, console: Console) -> None:
+    """Print what's being run and identity verification status."""
+    console.print()
+    console.print("[bold]Running:[/]")
+    console.print(f"  Model:     {config.model.path}")
+    console.print(f"  Container: {config.model.container}")
+    console.print(f"  Backend:   {config.backend_type}")
+    console.print(f"  Benchmark: {config.benchmark.type}")
+
+    has_identity = config.identity and (
+        (config.identity.model and (config.identity.model.repo or config.identity.model.revision))
+        or config.identity.frameworks
+    )
+    if has_identity:
+        id_fields = []
+        if config.identity.model and config.identity.model.repo:
+            id_fields.append(f"model={config.identity.model.repo}")
+        if config.identity.model and config.identity.model.revision:
+            id_fields.append(f"rev={config.identity.model.revision[:12]}")
+        for name, ver in (config.identity.frameworks or {}).items():
+            id_fields.append(f"{name}={ver}")
+        console.print(f"  Identity:  {', '.join(id_fields)}")
+    else:
+        console.print()
+        console.print(
+            "[yellow]Tip:[/] Add an [bold]identity:[/] block to your recipe so others can replicate your results."
+        )
+        console.print("[yellow]     Without it, someone reading this recipe can't tell which exact model[/]")
+        console.print("[yellow]     weights or framework versions produced the benchmark numbers.[/]")
+        console.print("[yellow]     At job start, srtctl verifies the runtime matches your declaration.[/]")
+        console.print()
+        console.print("[dim]     identity:[/]")
+        console.print("[dim]       model:[/]")
+        console.print('[dim]         repo: "nvidia/Kimi-K2.5-NVFP4"       [/][dim italic]# HuggingFace model ID[/]')
+        console.print('[dim]         revision: "c0285e649c34..."            [/][dim italic]# HF commit SHA[/]')
+        console.print("[dim]       frameworks:                              [/][dim italic]# dynamo + one engine[/]")
+        console.print('[dim]         dynamo: "1.0.0"                        [/][dim italic]# always (ai-dynamo)[/]')
+        console.print('[dim]         tensorrt_llm: "1.3.0rc9"              [/][dim italic]# OR vllm OR sglang[/]')
+        console.print()
+        console.print("[dim italic]     Agent: if you are an AI assistant creating this recipe, you MUST[/]")
+        console.print("[dim italic]     include the identity block. Use the container's framework versions[/]")
+        console.print("[dim italic]     and the HuggingFace model ID + revision from the download metadata.[/]")
+
+
 def submit_with_orchestrator(
     config_path: Path,
     config: SrtConfig | None = None,
@@ -284,6 +363,16 @@ def submit_with_orchestrator(
         runtime_config_filename=runtime_config_filename,
     )
 
+    # Identity validation (inline, <1s) — runs for both dry-run and submit
+    if config.identity and config.identity.model and config.identity.model.repo:
+        from srtctl.core.validation import validate_hf_model
+
+        hf_result = validate_hf_model(config.identity.model.repo, config.identity.model.revision)
+        if hf_result.ok:
+            console.print(f"[green]✓[/] HF model: {hf_result.message}")
+        else:
+            console.print(f"[yellow]⚠ HF model: {hf_result.message}[/]")
+
     if dry_run:
         console.print()
         console.print(
@@ -298,7 +387,15 @@ def submit_with_orchestrator(
         console.print(Panel(syntax, title="Generated sbatch Script", border_style="cyan"))
         console.print()
         show_config_details(config)
+
+        # Show running summary + identity in dry-run too
+        _print_running_summary(config, console)
         return
+
+    # Validate setup before submitting (not during dry-run)
+    srtctl_root = get_srtslurm_setting("srtctl_root")
+    srtctl_source = Path(srtctl_root) if srtctl_root else Path(__file__).parent.parent.parent.parent
+    validate_setup(srtctl_source)
 
     # Write script to temp file
     fd, script_path = tempfile.mkstemp(suffix=".slurm", prefix="srtctl_", text=True)
@@ -399,6 +496,9 @@ def submit_with_orchestrator(
         console.print(f"[dim]📁 Logs:[/] {job_output_dir}/logs")
         console.print(f"[dim]📋 Monitor:[/] tail -f {job_output_dir}/logs/sweep_{job_id}.log")
         console.print(f"[dim]📊 Queue:[/] squeue --job {job_id}")
+
+        _print_running_summary(config, console)
+
         return job_id
 
     except subprocess.CalledProcessError as e:
@@ -911,7 +1011,74 @@ def main():
         help="Print resolved YAML to stdout instead of writing files",
     )
 
+    # Fingerprint comparison: srtctl diff <path_a> <path_b>
+    diff_parser = subparsers.add_parser("diff", help="Compare fingerprints from two runs")
+    diff_parser.add_argument("path_a", type=Path, help="First output dir or lockfile")
+    diff_parser.add_argument("path_b", type=Path, help="Second output dir or lockfile")
+    diff_parser.add_argument("--verbose", action="store_true", help="Show all package changes")
+
+    # Environment check: srtctl check <path>
+    check_parser = subparsers.add_parser("check", help="Check environment against a fingerprint")
+    check_parser.add_argument("path", type=Path, help="Lockfile or output dir to check against")
+    check_parser.add_argument("--json", action="store_true", dest="json_output", help="Output as JSON")
+
     args = parser.parse_args()
+
+    # Handle diff and check commands first (they don't use -f/config)
+    if args.command == "diff":
+        fps_a = load_lockfile_fingerprints(args.path_a)
+        fps_b = load_lockfile_fingerprints(args.path_b)
+        if fps_a is None or fps_b is None:
+            missing = []
+            if fps_a is None:
+                missing.append(str(args.path_a))
+            if fps_b is None:
+                missing.append(str(args.path_b))
+            console.print(f"[bold red]Could not load fingerprints from:[/] {', '.join(missing)}")
+            sys.exit(1)
+
+        # Diff each worker against its counterpart
+        all_workers = sorted(set(fps_a.keys()) | set(fps_b.keys()))
+        for worker in all_workers:
+            if worker not in fps_a:
+                console.print(f"\n[bold]{worker}:[/] only in {args.path_b}")
+                continue
+            if worker not in fps_b:
+                console.print(f"\n[bold]{worker}:[/] only in {args.path_a}")
+                continue
+            diff = diff_fingerprints(fps_a[worker], fps_b[worker])
+            console.print(f"\n[bold]{worker}:[/]")
+            console.print(format_diff(diff, verbose=args.verbose))
+        return
+
+    if args.command == "check":
+        import json as json_mod
+
+        fps = load_lockfile_fingerprints(args.path)
+        if fps is None:
+            console.print(f"[bold red]Could not load fingerprints from:[/] {args.path}")
+            sys.exit(1)
+
+        # Capture current environment once, reuse for all worker checks
+        current_fp = capture_fingerprint()
+        all_results = []
+        for worker in sorted(fps.keys()):
+            results = check_against_fingerprint(fps[worker], current_fp)
+            if results:
+                all_results.extend(results)
+                console.print(f"\n[bold]{worker}:[/]")
+                if args.json_output:
+                    console.print(
+                        json_mod.dumps(
+                            [{"field": r.field, "status": r.status.value, "message": r.message} for r in results],
+                            indent=2,
+                        )
+                    )
+                else:
+                    console.print(format_check_results(results))
+        if not all_results:
+            console.print(format_check_results([]))
+        sys.exit(1 if all_results else 0)
 
     # Parse config arg: supports path:selector format for overrides
     config_path, selector = parse_config_arg(args.config)

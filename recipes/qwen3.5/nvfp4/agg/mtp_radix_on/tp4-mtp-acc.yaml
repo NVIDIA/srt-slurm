@@ -1,0 +1,83 @@
+# FlashInfer GDN decode validation: NVFP4, linear-attn-decode-backend=flashinfer (ladfi),
+# extra_buffer Mamba scheduler, NEXTN speculative decoding (MTP), concurrency 512.
+
+name: "nvfp4-agg-tp4-mtp-acc"
+
+setup_script: "upgrade-flashinfer-v067.sh"
+
+model:
+  path: "qwen3.5-nvfp4"
+  container: "dev-0318"
+  precision: "fp4"
+
+frontend:
+  type: "sglang"
+
+resources:
+  gpu_type: "gb200"
+  gpus_per_node: 4
+  agg_nodes: 1
+  agg_workers: 1
+
+slurm:
+  time_limit: "4:00:00"
+
+backend:
+  type: sglang
+
+  aggregated_environment:
+    PYTHONUNBUFFERED: "1"
+    NCCL_MNNVL_ENABLE: "1"
+    NCCL_CUMEM_ENABLE: "1"
+    NCCL_NVLS_ENABLE: "1"
+    SGLANG_ENABLE_FLASHINFER_GEMM: "true"
+    SGLANG_ENABLE_SPEC_V2: "1"
+    SGLANG_DG_CACHE_DIR: "/configs/deepgemm-cache"
+    FLASHINFER_WORKSPACE_BASE: "/configs/flashinfer-v067-cache"
+    FLASHINFER_DISABLE_VERSION_CHECK: "1"
+
+  sglang_config:
+    aggregated:
+      served-model-name: "nvidia/Qwen3.5-397B-A17B-NVFP4"
+      model-path: "/model/"
+
+      tensor-parallel-size: 4
+      expert-parallel-size: 1
+
+      quantization: modelopt_fp4
+      kv-cache-dtype: fp8_e4m3
+
+      mamba-ssm-dtype: "bfloat16"
+
+      attention-backend: trtllm_mha
+      moe-runner-backend: flashinfer_trtllm
+      linear-attn-decode-backend: flashinfer
+
+      mamba-scheduler-strategy: "extra_buffer"
+      disable-radix-cache: false
+      mem-fraction-static: 0.85
+      chunked-prefill-size: 32768
+      max-prefill-tokens: 32768
+
+      cuda-graph-max-bs: 512
+      max-running-requests: 512
+
+      scheduler-recv-interval: 30
+      stream-interval: 30
+
+      watchdog-timeout: 600
+
+      speculative-algorithm: NEXTN
+      speculative-num-steps: 3
+      speculative-eagle-topk: 1
+      speculative-num-draft-tokens: 4
+
+benchmark:
+  type: "gsm8k"
+  num_examples: 1319
+  max_tokens: 16000
+  num_threads: 512
+  num_shots: 8
+  temperature: 0.6
+  top_p: 0.95
+  top_k: 20

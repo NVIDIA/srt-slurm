@@ -1,0 +1,80 @@
+# NVFP4 Qwen3.5-397B aggregated TP4 — torch profiler trace (no_buffer mode)
+# Base: sweep-nobuf-conc64.yaml
+# Goal: confirm which GEMM kernels are FP4 vs BF16 at conc=64
+
+name: "nvfp4-agg-tp4-profile"
+
+model:
+  path: "qwen3.5-nvfp4"
+  container: "dev-0318"
+  precision: "fp4"
+
+frontend:
+  type: "sglang"
+
+resources:
+  gpu_type: "gb200"
+  gpus_per_node: 4
+  agg_nodes: 1
+  agg_workers: 1
+
+slurm:
+  time_limit: "2:00:00"
+
+backend:
+  type: sglang
+
+  aggregated_environment:
+    PYTHONUNBUFFERED: "1"
+    NCCL_MNNVL_ENABLE: "1"
+    NCCL_CUMEM_ENABLE: "1"
+    NCCL_NVLS_ENABLE: "1"
+    SGL_ENABLE_JIT_DEEPGEMM: "false"
+    SGLANG_ENABLE_FLASHINFER_GEMM: "true"
+    SGLANG_DG_CACHE_DIR: "/configs/deepgemm-cache"
+    FLASHINFER_WORKSPACE_BASE: "/configs/flashinfer-gdc-cache"
+    SGLANG_LOG_FORWARD_ITERS: "1"
+
+  sglang_config:
+    aggregated:
+      served-model-name: "nvidia/Qwen3.5-397B-A17B-NVFP4"
+      model-path: "/model/"
+
+      tensor-parallel-size: 4
+      expert-parallel-size: 1
+
+      quantization: modelopt_fp4
+      kv-cache-dtype: fp8_e4m3
+      fp4-gemm-backend: flashinfer_cutlass
+
+      mamba-ssm-dtype: "bfloat16"
+
+      attention-backend: trtllm_mha
+      moe-runner-backend: flashinfer_trtllm
+
+      mamba-scheduler-strategy: "no_buffer"
+      disable-radix-cache: true
+      mem-fraction-static: 0.85
+      chunked-prefill-size: 32768
+      max-prefill-tokens: 32768
+
+      cuda-graph-max-bs: 64
+      max-running-requests: 64
+
+      scheduler-recv-interval: 30
+      stream-interval: 30
+
+      watchdog-timeout: 600
+
+profiling:
+  type: "torch"
+  aggregated:
+    start_step: 50
+    stop_step: 70
+
+benchmark:
+  type: "sa-bench"
+  isl: 1000
+  osl: 128
+  concurrencies: "64"
+  req_rate: "10"
