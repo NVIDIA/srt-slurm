@@ -154,7 +154,7 @@ class BenchmarkStageMixin:
         return exit_code
 
     def _start_perf_monitor(self) -> list[tuple[str, "subprocess.Popen"]]:
-        """Start one perfmon process per worker node (excluding head node).
+        """Start one perfmon process per worker node.
 
         Failures are non-fatal: a warning is logged and that node is skipped.
 
@@ -165,10 +165,9 @@ class BenchmarkStageMixin:
         if m is None or not m.enabled:
             return []
 
-        # All worker nodes except the head (head runs nginx/benchmark client, not GPU workloads)
-        worker_nodes = [n for n in self.runtime.nodes.worker if n != self.runtime.nodes.head]
+        worker_nodes = list(self.runtime.nodes.worker)
         if not worker_nodes:
-            logger.warning("No worker nodes to monitor (all nodes are head node)")
+            logger.warning("No worker nodes to monitor")
             return []
 
         perfmon_script = Path(__file__).parent.parent.parent / "monitor" / "perfmon.py"
