@@ -668,6 +668,7 @@ class TestCopyConfigToLogs:
         mixin = PostProcessStageMixin()
         mixin.runtime = MagicMock()
         mixin.runtime.log_dir = log_dir
+        mixin.runtime.job_id = "12345"
         return mixin, log_dir
 
     def test_copies_config_yaml(self, tmp_path):
@@ -700,6 +701,18 @@ class TestCopyConfigToLogs:
         mixin._copy_config_to_logs()
 
         assert not (log_dir / "config.yaml").exists()
+
+    def test_copies_job_id_json(self, tmp_path):
+        """Test {job_id}.json is copied from output dir to log dir."""
+        mixin, log_dir = self._create_mixin_with_runtime(tmp_path)
+
+        json_src = tmp_path / "12345.json"
+        json_src.write_text('{"job_id": "12345"}\n')
+
+        mixin._copy_config_to_logs()
+
+        assert (log_dir / "12345.json").exists()
+        assert (log_dir / "12345.json").read_text() == '{"job_id": "12345"}\n'
 
     def test_copy_failure_does_not_raise(self, tmp_path):
         """Test graceful handling when copy fails."""
