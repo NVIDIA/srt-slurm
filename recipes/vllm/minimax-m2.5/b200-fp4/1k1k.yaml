@@ -6,7 +6,7 @@
 # srtctl apply -f 1k1k.yaml:zip_override_lowlat    # full lowlat sweep
 # srtctl apply -f 1k1k.yaml:zip_override_lowlat[2] # lowlat, tep2 variant only
 # srtctl apply -f 1k1k.yaml:zip_override_hightput   # full high tput sweep
-# srtctl dry-run -f 1k1k.yaml   # preview
+# srtctl dry-run -f 1k1k.yaml   # preview the variants
 
 base:
   name: "minimax-m2.5-nvfp4-b200-1k1k"
