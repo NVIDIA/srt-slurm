@@ -136,12 +136,21 @@ class RunMetadata:
         Returns:
             Formatted date string like "Nov 10", or raw date if parsing fails
         """
-        try:
-            # Parse YYYYMMDD_HHMMSS format
-            dt = datetime.strptime(self.run_date, "%Y%m%d_%H%M%S")
-            return dt.strftime("%b %d").replace(" 0", " ")
-        except (ValueError, TypeError):
-            return self.run_date
+        raw = self.run_date
+        if not raw:
+            return raw
+        formats = (
+            "%Y%m%d_%H%M%S",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d %H:%M:%S.%f",
+        )
+        for fmt in formats:
+            try:
+                dt = datetime.strptime(raw, fmt)
+                return dt.strftime("%b %d").replace(" 0", " ")
+            except (ValueError, TypeError):
+                continue
+        return raw
 
 
 @dataclass
