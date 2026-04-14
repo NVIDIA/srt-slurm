@@ -331,6 +331,9 @@ class VLLMProtocol:
             ]
         )
 
+        if nsys_prefix is not None:
+            cmd.extend(["--profiler-config.profiler", "cuda"])
+
         # Disaggregation mode (dynamo 1.0.0+: --is-prefill-worker/--is-decode-worker are deprecated)
         if mode in ("prefill", "decode"):
             cmd.extend(["--disaggregation-mode", mode])
