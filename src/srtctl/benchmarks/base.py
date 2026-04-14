@@ -59,19 +59,6 @@ class BenchmarkRunner(ABC):
         """
         ...
 
-    def get_extra_mounts(self, config: SrtConfig) -> dict[Path, Path]:
-        """Get additional container mounts required by this benchmark.
-
-        Override this method to add benchmark-specific mounts (e.g., trace files).
-
-        Args:
-            config: Full job configuration
-
-        Returns:
-            Dict of host_path -> container_path for additional mounts
-        """
-        return {}
-
 
 class AIPerfBenchmarkRunner(BenchmarkRunner):
     """Base class for AIPerf-driven benchmarks.

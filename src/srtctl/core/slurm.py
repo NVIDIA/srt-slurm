@@ -265,31 +265,12 @@ def start_srun_process(
 
     logger.info("srun command: %s", shlex.join(srun_cmd))
 
-    # Build a clean environment: strip SLURM vars that conflict with nested srun.
-    # SLURM_TRES_PER_TASK conflicts with SLURM_CPUS_PER_TASK causing srun fatal errors.
-    # Task/CPU-bind vars cause parallel container imports (OOM) and wrong CPU affinity.
-    _SLURM_VARS_TO_UNSET = {
-        "SLURM_TRES_PER_TASK",
-        "SLURM_TASKS_PER_NODE",
-        "SLURM_STEP_TASKS_PER_NODE",
-        "SLURM_NTASKS",
-        "SLURM_NTASKS_PER_NODE",
-        "SLURM_STEP_NUM_TASKS",
-        "SLURM_MEM_PER_NODE",
-        "SLURM_CPUS_PER_TASK",
-        "SLURM_CPU_BIND",
-        "SLURM_CPU_BIND_LIST",
-        "SLURM_CPU_BIND_TYPE",
-        "SLURM_CPU_BIND_VERBOSE",
-    }
-    clean_env = {k: v for k, v in os.environ.items() if k not in _SLURM_VARS_TO_UNSET}
-
     # Start the process
     proc = subprocess.Popen(
         srun_cmd,
         stdout=subprocess.PIPE if not output else None,
         stderr=subprocess.STDOUT if not output else None,
-        env=clean_env,
+        env=None,  # Inherit environment
     )
 
     return proc
