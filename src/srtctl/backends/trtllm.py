@@ -7,10 +7,11 @@ from dataclasses import field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
-from srtctl.backends.base import BackendProtocol
 import yaml
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
+
+from srtctl.backends.base import BackendProtocol
 
 if TYPE_CHECKING:
     from srtctl.backends.base import SrunConfig
