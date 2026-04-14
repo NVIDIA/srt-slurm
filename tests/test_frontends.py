@@ -208,21 +208,11 @@ class MockResourceConfig:
 
 
 @dataclass
-class MockInfraConfig:
-    """Mock InfraConfig for testing."""
+class MockObservabilityConfig:
+    """Mock ObservabilityConfig for testing."""
 
     enable_otel: bool = False
     otel_endpoint: str | None = None
-
-    def otel_env(self, component: str) -> dict[str, str]:
-        if not self.enable_otel or not self.otel_endpoint:
-            return {}
-        return {
-            "DYN_LOGGING_JSONL": "1",
-            "OTEL_EXPORT_ENABLED": "1",
-            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": self.otel_endpoint,
-            "OTEL_SERVICE_NAME": f"dynamo-{component}",
-        }
 
 
 @dataclass
@@ -231,7 +221,7 @@ class MockConfig:
 
     frontend: MockFrontendConfig
     resources: MockResourceConfig
-    infra: MockInfraConfig = field(default_factory=MockInfraConfig)
+    observability: MockObservabilityConfig = field(default_factory=MockObservabilityConfig)
 
 
 class TestSGLangGrpcScheme:

@@ -789,6 +789,47 @@ class ProfilingConfig:
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
 
+@dataclass(frozen=True)
+class ObservabilityConfig:
+    """Observability configuration for OTEL tracing.
+
+    When enable_otel is True, OTEL environment variables (DYN_LOGGING_JSONL,
+    OTEL_EXPORT_ENABLED, OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, OTEL_SERVICE_NAME)
+    are automatically injected into all workers and frontends.
+
+    OTEL_SERVICE_NAME defaults to "dynamo-{component}" (e.g. dynamo-prefill,
+    dynamo-decode, dynamo-frontend) and can be overridden per-component via
+    prefill_environment, decode_environment, or frontend.env.
+
+    Attributes:
+        enable_otel: If True, inject OTEL environment variables into all workers
+            and frontends. Requires otel_endpoint to be set. Default: False.
+        otel_endpoint: OTEL collector endpoint (e.g. "http://10.0.0.1:4317").
+            Required when enable_otel is True.
+    """
+
+    enable_otel: bool = False
+    otel_endpoint: str | None = None
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+def build_otel_env(observability: ObservabilityConfig, component: str) -> dict[str, str]:
+    """Build OTEL environment variables for a component.
+
+    Returns an empty dict if OTEL is disabled. Otherwise returns env vars
+    with OTEL_SERVICE_NAME set to "dynamo-{component}".
+    """
+    if not observability.enable_otel or not observability.otel_endpoint:
+        return {}
+    return {
+        "DYN_LOGGING_JSONL": "1",
+        "OTEL_EXPORT_ENABLED": "1",
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": observability.otel_endpoint,
+        "OTEL_SERVICE_NAME": f"dynamo-{component}",
+    }
+
+
 @dataclass
 class DynamoConfig:
     """Dynamo installation configuration.
@@ -942,33 +983,10 @@ class InfraConfig:
         nats_max_payload_mb: Maximum NATS message payload in MB. Default: None (uses
             NATS default of 1MB). Set to 24+ for disaggregated serving with long ISL
             (e.g. 65K+ tokens where prompt data exceeds 1MB in NATS messages).
-        enable_otel: If True, inject OTEL environment variables into all workers and
-            frontends. Requires otel_endpoint to be set. Default: False.
-        otel_endpoint: OTEL collector endpoint (e.g. "http://10.0.0.1:4317").
-            Required when enable_otel is True.
     """
 
     etcd_nats_dedicated_node: bool = False
     nats_max_payload_mb: int | None = None
-    enable_otel: bool = False
-    otel_endpoint: str | None = None
-
-    def otel_env(self, component: str) -> dict[str, str]:
-        """Generate OTEL environment variables for a component.
-
-        Returns env dict with DYN_LOGGING_JSONL, OTEL_EXPORT_ENABLED,
-        OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, and OTEL_SERVICE_NAME.
-        OTEL_SERVICE_NAME defaults to "dynamo-{component}" but can be
-        overridden by setting it explicitly in the per-mode environment.
-        """
-        if not self.enable_otel or not self.otel_endpoint:
-            return {}
-        return {
-            "DYN_LOGGING_JSONL": "1",
-            "OTEL_EXPORT_ENABLED": "1",
-            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": self.otel_endpoint,
-            "OTEL_SERVICE_NAME": f"dynamo-{component}",
-        }
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -1001,6 +1019,7 @@ class SrtConfig:
     output: OutputConfig = field(default_factory=OutputConfig)
     health_check: HealthCheckConfig = field(default_factory=HealthCheckConfig)
     infra: InfraConfig = field(default_factory=InfraConfig)
+    observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
 
     environment: dict[str, str] = field(default_factory=dict)
     container_mounts: dict[

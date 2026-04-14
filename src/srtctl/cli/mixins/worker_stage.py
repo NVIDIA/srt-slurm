@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from srtctl.core.fingerprint import generate_capture_script
 from srtctl.core.processes import ManagedProcess, NamedProcesses
+from srtctl.core.schema import build_otel_env
 from srtctl.core.slurm import start_srun_process
 
 if TYPE_CHECKING:
@@ -122,7 +123,7 @@ class WorkerStageMixin:
         }
 
         # Add OTEL env vars (before mode-specific env so OTEL_SERVICE_NAME can be overridden)
-        env_to_set.update(self.config.infra.otel_env(mode))
+        env_to_set.update(build_otel_env(self.config.observability, mode))
 
         # Add mode-specific environment variables from backend
         # Support simple {node} and {node_id} templating
@@ -246,7 +247,7 @@ class WorkerStageMixin:
         }
 
         # Add OTEL env vars (before mode-specific env so OTEL_SERVICE_NAME can be overridden)
-        env_to_set.update(self.config.infra.otel_env(mode))
+        env_to_set.update(build_otel_env(self.config.observability, mode))
 
         # Add mode-specific environment variables from backend
         env_to_set.update(self.backend.get_environment_for_mode(mode))

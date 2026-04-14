@@ -11,6 +11,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from srtctl.core.health import WorkerHealthResult, check_dynamo_health
+from srtctl.core.schema import build_otel_env
 from srtctl.core.slurm import start_srun_process
 
 if TYPE_CHECKING:
@@ -84,7 +85,7 @@ class DynamoFrontend:
             }
 
             # Add OTEL env vars (before frontend env so OTEL_SERVICE_NAME can be overridden)
-            env_to_set.update(config.infra.otel_env("frontend"))
+            env_to_set.update(build_otel_env(config.observability, "frontend"))
 
             # Add frontend env from config
             if config.frontend.env:

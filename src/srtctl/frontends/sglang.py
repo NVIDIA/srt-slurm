@@ -12,6 +12,7 @@ import shlex
 from typing import TYPE_CHECKING, Any
 
 from srtctl.core.health import WorkerHealthResult, check_sglang_router_health
+from srtctl.core.schema import build_otel_env
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
 
 if TYPE_CHECKING:
@@ -138,7 +139,7 @@ class SGLangFrontend:
             # Build env vars
             env_to_set: dict[str, str] = {}
             # Add OTEL env vars (before frontend env so OTEL_SERVICE_NAME can be overridden)
-            env_to_set.update(config.infra.otel_env("frontend"))
+            env_to_set.update(build_otel_env(config.observability, "frontend"))
             if config.frontend.env:
                 env_to_set.update(config.frontend.env)
 
