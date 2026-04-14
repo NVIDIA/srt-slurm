@@ -343,12 +343,6 @@ def run_interactive() -> int:
                 submit_single(config_path=config_path, dry_run=True)
 
         elif action == "submit":
-            # Ask for suffix first, before confirmation
-            cancelled, run_name_suffix = ask_run_name_suffix(config_path)
-            if cancelled:
-                console.print("[yellow]Cancelled.[/]")
-                continue
-
             if not confirm_submission(config_path, config, is_sweep):
                 console.print("[yellow]Submission cancelled.[/]")
                 continue
