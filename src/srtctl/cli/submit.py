@@ -1129,7 +1129,11 @@ def main():
             is_sweep = args.sweep or is_sweep_config(config_path)
             if is_sweep:
                 submit_sweep(
-                    config_path, dry_run=is_dry_run, setup_script=setup_script, tags=tags, output_dir=output_dir
+                    config_path,
+                    dry_run=is_dry_run,
+                    setup_script=setup_script,
+                    tags=tags,
+                    output_dir=output_dir,
                 )
             else:
                 submit_single(

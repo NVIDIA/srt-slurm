@@ -204,7 +204,7 @@ class TestTraceReplayRunner:
     def test_get_runner(self):
         """Can get runner for trace-replay."""
         runner = get_runner("trace-replay")
-        assert runner.name == "Trace Replay"
+        assert runner.name == "Trace-Replay-Bench"
         assert "trace-replay" in runner.script_path
 
     def test_validate_missing_trace_file(self):

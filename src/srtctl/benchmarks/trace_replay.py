@@ -40,7 +40,7 @@ class TraceReplayRunner(AIPerfBenchmarkRunner):
 
     @property
     def name(self) -> str:
-        return "Trace Replay"
+        return "Trace-Replay-Bench"
 
     @property
     def script_path(self) -> str:
