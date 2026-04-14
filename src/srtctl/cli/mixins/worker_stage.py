@@ -10,8 +10,9 @@ Handles starting backend worker processes (prefill/decode/agg).
 import logging
 import shlex
 from collections import defaultdict
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
+from srtctl.backends.base import BackendProtocol
 from srtctl.core.fingerprint import generate_capture_script
 from srtctl.core.processes import ManagedProcess, NamedProcesses
 from srtctl.core.schema import build_otel_env
@@ -40,7 +41,7 @@ class WorkerStageMixin:
     runtime: "RuntimeContext"
 
     @property
-    def backend(self) -> Any:
+    def backend(self) -> BackendProtocol:
         """Access the backend config (implements BackendProtocol)."""
         return self.config.backend
 
