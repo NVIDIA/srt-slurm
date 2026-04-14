@@ -137,6 +137,8 @@ class SGLangFrontend:
 
             # Build env vars
             env_to_set: dict[str, str] = {}
+            # Add OTEL env vars (before frontend env so OTEL_SERVICE_NAME can be overridden)
+            env_to_set.update(config.infra.otel_env("frontend"))
             if config.frontend.env:
                 env_to_set.update(config.frontend.env)
 

@@ -83,6 +83,9 @@ class DynamoFrontend:
                 "DYN_REQUEST_PLANE": "nats",
             }
 
+            # Add OTEL env vars (before frontend env so OTEL_SERVICE_NAME can be overridden)
+            env_to_set.update(config.infra.otel_env("frontend"))
+
             # Add frontend env from config
             if config.frontend.env:
                 env_to_set.update(config.frontend.env)

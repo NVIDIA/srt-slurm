@@ -121,6 +121,9 @@ class WorkerStageMixin:
             "DYN_REQUEST_PLANE": "nats",
         }
 
+        # Add OTEL env vars (before mode-specific env so OTEL_SERVICE_NAME can be overridden)
+        env_to_set.update(self.config.infra.otel_env(mode))
+
         # Add mode-specific environment variables from backend
         # Support simple {node} and {node_id} templating
         # Unknown placeholders are left unchanged (no error thrown)
@@ -241,6 +244,9 @@ class WorkerStageMixin:
             "NATS_SERVER": f"nats://{self.runtime.nodes.infra}:4222",
             "DYN_SYSTEM_PORT": str(leader.sys_port),
         }
+
+        # Add OTEL env vars (before mode-specific env so OTEL_SERVICE_NAME can be overridden)
+        env_to_set.update(self.config.infra.otel_env(mode))
 
         # Add mode-specific environment variables from backend
         env_to_set.update(self.backend.get_environment_for_mode(mode))
