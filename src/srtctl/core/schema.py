@@ -919,11 +919,13 @@ class SrtConfig:
             if start is None or stop is None:
                 continue
 
-            profiler_config = json.dumps({
-                "profiler": "cuda",
-                "delay_iterations": start,
-                "max_iterations": stop - start,
-            })
+            profiler_config = json.dumps(
+                {
+                    "profiler": "cuda",
+                    "delay_iterations": start,
+                    "max_iterations": stop - start,
+                }
+            )
 
             backend.setdefault("vllm_config", {})
             backend["vllm_config"].setdefault(phase, {})

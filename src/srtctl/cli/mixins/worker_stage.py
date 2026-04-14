@@ -10,7 +10,7 @@ Handles starting backend worker processes (prefill/decode/agg).
 import logging
 import shlex
 from collections import defaultdict
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from srtctl.backends.base import BackendProtocol
 from srtctl.core.processes import ManagedProcess, NamedProcesses

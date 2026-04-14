@@ -23,6 +23,7 @@ from typing import (
 
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
+
 from srtctl.backends.base import BackendProtocol
 
 if TYPE_CHECKING:
