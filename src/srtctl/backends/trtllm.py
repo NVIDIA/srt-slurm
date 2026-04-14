@@ -7,6 +7,7 @@ from dataclasses import field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
+from srtctl.backends.base import BackendProtocol
 import yaml
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
@@ -36,7 +37,7 @@ class TRTLLMServerConfig:
 
 
 @dataclass(frozen=True)
-class TRTLLMProtocol:
+class TRTLLMProtocol(BackendProtocol):
     """TRTLLM protocol - implements BackendProtocol.
 
     This frozen dataclass both holds configuration AND implements the

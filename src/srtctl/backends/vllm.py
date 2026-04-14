@@ -23,6 +23,7 @@ from typing import (
 
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
+from srtctl.backends.base import BackendProtocol
 
 if TYPE_CHECKING:
     from srtctl.backends.base import SrunConfig
@@ -50,7 +51,7 @@ class VLLMServerConfig:
 
 
 @dataclass(frozen=True)
-class VLLMProtocol:
+class VLLMProtocol(BackendProtocol):
     """vLLM protocol - implements BackendProtocol.
 
     This frozen dataclass both holds configuration AND implements the
@@ -330,9 +331,6 @@ class VLLMProtocol:
                 served_model_name,
             ]
         )
-
-        if nsys_prefix is not None:
-            cmd.extend(["--profiler-config.profiler", "cuda"])
 
         # Disaggregation mode (dynamo 1.0.0+: --is-prefill-worker/--is-decode-worker are deprecated)
         if mode in ("prefill", "decode"):

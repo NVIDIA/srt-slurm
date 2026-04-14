@@ -13,6 +13,7 @@ Backend configs are defined in srtctl.backends.configs/ for modularity.
 
 import builtins
 import itertools
+import json
 import logging
 from collections.abc import Iterator, Mapping
 from dataclasses import field
@@ -27,7 +28,7 @@ from typing import (
 )
 
 import yaml
-from marshmallow import Schema, ValidationError, fields
+from marshmallow import Schema, ValidationError, fields, pre_load
 from marshmallow_dataclass import dataclass
 
 from srtctl.backends import (
@@ -644,10 +645,8 @@ class ProfilingConfig:
             phase_key = mode.upper() if mode != "agg" else "AGG"
             if phase_config.start_step is not None:
                 env[f"PROFILE_{phase_key}_START_STEP"] = str(phase_config.start_step)
-                env["VLLM_PROFILER_DELAY_ITERS"] = str(phase_config.start_step)
             if phase_config.stop_step is not None:
                 env[f"PROFILE_{phase_key}_STOP_STEP"] = str(phase_config.stop_step)
-                env["VLLM_PROFILER_MAX_ITERS"] = str(phase_config.stop_step - phase_config.start_step)
 
         if self.is_torch:
             env["SGLANG_TORCH_PROFILER_DIR"] = f"{profile_dir}/{mode}"
@@ -896,6 +895,41 @@ class SrtConfig:
     reporting: ReportingConfig | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
+
+    @pre_load
+    def inject_vllm_profiling_args(self, data, **kwargs):
+        backend = data.get("backend")
+        if not isinstance(backend, dict) or backend.get("type") != "vllm":
+            return data
+
+        profiling = data.get("profiling")
+        if not profiling or not isinstance(profiling, dict):
+            return data
+
+        if profiling.get("type") != "nsys":
+            return data
+
+        for phase in ("prefill", "decode", "aggregated"):
+            phase_cfg = profiling.get(phase)
+            if not isinstance(phase_cfg, dict):
+                continue
+
+            start = phase_cfg.get("start_step")
+            stop = phase_cfg.get("stop_step")
+            if start is None or stop is None:
+                continue
+
+            profiler_config = json.dumps({
+                "profiler": "cuda",
+                "delay_iterations": start,
+                "max_iterations": stop - start,
+            })
+
+            backend.setdefault("vllm_config", {})
+            backend["vllm_config"].setdefault(phase, {})
+            backend["vllm_config"][phase]["profiler-config"] = profiler_config
+
+        return data
 
     def __post_init__(self):
         """Validate configuration after initialization."""
