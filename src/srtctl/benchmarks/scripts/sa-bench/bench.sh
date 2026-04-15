@@ -141,24 +141,26 @@ mkdir -p "$result_dir"
 start_all_profiling
 
 for concurrency in "${CONCURRENCY_LIST[@]}"; do
-
-    num_warmup_prompts=$((concurrency * NUM_WARMUP_MULT))
-    python3 -u "${WORK_DIR}/benchmark_serving.py" \
-        --model "${MODEL_NAME}" --tokenizer "${MODEL_PATH}" \
-        --host "$HOST" --port "$PORT" \
-        --backend "dynamo" --endpoint /v1/completions \
-        --disable-tqdm \
-        --dataset-name random \
-        --num-prompts "$num_warmup_prompts" \
-        --random-input-len "$ISL" \
-        --random-output-len "$OSL" \
-        --random-range-ratio "${RANDOM_RANGE_RATIO}" \
-        --ignore-eos \
-        --request-rate 250 \
-        --percentile-metrics ttft,tpot,itl,e2el \
-        --max-concurrency "$concurrency" \
-        --trust-remote-code \
-        "${CUSTOM_TOKENIZER_ARGS[@]}"
+   
+    if [ "$NUM_WARMUP_MULT" -gt 0 ]; then
+        num_warmup_prompts=$((concurrency * NUM_WARMUP_MULT))
+        python3 -u "${WORK_DIR}/benchmark_serving.py" \
+            --model "${MODEL_NAME}" --tokenizer "${MODEL_PATH}" \
+            --host "$HOST" --port "$PORT" \
+            --backend "dynamo" --endpoint /v1/completions \
+            --disable-tqdm \
+            --dataset-name random \
+            --num-prompts "$num_warmup_prompts" \
+            --random-input-len "$ISL" \
+            --random-output-len "$OSL" \
+            --random-range-ratio "${RANDOM_RANGE_RATIO}" \
+            --ignore-eos \
+            --request-rate 250 \
+            --percentile-metrics ttft,tpot,itl,e2el \
+            --max-concurrency "$concurrency" \
+            --trust-remote-code \
+            "${CUSTOM_TOKENIZER_ARGS[@]}"
+    fi
 
     num_prompts=$((concurrency * NUM_PROMPTS_MULT))
     
