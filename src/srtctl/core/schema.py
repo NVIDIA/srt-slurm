@@ -236,6 +236,7 @@ class BenchmarkType(str, Enum):
     ROUTER = "router"
     MOONCAKE_ROUTER = "mooncake-router"
     TRACE_REPLAY = "trace-replay"
+    AIPERF_BENCH = "aiperf-bench"
     MMLU = "mmlu"
     GPQA = "gpqa"
     GSM8K = "gsm8k"

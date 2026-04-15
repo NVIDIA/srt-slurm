@@ -615,6 +615,172 @@ class TestLMEvalRunner:
             "http://localhost:8000",
             "/infmax-workspace",
         ]
+class TestAIPerfBenchRunner:
+    """Test AIPerf synthetic benchmark runner."""
+
+    def test_in_registry(self):
+        """aiperf-bench is registered in benchmark list."""
+        benchmarks = list_benchmarks()
+        assert "aiperf-bench" in benchmarks
+
+    def test_get_runner(self):
+        """Can get runner for aiperf-bench."""
+        runner = get_runner("aiperf-bench")
+        assert runner.name == "AIPerf Bench"
+        assert "aiperf-bench" in runner.script_path
+
+    def test_validate_missing_isl(self):
+        """Validates that isl is required."""
+        from srtctl.benchmarks.aiperf_bench import AIPerfBenchRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = AIPerfBenchRunner()
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="gb200"),
+            benchmark=BenchmarkConfig(type="aiperf-bench", osl=128, concurrencies=[4, 8]),
+        )
+        errors = runner.validate_config(config)
+        assert any("isl" in e for e in errors)
+
+    def test_validate_missing_osl(self):
+        """Validates that osl is required."""
+        from srtctl.benchmarks.aiperf_bench import AIPerfBenchRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = AIPerfBenchRunner()
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="gb200"),
+            benchmark=BenchmarkConfig(type="aiperf-bench", isl=1024, concurrencies=[4, 8]),
+        )
+        errors = runner.validate_config(config)
+        assert any("osl" in e for e in errors)
+
+    def test_validate_missing_concurrencies(self):
+        """Validates that concurrencies is required."""
+        from srtctl.benchmarks.aiperf_bench import AIPerfBenchRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = AIPerfBenchRunner()
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="gb200"),
+            benchmark=BenchmarkConfig(type="aiperf-bench", isl=1024, osl=128),
+        )
+        errors = runner.validate_config(config)
+        assert any("concurrencies" in e for e in errors)
+
+    def test_validate_valid(self):
+        """Valid config passes validation."""
+        from srtctl.benchmarks.aiperf_bench import AIPerfBenchRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = AIPerfBenchRunner()
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="gb200"),
+            benchmark=BenchmarkConfig(type="aiperf-bench", isl=1024, osl=128, concurrencies=[4, 8]),
+        )
+        errors = runner.validate_config(config)
+        assert errors == []
+
+    def test_build_command(self):
+        """Build command includes all expected positional arguments."""
+        from unittest.mock import MagicMock
+
+        from srtctl.benchmarks.aiperf_bench import AIPerfBenchRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = AIPerfBenchRunner()
+        runtime = MagicMock()
+        runtime.frontend_port = 8000
+        runtime.is_hf_model = False
+
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model/llama", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="gb200"),
+            benchmark=BenchmarkConfig(
+                type="aiperf-bench",
+                isl=2048,
+                osl=512,
+                concurrencies=[4, 8, 16],
+                ttft_threshold_ms=3000,
+                itl_threshold_ms=10,
+            ),
+        )
+
+        cmd = runner.build_command(config, runtime)
+
+        assert cmd[0] == "bash"
+        assert "aiperf-bench" in cmd[1]
+        assert cmd[2] == "http://localhost:8000"  # endpoint
+        assert cmd[3] == "llama"  # model name (from path basename)
+        assert cmd[4] == "2048"  # isl
+        assert cmd[5] == "512"  # osl
+        assert cmd[6] == "4,8,16"  # concurrencies
+        assert cmd[7] == "3000"  # ttft threshold
+        assert cmd[8] == "10"  # itl threshold
+        assert cmd[9] == "0"  # isl_stddev (no random_range_ratio set)
+        assert cmd[10] == "/model"  # tokenizer path (local model)
+
+    def test_build_command_default_thresholds(self):
+        """Build command uses default thresholds when not specified."""
+        from unittest.mock import MagicMock
+
+        from srtctl.benchmarks.aiperf_bench import AIPerfBenchRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = AIPerfBenchRunner()
+        runtime = MagicMock()
+        runtime.frontend_port = 8000
+        runtime.is_hf_model = False
+
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model/test", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="gb200"),
+            benchmark=BenchmarkConfig(type="aiperf-bench", isl=1024, osl=128, concurrencies=[1]),
+        )
+
+        cmd = runner.build_command(config, runtime)
+        assert cmd[7] == "2000"  # default ttft
+        assert cmd[8] == "25"  # default itl
+
+    def test_build_command_random_range_ratio(self):
+        """random_range_ratio maps to isl_stddev = isl * (1 - ratio) / 2."""
+        from unittest.mock import MagicMock
+
+        from srtctl.benchmarks.aiperf_bench import AIPerfBenchRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = AIPerfBenchRunner()
+        runtime = MagicMock()
+        runtime.frontend_port = 8000
+        runtime.is_hf_model = False
+
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model/test", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="gb200"),
+            benchmark=BenchmarkConfig(
+                type="aiperf-bench", isl=1024, osl=128, concurrencies=[1], random_range_ratio=0.8
+            ),
+        )
+
+        cmd = runner.build_command(config, runtime)
+        # stddev = int(1024 * (1.0 - 0.8) / 2) = int(1024 * 0.1) = 102
+        assert cmd[9] == "102"
+
+    def test_script_exists(self):
+        """aiperf-bench script exists."""
+        script = SCRIPTS_DIR / "aiperf-bench" / "bench.sh"
+        assert script.exists()
 
 
 class TestScriptsExist:
