@@ -3,7 +3,7 @@
 
 """Tests for frontend implementations (SGLang and Dynamo)."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -208,11 +208,20 @@ class MockResourceConfig:
 
 
 @dataclass
+class MockObservabilityConfig:
+    """Mock ObservabilityConfig for testing."""
+
+    enable_otel: bool = False
+    otel_endpoint: str | None = None
+
+
+@dataclass
 class MockConfig:
     """Mock SrtConfig for testing."""
 
     frontend: MockFrontendConfig
     resources: MockResourceConfig
+    observability: MockObservabilityConfig = field(default_factory=MockObservabilityConfig)
 
 
 class TestSGLangGrpcScheme:
