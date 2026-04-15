@@ -12,7 +12,9 @@ import shlex
 from collections import defaultdict
 from typing import TYPE_CHECKING, Any
 
+from srtctl.core.fingerprint import generate_capture_script
 from srtctl.core.processes import ManagedProcess, NamedProcesses
+from srtctl.core.schema import build_otel_env
 from srtctl.core.slurm import start_srun_process
 
 if TYPE_CHECKING:
@@ -97,7 +99,9 @@ class WorkerStageMixin:
             (self.runtime.log_dir / "profiles" / mode).mkdir(parents=True, exist_ok=True)
         if profiling.is_nsys:
             nsys_output = f"/logs/profiles/{mode}/{process.node}_{mode}_w{index}_profile"
-            nsys_prefix = profiling.get_nsys_prefix(nsys_output, frontend_type=self.config.frontend.type)
+            nsys_prefix = profiling.get_nsys_prefix(
+                nsys_output, frontend_type=self.config.frontend.type, backend_type=self.config.backend_type
+            )
 
         # Build command using backend's method
         cmd = self.backend.build_worker_command(
@@ -117,6 +121,9 @@ class WorkerStageMixin:
             "DYN_SYSTEM_PORT": str(process.sys_port),
             "DYN_REQUEST_PLANE": "nats",
         }
+
+        # Add OTEL env vars (before mode-specific env so OTEL_SERVICE_NAME can be overridden)
+        env_to_set.update(build_otel_env(self.config.observability, mode))
 
         # Add mode-specific environment variables from backend
         # Support simple {node} and {node_id} templating
@@ -157,8 +164,10 @@ class WorkerStageMixin:
         if profiling.enabled:
             logger.info("Profiling: %s mode", profiling.type)
 
-        # Build bash preamble (setup script + dynamo install)
+        # Build bash preamble (setup script + dynamo install + fingerprint)
         bash_preamble = self._build_worker_preamble()
+        fp_cmd = generate_capture_script(f"/logs/fingerprint_{mode}_w{index}.json")
+        bash_preamble = f"{bash_preamble} && {fp_cmd}" if bash_preamble else fp_cmd
 
         proc = start_srun_process(
             command=cmd,
@@ -214,8 +223,10 @@ class WorkerStageMixin:
         if profiling.enabled:
             (self.runtime.log_dir / "profiles" / mode).mkdir(parents=True, exist_ok=True)
         if profiling.is_nsys:
-            nsys_output = f"/logs/profiles/{mode}/{leader.node}_{mode}_w{index}_profile"
-            nsys_prefix = profiling.get_nsys_prefix(nsys_output, frontend_type=self.config.frontend.type)
+            nsys_output = f"/logs/profiles/{mode}/{leader.node}_{mode}_w{index}_profile_rank%q{{SLURM_PROCID}}"
+            nsys_prefix = profiling.get_nsys_prefix(
+                nsys_output, frontend_type=self.config.frontend.type, backend_type=self.config.backend_type
+            )
 
         # Build command using backend's method
         cmd = self.backend.build_worker_command(
@@ -234,6 +245,9 @@ class WorkerStageMixin:
             "NATS_SERVER": f"nats://{self.runtime.nodes.infra}:4222",
             "DYN_SYSTEM_PORT": str(leader.sys_port),
         }
+
+        # Add OTEL env vars (before mode-specific env so OTEL_SERVICE_NAME can be overridden)
+        env_to_set.update(build_otel_env(self.config.observability, mode))
 
         # Add mode-specific environment variables from backend
         env_to_set.update(self.backend.get_environment_for_mode(mode))
@@ -258,8 +272,10 @@ class WorkerStageMixin:
         if profiling.enabled:
             logger.info("Profiling: %s mode", profiling.type)
 
-        # Build bash preamble (setup script + dynamo install)
+        # Build bash preamble (setup script + dynamo install + fingerprint)
         bash_preamble = self._build_worker_preamble()
+        fp_cmd = generate_capture_script(f"/logs/fingerprint_{mode}_w{index}.json")
+        bash_preamble = f"{bash_preamble} && {fp_cmd}" if bash_preamble else fp_cmd
 
         # Get srun config from backend
         srun_config = self.backend.get_srun_config()

@@ -14,7 +14,9 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from srtctl.core.fingerprint import format_identity_verification, verify_identity
 from srtctl.core.health import wait_for_model
+from srtctl.core.lockfile import collect_worker_fingerprints
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
 from srtctl.core.status import JobStage, JobStatus, StatusReporter
 
@@ -93,6 +95,27 @@ class BenchmarkStageMixin:
             return 1
 
         logger.info("Server is healthy - starting benchmark")
+
+        # Identity verification: compare recipe identity against runtime fingerprints
+        # Store results on self so postprocess can include them in the lockfile
+        self._identity_verification = None
+        try:
+            fingerprints = collect_worker_fingerprints(self.runtime.log_dir)
+            has_identity = self.config.identity and (
+                (
+                    self.config.identity.model
+                    and (self.config.identity.model.repo or self.config.identity.model.revision)
+                )
+                or self.config.identity.frameworks
+            )
+            if fingerprints and has_identity:
+                self._identity_verification = verify_identity(self.config.identity, fingerprints)
+                banner = format_identity_verification(self._identity_verification, self.config.identity)
+                for line in banner.splitlines():
+                    logger.info(line)
+        except Exception as e:
+            logger.debug("Identity verification skipped: %s", e)
+
         if reporter:
             reporter.report(JobStatus.BENCHMARK, JobStage.BENCHMARK, "Running benchmark")
 
@@ -254,11 +277,15 @@ class BenchmarkStageMixin:
             env["PROFILE_AGG_ENDPOINTS"] = ",".join(agg_endpoints)
 
         # Set profile output directory and common env vars for benchmarks that support profiling
-        if runner.name in ("SA-Bench", "SGLang-Bench"):
+        if runner.name in ("SA-Bench", "SGLang-Bench", "Trace-Replay-Bench"):
             env["PROFILE_OUTPUT_DIR"] = profiles_dir_in_container
             env["BENCH_MODEL_NAME"] = self.config.served_model_name
             env["HEAD_NODE"] = self.runtime.nodes.head
             env["HEAD_PORT"] = str(self.runtime.frontend_port)
+
+        # Let benchmark scripts know the backend type so they can select the right profiling lib
+        if self.config.backend_type == "trtllm":
+            env["PROFILING_BACKEND"] = "trtllm"
 
         return env
 
@@ -285,8 +312,10 @@ class BenchmarkStageMixin:
         env = self._get_benchmark_profiling_env(runner)
         env["SRTCTL_FRONTEND_TYPE"] = self.config.frontend.type
 
-        # Add AIPerf metrics URLs for AIPerf-driven benchmarks
+        # Add AIPerf-specific env vars for AIPerf-driven benchmarks only
         if isinstance(runner, AIPerfBenchmarkRunner):
             env.update(self._get_aiperf_server_metrics_env())
+            if self.config.benchmark.aiperf_package:
+                env["AIPERF_PACKAGE"] = self.config.benchmark.aiperf_package
 
         return env

@@ -28,6 +28,7 @@ import requests
 
 from srtctl.benchmarks.base import SCRIPTS_DIR
 from srtctl.core.config import load_cluster_config
+from srtctl.core.lockfile import write_lockfile
 from srtctl.core.schema import AIAnalysisConfig, S3Config
 from srtctl.core.slurm import start_srun_process
 
@@ -118,14 +119,15 @@ class PostProcessStageMixin:
         return os.environ.get(env_var)
 
     def _copy_config_to_logs(self) -> None:
-        """Copy the job config YAML into the log directory so it's included in S3 uploads.
+        """Copy job artifacts into the log directory so they're included in S3 uploads.
 
-        The config is saved to outputs/{job_id}/config.yaml at submit time,
-        but S3 syncs outputs/{job_id}/logs/. This copies it into logs/ so it
-        gets uploaded alongside benchmark results and worker logs.
+        At submit time, config.yaml, sbatch_script.sh, and {job_id}.json are saved
+        to outputs/{job_id}/, but S3 syncs outputs/{job_id}/logs/. This copies them
+        into logs/ so they get uploaded alongside benchmark results and worker logs.
         """
         output_dir = self.runtime.log_dir.parent
-        for name in ("config.yaml", "sbatch_script.sh"):
+        files_to_copy = ["config.yaml", "sbatch_script.sh", f"{self.runtime.job_id}.json"]
+        for name in files_to_copy:
             src = output_dir / name
             if not src.exists():
                 continue
@@ -150,6 +152,10 @@ class PostProcessStageMixin:
         Args:
             exit_code: Exit code from the benchmark run
         """
+        # Write lockfile with verification results (non-fatal — never blocks job completion)
+        verification = getattr(self, "_identity_verification", None)
+        write_lockfile(self.runtime.log_dir.parent, self.config, self.runtime.log_dir, verification=verification)
+
         # Copy config into log directory so it's included in S3 upload
         self._copy_config_to_logs()
 

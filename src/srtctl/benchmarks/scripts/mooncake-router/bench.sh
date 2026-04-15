@@ -26,10 +26,10 @@ if [ -n "${AIPERF_SERVER_METRICS_URLS:-}" ]; then
     fi
 fi
 
-# Setup directories
-BASE_DIR="/logs"
-TRACE_DIR="${BASE_DIR}/traces"
-ARTIFACT_DIR="${BASE_DIR}/artifacts"
+# Setup directories (BASE_DIR defaults to /logs inside container, overridable for testing)
+BASE_DIR="${BASE_DIR:-/logs}"
+TRACE_DIR="${TRACE_DIR:-${BASE_DIR}/traces}"
+ARTIFACT_DIR="${ARTIFACT_DIR:-${BASE_DIR}/artifacts}"
 mkdir -p "${TRACE_DIR}"
 mkdir -p "${ARTIFACT_DIR}"
 
