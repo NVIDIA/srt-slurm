@@ -175,7 +175,7 @@ get_node_ip() {
 
         exit 1
     "
-
+    # Execute the script on target node with single srun command
     local result
     result=$(srun --quiet --jobid "$slurm_job_id" --nodes=1 --ntasks=1 --nodelist="$node" bash -c "$ip_script" 2>&1)
     local rc=$?
