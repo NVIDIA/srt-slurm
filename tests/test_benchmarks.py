@@ -823,6 +823,66 @@ class TestAIPerfBenchRunner:
         config = SrtConfig.from_yaml(tmp_path)
         assert config.benchmark.enable_dcgm is True
 
+    def test_build_command_dcgm_enabled(self):
+        """build_command appends --gpu-telemetry for all worker nodes when enable_dcgm=True."""
+        from unittest.mock import MagicMock
+
+        from srtctl.benchmarks.aiperf_bench import AIPerfBenchRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = AIPerfBenchRunner()
+        runtime = MagicMock()
+        runtime.frontend_port = 8000
+        runtime.is_hf_model = False
+        runtime.nodes.worker = ("node-01", "node-02")
+
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model/llama", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="gb200"),
+            benchmark=BenchmarkConfig(
+                type="aiperf-bench",
+                isl=1024,
+                osl=128,
+                concurrencies=[4],
+                enable_dcgm=True,
+            ),
+        )
+
+        cmd = runner.build_command(config, runtime)
+
+        assert "--gpu-telemetry" in cmd
+        idx = cmd.index("--gpu-telemetry")
+        assert cmd[idx + 1] == "http://node-01:9400/metrics"
+        assert cmd[idx + 2] == "http://node-02:9400/metrics"
+
+    def test_build_command_dcgm_disabled(self):
+        """build_command does not include --gpu-telemetry when enable_dcgm=False (default)."""
+        from unittest.mock import MagicMock
+
+        from srtctl.benchmarks.aiperf_bench import AIPerfBenchRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = AIPerfBenchRunner()
+        runtime = MagicMock()
+        runtime.frontend_port = 8000
+        runtime.is_hf_model = False
+
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model/llama", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="gb200"),
+            benchmark=BenchmarkConfig(
+                type="aiperf-bench",
+                isl=1024,
+                osl=128,
+                concurrencies=[4],
+            ),
+        )
+
+        cmd = runner.build_command(config, runtime)
+        assert "--gpu-telemetry" not in cmd
+
 
 class TestScriptsExist:
     """Test that benchmark scripts exist."""
