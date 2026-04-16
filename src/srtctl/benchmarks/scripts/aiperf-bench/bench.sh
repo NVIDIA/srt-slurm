@@ -104,7 +104,7 @@ aiperf profile \
     --tokenizer "${TOKENIZER_PATH}" \
     --tokenizer-trust-remote-code \
     --random-seed 42 \
-    --ui simple \
+    --ui-type none \
     --artifact-dir "${WARMUP_DIR}"
 echo "Warmup complete"
 
@@ -141,7 +141,7 @@ for C in "${CONCURRENCY_LIST[@]}"; do
         --tokenizer "${TOKENIZER_PATH}" \
         --tokenizer-trust-remote-code \
         --random-seed 42 \
-        --ui simple \
+        --ui-type none \
         --artifact-dir "${RUN_ARTIFACT_DIR}" \
         --goodput "time_to_first_token:${TTFT_THRESHOLD} inter_token_latency:${ITL_THRESHOLD}" \
         "${SERVER_METRICS_ARGS[@]}" \
