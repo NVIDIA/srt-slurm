@@ -159,6 +159,13 @@ class BenchmarkStageMixin:
 
         logger.info("Running %s benchmark", runner.name)
 
+        # Start dcgm-exporter on all nodes if enabled — fail fast if unresponsive
+        dcgm_exit = self._start_dcgm_if_needed()
+        if dcgm_exit != 0:
+            if reporter:
+                reporter.report(JobStatus.FAILED, JobStage.BENCHMARK, "DCGM setup failed")
+            return dcgm_exit
+
         # Run the benchmark script
         benchmark_log = self.runtime.log_dir / "benchmark.out"
         exit_code = self._run_benchmark_script(runner, benchmark_log, stop_event)
@@ -388,3 +395,54 @@ class BenchmarkStageMixin:
                 env["AIPERF_PACKAGE"] = self.config.benchmark.aiperf_package
 
         return env
+
+    def _start_dcgm_if_needed(self) -> int:
+        """Start dcgm-exporter on all worker nodes if not already running.
+
+        Broadcasts a single srun step across all worker nodes using the job's
+        container image. Each node checks whether dcgm-exporter is running and
+        starts it if not, then verifies it responds on port 9400 within 10 seconds.
+
+        Returns:
+            0 on success, 1 if dcgm-exporter fails to start or respond on any node.
+        """
+        if not self.config.benchmark.enable_dcgm:
+            return 0
+
+        worker_nodes = list(self.runtime.nodes.worker)
+        num_nodes = len(worker_nodes)
+        logger.info("DCGM enabled: checking/starting dcgm-exporter on %d nodes", num_nodes)
+
+        dcgm_check_cmd = (
+            "pgrep -x dcgm-exporter > /dev/null "
+            "|| nohup dcgm-exporter > /tmp/dcgm-exporter.log 2>&1 & "
+            "timeout 10 bash -c "
+            "'until curl -sf http://localhost:9400/metrics > /dev/null; do sleep 1; done' "
+            "|| { echo 'dcgm-exporter not responding on port 9400' >&2; exit 1; }"
+        )
+
+        dcgm_log = self.runtime.log_dir / "dcgm_setup.out"
+
+        proc = start_srun_process(
+            command=["bash", "-c", dcgm_check_cmd],
+            nodes=num_nodes,
+            ntasks=num_nodes,
+            nodelist=worker_nodes,
+            container_image=str(self.runtime.container_image),
+            container_mounts=self.runtime.container_mounts,
+            output=str(dcgm_log),
+            use_bash_wrapper=False,
+        )
+
+        proc.wait()
+
+        if proc.returncode != 0:
+            logger.error(
+                "dcgm-exporter failed to start or respond on one or more nodes (exit code %d). Check %s for details.",
+                proc.returncode,
+                dcgm_log,
+            )
+            return 1
+
+        logger.info("dcgm-exporter confirmed running on all %d nodes", num_nodes)
+        return 0
