@@ -409,6 +409,20 @@ class BenchmarkStageMixin:
         if not self.config.benchmark.enable_dcgm:
             return 0
 
+        from srtctl.benchmarks import get_runner
+        from srtctl.benchmarks.base import AIPerfBenchmarkRunner
+
+        try:
+            runner = get_runner(self.config.benchmark.type)
+        except ValueError:
+            return 0
+        if not isinstance(runner, AIPerfBenchmarkRunner):
+            logger.warning(
+                "enable_dcgm is set but %r is not an AIPerf-based benchmark; skipping DCGM setup",
+                self.config.benchmark.type,
+            )
+            return 0
+
         worker_nodes = list(self.runtime.nodes.worker)
         num_nodes = len(worker_nodes)
         logger.info("DCGM enabled: checking/starting dcgm-exporter on %d nodes", num_nodes)
