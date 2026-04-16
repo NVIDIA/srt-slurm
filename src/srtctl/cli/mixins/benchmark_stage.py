@@ -294,13 +294,24 @@ class BenchmarkStageMixin:
         """Build server metrics URLs for AIPerf benchmarks.
 
         Collects metrics endpoints from all backend processes that expose
-        a sys_port (vLLM workers with AIPerf metrics enabled).
+        a sys_port (vLLM workers with AIPerf metrics enabled), plus KVBM
+        metrics endpoints if DYN_KVBM_METRICS_PORT is configured.
         """
         urls: list[str] = []
         for process in self.backend_processes:
             if process.sys_port > 0:
                 host = get_hostname_ip(process.node, self.runtime.network_interface)
                 urls.append(f"http://{host}:{process.sys_port}/metrics")
+
+        # Add KVBM metrics endpoints for prefill processes with DYN_KVBM_METRICS_PORT
+        prefill_env = getattr(self.config.backend, "prefill_environment", {})
+        agg_env = getattr(self.config.backend, "aggregated_environment", {})
+        kvbm_port = prefill_env.get("DYN_KVBM_METRICS_PORT") or agg_env.get("DYN_KVBM_METRICS_PORT")
+        if kvbm_port:
+            for process in self.backend_processes:
+                if process.endpoint_mode in ("prefill", "agg") and process.is_leader:
+                    host = get_hostname_ip(process.node, self.runtime.network_interface)
+                    urls.append(f"http://{host}:{kvbm_port}/metrics")
 
         if not urls:
             return {}

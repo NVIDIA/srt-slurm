@@ -598,109 +598,108 @@ class TestWorkerEnvironmentTemplating:
                 return result
             raise subprocess.CalledProcessError(1, cmd)
 
-        with patch.dict(os.environ, slurm_env):
-            with patch("subprocess.run", mock_scontrol):
-                with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
-                    # Create config with templated environment variables
-                    config = SrtConfig(
-                        name="test",
-                        model=ModelConfig(
-                            path=str(model_path),
-                            container=str(container_path),
-                            precision="fp8",
-                        ),
-                        resources=ResourceConfig(
-                            gpu_type="h100",
-                            gpus_per_node=8,
-                            prefill_nodes=1,
-                            decode_nodes=2,
-                        ),
-                        backend=SGLangProtocol(
-                            prefill_environment={
-                                "SGLANG_DG_CACHE_DIR": "/configs/dg-{node_id}",
-                                "WORKER_NODE": "{node}",
-                            },
-                            decode_environment={
-                                "SGLANG_DG_CACHE_DIR": "/configs/dg-{node_id}",
-                            },
-                        ),
-                    )
+        with patch.dict(os.environ, slurm_env), patch("subprocess.run", mock_scontrol):
+            with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+                # Create config with templated environment variables
+                config = SrtConfig(
+                    name="test",
+                    model=ModelConfig(
+                        path=str(model_path),
+                        container=str(container_path),
+                        precision="fp8",
+                    ),
+                    resources=ResourceConfig(
+                        gpu_type="h100",
+                        gpus_per_node=8,
+                        prefill_nodes=1,
+                        decode_nodes=2,
+                    ),
+                    backend=SGLangProtocol(
+                        prefill_environment={
+                            "SGLANG_DG_CACHE_DIR": "/configs/dg-{node_id}",
+                            "WORKER_NODE": "{node}",
+                        },
+                        decode_environment={
+                            "SGLANG_DG_CACHE_DIR": "/configs/dg-{node_id}",
+                        },
+                    ),
+                )
 
-                    runtime = RuntimeContext.from_config(config, job_id="12345")
+                runtime = RuntimeContext.from_config(config, job_id="12345")
 
-                    # Create a mock worker stage
-                    class MockWorkerStage(WorkerStageMixin):
-                        def __init__(self, config, runtime):
-                            self.config = config
-                            self.runtime = runtime
+                # Create a mock worker stage
+                class MockWorkerStage(WorkerStageMixin):
+                    def __init__(self, config, runtime):
+                        self.config = config
+                        self.runtime = runtime
 
-                    worker_stage = MockWorkerStage(config, runtime)
+                worker_stage = MockWorkerStage(config, runtime)
 
-                    # Create test processes on different nodes
-                    processes = [
-                        Process(
-                            node="gpu-01",
-                            gpu_indices=frozenset([0, 1, 2, 3, 4, 5, 6, 7]),
-                            sys_port=8081,
-                            http_port=30000,
-                            endpoint_mode="prefill",
-                            endpoint_index=0,
-                            node_rank=0,
-                        ),
-                        Process(
-                            node="gpu-02",
-                            gpu_indices=frozenset([0, 1, 2, 3, 4, 5, 6, 7]),
-                            sys_port=8082,
-                            http_port=30001,
-                            endpoint_mode="decode",
-                            endpoint_index=0,
-                            node_rank=0,
-                        ),
-                        Process(
-                            node="gpu-03",
-                            gpu_indices=frozenset([0, 1, 2, 3, 4, 5, 6, 7]),
-                            sys_port=8083,
-                            http_port=30002,
-                            endpoint_mode="decode",
-                            endpoint_index=1,
-                            node_rank=0,
-                        ),
-                    ]
+                # Create test processes on different nodes
+                processes = [
+                    Process(
+                        node="gpu-01",
+                        gpu_indices=frozenset([0, 1, 2, 3, 4, 5, 6, 7]),
+                        sys_port=8081,
+                        http_port=30000,
+                        endpoint_mode="prefill",
+                        endpoint_index=0,
+                        node_rank=0,
+                    ),
+                    Process(
+                        node="gpu-02",
+                        gpu_indices=frozenset([0, 1, 2, 3, 4, 5, 6, 7]),
+                        sys_port=8082,
+                        http_port=30001,
+                        endpoint_mode="decode",
+                        endpoint_index=0,
+                        node_rank=0,
+                    ),
+                    Process(
+                        node="gpu-03",
+                        gpu_indices=frozenset([0, 1, 2, 3, 4, 5, 6, 7]),
+                        sys_port=8083,
+                        http_port=30002,
+                        endpoint_mode="decode",
+                        endpoint_index=1,
+                        node_rank=0,
+                    ),
+                ]
 
-                    # Mock backend command builder and srun process to capture environment variables
-                    mock_backend = MagicMock()
-                    mock_backend.get_environment_for_mode.side_effect = config.backend.get_environment_for_mode
-                    mock_backend.build_worker_command.return_value = ["echo", "test"]
+                # Mock backend command builder and srun process to capture environment variables
+                mock_backend = MagicMock()
+                mock_backend.get_environment_for_mode.side_effect = config.backend.get_environment_for_mode
+                mock_backend.build_worker_command.return_value = ["echo", "test"]
 
-                    with patch.object(worker_stage, "config") as mock_config:
-                        mock_config.backend = mock_backend
-                        mock_config.profiling = config.profiling
+                with patch.object(worker_stage, "config") as mock_config:
+                    mock_config.backend = mock_backend
+                    mock_config.profiling = config.profiling
 
-                        with patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun:
-                            mock_srun.return_value = MagicMock()
+                    with patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun:
+                        mock_srun.return_value = MagicMock()
 
-                            # Test prefill worker on gpu-01 (index 0)
-                            worker_stage.start_worker(processes[0], [])
-                            call_kwargs = mock_srun.call_args.kwargs
-                            env_vars = call_kwargs.get("env_to_set", {})
+                        # Test prefill worker on gpu-01 (index 0)
+                        worker_stage.start_worker(processes[0], [])
+                        call_kwargs = mock_srun.call_args.kwargs
+                        env_vars = call_kwargs.get("env_to_set", {})
 
-                            assert "SGLANG_DG_CACHE_DIR" in env_vars
-                            assert env_vars["SGLANG_DG_CACHE_DIR"] == "/configs/dg-0"
-                            assert env_vars["WORKER_NODE"] == "gpu-01"
+                        assert "SGLANG_DG_CACHE_DIR" in env_vars
+                        assert env_vars["SGLANG_DG_CACHE_DIR"] == "/configs/dg-0"
+                        assert env_vars["WORKER_NODE"] == "gpu-01"
 
-                            # Test decode worker on gpu-02 (index 1)
-                            worker_stage.start_worker(processes[1], [])
-                            call_kwargs = mock_srun.call_args.kwargs
-                            env_vars = call_kwargs.get("env_to_set", {})
+                        # Test decode worker on gpu-02 (index 1)
+                        worker_stage.start_worker(processes[1], [])
+                        call_kwargs = mock_srun.call_args.kwargs
+                        env_vars = call_kwargs.get("env_to_set", {})
 
-                            assert env_vars["SGLANG_DG_CACHE_DIR"] == "/configs/dg-1"
+                        assert env_vars["SGLANG_DG_CACHE_DIR"] == "/configs/dg-1"
 
-                            # Test decode worker on gpu-03 (index 2)
-                            worker_stage.start_worker(processes[2], [])
-                            call_kwargs = mock_srun.call_args.kwargs
-                            env_vars = call_kwargs.get("env_to_set", {})
+                        # Test decode worker on gpu-03 (index 2)
+                        worker_stage.start_worker(processes[2], [])
+                        call_kwargs = mock_srun.call_args.kwargs
+                        env_vars = call_kwargs.get("env_to_set", {})
 
-                            assert env_vars["SGLANG_DG_CACHE_DIR"] == "/configs/dg-2"
+                        assert env_vars["SGLANG_DG_CACHE_DIR"] == "/configs/dg-2"
 
     def test_environment_variable_unsupported_placeholder(self, monkeypatch, tmp_path):
         """Test that unsupported placeholders like {foo} remain unchanged and don't throw errors."""
@@ -737,77 +736,76 @@ class TestWorkerEnvironmentTemplating:
                 return result
             raise subprocess.CalledProcessError(1, cmd)
 
-        with patch.dict(os.environ, slurm_env):
-            with patch("subprocess.run", mock_scontrol):
-                with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
-                    # Create config with unsupported template placeholders
-                    config = SrtConfig(
-                        name="test",
-                        model=ModelConfig(
-                            path=str(model_path),
-                            container=str(container_path),
-                            precision="fp8",
-                        ),
-                        resources=ResourceConfig(
-                            gpu_type="h100",
-                            gpus_per_node=8,
-                            prefill_nodes=1,
-                            decode_nodes=1,
-                        ),
-                        backend=SGLangProtocol(
-                            prefill_environment={
-                                # Mix of supported and unsupported placeholders
-                                "CACHE_DIR": "/cache/{node_id}/data",
-                                "UNSUPPORTED": "/path/{foo}/bar/{baz}",
-                                "MIXED": "{node}-{unsupported_var}-cache",
-                            },
-                        ),
-                    )
+        with patch.dict(os.environ, slurm_env), patch("subprocess.run", mock_scontrol):
+            with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+                # Create config with unsupported template placeholders
+                config = SrtConfig(
+                    name="test",
+                    model=ModelConfig(
+                        path=str(model_path),
+                        container=str(container_path),
+                        precision="fp8",
+                    ),
+                    resources=ResourceConfig(
+                        gpu_type="h100",
+                        gpus_per_node=8,
+                        prefill_nodes=1,
+                        decode_nodes=1,
+                    ),
+                    backend=SGLangProtocol(
+                        prefill_environment={
+                            # Mix of supported and unsupported placeholders
+                            "CACHE_DIR": "/cache/{node_id}/data",
+                            "UNSUPPORTED": "/path/{foo}/bar/{baz}",
+                            "MIXED": "{node}-{unsupported_var}-cache",
+                        },
+                    ),
+                )
 
-                    runtime = RuntimeContext.from_config(config, job_id="12345")
+                runtime = RuntimeContext.from_config(config, job_id="12345")
 
-                    class MockWorkerStage(WorkerStageMixin):
-                        def __init__(self, config, runtime):
-                            self.config = config
-                            self.runtime = runtime
+                class MockWorkerStage(WorkerStageMixin):
+                    def __init__(self, config, runtime):
+                        self.config = config
+                        self.runtime = runtime
 
-                    worker_stage = MockWorkerStage(config, runtime)
+                worker_stage = MockWorkerStage(config, runtime)
 
-                    process = Process(
-                        node="gpu-01",
-                        gpu_indices=frozenset([0, 1, 2, 3, 4, 5, 6, 7]),
-                        sys_port=8081,
-                        http_port=30000,
-                        endpoint_mode="prefill",
-                        endpoint_index=0,
-                        node_rank=0,
-                    )
+                process = Process(
+                    node="gpu-01",
+                    gpu_indices=frozenset([0, 1, 2, 3, 4, 5, 6, 7]),
+                    sys_port=8081,
+                    http_port=30000,
+                    endpoint_mode="prefill",
+                    endpoint_index=0,
+                    node_rank=0,
+                )
 
-                    # Mock backend command builder and srun process to capture environment variables
-                    mock_backend = MagicMock()
-                    mock_backend.get_environment_for_mode.side_effect = config.backend.get_environment_for_mode
-                    mock_backend.build_worker_command.return_value = ["echo", "test"]
+                # Mock backend command builder and srun process to capture environment variables
+                mock_backend = MagicMock()
+                mock_backend.get_environment_for_mode.side_effect = config.backend.get_environment_for_mode
+                mock_backend.build_worker_command.return_value = ["echo", "test"]
 
-                    with patch.object(worker_stage, "config") as mock_config:
-                        mock_config.backend = mock_backend
-                        mock_config.profiling = config.profiling
+                with patch.object(worker_stage, "config") as mock_config:
+                    mock_config.backend = mock_backend
+                    mock_config.profiling = config.profiling
 
-                        with patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun:
-                            mock_srun.return_value = MagicMock()
+                    with patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun:
+                        mock_srun.return_value = MagicMock()
 
-                            # This should NOT throw an error
-                            worker_stage.start_worker(process, [])
-                            call_kwargs = mock_srun.call_args.kwargs
-                            env_vars = call_kwargs.get("env_to_set", {})
+                        # This should NOT throw an error
+                        worker_stage.start_worker(process, [])
+                        call_kwargs = mock_srun.call_args.kwargs
+                        env_vars = call_kwargs.get("env_to_set", {})
 
-                            # Supported placeholder should be replaced
-                            assert env_vars["CACHE_DIR"] == "/cache/0/data"
+                        # Supported placeholder should be replaced
+                        assert env_vars["CACHE_DIR"] == "/cache/0/data"
 
-                            # Unsupported placeholders should remain unchanged
-                            assert env_vars["UNSUPPORTED"] == "/path/{foo}/bar/{baz}"
+                        # Unsupported placeholders should remain unchanged
+                        assert env_vars["UNSUPPORTED"] == "/path/{foo}/bar/{baz}"
 
-                            # Mixed case: supported replaced, unsupported kept
-                            assert env_vars["MIXED"] == "gpu-01-{unsupported_var}-cache"
+                        # Mixed case: supported replaced, unsupported kept
+                        assert env_vars["MIXED"] == "gpu-01-{unsupported_var}-cache"
 
 
 class TestInfraConfig:
@@ -1371,7 +1369,6 @@ class TestVLLMDataParallelMode:
 
     def test_connector_custom_json_passthrough(self):
         """connector set to a raw JSON string is passed through as-is."""
-        import json
 
         custom = '{"kv_connector":"MyCustomConnector","kv_role":"kv_both"}'
         cmd = self._build_cmd_with_connector(custom)

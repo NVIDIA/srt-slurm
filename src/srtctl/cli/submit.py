@@ -25,6 +25,7 @@ import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import yaml
 from rich.console import Console
@@ -450,7 +451,7 @@ def submit_with_orchestrator(
         job_name = get_job_name(config)
 
         # Build comprehensive job metadata
-        metadata = {
+        metadata: dict[str, Any] = {
             "version": "2.0",
             "orchestrator": True,
             "job_id": job_id,

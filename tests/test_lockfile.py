@@ -36,11 +36,13 @@ def _make_minimal_config():
     """Create a minimal SrtConfig for testing."""
     from srtctl.core.schema import SrtConfig
 
-    return SrtConfig.Schema().load({
-        "name": "test-job",
-        "model": {"path": "/model", "container": "/c.sqsh", "precision": "fp8"},
-        "resources": {"gpu_type": "h100", "gpus_per_node": 8, "prefill_nodes": 1, "decode_nodes": 1},
-    })
+    return SrtConfig.Schema().load(
+        {
+            "name": "test-job",
+            "model": {"path": "/model", "container": "/c.sqsh", "precision": "fp8"},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "prefill_nodes": 1, "decode_nodes": 1},
+        }
+    )
 
 
 def _write_recipe(tmp_path: Path, content: str | None = None) -> None:
@@ -333,7 +335,7 @@ class TestStripLockSection:
 
     def test_preserves_indented_lock_key(self):
         """Indented lock: is not a top-level key — should be preserved."""
-        text = 'backend:\n  config:\n    lock: true\n    timeout: 30\n'
+        text = "backend:\n  config:\n    lock: true\n    timeout: 30\n"
         result = _strip_lock_section(text)
         assert "lock: true" in result
         assert "timeout: 30" in result
@@ -382,10 +384,14 @@ class TestLoadLockfileFingerprints:
     def test_from_new_lockfile_format(self, tmp_path):
         """Load fingerprints from lock.fingerprints in new format."""
         lockfile = tmp_path / "recipe.lock.yaml"
-        lockfile.write_text(yaml.dump({
-            "name": "test",
-            "lock": {"fingerprints": {"prefill_w0": {"hostname": "node-1"}}},
-        }))
+        lockfile.write_text(
+            yaml.dump(
+                {
+                    "name": "test",
+                    "lock": {"fingerprints": {"prefill_w0": {"hostname": "node-1"}}},
+                }
+            )
+        )
 
         fps = load_lockfile_fingerprints(lockfile)
         assert fps["prefill_w0"]["hostname"] == "node-1"
@@ -393,20 +399,28 @@ class TestLoadLockfileFingerprints:
     def test_from_legacy_lockfile(self, tmp_path):
         """Load fingerprints from top-level fingerprints (legacy v1 format)."""
         lockfile = tmp_path / "recipe.lock.yaml"
-        lockfile.write_text(yaml.dump({
-            "_meta": {"version": 1},
-            "fingerprints": {"prefill_w0": {"hostname": "node-1"}},
-        }))
+        lockfile.write_text(
+            yaml.dump(
+                {
+                    "_meta": {"version": 1},
+                    "fingerprints": {"prefill_w0": {"hostname": "node-1"}},
+                }
+            )
+        )
 
         fps = load_lockfile_fingerprints(lockfile)
         assert fps["prefill_w0"]["hostname"] == "node-1"
 
     def test_from_output_dir(self, tmp_path):
         lockfile = tmp_path / "recipe.lock.yaml"
-        lockfile.write_text(yaml.dump({
-            "name": "test",
-            "lock": {"fingerprints": {"w0": {"hostname": "n1"}}},
-        }))
+        lockfile.write_text(
+            yaml.dump(
+                {
+                    "name": "test",
+                    "lock": {"fingerprints": {"w0": {"hostname": "n1"}}},
+                }
+            )
+        )
 
         fps = load_lockfile_fingerprints(tmp_path)
         assert fps["w0"]["hostname"] == "n1"
@@ -463,12 +477,16 @@ class TestReproductionReport:
             "python_version": "3.12.3",
             "cuda_version": "Cuda compilation tools, release 13.1, V13.1.80",
             "nccl_version": "(2, 28, 9)",
-            "gpu": {"available": True, "driver": "580.126.16", "gpus": [
-                {"name": "NVIDIA GB200", "driver": "580.126.16", "memory": "189471 MiB"},
-                {"name": "NVIDIA GB200", "driver": "580.126.16", "memory": "189471 MiB"},
-                {"name": "NVIDIA GB200", "driver": "580.126.16", "memory": "189471 MiB"},
-                {"name": "NVIDIA GB200", "driver": "580.126.16", "memory": "189471 MiB"},
-            ]},
+            "gpu": {
+                "available": True,
+                "driver": "580.126.16",
+                "gpus": [
+                    {"name": "NVIDIA GB200", "driver": "580.126.16", "memory": "189471 MiB"},
+                    {"name": "NVIDIA GB200", "driver": "580.126.16", "memory": "189471 MiB"},
+                    {"name": "NVIDIA GB200", "driver": "580.126.16", "memory": "189471 MiB"},
+                    {"name": "NVIDIA GB200", "driver": "580.126.16", "memory": "189471 MiB"},
+                ],
+            },
             "frameworks": {"dynamo": "1.0.0", "tensorrt_llm": "1.3.0rc9"},
             "env": {"CUDA_VERSION": "13.1.0.036", "NCCL_VERSION": "2.28.9"},
             "pip_packages": {"python3": ["torch==2.10.0", "numpy==2.4.4", "ai-dynamo==1.0.0"]},
@@ -496,12 +514,16 @@ class TestReproductionReport:
             "python_version": "3.12.3",
             "cuda_version": "Cuda compilation tools, release 13.1, V13.1.80",
             "nccl_version": "(2, 28, 9)",
-            "gpu": {"available": True, "driver": "580.126.16", "gpus": [
-                {"name": "NVIDIA GB200", "driver": "580.126.16", "memory": "189471 MiB"},
-                {"name": "NVIDIA GB200", "driver": "580.126.16", "memory": "189471 MiB"},
-                {"name": "NVIDIA GB200", "driver": "580.126.16", "memory": "189471 MiB"},
-                {"name": "NVIDIA GB200", "driver": "580.126.16", "memory": "189471 MiB"},
-            ]},
+            "gpu": {
+                "available": True,
+                "driver": "580.126.16",
+                "gpus": [
+                    {"name": "NVIDIA GB200", "driver": "580.126.16", "memory": "189471 MiB"},
+                    {"name": "NVIDIA GB200", "driver": "580.126.16", "memory": "189471 MiB"},
+                    {"name": "NVIDIA GB200", "driver": "580.126.16", "memory": "189471 MiB"},
+                    {"name": "NVIDIA GB200", "driver": "580.126.16", "memory": "189471 MiB"},
+                ],
+            },
             "frameworks": {"dynamo": "1.0.0", "tensorrt_llm": "1.3.0rc9"},
             "env": {"CUDA_VERSION": "13.1.0.036", "NCCL_VERSION": "2.28.9"},
             "pip_packages": {"python3": ["torch==2.10.0", "numpy==2.4.4", "ai-dynamo==1.0.0"]},
@@ -513,16 +535,20 @@ class TestReproductionReport:
             "python_version": "3.12.3",
             "cuda_version": "Cuda compilation tools, release 12.8, V12.8.93",
             "nccl_version": "(2, 25, 1)",
-            "gpu": {"available": True, "driver": "570.86.15", "gpus": [
-                {"name": "NVIDIA H100", "driver": "570.86.15", "memory": "81559 MiB"},
-                {"name": "NVIDIA H100", "driver": "570.86.15", "memory": "81559 MiB"},
-                {"name": "NVIDIA H100", "driver": "570.86.15", "memory": "81559 MiB"},
-                {"name": "NVIDIA H100", "driver": "570.86.15", "memory": "81559 MiB"},
-                {"name": "NVIDIA H100", "driver": "570.86.15", "memory": "81559 MiB"},
-                {"name": "NVIDIA H100", "driver": "570.86.15", "memory": "81559 MiB"},
-                {"name": "NVIDIA H100", "driver": "570.86.15", "memory": "81559 MiB"},
-                {"name": "NVIDIA H100", "driver": "570.86.15", "memory": "81559 MiB"},
-            ]},
+            "gpu": {
+                "available": True,
+                "driver": "570.86.15",
+                "gpus": [
+                    {"name": "NVIDIA H100", "driver": "570.86.15", "memory": "81559 MiB"},
+                    {"name": "NVIDIA H100", "driver": "570.86.15", "memory": "81559 MiB"},
+                    {"name": "NVIDIA H100", "driver": "570.86.15", "memory": "81559 MiB"},
+                    {"name": "NVIDIA H100", "driver": "570.86.15", "memory": "81559 MiB"},
+                    {"name": "NVIDIA H100", "driver": "570.86.15", "memory": "81559 MiB"},
+                    {"name": "NVIDIA H100", "driver": "570.86.15", "memory": "81559 MiB"},
+                    {"name": "NVIDIA H100", "driver": "570.86.15", "memory": "81559 MiB"},
+                    {"name": "NVIDIA H100", "driver": "570.86.15", "memory": "81559 MiB"},
+                ],
+            },
             "frameworks": {"dynamo": "0.8.1", "tensorrt_llm": "1.2.0"},
             "env": {"CUDA_VERSION": "12.8.0", "NCCL_VERSION": "2.25.1"},
             "pip_packages": {"python3": ["torch==2.6.0", "numpy==2.4.4", "ai-dynamo==0.8.1", "vllm==0.8.0"]},
@@ -540,6 +566,35 @@ class TestReproductionReport:
         assert any("dynamo" in issue for issue in issues)
         assert any("ISSUES FOUND" in line for line in report)
 
+    def test_env_and_pip_differences_are_issues(self):
+        """Env and pip drift should not produce a clean reproduction report."""
+        from srtctl.core.lockfile import generate_reproduction_report
+
+        prev_fp = {
+            "arch": "aarch64",
+            "os": "Ubuntu 24.04",
+            "python_version": "3.12.3",
+            "cuda_version": "13.1",
+            "nccl_version": "2.28.9",
+            "gpu": {"driver": "580.126.16", "gpus": [{"name": "NVIDIA GB200"}]},
+            "frameworks": {"dynamo": "1.0.0"},
+            "env": {"NCCL_DEBUG": "INFO"},
+            "pip_packages": {"python3": ["torch==2.10.0"]},
+        }
+        new_fp = {
+            **prev_fp,
+            "env": {"NCCL_DEBUG": "WARN"},
+            "pip_packages": {"python3": ["torch==2.11.0"]},
+        }
+        prev_lock = {"slurm": {"job_id": "1234"}, "fingerprints": {"agg_w0": prev_fp}}
+
+        _summary, report, issues = generate_reproduction_report(prev_lock, {"agg_w0": new_fp})
+
+        assert any("env vars differ" in issue for issue in issues)
+        assert any("pip packages differ" in issue for issue in issues)
+        assert any("ISSUES FOUND" in line for line in report)
+        assert not any("No issues found" in line for line in report)
+
     def test_identical_no_results(self, capsys):
         """Identical environments with no results — should still show clean report."""
         from srtctl.core.lockfile import generate_reproduction_report
@@ -551,9 +606,13 @@ class TestReproductionReport:
             "python_version": "3.12.3",
             "cuda_version": "13.1",
             "nccl_version": "2.28.9",
-            "gpu": {"available": True, "driver": "580.126.16", "gpus": [
-                {"name": "NVIDIA GB200", "driver": "580.126.16", "memory": "189471 MiB"},
-            ]},
+            "gpu": {
+                "available": True,
+                "driver": "580.126.16",
+                "gpus": [
+                    {"name": "NVIDIA GB200", "driver": "580.126.16", "memory": "189471 MiB"},
+                ],
+            },
             "frameworks": {"dynamo": "1.0.0"},
             "env": {},
             "pip_packages": {},
@@ -575,26 +634,48 @@ class TestReproductionReport:
         from srtctl.core.lockfile import generate_reproduction_report
 
         prefill_fp = {
-            "hostname": "node-001", "arch": "aarch64", "os": "Ubuntu 24.04",
-            "python_version": "3.12.3", "cuda_version": "13.1", "nccl_version": "2.28.9",
-            "gpu": {"available": True, "driver": "580.126.16", "gpus": [
-                {"name": "NVIDIA GB200", "driver": "580.126.16", "memory": "189471 MiB"},
-            ]},
+            "hostname": "node-001",
+            "arch": "aarch64",
+            "os": "Ubuntu 24.04",
+            "python_version": "3.12.3",
+            "cuda_version": "13.1",
+            "nccl_version": "2.28.9",
+            "gpu": {
+                "available": True,
+                "driver": "580.126.16",
+                "gpus": [
+                    {"name": "NVIDIA GB200", "driver": "580.126.16", "memory": "189471 MiB"},
+                ],
+            },
             "frameworks": {"dynamo": "1.0.0", "tensorrt_llm": "1.3.0rc9"},
-            "env": {}, "pip_packages": {},
+            "env": {},
+            "pip_packages": {},
         }
         decode_fp = {
-            "hostname": "node-002", "arch": "x86_64", "os": "Ubuntu 22.04",
-            "python_version": "3.12.3", "cuda_version": "12.8", "nccl_version": "2.25.1",
-            "gpu": {"available": True, "driver": "570.86.15", "gpus": [
-                {"name": "NVIDIA H100", "driver": "570.86.15", "memory": "81559 MiB"},
-            ]},
+            "hostname": "node-002",
+            "arch": "x86_64",
+            "os": "Ubuntu 22.04",
+            "python_version": "3.12.3",
+            "cuda_version": "12.8",
+            "nccl_version": "2.25.1",
+            "gpu": {
+                "available": True,
+                "driver": "570.86.15",
+                "gpus": [
+                    {"name": "NVIDIA H100", "driver": "570.86.15", "memory": "81559 MiB"},
+                ],
+            },
             "frameworks": {"dynamo": "1.0.0", "tensorrt_llm": "1.3.0rc9"},
-            "env": {}, "pip_packages": {},
+            "env": {},
+            "pip_packages": {},
         }
-        prev_lock = {"slurm": {"job_id": "7777"}, "fingerprints": {
-            "prefill_w0": prefill_fp, "decode_w0": decode_fp,
-        }}
+        prev_lock = {
+            "slurm": {"job_id": "7777"},
+            "fingerprints": {
+                "prefill_w0": prefill_fp,
+                "decode_w0": decode_fp,
+            },
+        }
         new_fps = {"prefill_w0": prefill_fp, "decode_w0": decode_fp}
 
         summary, report, issues = generate_reproduction_report(prev_lock, new_fps)
@@ -612,16 +693,31 @@ class TestReproductionReport:
         from srtctl.core.lockfile import generate_reproduction_report
 
         fp = {
-            "hostname": "node-001", "arch": "aarch64", "os": "Ubuntu 24.04",
-            "python_version": "3.12.3", "cuda_version": "13.1", "nccl_version": "2.28.9",
-            "gpu": {"available": True, "driver": "580.126.16", "gpus": [
-                {"name": "NVIDIA GB200", "driver": "580.126.16", "memory": "189471 MiB"},
-            ]},
-            "frameworks": {"dynamo": "1.0.0"}, "env": {}, "pip_packages": {},
+            "hostname": "node-001",
+            "arch": "aarch64",
+            "os": "Ubuntu 24.04",
+            "python_version": "3.12.3",
+            "cuda_version": "13.1",
+            "nccl_version": "2.28.9",
+            "gpu": {
+                "available": True,
+                "driver": "580.126.16",
+                "gpus": [
+                    {"name": "NVIDIA GB200", "driver": "580.126.16", "memory": "189471 MiB"},
+                ],
+            },
+            "frameworks": {"dynamo": "1.0.0"},
+            "env": {},
+            "pip_packages": {},
         }
-        prev_lock = {"slurm": {"job_id": "8888"}, "fingerprints": {
-            "prefill_w0": fp, "decode_w0": fp, "decode_w1": fp,
-        }}
+        prev_lock = {
+            "slurm": {"job_id": "8888"},
+            "fingerprints": {
+                "prefill_w0": fp,
+                "decode_w0": fp,
+                "decode_w1": fp,
+            },
+        }
         new_fps = {"prefill_w0": fp, "decode_w0": fp}
 
         summary, report, issues = generate_reproduction_report(prev_lock, new_fps)

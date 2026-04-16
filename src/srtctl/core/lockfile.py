@@ -311,7 +311,9 @@ def generate_reproduction_report(
         return line
 
     def _compare_worker(
-        worker: str, prev_fp: dict[str, Any], new_fp: dict[str, Any],
+        worker: str,
+        prev_fp: dict[str, Any],
+        new_fp: dict[str, Any],
         to_summary: bool = True,
     ) -> None:
         """Compare a single worker pair — appends to report_lines and optionally summary_lines."""
@@ -356,11 +358,15 @@ def generate_reproduction_report(
         prev_env = prev_fp.get("env", {})
         new_env = new_fp.get("env", {})
         all_env_keys = sorted(set(prev_env) | set(new_env))
-        env_diffs = [f"    !!  {k}: {prev_env.get(k)} -> {new_env.get(k)}"
-                     for k in all_env_keys if prev_env.get(k) != new_env.get(k)]
+        env_diffs = [
+            f"    !!  {k}: {prev_env.get(k)} -> {new_env.get(k)}"
+            for k in all_env_keys
+            if prev_env.get(k) != new_env.get(k)
+        ]
         report_lines.append(f"  Env Vars: {len(all_env_keys)} compared, {len(env_diffs)} differ")
         if env_diffs:
             report_lines.extend(env_diffs)
+            issues.append(f"{worker}: env vars differ ({len(env_diffs)})")
 
         # Pip packages (report only)
         prev_pkgs = _parse_pip_packages(prev_fp.get("pip_packages", {}))
@@ -384,6 +390,11 @@ def generate_reproduction_report(
         report_lines.extend(pkg_changed)
         report_lines.extend(pkg_added)
         report_lines.extend(pkg_removed)
+        if pkg_changed or pkg_added or pkg_removed:
+            issues.append(
+                f"{worker}: pip packages differ "
+                f"({len(pkg_changed)} changed, {len(pkg_added)} added, {len(pkg_removed)} removed)"
+            )
 
     # --- Header ---
     prev_job = prev_lock.get("slurm", {}).get("job_id", "?")
