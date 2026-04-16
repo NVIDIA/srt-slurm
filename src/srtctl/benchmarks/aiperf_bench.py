@@ -77,10 +77,8 @@ class AIPerfBenchRunner(AIPerfBenchmarkRunner):
         endpoint = f"http://localhost:{runtime.frontend_port}"
         model_name = config.served_model_name or config.model.path
 
-        # Format concurrencies as comma-separated string
-        concurrencies = b.concurrencies
-        if isinstance(concurrencies, list):
-            concurrencies = ",".join(str(c) for c in concurrencies)
+        # Format concurrencies as comma-separated string (handles both list and "NxM" string formats)
+        concurrencies = ",".join(str(c) for c in b.get_concurrency_list())
 
         ttft_threshold = b.ttft_threshold_ms or 2000
         itl_threshold = b.itl_threshold_ms or 25
