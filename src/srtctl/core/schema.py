@@ -221,6 +221,7 @@ class Precision(str, Enum):
 
 class BenchmarkType(str, Enum):
     MANUAL = "manual"
+    CUSTOM = "custom"
     SA_BENCH = "sa-bench"
     ROUTER = "router"
     MOONCAKE_ROUTER = "mooncake-router"
@@ -234,6 +235,10 @@ class ProfilingType(str, Enum):
     NSYS = "nsys"
     TORCH = "torch"
     NONE = "none"
+
+
+class TelemetryProvider(str, Enum):
+    SCRAPER = "scraper"
 
 
 # ============================================================================
@@ -597,6 +602,10 @@ class BenchmarkConfig:
     trace_file: str | None = None  # Path to trace JSONL file (container path, e.g., /traces/dataset.jsonl)
     custom_tokenizer: str | None = None  # Custom tokenizer class (e.g., "module.path.ClassName")
     use_chat_template: bool = True  # Pass --use-chat-template to benchmark (default: true)
+    # Custom benchmark hook
+    command: str | None = None
+    container_image: str | None = None
+    env: dict[str, str] = field(default_factory=dict)
     # aiperf pip install spec (e.g., "aiperf>=0.7.0", "aiperf @ git+https://...@commit")
     # If set, runs pip install <spec> before benchmarking. Upgrades if already installed.
     aiperf_package: str | None = None
@@ -832,6 +841,40 @@ class ObservabilityConfig:
     Schema: ClassVar[type[Schema]] = Schema
 
 
+@dataclass(frozen=True)
+class TelemetryExporterConfig:
+    """Configuration for telemetry exporters deployed on worker nodes."""
+
+    container_image: str
+    port: int
+    command: str | None = None
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
+class TelemetryConfig:
+    """Telemetry configuration for benchmark jobs.
+
+    The default provider bundles a scraper with dcgm_exporter and node_exporter.
+    Other providers can reuse the same top-level contract later.
+    """
+
+    enabled: bool = False
+    provider: TelemetryProvider = TelemetryProvider.SCRAPER
+    container_image: str | None = None
+    binary_path: str = "/usr/local/bin/telemetry-scraper"
+    default_frequency: float = 5.0
+    sync_interval_secs: int = 120
+    compaction_threads: int = 4
+    storage_subdir: str = "telemetry"
+    extra_metadata: dict[str, str] = field(default_factory=dict)
+    dcgm_exporter: TelemetryExporterConfig | None = None
+    node_exporter: TelemetryExporterConfig | None = None
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
 def build_otel_env(observability: ObservabilityConfig, component: str) -> dict[str, str]:
     """Build OTEL environment variables for a component.
 
@@ -1038,6 +1081,7 @@ class SrtConfig:
     health_check: HealthCheckConfig = field(default_factory=HealthCheckConfig)
     infra: InfraConfig = field(default_factory=InfraConfig)
     observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
+    telemetry: TelemetryConfig = field(default_factory=TelemetryConfig)
 
     environment: dict[str, str] = field(default_factory=dict)
     container_mounts: dict[
@@ -1064,6 +1108,7 @@ class SrtConfig:
     def __post_init__(self):
         """Validate configuration after initialization."""
         self._validate_profiling()
+        self._validate_telemetry()
 
     def _validate_profiling(self):
         """Validate profiling configuration matches serving mode."""
@@ -1119,6 +1164,28 @@ class SrtConfig:
                 )
             if (r.agg_workers or 0) <= 0:
                 raise ValidationError("Aggregated mode requires agg_workers to be > 0.")
+
+    def _validate_telemetry(self):
+        """Validate telemetry configuration."""
+        telemetry = self.telemetry
+        if not telemetry.enabled:
+            return
+
+        if telemetry.provider != TelemetryProvider.SCRAPER:
+            raise ValidationError(f"Unsupported telemetry provider: {telemetry.provider}")
+
+        if not telemetry.container_image:
+            raise ValidationError("telemetry.container_image is required when telemetry is enabled")
+        if telemetry.dcgm_exporter is None:
+            raise ValidationError("telemetry.dcgm_exporter is required when telemetry is enabled")
+        if telemetry.node_exporter is None:
+            raise ValidationError("telemetry.node_exporter is required when telemetry is enabled")
+        if telemetry.default_frequency <= 0:
+            raise ValidationError("telemetry.default_frequency must be positive")
+        if telemetry.sync_interval_secs < 0:
+            raise ValidationError("telemetry.sync_interval_secs must be >= 0")
+        if telemetry.compaction_threads < 0:
+            raise ValidationError("telemetry.compaction_threads must be >= 0")
 
     @classmethod
     def from_yaml(cls, yaml_path: Path) -> "SrtConfig":

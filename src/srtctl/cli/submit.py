@@ -136,6 +136,9 @@ def show_config_details(config: SrtConfig) -> None:
         if env:
             has_env = True
             mode_envs.append((mode_name, dict(env)))
+    if config.benchmark.env:
+        has_env = True
+        mode_envs.append(("benchmark", dict(config.benchmark.env)))
 
     if has_env:
         env_table = Table(title="Environment Variables", show_lines=False, pad_edge=False)
@@ -158,6 +161,27 @@ def show_config_details(config: SrtConfig) -> None:
     if config.srun_options:
         opts = " ".join(f"--{k} {v}" if v else f"--{k}" for k, v in config.srun_options.items())
         console.print(f"[dim]srun options:[/] {opts}")
+
+    if config.benchmark.type == "custom" or config.telemetry.enabled:
+        details = Table(title="Execution Extensions", show_lines=False, pad_edge=False)
+        details.add_column("Area", style="dim", width=14)
+        details.add_column("Setting", style="yellow")
+        details.add_column("Value", style="white")
+
+        if config.benchmark.type == "custom":
+            details.add_row("benchmark", "type", config.benchmark.type)
+            if config.benchmark.command:
+                details.add_row("benchmark", "command", config.benchmark.command)
+            if config.benchmark.container_image:
+                details.add_row("benchmark", "container_image", config.benchmark.container_image)
+
+        if config.telemetry.enabled:
+            details.add_row("telemetry", "provider", config.telemetry.provider.value)
+            details.add_row("telemetry", "container_image", config.telemetry.container_image or "<unset>")
+            details.add_row("telemetry", "storage_subdir", config.telemetry.storage_subdir)
+            details.add_row("telemetry", "frequency", str(config.telemetry.default_frequency))
+
+        console.print(Panel(details, border_style="blue"))
 
 
 def validate_setup(srtctl_source: Path) -> None:

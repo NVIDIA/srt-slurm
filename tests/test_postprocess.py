@@ -634,6 +634,36 @@ class TestS3UploadFaultTolerance:
         # Should return None for s3_url on failure
         assert s3_url is None
 
+    def test_parse_failure_still_returns_s3_url(self, tmp_path):
+        """Raw logs should still report an S3 URL when parsing fails after upload."""
+        mixin = self._create_mixin_with_runtime(tmp_path)
+        mixin._get_s3_config = MagicMock(return_value=S3Config(bucket="test-bucket"))
+
+        mock_proc = MagicMock()
+        mock_proc.wait.return_value = None
+        mock_proc.returncode = 20
+
+        with patch("srtctl.cli.mixins.postprocess_stage.start_srun_process") as mock_srun:
+            mock_srun.return_value = mock_proc
+
+            parquet_path, s3_url = mixin._run_postprocess_container()
+
+        assert parquet_path is None
+        assert s3_url is not None
+        assert s3_url.startswith("s3://test-bucket/")
+
+    def test_postprocess_script_uploads_after_parse(self, tmp_path):
+        """The generated script should upload even when parsing fails."""
+        mixin = self._create_mixin_with_runtime(tmp_path)
+        script = mixin._build_postprocess_script("s3://test-bucket/run/", "")
+
+        parse_line = "srtlog parse . || PARSE_STATUS=$?"
+        upload_line = "aws s3 sync /logs s3://test-bucket/run/"
+
+        assert parse_line in script
+        assert upload_line in script
+        assert script.index(parse_line) < script.index(upload_line)
+
     def test_run_postprocess_completes_with_s3_failure(self, tmp_path):
         """Test run_postprocess completes even when S3 upload fails entirely."""
         mixin = self._create_mixin_with_runtime(tmp_path)

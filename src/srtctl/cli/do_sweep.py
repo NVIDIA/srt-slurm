@@ -21,7 +21,13 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from srtctl.cli.mixins import BenchmarkStageMixin, FrontendStageMixin, PostProcessStageMixin, WorkerStageMixin
+from srtctl.cli.mixins import (
+    BenchmarkStageMixin,
+    FrontendStageMixin,
+    PostProcessStageMixin,
+    TelemetryStageMixin,
+    WorkerStageMixin,
+)
 from srtctl.core.config import load_config
 from srtctl.core.health import wait_for_port
 from srtctl.core.lockfile import write_lockfile
@@ -42,7 +48,13 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class SweepOrchestrator(WorkerStageMixin, FrontendStageMixin, BenchmarkStageMixin, PostProcessStageMixin):
+class SweepOrchestrator(
+    WorkerStageMixin,
+    FrontendStageMixin,
+    TelemetryStageMixin,
+    BenchmarkStageMixin,
+    PostProcessStageMixin,
+):
     """Main orchestrator for benchmark sweeps.
 
     Usage:
@@ -223,6 +235,10 @@ class SweepOrchestrator(WorkerStageMixin, FrontendStageMixin, BenchmarkStageMixi
             reporter.report(JobStatus.FRONTEND, JobStage.FRONTEND, "Starting frontend")
             frontend_procs = self.start_frontend(registry)
             for proc in frontend_procs:
+                registry.add_process(proc)
+
+            telemetry_procs = self.start_telemetry()
+            for proc in telemetry_procs:
                 registry.add_process(proc)
 
             self._print_connection_info()

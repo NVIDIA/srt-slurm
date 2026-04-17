@@ -179,6 +179,9 @@ class BenchmarkStageMixin:
 
         cmd = runner.build_command(self.config, self.runtime)
         env_to_set = self._get_benchmark_env(runner)
+        env_to_set.update(runner.get_environment(self.config, self.runtime))
+        container_image = runner.get_container_image(self.config, self.runtime)
+        container_mounts = runner.get_container_mounts(self.config, self.runtime)
 
         logger.info("Script: %s", runner.script_path)
         logger.info("Command: %s", shlex.join(cmd))
@@ -188,8 +191,8 @@ class BenchmarkStageMixin:
             command=cmd,
             nodelist=[self.runtime.nodes.head],
             output=str(log_file),
-            container_image=str(self.runtime.container_image),
-            container_mounts=self.runtime.container_mounts,
+            container_image=str(container_image),
+            container_mounts=container_mounts,
             env_to_set=env_to_set,
         )
 
