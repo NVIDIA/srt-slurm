@@ -25,6 +25,7 @@ import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import yaml
 from rich.console import Console
@@ -278,6 +279,7 @@ def _print_running_summary(config: SrtConfig, console: Console) -> None:
 
     has_identity = config.identity and (
         (config.identity.model and (config.identity.model.repo or config.identity.model.revision))
+        or (config.identity.container and config.identity.container.image)
         or config.identity.frameworks
     )
     if has_identity:
@@ -286,6 +288,12 @@ def _print_running_summary(config: SrtConfig, console: Console) -> None:
             id_fields.append(f"model={config.identity.model.repo}")
         if config.identity.model and config.identity.model.revision:
             id_fields.append(f"rev={config.identity.model.revision[:12]}")
+        if config.identity.container and config.identity.container.image:
+            # Shorten long registry URIs for display
+            img = config.identity.container.image
+            if len(img) > 50:
+                img = "..." + img[-47:]
+            id_fields.append(f"container={img}")
         for name, ver in (config.identity.frameworks or {}).items():
             id_fields.append(f"{name}={ver}")
         console.print(f"  Identity:  {', '.join(id_fields)}")
@@ -302,6 +310,8 @@ def _print_running_summary(config: SrtConfig, console: Console) -> None:
         console.print("[dim]       model:[/]")
         console.print('[dim]         repo: "nvidia/Kimi-K2.5-NVFP4"       [/][dim italic]# HuggingFace model ID[/]')
         console.print('[dim]         revision: "c0285e649c34..."            [/][dim italic]# HF commit SHA[/]')
+        console.print("[dim]       container:[/]")
+        console.print('[dim]         image: "gitlab:5005/.../trtllm-arm64"  [/][dim italic]# pullable Docker URI[/]')
         console.print("[dim]       frameworks:                              [/][dim italic]# dynamo + one engine[/]")
         console.print('[dim]         dynamo: "1.0.0"                        [/][dim italic]# always (ai-dynamo)[/]')
         console.print('[dim]         tensorrt_llm: "1.3.0rc9"              [/][dim italic]# OR vllm OR sglang[/]')
@@ -441,7 +451,7 @@ def submit_with_orchestrator(
         job_name = get_job_name(config)
 
         # Build comprehensive job metadata
-        metadata = {
+        metadata: dict[str, Any] = {
             "version": "2.0",
             "orchestrator": True,
             "job_id": job_id,

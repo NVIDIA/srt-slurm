@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 from srtctl.core.fingerprint import generate_capture_script
 from srtctl.core.processes import ManagedProcess, NamedProcesses
 from srtctl.core.schema import build_otel_env
-from srtctl.core.slurm import start_srun_process
+from srtctl.core.slurm import get_hostname_ip, start_srun_process
 
 if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
@@ -80,6 +80,35 @@ class WorkerStageMixin:
             return None
 
         return " && ".join(parts)
+
+    def _apply_kvbm_endpoint_env(self, env_to_set: dict[str, str], endpoint_processes: list["Process"]) -> None:
+        """Fill KVBM leader ZMQ settings for an endpoint.
+
+        KVBM defaults its leader control sockets to 127.0.0.1. That works for
+        single-node endpoints, but multi-node endpoints need every worker to
+        connect to the leader node. Also assign deterministic per-endpoint ports
+        when the user did not set them, so co-located KVBM endpoints do not fight
+        over the default 56001/56002 pair.
+        """
+        if env_to_set.get("DYN_CONNECTOR", "").lower() != "kvbm" or not endpoint_processes:
+            return
+
+        leader = endpoint_processes[0]
+        endpoint_nodes = list(dict.fromkeys(p.node for p in endpoint_processes))
+
+        if len(endpoint_nodes) > 1:
+            leader_host = get_hostname_ip(leader.node, self.runtime.network_interface)
+            env_to_set.setdefault("DYN_KVBM_LEADER_ZMQ_HOST", leader_host)
+
+        if leader.kv_events_port is None:
+            return
+
+        port_offset = max(0, leader.kv_events_port - 5550)
+        pub_port = 56001 + (port_offset * 2)
+        ack_port = pub_port + 1
+        if ack_port <= 65535:
+            env_to_set.setdefault("DYN_KVBM_LEADER_ZMQ_PUB_PORT", str(pub_port))
+            env_to_set.setdefault("DYN_KVBM_LEADER_ZMQ_ACK_PORT", str(ack_port))
 
     def start_worker(self, process: "Process", endpoint_processes: list["Process"]) -> ManagedProcess:
         """Start a single worker process (one srun per node, used by SGLang)."""
@@ -156,6 +185,8 @@ class WorkerStageMixin:
         # Add backend-specific process environment variables (e.g., unique ports)
         env_to_set.update(self.backend.get_process_environment(process))
 
+        self._apply_kvbm_endpoint_env(env_to_set, endpoint_processes)
+
         # Log env vars in the format: VAR=value VAR2=value2
         env_str = " ".join(f"{k}={v}" for k, v in sorted(env_to_set.items()))
         logger.info("Env: %s", env_str)
@@ -167,6 +198,9 @@ class WorkerStageMixin:
         # Build bash preamble (setup script + dynamo install + fingerprint)
         bash_preamble = self._build_worker_preamble()
         fp_cmd = generate_capture_script(f"/logs/fingerprint_{mode}_w{index}.json")
+        # Keep fingerprint failures non-fatal, but do not let its `|| true`
+        # mask failures from setup/dynamo install commands before it.
+        fp_cmd = f"( {fp_cmd} )"
         bash_preamble = f"{bash_preamble} && {fp_cmd}" if bash_preamble else fp_cmd
 
         proc = start_srun_process(
@@ -264,6 +298,8 @@ class WorkerStageMixin:
         if len(leader.gpu_indices) < self.runtime.gpus_per_node:
             env_to_set["CUDA_VISIBLE_DEVICES"] = leader.cuda_visible_devices
 
+        self._apply_kvbm_endpoint_env(env_to_set, endpoint_processes)
+
         # Log env vars in the format: VAR=value VAR2=value2
         env_str = " ".join(f"{k}={v}" for k, v in sorted(env_to_set.items()))
         logger.info("Env: %s", env_str)
@@ -275,6 +311,9 @@ class WorkerStageMixin:
         # Build bash preamble (setup script + dynamo install + fingerprint)
         bash_preamble = self._build_worker_preamble()
         fp_cmd = generate_capture_script(f"/logs/fingerprint_{mode}_w{index}.json")
+        # Keep fingerprint failures non-fatal, but do not let its `|| true`
+        # mask failures from setup/dynamo install commands before it.
+        fp_cmd = f"( {fp_cmd} )"
         bash_preamble = f"{bash_preamble} && {fp_cmd}" if bash_preamble else fp_cmd
 
         # Get srun config from backend

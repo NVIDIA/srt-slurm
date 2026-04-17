@@ -13,7 +13,6 @@ Every test runs without network, GPU, or special packages — probes are mocked.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -21,8 +20,6 @@ from srtctl.core.fingerprint import (
     UNAVAILABLE,
     CheckResult,
     CheckStatus,
-    FingerprintDiff,
-    PackageDiff,
     ProbeResult,
     _ordered_fingerprint,
     _parse_pip_packages,
@@ -35,7 +32,6 @@ from srtctl.core.fingerprint import (
     load_fingerprint,
     write_fingerprint,
 )
-
 
 # ============================================================================
 # Fixtures — reusable fingerprint data

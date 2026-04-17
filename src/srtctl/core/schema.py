@@ -399,16 +399,34 @@ class IdentityModelConfig:
 
 
 @dataclass(frozen=True)
+class IdentityContainerConfig:
+    """Container identity for reproduction (not verified at runtime).
+
+    Recorded so others can pull the same container image to reproduce.
+    Cannot be verified at runtime — Pyxis/enroot strips provenance during import.
+    """
+
+    image: str | None = None  # Docker URI, e.g. "gitlab-master:5005/.../trtllm-arm64"
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
 class IdentityConfig:
-    """Virtual identity for runtime verification.
+    """Virtual identity for runtime verification and reproduction.
 
     These fields declare what *should* be running. They are not used for
-    launching — only for verifying the runtime fingerprint matches expectations.
-    Mismatches produce warnings, not failures.
+    launching — only for verifying the runtime fingerprint matches expectations
+    and for helping others reproduce the run.
+
+    - model: HF repo + revision (verified against download metadata at runtime)
+    - container: Docker image URI (recorded for reproduction, not verified)
+    - frameworks: expected versions for dynamo + one engine (verified via importlib.metadata)
     """
 
     model: IdentityModelConfig = field(default_factory=IdentityModelConfig)
-    frameworks: dict[str, str] = field(default_factory=dict)  # e.g. {"dynamo": "1.0.0", "tensorrt_llm": "1.3.0rc9"}
+    container: IdentityContainerConfig = field(default_factory=IdentityContainerConfig)
+    frameworks: dict[str, str] = field(default_factory=dict)
 
     Schema: ClassVar[type[Schema]] = Schema
 

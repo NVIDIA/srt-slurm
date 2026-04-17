@@ -52,6 +52,8 @@ identity:
   model:
     repo: "nvidia/Kimi-K2.5-NVFP4"
     revision: "c0285e649c34d4386b01e38abca642c06cbe014e"
+  container:
+    image: "gitlab-master.nvidia.com:5005/dl/ai-dynamo/dynamo:56f877977-trtllm-arm64"
   frameworks:
     dynamo: "1.0.0"
     tensorrt_llm: "1.3.0rc9"

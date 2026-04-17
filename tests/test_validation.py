@@ -12,14 +12,12 @@ from unittest.mock import patch
 import requests
 
 from srtctl.core.validation import (
-    ValidationResult,
     run_all_validations,
     run_validations_background,
     validate_docker_image,
     validate_hf_model,
     validate_local_path,
 )
-
 
 # ============================================================================
 # Local path validation
@@ -178,7 +176,7 @@ class TestValidateDockerImage:
 class TestRunAllValidations:
     def test_never_raises(self):
         """Even with completely broken config, returns a list."""
-        from srtctl.core.schema import ModelConfig, ResourceConfig, SrtConfig
+        from srtctl.core.schema import SrtConfig
 
         config = SrtConfig.Schema().load({
             "name": "test",
