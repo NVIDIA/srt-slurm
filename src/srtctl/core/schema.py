@@ -883,6 +883,7 @@ class DynamoConfig:
         sglang = (
             "apt-get update -qq && apt-get install -y -qq libclang-dev curl > /dev/null 2>&1 && "
             "if ! command -v cargo &>/dev/null; then curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable -q && source $HOME/.cargo/env; fi && "
+            "if ! command -v maturin &>/dev/null; then pip install --break-system-packages maturin; fi && "
             "cd /sgl-workspace/ && "
             "git clone https://github.com/ai-dynamo/dynamo.git && "
             "cd dynamo && "
