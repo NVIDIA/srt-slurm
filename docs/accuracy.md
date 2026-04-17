@@ -1,6 +1,6 @@
 # Accuracy Benchmarks
 
-In srt-slurm, users can run different accuracy benchmarks by setting the benchmark section in the config yaml file. Supported benchmarks include `mmlu`, `gpqa` and `longbenchv2`.
+In srt-slurm, users can run different accuracy benchmarks by setting the benchmark section in the config yaml file. Supported benchmarks include `mmlu`, `gpqa`, `longbenchv2`, and `lm-eval`.
 
 ## Table of Contents
 
@@ -14,6 +14,7 @@ In srt-slurm, users can run different accuracy benchmarks by setting the benchma
   - [Example: Quick Validation](#example-quick-validation)
   - [Output](#output)
   - [Important Notes](#important-notes)
+- [lm-eval (InferenceX)](#lm-eval-inferencex)
 
 ---
 
@@ -191,3 +192,84 @@ The output includes per-category scores and aggregate metrics:
 4. **Categories**: Running specific categories is useful for targeted validation (e.g., just testing summarization capabilities)
 
 
+## lm-eval (InferenceX)
+
+The `lm-eval` benchmark runner integrates [EleutherAI/lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-harness) via InferenceX's `benchmark_lib.sh`. Unlike the built-in benchmarks above, this runner sources evaluation logic from an external InferenceX workspace mounted at `/infmax-workspace`.
+
+This is used by InferenceX CI to run evals such as GSM8K and GPQA against NVIDIA multi-node disaggregated deployments on GB200, GB300, B200, B300, H100, and H200. AMD MI355X multi-node evals are handled by InferenceX's upstreamed AMD Slurm path, not by this srt-slurm runner.
+
+In InferenceX CI, recipes normally keep their throughput benchmark configuration. `do_sweep.py` invokes the registered `lm-eval` runner as a post-step when `RUN_EVAL=true`, or as the only benchmark-like step when `EVAL_ONLY=true`. There is no separate `infmax-eval` benchmark type.
+
+### How it works
+
+1. `RuntimeContext` mounts the host path from `INFMAX_WORKSPACE` at `/infmax-workspace` inside the Slurm container.
+2. `do_sweep.py` starts infrastructure, workers, and the frontend for the normal recipe topology.
+3. For `EVAL_ONLY=true`, `do_sweep.py` skips the throughput benchmark stage and runs `_run_post_eval()` directly after frontend startup.
+4. `_run_post_eval()` waits for the OpenAI-compatible endpoint on port 8000 and, in eval-only mode, performs the full `wait_for_model()` health check for the configured prefill/decode or aggregated topology.
+5. `_run_post_eval()` launches the registered `lm-eval` runner on the head node and passes through InferenceX metadata such as framework, precision, sequence length, prefill/decode topology, and eval concurrency.
+6. The runner script (`benchmarks/scripts/lm-eval/bench.sh`) uses `MODEL_NAME` from `do_sweep.py`, or auto-discovers the served model from `/v1/models` as a fallback.
+7. The runner sources `/infmax-workspace/benchmarks/benchmark_lib.sh`, runs `run_eval --framework lm-eval`, and calls `append_lm_eval_summary`.
+8. Eval artifacts are copied to `/logs/eval_results/` for InferenceX launcher-side artifact pickup.
+
+### EVAL_ONLY mode
+
+srt-slurm supports an `EVAL_ONLY` mode for CI jobs that should only validate accuracy. This is controlled by environment variables from the InferenceX workflow:
+
+| Env var | Description |
+|---------|-------------|
+| `EVAL_ONLY` | Set to `true` to skip the throughput benchmark stage and run eval only |
+| `RUN_EVAL` | Set to `true` to run eval after the throughput benchmark completes |
+| `EVAL_CONC` | Concurrent requests for lm-eval, normally set by InferenceX from the generated `eval-conc` value |
+| `INFMAX_WORKSPACE` | Host path to the InferenceX checkout that should be mounted at `/infmax-workspace` |
+| `MODEL_NAME` | Served model alias for OpenAI-compatible requests; set by `do_sweep.py` from `config.served_model_name` |
+
+When `EVAL_ONLY=true`:
+- Stage 4 skips the throughput benchmark entirely. No throughput result JSON is expected from srt-slurm.
+- The eval path uses the full `wait_for_model()` health check before starting lm-eval.
+- `_run_post_eval()` launches the `lm-eval` runner and returns its exit code.
+- Eval failure is fatal because eval is the only purpose of the job.
+
+When `RUN_EVAL=true` (without `EVAL_ONLY`):
+- Throughput benchmark runs normally
+- After benchmark completes successfully, eval runs as a post-step
+- Eval failure is non-fatal; the benchmark job still succeeds if throughput passed
+
+### Environment variables
+
+The following env vars are passed through to the lm-eval runner container:
+
+| Env var | Purpose |
+|---------|---------|
+| `RUN_EVAL`, `EVAL_ONLY`, `IS_MULTINODE` | Control whether eval runs and how InferenceX classifies the artifact |
+| `FRAMEWORK`, `PRECISION`, `MODEL_PREFIX`, `RUNNER_TYPE`, `SPEC_DECODING` | Benchmark identity metadata for `meta_env.json` |
+| `ISL`, `OSL`, `RESULT_FILENAME` | Sequence length and result-file metadata |
+| `MODEL`, `MODEL_PATH`, `MODEL_NAME` | Model metadata and the served model alias used for requests |
+| `MAX_MODEL_LEN`, `EVAL_MAX_MODEL_LEN` | Context-length metadata used by InferenceX eval helpers when available |
+| `PREFILL_TP`, `PREFILL_EP`, `PREFILL_NUM_WORKERS`, `PREFILL_DP_ATTN` | Prefill-side topology metadata |
+| `DECODE_TP`, `DECODE_EP`, `DECODE_NUM_WORKERS`, `DECODE_DP_ATTN` | Decode-side topology metadata |
+| `EVAL_CONC`, `EVAL_CONCURRENT_REQUESTS` | Eval concurrency controls |
+
+The runner maps srt-slurm's `PREFILL_DP_ATTN` and `DECODE_DP_ATTN` names to InferenceX's `PREFILL_DP_ATTENTION` and `DECODE_DP_ATTENTION` names before calling `append_lm_eval_summary`. This is required for multi-node summary tables to preserve prefill/decode DPA state.
+
+### Concurrency
+
+Eval concurrency is ultimately read by InferenceX's `benchmark_lib.sh` from `EVAL_CONCURRENT_REQUESTS`. The runner script sets that value from `EVAL_CONC` when present, preserves an existing `EVAL_CONCURRENT_REQUESTS` otherwise, and falls back to `256` only if neither variable is set:
+
+```bash
+export EVAL_CONCURRENT_REQUESTS="${EVAL_CONC:-${EVAL_CONCURRENT_REQUESTS:-256}}"
+```
+
+The InferenceX workflow sets `EVAL_CONC` from the generated `eval-conc` value. For multi-node configs, InferenceX selects the `8k1k` entry with the highest max eligible concurrency for each `(model, runner, framework, precision, spec-decoding, prefill-dp-attn, decode-dp-attn)` group, then sets `eval-conc` to the upper median of that config's eligible concurrency list. If `EVAL_CONC` is not set in the environment, `do_sweep.py` falls back to the max of the recipe benchmark concurrency list.
+
+### Output
+
+Eval artifacts are written to `/logs/eval_results/` inside the container:
+- `meta_env.json` - metadata used by InferenceX aggregation and summary tables
+- `results*.json` - lm-eval scores per task
+- `sample*.jsonl` - per-sample outputs
+
+These are collected by the InferenceX NVIDIA launch scripts and uploaded as workflow artifacts. In eval-only mode the InferenceX workflow expects eval artifacts, not throughput benchmark artifacts.
+
+### Intricacies
+1. Eval floor of 16
+  - There is 1 sweep config of conc: [1], which causes evals to take >4hrs to complete.

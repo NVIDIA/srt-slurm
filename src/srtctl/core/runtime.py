@@ -231,6 +231,14 @@ class RuntimeContext:
                 host_path, container_path = mount_spec.split(":", 1)
                 container_mounts[Path(host_path).resolve()] = Path(container_path)
 
+        # Mount InferenceX workspace if available (for lm-eval support).
+        # Skip exists() check: the orchestrator runs on the SLURM head node
+        # where the GH Actions workspace path may not be directly accessible,
+        # but it IS accessible from compute nodes via shared filesystem.
+        infmax_ws = os.environ.get("INFMAX_WORKSPACE")
+        if infmax_ws:
+            container_mounts[Path(infmax_ws)] = Path("/infmax-workspace")
+
         # Add FormattablePath mounts from config.container_mounts
         # These need to be expanded with the runtime context, so we create a
         # temporary context first and then update
