@@ -18,6 +18,7 @@ import logging
 import os
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -182,6 +183,118 @@ class SweepOrchestrator(WorkerStageMixin, FrontendStageMixin, BenchmarkStageMixi
         logger.info("=" * 60)
         logger.info("")
 
+    def _run_post_eval(self, stop_event: threading.Event) -> int:
+        """Run lm-eval after the main benchmark completes (or directly in eval-only mode)."""
+        from srtctl.benchmarks import get_runner
+        from srtctl.core.health import wait_for_model
+
+        # In eval-only mode the benchmark health check was skipped, so do the
+        # full model-ready wait here.  In post-benchmark mode a quick port
+        # check is sufficient since the server already served traffic.
+        if os.environ.get("EVAL_ONLY", "false").lower() == "true":
+            r = self.config.resources
+            n_prefill = 0 if r.num_agg > 0 else r.num_prefill
+            n_decode = r.num_agg if r.num_agg > 0 else r.num_decode
+            hc = self.config.health_check
+            logger.info("EVAL_ONLY: Waiting for server health before eval...")
+            if not wait_for_model(
+                host=self.runtime.nodes.head,
+                port=8000,
+                n_prefill=n_prefill,
+                n_decode=n_decode,
+                poll_interval=float(hc.interval_seconds),
+                timeout=float(hc.max_attempts * hc.interval_seconds),
+                report_every=60.0,
+                frontend_type=self.config.frontend.type,
+                stop_event=stop_event,
+            ):
+                logger.error("Server did not become healthy for eval")
+                return 1
+        else:
+            if not wait_for_port(self.runtime.nodes.head, 8000, timeout=30):
+                logger.error("Server health check failed before eval - skipping")
+                return 1
+
+        try:
+            runner = get_runner("lm-eval")
+        except ValueError as e:
+            logger.error("lm-eval runner not available: %s", e)
+            return 1
+
+        eval_log = self.runtime.log_dir / "eval.out"
+        cmd = runner.build_command(self.config, self.runtime)
+
+        logger.info("Eval command: %s", " ".join(cmd))
+        logger.info("Eval log: %s", eval_log)
+
+        # Pass through eval-related env vars. InferenceX writes multi-node
+        # metadata from these variables in append_lm_eval_summary().
+        env_to_set = {}
+        for var in [
+            "RUN_EVAL",
+            "EVAL_ONLY",
+            "IS_MULTINODE",
+            "FRAMEWORK",
+            "PRECISION",
+            "MODEL_PREFIX",
+            "RUNNER_TYPE",
+            "RESULT_FILENAME",
+            "SPEC_DECODING",
+            "ISL",
+            "OSL",
+            "MODEL",
+            "MODEL_PATH",
+            "MAX_MODEL_LEN",
+            "EVAL_MAX_MODEL_LEN",
+            "PREFILL_TP",
+            "PREFILL_EP",
+            "PREFILL_DP_ATTN",
+            "PREFILL_NUM_WORKERS",
+            "DECODE_TP",
+            "DECODE_EP",
+            "DECODE_DP_ATTN",
+            "DECODE_NUM_WORKERS",
+        ]:
+            val = os.environ.get(var)
+            if val:
+                env_to_set[var] = val
+
+        # Set MODEL_NAME to the served model name so lm-eval uses the correct
+        # name for API requests. Without this, benchmark_lib.sh falls back to
+        # $MODEL (the HuggingFace ID) which the server doesn't recognize.
+        env_to_set["MODEL_NAME"] = self.config.served_model_name
+        logger.info("Eval MODEL_NAME: %s", env_to_set["MODEL_NAME"])
+
+        # Use EVAL_CONC from workflow (median chosen by InferenceX mark_eval_entries),
+        # falling back to max of benchmark concurrency list.
+        eval_conc = os.environ.get("EVAL_CONC")
+        if eval_conc:
+            env_to_set["EVAL_CONC"] = eval_conc
+            logger.info("Eval concurrency (from workflow): %s", eval_conc)
+        else:
+            conc_list = self.config.benchmark.get_concurrency_list()
+            if conc_list:
+                env_to_set["EVAL_CONC"] = str(max(conc_list))
+                logger.info("Eval concurrency (max of %s): %s", conc_list, env_to_set["EVAL_CONC"])
+
+        proc = start_srun_process(
+            command=cmd,
+            nodelist=[self.runtime.nodes.head],
+            output=str(eval_log),
+            container_image=str(self.runtime.container_image),
+            container_mounts=self.runtime.container_mounts,
+            env_to_set=env_to_set,
+        )
+
+        while proc.poll() is None:
+            if stop_event.is_set():
+                logger.info("Stop requested, terminating eval")
+                proc.terminate()
+                return 1
+            time.sleep(1)
+
+        return proc.returncode or 0
+
     def run(self) -> int:
         """Run the complete sweep."""
         # Create status reporter (fire-and-forget, no-op if not configured)
@@ -227,8 +340,27 @@ class SweepOrchestrator(WorkerStageMixin, FrontendStageMixin, BenchmarkStageMixi
 
             self._print_connection_info()
 
-            # Stage 4: Benchmark (status reported AFTER health check passes)
-            exit_code = self.run_benchmark(registry, stop_event, reporter)
+            if os.environ.get("EVAL_ONLY", "false").lower() == "true":
+                reporter.report(JobStatus.BENCHMARK, JobStage.BENCHMARK, "Running eval-only evaluation")
+                logger.info("EVAL_ONLY=true: Skipping benchmark stage and running lm-eval evaluation...")
+                exit_code = self._run_post_eval(stop_event)
+                if exit_code != 0:
+                    logger.error("Eval-only evaluation failed with exit code %d", exit_code)
+                else:
+                    logger.info("Eval-only evaluation completed successfully")
+            else:
+                # Stage 4: Benchmark (status reported AFTER health check passes)
+                exit_code = self.run_benchmark(registry, stop_event, reporter)
+
+                # Stage 5: Post-benchmark eval (optional, non-fatal)
+                if os.environ.get("RUN_EVAL", "false").lower() == "true" and exit_code == 0:
+                    reporter.report(JobStatus.BENCHMARK, JobStage.BENCHMARK, "Running post-benchmark evaluation")
+                    logger.info("RUN_EVAL=true: Running post-benchmark lm-eval evaluation...")
+                    eval_exit = self._run_post_eval(stop_event)
+                    if eval_exit != 0:
+                        logger.warning("Eval failed with exit code %d (benchmark result is still valid)", eval_exit)
+                    else:
+                        logger.info("Post-benchmark eval completed successfully")
 
         except Exception as e:
             logger.exception("Error during sweep: %s", e)
