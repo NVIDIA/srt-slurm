@@ -15,6 +15,7 @@ class TestBenchmarkRegistry:
     def test_list_benchmarks(self):
         """All expected benchmarks are registered."""
         benchmarks = list_benchmarks()
+        assert "custom" in benchmarks
         assert "sa-bench" in benchmarks
         assert "sglang-bench" in benchmarks
         assert "mmlu" in benchmarks
@@ -76,6 +77,50 @@ class TestSABenchRunner:
         )
         errors = runner.validate_config(config)
         assert errors == []
+
+
+class TestCustomBenchmarkRunner:
+    """Test custom benchmark runner."""
+
+    def test_validate_config_requires_command(self):
+        from srtctl.benchmarks.custom import CustomBenchmarkRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = CustomBenchmarkRunner()
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="h100"),
+            benchmark=BenchmarkConfig(type="custom"),
+        )
+        errors = runner.validate_config(config)
+        assert errors == ["benchmark.command is required for benchmark.type=custom"]
+
+    def test_build_command_uses_custom_container_and_env(self):
+        from unittest.mock import MagicMock
+
+        from srtctl.benchmarks.custom import CustomBenchmarkRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = CustomBenchmarkRunner()
+        runtime = MagicMock()
+        runtime.container_image = "/default-image"
+
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="h100"),
+            benchmark=BenchmarkConfig(
+                type="custom",
+                command="python /bench/run.py --foo bar",
+                container_image="nvcr.io/nvidia/python:3.11",
+                env={"FOO": "bar"},
+            ),
+        )
+
+        assert runner.build_command(config, runtime) == ["bash", "-lc", "python /bench/run.py --foo bar"]
+        assert runner.get_container_image(config, runtime) == "nvcr.io/nvidia/python:3.11"
+        assert runner.get_environment(config, runtime) == {"FOO": "bar"}
 
 
 class TestSGLangBenchRunner:

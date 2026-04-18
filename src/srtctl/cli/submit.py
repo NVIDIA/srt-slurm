@@ -56,6 +56,88 @@ from srtctl.core.status import create_job_record
 console = Console()
 logger = logging.getLogger(__name__)
 
+# Populated by submit_with_orchestrator on successful submission. Consumed by
+# main() when --json is set so callers get one JSON line per submitted job.
+_submissions: list[dict] = []
+
+
+def _record_submission(data: dict) -> None:
+    _submissions.append(data)
+
+
+def _install_mock_submit_patches() -> list:
+    """Stub the subset of `submit_with_orchestrator` that reaches real infra.
+
+    - `subprocess.run(["sbatch", ...])` is replaced with a fake that returns a
+      synthetic job id so the rest of the submit flow continues through the
+      real config write + metadata + _record_submission path.
+    - `validate_setup` and `create_job_record` are stubbed so mock runs do not
+      probe the cluster install or POST to a real status endpoint.
+    """
+    from unittest.mock import patch
+
+    original_run = subprocess.run
+
+    def _fake_subprocess_run(cmd, *args, **kwargs):
+        is_sbatch = (
+            isinstance(cmd, (list, tuple))
+            and len(cmd) > 0
+            and (cmd[0] == "sbatch" or (isinstance(cmd[0], str) and cmd[0].endswith("sbatch")))
+        )
+        if not is_sbatch:
+            return original_run(cmd, *args, **kwargs)
+        import time as _time
+
+        job_id = str(400_000 + int(_time.time() * 100) % 100_000)
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=0,
+            stdout=f"Submitted batch job {job_id}\n",
+            stderr="",
+        )
+
+    patchers = [
+        patch("subprocess.run", _fake_subprocess_run),
+        patch("srtctl.cli.submit.validate_setup"),
+        patch("srtctl.cli.submit.create_job_record"),
+    ]
+    for p in patchers:
+        p.start()
+    return patchers
+
+
+def _spawn_mock_worker(submission: dict, tick_s: float) -> None:
+    """Detach a `srtctl.cli.mock_worker` subprocess to drive the full orchestrator.
+
+    Writes worker stdout+stderr to <output_dir>/mock_worker.log so the parent
+    process can exit cleanly while the child keeps ticking.
+    """
+    output_dir = Path(submission["output_dir"])
+    config_path = submission["config_path"]
+    job_id = submission["slurm_job_id"]
+    log_path = output_dir / "mock_worker.log"
+    log_fh = log_path.open("w")
+    subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "srtctl.cli.mock_worker",
+            "--config",
+            str(config_path),
+            "--output-dir",
+            str(output_dir),
+            "--job-id",
+            str(job_id),
+            "--tick-s",
+            str(tick_s),
+        ],
+        stdout=log_fh,
+        stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+        close_fds=True,
+    )
+
 
 def get_job_name(config: SrtConfig) -> str:
     """Get job name, using RUNNER_NAME if available, otherwise config name.
@@ -136,6 +218,9 @@ def show_config_details(config: SrtConfig) -> None:
         if env:
             has_env = True
             mode_envs.append((mode_name, dict(env)))
+    if config.benchmark.env:
+        has_env = True
+        mode_envs.append(("benchmark", dict(config.benchmark.env)))
 
     if has_env:
         env_table = Table(title="Environment Variables", show_lines=False, pad_edge=False)
@@ -158,6 +243,27 @@ def show_config_details(config: SrtConfig) -> None:
     if config.srun_options:
         opts = " ".join(f"--{k} {v}" if v else f"--{k}" for k, v in config.srun_options.items())
         console.print(f"[dim]srun options:[/] {opts}")
+
+    if config.benchmark.type == "custom" or config.telemetry.enabled:
+        details = Table(title="Execution Extensions", show_lines=False, pad_edge=False)
+        details.add_column("Area", style="dim", width=14)
+        details.add_column("Setting", style="yellow")
+        details.add_column("Value", style="white")
+
+        if config.benchmark.type == "custom":
+            details.add_row("benchmark", "type", config.benchmark.type)
+            if config.benchmark.command:
+                details.add_row("benchmark", "command", config.benchmark.command)
+            if config.benchmark.container_image:
+                details.add_row("benchmark", "container_image", config.benchmark.container_image)
+
+        if config.telemetry.enabled:
+            details.add_row("telemetry", "provider", config.telemetry.provider.value)
+            details.add_row("telemetry", "container_image", config.telemetry.container_image or "<unset>")
+            details.add_row("telemetry", "storage_subdir", config.telemetry.storage_subdir)
+            details.add_row("telemetry", "frequency", str(config.telemetry.default_frequency))
+
+        console.print(Panel(details, border_style="blue"))
 
 
 def validate_setup(srtctl_source: Path) -> None:
@@ -490,6 +596,18 @@ def submit_with_orchestrator(
 
         with open(job_output_dir / f"{job_id}.json", "w") as f:
             json.dump(metadata, f, indent=2)
+
+        _record_submission(
+            {
+                "status": "submitted",
+                "slurm_job_id": job_id,
+                "job_name": job_name,
+                "output_dir": str(job_output_dir),
+                "metadata_path": str(job_output_dir / f"{job_id}.json"),
+                "config_path": str(config_path),
+                "tags": list(tags) if tags else None,
+            }
+        )
 
         # Report to status API (fire-and-forget, silent on failure)
         # Note: tags are already included in metadata dict above
@@ -999,6 +1117,29 @@ def main():
     add_common_args(apply_parser)
     apply_parser.add_argument("--setup-script", type=str, help="Custom setup script in configs/")
     apply_parser.add_argument("--tags", type=str, help="Comma-separated tags")
+    apply_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Emit one JSON line per submission on stdout; prose output goes to stderr.",
+    )
+    apply_parser.add_argument(
+        "--mock",
+        action="store_true",
+        dest="mock_mode",
+        help=(
+            "Stub sbatch and spawn a detached mock worker that runs the full "
+            "SweepOrchestrator locally. For testing external harnesses (ibar) "
+            "without cluster access."
+        ),
+    )
+    apply_parser.add_argument(
+        "--mock-tick-s",
+        type=float,
+        default=0.2,
+        dest="mock_tick_s",
+        help="Per-phase wall time used by the detached mock worker.",
+    )
 
     dry_run_parser = subparsers.add_parser("dry-run", help="Validate without submitting")
     add_common_args(dry_run_parser)
@@ -1033,6 +1174,22 @@ def main():
     check_parser.add_argument("--json", action="store_true", dest="json_output", help="Output as JSON")
 
     args = parser.parse_args()
+
+    json_mode = bool(getattr(args, "json_output", False))
+    mock_mode = bool(getattr(args, "mock_mode", False))
+    # Always rebind the module console on each invocation so json-mode prose
+    # goes to stderr and non-json prose returns to stdout. Save the original
+    # so we can restore it on exit — direct library callers of submit_single /
+    # submit_override (tests, etc.) must not see a leaked stderr binding.
+    global console
+    _original_console = console
+    console = Console(file=sys.stderr) if json_mode else Console()
+    if json_mode:
+        _submissions.clear()
+
+    _mock_patch_teardowns: list = []
+    if mock_mode:
+        _mock_patch_teardowns = _install_mock_submit_patches()
 
     # Handle diff and check commands first (they don't use -f/config)
     if args.command == "diff":
@@ -1154,9 +1311,45 @@ def main():
                     output_dir=output_dir,
                 )
     except Exception as e:
+        # Restore subprocess.run etc. before we exit so in-process test
+        # invocations don't leak patches across runs.
+        for patcher in _mock_patch_teardowns:
+            with contextlib.suppress(Exception):
+                patcher.stop()
+        _mock_patch_teardowns = []
+        console = _original_console
+        if json_mode:
+            sys.stdout.write(json.dumps({"status": "error", "error": str(e)}) + "\n")
+            sys.stdout.flush()
+            logging.debug("Full traceback:", exc_info=True)
+            sys.exit(1)
         console.print(f"[bold red]Error:[/] {e}")
         logging.debug("Full traceback:", exc_info=True)
         sys.exit(1)
+
+    # Mock-mode post-submit: spawn the detached orchestrator worker so the
+    # real SweepOrchestrator runs against the output_dir that submit just
+    # wrote to. Tear down sbatch patches AFTER the spawn so the spawned
+    # subprocess inherits a clean environment (Popen itself isn't patched).
+    if mock_mode:
+        for submission in _submissions:
+            _spawn_mock_worker(submission, tick_s=float(args.mock_tick_s))
+        for patcher in _mock_patch_teardowns:
+            with contextlib.suppress(Exception):
+                patcher.stop()
+        _mock_patch_teardowns = []
+
+    if json_mode:
+        if not _submissions:
+            sys.stdout.write(json.dumps({"status": "no-submissions"}) + "\n")
+        else:
+            for record in _submissions:
+                sys.stdout.write(json.dumps(record) + "\n")
+        sys.stdout.flush()
+
+    # Restore the pre-main console binding so direct library callers aren't
+    # affected by this invocation's json-mode rebinding.
+    console = _original_console
 
 
 if __name__ == "__main__":
