@@ -116,7 +116,7 @@ _INTEGER_FIELDS = {
 }
 
 
-def _lookup(data: dict, keys: list[str]):
+def _lookup(data: dict, keys: list[str]) -> float | int | str | None:
     """Return the first matching value from data, supporting one level of dot-notation."""
     for key in keys:
         if "." in key:
@@ -129,7 +129,7 @@ def _lookup(data: dict, keys: list[str]):
     return None
 
 
-def _fmt(val, *, integer: bool = False) -> str:
+def _fmt(val: float | int | str | None, *, integer: bool = False) -> str:
     """Format a single value for display."""
     if val is None:
         return "N/A"
@@ -160,6 +160,9 @@ def format_results(artifact_dir: str) -> str:
         data = json.loads(path.read_text())
     except json.JSONDecodeError:
         return "[format_results] Warning: could not parse profile_export_aiperf.json"
+
+    if not isinstance(data, dict):
+        return "[format_results] Warning: profile_export_aiperf.json is not a JSON object"
 
     def get(field: str):
         return _lookup(data, _FIELD_MAP[field])
