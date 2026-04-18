@@ -12,6 +12,8 @@
 
 set -e
 
+SCRIPT_DIR="$(dirname "$0")"
+
 # Ensure Python output is unbuffered for real-time logging
 export PYTHONUNBUFFERED=1
 
@@ -146,6 +148,8 @@ for C in "${CONCURRENCY_LIST[@]}"; do
         --goodput "time_to_first_token:${TTFT_THRESHOLD} inter_token_latency:${ITL_THRESHOLD}" \
         "${SERVER_METRICS_ARGS[@]}" \
         "${EXTRA_ARGS[@]}"
+
+    python3 "${SCRIPT_DIR}/format_results.py" "${RUN_ARTIFACT_DIR}" || true
 
     echo "$(date '+%Y-%m-%d %H:%M:%S') - Concurrency ${C} complete"
 
