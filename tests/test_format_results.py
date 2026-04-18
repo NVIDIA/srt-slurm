@@ -125,6 +125,12 @@ class TestFormatResults:
         assert "1000." not in result
         assert "8192" in result
 
+    def test_non_dict_json_returns_warning(self, format_results, tmp_path):
+        """Valid JSON that is not an object returns a warning string."""
+        (tmp_path / "profile_export_aiperf.json").write_text("[1, 2, 3]")
+        result = format_results(str(tmp_path))
+        assert "Warning" in result
+
     def test_row_alignment(self, format_results, tmp_path):
         """Each data row uses 40-char label column + space + value."""
         data = {"num_successful_requests": 999, "request_throughput": 12.34}
