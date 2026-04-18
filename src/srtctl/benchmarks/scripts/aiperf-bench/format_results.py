@@ -116,7 +116,7 @@ _INTEGER_FIELDS = {
 }
 
 
-def _lookup(data: dict, keys: list[str]) -> float | int | str | None:
+def _lookup(data: dict[str, object], keys: list[str]) -> float | int | str | None:
     """Return the first matching value from data, supporting one level of dot-notation."""
     for key in keys:
         if "." in key:
