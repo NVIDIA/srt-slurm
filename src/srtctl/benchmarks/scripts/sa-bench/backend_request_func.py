@@ -511,10 +511,52 @@ def get_model(pretrained_model_name_or_path: str) -> str:
     return pretrained_model_name_or_path
 
 
+def _load_glm_moe_dsa_tokenizer(pretrained_model_name_or_path: str) -> "PreTrainedTokenizerFast":
+    """Load GLM-Moe-Dsa / GLM-5 tokenizer directly from tokenizer.json.
+
+    Works around incompatibilities when the checkpoint was saved with
+    transformers 5.x (TokenizersBackend / list-style extra_special_tokens).
+    """
+    import json
+    from pathlib import Path
+
+    from tokenizers import Tokenizer as RustTokenizer
+    from transformers import PreTrainedTokenizerFast
+
+    _SAFE_CONFIG_KEYS = (
+        "pad_token", "pad_token_id", "eos_token", "eos_token_id",
+        "bos_token", "bos_token_id", "unk_token", "unk_token_id",
+        "model_max_length", "padding_side", "truncation_side",
+    )
+
+    path = Path(pretrained_model_name_or_path)
+    tokenizer_json = path / "tokenizer.json"
+    if not tokenizer_json.exists():
+        raise FileNotFoundError(
+            f"Expected tokenizer.json at {tokenizer_json}. "
+            "GlmMoeDsaTokenizer loads from tokenizer.json only."
+        )
+
+    rust_tok = RustTokenizer.from_file(str(tokenizer_json))
+    init_kwargs = {}
+    config_path = path / "tokenizer_config.json"
+    if config_path.exists():
+        with open(config_path, encoding="utf-8") as f:
+            config = json.load(f)
+        for key in _SAFE_CONFIG_KEYS:
+            if key in config:
+                init_kwargs[key] = config[key]
+        if "extra_special_tokens" in config:
+            init_kwargs["additional_special_tokens"] = config["extra_special_tokens"]
+
+    return PreTrainedTokenizerFast(tokenizer_object=rust_tok, **init_kwargs)
+
+
 def get_tokenizer(
     pretrained_model_name_or_path: str,
     tokenizer_mode: str = "auto",
     trust_remote_code: bool = False,
+    custom_tokenizer: str = None,
     **kwargs,
 ) -> PreTrainedTokenizer | PreTrainedTokenizerFast:
     if pretrained_model_name_or_path is not None and not os.path.exists(pretrained_model_name_or_path):
@@ -533,6 +575,23 @@ def get_tokenizer(
                 "to use mistral tokenizer mode."
             ) from e
         return MistralTokenizer.from_pretrained(str(pretrained_model_name_or_path))
+    if custom_tokenizer:
+        if custom_tokenizer == "glm_moe_dsa":
+            return _load_glm_moe_dsa_tokenizer(pretrained_model_name_or_path)
+        from importlib import import_module
+        try:
+            module_path, class_name = custom_tokenizer.rsplit('.', 1)
+            module = import_module(module_path)
+            tokenizer_class = getattr(module, class_name)
+            return tokenizer_class.from_pretrained(
+                pretrained_model_name_or_path,
+                trust_remote_code=trust_remote_code,
+                **kwargs,
+            )
+        except (ValueError, ImportError, AttributeError) as e:
+            raise ValueError(
+                f"Failed to load custom_tokenizer '{custom_tokenizer}'. "
+                "Expected 'glm_moe_dsa' or 'module.path.ClassName'.") from e
     else:
         return AutoTokenizer.from_pretrained(
             pretrained_model_name_or_path,
