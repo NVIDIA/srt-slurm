@@ -51,6 +51,10 @@ def test_apply_json_emits_single_line_on_stdout(
     mock_sbatch = MagicMock()
     mock_sbatch.stdout = "Submitted batch job 42042"
 
+    # Unset RUNNER_NAME so get_job_name() falls through to config.name. On
+    # GitHub Actions runners RUNNER_NAME is auto-set and would otherwise
+    # override the configured job name.
+    monkeypatch.delenv("RUNNER_NAME", raising=False)
     monkeypatch.setattr(
         sys,
         "argv",
