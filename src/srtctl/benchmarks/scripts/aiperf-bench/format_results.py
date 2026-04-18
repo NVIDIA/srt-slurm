@@ -117,15 +117,23 @@ _INTEGER_FIELDS = {
 
 
 def _lookup(data: dict[str, object], keys: list[str]) -> float | int | str | None:
-    """Return the first matching value from data, supporting one level of dot-notation."""
+    """Return the first matching scalar value from data, supporting one level of dot-notation.
+
+    Dict/list values are skipped so the next candidate key is tried — this handles JSON
+    structures where a top-level key holds a stats object rather than a scalar.
+    """
     for key in keys:
         if "." in key:
             head, tail = key.split(".", 1)
             nested = data.get(head)
             if isinstance(nested, dict) and tail in nested:
-                return nested[tail]
+                val = nested[tail]
+                if not isinstance(val, (dict, list)):
+                    return val  # type: ignore[return-value]
         elif key in data:
-            return data[key]
+            val = data[key]
+            if not isinstance(val, (dict, list)):
+                return val  # type: ignore[return-value]
     return None
 
 
