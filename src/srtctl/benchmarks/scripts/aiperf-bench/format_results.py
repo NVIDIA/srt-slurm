@@ -8,6 +8,11 @@ Usage: format_results.py <artifact_dir>
 
 Reads <artifact_dir>/profile_export_aiperf.json and prints a vLLM-style summary.
 Exits 0 always — missing or corrupt files produce a warning line instead.
+
+aiperf JSON structure: every metric is a stats object {"unit": ..., "avg": ..., "p50": ..., ...}.
+Use dot-notation in _FIELD_MAP to reach subkeys (e.g. "time_to_first_token.avg").
+Supports arbitrary depth (e.g. "input_config.loadgen.concurrency").
+JSON null values display as "inf" (aiperf uses null to mean "unlimited").
 """
 
 import json
@@ -16,95 +21,36 @@ from pathlib import Path
 
 _LABEL_WIDTH = 40
 
-# Maps internal key → ordered list of JSON key candidates (first match wins).
-# Dot-notation (e.g. "time_to_first_token.mean") resolves one level of nesting.
+# Sentinel returned by _lookup when no candidate key path resolves to a value.
+# Distinct from None, which means the key exists with a JSON null value (→ "inf").
+_MISSING: object = object()
+
+# Maps internal key → ordered list of JSON key paths (first resolved path wins).
+# All aiperf metrics live inside stats objects — use ".avg" for averages and
+# ".p50"/".p99" for percentiles.
 _FIELD_MAP: dict[str, list[str]] = {
-    "request_rate": ["request_rate", "traffic_request_rate"],
-    "burstiness_factor": ["burstiness_factor", "burstiness"],
-    "max_concurrency": ["max_concurrency", "concurrency", "maximum_request_concurrency"],
-    "successful_requests": ["num_successful_requests", "successful_requests"],
-    "duration": ["duration", "benchmark_duration", "benchmark_duration_s"],
-    "total_input_tokens": ["total_input_tokens", "total_prompt_tokens"],
-    "total_output_tokens": [
-        "total_output_tokens",
-        "total_generated_tokens",
-        "total_completion_tokens",
-    ],
-    "request_throughput": ["request_throughput", "requests_per_second"],
-    "output_throughput": ["output_token_throughput", "output_tokens_per_second"],
-    "total_throughput": ["total_token_throughput", "tokens_per_second"],
-    "ttft_mean": [
-        "ttft_mean_ms",
-        "mean_ttft_ms",
-        "time_to_first_token.mean",
-        "time_to_first_token_mean_ms",
-    ],
-    "ttft_median": [
-        "ttft_median_ms",
-        "median_ttft_ms",
-        "time_to_first_token.median",
-        "time_to_first_token_p50_ms",
-    ],
-    "ttft_p99": [
-        "ttft_p99_ms",
-        "p99_ttft_ms",
-        "time_to_first_token.p99",
-        "time_to_first_token_p99_ms",
-    ],
-    "tpot_mean": [
-        "tpot_mean_ms",
-        "mean_tpot_ms",
-        "time_per_output_token.mean",
-        "time_per_output_token_mean_ms",
-    ],
-    "tpot_median": [
-        "tpot_median_ms",
-        "median_tpot_ms",
-        "time_per_output_token.median",
-        "time_per_output_token_p50_ms",
-    ],
-    "tpot_p99": [
-        "tpot_p99_ms",
-        "p99_tpot_ms",
-        "time_per_output_token.p99",
-        "time_per_output_token_p99_ms",
-    ],
-    "itl_mean": [
-        "itl_mean_ms",
-        "mean_itl_ms",
-        "inter_token_latency.mean",
-        "inter_token_latency_mean_ms",
-    ],
-    "itl_median": [
-        "itl_median_ms",
-        "median_itl_ms",
-        "inter_token_latency.median",
-        "inter_token_latency_p50_ms",
-    ],
-    "itl_p99": [
-        "itl_p99_ms",
-        "p99_itl_ms",
-        "inter_token_latency.p99",
-        "inter_token_latency_p99_ms",
-    ],
-    "e2el_mean": [
-        "e2el_mean_ms",
-        "mean_e2el_ms",
-        "end_to_end_latency.mean",
-        "end_to_end_latency_mean_ms",
-    ],
-    "e2el_median": [
-        "e2el_median_ms",
-        "median_e2el_ms",
-        "end_to_end_latency.median",
-        "end_to_end_latency_p50_ms",
-    ],
-    "e2el_p99": [
-        "e2el_p99_ms",
-        "p99_e2el_ms",
-        "end_to_end_latency.p99",
-        "end_to_end_latency_p99_ms",
-    ],
+    "request_rate":        ["input_config.loadgen.request_rate"],
+    "burstiness_factor":   ["burstiness_factor"],
+    "max_concurrency":     ["input_config.loadgen.concurrency"],
+    "successful_requests": ["request_count.avg"],
+    "duration":            ["benchmark_duration.avg"],
+    "total_input_tokens":  ["total_isl.avg"],
+    "total_output_tokens": ["total_output_tokens.avg", "total_osl.avg"],
+    "request_throughput":  ["request_throughput.avg"],
+    "output_throughput":   ["output_token_throughput.avg"],
+    "total_throughput":    ["total_token_throughput.avg"],
+    "ttft_mean":           ["time_to_first_token.avg"],
+    "ttft_median":         ["time_to_first_token.p50"],
+    "ttft_p99":            ["time_to_first_token.p99"],
+    "tpot_mean":           ["inter_token_latency.avg"],
+    "tpot_median":         ["inter_token_latency.p50"],
+    "tpot_p99":            ["inter_token_latency.p99"],
+    "itl_mean":            ["inter_token_latency.avg"],
+    "itl_median":          ["inter_token_latency.p50"],
+    "itl_p99":             ["inter_token_latency.p99"],
+    "e2el_mean":           ["request_latency.avg"],
+    "e2el_median":         ["request_latency.p50"],
+    "e2el_p99":            ["request_latency.p99"],
 }
 
 # Fields that should display as integers (no decimal point).
@@ -116,37 +62,38 @@ _INTEGER_FIELDS = {
 }
 
 
-def _lookup(data: dict[str, object], keys: list[str]) -> float | int | str | None:
-    """Return the first matching scalar value from data, supporting one level of dot-notation.
+def _lookup(data: dict[str, object], keys: list[str]) -> object:
+    """Return the first matching value, supporting arbitrary-depth dot-notation.
 
-    Dict/list values are skipped so the next candidate key is tried — this handles JSON
-    structures where a top-level key holds a stats object rather than a scalar.
+    Returns _MISSING if no candidate path resolves to a non-dict/list value.
+    Returns None if the path resolves to a JSON null value (caller displays as "inf").
+    Dict and list values are skipped so the next candidate is tried.
     """
     for key in keys:
-        if "." in key:
-            head, tail = key.split(".", 1)
-            nested = data.get(head)
-            if isinstance(nested, dict) and tail in nested:
-                val = nested[tail]
-                if not isinstance(val, (dict, list)):
-                    return val  # type: ignore[return-value]
-        elif key in data:
-            val = data[key]
-            if not isinstance(val, (dict, list)):
-                return val  # type: ignore[return-value]
-    return None
+        node: object = data
+        for part in key.split("."):
+            if not isinstance(node, dict) or part not in node:
+                node = _MISSING
+                break
+            node = node[part]  # type: ignore[index]
+        if node is _MISSING or isinstance(node, (dict, list)):
+            continue
+        return node  # scalar or None (JSON null)
+    return _MISSING
 
 
-def _fmt(val: float | int | str | None, *, integer: bool = False) -> str:
+def _fmt(val: object, *, integer: bool = False) -> str:
     """Format a single value for display."""
-    if val is None:
+    if val is _MISSING:
         return "N/A"
+    if val is None:
+        return "inf"  # JSON null means unlimited/no-rate-limit in aiperf
     if isinstance(val, str):
         return val if val.lower() not in ("inf", "infinity") else "inf"
     if isinstance(val, float) and val >= 1e18:
         return "inf"
     if integer:
-        return str(int(val))
+        return str(int(val))  # type: ignore[arg-type]
     if isinstance(val, float):
         return f"{val:.2f}"
     return str(val)
@@ -172,7 +119,7 @@ def format_results(artifact_dir: str) -> str:
     if not isinstance(data, dict):
         return "[format_results] Warning: profile_export_aiperf.json is not a JSON object"
 
-    def get(field: str):
+    def get(field: str) -> object:
         return _lookup(data, _FIELD_MAP[field])
 
     def fmt(field: str) -> str:
