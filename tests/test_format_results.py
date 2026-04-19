@@ -22,31 +22,21 @@ def format_results():
 
 
 class TestFormatResults:
-    def test_flat_fields_full_output(self, format_results, tmp_path):
-        """All fields present in flat JSON produce complete formatted block."""
+    def test_aiperf_json_structure_full_output(self, format_results, tmp_path):
+        """All fields in actual aiperf nested stats structure produce complete formatted block."""
         data = {
-            "request_rate": 1e30,
+            "input_config": {"loadgen": {"concurrency": 64, "request_rate": None}},
             "burstiness_factor": 1.0,
-            "max_concurrency": 64,
-            "num_successful_requests": 640,
-            "duration": 12.34,
-            "total_input_tokens": 1024,
-            "total_output_tokens": 512,
-            "request_throughput": 51.87,
-            "output_token_throughput": 41.50,
-            "total_token_throughput": 93.37,
-            "ttft_mean_ms": 100.0,
-            "ttft_median_ms": 90.0,
-            "ttft_p99_ms": 300.0,
-            "tpot_mean_ms": 10.0,
-            "tpot_median_ms": 9.5,
-            "tpot_p99_ms": 15.0,
-            "itl_mean_ms": 5.0,
-            "itl_median_ms": 4.5,
-            "itl_p99_ms": 8.0,
-            "e2el_mean_ms": 200.0,
-            "e2el_median_ms": 180.0,
-            "e2el_p99_ms": 400.0,
+            "request_count": {"avg": 640.0},
+            "benchmark_duration": {"avg": 12.34},
+            "total_isl": {"avg": 1024.0},
+            "total_output_tokens": {"avg": 512.0},
+            "request_throughput": {"avg": 51.87},
+            "output_token_throughput": {"avg": 41.50},
+            "total_token_throughput": {"avg": 93.37},
+            "time_to_first_token": {"avg": 100.0, "p50": 90.0, "p99": 300.0},
+            "inter_token_latency": {"avg": 10.0, "p50": 9.5, "p99": 15.0},
+            "request_latency": {"avg": 200.0, "p50": 180.0, "p99": 400.0},
         }
         (tmp_path / "profile_export_aiperf.json").write_text(json.dumps(data))
         result = format_results(str(tmp_path))
@@ -62,18 +52,24 @@ class TestFormatResults:
         assert "300.00" in result
 
     def test_nested_fields(self, format_results, tmp_path):
-        """Nested JSON fields resolved via dot-notation."""
+        """Nested JSON fields resolved via dot-notation using .avg subkey."""
         data = {
-            "time_to_first_token": {"mean": 123.45, "median": 100.0, "p99": 500.0},
-            "time_per_output_token": {"mean": 5.0, "median": 4.5, "p99": 9.0},
-            "inter_token_latency": {"mean": 10.0, "median": 9.0, "p99": 20.0},
-            "end_to_end_latency": {"mean": 300.0, "median": 250.0, "p99": 600.0},
+            "time_to_first_token": {"avg": 123.45, "p50": 100.0, "p99": 500.0},
+            "inter_token_latency": {"avg": 10.0, "p50": 9.0, "p99": 20.0},
+            "request_latency": {"avg": 300.0, "p50": 250.0, "p99": 600.0},
         }
         (tmp_path / "profile_export_aiperf.json").write_text(json.dumps(data))
         result = format_results(str(tmp_path))
         assert "123.45" in result
         assert "10.00" in result
         assert "300.00" in result
+
+    def test_null_request_rate_shows_inf(self, format_results, tmp_path):
+        """JSON null for request_rate (aiperf's 'unlimited') displays as 'inf'."""
+        data = {"input_config": {"loadgen": {"request_rate": None}}}
+        (tmp_path / "profile_export_aiperf.json").write_text(json.dumps(data))
+        result = format_results(str(tmp_path))
+        assert "Traffic request rate: inf" in result
 
     def test_missing_fields_show_na(self, format_results, tmp_path):
         """Fields absent from JSON display as N/A."""
@@ -114,10 +110,10 @@ class TestFormatResults:
     def test_integer_fields_have_no_decimal(self, format_results, tmp_path):
         """Integer-class fields (counts, tokens) display without decimal point."""
         data = {
-            "num_successful_requests": 1000,
-            "total_input_tokens": 8192,
-            "total_output_tokens": 4096,
-            "max_concurrency": 32,
+            "request_count": {"avg": 1000.0},
+            "total_isl": {"avg": 8192.0},
+            "total_output_tokens": {"avg": 4096.0},
+            "input_config": {"loadgen": {"concurrency": 32}},
         }
         (tmp_path / "profile_export_aiperf.json").write_text(json.dumps(data))
         result = format_results(str(tmp_path))
@@ -133,7 +129,10 @@ class TestFormatResults:
 
     def test_row_alignment(self, format_results, tmp_path):
         """Each data row uses 40-char label column + space + value."""
-        data = {"num_successful_requests": 999, "request_throughput": 12.34}
+        data = {
+            "request_count": {"avg": 999.0},
+            "request_throughput": {"avg": 12.34},
+        }
         (tmp_path / "profile_export_aiperf.json").write_text(json.dumps(data))
         result = format_results(str(tmp_path))
         for line in result.splitlines():
