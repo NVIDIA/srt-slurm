@@ -25,7 +25,12 @@ from srtctl.backends import (
     SGLangServerConfig,
 )
 
-from .config import get_srtslurm_setting, load_config
+from .config import (
+    find_cluster_config_path,
+    get_cluster_aliases,
+    get_srtslurm_setting,
+    load_config,
+)
 from .formatting import FormattablePath, FormattableString
 from .health import (
     WorkerHealthResult,
@@ -80,6 +85,8 @@ from .topology import (
 __all__ = [
     # Config loading
     "load_config",
+    "find_cluster_config_path",
+    "get_cluster_aliases",
     "get_srtslurm_setting",
     # Schema types (frozen dataclasses)
     "SrtConfig",
