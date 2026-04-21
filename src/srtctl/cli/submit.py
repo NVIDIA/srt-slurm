@@ -36,9 +36,7 @@ from rich.table import Table
 
 # Import from srtctl modules
 from srtctl.core.config import (
-    find_cluster_config_path,
     generate_override_configs,
-    get_cluster_aliases,
     get_srtslurm_setting,
     load_cluster_config,
     load_config,
@@ -1234,17 +1232,6 @@ def main():
         help="Print resolved YAML to stdout instead of writing files",
     )
 
-    aliases_parser = subparsers.add_parser(
-        "cluster-aliases",
-        help="Print model/container aliases from srtslurm.yaml",
-    )
-    aliases_parser.add_argument(
-        "--json",
-        action="store_true",
-        dest="json_output",
-        help="Output aliases as JSON",
-    )
-
     # Fingerprint comparison: srtctl diff <path_a> <path_b>
     diff_parser = subparsers.add_parser("diff", help="Compare fingerprints from two runs")
     diff_parser.add_argument("path_a", type=Path, help="First output dir or lockfile")
@@ -1336,31 +1323,6 @@ def main():
             console.print(format_check_results([]))
         restore_console()
         sys.exit(1 if all_results else 0)
-
-    if args.command == "cluster-aliases":
-        payload = get_cluster_aliases()
-        if args.json_output:
-            sys.stdout.write(json.dumps(payload) + "\n")
-            sys.stdout.flush()
-            restore_console()
-            return
-
-        config_path = find_cluster_config_path()
-        console.print(f"[bold]Cluster config:[/] {config_path if config_path else '<not found>'}")
-        table = Table(title="Cluster Aliases")
-        table.add_column("Type", style="cyan")
-        table.add_column("Alias", style="green")
-        table.add_column("Resolved Value", style="yellow")
-        for alias, value in sorted(payload["model_paths"].items()):
-            table.add_row("model_paths", alias, value)
-        for alias, value in sorted(payload["containers"].items()):
-            table.add_row("containers", alias, value)
-        if not payload["model_paths"] and not payload["containers"]:
-            table.add_row("-", "-", "No aliases configured")
-        console.print()
-        console.print(table)
-        restore_console()
-        return
 
     # Parse config arg: supports path:selector format for overrides
     config_path, selector = parse_config_arg(args.config)

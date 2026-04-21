@@ -78,32 +78,6 @@ def load_cluster_config() -> dict[str, Any] | None:
         return None
 
 
-def get_cluster_aliases(
-    cluster_config: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Return the live model/container alias maps from srtslurm.yaml."""
-    config = cluster_config if cluster_config is not None else load_cluster_config()
-    if not config:
-        return {
-            "cluster_config_path": None,
-            "model_paths": {},
-            "containers": {},
-        }
-    return {
-        "cluster_config_path": (str(find_cluster_config_path()) if cluster_config is None else None),
-        "model_paths": {
-            str(key): str(value)
-            for key, value in (config.get("model_paths") or {}).items()
-            if isinstance(key, str) and isinstance(value, str)
-        },
-        "containers": {
-            str(key): str(value)
-            for key, value in (config.get("containers") or {}).items()
-            if isinstance(key, str) and isinstance(value, str)
-        },
-    }
-
-
 def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: dict[str, Any] | None) -> dict[str, Any]:
     """
     Resolve user config by applying cluster defaults and aliases.
