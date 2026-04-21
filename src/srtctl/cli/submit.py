@@ -1161,8 +1161,8 @@ def main():
         dest="mock_mode",
         help=(
             "Stub sbatch and spawn a detached mock worker that runs the full "
-            "SweepOrchestrator locally. For testing external harnesses (ibar) "
-            "without cluster access."
+            "SweepOrchestrator locally. For testing external harnesses without "
+            "cluster access."
         ),
     )
     apply_parser.add_argument(

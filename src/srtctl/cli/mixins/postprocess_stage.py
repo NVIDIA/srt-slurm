@@ -149,8 +149,8 @@ class PostProcessStageMixin:
         3. Benchmark result extraction (reads rollup or falls back to raw)
         4. srtlog parsing + S3 upload (if S3 configured)
         5. Eager push of ``logs_url`` to the status API right after the S3 sync
-           completes, so downstream consumers (e.g. IBAR) can fetch results
-           from S3 even if later stages below fail or hang.
+           completes, so downstream consumers can fetch results from S3 even
+           if later stages below fail or hang.
         6. Stash ``logs_url`` on self so the caller's final
            ``report_completed`` PUT in do_sweep can reassert the pointer.
         7. AI-powered failure analysis (only on failures, if enabled).
