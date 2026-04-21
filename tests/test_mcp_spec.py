@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from srtctl.mcp.spec_tools import (
     explain_field,
     get_config_reference,
@@ -58,12 +60,15 @@ def test_validate_config_accepts_minimal_recipe() -> None:
                 "gpus_per_node": 8,
                 "prefill_nodes": 1,
                 "decode_nodes": 1,
+                "prefill_workers": 1,
+                "decode_workers": 1,
             },
         },
     )
     assert result["valid"] is True
     assert result["normalized"][0]["config"]["name"] == "mcp-test"
-    assert result["cluster_defaults_source"] == "disabled"
+    assert result["cluster_defaults_source"] == "not-used-by-mcp"
+    assert "Host-side srtslurm.yaml is not used" in result["operator_boundary"]
 
 
 def test_preflight_config_reports_missing_container(tmp_path) -> None:
@@ -88,10 +93,81 @@ def test_preflight_config_reports_missing_container(tmp_path) -> None:
     )
 
     assert result["ok"] is False
-    assert result["scope"] == "local"
-    assert result["cluster_defaults_source"] == "disabled"
-    assert "IBAR remote preflight" in result["operator_hint"]
+    assert result["scope"] == "explicit-local-paths"
+    assert result["cluster_defaults_source"] == "not-used-by-mcp"
+    assert "compute side" in result["operator_hint"]
     assert result["variants"][0]["errors"][0]["field"] == "model.container"
+
+
+def test_validate_config_rejects_disagg_with_zero_prefill_workers() -> None:
+    """Reproduces the reported bad config: disagg-style block that should be aggregated."""
+    result = validate_config(
+        config={
+            "name": "mcp-test",
+            "model": {
+                "path": "/tmp/model",
+                "container": "/tmp/container.sqsh",
+                "precision": "bf16",
+            },
+            "resources": {
+                "gpu_type": "gb200",
+                "prefill_nodes": 0,
+                "decode_nodes": 1,
+                "prefill_workers": 0,
+                "decode_workers": 1,
+                "gpus_per_node": 4,
+            },
+        },
+    )
+    assert result["valid"] is False
+    assert len(result["errors"]) == 1
+    message = result["errors"][0]
+    assert "prefill_workers" in message
+    assert "agg_nodes: 1" in message
+    assert "agg_workers: 1" in message
+
+
+def test_validate_config_accepts_correct_aggregated_form() -> None:
+    result = validate_config(
+        config={
+            "name": "mcp-test",
+            "model": {
+                "path": "/tmp/model",
+                "container": "/tmp/container.sqsh",
+                "precision": "bf16",
+            },
+            "resources": {
+                "gpu_type": "gb200",
+                "gpus_per_node": 4,
+                "agg_nodes": 1,
+                "agg_workers": 1,
+            },
+        },
+    )
+    assert result["valid"] is True
+
+
+def test_validate_config_rejects_mixed_disagg_and_agg() -> None:
+    result = validate_config(
+        config={
+            "name": "mcp-test",
+            "model": {
+                "path": "/tmp/model",
+                "container": "/tmp/container.sqsh",
+                "precision": "bf16",
+            },
+            "resources": {
+                "gpu_type": "gb200",
+                "gpus_per_node": 4,
+                "prefill_nodes": 1,
+                "decode_nodes": 1,
+                "agg_nodes": 1,
+                "agg_workers": 1,
+            },
+        },
+    )
+    assert result["valid"] is False
+    assert "Mixes disaggregated fields" in result["errors"][0]
 
 
 def test_resolve_config_returns_variants() -> None:
@@ -119,6 +195,27 @@ def test_resolve_config_returns_variants() -> None:
         },
     )
     assert result["variant_count"] == 1
-    assert result["scope"] == "local"
-    assert result["cluster_defaults_source"] == "disabled"
+    assert result["scope"] == "schema-only"
+    assert result["cluster_defaults_source"] == "not-used-by-mcp"
     assert result["variants"][0]["variant"] == "alt"
+
+
+def test_mcp_tools_reject_host_side_cluster_defaults() -> None:
+    config = {
+        "name": "mcp-test",
+        "model": {
+            "path": "model-alias",
+            "container": "container-alias",
+            "precision": "bf16",
+        },
+        "resources": {
+            "gpu_type": "h100",
+            "gpus_per_node": 8,
+            "agg_nodes": 1,
+            "agg_workers": 1,
+        },
+    }
+
+    for tool in (validate_config, preflight_config, resolve_config):
+        with pytest.raises(ValueError, match="Host-side srtslurm.yaml is not used"):
+            tool(config=config, apply_cluster_defaults=True)
