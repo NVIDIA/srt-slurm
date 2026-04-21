@@ -27,44 +27,40 @@ from .schema import ClusterConfig, SrtConfig
 logger = logging.getLogger(__name__)
 
 
-def load_cluster_config() -> dict[str, Any] | None:
-    """
-    Load cluster configuration from srtslurm.yaml if it exists.
-
-    Searches for srtslurm.yaml in order:
-    1. SRTSLURM_CONFIG environment variable (if set)
-    2. Current working directory
-    3. Parent directories up to 3 levels
-
-    Returns None if file doesn't exist (graceful degradation).
-    """
+def find_cluster_config_path() -> Path | None:
+    """Locate srtslurm.yaml using the standard search order."""
     # Check env var first (highest priority)
     env_config = os.environ.get("SRTSLURM_CONFIG")
     if env_config:
         env_path = Path(env_config)
         if env_path.exists():
-            cluster_config_path = env_path
-            logger.debug(f"Using srtslurm.yaml from SRTSLURM_CONFIG: {cluster_config_path}")
-        else:
-            logger.warning(f"SRTSLURM_CONFIG set but file not found: {env_config}")
-            return None
-    else:
-        # Search paths
-        search_paths = [
-            Path.cwd() / "srtslurm.yaml",
-            Path.cwd().parent / "srtslurm.yaml",
-            Path.cwd().parent.parent / "srtslurm.yaml",
-        ]
+            logger.debug(f"Using srtslurm.yaml from SRTSLURM_CONFIG: {env_path}")
+            return env_path
+        logger.warning(f"SRTSLURM_CONFIG set but file not found: {env_config}")
+        return None
 
-        cluster_config_path = None
-        for path in search_paths:
-            if path.exists():
-                cluster_config_path = path
-                break
+    search_paths = [
+        Path.cwd() / "srtslurm.yaml",
+        Path.cwd().parent / "srtslurm.yaml",
+        Path.cwd().parent.parent / "srtslurm.yaml",
+    ]
+    for path in search_paths:
+        if path.exists():
+            return path
 
-        if not cluster_config_path:
-            logger.debug("No srtslurm.yaml found - using config as-is")
-            return None
+    logger.debug("No srtslurm.yaml found - using config as-is")
+    return None
+
+
+def load_cluster_config() -> dict[str, Any] | None:
+    """
+    Load cluster configuration from srtslurm.yaml if it exists.
+
+    Returns None if file doesn't exist (graceful degradation).
+    """
+    cluster_config_path = find_cluster_config_path()
+    if not cluster_config_path:
+        return None
 
     try:
         with open(cluster_config_path) as f:
@@ -80,6 +76,32 @@ def load_cluster_config() -> dict[str, Any] | None:
     except Exception as e:
         logger.warning(f"Failed to load or validate srtslurm.yaml: {e}")
         return None
+
+
+def get_cluster_aliases(
+    cluster_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return the live model/container alias maps from srtslurm.yaml."""
+    config = cluster_config if cluster_config is not None else load_cluster_config()
+    if not config:
+        return {
+            "cluster_config_path": None,
+            "model_paths": {},
+            "containers": {},
+        }
+    return {
+        "cluster_config_path": (str(find_cluster_config_path()) if cluster_config is None else None),
+        "model_paths": {
+            str(key): str(value)
+            for key, value in (config.get("model_paths") or {}).items()
+            if isinstance(key, str) and isinstance(value, str)
+        },
+        "containers": {
+            str(key): str(value)
+            for key, value in (config.get("containers") or {}).items()
+            if isinstance(key, str) and isinstance(value, str)
+        },
+    }
 
 
 def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: dict[str, Any] | None) -> dict[str, Any]:
@@ -533,6 +555,10 @@ def load_config(path: Path | str) -> SrtConfig:
     # Load raw user config
     with open(path) as f:
         user_config = yaml.safe_load(f)
+    if user_config is None:
+        raise ValueError(f"Invalid config in {path}: YAML file is empty")
+    if not isinstance(user_config, dict):
+        raise ValueError(f"Invalid config in {path}: top-level YAML must be a mapping")
 
     # Strip lock: section if present (lockfiles are valid recipes)
     # Preserved for comparison after the new run completes
