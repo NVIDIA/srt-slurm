@@ -429,13 +429,18 @@ class SweepOrchestrator(
 
         finally:
             logger.info("Cleanup")
-            reporter.report_completed(exit_code)
             stop_event.set()
             registry.cleanup()
             if exit_code != 0:
                 registry.print_failure_details()
-            # Run post-processing (AI analysis if enabled)
-            self.run_postprocess(exit_code)
+            # Post-process first: generate rollup, upload logs to S3, eagerly
+            # push logs_url to the status API. Runs before report_completed so
+            # the final PUT can reassert the artifact pointer.
+            self.run_postprocess(exit_code, reporter=reporter)
+            reporter.report_completed(
+                exit_code,
+                logs_url=getattr(self, "_last_logs_url", None),
+            )
 
         return exit_code
 
