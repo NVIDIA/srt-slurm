@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 from srtctl.mcp.spec_tools import (
-    cluster_aliases,
     explain_field,
     get_config_reference,
     preflight_config,
@@ -58,10 +57,10 @@ def test_validate_config_accepts_minimal_recipe() -> None:
                 "decode_nodes": 1,
             },
         },
-        apply_cluster_defaults=False,
     )
     assert result["valid"] is True
     assert result["normalized"][0]["config"]["name"] == "mcp-test"
+    assert result["cluster_defaults_source"] == "disabled"
 
 
 def test_preflight_config_reports_missing_container(tmp_path) -> None:
@@ -83,7 +82,6 @@ def test_preflight_config_reports_missing_container(tmp_path) -> None:
                 "decode_nodes": 1,
             },
         },
-        apply_cluster_defaults=False,
     )
 
     assert result["ok"] is False
@@ -116,20 +114,8 @@ def test_resolve_config_returns_variants() -> None:
                 },
             },
         },
-        apply_cluster_defaults=False,
     )
     assert result["variant_count"] == 1
     assert result["scope"] == "local"
     assert result["cluster_defaults_source"] == "disabled"
     assert result["variants"][0]["variant"] == "alt"
-
-
-def test_cluster_aliases_returns_empty_maps_without_local_config(monkeypatch, tmp_path) -> None:
-    monkeypatch.chdir(tmp_path)
-
-    result = cluster_aliases()
-
-    assert result["scope"] == "local"
-    assert result["cluster_config_path"] is None
-    assert result["model_paths"] == {}
-    assert result["containers"] == {}

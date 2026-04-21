@@ -13,7 +13,6 @@ import yaml
 from srtctl.core.config import (
     find_cluster_config_path,
     generate_override_configs,
-    get_cluster_aliases,
     load_cluster_config,
     resolve_config_with_defaults,
 )
@@ -95,7 +94,7 @@ def validate_config(
     *,
     config: dict[str, Any] | None = None,
     config_yaml: str | None = None,
-    apply_cluster_defaults: bool = True,
+    apply_cluster_defaults: bool = False,
 ) -> dict[str, Any]:
     """Validate one plain config or an override config against the real schema."""
     raw = _load_raw_config(config=config, config_yaml=config_yaml)
@@ -131,7 +130,7 @@ def preflight_config(
     *,
     config: dict[str, Any] | None = None,
     config_yaml: str | None = None,
-    apply_cluster_defaults: bool = True,
+    apply_cluster_defaults: bool = False,
 ) -> dict[str, Any]:
     """Check that model and container references are resolvable on this MCP host."""
     raw = _load_raw_config(config=config, config_yaml=config_yaml)
@@ -159,7 +158,7 @@ def resolve_config(
     *,
     config: dict[str, Any] | None = None,
     config_yaml: str | None = None,
-    apply_cluster_defaults: bool = True,
+    apply_cluster_defaults: bool = False,
 ) -> dict[str, Any]:
     """Resolve config defaults without requiring the caller to understand srtslurm.yaml."""
     raw = _load_raw_config(config=config, config_yaml=config_yaml)
@@ -188,18 +187,6 @@ def resolve_config(
         "variants": [{"variant": "base", "config": resolve_config_with_defaults(raw, cluster_config)}],
         **context,
     }
-
-
-def cluster_aliases() -> dict[str, Any]:
-    """Return model/container aliases from the local srtslurm.yaml, if present."""
-    aliases = get_cluster_aliases()
-    return {
-        "scope": "local",
-        "cluster_config_path": aliases["cluster_config_path"],
-        "model_paths": aliases["model_paths"],
-        "containers": aliases["containers"],
-    }
-
 
 def _load_raw_config(*, config: dict[str, Any] | None = None, config_yaml: str | None = None) -> dict[str, Any]:
     if config is not None:

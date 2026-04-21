@@ -9,9 +9,6 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from srtctl.mcp.spec_tools import (
-    cluster_aliases as cluster_aliases_impl,
-)
-from srtctl.mcp.spec_tools import (
     explain_field as explain_field_impl,
 )
 from srtctl.mcp.spec_tools import (
@@ -65,9 +62,9 @@ def explain_field(path: str) -> dict[str, Any]:
 def validate_config(
     config: dict[str, Any] | None = None,
     config_yaml: str | None = None,
-    apply_cluster_defaults: bool = True,
+    apply_cluster_defaults: bool = False,
 ) -> dict[str, Any]:
-    """Validate one plain recipe or override config against the real SrtConfig schema."""
+    """Validate recipe structure against the SrtConfig schema without assuming target-cluster state."""
     return validate_config_impl(
         config=config,
         config_yaml=config_yaml,
@@ -79,9 +76,9 @@ def validate_config(
 def preflight_config(
     config: dict[str, Any] | None = None,
     config_yaml: str | None = None,
-    apply_cluster_defaults: bool = True,
+    apply_cluster_defaults: bool = False,
 ) -> dict[str, Any]:
-    """Run local preflight against this MCP host's srtslurm.yaml and local filesystem."""
+    """Run local-only validation for explicit paths or optionally this MCP host's srtslurm.yaml."""
     return preflight_config_impl(
         config=config,
         config_yaml=config_yaml,
@@ -93,20 +90,14 @@ def preflight_config(
 def resolve_config(
     config: dict[str, Any] | None = None,
     config_yaml: str | None = None,
-    apply_cluster_defaults: bool = True,
+    apply_cluster_defaults: bool = False,
 ) -> dict[str, Any]:
-    """Resolve config defaults from this MCP host's local srtslurm.yaml."""
+    """Resolve schema defaults for recipe authoring without assuming target-cluster aliases."""
     return resolve_config_impl(
         config=config,
         config_yaml=config_yaml,
         apply_cluster_defaults=apply_cluster_defaults,
     )
-
-
-@mcp.tool()
-def cluster_aliases() -> dict[str, Any]:
-    """Return model/container aliases from this MCP host's local srtslurm.yaml."""
-    return cluster_aliases_impl()
 
 
 def main() -> None:
