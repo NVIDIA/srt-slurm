@@ -15,9 +15,7 @@ def test_get_node_ip_ignores_srun_step_created_output(tmp_path, monkeypatch):
 
     fake_srun = fake_bin / "srun"
     fake_srun.write_text(
-        "#!/bin/bash\n"
-        "echo 'srun: Step created for StepId=2279904.27' >&2\n"
-        "echo '10.109.25.246'\n",
+        "#!/bin/bash\necho 'srun: Step created for StepId=2279904.27' >&2\necho '10.109.25.246'\n",
         encoding="ascii",
     )
     fake_srun.chmod(0o755)

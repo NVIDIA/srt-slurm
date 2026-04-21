@@ -445,7 +445,8 @@ class TestSubmitOverride:
     def test_selector_submission_preserves_comments_in_resolved_variant(self, tmp_path: Path) -> None:
         """Override submission reuses resolve_override_yaml so runtime config keeps comments."""
         cfg = tmp_path / "submit_override.yaml"
-        cfg.write_text(textwrap.dedent("""\
+        cfg.write_text(
+            textwrap.dedent("""\
             base:
               name: "test-job"
               model:
@@ -466,7 +467,8 @@ class TestSubmitOverride:
             override_lowmem:
               resources:
                 decode_nodes: 4
-        """))
+        """)
+        )
 
         mock_result = MagicMock()
         mock_result.stdout = "Submitted batch job 99999"

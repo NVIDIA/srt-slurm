@@ -61,6 +61,7 @@ def test_dry_run_empty_stdin_fails_cleanly(monkeypatch, capsys) -> None:
     assert "No YAML received on stdin" in error
     assert "NoneType" not in error
 
+
 def test_load_config_rejects_empty_yaml(tmp_path: Path) -> None:
     path = tmp_path / "empty.yaml"
     path.write_text("")

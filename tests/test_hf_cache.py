@@ -233,7 +233,7 @@ model:
 backend:
   type: vllm
   prefill_environment:
-    HF_HOME: "{tmp_path / 'nonexistent'}"
+    HF_HOME: "{tmp_path / "nonexistent"}"
   vllm_config:
     prefill:
       tensor-parallel-size: 1
@@ -275,7 +275,7 @@ model:
 backend:
   type: vllm
   prefill_environment:
-    HF_HOME: "{tmp_path / 'cache'}"
+    HF_HOME: "{tmp_path / "cache"}"
   vllm_config:
     prefill:
       tensor-parallel-size: 1
@@ -345,7 +345,7 @@ model:
 backend:
   type: vllm
   prefill_environment:
-    HF_HOME: "{tmp_path / 'cache'}"
+    HF_HOME: "{tmp_path / "cache"}"
   vllm_config:
     prefill:
       tensor-parallel-size: 1
@@ -393,7 +393,7 @@ model:
 backend:
   type: vllm
   prefill_environment:
-    HF_HOME: "{tmp_path / 'cache'}"
+    HF_HOME: "{tmp_path / "cache"}"
   vllm_config:
     prefill:
       tensor-parallel-size: 1
@@ -451,7 +451,7 @@ model:
 backend:
   type: vllm
   prefill_environment:
-    HF_HOME: "{tmp_path / 'cache'}"
+    HF_HOME: "{tmp_path / "cache"}"
     HF_TOKEN: "hf_secret_token_123"
   vllm_config:
     prefill:
@@ -491,7 +491,7 @@ model:
 backend:
   type: vllm
   prefill_environment:
-    HF_HOME: "{tmp_path / 'cache'}"
+    HF_HOME: "{tmp_path / "cache"}"
   vllm_config:
     prefill:
       tensor-parallel-size: 1
@@ -530,7 +530,7 @@ model:
 backend:
   type: vllm
   prefill_environment:
-    HF_HOME: "{tmp_path / 'cache'}"
+    HF_HOME: "{tmp_path / "cache"}"
   vllm_config:
     prefill:
       tensor-parallel-size: 1
@@ -567,7 +567,7 @@ model:
 backend:
   type: vllm
   prefill_environment:
-    HF_HOME: "{tmp_path / 'cache'}"
+    HF_HOME: "{tmp_path / "cache"}"
   vllm_config:
     prefill:
       tensor-parallel-size: 1
@@ -611,7 +611,7 @@ model:
 backend:
   type: vllm
   prefill_environment:
-    HF_HOME: "{tmp_path / 'cache'}"
+    HF_HOME: "{tmp_path / "cache"}"
   vllm_config:
     prefill:
       tensor-parallel-size: 1

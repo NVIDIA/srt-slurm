@@ -24,7 +24,10 @@ def test_schema_summary_lists_top_level_fields() -> None:
 def test_get_config_reference_finds_reporting() -> None:
     result = get_config_reference(query="reporting", max_matches=2)
     assert result["matches"]
-    assert any("reporting" in match["snippet"].lower() or "reporting" in match["heading"].lower() for match in result["matches"])
+    assert any(
+        "reporting" in match["snippet"].lower() or "reporting" in match["heading"].lower()
+        for match in result["matches"]
+    )
 
 
 def test_explain_field_returns_schema_and_docs() -> None:

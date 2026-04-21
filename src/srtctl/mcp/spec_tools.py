@@ -188,6 +188,7 @@ def resolve_config(
         **context,
     }
 
+
 def _load_raw_config(*, config: dict[str, Any] | None = None, config_yaml: str | None = None) -> dict[str, Any]:
     if config is not None:
         return config

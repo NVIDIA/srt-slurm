@@ -45,7 +45,11 @@ def _make_fingerprint(**overrides) -> dict:
         "timestamp": "2026-04-09T14:30:00Z",
         "arch": "aarch64",
         "os": "Ubuntu 22.04.5 LTS",
-        "gpu": {"available": True, "driver": "570.86.15", "gpus": [{"name": "GB200", "driver": "570.86.15", "memory": "192 GiB"}]},
+        "gpu": {
+            "available": True,
+            "driver": "570.86.15",
+            "gpus": [{"name": "GB200", "driver": "570.86.15", "memory": "192 GiB"}],
+        },
         "python_version": "3.11.9",
         "cuda_version": "12.8",
         "nccl_version": "2.25.1",
@@ -167,6 +171,7 @@ class TestProbes:
 
     def test_capture_survives_probe_failure(self):
         """If a probe raises, capture still completes with UNAVAILABLE."""
+
         def exploding_probe():
             raise RuntimeError("kaboom")
 
@@ -547,7 +552,7 @@ class TestBashGeneration:
     def test_script_ends_with_or_true(self):
         """Script is wrapped in || true so it never blocks the worker."""
         script = generate_capture_script("/logs/fingerprint.json")
-        assert script.rstrip().endswith('|| true')
+        assert script.rstrip().endswith("|| true")
 
     def test_script_contains_output_path(self):
         """Output path appears in the generated script."""
@@ -557,7 +562,7 @@ class TestBashGeneration:
     def test_script_starts_with_python(self):
         """Script invokes python3."""
         script = generate_capture_script("/logs/fp.json")
-        assert script.startswith('python3')
+        assert script.startswith("python3")
 
     def test_script_includes_pip_freeze(self):
         """Script captures pip packages via pip freeze."""

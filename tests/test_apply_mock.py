@@ -54,9 +54,7 @@ def _wait_for(path: Path, *, timeout: float = 30.0, interval: float = 0.1) -> bo
     return False
 
 
-def test_apply_mock_emits_submission_json_and_spawns_worker(
-    monkeypatch, tmp_path: Path, capsys: Any
-) -> None:
+def test_apply_mock_emits_submission_json_and_spawns_worker(monkeypatch, tmp_path: Path, capsys: Any) -> None:
     cfg = _write_config(tmp_path)
     output_base = tmp_path / "outputs"
     output_base.mkdir()
@@ -120,9 +118,7 @@ def test_apply_mock_emits_submission_json_and_spawns_worker(
     assert (output_dir / "logs" / "benchmark.out").exists()
 
 
-def test_apply_mock_does_not_call_real_sbatch(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_apply_mock_does_not_call_real_sbatch(monkeypatch, tmp_path: Path) -> None:
     """Ensure the stubbed sbatch prevented an actual subprocess.run(sbatch, ...)."""
     cfg = _write_config(tmp_path)
     output_base = tmp_path / "outputs"
@@ -162,6 +158,4 @@ def test_apply_mock_does_not_call_real_sbatch(
     ):
         submit_cli.main()
 
-    assert seen_sbatch == [], (
-        f"Expected --mock to stub sbatch entirely, but saw real sbatch calls: {seen_sbatch}"
-    )
+    assert seen_sbatch == [], f"Expected --mock to stub sbatch entirely, but saw real sbatch calls: {seen_sbatch}"
