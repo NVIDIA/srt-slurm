@@ -210,6 +210,9 @@ class ClusterConfig:
     # ``"ulimit -n 1048576 -s unlimited -u 1048576"``. Silently dropped for
     # sruns that bypass the bash wrapper (distroless containers).
     default_bash_preamble: str | None = None
+    # Cluster-level environment variables applied to all jobs
+    # Recipe-level environment takes precedence on conflicts
+    default_environment: dict[str, str] | None = None
     reporting: ReportingConfig | None = None
     telemetry: dict | None = None  # opaque dict, parsed by try_start_snapshotter
     # When set, applied to job configs that omit ``frontend.nginx_raise_ulimit``.
