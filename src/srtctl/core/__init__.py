@@ -27,7 +27,6 @@ from srtctl.backends import (
 
 from .config import (
     find_cluster_config_path,
-    get_cluster_aliases,
     get_srtslurm_setting,
     load_config,
 )
@@ -86,7 +85,6 @@ __all__ = [
     # Config loading
     "load_config",
     "find_cluster_config_path",
-    "get_cluster_aliases",
     "get_srtslurm_setting",
     # Schema types (frozen dataclasses)
     "SrtConfig",

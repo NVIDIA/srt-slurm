@@ -11,6 +11,7 @@ from typing import Any, get_args, get_origin, get_type_hints
 import yaml
 
 from srtctl.core.config import (
+    find_cluster_config_path,
     generate_override_configs,
     load_cluster_config,
     resolve_config_with_defaults,
@@ -93,11 +94,15 @@ def validate_config(
     *,
     config: dict[str, Any] | None = None,
     config_yaml: str | None = None,
-    apply_cluster_defaults: bool = True,
+    apply_cluster_defaults: bool = False,
 ) -> dict[str, Any]:
     """Validate one plain config or an override config against the real schema."""
     raw = _load_raw_config(config=config, config_yaml=config_yaml)
     cluster_config = load_cluster_config() if apply_cluster_defaults else None
+    context = _cluster_context(
+        cluster_config=cluster_config,
+        apply_cluster_defaults=apply_cluster_defaults,
+    )
     schema = SrtConfig.Schema()
 
     variants: list[tuple[str, dict[str, Any]]] = generate_override_configs(raw) if "base" in raw else [("base", raw)]
@@ -117,7 +122,7 @@ def validate_config(
         "variant_count": len(variants),
         "errors": errors,
         "normalized": normalized,
-        "cluster_defaults_applied": apply_cluster_defaults and cluster_config is not None,
+        **context,
     }
 
 
@@ -125,17 +130,27 @@ def preflight_config(
     *,
     config: dict[str, Any] | None = None,
     config_yaml: str | None = None,
-    apply_cluster_defaults: bool = True,
+    apply_cluster_defaults: bool = False,
 ) -> dict[str, Any]:
-    """Check that model and container references are locally resolvable."""
+    """Check that model and container references are resolvable on this MCP host."""
     raw = _load_raw_config(config=config, config_yaml=config_yaml)
     cluster_config = load_cluster_config() if apply_cluster_defaults else None
+    context = _cluster_context(
+        cluster_config=cluster_config,
+        apply_cluster_defaults=apply_cluster_defaults,
+    )
     results = preflight_config_variants(raw, cluster_config=cluster_config)
     return {
+        "scope": "local",
         "ok": all(result.ok for result in results),
         "variant_count": len(results),
         "variants": [result.as_dict() for result in results],
-        "cluster_defaults_applied": apply_cluster_defaults and cluster_config is not None,
+        "operator_hint": (
+            "This preflight only reflects the srtslurm.yaml visible to this MCP host. "
+            "For cluster-aware operator flows through IBAR, prefer IBAR remote preflight "
+            "or IBAR remote dry-run with a compute profile."
+        ),
+        **context,
     }
 
 
@@ -143,11 +158,15 @@ def resolve_config(
     *,
     config: dict[str, Any] | None = None,
     config_yaml: str | None = None,
-    apply_cluster_defaults: bool = True,
+    apply_cluster_defaults: bool = False,
 ) -> dict[str, Any]:
     """Resolve config defaults without requiring the caller to understand srtslurm.yaml."""
     raw = _load_raw_config(config=config, config_yaml=config_yaml)
     cluster_config = load_cluster_config() if apply_cluster_defaults else None
+    context = _cluster_context(
+        cluster_config=cluster_config,
+        apply_cluster_defaults=apply_cluster_defaults,
+    )
     if "base" in raw:
         resolved_variants = [
             {
@@ -156,10 +175,17 @@ def resolve_config(
             }
             for suffix, variant in generate_override_configs(raw)
         ]
-        return {"variant_count": len(resolved_variants), "variants": resolved_variants}
+        return {
+            "scope": "local",
+            "variant_count": len(resolved_variants),
+            "variants": resolved_variants,
+            **context,
+        }
     return {
+        "scope": "local",
         "variant_count": 1,
         "variants": [{"variant": "base", "config": resolve_config_with_defaults(raw, cluster_config)}],
+        **context,
     }
 
 
@@ -172,6 +198,25 @@ def _load_raw_config(*, config: dict[str, Any] | None = None, config_yaml: str |
     if not isinstance(loaded, dict):
         raise ValueError("Config must be a YAML mapping")
     return loaded
+
+
+def _cluster_context(
+    *,
+    cluster_config: dict[str, Any] | None,
+    apply_cluster_defaults: bool,
+) -> dict[str, Any]:
+    path = find_cluster_config_path() if apply_cluster_defaults else None
+    if not apply_cluster_defaults:
+        source = "disabled"
+    elif cluster_config is None:
+        source = "none"
+    else:
+        source = "local-srtslurm.yaml"
+    return {
+        "cluster_defaults_applied": apply_cluster_defaults and cluster_config is not None,
+        "cluster_defaults_source": source,
+        "cluster_config_path": str(path) if path is not None else None,
+    }
 
 
 def _parse_doc_sections() -> list[dict[str, str]]:

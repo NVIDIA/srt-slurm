@@ -212,13 +212,13 @@ class TestTraceReplayIntegration:
             [
                 "bash",
                 str(BENCH_SCRIPT),
-                mock_server,             # ENDPOINT
-                "test-model",            # MODEL_NAME
-                str(fixture),            # TRACE_FILE
-                "1",                     # CONCURRENCIES
-                "5000",                  # TTFT_THRESHOLD
-                "100",                   # ITL_THRESHOLD
-                "test-model",            # TOKENIZER_PATH (aiperf resolves via HF)
+                mock_server,  # ENDPOINT
+                "test-model",  # MODEL_NAME
+                str(fixture),  # TRACE_FILE
+                "1",  # CONCURRENCIES
+                "5000",  # TTFT_THRESHOLD
+                "100",  # ITL_THRESHOLD
+                "test-model",  # TOKENIZER_PATH (aiperf resolves via HF)
             ],
             capture_output=True,
             text=True,
@@ -254,7 +254,7 @@ class TestTraceReplayIntegration:
                 mock_server,
                 "test-model",
                 str(fixture),
-                "1,2",                   # two concurrency levels
+                "1,2",  # two concurrency levels
                 "5000",
                 "100",
                 "test-model",

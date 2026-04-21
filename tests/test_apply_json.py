@@ -44,9 +44,7 @@ def _write_config(tmp_path: Path) -> Path:
     return cfg
 
 
-def test_apply_json_emits_single_line_on_stdout(
-    monkeypatch, tmp_path: Path, capsys: Any
-) -> None:
+def test_apply_json_emits_single_line_on_stdout(monkeypatch, tmp_path: Path, capsys: Any) -> None:
     cfg = _write_config(tmp_path)
     mock_sbatch = MagicMock()
     mock_sbatch.stdout = "Submitted batch job 42042"
@@ -83,9 +81,7 @@ def test_apply_json_emits_single_line_on_stdout(
     assert record["metadata_path"].endswith("42042.json")
 
 
-def test_apply_json_emits_error_line_on_failure(
-    monkeypatch, tmp_path: Path, capsys: Any
-) -> None:
+def test_apply_json_emits_error_line_on_failure(monkeypatch, tmp_path: Path, capsys: Any) -> None:
     cfg = _write_config(tmp_path)
 
     def boom(*args, **kwargs):
@@ -112,16 +108,12 @@ def test_apply_json_emits_error_line_on_failure(
     assert "on fire" in record["error"]
 
 
-def test_apply_without_json_emits_prose_only(
-    monkeypatch, tmp_path: Path, capsys: Any
-) -> None:
+def test_apply_without_json_emits_prose_only(monkeypatch, tmp_path: Path, capsys: Any) -> None:
     cfg = _write_config(tmp_path)
     mock_sbatch = MagicMock()
     mock_sbatch.stdout = "Submitted batch job 99999"
 
-    monkeypatch.setattr(
-        sys, "argv", ["srtctl", "apply", "-f", str(cfg), "-o", str(tmp_path)]
-    )
+    monkeypatch.setattr(sys, "argv", ["srtctl", "apply", "-f", str(cfg), "-o", str(tmp_path)])
     with (
         patch("subprocess.run", return_value=mock_sbatch),
         patch("srtctl.cli.submit.get_srtslurm_setting", return_value=None),

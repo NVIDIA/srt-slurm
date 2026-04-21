@@ -179,11 +179,13 @@ class TestRunAllValidations:
         """Even with completely broken config, returns a list."""
         from srtctl.core.schema import SrtConfig
 
-        config = SrtConfig.Schema().load({
-            "name": "test",
-            "model": {"path": "/nonexistent", "container": "/nonexistent.sqsh", "precision": "fp8"},
-            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "prefill_nodes": 1, "decode_nodes": 1},
-        })
+        config = SrtConfig.Schema().load(
+            {
+                "name": "test",
+                "model": {"path": "/nonexistent", "container": "/nonexistent.sqsh", "precision": "fp8"},
+                "resources": {"gpu_type": "h100", "gpus_per_node": 8, "prefill_nodes": 1, "decode_nodes": 1},
+            }
+        )
 
         results = run_all_validations(config)
         assert isinstance(results, list)
@@ -193,18 +195,20 @@ class TestRunAllValidations:
         """Each check type produces exactly one result."""
         from srtctl.core.schema import SrtConfig
 
-        config = SrtConfig.Schema().load({
-            "name": "test",
-            "model": {
-                "path": "/nonexistent",
-                "container": "/nonexistent.sqsh",
-                "precision": "fp8",
-            },
-            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "prefill_nodes": 1, "decode_nodes": 1},
-            "identity": {
-                "model": {"repo": "some/model"},
-            },
-        })
+        config = SrtConfig.Schema().load(
+            {
+                "name": "test",
+                "model": {
+                    "path": "/nonexistent",
+                    "container": "/nonexistent.sqsh",
+                    "precision": "fp8",
+                },
+                "resources": {"gpu_type": "h100", "gpus_per_node": 8, "prefill_nodes": 1, "decode_nodes": 1},
+                "identity": {
+                    "model": {"repo": "some/model"},
+                },
+            }
+        )
 
         with patch("srtctl.core.validation.requests.head", side_effect=requests.ConnectionError()):
             results = run_all_validations(config)
@@ -224,11 +228,13 @@ class TestBackgroundValidation:
     def test_thread_is_daemon(self):
         from srtctl.core.schema import SrtConfig
 
-        config = SrtConfig.Schema().load({
-            "name": "test",
-            "model": {"path": "/x", "container": "/x", "precision": "fp8"},
-            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "prefill_nodes": 1, "decode_nodes": 1},
-        })
+        config = SrtConfig.Schema().load(
+            {
+                "name": "test",
+                "model": {"path": "/x", "container": "/x", "precision": "fp8"},
+                "resources": {"gpu_type": "h100", "gpus_per_node": 8, "prefill_nodes": 1, "decode_nodes": 1},
+            }
+        )
 
         thread = run_validations_background(config)
         assert thread.daemon is True

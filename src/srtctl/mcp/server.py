@@ -62,9 +62,9 @@ def explain_field(path: str) -> dict[str, Any]:
 def validate_config(
     config: dict[str, Any] | None = None,
     config_yaml: str | None = None,
-    apply_cluster_defaults: bool = True,
+    apply_cluster_defaults: bool = False,
 ) -> dict[str, Any]:
-    """Validate one plain recipe or override config against the real SrtConfig schema."""
+    """Validate recipe structure against the SrtConfig schema without assuming target-cluster state."""
     return validate_config_impl(
         config=config,
         config_yaml=config_yaml,
@@ -76,9 +76,9 @@ def validate_config(
 def preflight_config(
     config: dict[str, Any] | None = None,
     config_yaml: str | None = None,
-    apply_cluster_defaults: bool = True,
+    apply_cluster_defaults: bool = False,
 ) -> dict[str, Any]:
-    """Check that model and container references are resolvable before submit."""
+    """Run local-only validation for explicit paths or optionally this MCP host's srtslurm.yaml."""
     return preflight_config_impl(
         config=config,
         config_yaml=config_yaml,
@@ -90,9 +90,9 @@ def preflight_config(
 def resolve_config(
     config: dict[str, Any] | None = None,
     config_yaml: str | None = None,
-    apply_cluster_defaults: bool = True,
+    apply_cluster_defaults: bool = False,
 ) -> dict[str, Any]:
-    """Resolve config defaults from srtslurm.yaml without submitting anything."""
+    """Resolve schema defaults for recipe authoring without assuming target-cluster aliases."""
     return resolve_config_impl(
         config=config,
         config_yaml=config_yaml,

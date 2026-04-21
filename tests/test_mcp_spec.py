@@ -24,7 +24,10 @@ def test_schema_summary_lists_top_level_fields() -> None:
 def test_get_config_reference_finds_reporting() -> None:
     result = get_config_reference(query="reporting", max_matches=2)
     assert result["matches"]
-    assert any("reporting" in match["snippet"].lower() or "reporting" in match["heading"].lower() for match in result["matches"])
+    assert any(
+        "reporting" in match["snippet"].lower() or "reporting" in match["heading"].lower()
+        for match in result["matches"]
+    )
 
 
 def test_explain_field_returns_schema_and_docs() -> None:
@@ -57,10 +60,10 @@ def test_validate_config_accepts_minimal_recipe() -> None:
                 "decode_nodes": 1,
             },
         },
-        apply_cluster_defaults=False,
     )
     assert result["valid"] is True
     assert result["normalized"][0]["config"]["name"] == "mcp-test"
+    assert result["cluster_defaults_source"] == "disabled"
 
 
 def test_preflight_config_reports_missing_container(tmp_path) -> None:
@@ -82,10 +85,12 @@ def test_preflight_config_reports_missing_container(tmp_path) -> None:
                 "decode_nodes": 1,
             },
         },
-        apply_cluster_defaults=False,
     )
 
     assert result["ok"] is False
+    assert result["scope"] == "local"
+    assert result["cluster_defaults_source"] == "disabled"
+    assert "IBAR remote preflight" in result["operator_hint"]
     assert result["variants"][0]["errors"][0]["field"] == "model.container"
 
 
@@ -112,7 +117,8 @@ def test_resolve_config_returns_variants() -> None:
                 },
             },
         },
-        apply_cluster_defaults=False,
     )
     assert result["variant_count"] == 1
+    assert result["scope"] == "local"
+    assert result["cluster_defaults_source"] == "disabled"
     assert result["variants"][0]["variant"] == "alt"
