@@ -114,6 +114,11 @@ echo "Warmup complete"
 MODEL_BASE_NAME="${MODEL_NAME##*/}"
 TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
 
+if [ -n "$DEBUG_MODE" ]; then
+    echo "WARNING: DEBUG_MODE ENABLED! MAKE SURE TO CANCEL YOUR JOB WHEN YOU ARE DONE!"
+    sleep inf
+fi
+
 # Parse concurrencies (comma-separated)
 IFS=',' read -r -a CONCURRENCY_LIST <<< "${CONCURRENCIES}"
 
@@ -139,6 +144,7 @@ for C in "${CONCURRENCY_LIST[@]}"; do
         --extra-inputs min_tokens:"${OSL}" \
         --extra-inputs ignore_eos:true \
         --concurrency "${C}" \
+	--request-rate "inf" \
         --request-count "${REQUEST_COUNT}" \
         --tokenizer "${TOKENIZER_PATH}" \
         --tokenizer-trust-remote-code \
