@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 from __future__ import annotations
 
 import types
@@ -79,10 +82,7 @@ def get_config_reference(query: str | None = None, max_matches: int = 5) -> dict
             matches.append(
                 {
                     "heading": f"Schema: {query}",
-                    "snippet": (
-                        f"{leaf['name']}: type={leaf['type']}, "
-                        f"default={leaf['default']}"
-                    ),
+                    "snippet": (f"{leaf['name']}: type={leaf['type']}, default={leaf['default']}"),
                     "score": 1,
                 }
             )
@@ -100,9 +100,7 @@ def validate_config(
     cluster_config = load_cluster_config() if apply_cluster_defaults else None
     schema = SrtConfig.Schema()
 
-    variants: list[tuple[str, dict[str, Any]]] = (
-        generate_override_configs(raw) if "base" in raw else [("base", raw)]
-    )
+    variants: list[tuple[str, dict[str, Any]]] = generate_override_configs(raw) if "base" in raw else [("base", raw)]
 
     normalized: list[dict[str, Any]] = []
     errors: list[str] = []
@@ -165,9 +163,7 @@ def resolve_config(
     }
 
 
-def _load_raw_config(
-    *, config: dict[str, Any] | None = None, config_yaml: str | None = None
-) -> dict[str, Any]:
+def _load_raw_config(*, config: dict[str, Any] | None = None, config_yaml: str | None = None) -> dict[str, Any]:
     if config is not None:
         return config
     if config_yaml is None:
@@ -223,7 +219,8 @@ def _field_summary(cls: type[Any], field_name: str) -> dict[str, Any]:
     if item.default is not MISSING:
         default = item.default
     elif item.default_factory is not MISSING:  # type: ignore[attr-defined]
-        default = f"<factory:{item.default_factory.__name__}>"
+        factory_name = getattr(item.default_factory, "__name__", type(item.default_factory).__name__)
+        default = f"<factory:{factory_name}>"
     else:
         default = "<required>"
     return {

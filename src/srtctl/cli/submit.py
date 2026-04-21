@@ -99,7 +99,7 @@ def _install_mock_submit_patches() -> list:
 
     def _fake_subprocess_run(cmd, *args, **kwargs):
         is_sbatch = (
-            isinstance(cmd, (list, tuple))
+            isinstance(cmd, list | tuple)
             and len(cmd) > 0
             and (cmd[0] == "sbatch" or (isinstance(cmd[0], str) and cmd[0].endswith("sbatch")))
         )
@@ -669,6 +669,7 @@ def submit_single(
     variant_suffix: str | None = None,
     source_config_path: Path | None = None,
     runtime_config_text: str | None = None,
+    enforce_preflight: bool = True,
 ) -> str | None:
     """Submit a single job from YAML config.
 
@@ -702,9 +703,10 @@ def submit_single(
         with open(config_path) as f:
             raw_config = yaml.safe_load(f)
     else:
-        raw_config = config.model_dump(mode="json")
+        raw_config = SrtConfig.Schema().dump(config)
 
-    _assert_preflight_passed(raw_config, label=str(config_path or "<inline-config>"))
+    if enforce_preflight:
+        _assert_preflight_passed(raw_config, label=str(config_path or "<inline-config>"))
 
     # Always use orchestrator mode
     return submit_with_orchestrator(
@@ -1376,6 +1378,7 @@ def main():
                     setup_script=setup_script,
                     tags=tags,
                     output_dir=output_dir,
+                    enforce_preflight=not mock_mode,
                 )
     except Exception as e:
         # Restore subprocess.run etc. before we exit so in-process test

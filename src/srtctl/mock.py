@@ -103,7 +103,7 @@ class FakePopen:
         deadline = None if timeout is None else time.monotonic() + timeout
         while self.poll() is None:
             if deadline is not None and time.monotonic() >= deadline:
-                raise subprocess.TimeoutExpired(cmd=self.args, timeout=timeout)
+                raise subprocess.TimeoutExpired(cmd=self.args, timeout=timeout or 0.0)
             time.sleep(0.02)
         assert self._returncode is not None
         return self._returncode

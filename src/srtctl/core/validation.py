@@ -241,17 +241,13 @@ def preflight_config_variants(
 ) -> list[PreflightResult]:
     active_cluster_config = load_cluster_config() if cluster_config is None else cluster_config
     variants = (
-        generate_override_configs(raw_config, selector=selector)
-        if "base" in raw_config
-        else [("base", raw_config)]
+        generate_override_configs(raw_config, selector=selector) if "base" in raw_config else [("base", raw_config)]
     )
     results: list[PreflightResult] = []
     for suffix, variant in variants:
         resolved = resolve_config_with_defaults(variant, active_cluster_config)
         model, model_issues = _preflight_model(variant, resolved, active_cluster_config)
-        container, container_issues = _preflight_container(
-            variant, resolved, active_cluster_config
-        )
+        container, container_issues = _preflight_container(variant, resolved, active_cluster_config)
         issues = [*model_issues, *container_issues]
         results.append(
             PreflightResult(
