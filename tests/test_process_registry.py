@@ -36,7 +36,7 @@ class TestManagedProcess:
         mock_popen.returncode = 1
         mock_popen.pid = 12345
 
-        mp = ManagedProcess(
+        ManagedProcess(
             name="test",
             popen=mock_popen,
             log_file=Path("/tmp/test.log"),

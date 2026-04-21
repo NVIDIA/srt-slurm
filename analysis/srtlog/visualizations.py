@@ -291,10 +291,7 @@ def create_node_metric_graph(
                 continue
 
             # Extract value
-            if value_extractor:
-                value = value_extractor(batch)
-            else:
-                value = batch.get(metric_key)
+            value = value_extractor(batch) if value_extractor else batch.get(metric_key)
 
             if value is not None:
                 timestamps.append(batch["timestamp"])
@@ -516,11 +513,10 @@ def calculate_pareto_frontier(df: pd.DataFrame, y_metric: str = "Output TPS/GPU"
 
         # Check if this point is dominated by any other point
         for j, (x2, y2) in enumerate(points):
-            if i != j:
+            if i != j and x2 >= x1 and y2 >= y1 and (x2 > x1 or y2 > y1):
                 # Point (x2, y2) dominates (x1, y1) if it's better in both dimensions
-                if x2 >= x1 and y2 >= y1 and (x2 > x1 or y2 > y1):
-                    is_dominated = True
-                    break
+                is_dominated = True
+                break
 
         if not is_dominated:
             frontier.append((x1, y1))
