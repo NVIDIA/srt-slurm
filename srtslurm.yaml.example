@@ -37,6 +37,11 @@ containers:
   # Or pass the URI directly in the recipe to let Pyxis auto-pull on first run.
   nemo-skills: "/shared/containers/nvidia+eval-factory+nemo-skills+26.03.sqsh"
 
+# Cluster-level environment variables (applied to all jobs, recipe overrides take precedence)
+# default_environment:
+#   NCCL_DEBUG: "INFO"
+#   CUDA_LAUNCH_BLOCKING: "0"
+
 # Model path aliases
 model_paths:
   deepseek-r1: "/shared/models/deepseek/DeepSeek-R1"
