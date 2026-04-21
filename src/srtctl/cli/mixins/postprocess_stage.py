@@ -6,6 +6,7 @@ Post-process stage mixin for SweepOrchestrator.
 
 Handles:
 - Benchmark result extraction
+- Optional node metrics CSV export (``analysis.srtlog``)
 - srtlog parsing and S3 upload
 - AI-powered failure analysis using Claude Code CLI
 
@@ -13,19 +14,22 @@ AI analysis uses Claude Code in headless mode (-p flag) with OpenRouter for auth
 See: https://openrouter.ai/docs/guides/claude-code-integration
 """
 
+import contextlib
+import importlib
 import json
 import logging
 import os
 import shlex
 import shutil
 import subprocess
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from srtctl.benchmarks.base import SCRIPTS_DIR
-from srtctl.core.config import load_cluster_config
+from srtctl.core.config import get_srtslurm_setting, load_cluster_config
 from srtctl.core.lockfile import collect_worker_fingerprints, generate_reproduction_report, write_lockfile
 from srtctl.core.schema import AIAnalysisConfig, S3Config
 from srtctl.core.slurm import start_srun_process
@@ -190,6 +194,9 @@ class PostProcessStageMixin:
         # Compare against previous lockfile if this was a lockfile re-run
         self._compare_against_previous_lock()
 
+        # Export per-node batch CSVs + gen_throughput summary (optional)
+        self._export_node_metrics_csv()
+
         # Run srtlog + S3 upload in single container (if S3 configured)
         _parquet_path, s3_url = self._run_postprocess_container()
 
@@ -294,6 +301,51 @@ class PostProcessStageMixin:
 
         except Exception as e:
             logger.debug("Lockfile comparison skipped: %s", e)
+
+    def _export_node_metrics_csv(self) -> None:
+        """Export node batch metrics CSVs via ``analysis.srtlog.export_node_metrics``.
+
+        Controlled by ``benchmark.export_node_metrics``. Prepends ``srtctl_root`` from
+        ``srtslurm.yaml`` to ``sys.path`` and imports ``analysis.srtlog.export_node_metrics``
+        so ``analysis`` resolves to ``<srtctl_root>/analysis/``.
+
+        Writes under ``<job_output>/logs/node_metrics/`` (same layout as manual export).
+        """
+        if not self.config.benchmark.export_node_metrics:
+            return
+
+        srtctl_root = get_srtslurm_setting("srtctl_root")
+        if not srtctl_root:
+            logger.warning(
+                "benchmark.export_node_metrics is true but srtslurm.yaml has no srtctl_root; skipping CSV export"
+            )
+            return
+
+        root = Path(srtctl_root).resolve()
+        if not root.is_dir():
+            logger.warning("srtctl_root is not a directory (%s); skipping node metrics CSV export", root)
+            return
+
+        run_path = self.runtime.log_dir.parent.resolve()
+        root_str = str(root)
+        inserted = False
+        if root_str not in sys.path:
+            sys.path.insert(0, root_str)
+            inserted = True
+        try:
+            mod = importlib.import_module("analysis.srtlog.export_node_metrics")
+            logger.info("Exporting node metrics CSVs (run_path=%s)...", run_path)
+            paths = mod.export_node_metrics(str(run_path))
+            if paths is None:
+                logger.warning("Node metrics CSV export produced no files (run_path=%s)", run_path)
+            else:
+                logger.info("Node metrics CSV export wrote %d file(s)", len(paths))
+        except Exception as e:
+            logger.warning("Node metrics CSV export error: %s", e)
+        finally:
+            if inserted:
+                with contextlib.suppress(ValueError):
+                    sys.path.remove(root_str)
 
     def _run_postprocess_container(self) -> tuple[Path | None, str | None]:
         """Run srtlog and upload entire log directory to S3.

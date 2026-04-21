@@ -412,6 +412,27 @@ backend:
 
 Benchmark configuration. The `type` field determines which benchmark runner is used and what additional fields are available.
 
+### Post-process: node metrics CSV
+
+When `export_node_metrics` is `true`, after the benchmark finishes srtctl prepends
+`srtctl_root` to `sys.path` and calls `analysis.srtlog.export_node_metrics.export_node_metrics`
+in-process on the job output directory. That writes per-node batch CSVs and `gen_throughput.csv`
+under `logs/node_metrics/` (next to worker logs).
+
+- Set **`srtctl_root`** in `srtslurm.yaml` to the srt-slurm repository root (the directory that contains `analysis/srtlog/`). This path is inserted at the front of `sys.path` for the import.
+- The export process needs **`pandas`** and **`pyarrow`** (same as the analysis dashboard).
+
+```yaml
+benchmark:
+  type: "sa-bench"
+  export_node_metrics: true   # default: false
+  # ... other benchmark fields
+```
+
+| Field                  | Type | Default | Description                                      |
+| ---------------------- | ---- | ------- | ------------------------------------------------ |
+| `export_node_metrics`  | bool | `false` | Export node batch CSVs + gen throughput summary |
+
 ### Available Benchmark Types
 
 | Type              | Description                                    |

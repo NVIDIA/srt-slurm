@@ -112,7 +112,7 @@ class NodeAnalyzer:
         config = {}
 
         try:
-            with open(filepath, encoding="utf-8") as f:
+            with open(filepath) as f:
                 for line in f:
                     # Parse prefill batch metrics
                     batch_metrics = self._parse_prefill_batch_line(line)
