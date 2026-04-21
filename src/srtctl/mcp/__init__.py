@@ -1,0 +1,1 @@
+"""MCP surface for srtctl."""

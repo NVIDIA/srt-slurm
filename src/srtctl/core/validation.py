@@ -12,12 +12,19 @@ background thread after job submission and never block or fail the submit.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import requests
+
+from srtctl.core.config import (
+    generate_override_configs,
+    load_cluster_config,
+    resolve_config_with_defaults,
+)
 
 if TYPE_CHECKING:
     from srtctl.core.schema import SrtConfig
@@ -34,6 +41,228 @@ class ValidationResult:
     check: str
     ok: bool
     message: str
+
+
+@dataclass(frozen=True)
+class PreflightIssue:
+    code: str
+    field: str
+    message: str
+
+
+@dataclass(frozen=True)
+class PreflightResolution:
+    field: str
+    raw: str | None
+    resolved: str | None
+    source: str
+    ok: bool
+    message: str
+
+
+@dataclass(frozen=True)
+class PreflightResult:
+    variant: str
+    ok: bool
+    model: PreflightResolution
+    container: PreflightResolution
+    errors: list[PreflightIssue]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "variant": self.variant,
+            "ok": self.ok,
+            "model": self.model.__dict__,
+            "container": self.container.__dict__,
+            "errors": [issue.__dict__ for issue in self.errors],
+        }
+
+
+def _expand_path(value: str) -> str:
+    return os.path.expanduser(os.path.expandvars(value))
+
+
+def _check_path(path_str: str, *, expect: str) -> tuple[bool, str]:
+    path = Path(path_str).resolve()
+    if not path.exists():
+        return False, f"not found: {path}"
+    if expect == "dir" and not path.is_dir():
+        return False, f"not a directory: {path}"
+    if expect == "file" and not path.is_file():
+        return False, f"not a file: {path}"
+    return True, f"exists: {path}"
+
+
+def _preflight_model(
+    raw_config: dict[str, Any],
+    resolved_config: dict[str, Any],
+    cluster_config: dict[str, Any] | None,
+) -> tuple[PreflightResolution, list[PreflightIssue]]:
+    raw = raw_config.get("model", {}).get("path")
+    resolved = resolved_config.get("model", {}).get("path")
+    aliases = (cluster_config or {}).get("model_paths") or {}
+    source = "srtslurm.yaml:model_paths" if raw in aliases else "literal"
+
+    if not raw or not resolved:
+        issue = PreflightIssue(
+            code="model-missing",
+            field="model.path",
+            message="model.path is required",
+        )
+        return (
+            PreflightResolution(
+                field="model.path",
+                raw=raw,
+                resolved=resolved,
+                source=source,
+                ok=False,
+                message=issue.message,
+            ),
+            [issue],
+        )
+
+    ok, detail = _check_path(_expand_path(resolved), expect="dir")
+    if ok:
+        return (
+            PreflightResolution(
+                field="model.path",
+                raw=raw,
+                resolved=str(Path(_expand_path(resolved)).resolve()),
+                source=source,
+                ok=True,
+                message=detail,
+            ),
+            [],
+        )
+
+    if source == "srtslurm.yaml:model_paths":
+        message = (
+            f"Model alias '{raw}' resolved to '{resolved}', but that path is unavailable. "
+            "Pull or register the model yourself before submitting."
+        )
+    else:
+        message = (
+            f"Model '{raw}' is not a local model path and is not defined in srtslurm.yaml "
+            "model_paths. Pull or register the model yourself before submitting."
+        )
+    issue = PreflightIssue(
+        code="model-not-available",
+        field="model.path",
+        message=message,
+    )
+    return (
+        PreflightResolution(
+            field="model.path",
+            raw=raw,
+            resolved=resolved,
+            source=source,
+            ok=False,
+            message=message,
+        ),
+        [issue],
+    )
+
+
+def _preflight_container(
+    raw_config: dict[str, Any],
+    resolved_config: dict[str, Any],
+    cluster_config: dict[str, Any] | None,
+) -> tuple[PreflightResolution, list[PreflightIssue]]:
+    raw = raw_config.get("model", {}).get("container")
+    resolved = resolved_config.get("model", {}).get("container")
+    aliases = (cluster_config or {}).get("containers") or {}
+    source = "srtslurm.yaml:containers" if raw in aliases else "literal"
+
+    if not raw or not resolved:
+        issue = PreflightIssue(
+            code="container-missing",
+            field="model.container",
+            message="model.container is required",
+        )
+        return (
+            PreflightResolution(
+                field="model.container",
+                raw=raw,
+                resolved=resolved,
+                source=source,
+                ok=False,
+                message=issue.message,
+            ),
+            [issue],
+        )
+
+    ok, detail = _check_path(_expand_path(resolved), expect="file")
+    if ok:
+        return (
+            PreflightResolution(
+                field="model.container",
+                raw=raw,
+                resolved=str(Path(_expand_path(resolved)).resolve()),
+                source=source,
+                ok=True,
+                message=detail,
+            ),
+            [],
+        )
+
+    if source == "srtslurm.yaml:containers":
+        message = (
+            f"Container alias '{raw}' resolved to '{resolved}', but that file is unavailable. "
+            "Provide or register the container yourself before submitting."
+        )
+    else:
+        message = (
+            f"Container '{raw}' is not a local container path and is not defined in "
+            "srtslurm.yaml containers. Provide or register the container yourself before submitting."
+        )
+    issue = PreflightIssue(
+        code="container-not-available",
+        field="model.container",
+        message=message,
+    )
+    return (
+        PreflightResolution(
+            field="model.container",
+            raw=raw,
+            resolved=resolved,
+            source=source,
+            ok=False,
+            message=message,
+        ),
+        [issue],
+    )
+
+
+def preflight_config_variants(
+    raw_config: dict[str, Any],
+    *,
+    cluster_config: dict[str, Any] | None = None,
+    selector: str | None = None,
+) -> list[PreflightResult]:
+    active_cluster_config = load_cluster_config() if cluster_config is None else cluster_config
+    variants = (
+        generate_override_configs(raw_config, selector=selector)
+        if "base" in raw_config
+        else [("base", raw_config)]
+    )
+    results: list[PreflightResult] = []
+    for suffix, variant in variants:
+        resolved = resolve_config_with_defaults(variant, active_cluster_config)
+        model, model_issues = _preflight_model(variant, resolved, active_cluster_config)
+        container, container_issues = _preflight_container(
+            variant, resolved, active_cluster_config
+        )
+        issues = [*model_issues, *container_issues]
+        results.append(
+            PreflightResult(
+                variant=suffix,
+                ok=not issues,
+                model=model,
+                container=container,
+                errors=issues,
+            )
+        )
+    return results
 
 
 def validate_local_path(name: str, path: str) -> ValidationResult:

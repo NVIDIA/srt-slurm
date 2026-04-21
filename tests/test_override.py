@@ -356,19 +356,23 @@ class TestSubmitOverride:
         )
 
         # all variants (no selector): override_small + zip_tp_0 + zip_tp_1 = 3 (base excluded)
-        submit_override(cfg, dry_run=True)
+        with patch("srtctl.cli.submit._assert_preflight_passed"):
+            submit_override(cfg, dry_run=True)
         assert "3 variants" in capsys.readouterr().out
 
         # zip group only
-        submit_override(cfg, selector="zip_override_tp", dry_run=True)
+        with patch("srtctl.cli.submit._assert_preflight_passed"):
+            submit_override(cfg, selector="zip_override_tp", dry_run=True)
         assert "2 variants" in capsys.readouterr().out
 
         # single zip variant
-        submit_override(cfg, selector="zip_override_tp[0]", dry_run=True)
+        with patch("srtctl.cli.submit._assert_preflight_passed"):
+            submit_override(cfg, selector="zip_override_tp[0]", dry_run=True)
         assert "1 variant" in capsys.readouterr().out
 
         # single override
-        submit_override(cfg, selector="override_small", dry_run=True)
+        with patch("srtctl.cli.submit._assert_preflight_passed"):
+            submit_override(cfg, selector="override_small", dry_run=True)
         out = capsys.readouterr().out
         assert "1 variant" in out
         assert "test-job_small" in out
@@ -391,6 +395,7 @@ class TestSubmitOverride:
                 patch("subprocess.run", return_value=mock_result) as mock_run,
                 patch("srtctl.cli.submit.get_srtslurm_setting", return_value=None),
                 patch("srtctl.cli.submit.create_job_record"),
+                patch("srtctl.cli.submit._assert_preflight_passed"),
                 patch("srtctl.cli.submit.validate_setup"),
             ):
                 submit_override(cfg, selector=selector, output_dir=tmp_path)
@@ -418,6 +423,7 @@ class TestSubmitOverride:
             patch("subprocess.run", return_value=mock_result),
             patch("srtctl.cli.submit.get_srtslurm_setting", return_value=None),
             patch("srtctl.cli.submit.create_job_record"),
+            patch("srtctl.cli.submit._assert_preflight_passed"),
             patch("srtctl.cli.submit.validate_setup"),
         ):
             submit_override(cfg, selector="zip_override_tp[1]", output_dir=tmp_path)
@@ -469,6 +475,7 @@ class TestSubmitOverride:
             patch("subprocess.run", return_value=mock_result),
             patch("srtctl.cli.submit.get_srtslurm_setting", return_value=None),
             patch("srtctl.cli.submit.create_job_record"),
+            patch("srtctl.cli.submit._assert_preflight_passed"),
             patch("srtctl.cli.submit.validate_setup"),
         ):
             submit_override(cfg, selector="override_lowmem", output_dir=tmp_path)
@@ -492,6 +499,7 @@ class TestSubmitSingleCompatibility:
             patch("subprocess.run", return_value=mock_result),
             patch("srtctl.cli.submit.get_srtslurm_setting", return_value=None),
             patch("srtctl.cli.submit.create_job_record"),
+            patch("srtctl.cli.submit._assert_preflight_passed"),
             patch("srtctl.cli.submit.validate_setup"),
         ):
             submit_single(config_path=cfg, output_dir=tmp_path)

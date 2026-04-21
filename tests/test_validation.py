@@ -12,6 +12,7 @@ from unittest.mock import patch
 import requests
 
 from srtctl.core.validation import (
+    preflight_config_variants,
     run_all_validations,
     run_validations_background,
     validate_docker_image,
@@ -232,3 +233,86 @@ class TestBackgroundValidation:
         thread = run_validations_background(config)
         assert thread.daemon is True
         thread.join(timeout=10)
+
+
+class TestPreflightConfigVariants:
+    def test_aliases_pass_when_paths_exist(self, tmp_path):
+        model_dir = tmp_path / "model"
+        model_dir.mkdir()
+        container_file = tmp_path / "container.sqsh"
+        container_file.write_text("sqsh")
+
+        results = preflight_config_variants(
+            {
+                "name": "ok",
+                "model": {
+                    "path": "qwen32b",
+                    "container": "sglang-latest",
+                    "precision": "bf16",
+                },
+                "resources": {
+                    "gpu_type": "gb200",
+                    "gpus_per_node": 4,
+                    "prefill_nodes": 1,
+                    "decode_nodes": 1,
+                },
+            },
+            cluster_config={
+                "model_paths": {"qwen32b": str(model_dir)},
+                "containers": {"sglang-latest": str(container_file)},
+            },
+        )
+
+        assert len(results) == 1
+        assert results[0].ok is True
+        assert results[0].model.source == "srtslurm.yaml:model_paths"
+        assert results[0].container.source == "srtslurm.yaml:containers"
+
+    def test_missing_model_alias_fails(self, tmp_path):
+        container_file = tmp_path / "container.sqsh"
+        container_file.write_text("sqsh")
+
+        results = preflight_config_variants(
+            {
+                "name": "bad-model",
+                "model": {
+                    "path": "Qwen/Qwen3-32B",
+                    "container": "sglang-latest",
+                    "precision": "bf16",
+                },
+                "resources": {
+                    "gpu_type": "gb200",
+                    "gpus_per_node": 4,
+                    "prefill_nodes": 1,
+                    "decode_nodes": 1,
+                },
+            },
+            cluster_config={"containers": {"sglang-latest": str(container_file)}},
+        )
+
+        assert results[0].ok is False
+        assert results[0].errors[0].code == "model-not-available"
+
+    def test_missing_container_alias_fails(self, tmp_path):
+        model_dir = tmp_path / "model"
+        model_dir.mkdir()
+
+        results = preflight_config_variants(
+            {
+                "name": "bad-container",
+                "model": {
+                    "path": str(model_dir),
+                    "container": "nvcr.io/fake:latest",
+                    "precision": "bf16",
+                },
+                "resources": {
+                    "gpu_type": "gb200",
+                    "gpus_per_node": 4,
+                    "prefill_nodes": 1,
+                    "decode_nodes": 1,
+                },
+            },
+        )
+
+        assert results[0].ok is False
+        assert any(issue.code == "container-not-available" for issue in results[0].errors)

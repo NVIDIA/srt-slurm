@@ -52,6 +52,7 @@ from srtctl.core.fingerprint import (
 from srtctl.core.lockfile import load_lockfile_fingerprints
 from srtctl.core.schema import SrtConfig
 from srtctl.core.status import create_job_record
+from srtctl.core.validation import preflight_config_variants
 
 console = Console()
 logger = logging.getLogger(__name__)
@@ -63,6 +64,24 @@ _submissions: list[dict] = []
 
 def _record_submission(data: dict) -> None:
     _submissions.append(data)
+
+
+def _format_preflight_error(label: str, results: list[Any]) -> str:
+    lines = [f"Preflight failed for {label}:"]
+    for result in results:
+        for issue in result.errors:
+            lines.append(f"- {issue.field}: {issue.message}")
+    return "\n".join(lines)
+
+
+def _assert_preflight_passed(raw_config: dict[str, Any], *, label: str) -> None:
+    results = preflight_config_variants(
+        raw_config,
+        cluster_config=load_cluster_config(),
+    )
+    failed = [result for result in results if not result.ok]
+    if failed:
+        raise ValueError(_format_preflight_error(label, failed))
 
 
 def _install_mock_submit_patches() -> list:
@@ -677,6 +696,16 @@ def submit_single(
     if config is None:
         raise ValueError("Either config_path or config must be provided")
 
+    if runtime_config_text is not None:
+        raw_config = yaml.safe_load(runtime_config_text)
+    elif config_path is not None:
+        with open(config_path) as f:
+            raw_config = yaml.safe_load(f)
+    else:
+        raw_config = config.model_dump(mode="json")
+
+    _assert_preflight_passed(raw_config, label=str(config_path or "<inline-config>"))
+
     # Always use orchestrator mode
     return submit_with_orchestrator(
         config_path=config_path or Path("./config.yaml"),
@@ -1091,6 +1120,7 @@ def main():
   srtctl apply -f config.yaml                    # Submit job
   srtctl apply -f ./configs/                     # Submit all YAMLs in directory
   srtctl apply -f config.yaml --sweep            # Submit sweep
+  srtctl preflight -f config.yaml                # Check model/container availability
   srtctl dry-run -f config.yaml                  # Dry run
   srtctl resolve-override -f config.yaml         # Resolve override YAML (no submit)
   srtctl resolve-override -f config.yaml --stdout  # Print to stdout
@@ -1143,6 +1173,19 @@ def main():
 
     dry_run_parser = subparsers.add_parser("dry-run", help="Validate without submitting")
     add_common_args(dry_run_parser)
+
+    preflight_parser = subparsers.add_parser(
+        "preflight",
+        help="Check model and container availability without submitting",
+    )
+    preflight_parser.add_argument(
+        "-f",
+        "--file",
+        type=str,
+        required=True,
+        dest="config",
+        help="YAML config file, or file:selector for overrides",
+    )
 
     resolve_parser = subparsers.add_parser(
         "resolve-override",
@@ -1264,6 +1307,30 @@ def main():
                 console.print(f"[bold red]Error:[/] {config_path} is not an override config (missing 'base' key)")
                 sys.exit(1)
             resolve_override_cmd(config_path, selector=selector, stdout=getattr(args, "stdout", False))
+            return
+
+        if args.command == "preflight":
+            if config_path.is_dir():
+                raise ValueError("preflight currently expects a file, not a directory")
+            with open(config_path) as f:
+                raw_config = yaml.safe_load(f)
+            results = preflight_config_variants(
+                raw_config,
+                cluster_config=load_cluster_config(),
+                selector=selector,
+            )
+            for result in results:
+                icon = "[green]✓[/]" if result.ok else "[red]✗[/]"
+                console.print(f"{icon} {result.variant}")
+                console.print(f"  model.path: {result.model.message}")
+                console.print(f"  model.container: {result.container.message}")
+            if any(not result.ok for result in results):
+                raise ValueError(
+                    _format_preflight_error(
+                        str(config_path),
+                        [result for result in results if not result.ok],
+                    )
+                )
             return
 
         setup_script = getattr(args, "setup_script", None)

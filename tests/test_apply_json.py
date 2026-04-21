@@ -64,6 +64,7 @@ def test_apply_json_emits_single_line_on_stdout(
         patch("subprocess.run", return_value=mock_sbatch),
         patch("srtctl.cli.submit.get_srtslurm_setting", return_value=None),
         patch("srtctl.cli.submit.create_job_record"),
+        patch("srtctl.cli.submit._assert_preflight_passed"),
         patch("srtctl.cli.submit.validate_setup"),
     ):
         submit_cli.main()
@@ -98,6 +99,7 @@ def test_apply_json_emits_error_line_on_failure(
     with (
         patch("subprocess.run", side_effect=boom),
         patch("srtctl.cli.submit.get_srtslurm_setting", return_value=None),
+        patch("srtctl.cli.submit._assert_preflight_passed"),
         patch("srtctl.cli.submit.validate_setup"),
         pytest.raises(SystemExit) as excinfo,
     ):
@@ -124,6 +126,7 @@ def test_apply_without_json_emits_prose_only(
         patch("subprocess.run", return_value=mock_sbatch),
         patch("srtctl.cli.submit.get_srtslurm_setting", return_value=None),
         patch("srtctl.cli.submit.create_job_record"),
+        patch("srtctl.cli.submit._assert_preflight_passed"),
         patch("srtctl.cli.submit.validate_setup"),
     ):
         submit_cli.main()

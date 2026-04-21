@@ -12,7 +12,6 @@ drives the real SweepOrchestrator under `srtctl.mock`.
 from __future__ import annotations
 
 import json
-import os
 import sys
 import time
 from pathlib import Path
@@ -79,7 +78,10 @@ def test_apply_mock_emits_submission_json_and_spawns_worker(
         ],
     )
     # get_srtslurm_setting returns cluster info; None is fine for the mock.
-    with patch("srtctl.cli.submit.get_srtslurm_setting", return_value=None):
+    with (
+        patch("srtctl.cli.submit.get_srtslurm_setting", return_value=None),
+        patch("srtctl.cli.submit._assert_preflight_passed"),
+    ):
         submit_cli.main()
 
     stdout = capsys.readouterr().out.strip()
@@ -155,6 +157,7 @@ def test_apply_mock_does_not_call_real_sbatch(
     # this will route the sbatch through to the real system call and surface.
     with (
         patch("srtctl.cli.submit.get_srtslurm_setting", return_value=None),
+        patch("srtctl.cli.submit._assert_preflight_passed"),
         patch("subprocess.run", side_effect=_tracking_run),
     ):
         submit_cli.main()
