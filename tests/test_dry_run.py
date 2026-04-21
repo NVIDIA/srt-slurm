@@ -173,6 +173,54 @@ class TestDryRunEnvironment:
         output = capsys.readouterr().out
         assert "No custom environment variables configured" in output
 
+    def test_cluster_default_environment_shown(self, capsys):
+        """Env vars from srtslurm.yaml default_environment are labeled 'srtslurm.yaml'."""
+        cluster_env = {"NCCL_DEBUG": "INFO", "CUDA_LAUNCH_BLOCKING": "0"}
+
+        def mock_setting(key, default=None):
+            if key == "default_environment":
+                return cluster_env
+            return default
+
+        with patch("srtctl.cli.submit.get_srtslurm_setting", side_effect=mock_setting):
+            config = _make_config({"environment": {"NCCL_DEBUG": "INFO", "CUDA_LAUNCH_BLOCKING": "0"}})
+            show_config_details(config)
+        output = capsys.readouterr().out
+        assert "NCCL_DEBUG" in output
+        assert "srtslurm.yaml" in output
+
+    def test_recipe_override_of_cluster_env_shown_as_recipe(self, capsys):
+        """Env vars overridden by recipe are labeled 'recipe'."""
+        cluster_env = {"NCCL_DEBUG": "INFO"}
+
+        def mock_setting(key, default=None):
+            if key == "default_environment":
+                return cluster_env
+            return default
+
+        with patch("srtctl.cli.submit.get_srtslurm_setting", side_effect=mock_setting):
+            config = _make_config({"environment": {"NCCL_DEBUG": "WARN", "MY_VAR": "hello"}})
+            show_config_details(config)
+        output = capsys.readouterr().out
+        assert "NCCL_DEBUG" in output
+        assert "MY_VAR" in output
+
+    def test_cluster_env_only_no_recipe_env(self, capsys):
+        """When only cluster env is set (no recipe env), vars still appear."""
+        cluster_env = {"NCCL_DEBUG": "INFO"}
+
+        def mock_setting(key, default=None):
+            if key == "default_environment":
+                return cluster_env
+            return default
+
+        with patch("srtctl.cli.submit.get_srtslurm_setting", side_effect=mock_setting):
+            config = _make_config({"environment": {"NCCL_DEBUG": "INFO"}})
+            show_config_details(config)
+        output = capsys.readouterr().out
+        assert "NCCL_DEBUG" in output
+        assert "srtslurm.yaml" in output
+
     def test_trtllm_backend_environment(self, capsys):
         config = _make_config(
             {
