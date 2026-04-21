@@ -1148,6 +1148,7 @@ def main():
   srtctl apply -f ./configs/                     # Submit all YAMLs in directory
   srtctl apply -f config.yaml --sweep            # Submit sweep
   srtctl preflight -f config.yaml                # Check model/container availability
+  srtctl ensure-assets -f config.yaml            # Pull/register missing model/container aliases
   srtctl dry-run -f config.yaml                  # Dry run
   srtctl resolve-override -f config.yaml         # Resolve override YAML (no submit)
   srtctl resolve-override -f config.yaml --stdout  # Print to stdout
@@ -1212,6 +1213,35 @@ def main():
         required=True,
         dest="config",
         help="YAML config file, or file:selector for overrides",
+    )
+
+    ensure_assets_parser = subparsers.add_parser(
+        "ensure-assets",
+        help="Pull/register missing model and container aliases in srtslurm.yaml",
+    )
+    ensure_assets_parser.add_argument(
+        "-f",
+        "--file",
+        type=str,
+        required=True,
+        dest="config",
+        help="YAML config file, or file:selector for overrides",
+    )
+    ensure_assets_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show planned materialization actions without running commands or editing srtslurm.yaml",
+    )
+    ensure_assets_parser.add_argument(
+        "--mode",
+        choices=["auto", "login", "srun"],
+        help="Override asset_materialization.mode for this invocation",
+    )
+    ensure_assets_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Emit the ensure-assets result as JSON on stdout; prose output goes to stderr.",
     )
 
     resolve_parser = subparsers.add_parser(
@@ -1373,6 +1403,49 @@ def main():
                     )
                 restore_console()
                 return
+
+            if args.command == "ensure-assets":
+                from srtctl.core.assets import ensure_assets_for_config_variants
+
+                if effective_config_path.is_dir():
+                    raise ValueError("ensure-assets currently expects a file, not a directory")
+                with open(effective_config_path) as f:
+                    raw_config = yaml.safe_load(f)
+                if not isinstance(raw_config, dict):
+                    raise ValueError(f"Invalid config in {config_path}: top-level YAML must be a mapping")
+                result = ensure_assets_for_config_variants(
+                    raw_config,
+                    selector=selector,
+                    dry_run=bool(getattr(args, "dry_run", False)),
+                    mode=getattr(args, "mode", None),
+                )
+                if json_mode:
+                    sys.stdout.write(json.dumps(result.as_dict()) + "\n")
+                    sys.stdout.flush()
+                else:
+                    action_table = Table(title=f"Asset Materialization: {result.cluster_config_path}")
+                    action_table.add_column("Kind", style="cyan")
+                    action_table.add_column("Alias", style="green")
+                    action_table.add_column("Status", style="yellow")
+                    action_table.add_column("Mode", style="magenta")
+                    action_table.add_column("Target", style="white")
+                    action_table.add_column("Message", style="dim")
+                    for action in result.actions:
+                        action_table.add_row(
+                            action.kind,
+                            action.alias or "",
+                            action.status,
+                            action.mode,
+                            action.target or "",
+                            action.message,
+                        )
+                    console.print(action_table)
+                    if result.changed:
+                        console.print(f"[green]Updated:[/] {result.cluster_config_path}")
+                    elif not result.actions:
+                        console.print("[green]No model/container aliases needed materialization.[/]")
+                restore_console()
+                sys.exit(0 if result.ok else 1)
 
             setup_script = getattr(args, "setup_script", None)
             output_dir = getattr(args, "output_dir", None)

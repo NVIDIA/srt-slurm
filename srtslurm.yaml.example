@@ -32,6 +32,23 @@ model_paths:
   llama-3-70b: "/shared/models/meta/llama-3-70b"
   llama-3-405b: "/shared/models/meta/llama-3-405b"
 
+# Optional POC: materialize missing model/container aliases.
+# Run explicitly with:
+#   srtctl ensure-assets -f recipe.yaml
+#
+# `mode` can be login, srun, or auto. In auto mode, login_probe_command decides:
+# success -> login, failure -> srun. Templates are cluster-owned because each
+# site uses different tools for HF downloads and container imports.
+# asset_materialization:
+#   mode: auto
+#   models_root: "/shared/models"
+#   containers_root: "/shared/containers"
+#   lock_path: "/shared/srt-slurm/.asset-materialization.lock"
+#   login_probe_command: "test -w /shared/models && test -w /shared/containers"
+#   srun_template: "srun --partition=cpu --nodes=1 --ntasks=1 --cpus-per-task=8 --time=02:00:00 bash -lc {q_command}"
+#   model_pull_template: "huggingface-cli download {q_source} --local-dir {q_target}"
+#   container_pull_template: "enroot import -o {q_target} docker://{source}"
+
 # AI-powered failure analysis (optional)
 # When enabled, Claude Code CLI analyzes benchmark failures and writes ai_analysis.md
 # Uses OpenRouter for authentication (works well in headless/automated environments)
