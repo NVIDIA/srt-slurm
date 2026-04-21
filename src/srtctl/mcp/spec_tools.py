@@ -11,15 +11,19 @@ from typing import Any, get_args, get_origin, get_type_hints
 import yaml
 
 from srtctl.core.config import (
-    find_cluster_config_path,
     generate_override_configs,
-    load_cluster_config,
     resolve_config_with_defaults,
 )
 from srtctl.core.schema import SrtConfig
-from srtctl.core.validation import preflight_config_variants
+from srtctl.core.validation import preflight_config_variants, validate_topology
 
 DOC_PATH = Path(__file__).resolve().parents[3] / "docs" / "config-reference.md"
+COMPUTE_SIDE_HINT = (
+    "Host-side srtslurm.yaml is not used by srtctl MCP. For cluster defaults, "
+    "aliases, containers, model paths, filesystem checks, or dry-run behavior, "
+    "run srtctl on the compute side or use IBAR remote_preflight/remote_dry_run/"
+    "cluster_aliases with the target compute profile."
+)
 
 
 def schema_summary() -> dict[str, Any]:
@@ -97,12 +101,10 @@ def validate_config(
     apply_cluster_defaults: bool = False,
 ) -> dict[str, Any]:
     """Validate one plain config or an override config against the real schema."""
+    _reject_cluster_defaults(apply_cluster_defaults)
     raw = _load_raw_config(config=config, config_yaml=config_yaml)
-    cluster_config = load_cluster_config() if apply_cluster_defaults else None
-    context = _cluster_context(
-        cluster_config=cluster_config,
-        apply_cluster_defaults=apply_cluster_defaults,
-    )
+    cluster_config = None
+    context = _cluster_context()
     schema = SrtConfig.Schema()
 
     variants: list[tuple[str, dict[str, Any]]] = generate_override_configs(raw) if "base" in raw else [("base", raw)]
@@ -116,6 +118,9 @@ def validate_config(
             normalized.append({"variant": suffix, "config": schema.dump(loaded)})
         except Exception as exc:
             errors.append(f"{suffix}: {exc}")
+            continue
+        for issue in validate_topology(variant.get("resources")):
+            errors.append(f"{suffix}: {issue.field}: {issue.message}")
 
     return {
         "valid": not errors,
@@ -132,24 +137,18 @@ def preflight_config(
     config_yaml: str | None = None,
     apply_cluster_defaults: bool = False,
 ) -> dict[str, Any]:
-    """Check that model and container references are resolvable on this MCP host."""
+    """Check explicit local paths only; cluster state must be checked compute-side."""
+    _reject_cluster_defaults(apply_cluster_defaults)
     raw = _load_raw_config(config=config, config_yaml=config_yaml)
-    cluster_config = load_cluster_config() if apply_cluster_defaults else None
-    context = _cluster_context(
-        cluster_config=cluster_config,
-        apply_cluster_defaults=apply_cluster_defaults,
-    )
+    cluster_config = None
+    context = _cluster_context()
     results = preflight_config_variants(raw, cluster_config=cluster_config)
     return {
-        "scope": "local",
+        "scope": "explicit-local-paths",
         "ok": all(result.ok for result in results),
         "variant_count": len(results),
         "variants": [result.as_dict() for result in results],
-        "operator_hint": (
-            "This preflight only reflects the srtslurm.yaml visible to this MCP host. "
-            "For cluster-aware operator flows through IBAR, prefer IBAR remote preflight "
-            "or IBAR remote dry-run with a compute profile."
-        ),
+        "operator_hint": COMPUTE_SIDE_HINT,
         **context,
     }
 
@@ -160,13 +159,11 @@ def resolve_config(
     config_yaml: str | None = None,
     apply_cluster_defaults: bool = False,
 ) -> dict[str, Any]:
-    """Resolve config defaults without requiring the caller to understand srtslurm.yaml."""
+    """Resolve schema-only defaults without reading host-side srtslurm.yaml."""
+    _reject_cluster_defaults(apply_cluster_defaults)
     raw = _load_raw_config(config=config, config_yaml=config_yaml)
-    cluster_config = load_cluster_config() if apply_cluster_defaults else None
-    context = _cluster_context(
-        cluster_config=cluster_config,
-        apply_cluster_defaults=apply_cluster_defaults,
-    )
+    cluster_config = None
+    context = _cluster_context()
     if "base" in raw:
         resolved_variants = [
             {
@@ -176,13 +173,13 @@ def resolve_config(
             for suffix, variant in generate_override_configs(raw)
         ]
         return {
-            "scope": "local",
+            "scope": "schema-only",
             "variant_count": len(resolved_variants),
             "variants": resolved_variants,
             **context,
         }
     return {
-        "scope": "local",
+        "scope": "schema-only",
         "variant_count": 1,
         "variants": [{"variant": "base", "config": resolve_config_with_defaults(raw, cluster_config)}],
         **context,
@@ -200,22 +197,17 @@ def _load_raw_config(*, config: dict[str, Any] | None = None, config_yaml: str |
     return loaded
 
 
-def _cluster_context(
-    *,
-    cluster_config: dict[str, Any] | None,
-    apply_cluster_defaults: bool,
-) -> dict[str, Any]:
-    path = find_cluster_config_path() if apply_cluster_defaults else None
-    if not apply_cluster_defaults:
-        source = "disabled"
-    elif cluster_config is None:
-        source = "none"
-    else:
-        source = "local-srtslurm.yaml"
+def _reject_cluster_defaults(apply_cluster_defaults: bool) -> None:
+    if apply_cluster_defaults:
+        raise ValueError(COMPUTE_SIDE_HINT)
+
+
+def _cluster_context() -> dict[str, Any]:
     return {
-        "cluster_defaults_applied": apply_cluster_defaults and cluster_config is not None,
-        "cluster_defaults_source": source,
-        "cluster_config_path": str(path) if path is not None else None,
+        "cluster_defaults_applied": False,
+        "cluster_defaults_source": "not-used-by-mcp",
+        "cluster_config_path": None,
+        "operator_boundary": COMPUTE_SIDE_HINT,
     }
 
 

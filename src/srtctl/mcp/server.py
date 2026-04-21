@@ -64,7 +64,7 @@ def validate_config(
     config_yaml: str | None = None,
     apply_cluster_defaults: bool = False,
 ) -> dict[str, Any]:
-    """Validate recipe structure against the SrtConfig schema without assuming target-cluster state."""
+    """Validate recipe structure only; never read host-side srtslurm.yaml."""
     return validate_config_impl(
         config=config,
         config_yaml=config_yaml,
@@ -78,7 +78,7 @@ def preflight_config(
     config_yaml: str | None = None,
     apply_cluster_defaults: bool = False,
 ) -> dict[str, Any]:
-    """Run local-only validation for explicit paths or optionally this MCP host's srtslurm.yaml."""
+    """Check explicit local paths only; run cluster checks compute-side."""
     return preflight_config_impl(
         config=config,
         config_yaml=config_yaml,
@@ -92,7 +92,7 @@ def resolve_config(
     config_yaml: str | None = None,
     apply_cluster_defaults: bool = False,
 ) -> dict[str, Any]:
-    """Resolve schema defaults for recipe authoring without assuming target-cluster aliases."""
+    """Resolve schema-only defaults without reading host-side srtslurm.yaml."""
     return resolve_config_impl(
         config=config,
         config_yaml=config_yaml,

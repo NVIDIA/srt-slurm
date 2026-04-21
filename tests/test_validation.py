@@ -242,6 +242,40 @@ class TestBackgroundValidation:
 
 
 class TestPreflightConfigVariants:
+    def test_does_not_load_host_side_srtslurm_yaml_by_default(self, tmp_path, monkeypatch):
+        model_dir = tmp_path / "model"
+        model_dir.mkdir()
+        container_file = tmp_path / "container.sqsh"
+        container_file.write_text("sqsh")
+        (tmp_path / "srtslurm.yaml").write_text(
+            "model_paths:\n"
+            f"  qwen32b: {model_dir}\n"
+            "containers:\n"
+            f"  sglang-latest: {container_file}\n"
+        )
+        monkeypatch.chdir(tmp_path)
+
+        results = preflight_config_variants(
+            {
+                "name": "host-side-ignored",
+                "model": {
+                    "path": "qwen32b",
+                    "container": "sglang-latest",
+                    "precision": "bf16",
+                },
+                "resources": {
+                    "gpu_type": "gb200",
+                    "gpus_per_node": 4,
+                    "agg_nodes": 1,
+                    "agg_workers": 1,
+                },
+            },
+        )
+
+        assert results[0].ok is False
+        assert results[0].model.source == "literal"
+        assert results[0].container.source == "literal"
+
     def test_aliases_pass_when_paths_exist(self, tmp_path):
         model_dir = tmp_path / "model"
         model_dir.mkdir()
@@ -261,6 +295,8 @@ class TestPreflightConfigVariants:
                     "gpus_per_node": 4,
                     "prefill_nodes": 1,
                     "decode_nodes": 1,
+                    "prefill_workers": 1,
+                    "decode_workers": 1,
                 },
             },
             cluster_config={
