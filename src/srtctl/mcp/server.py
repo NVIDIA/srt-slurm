@@ -9,6 +9,9 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from srtctl.mcp.spec_tools import (
+    cluster_aliases as cluster_aliases_impl,
+)
+from srtctl.mcp.spec_tools import (
     explain_field as explain_field_impl,
 )
 from srtctl.mcp.spec_tools import (
@@ -78,7 +81,7 @@ def preflight_config(
     config_yaml: str | None = None,
     apply_cluster_defaults: bool = True,
 ) -> dict[str, Any]:
-    """Check that model and container references are resolvable before submit."""
+    """Run local preflight against this MCP host's srtslurm.yaml and local filesystem."""
     return preflight_config_impl(
         config=config,
         config_yaml=config_yaml,
@@ -92,12 +95,18 @@ def resolve_config(
     config_yaml: str | None = None,
     apply_cluster_defaults: bool = True,
 ) -> dict[str, Any]:
-    """Resolve config defaults from srtslurm.yaml without submitting anything."""
+    """Resolve config defaults from this MCP host's local srtslurm.yaml."""
     return resolve_config_impl(
         config=config,
         config_yaml=config_yaml,
         apply_cluster_defaults=apply_cluster_defaults,
     )
+
+
+@mcp.tool()
+def cluster_aliases() -> dict[str, Any]:
+    """Return model/container aliases from this MCP host's local srtslurm.yaml."""
+    return cluster_aliases_impl()
 
 
 def main() -> None:
