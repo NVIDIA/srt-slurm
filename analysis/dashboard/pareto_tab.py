@@ -122,10 +122,11 @@ def render(df: pd.DataFrame, selected_runs: list[str], run_legend_labels: dict, 
         st.warning("Select exactly 2 points to compare. Clear selection and try again.")
 
     # Clear selection button (visible when any points are selected)
-    if len(points) >= 1 and st.button("Clear selection", key="clear_pareto_selection"):
-        st.session_state.pareto_chart_gen += 1
-        st.session_state.pareto_swapped = False
-        st.rerun()
+    if len(points) >= 1:
+        if st.button("Clear selection", key="clear_pareto_selection"):
+            st.session_state.pareto_chart_gen += 1
+            st.session_state.pareto_swapped = False
+            st.rerun()
 
     # Debug info for frontier
     if pareto_options["show_frontier"]:

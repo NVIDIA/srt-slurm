@@ -34,17 +34,19 @@ def validate_config_structure(config: dict[str, Any], config_path: str) -> None:
         )
 
     # Validate nested structure
-    if "config" in config and "server_args" not in config["config"]:
-        logger.warning(
-            f"Config at {config_path} missing 'server_args' in 'config'. "
-            f"Available keys in config: {list(config['config'].keys())}"
-        )
+    if "config" in config:
+        if "server_args" not in config["config"]:
+            logger.warning(
+                f"Config at {config_path} missing 'server_args' in 'config'. "
+                f"Available keys in config: {list(config['config'].keys())}"
+            )
 
-    if "gpu_info" in config and "gpus" not in config["gpu_info"]:
-        logger.warning(
-            f"Config at {config_path} missing 'gpus' in 'gpu_info'. "
-            f"Available keys: {list(config['gpu_info'].keys())}"
-        )
+    if "gpu_info" in config:
+        if "gpus" not in config["gpu_info"]:
+            logger.warning(
+                f"Config at {config_path} missing 'gpus' in 'gpu_info'. "
+                f"Available keys: {list(config['gpu_info'].keys())}"
+            )
 
 
 def read_config_file(config_path: str) -> NodeConfig | None:

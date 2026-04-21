@@ -189,14 +189,9 @@ class TestNginxConfigGeneration:
             public_port=8000,
         )
 
-        with (
-            patch.object(orchestrator, "runtime", runtime),
-            patch(
-                "srtctl.cli.mixins.frontend_stage.get_hostname_ip",
-                side_effect=lambda x: f"10.0.0.{x[-1]}",
-            ),
-        ):
-            nginx_config = orchestrator._generate_nginx_config(topology)
+        with patch.object(orchestrator, "runtime", runtime):
+            with patch("srtctl.cli.mixins.frontend_stage.get_hostname_ip", side_effect=lambda x: f"10.0.0.{x[-1]}"):
+                nginx_config = orchestrator._generate_nginx_config(topology)
 
         assert "server 10.0.0.1:8180" in nginx_config
         assert "listen 8000" in nginx_config

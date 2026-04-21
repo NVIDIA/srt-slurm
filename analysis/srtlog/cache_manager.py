@@ -126,7 +126,14 @@ class CacheManager:
             source_patterns: Glob patterns for source files
         """
         # Convert to DataFrame if needed
-        df = (pd.DataFrame() if not data else pd.DataFrame(data)) if isinstance(data, list) else data
+        if isinstance(data, list):
+            if not data:
+                # Save empty DataFrame
+                df = pd.DataFrame()
+            else:
+                df = pd.DataFrame(data)
+        else:
+            df = data
 
         # Save to parquet
         cache_file = self.cache_dir / f"{cache_name}.parquet"

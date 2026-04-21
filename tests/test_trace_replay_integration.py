@@ -92,7 +92,7 @@ def _create_mock_server(port: int):
             }
 
         def generate():
-            for _i in range(num_tokens):
+            for i in range(num_tokens):
                 chunk = {
                     "id": "chatcmpl-test",
                     "object": "chat.completion.chunk",
