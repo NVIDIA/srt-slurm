@@ -17,6 +17,7 @@
 - [Commands](#commands)
   - [srtctl apply](#srtctl-apply)
   - [srtctl dry-run](#srtctl-dry-run)
+  - [srtctl ensure-assets](#srtctl-ensure-assets)
   - [srtctl resolve-override](#srtctl-resolve-override)
 - [Output](#output)
 - [Sweep Support](#sweep-support)
@@ -309,6 +310,69 @@ Dry-run output includes:
 - For sweeps: table of all jobs with parameters
 - Generated configs saved to `dry-runs/` folder
 
+### `srtctl ensure-assets`
+
+Materialize missing model and container aliases before submitting.
+
+```bash
+srtctl ensure-assets -f <config.yaml> [options]
+```
+
+`ensure-assets` is a cluster-side operation. It reads the target cluster's
+`srtslurm.yaml`, checks aliases referenced by `model.path` and
+`model.container`, and can run cluster-owned pull/import commands when those
+aliases are missing. It updates `srtslurm.yaml`; it does not rewrite the recipe
+YAML.
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `-f, --file` | YAML config file, or `file:selector` for overrides (required) |
+| `--dry-run` | Show planned materialization actions without running commands or editing `srtslurm.yaml` |
+| `--mode` | Override `asset_materialization.mode`; one of `auto`, `login`, or `srun` |
+| `--json` | Emit a machine-readable result for orchestrators |
+
+**Examples:**
+
+```bash
+# Preview missing assets and commands
+srtctl ensure-assets -f config.yaml --dry-run
+
+# Pull/import missing assets and register aliases
+srtctl ensure-assets -f config.yaml
+
+# Force materialization through srun for this invocation
+srtctl ensure-assets -f config.yaml --mode srun
+
+# JSON output for IBAR or other orchestrators
+srtctl ensure-assets -f config.yaml --json
+```
+
+`ensure-assets` uses the recipe `identity` block as provenance:
+
+```yaml
+model:
+  path: qwen32b
+  container: sglang-dev
+  precision: fp8
+
+identity:
+  model:
+    repo: Qwen/Qwen3-32B
+    revision: abc123
+  container:
+    image: nvcr.io/example/sglang:latest
+```
+
+If `qwen32b` is missing from `model_paths`, `ensure-assets` uses
+`identity.model.repo` and `identity.model.revision` with the configured
+`model_pull_template`. If `sglang-dev` is missing from `containers`, it uses
+`identity.container.image` with `container_pull_template`.
+
+Configure cluster behavior in `srtslurm.yaml` with `asset_materialization`.
+See [Configuration Reference — Asset Materialization](config-reference.md#asset-materialization).
+
 ### `srtctl resolve-override`
 
 Expand an override config and write the specialised YAML file(s) without submitting.
@@ -412,4 +476,3 @@ grep -E "Env:|Command:" outputs/<job_id>/logs/sweep_<job_id>.log
 - Use `srtctl apply -f` for scripting and CI pipelines
 - Always `dry-run` first for sweeps to check job count
 - Check `outputs/<job_id>/` for submitted configs and metadata
-

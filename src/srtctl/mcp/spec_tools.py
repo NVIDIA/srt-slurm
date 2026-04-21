@@ -20,9 +20,10 @@ from srtctl.core.validation import preflight_config_variants, validate_topology
 DOC_PATH = Path(__file__).resolve().parents[3] / "docs" / "config-reference.md"
 COMPUTE_SIDE_HINT = (
     "Host-side srtslurm.yaml is not used by srtctl MCP. For cluster defaults, "
-    "aliases, containers, model paths, filesystem checks, or dry-run behavior, "
-    "run srtctl on the compute side or use IBAR remote_preflight/remote_dry_run/"
-    "cluster_aliases with the target compute profile."
+    "aliases, containers, model paths, asset materialization, filesystem checks, "
+    "or dry-run behavior, run srtctl on the compute side or use IBAR remote "
+    "lifecycle commands. For missing model/container aliases, run compute-side "
+    "`srtctl ensure-assets -f <recipe> --json` before remote preflight."
 )
 
 
