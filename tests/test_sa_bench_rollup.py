@@ -167,3 +167,121 @@ def test_sa_bench_rollup_uses_metadata_for_name_gpu_counts_and_p90(tmp_path):
     assert row["P90 Decode Running Requests"] == "32"
     assert row["Output Token Throughput per User"] == "40"
     assert row["Total Token Throughput per GPU"] == "33.333"
+
+
+def test_sa_bench_rollup_aggregated_deployment_reports_all_gpus(tmp_path):
+    """Aggregated runs should report total and decode GPU counts from agg_* fields."""
+    rollup = _load_rollup_module()
+
+    logs_dir = tmp_path / "logs"
+    result_dir = logs_dir / "sa-bench_isl_1024_osl_1024"
+    result_dir.mkdir(parents=True)
+
+    (tmp_path / "4688.json").write_text(
+        json.dumps(
+            {
+                "job_name": "glm47flash-agg-tp4-baseline",
+                "backend_type": "sglang",
+                "resources": {
+                    "gpus_per_node": 4,
+                    "prefill_nodes": None,
+                    "decode_nodes": None,
+                    "agg_nodes": 1,
+                    "prefill_workers": 0,
+                    "decode_workers": 0,
+                    "agg_workers": 1,
+                    "gpus_per_agg": 4,
+                },
+            }
+        )
+    )
+
+    result = {
+        "model_id": "zai-org/GLM-4.7-Flash",
+        "max_concurrency": 512,
+        "output_throughput": 12617.0,
+        "total_token_throughput": 25230.0,
+        "median_ttft_ms": 1780.0,
+        "median_tpot_ms": 38.5,
+        "median_itl_ms": 38.5,
+    }
+    (result_dir / "results_concurrency_512_gpus_4.json").write_text(json.dumps(result))
+
+    rollup.main(logs_dir)
+
+    rows = _read_csv_rows(logs_dir / "benchmark-rollup.csv")
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["Config"] == "glm47flash-agg-tp4-baseline"
+    assert row["Total GPU Count"] == "4"
+    assert row["Decode GPU Count"] == "4"
+    assert row["Total Token Throughput per GPU"] == "6307.5"
+
+
+def test_sa_bench_rollup_tolerates_null_resource_fields(tmp_path):
+    """Legacy metadata with null optional fields must not crash _compute_gpu_counts."""
+    rollup = _load_rollup_module()
+
+    logs_dir = tmp_path / "logs"
+    result_dir = logs_dir / "sa-bench_isl_1024_osl_1024"
+    result_dir.mkdir(parents=True)
+
+    # Pre-fix metadata shape: prefill/decode_nodes are JSON null, no agg_nodes
+    # key. Rollup used to crash with TypeError: int() argument must be ... not
+    # 'NoneType'.
+    (tmp_path / "4688.json").write_text(
+        json.dumps(
+            {
+                "job_name": "legacy-agg-run",
+                "backend_type": "sglang",
+                "resources": {
+                    "gpus_per_node": 4,
+                    "prefill_nodes": None,
+                    "decode_nodes": None,
+                    "prefill_workers": 0,
+                    "decode_workers": 0,
+                    "agg_workers": 1,
+                },
+            }
+        )
+    )
+
+    result = {
+        "model_id": "zai-org/GLM-4.7-Flash",
+        "max_concurrency": 128,
+        "output_throughput": 7130.0,
+        "total_token_throughput": 14278.0,
+        "median_ttft_ms": 138.0,
+        "median_tpot_ms": 17.4,
+        "median_itl_ms": 17.4,
+    }
+    (result_dir / "results_concurrency_128_gpus_4.json").write_text(json.dumps(result))
+
+    rollup.main(logs_dir)
+
+    rows = _read_csv_rows(logs_dir / "benchmark-rollup.csv")
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["Config"] == "legacy-agg-run"
+    assert row["Total GPU Count"] == "4"
+
+
+def test_compute_gpu_counts_handles_none_values():
+    """_compute_gpu_counts should never raise on null-valued keys."""
+    rollup = _load_rollup_module()
+
+    assert rollup._compute_gpu_counts(
+        {
+            "gpus_per_node": 4,
+            "prefill_nodes": None,
+            "decode_nodes": None,
+            "agg_nodes": None,
+            "prefill_workers": None,
+            "decode_workers": None,
+            "agg_workers": None,
+            "gpus_per_agg": None,
+        }
+    ) == (4, None)
+
+    assert rollup._compute_gpu_counts({}) == (None, None)
+    assert rollup._compute_gpu_counts({"gpus_per_node": None}) == (None, None)
