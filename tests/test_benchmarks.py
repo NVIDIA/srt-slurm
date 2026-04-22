@@ -581,14 +581,6 @@ class TestScriptsExist:
 class TestCustomDatasetLoader:
     """Test benchmark_dataset.py custom JSONL loader."""
 
-    def _make_tokenizer(self):
-        """Create a mock tokenizer that returns predictable token counts."""
-        from unittest.mock import MagicMock
-
-        tokenizer = MagicMock()
-        tokenizer.side_effect = lambda prompts: MagicMock(input_ids=[[0] * len(p) for p in prompts])
-        return tokenizer
-
     def test_trtllm_format(self, tmp_path):
         """Loads TRT-LLM OpenAI-style JSONL."""
         import sys
@@ -606,9 +598,7 @@ class TestCustomDatasetLoader:
             '{"input": {"messages": [{"role": "user", "content": "How are you?"}], "max_tokens": 128}}\n'
         )
 
-        results = sample_custom_requests(
-            str(dataset_file), num_requests=10, tokenizer=self._make_tokenizer()
-        )
+        results = sample_custom_requests(str(dataset_file), num_requests=10)
         assert len(results) == 2
         assert all(len(r) == 4 for r in results)
         assert results[0][3] is None
@@ -630,9 +620,7 @@ class TestCustomDatasetLoader:
             '{"prompt": "Translate to French", "max_tokens": 100}\n'
         )
 
-        results = sample_custom_requests(
-            str(dataset_file), num_requests=10, tokenizer=self._make_tokenizer()
-        )
+        results = sample_custom_requests(str(dataset_file), num_requests=10)
         assert len(results) == 2
         output_lens = {r[2] for r in results}
         assert 256 in output_lens
@@ -653,9 +641,7 @@ class TestCustomDatasetLoader:
         dataset_file = tmp_path / "data.jsonl"
         dataset_file.write_text("".join(lines))
 
-        results = sample_custom_requests(
-            str(dataset_file), num_requests=5, tokenizer=self._make_tokenizer()
-        )
+        results = sample_custom_requests(str(dataset_file), num_requests=5)
         assert len(results) == 5
 
     def test_precomputed_token_lengths(self, tmp_path):
@@ -674,13 +660,27 @@ class TestCustomDatasetLoader:
             '{"input": {"messages": [{"role": "user", "content": "Hello"}], "max_tokens": 64, "num_tokens": 42}}\n'
         )
 
-        from unittest.mock import MagicMock
-
-        tokenizer = MagicMock()
-        results = sample_custom_requests(str(dataset_file), num_requests=10, tokenizer=tokenizer)
+        results = sample_custom_requests(str(dataset_file), num_requests=10)
         assert len(results) == 1
         assert results[0][1] == 42
-        tokenizer.assert_not_called()
+
+    def test_prompt_len_estimated_when_missing(self, tmp_path):
+        """Estimates prompt_len from text length when not provided."""
+        import sys
+
+        scripts_dir = str(SCRIPTS_DIR / "sa-bench")
+        sys.path.insert(0, scripts_dir)
+        try:
+            from benchmark_dataset import sample_custom_requests
+        finally:
+            sys.path.pop(0)
+
+        dataset_file = tmp_path / "data.jsonl"
+        dataset_file.write_text('{"prompt": "abcdefghijklmnop", "expected_output_len": 64}\n')
+
+        results = sample_custom_requests(str(dataset_file), num_requests=10)
+        assert len(results) == 1
+        assert results[0][1] == 4  # len("abcdefghijklmnop") // 4
 
     def test_config_roundtrip_custom_dataset(self):
         """Config with custom dataset loads correctly from YAML."""

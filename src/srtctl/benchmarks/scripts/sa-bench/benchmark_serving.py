@@ -833,12 +833,20 @@ def main(args: argparse.Namespace):
         api_url = f"http://{args.host}:{args.port}{args.endpoint}"
         base_url = f"http://{args.host}:{args.port}"
 
-    tokenizer = get_tokenizer(
-        tokenizer_id,
-        tokenizer_mode=tokenizer_mode,
-        trust_remote_code=args.trust_remote_code,
-        custom_tokenizer=args.custom_tokenizer,
-    )
+    if args.dataset_name == "custom":
+        from benchmark_dataset import sample_custom_requests
+
+        input_requests = sample_custom_requests(
+            dataset_path=args.dataset_path,
+            num_requests=args.num_prompts,
+        )
+    else:
+        tokenizer = get_tokenizer(
+            tokenizer_id,
+            tokenizer_mode=tokenizer_mode,
+            trust_remote_code=args.trust_remote_code,
+            custom_tokenizer=args.custom_tokenizer,
+        )
 
     if args.dataset is not None:
         warnings.warn(
@@ -911,15 +919,6 @@ def main(args: argparse.Namespace):
             tokenizer=tokenizer,
             random_seed=args.seed,
             fixed_output_len=args.hf_output_len,
-        )
-
-    elif args.dataset_name == "custom":
-        from benchmark_dataset import sample_custom_requests
-
-        input_requests = sample_custom_requests(
-            dataset_path=args.dataset_path,
-            num_requests=args.num_prompts,
-            tokenizer=tokenizer,
         )
 
     elif args.dataset_name == "random":
