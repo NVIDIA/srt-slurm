@@ -67,7 +67,7 @@ class FrontendStageMixin:
     @property
     def backend_processes(self) -> list["Process"]:
         """Compute physical process topology from endpoints (cached)."""
-        ...
+        raise NotImplementedError
 
     def _compute_frontend_topology(self) -> FrontendTopology:
         """Determine where nginx and frontends should run.

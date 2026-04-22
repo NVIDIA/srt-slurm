@@ -78,6 +78,110 @@ jobs:
           fail_ci_if_error: false
         continue-on-error: true
 
+  # Exercise the new mock + status-server surfaces end-to-end. These are
+  # covered by `pytest tests/` via the main `test` job, but we call them
+  # out here so a failure of the mock harness or the status-contract
+  # integration shows up as its own CI signal, and we run the full
+  # `srtctl apply --mock` CLI as a real subprocess to catch packaging or
+  # entry-point regressions that in-process tests can't.
+  mock-and-server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        run: uv python install 3.10
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Run mock + status-server tests
+        run: |
+          uv run pytest -v \
+            tests/test_apply_json.py \
+            tests/test_apply_mock.py \
+            tests/test_mock_sweep.py \
+            tests/test_integration_status.py
+
+      - name: Smoke — srtctl apply --mock --json as a real CLI
+        run: |
+          set -euo pipefail
+          cat > /tmp/smoke.yaml <<'EOF'
+          name: ci-smoke
+          model:
+            path: hf:fake/mock-model
+            container: nvcr.io/fake:latest
+            precision: fp8
+          resources:
+            gpu_type: h100
+            gpus_per_node: 8
+            agg_nodes: 1
+            agg_workers: 1
+          benchmark:
+            type: custom
+            command: echo ci-smoke
+          EOF
+
+          mkdir -p /tmp/ci-outputs
+          uv run srtctl apply \
+            -f /tmp/smoke.yaml \
+            -o /tmp/ci-outputs \
+            --mock \
+            --mock-tick-s 0.1 \
+            --json \
+            > /tmp/submission.json
+
+          cat /tmp/submission.json
+
+          uv run python - <<'PY'
+          import json, pathlib, time
+          sub = json.loads(pathlib.Path("/tmp/submission.json").read_text().strip())
+          assert sub["status"] == "submitted", sub
+          output_dir = pathlib.Path(sub["output_dir"])
+          result_path = output_dir / "result.json"
+          # The detached mock worker keeps ticking in the background after
+          # apply returns. Give it a generous window to land result.json.
+          deadline = time.monotonic() + 45
+          while time.monotonic() < deadline:
+              if result_path.exists():
+                  break
+              time.sleep(0.25)
+          assert result_path.exists(), (
+              f"mock worker did not finish within window. output_dir contents: "
+              f"{sorted(p.name for p in output_dir.iterdir()) if output_dir.exists() else 'MISSING'}"
+          )
+          result = json.loads(result_path.read_text())
+          assert result["status"] == "completed", result
+          assert result["exit_code"] == 0, result
+          assert (output_dir / "status.json").exists()
+          assert (output_dir / "status_events.jsonl").exists()
+          assert (output_dir / "recipe.lock.yaml").exists()
+          print("CLI smoke passed:", {k: result.get(k) for k in ("job_id", "status", "score")})
+          PY
+
+      - name: Smoke — python -m srtctl.cli.mock_worker standalone
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/worker-out/54321
+          uv run python -m srtctl.cli.mock_worker \
+            --config /tmp/smoke.yaml \
+            --output-dir /tmp/worker-out/54321 \
+            --job-id 54321 \
+            --tick-s 0.1
+
+          test -f /tmp/worker-out/54321/result.json
+          uv run python -c "
+          import json
+          r = json.loads(open('/tmp/worker-out/54321/result.json').read())
+          assert r['status'] == 'completed' and r['exit_code'] == 0, r
+          print('worker standalone:', r)
+          "
+
   # Quick sanity check that recipes are valid
   validate-recipes:
     runs-on: ubuntu-latest

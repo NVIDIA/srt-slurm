@@ -245,14 +245,15 @@ def start_srun_process(
         # Build bash command with environment setup
         bash_parts = []
 
-        # Add preamble if provided
-        if bash_preamble:
-            bash_parts.append(bash_preamble)
-
         # Export environment variables
         if env_to_set:
             for name, value in env_to_set.items():
                 bash_parts.append(f"export {name}={shlex.quote(value)}")
+
+        # Add preamble if provided. It runs after exports so setup/fingerprint
+        # hooks observe the same environment as the main command.
+        if bash_preamble:
+            bash_parts.append(bash_preamble)
 
         # Add the main command
         bash_parts.append(shlex.join(command))

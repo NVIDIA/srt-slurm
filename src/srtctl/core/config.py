@@ -21,49 +21,46 @@ from typing import Any
 import yaml
 from ruamel.yaml.comments import CommentedMap
 
+from .lockfile import verify_lock_integrity
 from .schema import ClusterConfig, SrtConfig
 
 logger = logging.getLogger(__name__)
+
+
+def find_cluster_config_path() -> Path | None:
+    """Locate srtslurm.yaml using the standard search order."""
+    # Check env var first (highest priority)
+    env_config = os.environ.get("SRTSLURM_CONFIG")
+    if env_config:
+        env_path = Path(env_config)
+        if env_path.exists():
+            logger.debug(f"Using srtslurm.yaml from SRTSLURM_CONFIG: {env_path}")
+            return env_path
+        logger.warning(f"SRTSLURM_CONFIG set but file not found: {env_config}")
+        return None
+
+    search_paths = [
+        Path.cwd() / "srtslurm.yaml",
+        Path.cwd().parent / "srtslurm.yaml",
+        Path.cwd().parent.parent / "srtslurm.yaml",
+    ]
+    for path in search_paths:
+        if path.exists():
+            return path
+
+    logger.debug("No srtslurm.yaml found - using config as-is")
+    return None
 
 
 def load_cluster_config() -> dict[str, Any] | None:
     """
     Load cluster configuration from srtslurm.yaml if it exists.
 
-    Searches for srtslurm.yaml in order:
-    1. SRTSLURM_CONFIG environment variable (if set)
-    2. Current working directory
-    3. Parent directories up to 3 levels
-
     Returns None if file doesn't exist (graceful degradation).
     """
-    # Check env var first (highest priority)
-    env_config = os.environ.get("SRTSLURM_CONFIG")
-    if env_config:
-        env_path = Path(env_config)
-        if env_path.exists():
-            cluster_config_path = env_path
-            logger.debug(f"Using srtslurm.yaml from SRTSLURM_CONFIG: {cluster_config_path}")
-        else:
-            logger.warning(f"SRTSLURM_CONFIG set but file not found: {env_config}")
-            return None
-    else:
-        # Search paths
-        search_paths = [
-            Path.cwd() / "srtslurm.yaml",
-            Path.cwd().parent / "srtslurm.yaml",
-            Path.cwd().parent.parent / "srtslurm.yaml",
-        ]
-
-        cluster_config_path = None
-        for path in search_paths:
-            if path.exists():
-                cluster_config_path = path
-                break
-
-        if not cluster_config_path:
-            logger.debug("No srtslurm.yaml found - using config as-is")
-            return None
+    cluster_config_path = find_cluster_config_path()
+    if not cluster_config_path:
+        return None
 
     try:
         with open(cluster_config_path) as f:
@@ -532,6 +529,20 @@ def load_config(path: Path | str) -> SrtConfig:
     # Load raw user config
     with open(path) as f:
         user_config = yaml.safe_load(f)
+    if user_config is None:
+        raise ValueError(f"Invalid config in {path}: YAML file is empty")
+    if not isinstance(user_config, dict):
+        raise ValueError(f"Invalid config in {path}: top-level YAML must be a mapping")
+
+    # Strip lock: section if present (lockfiles are valid recipes)
+    # Preserved for comparison after the new run completes
+    lock_data = user_config.pop("lock", None)
+    if lock_data:
+        if verify_lock_integrity(lock_data):
+            logger.info("Loaded lockfile — integrity verified, will compare after benchmark")
+        else:
+            logger.warning("Loaded lockfile — integrity check FAILED (lock section may have been edited)")
+            logger.warning("Comparison results may not reflect the original run")
 
     # Load cluster defaults (optional)
     cluster_config = load_cluster_config()
@@ -545,6 +556,11 @@ def load_config(path: Path | str) -> SrtConfig:
         config = schema.load(resolved_config)
         assert isinstance(config, SrtConfig)
         logger.info(f"Loaded config: {config.name}")
+        # Attach lock data for post-run comparison. Uses object.__setattr__
+        # because SrtConfig is frozen — this is the standard Python pattern for
+        # adding metadata to frozen dataclasses without modifying the schema.
+        # Retrieved via getattr(config, "_lock_data", None) in postprocess.
+        object.__setattr__(config, "_lock_data", lock_data)
         return config
     except Exception as e:
         raise ValueError(f"Invalid config in {path}: {e}") from e

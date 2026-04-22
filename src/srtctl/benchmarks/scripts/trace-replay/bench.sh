@@ -9,8 +9,29 @@
 # Usage: bench.sh ENDPOINT MODEL_NAME TRACE_FILE CONCURRENCIES [TTFT_THRESHOLD] [ITL_THRESHOLD] [TOKENIZER_PATH] [EXTRA_ARGS]
 #
 # EXTRA_ARGS: JSON-encoded string of additional aiperf flags (passed from Python)
+#
+# Profiling support (optional):
+#   PROFILING_BACKEND: set to "trtllm" to use the no-op TRTLLM profiling lib
+#                      (profiling is managed by worker env vars at launch time)
+#   PROFILE_TYPE: "nsys" or "nsys-time" -- logged for diagnostics
 
 set -e
+
+SCRIPT_DIR="$(dirname "$0")"
+LIB_DIR="${SCRIPT_DIR}/../lib"
+
+# Source the appropriate profiling library
+if [[ "${PROFILING_BACKEND:-}" == "trtllm" ]]; then
+    # shellcheck source=../lib/profiling_trtllm.sh
+    source "${LIB_DIR}/profiling_trtllm.sh"
+else
+    # shellcheck source=../lib/profiling.sh
+    source "${LIB_DIR}/profiling.sh"
+fi
+profiling_init_from_env
+
+cleanup() { stop_all_profiling; }
+trap cleanup EXIT
 
 # Ensure Python output is unbuffered for real-time logging
 export PYTHONUNBUFFERED=1
@@ -32,6 +53,7 @@ if [ -n "${AIPERF_SERVER_METRICS_URLS:-}" ]; then
     IFS=',' read -r -a server_metrics_urls <<< "${AIPERF_SERVER_METRICS_URLS}"
     if [ ${#server_metrics_urls[@]} -gt 0 ]; then
         SERVER_METRICS_ARGS+=(--server-metrics "${server_metrics_urls[@]}")
+        SERVER_METRICS_ARGS+=(--server-metrics-formats json jsonl)
     fi
 fi
 
@@ -58,6 +80,9 @@ echo "ITL Threshold: ${ITL_THRESHOLD}ms"
 echo "Tokenizer Path: ${TOKENIZER_PATH}"
 if [ ${#EXTRA_ARGS[@]} -gt 0 ]; then
     echo "Extra Args: ${EXTRA_ARGS[*]}"
+fi
+if [[ "${PROFILE_TYPE:-none}" != "none" ]]; then
+    echo "Profiling: ${PROFILE_TYPE} (backend=${PROFILING_BACKEND:-sglang})"
 fi
 echo "=============================================="
 
@@ -110,6 +135,9 @@ TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
 # Parse concurrencies (comma-separated)
 IFS=',' read -r -a CONCURRENCY_LIST <<< "${CONCURRENCIES}"
 
+# a no-op if profiling is not enabled
+start_all_profiling
+
 for C in "${CONCURRENCY_LIST[@]}"; do
     echo ""
     echo "=============================================="
@@ -142,6 +170,9 @@ for C in "${CONCURRENCY_LIST[@]}"; do
     # List artifacts
     ls -la "${RUN_ARTIFACT_DIR}" 2>/dev/null || true
 done
+
+# a no-op if profiling is not enabled
+stop_all_profiling
 
 echo ""
 echo "=============================================="

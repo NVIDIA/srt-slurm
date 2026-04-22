@@ -181,8 +181,8 @@ class TRTLLMProtocol(BackendProtocol):
         # For local models, model is mounted to /model in the container
         model_arg = str(runtime.model_path) if runtime.is_hf_model else "/model"
 
-        cmd = [
-            "trtllm-llmapi-launch",
+        cmd = list(nsys_prefix) + ["trtllm-llmapi-launch"] if nsys_prefix else ["trtllm-llmapi-launch"]
+        cmd += [
             "python3",
             "-m",
             "dynamo.trtllm",
@@ -204,5 +204,7 @@ class TRTLLMProtocol(BackendProtocol):
                 "nats",
             ]
         )
+
+        cmd.append("--publish-events-and-metrics")
 
         return cmd

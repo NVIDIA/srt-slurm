@@ -144,16 +144,28 @@ class TestClusterConfigIntegration:
 class TestPostProcessStageMixin:
     """Tests for PostProcessStageMixin."""
 
-    def _create_mixin_with_mocks(self):
+    def _create_mixin_with_mocks(self, tmp_path=None):
         """Create a mixin instance with all post-processing methods mocked."""
         from srtctl.cli.mixins.postprocess_stage import PostProcessStageMixin
 
         mixin = PostProcessStageMixin()
+
+        # Mock runtime and config for lockfile writing
+        if tmp_path is None:
+            import tempfile
+            from pathlib import Path
+
+            tmp_path = Path(tempfile.mkdtemp())
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        mixin.runtime = MagicMock()
+        mixin.runtime.log_dir = log_dir
+        mixin.config = MagicMock()
+
         mixin._copy_config_to_logs = MagicMock()
         mixin._generate_rollup = MagicMock()
         mixin._extract_benchmark_results = MagicMock(return_value=None)
         mixin._run_postprocess_container = MagicMock(return_value=(None, None))
-        mixin._report_metrics = MagicMock()
         mixin._get_ai_analysis_config = MagicMock(return_value=None)
         mixin._run_ai_analysis = MagicMock()
         return mixin
@@ -198,7 +210,41 @@ class TestPostProcessStageMixin:
 
         mixin._extract_benchmark_results.assert_called_once()
         mixin._run_postprocess_container.assert_called_once()
-        mixin._report_metrics.assert_called_once()
+        # logs_url is stashed on self for do_sweep's final report_completed PUT
+        assert mixin._last_logs_url is None  # no S3 configured in this mock
+
+    def test_run_postprocess_eagerly_pushes_logs_url_to_reporter(self):
+        """When a reporter is passed and S3 sync produces a URL, push eagerly."""
+        mixin = self._create_mixin_with_mocks()
+        s3_url = "s3://bucket/prefix/12345/"
+        mixin._run_postprocess_container = MagicMock(return_value=(None, s3_url))
+        reporter = MagicMock()
+
+        mixin.run_postprocess(0, reporter=reporter)
+
+        reporter.report_artifacts.assert_called_once_with(logs_url=s3_url)
+        assert mixin._last_logs_url == s3_url
+
+    def test_run_postprocess_skips_eager_push_when_no_s3_url(self):
+        """No S3 URL means no eager report_artifacts call."""
+        mixin = self._create_mixin_with_mocks()
+        reporter = MagicMock()
+
+        mixin.run_postprocess(0, reporter=reporter)
+
+        reporter.report_artifacts.assert_not_called()
+        assert mixin._last_logs_url is None
+
+    def test_run_postprocess_skips_eager_push_without_reporter(self):
+        """Without a reporter, stash happens but no PUT is attempted."""
+        mixin = self._create_mixin_with_mocks()
+        s3_url = "s3://bucket/prefix/12345/"
+        mixin._run_postprocess_container = MagicMock(return_value=(None, s3_url))
+
+        # Should not raise even though no reporter is provided
+        mixin.run_postprocess(0)
+
+        assert mixin._last_logs_url == s3_url
 
     def test_run_postprocess_skips_ai_on_success(self):
         """Test run_postprocess skips AI analysis when exit_code is 0."""
@@ -513,7 +559,6 @@ class TestRollupFaultTolerance:
 
         # Mock all the other methods to isolate rollup behavior
         mixin._run_postprocess_container = MagicMock(return_value=(None, None))
-        mixin._report_metrics = MagicMock()
         mixin._get_ai_analysis_config = MagicMock(return_value=None)
 
         # Mock _generate_rollup to raise (simulating worst case)
@@ -524,9 +569,10 @@ class TestRollupFaultTolerance:
             # Should complete without raising
             mixin.run_postprocess(exit_code=0)
 
-        # Verify other methods were still called
+        # S3 upload still attempted even when rollup fails
         mixin._run_postprocess_container.assert_called_once()
-        mixin._report_metrics.assert_called_once()
+        # And logs_url is still stashed (None here because S3 returned None)
+        assert mixin._last_logs_url is None
 
 
 class TestS3UploadFaultTolerance:
@@ -621,6 +667,36 @@ class TestS3UploadFaultTolerance:
         # Should return None for s3_url on failure
         assert s3_url is None
 
+    def test_parse_failure_still_returns_s3_url(self, tmp_path):
+        """Raw logs should still report an S3 URL when parsing fails after upload."""
+        mixin = self._create_mixin_with_runtime(tmp_path)
+        mixin._get_s3_config = MagicMock(return_value=S3Config(bucket="test-bucket"))
+
+        mock_proc = MagicMock()
+        mock_proc.wait.return_value = None
+        mock_proc.returncode = 20
+
+        with patch("srtctl.cli.mixins.postprocess_stage.start_srun_process") as mock_srun:
+            mock_srun.return_value = mock_proc
+
+            parquet_path, s3_url = mixin._run_postprocess_container()
+
+        assert parquet_path is None
+        assert s3_url is not None
+        assert s3_url.startswith("s3://test-bucket/")
+
+    def test_postprocess_script_uploads_after_parse(self, tmp_path):
+        """The generated script should upload even when parsing fails."""
+        mixin = self._create_mixin_with_runtime(tmp_path)
+        script = mixin._build_postprocess_script("s3://test-bucket/run/", "")
+
+        parse_line = "srtlog parse . || PARSE_STATUS=$?"
+        upload_line = "aws s3 sync /logs s3://test-bucket/run/"
+
+        assert parse_line in script
+        assert upload_line in script
+        assert script.index(parse_line) < script.index(upload_line)
+
     def test_run_postprocess_completes_with_s3_failure(self, tmp_path):
         """Test run_postprocess completes even when S3 upload fails entirely."""
         mixin = self._create_mixin_with_runtime(tmp_path)
@@ -631,15 +707,18 @@ class TestS3UploadFaultTolerance:
         # Mock _run_postprocess_container to simulate S3 failure
         mixin._run_postprocess_container = MagicMock(return_value=(None, None))
 
-        # Mock other methods
-        mixin._report_metrics = MagicMock()
+        # Mock AI config
         mixin._get_ai_analysis_config = MagicMock(return_value=None)
 
-        # Should complete without raising
-        mixin.run_postprocess(exit_code=0)
+        reporter = MagicMock()
 
-        # Verify _report_metrics was still called (with None for s3_url, exit_code=0)
-        mixin._report_metrics.assert_called_once_with(None, None, 0)
+        # Should complete without raising
+        mixin.run_postprocess(exit_code=0, reporter=reporter)
+
+        # No S3 URL => no eager artifact push, and logs_url stash is None so the
+        # final report_completed PUT sends exit_code only.
+        reporter.report_artifacts.assert_not_called()
+        assert mixin._last_logs_url is None
 
 
 class TestCopyConfigToLogs:
@@ -655,6 +734,7 @@ class TestCopyConfigToLogs:
         mixin = PostProcessStageMixin()
         mixin.runtime = MagicMock()
         mixin.runtime.log_dir = log_dir
+        mixin.runtime.job_id = "12345"
         return mixin, log_dir
 
     def test_copies_config_yaml(self, tmp_path):
@@ -687,6 +767,18 @@ class TestCopyConfigToLogs:
         mixin._copy_config_to_logs()
 
         assert not (log_dir / "config.yaml").exists()
+
+    def test_copies_job_id_json(self, tmp_path):
+        """Test {job_id}.json is copied from output dir to log dir."""
+        mixin, log_dir = self._create_mixin_with_runtime(tmp_path)
+
+        json_src = tmp_path / "12345.json"
+        json_src.write_text('{"job_id": "12345"}\n')
+
+        mixin._copy_config_to_logs()
+
+        assert (log_dir / "12345.json").exists()
+        assert (log_dir / "12345.json").read_text() == '{"job_id": "12345"}\n'
 
     def test_copy_failure_does_not_raise(self, tmp_path):
         """Test graceful handling when copy fails."""

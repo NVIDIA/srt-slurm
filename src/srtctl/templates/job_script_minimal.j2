@@ -82,6 +82,10 @@ echo "Preparing srtctl environment..."
 # This avoids arch mismatch when login node (x86_64) != compute node (aarch64)
 export PATH="${SRTCTL_SOURCE}/bin:$HOME/.local/bin:$PATH"
 
+# Use a compute-specific venv so we don't pick up the login node's .venv/
+# (which may be built for a different arch, e.g. x86_64 login vs aarch64 compute)
+export UV_PROJECT_ENVIRONMENT="${SRTCTL_SOURCE}/.venv-compute"
+
 if ! command -v uv &> /dev/null; then
     echo "ERROR: uv not found. Run 'make setup ARCH=<compute_arch>' first."
     echo "  e.g., make setup ARCH=aarch64  (for GB200/Grace compute nodes)"
