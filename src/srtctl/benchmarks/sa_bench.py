@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from srtctl.benchmarks.base import SCRIPTS_DIR, BenchmarkRunner, register_benchmark
@@ -12,6 +13,8 @@ from srtctl.benchmarks.base import SCRIPTS_DIR, BenchmarkRunner, register_benchm
 if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import SrtConfig
+
+CONTAINER_DATASET_DIR = Path("/benchmark-dataset")
 
 
 @register_benchmark("sa-bench")
@@ -21,12 +24,13 @@ class SABenchRunner(BenchmarkRunner):
     Tests serving throughput at various concurrency levels.
 
     Required config fields:
-        - benchmark.isl: Input sequence length
-        - benchmark.osl: Output sequence length
         - benchmark.concurrencies: Concurrency levels (e.g., "4x8x16x32")
+        - benchmark.isl / benchmark.osl: Required when dataset_name is "random" (default)
 
     Optional:
         - benchmark.req_rate: Request rate (default: "inf")
+        - benchmark.dataset_name: "random" (default) or "custom"
+        - benchmark.dataset_path: Host path to JSONL file (required when dataset_name="custom")
     """
 
     @property
@@ -45,12 +49,17 @@ class SABenchRunner(BenchmarkRunner):
         errors = []
         b = config.benchmark
 
-        if b.isl is None:
-            errors.append("benchmark.isl is required for sa-bench")
-        if b.osl is None:
-            errors.append("benchmark.osl is required for sa-bench")
+        is_custom = b.dataset_name == "custom"
+
+        if not is_custom:
+            if b.isl is None:
+                errors.append("benchmark.isl is required for sa-bench (when dataset_name is not 'custom')")
+            if b.osl is None:
+                errors.append("benchmark.osl is required for sa-bench (when dataset_name is not 'custom')")
         if b.concurrencies is None:
             errors.append("benchmark.concurrencies is required for sa-bench")
+        if is_custom and not b.dataset_path:
+            errors.append("benchmark.dataset_path is required when dataset_name='custom'")
 
         return errors
 
@@ -82,12 +91,18 @@ class SABenchRunner(BenchmarkRunner):
         # Tokenizer path: HF model ID or container mount path
         tokenizer_path = str(runtime.model_path) if runtime.is_hf_model else "/model"
 
+        # Resolve dataset name and container path
+        dataset_name = b.dataset_name or "random"
+        container_dataset_path = ""
+        if dataset_name == "custom" and b.dataset_path:
+            container_dataset_path = str(CONTAINER_DATASET_DIR / Path(b.dataset_path).name)
+
         cmd = [
             "bash",
             self.script_path,
             endpoint,
-            str(b.isl),
-            str(b.osl),
+            str(b.isl or 0),
+            str(b.osl or 0),
             str(concurrencies) if concurrencies else "",
             str(b.req_rate) if b.req_rate else "inf",
             tokenizer_path,
@@ -101,5 +116,15 @@ class SABenchRunner(BenchmarkRunner):
             str(b.num_warmup_mult) if b.num_warmup_mult is not None else "2",
             b.custom_tokenizer or "",
             str(b.use_chat_template).lower(),
+            dataset_name,
+            container_dataset_path,
         ]
         return cmd
+
+    def get_container_mounts(self, config: SrtConfig, runtime: RuntimeContext) -> dict[Path, Path]:
+        mounts = dict(runtime.container_mounts)
+        b = config.benchmark
+        if b.dataset_name == "custom" and b.dataset_path:
+            host_path = Path(b.dataset_path).resolve().parent
+            mounts[host_path] = CONTAINER_DATASET_DIR
+        return mounts

@@ -913,6 +913,15 @@ def main(args: argparse.Namespace):
             fixed_output_len=args.hf_output_len,
         )
 
+    elif args.dataset_name == "custom":
+        from benchmark_dataset import sample_custom_requests
+
+        input_requests = sample_custom_requests(
+            dataset_path=args.dataset_path,
+            num_requests=args.num_prompts,
+            tokenizer=tokenizer,
+        )
+
     elif args.dataset_name == "random":
         input_requests = sample_random_requests(
             prefix_len=args.random_prefix_len,
@@ -1033,7 +1042,7 @@ if __name__ == "__main__":
         "--dataset-name",
         type=str,
         default="sharegpt",
-        choices=["sharegpt", "burstgpt", "sonnet", "random", "hf"],
+        choices=["sharegpt", "burstgpt", "sonnet", "random", "hf", "custom"],
         help="Name of the dataset to benchmark on.",
     )
     parser.add_argument(
