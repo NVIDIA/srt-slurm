@@ -112,10 +112,10 @@ class TestSABenchRunner:
         assert errors == []
 
     def test_build_command_custom_dataset(self):
-        """build_command includes dataset name and container path."""
+        """build_command passes dataset_path through as container path."""
         from unittest.mock import MagicMock
 
-        from srtctl.benchmarks.sa_bench import CONTAINER_DATASET_DIR, SABenchRunner
+        from srtctl.benchmarks.sa_bench import SABenchRunner
         from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
 
         runner = SABenchRunner()
@@ -129,36 +129,15 @@ class TestSABenchRunner:
             model=ModelConfig(path="/model", container="/image", precision="fp4"),
             resources=ResourceConfig(gpu_type="h100"),
             benchmark=BenchmarkConfig(
-                type="sa-bench", dataset_name="custom", dataset_path="/data/bench.jsonl", concurrencies="4x8"
+                type="sa-bench",
+                dataset_name="custom",
+                dataset_path="/glm5_datasets/bench.jsonl",
+                concurrencies="4x8",
             ),
         )
         cmd = runner.build_command(config, runtime)
         assert "custom" in cmd
-        assert str(CONTAINER_DATASET_DIR / "bench.jsonl") in cmd
-
-    def test_get_container_mounts_custom_dataset(self):
-        """Custom dataset dir is auto-mounted into container."""
-        from pathlib import Path
-        from unittest.mock import MagicMock
-
-        from srtctl.benchmarks.sa_bench import CONTAINER_DATASET_DIR, SABenchRunner
-        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
-
-        runner = SABenchRunner()
-        runtime = MagicMock()
-        runtime.container_mounts = {}
-
-        config = SrtConfig(
-            name="test",
-            model=ModelConfig(path="/model", container="/image", precision="fp4"),
-            resources=ResourceConfig(gpu_type="h100"),
-            benchmark=BenchmarkConfig(
-                type="sa-bench", dataset_name="custom", dataset_path="/data/bench.jsonl", concurrencies="4x8"
-            ),
-        )
-        mounts = runner.get_container_mounts(config, runtime)
-        assert Path("/data") in mounts
-        assert mounts[Path("/data")] == CONTAINER_DATASET_DIR
+        assert "/glm5_datasets/bench.jsonl" in cmd
 
     def test_build_command_default_dataset_random(self):
         """Default dataset_name is 'random' when not specified."""

@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from srtctl.benchmarks.base import SCRIPTS_DIR, BenchmarkRunner, register_benchmark
@@ -13,8 +12,6 @@ from srtctl.benchmarks.base import SCRIPTS_DIR, BenchmarkRunner, register_benchm
 if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import SrtConfig
-
-CONTAINER_DATASET_DIR = Path("/benchmark-dataset")
 
 
 @register_benchmark("sa-bench")
@@ -30,7 +27,7 @@ class SABenchRunner(BenchmarkRunner):
     Optional:
         - benchmark.req_rate: Request rate (default: "inf")
         - benchmark.dataset_name: "random" (default) or "custom"
-        - benchmark.dataset_path: Host path to JSONL file (required when dataset_name="custom")
+        - benchmark.dataset_path: Container path to dataset file (required when dataset_name="custom")
     """
 
     @property
@@ -91,11 +88,7 @@ class SABenchRunner(BenchmarkRunner):
         # Tokenizer path: HF model ID or container mount path
         tokenizer_path = str(runtime.model_path) if runtime.is_hf_model else "/model"
 
-        # Resolve dataset name and container path
         dataset_name = b.dataset_name or "random"
-        container_dataset_path = ""
-        if dataset_name == "custom" and b.dataset_path:
-            container_dataset_path = str(CONTAINER_DATASET_DIR / Path(b.dataset_path).name)
 
         cmd = [
             "bash",
@@ -117,14 +110,6 @@ class SABenchRunner(BenchmarkRunner):
             b.custom_tokenizer or "",
             str(b.use_chat_template).lower(),
             dataset_name,
-            container_dataset_path,
+            b.dataset_path or "",
         ]
         return cmd
-
-    def get_container_mounts(self, config: SrtConfig, runtime: RuntimeContext) -> dict[Path, Path]:
-        mounts = dict(runtime.container_mounts)
-        b = config.benchmark
-        if b.dataset_name == "custom" and b.dataset_path:
-            host_path = Path(b.dataset_path).resolve().parent
-            mounts[host_path] = CONTAINER_DATASET_DIR
-        return mounts
