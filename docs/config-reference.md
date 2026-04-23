@@ -630,7 +630,7 @@ profiling:
   type: "nsys"                       # "none", "nsys", or "torch"
 
   # Extra arguments for nsys profile (when type is nsys or nsys-time)
-  nsys_args: ["--stats=true"]       # Optional: list of strings
+  extra_nsys_args: ["--stats=true"]       # Optional: list of strings
 
   # Phase-specific profiling step configs
   prefill:
@@ -648,7 +648,7 @@ profiling:
 | Field         | Type   | Required | Default | Description                              |
 | ------------- | ------ | -------- | ------- | ---------------------------------------- |
 | `type`        | string | No       | "none"  | Profiling type: "none", "nsys", "torch"  |
-| `nsys_args`   | list[string] | No | null   | Extra args for nsys profile (when type is `nsys` or `nsys-time`) |
+| `extra_nsys_args` | list[string] | No | null | Extra args for nsys profile (when type is `nsys` or `nsys-time`) |
 | `prefill`     | object | Disaggregated | null | Prefill phase config                   |
 | `decode`      | object | Disaggregated | null | Decode phase config                    |
 | `aggregated`  | object | Aggregated | null | Aggregated phase config                  |
@@ -702,7 +702,7 @@ resources:
 
 profiling:
   type: "nsys"
-  nsys_args: ["--stats=true", "--trace=osrt"]
+  extra_nsys_args: ["--stats=true", "--trace=osrt"]
   aggregated:
     start_step: 10
     stop_step: 25

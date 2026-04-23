@@ -646,7 +646,7 @@ class ProfilingConfig:
     type: str = "none"  # "none", "nsys", "nsys-time", or "torch"
 
     # Extra arguments passed to nsys profile (appended before `-o`; see get_nsys_prefix)
-    nsys_args: list[str] | None = None
+    extra_nsys_args: list[str] | None = None
 
     # Phase-specific profiling step configs (not used for nsys-time)
     prefill: ProfilingPhaseConfig | None = None
@@ -761,8 +761,8 @@ class ProfilingConfig:
                 "stop",
             ]
 
-        if self.nsys_args:
-            cmd.extend(self.nsys_args)
+        if self.extra_nsys_args:
+            cmd.extend(self.extra_nsys_args)
 
         cmd += [
             "--kill",
@@ -812,8 +812,8 @@ class ProfilingConfig:
             "true",
         ]
 
-        if self.nsys_args:
-            cmd.extend(self.nsys_args)
+        if self.extra_nsys_args:
+            cmd.extend(self.extra_nsys_args)
 
         cmd.extend(["-o", output_file])
 

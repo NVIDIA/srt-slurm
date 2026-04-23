@@ -57,7 +57,7 @@ profiling:
   type: "torch" # Required: "none", "torch", or "nsys"
 
   # nsys / nsys-time: extra arguments for nsys profile (e.g. ["--stats=true"])
-  nsys_args: []  # Optional
+  extra_nsys_args: []  # Optional
 
   # Disaggregated mode: must set both prefill and decode sections
   prefill:
@@ -114,12 +114,12 @@ When using `nsys`, workers are wrapped with:
 ```bash
 nsys profile -t cuda,nvtx --cuda-graph-trace=node \
   -c cudaProfilerApi --capture-range-end stop \
-  [nsys_args...] \
+  [extra_nsys_args...] \
   -o /logs/profiles/{mode}/{name} \
   python3 -m sglang.launch_server ...
 ```
 
-You can pass extra arguments via `profiling.nsys_args` (e.g. `["--stats=true", "--trace=osrt"]`).
+You can pass extra arguments via `profiling.extra_nsys_args` (e.g. `["--stats=true", "--trace=osrt"]`).
 
 ## Example Configurations
 
