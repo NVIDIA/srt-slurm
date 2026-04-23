@@ -38,7 +38,7 @@ backend:
       enable_attention_dp: true
       disable_overlap_scheduler: true
       trust_remote_code: true
-      custom_tokenizer: glm_moe_dsa
+      custom_tokenizer: "glm_moe_dsa"
       max_batch_size: 2
       max_num_tokens: 16640
       max_seq_len: 8232
@@ -60,7 +60,7 @@ backend:
       enable_attention_dp: false
       enable_lm_head_tp_in_adp: false
       trust_remote_code: true
-      custom_tokenizer: glm_moe_dsa
+      custom_tokenizer: "glm_moe_dsa"
       max_batch_size: 4
       max_num_tokens: 4
       max_seq_len: 9256
@@ -93,9 +93,9 @@ benchmark:
   type: sa-bench
   isl: 8192
   osl: 1024
-  concurrencies: '25'
+  concurrencies: "25"
   req_rate: inf
-  custom_tokenizer: glm_moe_dsa
+  custom_tokenizer: "glm_moe_dsa"
   use_chat_template: false
 frontend:
   type: dynamo
