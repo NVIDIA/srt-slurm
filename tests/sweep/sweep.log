@@ -1,0 +1,860 @@
+==========================================
+🚀 srtctl Sweep Orchestrator
+==========================================
+Job ID: 1543570
+Config: /home/rihuo/srt-slurm/recipes/glm5/ctx4dep2_gen1dep16_batch512_eplb256_mtp0.yaml
+Nodes: 7
+Container: /lustre/fsw/core_dlfw_ci/rihuo/tensorrtllm-runtime-1-1-0-dev-3.sqsh
+Start: Tue Apr 21 14:10:22 PDT 2026
+==========================================
+
+Runtime config: /home/rihuo/srt-slurm/outputs/1543570/config.yaml
+Head node: theia0043
+
+Preparing srtctl environment...
+Using uv uv 0.11.7 (aarch64-unknown-linux-gnu)...
+Running orchestrator on host (with srun access)...
+
+Using CPython 3.12.3 interpreter at: /usr/bin/python3.12
+Creating virtual environment at: .venv-compute
+   Building srtctl @ file:///home/rihuo/srt-slurm
+Downloading cryptography (4.1MiB)
+Downloading pydantic-core (1.9MiB)
+ Downloaded pydantic-core
+      Built srtctl @ file:///home/rihuo/srt-slurm
+ Downloaded cryptography
+Installed 50 packages in 865ms
+2026-04-21 14:10:28 [INFO] Loaded config: glm5_nvfp4_ISL1K_OSL1K_ctx4dep2_gen1dep16_batch512_eplb256_mtp0
+2026-04-21 14:10:29 [INFO] Sweep Orchestrator
+2026-04-21 14:10:29 [INFO] Job ID: 1543570
+2026-04-21 14:10:29 [INFO] Run name: glm5_nvfp4_ISL1K_OSL1K_ctx4dep2_gen1dep16_batch512_eplb256_mtp0_1543570
+2026-04-21 14:10:29 [INFO] Config: glm5_nvfp4_ISL1K_OSL1K_ctx4dep2_gen1dep16_batch512_eplb256_mtp0
+2026-04-21 14:10:29 [INFO] Infra node: theia0043
+2026-04-21 14:10:29 [INFO] Head node: theia0044
+2026-04-21 14:10:29 [INFO] Worker nodes: theia0044, theia0045, theia0047, theia0048, theia0049, theia0050
+2026-04-21 14:10:29 [INFO] Wrote lockfile: /home/rihuo/srt-slurm/outputs/1543570/recipe.lock.yaml
+2026-04-21 14:10:29 [INFO] Starting infrastructure services (NATS, etcd)
+2026-04-21 14:10:29 [INFO] Infra node: theia0043
+2026-04-21 14:10:29 [INFO] srun command: srun --jobid 1543570 --overlap --nodes 1 --ntasks 1 --nodelist theia0043 --output /home/rihuo/srt-slurm/outputs/1543570/logs/infra.out --container-image /lustre/fsw/core_dlfw_ci/rihuo/tensorrtllm-runtime-1-1-0-dev-3.sqsh --no-container-entrypoint --no-container-mount-home --container-mounts /home/rihuo/srt-slurm/outputs/1543570/logs:/logs,/lustre/fsw/core_dlfw_ci/rihuo/nvidia_GLM-5-NVFP4:/model,/home/rihuo/srt-slurm/configs:/configs,/home/rihuo/srt-slurm/src/srtctl/benchmarks/scripts:/srtctl-benchmarks,/home/rihuo/srt-slurm/src/srtctl/cli/setup_head.py:/tmp/setup_head.py,/tmp:/host-tmp bash -c 'python3 /tmp/setup_head.py --name glm5_nvfp4_ISL1K_OSL1K_ctx4dep2_gen1dep16_batch512_eplb256_mtp0 --log-dir /home/rihuo/srt-slurm/outputs/1543570/logs'
+2026-04-21 14:10:29 [INFO] Waiting for NATS (port 4222) on theia0043...
+2026-04-21 14:10:37 [INFO] NATS is ready
+2026-04-21 14:10:37 [INFO] Waiting for etcd (port 2379) on theia0043...
+2026-04-21 14:10:37 [INFO] etcd is ready
+2026-04-21 14:10:37 [INFO] Starting backend workers
+2026-04-21 14:10:37 [INFO] Starting prefill worker 0 on 1 nodes (theia0044) with 2 total GPUs (MPI mode)
+2026-04-21 14:10:37 [INFO] Env: CUDA_VISIBLE_DEVICES=0,1 DYN_SYSTEM_PORT=8081 ENROOT_ALLOW_DEV=yes ETCD_ENDPOINTS=http://theia0043:2379 HEAD_NODE_IP=10.66.4.181 MIMALLOC_PURGE_DELAY=0 NATS_SERVER=nats://theia0043:4222 NCCL_GRAPH_MIXING_SUPPORT=0 TLLM_LOG_LEVEL=INFO TRTLLM_ENABLE_PDL=1 TRTLLM_EPLB_SHM_NAME=moe_shared_bfe83e79e68a44d38150c5a88a63521d TRTLLM_SERVER_DISABLE_GC=1 TRTLLM_WORKER_DISABLE_GC=1
+2026-04-21 14:10:37 [INFO] Command: trtllm-llmapi-launch python3 -m dynamo.trtllm --model-path /model --served-model-name nvidia_GLM-5-NVFP4 --disaggregation-mode prefill --extra-engine-args /logs/trtllm_config_prefill.yaml --request-plane nats --publish-events-and-metrics
+2026-04-21 14:10:37 [INFO] Log: /home/rihuo/srt-slurm/outputs/1543570/logs/theia0044_prefill_w0.out
+2026-04-21 14:10:37 [INFO] srun command: srun --jobid 1543570 --overlap --mpi pmix --oversubscribe --cpu-bind verbose,none --nodes 1 --ntasks 2 --nodelist theia0044 --output /home/rihuo/srt-slurm/outputs/1543570/logs/theia0044_prefill_w0.out --container-image /lustre/fsw/core_dlfw_ci/rihuo/tensorrtllm-runtime-1-1-0-dev-3.sqsh --no-container-entrypoint --no-container-mount-home --container-mounts /home/rihuo/srt-slurm/outputs/1543570/logs:/logs,/lustre/fsw/core_dlfw_ci/rihuo/nvidia_GLM-5-NVFP4:/model,/home/rihuo/srt-slurm/configs:/configs,/home/rihuo/srt-slurm/src/srtctl/benchmarks/scripts:/srtctl-benchmarks bash -c 'export HEAD_NODE_IP=10.66.4.181 && export ETCD_ENDPOINTS=http://theia0043:2379 && export NATS_SERVER=nats://theia0043:4222 && export DYN_SYSTEM_PORT=8081 && export ENROOT_ALLOW_DEV=yes && export MIMALLOC_PURGE_DELAY=0 && export NCCL_GRAPH_MIXING_SUPPORT=0 && export TLLM_LOG_LEVEL=INFO && export TRTLLM_ENABLE_PDL=1 && export TRTLLM_SERVER_DISABLE_GC=1 && export TRTLLM_WORKER_DISABLE_GC=1 && export TRTLLM_EPLB_SHM_NAME=moe_shared_bfe83e79e68a44d38150c5a88a63521d && export CUDA_VISIBLE_DEVICES=0,1 && ( python3 <(cat <<'"'"'__FINGERPRINT_EOF__'"'"'
+import json, subprocess, platform, socket, sys
+from pathlib import Path
+from datetime import datetime, timezone
+
+def run(cmd, timeout=3):
+    try:
+        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+        return r.stdout.strip() if r.returncode == 0 else None
+    except Exception:
+        return None
+
+def find_python():
+    for p in ['"'"'/opt/dynamo/venv/bin/python3'"'"', '"'"'/opt/venv/bin/python3'"'"']:
+        if Path(p).exists():
+            return p
+    return '"'"'python3'"'"'
+
+PY = find_python()
+
+def pip_pkgs():
+    result = {}
+    for label, cmd in [
+        (PY, f'"'"'{PY} -m pip freeze 2>/dev/null'"'"'.format(PY=PY)),
+        ('"'"'python3'"'"', '"'"'python3 -m pip freeze 2>/dev/null'"'"'),
+        ('"'"'pip'"'"', '"'"'pip freeze 2>/dev/null'"'"'),
+        ('"'"'uv'"'"', '"'"'uv pip freeze 2>/dev/null'"'"'),
+    ]:
+        out = run(cmd)
+        if out:
+            pkgs = sorted([l.strip() for l in out.splitlines() if l.strip() and not l.startswith('"'"'#'"'"')], key=lambda s: s.lower())
+            if pkgs:
+                result[label] = pkgs
+    return result
+
+def gpu_info():
+    out = run('"'"'nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader'"'"')
+    if not out: return {'"'"'available'"'"': False}
+    gpus = []
+    for line in out.splitlines():
+        parts = [p.strip() for p in line.split('"'"','"'"')]
+        if len(parts) >= 3:
+            gpus.append({'"'"'name'"'"': parts[0], '"'"'driver'"'"': parts[1], '"'"'memory'"'"': parts[2]})
+    return {'"'"'available'"'"': True, '"'"'driver'"'"': gpus[0]['"'"'driver'"'"'] if gpus else '"'"'unknown'"'"', '"'"'gpus'"'"': gpus}
+
+def framework_versions():
+    # Use importlib.metadata for all packages — avoids loading native CUDA
+    # extensions (tensorrt_llm, torch) which fail without GPU context.
+    versions = {}
+    for name, pkg in [('"'"'vllm'"'"', '"'"'vllm'"'"'), ('"'"'sglang'"'"', '"'"'sglang'"'"'), ('"'"'tensorrt_llm'"'"', '"'"'tensorrt-llm'"'"'), ('"'"'dynamo'"'"', '"'"'ai-dynamo'"'"')]:
+        v = run(f"{PY} -c \"import importlib.metadata; print(importlib.metadata.version('"'"'{pkg}'"'"'))\"".format(PY=PY, pkg=pkg))
+        if v:
+            versions[name] = v
+    return versions
+
+def model_identity(model_path):
+    info = {}
+    mp = Path(model_path) if model_path else None
+    if not mp or not mp.exists():
+        return None
+    # HuggingFace snapshot_download: refs/main has commit SHA
+    for refs_path in [mp / '"'"'.huggingface'"'"' / '"'"'refs'"'"' / '"'"'main'"'"', mp / '"'"'refs'"'"' / '"'"'main'"'"']:
+        if refs_path.exists():
+            info['"'"'hf_revision'"'"'] = refs_path.read_text().strip()
+            break
+    # HuggingFace hf download --local-dir: .cache/huggingface/download/*.metadata
+    # Line 1 of each .metadata file is the commit hash
+    if '"'"'hf_revision'"'"' not in info:
+        cache_dl = mp / '"'"'.cache'"'"' / '"'"'huggingface'"'"' / '"'"'download'"'"'
+        if cache_dl.is_dir():
+            for meta_file in sorted(cache_dl.glob('"'"'*.metadata'"'"')):
+                try:
+                    first_line = meta_file.read_text().splitlines()[0].strip()
+                    if len(first_line) == 40 and all(c in '"'"'0123456789abcdef'"'"' for c in first_line):
+                        info['"'"'hf_revision'"'"'] = first_line
+                        break
+                except Exception:
+                    pass
+    # HuggingFace: check .huggingface/download_metadata.json (older format)
+    meta = mp / '"'"'.huggingface'"'"' / '"'"'download_metadata.json'"'"'
+    if meta.exists():
+        try:
+            m = json.loads(meta.read_text())
+            if '"'"'commit_hash'"'"' in m:
+                info['"'"'hf_revision'"'"'] = m['"'"'commit_hash'"'"']
+            if '"'"'repo_id'"'"' in m:
+                info['"'"'hf_repo'"'"'] = m['"'"'repo_id'"'"']
+        except Exception:
+            pass
+    # config.json often has _name_or_path
+    config_json = mp / '"'"'config.json'"'"'
+    if config_json.exists():
+        try:
+            cfg = json.loads(config_json.read_text())
+            if '"'"'_name_or_path'"'"' in cfg:
+                info['"'"'model_id'"'"'] = cfg['"'"'_name_or_path'"'"']
+        except Exception:
+            pass
+    return info or None
+
+def env_vars():
+    import os
+    prefixes = ('"'"'CUDA_'"'"', '"'"'TORCH_'"'"', '"'"'PYTORCH_'"'"', '"'"'NCCL_'"'"', '"'"'VLLM_'"'"', '"'"'SGLANG_'"'"', '"'"'SGL_'"'"',
+                '"'"'TRTLLM_'"'"', '"'"'TRT_LLM_'"'"', '"'"'TENSORRT_'"'"', '"'"'HF_'"'"', '"'"'TRANSFORMERS_'"'"', '"'"'DYN_'"'"',
+                '"'"'NVIDIA_'"'"', '"'"'OMPI_'"'"', '"'"'UCX_'"'"', '"'"'NVSHMEM_'"'"')
+    secrets = ('"'"'TOKEN'"'"', '"'"'KEY'"'"', '"'"'SECRET'"'"', '"'"'PASSWORD'"'"', '"'"'CREDENTIAL'"'"', '"'"'AUTH'"'"')
+    result = {}
+    for k, v in sorted(os.environ.items()):
+        if any(k.startswith(p) for p in prefixes):
+            if any(s in k.upper() for s in secrets):
+                result[k] = '"'"'***REDACTED***'"'"'
+            else:
+                result[k] = v
+    return result
+
+fp = {
+    '"'"'hostname'"'"': socket.gethostname(),
+    '"'"'timestamp'"'"': datetime.now(timezone.utc).strftime('"'"'%Y-%m-%dT%H:%M:%SZ'"'"'),
+    '"'"'arch'"'"': platform.machine(),
+    '"'"'os'"'"': next((l.split('"'"'='"'"',1)[1].strip('"'"'"'"'"') for l in Path('"'"'/etc/os-release'"'"').read_text().splitlines() if l.startswith('"'"'PRETTY_NAME='"'"')), platform.platform()) if Path('"'"'/etc/os-release'"'"').exists() else platform.platform(),
+    '"'"'gpu'"'"': gpu_info(),
+    '"'"'python_version'"'"': platform.python_version(),
+    '"'"'cuda_version'"'"': run('"'"'nvcc --version 2>/dev/null | grep release'"'"') or '"'"'unavailable'"'"',
+    '"'"'nccl_version'"'"': run(f'"'"'{PY} -c "import torch; print(torch.cuda.nccl.version())"'"'"'.format(PY=PY)) or '"'"'unavailable'"'"',
+    '"'"'frameworks'"'"': framework_versions(),
+    '"'"'model'"'"': model_identity('"'"'/model'"'"'),
+    '"'"'env'"'"': env_vars(),
+    '"'"'pip_packages'"'"': pip_pkgs(),
+}
+Path('"'"'/logs/fingerprint_prefill_w0.json'"'"').parent.mkdir(parents=True, exist_ok=True)
+Path('"'"'/logs/fingerprint_prefill_w0.json'"'"').write_text(json.dumps(fp, indent=2) + '"'"'\n'"'"')
+__FINGERPRINT_EOF__
+) || true ) && trtllm-llmapi-launch python3 -m dynamo.trtllm --model-path /model --served-model-name nvidia_GLM-5-NVFP4 --disaggregation-mode prefill --extra-engine-args /logs/trtllm_config_prefill.yaml --request-plane nats --publish-events-and-metrics'
+2026-04-21 14:10:37 [INFO] Starting prefill worker 1 on 1 nodes (theia0044) with 2 total GPUs (MPI mode)
+2026-04-21 14:10:37 [INFO] Env: CUDA_VISIBLE_DEVICES=2,3 DYN_SYSTEM_PORT=8082 ENROOT_ALLOW_DEV=yes ETCD_ENDPOINTS=http://theia0043:2379 HEAD_NODE_IP=10.66.4.181 MIMALLOC_PURGE_DELAY=0 NATS_SERVER=nats://theia0043:4222 NCCL_GRAPH_MIXING_SUPPORT=0 TLLM_LOG_LEVEL=INFO TRTLLM_ENABLE_PDL=1 TRTLLM_EPLB_SHM_NAME=moe_shared_345b5259741e4c4584b782c3557a9046 TRTLLM_SERVER_DISABLE_GC=1 TRTLLM_WORKER_DISABLE_GC=1
+2026-04-21 14:10:37 [INFO] Command: trtllm-llmapi-launch python3 -m dynamo.trtllm --model-path /model --served-model-name nvidia_GLM-5-NVFP4 --disaggregation-mode prefill --extra-engine-args /logs/trtllm_config_prefill.yaml --request-plane nats --publish-events-and-metrics
+2026-04-21 14:10:37 [INFO] Log: /home/rihuo/srt-slurm/outputs/1543570/logs/theia0044_prefill_w1.out
+2026-04-21 14:10:37 [INFO] srun command: srun --jobid 1543570 --overlap --mpi pmix --oversubscribe --cpu-bind verbose,none --nodes 1 --ntasks 2 --nodelist theia0044 --output /home/rihuo/srt-slurm/outputs/1543570/logs/theia0044_prefill_w1.out --container-image /lustre/fsw/core_dlfw_ci/rihuo/tensorrtllm-runtime-1-1-0-dev-3.sqsh --no-container-entrypoint --no-container-mount-home --container-mounts /home/rihuo/srt-slurm/outputs/1543570/logs:/logs,/lustre/fsw/core_dlfw_ci/rihuo/nvidia_GLM-5-NVFP4:/model,/home/rihuo/srt-slurm/configs:/configs,/home/rihuo/srt-slurm/src/srtctl/benchmarks/scripts:/srtctl-benchmarks bash -c 'export HEAD_NODE_IP=10.66.4.181 && export ETCD_ENDPOINTS=http://theia0043:2379 && export NATS_SERVER=nats://theia0043:4222 && export DYN_SYSTEM_PORT=8082 && export ENROOT_ALLOW_DEV=yes && export MIMALLOC_PURGE_DELAY=0 && export NCCL_GRAPH_MIXING_SUPPORT=0 && export TLLM_LOG_LEVEL=INFO && export TRTLLM_ENABLE_PDL=1 && export TRTLLM_SERVER_DISABLE_GC=1 && export TRTLLM_WORKER_DISABLE_GC=1 && export TRTLLM_EPLB_SHM_NAME=moe_shared_345b5259741e4c4584b782c3557a9046 && export CUDA_VISIBLE_DEVICES=2,3 && ( python3 <(cat <<'"'"'__FINGERPRINT_EOF__'"'"'
+import json, subprocess, platform, socket, sys
+from pathlib import Path
+from datetime import datetime, timezone
+
+def run(cmd, timeout=3):
+    try:
+        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+        return r.stdout.strip() if r.returncode == 0 else None
+    except Exception:
+        return None
+
+def find_python():
+    for p in ['"'"'/opt/dynamo/venv/bin/python3'"'"', '"'"'/opt/venv/bin/python3'"'"']:
+        if Path(p).exists():
+            return p
+    return '"'"'python3'"'"'
+
+PY = find_python()
+
+def pip_pkgs():
+    result = {}
+    for label, cmd in [
+        (PY, f'"'"'{PY} -m pip freeze 2>/dev/null'"'"'.format(PY=PY)),
+        ('"'"'python3'"'"', '"'"'python3 -m pip freeze 2>/dev/null'"'"'),
+        ('"'"'pip'"'"', '"'"'pip freeze 2>/dev/null'"'"'),
+        ('"'"'uv'"'"', '"'"'uv pip freeze 2>/dev/null'"'"'),
+    ]:
+        out = run(cmd)
+        if out:
+            pkgs = sorted([l.strip() for l in out.splitlines() if l.strip() and not l.startswith('"'"'#'"'"')], key=lambda s: s.lower())
+            if pkgs:
+                result[label] = pkgs
+    return result
+
+def gpu_info():
+    out = run('"'"'nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader'"'"')
+    if not out: return {'"'"'available'"'"': False}
+    gpus = []
+    for line in out.splitlines():
+        parts = [p.strip() for p in line.split('"'"','"'"')]
+        if len(parts) >= 3:
+            gpus.append({'"'"'name'"'"': parts[0], '"'"'driver'"'"': parts[1], '"'"'memory'"'"': parts[2]})
+    return {'"'"'available'"'"': True, '"'"'driver'"'"': gpus[0]['"'"'driver'"'"'] if gpus else '"'"'unknown'"'"', '"'"'gpus'"'"': gpus}
+
+def framework_versions():
+    # Use importlib.metadata for all packages — avoids loading native CUDA
+    # extensions (tensorrt_llm, torch) which fail without GPU context.
+    versions = {}
+    for name, pkg in [('"'"'vllm'"'"', '"'"'vllm'"'"'), ('"'"'sglang'"'"', '"'"'sglang'"'"'), ('"'"'tensorrt_llm'"'"', '"'"'tensorrt-llm'"'"'), ('"'"'dynamo'"'"', '"'"'ai-dynamo'"'"')]:
+        v = run(f"{PY} -c \"import importlib.metadata; print(importlib.metadata.version('"'"'{pkg}'"'"'))\"".format(PY=PY, pkg=pkg))
+        if v:
+            versions[name] = v
+    return versions
+
+def model_identity(model_path):
+    info = {}
+    mp = Path(model_path) if model_path else None
+    if not mp or not mp.exists():
+        return None
+    # HuggingFace snapshot_download: refs/main has commit SHA
+    for refs_path in [mp / '"'"'.huggingface'"'"' / '"'"'refs'"'"' / '"'"'main'"'"', mp / '"'"'refs'"'"' / '"'"'main'"'"']:
+        if refs_path.exists():
+            info['"'"'hf_revision'"'"'] = refs_path.read_text().strip()
+            break
+    # HuggingFace hf download --local-dir: .cache/huggingface/download/*.metadata
+    # Line 1 of each .metadata file is the commit hash
+    if '"'"'hf_revision'"'"' not in info:
+        cache_dl = mp / '"'"'.cache'"'"' / '"'"'huggingface'"'"' / '"'"'download'"'"'
+        if cache_dl.is_dir():
+            for meta_file in sorted(cache_dl.glob('"'"'*.metadata'"'"')):
+                try:
+                    first_line = meta_file.read_text().splitlines()[0].strip()
+                    if len(first_line) == 40 and all(c in '"'"'0123456789abcdef'"'"' for c in first_line):
+                        info['"'"'hf_revision'"'"'] = first_line
+                        break
+                except Exception:
+                    pass
+    # HuggingFace: check .huggingface/download_metadata.json (older format)
+    meta = mp / '"'"'.huggingface'"'"' / '"'"'download_metadata.json'"'"'
+    if meta.exists():
+        try:
+            m = json.loads(meta.read_text())
+            if '"'"'commit_hash'"'"' in m:
+                info['"'"'hf_revision'"'"'] = m['"'"'commit_hash'"'"']
+            if '"'"'repo_id'"'"' in m:
+                info['"'"'hf_repo'"'"'] = m['"'"'repo_id'"'"']
+        except Exception:
+            pass
+    # config.json often has _name_or_path
+    config_json = mp / '"'"'config.json'"'"'
+    if config_json.exists():
+        try:
+            cfg = json.loads(config_json.read_text())
+            if '"'"'_name_or_path'"'"' in cfg:
+                info['"'"'model_id'"'"'] = cfg['"'"'_name_or_path'"'"']
+        except Exception:
+            pass
+    return info or None
+
+def env_vars():
+    import os
+    prefixes = ('"'"'CUDA_'"'"', '"'"'TORCH_'"'"', '"'"'PYTORCH_'"'"', '"'"'NCCL_'"'"', '"'"'VLLM_'"'"', '"'"'SGLANG_'"'"', '"'"'SGL_'"'"',
+                '"'"'TRTLLM_'"'"', '"'"'TRT_LLM_'"'"', '"'"'TENSORRT_'"'"', '"'"'HF_'"'"', '"'"'TRANSFORMERS_'"'"', '"'"'DYN_'"'"',
+                '"'"'NVIDIA_'"'"', '"'"'OMPI_'"'"', '"'"'UCX_'"'"', '"'"'NVSHMEM_'"'"')
+    secrets = ('"'"'TOKEN'"'"', '"'"'KEY'"'"', '"'"'SECRET'"'"', '"'"'PASSWORD'"'"', '"'"'CREDENTIAL'"'"', '"'"'AUTH'"'"')
+    result = {}
+    for k, v in sorted(os.environ.items()):
+        if any(k.startswith(p) for p in prefixes):
+            if any(s in k.upper() for s in secrets):
+                result[k] = '"'"'***REDACTED***'"'"'
+            else:
+                result[k] = v
+    return result
+
+fp = {
+    '"'"'hostname'"'"': socket.gethostname(),
+    '"'"'timestamp'"'"': datetime.now(timezone.utc).strftime('"'"'%Y-%m-%dT%H:%M:%SZ'"'"'),
+    '"'"'arch'"'"': platform.machine(),
+    '"'"'os'"'"': next((l.split('"'"'='"'"',1)[1].strip('"'"'"'"'"') for l in Path('"'"'/etc/os-release'"'"').read_text().splitlines() if l.startswith('"'"'PRETTY_NAME='"'"')), platform.platform()) if Path('"'"'/etc/os-release'"'"').exists() else platform.platform(),
+    '"'"'gpu'"'"': gpu_info(),
+    '"'"'python_version'"'"': platform.python_version(),
+    '"'"'cuda_version'"'"': run('"'"'nvcc --version 2>/dev/null | grep release'"'"') or '"'"'unavailable'"'"',
+    '"'"'nccl_version'"'"': run(f'"'"'{PY} -c "import torch; print(torch.cuda.nccl.version())"'"'"'.format(PY=PY)) or '"'"'unavailable'"'"',
+    '"'"'frameworks'"'"': framework_versions(),
+    '"'"'model'"'"': model_identity('"'"'/model'"'"'),
+    '"'"'env'"'"': env_vars(),
+    '"'"'pip_packages'"'"': pip_pkgs(),
+}
+Path('"'"'/logs/fingerprint_prefill_w1.json'"'"').parent.mkdir(parents=True, exist_ok=True)
+Path('"'"'/logs/fingerprint_prefill_w1.json'"'"').write_text(json.dumps(fp, indent=2) + '"'"'\n'"'"')
+__FINGERPRINT_EOF__
+) || true ) && trtllm-llmapi-launch python3 -m dynamo.trtllm --model-path /model --served-model-name nvidia_GLM-5-NVFP4 --disaggregation-mode prefill --extra-engine-args /logs/trtllm_config_prefill.yaml --request-plane nats --publish-events-and-metrics'
+2026-04-21 14:10:37 [INFO] Starting prefill worker 2 on 1 nodes (theia0045) with 2 total GPUs (MPI mode)
+2026-04-21 14:10:37 [INFO] Env: CUDA_VISIBLE_DEVICES=0,1 DYN_SYSTEM_PORT=8083 ENROOT_ALLOW_DEV=yes ETCD_ENDPOINTS=http://theia0043:2379 HEAD_NODE_IP=10.66.4.181 MIMALLOC_PURGE_DELAY=0 NATS_SERVER=nats://theia0043:4222 NCCL_GRAPH_MIXING_SUPPORT=0 TLLM_LOG_LEVEL=INFO TRTLLM_ENABLE_PDL=1 TRTLLM_EPLB_SHM_NAME=moe_shared_5c6311f8206b44348eb1dc995574517f TRTLLM_SERVER_DISABLE_GC=1 TRTLLM_WORKER_DISABLE_GC=1
+2026-04-21 14:10:37 [INFO] Command: trtllm-llmapi-launch python3 -m dynamo.trtllm --model-path /model --served-model-name nvidia_GLM-5-NVFP4 --disaggregation-mode prefill --extra-engine-args /logs/trtllm_config_prefill.yaml --request-plane nats --publish-events-and-metrics
+2026-04-21 14:10:37 [INFO] Log: /home/rihuo/srt-slurm/outputs/1543570/logs/theia0045_prefill_w2.out
+2026-04-21 14:10:37 [INFO] srun command: srun --jobid 1543570 --overlap --mpi pmix --oversubscribe --cpu-bind verbose,none --nodes 1 --ntasks 2 --nodelist theia0045 --output /home/rihuo/srt-slurm/outputs/1543570/logs/theia0045_prefill_w2.out --container-image /lustre/fsw/core_dlfw_ci/rihuo/tensorrtllm-runtime-1-1-0-dev-3.sqsh --no-container-entrypoint --no-container-mount-home --container-mounts /home/rihuo/srt-slurm/outputs/1543570/logs:/logs,/lustre/fsw/core_dlfw_ci/rihuo/nvidia_GLM-5-NVFP4:/model,/home/rihuo/srt-slurm/configs:/configs,/home/rihuo/srt-slurm/src/srtctl/benchmarks/scripts:/srtctl-benchmarks bash -c 'export HEAD_NODE_IP=10.66.4.181 && export ETCD_ENDPOINTS=http://theia0043:2379 && export NATS_SERVER=nats://theia0043:4222 && export DYN_SYSTEM_PORT=8083 && export ENROOT_ALLOW_DEV=yes && export MIMALLOC_PURGE_DELAY=0 && export NCCL_GRAPH_MIXING_SUPPORT=0 && export TLLM_LOG_LEVEL=INFO && export TRTLLM_ENABLE_PDL=1 && export TRTLLM_SERVER_DISABLE_GC=1 && export TRTLLM_WORKER_DISABLE_GC=1 && export TRTLLM_EPLB_SHM_NAME=moe_shared_5c6311f8206b44348eb1dc995574517f && export CUDA_VISIBLE_DEVICES=0,1 && ( python3 <(cat <<'"'"'__FINGERPRINT_EOF__'"'"'
+import json, subprocess, platform, socket, sys
+from pathlib import Path
+from datetime import datetime, timezone
+
+def run(cmd, timeout=3):
+    try:
+        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+        return r.stdout.strip() if r.returncode == 0 else None
+    except Exception:
+        return None
+
+def find_python():
+    for p in ['"'"'/opt/dynamo/venv/bin/python3'"'"', '"'"'/opt/venv/bin/python3'"'"']:
+        if Path(p).exists():
+            return p
+    return '"'"'python3'"'"'
+
+PY = find_python()
+
+def pip_pkgs():
+    result = {}
+    for label, cmd in [
+        (PY, f'"'"'{PY} -m pip freeze 2>/dev/null'"'"'.format(PY=PY)),
+        ('"'"'python3'"'"', '"'"'python3 -m pip freeze 2>/dev/null'"'"'),
+        ('"'"'pip'"'"', '"'"'pip freeze 2>/dev/null'"'"'),
+        ('"'"'uv'"'"', '"'"'uv pip freeze 2>/dev/null'"'"'),
+    ]:
+        out = run(cmd)
+        if out:
+            pkgs = sorted([l.strip() for l in out.splitlines() if l.strip() and not l.startswith('"'"'#'"'"')], key=lambda s: s.lower())
+            if pkgs:
+                result[label] = pkgs
+    return result
+
+def gpu_info():
+    out = run('"'"'nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader'"'"')
+    if not out: return {'"'"'available'"'"': False}
+    gpus = []
+    for line in out.splitlines():
+        parts = [p.strip() for p in line.split('"'"','"'"')]
+        if len(parts) >= 3:
+            gpus.append({'"'"'name'"'"': parts[0], '"'"'driver'"'"': parts[1], '"'"'memory'"'"': parts[2]})
+    return {'"'"'available'"'"': True, '"'"'driver'"'"': gpus[0]['"'"'driver'"'"'] if gpus else '"'"'unknown'"'"', '"'"'gpus'"'"': gpus}
+
+def framework_versions():
+    # Use importlib.metadata for all packages — avoids loading native CUDA
+    # extensions (tensorrt_llm, torch) which fail without GPU context.
+    versions = {}
+    for name, pkg in [('"'"'vllm'"'"', '"'"'vllm'"'"'), ('"'"'sglang'"'"', '"'"'sglang'"'"'), ('"'"'tensorrt_llm'"'"', '"'"'tensorrt-llm'"'"'), ('"'"'dynamo'"'"', '"'"'ai-dynamo'"'"')]:
+        v = run(f"{PY} -c \"import importlib.metadata; print(importlib.metadata.version('"'"'{pkg}'"'"'))\"".format(PY=PY, pkg=pkg))
+        if v:
+            versions[name] = v
+    return versions
+
+def model_identity(model_path):
+    info = {}
+    mp = Path(model_path) if model_path else None
+    if not mp or not mp.exists():
+        return None
+    # HuggingFace snapshot_download: refs/main has commit SHA
+    for refs_path in [mp / '"'"'.huggingface'"'"' / '"'"'refs'"'"' / '"'"'main'"'"', mp / '"'"'refs'"'"' / '"'"'main'"'"']:
+        if refs_path.exists():
+            info['"'"'hf_revision'"'"'] = refs_path.read_text().strip()
+            break
+    # HuggingFace hf download --local-dir: .cache/huggingface/download/*.metadata
+    # Line 1 of each .metadata file is the commit hash
+    if '"'"'hf_revision'"'"' not in info:
+        cache_dl = mp / '"'"'.cache'"'"' / '"'"'huggingface'"'"' / '"'"'download'"'"'
+        if cache_dl.is_dir():
+            for meta_file in sorted(cache_dl.glob('"'"'*.metadata'"'"')):
+                try:
+                    first_line = meta_file.read_text().splitlines()[0].strip()
+                    if len(first_line) == 40 and all(c in '"'"'0123456789abcdef'"'"' for c in first_line):
+                        info['"'"'hf_revision'"'"'] = first_line
+                        break
+                except Exception:
+                    pass
+    # HuggingFace: check .huggingface/download_metadata.json (older format)
+    meta = mp / '"'"'.huggingface'"'"' / '"'"'download_metadata.json'"'"'
+    if meta.exists():
+        try:
+            m = json.loads(meta.read_text())
+            if '"'"'commit_hash'"'"' in m:
+                info['"'"'hf_revision'"'"'] = m['"'"'commit_hash'"'"']
+            if '"'"'repo_id'"'"' in m:
+                info['"'"'hf_repo'"'"'] = m['"'"'repo_id'"'"']
+        except Exception:
+            pass
+    # config.json often has _name_or_path
+    config_json = mp / '"'"'config.json'"'"'
+    if config_json.exists():
+        try:
+            cfg = json.loads(config_json.read_text())
+            if '"'"'_name_or_path'"'"' in cfg:
+                info['"'"'model_id'"'"'] = cfg['"'"'_name_or_path'"'"']
+        except Exception:
+            pass
+    return info or None
+
+def env_vars():
+    import os
+    prefixes = ('"'"'CUDA_'"'"', '"'"'TORCH_'"'"', '"'"'PYTORCH_'"'"', '"'"'NCCL_'"'"', '"'"'VLLM_'"'"', '"'"'SGLANG_'"'"', '"'"'SGL_'"'"',
+                '"'"'TRTLLM_'"'"', '"'"'TRT_LLM_'"'"', '"'"'TENSORRT_'"'"', '"'"'HF_'"'"', '"'"'TRANSFORMERS_'"'"', '"'"'DYN_'"'"',
+                '"'"'NVIDIA_'"'"', '"'"'OMPI_'"'"', '"'"'UCX_'"'"', '"'"'NVSHMEM_'"'"')
+    secrets = ('"'"'TOKEN'"'"', '"'"'KEY'"'"', '"'"'SECRET'"'"', '"'"'PASSWORD'"'"', '"'"'CREDENTIAL'"'"', '"'"'AUTH'"'"')
+    result = {}
+    for k, v in sorted(os.environ.items()):
+        if any(k.startswith(p) for p in prefixes):
+            if any(s in k.upper() for s in secrets):
+                result[k] = '"'"'***REDACTED***'"'"'
+            else:
+                result[k] = v
+    return result
+
+fp = {
+    '"'"'hostname'"'"': socket.gethostname(),
+    '"'"'timestamp'"'"': datetime.now(timezone.utc).strftime('"'"'%Y-%m-%dT%H:%M:%SZ'"'"'),
+    '"'"'arch'"'"': platform.machine(),
+    '"'"'os'"'"': next((l.split('"'"'='"'"',1)[1].strip('"'"'"'"'"') for l in Path('"'"'/etc/os-release'"'"').read_text().splitlines() if l.startswith('"'"'PRETTY_NAME='"'"')), platform.platform()) if Path('"'"'/etc/os-release'"'"').exists() else platform.platform(),
+    '"'"'gpu'"'"': gpu_info(),
+    '"'"'python_version'"'"': platform.python_version(),
+    '"'"'cuda_version'"'"': run('"'"'nvcc --version 2>/dev/null | grep release'"'"') or '"'"'unavailable'"'"',
+    '"'"'nccl_version'"'"': run(f'"'"'{PY} -c "import torch; print(torch.cuda.nccl.version())"'"'"'.format(PY=PY)) or '"'"'unavailable'"'"',
+    '"'"'frameworks'"'"': framework_versions(),
+    '"'"'model'"'"': model_identity('"'"'/model'"'"'),
+    '"'"'env'"'"': env_vars(),
+    '"'"'pip_packages'"'"': pip_pkgs(),
+}
+Path('"'"'/logs/fingerprint_prefill_w2.json'"'"').parent.mkdir(parents=True, exist_ok=True)
+Path('"'"'/logs/fingerprint_prefill_w2.json'"'"').write_text(json.dumps(fp, indent=2) + '"'"'\n'"'"')
+__FINGERPRINT_EOF__
+) || true ) && trtllm-llmapi-launch python3 -m dynamo.trtllm --model-path /model --served-model-name nvidia_GLM-5-NVFP4 --disaggregation-mode prefill --extra-engine-args /logs/trtllm_config_prefill.yaml --request-plane nats --publish-events-and-metrics'
+2026-04-21 14:10:37 [INFO] Starting prefill worker 3 on 1 nodes (theia0045) with 2 total GPUs (MPI mode)
+2026-04-21 14:10:37 [INFO] Env: CUDA_VISIBLE_DEVICES=2,3 DYN_SYSTEM_PORT=8084 ENROOT_ALLOW_DEV=yes ETCD_ENDPOINTS=http://theia0043:2379 HEAD_NODE_IP=10.66.4.181 MIMALLOC_PURGE_DELAY=0 NATS_SERVER=nats://theia0043:4222 NCCL_GRAPH_MIXING_SUPPORT=0 TLLM_LOG_LEVEL=INFO TRTLLM_ENABLE_PDL=1 TRTLLM_EPLB_SHM_NAME=moe_shared_646d0d9cefb8499599da3edb3df95a1b TRTLLM_SERVER_DISABLE_GC=1 TRTLLM_WORKER_DISABLE_GC=1
+2026-04-21 14:10:37 [INFO] Command: trtllm-llmapi-launch python3 -m dynamo.trtllm --model-path /model --served-model-name nvidia_GLM-5-NVFP4 --disaggregation-mode prefill --extra-engine-args /logs/trtllm_config_prefill.yaml --request-plane nats --publish-events-and-metrics
+2026-04-21 14:10:37 [INFO] Log: /home/rihuo/srt-slurm/outputs/1543570/logs/theia0045_prefill_w3.out
+2026-04-21 14:10:37 [INFO] srun command: srun --jobid 1543570 --overlap --mpi pmix --oversubscribe --cpu-bind verbose,none --nodes 1 --ntasks 2 --nodelist theia0045 --output /home/rihuo/srt-slurm/outputs/1543570/logs/theia0045_prefill_w3.out --container-image /lustre/fsw/core_dlfw_ci/rihuo/tensorrtllm-runtime-1-1-0-dev-3.sqsh --no-container-entrypoint --no-container-mount-home --container-mounts /home/rihuo/srt-slurm/outputs/1543570/logs:/logs,/lustre/fsw/core_dlfw_ci/rihuo/nvidia_GLM-5-NVFP4:/model,/home/rihuo/srt-slurm/configs:/configs,/home/rihuo/srt-slurm/src/srtctl/benchmarks/scripts:/srtctl-benchmarks bash -c 'export HEAD_NODE_IP=10.66.4.181 && export ETCD_ENDPOINTS=http://theia0043:2379 && export NATS_SERVER=nats://theia0043:4222 && export DYN_SYSTEM_PORT=8084 && export ENROOT_ALLOW_DEV=yes && export MIMALLOC_PURGE_DELAY=0 && export NCCL_GRAPH_MIXING_SUPPORT=0 && export TLLM_LOG_LEVEL=INFO && export TRTLLM_ENABLE_PDL=1 && export TRTLLM_SERVER_DISABLE_GC=1 && export TRTLLM_WORKER_DISABLE_GC=1 && export TRTLLM_EPLB_SHM_NAME=moe_shared_646d0d9cefb8499599da3edb3df95a1b && export CUDA_VISIBLE_DEVICES=2,3 && ( python3 <(cat <<'"'"'__FINGERPRINT_EOF__'"'"'
+import json, subprocess, platform, socket, sys
+from pathlib import Path
+from datetime import datetime, timezone
+
+def run(cmd, timeout=3):
+    try:
+        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+        return r.stdout.strip() if r.returncode == 0 else None
+    except Exception:
+        return None
+
+def find_python():
+    for p in ['"'"'/opt/dynamo/venv/bin/python3'"'"', '"'"'/opt/venv/bin/python3'"'"']:
+        if Path(p).exists():
+            return p
+    return '"'"'python3'"'"'
+
+PY = find_python()
+
+def pip_pkgs():
+    result = {}
+    for label, cmd in [
+        (PY, f'"'"'{PY} -m pip freeze 2>/dev/null'"'"'.format(PY=PY)),
+        ('"'"'python3'"'"', '"'"'python3 -m pip freeze 2>/dev/null'"'"'),
+        ('"'"'pip'"'"', '"'"'pip freeze 2>/dev/null'"'"'),
+        ('"'"'uv'"'"', '"'"'uv pip freeze 2>/dev/null'"'"'),
+    ]:
+        out = run(cmd)
+        if out:
+            pkgs = sorted([l.strip() for l in out.splitlines() if l.strip() and not l.startswith('"'"'#'"'"')], key=lambda s: s.lower())
+            if pkgs:
+                result[label] = pkgs
+    return result
+
+def gpu_info():
+    out = run('"'"'nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader'"'"')
+    if not out: return {'"'"'available'"'"': False}
+    gpus = []
+    for line in out.splitlines():
+        parts = [p.strip() for p in line.split('"'"','"'"')]
+        if len(parts) >= 3:
+            gpus.append({'"'"'name'"'"': parts[0], '"'"'driver'"'"': parts[1], '"'"'memory'"'"': parts[2]})
+    return {'"'"'available'"'"': True, '"'"'driver'"'"': gpus[0]['"'"'driver'"'"'] if gpus else '"'"'unknown'"'"', '"'"'gpus'"'"': gpus}
+
+def framework_versions():
+    # Use importlib.metadata for all packages — avoids loading native CUDA
+    # extensions (tensorrt_llm, torch) which fail without GPU context.
+    versions = {}
+    for name, pkg in [('"'"'vllm'"'"', '"'"'vllm'"'"'), ('"'"'sglang'"'"', '"'"'sglang'"'"'), ('"'"'tensorrt_llm'"'"', '"'"'tensorrt-llm'"'"'), ('"'"'dynamo'"'"', '"'"'ai-dynamo'"'"')]:
+        v = run(f"{PY} -c \"import importlib.metadata; print(importlib.metadata.version('"'"'{pkg}'"'"'))\"".format(PY=PY, pkg=pkg))
+        if v:
+            versions[name] = v
+    return versions
+
+def model_identity(model_path):
+    info = {}
+    mp = Path(model_path) if model_path else None
+    if not mp or not mp.exists():
+        return None
+    # HuggingFace snapshot_download: refs/main has commit SHA
+    for refs_path in [mp / '"'"'.huggingface'"'"' / '"'"'refs'"'"' / '"'"'main'"'"', mp / '"'"'refs'"'"' / '"'"'main'"'"']:
+        if refs_path.exists():
+            info['"'"'hf_revision'"'"'] = refs_path.read_text().strip()
+            break
+    # HuggingFace hf download --local-dir: .cache/huggingface/download/*.metadata
+    # Line 1 of each .metadata file is the commit hash
+    if '"'"'hf_revision'"'"' not in info:
+        cache_dl = mp / '"'"'.cache'"'"' / '"'"'huggingface'"'"' / '"'"'download'"'"'
+        if cache_dl.is_dir():
+            for meta_file in sorted(cache_dl.glob('"'"'*.metadata'"'"')):
+                try:
+                    first_line = meta_file.read_text().splitlines()[0].strip()
+                    if len(first_line) == 40 and all(c in '"'"'0123456789abcdef'"'"' for c in first_line):
+                        info['"'"'hf_revision'"'"'] = first_line
+                        break
+                except Exception:
+                    pass
+    # HuggingFace: check .huggingface/download_metadata.json (older format)
+    meta = mp / '"'"'.huggingface'"'"' / '"'"'download_metadata.json'"'"'
+    if meta.exists():
+        try:
+            m = json.loads(meta.read_text())
+            if '"'"'commit_hash'"'"' in m:
+                info['"'"'hf_revision'"'"'] = m['"'"'commit_hash'"'"']
+            if '"'"'repo_id'"'"' in m:
+                info['"'"'hf_repo'"'"'] = m['"'"'repo_id'"'"']
+        except Exception:
+            pass
+    # config.json often has _name_or_path
+    config_json = mp / '"'"'config.json'"'"'
+    if config_json.exists():
+        try:
+            cfg = json.loads(config_json.read_text())
+            if '"'"'_name_or_path'"'"' in cfg:
+                info['"'"'model_id'"'"'] = cfg['"'"'_name_or_path'"'"']
+        except Exception:
+            pass
+    return info or None
+
+def env_vars():
+    import os
+    prefixes = ('"'"'CUDA_'"'"', '"'"'TORCH_'"'"', '"'"'PYTORCH_'"'"', '"'"'NCCL_'"'"', '"'"'VLLM_'"'"', '"'"'SGLANG_'"'"', '"'"'SGL_'"'"',
+                '"'"'TRTLLM_'"'"', '"'"'TRT_LLM_'"'"', '"'"'TENSORRT_'"'"', '"'"'HF_'"'"', '"'"'TRANSFORMERS_'"'"', '"'"'DYN_'"'"',
+                '"'"'NVIDIA_'"'"', '"'"'OMPI_'"'"', '"'"'UCX_'"'"', '"'"'NVSHMEM_'"'"')
+    secrets = ('"'"'TOKEN'"'"', '"'"'KEY'"'"', '"'"'SECRET'"'"', '"'"'PASSWORD'"'"', '"'"'CREDENTIAL'"'"', '"'"'AUTH'"'"')
+    result = {}
+    for k, v in sorted(os.environ.items()):
+        if any(k.startswith(p) for p in prefixes):
+            if any(s in k.upper() for s in secrets):
+                result[k] = '"'"'***REDACTED***'"'"'
+            else:
+                result[k] = v
+    return result
+
+fp = {
+    '"'"'hostname'"'"': socket.gethostname(),
+    '"'"'timestamp'"'"': datetime.now(timezone.utc).strftime('"'"'%Y-%m-%dT%H:%M:%SZ'"'"'),
+    '"'"'arch'"'"': platform.machine(),
+    '"'"'os'"'"': next((l.split('"'"'='"'"',1)[1].strip('"'"'"'"'"') for l in Path('"'"'/etc/os-release'"'"').read_text().splitlines() if l.startswith('"'"'PRETTY_NAME='"'"')), platform.platform()) if Path('"'"'/etc/os-release'"'"').exists() else platform.platform(),
+    '"'"'gpu'"'"': gpu_info(),
+    '"'"'python_version'"'"': platform.python_version(),
+    '"'"'cuda_version'"'"': run('"'"'nvcc --version 2>/dev/null | grep release'"'"') or '"'"'unavailable'"'"',
+    '"'"'nccl_version'"'"': run(f'"'"'{PY} -c "import torch; print(torch.cuda.nccl.version())"'"'"'.format(PY=PY)) or '"'"'unavailable'"'"',
+    '"'"'frameworks'"'"': framework_versions(),
+    '"'"'model'"'"': model_identity('"'"'/model'"'"'),
+    '"'"'env'"'"': env_vars(),
+    '"'"'pip_packages'"'"': pip_pkgs(),
+}
+Path('"'"'/logs/fingerprint_prefill_w3.json'"'"').parent.mkdir(parents=True, exist_ok=True)
+Path('"'"'/logs/fingerprint_prefill_w3.json'"'"').write_text(json.dumps(fp, indent=2) + '"'"'\n'"'"')
+__FINGERPRINT_EOF__
+) || true ) && trtllm-llmapi-launch python3 -m dynamo.trtllm --model-path /model --served-model-name nvidia_GLM-5-NVFP4 --disaggregation-mode prefill --extra-engine-args /logs/trtllm_config_prefill.yaml --request-plane nats --publish-events-and-metrics'
+2026-04-21 14:10:37 [INFO] Starting decode worker 0 on 4 nodes (theia0047,theia0048,theia0049,theia0050) with 16 total GPUs (MPI mode)
+2026-04-21 14:10:37 [INFO] Env: DYN_SYSTEM_PORT=8085 ENROOT_ALLOW_DEV=yes ETCD_ENDPOINTS=http://theia0043:2379 HEAD_NODE_IP=10.66.4.181 MIMALLOC_PURGE_DELAY=0 NATS_SERVER=nats://theia0043:4222 NCCL_GRAPH_MIXING_SUPPORT=0 TLLM_LOG_LEVEL=INFO TRTLLM_ENABLE_PDL=1 TRTLLM_EPLB_SHM_NAME=moe_shared_2468ae4533534170b6d22ddebdb4ce70 TRTLLM_SERVER_DISABLE_GC=1 TRTLLM_WORKER_DISABLE_GC=1
+2026-04-21 14:10:37 [INFO] Command: trtllm-llmapi-launch python3 -m dynamo.trtllm --model-path /model --served-model-name nvidia_GLM-5-NVFP4 --disaggregation-mode decode --extra-engine-args /logs/trtllm_config_decode.yaml --request-plane nats --publish-events-and-metrics
+2026-04-21 14:10:37 [INFO] Log: /home/rihuo/srt-slurm/outputs/1543570/logs/theia0047_decode_w0.out
+2026-04-21 14:10:37 [INFO] srun command: srun --jobid 1543570 --overlap --mpi pmix --oversubscribe --cpu-bind verbose,none --nodes 4 --ntasks 16 --nodelist theia0047,theia0048,theia0049,theia0050 --output /home/rihuo/srt-slurm/outputs/1543570/logs/theia0047_decode_w0.out --container-image /lustre/fsw/core_dlfw_ci/rihuo/tensorrtllm-runtime-1-1-0-dev-3.sqsh --no-container-entrypoint --no-container-mount-home --container-mounts /home/rihuo/srt-slurm/outputs/1543570/logs:/logs,/lustre/fsw/core_dlfw_ci/rihuo/nvidia_GLM-5-NVFP4:/model,/home/rihuo/srt-slurm/configs:/configs,/home/rihuo/srt-slurm/src/srtctl/benchmarks/scripts:/srtctl-benchmarks bash -c 'export HEAD_NODE_IP=10.66.4.181 && export ETCD_ENDPOINTS=http://theia0043:2379 && export NATS_SERVER=nats://theia0043:4222 && export DYN_SYSTEM_PORT=8085 && export ENROOT_ALLOW_DEV=yes && export MIMALLOC_PURGE_DELAY=0 && export NCCL_GRAPH_MIXING_SUPPORT=0 && export TLLM_LOG_LEVEL=INFO && export TRTLLM_ENABLE_PDL=1 && export TRTLLM_SERVER_DISABLE_GC=1 && export TRTLLM_WORKER_DISABLE_GC=1 && export TRTLLM_EPLB_SHM_NAME=moe_shared_2468ae4533534170b6d22ddebdb4ce70 && ( python3 <(cat <<'"'"'__FINGERPRINT_EOF__'"'"'
+import json, subprocess, platform, socket, sys
+from pathlib import Path
+from datetime import datetime, timezone
+
+def run(cmd, timeout=3):
+    try:
+        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+        return r.stdout.strip() if r.returncode == 0 else None
+    except Exception:
+        return None
+
+def find_python():
+    for p in ['"'"'/opt/dynamo/venv/bin/python3'"'"', '"'"'/opt/venv/bin/python3'"'"']:
+        if Path(p).exists():
+            return p
+    return '"'"'python3'"'"'
+
+PY = find_python()
+
+def pip_pkgs():
+    result = {}
+    for label, cmd in [
+        (PY, f'"'"'{PY} -m pip freeze 2>/dev/null'"'"'.format(PY=PY)),
+        ('"'"'python3'"'"', '"'"'python3 -m pip freeze 2>/dev/null'"'"'),
+        ('"'"'pip'"'"', '"'"'pip freeze 2>/dev/null'"'"'),
+        ('"'"'uv'"'"', '"'"'uv pip freeze 2>/dev/null'"'"'),
+    ]:
+        out = run(cmd)
+        if out:
+            pkgs = sorted([l.strip() for l in out.splitlines() if l.strip() and not l.startswith('"'"'#'"'"')], key=lambda s: s.lower())
+            if pkgs:
+                result[label] = pkgs
+    return result
+
+def gpu_info():
+    out = run('"'"'nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader'"'"')
+    if not out: return {'"'"'available'"'"': False}
+    gpus = []
+    for line in out.splitlines():
+        parts = [p.strip() for p in line.split('"'"','"'"')]
+        if len(parts) >= 3:
+            gpus.append({'"'"'name'"'"': parts[0], '"'"'driver'"'"': parts[1], '"'"'memory'"'"': parts[2]})
+    return {'"'"'available'"'"': True, '"'"'driver'"'"': gpus[0]['"'"'driver'"'"'] if gpus else '"'"'unknown'"'"', '"'"'gpus'"'"': gpus}
+
+def framework_versions():
+    # Use importlib.metadata for all packages — avoids loading native CUDA
+    # extensions (tensorrt_llm, torch) which fail without GPU context.
+    versions = {}
+    for name, pkg in [('"'"'vllm'"'"', '"'"'vllm'"'"'), ('"'"'sglang'"'"', '"'"'sglang'"'"'), ('"'"'tensorrt_llm'"'"', '"'"'tensorrt-llm'"'"'), ('"'"'dynamo'"'"', '"'"'ai-dynamo'"'"')]:
+        v = run(f"{PY} -c \"import importlib.metadata; print(importlib.metadata.version('"'"'{pkg}'"'"'))\"".format(PY=PY, pkg=pkg))
+        if v:
+            versions[name] = v
+    return versions
+
+def model_identity(model_path):
+    info = {}
+    mp = Path(model_path) if model_path else None
+    if not mp or not mp.exists():
+        return None
+    # HuggingFace snapshot_download: refs/main has commit SHA
+    for refs_path in [mp / '"'"'.huggingface'"'"' / '"'"'refs'"'"' / '"'"'main'"'"', mp / '"'"'refs'"'"' / '"'"'main'"'"']:
+        if refs_path.exists():
+            info['"'"'hf_revision'"'"'] = refs_path.read_text().strip()
+            break
+    # HuggingFace hf download --local-dir: .cache/huggingface/download/*.metadata
+    # Line 1 of each .metadata file is the commit hash
+    if '"'"'hf_revision'"'"' not in info:
+        cache_dl = mp / '"'"'.cache'"'"' / '"'"'huggingface'"'"' / '"'"'download'"'"'
+        if cache_dl.is_dir():
+            for meta_file in sorted(cache_dl.glob('"'"'*.metadata'"'"')):
+                try:
+                    first_line = meta_file.read_text().splitlines()[0].strip()
+                    if len(first_line) == 40 and all(c in '"'"'0123456789abcdef'"'"' for c in first_line):
+                        info['"'"'hf_revision'"'"'] = first_line
+                        break
+                except Exception:
+                    pass
+    # HuggingFace: check .huggingface/download_metadata.json (older format)
+    meta = mp / '"'"'.huggingface'"'"' / '"'"'download_metadata.json'"'"'
+    if meta.exists():
+        try:
+            m = json.loads(meta.read_text())
+            if '"'"'commit_hash'"'"' in m:
+                info['"'"'hf_revision'"'"'] = m['"'"'commit_hash'"'"']
+            if '"'"'repo_id'"'"' in m:
+                info['"'"'hf_repo'"'"'] = m['"'"'repo_id'"'"']
+        except Exception:
+            pass
+    # config.json often has _name_or_path
+    config_json = mp / '"'"'config.json'"'"'
+    if config_json.exists():
+        try:
+            cfg = json.loads(config_json.read_text())
+            if '"'"'_name_or_path'"'"' in cfg:
+                info['"'"'model_id'"'"'] = cfg['"'"'_name_or_path'"'"']
+        except Exception:
+            pass
+    return info or None
+
+def env_vars():
+    import os
+    prefixes = ('"'"'CUDA_'"'"', '"'"'TORCH_'"'"', '"'"'PYTORCH_'"'"', '"'"'NCCL_'"'"', '"'"'VLLM_'"'"', '"'"'SGLANG_'"'"', '"'"'SGL_'"'"',
+                '"'"'TRTLLM_'"'"', '"'"'TRT_LLM_'"'"', '"'"'TENSORRT_'"'"', '"'"'HF_'"'"', '"'"'TRANSFORMERS_'"'"', '"'"'DYN_'"'"',
+                '"'"'NVIDIA_'"'"', '"'"'OMPI_'"'"', '"'"'UCX_'"'"', '"'"'NVSHMEM_'"'"')
+    secrets = ('"'"'TOKEN'"'"', '"'"'KEY'"'"', '"'"'SECRET'"'"', '"'"'PASSWORD'"'"', '"'"'CREDENTIAL'"'"', '"'"'AUTH'"'"')
+    result = {}
+    for k, v in sorted(os.environ.items()):
+        if any(k.startswith(p) for p in prefixes):
+            if any(s in k.upper() for s in secrets):
+                result[k] = '"'"'***REDACTED***'"'"'
+            else:
+                result[k] = v
+    return result
+
+fp = {
+    '"'"'hostname'"'"': socket.gethostname(),
+    '"'"'timestamp'"'"': datetime.now(timezone.utc).strftime('"'"'%Y-%m-%dT%H:%M:%SZ'"'"'),
+    '"'"'arch'"'"': platform.machine(),
+    '"'"'os'"'"': next((l.split('"'"'='"'"',1)[1].strip('"'"'"'"'"') for l in Path('"'"'/etc/os-release'"'"').read_text().splitlines() if l.startswith('"'"'PRETTY_NAME='"'"')), platform.platform()) if Path('"'"'/etc/os-release'"'"').exists() else platform.platform(),
+    '"'"'gpu'"'"': gpu_info(),
+    '"'"'python_version'"'"': platform.python_version(),
+    '"'"'cuda_version'"'"': run('"'"'nvcc --version 2>/dev/null | grep release'"'"') or '"'"'unavailable'"'"',
+    '"'"'nccl_version'"'"': run(f'"'"'{PY} -c "import torch; print(torch.cuda.nccl.version())"'"'"'.format(PY=PY)) or '"'"'unavailable'"'"',
+    '"'"'frameworks'"'"': framework_versions(),
+    '"'"'model'"'"': model_identity('"'"'/model'"'"'),
+    '"'"'env'"'"': env_vars(),
+    '"'"'pip_packages'"'"': pip_pkgs(),
+}
+Path('"'"'/logs/fingerprint_decode_w0.json'"'"').parent.mkdir(parents=True, exist_ok=True)
+Path('"'"'/logs/fingerprint_decode_w0.json'"'"').write_text(json.dumps(fp, indent=2) + '"'"'\n'"'"')
+__FINGERPRINT_EOF__
+) || true ) && trtllm-llmapi-launch python3 -m dynamo.trtllm --model-path /model --served-model-name nvidia_GLM-5-NVFP4 --disaggregation-mode decode --extra-engine-args /logs/trtllm_config_decode.yaml --request-plane nats --publish-events-and-metrics'
+2026-04-21 14:10:37 [INFO] Started 5 worker processes
+2026-04-21 14:10:37 [INFO] Starting frontend layer
+2026-04-21 14:10:37 [INFO] Frontend topology: nginx on theia0044, 5 frontends on ['theia0045', 'theia0047', 'theia0048', 'theia0049', 'theia0050']
+2026-04-21 14:10:37 [INFO] Starting nginx on theia0044
+2026-04-21 14:10:37 [INFO] srun command: srun --jobid 1543570 --overlap --nodes 1 --ntasks 1 --nodelist theia0044 --output /home/rihuo/srt-slurm/outputs/1543570/logs/theia0044_nginx.out --container-image nginx:1.27.4 --no-container-entrypoint --no-container-mount-home --container-mounts /home/rihuo/srt-slurm/outputs/1543570/logs:/logs,/lustre/fsw/core_dlfw_ci/rihuo/nvidia_GLM-5-NVFP4:/model,/home/rihuo/srt-slurm/configs:/configs,/home/rihuo/srt-slurm/src/srtctl/benchmarks/scripts:/srtctl-benchmarks --container-remap-root bash -c 'nginx -c /logs/nginx.conf -g '"'"'daemon off;'"'"''
+2026-04-21 14:10:37 [INFO] Starting dynamo frontend 0 on theia0045
+2026-04-21 14:10:37 [INFO] srun command: srun --jobid 1543570 --overlap --mpi pmix --nodes 1 --ntasks 1 --nodelist theia0045 --output /home/rihuo/srt-slurm/outputs/1543570/logs/theia0045_frontend_0.out --container-image /lustre/fsw/core_dlfw_ci/rihuo/tensorrtllm-runtime-1-1-0-dev-3.sqsh --no-container-entrypoint --no-container-mount-home --container-mounts /home/rihuo/srt-slurm/outputs/1543570/logs:/logs,/lustre/fsw/core_dlfw_ci/rihuo/nvidia_GLM-5-NVFP4:/model,/home/rihuo/srt-slurm/configs:/configs,/home/rihuo/srt-slurm/src/srtctl/benchmarks/scripts:/srtctl-benchmarks bash -c 'export ETCD_ENDPOINTS=http://theia0043:2379 && export NATS_SERVER=nats://theia0043:4222 && export DYN_REQUEST_PLANE=nats && python3 -m dynamo.frontend --http-port=8180'
+2026-04-21 14:10:37 [INFO] Starting dynamo frontend 1 on theia0047
+2026-04-21 14:10:37 [INFO] srun command: srun --jobid 1543570 --overlap --mpi pmix --nodes 1 --ntasks 1 --nodelist theia0047 --output /home/rihuo/srt-slurm/outputs/1543570/logs/theia0047_frontend_1.out --container-image /lustre/fsw/core_dlfw_ci/rihuo/tensorrtllm-runtime-1-1-0-dev-3.sqsh --no-container-entrypoint --no-container-mount-home --container-mounts /home/rihuo/srt-slurm/outputs/1543570/logs:/logs,/lustre/fsw/core_dlfw_ci/rihuo/nvidia_GLM-5-NVFP4:/model,/home/rihuo/srt-slurm/configs:/configs,/home/rihuo/srt-slurm/src/srtctl/benchmarks/scripts:/srtctl-benchmarks bash -c 'export ETCD_ENDPOINTS=http://theia0043:2379 && export NATS_SERVER=nats://theia0043:4222 && export DYN_REQUEST_PLANE=nats && python3 -m dynamo.frontend --http-port=8180'
+2026-04-21 14:10:37 [INFO] Starting dynamo frontend 2 on theia0048
+2026-04-21 14:10:37 [INFO] srun command: srun --jobid 1543570 --overlap --mpi pmix --nodes 1 --ntasks 1 --nodelist theia0048 --output /home/rihuo/srt-slurm/outputs/1543570/logs/theia0048_frontend_2.out --container-image /lustre/fsw/core_dlfw_ci/rihuo/tensorrtllm-runtime-1-1-0-dev-3.sqsh --no-container-entrypoint --no-container-mount-home --container-mounts /home/rihuo/srt-slurm/outputs/1543570/logs:/logs,/lustre/fsw/core_dlfw_ci/rihuo/nvidia_GLM-5-NVFP4:/model,/home/rihuo/srt-slurm/configs:/configs,/home/rihuo/srt-slurm/src/srtctl/benchmarks/scripts:/srtctl-benchmarks bash -c 'export ETCD_ENDPOINTS=http://theia0043:2379 && export NATS_SERVER=nats://theia0043:4222 && export DYN_REQUEST_PLANE=nats && python3 -m dynamo.frontend --http-port=8180'
+2026-04-21 14:10:37 [INFO] Starting dynamo frontend 3 on theia0049
+2026-04-21 14:10:37 [INFO] srun command: srun --jobid 1543570 --overlap --mpi pmix --nodes 1 --ntasks 1 --nodelist theia0049 --output /home/rihuo/srt-slurm/outputs/1543570/logs/theia0049_frontend_3.out --container-image /lustre/fsw/core_dlfw_ci/rihuo/tensorrtllm-runtime-1-1-0-dev-3.sqsh --no-container-entrypoint --no-container-mount-home --container-mounts /home/rihuo/srt-slurm/outputs/1543570/logs:/logs,/lustre/fsw/core_dlfw_ci/rihuo/nvidia_GLM-5-NVFP4:/model,/home/rihuo/srt-slurm/configs:/configs,/home/rihuo/srt-slurm/src/srtctl/benchmarks/scripts:/srtctl-benchmarks bash -c 'export ETCD_ENDPOINTS=http://theia0043:2379 && export NATS_SERVER=nats://theia0043:4222 && export DYN_REQUEST_PLANE=nats && python3 -m dynamo.frontend --http-port=8180'
+2026-04-21 14:10:37 [INFO] Starting dynamo frontend 4 on theia0050
+2026-04-21 14:10:37 [INFO] srun command: srun --jobid 1543570 --overlap --mpi pmix --nodes 1 --ntasks 1 --nodelist theia0050 --output /home/rihuo/srt-slurm/outputs/1543570/logs/theia0050_frontend_4.out --container-image /lustre/fsw/core_dlfw_ci/rihuo/tensorrtllm-runtime-1-1-0-dev-3.sqsh --no-container-entrypoint --no-container-mount-home --container-mounts /home/rihuo/srt-slurm/outputs/1543570/logs:/logs,/lustre/fsw/core_dlfw_ci/rihuo/nvidia_GLM-5-NVFP4:/model,/home/rihuo/srt-slurm/configs:/configs,/home/rihuo/srt-slurm/src/srtctl/benchmarks/scripts:/srtctl-benchmarks bash -c 'export ETCD_ENDPOINTS=http://theia0043:2379 && export NATS_SERVER=nats://theia0043:4222 && export DYN_REQUEST_PLANE=nats && python3 -m dynamo.frontend --http-port=8180'
+2026-04-21 14:10:37 [INFO] Telemetry disabled
+2026-04-21 14:10:37 [INFO]
+2026-04-21 14:10:37 [INFO] ============================================================
+2026-04-21 14:10:37 [INFO] Connection Commands
+2026-04-21 14:10:37 [INFO] ============================================================
+2026-04-21 14:10:37 [INFO] Frontend URL: http://theia0044:8000
+2026-04-21 14:10:37 [INFO]
+2026-04-21 14:10:37 [INFO] To connect to head node (theia0044):
+2026-04-21 14:10:37 [INFO]   srun --container-image=/lustre/fsw/core_dlfw_ci/rihuo/tensorrtllm-runtime-1-1-0-dev-3.sqsh --container-mounts=/home/rihuo/srt-slurm/outputs/1543570/logs:/logs,/lustre/fsw/core_dlfw_ci/rihuo/nvidia_GLM-5-NVFP4:/model,/home/rihuo/srt-slurm/configs:/configs,/home/rihuo/srt-slurm/src/srtctl/benchmarks/scripts:/srtctl-benchmarks --jobid 1543570 -w theia0044 --overlap --pty bash
+2026-04-21 14:10:37 [INFO]
+2026-04-21 14:10:37 [INFO] To connect to worker node (theia0045):
+2026-04-21 14:10:37 [INFO]   srun --container-image=/lustre/fsw/core_dlfw_ci/rihuo/tensorrtllm-runtime-1-1-0-dev-3.sqsh --container-mounts=/home/rihuo/srt-slurm/outputs/1543570/logs:/logs,/lustre/fsw/core_dlfw_ci/rihuo/nvidia_GLM-5-NVFP4:/model,/home/rihuo/srt-slurm/configs:/configs,/home/rihuo/srt-slurm/src/srtctl/benchmarks/scripts:/srtctl-benchmarks --jobid 1543570 -w theia0045 --overlap --pty bash
+2026-04-21 14:10:37 [INFO]
+2026-04-21 14:10:37 [INFO] To connect to worker node (theia0047):
+2026-04-21 14:10:37 [INFO]   srun --container-image=/lustre/fsw/core_dlfw_ci/rihuo/tensorrtllm-runtime-1-1-0-dev-3.sqsh --container-mounts=/home/rihuo/srt-slurm/outputs/1543570/logs:/logs,/lustre/fsw/core_dlfw_ci/rihuo/nvidia_GLM-5-NVFP4:/model,/home/rihuo/srt-slurm/configs:/configs,/home/rihuo/srt-slurm/src/srtctl/benchmarks/scripts:/srtctl-benchmarks --jobid 1543570 -w theia0047 --overlap --pty bash
+2026-04-21 14:10:37 [INFO]
+2026-04-21 14:10:37 [INFO] To connect to worker node (theia0048):
+2026-04-21 14:10:37 [INFO]   srun --container-image=/lustre/fsw/core_dlfw_ci/rihuo/tensorrtllm-runtime-1-1-0-dev-3.sqsh --container-mounts=/home/rihuo/srt-slurm/outputs/1543570/logs:/logs,/lustre/fsw/core_dlfw_ci/rihuo/nvidia_GLM-5-NVFP4:/model,/home/rihuo/srt-slurm/configs:/configs,/home/rihuo/srt-slurm/src/srtctl/benchmarks/scripts:/srtctl-benchmarks --jobid 1543570 -w theia0048 --overlap --pty bash
+2026-04-21 14:10:37 [INFO]
+2026-04-21 14:10:37 [INFO] To connect to worker node (theia0049):
+2026-04-21 14:10:37 [INFO]   srun --container-image=/lustre/fsw/core_dlfw_ci/rihuo/tensorrtllm-runtime-1-1-0-dev-3.sqsh --container-mounts=/home/rihuo/srt-slurm/outputs/1543570/logs:/logs,/lustre/fsw/core_dlfw_ci/rihuo/nvidia_GLM-5-NVFP4:/model,/home/rihuo/srt-slurm/configs:/configs,/home/rihuo/srt-slurm/src/srtctl/benchmarks/scripts:/srtctl-benchmarks --jobid 1543570 -w theia0049 --overlap --pty bash
+2026-04-21 14:10:37 [INFO]
+2026-04-21 14:10:37 [INFO] To connect to worker node (theia0050):
+2026-04-21 14:10:37 [INFO]   srun --container-image=/lustre/fsw/core_dlfw_ci/rihuo/tensorrtllm-runtime-1-1-0-dev-3.sqsh --container-mounts=/home/rihuo/srt-slurm/outputs/1543570/logs:/logs,/lustre/fsw/core_dlfw_ci/rihuo/nvidia_GLM-5-NVFP4:/model,/home/rihuo/srt-slurm/configs:/configs,/home/rihuo/srt-slurm/src/srtctl/benchmarks/scripts:/srtctl-benchmarks --jobid 1543570 -w theia0050 --overlap --pty bash
+2026-04-21 14:10:37 [INFO] ============================================================
+2026-04-21 14:10:37 [INFO]
+2026-04-21 14:10:37 [INFO] Waiting for workers to be ready...
+2026-04-21 14:10:37 [INFO] Waiting for server health (expecting 5 workers: 4P + 1D)...
+2026-04-21 14:10:37 [INFO] Polling http://theia0044:8000/health every 10.0s for 4 prefills and 1 decodes
+2026-04-21 14:11:37 [INFO] Model is not ready, waiting for 4 prefills and 1 decodes. Have 0 prefills and 0 decodes.
+2026-04-21 14:12:37 [INFO] Model is not ready, waiting for 4 prefills and 1 decodes. Have 0 prefills and 0 decodes.
+2026-04-21 14:13:37 [INFO] Model is not ready, waiting for 4 prefills and 1 decodes. Have 0 prefills and 0 decodes.
+2026-04-21 14:14:37 [INFO] Model is not ready, waiting for 4 prefills and 1 decodes. Have 0 prefills and 0 decodes.
+2026-04-21 14:15:37 [INFO] Model is not ready, waiting for 4 prefills and 1 decodes. Have 0 prefills and 0 decodes.
+2026-04-21 14:16:37 [INFO] Model is not ready, waiting for 2 prefills and 1 decodes. Have 2 prefills and 0 decodes.
+2026-04-21 14:17:37 [INFO] Model is not ready, waiting for 0 prefills and 1 decodes. Have 4 prefills and 0 decodes.
+
+2026-04-21 14:18:38 [INFO] Model is not ready, waiting for 0 prefills and 1 decodes. Have 4 prefills and 0 decodes.
+2026-04-21 14:19:38 [INFO] Model is not ready, waiting for 0 prefills and 1 decodes. Have 4 prefills and 0 decodes.
+2026-04-21 14:20:38 [INFO] Model is not ready, waiting for 0 prefills and 1 decodes. Have 4 prefills and 0 decodes.
+2026-04-21 14:21:38 [INFO] Model is not ready, waiting for 0 prefills and 1 decodes. Have 4 prefills and 0 decodes.
+2026-04-21 14:22:38 [INFO] Model is not ready, waiting for 0 prefills and 1 decodes. Have 4 prefills and 0 decodes.
+2026-04-21 14:23:38 [INFO] Model is not ready, waiting for 0 prefills and 1 decodes. Have 4 prefills and 0 decodes.
+2026-04-21 14:24:38 [INFO] Model is not ready, waiting for 0 prefills and 1 decodes. Have 4 prefills and 0 decodes.
+2026-04-21 14:25:38 [INFO] Model is not ready, waiting for 0 prefills and 1 decodes. Have 4 prefills and 0 decodes.
+2026-04-21 14:26:38 [INFO] Model is ready. Have 4 prefills and 1 decodes.
+2026-04-21 14:26:38 [INFO] Server is healthy - starting benchmark
+2026-04-21 14:26:38 [INFO] Running SA-Bench benchmark
+2026-04-21 14:26:38 [INFO] Script: /srtctl-benchmarks/sa-bench/bench.sh
+2026-04-21 14:26:38 [INFO] Command: bash /srtctl-benchmarks/sa-bench/bench.sh http://localhost:8000 1024 1024 8192 inf /model nvidia_GLM-5-NVFP4 true 24 8 16 0.8 10 2 glm_moe_dsa false
+2026-04-21 14:26:38 [INFO] Log: /home/rihuo/srt-slurm/outputs/1543570/logs/benchmark.out
+2026-04-21 14:26:38 [INFO] srun command: srun --jobid 1543570 --overlap --nodes 1 --ntasks 1 --nodelist theia0044 --output /home/rihuo/srt-slurm/outputs/1543570/logs/benchmark.out --container-image /lustre/fsw/core_dlfw_ci/rihuo/tensorrtllm-runtime-1-1-0-dev-3.sqsh --no-container-entrypoint --no-container-mount-home --container-mounts /home/rihuo/srt-slurm/outputs/1543570/logs:/logs,/lustre/fsw/core_dlfw_ci/rihuo/nvidia_GLM-5-NVFP4:/model,/home/rihuo/srt-slurm/configs:/configs,/home/rihuo/srt-slurm/src/srtctl/benchmarks/scripts:/srtctl-benchmarks bash -c 'export SRTCTL_FRONTEND_TYPE=dynamo && bash /srtctl-benchmarks/sa-bench/bench.sh http://localhost:8000 1024 1024 8192 inf /model nvidia_GLM-5-NVFP4 true 24 8 16 0.8 10 2 glm_moe_dsa false'
+2026-04-21 14:46:43 [INFO] Benchmark completed successfully
+2026-04-21 14:46:43 [INFO] Cleanup
+2026-04-21 14:46:43 [INFO] Cleaning up 12 processes...
+srun: forcing job termination
+srun: Job step aborted: Waiting up to 122 seconds for job step to finish.
+srun: error: theia0043: task 0: Killed
+srun: Terminating StepId=1543570.2
+srun: forcing job termination
+srun: Job step aborted: Waiting up to 122 seconds for job step to finish.
+srun: error: theia0044: tasks 0-1: Killed
+srun: Terminating StepId=1543570.3
+srun: forcing job termination
+srun: Job step aborted: Waiting up to 122 seconds for job step to finish.
+srun: error: theia0044: tasks 0-1: Killed
+srun: Terminating StepId=1543570.4
+srun: forcing job termination
+srun: Job step aborted: Waiting up to 122 seconds for job step to finish.
+srun: error: theia0045: tasks 0-1: Killed
+srun: Terminating StepId=1543570.5
+srun: forcing job termination
+srun: Job step aborted: Waiting up to 122 seconds for job step to finish.
+srun: error: theia0045: tasks 0-1: Killed
+srun: Terminating StepId=1543570.6
+srun: forcing job termination
+srun: Job step aborted: Waiting up to 122 seconds for job step to finish.
+srun: error: theia0049: tasks 8-11: Killed
+srun: Terminating StepId=1543570.7
+srun: error: theia0050: tasks 12-15: Killed
+srun: error: theia0048: tasks 4-7: Killed
+srun: error: theia0047: tasks 0-3: Killed
+srun: forcing job termination
+srun: Job step aborted: Waiting up to 122 seconds for job step to finish.
+srun: error: theia0044: task 0: Killed
+srun: Terminating StepId=1543570.14
+srun: forcing job termination
+srun: Job step aborted: Waiting up to 122 seconds for job step to finish.
+srun: error: theia0045: task 0: Killed
+srun: Terminating StepId=1543570.13
+srun: forcing job termination
+srun: Job step aborted: Waiting up to 122 seconds for job step to finish.
+srun: error: theia0047: task 0: Killed
+srun: Terminating StepId=1543570.15
+srun: forcing job termination
+srun: Job step aborted: Waiting up to 122 seconds for job step to finish.
+srun: error: theia0048: task 0: Killed
+srun: Terminating StepId=1543570.16
+srun: forcing job termination
+srun: Job step aborted: Waiting up to 122 seconds for job step to finish.
+srun: error: theia0049: task 0: Killed
+srun: Terminating StepId=1543570.17
+srun: forcing job termination
+srun: Job step aborted: Waiting up to 122 seconds for job step to finish.
+srun: error: theia0050: task 0: Killed
+srun: Terminating StepId=1543570.18
+2026-04-21 14:46:58 [INFO] Copied config.yaml to log directory
+2026-04-21 14:46:58 [INFO] Copied sbatch_script.sh to log directory
+2026-04-21 14:46:58 [INFO] Copied 1543570.json to log directory
+2026-04-21 14:46:59 [INFO] Wrote /home/rihuo/srt-slurm/outputs/1543570/logs/benchmark-rollup.json
+Wrote /home/rihuo/srt-slurm/outputs/1543570/logs/benchmark-rollup.csv
+2026-04-21 14:46:59 [INFO] Wrote lockfile: /home/rihuo/srt-slurm/outputs/1543570/recipe.lock.yaml
+
+==========================================
+✓ Sweep completed successfully
+End: Tue Apr 21 14:46:59 PDT 2026
+==========================================
