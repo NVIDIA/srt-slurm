@@ -135,7 +135,7 @@ for C in "${CONCURRENCY_LIST[@]}"; do
 
     aiperf profile \
         -m "${MODEL_NAME}" \
-        --endpoint-type chat \
+        --endpoint-type completions \
         --streaming \
         --url "${ENDPOINT}" \
         --synthetic-input-tokens-mean "${ISL}" \
@@ -144,16 +144,18 @@ for C in "${CONCURRENCY_LIST[@]}"; do
         --extra-inputs min_tokens:"${OSL}" \
         --extra-inputs ignore_eos:true \
         --concurrency "${C}" \
-	--request-rate "inf" \
+	--request-rate "${REQ_RATE}" \
         --request-count "${REQUEST_COUNT}" \
         --tokenizer "${TOKENIZER_PATH}" \
         --tokenizer-trust-remote-code \
         --random-seed 42 \
         --ui-type none \
         --artifact-dir "${RUN_ARTIFACT_DIR}" \
-        --goodput "time_to_first_token:${TTFT_THRESHOLD} inter_token_latency:${ITL_THRESHOLD}" \
+	--extra-inputs "temperature:0.0" \
+	--extra-inputs "best_of:0" \
         "${SERVER_METRICS_ARGS[@]}" \
         "${EXTRA_ARGS[@]}"
+	#--goodput "time_to_first_token:${TTFT_THRESHOLD} inter_token_latency:${ITL_THRESHOLD}" \
 
     python3 "${SCRIPT_DIR}/format_results.py" "${RUN_ARTIFACT_DIR}" || true
 
