@@ -5,22 +5,23 @@
 #SBATCH --nodes=7
 #SBATCH --ntasks=28
 #SBATCH --ntasks-per-node=4
+#SBATCH --gpus-per-node=4
 #SBATCH --segment=7
-#SBATCH --account=core_dlfw_ci
+#SBATCH --account=restricted
 #SBATCH --time=4:00:00
-#SBATCH --output=/home/rihuo/srt-slurm/outputs/%j/logs/sweep_%j.log
-#SBATCH --partition=gb300
+#SBATCH --output=/data/home/rihuo/srt-slurm/outputs/%j/logs/sweep_%j.log
+#SBATCH --partition=batch_2
 
 set -euo pipefail
 
-SRTCTL_SOURCE="/home/rihuo/srt-slurm"
-OUTPUT_BASE="/home/rihuo/srt-slurm/outputs"
+SRTCTL_SOURCE="/data/home/rihuo/srt-slurm"
+OUTPUT_BASE="/data/home/rihuo/srt-slurm/outputs"
 OUTPUT_DIR="${OUTPUT_BASE}/${SLURM_JOB_ID}"
 LOG_DIR="${OUTPUT_DIR}/logs"
-CONTAINER_IMAGE="/lustre/fsw/core_dlfw_ci/rihuo/tensorrtllm-runtime-1-1-0-dev-3.sqsh"
-MODEL_PATH="/lustre/fsw/core_dlfw_ci/rihuo/nvidia_GLM-5-NVFP4"
+CONTAINER_IMAGE="/data/home/rihuo/tensorrtllm-runtime-1-1-0-dev-3.sqsh"
+MODEL_PATH="/data/home/rihuo/nvidia_GLM-5-NVFP4"
 MODEL_NAME="nvidia_GLM-5-NVFP4"
-DATASET_MOUNT="/lustre/fsw/core_dlfw_ci/rihuo/glm5_dataset:/glm5_datasets"
+DATASET_MOUNT="/data/home/rihuo/glm5_dataset:/glm5_datasets"
 SCRIPT_MOUNTS="${LOG_DIR}:/logs,${MODEL_PATH}:/model,${SRTCTL_SOURCE}/configs:/configs,${SRTCTL_SOURCE}/src/srtctl/benchmarks/scripts:/srtctl-benchmarks,${DATASET_MOUNT}"
 TRTLLM_COMMON_ENV="export ENROOT_ALLOW_DEV=yes && export MIMALLOC_PURGE_DELAY=0 && export NCCL_GRAPH_MIXING_SUPPORT=0 && export TLLM_LOG_LEVEL=INFO && export TRTLLM_ENABLE_PDL=1 && export TRTLLM_SERVER_DISABLE_GC=1 && export TRTLLM_WORKER_DISABLE_GC=1"
 
