@@ -1,4 +1,4 @@
-name: glm5_nvfp4_ISL1K_OSL1K_ctx3dep4_gen1dep32_batch128_eplb288_mtp1
+name: glm5_nvfp4_ISL1K_OSL1K_ctx3dep4_gen1dep32_batch64_eplb0_mtp1
 model:
   path: nvidia/GLM5-NVFP4
   container: nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:1.1.0-dev.3
@@ -64,8 +64,8 @@ backend:
       enable_lm_head_tp_in_adp: true
       trust_remote_code: true
       custom_tokenizer: glm_moe_dsa
-      max_batch_size: 128
-      max_num_tokens: 256
+      max_batch_size: 64
+      max_num_tokens: 128
       max_seq_len: 2088
       print_iter_log: true
       stream_interval: 100
@@ -84,20 +84,9 @@ backend:
         - 48
         - 56
         - 64
-        - 72
-        - 80
-        - 88
-        - 96
-        - 104
-        - 112
-        - 120
-        - 128
       moe_config:
         backend: CUTEDSL
         use_low_precision_moe_combine: true
-        load_balancer:
-          layer_updates_per_iter: 1
-          num_slots: 288
       kv_cache_config:
         dtype: fp8
         enable_block_reuse: false
@@ -118,7 +107,7 @@ benchmark:
   type: sa-bench
   isl: 1024
   osl: 1024
-  concurrencies: '4301'
+  concurrencies: '2151'
   req_rate: inf
   custom_tokenizer: glm_moe_dsa
   use_chat_template: false

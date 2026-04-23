@@ -1,4 +1,4 @@
-name: glm5_nvfp4_ISL1K_OSL1K_ctx3dep4_gen1dep32_batch128_eplb288_mtp1
+name: glm5_nvfp4_ISL1K_OSL1K_ctx3dep4_gen1dep32_batch128_eplb0_mtp0
 model:
   path: nvidia/GLM5-NVFP4
   container: nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:1.1.0-dev.3
@@ -53,19 +53,16 @@ backend:
       cache_transceiver_config:
         backend: UCX
         max_tokens_in_buffer: 16384
-      speculative_config:
-        decoding_type: MTP
-        num_nextn_predict_layers: 1
     decode:
       tensor_parallel_size: 32
       moe_expert_parallel_size: 32
       pipeline_parallel_size: 1
       enable_attention_dp: true
-      enable_lm_head_tp_in_adp: true
+      enable_lm_head_tp_in_adp: false
       trust_remote_code: true
       custom_tokenizer: glm_moe_dsa
       max_batch_size: 128
-      max_num_tokens: 256
+      max_num_tokens: 128
       max_seq_len: 2088
       print_iter_log: true
       stream_interval: 100
@@ -95,13 +92,10 @@ backend:
       moe_config:
         backend: CUTEDSL
         use_low_precision_moe_combine: true
-        load_balancer:
-          layer_updates_per_iter: 1
-          num_slots: 288
       kv_cache_config:
         dtype: fp8
         enable_block_reuse: false
-        free_gpu_memory_fraction: 0.6
+        free_gpu_memory_fraction: 0.7
       cache_transceiver_config:
         backend: UCX
         max_tokens_in_buffer: 16384
@@ -111,9 +105,6 @@ backend:
         - cublaslt
         - cutedsl
         - cuda_core
-      speculative_config:
-        decoding_type: MTP
-        num_nextn_predict_layers: 1
 benchmark:
   type: sa-bench
   isl: 1024
