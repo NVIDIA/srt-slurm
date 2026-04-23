@@ -397,8 +397,6 @@ class BenchmarkStageMixin:
         # Add debug sleep to force benchmark to "hang" so debug can occur.
         if self.config.benchmark.debug_mode:
             env["DEBUG_MODE"] = "1"
-        else:
-            env["DEBUG_MODE"] = "0"
 
         return env
 
