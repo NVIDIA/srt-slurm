@@ -1,7 +1,7 @@
 # Qwen3.5-397B-A17B-FP8 disaggregated 1P1D: TP4 prefill + DEP4 decode (Mooncake, staging buffer).
 # Model / resources / backend / sglang_config: copied from
 #   recipes/qwen3.5/fp8/disagg/mooncake/profile/1p1d-dep4-nsys-profile.yaml
-# This file changes profiling + benchmark only, to pair nsys with SGLang decode /slow_down.
+# This file changes frontend + profiling + benchmark only, to pair nsys with SGLang decode /slow_down.
 #
 # Slow-down is meant to be used with SA-Bench warmup skipped (num_warmup_mult: 0). The
 # separate benchmark warmup is disabled so step indices stay predictable; the role of
@@ -31,6 +31,10 @@ resources:
   decode_nodes: 1
   prefill_workers: 1
   decode_workers: 1
+
+frontend:
+  type: "sglang"
+  enable_multiple_frontends: false
 
 backend:
 
