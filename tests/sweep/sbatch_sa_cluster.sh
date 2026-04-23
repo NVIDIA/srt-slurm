@@ -18,7 +18,7 @@ SRTCTL_SOURCE="/data/home/rihuo/srt-slurm"
 OUTPUT_BASE="/data/home/rihuo/srt-slurm/outputs"
 OUTPUT_DIR="${OUTPUT_BASE}/${SLURM_JOB_ID}"
 LOG_DIR="${OUTPUT_DIR}/logs"
-CONTAINER_IMAGE="/data/home/rihuo/tensorrtllm-runtime-1-1-0-dev-3.sqsh"
+CONTAINER_IMAGE="/data/home/rihuo/tensorrt-llm-release-1-3-0rc11.sqsh"
 MODEL_PATH="/data/home/rihuo/nvidia_GLM-5-NVFP4"
 MODEL_NAME="nvidia_GLM-5-NVFP4"
 DATASET_MOUNT="/data/home/rihuo/glm5_dataset:/glm5_datasets"
@@ -279,8 +279,6 @@ start_bg srun \
     --jobid "${SLURM_JOB_ID}" \
     --overlap \
     --mpi pmix \
-    --oversubscribe \
-    --cpu-bind verbose,none \
     --nodes 1 \
     --ntasks 2 \
     --nodelist "${PREFILL_NODE_A}" \
@@ -296,8 +294,6 @@ start_bg srun \
     --jobid "${SLURM_JOB_ID}" \
     --overlap \
     --mpi pmix \
-    --oversubscribe \
-    --cpu-bind verbose,none \
     --nodes 1 \
     --ntasks 2 \
     --nodelist "${PREFILL_NODE_A}" \
@@ -313,8 +309,6 @@ start_bg srun \
     --jobid "${SLURM_JOB_ID}" \
     --overlap \
     --mpi pmix \
-    --oversubscribe \
-    --cpu-bind verbose,none \
     --nodes 1 \
     --ntasks 2 \
     --nodelist "${PREFILL_NODE_B}" \
@@ -330,8 +324,6 @@ start_bg srun \
     --jobid "${SLURM_JOB_ID}" \
     --overlap \
     --mpi pmix \
-    --oversubscribe \
-    --cpu-bind verbose,none \
     --nodes 1 \
     --ntasks 2 \
     --nodelist "${PREFILL_NODE_B}" \
@@ -348,8 +340,6 @@ start_bg srun \
     --jobid "${SLURM_JOB_ID}" \
     --overlap \
     --mpi pmix \
-    --oversubscribe \
-    --cpu-bind verbose,none \
     --nodes 4 \
     --ntasks 16 \
     --nodelist "${DECODE_NODELIST}" \
