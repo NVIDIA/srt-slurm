@@ -13,7 +13,6 @@ import yaml
 from srtctl.backends import MockerProtocol, MockerServerConfig
 from srtctl.core.schema import SrtConfig
 
-
 # ============================================================================
 # Helpers
 # ============================================================================

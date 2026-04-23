@@ -178,11 +178,13 @@ get_node_ip() {
 
     # Execute the script on target node with single srun command
     local result
-    result=$(srun --jobid $slurm_job_id --nodes=1 --ntasks=1 --nodelist=$node bash -c "$ip_script" 2>&1)
+    result=$(srun --quiet --jobid "$slurm_job_id" --nodes=1 --ntasks=1 --nodelist="$node" bash -c "$ip_script" 2>&1)
     local rc=$?
+    local ip
+    ip=$(printf '%s\n' "$result" | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | tail -n 1)
 
-    if [ $rc -eq 0 ] && [ -n "$result" ]; then
-        echo "$result"
+    if [ $rc -eq 0 ] && [ -n "$ip" ]; then
+        echo "$ip"
         return 0
     else
         echo "Error: Could not retrieve IP address for node $node" >&2

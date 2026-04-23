@@ -20,6 +20,7 @@ venv/
 env/
 ENV/
 .venv/
+.venv-compute/
 
 # uv
 .uv/

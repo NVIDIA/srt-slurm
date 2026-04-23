@@ -260,6 +260,61 @@ class TestStatusReporterCompleted:
         assert result is True
         assert mock_put.call_count == 2
 
+    @patch("srtctl.core.status.requests.put")
+    def test_report_completed_includes_logs_url_when_provided(self, mock_put):
+        """logs_url is forwarded in the completion PUT when supplied."""
+        mock_put.return_value = MagicMock(status_code=200)
+        reporter = StatusReporter(job_id="12345", api_endpoints=("https://status.example.com",))
+
+        reporter.report_completed(exit_code=0, logs_url="s3://bucket/prefix/12345/")
+
+        payload = mock_put.call_args[1]["json"]
+        assert payload["logs_url"] == "s3://bucket/prefix/12345/"
+
+    @patch("srtctl.core.status.requests.put")
+    def test_report_completed_omits_logs_url_when_none(self, mock_put):
+        """logs_url is excluded from the payload when None (exclude_none)."""
+        mock_put.return_value = MagicMock(status_code=200)
+        reporter = StatusReporter(job_id="12345", api_endpoints=("https://status.example.com",))
+
+        reporter.report_completed(exit_code=0)
+
+        payload = mock_put.call_args[1]["json"]
+        assert "logs_url" not in payload
+
+
+class TestStatusReporterArtifacts:
+    """Test StatusReporter.report_artifacts() method."""
+
+    def test_returns_false_when_disabled(self):
+        """report_artifacts returns False when disabled."""
+        reporter = StatusReporter(job_id="12345", api_endpoints=())
+
+        assert reporter.report_artifacts(logs_url="s3://bucket/") is False
+
+    def test_returns_false_when_logs_url_empty(self):
+        """report_artifacts is a no-op when no logs_url is supplied."""
+        reporter = StatusReporter(job_id="12345", api_endpoints=("https://status.example.com",))
+
+        assert reporter.report_artifacts(logs_url="") is False
+
+    @patch("srtctl.core.status.requests.put")
+    def test_report_artifacts_sends_logs_url_without_completing(self, mock_put):
+        """report_artifacts forwards logs_url on a benchmark-stage PUT."""
+        mock_put.return_value = MagicMock(status_code=200)
+        reporter = StatusReporter(job_id="12345", api_endpoints=("https://status.example.com",))
+
+        result = reporter.report_artifacts(logs_url="s3://bucket/prefix/12345/")
+
+        assert result is True
+        payload = mock_put.call_args[1]["json"]
+        assert payload["logs_url"] == "s3://bucket/prefix/12345/"
+        # Must NOT flip the lifecycle to completed; that's report_completed's job
+        assert payload["status"] != "completed"
+        # Stays in the benchmark lifecycle so the dashboard knows the job is
+        # still active (AI analysis may still be running).
+        assert payload["status"] == "benchmark"
+
 
 # ============================================================================
 # Payload Model Tests

@@ -25,6 +25,7 @@ import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import yaml
 from rich.console import Console
@@ -41,11 +42,120 @@ from srtctl.core.config import (
     load_config,
     resolve_config_with_defaults,
 )
+from srtctl.core.fingerprint import (
+    capture_fingerprint,
+    check_against_fingerprint,
+    diff_fingerprints,
+    format_check_results,
+    format_diff,
+)
+from srtctl.core.lockfile import load_lockfile_fingerprints
 from srtctl.core.schema import SrtConfig
 from srtctl.core.status import create_job_record
+from srtctl.core.validation import preflight_config_variants
 
 console = Console()
 logger = logging.getLogger(__name__)
+
+# Populated by submit_with_orchestrator on successful submission. Consumed by
+# main() when --json is set so callers get one JSON line per submitted job.
+_submissions: list[dict] = []
+
+
+def _record_submission(data: dict) -> None:
+    _submissions.append(data)
+
+
+def _format_preflight_error(label: str, results: list[Any]) -> str:
+    lines = [f"Preflight failed for {label}:"]
+    for result in results:
+        for issue in result.errors:
+            lines.append(f"- {issue.field}: {issue.message}")
+    return "\n".join(lines)
+
+
+def _assert_preflight_passed(raw_config: dict[str, Any], *, label: str) -> None:
+    results = preflight_config_variants(
+        raw_config,
+        cluster_config=load_cluster_config(),
+    )
+    failed = [result for result in results if not result.ok]
+    if failed:
+        raise ValueError(_format_preflight_error(label, failed))
+
+
+def _install_mock_submit_patches() -> list:
+    """Stub the subset of `submit_with_orchestrator` that reaches real infra.
+
+    - `subprocess.run(["sbatch", ...])` is replaced with a fake that returns a
+      synthetic job id so the rest of the submit flow continues through the
+      real config write + metadata + _record_submission path.
+    - `validate_setup` and `create_job_record` are stubbed so mock runs do not
+      probe the cluster install or POST to a real status endpoint.
+    """
+    from unittest.mock import patch
+
+    original_run = subprocess.run
+
+    def _fake_subprocess_run(cmd, *args, **kwargs):
+        is_sbatch = (
+            isinstance(cmd, list | tuple)
+            and len(cmd) > 0
+            and (cmd[0] == "sbatch" or (isinstance(cmd[0], str) and cmd[0].endswith("sbatch")))
+        )
+        if not is_sbatch:
+            return original_run(cmd, *args, **kwargs)
+        import time as _time
+
+        job_id = str(400_000 + int(_time.time() * 100) % 100_000)
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=0,
+            stdout=f"Submitted batch job {job_id}\n",
+            stderr="",
+        )
+
+    patchers = [
+        patch("subprocess.run", _fake_subprocess_run),
+        patch("srtctl.cli.submit.validate_setup"),
+        patch("srtctl.cli.submit.create_job_record"),
+    ]
+    for p in patchers:
+        p.start()
+    return patchers
+
+
+def _spawn_mock_worker(submission: dict, tick_s: float) -> None:
+    """Detach a `srtctl.cli.mock_worker` subprocess to drive the full orchestrator.
+
+    Writes worker stdout+stderr to <output_dir>/mock_worker.log so the parent
+    process can exit cleanly while the child keeps ticking.
+    """
+    output_dir = Path(submission["output_dir"])
+    config_path = submission["config_path"]
+    job_id = submission["slurm_job_id"]
+    log_path = output_dir / "mock_worker.log"
+    log_fh = log_path.open("w")
+    subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "srtctl.cli.mock_worker",
+            "--config",
+            str(config_path),
+            "--output-dir",
+            str(output_dir),
+            "--job-id",
+            str(job_id),
+            "--tick-s",
+            str(tick_s),
+        ],
+        stdout=log_fh,
+        stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+        close_fds=True,
+    )
 
 
 def get_job_name(config: SrtConfig) -> str:
@@ -127,6 +237,9 @@ def show_config_details(config: SrtConfig) -> None:
         if env:
             has_env = True
             mode_envs.append((mode_name, dict(env)))
+    if config.benchmark.env:
+        has_env = True
+        mode_envs.append(("benchmark", dict(config.benchmark.env)))
 
     if has_env:
         env_table = Table(title="Environment Variables", show_lines=False, pad_edge=False)
@@ -149,6 +262,27 @@ def show_config_details(config: SrtConfig) -> None:
     if config.srun_options:
         opts = " ".join(f"--{k} {v}" if v else f"--{k}" for k, v in config.srun_options.items())
         console.print(f"[dim]srun options:[/] {opts}")
+
+    if config.benchmark.type == "custom" or config.telemetry.enabled:
+        details = Table(title="Execution Extensions", show_lines=False, pad_edge=False)
+        details.add_column("Area", style="dim", width=14)
+        details.add_column("Setting", style="yellow")
+        details.add_column("Value", style="white")
+
+        if config.benchmark.type == "custom":
+            details.add_row("benchmark", "type", config.benchmark.type)
+            if config.benchmark.command:
+                details.add_row("benchmark", "command", config.benchmark.command)
+            if config.benchmark.container_image:
+                details.add_row("benchmark", "container_image", config.benchmark.container_image)
+
+        if config.telemetry.enabled:
+            details.add_row("telemetry", "provider", config.telemetry.provider.value)
+            details.add_row("telemetry", "container_image", config.telemetry.container_image or "<unset>")
+            details.add_row("telemetry", "storage_subdir", config.telemetry.storage_subdir)
+            details.add_row("telemetry", "frequency", str(config.telemetry.default_frequency))
+
+        console.print(Panel(details, border_style="blue"))
 
 
 def validate_setup(srtctl_source: Path) -> None:
@@ -259,6 +393,59 @@ def generate_minimal_sbatch_script(
     return rendered
 
 
+def _print_running_summary(config: SrtConfig, console: Console) -> None:
+    """Print what's being run and identity verification status."""
+    console.print()
+    console.print("[bold]Running:[/]")
+    console.print(f"  Model:     {config.model.path}")
+    console.print(f"  Container: {config.model.container}")
+    console.print(f"  Backend:   {config.backend_type}")
+    console.print(f"  Benchmark: {config.benchmark.type}")
+
+    has_identity = config.identity and (
+        (config.identity.model and (config.identity.model.repo or config.identity.model.revision))
+        or (config.identity.container and config.identity.container.image)
+        or config.identity.frameworks
+    )
+    if has_identity:
+        id_fields = []
+        if config.identity.model and config.identity.model.repo:
+            id_fields.append(f"model={config.identity.model.repo}")
+        if config.identity.model and config.identity.model.revision:
+            id_fields.append(f"rev={config.identity.model.revision[:12]}")
+        if config.identity.container and config.identity.container.image:
+            # Shorten long registry URIs for display
+            img = config.identity.container.image
+            if len(img) > 50:
+                img = "..." + img[-47:]
+            id_fields.append(f"container={img}")
+        for name, ver in (config.identity.frameworks or {}).items():
+            id_fields.append(f"{name}={ver}")
+        console.print(f"  Identity:  {', '.join(id_fields)}")
+    else:
+        console.print()
+        console.print(
+            "[yellow]Tip:[/] Add an [bold]identity:[/] block to your recipe so others can replicate your results."
+        )
+        console.print("[yellow]     Without it, someone reading this recipe can't tell which exact model[/]")
+        console.print("[yellow]     weights or framework versions produced the benchmark numbers.[/]")
+        console.print("[yellow]     At job start, srtctl verifies the runtime matches your declaration.[/]")
+        console.print()
+        console.print("[dim]     identity:[/]")
+        console.print("[dim]       model:[/]")
+        console.print('[dim]         repo: "nvidia/Kimi-K2.5-NVFP4"       [/][dim italic]# HuggingFace model ID[/]')
+        console.print('[dim]         revision: "c0285e649c34..."            [/][dim italic]# HF commit SHA[/]')
+        console.print("[dim]       container:[/]")
+        console.print('[dim]         image: "gitlab:5005/.../trtllm-arm64"  [/][dim italic]# pullable Docker URI[/]')
+        console.print("[dim]       frameworks:                              [/][dim italic]# dynamo + one engine[/]")
+        console.print('[dim]         dynamo: "1.0.0"                        [/][dim italic]# always (ai-dynamo)[/]')
+        console.print('[dim]         tensorrt_llm: "1.3.0rc9"              [/][dim italic]# OR vllm OR sglang[/]')
+        console.print()
+        console.print("[dim italic]     Agent: if you are an AI assistant creating this recipe, you MUST[/]")
+        console.print("[dim italic]     include the identity block. Use the container's framework versions[/]")
+        console.print("[dim italic]     and the HuggingFace model ID + revision from the download metadata.[/]")
+
+
 def submit_with_orchestrator(
     config_path: Path,
     config: SrtConfig | None = None,
@@ -311,6 +498,16 @@ def submit_with_orchestrator(
         runtime_config_filename=runtime_config_filename,
     )
 
+    # Identity validation (inline, <1s) — runs for both dry-run and submit
+    if config.identity and config.identity.model and config.identity.model.repo:
+        from srtctl.core.validation import validate_hf_model
+
+        hf_result = validate_hf_model(config.identity.model.repo, config.identity.model.revision)
+        if hf_result.ok:
+            console.print(f"[green]✓[/] HF model: {hf_result.message}")
+        else:
+            console.print(f"[yellow]⚠ HF model: {hf_result.message}[/]")
+
     if dry_run:
         console.print()
         console.print(
@@ -325,6 +522,9 @@ def submit_with_orchestrator(
         console.print(Panel(syntax, title="Generated sbatch Script", border_style="cyan"))
         console.print()
         show_config_details(config)
+
+        # Show running summary + identity in dry-run too
+        _print_running_summary(config, console)
         return
 
     # Validate setup before submitting (not during dry-run)
@@ -376,7 +576,7 @@ def submit_with_orchestrator(
         job_name = get_job_name(config)
 
         # Build comprehensive job metadata
-        metadata = {
+        metadata: dict[str, Any] = {
             "version": "2.0",
             "orchestrator": True,
             "job_id": job_id,
@@ -394,9 +594,13 @@ def submit_with_orchestrator(
                 "gpus_per_node": config.resources.gpus_per_node,
                 "prefill_nodes": config.resources.prefill_nodes,
                 "decode_nodes": config.resources.decode_nodes,
+                "agg_nodes": config.resources.agg_nodes,
                 "prefill_workers": config.resources.num_prefill,
                 "decode_workers": config.resources.num_decode,
                 "agg_workers": config.resources.num_agg,
+                "gpus_per_prefill": config.resources.gpus_per_prefill,
+                "gpus_per_decode": config.resources.gpus_per_decode,
+                "gpus_per_agg": config.resources.gpus_per_agg,
             },
             # Backend and frontend
             "backend_type": config.backend_type,
@@ -416,6 +620,18 @@ def submit_with_orchestrator(
         with open(job_output_dir / f"{job_id}.json", "w") as f:
             json.dump(metadata, f, indent=2)
 
+        _record_submission(
+            {
+                "status": "submitted",
+                "slurm_job_id": job_id,
+                "job_name": job_name,
+                "output_dir": str(job_output_dir),
+                "metadata_path": str(job_output_dir / f"{job_id}.json"),
+                "config_path": str(config_path),
+                "tags": list(tags) if tags else None,
+            }
+        )
+
         # Report to status API (fire-and-forget, silent on failure)
         # Note: tags are already included in metadata dict above
         create_job_record(
@@ -431,6 +647,9 @@ def submit_with_orchestrator(
         console.print(f"[dim]📁 Logs:[/] {job_output_dir}/logs")
         console.print(f"[dim]📋 Monitor:[/] tail -f {job_output_dir}/logs/sweep_{job_id}.log")
         console.print(f"[dim]📊 Queue:[/] squeue --job {job_id}")
+
+        _print_running_summary(config, console)
+
         return job_id
 
     except subprocess.CalledProcessError as e:
@@ -454,6 +673,7 @@ def submit_single(
     variant_suffix: str | None = None,
     source_config_path: Path | None = None,
     runtime_config_text: str | None = None,
+    enforce_preflight: bool = True,
 ) -> str | None:
     """Submit a single job from YAML config.
 
@@ -480,6 +700,17 @@ def submit_single(
 
     if config is None:
         raise ValueError("Either config_path or config must be provided")
+
+    if runtime_config_text is not None:
+        raw_config = yaml.safe_load(runtime_config_text)
+    elif config_path is not None:
+        with open(config_path) as f:
+            raw_config = yaml.safe_load(f)
+    else:
+        raw_config = SrtConfig.Schema().dump(config)
+
+    if enforce_preflight:
+        _assert_preflight_passed(raw_config, label=str(config_path or "<inline-config>"))
 
     # Always use orchestrator mode
     return submit_with_orchestrator(
@@ -749,6 +980,31 @@ def is_override_config(config_path: Path) -> bool:
     return "base" in config
 
 
+@contextlib.contextmanager
+def materialize_config_path(config_path: Path):
+    """Stage stdin-backed configs to a temporary YAML file for repeated reads."""
+    if str(config_path) not in {"-", "/dev/stdin"}:
+        yield config_path
+        return
+
+    payload = sys.stdin.read()
+    if not payload.strip():
+        raise ValueError("No YAML received on stdin")
+
+    fd, temp_path = tempfile.mkstemp(
+        suffix=".yaml",
+        prefix="srtctl_stdin_",
+        text=True,
+    )
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(payload)
+        yield Path(temp_path)
+    finally:
+        with contextlib.suppress(OSError):
+            os.remove(temp_path)
+
+
 def submit_override(
     config_path: Path,
     selector: str | None = None,
@@ -895,6 +1151,7 @@ def main():
   srtctl apply -f config.yaml                    # Submit job
   srtctl apply -f ./configs/                     # Submit all YAMLs in directory
   srtctl apply -f config.yaml --sweep            # Submit sweep
+  srtctl preflight -f config.yaml                # Check model/container availability
   srtctl dry-run -f config.yaml                  # Dry run
   srtctl resolve-override -f config.yaml         # Resolve override YAML (no submit)
   srtctl resolve-override -f config.yaml --stdout  # Print to stdout
@@ -921,9 +1178,45 @@ def main():
     add_common_args(apply_parser)
     apply_parser.add_argument("--setup-script", type=str, help="Custom setup script in configs/")
     apply_parser.add_argument("--tags", type=str, help="Comma-separated tags")
+    apply_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Emit one JSON line per submission on stdout; prose output goes to stderr.",
+    )
+    apply_parser.add_argument(
+        "--mock",
+        action="store_true",
+        dest="mock_mode",
+        help=(
+            "Stub sbatch and spawn a detached mock worker that runs the full "
+            "SweepOrchestrator locally. For testing external harnesses without "
+            "cluster access."
+        ),
+    )
+    apply_parser.add_argument(
+        "--mock-tick-s",
+        type=float,
+        default=0.2,
+        dest="mock_tick_s",
+        help="Per-phase wall time used by the detached mock worker.",
+    )
 
     dry_run_parser = subparsers.add_parser("dry-run", help="Validate without submitting")
     add_common_args(dry_run_parser)
+
+    preflight_parser = subparsers.add_parser(
+        "preflight",
+        help="Check model and container availability without submitting",
+    )
+    preflight_parser.add_argument(
+        "-f",
+        "--file",
+        type=str,
+        required=True,
+        dest="config",
+        help="YAML config file, or file:selector for overrides",
+    )
 
     resolve_parser = subparsers.add_parser(
         "resolve-override",
@@ -943,71 +1236,233 @@ def main():
         help="Print resolved YAML to stdout instead of writing files",
     )
 
+    # Fingerprint comparison: srtctl diff <path_a> <path_b>
+    diff_parser = subparsers.add_parser("diff", help="Compare fingerprints from two runs")
+    diff_parser.add_argument("path_a", type=Path, help="First output dir or lockfile")
+    diff_parser.add_argument("path_b", type=Path, help="Second output dir or lockfile")
+    diff_parser.add_argument("--verbose", action="store_true", help="Show all package changes")
+
+    # Environment check: srtctl check <path>
+    check_parser = subparsers.add_parser("check", help="Check environment against a fingerprint")
+    check_parser.add_argument("path", type=Path, help="Lockfile or output dir to check against")
+    check_parser.add_argument("--json", action="store_true", dest="json_output", help="Output as JSON")
+
     args = parser.parse_args()
+
+    json_mode = bool(getattr(args, "json_output", False))
+    mock_mode = bool(getattr(args, "mock_mode", False))
+    # Always rebind the module console on each invocation so json-mode prose
+    # goes to stderr and non-json prose returns to stdout. Save the original
+    # so we can restore it on exit — direct library callers of submit_single /
+    # submit_override (tests, etc.) must not see a leaked stderr binding.
+    global console
+    _original_console = console
+    console = Console(file=sys.stderr) if json_mode else Console()
+
+    def restore_console() -> None:
+        global console
+        console = _original_console
+
+    if json_mode:
+        _submissions.clear()
+
+    _mock_patch_teardowns: list = []
+    if mock_mode:
+        _mock_patch_teardowns = _install_mock_submit_patches()
+
+    # Handle diff and check commands first (they don't use -f/config)
+    if args.command == "diff":
+        fps_a = load_lockfile_fingerprints(args.path_a)
+        fps_b = load_lockfile_fingerprints(args.path_b)
+        if fps_a is None or fps_b is None:
+            missing = []
+            if fps_a is None:
+                missing.append(str(args.path_a))
+            if fps_b is None:
+                missing.append(str(args.path_b))
+            console.print(f"[bold red]Could not load fingerprints from:[/] {', '.join(missing)}")
+            sys.exit(1)
+
+        # Diff each worker against its counterpart
+        all_workers = sorted(set(fps_a.keys()) | set(fps_b.keys()))
+        for worker in all_workers:
+            if worker not in fps_a:
+                console.print(f"\n[bold]{worker}:[/] only in {args.path_b}")
+                continue
+            if worker not in fps_b:
+                console.print(f"\n[bold]{worker}:[/] only in {args.path_a}")
+                continue
+            diff = diff_fingerprints(fps_a[worker], fps_b[worker])
+            console.print(f"\n[bold]{worker}:[/]")
+            console.print(format_diff(diff, verbose=args.verbose))
+        restore_console()
+        return
+
+    if args.command == "check":
+        import json as json_mod
+
+        fps = load_lockfile_fingerprints(args.path)
+        if fps is None:
+            console.print(f"[bold red]Could not load fingerprints from:[/] {args.path}")
+            sys.exit(1)
+
+        # Capture current environment once, reuse for all worker checks
+        current_fp = capture_fingerprint()
+        all_results = []
+        for worker in sorted(fps.keys()):
+            results = check_against_fingerprint(fps[worker], current_fp)
+            if results:
+                all_results.extend(results)
+                console.print(f"\n[bold]{worker}:[/]")
+                if args.json_output:
+                    console.print(
+                        json_mod.dumps(
+                            [{"field": r.field, "status": r.status.value, "message": r.message} for r in results],
+                            indent=2,
+                        )
+                    )
+                else:
+                    console.print(format_check_results(results))
+        if not all_results:
+            console.print(format_check_results([]))
+        restore_console()
+        sys.exit(1 if all_results else 0)
 
     # Parse config arg: supports path:selector format for overrides
     config_path, selector = parse_config_arg(args.config)
-
-    if not config_path.exists():
-        console.print(f"[bold red]Config not found:[/] {config_path}")
-        sys.exit(1)
 
     is_dry_run = args.command == "dry-run"
     tags = [t.strip() for t in (getattr(args, "tags", "") or "").split(",") if t.strip()] or None
 
     try:
-        # resolve-override has its own simple dispatch path
-        if args.command == "resolve-override":
-            if not is_override_config(config_path):
-                console.print(f"[bold red]Error:[/] {config_path} is not an override config (missing 'base' key)")
+        with materialize_config_path(config_path) as effective_config_path:
+            if not effective_config_path.exists():
+                console.print(f"[bold red]Config not found:[/] {config_path}")
                 sys.exit(1)
-            resolve_override_cmd(config_path, selector=selector, stdout=getattr(args, "stdout", False))
-            return
 
-        setup_script = getattr(args, "setup_script", None)
-        output_dir = getattr(args, "output_dir", None)
-
-        # Handle directory input
-        if config_path.is_dir():
-            if selector:
-                logger.warning(f"Selector ':{selector}' ignored for directory input")
-            submit_directory(
-                config_path,
-                dry_run=is_dry_run,
-                setup_script=setup_script,
-                tags=tags,
-                force_sweep=args.sweep,
-                output_dir=output_dir,
-            )
-        elif is_override_config(config_path):
-            submit_override(
-                config_path,
-                selector=selector,
-                dry_run=is_dry_run,
-                setup_script=setup_script,
-                tags=tags,
-                output_dir=output_dir,
-            )
-        else:
-            if selector:
-                logger.warning(f"Selector ':{selector}' ignored — config is not an override file")
-            is_sweep = args.sweep or is_sweep_config(config_path)
-            if is_sweep:
-                submit_sweep(
-                    config_path, dry_run=is_dry_run, setup_script=setup_script, tags=tags, output_dir=output_dir
+            # resolve-override has its own simple dispatch path
+            if args.command == "resolve-override":
+                if not is_override_config(effective_config_path):
+                    console.print(f"[bold red]Error:[/] {config_path} is not an override config (missing 'base' key)")
+                    sys.exit(1)
+                resolve_override_cmd(
+                    effective_config_path,
+                    selector=selector,
+                    stdout=getattr(args, "stdout", False),
                 )
-            else:
-                submit_single(
-                    config_path=config_path,
+                restore_console()
+                return
+
+            if args.command == "preflight":
+                if effective_config_path.is_dir():
+                    raise ValueError("preflight currently expects a file, not a directory")
+                with open(effective_config_path) as f:
+                    raw_config = yaml.safe_load(f)
+                results = preflight_config_variants(
+                    raw_config,
+                    cluster_config=load_cluster_config(),
+                    selector=selector,
+                )
+                for result in results:
+                    icon = "[green]✓[/]" if result.ok else "[red]✗[/]"
+                    console.print(f"{icon} {result.variant}")
+                    console.print(f"  model.path: {result.model.message}")
+                    console.print(f"  model.container: {result.container.message}")
+                if any(not result.ok for result in results):
+                    raise ValueError(
+                        _format_preflight_error(
+                            str(config_path),
+                            [result for result in results if not result.ok],
+                        )
+                    )
+                restore_console()
+                return
+
+            setup_script = getattr(args, "setup_script", None)
+            output_dir = getattr(args, "output_dir", None)
+
+            # Handle directory input
+            if effective_config_path.is_dir():
+                if selector:
+                    logger.warning(f"Selector ':{selector}' ignored for directory input")
+                submit_directory(
+                    effective_config_path,
+                    dry_run=is_dry_run,
+                    setup_script=setup_script,
+                    tags=tags,
+                    force_sweep=args.sweep,
+                    output_dir=output_dir,
+                )
+            elif is_override_config(effective_config_path):
+                submit_override(
+                    effective_config_path,
+                    selector=selector,
                     dry_run=is_dry_run,
                     setup_script=setup_script,
                     tags=tags,
                     output_dir=output_dir,
                 )
+            else:
+                if selector:
+                    logger.warning(f"Selector ':{selector}' ignored — config is not an override file")
+                is_sweep = args.sweep or is_sweep_config(effective_config_path)
+                if is_sweep:
+                    submit_sweep(
+                        effective_config_path,
+                        dry_run=is_dry_run,
+                        setup_script=setup_script,
+                        tags=tags,
+                        output_dir=output_dir,
+                    )
+                else:
+                    submit_single(
+                        config_path=effective_config_path,
+                        dry_run=is_dry_run,
+                        setup_script=setup_script,
+                        tags=tags,
+                        output_dir=output_dir,
+                        enforce_preflight=not (mock_mode or is_dry_run),
+                    )
     except Exception as e:
+        # Restore subprocess.run etc. before we exit so in-process test
+        # invocations don't leak patches across runs.
+        for patcher in _mock_patch_teardowns:
+            with contextlib.suppress(Exception):
+                patcher.stop()
+        _mock_patch_teardowns = []
+        restore_console()
+        if json_mode:
+            sys.stdout.write(json.dumps({"status": "error", "error": str(e)}) + "\n")
+            sys.stdout.flush()
+            logging.debug("Full traceback:", exc_info=True)
+            sys.exit(1)
         console.print(f"[bold red]Error:[/] {e}")
         logging.debug("Full traceback:", exc_info=True)
         sys.exit(1)
+
+    # Mock-mode post-submit: spawn the detached orchestrator worker so the
+    # real SweepOrchestrator runs against the output_dir that submit just
+    # wrote to. Tear down sbatch patches AFTER the spawn so the spawned
+    # subprocess inherits a clean environment (Popen itself isn't patched).
+    if mock_mode:
+        for submission in _submissions:
+            _spawn_mock_worker(submission, tick_s=float(args.mock_tick_s))
+        for patcher in _mock_patch_teardowns:
+            with contextlib.suppress(Exception):
+                patcher.stop()
+        _mock_patch_teardowns = []
+
+    if json_mode:
+        if not _submissions:
+            sys.stdout.write(json.dumps({"status": "no-submissions"}) + "\n")
+        else:
+            for record in _submissions:
+                sys.stdout.write(json.dumps(record) + "\n")
+        sys.stdout.flush()
+
+    # Restore the pre-main console binding so direct library callers aren't
+    # affected by this invocation's json-mode rebinding.
+    restore_console()
 
 
 if __name__ == "__main__":

@@ -196,11 +196,16 @@ class StatusReporter:
 
         return self._put(payload.model_dump(exclude_none=True))
 
-    def report_completed(self, exit_code: int) -> bool:
-        """Report job completed with exit code.
+    def report_completed(self, exit_code: int, logs_url: str | None = None) -> bool:
+        """Report job completed with exit code and optional logs pointer.
+
+        Benchmark results themselves are intentionally not carried in this PUT.
+        S3 is the source of truth for artifacts; the collector stores the
+        pointer (``logs_url``) and consumers fetch the full rollup from S3.
 
         Args:
             exit_code: Process exit code (0 = success)
+            logs_url: URL where logs were uploaded (e.g. s3://bucket/prefix/job/)
 
         Returns:
             True if reported to at least one endpoint, False otherwise
@@ -218,6 +223,35 @@ class StatusReporter:
             completed_at=self._now_iso(),
             updated_at=self._now_iso(),
             exit_code=exit_code,
+            logs_url=logs_url,
+        )
+
+        return self._put(payload.model_dump(exclude_none=True))
+
+    def report_artifacts(self, logs_url: str) -> bool:
+        """Push an artifacts pointer (``logs_url``) eagerly, mid-run.
+
+        Used after S3 sync completes but before later stages (AI analysis,
+        cleanup) that can hang or fail. Keeps the status value at its current
+        stage (``benchmark``) so this PUT is purely an artifact-pointer update,
+        not a lifecycle transition. The collector merges ``logs_url`` in; a
+        later ``report_completed`` will reassert it idempotently.
+
+        Args:
+            logs_url: URL where logs are being / have been uploaded
+
+        Returns:
+            True if reported to at least one endpoint, False otherwise
+        """
+        if not self.enabled or not logs_url:
+            return False
+
+        payload = JobUpdatePayload(
+            status=JobStatus.BENCHMARK.value,
+            stage=JobStage.CLEANUP.value,
+            message="Artifacts uploaded",
+            updated_at=self._now_iso(),
+            logs_url=logs_url,
         )
 
         return self._put(payload.model_dump(exclude_none=True))

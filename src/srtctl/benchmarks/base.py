@@ -59,6 +59,18 @@ class BenchmarkRunner(ABC):
         """
         ...
 
+    def get_container_image(self, config: SrtConfig, runtime: RuntimeContext) -> str | Path:
+        """Get the container image used for the benchmark process."""
+        return runtime.container_image
+
+    def get_container_mounts(self, config: SrtConfig, runtime: RuntimeContext) -> dict[Path, Path]:
+        """Get mounts used for the benchmark process."""
+        return runtime.container_mounts
+
+    def get_environment(self, config: SrtConfig, runtime: RuntimeContext) -> dict[str, str]:
+        """Get benchmark-specific environment variables."""
+        return {}
+
 
 class AIPerfBenchmarkRunner(BenchmarkRunner):
     """Base class for AIPerf-driven benchmarks.

@@ -116,18 +116,20 @@ class TestDryRunEnvironment:
         assert "global" in output
 
     def test_backend_prefill_decode_environment(self, capsys):
-        config = _make_config({
-            "backend": {
-                "type": "sglang",
-                "prefill_environment": {
-                    "TORCH_DISTRIBUTED_DEFAULT_TIMEOUT": "1800",
-                    "PYTHONUNBUFFERED": "1",
+        config = _make_config(
+            {
+                "backend": {
+                    "type": "sglang",
+                    "prefill_environment": {
+                        "TORCH_DISTRIBUTED_DEFAULT_TIMEOUT": "1800",
+                        "PYTHONUNBUFFERED": "1",
+                    },
+                    "decode_environment": {
+                        "SGLANG_ENABLE_FLASHINFER_GEMM": "1",
+                    },
                 },
-                "decode_environment": {
-                    "SGLANG_ENABLE_FLASHINFER_GEMM": "1",
-                },
-            },
-        })
+            }
+        )
         show_config_details(config)
         output = capsys.readouterr().out
         assert "TORCH_DISTRIBUTED_DEFAULT_TIMEOUT" in output
@@ -138,13 +140,15 @@ class TestDryRunEnvironment:
 
     def test_global_and_backend_env_together(self, capsys):
         """Global environment AND backend per-mode env should both appear."""
-        config = _make_config({
-            "environment": {"GLOBAL_VAR": "global_val"},
-            "backend": {
-                "type": "sglang",
-                "prefill_environment": {"PREFILL_VAR": "prefill_val"},
-            },
-        })
+        config = _make_config(
+            {
+                "environment": {"GLOBAL_VAR": "global_val"},
+                "backend": {
+                    "type": "sglang",
+                    "prefill_environment": {"PREFILL_VAR": "prefill_val"},
+                },
+            }
+        )
         show_config_details(config)
         output = capsys.readouterr().out
         assert "GLOBAL_VAR" in output
@@ -159,24 +163,41 @@ class TestDryRunEnvironment:
         assert "No custom environment variables configured" in output
 
     def test_trtllm_backend_environment(self, capsys):
-        config = _make_config({
-            "backend": {
-                "type": "trtllm",
-                "prefill_environment": {
-                    "TRTLLM_ENABLE_PDL": "1",
-                    "NCCL_GRAPH_MIXING_SUPPORT": "0",
+        config = _make_config(
+            {
+                "backend": {
+                    "type": "trtllm",
+                    "prefill_environment": {
+                        "TRTLLM_ENABLE_PDL": "1",
+                        "NCCL_GRAPH_MIXING_SUPPORT": "0",
+                    },
+                    "decode_environment": {
+                        "TRTLLM_SERVER_DISABLE_GC": "1",
+                    },
                 },
-                "decode_environment": {
-                    "TRTLLM_SERVER_DISABLE_GC": "1",
-                },
-            },
-        })
+            }
+        )
         show_config_details(config)
         output = capsys.readouterr().out
         assert "TRTLLM_ENABLE_PDL" in output
         assert "prefill" in output
         assert "TRTLLM_SERVER_DISABLE_GC" in output
         assert "decode" in output
+
+    def test_custom_benchmark_environment(self, capsys):
+        config = _make_config(
+            {
+                "benchmark": {
+                    "type": "custom",
+                    "command": "python /bench/run.py",
+                    "env": {"BENCH_FOO": "bar"},
+                }
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "BENCH_FOO" in output
+        assert "benchmark" in output
 
 
 class TestDryRunSrunOptions:
@@ -194,3 +215,40 @@ class TestDryRunSrunOptions:
         show_config_details(config)
         output = capsys.readouterr().out
         assert "srun options" not in output
+
+
+class TestDryRunExecutionExtensions:
+    """Test custom benchmark and telemetry details display."""
+
+    def test_custom_benchmark_details_shown(self, capsys):
+        config = _make_config(
+            {
+                "benchmark": {
+                    "type": "custom",
+                    "command": "python /bench/run.py",
+                    "container_image": "nvcr.io/nvidia/python:3.11",
+                }
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "Execution Extensions" in output
+        assert "container_image" in output
+        assert "nvcr.io/nvidia/python:3.11" in output
+
+    def test_telemetry_details_shown(self, capsys):
+        config = _make_config(
+            {
+                "telemetry": {
+                    "enabled": True,
+                    "container_image": "telemetry:latest",
+                    "dcgm_exporter": {"container_image": "dcgm:latest", "port": 9401},
+                    "node_exporter": {"container_image": "node:latest", "port": 9101},
+                }
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "telemetry" in output
+        assert "scraper" in output
+        assert "storage_subdir" in output

@@ -222,6 +222,7 @@ class Precision(str, Enum):
 
 class BenchmarkType(str, Enum):
     MANUAL = "manual"
+    CUSTOM = "custom"
     SA_BENCH = "sa-bench"
     ROUTER = "router"
     MOONCAKE_ROUTER = "mooncake-router"
@@ -235,6 +236,10 @@ class ProfilingType(str, Enum):
     NSYS = "nsys"
     TORCH = "torch"
     NONE = "none"
+
+
+class TelemetryProvider(str, Enum):
+    SCRAPER = "scraper"
 
 
 # ============================================================================
@@ -385,6 +390,49 @@ class ModelConfig:
     path: str
     container: str
     precision: str
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
+class IdentityModelConfig:
+    """Virtual model identity for runtime verification."""
+
+    repo: str | None = None  # HuggingFace model ID, e.g. "nvidia/Kimi-K2.5-NVFP4"
+    revision: str | None = None  # HuggingFace git commit SHA
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
+class IdentityContainerConfig:
+    """Container identity for reproduction (not verified at runtime).
+
+    Recorded so others can pull the same container image to reproduce.
+    Cannot be verified at runtime — Pyxis/enroot strips provenance during import.
+    """
+
+    image: str | None = None  # Docker URI, e.g. "gitlab-master:5005/.../trtllm-arm64"
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
+class IdentityConfig:
+    """Virtual identity for runtime verification and reproduction.
+
+    These fields declare what *should* be running. They are not used for
+    launching — only for verifying the runtime fingerprint matches expectations
+    and for helping others reproduce the run.
+
+    - model: HF repo + revision (verified against download metadata at runtime)
+    - container: Docker image URI (recorded for reproduction, not verified)
+    - frameworks: expected versions for dynamo + one engine (verified via importlib.metadata)
+    """
+
+    model: IdentityModelConfig = field(default_factory=IdentityModelConfig)
+    container: IdentityContainerConfig = field(default_factory=IdentityContainerConfig)
+    frameworks: dict[str, str] = field(default_factory=dict)
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -555,6 +603,10 @@ class BenchmarkConfig:
     trace_file: str | None = None  # Path to trace JSONL file (container path, e.g., /traces/dataset.jsonl)
     custom_tokenizer: str | None = None  # Custom tokenizer class (e.g., "module.path.ClassName")
     use_chat_template: bool = True  # Pass --use-chat-template to benchmark (default: true)
+    # Custom benchmark hook
+    command: str | None = None
+    container_image: str | None = None
+    env: dict[str, str] = field(default_factory=dict)
     # aiperf pip install spec (e.g., "aiperf>=0.7.0", "aiperf @ git+https://...@commit")
     # If set, runs pip install <spec> before benchmarking. Upgrades if already installed.
     aiperf_package: str | None = None
@@ -592,12 +644,17 @@ class ProfilingConfig:
     Per-phase start_step/stop_step are specified in the prefill/decode/aggregated sections.
     """
 
-    type: str = "none"  # "none", "nsys", or "torch"
+    type: str = "none"  # "none", "nsys", "nsys-time", or "torch"
 
-    # Phase-specific profiling step configs
+    # Phase-specific profiling step configs (not used for nsys-time)
     prefill: ProfilingPhaseConfig | None = None
     decode: ProfilingPhaseConfig | None = None
     aggregated: ProfilingPhaseConfig | None = None
+
+    # nsys-time fields: time-based capture window, same on all workers
+    delay_secs: int | None = None  # nsys --delay: seconds from worker launch before capture starts
+    duration_secs: int | None = None  # nsys --duration: seconds to capture after delay
+    benchmark_duration_secs: int = 300  # total traffic generation duration (must cover delay + duration)
 
     @property
     def enabled(self) -> bool:
@@ -606,8 +663,13 @@ class ProfilingConfig:
 
     @property
     def is_nsys(self) -> bool:
-        """Check if using NVIDIA Nsight Systems profiling."""
-        return self.type == "nsys"
+        """Check if using NVIDIA Nsight Systems profiling (includes nsys-time)."""
+        return self.type in ("nsys", "nsys-time")
+
+    @property
+    def is_nsys_time(self) -> bool:
+        """Check if using time-based nsys capture (--delay/--duration instead of cudaProfilerApi)."""
+        return self.type == "nsys-time"
 
     @property
     def is_torch(self) -> bool:
@@ -651,15 +713,75 @@ class ProfilingConfig:
         if self.is_torch:
             env["SGLANG_TORCH_PROFILER_DIR"] = f"{profile_dir}/{mode}"
 
+        if self.is_nsys_time:
+            env["PROFILE_BENCHMARK_DURATION_SECS"] = str(self.benchmark_duration_secs)
+        elif (
+            self.is_nsys and phase_config and phase_config.start_step is not None and phase_config.stop_step is not None
+        ):
+            # TRTLLM iteration-based nsys: PyExecutor triggers cudaProfilerStart/Stop at these boundaries.
+            # Harmless on SGLang workers (unknown env vars are ignored).
+            env["TLLM_PROFILE_START_STOP"] = f"{phase_config.start_step}-{phase_config.stop_step}"
+            env["TLLM_LLMAPI_ENABLE_NVTX"] = "1"
+
         return env
 
-    def get_nsys_prefix(self, output_file: str, *, frontend_type: str | None = None) -> list[str]:
+    def _get_nsys_prefix_trtllm(self, output_file: str) -> list[str]:
+        """Get nsys command prefix for TRTLLM workers.
+
+        Supports both iteration-based (cudaProfilerApi trigger via TLLM_PROFILE_START_STOP)
+        and time-based (--delay/--duration) capture modes.
+        """
+        if self.is_nsys_time:
+            cmd = [
+                "nsys",
+                "profile",
+                "-t",
+                "cuda,nvtx,ucx",
+                "--sample=none",
+                "--cuda-graph-trace=node",
+            ]
+            if self.delay_secs is not None:
+                cmd += ["--delay", str(self.delay_secs)]
+            if self.duration_secs is not None:
+                cmd += ["--duration", str(self.duration_secs)]
+        else:
+            # Iteration-based: TLLM_PROFILE_START_STOP env var triggers cudaProfilerStart/Stop
+            cmd = [
+                "nsys",
+                "profile",
+                "-t",
+                "cuda,nvtx,ucx",
+                "--sample=none",
+                "--cuda-graph-trace=node",
+                "-c",
+                "cudaProfilerApi",
+                "--capture-range-end",
+                "stop",
+            ]
+
+        cmd += [
+            "--kill",
+            "none",
+            "--wait",
+            "all",
+            "--force-overwrite",
+            "true",
+            "-o",
+            output_file,
+        ]
+        return cmd
+
+    def get_nsys_prefix(
+        self, output_file: str, *, frontend_type: str | None = None, backend_type: str | None = None
+    ) -> list[str]:
         """Get nsys profiling command prefix.
 
         Args:
             output_file: Path for nsys output file (without extension)
-            frontend_type: Frontend type (e.g., "dynamo", "sglangrouter"). When set to "dynamo",
-                add flags required for Dynamo's process model.
+            frontend_type: Frontend type (e.g., "dynamo", "sglang"). When set to "dynamo"
+                with a non-trtllm backend, adds --trace-fork-before-exec=true.
+            backend_type: Backend type (e.g., "trtllm", "sglang"). When set to "trtllm",
+                uses TRTLLM-specific nsys flags (ucx traces, --kill none, --wait all).
 
         Returns:
             Command prefix list for nsys profiling
@@ -667,6 +789,10 @@ class ProfilingConfig:
         if not self.is_nsys:
             return []
 
+        if backend_type == "trtllm":
+            return self._get_nsys_prefix_trtllm(output_file)
+
+        # SGLang / default path — keep existing behavior
         cmd = [
             "nsys",
             "profile",
@@ -689,6 +815,81 @@ class ProfilingConfig:
         return cmd
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
+class ObservabilityConfig:
+    """Observability configuration for OTEL tracing.
+
+    When enable_otel is True, OTEL environment variables (DYN_LOGGING_JSONL,
+    OTEL_EXPORT_ENABLED, OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, OTEL_SERVICE_NAME)
+    are automatically injected into all workers and frontends.
+
+    OTEL_SERVICE_NAME defaults to "dynamo-{component}" (e.g. dynamo-prefill,
+    dynamo-decode, dynamo-frontend) and can be overridden per-component via
+    prefill_environment, decode_environment, or frontend.env.
+
+    Attributes:
+        enable_otel: If True, inject OTEL environment variables into all workers
+            and frontends. Requires otel_endpoint to be set. Default: False.
+        otel_endpoint: OTEL collector endpoint (e.g. "http://10.0.0.1:4317").
+            Required when enable_otel is True.
+    """
+
+    enable_otel: bool = False
+    otel_endpoint: str | None = None
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
+class TelemetryExporterConfig:
+    """Configuration for telemetry exporters deployed on worker nodes."""
+
+    container_image: str
+    port: int
+    command: str | None = None
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
+class TelemetryConfig:
+    """Telemetry configuration for benchmark jobs.
+
+    The default provider bundles a scraper with dcgm_exporter and node_exporter.
+    Other providers can reuse the same top-level contract later.
+    """
+
+    enabled: bool = False
+    provider: TelemetryProvider = TelemetryProvider.SCRAPER
+    container_image: str | None = None
+    binary_path: str = "/usr/local/bin/telemetry-scraper"
+    default_frequency: float = 5.0
+    sync_interval_secs: int = 120
+    compaction_threads: int = 4
+    storage_subdir: str = "telemetry"
+    extra_metadata: dict[str, str] = field(default_factory=dict)
+    dcgm_exporter: TelemetryExporterConfig | None = None
+    node_exporter: TelemetryExporterConfig | None = None
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+def build_otel_env(observability: ObservabilityConfig, component: str) -> dict[str, str]:
+    """Build OTEL environment variables for a component.
+
+    Returns an empty dict if OTEL is disabled. Otherwise returns env vars
+    with OTEL_SERVICE_NAME set to "dynamo-{component}".
+    """
+    if not observability.enable_otel or not observability.otel_endpoint:
+        return {}
+    return {
+        "DYN_LOGGING_JSONL": "1",
+        "OTEL_EXPORT_ENABLED": "1",
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": observability.otel_endpoint,
+        "OTEL_SERVICE_NAME": f"dynamo-{component}",
+    }
 
 
 @dataclass
@@ -744,6 +945,7 @@ class DynamoConfig:
         sglang = (
             "apt-get update -qq && apt-get install -y -qq libclang-dev curl > /dev/null 2>&1 && "
             "if ! command -v cargo &>/dev/null; then curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable -q && source $HOME/.cargo/env; fi && "
+            "if ! command -v maturin &>/dev/null; then pip install --break-system-packages maturin; fi && "
             "cd /sgl-workspace/ && "
             "git clone https://github.com/ai-dynamo/dynamo.git && "
             "cd dynamo && "
@@ -841,9 +1043,13 @@ class InfraConfig:
         etcd_nats_dedicated_node: If True, run etcd and nats on a dedicated node
             instead of the head node. This reserves the first node exclusively
             for infrastructure services. Default: False.
+        nats_max_payload_mb: Maximum NATS message payload in MB. Default: None (uses
+            NATS default of 1MB). Set to 24+ for disaggregated serving with long ISL
+            (e.g. 65K+ tokens where prompt data exceeds 1MB in NATS messages).
     """
 
     etcd_nats_dedicated_node: bool = False
+    nats_max_payload_mb: int | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -876,6 +1082,8 @@ class SrtConfig:
     output: OutputConfig = field(default_factory=OutputConfig)
     health_check: HealthCheckConfig = field(default_factory=HealthCheckConfig)
     infra: InfraConfig = field(default_factory=InfraConfig)
+    observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
+    telemetry: TelemetryConfig = field(default_factory=TelemetryConfig)
 
     environment: dict[str, str] = field(default_factory=dict)
     container_mounts: dict[
@@ -890,6 +1098,9 @@ class SrtConfig:
     # Custom setup script (runs before dynamo install and worker startup)
     # e.g. "custom-setup.sh" -> runs /configs/custom-setup.sh
     setup_script: str | None = None
+
+    # Virtual identity — declares what *should* be running (verified against fingerprint)
+    identity: IdentityConfig = field(default_factory=IdentityConfig)
 
     # Reporting configuration (status API, future: logs to S3, etc.)
     reporting: ReportingConfig | None = None
@@ -918,11 +1129,30 @@ class SrtConfig:
     def __post_init__(self):
         """Validate configuration after initialization."""
         self._validate_profiling()
+        self._validate_telemetry()
 
     def _validate_profiling(self):
         """Validate profiling configuration matches serving mode."""
         prof = self.profiling
         if not prof.enabled:
+            return
+
+        backend_type = self.backend.type
+
+        # torch profiling is SGLang-only (uses SGLANG_TORCH_PROFILER_DIR)
+        if prof.is_torch and backend_type == "trtllm":
+            raise ValidationError("torch profiling is not supported for the trtllm backend; use nsys instead")
+
+        # nsys-time is TRTLLM-only (time-based capture via nsys --delay/--duration)
+        if prof.is_nsys_time and backend_type != "trtllm":
+            raise ValidationError("nsys-time profiling is only supported for the trtllm backend")
+
+        # nsys-time uses top-level delay/duration — no per-phase step configs needed
+        if prof.is_nsys_time:
+            if prof.delay_secs is None or prof.duration_secs is None:
+                raise ValidationError(
+                    "profiling.delay_secs and profiling.duration_secs are required for nsys-time mode"
+                )
             return
 
         r = self.resources
@@ -955,6 +1185,28 @@ class SrtConfig:
                 )
             if (r.agg_workers or 0) <= 0:
                 raise ValidationError("Aggregated mode requires agg_workers to be > 0.")
+
+    def _validate_telemetry(self):
+        """Validate telemetry configuration."""
+        telemetry = self.telemetry
+        if not telemetry.enabled:
+            return
+
+        if telemetry.provider != TelemetryProvider.SCRAPER:
+            raise ValidationError(f"Unsupported telemetry provider: {telemetry.provider}")
+
+        if not telemetry.container_image:
+            raise ValidationError("telemetry.container_image is required when telemetry is enabled")
+        if telemetry.dcgm_exporter is None:
+            raise ValidationError("telemetry.dcgm_exporter is required when telemetry is enabled")
+        if telemetry.node_exporter is None:
+            raise ValidationError("telemetry.node_exporter is required when telemetry is enabled")
+        if telemetry.default_frequency <= 0:
+            raise ValidationError("telemetry.default_frequency must be positive")
+        if telemetry.sync_interval_secs < 0:
+            raise ValidationError("telemetry.sync_interval_secs must be >= 0")
+        if telemetry.compaction_threads < 0:
+            raise ValidationError("telemetry.compaction_threads must be >= 0")
 
     @classmethod
     def from_yaml(cls, yaml_path: Path) -> "SrtConfig":

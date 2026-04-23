@@ -14,7 +14,9 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from srtctl.core.fingerprint import format_identity_verification, verify_identity
 from srtctl.core.health import wait_for_model
+from srtctl.core.lockfile import collect_worker_fingerprints
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
 from srtctl.core.status import JobStage, JobStatus, StatusReporter
 
@@ -93,6 +95,28 @@ class BenchmarkStageMixin:
             return 1
 
         logger.info("Server is healthy - starting benchmark")
+
+        # Identity verification: compare recipe identity against runtime fingerprints
+        # Store results on self so postprocess can include them in the lockfile
+        self._identity_verification = None
+        try:
+            fingerprints = collect_worker_fingerprints(self.runtime.log_dir)
+            has_identity = self.config.identity and (
+                (
+                    self.config.identity.model
+                    and (self.config.identity.model.repo or self.config.identity.model.revision)
+                )
+                or (self.config.identity.container and self.config.identity.container.image)
+                or self.config.identity.frameworks
+            )
+            if fingerprints and has_identity:
+                self._identity_verification = verify_identity(self.config.identity, fingerprints)
+                banner = format_identity_verification(self._identity_verification, self.config.identity)
+                for line in banner.splitlines():
+                    logger.info(line)
+        except Exception as e:
+            logger.debug("Identity verification skipped: %s", e)
+
         if reporter:
             reporter.report(JobStatus.BENCHMARK, JobStage.BENCHMARK, "Running benchmark")
 
@@ -155,6 +179,9 @@ class BenchmarkStageMixin:
 
         cmd = runner.build_command(self.config, self.runtime)
         env_to_set = self._get_benchmark_env(runner)
+        env_to_set.update(runner.get_environment(self.config, self.runtime))
+        container_image = runner.get_container_image(self.config, self.runtime)
+        container_mounts = runner.get_container_mounts(self.config, self.runtime)
 
         logger.info("Script: %s", runner.script_path)
         logger.info("Command: %s", shlex.join(cmd))
@@ -164,8 +191,8 @@ class BenchmarkStageMixin:
             command=cmd,
             nodelist=[self.runtime.nodes.head],
             output=str(log_file),
-            container_image=str(self.runtime.container_image),
-            container_mounts=self.runtime.container_mounts,
+            container_image=str(container_image),
+            container_mounts=container_mounts,
             env_to_set=env_to_set,
         )
 
@@ -254,11 +281,15 @@ class BenchmarkStageMixin:
             env["PROFILE_AGG_ENDPOINTS"] = ",".join(agg_endpoints)
 
         # Set profile output directory and common env vars for benchmarks that support profiling
-        if runner.name in ("SA-Bench", "SGLang-Bench"):
+        if runner.name in ("SA-Bench", "SGLang-Bench", "Trace-Replay-Bench"):
             env["PROFILE_OUTPUT_DIR"] = profiles_dir_in_container
             env["BENCH_MODEL_NAME"] = self.config.served_model_name
             env["HEAD_NODE"] = self.runtime.nodes.head
             env["HEAD_PORT"] = str(self.runtime.frontend_port)
+
+        # Let benchmark scripts know the backend type so they can select the right profiling lib
+        if self.config.backend_type == "trtllm":
+            env["PROFILING_BACKEND"] = "trtllm"
 
         return env
 
@@ -266,13 +297,24 @@ class BenchmarkStageMixin:
         """Build server metrics URLs for AIPerf benchmarks.
 
         Collects metrics endpoints from all backend processes that expose
-        a sys_port (vLLM workers with AIPerf metrics enabled).
+        a sys_port (vLLM workers with AIPerf metrics enabled), plus KVBM
+        metrics endpoints if DYN_KVBM_METRICS_PORT is configured.
         """
         urls: list[str] = []
         for process in self.backend_processes:
             if process.sys_port > 0:
                 host = get_hostname_ip(process.node, self.runtime.network_interface)
                 urls.append(f"http://{host}:{process.sys_port}/metrics")
+
+        # Add KVBM metrics endpoints for prefill processes with DYN_KVBM_METRICS_PORT
+        prefill_env = getattr(self.config.backend, "prefill_environment", {})
+        agg_env = getattr(self.config.backend, "aggregated_environment", {})
+        kvbm_port = prefill_env.get("DYN_KVBM_METRICS_PORT") or agg_env.get("DYN_KVBM_METRICS_PORT")
+        if kvbm_port:
+            for process in self.backend_processes:
+                if process.endpoint_mode in ("prefill", "agg") and process.is_leader:
+                    host = get_hostname_ip(process.node, self.runtime.network_interface)
+                    urls.append(f"http://{host}:{kvbm_port}/metrics")
 
         if not urls:
             return {}
