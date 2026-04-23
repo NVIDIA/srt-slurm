@@ -1,11 +1,21 @@
 # Qwen3.5-397B-A17B-FP8 disaggregated 1P1D: TP4 prefill + DEP4 decode (Mooncake, staging buffer).
 # Model / resources / backend / sglang_config: copied from
 #   recipes/qwen3.5/fp8/disagg/mooncake/profile/1p1d-dep4-nsys-profile.yaml
-# This file changes profiling + benchmark only, to pair nsys with SGLang decode /slow_down:
-# SA-Bench posts slow_down on decode leaders so the first few decode forwards sleep per
-# step; prefill can catch up and decode can approach max batch inside that window, which
-# helps align nsys capture (decode start/stop) with a saturated decode phase. Adjust
-# slow_down_* with your isl/osl, concurrency, and prefill time.
+# This file changes profiling + benchmark only, to pair nsys with SGLang decode /slow_down.
+#
+# Slow-down is meant to be used with SA-Bench warmup skipped (num_warmup_mult: 0). The
+# separate benchmark warmup is disabled so step indices stay predictable; the role of
+# "warming up" decode (graphs, batching) is instead covered by a short span of real
+# forwards *after* slow_down auto-clears and *before* the nsys decode window.
+#
+# Choose profiling.decode.start_step as:
+#   decode.start_step = bootstrap_steps + slow_down_steps + warmup_steps
+# In this example (osl=1024, slow_down window ≈4 steps, post-slowdown warmup ≈72 steps):
+#   1100 = 1024 + 4 + 72
+#   — bootstrap_steps is taken as osl (decode gen length) for this workload;
+#   — slow_down_steps: forwards while /slow_down is active (tune with slow_down_*);
+#   — warmup_steps: extra forwards after slow_down ends so decode is hot before capture.
+# Adjust the three terms if you change osl, concurrency, or slow_down timing.
 
 name: "qwen3.5-1p1d-dep4-nsys-profile"
 
@@ -125,6 +135,7 @@ profiling:
     start_step: 10
     stop_step: 30
   decode:
+    # nsys starts after bootstrap (≈osl) + slow_down (4) + post-slowdown warmup (72) — see file header
     start_step: 1100
     stop_step: 1120
 
@@ -135,7 +146,7 @@ benchmark:
   concurrencies: "2048"
   req_rate: "inf"
   random_range_ratio: 1.0
-  num_warmup_mult: 0
+  num_warmup_mult: 0  # skip SA-Bench warmup; use slow_down then post-slowdown steps as warmup
   num_prompts_mult: 1
   slow_down_sleep_time: 30.0  # s per forward while slow_down is on
   slow_down_wait_time: 120.0  # then clear slow_down
