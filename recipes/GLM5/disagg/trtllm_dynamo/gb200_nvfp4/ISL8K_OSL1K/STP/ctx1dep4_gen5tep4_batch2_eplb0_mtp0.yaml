@@ -1,4 +1,4 @@
-name: glm5_nvfp4_ISL1K_OSL1K_ctx1dep4_gen5tep4_batch1_eplb0_mtp3
+name: glm5_nvfp4_ISL8K_OSL1K_ctx1dep4_gen5tep4_batch2_eplb0_mtp0
 model:
   path: nvidia/GLM5-NVFP4
   container: nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:1.1.0-dev.3
@@ -39,9 +39,9 @@ backend:
       disable_overlap_scheduler: true
       trust_remote_code: true
       custom_tokenizer: "glm_moe_dsa"
-      max_batch_size: 16
-      max_num_tokens: 16384
-      max_seq_len: 1064
+      max_batch_size: 2
+      max_num_tokens: 16640
+      max_seq_len: 8232
       print_iter_log: true
       cuda_graph_config: null
       moe_config:
@@ -53,9 +53,6 @@ backend:
       cache_transceiver_config:
         backend: UCX
         max_tokens_in_buffer: 16384
-      speculative_config:
-        decoding_type: MTP
-        num_nextn_predict_layers: 3
     decode:
       tensor_parallel_size: 4
       moe_expert_parallel_size: 4
@@ -64,9 +61,9 @@ backend:
       enable_lm_head_tp_in_adp: false
       trust_remote_code: true
       custom_tokenizer: "glm_moe_dsa"
-      max_batch_size: 1
-      max_num_tokens: 4
-      max_seq_len: 2088
+      max_batch_size: 2
+      max_num_tokens: 2
+      max_seq_len: 9256
       print_iter_log: true
       stream_interval: 100
       num_postprocess_workers: 4
@@ -74,13 +71,14 @@ backend:
         enable_padding: true
         batch_sizes:
         - 1
+        - 2
       moe_config:
         backend: TRTLLM
         use_low_precision_moe_combine: true
       kv_cache_config:
         dtype: fp8
         enable_block_reuse: false
-        free_gpu_memory_fraction: 0.85
+        free_gpu_memory_fraction: 0.9
       cache_transceiver_config:
         backend: UCX
         max_tokens_in_buffer: 16384
@@ -90,12 +88,9 @@ backend:
         - cublaslt
         - cutedsl
         - cuda_core
-      speculative_config:
-        decoding_type: MTP
-        num_nextn_predict_layers: 3
 benchmark:
   type: sa-bench
-  isl: 1024
+  isl: 8192
   osl: 1024
   concurrencies: "10"
   req_rate: inf
