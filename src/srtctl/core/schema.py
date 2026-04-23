@@ -898,38 +898,20 @@ class SrtConfig:
 
     @pre_load
     def inject_vllm_profiling_args(self, data, **kwargs):
-        backend = data.get("backend")
-        if not isinstance(backend, dict) or backend.get("type") != "vllm":
-            return data
-
-        profiling = data.get("profiling")
-        if not profiling or not isinstance(profiling, dict):
-            return data
-
-        if profiling.get("type") != "nsys":
-            return data
+        match data.get("backend"), data.get("profiling"):
+            case {"type": "vllm"} as backend, {"type": "nsys"} as profiling:
+                pass
+            case _:
+                return data
 
         for phase in ("prefill", "decode", "aggregated"):
-            phase_cfg = profiling.get(phase)
-            if not isinstance(phase_cfg, dict):
-                continue
-
-            start = phase_cfg.get("start_step")
-            stop = phase_cfg.get("stop_step")
-            if start is None or stop is None:
-                continue
-
-            profiler_config = json.dumps(
-                {
-                    "profiler": "cuda",
-                    "delay_iterations": start,
-                    "max_iterations": stop - start,
-                }
-            )
-
-            backend.setdefault("vllm_config", {})
-            backend["vllm_config"].setdefault(phase, {})
-            backend["vllm_config"][phase]["profiler-config"] = profiler_config
+            match profiling.get(phase):
+                case {"start_step": int() as start, "stop_step": int() as stop}:
+                    backend.setdefault("vllm_config", {})
+                    backend["vllm_config"].setdefault(phase, {})
+                    backend["vllm_config"][phase]["profiler-config"] = json.dumps(
+                        {"profiler": "cuda", "delay_iterations": start, "max_iterations": stop - start}
+                    )
 
         return data
 
