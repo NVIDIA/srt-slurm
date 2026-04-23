@@ -541,6 +541,9 @@ class BenchmarkConfig:
     random_range_ratio: float | None = None  # Random input/output length range ratio (default: 0.8)
     num_prompts_mult: int | None = None  # Multiplier for num_prompts = concurrency * mult (default: 10)
     num_warmup_mult: int | None = None  # Multiplier for warmup prompts = concurrency * mult (default: 2)
+    # Custom dataset fields (sa-bench)
+    dataset_name: str | None = None  # "random" (default) or "custom"
+    dataset_path: str | None = None  # Container path to dataset file (mount via extra_mount)
     # Trace replay benchmark fields (uses aiperf with mooncake_trace dataset type)
     trace_file: str | None = None  # Path to trace JSONL file (container path, e.g., /traces/dataset.jsonl)
     custom_tokenizer: str | None = None  # Custom tokenizer class (e.g., "module.path.ClassName")

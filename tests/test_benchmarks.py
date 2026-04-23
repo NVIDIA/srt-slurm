@@ -77,6 +77,90 @@ class TestSABenchRunner:
         errors = runner.validate_config(config)
         assert errors == []
 
+    def test_validate_custom_dataset_requires_path(self):
+        """Custom dataset requires dataset_path."""
+        from srtctl.benchmarks.sa_bench import SABenchRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = SABenchRunner()
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="h100"),
+            benchmark=BenchmarkConfig(type="sa-bench", dataset_name="custom", concurrencies="4x8"),
+        )
+        errors = runner.validate_config(config)
+        assert any("dataset_path" in e for e in errors)
+        assert not any("isl" in e for e in errors)
+
+    def test_validate_custom_dataset_valid(self):
+        """Custom dataset with path passes validation (isl/osl not required)."""
+        from srtctl.benchmarks.sa_bench import SABenchRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = SABenchRunner()
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="h100"),
+            benchmark=BenchmarkConfig(
+                type="sa-bench", dataset_name="custom", dataset_path="/data/bench.jsonl", concurrencies="4x8"
+            ),
+        )
+        errors = runner.validate_config(config)
+        assert errors == []
+
+    def test_build_command_custom_dataset(self):
+        """build_command passes dataset_path through as container path."""
+        from unittest.mock import MagicMock
+
+        from srtctl.benchmarks.sa_bench import SABenchRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = SABenchRunner()
+        runtime = MagicMock()
+        runtime.frontend_port = 8000
+        runtime.model_path = "/model"
+        runtime.is_hf_model = False
+
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="h100"),
+            benchmark=BenchmarkConfig(
+                type="sa-bench",
+                dataset_name="custom",
+                dataset_path="/glm5_datasets/bench.jsonl",
+                concurrencies="4x8",
+            ),
+        )
+        cmd = runner.build_command(config, runtime)
+        assert "custom" in cmd
+        assert "/glm5_datasets/bench.jsonl" in cmd
+
+    def test_build_command_default_dataset_random(self):
+        """Default dataset_name is 'random' when not specified."""
+        from unittest.mock import MagicMock
+
+        from srtctl.benchmarks.sa_bench import SABenchRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = SABenchRunner()
+        runtime = MagicMock()
+        runtime.frontend_port = 8000
+        runtime.model_path = "/model"
+        runtime.is_hf_model = False
+
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="h100"),
+            benchmark=BenchmarkConfig(type="sa-bench", isl=1024, osl=128, concurrencies="4x8"),
+        )
+        cmd = runner.build_command(config, runtime)
+        assert "random" in cmd
+        assert cmd[-1] == ""  # empty dataset path
+
 
 class TestSGLangBenchRunner:
     """Test SGLang-Bench runner."""
@@ -627,3 +711,138 @@ class TestSweepRunEvalIntegration:
 
         mock_eval.assert_not_called()
         assert exit_code == 1
+
+
+class TestCustomDatasetLoader:
+    """Test benchmark_dataset.py custom JSONL loader."""
+
+    def test_trtllm_format(self, tmp_path):
+        """Loads TRT-LLM OpenAI-style JSONL."""
+        import sys
+
+        scripts_dir = str(SCRIPTS_DIR / "sa-bench")
+        sys.path.insert(0, scripts_dir)
+        try:
+            from benchmark_dataset import sample_custom_requests
+        finally:
+            sys.path.pop(0)
+
+        dataset_file = tmp_path / "data.jsonl"
+        dataset_file.write_text(
+            '{"input": {"messages": [{"role": "user", "content": "Hello world"}], "max_tokens": 64}}\n'
+            '{"input": {"messages": [{"role": "user", "content": "How are you?"}], "max_tokens": 128}}\n'
+        )
+
+        results = sample_custom_requests(str(dataset_file), num_requests=10)
+        assert len(results) == 2
+        assert all(len(r) == 4 for r in results)
+        assert results[0][3] is None
+
+    def test_flat_format(self, tmp_path):
+        """Loads flat prompt/output_len JSONL."""
+        import sys
+
+        scripts_dir = str(SCRIPTS_DIR / "sa-bench")
+        sys.path.insert(0, scripts_dir)
+        try:
+            from benchmark_dataset import sample_custom_requests
+        finally:
+            sys.path.pop(0)
+
+        dataset_file = tmp_path / "data.jsonl"
+        dataset_file.write_text(
+            '{"prompt": "Summarize this article", "expected_output_len": 256}\n'
+            '{"prompt": "Translate to French", "max_tokens": 100}\n'
+        )
+
+        results = sample_custom_requests(str(dataset_file), num_requests=10)
+        assert len(results) == 2
+        output_lens = {r[2] for r in results}
+        assert 256 in output_lens
+        assert 100 in output_lens
+
+    def test_num_requests_limit(self, tmp_path):
+        """Respects num_requests cap."""
+        import sys
+
+        scripts_dir = str(SCRIPTS_DIR / "sa-bench")
+        sys.path.insert(0, scripts_dir)
+        try:
+            from benchmark_dataset import sample_custom_requests
+        finally:
+            sys.path.pop(0)
+
+        lines = [f'{{"prompt": "request {i}", "expected_output_len": 64}}\n' for i in range(50)]
+        dataset_file = tmp_path / "data.jsonl"
+        dataset_file.write_text("".join(lines))
+
+        results = sample_custom_requests(str(dataset_file), num_requests=5)
+        assert len(results) == 5
+
+    def test_precomputed_token_lengths(self, tmp_path):
+        """Uses precomputed num_tokens when available in TRT-LLM format."""
+        import sys
+
+        scripts_dir = str(SCRIPTS_DIR / "sa-bench")
+        sys.path.insert(0, scripts_dir)
+        try:
+            from benchmark_dataset import sample_custom_requests
+        finally:
+            sys.path.pop(0)
+
+        dataset_file = tmp_path / "data.jsonl"
+        dataset_file.write_text(
+            '{"input": {"messages": [{"role": "user", "content": "Hello"}], "max_tokens": 64, "num_tokens": 42}}\n'
+        )
+
+        results = sample_custom_requests(str(dataset_file), num_requests=10)
+        assert len(results) == 1
+        assert results[0][1] == 42
+
+    def test_prompt_len_estimated_when_missing(self, tmp_path):
+        """Estimates prompt_len from text length when not provided."""
+        import sys
+
+        scripts_dir = str(SCRIPTS_DIR / "sa-bench")
+        sys.path.insert(0, scripts_dir)
+        try:
+            from benchmark_dataset import sample_custom_requests
+        finally:
+            sys.path.pop(0)
+
+        dataset_file = tmp_path / "data.jsonl"
+        dataset_file.write_text('{"prompt": "abcdefghijklmnop", "expected_output_len": 64}\n')
+
+        results = sample_custom_requests(str(dataset_file), num_requests=10)
+        assert len(results) == 1
+        assert results[0][1] == 4  # len("abcdefghijklmnop") // 4
+
+    def test_config_roundtrip_custom_dataset(self):
+        """Config with custom dataset loads correctly from YAML."""
+        import tempfile
+        from pathlib import Path
+
+        import yaml
+
+        from srtctl.core.schema import SrtConfig
+
+        config_data = {
+            "name": "custom-dataset-test",
+            "model": {"path": "/model", "container": "/image", "precision": "fp4"},
+            "resources": {"gpu_type": "h100"},
+            "benchmark": {
+                "type": "sa-bench",
+                "dataset_name": "custom",
+                "dataset_path": "/data/my_dataset.jsonl",
+                "concurrencies": [4, 8],
+            },
+        }
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            yaml.dump(config_data, f)
+            tmp_path = Path(f.name)
+
+        config = SrtConfig.from_yaml(tmp_path)
+        assert config.benchmark.dataset_name == "custom"
+        assert config.benchmark.dataset_path == "/data/my_dataset.jsonl"
+        assert config.benchmark.concurrencies == [4, 8]
