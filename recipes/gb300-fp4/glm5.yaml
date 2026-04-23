@@ -105,10 +105,6 @@ base:
         mem-fraction-static: 0.8
         context-length: 9600
 
-        # Parallelism
-        tensor-parallel-size: 8
-        expert-parallel-size: 1
-
         # Backend
         nsa-decode-backend: "trtllm"
         nsa-prefill-backend: "trtllm"
@@ -134,17 +130,18 @@ base:
 
 zip_override_8k1k_hightpt:
   resources:
-    prefill_nodes:   5
-    prefill_workers: 5
-    decode_nodes:    8
+    prefill_nodes:   [5, 7, 10]
+    prefill_workers: [5, 7, 10]
+    decode_nodes:    [8]
     decode_workers:  1
   backend:
     sglang_config:
       decode:
 
+        # Parallelism
         tensor-parallel-size: 32
         expert-parallel-size: 32
-        data-parallel-size: 32
+        data-parallel-size:   32
 
         # dp
         enable-dp-lm-head: true
@@ -153,7 +150,7 @@ zip_override_8k1k_hightpt:
         load-balance-method: "total_tokens"
 
         # ep
-        ep-num-redundant-experts: 32 
+        ep-num-redundant-experts: 32
         ep-dispatch-algorithm: "static"
         # eplb-algorithm: "deepseek"
 
@@ -167,26 +164,29 @@ zip_override_8k1k_hightpt:
   benchmark:
     isl: 8192
     osl: 1024
-    concurrencies: ["2048"]
+    concurrencies: ["2048", "3072", "4096"]
 
 zip_override_8k1k_lowlat:
   resources:
     prefill_nodes:   1
     prefill_workers: 1
-    decode_nodes:   [2, 3, 4, 5, 7, 8]
-    decode_workers: [2, 3, 4, 5, 7, 8]
+    decode_nodes:   [3, 5, 9, 15]
+    decode_workers: [3, 5, 9, 15]
   backend:
     sglang_config:
       decode:
-        data-parallel-size: 1
+        # Parallelism
+        tensor-parallel-size: 4
+        expert-parallel-size: 1
+        data-parallel-size:   1
 
-        max-running-requests: [80, 48, 34, 22, 8, 1]
-        cuda-graph-max-bs:    [80, 48, 34, 22, 8, 1]
+        max-running-requests: 4096
+        cuda-graph-max-bs:    4096
 
   benchmark:
     isl: 8192
     osl: 1024
-    concurrencies: ["256", "256", "200", "128", "64", "12"]
+    concurrencies: ["2048"]
 
 
 
