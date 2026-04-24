@@ -629,6 +629,16 @@ def get_tokenizer(
                 "to use mistral tokenizer mode."
             ) from e
         return MistralTokenizer.from_pretrained(str(pretrained_model_name_or_path))
+    if tokenizer_mode == "deepseek_v4":
+        try:
+            from vllm.tokenizers.deepseek_v4 import DeepseekV4Tokenizer
+        except ImportError as e:
+            raise ImportError(
+                "DeepseekV4Tokenizer requires vllm package.\n"
+                "Please install it with `pip install vllm` "
+                "to use deepseek_v4 tokenizer mode."
+            ) from e
+        return DeepseekV4Tokenizer.from_pretrained(str(pretrained_model_name_or_path))
 
     if custom_tokenizer:
         if custom_tokenizer == "glm_moe_dsa":
