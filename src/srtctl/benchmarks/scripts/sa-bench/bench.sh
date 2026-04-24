@@ -64,6 +64,8 @@ NUM_PROMPTS_MULT=${13:-10}
 NUM_WARMUP_MULT=${14:-2}
 CUSTOM_TOKENIZER=${15:-}
 USE_CHAT_TEMPLATE=${16:-true}
+DATASET_NAME=${17:-random}
+DATASET_PATH=${18:-}
 
 # Build optional custom tokenizer args
 CUSTOM_TOKENIZER_ARGS=()
@@ -75,6 +77,22 @@ fi
 CHAT_TEMPLATE_ARGS=()
 if [ "$USE_CHAT_TEMPLATE" = "true" ]; then
     CHAT_TEMPLATE_ARGS=(--use-chat-template)
+fi
+
+# Build dataset args
+DATASET_ARGS=(--dataset-name "$DATASET_NAME")
+if [ -n "$DATASET_PATH" ]; then
+    DATASET_ARGS+=(--dataset-path "$DATASET_PATH")
+fi
+
+# Random-length args only apply to random dataset
+RANDOM_LEN_ARGS=()
+if [ "$DATASET_NAME" = "random" ]; then
+    RANDOM_LEN_ARGS=(
+        --random-input-len "$ISL"
+        --random-output-len "$OSL"
+        --random-range-ratio "${RANDOM_RANGE_RATIO}"
+    )
 fi
 
 # Optional SGLang /slow_down (set by srtctl for SA-Bench when YAML provides slow_down_* and frontend is sglang):
@@ -105,7 +123,7 @@ PORT=$(echo "$ENDPOINT" | sed 's|http://||' | cut -d: -f2 | cut -d/ -f1)
 
 WORK_DIR="$(dirname "$0")"
 
-echo "SA-Bench Config: endpoint=${ENDPOINT}; isl=${ISL}; osl=${OSL}; concurrencies=${CONCURRENCIES}; req_rate=${REQ_RATE}; model=${MODEL_NAME}"
+echo "SA-Bench Config: endpoint=${ENDPOINT}; isl=${ISL}; osl=${OSL}; concurrencies=${CONCURRENCIES}; req_rate=${REQ_RATE}; model=${MODEL_NAME}; dataset=${DATASET_NAME}; dataset_path=${DATASET_PATH}"
 
 # Profiling shared helpers
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -134,14 +152,19 @@ echo ""
 ulimit -n 65536 2>/dev/null || true  # May fail in containers without CAP_SYS_RESOURCE
 
 # Benchmark
-result_dir="/logs/sa-bench_isl_${ISL}_osl_${OSL}"
+if [ "$DATASET_NAME" = "custom" ]; then
+    dataset_label=$(basename "${DATASET_PATH%.*}")
+    result_dir="/logs/sa-bench_custom_${dataset_label}"
+else
+    result_dir="/logs/sa-bench_isl_${ISL}_osl_${OSL}"
+fi
 mkdir -p "$result_dir"
 
 # Start profiling before benchmark
 start_all_profiling
 
 for concurrency in "${CONCURRENCY_LIST[@]}"; do
-   
+
     if [ "$NUM_WARMUP_MULT" -gt 0 ]; then
         num_warmup_prompts=$((concurrency * NUM_WARMUP_MULT))
         python3 -u "${WORK_DIR}/benchmark_serving.py" \
@@ -149,11 +172,9 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
             --host "$HOST" --port "$PORT" \
             --backend "dynamo" --endpoint /v1/completions \
             --disable-tqdm \
-            --dataset-name random \
+            "${DATASET_ARGS[@]}" \
             --num-prompts "$num_warmup_prompts" \
-            --random-input-len "$ISL" \
-            --random-output-len "$OSL" \
-            --random-range-ratio "${RANDOM_RANGE_RATIO}" \
+            "${RANDOM_LEN_ARGS[@]}" \
             --ignore-eos \
             --request-rate 250 \
             --percentile-metrics ttft,tpot,itl,e2el \
@@ -163,14 +184,14 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
     fi
 
     num_prompts=$((concurrency * NUM_PROMPTS_MULT))
-    
+
     # Generate result filename based on mode
     if [ "$IS_DISAGGREGATED" = "true" ]; then
         result_filename="results_concurrency_${concurrency}_gpus_${TOTAL_GPUS}_ctx_${PREFILL_GPUS}_gen_${DECODE_GPUS}.json"
     else
         result_filename="results_concurrency_${concurrency}_gpus_${TOTAL_GPUS}.json"
     fi
-    
+
     echo "Running benchmark with concurrency: $concurrency"
     echo "$(date '+%Y-%m-%d %H:%M:%S')"
 
@@ -180,11 +201,9 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
         --host "$HOST" --port "$PORT" \
         --backend "dynamo" --endpoint /v1/completions \
         --disable-tqdm \
-        --dataset-name random \
+        "${DATASET_ARGS[@]}" \
         --num-prompts "$num_prompts" \
-        --random-input-len "$ISL" \
-        --random-output-len "$OSL" \
-        --random-range-ratio "${RANDOM_RANGE_RATIO}" \
+        "${RANDOM_LEN_ARGS[@]}" \
         --ignore-eos \
         --request-rate "${REQ_RATE}" \
         --percentile-metrics ttft,tpot,itl,e2el \
@@ -192,7 +211,6 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
         --trust-remote-code \
         "${CHAT_TEMPLATE_ARGS[@]}" \
         "${CUSTOM_TOKENIZER_ARGS[@]}" \
-        --use-chat-template \
         "${SLOW_DOWN_ARGS[@]}" \
         "${SLOW_DOWN_EXTRA[@]}" \
         --save-result --result-dir "$result_dir" --result-filename "$result_filename"

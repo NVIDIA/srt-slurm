@@ -598,11 +598,18 @@ class BenchmarkConfig:
     random_range_ratio: float | None = None  # Random input/output length range ratio (default: 0.8)
     num_prompts_mult: int | None = None  # Multiplier for num_prompts = concurrency * mult (default: 10)
     num_warmup_mult: int | None = None  # Multiplier for warmup prompts = concurrency * mult (default: 2)
+    # Custom dataset fields (sa-bench)
+    dataset_name: str | None = None  # "random" (default) or "custom"
+    dataset_path: str | None = None  # Container path to dataset file (mount via extra_mount)
     # Trace replay benchmark fields (uses aiperf with mooncake_trace dataset type)
     trace_file: str | None = None  # Path to trace JSONL file (container path, e.g., /traces/dataset.jsonl)
     custom_tokenizer: str | None = None  # Custom tokenizer class (e.g., "module.path.ClassName")
     use_chat_template: bool = True  # Pass --use-chat-template to benchmark (default: true)
-    # Custom benchmark hook
+    # Custom benchmark hook.
+    # ``command`` is passed to ``bash -lc`` verbatim; srtctl does NOT
+    # substitute placeholders like ``{nginx_url}`` or ``{slurm_job_id}``.
+    # Render any parameters when generating the recipe. See
+    # srtctl.benchmarks.custom.CustomBenchmarkRunner for details.
     command: str | None = None
     container_image: str | None = None
     env: dict[str, str] = field(default_factory=dict)
@@ -999,7 +1006,13 @@ class FrontendConfig:
 
     Attributes:
         type: Frontend type - "dynamo" (default) or "sglang"
-        enable_multiple_frontends: Scale with nginx + multiple routers
+        enable_multiple_frontends: Scale with nginx + multiple routers.
+            When ``True`` (default), srtctl stands up nginx and fans out
+            to ``num_additional_frontends + 1`` router replicas. When
+            ``False``, there is NO nginx proxy — the benchmark must
+            target the single master router (or a worker) directly at
+            ``http://localhost:<port>``. ``benchmark.command`` has no
+            placeholder substitution, so write the URL out literally.
         num_additional_frontends: Additional routers beyond master (default: 9)
         nginx_container: Custom nginx container image (default: nginx:1.27.4)
         args: CLI arguments passed to the frontend/router process
