@@ -1038,6 +1038,25 @@ class OutputConfig:
 
 
 @dataclass(frozen=True)
+class MonitoringConfig:
+    """Built-in GPU performance monitoring during benchmark execution.
+
+    When enabled, one perfmon process runs per worker node (excluding the head node)
+    and writes per-node output files to the job log directory:
+      - perf_samples_{node}.csv   per-second time-series (GPU util, memory, power, temp)
+      - perf_summary_{node}.json  aggregate statistics over the benchmark window
+
+    Uses nvidia-smi — no external dependencies required.
+    Failures are non-fatal: monitoring is skipped for affected nodes, benchmark continues.
+    """
+
+    enabled: bool = True
+    sample_interval: float = 1.0
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
 class HealthCheckConfig:
     """Health check configuration."""
 
@@ -1116,6 +1135,9 @@ class SrtConfig:
 
     # Reporting configuration (status API, future: logs to S3, etc.)
     reporting: ReportingConfig | None = None
+
+    # Built-in GPU performance monitoring (runs on all worker nodes during benchmark)
+    monitoring: MonitoringConfig | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 
