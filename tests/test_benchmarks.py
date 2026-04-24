@@ -728,6 +728,35 @@ class TestAIPerfBenchRunner:
         assert cmd[8] == "10"  # itl threshold
         assert cmd[9] == "0"  # isl_stddev (no random_range_ratio set)
         assert cmd[10] == "/model"  # tokenizer path (local model)
+        assert cmd[11] == "inf"  # default req_rate
+
+    def test_build_command_custom_req_rate(self):
+        """Build command passes custom request rate."""
+        from unittest.mock import MagicMock
+
+        from srtctl.benchmarks.aiperf_bench import AIPerfBenchRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = AIPerfBenchRunner()
+        runtime = MagicMock()
+        runtime.frontend_port = 8000
+        runtime.is_hf_model = False
+
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model/llama", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="gb200"),
+            benchmark=BenchmarkConfig(
+                type="aiperf-bench",
+                isl=2048,
+                osl=512,
+                concurrencies=[4, 8],
+                req_rate=100,
+            ),
+        )
+
+        cmd = runner.build_command(config, runtime)
+        assert cmd[11] == "100"
 
     def test_build_command_default_thresholds(self):
         """Build command uses default thresholds when not specified."""

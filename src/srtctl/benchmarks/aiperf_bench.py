@@ -89,6 +89,8 @@ class AIPerfBenchRunner(AIPerfBenchmarkRunner):
 
         tokenizer_path = str(runtime.model_path) if runtime.is_hf_model else "/model"
 
+        req_rate = str(b.req_rate) if b.req_rate is not None else "inf"
+
         cmd = [
             "bash",
             self.script_path,
@@ -101,6 +103,7 @@ class AIPerfBenchRunner(AIPerfBenchmarkRunner):
             str(itl_threshold),
             str(isl_stddev),
             tokenizer_path,
+            req_rate,
         ]
 
         self.append_aiperf_args(cmd, config)
