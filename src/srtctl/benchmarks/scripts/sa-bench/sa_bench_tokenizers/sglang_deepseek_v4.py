@@ -13,9 +13,21 @@ feeds into the model.
 The vllm counterpart lives in ``vllm.tokenizers.deepseek_v4``; sglang
 has no equivalent client-side package, so we vendor the rendering
 logic from ``encoding_dsv4.py`` in ``_sglang_encoding_dsv4.py``.
+
+Env-var fallback (mirrors sglang ``serving_chat.py``):
+
+- ``SGLANG_ENABLE_THINKING=1`` flips the default ``thinking_mode`` from
+  ``"chat"`` to ``"thinking"`` when the caller does not pass ``thinking``
+  explicitly. This keeps ISL / TPOT / accept-rate metrics in lock-step
+  with the server when users set the env on both sides of a run (e.g.
+  in a recipe's ``prefill_environment`` / ``decode_environment``).
+- ``SGLANG_REASONING_EFFORT`` provides a default for ``reasoning_effort``
+  when the caller does not pass one. Only ``"max"`` / ``"high"`` are
+  honored; any other value is filtered out to match sglang.
 """
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List, Optional
 
 from transformers import AutoTokenizer, PreTrainedTokenizerFast
@@ -23,22 +35,54 @@ from transformers import AutoTokenizer, PreTrainedTokenizerFast
 from ._sglang_encoding_dsv4 import encode_messages as _encode_messages
 
 
+def _env_enable_thinking() -> bool:
+    """Parse ``SGLANG_ENABLE_THINKING`` the same way sglang ``EnvBool`` does."""
+    return os.environ.get("SGLANG_ENABLE_THINKING", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _env_reasoning_effort() -> Optional[str]:
+    """Parse ``SGLANG_REASONING_EFFORT``; only ``max`` / ``high`` are honored."""
+    val = os.environ.get("SGLANG_REASONING_EFFORT", "").strip()
+    return val if val in ("max", "high") else None
+
+
 class SGLangDeepseekV4Tokenizer:
     """Client-side DeepSeek-V4 tokenizer matching sglang server behavior.
 
     The server-side call chain (sglang PR #23600) is:
+
+        # sglang serving_chat.py, chat_encoding_spec == "dsv4" branch:
+        thinking_requested = (request.chat_template_kwargs or {}).get(
+            "thinking", envs.SGLANG_ENABLE_THINKING.get()
+        )
+        thinking_mode = "thinking" if thinking_requested else "chat"
+
+        effort_source = request.reasoning_effort
+        if effort_source is None:
+            env_val = envs.SGLANG_REASONING_EFFORT.get()
+            if env_val:
+                effort_source = env_val
+        reasoning_effort = effort_source if effort_source in ("max", "high") else None
 
         messages = request.messages                        # OpenAI-style
         if messages[0]["role"] != "system":
             messages.insert(0, {"role": "system", "content": ""})
         real_input = encoding_dsv4.encode_messages(
             messages,
-            thinking_mode="chat",                          # default
-            reasoning_effort=None,                         # "medium" dropped
+            thinking_mode=thinking_mode,
+            reasoning_effort=reasoning_effort,
         )
         prompt_ids = tokenizer.encode(real_input)
 
-    We reproduce the exact same steps here.
+    We reproduce the exact same steps here, including the
+    ``SGLANG_ENABLE_THINKING`` / ``SGLANG_REASONING_EFFORT`` env-var
+    fallback so that a sa-bench run with these envs set matches the
+    server's prompt rendering byte-for-byte.
     """
 
     def __init__(self, hf_tokenizer):
@@ -86,10 +130,16 @@ class SGLangDeepseekV4Tokenizer:
         tokenize: bool = True,
         add_generation_prompt: bool = True,  # noqa: ARG002  (encoder always adds the <｜Assistant｜>... tail)
         tools: Optional[List[Dict[str, Any]]] = None,
-        thinking: bool = False,
+        thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         **_: Any,
     ):
+        # Per-caller kwargs win; env is fallback (mirrors sglang serving_chat.py).
+        if thinking is None:
+            thinking = _env_enable_thinking()
+        if reasoning_effort is None:
+            reasoning_effort = _env_reasoning_effort()
+
         msgs = [dict(m) for m in messages]
         if tools:
             if not msgs or msgs[0].get("role") != "system":
