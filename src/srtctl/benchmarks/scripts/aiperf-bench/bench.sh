@@ -6,7 +6,7 @@
 # Benchmarks LLM serving at specific ISL/OSL using aiperf's built-in synthetic
 # dataset generation. Sweeps multiple concurrency levels.
 #
-# Usage: bench.sh ENDPOINT MODEL_NAME ISL OSL CONCURRENCIES [TTFT_THRESHOLD] [ITL_THRESHOLD] [ISL_STDDEV] [TOKENIZER_PATH] [EXTRA_ARGS...]
+# Usage: bench.sh ENDPOINT MODEL_NAME ISL OSL CONCURRENCIES [TTFT_THRESHOLD] [ITL_THRESHOLD] [ISL_STDDEV] [TOKENIZER_PATH] [REQ_RATE] [EXTRA_ARGS...]
 #
 # EXTRA_ARGS: Additional aiperf CLI flags (e.g., --benchmark-duration 600)
 
@@ -26,8 +26,9 @@ TTFT_THRESHOLD=${6:-2000}
 ITL_THRESHOLD=${7:-25}
 ISL_STDDEV=${8:-0}
 TOKENIZER_PATH=${9:-"/model"}
+REQ_RATE=${10:-"inf"}
 # Remaining args are extra aiperf flags
-shift 9 2>/dev/null || true
+shift 10 2>/dev/null || true
 EXTRA_ARGS=("$@")
 
 # Optional: extra Prometheus endpoints for AIPerf server metrics
@@ -61,6 +62,7 @@ echo "ISL Stddev:    ${ISL_STDDEV}"
 echo "Concurrencies: ${CONCURRENCIES}"
 echo "TTFT Threshold: ${TTFT_THRESHOLD}ms"
 echo "ITL Threshold:  ${ITL_THRESHOLD}ms"
+echo "Request Rate:  ${REQ_RATE}"
 echo "Tokenizer:     ${TOKENIZER_PATH}"
 if [ ${#EXTRA_ARGS[@]} -gt 0 ]; then
     echo "Extra Args:    ${EXTRA_ARGS[*]}"
@@ -133,6 +135,12 @@ for C in "${CONCURRENCY_LIST[@]}"; do
     RUN_ARTIFACT_DIR="${ARTIFACT_DIR}/${MODEL_BASE_NAME}_isl${ISL}_osl${OSL}_c${C}_${TIMESTAMP}"
     mkdir -p "${RUN_ARTIFACT_DIR}"
 
+    # Build optional request-rate flag (omit for "inf" / unlimited)
+    REQ_RATE_ARGS=()
+    if [ -n "${REQ_RATE}" ] && [ "${REQ_RATE}" != "inf" ]; then
+        REQ_RATE_ARGS=(--request-rate "${REQ_RATE}")
+    fi
+
     aiperf profile \
         -m "${MODEL_NAME}" \
         --endpoint-type completions \
@@ -144,18 +152,17 @@ for C in "${CONCURRENCY_LIST[@]}"; do
         --extra-inputs min_tokens:"${OSL}" \
         --extra-inputs ignore_eos:true \
         --concurrency "${C}" \
-	--request-rate "${REQ_RATE}" \
+        "${REQ_RATE_ARGS[@]}" \
         --request-count "${REQUEST_COUNT}" \
         --tokenizer "${TOKENIZER_PATH}" \
         --tokenizer-trust-remote-code \
         --random-seed 42 \
         --ui-type none \
         --artifact-dir "${RUN_ARTIFACT_DIR}" \
-	--extra-inputs "temperature:0.0" \
-	--extra-inputs "best_of:0" \
+        --extra-inputs "temperature:0.0" \
+        --extra-inputs "best_of:0" \
         "${SERVER_METRICS_ARGS[@]}" \
         "${EXTRA_ARGS[@]}"
-	#--goodput "time_to_first_token:${TTFT_THRESHOLD} inter_token_latency:${ITL_THRESHOLD}" \
 
     python3 "${SCRIPT_DIR}/format_results.py" "${RUN_ARTIFACT_DIR}" || true
 
