@@ -81,6 +81,7 @@ backend:
       enable-dp-attention: true
       enable-dp-lm-head: true
       moe-dense-tp-size: 1
+      load-balance-method: "total_tokens"
 
       mamba-scheduler-strategy: "no_buffer"
       mamba-track-interval: 2048
@@ -115,6 +116,7 @@ backend:
       enable-dp-attention: true
       enable-dp-lm-head: true
       prefill-round-robin-balance: true
+      load-balance-method: "total_tokens"
 
       mamba-scheduler-strategy: "no_buffer"
       mamba-track-interval: 128

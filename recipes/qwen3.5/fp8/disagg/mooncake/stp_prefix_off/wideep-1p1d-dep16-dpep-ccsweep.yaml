@@ -80,6 +80,7 @@ backend:
       enable-dp-attention: true
       enable-dp-lm-head: true
       moe-dense-tp-size: 1
+      load-balance-method: "total_tokens"
 
       mamba-scheduler-strategy: "no_buffer"
       mamba-track-interval: 2048
@@ -112,6 +113,7 @@ backend:
       enable-dp-attention: true
       enable-dp-lm-head: true
       prefill-round-robin-balance: true
+      load-balance-method: "total_tokens"
 
       mamba-scheduler-strategy: "no_buffer"
       mamba-track-interval: 128
@@ -150,4 +152,4 @@ benchmark:
   # num_prompts_mult: 10
   # num_warmup_mult: 1
   random_range_ratio: 1.0
-  concurrencies: "16x32x64x128x256x512x1024x2048"
+  concurrencies: "16x32x64x128x256x512x1024"

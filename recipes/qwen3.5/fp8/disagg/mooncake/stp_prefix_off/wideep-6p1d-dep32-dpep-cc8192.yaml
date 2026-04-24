@@ -1,7 +1,7 @@
-# Qwen3.5-397B-A17B-FP8 1P1D DEP4 (prefill) + DEP32 (decode) + deepep
-# Phase 5a: smoke cc2048; flip for Phase 5b.
+# Qwen3.5-397B-A17B-FP8 2P1D DEP4 (prefill×2) + DEP32 (decode) + deepep
+# Phase 5c: single cc4096 point
 
-name: "qwen3.5-1p1d-dep32-dpep-router"
+name: "qwen3.5-6p1d-dep32-dpep-router-cc8192"
 
 setup_script: setup-router-and-deepep.sh
 
@@ -17,9 +17,9 @@ model:
 resources:
   gpu_type: "gb200"
   gpus_per_node: 4
-  prefill_nodes: 1
+  prefill_nodes: 6
   decode_nodes: 8
-  prefill_workers: 1
+  prefill_workers: 6
   decode_workers: 1
 
 backend:
@@ -105,7 +105,6 @@ backend:
       quantization: "fp8"
       kv-cache-dtype: "fp8_e4m3"
 
-      # DEP32 decode (8 nodes = 32 GPUs)
       tensor-parallel-size: 32
       data-parallel-size: 32
       expert-parallel-size: 32
@@ -123,13 +122,13 @@ backend:
       disable-radix-cache: true
       disaggregation-bootstrap-port: 31000
 
-      # cc2048 smoke: per-DP = 2048/32 = 64
-      chunked-prefill-size: 4096
-      context-length: 4096
+      # cc8192: per-DP = 8192/32 = 256
+      chunked-prefill-size: 8192
+      context-length: 8192
       mem-fraction-static: 0.75  # DEP32 DeepEP buffers scale with ep_size; 0.80 OOM at graph capture (2377537)
-      max-mamba-cache-size: 2048  # sglang divides by dp_size=32 → 64 per-DP
-      max-running-requests: 2048  # sglang divides by dp_size=32 → 64 per-DP
-      cuda-graph-max-bs: 64
+      max-mamba-cache-size: 8192  # sglang divides by dp_size=32 → 256 per-DP
+      max-running-requests: 8192  # sglang divides by dp_size=32 → 256 per-DP
+      cuda-graph-max-bs: 256
       watchdog-timeout: 1000000
 
       page-size: 64
@@ -151,4 +150,4 @@ benchmark:
   # num_prompts_mult: 10
   # num_warmup_mult: 1
   random_range_ratio: 1.0
-  concurrencies: "32x64x128x256x512x1024x2048"
+  concurrencies: "8192"
