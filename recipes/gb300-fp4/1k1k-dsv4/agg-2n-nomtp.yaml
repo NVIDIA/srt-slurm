@@ -1,0 +1,58 @@
+# DeepSeek-V4-Pro aggregated on GB300 2 nodes (TP=8) - MTP enabled
+name: "dsv4-pro-gb300-2n-agg-nomtp-1k1k-official"
+
+slurm:
+  partition: gb300
+  time_limit: "4:00:00"
+
+model:
+  path: "dsv4-pro"
+  container: "dsv4-grace-blackwell"
+  precision: "fp4"
+
+frontend:
+  type: sglang
+
+resources:
+  gpu_type: "gb300"
+  gpus_per_node: 4
+  agg_nodes: 2
+  agg_workers: 1
+
+backend:
+  type: sglang
+
+  aggregated_environment:
+    PYTHONUNBUFFERED: "1"
+    SGLANG_JIT_DEEPGEMM_PRECOMPILE: "0"
+    SGLANG_JIT_DEEPGEMM_FAST_WARMUP: "1"
+    SGLANG_MOONCAKE_CUSTOM_MEM_POOL: "True"
+    NCCL_MNNVL_ENABLE: "1"
+    NCCL_CUMEM_ENABLE: "1"
+
+  sglang_config:
+    aggregated:
+      served-model-name: "deepseek-ai/DeepSeek-V4-Pro"
+      model-path: "/model/"
+      trust-remote-code: true
+      tensor-parallel-size: 8
+
+      moe-runner-backend: "flashinfer_mxfp4"
+      chunked-prefill-size: 4096
+      disable-flashinfer-autotune: true
+      mem-fraction-static: 0.82
+
+      context-length: 2200
+      cuda-graph-max-bs: 1024
+      max-running-requests: 1024
+      disable-radix-cache: true
+      decode-log-interval: 1
+      stream-interval: 50
+
+benchmark:
+  type: "sa-bench"
+  isl: 1024
+  osl: 1024
+  random_range_ratio: 0.8
+  concurrencies: "1x2x4x8x16x32x64x128x256x512x1024"
+  req_rate: "inf"
