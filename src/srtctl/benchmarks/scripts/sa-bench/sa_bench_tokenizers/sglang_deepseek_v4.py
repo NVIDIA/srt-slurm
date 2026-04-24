@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, PreTrainedTokenizerFast
 
 from ._sglang_encoding_dsv4 import encode_messages as _encode_messages
 
@@ -45,10 +45,19 @@ class SGLangDeepseekV4Tokenizer:
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path: str, **kwargs):
+        # DeepSeek-V4 ships a fast tokenizer.json but no tokenization_*.py,
+        # and `model_type: deepseek_v4` isn't recognized by stock HF
+        # transformers. Load the fast tokenizer directly; fall back to
+        # AutoTokenizer (for future versions that register the config).
         kwargs.setdefault("trust_remote_code", True)
-        hf = AutoTokenizer.from_pretrained(
-            pretrained_model_name_or_path, **kwargs
-        )
+        try:
+            hf = PreTrainedTokenizerFast.from_pretrained(
+                pretrained_model_name_or_path, **kwargs
+            )
+        except Exception:
+            hf = AutoTokenizer.from_pretrained(
+                pretrained_model_name_or_path, **kwargs
+            )
         return cls(hf)
 
     def _render_prompt(
