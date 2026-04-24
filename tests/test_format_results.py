@@ -51,6 +51,37 @@ class TestFormatResults:
         assert "90.00" in result
         assert "300.00" in result
 
+    def test_itl_mean_includes_ttft(self, format_results, tmp_path):
+        """Mean ITL is a weighted average of TTFT and TPOT; median/p99 are N/A."""
+        data = {
+            "request_count": {"avg": 100.0},
+            "total_output_tokens": {"avg": 1000.0},
+            "time_to_first_token": {"avg": 500.0, "p50": 450.0, "p99": 900.0},
+            "inter_token_latency": {"avg": 50.0, "p50": 45.0, "p99": 80.0},
+        }
+        (tmp_path / "profile_export_aiperf.json").write_text(json.dumps(data))
+        result = format_results(str(tmp_path))
+        # mean_ITL = (100*500 + 900*50) / 1000 = 95000/1000 = 95.00
+        assert "Mean ITL (ms):" in result
+        lines = result.splitlines()
+        itl_lines = [line for line in lines if "ITL (ms)" in line]
+        assert len(itl_lines) == 3
+        assert "95.00" in itl_lines[0]
+        assert "N/A" in itl_lines[1]
+        assert "N/A" in itl_lines[2]
+
+    def test_itl_mean_na_when_missing_fields(self, format_results, tmp_path):
+        """Mean ITL falls back to N/A when required fields are missing."""
+        data = {
+            "time_to_first_token": {"avg": 500.0},
+            "inter_token_latency": {"avg": 50.0},
+        }
+        (tmp_path / "profile_export_aiperf.json").write_text(json.dumps(data))
+        result = format_results(str(tmp_path))
+        lines = result.splitlines()
+        itl_mean_line = [line for line in lines if "Mean ITL (ms)" in line][0]
+        assert "N/A" in itl_mean_line
+
     def test_nested_fields(self, format_results, tmp_path):
         """Nested JSON fields resolved via dot-notation using .avg subkey."""
         data = {
