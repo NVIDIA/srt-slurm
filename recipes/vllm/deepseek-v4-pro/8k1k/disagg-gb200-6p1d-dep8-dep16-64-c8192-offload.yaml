@@ -1,7 +1,7 @@
 name: "svf-vllm-disagg-gb200-2p1d-dep8-dep16"
 model:
   path: "deepseekv4-fp4"
-  container: "inferactinc/dev:svf-arm64-cu130-8d599d7"
+  container: "vllm/vllm-openai@sha256:2af012a17c2cee0bc1428c03a8a5e42b552f25dc6f73495ab5a29ccf4123c257"
   precision: "fp4"
 
 dynamo:
