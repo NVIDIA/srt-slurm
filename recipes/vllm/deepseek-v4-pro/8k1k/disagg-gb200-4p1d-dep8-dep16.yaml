@@ -84,3 +84,5 @@ benchmark:
   osl: 1024
   concurrencies: "2048"
   req_rate: "inf"
+  custom_tokenizer: "deepseek_v4"
+  use_chat_template: false
