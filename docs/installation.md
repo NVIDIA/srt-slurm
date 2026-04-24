@@ -130,6 +130,17 @@ model_paths:
 containers:
   latest: "/containers/sglang-latest.sqsh"
   stable: "/containers/sglang-stable.sqsh"
+
+# Optional: allow srtctl ensure-assets to pull/import missing aliases
+asset_materialization:
+  mode: auto # login | srun | auto
+  models_root: "/models"
+  containers_root: "/containers"
+  lock_path: "/path/to/srtctl/.asset-materialization.lock"
+  login_probe_command: "test -w /models && test -w /containers"
+  srun_template: "srun --partition=cpu --nodes=1 --ntasks=1 --cpus-per-task=8 --time=02:00:00 bash -lc {q_command}"
+  model_pull_template: "huggingface-cli download {q_source} --local-dir {q_target}"
+  container_pull_template: "enroot import -o {q_target} docker://{source}"
 ```
 
 ## Create a Job Config

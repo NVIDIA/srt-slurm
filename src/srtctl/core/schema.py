@@ -175,6 +175,27 @@ class S3Config:
     Schema: ClassVar[type[Schema]] = Schema
 
 
+@dataclass(frozen=True)
+class AssetMaterializationConfig:
+    """Cluster policy for materializing model and container aliases.
+
+    This is intentionally command-template based for the first implementation:
+    clusters can decide whether downloads/imports run directly on the login
+    node or behind an srun wrapper, and can choose the local tools they trust.
+    """
+
+    mode: str = "login"  # login | srun | auto
+    models_root: str | None = None
+    containers_root: str | None = None
+    lock_path: str | None = None
+    srun_template: str | None = None
+    login_probe_command: str | None = None
+    model_pull_template: str | None = None
+    container_pull_template: str | None = None
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
 @dataclass
 class ClusterConfig:
     """Cluster configuration from srtslurm.yaml."""
@@ -196,6 +217,7 @@ class ClusterConfig:
     # Cluster-level container mounts (host_path -> container_path)
     # Applied to all jobs on this cluster, useful for cluster-specific paths
     default_mounts: dict[str, str] | None = None
+    asset_materialization: AssetMaterializationConfig | None = None
     reporting: ReportingConfig | None = None
 
     Schema: ClassVar[type[Schema]] = Schema

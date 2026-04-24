@@ -116,8 +116,97 @@ The `srtslurm.yaml` file can contain the following fields:
 | `model_paths`                   | dict   | Model path aliases                                    |
 | `containers`                    | dict   | Container image aliases                               |
 | `default_mounts`                | dict   | Cluster-wide container mounts                         |
+| `asset_materialization`         | dict   | Optional policy for `srtctl ensure-assets`            |
 
 **output_dir**: When set, job logs are written to `output_dir/{job_id}/logs` instead of `srtctl_root/outputs/{job_id}/logs`. Useful for CI/CD and ephemeral environments.
+
+### Asset Materialization
+
+`asset_materialization` configures the cluster-side `srtctl ensure-assets`
+command. It is optional and only used when `ensure-assets` is run explicitly.
+Normal `srtctl apply` does not pull models, import containers, or mutate
+`srtslurm.yaml` by itself.
+
+```yaml
+# In srtslurm.yaml
+asset_materialization:
+  mode: auto
+  models_root: "/shared/models"
+  containers_root: "/shared/containers"
+  lock_path: "/shared/srt-slurm/.asset-materialization.lock"
+  login_probe_command: "test -w /shared/models && test -w /shared/containers"
+  srun_template: "srun --partition=cpu --nodes=1 --ntasks=1 --cpus-per-task=8 --time=02:00:00 bash -lc {q_command}"
+  model_pull_template: "huggingface-cli download {q_source} --local-dir {q_target}"
+  container_pull_template: "enroot import -o {q_target} docker://{source}"
+```
+
+| Field | Type | Default | Description |
+| ----- | ---- | ------- | ----------- |
+| `mode` | string | `login` | Where to run materialization commands: `login`, `srun`, or `auto` |
+| `models_root` | string | null | Directory for new model aliases, e.g. `/shared/models/<alias>` |
+| `containers_root` | string | null | Directory for new container aliases, e.g. `/shared/containers/<alias>.sqsh` |
+| `lock_path` | string | `<srtslurm.yaml>.asset.lock` | File lock used to serialize alias updates |
+| `login_probe_command` | string | null | In `auto` mode, success selects `login`; failure selects `srun` |
+| `srun_template` | string | `srun --nodes=1 --ntasks=1 bash -lc {q_command}` | Wrapper used when selected mode is `srun` |
+| `model_pull_template` | string | null | Command template used to pull a missing model alias |
+| `container_pull_template` | string | null | Command template used to import a missing container alias |
+
+`ensure-assets` fills templates from the recipe alias and identity fields. For
+example:
+
+```yaml
+model:
+  path: qwen32b
+  container: sglang-dev
+  precision: fp8
+
+identity:
+  model:
+    repo: Qwen/Qwen3-32B
+    revision: abc123
+  container:
+    image: nvcr.io/example/sglang:latest
+```
+
+Available placeholders:
+
+| Placeholder | Description |
+| ----------- | ----------- |
+| `{alias}` | Raw alias from `model.path` or `model.container` |
+| `{source}` | Raw source: `identity.model.repo` or `identity.container.image` |
+| `{target}` | Raw target path under `models_root` or `containers_root` |
+| `{revision}` | `identity.model.revision`, or empty string |
+| `{q_alias}` / `{q_source}` / `{q_target}` / `{q_revision}` | Shell-quoted values for command templates |
+| `{py_alias}` / `{py_source}` / `{py_target}` / `{py_revision}` | Python-literal quoted values for inline Python snippets |
+| `{command}` | Unquoted inner command, available only to `srun_template` |
+| `{q_command}` | Shell-quoted inner command, available only to `srun_template` |
+
+Use the `q_` placeholders when interpolating shell arguments:
+
+```yaml
+model_pull_template: "huggingface-cli download {q_source} --local-dir {q_target}"
+```
+
+Use raw `{source}` when a tool expects the source to be part of a larger token,
+such as an enroot Docker URI:
+
+```yaml
+container_pull_template: "enroot import -o {q_target} docker://{source}"
+```
+
+The command updates only `srtslurm.yaml` aliases:
+
+```yaml
+model_paths:
+  qwen32b: "/shared/models/qwen32b"
+
+containers:
+  sglang-dev: "/shared/containers/sglang-dev.sqsh"
+```
+
+It does not rewrite the submitted recipe. Later runs resolve the aliases
+through normal config loading, and the recipe `identity` block remains available
+for runtime fingerprint verification.
 
 ---
 

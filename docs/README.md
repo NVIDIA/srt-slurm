@@ -32,9 +32,10 @@ When you run `srtctl apply -f config.yaml`, the tool:
 
 The `srtctl-mcp` server is different from `srtctl apply`: it is a schema and
 recipe-authoring helper. It does not use host-side `srtslurm.yaml` for cluster
-defaults, aliases, containers, model paths, filesystem checks, or dry-run
-behavior. Run `srtctl` on the compute side, or use an orchestrator remote
-preflight path, for those checks.
+defaults, aliases, containers, model paths, filesystem checks, asset
+materialization, or dry-run behavior. Run `srtctl` on the compute side, or use
+an orchestrator remote path, for `srtctl ensure-assets`, preflight, and dry-run
+checks.
 
 Once allocated, workers launch inside containers, discover each other through ETCD and NATS, and begin serving. If you've configured a benchmark, it runs automatically against the serving endpoint and saves results to the log directory.
 
@@ -45,6 +46,7 @@ Once allocated, workers launch inside containers, discover each other through ET
 | `srtctl apply -f <config>`                         | Submit job(s) to SLURM                  |
 | `srtctl apply -f <config> --setup-script <script>` | Submit with custom setup script         |
 | `srtctl apply -f <config> --tags tag1,tag2`        | Submit with tags for filtering          |
+| `srtctl ensure-assets -f <config>`                 | Pull/import missing cluster aliases     |
 | `srtctl dry-run -f <config>`                       | Validate and preview without submitting |
 | `srtctl validate -f <config>`                      | Alias for dry-run                       |
 
