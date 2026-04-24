@@ -60,5 +60,3 @@ benchmark:
   random_range_ratio: 0.8
   concurrencies: "1x2x4x8x16x32x64x128x256x512x1024"
   req_rate: "inf"
-  warmup_multiplier: 2
-  formal_multiplier: 10
