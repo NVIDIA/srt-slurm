@@ -148,8 +148,8 @@ for C in "${CONCURRENCY_LIST[@]}"; do
         --url "${ENDPOINT}" \
         --synthetic-input-tokens-mean "${ISL}" \
         --synthetic-input-tokens-stddev "${ISL_STDDEV}" \
+        --output-tokens-stddev "${ISL_STDDEV}" \
         --output-tokens-mean "${OSL}" \
-        --extra-inputs min_tokens:"${OSL}" \
         --extra-inputs ignore_eos:true \
         --concurrency "${C}" \
         "${REQ_RATE_ARGS[@]}" \
