@@ -160,7 +160,7 @@ for C in "${CONCURRENCY_LIST[@]}"; do
         --ui-type none \
         --artifact-dir "${RUN_ARTIFACT_DIR}" \
         --extra-inputs "temperature:0.0" \
-        --extra-inputs "best_of:0" \
+        --extra-inputs "best_of:1" \
         "${SERVER_METRICS_ARGS[@]}" \
         "${EXTRA_ARGS[@]}"
 
