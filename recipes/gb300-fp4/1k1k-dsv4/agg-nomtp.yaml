@@ -26,14 +26,10 @@ backend:
   aggregated_environment:
     PYTHONUNBUFFERED: "1"
     SGLANG_JIT_DEEPGEMM_PRECOMPILE: "0"
+    SGLANG_JIT_DEEPGEMM_FAST_WARMUP: "1"
     SGLANG_MOONCAKE_CUSTOM_MEM_POOL: "True"
     NCCL_MNNVL_ENABLE: "1"
     NCCL_CUMEM_ENABLE: "1"
-    # Persistent JIT caches (recommended for repeatable runs).
-    # Mount your own cache dirs into /configs/** via srt-slurm extra_mount
-    # or change these to any writable path inside the container.
-    SGLANG_DG_CACHE_DIR: "/configs/dsv4/gb300/deepgemm-cache"
-    FLASHINFER_WORKSPACE_BASE: "/configs/dsv4/gb300/flashinfer-cache"
 
   sglang_config:
     aggregated:
