@@ -24,11 +24,21 @@ containers:
   sglang-latest: "/shared/containers/sglang-v0.4.sqsh"
   sglang-dev: "/shared/containers/sglang-dev.sqsh"
   sglang-fp4: "/shared/containers/sglang-fp4.sqsh"
+  # DeepSeek-V4 cookbook images (pull via enroot from Docker Hub lmsysorg/sglang):
+  #   lmsysorg/sglang:deepseek-v4-blackwell         (B200 / x86_64)
+  #   lmsysorg/sglang:deepseek-v4-grace-blackwell   (GB200 / GB300 / aarch64)
+  #   lmsysorg/sglang:deepseek-v4-hopper            (H200)
+  dsv4-blackwell: "/shared/containers/sglang-deepseek-v4-blackwell.sqsh"
+  dsv4-grace-blackwell: "/shared/containers/sglang-deepseek-v4-grace-blackwell.sqsh"
+  dsv4-hopper: "/shared/containers/sglang-deepseek-v4-hopper.sqsh"
 
 # Model path aliases
 model_paths:
   deepseek-r1: "/shared/models/deepseek/DeepSeek-R1"
   deepseek-r1-distill: "/shared/models/deepseek/DeepSeek-R1-Distill-Qwen-32B"
+  # DeepSeek-V4 checkpoints (huggingface.co/deepseek-ai/DeepSeek-V4-Pro, -V4-Flash):
+  dsv4-pro: "/shared/models/deepseek/DeepSeek-V4-Pro"
+  dsv4-flash: "/shared/models/deepseek/DeepSeek-V4-Flash"
   llama-3-70b: "/shared/models/meta/llama-3-70b"
   llama-3-405b: "/shared/models/meta/llama-3-405b"
 
