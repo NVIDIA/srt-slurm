@@ -1,4 +1,4 @@
-name: "svf-vllm-disagg-gb200-1p1d-dep4-dep8"
+name: "svf-vllm-disagg-gb200-1p1d-dep8-dep8"
 model:
   path: "deepseekv4-fp4"
   container: "vllm/vllm-openai:deepseekv4-cu130"
