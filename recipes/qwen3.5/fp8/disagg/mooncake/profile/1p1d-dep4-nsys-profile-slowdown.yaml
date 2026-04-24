@@ -1,7 +1,7 @@
-# Qwen3.5-397B-A17B-FP8 disaggregated 1P1D: TP4 prefill + DEP4 decode (Mooncake, staging buffer).
+# Qwen3.5-397B-A17B-FP8 disaggregated 1P1D: TP4 prefill + DEP4 decode (Mooncake).
 # Model / resources / backend / sglang_config: copied from
 #   recipes/qwen3.5/fp8/disagg/mooncake/profile/1p1d-dep4-nsys-profile.yaml
-# This file changes frontend + profiling + benchmark only, to pair nsys with SGLang decode /slow_down.
+# This file changes frontend + profiling + benchmark, and disables staging buffer, to pair nsys with SGLang decode /slow_down.
 #
 # Slow-down is meant to be used with SA-Bench warmup skipped (num_warmup_mult: 0). The
 # separate benchmark warmup is disabled so step indices stay predictable; the role of
@@ -17,7 +17,7 @@
 #   — warmup_steps: extra forwards after slow_down ends so decode is hot before capture.
 # Adjust the three terms if you change osl, concurrency, or slow_down timing.
 
-name: "qwen3.5-1p1d-dep4-nsys-profile"
+name: "qwen3.5-1p1d-dep4-nsys-profile-slowdown"
 
 model:
   path: "qwen3.5-fp8"
@@ -52,8 +52,8 @@ backend:
     SGLANG_MOONCAKE_CUSTOM_MEM_POOL: "True"
     SGLANG_USE_MESSAGE_QUEUE_BROADCASTER: "0"
     SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK: "1"
-    SGLANG_DISAGG_STAGING_BUFFER: "1"
-    SGLANG_DISAGG_STAGING_BUFFER_SIZE_MB: "128"
+    # SGLANG_DISAGG_STAGING_BUFFER: "1"
+    # SGLANG_DISAGG_STAGING_BUFFER_SIZE_MB: "128"
     SGLANG_LOG_FORWARD_ITERS: "1"
 
   decode_environment:
@@ -72,8 +72,8 @@ backend:
     SGLANG_MOONCAKE_CUSTOM_MEM_POOL: "True"
     SGLANG_USE_MESSAGE_QUEUE_BROADCASTER: "0"
     SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK: "1"
-    SGLANG_DISAGG_STAGING_BUFFER: "1"
-    SGLANG_DISAGG_STAGING_BUFFER_SIZE_MB: "128"
+    # SGLANG_DISAGG_STAGING_BUFFER: "1"
+    # SGLANG_DISAGG_STAGING_BUFFER_SIZE_MB: "128"
     SGLANG_LOG_FORWARD_ITERS: "1"
 
   sglang_config:
@@ -97,7 +97,7 @@ backend:
 
       mem-fraction-static: 0.80
       chunked-prefill-size: 16384
-      context-length: 2020
+      context-length: 4096
       load-balance-method: "round_robin"
       watchdog-timeout: 1000000
 
@@ -127,7 +127,7 @@ backend:
 
       mem-fraction-static: 0.80
       chunked-prefill-size: 16384
-      context-length: 2020
+      context-length: 4096
       cuda-graph-max-bs: 1024
       decode-log-interval: 1
       stream-interval: 50
