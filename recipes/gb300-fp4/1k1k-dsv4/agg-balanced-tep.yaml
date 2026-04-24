@@ -31,7 +31,7 @@ backend:
     SGLANG_MOONCAKE_CUSTOM_MEM_POOL: "True"
     NCCL_MNNVL_ENABLE: "1"
     NCCL_CUMEM_ENABLE: "1"
-    SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK: "1024"
+    SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK: "512"
     # Persistent JIT caches (recommended for repeatable runs).
     # Mount your own cache dirs into /configs/** via srt-slurm extra_mount
     # or change these to any writable path inside the container.
@@ -57,10 +57,11 @@ backend:
       speculative-eagle-topk: 1
       speculative-num-draft-tokens: 2
 
-      mem-fraction-static: 0.78
+      mem-fraction-static: 0.9
       context-length: 2200
-      cuda-graph-max-bs: 128
-      max-running-requests: 256
+      max-prefill-tokens: 4096
+      cuda-graph-max-bs: 64
+      max-running-requests: 64
       disable-radix-cache: true
       decode-log-interval: 1
       stream-interval: 50
@@ -70,5 +71,6 @@ benchmark:
   isl: 1024
   osl: 1024
   random_range_ratio: 0.8
-  concurrencies: "1x2x4x8x16x32x64x128x256"
+  concurrencies: "32x64"
   req_rate: "inf"
+  use_chat_template: false

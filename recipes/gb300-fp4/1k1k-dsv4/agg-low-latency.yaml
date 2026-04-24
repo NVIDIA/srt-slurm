@@ -56,8 +56,8 @@ backend:
 
       # Generic knobs
       context-length: 2200
-      cuda-graph-max-bs: 1024
-      max-running-requests: 1024
+      cuda-graph-max-bs: 8
+      max-running-requests: 8
       disable-radix-cache: true
       decode-log-interval: 1
       stream-interval: 50
@@ -67,5 +67,6 @@ benchmark:
   isl: 1024
   osl: 1024
   random_range_ratio: 0.8
-  concurrencies: "1x2x4x8x16x32x64x128x256x512x1024"
+  concurrencies: "1x2x4x8"
   req_rate: "inf"
+  use_chat_template: false
