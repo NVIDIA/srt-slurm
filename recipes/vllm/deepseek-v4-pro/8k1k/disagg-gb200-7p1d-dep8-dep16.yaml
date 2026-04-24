@@ -4,8 +4,7 @@ model:
   container: "vllm/vllm-openai:deepseekv4-cu130"
   precision: "fp4"
 dynamo:
-  version: 1.0.1
-  install: true
+  hash: 6a159fedd8e4a1563aa647c31f622aedbf254b5b
 setup_script: vllm-container-deps.sh
 resources:
   gpu_type: "gb200"
