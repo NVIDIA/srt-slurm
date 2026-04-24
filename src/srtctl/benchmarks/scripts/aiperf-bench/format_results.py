@@ -45,9 +45,6 @@ _FIELD_MAP: dict[str, list[str]] = {
     "tpot_mean":           ["inter_token_latency.avg"],
     "tpot_median":         ["inter_token_latency.p50"],
     "tpot_p99":            ["inter_token_latency.p99"],
-    "itl_mean":            ["inter_token_latency.avg"],
-    "itl_median":          ["inter_token_latency.p50"],
-    "itl_p99":             ["inter_token_latency.p99"],
     "e2el_mean":           ["request_latency.avg"],
     "e2el_median":         ["request_latency.p50"],
     "e2el_p99":            ["request_latency.p99"],
@@ -130,6 +127,24 @@ def format_results(artifact_dir: str) -> str:
     if burstiness_val == 1.0:
         burstiness_str += " (Poisson process)"
 
+    # ITL includes TTFT as the first inter-token gap, so the mean is a weighted
+    # average of TTFT and TPOT.  Median/p99 cannot be derived from aggregate
+    # percentiles without the raw per-token data.
+    itl_mean_str = "N/A"
+    num_requests = get("successful_requests")
+    total_out = get("total_output_tokens")
+    ttft_avg = get("ttft_mean")
+    tpot_avg = get("tpot_mean")
+    if (
+        isinstance(num_requests, (int, float))
+        and isinstance(total_out, (int, float))
+        and isinstance(ttft_avg, (int, float))
+        and isinstance(tpot_avg, (int, float))
+        and total_out > 0
+    ):
+        itl_mean_val = (num_requests * ttft_avg + (total_out - num_requests) * tpot_avg) / total_out
+        itl_mean_str = f"{itl_mean_val:.2f}"
+
     lines = [
         f"Traffic request rate: {_fmt(get('request_rate'))}",
         f"Burstiness factor: {burstiness_str}",
@@ -151,9 +166,9 @@ def format_results(artifact_dir: str) -> str:
         _row("Median TPOT (ms)", fmt("tpot_median")),
         _row("P99 TPOT (ms)", fmt("tpot_p99")),
         "---------------Inter-token Latency----------------",
-        _row("Mean ITL (ms)", fmt("itl_mean")),
-        _row("Median ITL (ms)", fmt("itl_median")),
-        _row("P99 ITL (ms)", fmt("itl_p99")),
+        _row("Mean ITL (ms)", itl_mean_str),
+        _row("Median ITL (ms)", "N/A"),
+        _row("P99 ITL (ms)", "N/A"),
         "----------------End-to-end Latency----------------",
         _row("Mean E2EL (ms)", fmt("e2el_mean")),
         _row("Median E2EL (ms)", fmt("e2el_median")),
