@@ -611,6 +611,7 @@ def get_tokenizer(
     tokenizer_mode: str = "auto",
     trust_remote_code: bool = False,
     custom_tokenizer: str | None = None,
+    backend: str | None = None,
     **kwargs,
 ) -> PreTrainedTokenizer | PreTrainedTokenizerFast:
     if pretrained_model_name_or_path is not None and not os.path.exists(pretrained_model_name_or_path):
@@ -634,15 +635,33 @@ def get_tokenizer(
         if custom_tokenizer == "glm_moe_dsa":
             return _load_glm_moe_dsa_tokenizer(pretrained_model_name_or_path)
         if custom_tokenizer == "deepseek_v4":
-            try:
-                from vllm.tokenizers.deepseek_v4 import DeepseekV4Tokenizer
-            except ImportError as e:
-                raise ImportError(
-                    "DeepseekV4Tokenizer requires vllm package.\n"
-                    "Please install it with `pip install vllm` "
-                    "to use deepseek_v4 tokenizer."
-                ) from e
-            return DeepseekV4Tokenizer.from_pretrained(str(pretrained_model_name_or_path))
+            if backend == "sglang":
+                # SGLang has no client-side DeepseekV4Tokenizer package; we
+                # vendor sglang's own server-side encoder (encoding_dsv4.py)
+                # under ./tokenizers/ so the sa-bench client renders the
+                # exact same DSML prompt the sglang server builds.
+                from tokenizers.sglang_deepseek_v4 import (
+                    SGLangDeepseekV4Tokenizer,
+                )
+                return SGLangDeepseekV4Tokenizer.from_pretrained(
+                    str(pretrained_model_name_or_path)
+                )
+            if backend in (None, "vllm"):
+                try:
+                    from vllm.tokenizers.deepseek_v4 import DeepseekV4Tokenizer
+                except ImportError as e:
+                    raise ImportError(
+                        "DeepseekV4Tokenizer requires vllm package.\n"
+                        "Please install it with `pip install vllm` "
+                        "to use deepseek_v4 tokenizer."
+                    ) from e
+                return DeepseekV4Tokenizer.from_pretrained(
+                    str(pretrained_model_name_or_path)
+                )
+            raise ValueError(
+                f"custom_tokenizer='deepseek_v4' does not support backend={backend!r}; "
+                "expected 'vllm' or 'sglang'."
+            )
         from importlib import import_module
         try:
             module_path, class_name = custom_tokenizer.rsplit('.', 1)

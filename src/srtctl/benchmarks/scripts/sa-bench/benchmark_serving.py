@@ -838,6 +838,7 @@ def main(args: argparse.Namespace):
         tokenizer_mode=tokenizer_mode,
         trust_remote_code=args.trust_remote_code,
         custom_tokenizer=args.custom_tokenizer,
+        backend=backend,
     )
 
     if args.dataset is not None:
