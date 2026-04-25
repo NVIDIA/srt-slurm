@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 # Install sglang-router 0.3.2 and rebuild DeepEP with kNumMaxTopK=16.
 # Used by tasks/bench-sgl-router/*.yaml via setup_script.
 set -eux
