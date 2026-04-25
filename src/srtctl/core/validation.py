@@ -12,12 +12,18 @@ background thread after job submission and never block or fail the submit.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import requests
+
+from srtctl.core.config import (
+    generate_override_configs,
+    resolve_config_with_defaults,
+)
 
 if TYPE_CHECKING:
     from srtctl.core.schema import SrtConfig
@@ -34,6 +40,361 @@ class ValidationResult:
     check: str
     ok: bool
     message: str
+
+
+@dataclass(frozen=True)
+class PreflightIssue:
+    code: str
+    field: str
+    message: str
+
+
+@dataclass(frozen=True)
+class PreflightResolution:
+    field: str
+    raw: str | None
+    resolved: str | None
+    source: str
+    ok: bool
+    message: str
+
+
+@dataclass(frozen=True)
+class PreflightResult:
+    variant: str
+    ok: bool
+    model: PreflightResolution
+    container: PreflightResolution
+    errors: list[PreflightIssue]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "variant": self.variant,
+            "ok": self.ok,
+            "model": self.model.__dict__,
+            "container": self.container.__dict__,
+            "errors": [issue.__dict__ for issue in self.errors],
+        }
+
+
+def _expand_path(value: str) -> str:
+    return os.path.expanduser(os.path.expandvars(value))
+
+
+def _check_path(path_str: str, *, expect: str) -> tuple[bool, str]:
+    path = Path(path_str).resolve()
+    if not path.exists():
+        return False, f"not found: {path}"
+    if expect == "dir" and not path.is_dir():
+        return False, f"not a directory: {path}"
+    if expect == "file" and not path.is_file():
+        return False, f"not a file: {path}"
+    return True, f"exists: {path}"
+
+
+def _preflight_model(
+    raw_config: dict[str, Any],
+    resolved_config: dict[str, Any],
+    cluster_config: dict[str, Any] | None,
+) -> tuple[PreflightResolution, list[PreflightIssue]]:
+    raw = raw_config.get("model", {}).get("path")
+    resolved = resolved_config.get("model", {}).get("path")
+    aliases = (cluster_config or {}).get("model_paths") or {}
+    source = "srtslurm.yaml:model_paths" if raw in aliases else "literal"
+
+    if not raw or not resolved:
+        issue = PreflightIssue(
+            code="model-missing",
+            field="model.path",
+            message="model.path is required",
+        )
+        return (
+            PreflightResolution(
+                field="model.path",
+                raw=raw,
+                resolved=resolved,
+                source=source,
+                ok=False,
+                message=issue.message,
+            ),
+            [issue],
+        )
+
+    ok, detail = _check_path(_expand_path(resolved), expect="dir")
+    if ok:
+        return (
+            PreflightResolution(
+                field="model.path",
+                raw=raw,
+                resolved=str(Path(_expand_path(resolved)).resolve()),
+                source=source,
+                ok=True,
+                message=detail,
+            ),
+            [],
+        )
+
+    if source == "srtslurm.yaml:model_paths":
+        message = (
+            f"Model alias '{raw}' resolved to '{resolved}', but that path is unavailable. "
+            "Pull or register the model yourself before submitting."
+        )
+    else:
+        message = (
+            f"Model '{raw}' is not a local model path and is not defined in srtslurm.yaml "
+            "model_paths. Pull or register the model yourself before submitting."
+        )
+    issue = PreflightIssue(
+        code="model-not-available",
+        field="model.path",
+        message=message,
+    )
+    return (
+        PreflightResolution(
+            field="model.path",
+            raw=raw,
+            resolved=resolved,
+            source=source,
+            ok=False,
+            message=message,
+        ),
+        [issue],
+    )
+
+
+def _preflight_container(
+    raw_config: dict[str, Any],
+    resolved_config: dict[str, Any],
+    cluster_config: dict[str, Any] | None,
+) -> tuple[PreflightResolution, list[PreflightIssue]]:
+    raw = raw_config.get("model", {}).get("container")
+    resolved = resolved_config.get("model", {}).get("container")
+    aliases = (cluster_config or {}).get("containers") or {}
+    source = "srtslurm.yaml:containers" if raw in aliases else "literal"
+
+    if not raw or not resolved:
+        issue = PreflightIssue(
+            code="container-missing",
+            field="model.container",
+            message="model.container is required",
+        )
+        return (
+            PreflightResolution(
+                field="model.container",
+                raw=raw,
+                resolved=resolved,
+                source=source,
+                ok=False,
+                message=issue.message,
+            ),
+            [issue],
+        )
+
+    ok, detail = _check_path(_expand_path(resolved), expect="file")
+    if ok:
+        return (
+            PreflightResolution(
+                field="model.container",
+                raw=raw,
+                resolved=str(Path(_expand_path(resolved)).resolve()),
+                source=source,
+                ok=True,
+                message=detail,
+            ),
+            [],
+        )
+
+    if source == "srtslurm.yaml:containers":
+        message = (
+            f"Container alias '{raw}' resolved to '{resolved}', but that file is unavailable. "
+            "Provide or register the container yourself before submitting."
+        )
+    else:
+        message = (
+            f"Container '{raw}' is not a local container path and is not defined in "
+            "srtslurm.yaml containers. Provide or register the container yourself before submitting."
+        )
+    issue = PreflightIssue(
+        code="container-not-available",
+        field="model.container",
+        message=message,
+    )
+    return (
+        PreflightResolution(
+            field="model.container",
+            raw=raw,
+            resolved=resolved,
+            source=source,
+            ok=False,
+            message=message,
+        ),
+        [issue],
+    )
+
+
+def validate_topology(resources: dict[str, Any] | None) -> list[PreflightIssue]:
+    """Catch semantically wrong resources blocks that pass the marshmallow schema.
+
+    The schema accepts any combination of prefill_*, decode_*, and agg_* fields,
+    so configs like ``prefill_workers: 0`` with ``decode_workers: 1`` look valid
+    but express "disaggregated with no prefill" — which is really aggregated and
+    should use agg_nodes/agg_workers instead.
+    """
+    if not resources:
+        return [
+            PreflightIssue(
+                code="topology-missing",
+                field="resources",
+                message=(
+                    "resources block is empty. Set either disaggregated "
+                    "(prefill_nodes/prefill_workers + decode_nodes/decode_workers) "
+                    "or aggregated (agg_nodes + agg_workers)."
+                ),
+            )
+        ]
+
+    prefill_nodes = resources.get("prefill_nodes")
+    decode_nodes = resources.get("decode_nodes")
+    prefill_workers = resources.get("prefill_workers")
+    decode_workers = resources.get("decode_workers")
+    agg_nodes = resources.get("agg_nodes")
+    agg_workers = resources.get("agg_workers")
+
+    disagg_fields = {
+        "prefill_nodes": prefill_nodes,
+        "decode_nodes": decode_nodes,
+        "prefill_workers": prefill_workers,
+        "decode_workers": decode_workers,
+    }
+    agg_fields = {"agg_nodes": agg_nodes, "agg_workers": agg_workers}
+
+    has_disagg = any(v is not None for v in disagg_fields.values())
+    has_agg = any(v is not None for v in agg_fields.values())
+
+    if has_disagg and has_agg:
+        set_disagg = sorted(k for k, v in disagg_fields.items() if v is not None)
+        set_agg = sorted(k for k, v in agg_fields.items() if v is not None)
+        return [
+            PreflightIssue(
+                code="topology-mixed",
+                field="resources",
+                message=(
+                    f"Mixes disaggregated fields ({', '.join(set_disagg)}) with aggregated fields "
+                    f"({', '.join(set_agg)}). Use disaggregated (prefill_*/decode_*) "
+                    "or aggregated (agg_*), not both."
+                ),
+            )
+        ]
+
+    issues: list[PreflightIssue] = []
+
+    if has_disagg:
+        pf_workers = prefill_workers or 0
+        dc_workers = decode_workers or 0
+        pf_nodes = prefill_nodes or 0
+        dc_nodes = decode_nodes or 0
+
+        if pf_workers == 0 and dc_workers == 0:
+            issues.append(
+                PreflightIssue(
+                    code="topology-no-workers",
+                    field="resources",
+                    message=(
+                        "Disaggregated resources block has no workers: prefill_workers and "
+                        "decode_workers are both 0/null. Set both, or switch to aggregated "
+                        "mode with agg_nodes + agg_workers."
+                    ),
+                )
+            )
+        elif pf_workers == 0:
+            issues.append(
+                PreflightIssue(
+                    code="topology-aggregated-style",
+                    field="resources.prefill_workers",
+                    message=(
+                        "prefill_workers is 0 in a disaggregated-style resources block. "
+                        f"For a single-side topology on {dc_nodes} node(s) with {dc_workers} "
+                        f"worker(s), use aggregated mode: `agg_nodes: {dc_nodes}, "
+                        f"agg_workers: {dc_workers}` (remove prefill_*/decode_*)."
+                    ),
+                )
+            )
+        elif dc_workers == 0:
+            issues.append(
+                PreflightIssue(
+                    code="topology-aggregated-style",
+                    field="resources.decode_workers",
+                    message=(
+                        "decode_workers is 0 in a disaggregated-style resources block. "
+                        f"For a single-side topology on {pf_nodes} node(s) with {pf_workers} "
+                        f"worker(s), use aggregated mode: `agg_nodes: {pf_nodes}, "
+                        f"agg_workers: {pf_workers}` (remove prefill_*/decode_*)."
+                    ),
+                )
+            )
+        return issues
+
+    if has_agg:
+        ag_workers = agg_workers or 0
+        ag_nodes = agg_nodes or 0
+        if ag_workers == 0:
+            issues.append(
+                PreflightIssue(
+                    code="topology-no-workers",
+                    field="resources.agg_workers",
+                    message="agg_workers must be > 0 in aggregated mode.",
+                )
+            )
+        if ag_nodes == 0:
+            issues.append(
+                PreflightIssue(
+                    code="topology-no-nodes",
+                    field="resources.agg_nodes",
+                    message="agg_nodes must be > 0 in aggregated mode.",
+                )
+            )
+        return issues
+
+    return [
+        PreflightIssue(
+            code="topology-missing",
+            field="resources",
+            message=(
+                "No topology set. Set either disaggregated "
+                "(prefill_nodes/prefill_workers + decode_nodes/decode_workers) "
+                "or aggregated (agg_nodes + agg_workers)."
+            ),
+        )
+    ]
+
+
+def preflight_config_variants(
+    raw_config: dict[str, Any],
+    *,
+    cluster_config: dict[str, Any] | None = None,
+    selector: str | None = None,
+) -> list[PreflightResult]:
+    active_cluster_config = cluster_config
+    variants = (
+        generate_override_configs(raw_config, selector=selector) if "base" in raw_config else [("base", raw_config)]
+    )
+    results: list[PreflightResult] = []
+    for suffix, variant in variants:
+        resolved = resolve_config_with_defaults(variant, active_cluster_config)
+        model, model_issues = _preflight_model(variant, resolved, active_cluster_config)
+        container, container_issues = _preflight_container(variant, resolved, active_cluster_config)
+        topology_issues = validate_topology(variant.get("resources"))
+        issues = [*model_issues, *container_issues, *topology_issues]
+        results.append(
+            PreflightResult(
+                variant=suffix,
+                ok=not issues,
+                model=model,
+                container=container,
+                errors=issues,
+            )
+        )
+    return results
 
 
 def validate_local_path(name: str, path: str) -> ValidationResult:

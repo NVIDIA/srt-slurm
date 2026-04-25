@@ -10,8 +10,8 @@ touching real cluster infrastructure. Every external surface that would
 reach slurm, a network port, or a subprocess is swapped for a local fake
 while the orchestration code itself runs for real.
 
-Designed for end-to-end tests of upstream harnesses (ibar) that need to
-observe a plausible sequence of artifacts appearing under an output_dir.
+Designed for end-to-end tests of upstream harnesses that need to observe
+a plausible sequence of artifacts appearing under an output_dir.
 """
 
 from __future__ import annotations
@@ -103,7 +103,7 @@ class FakePopen:
         deadline = None if timeout is None else time.monotonic() + timeout
         while self.poll() is None:
             if deadline is not None and time.monotonic() >= deadline:
-                raise subprocess.TimeoutExpired(cmd=self.args, timeout=timeout)
+                raise subprocess.TimeoutExpired(cmd=self.args, timeout=timeout or 0.0)
             time.sleep(0.02)
         assert self._returncode is not None
         return self._returncode
@@ -410,7 +410,7 @@ def run_mock_sweep(
     log_dir.mkdir(parents=True, exist_ok=True)
 
     # SweepOrchestrator reads SRTCTL_OUTPUT_DIR to place log_dir; point it at
-    # the real output_dir so artifacts land where ibar expects them.
+    # the real output_dir so artifacts land where the upstream harness expects.
     prior_output = os.environ.get("SRTCTL_OUTPUT_DIR")
     os.environ["SRTCTL_OUTPUT_DIR"] = str(output_dir)
     prior_slurm = _set_slurm_env(job_id, opts.nodelist)

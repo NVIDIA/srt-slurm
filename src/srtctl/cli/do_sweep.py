@@ -16,6 +16,7 @@ import argparse
 import functools
 import logging
 import os
+import subprocess
 import sys
 import threading
 from dataclasses import dataclass
@@ -194,6 +195,173 @@ class SweepOrchestrator(
         logger.info("=" * 60)
         logger.info("")
 
+    def _get_hf_home(self) -> str | None:
+        """Get HF_HOME from backend environment config."""
+        for mode in ("prefill", "decode", "agg"):
+            env = self.config.backend.get_environment_for_mode(mode)
+            if "HF_HOME" in env:
+                return env["HF_HOME"]
+        return None
+
+    def _get_hf_env(self) -> dict[str, str]:
+        """Collect HF-related environment variables from backend config.
+
+        Merges environment from all modes (prefill/decode/agg), keeping
+        only HuggingFace-relevant keys (HF_*, HUGGING_FACE_*) so the
+        pre-download srun runs with the same auth/endpoint context as workers.
+        """
+        hf_env: dict[str, str] = {}
+        for mode in ("prefill", "decode", "agg"):
+            for key, val in self.config.backend.get_environment_for_mode(mode).items():
+                if key.startswith(("HF_", "HUGGING_FACE_")):
+                    hf_env[key] = val
+        return hf_env
+
+    def _clean_stale_hf_locks(self) -> None:
+        """Clean stale HuggingFace download lock files from shared cache.
+
+        When multiple workers share a HF cache on a networked filesystem,
+        stale .lock files from crashed jobs block all future downloads with
+        "Lock acquisition failed". This removes locks older than 30 minutes
+        (no legitimate download takes that long).
+        """
+        hf_home = self._get_hf_home()
+        if not hf_home:
+            return
+
+        cache_dir = Path(hf_home)
+        if not cache_dir.is_dir():
+            return
+
+        import time
+
+        threshold = time.time() - 30 * 60  # 30 minutes ago
+        removed = 0
+        for lock_file in cache_dir.rglob("*.lock"):
+            try:
+                if lock_file.stat().st_mtime < threshold:
+                    lock_file.unlink()
+                    removed += 1
+            except OSError:
+                pass  # Permission denied or already deleted
+
+        if removed > 0:
+            logger.info("Cleaned %d stale .lock files from HF cache: %s", removed, hf_home)
+
+    def _ensure_model_cached(self) -> None:
+        """Pre-download HuggingFace model on a single node before starting workers.
+
+        srt-slurm launches multiple workers that each independently call
+        dynamo's fetch_model(). Without pre-caching, all workers race to
+        download the same model on the shared filesystem, causing lock
+        contention and "Lock acquisition failed" errors.
+
+        This method runs huggingface-cli download on ONE compute node
+        (synchronously, blocking) so the model is fully cached before
+        any worker starts. Subsequent worker startups find the model
+        in cache and skip downloading entirely - no locks created.
+        """
+        if not self.runtime.is_hf_model:
+            return
+
+        hf_home = self._get_hf_home()
+        if not hf_home:
+            logger.warning(
+                "HF model '%s' specified but HF_HOME is not set in backend environment config. "
+                "Workers will use the default HuggingFace cache (~/.cache/huggingface) which may not "
+                "be shared across nodes. Set HF_HOME in prefill_environment/decode_environment to use "
+                "a shared cache directory (e.g., HF_HOME: /lustre/fsw/.../common/cache).",
+                self.runtime.model_path,
+            )
+            return
+
+        model_id = str(self.runtime.model_path)
+
+        # Check if model is already fully cached using huggingface_hub API.
+        # snapshot_download with local_files_only=True succeeds only if every
+        # file in the model repo is already present in the local cache.
+        # Note: HF_HOME stores models in $HF_HOME/hub/, so we pass cache_dir=$HF_HOME/hub
+        # to match the actual storage location used by workers.
+        try:
+            from huggingface_hub import snapshot_download  # type: ignore[import-untyped]
+
+            snapshot_download(model_id, cache_dir=str(Path(hf_home) / "hub"), local_files_only=True)
+            logger.info("Model '%s' already cached at %s, skipping pre-download", model_id, hf_home)
+            return
+        except ImportError:
+            logger.debug("huggingface_hub not installed on host, will use container to check/download")
+        except Exception:
+            logger.debug("Model '%s' not fully cached, will pre-download", model_id)
+
+        download_node = self.runtime.nodes.worker[0]
+
+        logger.info("Ensuring model '%s' is cached on %s (cache: %s)", model_id, download_node, hf_home)
+
+        # The srun command uses HF_HOME (not --cache-dir) to match the exact
+        # cache path workers use ($HF_HOME/hub/models--*/).
+        # It first checks with HF_HUB_OFFLINE=1 (fast, no network). Only if
+        # that fails does it actually download.
+        # Uses 'hf download' (new CLI) with 'huggingface-cli download' as fallback.
+        import shlex
+
+        q_hf_home = shlex.quote(hf_home)
+        q_model_id = shlex.quote(model_id)
+        download_cmd = [
+            "bash",
+            "-c",
+            f"export HF_HOME={q_hf_home}; "
+            f"find {q_hf_home} -name '*.lock' -mmin +30 -delete 2>/dev/null; "
+            f"DL_CMD='hf download'; "
+            f"command -v hf >/dev/null 2>&1 || DL_CMD='huggingface-cli download'; "
+            f"if HF_HUB_OFFLINE=1 $DL_CMD {q_model_id} --quiet 2>/dev/null; then "
+            f"echo 'Model already cached'; "
+            f"else "
+            f"echo 'Downloading model...'; "
+            f"$DL_CMD {q_model_id} --quiet; "
+            f"fi",
+        ]
+
+        download_log = self.runtime.log_dir / "model_download.out"
+
+        # Pass all HF-related env vars (HF_TOKEN, HF_ENDPOINT, etc.) so the
+        # pre-download runs with the same auth/endpoint context as workers.
+        hf_env = self._get_hf_env()
+
+        try:
+            proc = start_srun_process(
+                command=download_cmd,
+                nodelist=[download_node],
+                output=str(download_log),
+                container_image=str(self.runtime.container_image),
+                container_mounts=self.runtime.container_mounts,
+                env_to_set=hf_env,
+                use_bash_wrapper=False,  # command is already bash -c
+            )
+
+            timeout_sec = 60 * 60  # 1 hour; large models can take a while
+            try:
+                rc = proc.wait(timeout=timeout_sec)
+            except subprocess.TimeoutExpired:
+                logger.warning(
+                    "Model pre-download timed out after %d seconds, killing (workers will retry at startup). Log: %s",
+                    timeout_sec,
+                    download_log,
+                )
+                proc.kill()
+                proc.wait()
+                return
+
+            if rc != 0:
+                logger.warning(
+                    "Model pre-download exited with code %d (workers will retry at startup). Log: %s",
+                    rc,
+                    download_log,
+                )
+            else:
+                logger.info("Model pre-download complete")
+        except Exception:
+            logger.warning("Model pre-download failed (workers will retry at startup)", exc_info=True)
+
     def run(self) -> int:
         """Run the complete sweep."""
         # Create status reporter (fire-and-forget, no-op if not configured)
@@ -226,6 +394,14 @@ class SweepOrchestrator(
             head_proc = self.start_head_infrastructure(registry)
             registry.add_process(head_proc)
 
+            # Pre-worker: Ensure HF model is cached before starting workers.
+            # 1. Clean stale lock files from previous crashed downloads
+            # 2. Download model on a single node (blocks until complete)
+            # This prevents lock contention when multiple workers start.
+            if self.runtime.is_hf_model:
+                self._clean_stale_hf_locks()
+                self._ensure_model_cached()
+
             # Stage 2: Workers
             reporter.report(JobStatus.WORKERS, JobStage.WORKERS, "Starting workers")
             worker_procs = self.start_all_workers()
@@ -253,13 +429,18 @@ class SweepOrchestrator(
 
         finally:
             logger.info("Cleanup")
-            reporter.report_completed(exit_code)
             stop_event.set()
             registry.cleanup()
             if exit_code != 0:
                 registry.print_failure_details()
-            # Run post-processing (AI analysis if enabled)
-            self.run_postprocess(exit_code)
+            # Post-process first: generate rollup, upload logs to S3, eagerly
+            # push logs_url to the status API. Runs before report_completed so
+            # the final PUT can reassert the artifact pointer.
+            self.run_postprocess(exit_code, reporter=reporter)
+            reporter.report_completed(
+                exit_code,
+                logs_url=getattr(self, "_last_logs_url", None),
+            )
 
         return exit_code
 

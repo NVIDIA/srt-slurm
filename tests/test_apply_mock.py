@@ -12,7 +12,6 @@ drives the real SweepOrchestrator under `srtctl.mock`.
 from __future__ import annotations
 
 import json
-import os
 import sys
 import time
 from pathlib import Path
@@ -55,9 +54,7 @@ def _wait_for(path: Path, *, timeout: float = 30.0, interval: float = 0.1) -> bo
     return False
 
 
-def test_apply_mock_emits_submission_json_and_spawns_worker(
-    monkeypatch, tmp_path: Path, capsys: Any
-) -> None:
+def test_apply_mock_emits_submission_json_and_spawns_worker(monkeypatch, tmp_path: Path, capsys: Any) -> None:
     cfg = _write_config(tmp_path)
     output_base = tmp_path / "outputs"
     output_base.mkdir()
@@ -79,7 +76,10 @@ def test_apply_mock_emits_submission_json_and_spawns_worker(
         ],
     )
     # get_srtslurm_setting returns cluster info; None is fine for the mock.
-    with patch("srtctl.cli.submit.get_srtslurm_setting", return_value=None):
+    with (
+        patch("srtctl.cli.submit.get_srtslurm_setting", return_value=None),
+        patch("srtctl.cli.submit._assert_preflight_passed"),
+    ):
         submit_cli.main()
 
     stdout = capsys.readouterr().out.strip()
@@ -118,9 +118,7 @@ def test_apply_mock_emits_submission_json_and_spawns_worker(
     assert (output_dir / "logs" / "benchmark.out").exists()
 
 
-def test_apply_mock_does_not_call_real_sbatch(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_apply_mock_does_not_call_real_sbatch(monkeypatch, tmp_path: Path) -> None:
     """Ensure the stubbed sbatch prevented an actual subprocess.run(sbatch, ...)."""
     cfg = _write_config(tmp_path)
     output_base = tmp_path / "outputs"
@@ -155,10 +153,9 @@ def test_apply_mock_does_not_call_real_sbatch(
     # this will route the sbatch through to the real system call and surface.
     with (
         patch("srtctl.cli.submit.get_srtslurm_setting", return_value=None),
+        patch("srtctl.cli.submit._assert_preflight_passed"),
         patch("subprocess.run", side_effect=_tracking_run),
     ):
         submit_cli.main()
 
-    assert seen_sbatch == [], (
-        f"Expected --mock to stub sbatch entirely, but saw real sbatch calls: {seen_sbatch}"
-    )
+    assert seen_sbatch == [], f"Expected --mock to stub sbatch entirely, but saw real sbatch calls: {seen_sbatch}"

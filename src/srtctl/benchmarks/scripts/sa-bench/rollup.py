@@ -59,12 +59,27 @@ def _read_job_metadata(log_dir: Path) -> dict[str, Any] | None:
     return None
 
 
+def _as_int(value: Any) -> int:
+    """Coerce to int, treating None / non-numeric as 0.
+
+    Submit metadata serializes optional ResourceConfig fields as JSON null, so
+    ``dict.get(key, 0)`` returns ``None`` (not 0) when the key is present but
+    unset. ``int(None)`` raises, so every field read here must go through this.
+    """
+    if value is None:
+        return 0
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _compute_gpu_counts(resources: dict[str, Any]) -> tuple[int | None, int | None]:
-    """Compute total and decode GPU counts from resource settings."""
-    gpus_per_node = int(resources.get("gpus_per_node", 0))
-    prefill_nodes = int(resources.get("prefill_nodes", 0))
-    decode_nodes = int(resources.get("decode_nodes", 0))
-    agg_nodes = int(resources.get("agg_nodes", 0))
+    """Compute total and decode-serving GPU counts from resource settings."""
+    gpus_per_node = _as_int(resources.get("gpus_per_node"))
+    prefill_nodes = _as_int(resources.get("prefill_nodes"))
+    decode_nodes = _as_int(resources.get("decode_nodes"))
+    agg_nodes = _as_int(resources.get("agg_nodes"))
     if gpus_per_node <= 0:
         return None, None
 
@@ -78,10 +93,18 @@ def _compute_gpu_counts(resources: dict[str, Any]) -> tuple[int | None, int | No
     if decode_nodes > 0:
         return total_gpu_count, decode_nodes * gpus_per_node
 
-    decode_workers = int(resources.get("decode_workers", 0))
-    gpus_per_decode = int(resources.get("gpus_per_decode", 0))
+    decode_workers = _as_int(resources.get("decode_workers"))
+    gpus_per_decode = _as_int(resources.get("gpus_per_decode"))
     if decode_workers > 0 and gpus_per_decode > 0:
         return total_gpu_count, decode_workers * gpus_per_decode
+
+    # Aggregated deployments: all provisioned GPUs serve both prefill and decode.
+    agg_workers = _as_int(resources.get("agg_workers"))
+    gpus_per_agg = _as_int(resources.get("gpus_per_agg"))
+    if agg_workers > 0 and gpus_per_agg > 0:
+        return total_gpu_count, agg_workers * gpus_per_agg
+    if agg_nodes > 0:
+        return total_gpu_count, total_gpu_count
 
     return total_gpu_count, None
 
@@ -94,9 +117,9 @@ def _extract_p90_decode_running_requests(log_dir: Path, metadata: dict[str, Any]
     resources = metadata.get("resources")
     if resources is None:
         return None
-    if not (int(resources.get("prefill_nodes", 0)) > 0 and int(resources.get("decode_nodes", 0)) > 0):
+    if not (_as_int(resources.get("prefill_nodes")) > 0 and _as_int(resources.get("decode_nodes")) > 0):
         return None
-    if int(resources.get("agg_workers", 0)) > 0:
+    if _as_int(resources.get("agg_workers")) > 0:
         return None
 
     counts: Counter[int] = Counter()
