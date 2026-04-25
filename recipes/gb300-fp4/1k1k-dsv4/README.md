@@ -1,9 +1,10 @@
-# DeepSeek-V4-Pro (1.6T MoE, MXFP4) — 1k/1k aggregated on GB300
+# DeepSeek-V4-Pro (1.6T MoE, MXFP4) — 1k/1k on GB300
 
 This directory contains NVIDIA-verified SGLang recipes for **DeepSeek-V4-Pro**
 (1.6T-parameter MoE with MXFP4 MoE weights + FP8 KV, UE8M0 scales) on **GB300**
-(ARM64 Grace + Blackwell, 4 GPU per node), aggregated serving mode, 1024 input /
-1024 output workload.
+(ARM64 Grace + Blackwell, 4 GPU per node), 1024 input / 1024 output workload.
+Both **aggregated** (single-node SGLang) and **disaggregated** (1P+1D dynamo +
+NIXL) serving modes are covered.
 
 ## Container
 
@@ -25,6 +26,8 @@ hf download deepseek-ai/DeepSeek-V4-Pro --local-dir /shared/models/deepseek/Deep
 
 ## Recipes
 
+### Aggregated (single SGLang server)
+
 | file | parallelism | MTP | target | notes |
 |---|---|---|---|---|
 | `agg-low-latency.yaml`  | TP=4                        | EAGLE 3/4 | minimum TPOT / best per-user latency | GB300 1 node |
@@ -33,6 +36,12 @@ hf download deepseek-ai/DeepSeek-V4-Pro --local-dir /shared/models/deepseek/Deep
 | `agg-max-tpt-tep.yaml`  | TP=4 + DP=4 + DP-attn + DeepEP | —         | maximum TPS/GPU                      | GB300 1 node |
 | `agg-2n-low-latency.yaml` | TP=8                      | EAGLE 3/4 | low-latency, 2× memory headroom     | GB300 2 nodes |
 | `agg-2n-nomtp.yaml`     | TP=8                        | —         | throughput, 2× memory headroom       | GB300 2 nodes |
+
+### Disaggregated (dynamo frontend, NIXL KV transfer)
+
+| file | parallelism | MTP | target | notes |
+|---|---|---|---|---|
+| `disagg-1p1d-tp4-mxfp4.yaml` | 1P + 1D, both TP=4 | — | steady decode TPOT at high concurrency | GB300 2 nodes (1P + 1D) |
 
 ## Key flags (derived from the SGLang DSv4 cookbook)
 
