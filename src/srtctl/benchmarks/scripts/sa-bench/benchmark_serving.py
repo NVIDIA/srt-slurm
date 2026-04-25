@@ -840,6 +840,29 @@ def main(args: argparse.Namespace):
         custom_tokenizer=args.custom_tokenizer,
     )
 
+    # Some models (e.g. DeepSeek-V4) ship NO Hugging Face chat template; the
+    # server-side rendering happens entirely inside the engine. If a user runs
+    # such a model without supplying a `custom_tokenizer` plugin, the default
+    # `use_chat_template=True` would cause `tokenizer.apply_chat_template(...)`
+    # to raise. Auto-fallback to raw-text mode and warn loudly so the run does
+    # not silently break.
+    if args.use_chat_template and not args.custom_tokenizer:
+        has_template = bool(getattr(tokenizer, "chat_template", None)) or bool(
+            getattr(tokenizer, "default_chat_template", None)
+        )
+        if not has_template:
+            warnings.warn(
+                f"Tokenizer for '{tokenizer_id}' has no chat_template and no "
+                "`custom_tokenizer` was provided; disabling --use-chat-template "
+                "and benchmarking against the raw text path. Token counts on the "
+                "client may diverge from the server's #new-token. To match the "
+                "server exactly, set `custom_tokenizer` in the recipe (e.g. "
+                "`sa_bench_tokenizers.sglang_deepseek_v4.SGLangDeepseekV4Tokenizer` "
+                "for DeepSeek-V4).",
+                stacklevel=2,
+            )
+            args.use_chat_template = False
+
     if args.dataset_name == "custom":
         from benchmark_dataset import sample_custom_requests
 
