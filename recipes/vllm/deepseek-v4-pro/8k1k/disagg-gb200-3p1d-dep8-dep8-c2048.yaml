@@ -1,14 +1,18 @@
-name: "svf-vllm-disagg-gb200-2p1d-dep8-dep16"
+name: "svf-vllm-disagg-gb200-3p1d-dep8-dep8"
 model:
   path: "deepseekv4-fp4"
   container: "vllm/vllm-openai@sha256:d29a90b13bb9758821839dd810db9679055e8adf7c670df9f0a432f45f2488a5"
   precision: "fp4"
 
 dynamo:
-  version: 1.0.2
+  hash: 6a159fedd8e4a1563aa647c31f622aedbf254b5b
   install: true
 
 setup_script: vllm-container-deps.sh
+health_check:
+  max_attempts: 360
+  interval_seconds: 10
+
 resources:
   gpu_type: "gb200"
   gpus_per_node: 4
@@ -25,6 +29,7 @@ backend:
   type: vllm
   connector: null
   prefill_environment:
+    VLLM_ENGINE_READY_TIMEOUT_S: "3600"
     TILELANG_CLEANUP_TEMP_FILES: "1"
     VLLM_USE_NCCL_SYMM_MEM: "1"
     NCCL_CUMEM_ENABLE: "1"
@@ -34,6 +39,7 @@ backend:
     VLLM_MOE_ROUTING_SIMULATION_STRATEGY: "uniform_random"
     VLLM_LOG_STATS_INTERVAL: "1"
   decode_environment:
+    VLLM_ENGINE_READY_TIMEOUT_S: "3600"
     TILELANG_CLEANUP_TEMP_FILES: "1"
     VLLM_USE_NCCL_SYMM_MEM: "1"
     NCCL_CUMEM_ENABLE: "1"
@@ -97,5 +103,6 @@ benchmark:
   type: "vllm-bench"
   isl: 8192
   osl: 1024
-  concurrencies: "2048"
-  num_warmups: 256
+  concurrencies: "256x512x1024"
+  num_warmups: 64
+  tokenizer_mode: "deepseek_v4"

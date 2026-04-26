@@ -1,7 +1,7 @@
 name: "svf-vllm-agg-gb300-tep4"
 model:
   path: "deepseekv4-fp4"
-  container: "vllm/vllm-openai:deepseekv4-cu130"
+  container: "vllm/vllm-openai@sha256:d29a90b13bb9758821839dd810db9679055e8adf7c670df9f0a432f45f2488a5"
   precision: "fp4"
 
 dynamo:
