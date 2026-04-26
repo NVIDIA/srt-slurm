@@ -104,5 +104,4 @@ benchmark:
   isl: 8192
   osl: 1024
   concurrencies: "256x512x1024"
-  num_warmups: 64
   tokenizer_mode: "deepseek_v4"
