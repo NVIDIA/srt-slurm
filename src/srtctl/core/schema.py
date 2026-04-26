@@ -949,9 +949,14 @@ class DynamoConfig:
 
         # Original SGLang container path
         sglang = (
-            "apt-get update -qq && apt-get install -y -qq libclang-dev curl > /dev/null 2>&1 && "
+            # protobuf-compiler is required by modelexpress-common's build.rs (prost-build).
+            # Some SGLang images ship without /usr/bin/protoc; install it unconditionally.
+            "apt-get update -qq && apt-get install -y -qq libclang-dev curl protobuf-compiler > /dev/null 2>&1 && "
             "if ! command -v cargo &>/dev/null; then curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable -q && source $HOME/.cargo/env; fi && "
-            "if ! command -v maturin &>/dev/null; then pip install --break-system-packages maturin; fi && "
+            # Force-reinstall maturin: some images ship the python module in dist-packages
+            # without the console-script entry point, so `command -v maturin` fails AND a
+            # plain `pip install maturin` reports "already satisfied" and skips the fix.
+            "pip install --break-system-packages --force-reinstall --quiet maturin && "
             "cd /sgl-workspace/ && "
             "git clone https://github.com/ai-dynamo/dynamo.git && "
             "cd dynamo && "
