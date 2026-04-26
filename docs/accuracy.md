@@ -1,6 +1,6 @@
 # Accuracy Benchmarks
 
-In srt-slurm, users can run different accuracy benchmarks by setting the benchmark section in the config yaml file. Supported benchmarks include `mmlu`, `gpqa` and `longbenchv2`.
+In srt-slurm, users can run different accuracy benchmarks by setting the benchmark section in the config yaml file. Supported benchmarks include `mmlu`, `gpqa`, `longbenchv2`, and `lm-eval`.
 
 ## Table of Contents
 
@@ -14,6 +14,7 @@ In srt-slurm, users can run different accuracy benchmarks by setting the benchma
   - [Example: Quick Validation](#example-quick-validation)
   - [Output](#output)
   - [Important Notes](#important-notes)
+- [lm-eval](#lm-eval)
 
 ---
 
@@ -191,3 +192,83 @@ The output includes per-category scores and aggregate metrics:
 4. **Categories**: Running specific categories is useful for targeted validation (e.g., just testing summarization capabilities)
 
 
+## lm-eval
+
+The `lm-eval` benchmark runner integrates [EleutherAI/lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-harness) against the deployed OpenAI-compatible endpoint. By default, the runner invokes the `lm_eval` CLI directly (installing the `lm-eval` pip package on demand when it isn't already present in the container). An external eval workspace that exposes a compatible `benchmark_lib.sh` can be plugged in instead — see [External eval harness](#external-eval-harness) below.
+
+### How it works
+
+1. `do_sweep.py` starts infrastructure, workers, and the frontend for the normal recipe topology.
+2. For `EVAL_ONLY=true`, `do_sweep.py` skips the throughput benchmark stage and runs `_run_post_eval()` directly after frontend startup.
+3. `_run_post_eval()` waits for the OpenAI-compatible endpoint on port 8000 and, in eval-only mode, performs the full `wait_for_model()` health check for the configured prefill/decode or aggregated topology.
+4. `_run_post_eval()` launches the registered `lm-eval` runner on the head node.
+5. The runner script (`benchmarks/scripts/lm-eval/bench.sh`) uses `MODEL_NAME` from `do_sweep.py`, or auto-discovers the served model from `/v1/models` as a fallback.
+6. The runner calls `lm_eval --model local-chat-completions --model_args base_url=<endpoint>/v1/chat/completions,model=<MODEL_NAME>,num_concurrent=<EVAL_CONCURRENT_REQUESTS>,tokenized_requests=False --tasks <LM_EVAL_TASKS>` and writes results to `/logs/eval_results/`.
+
+### EVAL_ONLY mode
+
+srt-slurm supports an `EVAL_ONLY` mode for jobs that should only validate accuracy. It is controlled by environment variables:
+
+| Env var | Description |
+|---------|-------------|
+| `EVAL_ONLY` | Set to `true` to skip the throughput benchmark stage and run eval only |
+| `RUN_EVAL` | Set to `true` to run eval after the throughput benchmark completes |
+| `EVAL_CONC` | Concurrent requests for lm-eval; falls back to max of the recipe benchmark concurrency list |
+| `MODEL_NAME` | Served model alias for OpenAI-compatible requests; set by `do_sweep.py` from `config.served_model_name` |
+| `LM_EVAL_TASKS` | Comma-separated lm-evaluation-harness tasks (default: `gsm8k`) |
+| `LM_EVAL_MODEL` | lm-evaluation-harness model type (default: `local-chat-completions`) |
+| `LM_EVAL_EXTRA_ARGS` | Extra flags appended to the `lm_eval` command line |
+| `EVAL_OUTPUT_DIR` | Where eval artifacts are written inside the container (default: `/logs/eval_results`) |
+
+When `EVAL_ONLY=true`:
+- Stage 4 skips the throughput benchmark entirely. No throughput result JSON is expected from srt-slurm.
+- The eval path uses the full `wait_for_model()` health check before starting lm-eval.
+- `_run_post_eval()` launches the `lm-eval` runner and returns its exit code.
+- Eval failure is fatal because eval is the only purpose of the job.
+
+When `RUN_EVAL=true` (without `EVAL_ONLY`):
+- Throughput benchmark runs normally.
+- After benchmark completes successfully, eval runs as a post-step.
+- Eval failure is non-fatal; the benchmark job still succeeds if throughput passed.
+
+### Topology metadata passthrough
+
+`do_sweep.py` also forwards a set of topology/precision env vars to the eval container so downstream aggregation tooling can record them alongside the eval results:
+
+| Env var | Purpose |
+|---------|---------|
+| `RUN_EVAL`, `EVAL_ONLY`, `IS_MULTINODE` | Whether eval runs and how artifacts are classified |
+| `FRAMEWORK`, `PRECISION`, `MODEL_PREFIX`, `RUNNER_TYPE`, `SPEC_DECODING` | Benchmark identity metadata |
+| `ISL`, `OSL`, `RESULT_FILENAME` | Sequence length and result-file metadata |
+| `MODEL`, `MODEL_PATH`, `MODEL_NAME` | Model metadata and the served model alias |
+| `MAX_MODEL_LEN`, `EVAL_MAX_MODEL_LEN` | Context-length metadata |
+| `PREFILL_TP`, `PREFILL_EP`, `PREFILL_NUM_WORKERS`, `PREFILL_DP_ATTN` | Prefill-side topology metadata |
+| `DECODE_TP`, `DECODE_EP`, `DECODE_NUM_WORKERS`, `DECODE_DP_ATTN` | Decode-side topology metadata |
+| `EVAL_CONC`, `EVAL_CONCURRENT_REQUESTS` | Eval concurrency controls |
+
+These variables are optional: they are passed through only when the launcher sets them, and the default lm-eval path works without any of them.
+
+### Concurrency
+
+The runner exports `EVAL_CONCURRENT_REQUESTS`, preferring `EVAL_CONC` when set and falling back to `256`:
+
+```bash
+export EVAL_CONCURRENT_REQUESTS="${EVAL_CONC:-${EVAL_CONCURRENT_REQUESTS:-256}}"
+```
+
+When `EVAL_CONC` is not set, `do_sweep.py` defaults it to the max of the recipe benchmark concurrency list.
+
+### Output
+
+Eval artifacts are written to `/logs/eval_results/` inside the container (override with `EVAL_OUTPUT_DIR`):
+- `results*.json` - lm-eval scores per task
+- `sample*.jsonl` - per-sample outputs (when the harness emits them)
+
+### External eval harness
+
+If the launcher needs to drive lm-eval through an existing `benchmark_lib.sh` (for example, an internal evaluation library that also handles summary generation), mount that workspace into the container and point the runner at it with one of:
+
+- `LM_EVAL_LIB` - absolute container path to the `benchmark_lib.sh` file.
+- `LM_EVAL_WORKSPACE` - host path to a workspace; it is mounted at `/lm-eval-workspace` inside the container, and the runner sources `/lm-eval-workspace/benchmarks/benchmark_lib.sh`.
+
+When a `benchmark_lib.sh` is found, the runner sources it, calls `run_eval --framework lm-eval` and (if exported) `append_lm_eval_summary`, and copies `meta_env.json`, `results*.json`, and `sample*.jsonl` from the CWD into `EVAL_OUTPUT_DIR`. Otherwise, the default in-container `lm_eval` CLI path is used.

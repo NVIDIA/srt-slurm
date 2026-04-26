@@ -231,6 +231,13 @@ class RuntimeContext:
                 host_path, container_path = mount_spec.split(":", 1)
                 container_mounts[Path(host_path).resolve()] = Path(container_path)
 
+        # Optional external eval-harness mount (used by the lm-eval runner when
+        # present). Skip exists() here: the orchestrator runs on the SLURM head
+        # node where this path may live only on the compute-node shared FS.
+        eval_ws = os.environ.get("LM_EVAL_WORKSPACE")
+        if eval_ws:
+            container_mounts[Path(eval_ws)] = Path("/lm-eval-workspace")
+
         # Add FormattablePath mounts from config.container_mounts
         # These need to be expanded with the runtime context, so we create a
         # temporary context first and then update
