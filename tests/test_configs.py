@@ -141,6 +141,22 @@ class TestDynamoConfig:
         assert "if ! command -v cargo" in cmd
         assert "if ! command -v maturin" in cmd
 
+    def test_wheel_install_command(self):
+        """Wheel config installs ai-dynamo without runtime/source build."""
+        from srtctl.core.schema import DynamoConfig
+
+        config = DynamoConfig(wheel="ai_dynamo-1.2.0.dev20260426-py3-none-any.whl")
+        cmd = config.get_install_commands()
+
+        assert config.version is None
+        assert config.needs_source_install is False
+        assert "install-ai-dynamo.sh" in cmd
+        assert "ai_dynamo-1.2.0.dev20260426-py3-none-any.whl" in cmd
+        assert "--no-deps" in cmd
+        assert "ai-dynamo-runtime" not in cmd
+        assert "maturin" not in cmd
+        assert "git clone" not in cmd
+
     def test_source_install_clone_retry_helper_retries_and_cleans_partial_clone(self, tmp_path):
         """Clone helper retries transient failures and cleans partial clone directories."""
         import subprocess
@@ -197,6 +213,25 @@ fi
 
         with pytest.raises(ValueError, match="Cannot specify both"):
             DynamoConfig(hash="abc123", top_of_tree=True)
+
+    def test_hash_and_wheel_not_allowed(self):
+        """Cannot specify both hash and wheel."""
+        from srtctl.core.schema import DynamoConfig
+
+        with pytest.raises(ValueError, match="Cannot specify both"):
+            DynamoConfig(hash="abc123", wheel="ai_dynamo-1.2.0.dev20260426-py3-none-any.whl")
+
+    def test_wheel_environment_from_filename(self):
+        """Wheel filename is converted to setup/prefetch environment."""
+        from srtctl.core.schema import DynamoConfig
+
+        config = DynamoConfig(wheel="/configs/wheels/ai_dynamo-1.2.0.dev20260426-py3-none-any.whl")
+
+        assert config.wheel_version == "1.2.0.dev20260426"
+        assert config.get_wheel_environment() == {
+            "DYNAMO_VERSION": "1.2.0.dev20260426",
+            "DYNAMO_WHEEL_NAME": "ai_dynamo-1.2.0.dev20260426-py3-none-any.whl",
+        }
 
 
 class TestSGLangProtocol:
@@ -520,6 +555,29 @@ class TestSetupScript:
             setup_script="install-sglang-main.sh",
         )
         assert 'export SRTCTL_SETUP_SCRIPT="install-sglang-main.sh"' in script
+
+    def test_sbatch_template_prefetches_dynamo_wheel(self):
+        """Test that dynamo.wheel is exported and prefetched before orchestrator launch."""
+        from pathlib import Path
+
+        from srtctl.cli.submit import generate_minimal_sbatch_script
+        from srtctl.core.schema import DynamoConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/container.sqsh", precision="fp8"),
+            resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1),
+            dynamo=DynamoConfig(
+                install=True,
+                wheel="ai_dynamo-1.2.0.dev20260426-py3-none-any.whl",
+            ),
+        )
+
+        script = generate_minimal_sbatch_script(config, Path("/tmp/test.yaml"))
+
+        assert "export DYNAMO_VERSION=1.2.0.dev20260426" in script
+        assert "export DYNAMO_WHEEL_NAME=ai_dynamo-1.2.0.dev20260426-py3-none-any.whl" in script
+        assert "configs/prefetch-ai-dynamo-wheel.sh" in script
 
     def test_setup_script_env_var_override(self, monkeypatch):
         """Test that SRTCTL_SETUP_SCRIPT env var overrides config."""
@@ -1365,8 +1423,6 @@ class TestVLLMDataParallelMode:
 
     def test_connector_custom_json_passthrough(self):
         """connector set to a raw JSON string is passed through as-is."""
-        import json
-
         custom = '{"kv_connector":"MyCustomConnector","kv_role":"kv_both"}'
         cmd = self._build_cmd_with_connector(custom)
         idx = cmd.index("--kv-transfer-config")

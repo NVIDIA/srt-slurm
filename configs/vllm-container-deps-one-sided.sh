@@ -4,6 +4,12 @@
 
 pip install msgpack
 
+if [ -f /configs/install-ai-dynamo.sh ]; then
+    bash /configs/install-ai-dynamo.sh
+else
+    python -m pip install --pre --no-deps --index-url https://pypi.org/simple --extra-index-url https://pypi.nvidia.com "ai-dynamo==1.2.0.dev20260426"
+fi
+
 # Upgrade FlashInfer for the NVLink one-sided all-to-all bf16 dispatch patch.
 # flashinfer-python / flashinfer-cubin publish on PyPI; flashinfer-jit-cache is
 # CUDA-specific and only on the cu130 index. --index-url replaces PyPI entirely,

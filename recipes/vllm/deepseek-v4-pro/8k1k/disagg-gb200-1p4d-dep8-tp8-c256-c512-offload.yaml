@@ -5,9 +5,9 @@ model:
   precision: "fp4"
 
 dynamo:
-  hash: 6a159fedd8e4a1563aa647c31f622aedbf254b5b
 #  version: 1.0.2
   install: true
+  wheel: "ai_dynamo-1.2.0.dev20260426-py3-none-any.whl"
 
 health_check:
   max_attempts: 360
