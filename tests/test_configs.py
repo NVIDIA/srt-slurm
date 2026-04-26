@@ -125,6 +125,14 @@ class TestDynamoConfig:
         assert config.needs_source_install
         cmd = config.get_install_commands()
         assert "git clone" in cmd
+        assert "dynamo_retry_git_clone dynamo" in cmd
+        assert "DYNAMO_INSTALL_RETRIES:-5" in cmd
+        assert "DYNAMO_INSTALL_RETRY_DELAY:-10" in cmd
+        assert "DYNAMO_INSTALL_RETRY_MAX_DELAY:-120" in cmd
+        assert "DYNAMO_INSTALL_RETRY_JITTER:-5" in cmd
+        assert "RANDOM % (jitter + 1)" in cmd
+        assert 'rm -rf "$target" "$tmp_target"' in cmd
+        assert "else rc=$?; fi" in cmd
         assert "git checkout abc123" in cmd
         assert "maturin build" in cmd
         assert "if [ -d /sgl-workspace ]" in cmd
@@ -132,6 +140,40 @@ class TestDynamoConfig:
         assert "protobuf-compiler" in cmd
         assert "if ! command -v cargo" in cmd
         assert "if ! command -v maturin" in cmd
+
+    def test_source_install_clone_retry_helper_retries_and_cleans_partial_clone(self, tmp_path):
+        """Clone helper retries transient failures and cleans partial clone directories."""
+        import subprocess
+
+        from srtctl.core.schema import DynamoConfig
+
+        script = f"""
+set -euo pipefail
+{DynamoConfig._source_install_retry_helpers()}
+git() {{
+    count=0
+    if [ -f attempts ]; then count=$(cat attempts); fi
+    count=$((count + 1))
+    echo "$count" > attempts
+    mkdir -p "$3"
+    echo "attempt-$count" > "$3/marker"
+    if [ "$count" -lt 3 ]; then
+        return 22
+    fi
+    return 0
+}}
+export DYNAMO_INSTALL_RETRIES=4
+export DYNAMO_INSTALL_RETRY_DELAY=0
+export DYNAMO_INSTALL_RETRY_JITTER=0
+dynamo_retry_git_clone dynamo
+test "$(cat attempts)" = "3"
+test "$(cat dynamo/marker)" = "attempt-3"
+if find . -maxdepth 1 -type d -name 'dynamo.clone.*' | grep -q .; then
+    echo "leftover temp clone" >&2
+    exit 1
+fi
+"""
+        subprocess.run(["bash", "-c", script], cwd=tmp_path, check=True, capture_output=True, text=True)
 
     def test_top_of_tree_install_command(self):
         """Top-of-tree config generates source install without checkout."""

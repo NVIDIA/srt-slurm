@@ -713,6 +713,41 @@ class DynamoConfig:
         """Whether this config requires a source install (git clone + maturin)."""
         return self.hash is not None or self.top_of_tree
 
+    @staticmethod
+    def _source_install_retry_helpers() -> str:
+        """Bash helpers for transient network failures during source installs."""
+        return (
+            "dynamo_retry_git_clone() { "
+            'target="$1"; '
+            'attempts="${DYNAMO_INSTALL_RETRIES:-5}"; '
+            'delay="${DYNAMO_INSTALL_RETRY_DELAY:-10}"; '
+            'max_delay="${DYNAMO_INSTALL_RETRY_MAX_DELAY:-120}"; '
+            'jitter="${DYNAMO_INSTALL_RETRY_JITTER:-5}"; '
+            "attempt=1; "
+            "while true; do "
+            'tmp_target="${target}.clone.$$.$attempt"; '
+            'rm -rf "$target" "$tmp_target"; '
+            'if git clone https://github.com/ai-dynamo/dynamo.git "$tmp_target"; then '
+            'rm -rf "$target" && mv "$tmp_target" "$target" && return 0; '
+            "else "
+            "rc=$?; "
+            "fi; "
+            'rm -rf "$tmp_target"; '
+            'if [ "$attempt" -ge "$attempts" ]; then '
+            'echo "Dynamo git clone failed after $attempts attempts" >&2; '
+            'return "$rc"; '
+            "fi; "
+            'sleep_for="$delay"; '
+            'if [ "$jitter" -gt 0 ]; then sleep_for=$((sleep_for + RANDOM % (jitter + 1))); fi; '
+            'echo "Dynamo git clone failed on attempt $attempt/$attempts (exit $rc); retrying in ${sleep_for}s" >&2; '
+            'sleep "$sleep_for"; '
+            "attempt=$((attempt + 1)); "
+            "delay=$((delay * 2)); "
+            'if [ "$delay" -gt "$max_delay" ]; then delay="$max_delay"; fi; '
+            "done; "
+            "}; "
+        )
+
     def get_install_commands(self) -> str:
         """Get the bash commands to install dynamo."""
         if self.version is not None:
@@ -730,7 +765,7 @@ class DynamoConfig:
         sglang = (
             "apt-get update -qq && apt-get install -y -qq libclang-dev > /dev/null 2>&1 && "
             "cd /sgl-workspace/ && "
-            "git clone https://github.com/ai-dynamo/dynamo.git && "
+            "dynamo_retry_git_clone dynamo && "
             "cd dynamo && "
             f"{checkout_cmd + ' && ' if checkout_cmd else ''}"
             "cd lib/bindings/python/ && "
@@ -752,7 +787,7 @@ class DynamoConfig:
             "if ! command -v maturin &> /dev/null; then "
             "pip install --break-system-packages maturin; fi; fi && "
             "ORIG_DIR=$(pwd) && rm -rf /tmp/dynamo_build && mkdir -p /tmp/dynamo_build && cd /tmp/dynamo_build && "
-            "git clone https://github.com/ai-dynamo/dynamo.git && "
+            "dynamo_retry_git_clone dynamo && "
             "cd dynamo && "
             f"{checkout_cmd + ' && ' if checkout_cmd else ''}"
             "cd lib/bindings/python/ && "
@@ -768,6 +803,7 @@ class DynamoConfig:
 
         return (
             f"echo 'Installing dynamo from source ({git_ref})...' && "
+            f"{self._source_install_retry_helpers()}"
             f"if [ -d /sgl-workspace ]; then {sglang}; else {portable}; fi"
         )
 
