@@ -1,9 +1,11 @@
 # Accuracy Benchmarks
 
-In srt-slurm, users can run different accuracy benchmarks by setting the benchmark section in the config yaml file. Supported benchmarks include `mmlu`, `gpqa` and `longbenchv2`.
+In srt-slurm, users can run different accuracy benchmarks by setting the benchmark section in the config yaml file. Supported benchmarks include `aime`, `mmlu`, `gpqa` and `longbenchv2`.
 
 ## Table of Contents
 
+- [How Scoring Works](#how-scoring-works)
+- [AIME](#aime)
 - [MMLU](#mmlu)
 - [GPQA](#gpqa)
 - [LongBench-V2](#longbench-v2)
@@ -18,6 +20,40 @@ In srt-slurm, users can run different accuracy benchmarks by setting the benchma
 ---
 
 **Note**: The `context-length` argument in the config yaml needs to be larger than the `max_tokens` argument of accuracy benchmark.
+
+
+## How Scoring Works
+
+Accuracy benchmarks send a fixed dataset through the running OpenAI-compatible endpoint and compare each model
+response against the benchmark's expected answer. For AIME, NeMo Skills prompts the model to put the final answer in
+`\boxed{...}`, extracts that final boxed answer, and grades it with its math evaluator. There is no LLM judge in the
+default AIME path; the score is computed from exact/symbolic correctness.
+
+When `repeat` is greater than 1, the benchmark runs multiple sampled generations per problem. NeMo Skills summarizes
+metrics across those generations, which is useful for comparing pass@1-style deterministic accuracy and sampled
+accuracy on the same serving setup.
+
+
+## AIME
+
+For AIME, the benchmark section in yaml file can be modified in the following way:
+```bash
+benchmark:
+  type: "aime"
+  aime_dataset: "aime25" # One of: aime24, aime25, aime26
+  num_examples: null # Number of examples to run; null means all
+  max_tokens: 24576 # Max number of output tokens
+  repeat: 1 # Number of sampled repetitions
+  num_threads: 30 # Number of parallel requests
+```
+
+Then launch the script as usual:
+```bash
+srtctl apply -f config.yaml
+```
+
+After finishing benchmarking, AIME outputs are written under `/logs/accuracy/<aime_dataset>/` and summarized metrics
+are written to `/logs/accuracy/<aime_dataset>_metrics.json`.
 
 
 ## MMLU
@@ -189,5 +225,4 @@ The output includes per-category scores and aggregate metrics:
 2. **Memory**: Long-context evaluation requires significant GPU memory. Use appropriate `mem-fraction-static` settings
 3. **Throughput**: Increase `num_threads` for faster evaluation, but monitor for OOM errors
 4. **Categories**: Running specific categories is useful for targeted validation (e.g., just testing summarization capabilities)
-
 

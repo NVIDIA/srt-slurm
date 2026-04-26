@@ -67,7 +67,7 @@ def comment_aware_merge(base: CommentedMap, override: CommentedMap | dict[str, A
             val = override[key]
             if val is None:
                 continue  # None → delete key
-            if isinstance(base[key], CommentedMap) and isinstance(val, (dict, CommentedMap)):
+            if isinstance(base[key], CommentedMap) and isinstance(val, dict | CommentedMap):
                 result[key] = comment_aware_merge(base[key], val)
             else:
                 result[key] = copy.deepcopy(val)

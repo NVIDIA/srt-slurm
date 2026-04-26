@@ -419,6 +419,7 @@ Benchmark configuration. The `type` field determines which benchmark runner is u
 | `manual`          | No benchmark (default), manual testing mode    |
 | `sa-bench`        | Throughput/latency serving benchmark           |
 | `sglang-bench`    | SGLang bench_serving benchmark                 |
+| `aime`            | AIME math accuracy evaluation                  |
 | `mmlu`            | MMLU accuracy evaluation                       |
 | `gpqa`            | GPQA (Graduate-level science QA) evaluation    |
 | `longbenchv2`     | Long-context evaluation benchmark              |
@@ -517,6 +518,37 @@ benchmark:
 | `max_tokens`   | int  | No       | 32768   | Max tokens per response      |
 | `repeat`       | int  | No       | 8       | Number of repeats            |
 | `num_threads`  | int  | No       | 128     | Concurrent threads           |
+
+### aime
+
+AIME math accuracy evaluation using NVIDIA NeMo Skills.
+
+```yaml
+benchmark:
+  type: "aime"
+  aime_dataset: "aime25"             # Optional: aime24, aime25, or aime26
+  num_examples: null                 # Optional: Number of examples (all if null)
+  max_tokens: 24576                  # Optional: Max tokens per response
+  repeat: 1                          # Optional: Number of sampled repeats
+  num_threads: 30                    # Optional: Concurrent requests
+  temperature: null                  # Optional: 0.0 for repeat=1, 0.7 for repeat>1
+  top_p: null                        # Optional: NeMo Skills/default sampler value
+  top_k: null                        # Optional: NeMo Skills/default sampler value
+```
+
+| Field          | Type  | Required | Default | Description                         |
+| -------------- | ----- | -------- | ------- | ----------------------------------- |
+| `aime_dataset` | str   | No       | aime25  | NeMo Skills dataset to run          |
+| `num_examples` | int   | No       | all     | Number of examples to run           |
+| `max_tokens`   | int   | No       | 24576   | Max tokens per response             |
+| `repeat`       | int   | No       | 1       | Number of sampled repeats           |
+| `num_threads`  | int   | No       | 30      | Concurrent requests                 |
+| `temperature`  | float | No       | auto    | Sampling temperature                 |
+| `top_p`        | float | No       | default | Nucleus sampling threshold          |
+| `top_k`        | int   | No       | default | Top-k sampling                      |
+
+Results are written to `/logs/accuracy/<aime_dataset>/`; summarized metrics are also copied to
+`/logs/accuracy/<aime_dataset>_metrics.json`.
 
 ### longbenchv2
 

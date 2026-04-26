@@ -226,6 +226,7 @@ class BenchmarkType(str, Enum):
     ROUTER = "router"
     MOONCAKE_ROUTER = "mooncake-router"
     TRACE_REPLAY = "trace-replay"
+    AIME = "aime"
     MMLU = "mmlu"
     GPQA = "gpqa"
     LONGBENCHV2 = "longbenchv2"
@@ -584,6 +585,7 @@ class BenchmarkConfig:
     max_context_length: int | None = None
     categories: list[str] | None = None
     num_shots: int | None = None  # GSM8K few-shot examples
+    aime_dataset: str | None = None  # NeMo Skills AIME dataset: aime24, aime25, or aime26
     temperature: float | None = None
     top_p: float | None = None
     top_k: int | None = None
