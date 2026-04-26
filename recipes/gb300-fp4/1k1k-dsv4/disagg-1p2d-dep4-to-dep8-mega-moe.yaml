@@ -1,0 +1,114 @@
+# DeepSeek-V4-Pro disaggregated on GB300 (1P2D, asymmetric DEP4 -> DEP8) — dynamo frontend.
+#
+# 1 prefill node (TP=4 + DP=4 + DP-attention + DeepEP) + 2 decode nodes
+# (TP=8 + DP=8 + DP-attention + DeepEP). The decode side scales out the
+# EP domain to 8 GPUs while the prefill side stays at 4 GPUs — the
+# asymmetric topology favors decode-bound 1k/1k workloads (each prefill
+# step produces ~1024 decode steps).
+#
+# Why this beats symmetric 2P2D on per-GPU efficiency: when the workload
+# is decode-heavy, increasing decode EP from 4 to 8 roughly doubles MoE
+# throughput (each rank holds half as many experts → smaller MoE
+# GroupedGEMM K-dim → memory-bound path more friendly), while the prefill
+# bottleneck is comparatively cheap at 1k isl.
+#
+# Decode side drops `SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2` because CAR_V2
+# is single-node only — multi-node EP must use the default NCCL all-reduce.
+name: "dsv4-pro-gb300-disagg-1p2d-dep4-to-dep8-mega-moe-1k1k"
+
+slurm:
+  partition: gb300
+  time_limit: "4:00:00"
+
+frontend:
+  type: dynamo
+  nginx_container: nginx
+
+model:
+  path: "dsv4-pro"
+  container: "dsv4-grace-blackwell"
+  precision: "mxfp4"
+
+resources:
+  gpu_type: "gb300"
+  prefill_nodes: 1
+  decode_nodes: 2
+  prefill_workers: 1
+  decode_workers: 1
+  gpus_per_node: 4
+
+backend:
+  type: sglang
+
+  prefill_environment:
+    PYTHONUNBUFFERED: "1"
+    SGLANG_JIT_DEEPGEMM_PRECOMPILE: "0"
+    SGLANG_JIT_DEEPGEMM_FAST_WARMUP: "1"
+    NCCL_MNNVL_ENABLE: "1"
+    NCCL_CUMEM_ENABLE: "1"
+    SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK: "0"
+
+  decode_environment:
+    PYTHONUNBUFFERED: "1"
+    SGLANG_JIT_DEEPGEMM_PRECOMPILE: "0"
+    SGLANG_JIT_DEEPGEMM_FAST_WARMUP: "1"
+    NCCL_MNNVL_ENABLE: "1"
+    NCCL_CUMEM_ENABLE: "1"
+    SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK: "0"
+    # SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2 intentionally NOT set: CAR_V2
+    # is single-node only and corrupts results in 2-node decode setups.
+
+  sglang_config:
+    prefill:
+      served-model-name: "deepseek-ai/DeepSeek-V4-Pro"
+      model-path: "/model/"
+      trust-remote-code: true
+
+      # Prefill: DEP4 (1 node)
+      tensor-parallel-size: 4
+      data-parallel-size: 4
+      enable-dp-attention: true
+      moe-a2a-backend: "deepep"
+      deepep-config: '{"normal_dispatch":{"num_sms":96},"normal_combine":{"num_sms":96}}'
+
+      disaggregation-mode: "prefill"
+      disaggregation-transfer-backend: nixl
+
+      mem-fraction-static: 0.90
+      max-running-requests: 1024
+      cuda-graph-max-bs: 1024
+      chunked-prefill-size: 32768
+      disable-radix-cache: true
+
+    decode:
+      served-model-name: "deepseek-ai/DeepSeek-V4-Pro"
+      model-path: "/model/"
+      trust-remote-code: true
+
+      # Decode: DEP8 (2 nodes)
+      tensor-parallel-size: 8
+      data-parallel-size: 8
+      enable-dp-attention: true
+      moe-a2a-backend: "deepep"
+      deepep-config: '{"normal_dispatch":{"num_sms":96},"normal_combine":{"num_sms":96}}'
+
+      disaggregation-mode: "decode"
+      disaggregation-transfer-backend: nixl
+
+      # Lower mfs on decode: DEP8 weight memory + KV pool both grow ~2x
+      # vs DEP4, so 0.83 leaves enough headroom for cuda-graph capture
+      # at cgmb=2048.
+      mem-fraction-static: 0.83
+      max-running-requests: 2048
+      cuda-graph-max-bs: 2048
+      chunked-prefill-size: 32768
+      disable-radix-cache: true
+
+benchmark:
+  type: "sa-bench"
+  isl: 1024
+  osl: 1024
+  random_range_ratio: 0.8
+  concurrencies: "4x8x16x32x64x128x256x512x1024x1536x2048"
+  req_rate: "inf"
+  use_chat_template: false

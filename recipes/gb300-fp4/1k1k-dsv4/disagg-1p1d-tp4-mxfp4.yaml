@@ -48,8 +48,12 @@ backend:
       disaggregation-mode: "prefill"
       disaggregation-transfer-backend: nixl
       moe-runner-backend: "flashinfer_mxfp4"
-      chunked-prefill-size: 4096
       disable-flashinfer-autotune: true
+      mem-fraction-static: 0.90
+      max-running-requests: 128
+      cuda-graph-max-bs: 128
+      chunked-prefill-size: 8192
+      disable-radix-cache: true
 
     decode:
       served-model-name: "deepseek-ai/DeepSeek-V4-Pro"
@@ -59,8 +63,20 @@ backend:
       disaggregation-mode: "decode"
       disaggregation-transfer-backend: nixl
       moe-runner-backend: "flashinfer_mxfp4"
-      chunked-prefill-size: 4096
       disable-flashinfer-autotune: true
+      mem-fraction-static: 0.90
+      max-running-requests: 128
+      cuda-graph-max-bs: 128
+      chunked-prefill-size: 8192
+      disable-radix-cache: true
 
 benchmark:
-  type: "manual"
+  type: "sa-bench"
+  isl: 1024
+  osl: 1024
+  random_range_ratio: 0.8
+  # Low-latency band only — TP4 1P1D saturates near conc=128 on GB300;
+  # for high-concurrency Pareto use the DEP variants.
+  concurrencies: "4x8x16x32x64x128"
+  req_rate: "inf"
+  use_chat_template: false

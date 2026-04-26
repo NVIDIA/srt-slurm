@@ -39,9 +39,58 @@ hf download deepseek-ai/DeepSeek-V4-Pro --local-dir /shared/models/deepseek/Deep
 
 ### Disaggregated (dynamo frontend, NIXL KV transfer)
 
-| file | parallelism | MTP | target | notes |
-|---|---|---|---|---|
-| `disagg-1p1d-tp4-mxfp4.yaml` | 1P + 1D, both TP=4 | — | steady decode TPOT at high concurrency | GB300 2 nodes (1P + 1D) |
+> ⚠️ **Required SGLang patch (upstreaming in flight).** All disagg
+> recipes below depend on a fix to `python/sglang/srt/disaggregation/nixl/conn.py`
+> that registers and transfers the model's auxiliary state buffers
+> (SWA / NSA / Mamba) alongside the KV cache. Without this patch the NIXL
+> backend silently drops the state buffer, causing decode-side accuracy
+> to collapse on DSv4-Pro (GSM8K ≈ 0.13 vs 1.00 with the patch) even
+> though throughput numbers look healthy. The fix mirrors what the
+> Mooncake backend already does; an upstream sglang PR is being prepared
+> separately. Until it lands, point your `dsv4-grace-blackwell` container
+> at a build with the patch applied (mounting the patched
+> `python/sglang/srt/disaggregation/nixl/` over the container path is
+> sufficient). The recipes themselves intentionally do **not** declare
+> any local mounts — pick up the patch via your container build process.
+>
+> Performance numbers in the table further down were measured against a
+> patched build; they should reproduce on any build that includes the
+> equivalent fix.
+
+`XPYD` in the table below denotes **X prefill nodes + Y decode nodes**
+(one SGLang worker per role per node, NOT per-instance counts). Each
+GB300 node has 4 GPUs, so e.g. 2P2D DEP=8 = 16 GPUs total.
+
+| file | topology | parallelism | MoE backend | target | notes |
+|---|---|---|---|---|---|
+| `disagg-1p1d-tp4-mxfp4.yaml`            | 1P+1D (2 nodes / 8 GPU)  | both TP=4                       | flashinfer_mxfp4 | low-latency, low/medium concurrency       | TP-only baseline |
+| `disagg-1p1d-dep4-mega-moe.yaml`        | 1P+1D (2 nodes / 8 GPU)  | both TP=4 + DP=4 + DeepEP       | mega_moe (DeepGEMM) | DEP throughput Pareto reference        | TEP topology, mirrors `agg-max-tpt-tep.yaml` split across 2 nodes |
+| `disagg-1p2d-dep4-to-dep8-mega-moe.yaml`| 1P+2D (3 nodes / 12 GPU) | P: TP=4+DP=4; D: TP=8+DP=8 + DeepEP | mega_moe (DeepGEMM) | **best per-GPU efficiency** for decode-heavy 1k/1k | asymmetric — decode EP domain doubled |
+| `disagg-2p2d-dep8-mega-moe.yaml`        | 2P+2D (4 nodes / 16 GPU) | both TP=8 + DP=8 + DeepEP       | mega_moe (DeepGEMM) | largest DEP throughput config             | symmetric counterpart to the 1P2D recipe |
+| `disagg-2p2d-tp8-mxfp4.yaml`            | 2P+2D (4 nodes / 16 GPU) | both TP=8                       | flashinfer_mxfp4 | TP-only 4-node baseline                    | quantifies the DEP+DeepEP uplift on GB300 |
+
+Multi-node decode recipes intentionally do NOT set
+`SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2`: CAR_V2 is single-node only and
+silently corrupts results when used across nodes.
+
+#### Verified throughput (sa-bench, isl=osl=1024, random_range_ratio=0.8)
+
+Peak Total TPS / GPU at the saturation point of each curve (lower-conc
+points trade throughput for latency; full Pareto curves available on
+request):
+
+| recipe | GPUs | peak conc | Output TPS | Total TPS / GPU | Mean TTFT | Mean TPOT |
+|---|---:|---:|---:|---:|---:|---:|
+| `disagg-1p1d-tp4-mxfp4.yaml`             |  8 |  128 |  3,349 |   838 |  1.05 s | 36.1 ms |
+| `disagg-1p1d-dep4-mega-moe.yaml`         |  8 |  128 |  3,293 |   824 |  0.88 s | 36.8 ms |
+| `disagg-2p2d-tp8-mxfp4.yaml`             | 16 |  512 |  6,863 |   857 |  2.26 s | 70.2 ms |
+| `disagg-2p2d-dep8-mega-moe.yaml`         | 16 | 2,048 | 32,840 | 4,104 |  2.12 s | 58.2 ms |
+| `disagg-1p2d-dep4-to-dep8-mega-moe.yaml` | 12 | 2,048 | 33,442 | **5,572** |  4.26 s | 53.8 ms |
+
+Headline: the asymmetric 1P2D DEP4→DEP8 config delivers the highest
+**per-GPU** total throughput because at 1k/1k the workload is
+decode-heavy, so doubling the decode EP domain (4 → 8 GPUs, 256 → 32
+experts/GPU) buys far more than scaling prefill.
 
 ## Key flags (derived from the SGLang DSv4 cookbook)
 
