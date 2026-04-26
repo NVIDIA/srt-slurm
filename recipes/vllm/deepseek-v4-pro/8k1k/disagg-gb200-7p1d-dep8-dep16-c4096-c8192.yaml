@@ -8,7 +8,7 @@ dynamo:
   hash: 6a159fedd8e4a1563aa647c31f622aedbf254b5b
   install: true
 
-setup_script: vllm-container-deps.sh
+setup_script: vllm-container-deps-one-sided.sh
 health_check:
   max_attempts: 360
   interval_seconds: 10
