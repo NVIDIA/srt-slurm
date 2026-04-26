@@ -7,7 +7,7 @@ pip install msgpack
 if [ -f /configs/install-ai-dynamo.sh ]; then
     bash /configs/install-ai-dynamo.sh
 else
-    python -m pip install --pre --no-deps --index-url https://pypi.org/simple --extra-index-url https://pypi.nvidia.com "ai-dynamo-runtime==1.2.0.dev20260426" "ai-dynamo==1.2.0.dev20260426"
+    python3 -m pip install --pre --no-deps --index-url https://pypi.org/simple --extra-index-url https://pypi.nvidia.com "ai-dynamo-runtime==1.2.0.dev20260426" "ai-dynamo==1.2.0.dev20260426"
 fi
 
 # Upgrade FlashInfer for the NVLink one-sided all-to-all bf16 dispatch patch.

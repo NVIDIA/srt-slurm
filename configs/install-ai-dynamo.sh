@@ -12,8 +12,20 @@ DYNAMO_RUNTIME_WHEEL_PATTERN="${DYNAMO_RUNTIME_WHEEL_PATTERN:-ai_dynamo_runtime-
 DYNAMO_WHEEL_DIRS="${DYNAMO_WHEEL_DIRS:-/configs/wheels /configs}"
 DYNAMO_INDEX_URL="${DYNAMO_INDEX_URL:-https://pypi.org/simple}"
 DYNAMO_EXTRA_INDEX_URL="${DYNAMO_EXTRA_INDEX_URL:-https://pypi.nvidia.com}"
+PYTHON_BIN="${PYTHON_BIN:-}"
 
-if python - <<PY
+if [ -z "${PYTHON_BIN}" ]; then
+    if command -v python3 >/dev/null 2>&1; then
+        PYTHON_BIN="python3"
+    elif command -v python >/dev/null 2>&1; then
+        PYTHON_BIN="python"
+    else
+        echo "ERROR: neither python3 nor python found in PATH" >&2
+        exit 127
+    fi
+fi
+
+if "${PYTHON_BIN}" - <<PY
 import importlib.metadata
 import sys
 
@@ -56,7 +68,7 @@ done
 
 if [ -n "${dynamo_wheel}" ] && [ -n "${runtime_wheel}" ]; then
     echo "Installing ai-dynamo-runtime and ai-dynamo ${DYNAMO_VERSION} from local wheels"
-    python -m pip install \
+    "${PYTHON_BIN}" -m pip install \
         --pre \
         --no-deps \
         --no-index \
@@ -65,7 +77,7 @@ if [ -n "${dynamo_wheel}" ] && [ -n "${runtime_wheel}" ]; then
         "${DYNAMO_PACKAGE}"
 else
     echo "Installing ai-dynamo-runtime and ai-dynamo ${DYNAMO_VERSION} from package index"
-    python -m pip install \
+    "${PYTHON_BIN}" -m pip install \
         --pre \
         --no-deps \
         --index-url "${DYNAMO_INDEX_URL}" \
@@ -74,6 +86,6 @@ else
         "${DYNAMO_PACKAGE}"
 fi
 
-python - <<'PY'
+"${PYTHON_BIN}" - <<'PY'
 import dynamo.llm  # noqa: F401
 PY
