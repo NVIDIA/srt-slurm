@@ -2,7 +2,7 @@
 
 model:
   path: "deepseek-v4-pro"
-  container: "inferactinc/dev:svf-arm64-cu130-20260426010012"
+  container: "vllm/vllm-openai@sha256:d29a90b13bb9758821839dd810db9679055e8adf7c670df9f0a432f45f2488a5"
   precision: "fp4"
 
 # dynamo:
