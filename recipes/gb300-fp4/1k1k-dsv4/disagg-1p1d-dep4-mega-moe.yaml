@@ -1,0 +1,104 @@
+# DeepSeek-V4-Pro disaggregated on GB300 (1P1D, DEP=4, mega_moe) — dynamo frontend.
+#
+# 1 prefill node + 1 decode node, each TP=4 + DP=4 + DP-attention + DeepEP
+# (the same TEP topology as the agg-balanced-tep / agg-max-tpt-tep recipes
+# in this directory, but split across two nodes). Frontend is dynamo with
+# the nginx fan-in container; KV transfer over NIXL.
+#
+# Throughput-oriented disagg counterpart to disagg-1p1d-tp4-mxfp4.yaml:
+# DEP4 + mega_moe (DeepEP-based MoE all-to-all) gives roughly the same
+# peak throughput at conc=128 as the pure-TP4 disagg recipe, but holds
+# that throughput further into the saturation regime because DeepEP keeps
+# MoE compute well-balanced.
+name: "dsv4-pro-gb300-disagg-1p1d-dep4-mega-moe-1k1k"
+
+slurm:
+  partition: gb300
+  time_limit: "4:00:00"
+
+frontend:
+  type: dynamo
+  nginx_container: nginx
+
+model:
+  path: "dsv4-pro"
+  container: "dsv4-grace-blackwell"
+  precision: "mxfp4"
+
+resources:
+  gpu_type: "gb300"
+  prefill_nodes: 1
+  decode_nodes: 1
+  prefill_workers: 1
+  decode_workers: 1
+  gpus_per_node: 4
+
+backend:
+  type: sglang
+
+  prefill_environment:
+    PYTHONUNBUFFERED: "1"
+    SGLANG_JIT_DEEPGEMM_PRECOMPILE: "0"
+    SGLANG_JIT_DEEPGEMM_FAST_WARMUP: "1"
+    NCCL_MNNVL_ENABLE: "1"
+    NCCL_CUMEM_ENABLE: "1"
+    SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK: "0"
+
+  decode_environment:
+    PYTHONUNBUFFERED: "1"
+    SGLANG_JIT_DEEPGEMM_PRECOMPILE: "0"
+    SGLANG_JIT_DEEPGEMM_FAST_WARMUP: "1"
+    NCCL_MNNVL_ENABLE: "1"
+    NCCL_CUMEM_ENABLE: "1"
+    SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK: "0"
+
+  sglang_config:
+    prefill:
+      served-model-name: "deepseek-ai/DeepSeek-V4-Pro"
+      model-path: "/model/"
+      trust-remote-code: true
+
+      # DEP4: TP=4 + DP=4 + DP-attention + DeepEP (mega_moe path)
+      tensor-parallel-size: 4
+      data-parallel-size: 4
+      enable-dp-attention: true
+      moe-a2a-backend: "deepep"
+      deepep-config: '{"normal_dispatch":{"num_sms":96},"normal_combine":{"num_sms":96}}'
+
+      disaggregation-mode: "prefill"
+      disaggregation-transfer-backend: nixl
+
+      mem-fraction-static: 0.90
+      max-running-requests: 1024
+      cuda-graph-max-bs: 1024
+      chunked-prefill-size: 32768
+      disable-radix-cache: true
+
+    decode:
+      served-model-name: "deepseek-ai/DeepSeek-V4-Pro"
+      model-path: "/model/"
+      trust-remote-code: true
+
+      tensor-parallel-size: 4
+      data-parallel-size: 4
+      enable-dp-attention: true
+      moe-a2a-backend: "deepep"
+      deepep-config: '{"normal_dispatch":{"num_sms":96},"normal_combine":{"num_sms":96}}'
+
+      disaggregation-mode: "decode"
+      disaggregation-transfer-backend: nixl
+
+      mem-fraction-static: 0.90
+      max-running-requests: 1024
+      cuda-graph-max-bs: 1024
+      chunked-prefill-size: 32768
+      disable-radix-cache: true
+
+benchmark:
+  type: "sa-bench"
+  isl: 1024
+  osl: 1024
+  random_range_ratio: 0.8
+  concurrencies: "4x8x16x32x64x128x256x512x1024x1536x2048"
+  req_rate: "inf"
+  use_chat_template: false
