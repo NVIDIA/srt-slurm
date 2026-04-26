@@ -100,7 +100,7 @@ backend:
       all2all-backend: "flashinfer_nvlink_one_sided"
 
 benchmark:
-  type: "vllm-bench"
+  type: "sa-bench"
   isl: 8192
   osl: 1024
   concurrencies: "256x512x1024"

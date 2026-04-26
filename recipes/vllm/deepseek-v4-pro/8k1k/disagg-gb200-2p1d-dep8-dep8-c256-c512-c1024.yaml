@@ -101,7 +101,7 @@ backend:
 
 
 benchmark:
-  type: "vllm-bench"
+  type: "sa-bench"
   isl: 8192
   osl: 1024
   concurrencies: "256x512x1024"
