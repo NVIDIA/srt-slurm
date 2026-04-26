@@ -691,7 +691,8 @@ class DynamoConfig:
         version: Install specific version from PyPI (e.g., "0.8.0")
         hash: Clone repo and checkout specific commit hash
         top_of_tree: Clone repo at HEAD (latest)
-        wheel: ai-dynamo wheel filename to stage before worker launch
+        wheel: ai-dynamo package version to install via staged wheels. The
+               matching ai-dynamo-runtime wheel is installed automatically.
 
     If top_of_tree, hash, or wheel is set, version is automatically cleared.
     """
@@ -718,6 +719,9 @@ class DynamoConfig:
         if len(enabled_sources) > 1:
             raise ValueError(f"Cannot specify both Dynamo install sources: {', '.join(enabled_sources)}")
 
+        if self.wheel is not None and (Path(self.wheel).name.endswith(".whl") or "/" in self.wheel):
+            raise ValueError("dynamo.wheel must be a package version like '1.2.0.dev20260426', not a filename")
+
     @property
     def needs_source_install(self) -> bool:
         """Whether this config requires a source install (git clone + maturin)."""
@@ -725,21 +729,22 @@ class DynamoConfig:
 
     @property
     def wheel_version(self) -> str | None:
-        """Infer the package version from a standard ai_dynamo wheel filename."""
+        """Package version requested for staged wheel installation."""
+        return self.wheel
+
+    @property
+    def wheel_name(self) -> str | None:
+        """Return the ai-dynamo wheel filename for the requested package version."""
         if not self.wheel:
             return None
-        name = Path(self.wheel).name
-        prefix = "ai_dynamo-"
-        suffix = "-py3-none-any.whl"
-        if name.startswith(prefix) and name.endswith(suffix):
-            return name[len(prefix) : -len(suffix)]
-        return None
+        return f"ai_dynamo-{self.wheel}-py3-none-any.whl"
 
     def get_wheel_environment(self) -> dict[str, str]:
         """Environment variables consumed by ai-dynamo prefetch/setup scripts."""
         if not self.wheel:
             return {}
-        env = {"DYNAMO_WHEEL_NAME": Path(self.wheel).name}
+        wheel_name = self.wheel_name
+        env = {"DYNAMO_WHEEL_NAME": wheel_name} if wheel_name else {}
         version = self.wheel_version
         if version:
             env["DYNAMO_VERSION"] = version
@@ -783,7 +788,7 @@ class DynamoConfig:
     def get_install_commands(self) -> str:
         """Get the bash commands to install dynamo."""
         if self.wheel is not None:
-            wheel_name = Path(self.wheel).name
+            wheel_name = self.wheel_name or Path(self.wheel).name
             wheels_path_shell = shlex.quote(f"/configs/wheels/{wheel_name}")
             configs_path_shell = shlex.quote(f"/configs/{wheel_name}")
             version = self.wheel_version

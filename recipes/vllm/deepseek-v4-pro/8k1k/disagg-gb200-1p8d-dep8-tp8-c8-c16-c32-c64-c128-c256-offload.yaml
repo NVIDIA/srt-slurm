@@ -7,7 +7,7 @@ model:
 dynamo:
 #  version: 1.0.2
   install: true
-  wheel: "ai_dynamo-1.2.0.dev20260426-py3-none-any.whl"
+  wheel: "1.2.0.dev20260426"
 
 health_check:
   max_attempts: 360

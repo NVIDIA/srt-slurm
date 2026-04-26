@@ -6,7 +6,7 @@ model:
 
 dynamo:
   install: true
-  wheel: "ai_dynamo-1.2.0.dev20260426-py3-none-any.whl"
+  wheel: "1.2.0.dev20260426"
 setup_script: vllm-container-deps.sh
 
 resources:

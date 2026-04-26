@@ -145,7 +145,7 @@ class TestDynamoConfig:
         """Wheel config installs ai-dynamo plus runtime without source build."""
         from srtctl.core.schema import DynamoConfig
 
-        config = DynamoConfig(wheel="ai_dynamo-1.2.0.dev20260426-py3-none-any.whl")
+        config = DynamoConfig(wheel="1.2.0.dev20260426")
         cmd = config.get_install_commands()
 
         assert config.version is None
@@ -221,15 +221,23 @@ fi
         from srtctl.core.schema import DynamoConfig
 
         with pytest.raises(ValueError, match="Cannot specify both"):
-            DynamoConfig(hash="abc123", wheel="ai_dynamo-1.2.0.dev20260426-py3-none-any.whl")
+            DynamoConfig(hash="abc123", wheel="1.2.0.dev20260426")
 
-    def test_wheel_environment_from_filename(self):
-        """Wheel filename is converted to setup/prefetch environment."""
+    def test_wheel_filename_not_allowed(self):
+        """Wheel config takes a package version, not an artifact filename."""
         from srtctl.core.schema import DynamoConfig
 
-        config = DynamoConfig(wheel="/configs/wheels/ai_dynamo-1.2.0.dev20260426-py3-none-any.whl")
+        with pytest.raises(ValueError, match="package version"):
+            DynamoConfig(wheel="ai_dynamo-1.2.0.dev20260426-py3-none-any.whl")
+
+    def test_wheel_environment_from_version(self):
+        """Wheel version is converted to setup/prefetch environment."""
+        from srtctl.core.schema import DynamoConfig
+
+        config = DynamoConfig(wheel="1.2.0.dev20260426")
 
         assert config.wheel_version == "1.2.0.dev20260426"
+        assert config.wheel_name == "ai_dynamo-1.2.0.dev20260426-py3-none-any.whl"
         assert config.get_wheel_environment() == {
             "DYNAMO_VERSION": "1.2.0.dev20260426",
             "DYNAMO_WHEEL_NAME": "ai_dynamo-1.2.0.dev20260426-py3-none-any.whl",
@@ -571,7 +579,7 @@ class TestSetupScript:
             resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1),
             dynamo=DynamoConfig(
                 install=True,
-                wheel="ai_dynamo-1.2.0.dev20260426-py3-none-any.whl",
+                wheel="1.2.0.dev20260426",
             ),
         )
 
