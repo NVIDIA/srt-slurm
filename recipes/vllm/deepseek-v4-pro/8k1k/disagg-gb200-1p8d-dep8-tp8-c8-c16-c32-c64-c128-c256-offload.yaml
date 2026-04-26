@@ -1,13 +1,17 @@
 name: "svf-vllm-disagg-gb200-1p8d-dep8-tp8-offload"
 model:
   path: "deepseekv4-fp4"
-  container: "vllm/vllm-openai:deepseekv4-cu130"
+  container: "vllm/vllm-openai@sha256:d29a90b13bb9758821839dd810db9679055e8adf7c670df9f0a432f45f2488a5"
   precision: "fp4"
 
 dynamo:
   hash: 6a159fedd8e4a1563aa647c31f622aedbf254b5b
 #  version: 1.0.2
   install: true
+
+health_check:
+  max_attempts: 360
+  interval_seconds: 10
 
 setup_script: vllm-container-deps.sh
 resources:
