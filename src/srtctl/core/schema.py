@@ -788,22 +788,26 @@ class DynamoConfig:
             configs_path_shell = shlex.quote(f"/configs/{wheel_name}")
             version = self.wheel_version
             package = f"ai-dynamo=={version}" if version else "ai-dynamo"
+            runtime_package = f"ai-dynamo-runtime=={version}" if version else "ai-dynamo-runtime"
             package_shell = shlex.quote(package)
-            start_message = shlex.quote(f"Installing ai-dynamo from wheel {wheel_name}...")
-            done_message = shlex.quote(f"ai-dynamo install path completed for {wheel_name}")
+            runtime_package_shell = shlex.quote(runtime_package)
+            start_message = shlex.quote(f"Installing ai-dynamo-runtime and ai-dynamo from wheel {wheel_name}...")
+            done_message = shlex.quote(f"ai-dynamo-runtime and ai-dynamo install path completed for {wheel_name}")
             return (
                 f"echo {start_message} && "
                 "if [ -f /configs/install-ai-dynamo.sh ]; then "
                 "bash /configs/install-ai-dynamo.sh; "
                 f"elif [ -f {wheels_path_shell} ]; then "
-                f"python -m pip install --pre --no-deps --no-index {wheels_path_shell}; "
+                "python -m pip install --pre --no-deps --no-index "
+                f"--find-links /configs/wheels {runtime_package_shell} {wheels_path_shell}; "
                 f"elif [ -f {configs_path_shell} ]; then "
-                f"python -m pip install --pre --no-deps --no-index {configs_path_shell}; "
+                "python -m pip install --pre --no-deps --no-index "
+                f"--find-links /configs {runtime_package_shell} {configs_path_shell}; "
                 "else "
                 "python -m pip install --pre --no-deps "
                 "--index-url ${DYNAMO_INDEX_URL:-https://pypi.org/simple} "
                 "--extra-index-url ${DYNAMO_EXTRA_INDEX_URL:-https://pypi.nvidia.com} "
-                f"{package_shell}; "
+                f"{runtime_package_shell} {package_shell}; "
                 "fi && "
                 f"echo {done_message}"
             )

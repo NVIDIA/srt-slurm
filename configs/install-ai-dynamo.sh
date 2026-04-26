@@ -6,7 +6,9 @@ set -euo pipefail
 
 DYNAMO_VERSION="${DYNAMO_VERSION:-1.2.0.dev20260426}"
 DYNAMO_PACKAGE="${DYNAMO_PACKAGE:-ai-dynamo==${DYNAMO_VERSION}}"
+DYNAMO_RUNTIME_PACKAGE="${DYNAMO_RUNTIME_PACKAGE:-ai-dynamo-runtime==${DYNAMO_VERSION}}"
 DYNAMO_WHEEL_NAME="${DYNAMO_WHEEL_NAME:-ai_dynamo-${DYNAMO_VERSION}-py3-none-any.whl}"
+DYNAMO_RUNTIME_WHEEL_PATTERN="${DYNAMO_RUNTIME_WHEEL_PATTERN:-ai_dynamo_runtime-${DYNAMO_VERSION}-*.whl}"
 DYNAMO_WHEEL_DIRS="${DYNAMO_WHEEL_DIRS:-/configs/wheels /configs}"
 DYNAMO_INDEX_URL="${DYNAMO_INDEX_URL:-https://pypi.org/simple}"
 DYNAMO_EXTRA_INDEX_URL="${DYNAMO_EXTRA_INDEX_URL:-https://pypi.nvidia.com}"
@@ -16,15 +18,21 @@ import importlib.metadata
 import sys
 
 wanted = "${DYNAMO_VERSION}"
-try:
-    installed = importlib.metadata.version("ai-dynamo")
-except importlib.metadata.PackageNotFoundError:
-    sys.exit(1)
+packages = ("ai-dynamo", "ai-dynamo-runtime")
+for package in packages:
+    try:
+        installed = importlib.metadata.version(package)
+    except importlib.metadata.PackageNotFoundError:
+        sys.exit(1)
+    if installed != wanted:
+        sys.exit(1)
 
-sys.exit(0 if installed == wanted else 1)
+import dynamo.llm  # noqa: F401
+
+sys.exit(0)
 PY
 then
-    echo "ai-dynamo ${DYNAMO_VERSION} already installed"
+    echo "ai-dynamo and ai-dynamo-runtime ${DYNAMO_VERSION} already installed"
     exit 0
 fi
 
@@ -38,20 +46,34 @@ find_wheel() {
 }
 
 dynamo_wheel="$(find_wheel "${DYNAMO_WHEEL_NAME}")"
+runtime_wheel="$(find_wheel "${DYNAMO_RUNTIME_WHEEL_PATTERN}")"
 
-if [ -n "${dynamo_wheel}" ]; then
-    echo "Installing ai-dynamo ${DYNAMO_VERSION} from local wheel"
+find_links_args=()
+for wheel_dir in ${DYNAMO_WHEEL_DIRS}; do
+    [ -d "${wheel_dir}" ] || continue
+    find_links_args+=(--find-links "${wheel_dir}")
+done
+
+if [ -n "${dynamo_wheel}" ] && [ -n "${runtime_wheel}" ]; then
+    echo "Installing ai-dynamo-runtime and ai-dynamo ${DYNAMO_VERSION} from local wheels"
     python -m pip install \
         --pre \
         --no-deps \
         --no-index \
-        "${dynamo_wheel}"
+        "${find_links_args[@]}" \
+        "${DYNAMO_RUNTIME_PACKAGE}" \
+        "${DYNAMO_PACKAGE}"
 else
-    echo "Installing ai-dynamo ${DYNAMO_VERSION} from package index"
+    echo "Installing ai-dynamo-runtime and ai-dynamo ${DYNAMO_VERSION} from package index"
     python -m pip install \
         --pre \
         --no-deps \
         --index-url "${DYNAMO_INDEX_URL}" \
         --extra-index-url "${DYNAMO_EXTRA_INDEX_URL}" \
+        "${DYNAMO_RUNTIME_PACKAGE}" \
         "${DYNAMO_PACKAGE}"
 fi
+
+python - <<'PY'
+import dynamo.llm  # noqa: F401
+PY

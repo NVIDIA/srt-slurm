@@ -142,7 +142,7 @@ class TestDynamoConfig:
         assert "if ! command -v maturin" in cmd
 
     def test_wheel_install_command(self):
-        """Wheel config installs ai-dynamo without runtime/source build."""
+        """Wheel config installs ai-dynamo plus runtime without source build."""
         from srtctl.core.schema import DynamoConfig
 
         config = DynamoConfig(wheel="ai_dynamo-1.2.0.dev20260426-py3-none-any.whl")
@@ -153,7 +153,9 @@ class TestDynamoConfig:
         assert "install-ai-dynamo.sh" in cmd
         assert "ai_dynamo-1.2.0.dev20260426-py3-none-any.whl" in cmd
         assert "--no-deps" in cmd
-        assert "ai-dynamo-runtime" not in cmd
+        assert "ai-dynamo-runtime==1.2.0.dev20260426" in cmd
+        assert "--find-links /configs/wheels" in cmd
+        assert "--find-links /configs" in cmd
         assert "maturin" not in cmd
         assert "git clone" not in cmd
 
