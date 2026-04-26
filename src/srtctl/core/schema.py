@@ -228,6 +228,7 @@ class BenchmarkType(str, Enum):
     TRACE_REPLAY = "trace-replay"
     MMLU = "mmlu"
     GPQA = "gpqa"
+    GSM8K = "gsm8k"
     LONGBENCHV2 = "longbenchv2"
 
 

@@ -20,6 +20,7 @@ class TestBenchmarkRegistry:
         assert "sglang-bench" in benchmarks
         assert "mmlu" in benchmarks
         assert "gpqa" in benchmarks
+        assert "gsm8k" in benchmarks
         assert "longbenchv2" in benchmarks
         assert "router" in benchmarks
 
@@ -575,6 +576,11 @@ class TestScriptsExist:
     def test_mmlu_script_exists(self):
         """MMLU script exists."""
         script = SCRIPTS_DIR / "mmlu" / "bench.sh"
+        assert script.exists()
+
+    def test_gsm8k_script_exists(self):
+        """GSM8K script exists."""
+        script = SCRIPTS_DIR / "gsm8k" / "bench.sh"
         assert script.exists()
 
 
