@@ -201,7 +201,7 @@ class NodeAnalyzer:
                 f"Log format may have changed."
             )
 
-        logger.debug(f"Parsed {filepath}: {len(batches)} batches, " f"{len(memory_snapshots)} memory snapshots")
+        logger.debug(f"Parsed {filepath}: {len(batches)} batches, {len(memory_snapshots)} memory snapshots")
 
         return NodeMetrics(
             node_info=node_info,

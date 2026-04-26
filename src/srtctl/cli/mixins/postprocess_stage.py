@@ -24,8 +24,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import requests
-
 from srtctl.benchmarks.base import SCRIPTS_DIR
 from srtctl.core.config import load_cluster_config
 from srtctl.core.lockfile import collect_worker_fingerprints, generate_reproduction_report, write_lockfile
@@ -35,6 +33,7 @@ from srtctl.core.slurm import start_srun_process
 if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import SrtConfig
+    from srtctl.core.status import StatusReporter
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +140,7 @@ class PostProcessStageMixin:
             except Exception as e:
                 logger.warning("Failed to copy %s to log directory: %s", name, e)
 
-    def run_postprocess(self, exit_code: int) -> None:
+    def run_postprocess(self, exit_code: int, reporter: "StatusReporter | None" = None) -> None:
         """Run post-processing after benchmark completion.
 
         Handles:
@@ -149,20 +148,32 @@ class PostProcessStageMixin:
         2. Rollup generation (benchmark-specific normalization)
         3. Benchmark result extraction (reads rollup or falls back to raw)
         4. srtlog parsing + S3 upload (if S3 configured)
-        5. Metrics reporting to dashboard (if status endpoint configured)
-        6. AI-powered failure analysis (only on failures, if enabled)
+        5. Eager push of ``logs_url`` to the status API right after the S3 sync
+           completes, so downstream consumers can fetch results from S3 even
+           if later stages below fail or hang.
+        6. Stash ``logs_url`` on self so the caller's final
+           ``report_completed`` PUT in do_sweep can reassert the pointer.
+        7. AI-powered failure analysis (only on failures, if enabled).
+
+        Benchmark results themselves are NOT pushed to the status API — S3 is
+        the source of truth for artifacts. The collector only stores pointers.
 
         Args:
             exit_code: Exit code from the benchmark run
+            reporter: Optional StatusReporter for eager mid-run pushes. When
+                provided, ``logs_url`` is PUT as soon as it's known (step 5);
+                when None, only the stash path is used.
         """
         # Copy config into log directory so it's included in S3 upload
         self._copy_config_to_logs()
 
-        # Generate rollup first (benchmark-specific normalization)
+        # Generate rollup first (benchmark-specific normalization). This writes
+        # benchmark-rollup.json into the log dir; consumers pull it from S3.
         self._generate_rollup()
 
-        # Extract benchmark results (reads rollup if available)
-        benchmark_results = self._extract_benchmark_results()
+        # Extract benchmark results for the lockfile path only. The dict is
+        # intentionally NOT forwarded to the status API (see docstring).
+        _benchmark_results = self._extract_benchmark_results()
 
         # Write lockfile with verification
         # TODO: include benchmark results once rollup format is standardized across
@@ -180,10 +191,16 @@ class PostProcessStageMixin:
         self._compare_against_previous_lock()
 
         # Run srtlog + S3 upload in single container (if S3 configured)
-        parquet_path, s3_url = self._run_postprocess_container()
+        _parquet_path, s3_url = self._run_postprocess_container()
 
-        # Report metrics to dashboard
-        self._report_metrics(benchmark_results, s3_url, exit_code)
+        # Eager push of logs_url to the status API. Fires BEFORE AI analysis so
+        # a hanging/crashing analyzer does not strand the artifact pointer.
+        if reporter is not None and s3_url:
+            reporter.report_artifacts(logs_url=s3_url)
+
+        # Stash so the final StatusReporter.report_completed PUT (in do_sweep)
+        # reasserts logs_url idempotently across every configured endpoint.
+        self._last_logs_url = s3_url
 
         # AI analysis only on failures
         if exit_code != 0:
@@ -400,51 +417,6 @@ if [ "$PARSE_STATUS" -ne 0 ]; then
   exit {POSTPROCESS_PARSE_FAILED_EXIT}
 fi
 """
-
-    def _report_metrics(self, benchmark_results: dict[str, Any] | None, s3_url: str | None, exit_code: int) -> None:
-        """Report metrics to dashboard via status API.
-
-        Args:
-            benchmark_results: Extracted benchmark results
-            s3_url: S3 URL where logs were uploaded
-            exit_code: Exit code from the benchmark run
-        """
-        cluster_config = load_cluster_config()
-        if not cluster_config:
-            return
-
-        reporting = cluster_config.get("reporting")
-        if not reporting:
-            return
-
-        status_dict = reporting.get("status")
-        if not status_dict or not status_dict.get("endpoint"):
-            return
-
-        endpoint = status_dict["endpoint"]
-
-        payload: dict[str, Any] = {}
-        if benchmark_results:
-            payload["benchmark_results"] = benchmark_results
-        if s3_url:
-            payload["logs_url"] = s3_url
-
-        if not payload:
-            return
-
-        # Use "failed" status when exit code is non-zero
-        status = "failed" if exit_code != 0 else "completed"
-        payload["status"] = status
-
-        try:
-            url = f"{endpoint}/api/jobs/{self.runtime.job_id}"
-            response = requests.put(url, json=payload, timeout=5)
-            if response.ok:
-                logger.info("Reported metrics to dashboard: %s", url)
-            else:
-                logger.warning("Dashboard metrics report failed: %s %s", response.status_code, response.text)
-        except Exception as e:
-            logger.warning("Dashboard metrics report failed: %s", e)
 
     def _run_ai_analysis(self, config: AIAnalysisConfig) -> None:
         """Run AI analysis using Claude Code CLI via OpenRouter.

@@ -594,9 +594,13 @@ def submit_with_orchestrator(
                 "gpus_per_node": config.resources.gpus_per_node,
                 "prefill_nodes": config.resources.prefill_nodes,
                 "decode_nodes": config.resources.decode_nodes,
+                "agg_nodes": config.resources.agg_nodes,
                 "prefill_workers": config.resources.num_prefill,
                 "decode_workers": config.resources.num_decode,
                 "agg_workers": config.resources.num_agg,
+                "gpus_per_prefill": config.resources.gpus_per_prefill,
+                "gpus_per_decode": config.resources.gpus_per_decode,
+                "gpus_per_agg": config.resources.gpus_per_agg,
             },
             # Backend and frontend
             "backend_type": config.backend_type,
@@ -976,6 +980,31 @@ def is_override_config(config_path: Path) -> bool:
     return "base" in config
 
 
+@contextlib.contextmanager
+def materialize_config_path(config_path: Path):
+    """Stage stdin-backed configs to a temporary YAML file for repeated reads."""
+    if str(config_path) not in {"-", "/dev/stdin"}:
+        yield config_path
+        return
+
+    payload = sys.stdin.read()
+    if not payload.strip():
+        raise ValueError("No YAML received on stdin")
+
+    fd, temp_path = tempfile.mkstemp(
+        suffix=".yaml",
+        prefix="srtctl_stdin_",
+        text=True,
+    )
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(payload)
+        yield Path(temp_path)
+    finally:
+        with contextlib.suppress(OSError):
+            os.remove(temp_path)
+
+
 def submit_override(
     config_path: Path,
     selector: str | None = None,
@@ -1161,8 +1190,8 @@ def main():
         dest="mock_mode",
         help=(
             "Stub sbatch and spawn a detached mock worker that runs the full "
-            "SweepOrchestrator locally. For testing external harnesses (ibar) "
-            "without cluster access."
+            "SweepOrchestrator locally. For testing external harnesses without "
+            "cluster access."
         ),
     )
     apply_parser.add_argument(
@@ -1229,6 +1258,11 @@ def main():
     global console
     _original_console = console
     console = Console(file=sys.stderr) if json_mode else Console()
+
+    def restore_console() -> None:
+        global console
+        console = _original_console
+
     if json_mode:
         _submissions.clear()
 
@@ -1261,6 +1295,7 @@ def main():
             diff = diff_fingerprints(fps_a[worker], fps_b[worker])
             console.print(f"\n[bold]{worker}:[/]")
             console.print(format_diff(diff, verbose=args.verbose))
+        restore_console()
         return
 
     if args.command == "check":
@@ -1290,96 +1325,104 @@ def main():
                     console.print(format_check_results(results))
         if not all_results:
             console.print(format_check_results([]))
+        restore_console()
         sys.exit(1 if all_results else 0)
 
     # Parse config arg: supports path:selector format for overrides
     config_path, selector = parse_config_arg(args.config)
 
-    if not config_path.exists():
-        console.print(f"[bold red]Config not found:[/] {config_path}")
-        sys.exit(1)
-
     is_dry_run = args.command == "dry-run"
     tags = [t.strip() for t in (getattr(args, "tags", "") or "").split(",") if t.strip()] or None
 
     try:
-        # resolve-override has its own simple dispatch path
-        if args.command == "resolve-override":
-            if not is_override_config(config_path):
-                console.print(f"[bold red]Error:[/] {config_path} is not an override config (missing 'base' key)")
+        with materialize_config_path(config_path) as effective_config_path:
+            if not effective_config_path.exists():
+                console.print(f"[bold red]Config not found:[/] {config_path}")
                 sys.exit(1)
-            resolve_override_cmd(config_path, selector=selector, stdout=getattr(args, "stdout", False))
-            return
 
-        if args.command == "preflight":
-            if config_path.is_dir():
-                raise ValueError("preflight currently expects a file, not a directory")
-            with open(config_path) as f:
-                raw_config = yaml.safe_load(f)
-            results = preflight_config_variants(
-                raw_config,
-                cluster_config=load_cluster_config(),
-                selector=selector,
-            )
-            for result in results:
-                icon = "[green]✓[/]" if result.ok else "[red]✗[/]"
-                console.print(f"{icon} {result.variant}")
-                console.print(f"  model.path: {result.model.message}")
-                console.print(f"  model.container: {result.container.message}")
-            if any(not result.ok for result in results):
-                raise ValueError(
-                    _format_preflight_error(
-                        str(config_path),
-                        [result for result in results if not result.ok],
-                    )
+            # resolve-override has its own simple dispatch path
+            if args.command == "resolve-override":
+                if not is_override_config(effective_config_path):
+                    console.print(f"[bold red]Error:[/] {config_path} is not an override config (missing 'base' key)")
+                    sys.exit(1)
+                resolve_override_cmd(
+                    effective_config_path,
+                    selector=selector,
+                    stdout=getattr(args, "stdout", False),
                 )
-            return
+                restore_console()
+                return
 
-        setup_script = getattr(args, "setup_script", None)
-        output_dir = getattr(args, "output_dir", None)
+            if args.command == "preflight":
+                if effective_config_path.is_dir():
+                    raise ValueError("preflight currently expects a file, not a directory")
+                with open(effective_config_path) as f:
+                    raw_config = yaml.safe_load(f)
+                results = preflight_config_variants(
+                    raw_config,
+                    cluster_config=load_cluster_config(),
+                    selector=selector,
+                )
+                for result in results:
+                    icon = "[green]✓[/]" if result.ok else "[red]✗[/]"
+                    console.print(f"{icon} {result.variant}")
+                    console.print(f"  model.path: {result.model.message}")
+                    console.print(f"  model.container: {result.container.message}")
+                if any(not result.ok for result in results):
+                    raise ValueError(
+                        _format_preflight_error(
+                            str(config_path),
+                            [result for result in results if not result.ok],
+                        )
+                    )
+                restore_console()
+                return
 
-        # Handle directory input
-        if config_path.is_dir():
-            if selector:
-                logger.warning(f"Selector ':{selector}' ignored for directory input")
-            submit_directory(
-                config_path,
-                dry_run=is_dry_run,
-                setup_script=setup_script,
-                tags=tags,
-                force_sweep=args.sweep,
-                output_dir=output_dir,
-            )
-        elif is_override_config(config_path):
-            submit_override(
-                config_path,
-                selector=selector,
-                dry_run=is_dry_run,
-                setup_script=setup_script,
-                tags=tags,
-                output_dir=output_dir,
-            )
-        else:
-            if selector:
-                logger.warning(f"Selector ':{selector}' ignored — config is not an override file")
-            is_sweep = args.sweep or is_sweep_config(config_path)
-            if is_sweep:
-                submit_sweep(
-                    config_path,
+            setup_script = getattr(args, "setup_script", None)
+            output_dir = getattr(args, "output_dir", None)
+
+            # Handle directory input
+            if effective_config_path.is_dir():
+                if selector:
+                    logger.warning(f"Selector ':{selector}' ignored for directory input")
+                submit_directory(
+                    effective_config_path,
+                    dry_run=is_dry_run,
+                    setup_script=setup_script,
+                    tags=tags,
+                    force_sweep=args.sweep,
+                    output_dir=output_dir,
+                )
+            elif is_override_config(effective_config_path):
+                submit_override(
+                    effective_config_path,
+                    selector=selector,
                     dry_run=is_dry_run,
                     setup_script=setup_script,
                     tags=tags,
                     output_dir=output_dir,
                 )
             else:
-                submit_single(
-                    config_path=config_path,
-                    dry_run=is_dry_run,
-                    setup_script=setup_script,
-                    tags=tags,
-                    output_dir=output_dir,
-                    enforce_preflight=not mock_mode,
-                )
+                if selector:
+                    logger.warning(f"Selector ':{selector}' ignored — config is not an override file")
+                is_sweep = args.sweep or is_sweep_config(effective_config_path)
+                if is_sweep:
+                    submit_sweep(
+                        effective_config_path,
+                        dry_run=is_dry_run,
+                        setup_script=setup_script,
+                        tags=tags,
+                        output_dir=output_dir,
+                    )
+                else:
+                    submit_single(
+                        config_path=effective_config_path,
+                        dry_run=is_dry_run,
+                        setup_script=setup_script,
+                        tags=tags,
+                        output_dir=output_dir,
+                        enforce_preflight=not (mock_mode or is_dry_run),
+                    )
     except Exception as e:
         # Restore subprocess.run etc. before we exit so in-process test
         # invocations don't leak patches across runs.
@@ -1387,7 +1430,7 @@ def main():
             with contextlib.suppress(Exception):
                 patcher.stop()
         _mock_patch_teardowns = []
-        console = _original_console
+        restore_console()
         if json_mode:
             sys.stdout.write(json.dumps({"status": "error", "error": str(e)}) + "\n")
             sys.stdout.flush()
@@ -1419,7 +1462,7 @@ def main():
 
     # Restore the pre-main console binding so direct library callers aren't
     # affected by this invocation's json-mode rebinding.
-    console = _original_console
+    restore_console()
 
 
 if __name__ == "__main__":

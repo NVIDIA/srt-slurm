@@ -359,7 +359,7 @@ class TestQwen32BCluster:
                 for i, ep in enumerate(prefill_eps[:4]):
                     assert ep.nodes[0] == nodes[0], f"prefill {i} should be on node0"
                 for i, ep in enumerate(prefill_eps[4:]):
-                    assert ep.nodes[0] == nodes[1], f"prefill {i+4} should be on node1"
+                    assert ep.nodes[0] == nodes[1], f"prefill {i + 4} should be on node1"
 
                 # Check decode allocation: on node1 (GPUs 4-5, 6-7)
                 for ep in decode_eps:
@@ -414,9 +414,7 @@ class TestQwen32BCluster:
                 all_gpus_on_node1 = set()
                 for proc in node1_processes:
                     for gpu in proc.gpu_indices:
-                        assert gpu not in all_gpus_on_node1, (
-                            f"GPU {gpu} assigned to multiple processes on {nodes[1]}!"
-                        )
+                        assert gpu not in all_gpus_on_node1, f"GPU {gpu} assigned to multiple processes on {nodes[1]}!"
                         all_gpus_on_node1.add(gpu)
 
                 # All 8 GPUs on node1 should be used
@@ -442,10 +440,7 @@ class TestQwen32BCluster:
                 config = load_config(str(recipe_path))
                 r = config.resources
 
-                total_gpus_needed = (
-                    r.num_prefill * r.gpus_per_prefill
-                    + r.num_decode * r.gpus_per_decode
-                )
+                total_gpus_needed = r.num_prefill * r.gpus_per_prefill + r.num_decode * r.gpus_per_decode
                 total_gpus_available = r.total_nodes * r.gpus_per_node
 
                 assert total_gpus_needed <= total_gpus_available, (

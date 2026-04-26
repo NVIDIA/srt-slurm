@@ -22,7 +22,6 @@ import requests
 
 from srtctl.core.config import (
     generate_override_configs,
-    load_cluster_config,
     resolve_config_with_defaults,
 )
 
@@ -233,13 +232,149 @@ def _preflight_container(
     )
 
 
+def validate_topology(resources: dict[str, Any] | None) -> list[PreflightIssue]:
+    """Catch semantically wrong resources blocks that pass the marshmallow schema.
+
+    The schema accepts any combination of prefill_*, decode_*, and agg_* fields,
+    so configs like ``prefill_workers: 0`` with ``decode_workers: 1`` look valid
+    but express "disaggregated with no prefill" — which is really aggregated and
+    should use agg_nodes/agg_workers instead.
+    """
+    if not resources:
+        return [
+            PreflightIssue(
+                code="topology-missing",
+                field="resources",
+                message=(
+                    "resources block is empty. Set either disaggregated "
+                    "(prefill_nodes/prefill_workers + decode_nodes/decode_workers) "
+                    "or aggregated (agg_nodes + agg_workers)."
+                ),
+            )
+        ]
+
+    prefill_nodes = resources.get("prefill_nodes")
+    decode_nodes = resources.get("decode_nodes")
+    prefill_workers = resources.get("prefill_workers")
+    decode_workers = resources.get("decode_workers")
+    agg_nodes = resources.get("agg_nodes")
+    agg_workers = resources.get("agg_workers")
+
+    disagg_fields = {
+        "prefill_nodes": prefill_nodes,
+        "decode_nodes": decode_nodes,
+        "prefill_workers": prefill_workers,
+        "decode_workers": decode_workers,
+    }
+    agg_fields = {"agg_nodes": agg_nodes, "agg_workers": agg_workers}
+
+    has_disagg = any(v is not None for v in disagg_fields.values())
+    has_agg = any(v is not None for v in agg_fields.values())
+
+    if has_disagg and has_agg:
+        set_disagg = sorted(k for k, v in disagg_fields.items() if v is not None)
+        set_agg = sorted(k for k, v in agg_fields.items() if v is not None)
+        return [
+            PreflightIssue(
+                code="topology-mixed",
+                field="resources",
+                message=(
+                    f"Mixes disaggregated fields ({', '.join(set_disagg)}) with aggregated fields "
+                    f"({', '.join(set_agg)}). Use disaggregated (prefill_*/decode_*) "
+                    "or aggregated (agg_*), not both."
+                ),
+            )
+        ]
+
+    issues: list[PreflightIssue] = []
+
+    if has_disagg:
+        pf_workers = prefill_workers or 0
+        dc_workers = decode_workers or 0
+        pf_nodes = prefill_nodes or 0
+        dc_nodes = decode_nodes or 0
+
+        if pf_workers == 0 and dc_workers == 0:
+            issues.append(
+                PreflightIssue(
+                    code="topology-no-workers",
+                    field="resources",
+                    message=(
+                        "Disaggregated resources block has no workers: prefill_workers and "
+                        "decode_workers are both 0/null. Set both, or switch to aggregated "
+                        "mode with agg_nodes + agg_workers."
+                    ),
+                )
+            )
+        elif pf_workers == 0:
+            issues.append(
+                PreflightIssue(
+                    code="topology-aggregated-style",
+                    field="resources.prefill_workers",
+                    message=(
+                        "prefill_workers is 0 in a disaggregated-style resources block. "
+                        f"For a single-side topology on {dc_nodes} node(s) with {dc_workers} "
+                        f"worker(s), use aggregated mode: `agg_nodes: {dc_nodes}, "
+                        f"agg_workers: {dc_workers}` (remove prefill_*/decode_*)."
+                    ),
+                )
+            )
+        elif dc_workers == 0:
+            issues.append(
+                PreflightIssue(
+                    code="topology-aggregated-style",
+                    field="resources.decode_workers",
+                    message=(
+                        "decode_workers is 0 in a disaggregated-style resources block. "
+                        f"For a single-side topology on {pf_nodes} node(s) with {pf_workers} "
+                        f"worker(s), use aggregated mode: `agg_nodes: {pf_nodes}, "
+                        f"agg_workers: {pf_workers}` (remove prefill_*/decode_*)."
+                    ),
+                )
+            )
+        return issues
+
+    if has_agg:
+        ag_workers = agg_workers or 0
+        ag_nodes = agg_nodes or 0
+        if ag_workers == 0:
+            issues.append(
+                PreflightIssue(
+                    code="topology-no-workers",
+                    field="resources.agg_workers",
+                    message="agg_workers must be > 0 in aggregated mode.",
+                )
+            )
+        if ag_nodes == 0:
+            issues.append(
+                PreflightIssue(
+                    code="topology-no-nodes",
+                    field="resources.agg_nodes",
+                    message="agg_nodes must be > 0 in aggregated mode.",
+                )
+            )
+        return issues
+
+    return [
+        PreflightIssue(
+            code="topology-missing",
+            field="resources",
+            message=(
+                "No topology set. Set either disaggregated "
+                "(prefill_nodes/prefill_workers + decode_nodes/decode_workers) "
+                "or aggregated (agg_nodes + agg_workers)."
+            ),
+        )
+    ]
+
+
 def preflight_config_variants(
     raw_config: dict[str, Any],
     *,
     cluster_config: dict[str, Any] | None = None,
     selector: str | None = None,
 ) -> list[PreflightResult]:
-    active_cluster_config = load_cluster_config() if cluster_config is None else cluster_config
+    active_cluster_config = cluster_config
     variants = (
         generate_override_configs(raw_config, selector=selector) if "base" in raw_config else [("base", raw_config)]
     )
@@ -248,7 +383,8 @@ def preflight_config_variants(
         resolved = resolve_config_with_defaults(variant, active_cluster_config)
         model, model_issues = _preflight_model(variant, resolved, active_cluster_config)
         container, container_issues = _preflight_container(variant, resolved, active_cluster_config)
-        issues = [*model_issues, *container_issues]
+        topology_issues = validate_topology(variant.get("resources"))
+        issues = [*model_issues, *container_issues, *topology_issues]
         results.append(
             PreflightResult(
                 variant=suffix,
