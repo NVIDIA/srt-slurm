@@ -107,14 +107,16 @@ class TestDynamoConfig:
         assert not config.needs_source_install
 
     def test_version_install_command(self):
-        """Version config generates pip install command."""
+        """Version config uses the staged wheel installer when available."""
         from srtctl.core.schema import DynamoConfig
 
-        config = DynamoConfig(version="0.8.0")
+        config = DynamoConfig(version="1.2.0.dev20260426")
         cmd = config.get_install_commands()
-        assert "pip install" in cmd
-        assert "ai-dynamo-runtime==0.8.0" in cmd
-        assert "ai-dynamo==0.8.0" in cmd
+        assert "install-ai-dynamo.sh" in cmd
+        assert "DYNAMO_VERSION=1.2.0.dev20260426" in cmd
+        assert "ai-dynamo-runtime==1.2.0.dev20260426" in cmd
+        assert "ai-dynamo==1.2.0.dev20260426" in cmd
+        assert "--no-deps" in cmd
 
     def test_hash_install_command(self):
         """Hash config generates source install command."""
@@ -233,6 +235,18 @@ fi
         assert config.get_wheel_environment() == {
             "DYNAMO_VERSION": "1.2.0.dev20260426",
             "DYNAMO_WHEEL_NAME": "ai_dynamo-1.2.0.dev20260426-py3-none-any.whl",
+            "SRTCTL_PREFETCH_AI_DYNAMO": "1",
+        }
+
+    def test_version_environment_prefetches_non_default_version(self):
+        """Non-default version config is enough to trigger wheel prefetch."""
+        from srtctl.core.schema import DynamoConfig
+
+        config = DynamoConfig(version="1.2.0.dev20260426")
+
+        assert config.get_wheel_environment() == {
+            "DYNAMO_VERSION": "1.2.0.dev20260426",
+            "SRTCTL_PREFETCH_AI_DYNAMO": "1",
         }
 
 
@@ -558,8 +572,8 @@ class TestSetupScript:
         )
         assert 'export SRTCTL_SETUP_SCRIPT="install-sglang-main.sh"' in script
 
-    def test_sbatch_template_prefetches_dynamo_wheel(self):
-        """Test that dynamo.wheel is exported and prefetched before orchestrator launch."""
+    def test_sbatch_template_prefetches_dynamo_version(self):
+        """Test that dynamo.version is exported and prefetched before orchestrator launch."""
         from pathlib import Path
 
         from srtctl.cli.submit import generate_minimal_sbatch_script
@@ -571,14 +585,15 @@ class TestSetupScript:
             resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1),
             dynamo=DynamoConfig(
                 install=True,
-                wheel="ai_dynamo-1.2.0.dev20260426-py3-none-any.whl",
+                version="1.2.0.dev20260426",
             ),
         )
 
         script = generate_minimal_sbatch_script(config, Path("/tmp/test.yaml"))
 
         assert "export DYNAMO_VERSION=1.2.0.dev20260426" in script
-        assert "export DYNAMO_WHEEL_NAME=ai_dynamo-1.2.0.dev20260426-py3-none-any.whl" in script
+        assert "export SRTCTL_PREFETCH_AI_DYNAMO=1" in script
+        assert "export DYNAMO_WHEEL_NAME=" not in script
         assert "configs/prefetch-ai-dynamo-wheel.sh" in script
 
     def test_setup_script_env_var_override(self, monkeypatch):

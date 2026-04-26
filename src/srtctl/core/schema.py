@@ -688,10 +688,10 @@ class DynamoConfig:
     Options:
         install: Whether to install dynamo at all (default: True). Set to False
                  if your container already has dynamo pre-installed.
-        version: Install specific version from PyPI (e.g., "0.8.0")
+        version: Install/stage a specific ai-dynamo package version (e.g., "1.2.0.dev20260426")
         hash: Clone repo and checkout specific commit hash
         top_of_tree: Clone repo at HEAD (latest)
-        wheel: ai-dynamo wheel filename to stage before worker launch
+        wheel: ai-dynamo wheel filename override to stage before worker launch
 
     If top_of_tree, hash, or wheel is set, version is automatically cleared.
     """
@@ -735,14 +735,27 @@ class DynamoConfig:
             return name[len(prefix) : -len(suffix)]
         return None
 
+    @property
+    def package_version(self) -> str | None:
+        """Version to install for ai-dynamo and ai-dynamo-runtime."""
+        return self.wheel_version if self.wheel else self.version
+
     def get_wheel_environment(self) -> dict[str, str]:
         """Environment variables consumed by ai-dynamo prefetch/setup scripts."""
-        if not self.wheel:
+        if not self.install:
             return {}
-        env = {"DYNAMO_WHEEL_NAME": Path(self.wheel).name}
-        version = self.wheel_version
-        if version:
-            env["DYNAMO_VERSION"] = version
+
+        env = {}
+        if self.wheel:
+            env["DYNAMO_WHEEL_NAME"] = Path(self.wheel).name
+            env["SRTCTL_PREFETCH_AI_DYNAMO"] = "1"
+            version = self.package_version
+            if version:
+                env["DYNAMO_VERSION"] = version
+        elif self.version is not None and self.version != "0.8.0":
+            env["DYNAMO_VERSION"] = self.version
+            env["SRTCTL_PREFETCH_AI_DYNAMO"] = "1"
+
         return env
 
     @staticmethod
@@ -813,10 +826,20 @@ class DynamoConfig:
             )
 
         if self.version is not None:
+            package_shell = shlex.quote(f"ai-dynamo=={self.version}")
+            runtime_package_shell = shlex.quote(f"ai-dynamo-runtime=={self.version}")
+            version_shell = shlex.quote(self.version)
             return (
-                f"echo 'Installing dynamo {self.version}...' && "
-                f"pip install --break-system-packages --quiet --extra-index-url https://pypi.nvidia.com ai-dynamo-runtime=={self.version} ai-dynamo=={self.version} && "
-                f"echo 'Dynamo {self.version} installed'"
+                f"echo 'Installing ai-dynamo-runtime and ai-dynamo {self.version}...' && "
+                "if [ -f /configs/install-ai-dynamo.sh ]; then "
+                f"DYNAMO_VERSION={version_shell} bash /configs/install-ai-dynamo.sh; "
+                "else "
+                "python3 -m pip install --pre --no-deps "
+                "--index-url ${DYNAMO_INDEX_URL:-https://pypi.org/simple} "
+                "--extra-index-url ${DYNAMO_EXTRA_INDEX_URL:-https://pypi.nvidia.com} "
+                f"{runtime_package_shell} {package_shell}; "
+                "fi && "
+                f"echo 'ai-dynamo-runtime and ai-dynamo {self.version} installed'"
             )
 
         # Source install (hash or top-of-tree)
