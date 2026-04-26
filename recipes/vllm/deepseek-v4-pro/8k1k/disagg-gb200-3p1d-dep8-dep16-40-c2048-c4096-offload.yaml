@@ -9,6 +9,10 @@ dynamo:
   install: true
 
 setup_script: vllm-container-deps.sh
+health_check:
+  max_attempts: 360
+  interval_seconds: 10
+
 resources:
   gpu_type: "gb200"
   gpus_per_node: 4
