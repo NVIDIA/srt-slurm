@@ -120,7 +120,7 @@ benchmark:
 identity:
   model:
     repo: "deepseek-ai/DeepSeek-V4-Pro"
-    revision: "45040942eb0d1c4e29fa6b92a6195f110e9e7444"
+    revision: "0366e4e064385807ea86b088a5c6c878ff23343b"
   container:
     image: "vllm/vllm-openai:v0.20.0-ubuntu2404@sha256:46da022ce07aae43e4ffae844aeab467a223437e071abadf566555699fbf16c3"
   frameworks:
