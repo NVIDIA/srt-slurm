@@ -87,6 +87,10 @@ class DynamoFrontend:
             # Add OTEL env vars (before frontend env so OTEL_SERVICE_NAME can be overridden)
             env_to_set.update(build_otel_env(config.observability, "frontend"))
 
+            # Add global recipe environment, including values derived from
+            # dynamo.wheel, before frontend-specific overrides.
+            env_to_set.update(runtime.environment)
+
             # Add frontend env from config
             if config.frontend.env:
                 env_to_set.update(config.frontend.env)
