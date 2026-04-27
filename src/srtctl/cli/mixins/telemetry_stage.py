@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import datetime as _dt
 import logging
 import shlex
 from pathlib import Path
@@ -56,6 +57,7 @@ class TelemetryStageMixin:
 
         proc = start_srun_process(
             command=shlex.split(cmd_str),
+            nodes=len(nodelist),
             ntasks=len(nodelist),
             nodelist=nodelist,
             output=str(log_file),
@@ -82,6 +84,13 @@ class TelemetryStageMixin:
         logger.info("Starting telemetry provider: %s", telemetry.provider.value)
 
         topology = self._compute_frontend_topology()
+
+        # The scraper rejects an existing storage directory and wants a fresh
+        # nested path (e.g. ``YYYY-MM-DD/run-name``). Build the container-side
+        # path once and pass it through to the TOML generator.
+        date_str = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d")
+        storage_path = f"/logs/{telemetry.storage_subdir}/{date_str}/{self.runtime.run_name}"
+
         config_path = self.runtime.log_dir / "telemetry_config.toml"
         config_path.write_text(
             generate_telemetry_config(
@@ -89,12 +98,13 @@ class TelemetryStageMixin:
                 frontend_topology=topology,
                 runtime=self.runtime,
                 telemetry=telemetry,
+                storage_path=storage_path,
             )
         )
 
-        telemetry_dir = self.runtime.log_dir / telemetry.storage_subdir
-        telemetry_dir.mkdir(parents=True, exist_ok=True)
-        local_dir = telemetry_dir / "local"
+        # Pre-create only the local working dir; the scraper creates the
+        # storage dir itself and errors if it already exists.
+        local_dir = self.runtime.log_dir / telemetry.storage_subdir / "local"
         local_dir.mkdir(parents=True, exist_ok=True)
 
         worker_nodes = sorted({process.node for process in self.backend_processes})
@@ -154,5 +164,5 @@ class TelemetryStageMixin:
                 node=self.runtime.nodes.head,
             )
         )
-        logger.info("Telemetry started with artifacts under %s", telemetry_dir)
+        logger.info("Telemetry started with artifacts under %s", local_dir.parent)
         return processes
