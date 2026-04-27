@@ -199,6 +199,9 @@ class TestTelemetryStageMixin:
         for call in exporter_calls:
             assert call.kwargs.get("nodes") == 4
             assert call.kwargs.get("ntasks") == 4
+            # Distroless images (e.g. prom/node-exporter) have no bash, so we
+            # must invoke the binary directly rather than via `bash -c`.
+            assert call.kwargs.get("use_bash_wrapper") is False
 
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
     @patch(

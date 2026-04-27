@@ -55,6 +55,9 @@ class TelemetryStageMixin:
         else:
             cmd_str = exporter_config.command
 
+        # Exporter images can be distroless (e.g. prom/node-exporter has no
+        # shell), so we run the binary directly via execve instead of the
+        # default bash wrapper.
         proc = start_srun_process(
             command=shlex.split(cmd_str),
             nodes=len(nodelist),
@@ -64,6 +67,7 @@ class TelemetryStageMixin:
             container_image=exporter_config.container_image,
             container_mounts=self.runtime.container_mounts,
             srun_options=self.runtime.srun_options,
+            use_bash_wrapper=False,
         )
         return ManagedProcess(
             name=name,
