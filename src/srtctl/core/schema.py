@@ -655,6 +655,9 @@ class ProfilingConfig:
 
     type: str = "none"  # "none", "nsys", "nsys-time", or "torch"
 
+    # Extra arguments passed to nsys profile (appended before `-o`; see get_nsys_prefix)
+    extra_nsys_args: list[str] | None = None
+
     # Phase-specific profiling step configs (not used for nsys-time)
     prefill: ProfilingPhaseConfig | None = None
     decode: ProfilingPhaseConfig | None = None
@@ -768,6 +771,9 @@ class ProfilingConfig:
                 "stop",
             ]
 
+        if self.extra_nsys_args:
+            cmd.extend(self.extra_nsys_args)
+
         cmd += [
             "--kill",
             "none",
@@ -814,9 +820,12 @@ class ProfilingConfig:
             "stop",
             "--force-overwrite",
             "true",
-            "-o",
-            output_file,
         ]
+
+        if self.extra_nsys_args:
+            cmd.extend(self.extra_nsys_args)
+
+        cmd.extend(["-o", output_file])
 
         if frontend_type == "dynamo":
             cmd.insert(-2, "--trace-fork-before-exec=true")
