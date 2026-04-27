@@ -107,7 +107,15 @@ echo ""
 # Output goes to SLURM's --output (sweep_%j.log)
 set +e  # Temporarily disable exit-on-error to capture exit code
 cd "${SRTCTL_SOURCE}"
-uv run --python 3.12 --no-dev -m srtctl.cli.do_sweep "${OUTPUT_DIR}/{{ runtime_config_filename }}"
+# Lock-protected venv sync to avoid concurrent .venv-compute teardown/recreate
+# races across simultaneous SLURM jobs sharing this directory. uv may decide
+# the existing venv is invalid (broken python interpreter symlink) and tear
+# it down + rebuild; if N jobs do that at once they stomp each other with
+# "Directory not empty" / "Failed to spawn 'python -m'" / missing CACHEDIR.TAG
+# errors. The flock serializes only the venv init; the lock is released
+# before the actual sweep so jobs still run in parallel.
+flock -x "${SRTCTL_SOURCE}/.venv-compute.lock" uv sync --python 3.12 --no-dev
+uv run --python 3.12 --no-dev --no-sync -m srtctl.cli.do_sweep "${OUTPUT_DIR}/{{ runtime_config_filename }}"
 EXIT_CODE=$?
 set -e  # Re-enable exit-on-error
 

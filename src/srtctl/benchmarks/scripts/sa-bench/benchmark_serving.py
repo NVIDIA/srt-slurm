@@ -840,92 +840,129 @@ def main(args: argparse.Namespace):
         custom_tokenizer=args.custom_tokenizer,
     )
 
-    if args.dataset is not None:
-        warnings.warn(
-            "The '--dataset' argument will be deprecated in the next "
-            "release. Please use '--dataset-name' and "
-            "'--dataset-path' in the future runs.",
-            stacklevel=2,
+    if args.use_chat_template:
+        # Fail fast with an actionable message when --use-chat-template is set
+        # but the loaded tokenizer cannot render a chat template. The default
+        # HF DeepSeek-V4 tokenizer has no jinja chat_template and would otherwise
+        # crash deep inside transformers with a generic ValueError.
+        from transformers.tokenization_utils_base import PreTrainedTokenizerBase
+        has_jinja = bool(getattr(tokenizer, "chat_template", None))
+        has_method_override = (
+            type(tokenizer).apply_chat_template
+            is not PreTrainedTokenizerBase.apply_chat_template
         )
-        input_requests = sample_sharegpt_requests(
-            dataset_path=args.dataset,
-            num_requests=args.num_prompts,
-            tokenizer=tokenizer,
-            fixed_output_len=args.sharegpt_output_len,
-        )
-
-    elif args.dataset_name == "sharegpt":
-        input_requests = sample_sharegpt_requests(
-            dataset_path=args.dataset_path,
-            num_requests=args.num_prompts,
-            tokenizer=tokenizer,
-            fixed_output_len=args.sharegpt_output_len,
-        )
-
-    elif args.dataset_name == "burstgpt":
-        input_requests = sample_burstgpt_requests(
-            dataset_path=args.dataset_path,
-            num_requests=args.num_prompts,
-            random_seed=args.seed,
-            tokenizer=tokenizer,
-        )
-
-    elif args.dataset_name == "sonnet":
-        # Do not format the prompt, pass to message directly
-        if args.backend == "openai-chat":
-            input_requests = sample_sonnet_requests(
-                dataset_path=args.dataset_path,
-                num_requests=args.num_prompts,
-                input_len=args.sonnet_input_len,
-                output_len=args.sonnet_output_len,
-                prefix_len=args.sonnet_prefix_len,
-                tokenizer=tokenizer,
+        if not has_jinja and not has_method_override:
+            raise ValueError(
+                "--use-chat-template was set, but the loaded tokenizer "
+                f"({type(tokenizer).__name__}) has no jinja chat_template and "
+                "does not override apply_chat_template().\n"
+                "\n"
+                "For DeepSeek-V4 / DSV4-Pro, set in your recipe:\n"
+                "  benchmark:\n"
+                "    custom_tokenizer: "
+                "sa_bench_tokenizers.sglang_deepseek_v4.SGLangDeepseekV4Tokenizer\n"
+                "\n"
+                "Or, to skip chat-template formatting entirely (random tokens "
+                "sent raw, mirrors pre-DSV4 behavior):\n"
+                "  benchmark:\n"
+                "    use_chat_template: false\n"
             )
-            input_requests = [
-                (prompt, prompt_len, output_len, None)
-                for prompt, prompt_formatted, prompt_len, output_len, _ in input_requests
-            ]
-        else:
-            assert (
-                tokenizer.chat_template or tokenizer.default_chat_template
-            ), "Tokenizer/model must have chat template for sonnet dataset."
-            input_requests = sample_sonnet_requests(
-                dataset_path=args.dataset_path,
-                num_requests=args.num_prompts,
-                input_len=args.sonnet_input_len,
-                output_len=args.sonnet_output_len,
-                prefix_len=args.sonnet_prefix_len,
-                tokenizer=tokenizer,
-            )
-            input_requests = [
-                (prompt_formatted, prompt_len, output_len, None)
-                for prompt, prompt_formatted, prompt_len, output_len, _ in input_requests
-            ]
 
-    elif args.dataset_name == "hf":
-        input_requests = sample_hf_requests(
+    if args.dataset_name == "custom":
+        from benchmark_dataset import sample_custom_requests
+
+        input_requests = sample_custom_requests(
             dataset_path=args.dataset_path,
-            dataset_subset=args.hf_subset,
-            dataset_split=args.hf_split,
             num_requests=args.num_prompts,
-            tokenizer=tokenizer,
-            random_seed=args.seed,
-            fixed_output_len=args.hf_output_len,
         )
-
-    elif args.dataset_name == "random":
-        input_requests = sample_random_requests(
-            prefix_len=args.random_prefix_len,
-            input_len=args.random_input_len,
-            output_len=args.random_output_len,
-            num_prompts=args.num_prompts,
-            range_ratio=args.random_range_ratio,
-            tokenizer=tokenizer,
-            use_chat_template=args.use_chat_template,
-        )
-
     else:
-        raise ValueError(f"Unknown dataset: {args.dataset_name}")
+
+        if args.dataset is not None:
+            warnings.warn(
+                "The '--dataset' argument will be deprecated in the next "
+                "release. Please use '--dataset-name' and "
+                "'--dataset-path' in the future runs.",
+                stacklevel=2,
+            )
+            input_requests = sample_sharegpt_requests(
+                dataset_path=args.dataset,
+                num_requests=args.num_prompts,
+                tokenizer=tokenizer,
+                fixed_output_len=args.sharegpt_output_len,
+            )
+
+        elif args.dataset_name == "sharegpt":
+            input_requests = sample_sharegpt_requests(
+                dataset_path=args.dataset_path,
+                num_requests=args.num_prompts,
+                tokenizer=tokenizer,
+                fixed_output_len=args.sharegpt_output_len,
+            )
+
+        elif args.dataset_name == "burstgpt":
+            input_requests = sample_burstgpt_requests(
+                dataset_path=args.dataset_path,
+                num_requests=args.num_prompts,
+                random_seed=args.seed,
+                tokenizer=tokenizer,
+            )
+
+        elif args.dataset_name == "sonnet":
+            # Do not format the prompt, pass to message directly
+            if args.backend == "openai-chat":
+                input_requests = sample_sonnet_requests(
+                    dataset_path=args.dataset_path,
+                    num_requests=args.num_prompts,
+                    input_len=args.sonnet_input_len,
+                    output_len=args.sonnet_output_len,
+                    prefix_len=args.sonnet_prefix_len,
+                    tokenizer=tokenizer,
+                )
+                input_requests = [
+                    (prompt, prompt_len, output_len, None)
+                    for prompt, prompt_formatted, prompt_len, output_len, _ in input_requests
+                ]
+            else:
+                assert (
+                    tokenizer.chat_template or tokenizer.default_chat_template
+                ), "Tokenizer/model must have chat template for sonnet dataset."
+                input_requests = sample_sonnet_requests(
+                    dataset_path=args.dataset_path,
+                    num_requests=args.num_prompts,
+                    input_len=args.sonnet_input_len,
+                    output_len=args.sonnet_output_len,
+                    prefix_len=args.sonnet_prefix_len,
+                    tokenizer=tokenizer,
+                )
+                input_requests = [
+                    (prompt_formatted, prompt_len, output_len, None)
+                    for prompt, prompt_formatted, prompt_len, output_len, _ in input_requests
+                ]
+
+        elif args.dataset_name == "hf":
+            input_requests = sample_hf_requests(
+                dataset_path=args.dataset_path,
+                dataset_subset=args.hf_subset,
+                dataset_split=args.hf_split,
+                num_requests=args.num_prompts,
+                tokenizer=tokenizer,
+                random_seed=args.seed,
+                fixed_output_len=args.hf_output_len,
+            )
+
+        elif args.dataset_name == "random":
+            input_requests = sample_random_requests(
+                prefix_len=args.random_prefix_len,
+                input_len=args.random_input_len,
+                output_len=args.random_output_len,
+                num_prompts=args.num_prompts,
+                range_ratio=args.random_range_ratio,
+                tokenizer=tokenizer,
+                use_chat_template=args.use_chat_template,
+            )
+
+        else:
+            raise ValueError(f"Unknown dataset: {args.dataset_name}")
 
     goodput_config_dict = check_goodput_args(args)
 
@@ -1033,7 +1070,7 @@ if __name__ == "__main__":
         "--dataset-name",
         type=str,
         default="sharegpt",
-        choices=["sharegpt", "burstgpt", "sonnet", "random", "hf"],
+        choices=["sharegpt", "burstgpt", "sonnet", "random", "hf", "custom"],
         help="Name of the dataset to benchmark on.",
     )
     parser.add_argument(

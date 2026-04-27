@@ -14,7 +14,29 @@ from srtctl.core.schema import SrtConfig
 
 @register_benchmark("custom")
 class CustomBenchmarkRunner(BenchmarkRunner):
-    """Run an arbitrary benchmark command inside a container."""
+    """Run an arbitrary benchmark command inside a container.
+
+    IMPORTANT — no templating on ``benchmark.command``.
+
+    The string in ``benchmark.command`` is passed to ``bash -lc`` verbatim.
+    srtctl does NOT substitute placeholders like ``{nginx_url}``,
+    ``{slurm_job_id}``, ``{log_dir}``, ``{target}``, etc. Any literal
+    ``{…}`` in the command will reach the shell unchanged and almost
+    certainly produce a confusing error (e.g. ``bash: {nginx_url}: not
+    found``).
+
+    Practical consequences:
+
+    * The benchmark runs inside the job's container with pyxis/enroot's
+      default networking, so services on the head node are reachable at
+      ``localhost``. Hit ``http://localhost:<port>`` directly.
+    * If ``frontend.enable_multiple_frontends`` is ``False`` there is no
+      nginx proxy; point the benchmark at the master router port (or a
+      worker) directly — again via ``localhost``.
+    * If you need to parameterize the command, render it yourself when
+      you generate the recipe and paste the final string into
+      ``benchmark.command``.
+    """
 
     @property
     def name(self) -> str:

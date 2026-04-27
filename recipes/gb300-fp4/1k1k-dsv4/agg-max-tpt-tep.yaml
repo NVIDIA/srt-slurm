@@ -1,0 +1,68 @@
+# DeepSeek-V4-Pro GB300 1n TEP 'max-throughput' recipe
+# From SGLang cookbook (DeepSeek-V4.mdx / deepseek-v4-deployment.jsx):
+#   TP=4 + DP=4 + DP-attention + DeepEP, NO MTP + cg=128 max-run=256
+# Tests TEP peak throughput at high concurrency.
+name: "dsv4-pro-gb300-agg-maxtpt-1k1k-official"
+
+slurm:
+  partition: gb300
+  time_limit: "4:00:00"
+
+model:
+  path: "dsv4-pro"
+  container: "dsv4-grace-blackwell"
+  precision: "fp4"
+
+frontend:
+  type: sglang
+
+resources:
+  gpu_type: "gb300"
+  gpus_per_node: 4
+  agg_nodes: 1
+  agg_workers: 1
+
+backend:
+  type: sglang
+
+  aggregated_environment:
+    PYTHONUNBUFFERED: "1"
+    SGLANG_JIT_DEEPGEMM_PRECOMPILE: "0"
+    SGLANG_JIT_DEEPGEMM_FAST_WARMUP: "1"
+    SGLANG_MOONCAKE_CUSTOM_MEM_POOL: "True"
+    NCCL_MNNVL_ENABLE: "1"
+    NCCL_CUMEM_ENABLE: "1"
+    SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK: "512"
+
+  sglang_config:
+    aggregated:
+      served-model-name: "deepseek-ai/DeepSeek-V4-Pro"
+      model-path: "/model/"
+      trust-remote-code: true
+
+      # TEP: TP=DP=4 + dp-attention + deepep
+      tensor-parallel-size: 4
+      data-parallel-size: 4
+      enable-dp-attention: true
+      moe-a2a-backend: "deepep"
+      deepep-config: '{"normal_dispatch":{"num_sms":96},"normal_combine":{"num_sms":96}}'
+
+      # NO MTP for max-tpt
+
+      mem-fraction-static: 0.9
+      context-length: 2200
+      max-prefill-tokens: 4096
+      cuda-graph-max-bs: 256
+      max-running-requests: 256
+      disable-radix-cache: true
+      decode-log-interval: 1
+      stream-interval: 50
+
+benchmark:
+  type: "sa-bench"
+  isl: 1024
+  osl: 1024
+  random_range_ratio: 0.8
+  concurrencies: "64x128x256"
+  req_rate: "inf"
+  use_chat_template: false

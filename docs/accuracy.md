@@ -1,9 +1,11 @@
 # Accuracy Benchmarks
 
-In srt-slurm, users can run different accuracy benchmarks by setting the benchmark section in the config yaml file. Supported benchmarks include `mmlu`, `gpqa` and `longbenchv2`.
+In srt-slurm, users can run different accuracy benchmarks by setting the benchmark section in the config yaml file. Supported benchmarks include `aime`, `mmlu`, `gpqa` and `longbenchv2`.
 
 ## Table of Contents
 
+- [How Scoring Works](#how-scoring-works)
+- [AIME](#aime)
 - [MMLU](#mmlu)
 - [GPQA](#gpqa)
 - [LongBench-V2](#longbench-v2)
@@ -18,6 +20,120 @@ In srt-slurm, users can run different accuracy benchmarks by setting the benchma
 ---
 
 **Note**: The `context-length` argument in the config yaml needs to be larger than the `max_tokens` argument of accuracy benchmark.
+
+
+## How Scoring Works
+
+Accuracy benchmarks send a fixed dataset through the running OpenAI-compatible endpoint and compare each model
+response against the benchmark's expected answer. For AIME, NeMo Skills prompts the model to put the final answer in
+`\boxed{...}`, extracts that final boxed answer, and grades it with its math evaluator. There is no LLM judge in the
+default AIME path; the score is computed from exact/symbolic correctness.
+
+When `repeat` is greater than 1, the benchmark runs multiple sampled generations per problem. NeMo Skills summarizes
+metrics across those generations, which is useful for comparing pass@1-style deterministic accuracy and sampled
+accuracy on the same serving setup.
+
+
+## AIME
+
+For AIME, the benchmark section in yaml file can be modified in the following way:
+```bash
+benchmark:
+  type: "aime"
+  aime_dataset: "aime25" # One of: aime24, aime25, aime26
+  num_examples: null # Number of examples to run; null means all
+  max_tokens: 24576 # Max number of output tokens
+  repeat: 1 # Number of sampled repetitions
+  num_threads: 30 # Number of parallel requests
+```
+
+Then launch the script as usual:
+```bash
+srtctl apply -f config.yaml
+```
+
+After finishing benchmarking, AIME outputs are written under `/logs/accuracy/<aime_dataset>/` and summarized metrics
+are written to `/logs/accuracy/<aime_dataset>_metrics.json`.
+
+### AIME for reasoning models (NeMo Skills container)
+
+The defaults above target greedy non-reasoning evaluation. For reasoning-capable
+models (e.g. DeepSeek-V4-Pro thinking mode, GPT-OSS) you'll want long
+`max_tokens`, sampling temperature, and pass@k — and you'll want the eval
+running inside the official NeMo Skills container so installing `ns eval` and
+its long transitive dependency chain isn't part of every job.
+
+Run AIME via `type: custom` pointed at the NeMo Skills container:
+
+1. **Add the container alias to `srtslurm.yaml`** (optional — let Pyxis auto-pull
+   from NGC if you skip this):
+
+   ```yaml
+   containers:
+     nemo-skills: "/shared/containers/nvidia+eval-factory+nemo-skills+26.03.sqsh"
+   ```
+
+   Pre-cache with: `enroot import 'docker://nvcr.io#nvidia/eval-factory/nemo-skills:26.03'`.
+
+2. **Enable thinking mode on the workers.** This is a server-side knob — set
+   in both `prefill_environment` and `decode_environment`:
+
+   ```yaml
+   backend:
+     prefill_environment:
+       SGLANG_ENABLE_THINKING: "1"
+       SGLANG_REASONING_EFFORT: "max"
+     decode_environment:
+       SGLANG_ENABLE_THINKING: "1"
+       SGLANG_REASONING_EFFORT: "max"
+   ```
+
+   Without these, the model emits non-reasoning answers and AIME pass@k drops
+   ~30 points below what the model is capable of.
+
+3. **Configure the bench** as a `type: custom` step running `ns eval` in the
+   NeMo Skills container. `HF_TOKEN` propagates from the recipe top-level
+   `environment:` block:
+
+   ```yaml
+   environment:
+     HF_TOKEN: "${HF_TOKEN}"   # propagates to bench for `ns prepare_data`
+
+   benchmark:
+     type: custom
+     container_image: nemo-skills   # alias from srtslurm.yaml, or pass the
+                                    # nvcr.io URI directly for auto-pull
+     env:
+       OPENAI_API_KEY: "EMPTY"      # ns/litellm requires it set; value is unused
+     command: |
+       ns prepare_data aime25 && \
+       ns eval \
+         --server_type=openai \
+         --model=dspro \
+         --server_address=http://localhost:8000/v1 \
+         --benchmarks=aime25:16 \
+         --output_dir=/logs/accuracy/aime25 \
+         --starting_seed=42 \
+         ++inference.tokens_to_generate=400000 \
+         ++max_concurrent_requests=512 \
+         ++inference.temperature=1.0 \
+         ++inference.top_p=1.0 \
+         ++inference.timeout=25000000
+   ```
+
+   Notes:
+   - `--model` must match the server's `served-model-name` from
+     `sglang_config` — replace `dspro` with whatever your recipe sets.
+   - `--server_address` always points at the in-job dynamo frontend on
+     `localhost:8000`.
+   - Mounts (`/logs`, `/model`, `/configs`, `/srtctl-benchmarks`) are
+     auto-mounted, so `--output_dir=/logs/...` persists out of the container.
+   - `ns eval` writes its own `metrics.json` under
+     `/logs/accuracy/aime25/aime25/eval-results/<benchmark>/...` —
+     `cat` the deepest `metrics.json` for pass@1 / pass@16 / pass@k.
+   - Tuning knobs (`max_tokens`, `repeat`, `temperature`, `top_p`,
+     `max_concurrent_requests`, `starting_seed`) match the upstream
+     reasoning-eval reference for DeepSeek-V4-Pro / similar.
 
 
 ## MMLU
@@ -189,5 +305,4 @@ The output includes per-category scores and aggregate metrics:
 2. **Memory**: Long-context evaluation requires significant GPU memory. Use appropriate `mem-fraction-static` settings
 3. **Throughput**: Increase `num_threads` for faster evaluation, but monitor for OOM errors
 4. **Categories**: Running specific categories is useful for targeted validation (e.g., just testing summarization capabilities)
-
 
