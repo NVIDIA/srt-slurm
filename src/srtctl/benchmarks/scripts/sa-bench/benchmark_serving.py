@@ -42,6 +42,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+import aiohttp
 import numpy as np
 import pandas as pd
 from backend_request_func import (
@@ -67,6 +68,41 @@ except ImportError:
 from benchmark_utils import convert_to_pytorch_benchmark_format
 
 MILLISECONDS_TO_SECONDS_CONVERSION = 1000
+
+
+async def _post_slow_down_all_aiohttp(
+    server_bases: list[str],
+    forward_sleep_time: float | None,
+) -> None:
+    """POST /slow_down on SGLang HTTP servers (admin/testing)."""
+    headers: dict[str, str] = {}
+    key = os.environ.get("OPENAI_API_KEY")
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    else:
+        api_key = os.environ.get("API_KEY")
+        if api_key:
+            headers["Authorization"] = str(api_key)
+    timeout = aiohttp.ClientTimeout(total=60)
+    try:
+        async with aiohttp.ClientSession(trust_env=True, timeout=timeout) as session:
+            for base in server_bases:
+                url = base.rstrip("/") + "/slow_down"
+                try:
+                    async with session.post(
+                        url,
+                        json={"forward_sleep_time": forward_sleep_time},
+                        headers=headers,
+                    ) as resp:
+                        if resp.status >= 400:
+                            body = await resp.text()
+                            print(
+                                f"Warning: slow_down POST {url} -> HTTP {resp.status}: {body[:500]}"
+                            )
+                except aiohttp.ClientError as e:
+                    print(f"Warning: slow_down POST {url} failed: {e}")
+    except aiohttp.ClientError as e:
+        print(f"Warning: slow_down session error: {e}")
 
 
 @dataclass
@@ -544,6 +580,9 @@ async def benchmark(
     goodput_config_dict: dict[str, float],
     max_concurrency: int | None,
     lora_modules: list[str] | None,
+    slow_down_servers: list[str] | None = None,
+    slow_down_sleep_time: float = 1.0,
+    slow_down_wait_time: float = 60.0,
 ):
     if backend in ASYNC_REQUEST_FUNCS:
         request_func = ASYNC_REQUEST_FUNCS[backend]
@@ -608,6 +647,33 @@ async def benchmark(
     print(f"Burstiness factor: {burstiness} ({distribution})")
     print(f"Maximum request concurrency: {max_concurrency}")
 
+    slow_bases = [s.strip() for s in (slow_down_servers or []) if s.strip()]
+    slow_down_task: asyncio.Task | None = None
+    if slow_bases:
+        if os.environ.get("SRTCTL_FRONTEND_TYPE") != "sglang":
+            print(
+                "Warning: --slow-down-server ignored (SRTCTL_FRONTEND_TYPE is not sglang; "
+                "slow_down applies to SGLang worker HTTP /slow_down only)."
+            )
+        else:
+            listed = ", ".join(f"{b.rstrip('/')}/slow_down" for b in slow_bases)
+            print(
+                f"Enabling slow_down (forward_sleep_time={slow_down_sleep_time}s) on {listed}; "
+                f"will auto-disable after {slow_down_wait_time}s."
+            )
+            await _post_slow_down_all_aiohttp(slow_bases, slow_down_sleep_time)
+            bases_snapshot = list(slow_bases)
+
+            async def _slow_down_disable_after_wait():
+                await asyncio.sleep(slow_down_wait_time)
+                print(
+                    f"slow_down auto-disabled after {slow_down_wait_time}s "
+                    f"({len(bases_snapshot)} server(s))."
+                )
+                await _post_slow_down_all_aiohttp(bases_snapshot, None)
+
+            slow_down_task = asyncio.create_task(_slow_down_disable_after_wait())
+
     pbar = None if disable_tqdm else tqdm(total=len(input_requests))
 
     # This can be used once the minimum Python version is 3.10 or higher,
@@ -645,6 +711,14 @@ async def benchmark(
         )
         tasks.append(asyncio.create_task(limited_request_func(request_func_input=request_func_input, pbar=pbar)))
     outputs: list[RequestFuncOutput] = await asyncio.gather(*tasks)
+    
+    if slow_down_task is not None and not slow_down_task.done():
+        slow_down_task.cancel()
+        try:
+            await slow_down_task
+        except asyncio.CancelledError:
+            pass
+        await _post_slow_down_all_aiohttp(slow_bases, None)
 
     if profile:
         print("Stopping profiler...")
@@ -817,6 +891,8 @@ def save_to_pytorch_benchmark_format(args: argparse.Namespace, results: dict[str
 
 def main(args: argparse.Namespace):
     print(args)
+    if args.slow_down_servers is None:
+        args.slow_down_servers = []
     random.seed(args.seed)
     np.random.seed(args.seed)
 
@@ -991,6 +1067,9 @@ def main(args: argparse.Namespace):
             goodput_config_dict=goodput_config_dict,
             max_concurrency=args.max_concurrency,
             lora_modules=args.lora_modules,
+            slow_down_servers=args.slow_down_servers,
+            slow_down_sleep_time=args.slow_down_sleep_time,
+            slow_down_wait_time=args.slow_down_wait_time,
         )
     )
 
@@ -1091,6 +1170,29 @@ if __name__ == "__main__":
         "to execute at a time. This means that when used in combination, the "
         "actual request rate may be lower than specified with --request-rate, "
         "if the server is not processing requests fast enough to keep up.",
+    )
+    parser.add_argument(
+        "--slow-down-server",
+        action="append",
+        dest="slow_down_servers",
+        default=None,
+        metavar="URL",
+        help=(
+            "SGLang worker HTTP base URL for POST /slow_down (repeatable). "
+            "Only effective when SRTCTL_FRONTEND_TYPE=sglang."
+        ),
+    )
+    parser.add_argument(
+        "--slow-down-sleep-time",
+        type=float,
+        default=1.0,
+        help="forward_sleep_time (seconds) for /slow_down when decode URLs are set.",
+    )
+    parser.add_argument(
+        "--slow-down-wait-time",
+        type=float,
+        default=60.0,
+        help="Seconds until POST clears slow_down; benchmark end also clears.",
     )
 
     parser.add_argument(

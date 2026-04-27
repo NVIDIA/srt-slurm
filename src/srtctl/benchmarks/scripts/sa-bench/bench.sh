@@ -104,6 +104,28 @@ if [ "$DATASET_NAME" = "random" ]; then
     )
 fi
 
+# Optional SGLang /slow_down (set by srtctl for SA-Bench when YAML provides slow_down_* and frontend is sglang):
+#   SA_BENCH_SLOW_DOWN_URLS: comma-separated http://host:port base URLs (decode workers)
+#   SA_BENCH_SLOW_DOWN_SLEEP_TIME / SA_BENCH_SLOW_DOWN_WAIT_TIME
+SLOW_DOWN_ARGS=()
+if [ -n "${SA_BENCH_SLOW_DOWN_URLS:-}" ]; then
+    IFS=',' read -r -a _sd_urls <<< "${SA_BENCH_SLOW_DOWN_URLS}"
+    for u in "${_sd_urls[@]}"; do
+        u="$(echo "$u" | xargs)"
+        if [ -n "$u" ]; then
+            SLOW_DOWN_ARGS+=(--slow-down-server "$u")
+        fi
+    done
+fi
+if [ ${#SLOW_DOWN_ARGS[@]} -gt 0 ]; then
+    SLOW_DOWN_EXTRA=(
+        --slow-down-sleep-time "${SA_BENCH_SLOW_DOWN_SLEEP_TIME:-1}"
+        --slow-down-wait-time "${SA_BENCH_SLOW_DOWN_WAIT_TIME:-60}"
+    )
+else
+    SLOW_DOWN_EXTRA=()
+fi
+
 # Parse endpoint into host:port
 HOST=$(echo "$ENDPOINT" | sed 's|http://||' | cut -d: -f1)
 PORT=$(echo "$ENDPOINT" | sed 's|http://||' | cut -d: -f2 | cut -d/ -f1)
@@ -152,22 +174,24 @@ start_all_profiling
 
 for concurrency in "${CONCURRENCY_LIST[@]}"; do
 
-    num_warmup_prompts=$((concurrency * NUM_WARMUP_MULT))
-    python3 -u "${WORK_DIR}/benchmark_serving.py" \
-        --model "${MODEL_NAME}" --tokenizer "${MODEL_PATH}" \
-        --host "$HOST" --port "$PORT" \
-        --backend "dynamo" --endpoint /v1/completions \
-        --disable-tqdm \
-        "${DATASET_ARGS[@]}" \
-        --num-prompts "$num_warmup_prompts" \
-        "${RANDOM_LEN_ARGS[@]}" \
-        --ignore-eos \
-        --request-rate 250 \
-        --percentile-metrics ttft,tpot,itl,e2el \
-        --max-concurrency "$concurrency" \
-        --trust-remote-code \
-        "${CHAT_TEMPLATE_ARGS[@]}" \
-        "${CUSTOM_TOKENIZER_ARGS[@]}"
+    if [ "$NUM_WARMUP_MULT" -gt 0 ]; then
+        num_warmup_prompts=$((concurrency * NUM_WARMUP_MULT))
+        python3 -u "${WORK_DIR}/benchmark_serving.py" \
+            --model "${MODEL_NAME}" --tokenizer "${MODEL_PATH}" \
+            --host "$HOST" --port "$PORT" \
+            --backend "dynamo" --endpoint /v1/completions \
+            --disable-tqdm \
+            "${DATASET_ARGS[@]}" \
+            --num-prompts "$num_warmup_prompts" \
+            "${RANDOM_LEN_ARGS[@]}" \
+            --ignore-eos \
+            --request-rate 250 \
+            --percentile-metrics ttft,tpot,itl,e2el \
+            --max-concurrency "$concurrency" \
+            --trust-remote-code \
+            "${CHAT_TEMPLATE_ARGS[@]}" \
+            "${CUSTOM_TOKENIZER_ARGS[@]}"
+    fi
 
     num_prompts=$((concurrency * NUM_PROMPTS_MULT))
 
@@ -197,6 +221,8 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
         --trust-remote-code \
         "${CHAT_TEMPLATE_ARGS[@]}" \
         "${CUSTOM_TOKENIZER_ARGS[@]}" \
+        "${SLOW_DOWN_ARGS[@]}" \
+        "${SLOW_DOWN_EXTRA[@]}" \
         --save-result --result-dir "$result_dir" --result-filename "$result_filename"
     set +x
 

@@ -293,6 +293,41 @@ class BenchmarkStageMixin:
 
         return env
 
+    def _get_sa_bench_slow_down_env(self) -> dict[str, str]:
+        """Build SA-Bench slow_down env from benchmark config and decode worker leaders."""
+        b = self.config.benchmark
+        if b.slow_down_sleep_time is None or b.slow_down_wait_time is None:
+            return {}
+        if b.slow_down_sleep_time <= 0 or b.slow_down_wait_time <= 0:
+            logger.warning(
+                "benchmark slow_down: slow_down_sleep_time and slow_down_wait_time must be positive; skipping"
+            )
+            return {}
+        if self.config.frontend.type != "sglang":
+            logger.warning("benchmark.slow_down_* ignored: frontend.type is not sglang")
+            return {}
+
+        decode_urls: list[str] = []
+        for process in self.backend_processes:
+            if not process.is_leader:
+                continue
+            if process.endpoint_mode != "decode":
+                continue
+            leader_ip = get_hostname_ip(process.node, self.runtime.network_interface)
+            decode_urls.append(f"http://{leader_ip}:{process.http_port}")
+
+        if not decode_urls:
+            logger.warning(
+                "benchmark slow_down requested but no decode worker leaders found; skipping slow_down env"
+            )
+            return {}
+
+        return {
+            "SA_BENCH_SLOW_DOWN_URLS": ",".join(decode_urls),
+            "SA_BENCH_SLOW_DOWN_SLEEP_TIME": str(b.slow_down_sleep_time),
+            "SA_BENCH_SLOW_DOWN_WAIT_TIME": str(b.slow_down_wait_time),
+        }
+
     def _get_aiperf_server_metrics_env(self) -> dict[str, str]:
         """Build server metrics URLs for AIPerf benchmarks.
 
@@ -333,6 +368,9 @@ class BenchmarkStageMixin:
         # dataset prep against gated HF datasets).
         for key, value in self.runtime.environment.items():
             env[key] = value
+
+        if runner.name == "SA-Bench":
+            env.update(self._get_sa_bench_slow_down_env())
 
         # Add AIPerf-specific env vars for AIPerf-driven benchmarks only
         if isinstance(runner, AIPerfBenchmarkRunner):
