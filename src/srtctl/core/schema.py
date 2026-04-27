@@ -901,6 +901,121 @@ def build_otel_env(observability: ObservabilityConfig, component: str) -> dict[s
     }
 
 
+# /configs/dynamo-wheels is the lustre-mounted cache for hash-pinned dynamo
+# source builds. The bench/frontend container always mounts srtslurm's
+# `configs/` dir at /configs (see RuntimeContext.container_mounts), so this
+# path is reachable from every node without any extra recipe wiring.
+_DYNAMO_CACHE_ROOT = "/configs/dynamo-wheels"
+
+
+def _hash_cached_source_install(dynamo_hash: str) -> str:
+    """Bash for hash-pinned source install with a /configs/dynamo-wheels cache.
+
+    Cache layout: ``{root}/<hash>/`` contains the maturin wheel
+    (``ai_dynamo_runtime-*.whl``), a tarball of the dynamo source tree
+    (``dynamo-src.tar.gz``), and a ``.complete`` sentinel that's only touched
+    on a successful build. flock on the per-hash lock file serializes the
+    cold-cache build across multiple frontends starting in parallel.
+    """
+    cache = f"{_DYNAMO_CACHE_ROOT}/{dynamo_hash}"
+    lock = f"{_DYNAMO_CACHE_ROOT}/.{dynamo_hash}.lock"
+    return (
+        f"echo 'Installing dynamo from source ({dynamo_hash}, /configs cache)...' && "
+        f"mkdir -p {_DYNAMO_CACHE_ROOT} && "
+        # Subshell + flock-FD pattern: only the first frontend in a cold-cache
+        # job builds; later frontends block on the lock then read .complete.
+        f"( "
+        f"flock -x 200; "
+        f"if [ ! -f {cache}/.complete ]; then "
+        # Build tools — install on cold cache only. apt + protoc + cargo + maturin.
+        f"apt-get update -qq && apt-get install -y -qq libclang-dev curl git protobuf-compiler > /dev/null 2>&1 && "
+        f"if ! command -v cargo &>/dev/null; then "
+        f"curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable -q && "
+        f". $HOME/.cargo/env; fi && "
+        # Force-reinstall maturin: some images ship the module without the
+        # console-script, so `command -v maturin` fails AND a plain pip
+        # install reports "already satisfied".
+        f"pip install --break-system-packages --force-reinstall --quiet maturin && "
+        # Clone + build the runtime wheel.
+        f"DYN_BUILD_DIR=$(mktemp -d) && cd $DYN_BUILD_DIR && "
+        f"git clone https://github.com/ai-dynamo/dynamo.git && "
+        f"cd dynamo && git checkout {dynamo_hash} && "
+        f"cd lib/bindings/python/ && "
+        f'export RUSTFLAGS="${{RUSTFLAGS:-}} -C target-cpu=native --cfg tokio_unstable" && '
+        f"rm -f /tmp/ai_dynamo_runtime*.whl && "
+        f"maturin build -o /tmp && "
+        # Populate cache atomically: copy artifacts first, touch .complete last.
+        f"mkdir -p {cache} && "
+        f"cp /tmp/ai_dynamo_runtime*.whl {cache}/ && "
+        f"cd $DYN_BUILD_DIR && "
+        f"tar -czf {cache}/dynamo-src.tar.gz dynamo && "
+        f"touch {cache}/.complete && "
+        f"cd / && rm -rf $DYN_BUILD_DIR; "
+        f"fi "
+        f") 200>{lock} && "
+        # Install from the (now warm) cache. Both branches above land here.
+        f"pip install --break-system-packages --force-reinstall {cache}/ai_dynamo_runtime-*.whl && "
+        f"rm -rf /tmp/dynamo-src && mkdir -p /tmp/dynamo-src && "
+        f"tar -xzf {cache}/dynamo-src.tar.gz -C /tmp/dynamo-src && "
+        f"pip install --break-system-packages -e /tmp/dynamo-src/dynamo && "
+        f"echo 'Dynamo installed from source ({dynamo_hash})'"
+    )
+
+
+def _live_source_install_for_top_of_tree() -> str:
+    """Bash for live source install at HEAD — no cache (no stable key).
+
+    Keeps the original SGLang-vs-portable bifurcation: SGLang containers
+    already have rust + maturin in the right places at /sgl-workspace; other
+    containers (vLLM, etc.) install everything from scratch into /tmp.
+    """
+    sglang = (
+        # protobuf-compiler is required by modelexpress-common's build.rs (prost-build).
+        # Some SGLang images ship without /usr/bin/protoc; install it unconditionally.
+        "apt-get update -qq && apt-get install -y -qq libclang-dev curl protobuf-compiler > /dev/null 2>&1 && "
+        "if ! command -v cargo &>/dev/null; then curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable -q && source $HOME/.cargo/env; fi && "
+        # Force-reinstall maturin: see _hash_cached_source_install.
+        "pip install --break-system-packages --force-reinstall --quiet maturin && "
+        "cd /sgl-workspace/ && "
+        "git clone https://github.com/ai-dynamo/dynamo.git && "
+        "cd dynamo && "
+        "cd lib/bindings/python/ && "
+        'export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native --cfg tokio_unstable" && '
+        "maturin build -o /tmp && "
+        "pip install /tmp/ai_dynamo_runtime*.whl && "
+        "cd /sgl-workspace/dynamo/ && "
+        "pip install -e . && "
+        "cd /sgl-workspace/sglang/ && "
+        "echo 'Dynamo installed from source (HEAD)'"
+    )
+
+    portable = (
+        "if ! command -v cargo &> /dev/null || ! command -v maturin &> /dev/null; then "
+        "apt-get update -qq && apt-get install -y -qq git curl libclang-dev protobuf-compiler > /dev/null 2>&1 && "
+        "if ! command -v cargo &> /dev/null; then "
+        "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && source $HOME/.cargo/env; fi && "
+        "if ! command -v maturin &> /dev/null; then "
+        "pip install --break-system-packages maturin; fi; fi && "
+        "ORIG_DIR=$(pwd) && rm -rf /tmp/dynamo_build && mkdir -p /tmp/dynamo_build && cd /tmp/dynamo_build && "
+        "git clone https://github.com/ai-dynamo/dynamo.git && "
+        "cd dynamo && "
+        "cd lib/bindings/python/ && "
+        'export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native --cfg tokio_unstable" && '
+        "rm -f /tmp/ai_dynamo_runtime*.whl && "
+        "maturin build -o /tmp && "
+        "pip install --break-system-packages /tmp/ai_dynamo_runtime*.whl --force-reinstall && "
+        "cd /tmp/dynamo_build/dynamo/ && "
+        "pip install --break-system-packages -e . && "
+        "cd $ORIG_DIR && "
+        "echo 'Dynamo installed from source (HEAD)'"
+    )
+
+    return (
+        "echo 'Installing dynamo from source (HEAD)...' && "
+        f"if [ -d /sgl-workspace ]; then {sglang}; else {portable}; fi"
+    )
+
+
 @dataclass
 class DynamoConfig:
     """Dynamo installation configuration.
@@ -946,61 +1061,16 @@ class DynamoConfig:
                 f"echo 'Dynamo {self.version} installed'"
             )
 
-        # Source install (hash or top-of-tree)
-        git_ref = self.hash if self.hash else "HEAD"
-        checkout_cmd = f"git checkout {self.hash}" if self.hash else ""
+        # Source install. When pinned to an immutable hash, cache the build on
+        # /configs (lustre, shared by every job) keyed by hash. First frontend
+        # in any job hitting a cold cache builds under flock; everyone else
+        # reuses the artifacts. Drops bootstrap from ~5 min + flaky github clone
+        # to ~10 sec lustre access for repeat hashes. top_of_tree skips the
+        # cache (no stable key) and always live-builds.
+        if self.hash is not None:
+            return _hash_cached_source_install(self.hash)
 
-        # Original SGLang container path
-        sglang = (
-            # protobuf-compiler is required by modelexpress-common's build.rs (prost-build).
-            # Some SGLang images ship without /usr/bin/protoc; install it unconditionally.
-            "apt-get update -qq && apt-get install -y -qq libclang-dev curl protobuf-compiler > /dev/null 2>&1 && "
-            "if ! command -v cargo &>/dev/null; then curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable -q && source $HOME/.cargo/env; fi && "
-            # Force-reinstall maturin: some images ship the python module in dist-packages
-            # without the console-script entry point, so `command -v maturin` fails AND a
-            # plain `pip install maturin` reports "already satisfied" and skips the fix.
-            "pip install --break-system-packages --force-reinstall --quiet maturin && "
-            "cd /sgl-workspace/ && "
-            "git clone https://github.com/ai-dynamo/dynamo.git && "
-            "cd dynamo && "
-            f"{checkout_cmd + ' && ' if checkout_cmd else ''}"
-            "cd lib/bindings/python/ && "
-            'export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native --cfg tokio_unstable" && '
-            "maturin build -o /tmp && "
-            "pip install /tmp/ai_dynamo_runtime*.whl && "
-            "cd /sgl-workspace/dynamo/ && "
-            "pip install -e . && "
-            "cd /sgl-workspace/sglang/ && "
-            f"echo 'Dynamo installed from source ({git_ref})'"
-        )
-
-        # Portable path for non-SGLang containers (vLLM, etc.)
-        portable = (
-            "if ! command -v cargo &> /dev/null || ! command -v maturin &> /dev/null; then "
-            "apt-get update -qq && apt-get install -y -qq git curl libclang-dev protobuf-compiler > /dev/null 2>&1 && "
-            "if ! command -v cargo &> /dev/null; then "
-            "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && source $HOME/.cargo/env; fi && "
-            "if ! command -v maturin &> /dev/null; then "
-            "pip install --break-system-packages maturin; fi; fi && "
-            "ORIG_DIR=$(pwd) && rm -rf /tmp/dynamo_build && mkdir -p /tmp/dynamo_build && cd /tmp/dynamo_build && "
-            "git clone https://github.com/ai-dynamo/dynamo.git && "
-            "cd dynamo && "
-            f"{checkout_cmd + ' && ' if checkout_cmd else ''}"
-            "cd lib/bindings/python/ && "
-            'export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native --cfg tokio_unstable" && '
-            "rm -f /tmp/ai_dynamo_runtime*.whl && "
-            "maturin build -o /tmp && "
-            "pip install --break-system-packages /tmp/ai_dynamo_runtime*.whl --force-reinstall && "
-            "cd /tmp/dynamo_build/dynamo/ && "
-            "pip install --break-system-packages -e . && "
-            "cd $ORIG_DIR && "
-            f"echo 'Dynamo installed from source ({git_ref})'"
-        )
-
-        return (
-            f"echo 'Installing dynamo from source ({git_ref})...' && "
-            f"if [ -d /sgl-workspace ]; then {sglang}; else {portable}; fi"
-        )
+        return _live_source_install_for_top_of_tree()
 
     Schema: ClassVar[type[Schema]] = Schema
 

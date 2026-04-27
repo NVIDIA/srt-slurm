@@ -166,21 +166,40 @@ class TestDynamoConfig:
         assert "ai-dynamo==0.8.0" in cmd
 
     def test_hash_install_command(self):
-        """Hash config generates source install command."""
+        """Hash config generates a cache-aware source-install command.
+
+        The bash should: (1) check the /configs cache, (2) clone+build under
+        flock if cold, (3) install from the cache regardless. Cache is keyed
+        by hash so bumping the hash forces a rebuild.
+        """
         from srtctl.core.schema import DynamoConfig
 
         config = DynamoConfig(hash="abc123")
         assert config.version is None  # Auto-cleared
         assert config.needs_source_install
         cmd = config.get_install_commands()
+
+        # Cache lookup + flock-protected cold build
+        assert "/configs/dynamo-wheels/abc123" in cmd
+        assert "/configs/dynamo-wheels/abc123/.complete" in cmd
+        assert "flock -x 200" in cmd
+        assert "/configs/dynamo-wheels/.abc123.lock" in cmd
+
+        # Cold-cache build still does git clone + checkout + maturin build
         assert "git clone" in cmd
         assert "git checkout abc123" in cmd
         assert "maturin build" in cmd
-        assert "if [ -d /sgl-workspace ]" in cmd
-        assert "/tmp/dynamo_build" in cmd
         assert "protobuf-compiler" in cmd
-        assert "if ! command -v cargo" in cmd
-        assert "if ! command -v maturin" in cmd
+
+        # Cache populate: wheel + tarball + sentinel
+        assert "ai_dynamo_runtime*.whl" in cmd
+        assert "dynamo-src.tar.gz" in cmd
+        assert "touch /configs/dynamo-wheels/abc123/.complete" in cmd
+
+        # Final install from cache
+        assert "pip install --break-system-packages --force-reinstall /configs/dynamo-wheels/abc123/ai_dynamo_runtime-*.whl" in cmd
+        assert "tar -xzf /configs/dynamo-wheels/abc123/dynamo-src.tar.gz" in cmd
+        assert "pip install --break-system-packages -e /tmp/dynamo-src/dynamo" in cmd
 
     def test_top_of_tree_install_command(self):
         """Top-of-tree config generates source install without checkout."""
