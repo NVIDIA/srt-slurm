@@ -40,9 +40,7 @@ class NodeAnalyzer:
             if not os.path.isdir(dir_path):
                 return
             for name in os.listdir(dir_path):
-                if (name.endswith(".err") or name.endswith(".out")) and (
-                    "prefill" in name or "decode" in name
-                ):
+                if (name.endswith(".err") or name.endswith(".out")) and ("prefill" in name or "decode" in name):
                     full = os.path.join(dir_path, name)
                     if full not in seen:
                         seen.add(full)

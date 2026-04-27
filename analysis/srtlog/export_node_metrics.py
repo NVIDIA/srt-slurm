@@ -59,7 +59,7 @@ BATCH_CSV_COLUMNS: list[str] = [
 
 def _node_batch_csv_filename(node: NodeMetrics) -> str:
     ni = node.node_info
-    stem = f'{ni.get("node", "unknown")}_{ni.get("worker_type", "")}_{ni.get("worker_id", "")}'
+    stem = f"{ni.get('node', 'unknown')}_{ni.get('worker_type', '')}_{ni.get('worker_id', '')}"
     return f"{stem}.csv"
 
 
@@ -105,9 +105,7 @@ def _gen_throughput_summary_dataframe(nodes: list[NodeMetrics]) -> pd.DataFrame:
             pairs.append((int(batch.running_req), float(batch.gen_throughput)))
 
     if not pairs:
-        return pd.DataFrame(
-            columns=["running_req", "sample_count", "gen_throughput_mean", "gen_throughput_median"]
-        )
+        return pd.DataFrame(columns=["running_req", "sample_count", "gen_throughput_mean", "gen_throughput_median"])
 
     df = pd.DataFrame(pairs, columns=["running_req", "gen_throughput"])
     summary = (
