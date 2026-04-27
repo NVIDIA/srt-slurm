@@ -148,6 +148,19 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
         config["frontend"] = frontend
         logger.debug(f"Resolved nginx_container alias '{nginx_container}' -> '{resolved_nginx}'")
 
+    # Resolve benchmark.container_image alias for benches that ship their own
+    # eval container (e.g. NeMo Skills for accuracy benchmarks). Mirrors how
+    # model.container and frontend.nginx_container resolve against the same
+    # `containers:` map.
+    benchmark = config.get("benchmark", {})
+    benchmark_container = benchmark.get("container_image", "")
+
+    if containers and benchmark_container in containers:
+        resolved_bench = containers[benchmark_container]
+        benchmark["container_image"] = resolved_bench
+        config["benchmark"] = benchmark
+        logger.debug(f"Resolved benchmark.container_image alias '{benchmark_container}' -> '{resolved_bench}'")
+
     return config
 
 
