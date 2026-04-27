@@ -967,8 +967,8 @@ class TestVLLMDataParallelMode:
         assert backend_dp._is_dp_mode("decode") is True
         assert backend_dp._get_dp_size("prefill") == 16
 
-    def test_dp_mode_creates_per_gpu_processes(self):
-        """Test that DP mode creates one process per GPU instead of per node."""
+    def test_dp_mode_creates_per_node_processes(self):
+        """Test that DP mode creates one process per node (hybrid_lb)."""
         from srtctl.backends import VLLMProtocol, VLLMServerConfig
         from srtctl.core.topology import Endpoint
 
@@ -989,31 +989,21 @@ class TestVLLMDataParallelMode:
 
         processes = backend.endpoints_to_processes([endpoint])
 
-        # Should create 16 processes (1 per GPU), not 2 (1 per node)
-        assert len(processes) == 16
+        # One process per node. vLLM spawns local DP engines inside each.
+        assert len(processes) == 2
+        assert [p.node for p in processes] == ["node0", "node1"]
 
-        # Each process should have exactly 1 GPU
+        # Each process owns the full local GPU set so the inner engines share
+        # a CUDA namespace (no per-process CUDA_VISIBLE_DEVICES restriction).
         for proc in processes:
-            assert len(proc.gpu_indices) == 1
+            assert proc.gpu_indices == frozenset(range(8))
 
-        # First 8 processes on node0, next 8 on node1
-        node0_processes = [p for p in processes if p.node == "node0"]
-        node1_processes = [p for p in processes if p.node == "node1"]
-        assert len(node0_processes) == 8
-        assert len(node1_processes) == 8
-
-        # GPU indices should be 0-7 on each node
-        node0_gpus = {list(p.gpu_indices)[0] for p in node0_processes}
-        node1_gpus = {list(p.gpu_indices)[0] for p in node1_processes}
-        assert node0_gpus == {0, 1, 2, 3, 4, 5, 6, 7}
-        assert node1_gpus == {0, 1, 2, 3, 4, 5, 6, 7}
-
-        # dp_rank (stored in node_rank) should go from 0 to 15
-        dp_ranks = [p.node_rank for p in processes]
-        assert dp_ranks == list(range(16))
+        # node_rank is the node index within the endpoint (used to compute
+        # --data-parallel-start-rank in build_worker_command).
+        assert [p.node_rank for p in processes] == [0, 1]
 
     def test_dp_mode_command_includes_dp_flags(self):
-        """Test that DP mode command includes correct DP flags instead of TP flags."""
+        """Test that DP mode command uses hybrid_lb flags (size-local + start-rank)."""
         from pathlib import Path
         from unittest.mock import MagicMock, patch
 
@@ -1030,43 +1020,31 @@ class TestVLLMDataParallelMode:
             )
         )
 
-        # Create a process representing GPU 5 with dp_rank=5
+        # Worker node (node_rank=1) of a 2-node endpoint with 8 GPUs each.
+        # Hybrid_lb: one process per node owns the full local GPU set.
         process = Process(
-            node="node0",
-            gpu_indices=frozenset([5]),
-            sys_port=8081,
+            node="node1",
+            gpu_indices=frozenset(range(8)),
+            sys_port=8082,
             http_port=0,
             endpoint_mode="prefill",
             endpoint_index=0,
-            node_rank=5,  # dp_rank
+            node_rank=1,
         )
 
-        # Create endpoint_processes spanning 2 nodes
         endpoint_processes = [
             Process(
                 node="node0",
-                gpu_indices=frozenset([i]),
-                sys_port=8081 + i,
-                http_port=0,
+                gpu_indices=frozenset(range(8)),
+                sys_port=8081,
+                http_port=30000,
                 endpoint_mode="prefill",
                 endpoint_index=0,
-                node_rank=i,
-            )
-            for i in range(8)
-        ] + [
-            Process(
-                node="node1",
-                gpu_indices=frozenset([i]),
-                sys_port=8089 + i,
-                http_port=0,
-                endpoint_mode="prefill",
-                endpoint_index=0,
-                node_rank=8 + i,
-            )
-            for i in range(8)
+                node_rank=0,
+            ),
+            process,
         ]
 
-        # Mock runtime context
         mock_runtime = MagicMock()
         mock_runtime.model_path = Path("/model")
         mock_runtime.is_hf_model = False
@@ -1078,9 +1056,16 @@ class TestVLLMDataParallelMode:
                 runtime=mock_runtime,
             )
 
-        # Should include DP flags
-        assert "--data-parallel-rank" in cmd
-        assert "5" in cmd  # dp_rank = 5
+        # hybrid_lb flags. We pass --data-parallel-hybrid-lb explicitly because
+        # vLLM's auto-detect uses truthy on start_rank, so leader (start_rank=0)
+        # would silently fall out of hybrid_lb otherwise.
+        assert "--data-parallel-hybrid-lb" in cmd
+        assert "--data-parallel-size-local" in cmd
+        i = cmd.index("--data-parallel-size-local")
+        assert cmd[i + 1] == "8"  # 8 local DP ranks per node
+        assert "--data-parallel-start-rank" in cmd
+        i = cmd.index("--data-parallel-start-rank")
+        assert cmd[i + 1] == "8"  # node_rank=1 → start_rank = 1 * 8
         assert "--data-parallel-address" in cmd
         assert "10.0.0.1" in cmd
         assert "--data-parallel-rpc-port" in cmd
@@ -1088,7 +1073,8 @@ class TestVLLMDataParallelMode:
         assert "--data-parallel-size" in cmd
         assert "16" in cmd
 
-        # Should NOT include TP multi-node flags
+        # external_lb / TP multi-node flags must not leak in
+        assert "--data-parallel-rank" not in cmd
         assert "--master-addr" not in cmd
         assert "--nnodes" not in cmd
         assert "--node-rank" not in cmd
@@ -1246,6 +1232,9 @@ class TestVLLMDataParallelMode:
 
         # Should NOT include DP flags
         assert "--data-parallel-rank" not in cmd
+        assert "--data-parallel-hybrid-lb" not in cmd
+        assert "--data-parallel-size-local" not in cmd
+        assert "--data-parallel-start-rank" not in cmd
         assert "--data-parallel-address" not in cmd
 
     def test_tp_mode_leader_not_headless(self):

@@ -179,7 +179,9 @@ class VLLMProtocol:
         """Check if this mode uses Data Parallel + Expert Parallel pattern.
 
         DP+EP mode is detected when data-parallel-size is set in the mode's config.
-        In this mode, each GPU runs its own process (rather than TP across GPUs).
+        We launch one dynamo.vllm process per node and let vLLM spawn the local
+        DP engines (hybrid_lb), so all GPUs on a node share a CUDA namespace and
+        symm-mem / NVLink P2P fast paths work.
         """
         config = self.get_config_for_mode(mode)
         return config.get("data-parallel-size") is not None or config.get("data_parallel_size") is not None
@@ -196,8 +198,9 @@ class VLLMProtocol:
     ) -> list[Process]:
         """Convert endpoints to processes.
 
-        For DP+EP mode (data-parallel-size set), creates one process per GPU.
-        For standard TP mode, creates one process per node.
+        For DP+EP mode (data-parallel-size set), creates one process per NODE
+        with all local GPUs visible — vLLM internally spawns the local DP engines
+        (hybrid_lb). For standard TP mode, also one process per node.
         """
         from srtctl.core.topology import NodePortAllocator, Process, endpoints_to_processes
 
@@ -208,71 +211,47 @@ class VLLMProtocol:
             # Standard TP mode: one process per node
             return endpoints_to_processes(endpoints, base_sys_port=base_sys_port)
 
-        # DP+EP mode: one process per GPU
+        # DP+EP mode: one process per node
         processes: list[Process] = []
         current_sys_port = base_sys_port
         port_allocator = NodePortAllocator()
 
         for endpoint in endpoints:
-            if not self._is_dp_mode(endpoint.mode):
-                # Non-DP endpoints get standard processing
-                # (This shouldn't happen in practice since all modes should be consistent)
-                for node_rank, node in enumerate(endpoint.nodes):
-                    is_leader = node_rank == 0
-                    http_port = port_allocator.next_http_port(node) if is_leader else 0
-                    bootstrap_port = (
-                        port_allocator.next_bootstrap_port(node) if endpoint.mode == "prefill" and is_leader else None
-                    )
-                    kv_events_port = port_allocator.next_kv_events_port()
-                    nixl_port = port_allocator.next_nixl_port()
+            # local_dp_size = local DP ranks per node (= number of GPUs the
+            # endpoint claims on each node). Reserve that many KV-events ports
+            # because dynamo opens one ZMQ publisher per local rank inside the
+            # same dynamo.vllm process (port = base ± dp_rank).
+            local_dp_size = len(endpoint.gpu_indices)
 
-                    processes.append(
-                        Process(
-                            node=node,
-                            gpu_indices=endpoint.gpu_indices,
-                            sys_port=current_sys_port,
-                            http_port=http_port,
-                            endpoint_mode=endpoint.mode,
-                            endpoint_index=endpoint.index,
-                            node_rank=node_rank,
-                            bootstrap_port=bootstrap_port,
-                            kv_events_port=kv_events_port,
-                            nixl_port=nixl_port,
-                        )
-                    )
-                    current_sys_port += 1
-            else:
-                # DP+EP mode: one process per GPU
-                # Each process gets a single GPU and a unique dp_rank
-                dp_rank = 0
-                for _node_rank, node in enumerate(endpoint.nodes):
-                    for gpu_idx in sorted(endpoint.gpu_indices):
-                        is_leader = dp_rank == 0
-                        http_port = port_allocator.next_http_port(node) if is_leader else 0
-                        bootstrap_port = (
-                            port_allocator.next_bootstrap_port(node)
-                            if endpoint.mode == "prefill" and is_leader
-                            else None
-                        )
-                        kv_events_port = port_allocator.next_kv_events_port()
-                        nixl_port = port_allocator.next_nixl_port()
+            for node_rank, node in enumerate(endpoint.nodes):
+                is_leader = node_rank == 0
+                http_port = port_allocator.next_http_port(node) if is_leader else 0
+                bootstrap_port = (
+                    port_allocator.next_bootstrap_port(node) if endpoint.mode == "prefill" and is_leader else None
+                )
+                kv_events_port = port_allocator.next_kv_events_port()
+                if self._is_dp_mode(endpoint.mode):
+                    # Reserve trailing slots so the next allocation can't collide
+                    # with this process's per-rank publishers on the same host.
+                    for _ in range(local_dp_size - 1):
+                        port_allocator.next_kv_events_port()
+                nixl_port = port_allocator.next_nixl_port()
 
-                        processes.append(
-                            Process(
-                                node=node,
-                                gpu_indices=frozenset([gpu_idx]),  # Single GPU per process
-                                sys_port=current_sys_port,
-                                http_port=http_port,
-                                endpoint_mode=endpoint.mode,
-                                endpoint_index=endpoint.index,
-                                node_rank=dp_rank,  # dp_rank stored in node_rank for now
-                                bootstrap_port=bootstrap_port,
-                                kv_events_port=kv_events_port,
-                                nixl_port=nixl_port,
-                            )
-                        )
-                        current_sys_port += 1
-                        dp_rank += 1
+                processes.append(
+                    Process(
+                        node=node,
+                        gpu_indices=endpoint.gpu_indices,
+                        sys_port=current_sys_port,
+                        http_port=http_port,
+                        endpoint_mode=endpoint.mode,
+                        endpoint_index=endpoint.index,
+                        node_rank=node_rank,
+                        bootstrap_port=bootstrap_port,
+                        kv_events_port=kv_events_port,
+                        nixl_port=nixl_port,
+                    )
+                )
+                current_sys_port += 1
 
         return processes
 
@@ -349,21 +328,37 @@ class VLLMProtocol:
         is_dp_mode = self._is_dp_mode(mode)
 
         if is_dp_mode:
-            # DP+EP mode: each GPU runs its own process
-            # process.node_rank is the dp_rank (set in endpoints_to_processes)
-            dp_rank = process.node_rank
+            # Hybrid DP+EP: one dynamo.vllm process per node, vLLM spawns the
+            # local DP engines internally. process.node_rank is the node index
+            # within the endpoint (0 for leader, 1+ for workers).
+            #
+            # We deliberately do NOT pass --data-parallel-rank: vLLM auto-flips
+            # to external_lb the moment that flag is set and forces
+            # data_parallel_size_local=1, which puts each rank in its own CUDA
+            # namespace and breaks symm-mem rendezvous (overlapping cuda:0).
+            # See vllm/engine/arg_utils.py:1702-1717.
+            local_dp_size = len(process.gpu_indices)
+            start_rank = process.node_rank * local_dp_size
             dp_rpc_port = config.pop("data-parallel-rpc-port", None) or config.pop("data_parallel_rpc_port", 13345)
 
             cmd.extend(
                 [
-                    "--data-parallel-rank",
-                    str(dp_rank),
+                    "--data-parallel-hybrid-lb",
+                    "--data-parallel-size-local",
+                    str(local_dp_size),
+                    "--data-parallel-start-rank",
+                    str(start_rank),
                     "--data-parallel-address",
                     leader_ip,
                     "--data-parallel-rpc-port",
                     str(dp_rpc_port),
                 ]
             )
+            # We pass --data-parallel-hybrid-lb explicitly because vLLM's auto-detect
+            # (arg_utils.py:1721 `if self.data_parallel_start_rank and not headless`)
+            # uses Python truthiness, so a leader node with start_rank=0 silently
+            # falls out of hybrid_lb and rejects worker engines as "Remote engine N
+            # must use --headless unless in external or hybrid dp lb mode".
             # Note: --data-parallel-size is added via _config_to_cli_args from vllm_config
         elif is_multi_node:
             # Standard TP+PP multi-node coordination flags
