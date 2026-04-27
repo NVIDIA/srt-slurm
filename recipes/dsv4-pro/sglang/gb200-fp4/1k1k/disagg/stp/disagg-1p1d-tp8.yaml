@@ -11,7 +11,7 @@ frontend:
 
 model:
   path: "dspro"
-  container: "dspro-0426"
+  container: "dspro-0426-nixl"
   precision: "mxfp4"
 
 resources:
