@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """
 Patch vLLM's ParallelConfig.compute_hash to exclude NUMA-bind fields
 (numa_bind / numa_bind_nodes / numa_bind_cpus) from the DP consistency hash.
