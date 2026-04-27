@@ -24,6 +24,11 @@ base:
     decode_nodes: 2
     decode_workers: 1
 
+  # extra_mount:
+  # - /mnt/home/weiliang/project/sglang:/sgl-workspace/sglang
+
+  # setup_script: "install_sglang.sh"
+
   backend:
     type: sglang
 
@@ -33,6 +38,7 @@ base:
       SGLANG_ENABLE_THINKING: "1"
       SGLANG_REASONING_EFFORT: "max"
       SGLANG_OPT_SWA_SPLIT_LEAF_ON_INSERT: "1"
+      SGLANG_OPT_SWA_EVICT_DROP_PAGE_MARGIN: "1"
       SGLANG_OPT_USE_JIT_NORM: "1"
       SGLANG_OPT_USE_JIT_INDEXER_METADATA: "1"
       SGLANG_OPT_USE_TOPK_V2: "1"
@@ -41,14 +47,16 @@ base:
       SGLANG_OPT_FIX_HASH_MEGA_MOE: "1"
       SGLANG_OPT_USE_FAST_MASK_EP: "1"
       SGLANG_OPT_FIX_MEGA_MOE_MEMORY: "1"
-      SGLANG_OPT_DEEPGEMM_MEGA_MOE_NUM_MAX_TOKENS_PER_RANK: "4096"
+      SGLANG_OPT_DEEPGEMM_MEGA_MOE_NUM_MAX_TOKENS_PER_RANK: "9216"
       SGLANG_OPT_FIX_NEXTN_MEGA_MOE: "1"
       SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK: "0"
       NCCL_MNNVL_ENABLE: "1"
       NCCL_CUMEM_ENABLE: "1"
       SGLANG_MOONCAKE_CUSTOM_MEM_POOL: "True"
       MC_FORCE_MNNVL: "1"
-
+      SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT: "100000"
+      SGLANG_DISAGGREGATION_WAITING_TIMEOUT: "100000"
+      SGLANG_OPT_SWA_RELEASE_LEAF_LOCK_AFTER_WINDOW: "1"
 
     decode_environment:
       PYTHONUNBUFFERED: "1"
@@ -56,6 +64,7 @@ base:
       SGLANG_ENABLE_THINKING: "1"
       SGLANG_REASONING_EFFORT: "max"
       SGLANG_OPT_SWA_SPLIT_LEAF_ON_INSERT: "1"
+      SGLANG_OPT_SWA_EVICT_DROP_PAGE_MARGIN: "1"
       SGLANG_OPT_USE_JIT_NORM: "1"
       SGLANG_OPT_USE_JIT_INDEXER_METADATA: "1"
       SGLANG_OPT_USE_TOPK_V2: "1"
@@ -63,13 +72,16 @@ base:
       SGLANG_OPT_FIX_HASH_MEGA_MOE: "1"
       SGLANG_OPT_USE_FAST_MASK_EP: "1"
       SGLANG_OPT_FIX_MEGA_MOE_MEMORY: "1"
-      SGLANG_OPT_DEEPGEMM_MEGA_MOE_NUM_MAX_TOKENS_PER_RANK: "4096"
+      SGLANG_OPT_DEEPGEMM_MEGA_MOE_NUM_MAX_TOKENS_PER_RANK: "576"
       SGLANG_OPT_FIX_NEXTN_MEGA_MOE: "1"
       SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK: "0"
       NCCL_MNNVL_ENABLE: "1"
       NCCL_CUMEM_ENABLE: "1"
       SGLANG_MOONCAKE_CUSTOM_MEM_POOL: "True"
       MC_FORCE_MNNVL: "1"
+      SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT: "100000"
+      SGLANG_DISAGGREGATION_WAITING_TIMEOUT: "100000" 
+      SGLANG_OPT_SWA_RELEASE_LEAF_LOCK_AFTER_WINDOW: "1"
       # SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2 intentionally NOT set: CAR_V2
       # is single-node only and corrupts results in 2-node decode setups.
 
@@ -94,7 +106,7 @@ base:
         mem-fraction-static: 0.90
         max-running-requests: 512
         cuda-graph-max-bs: 512
-        chunked-prefill-size: 65536
+        chunked-prefill-size: 32768
         disable-radix-cache: true
 
       decode:
@@ -114,9 +126,9 @@ base:
         # Lower mfs on decode: DEP8 weight memory + KV pool both grow ~2x
         # vs DEP4, so 0.83 leaves enough headroom for cuda-graph capture
         # at cgmb=2048.
-        mem-fraction-static: 0.75
-        max-running-requests: 4096
-        cuda-graph-max-bs:    4096
+        mem-fraction-static: 0.9
+        max-running-requests: 8192
+        cuda-graph-max-bs:    8192
         swa-full-tokens-ratio: 0.1
         context-length: 16384
 
@@ -129,30 +141,31 @@ base:
 # [0]is wideep, [1] is narrow ep
 zip_override_8k1k_hightpt:
   resources:
-    prefill_nodes:   [5, 1]
-    prefill_workers: [5, 1]
-    decode_nodes:    [8, 2]
+    prefill_nodes:   [14, 1]
+    prefill_workers: [14, 1]
+    decode_nodes:    [4, 2]
     decode_workers:  [1, 1]
   backend:
     sglang_config:
       decode:
-        tensor-parallel-size:     [32, 8]
-        data-parallel-size:       [32, 8]
-        expert-parallel-size:     [32, 8]
+        tensor-parallel-size:     [16, 8]
+        data-parallel-size:       [16, 8]
+        expert-parallel-size:     [16, 8]
 
         enable-dp-attention: true
         enable-dp-lm-head: true
-        ep-num-redundant-experts: [32, null]
+
+        ep-num-redundant-experts: [16, null]
         ep-dispatch-algorithm: ["static", null]
         moe-a2a-backend: "deepep"
         deepep-config: '{"normal_dispatch":{"num_sms":96},"normal_combine":{"num_sms":96}}'
 
-        max-running-requests: [2048, 256]
-        cuda-graph-max-bs:    [2048, 256]
+        max-running-requests: [9216, 256]
+        cuda-graph-max-bs:    [576, 32]
 
   benchmark:
     isl: 8192
     osl: 1024
-    concurrencies: "4096"
+    concurrencies: "8192"
 
 ############ 1k1k ###############
