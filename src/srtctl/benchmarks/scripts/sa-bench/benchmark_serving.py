@@ -341,44 +341,52 @@ def sample_random_requests(
     tokenizer: PreTrainedTokenizerBase,
     use_chat_template: bool = False,
 ) -> list[tuple[str, int, int]]:
-    prefix_token_ids = np.random.randint(0, tokenizer.vocab_size, size=prefix_len).tolist()
     if use_chat_template:
-        chat_template_dummy = tokenizer.apply_chat_template(
-            [{"role": "user", "content": "a"}],
-            add_generation_prompt=True,
-            tokenize=False,
-        )
-        tokenized_chat_template_dummy = tokenizer.encode(chat_template_dummy, add_special_tokens=False)
-        chat_template_len = len(tokenized_chat_template_dummy) - 1
+        chat_template_len = len(tokenizer.encode(
+            tokenizer.apply_chat_template(
+                [{"role": "user", "content": "a"}],
+                add_generation_prompt=True,
+                tokenize=False,
+            ), add_special_tokens=False,
+        )) - 1
         input_len = input_len - chat_template_len
 
     input_lens = np.random.randint(
-        int(input_len * range_ratio),
+        int(input_len * range_ratio) if input_len > 1 else 1,
         input_len + 1,
         size=num_prompts,
     )
     output_lens = np.random.randint(
-        int(output_len * range_ratio),
+        int(output_len * range_ratio) if output_len > 1 else 1,
         output_len + 1,
         size=num_prompts,
     )
     offsets = np.random.randint(0, tokenizer.vocab_size, size=num_prompts)
     input_requests = []
-    for i in range(num_prompts):
-        prompt = tokenizer.decode(
-            prefix_token_ids + [(offsets[i] + i + j) % tokenizer.vocab_size for j in range(input_lens[i])]
-        )
-        re_encoded_sequence = tokenizer.encode(prompt, add_special_tokens=False)[: (prefix_len + input_lens[i])]
-        prompt = tokenizer.decode(re_encoded_sequence)
-        if use_chat_template:
+
+    if use_chat_template:
+        for i in range(num_prompts):
+            origin_text = tokenizer.decode(
+                [(offsets[i] + i + j) % tokenizer.vocab_size for j in range(int(input_lens[i] * 1.5))]
+            )
+            re_encoded_sequence = tokenizer.encode(origin_text, add_special_tokens=False)[: input_lens[i]]
+            prompt_text = tokenizer.decode(re_encoded_sequence)
             prompt = tokenizer.apply_chat_template(
-                [{"role": "user", "content": prompt}],
+                [{"role": "user", "content": prompt_text}],
                 add_generation_prompt=True,
                 tokenize=False,
             )
             input_lens[i] += chat_template_len
-
-        input_requests.append((prompt, int(prefix_len + input_lens[i]), int(output_lens[i]), None))
+            input_requests.append((prompt, int(input_lens[i]), int(output_lens[i]), None))
+    else:
+        prefix_token_ids = np.random.randint(0, tokenizer.vocab_size, size=prefix_len).tolist()
+        for i in range(num_prompts):
+            prompt = tokenizer.decode(
+                prefix_token_ids + [(offsets[i] + i + j) % tokenizer.vocab_size for j in range(input_lens[i])]
+            )
+            re_encoded_sequence = tokenizer.encode(prompt, add_special_tokens=False)[: (prefix_len + input_lens[i])]
+            prompt = tokenizer.decode(re_encoded_sequence)
+            input_requests.append((prompt, int(prefix_len + input_lens[i]), int(output_lens[i]), None))
 
     return input_requests
 

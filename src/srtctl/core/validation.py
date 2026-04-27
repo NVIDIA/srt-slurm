@@ -232,6 +232,54 @@ def _preflight_container(
     )
 
 
+_TELEMETRY_IMAGE_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("telemetry.container_image", ("container_image",)),
+    ("telemetry.dcgm_exporter.container_image", ("dcgm_exporter", "container_image")),
+    ("telemetry.node_exporter.container_image", ("node_exporter", "container_image")),
+)
+
+
+def _preflight_telemetry(
+    raw_config: dict[str, Any],
+    resolved_config: dict[str, Any],
+    cluster_config: dict[str, Any] | None,
+) -> list[PreflightIssue]:
+    telemetry = resolved_config.get("telemetry") or {}
+    if not telemetry.get("enabled"):
+        return []
+
+    aliases = (cluster_config or {}).get("containers") or {}
+    raw_telemetry = raw_config.get("telemetry") or {}
+    issues: list[PreflightIssue] = []
+
+    for field, path in _TELEMETRY_IMAGE_FIELDS:
+        resolved_value: Any = telemetry
+        raw_value: Any = raw_telemetry
+        for key in path:
+            resolved_value = (resolved_value or {}).get(key) if isinstance(resolved_value, dict) else None
+            raw_value = (raw_value or {}).get(key) if isinstance(raw_value, dict) else None
+        if not resolved_value:
+            continue  # schema-level validator handles required-when-enabled
+
+        ok, _ = _check_path(_expand_path(resolved_value), expect="file")
+        if ok:
+            continue
+
+        if raw_value in aliases:
+            message = (
+                f"Telemetry alias '{raw_value}' resolved to '{resolved_value}', but that file is unavailable. "
+                "Provide or register the container yourself before submitting."
+            )
+        else:
+            message = (
+                f"Telemetry container '{resolved_value}' is not a local container path and is not defined "
+                "in srtslurm.yaml containers. Provide or register the container yourself before submitting."
+            )
+        issues.append(PreflightIssue(code="telemetry-container-not-available", field=field, message=message))
+
+    return issues
+
+
 def validate_topology(resources: dict[str, Any] | None) -> list[PreflightIssue]:
     """Catch semantically wrong resources blocks that pass the marshmallow schema.
 
@@ -384,7 +432,8 @@ def preflight_config_variants(
         model, model_issues = _preflight_model(variant, resolved, active_cluster_config)
         container, container_issues = _preflight_container(variant, resolved, active_cluster_config)
         topology_issues = validate_topology(variant.get("resources"))
-        issues = [*model_issues, *container_issues, *topology_issues]
+        telemetry_issues = _preflight_telemetry(variant, resolved, active_cluster_config)
+        issues = [*model_issues, *container_issues, *topology_issues, *telemetry_issues]
         results.append(
             PreflightResult(
                 variant=suffix,
