@@ -176,10 +176,10 @@ class VLLMProtocol:
         )
 
     def _is_dp_mode(self, mode: WorkerMode) -> bool:
-        """Check if this mode uses Data Parallel + Expert Parallel pattern.
+        """Check if this mode uses vLLM data parallelism.
 
-        DP+EP mode is detected when data-parallel-size is set in the mode's config.
-        In this mode, each GPU runs its own process (rather than TP across GPUs).
+        DP mode is detected when data-parallel-size is set in the mode's config.
+        TP1 runs one process per GPU; TP>1 runs one process per DP rank.
         """
         config = self.get_config_for_mode(mode)
         return config.get("data-parallel-size") is not None or config.get("data_parallel_size") is not None
@@ -187,7 +187,14 @@ class VLLMProtocol:
     def _get_dp_size(self, mode: WorkerMode) -> int | None:
         """Get the data-parallel-size for a mode, or None if not in DP mode."""
         config = self.get_config_for_mode(mode)
-        return config.get("data-parallel-size") or config.get("data_parallel_size")
+        value = config.get("data-parallel-size") or config.get("data_parallel_size")
+        return int(value) if value is not None else None
+
+    def _get_tp_size(self, mode: WorkerMode) -> int:
+        """Get tensor-parallel-size for a mode, defaulting to 1."""
+        config = self.get_config_for_mode(mode)
+        value = config.get("tensor-parallel-size") or config.get("tensor_parallel_size")
+        return int(value) if value is not None else 1
 
     def endpoints_to_processes(
         self,
@@ -196,7 +203,8 @@ class VLLMProtocol:
     ) -> list[Process]:
         """Convert endpoints to processes.
 
-        For DP+EP mode (data-parallel-size set), creates one process per GPU.
+        For DP mode (data-parallel-size set), creates one process per DP rank.
+        Each rank sees tensor-parallel-size GPUs.
         For standard TP mode, creates one process per node.
         """
         from srtctl.core.topology import NodePortAllocator, Process, endpoints_to_processes
@@ -242,37 +250,56 @@ class VLLMProtocol:
                     )
                     current_sys_port += 1
             else:
-                # DP+EP mode: one process per GPU
-                # Each process gets a single GPU and a unique dp_rank
-                dp_rank = 0
-                for _node_rank, node in enumerate(endpoint.nodes):
-                    for gpu_idx in sorted(endpoint.gpu_indices):
-                        is_leader = dp_rank == 0
-                        http_port = port_allocator.next_http_port(node) if is_leader else 0
-                        bootstrap_port = (
-                            port_allocator.next_bootstrap_port(node)
-                            if endpoint.mode == "prefill" and is_leader
-                            else None
-                        )
-                        kv_events_port = port_allocator.next_kv_events_port()
-                        nixl_port = port_allocator.next_nixl_port()
+                # DP mode: one process per DP rank, with TP GPUs visible to that process.
+                # TP1 preserves the existing DP+EP behavior of one process per GPU.
+                dp_size = self._get_dp_size(endpoint.mode)
+                tp_size = self._get_tp_size(endpoint.mode)
+                if dp_size is None:
+                    raise ValueError(f"Missing data-parallel-size for {endpoint.mode} endpoint {endpoint.index}")
 
-                        processes.append(
-                            Process(
-                                node=node,
-                                gpu_indices=frozenset([gpu_idx]),  # Single GPU per process
-                                sys_port=current_sys_port,
-                                http_port=http_port,
-                                endpoint_mode=endpoint.mode,
-                                endpoint_index=endpoint.index,
-                                node_rank=dp_rank,  # dp_rank stored in node_rank for now
-                                bootstrap_port=bootstrap_port,
-                                kv_events_port=kv_events_port,
-                                nixl_port=nixl_port,
-                            )
+                expected_gpus = dp_size * tp_size
+                if endpoint.total_gpus != expected_gpus:
+                    raise ValueError(
+                        f"{endpoint.mode} endpoint {endpoint.index} has {endpoint.total_gpus} GPUs, "
+                        f"but data-parallel-size ({dp_size}) * tensor-parallel-size ({tp_size}) "
+                        f"requires {expected_gpus}"
+                    )
+
+                gpu_slots = [(node, gpu_idx) for node in endpoint.nodes for gpu_idx in sorted(endpoint.gpu_indices)]
+                for dp_rank in range(dp_size):
+                    rank_slots = gpu_slots[dp_rank * tp_size : (dp_rank + 1) * tp_size]
+                    rank_nodes = {node for node, _gpu_idx in rank_slots}
+                    if len(rank_nodes) != 1:
+                        raise ValueError(
+                            f"{endpoint.mode} endpoint {endpoint.index} DP rank {dp_rank} spans nodes "
+                            f"{sorted(rank_nodes)}; vLLM DP+TP launch currently requires each TP group to fit on one node"
                         )
-                        current_sys_port += 1
-                        dp_rank += 1
+
+                    node = rank_slots[0][0]
+                    gpu_indices = frozenset(gpu_idx for _node, gpu_idx in rank_slots)
+                    is_leader = dp_rank == 0
+                    http_port = port_allocator.next_http_port(node) if is_leader else 0
+                    bootstrap_port = (
+                        port_allocator.next_bootstrap_port(node) if endpoint.mode == "prefill" and is_leader else None
+                    )
+                    kv_events_port = port_allocator.next_kv_events_port()
+                    nixl_port = port_allocator.next_nixl_port()
+
+                    processes.append(
+                        Process(
+                            node=node,
+                            gpu_indices=gpu_indices,
+                            sys_port=current_sys_port,
+                            http_port=http_port,
+                            endpoint_mode=endpoint.mode,
+                            endpoint_index=endpoint.index,
+                            node_rank=dp_rank,  # dp_rank stored in node_rank for now
+                            bootstrap_port=bootstrap_port,
+                            kv_events_port=kv_events_port,
+                            nixl_port=nixl_port,
+                        )
+                    )
+                    current_sys_port += 1
 
         return processes
 
