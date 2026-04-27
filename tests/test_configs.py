@@ -1012,6 +1012,63 @@ class TestVLLMDataParallelMode:
         dp_ranks = [p.node_rank for p in processes]
         assert dp_ranks == list(range(16))
 
+    def test_dp_tp_mode_creates_one_process_per_dp_rank(self):
+        """Test that DP2TP4 creates two processes with four GPUs each."""
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Endpoint
+
+        backend = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                decode={
+                    "data-parallel-size": 2,
+                    "tensor-parallel-size": 4,
+                },
+            )
+        )
+
+        endpoint = Endpoint(
+            mode="decode",
+            index=0,
+            nodes=("node0",),
+            gpu_indices=frozenset(range(8)),
+            gpus_per_node=8,
+        )
+
+        processes = backend.endpoints_to_processes([endpoint])
+
+        assert len(processes) == 2
+        assert processes[0].node_rank == 0
+        assert processes[0].gpu_indices == frozenset({0, 1, 2, 3})
+        assert processes[1].node_rank == 1
+        assert processes[1].gpu_indices == frozenset({4, 5, 6, 7})
+
+    def test_dp_tp_mode_rejects_mismatched_gpu_count(self):
+        """Test that DP*TP must match the allocated endpoint GPU count."""
+        import pytest
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Endpoint
+
+        backend = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                decode={
+                    "data-parallel-size": 2,
+                    "tensor-parallel-size": 4,
+                },
+            )
+        )
+
+        endpoint = Endpoint(
+            mode="decode",
+            index=0,
+            nodes=("node0", "node1"),
+            gpu_indices=frozenset(range(8)),
+            gpus_per_node=8,
+        )
+
+        with pytest.raises(ValueError, match=r"data-parallel-size .* tensor-parallel-size"):
+            backend.endpoints_to_processes([endpoint])
+
     def test_dp_mode_command_includes_dp_flags(self):
         """Test that DP mode command includes correct DP flags instead of TP flags."""
         from pathlib import Path
