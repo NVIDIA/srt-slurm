@@ -263,7 +263,7 @@ def show_config_details(config: SrtConfig) -> None:
         opts = " ".join(f"--{k} {v}" if v else f"--{k}" for k, v in config.srun_options.items())
         console.print(f"[dim]srun options:[/] {opts}")
 
-    if config.benchmark.type == "custom" or config.telemetry.enabled:
+    if config.benchmark.type == "custom" or config.benchmark.container_image or config.telemetry.enabled:
         details = Table(title="Execution Extensions", show_lines=False, pad_edge=False)
         details.add_column("Area", style="dim", width=14)
         details.add_column("Setting", style="yellow")
@@ -273,8 +273,13 @@ def show_config_details(config: SrtConfig) -> None:
             details.add_row("benchmark", "type", config.benchmark.type)
             if config.benchmark.command:
                 details.add_row("benchmark", "command", config.benchmark.command)
-            if config.benchmark.container_image:
-                details.add_row("benchmark", "container_image", config.benchmark.container_image)
+
+        # Surface a non-default benchmark container regardless of type — accuracy
+        # benchmarks like AIME (run via type: custom + the NeMo Skills container)
+        # need this visible at submit time so operators can verify the alias
+        # resolved to the expected sqsh / URI.
+        if config.benchmark.container_image:
+            details.add_row("benchmark", "container_image", config.benchmark.container_image)
 
         if config.telemetry.enabled:
             details.add_row("telemetry", "provider", config.telemetry.provider.value)
