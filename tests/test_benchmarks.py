@@ -139,6 +139,7 @@ class TestSABenchRunner:
         cmd = runner.build_command(config, runtime)
         assert "custom" in cmd
         assert "/glm5_datasets/bench.jsonl" in cmd
+        assert cmd[-1] == "auto"
 
     def test_build_command_default_dataset_random(self):
         """Default dataset_name is 'random' when not specified."""
@@ -161,7 +162,37 @@ class TestSABenchRunner:
         )
         cmd = runner.build_command(config, runtime)
         assert "random" in cmd
-        assert cmd[-1] == ""  # empty dataset path
+        assert cmd[-2] == ""  # empty dataset path
+        assert cmd[-1] == "auto"
+
+    def test_build_command_passes_tokenizer_mode(self):
+        """build_command passes tokenizer_mode through to SA-Bench."""
+        from unittest.mock import MagicMock
+
+        from srtctl.benchmarks.sa_bench import SABenchRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = SABenchRunner()
+        runtime = MagicMock()
+        runtime.frontend_port = 8000
+        runtime.model_path = "/model"
+        runtime.is_hf_model = False
+
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="h100"),
+            benchmark=BenchmarkConfig(
+                type="sa-bench",
+                isl=1024,
+                osl=128,
+                concurrencies="4x8",
+                tokenizer_mode="deepseek_v4",
+            ),
+        )
+
+        cmd = runner.build_command(config, runtime)
+        assert cmd[-1] == "deepseek_v4"
 
 
 class TestCustomBenchmarkRunner:

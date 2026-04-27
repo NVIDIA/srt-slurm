@@ -111,5 +111,6 @@ class SABenchRunner(BenchmarkRunner):
             str(b.use_chat_template).lower(),
             dataset_name,
             b.dataset_path or "",
+            b.tokenizer_mode or "auto",
         ]
         return cmd

@@ -1317,11 +1317,12 @@ if __name__ == "__main__":
         "--tokenizer-mode",
         type=str,
         default="auto",
-        choices=["auto", "slow", "mistral", "custom"],
+        choices=["auto", "slow", "mistral", "deepseek_v4", "custom"],
         help='The tokenizer mode.\n\n* "auto" will use the '
         'fast tokenizer if available.\n* "slow" will '
         "always use the slow tokenizer. \n* "
-        '"mistral" will always use the `mistral_common` tokenizer. \n*'
+        '"mistral" will always use the `mistral_common` tokenizer. \n* '
+        '"deepseek_v4" will use vLLM\'s DeepSeek V4 tokenizer. \n* '
         '"custom" will use --tokenizer to select the preregistered tokenizer.',
     )
 
@@ -1329,7 +1330,7 @@ if __name__ == "__main__":
         "--custom-tokenizer",
         type=str,
         default=None,
-        help="Custom tokenizer to use (e.g., 'glm_moe_dsa' or 'module.path.ClassName'). "
+        help="Custom tokenizer to use (e.g., 'glm_moe_dsa', 'deepseek_v4', or 'module.path.ClassName'). "
         "When set, overrides the default tokenizer loading.",
     )
 
