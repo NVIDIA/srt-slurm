@@ -672,6 +672,7 @@ class TestSetupScript:
 
         assert "export DYNAMO_VERSION=1.2.0.dev20260426" in script
         assert "export DYNAMO_WHEEL_NAME=ai_dynamo-1.2.0.dev20260426-py3-none-any.whl" in script
+        assert 'uv run --no-project --python "${DYNAMO_PYTHON_VERSION:-3.12}" --with pip' in script
         assert "src/srtctl/runtime_scripts/dynamo_wheels.py" in script
         assert "configs/prefetch-ai-dynamo-wheel.sh" not in script
 

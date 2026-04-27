@@ -48,6 +48,7 @@ from backend_request_func import (
     ASYNC_REQUEST_FUNCS,
     RequestFuncInput,
     RequestFuncOutput,
+    get_tokenizer as get_sa_bench_tokenizer,
 )
 from datasets import load_dataset
 from PIL.Image import Image
@@ -55,9 +56,9 @@ from tqdm.asyncio import tqdm
 from transformers import PreTrainedTokenizerBase
 
 try:
-    from vllm.transformers_utils.tokenizer import get_tokenizer
+    from vllm.transformers_utils.tokenizer import get_tokenizer as get_vllm_tokenizer
 except ImportError:
-    from backend_request_func import get_tokenizer
+    get_vllm_tokenizer = get_sa_bench_tokenizer
 
 try:
     from vllm.utils import FlexibleArgumentParser
@@ -67,6 +68,29 @@ except ImportError:
 from benchmark_utils import convert_to_pytorch_benchmark_format
 
 MILLISECONDS_TO_SECONDS_CONVERSION = 1000
+
+
+def load_tokenizer(
+    tokenizer_id: str,
+    tokenizer_mode: str,
+    trust_remote_code: bool,
+    custom_tokenizer: str | None,
+):
+    """Load the benchmark tokenizer, honoring sa-bench custom adapters.
+
+    vLLM containers provide their own get_tokenizer() helper, but its
+    custom-tokenizer path can return a cached wrapper that hides
+    apply_chat_template(). The sa-bench loader imports module.path.ClassName
+    adapters directly, which is what the DeepSeek-V4 chat-template adapters
+    rely on.
+    """
+    loader = get_sa_bench_tokenizer if custom_tokenizer else get_vllm_tokenizer
+    return loader(
+        tokenizer_id,
+        tokenizer_mode=tokenizer_mode,
+        trust_remote_code=trust_remote_code,
+        custom_tokenizer=custom_tokenizer,
+    )
 
 
 @dataclass
@@ -841,7 +865,7 @@ def main(args: argparse.Namespace):
         api_url = f"http://{args.host}:{args.port}{args.endpoint}"
         base_url = f"http://{args.host}:{args.port}"
 
-    tokenizer = get_tokenizer(
+    tokenizer = load_tokenizer(
         tokenizer_id,
         tokenizer_mode=tokenizer_mode,
         trust_remote_code=args.trust_remote_code,
@@ -865,7 +889,12 @@ def main(args: argparse.Namespace):
                 f"({type(tokenizer).__name__}) has no jinja chat_template and "
                 "does not override apply_chat_template().\n"
                 "\n"
-                "For DeepSeek-V4 / DSV4-Pro, set in your recipe:\n"
+                "For vLLM DeepSeek-V4 / DSV4-Pro, set in your recipe:\n"
+                "  benchmark:\n"
+                "    custom_tokenizer: "
+                "sa_bench_tokenizers.vllm_deepseek_v4.VLLMDeepseekV4Tokenizer\n"
+                "\n"
+                "For SGLang DeepSeek-V4 / DSV4-Pro, set in your recipe:\n"
                 "  benchmark:\n"
                 "    custom_tokenizer: "
                 "sa_bench_tokenizers.sglang_deepseek_v4.SGLangDeepseekV4Tokenizer\n"
