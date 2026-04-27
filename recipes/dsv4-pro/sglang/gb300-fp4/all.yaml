@@ -114,7 +114,7 @@ base:
         # Lower mfs on decode: DEP8 weight memory + KV pool both grow ~2x
         # vs DEP4, so 0.83 leaves enough headroom for cuda-graph capture
         # at cgmb=2048.
-        mem-fraction-static: 0.83
+        mem-fraction-static: 0.75
         max-running-requests: 4096
         cuda-graph-max-bs:    4096
         swa-full-tokens-ratio: 0.1
@@ -141,6 +141,7 @@ zip_override_8k1k_hightpt:
         expert-parallel-size:     [32, 8]
 
         enable-dp-attention: true
+        enable-dp-lm-head: true
         ep-num-redundant-experts: [32, null]
         ep-dispatch-algorithm: ["static", null]
         moe-a2a-backend: "deepep"
