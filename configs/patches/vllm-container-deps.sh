@@ -7,3 +7,7 @@ set -euo pipefail
 apt-get -y update && apt-get install -y --no-install-recommends --allow-change-held-packages numactl
 
 pip install msgpack
+
+if [ -f /configs/patches/vllm_numa_bind_hash_fix.py ]; then
+    python3 /configs/patches/vllm_numa_bind_hash_fix.py
+fi
