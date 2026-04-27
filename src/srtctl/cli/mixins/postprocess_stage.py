@@ -14,15 +14,12 @@ AI analysis uses Claude Code in headless mode (-p flag) with OpenRouter for auth
 See: https://openrouter.ai/docs/guides/claude-code-integration
 """
 
-import contextlib
-import importlib
 import json
 import logging
 import os
 import shlex
 import shutil
 import subprocess
-import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -43,6 +40,7 @@ logger = logging.getLogger(__name__)
 
 POSTPROCESS_PARSE_FAILED_EXIT = 20
 POSTPROCESS_UPLOAD_FAILED_EXIT = 11
+NODE_METRICS_EXPORT_TIMEOUT_SEC = 600
 
 
 class PostProcessStageMixin:
@@ -302,12 +300,42 @@ class PostProcessStageMixin:
         except Exception as e:
             logger.debug("Lockfile comparison skipped: %s", e)
 
+    def _build_node_metrics_export_script(self, run_path: str, srtctl_root: Path) -> str:
+        """Bash script: ``mktemp`` venv, ``pip install -r analysis/requirements.txt``, then ``-m`` export.
+
+        Dependencies install only inside the ephemeral venv (no ``uv pip install --system``).
+        ``PYTHONPATH`` is set to ``srtctl_root`` so ``analysis`` resolves to ``<root>/analysis/``.
+        """
+        requirements = srtctl_root / "analysis" / "requirements.txt"
+        q_root = shlex.quote(str(srtctl_root))
+        q_req = shlex.quote(str(requirements))
+        q_run = shlex.quote(run_path)
+        return f"""
+set -u
+set -o pipefail
+
+VENV_DIR=$(mktemp -d)
+cleanup() {{ rm -rf "$VENV_DIR"; }}
+trap cleanup EXIT
+
+echo "Creating ephemeral venv for node metrics export..."
+python3 -m venv "$VENV_DIR"
+
+echo "Installing dependencies from {q_req}..."
+"$VENV_DIR/bin/pip" install -q -r {q_req}
+
+export PYTHONPATH={q_root}
+echo "Running analysis.srtlog.export_node_metrics {q_run}..."
+"$VENV_DIR/bin/python" -m analysis.srtlog.export_node_metrics {q_run}
+"""
+
     def _export_node_metrics_csv(self) -> None:
         """Export node batch metrics CSVs via ``analysis.srtlog.export_node_metrics``.
 
-        Controlled by ``benchmark.export_node_metrics``. Prepends ``srtctl_root`` from
-        ``srtslurm.yaml`` to ``sys.path`` and imports ``analysis.srtlog.export_node_metrics``
-        so ``analysis`` resolves to ``<srtctl_root>/analysis/``.
+        Controlled by ``benchmark.export_node_metrics``. Runs a **subprocess** whose bash
+        script creates a temporary venv, ``pip install -r <srtctl_root>/analysis/requirements.txt``,
+        then ``python -m analysis.srtlog.export_node_metrics <run_path>`` with ``PYTHONPATH``
+        set to ``srtctl_root`` from ``srtslurm.yaml``.
 
         Writes under ``<job_output>/logs/node_metrics/`` (same layout as manual export).
         """
@@ -326,26 +354,44 @@ class PostProcessStageMixin:
             logger.warning("srtctl_root is not a directory (%s); skipping node metrics CSV export", root)
             return
 
+        requirements = root / "analysis" / "requirements.txt"
+        if not requirements.is_file():
+            logger.warning("analysis/requirements.txt missing at %s; skipping node metrics CSV export", requirements)
+            return
+
         run_path = self.runtime.log_dir.parent.resolve()
-        root_str = str(root)
-        inserted = False
-        if root_str not in sys.path:
-            sys.path.insert(0, root_str)
-            inserted = True
+        script = self._build_node_metrics_export_script(str(run_path), root)
+
         try:
-            mod = importlib.import_module("analysis.srtlog.export_node_metrics")
-            logger.info("Exporting node metrics CSVs (run_path=%s)...", run_path)
-            paths = mod.export_node_metrics(str(run_path))
-            if paths is None:
-                logger.warning("Node metrics CSV export produced no files (run_path=%s)", run_path)
+            logger.info("Exporting node metrics CSVs in subprocess (run_path=%s)...", run_path)
+            result = subprocess.run(
+                ["bash", "-c", script],
+                capture_output=True,
+                text=True,
+                timeout=NODE_METRICS_EXPORT_TIMEOUT_SEC,
+            )
+            if result.stdout:
+                for line in result.stdout.rstrip().splitlines():
+                    logger.info("%s", line)
+            if result.stderr:
+                for line in result.stderr.rstrip().splitlines():
+                    logger.warning("%s", line)
+            if result.returncode != 0:
+                logger.warning(
+                    "Node metrics CSV export subprocess failed (exit %d, run_path=%s)",
+                    result.returncode,
+                    run_path,
+                )
             else:
-                logger.info("Node metrics CSV export wrote %d file(s)", len(paths))
+                logger.info("Node metrics CSV export subprocess finished (run_path=%s)", run_path)
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "Node metrics CSV export subprocess timed out after %d s (run_path=%s)",
+                NODE_METRICS_EXPORT_TIMEOUT_SEC,
+                run_path,
+            )
         except Exception as e:
             logger.warning("Node metrics CSV export error: %s", e)
-        finally:
-            if inserted:
-                with contextlib.suppress(ValueError):
-                    sys.path.remove(root_str)
 
     def _run_postprocess_container(self) -> tuple[Path | None, str | None]:
         """Run srtlog and upload entire log directory to S3.
