@@ -97,6 +97,7 @@ class BenchmarkMetrics:
     median_e2el_ms: float
     std_e2el_ms: float
     percentiles_e2el_ms: list[tuple[float, float]]
+    peak_output_tokens_per_s: float = 0.0
 
 
 def sample_sharegpt_requests(
@@ -495,6 +496,48 @@ def calculate_metrics(
             "All requests failed. This is likely due to a misconfiguration " "on the benchmark arguments.",
             stacklevel=2,
         )
+
+    # Peak output token throughput: reconstruct per-chunk arrival times from
+    # start_time + ttft + cumulative ITL, then tokenize each chunk's text to
+    # get the token count per chunk and bucket into 1-second windows.
+    # ITL in sa-bench is per SSE chunk (not per token), so we must tokenize
+    # chunk text to know how many tokens each bucket receives.
+    peak_output_tokens_per_s = 0.0
+    peak_output_smooth_factor = 10
+    successful_outputs = [o for o in outputs if o.success and o.start_time > 0]
+    if successful_outputs:
+        min_start_time = min(o.start_time for o in successful_outputs)
+        max_end_time = max(o.start_time + o.latency for o in successful_outputs)
+        duration_seconds = int(np.ceil(max_end_time - min_start_time)) + 1
+        tokens_per_second: list[float] = [0.0] * duration_seconds
+
+        for output in successful_outputs:
+            # Reconstruct absolute arrival time for each SSE chunk.
+            # chunk_times[0] = first chunk (TTFT); chunk_times[k] = chunk_times[k-1] + itl[k-1]
+            chunk_times = [output.start_time + output.ttft]
+            for itl_val in output.itl:
+                chunk_times.append(chunk_times[-1] + itl_val)
+
+            for i, chunk_time in enumerate(chunk_times):
+                if output.text_chunks and i < len(output.text_chunks) and output.text_chunks[i]:
+                    num_tokens = len(tokenizer(output.text_chunks[i], add_special_tokens=False).input_ids)
+                else:
+                    # Fallback when text_chunks is unavailable (e.g. TGI backend):
+                    # distribute output tokens evenly across chunks.
+                    total_tokens = output.output_tokens or len(chunk_times)
+                    num_chunks = len(chunk_times)
+                    base = total_tokens // num_chunks
+                    num_tokens = base + (1 if i < total_tokens % num_chunks else 0)
+                second_bucket = int(chunk_time - min_start_time)
+                if 0 <= second_bucket < duration_seconds:
+                    tokens_per_second[second_bucket] += num_tokens
+
+        if tokens_per_second:
+            # for i in range(len(tokens_per_second)):
+            #     print(f"Time {i}: {tokens_per_second[i]} tokens")
+            smoothed_tokens_per_second = np.convolve(tokens_per_second, np.ones(peak_output_smooth_factor) / peak_output_smooth_factor, mode='valid')
+            peak_output_tokens_per_s = float(max(smoothed_tokens_per_second))
+
     metrics = BenchmarkMetrics(
         completed=completed,
         total_input=total_input,
@@ -519,6 +562,7 @@ def calculate_metrics(
         std_e2el_ms=np.std(e2els or 0) * 1000,
         median_e2el_ms=np.median(e2els or 0) * 1000,
         percentiles_e2el_ms=[(p, np.percentile(e2els or 0, p) * 1000) for p in selected_percentiles],
+        peak_output_tokens_per_s=peak_output_tokens_per_s,
     )
 
     return metrics, actual_output_lens
@@ -685,6 +729,7 @@ async def benchmark(
     if goodput_config_dict:
         print("{:<40} {:<10.2f}".format("Request goodput (req/s):", metrics.request_goodput))
     print("{:<40} {:<10.2f}".format("Output token throughput (tok/s):", metrics.output_throughput))
+    print("{:<40} {:<10.2f}".format("Peak output token throughput (tok/s):", metrics.peak_output_tokens_per_s))
     print("{:<40} {:<10.2f}".format("Total Token throughput (tok/s):", metrics.total_token_throughput))
 
     result = {
@@ -695,6 +740,7 @@ async def benchmark(
         "request_throughput": metrics.request_throughput,
         "request_goodput": metrics.request_goodput if goodput_config_dict else None,
         "output_throughput": metrics.output_throughput,
+        "peak_output_tokens_per_s": metrics.peak_output_tokens_per_s,
         "total_token_throughput": metrics.total_token_throughput,
         "input_lens": [output.prompt_len for output in outputs],
         "output_lens": actual_output_lens,

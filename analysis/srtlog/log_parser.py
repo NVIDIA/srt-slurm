@@ -25,10 +25,39 @@ class NodeAnalyzer:
     All parsing logic is encapsulated as methods.
     """
 
+    def _node_log_glob_patterns(self, run_path: str) -> list[str]:
+        """Glob patterns (relative to run_path) for prefill/decode .err/.out sources."""
+        patterns = ["*.err", "*.out"]
+        if os.path.isdir(os.path.join(run_path, "logs")):
+            patterns.extend(["logs/*.err", "logs/*.out"])
+        return patterns
+
+    def _iter_prefill_decode_log_paths(self, run_path: str):
+        """Yield absolute paths to *prefill* / *decode* .err and .out under run_path and run_path/logs."""
+        seen: set[str] = set()
+
+        def scan_dir(dir_path: str):
+            if not os.path.isdir(dir_path):
+                return
+            for name in os.listdir(dir_path):
+                if (name.endswith(".err") or name.endswith(".out")) and (
+                    "prefill" in name or "decode" in name
+                ):
+                    full = os.path.join(dir_path, name)
+                    if full not in seen:
+                        seen.add(full)
+                        yield full
+
+        yield from scan_dir(run_path)
+        yield from scan_dir(os.path.join(run_path, "logs"))
+
     def parse_run_logs(self, run_path: str, return_dicts: bool = False) -> list:
         """Parse all node log files in a run directory.
 
         Uses parquet caching to avoid re-parsing on subsequent loads.
+
+        Scans ``run_path`` and, if present, ``run_path/logs/`` for ``*prefill*`` / ``*decode*``
+        ``.err`` / ``.out`` files (same layout as current srt-slurm job outputs).
 
         Args:
             run_path: Path to the run directory containing .err/.out files
@@ -40,8 +69,8 @@ class NodeAnalyzer:
         # Initialize cache manager
         cache_mgr = CacheManager(run_path)
 
-        # Define source patterns for cache validation (.err and .out files)
-        source_patterns = ["*.err", "*.out"]
+        # Source patterns for cache validation (root + optional logs/)
+        source_patterns = self._node_log_glob_patterns(run_path)
 
         # Try to load from cache first
         if cache_mgr.is_cache_valid("node_metrics", source_patterns):
@@ -67,19 +96,23 @@ class NodeAnalyzer:
         total_err_files = 0
         parsed_successfully = 0
 
-        for file in os.listdir(run_path):
-            if (file.endswith(".err") or file.endswith(".out")) and ("prefill" in file or "decode" in file):
-                total_err_files += 1
-                filepath = os.path.join(run_path, file)
-                node = self.parse_single_log(filepath)
-                if node:
-                    nodes.append(node)
-                    parsed_successfully += 1
+        for filepath in self._iter_prefill_decode_log_paths(run_path):
+            total_err_files += 1
+            node = self.parse_single_log(filepath)
+            if node:
+                nodes.append(node)
+                parsed_successfully += 1
 
-        logger.info(f"Parsed {parsed_successfully}/{total_err_files} prefill/decode log files from {run_path}")
+        logger.info(
+            f"Parsed {parsed_successfully}/{total_err_files} prefill/decode log files "
+            f"from {run_path} (including logs/ when present)"
+        )
 
         if total_err_files == 0:
-            logger.warning(f"No prefill/decode log files found in {run_path}")
+            logger.warning(
+                f"No prefill/decode log files found under {run_path} or {run_path}/logs "
+                f"(expected *prefill* / *decode* .err/.out)"
+            )
 
         # Save to cache if we have data
         if nodes:
@@ -531,7 +564,8 @@ class NodeAnalyzer:
         # Extract metrics using regex
         patterns = {
             "running_req": r"#running-req:\s*(\d+)",
-            "num_tokens": r"#token:\s*(\d+)",
+            # Newer SGLang logs use "#full token:"; older used "#token:"
+            "num_tokens": r"#(?:full )?token:\s*(\d+)",
             "token_usage": r"token usage:\s*([\d.]+)",
             "preallocated_usage": r"pre-allocated usage:\s*([\d.]+)",
             "prealloc_req": r"#prealloc-req:\s*(\d+)",
