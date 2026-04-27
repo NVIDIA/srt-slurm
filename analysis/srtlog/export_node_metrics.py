@@ -1,12 +1,17 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """
-Export node-level metrics of a benchmark run to CSV.
+Exports node-level **batch** metrics from a single benchmark run into multiple CSV files (one per node).
 
-Uses ``NodeAnalyzer`` (logic consistent with ``log_parser``) to parse ``run_path`` and
-prefill/decode ``*.err`` / ``*.out`` under ``run_path/logs/``, then writes a flat table.
+Parses `run_path` and `run_path/logs/` for prefill/decode `*.err` / `*.out` files using `NodeAnalyzer`.
+Each output CSV file is named `{node}_{worker_type}_{worker_id}.csv` and contains only batch rows and
+columns meaningful to batch data (omitting columns constant per node such as tp/dp/ep size).
 
-Default output directory: ``<run_path>/logs/node_metrics/``, output filename: ``node_metrics.csv``.
+The default output directory is `<run_path>/logs/node_metrics/`.
+
+Additionally, a file named `gen_throughput.csv` is written in the same directory:
+For all batch samples in the run, this groups by `running_req`, and computes count, mean, and median of
+`gen_throughput` (using only rows where both are non-empty).
 
 Run from the srt-slurm repository root::
 
@@ -121,14 +126,15 @@ def _gen_throughput_summary_dataframe(nodes: list[NodeMetrics]) -> pd.DataFrame:
 
 
 def export_node_metrics(run_path: str, output_dir: str | None = None) -> list[str] | None:
-    """解析 run 目录下的节点日志，按节点写出仅含 batch 列的 CSV。
+    """Parse node logs in the run directory and export them to CSV.
 
     Args:
         run_path: Run directory containing Slurm output logs (may contain ``logs/`` subdirectory)
         output_dir: Output directory; defaults to ``<run_path>/logs/node_metrics``
 
     Returns:
-        Absolute path to the written CSV; returns ``None`` if there are no parsing results
+        Absolute paths to the written CSV files (including ``gen_throughput.csv``);
+        returns ``None`` if there are no parsing results
     """
     run_path = os.path.abspath(run_path)
     if not os.path.isdir(run_path):
