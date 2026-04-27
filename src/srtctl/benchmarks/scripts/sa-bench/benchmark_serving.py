@@ -503,6 +503,7 @@ def calculate_metrics(
     # ITL in sa-bench is per SSE chunk (not per token), so we must tokenize
     # chunk text to know how many tokens each bucket receives.
     peak_output_tokens_per_s = 0.0
+    peak_output_smooth_factor = 10
     successful_outputs = [o for o in outputs if o.success and o.start_time > 0]
     if successful_outputs:
         min_start_time = min(o.start_time for o in successful_outputs)
@@ -534,7 +535,8 @@ def calculate_metrics(
         if tokens_per_second:
             # for i in range(len(tokens_per_second)):
             #     print(f"Time {i}: {tokens_per_second[i]} tokens")
-            peak_output_tokens_per_s = float(max(tokens_per_second))
+            smoothed_tokens_per_second = np.convolve(tokens_per_second, np.ones(peak_output_smooth_factor) / peak_output_smooth_factor, mode='valid')
+            peak_output_tokens_per_s = float(max(smoothed_tokens_per_second))
 
     metrics = BenchmarkMetrics(
         completed=completed,
