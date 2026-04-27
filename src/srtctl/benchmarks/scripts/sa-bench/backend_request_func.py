@@ -603,7 +603,14 @@ def _load_glm_moe_dsa_tokenizer(pretrained_model_name_or_path: str) -> "PreTrain
         if "extra_special_tokens" in config:
             init_kwargs["additional_special_tokens"] = config["extra_special_tokens"]
 
-    return PreTrainedTokenizerFast(tokenizer_object=rust_tok, **init_kwargs)
+    tok = PreTrainedTokenizerFast(tokenizer_object=rust_tok, **init_kwargs)
+
+    jinja_path = path / "chat_template.jinja"
+    if jinja_path.exists():
+        tok.chat_template = jinja_path.read_text(encoding="utf-8")
+        print(f"[sa-bench] Loaded chat template from {jinja_path}", flush=True)
+
+    return tok
 
 
 def get_tokenizer(
