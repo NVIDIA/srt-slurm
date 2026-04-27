@@ -64,6 +64,10 @@ NUM_PROMPTS_MULT=${13:-10}
 NUM_WARMUP_MULT=${14:-2}
 CUSTOM_TOKENIZER=${15:-}
 USE_CHAT_TEMPLATE=${16:-true}
+TOKENIZER_MODE=${17:-auto}
+
+# Build optional tokenizer mode args
+TOKENIZER_MODE_ARGS=(--tokenizer-mode "$TOKENIZER_MODE")
 
 # Build optional custom tokenizer args
 CUSTOM_TOKENIZER_ARGS=()
@@ -136,6 +140,8 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
         --percentile-metrics ttft,tpot,itl,e2el \
         --max-concurrency "$concurrency" \
         --trust-remote-code \
+        "${TOKENIZER_MODE_ARGS[@]}" \
+        "${CHAT_TEMPLATE_ARGS[@]}" \
         "${CUSTOM_TOKENIZER_ARGS[@]}"
 
     num_prompts=$((concurrency * 10))
@@ -166,6 +172,7 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
         --percentile-metrics ttft,tpot,itl,e2el \
         --max-concurrency "$concurrency" \
         --trust-remote-code \
+        "${TOKENIZER_MODE_ARGS[@]}" \
         "${CHAT_TEMPLATE_ARGS[@]}" \
         "${CUSTOM_TOKENIZER_ARGS[@]}" \
         --save-result --result-dir "$result_dir" --result-filename "$result_filename"
@@ -179,4 +186,3 @@ done
 stop_all_profiling
 
 echo "SA-Bench complete. Results in $result_dir"
-

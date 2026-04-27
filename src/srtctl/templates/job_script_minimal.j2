@@ -75,6 +75,10 @@ echo "Head node: ${HEAD_NODE}"
 # Set source directory for container mounts (/configs)
 export SRTCTL_SOURCE_DIR="${SRTCTL_SOURCE}"
 
+{% for key, value in config_environment.items() %}
+export {{ key }}={{ value }}
+{% endfor %}
+
 echo ""
 echo "Preparing srtctl environment..."
 
@@ -86,6 +90,14 @@ if ! command -v uv &> /dev/null; then
 fi
 
 echo "Using uv with Python 3.12..."
+
+if [ -n "${DYNAMO_WHEEL_NAME:-}" ] || [ "${SRTCTL_PREFETCH_AI_DYNAMO:-0}" = "1" ]; then
+    if [ -f "${SRTCTL_SOURCE}/configs/prefetch-ai-dynamo-wheel.sh" ]; then
+        bash "${SRTCTL_SOURCE}/configs/prefetch-ai-dynamo-wheel.sh"
+    else
+        echo "WARNING: ${SRTCTL_SOURCE}/configs/prefetch-ai-dynamo-wheel.sh not found"
+    fi
+fi
 
 {% if setup_script %}
 # Custom setup script override from CLI

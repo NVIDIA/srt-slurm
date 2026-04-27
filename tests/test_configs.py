@@ -125,6 +125,14 @@ class TestDynamoConfig:
         assert config.needs_source_install
         cmd = config.get_install_commands()
         assert "git clone" in cmd
+        assert "dynamo_retry_git_clone dynamo" in cmd
+        assert "DYNAMO_INSTALL_RETRIES:-5" in cmd
+        assert "DYNAMO_INSTALL_RETRY_DELAY:-10" in cmd
+        assert "DYNAMO_INSTALL_RETRY_MAX_DELAY:-120" in cmd
+        assert "DYNAMO_INSTALL_RETRY_JITTER:-5" in cmd
+        assert "RANDOM % (jitter + 1)" in cmd
+        assert 'rm -rf "$target" "$tmp_target"' in cmd
+        assert "else rc=$?; fi" in cmd
         assert "git checkout abc123" in cmd
         assert "maturin build" in cmd
         assert "if [ -d /sgl-workspace ]" in cmd
@@ -132,6 +140,60 @@ class TestDynamoConfig:
         assert "protobuf-compiler" in cmd
         assert "if ! command -v cargo" in cmd
         assert "if ! command -v maturin" in cmd
+
+    def test_wheel_install_command(self):
+        """Wheel config installs ai-dynamo plus runtime without source build."""
+        from srtctl.core.schema import DynamoConfig
+
+        config = DynamoConfig(wheel="1.2.0.dev20260426")
+        cmd = config.get_install_commands()
+
+        assert config.version is None
+        assert config.needs_source_install is False
+        assert "install-ai-dynamo.sh" in cmd
+        assert "ai_dynamo-1.2.0.dev20260426-py3-none-any.whl" in cmd
+        assert "--no-deps" in cmd
+        assert "ai-dynamo-runtime==1.2.0.dev20260426" in cmd
+        assert "--find-links /configs/wheels" in cmd
+        assert "--find-links /configs" in cmd
+        assert "--extra-index-url" not in cmd
+        assert "were not found" in cmd
+        assert "maturin" not in cmd
+        assert "git clone" not in cmd
+
+    def test_source_install_clone_retry_helper_retries_and_cleans_partial_clone(self, tmp_path):
+        """Clone helper retries transient failures and cleans partial clone directories."""
+        import subprocess
+
+        from srtctl.core.schema import DynamoConfig
+
+        script = f"""
+set -euo pipefail
+{DynamoConfig._source_install_retry_helpers()}
+git() {{
+    count=0
+    if [ -f attempts ]; then count=$(cat attempts); fi
+    count=$((count + 1))
+    echo "$count" > attempts
+    mkdir -p "$3"
+    echo "attempt-$count" > "$3/marker"
+    if [ "$count" -lt 3 ]; then
+        return 22
+    fi
+    return 0
+}}
+export DYNAMO_INSTALL_RETRIES=4
+export DYNAMO_INSTALL_RETRY_DELAY=0
+export DYNAMO_INSTALL_RETRY_JITTER=0
+dynamo_retry_git_clone dynamo
+test "$(cat attempts)" = "3"
+test "$(cat dynamo/marker)" = "attempt-3"
+if find . -maxdepth 1 -type d -name 'dynamo.clone.*' | grep -q .; then
+    echo "leftover temp clone" >&2
+    exit 1
+fi
+"""
+        subprocess.run(["bash", "-c", script], cwd=tmp_path, check=True, capture_output=True, text=True)
 
     def test_top_of_tree_install_command(self):
         """Top-of-tree config generates source install without checkout."""
@@ -155,6 +217,40 @@ class TestDynamoConfig:
 
         with pytest.raises(ValueError, match="Cannot specify both"):
             DynamoConfig(hash="abc123", top_of_tree=True)
+
+    def test_hash_and_wheel_not_allowed(self):
+        """Cannot specify both hash and wheel."""
+        from srtctl.core.schema import DynamoConfig
+
+        with pytest.raises(ValueError, match="Cannot specify both"):
+            DynamoConfig(hash="abc123", wheel="1.2.0.dev20260426")
+
+    def test_wheel_filename_not_allowed(self):
+        """Wheel config takes a package version, not an artifact filename."""
+        from srtctl.core.schema import DynamoConfig
+
+        with pytest.raises(ValueError, match="package version"):
+            DynamoConfig(wheel="ai_dynamo-1.2.0.dev20260426-py3-none-any.whl")
+
+    def test_wheel_version_required(self):
+        """Wheel config must provide an exact package version."""
+        from srtctl.core.schema import DynamoConfig
+
+        with pytest.raises(ValueError, match="non-empty package version"):
+            DynamoConfig(wheel="")
+
+    def test_wheel_environment_from_version(self):
+        """Wheel version is converted to setup/prefetch environment."""
+        from srtctl.core.schema import DynamoConfig
+
+        config = DynamoConfig(wheel="1.2.0.dev20260426")
+
+        assert config.wheel_version == "1.2.0.dev20260426"
+        assert config.wheel_name == "ai_dynamo-1.2.0.dev20260426-py3-none-any.whl"
+        assert config.get_wheel_environment() == {
+            "DYNAMO_VERSION": "1.2.0.dev20260426",
+            "DYNAMO_WHEEL_NAME": "ai_dynamo-1.2.0.dev20260426-py3-none-any.whl",
+        }
 
 
 class TestSGLangProtocol:
@@ -478,6 +574,29 @@ class TestSetupScript:
             setup_script="install-sglang-main.sh",
         )
         assert 'export SRTCTL_SETUP_SCRIPT="install-sglang-main.sh"' in script
+
+    def test_sbatch_template_prefetches_dynamo_wheel(self):
+        """Test that dynamo.wheel is exported and prefetched before orchestrator launch."""
+        from pathlib import Path
+
+        from srtctl.cli.submit import generate_minimal_sbatch_script
+        from srtctl.core.schema import DynamoConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/container.sqsh", precision="fp8"),
+            resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1),
+            dynamo=DynamoConfig(
+                install=True,
+                wheel="1.2.0.dev20260426",
+            ),
+        )
+
+        script = generate_minimal_sbatch_script(config, Path("/tmp/test.yaml"))
+
+        assert "export DYNAMO_VERSION=1.2.0.dev20260426" in script
+        assert "export DYNAMO_WHEEL_NAME=ai_dynamo-1.2.0.dev20260426-py3-none-any.whl" in script
+        assert "configs/prefetch-ai-dynamo-wheel.sh" in script
 
     def test_setup_script_env_var_override(self, monkeypatch):
         """Test that SRTCTL_SETUP_SCRIPT env var overrides config."""
@@ -1323,8 +1442,6 @@ class TestVLLMDataParallelMode:
 
     def test_connector_custom_json_passthrough(self):
         """connector set to a raw JSON string is passed through as-is."""
-        import json
-
         custom = '{"kv_connector":"MyCustomConnector","kv_role":"kv_both"}'
         cmd = self._build_cmd_with_connector(custom)
         idx = cmd.index("--kv-transfer-config")

@@ -14,6 +14,7 @@ Backend configs are defined in srtctl.backends.configs/ for modularity.
 import builtins
 import itertools
 import logging
+import shlex
 from collections.abc import Iterator, Mapping
 from dataclasses import field
 from enum import Enum
@@ -543,6 +544,7 @@ class BenchmarkConfig:
     num_warmup_mult: int | None = None  # Multiplier for warmup prompts = concurrency * mult (default: 2)
     # Trace replay benchmark fields (uses aiperf with mooncake_trace dataset type)
     trace_file: str | None = None  # Path to trace JSONL file (container path, e.g., /traces/dataset.jsonl)
+    tokenizer_mode: str | None = None  # Tokenizer mode passed to SA-Bench (e.g., "auto", "deepseek_v4")
     custom_tokenizer: str | None = None  # Custom tokenizer class (e.g., "module.path.ClassName")
     use_chat_template: bool = True  # Pass --use-chat-template to benchmark (default: true)
 
@@ -680,7 +682,7 @@ class ProfilingConfig:
 class DynamoConfig:
     """Dynamo installation configuration.
 
-    Only one of version, hash, or top_of_tree should be specified.
+    Only one of version, hash, top_of_tree, or wheel should be specified.
     Defaults to version="0.8.0" (pip install).
 
     Options:
@@ -689,31 +691,133 @@ class DynamoConfig:
         version: Install specific version from PyPI (e.g., "0.8.0")
         hash: Clone repo and checkout specific commit hash
         top_of_tree: Clone repo at HEAD (latest)
+        wheel: ai-dynamo package version to install via staged wheels. The
+               matching ai-dynamo-runtime wheel is installed automatically.
 
-    If top_of_tree or hash is set, version is automatically cleared.
+    If top_of_tree, hash, or wheel is set, version is automatically cleared.
     """
 
     install: bool = True
     version: str | None = "0.8.0"
     hash: str | None = None
     top_of_tree: bool = False
+    wheel: str | None = None
 
     def __post_init__(self) -> None:
-        # Auto-clear version if hash or top_of_tree is set
-        if self.hash is not None or self.top_of_tree:
+        install_sources = [
+            ("hash", self.hash is not None),
+            ("top_of_tree", self.top_of_tree),
+            ("wheel", self.wheel is not None),
+        ]
+        enabled_sources = [name for name, enabled in install_sources if enabled]
+
+        # Auto-clear version if another install source is set.
+        if enabled_sources:
             object.__setattr__(self, "version", None)
 
         # Validate only one source option is set
-        if self.hash is not None and self.top_of_tree:
-            raise ValueError("Cannot specify both hash and top_of_tree")
+        if len(enabled_sources) > 1:
+            raise ValueError(f"Cannot specify both Dynamo install sources: {', '.join(enabled_sources)}")
+
+        if self.wheel is not None:
+            if not self.wheel.strip():
+                raise ValueError("dynamo.wheel must be a non-empty package version")
+            if Path(self.wheel).name.endswith(".whl") or "/" in self.wheel:
+                raise ValueError("dynamo.wheel must be a package version like '1.2.0.dev20260426', not a filename")
 
     @property
     def needs_source_install(self) -> bool:
         """Whether this config requires a source install (git clone + maturin)."""
-        return self.hash is not None or self.top_of_tree
+        return self.wheel is None and (self.hash is not None or self.top_of_tree)
+
+    @property
+    def wheel_version(self) -> str | None:
+        """Package version requested for staged wheel installation."""
+        return self.wheel
+
+    @property
+    def wheel_name(self) -> str | None:
+        """Return the ai-dynamo wheel filename for the requested package version."""
+        if not self.wheel:
+            return None
+        return f"ai_dynamo-{self.wheel}-py3-none-any.whl"
+
+    def get_wheel_environment(self) -> dict[str, str]:
+        """Environment variables consumed by ai-dynamo prefetch/setup scripts."""
+        if not self.wheel:
+            return {}
+        wheel_name = self.wheel_name
+        env = {"DYNAMO_WHEEL_NAME": wheel_name} if wheel_name else {}
+        version = self.wheel_version
+        if version:
+            env["DYNAMO_VERSION"] = version
+        return env
+
+    @staticmethod
+    def _source_install_retry_helpers() -> str:
+        """Bash helpers for transient network failures during source installs."""
+        return (
+            "dynamo_retry_git_clone() { "
+            'target="$1"; '
+            'attempts="${DYNAMO_INSTALL_RETRIES:-5}"; '
+            'delay="${DYNAMO_INSTALL_RETRY_DELAY:-10}"; '
+            'max_delay="${DYNAMO_INSTALL_RETRY_MAX_DELAY:-120}"; '
+            'jitter="${DYNAMO_INSTALL_RETRY_JITTER:-5}"; '
+            "attempt=1; "
+            "while true; do "
+            'tmp_target="${target}.clone.$$.$attempt"; '
+            'rm -rf "$target" "$tmp_target"; '
+            'if git clone https://github.com/ai-dynamo/dynamo.git "$tmp_target"; then '
+            'rm -rf "$target" && mv "$tmp_target" "$target" && return 0; '
+            "else "
+            "rc=$?; "
+            "fi; "
+            'rm -rf "$tmp_target"; '
+            'if [ "$attempt" -ge "$attempts" ]; then '
+            'echo "Dynamo git clone failed after $attempts attempts" >&2; '
+            'return "$rc"; '
+            "fi; "
+            'sleep_for="$delay"; '
+            'if [ "$jitter" -gt 0 ]; then sleep_for=$((sleep_for + RANDOM % (jitter + 1))); fi; '
+            'echo "Dynamo git clone failed on attempt $attempt/$attempts (exit $rc); retrying in ${sleep_for}s" >&2; '
+            'sleep "$sleep_for"; '
+            "attempt=$((attempt + 1)); "
+            "delay=$((delay * 2)); "
+            'if [ "$delay" -gt "$max_delay" ]; then delay="$max_delay"; fi; '
+            "done; "
+            "}; "
+        )
 
     def get_install_commands(self) -> str:
         """Get the bash commands to install dynamo."""
+        if self.wheel is not None:
+            wheel_name = self.wheel_name or Path(self.wheel).name
+            wheels_path_shell = shlex.quote(f"/configs/wheels/{wheel_name}")
+            configs_path_shell = shlex.quote(f"/configs/{wheel_name}")
+            version = self.wheel_version
+            if not version:
+                raise ValueError("dynamo.wheel must provide an exact package version")
+            runtime_package = f"ai-dynamo-runtime=={version}"
+            runtime_package_shell = shlex.quote(runtime_package)
+            start_message = shlex.quote(f"Installing ai-dynamo-runtime and ai-dynamo from wheel {wheel_name}...")
+            done_message = shlex.quote(f"ai-dynamo-runtime and ai-dynamo install path completed for {wheel_name}")
+            return (
+                f"echo {start_message} && "
+                "if [ -f /configs/install-ai-dynamo.sh ]; then "
+                "bash /configs/install-ai-dynamo.sh; "
+                f"elif [ -f {wheels_path_shell} ]; then "
+                "python3 -m pip install --pre --no-deps --no-index "
+                f"--find-links /configs/wheels {runtime_package_shell} {wheels_path_shell}; "
+                f"elif [ -f {configs_path_shell} ]; then "
+                "python3 -m pip install --pre --no-deps --no-index "
+                f"--find-links /configs {runtime_package_shell} {configs_path_shell}; "
+                "else "
+                f"echo 'ERROR: exact ai-dynamo wheels for {version} were not found in /configs/wheels or /configs' >&2; "
+                "exit 1; "
+                "fi && "
+                f"echo {done_message}"
+            )
+
         if self.version is not None:
             return (
                 f"echo 'Installing dynamo {self.version}...' && "
@@ -729,7 +833,7 @@ class DynamoConfig:
         sglang = (
             "apt-get update -qq && apt-get install -y -qq libclang-dev > /dev/null 2>&1 && "
             "cd /sgl-workspace/ && "
-            "git clone https://github.com/ai-dynamo/dynamo.git && "
+            "dynamo_retry_git_clone dynamo && "
             "cd dynamo && "
             f"{checkout_cmd + ' && ' if checkout_cmd else ''}"
             "cd lib/bindings/python/ && "
@@ -751,7 +855,7 @@ class DynamoConfig:
             "if ! command -v maturin &> /dev/null; then "
             "pip install --break-system-packages maturin; fi; fi && "
             "ORIG_DIR=$(pwd) && rm -rf /tmp/dynamo_build && mkdir -p /tmp/dynamo_build && cd /tmp/dynamo_build && "
-            "git clone https://github.com/ai-dynamo/dynamo.git && "
+            "dynamo_retry_git_clone dynamo && "
             "cd dynamo && "
             f"{checkout_cmd + ' && ' if checkout_cmd else ''}"
             "cd lib/bindings/python/ && "
@@ -767,6 +871,7 @@ class DynamoConfig:
 
         return (
             f"echo 'Installing dynamo from source ({git_ref})...' && "
+            f"{self._source_install_retry_helpers()}"
             f"if [ -d /sgl-workspace ]; then {sglang}; else {portable}; fi"
         )
 

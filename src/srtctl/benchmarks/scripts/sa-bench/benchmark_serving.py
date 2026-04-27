@@ -1272,11 +1272,12 @@ if __name__ == "__main__":
         "--tokenizer-mode",
         type=str,
         default="auto",
-        choices=["auto", "slow", "mistral", "custom"],
+        choices=["auto", "slow", "mistral", "custom", "deepseek_v4"],
         help='The tokenizer mode.\n\n* "auto" will use the '
         'fast tokenizer if available.\n* "slow" will '
         "always use the slow tokenizer. \n* "
-        '"mistral" will always use the `mistral_common` tokenizer. \n*'
+        '"mistral" will always use the `mistral_common` tokenizer. \n* '
+        '"deepseek_v4" will use vLLM\'s DeepSeek V4 tokenizer. \n* '
         '"custom" will use --tokenizer to select the preregistered tokenizer.',
     )
 
