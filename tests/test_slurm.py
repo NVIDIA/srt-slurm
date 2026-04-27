@@ -88,4 +88,5 @@ def test_worker_stage_wraps_nonfatal_fingerprint_hook(tmp_path: Path) -> None:
 
     bash_preamble = mock_srun.call_args.kwargs["bash_preamble"]
     assert "setup.sh" in bash_preamble
+    assert "/configs/patches/${setup_script}" in bash_preamble
     assert bash_preamble.endswith("&& ( fingerprint || true )")

@@ -1,4 +1,5 @@
 name: "svf-vllm-disagg-gb200-3p1d-dep8-dep16-offload"
+setup_script: "vllm-container-deps.sh"
 model:
   path: "deepseekv4-fp4"
   container: "vllm/vllm-openai:v0.20.0-ubuntu2404@sha256:46da022ce07aae43e4ffae844aeab467a223437e071abadf566555699fbf16c3"
@@ -110,7 +111,7 @@ benchmark:
   concurrencies: "256x512x1024"
   req_rate: "inf"
   use_chat_template: true
-  custom_tokenizer: "vllm.tokenizers.deepseek_v4.DeepseekV4Tokenizer"
+  custom_tokenizer: "sa_bench_tokenizers.vllm_deepseek_v4.VLLMDeepseekV4Tokenizer"
 
 identity:
   model:

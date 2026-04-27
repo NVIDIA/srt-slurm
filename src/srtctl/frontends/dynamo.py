@@ -8,6 +8,7 @@ Uses NATS/etcd for communication between frontend and backend workers.
 """
 
 import logging
+import shlex
 from typing import TYPE_CHECKING, Any
 
 from srtctl.core.health import WorkerHealthResult, check_dynamo_health
@@ -128,11 +129,17 @@ class DynamoFrontend:
         parts = []
 
         # Custom setup script
-        if config.setup_script:
-            script_path = f"/configs/{config.setup_script}"
+        setup_script = getattr(config, "setup_script", None)
+        if isinstance(setup_script, str) and setup_script:
+            script_name = shlex.quote(setup_script)
             parts.append(
-                f"echo 'Running setup script: {script_path}' && "
-                f"if [ -f '{script_path}' ]; then bash '{script_path}'; else echo 'WARNING: {script_path} not found'; fi"
+                f"setup_script={script_name} && "
+                'script_path="/configs/${setup_script}" && '
+                'patch_script_path="/configs/patches/${setup_script}" && '
+                'echo "Running setup script: ${script_path} (fallback ${patch_script_path})" && '
+                'if [ -f "${script_path}" ]; then bash "${script_path}"; '
+                'elif [ -f "${patch_script_path}" ]; then bash "${patch_script_path}"; '
+                'else echo "WARNING: ${script_path} or ${patch_script_path} not found"; fi'
             )
 
         # Dynamo installation (required for dynamo frontend)
