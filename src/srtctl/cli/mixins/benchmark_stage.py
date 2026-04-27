@@ -362,10 +362,17 @@ class BenchmarkStageMixin:
         env = self._get_benchmark_profiling_env(runner)
         env["SRTCTL_FRONTEND_TYPE"] = self.config.frontend.type
 
+        # Propagate top-level recipe environment to the bench step. Workers
+        # already get this via worker_stage; benches need it too for things
+        # like HF_TOKEN that the bench script may consume (e.g. NeMo Skills
+        # dataset prep against gated HF datasets).
+        for key, value in self.runtime.environment.items():
+            env[key] = value
+
         if runner.name == "SA-Bench":
             env.update(self._get_sa_bench_slow_down_env())
 
-        # Add AIPerf metrics URLs for AIPerf-driven benchmarks
+        # Add AIPerf-specific env vars for AIPerf-driven benchmarks only
         if isinstance(runner, AIPerfBenchmarkRunner):
             env.update(self._get_aiperf_server_metrics_env())
             if self.config.benchmark.aiperf_package:

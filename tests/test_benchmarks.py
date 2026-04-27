@@ -18,8 +18,10 @@ class TestBenchmarkRegistry:
         assert "custom" in benchmarks
         assert "sa-bench" in benchmarks
         assert "sglang-bench" in benchmarks
+        assert "aime" in benchmarks
         assert "mmlu" in benchmarks
         assert "gpqa" in benchmarks
+        assert "gsm8k" in benchmarks
         assert "longbenchv2" in benchmarks
         assert "router" in benchmarks
 
@@ -560,6 +562,86 @@ class TestTraceReplayRunner:
         assert config.benchmark.itl_threshold_ms == 7
 
 
+class TestAIMERunner:
+    """Test AIME runner."""
+
+    def test_get_runner(self):
+        """Can get runner for AIME."""
+        runner = get_runner("aime")
+        assert runner.name == "AIME"
+        assert "aime" in runner.script_path
+
+    def test_validate_valid(self):
+        from srtctl.benchmarks.aime import AIMERunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = AIMERunner()
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="h100"),
+            benchmark=BenchmarkConfig(type="aime", aime_dataset="aime25", repeat=8),
+        )
+        errors = runner.validate_config(config)
+        assert errors == []
+
+    def test_validate_invalid_dataset(self):
+        from srtctl.benchmarks.aime import AIMERunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = AIMERunner()
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="h100"),
+            benchmark=BenchmarkConfig(type="aime", aime_dataset="math-500"),
+        )
+        errors = runner.validate_config(config)
+        assert any("aime_dataset" in e for e in errors)
+
+    def test_build_command(self):
+        from unittest.mock import MagicMock
+
+        from srtctl.benchmarks.aime import AIMERunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = AIMERunner()
+        runtime = MagicMock()
+        runtime.frontend_port = 8000
+
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/models/qwen", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="h100"),
+            benchmark=BenchmarkConfig(
+                type="aime",
+                aime_dataset="aime24",
+                num_examples=10,
+                max_tokens=4096,
+                repeat=4,
+                num_threads=8,
+                temperature=0.6,
+                top_p=0.95,
+            ),
+        )
+
+        cmd = runner.build_command(config, runtime)
+        assert cmd == [
+            "bash",
+            "/srtctl-benchmarks/aime/bench.sh",
+            "http://localhost:8000",
+            "qwen",
+            "aime24",
+            "10",
+            "4096",
+            "8",
+            "4",
+            "0.6",
+            "0.95",
+            "",
+        ]
+
+
 class TestScriptsExist:
     """Test that benchmark scripts exist."""
 
@@ -575,6 +657,16 @@ class TestScriptsExist:
     def test_mmlu_script_exists(self):
         """MMLU script exists."""
         script = SCRIPTS_DIR / "mmlu" / "bench.sh"
+        assert script.exists()
+
+    def test_aime_script_exists(self):
+        """AIME script exists."""
+        script = SCRIPTS_DIR / "aime" / "bench.sh"
+        assert script.exists()
+
+    def test_gsm8k_script_exists(self):
+        """GSM8K script exists."""
+        script = SCRIPTS_DIR / "gsm8k" / "bench.sh"
         assert script.exists()
 
 

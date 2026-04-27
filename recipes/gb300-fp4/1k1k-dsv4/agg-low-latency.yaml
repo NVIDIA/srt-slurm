@@ -1,0 +1,68 @@
+# DeepSeek-V4-Pro aggregated mode on GB300 (1 node 4 GPU, TP=4)
+# Based on SGLang upstream dsv4-docs cookbook (b200|big|low-latency verified)
+# Adapted to GB300 per DeepSeek-V4.mdx: "GB300 4 GPU" is the single-node config
+name: "dsv4-pro-gb300-agg-ll-1k1k"
+
+slurm:
+  partition: gb300
+  time_limit: "4:00:00"
+
+model:
+  path: "dsv4-pro"
+  container: "dsv4-grace-blackwell"
+  precision: "fp4"
+
+frontend:
+  type: sglang
+
+resources:
+  gpu_type: "gb300"
+  gpus_per_node: 4
+  agg_nodes: 1
+  agg_workers: 1
+
+backend:
+  type: sglang
+
+  aggregated_environment:
+    PYTHONUNBUFFERED: "1"
+    SGLANG_JIT_DEEPGEMM_PRECOMPILE: "0"
+    SGLANG_JIT_DEEPGEMM_FAST_WARMUP: "1"
+    SGLANG_MOONCAKE_CUSTOM_MEM_POOL: "True"
+    NCCL_MNNVL_ENABLE: "1"
+    NCCL_CUMEM_ENABLE: "1"
+
+  sglang_config:
+    aggregated:
+      served-model-name: "deepseek-ai/DeepSeek-V4-Pro"
+      model-path: "/model/"
+      trust-remote-code: true
+
+      tensor-parallel-size: 4
+
+      # V4 low-latency recipe: MXFP4 MoE + MTP 3/4 + chunked-prefill 4096
+      moe-runner-backend: "flashinfer_mxfp4"
+      speculative-algo: "EAGLE"
+      speculative-num-steps: 3
+      speculative-eagle-topk: 1
+      speculative-num-draft-tokens: 4
+      chunked-prefill-size: 4096
+      disable-flashinfer-autotune: true
+      mem-fraction-static: 0.78
+
+      # Generic knobs
+      context-length: 2200
+      cuda-graph-max-bs: 8
+      max-running-requests: 8
+      disable-radix-cache: true
+      decode-log-interval: 1
+      stream-interval: 50
+
+benchmark:
+  type: "sa-bench"
+  isl: 1024
+  osl: 1024
+  random_range_ratio: 0.8
+  concurrencies: "1x2x4x8"
+  req_rate: "inf"
+  use_chat_template: false

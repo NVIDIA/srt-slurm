@@ -916,6 +916,34 @@ def main(args: argparse.Namespace):
         custom_tokenizer=args.custom_tokenizer,
     )
 
+    if args.use_chat_template:
+        # Fail fast with an actionable message when --use-chat-template is set
+        # but the loaded tokenizer cannot render a chat template. The default
+        # HF DeepSeek-V4 tokenizer has no jinja chat_template and would otherwise
+        # crash deep inside transformers with a generic ValueError.
+        from transformers.tokenization_utils_base import PreTrainedTokenizerBase
+        has_jinja = bool(getattr(tokenizer, "chat_template", None))
+        has_method_override = (
+            type(tokenizer).apply_chat_template
+            is not PreTrainedTokenizerBase.apply_chat_template
+        )
+        if not has_jinja and not has_method_override:
+            raise ValueError(
+                "--use-chat-template was set, but the loaded tokenizer "
+                f"({type(tokenizer).__name__}) has no jinja chat_template and "
+                "does not override apply_chat_template().\n"
+                "\n"
+                "For DeepSeek-V4 / DSV4-Pro, set in your recipe:\n"
+                "  benchmark:\n"
+                "    custom_tokenizer: "
+                "sa_bench_tokenizers.sglang_deepseek_v4.SGLangDeepseekV4Tokenizer\n"
+                "\n"
+                "Or, to skip chat-template formatting entirely (random tokens "
+                "sent raw, mirrors pre-DSV4 behavior):\n"
+                "  benchmark:\n"
+                "    use_chat_template: false\n"
+            )
+
     if args.dataset_name == "custom":
         from benchmark_dataset import sample_custom_requests
 

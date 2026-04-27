@@ -226,8 +226,10 @@ class BenchmarkType(str, Enum):
     ROUTER = "router"
     MOONCAKE_ROUTER = "mooncake-router"
     TRACE_REPLAY = "trace-replay"
+    AIME = "aime"
     MMLU = "mmlu"
     GPQA = "gpqa"
+    GSM8K = "gsm8k"
     LONGBENCHV2 = "longbenchv2"
 
 
@@ -584,6 +586,7 @@ class BenchmarkConfig:
     max_context_length: int | None = None
     categories: list[str] | None = None
     num_shots: int | None = None  # GSM8K few-shot examples
+    aime_dataset: str | None = None  # NeMo Skills AIME dataset: aime24, aime25, or aime26
     temperature: float | None = None
     top_p: float | None = None
     top_k: int | None = None
@@ -952,9 +955,14 @@ class DynamoConfig:
 
         # Original SGLang container path
         sglang = (
-            "apt-get update -qq && apt-get install -y -qq libclang-dev curl > /dev/null 2>&1 && "
+            # protobuf-compiler is required by modelexpress-common's build.rs (prost-build).
+            # Some SGLang images ship without /usr/bin/protoc; install it unconditionally.
+            "apt-get update -qq && apt-get install -y -qq libclang-dev curl protobuf-compiler > /dev/null 2>&1 && "
             "if ! command -v cargo &>/dev/null; then curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable -q && source $HOME/.cargo/env; fi && "
-            "if ! command -v maturin &>/dev/null; then pip install --break-system-packages maturin; fi && "
+            # Force-reinstall maturin: some images ship the python module in dist-packages
+            # without the console-script entry point, so `command -v maturin` fails AND a
+            # plain `pip install maturin` reports "already satisfied" and skips the fix.
+            "pip install --break-system-packages --force-reinstall --quiet maturin && "
             "cd /sgl-workspace/ && "
             "git clone https://github.com/ai-dynamo/dynamo.git && "
             "cd dynamo && "
