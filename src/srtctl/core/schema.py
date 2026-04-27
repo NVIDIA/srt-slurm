@@ -13,6 +13,7 @@ Backend configs are defined in srtctl.backends.configs/ for modularity.
 
 import builtins
 import itertools
+import json
 import logging
 from collections.abc import Iterator, Mapping
 from dataclasses import field
@@ -27,7 +28,7 @@ from typing import (
 )
 
 import yaml
-from marshmallow import Schema, ValidationError, fields
+from marshmallow import Schema, ValidationError, fields, pre_load
 from marshmallow_dataclass import dataclass
 
 from srtctl.backends import (
@@ -1124,6 +1125,25 @@ class SrtConfig:
     reporting: ReportingConfig | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
+
+    @pre_load
+    def inject_vllm_profiling_args(self, data, **kwargs):
+        match data.get("backend"), data.get("profiling"):
+            case {"type": "vllm"} as backend, {"type": "nsys"} as profiling:
+                pass
+            case _:
+                return data
+
+        for phase in ("prefill", "decode", "aggregated"):
+            match profiling.get(phase):
+                case {"start_step": int() as start, "stop_step": int() as stop}:
+                    backend.setdefault("vllm_config", {})
+                    backend["vllm_config"].setdefault(phase, {})
+                    backend["vllm_config"][phase]["profiler-config"] = json.dumps(
+                        {"profiler": "cuda", "delay_iterations": start, "max_iterations": stop - start}
+                    )
+
+        return data
 
     def __post_init__(self):
         """Validate configuration after initialization."""
