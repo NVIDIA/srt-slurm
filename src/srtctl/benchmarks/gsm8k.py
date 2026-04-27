@@ -60,7 +60,7 @@ class GSM8KRunner(BenchmarkRunner):
     ) -> list[str]:
         b = config.benchmark
         # TODO: support overriding endpoint via config to target external servers;
-        # mmlu/gpqa/longbenchv2 share the same limitation today.
+        # mmlu/longbenchv2 share the same limitation today.
         endpoint = f"http://localhost:{runtime.frontend_port}"
 
         return [

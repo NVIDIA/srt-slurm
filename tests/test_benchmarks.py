@@ -19,7 +19,6 @@ class TestBenchmarkRegistry:
         assert "sa-bench" in benchmarks
         assert "sglang-bench" in benchmarks
         assert "mmlu" in benchmarks
-        assert "gpqa" in benchmarks
         assert "gsm8k" in benchmarks
         assert "longbenchv2" in benchmarks
         assert "router" in benchmarks

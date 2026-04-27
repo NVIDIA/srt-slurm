@@ -119,8 +119,14 @@ backend:
       reasoning-parser: qwen3
 
 benchmark:
-  type: "gpqa"
-  num_examples: 198
-  max_tokens: 65536
-  repeat: 1
-  num_threads: 64
+  type: custom
+  container_image: nemo-skills
+  env:
+    OPENAI_API_KEY: "EMPTY"
+    HF_TOKEN: "${HF_TOKEN}"
+    MODEL: "Qwen/Qwen3.5-397B-A17B-FP8"
+    MAX_TOKENS: "65536"
+    REPEAT: "1"
+    NUM_THREADS: "64"
+  command: |
+    bash /configs/gpqa/run.sh

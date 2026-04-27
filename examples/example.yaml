@@ -63,7 +63,7 @@ backend:
 
 # Benchmark configuration
 benchmark:
-  type: "sa-bench"           # sa-bench, mmlu, gpqa, custom, or "manual" (no auto-benchmark)
+  type: "sa-bench"           # sa-bench, mmlu, custom, or "manual" (no auto-benchmark)
   isl: 1024                  # Input sequence length
   osl: 1024                  # Output sequence length
   concurrencies: [256, 512]  # Concurrency levels to test
