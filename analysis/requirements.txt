@@ -1,0 +1,7 @@
+numpy>=1.24.0
+pandas>=2.0.0
+plotly>=5.18.0
+pyarrow>=14.0.0
+
+# for dashboard
+streamlit>=1.28.0
