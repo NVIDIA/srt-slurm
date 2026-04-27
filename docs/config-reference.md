@@ -420,7 +420,6 @@ Benchmark configuration. The `type` field determines which benchmark runner is u
 | `sa-bench`        | Throughput/latency serving benchmark           |
 | `sglang-bench`    | SGLang bench_serving benchmark                 |
 | `mmlu`            | MMLU accuracy evaluation                       |
-| `gpqa`            | GPQA (Graduate-level science QA) evaluation    |
 | `longbenchv2`     | Long-context evaluation benchmark              |
 | `router`          | Router performance with prefix caching         |
 | `mooncake-router` | KV-aware routing with Mooncake trace           |
@@ -497,26 +496,6 @@ benchmark:
 | `max_tokens`   | int  | No       | 2048    | Max tokens per response      |
 | `repeat`       | int  | No       | 8       | Number of repeats            |
 | `num_threads`  | int  | No       | 512     | Concurrent threads           |
-
-### gpqa
-
-Graduate-level science QA evaluation using sglang.test.run_eval.
-
-```yaml
-benchmark:
-  type: "gpqa"
-  num_examples: 198                  # Optional: Number of examples
-  max_tokens: 32768                  # Optional: Max tokens per response
-  repeat: 8                          # Optional: Number of repeats
-  num_threads: 128                   # Optional: Concurrent threads
-```
-
-| Field          | Type | Required | Default | Description                  |
-| -------------- | ---- | -------- | ------- | ---------------------------- |
-| `num_examples` | int  | No       | 198     | Number of examples to run    |
-| `max_tokens`   | int  | No       | 32768   | Max tokens per response      |
-| `repeat`       | int  | No       | 8       | Number of repeats            |
-| `num_threads`  | int  | No       | 128     | Concurrent threads           |
 
 ### longbenchv2
 

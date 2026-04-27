@@ -1087,9 +1087,7 @@ src/srtctl/
 |   |-- __init__.py          # Registry and exports
 |   |-- base.py              # BenchmarkRunner ABC, register_benchmark
 |   |-- sa_bench.py          # SA-Bench throughput benchmark
-|   |-- aime.py              # AIME math accuracy benchmark
 |   |-- mmlu.py              # MMLU accuracy benchmark
-|   |-- gpqa.py              # GPQA benchmark
 |   |-- longbenchv2.py       # LongBench v2 benchmark
 |   |-- router.py            # Router benchmark
 |   |-- mooncake_router.py   # Mooncake router benchmark

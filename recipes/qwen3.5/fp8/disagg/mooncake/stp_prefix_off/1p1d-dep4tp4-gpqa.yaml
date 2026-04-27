@@ -110,8 +110,14 @@ backend:
       watchdog-timeout: 1000000
 
 benchmark:
-  type: "gpqa"
-  num_examples: 198
-  max_tokens: 65536
-  repeat: 8
-  num_threads: 128
+  type: custom
+  container_image: nemo-skills
+  env:
+    OPENAI_API_KEY: "EMPTY"
+    HF_TOKEN: "${HF_TOKEN}"
+    MODEL: "Qwen/Qwen3.5-397B-A17B-FP8"
+    MAX_TOKENS: "65536"
+    REPEAT: "8"
+    NUM_THREADS: "128"
+  command: |
+    bash /configs/gpqa/run.sh
