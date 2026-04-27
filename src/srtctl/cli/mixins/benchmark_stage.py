@@ -317,9 +317,7 @@ class BenchmarkStageMixin:
             decode_urls.append(f"http://{leader_ip}:{process.http_port}")
 
         if not decode_urls:
-            logger.warning(
-                "benchmark slow_down requested but no decode worker leaders found; skipping slow_down env"
-            )
+            logger.warning("benchmark slow_down requested but no decode worker leaders found; skipping slow_down env")
             return {}
 
         return {
