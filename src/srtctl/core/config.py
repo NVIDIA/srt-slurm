@@ -161,6 +161,29 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
         config["benchmark"] = benchmark
         logger.debug(f"Resolved benchmark.container_image alias '{benchmark_container}' -> '{resolved_bench}'")
 
+    # Resolve telemetry container aliases (scraper + dcgm/node exporters). All
+    # three are nullable in the schema; only resolve fields that are set.
+    telemetry = config.get("telemetry")
+    if telemetry and containers:
+        scraper_image = telemetry.get("container_image")
+        if scraper_image and scraper_image in containers:
+            resolved_scraper = containers[scraper_image]
+            telemetry["container_image"] = resolved_scraper
+            logger.debug(f"Resolved telemetry.container_image alias '{scraper_image}' -> '{resolved_scraper}'")
+
+        for exporter_key in ("dcgm_exporter", "node_exporter"):
+            exporter = telemetry.get(exporter_key)
+            if not exporter:
+                continue
+            exporter_image = exporter.get("container_image")
+            if exporter_image and exporter_image in containers:
+                resolved_exporter = containers[exporter_image]
+                exporter["container_image"] = resolved_exporter
+                logger.debug(
+                    f"Resolved telemetry.{exporter_key}.container_image alias "
+                    f"'{exporter_image}' -> '{resolved_exporter}'"
+                )
+
     return config
 
 
