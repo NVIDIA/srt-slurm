@@ -91,3 +91,66 @@ def test_vllm_deepseek_v4_adapter_uses_unwrapped_vllm_renderer(monkeypatch):
     assert tokenizer is rendered_tokenizer
     assert calls["renderer_tokenizer"] is fake_hf_tokenizer
     assert calls["from_pretrained"] == ("/model", {"trust_remote_code": True})
+
+
+def test_benchmark_serving_custom_tokenizer_uses_sa_bench_loader(monkeypatch):
+    """Custom tokenizer strings must not be routed through vLLM's wrapper."""
+    sys.path.insert(0, str(SA_BENCH_DIR))
+    try:
+        sys.modules.pop("benchmark_serving", None)
+        module = importlib.import_module("benchmark_serving")
+    finally:
+        sys.path.remove(str(SA_BENCH_DIR))
+
+    calls = []
+    custom_tokenizer = object()
+    default_tokenizer = object()
+
+    def fake_sa_loader(*args, **kwargs):
+        calls.append(("sa-bench", args, kwargs))
+        return custom_tokenizer
+
+    def fake_vllm_loader(*args, **kwargs):
+        calls.append(("vllm", args, kwargs))
+        return default_tokenizer
+
+    monkeypatch.setattr(module, "get_sa_bench_tokenizer", fake_sa_loader)
+    monkeypatch.setattr(module, "get_vllm_tokenizer", fake_vllm_loader)
+
+    tokenizer = module.load_tokenizer(
+        "/model",
+        tokenizer_mode="auto",
+        trust_remote_code=True,
+        custom_tokenizer="sa_bench_tokenizers.vllm_deepseek_v4.VLLMDeepseekV4Tokenizer",
+    )
+
+    assert tokenizer is custom_tokenizer
+    assert calls == [
+        (
+            "sa-bench",
+            ("/model",),
+            {
+                "tokenizer_mode": "auto",
+                "trust_remote_code": True,
+                "custom_tokenizer": "sa_bench_tokenizers.vllm_deepseek_v4.VLLMDeepseekV4Tokenizer",
+            },
+        )
+    ]
+
+    tokenizer = module.load_tokenizer(
+        "/model",
+        tokenizer_mode="auto",
+        trust_remote_code=True,
+        custom_tokenizer=None,
+    )
+
+    assert tokenizer is default_tokenizer
+    assert calls[-1] == (
+        "vllm",
+        ("/model",),
+        {
+            "tokenizer_mode": "auto",
+            "trust_remote_code": True,
+            "custom_tokenizer": None,
+        },
+    )
