@@ -180,13 +180,18 @@ zip_override_8k1k_lowlat:
         expert-parallel-size: 1
         data-parallel-size:   1
 
+        # base decode uses flashinfer_cutedsl which requires deepep a2a for NVFP4
+        # (nvfp4_expert_quant.cuh:572 dimension mismatch with ep=1). Override to
+        # flashinfer_trtllm which has a registered fused func for ("none", ...).
+        moe-runner-backend: "flashinfer_trtllm"
+
         max-running-requests: 4096
         cuda-graph-max-bs:    4096
 
   benchmark:
     isl: 8192
     osl: 1024
-    concurrencies: ["2048"]
+    concurrencies: ["1024"]
 
 
 
