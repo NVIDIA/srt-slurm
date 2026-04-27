@@ -104,6 +104,7 @@ class TestDynamoConfig:
         assert config.version == "0.8.0"
         assert config.hash is None
         assert config.top_of_tree is False
+        assert config.wheel is None
         assert not config.needs_source_install
 
     def test_version_install_command(self):
@@ -115,6 +116,24 @@ class TestDynamoConfig:
         assert "pip install" in cmd
         assert "ai-dynamo-runtime==0.8.0" in cmd
         assert "ai-dynamo==0.8.0" in cmd
+
+    def test_wheel_install_command(self):
+        """Wheel config installs ai-dynamo plus runtime without source build."""
+        from srtctl.core.schema import DynamoConfig
+
+        config = DynamoConfig(wheel="1.2.0.dev20260426")
+        cmd = config.get_install_commands()
+
+        assert config.version is None
+        assert config.needs_source_install is False
+        assert "/srtctl-runtime/dynamo_wheels.py" in cmd
+        assert "ai_dynamo-1.2.0.dev20260426-py3-none-any.whl" in cmd
+        assert "install-ai-dynamo.sh" not in cmd
+        assert "--find-links" not in cmd
+        assert "configs/wheels" not in cmd
+        assert "--extra-index-url" not in cmd
+        assert "maturin" not in cmd
+        assert "git clone" not in cmd
 
     def test_hash_install_command(self):
         """Hash config generates source install command."""
@@ -155,6 +174,40 @@ class TestDynamoConfig:
 
         with pytest.raises(ValueError, match="Cannot specify both"):
             DynamoConfig(hash="abc123", top_of_tree=True)
+
+    def test_hash_and_wheel_not_allowed(self):
+        """Cannot specify both hash and wheel."""
+        from srtctl.core.schema import DynamoConfig
+
+        with pytest.raises(ValueError, match="Cannot specify both"):
+            DynamoConfig(hash="abc123", wheel="1.2.0.dev20260426")
+
+    def test_wheel_filename_not_allowed(self):
+        """Wheel config takes a package version, not an artifact filename."""
+        from srtctl.core.schema import DynamoConfig
+
+        with pytest.raises(ValueError, match="package version"):
+            DynamoConfig(wheel="ai_dynamo-1.2.0.dev20260426-py3-none-any.whl")
+
+    def test_wheel_version_required(self):
+        """Wheel config must provide an exact package version."""
+        from srtctl.core.schema import DynamoConfig
+
+        with pytest.raises(ValueError, match="non-empty package version"):
+            DynamoConfig(wheel="")
+
+    def test_wheel_environment_from_version(self):
+        """Wheel version is converted to setup/prefetch environment."""
+        from srtctl.core.schema import DynamoConfig
+
+        config = DynamoConfig(wheel="1.2.0.dev20260426")
+
+        assert config.wheel_version == "1.2.0.dev20260426"
+        assert config.wheel_name == "ai_dynamo-1.2.0.dev20260426-py3-none-any.whl"
+        assert config.get_wheel_environment() == {
+            "DYNAMO_VERSION": "1.2.0.dev20260426",
+            "DYNAMO_WHEEL_NAME": "ai_dynamo-1.2.0.dev20260426-py3-none-any.whl",
+        }
 
 
 class TestSGLangProtocol:
@@ -478,6 +531,30 @@ class TestSetupScript:
             setup_script="install-sglang-main.sh",
         )
         assert 'export SRTCTL_SETUP_SCRIPT="install-sglang-main.sh"' in script
+
+    def test_sbatch_template_prefetches_dynamo_wheel(self):
+        """dynamo.wheel is exported and prefetched before orchestrator launch."""
+        from pathlib import Path
+
+        from srtctl.cli.submit import generate_minimal_sbatch_script
+        from srtctl.core.schema import DynamoConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/container.sqsh", precision="fp8"),
+            resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1),
+            dynamo=DynamoConfig(
+                install=True,
+                wheel="1.2.0.dev20260426",
+            ),
+        )
+
+        script = generate_minimal_sbatch_script(config, Path("/tmp/test.yaml"))
+
+        assert "export DYNAMO_VERSION=1.2.0.dev20260426" in script
+        assert "export DYNAMO_WHEEL_NAME=ai_dynamo-1.2.0.dev20260426-py3-none-any.whl" in script
+        assert "src/srtctl/runtime_scripts/dynamo_wheels.py" in script
+        assert "configs/prefetch-ai-dynamo-wheel.sh" not in script
 
     def test_setup_script_env_var_override(self, monkeypatch):
         """Test that SRTCTL_SETUP_SCRIPT env var overrides config."""

@@ -83,6 +83,10 @@ class DynamoFrontend:
                 "DYN_REQUEST_PLANE": "nats",
             }
 
+            # Add global recipe environment, including values derived from
+            # dynamo.wheel, before frontend-specific overrides.
+            env_to_set.update(runtime.environment)
+
             # Add frontend env from config
             if config.frontend.env:
                 env_to_set.update(config.frontend.env)

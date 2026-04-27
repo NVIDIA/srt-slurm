@@ -14,6 +14,7 @@ Backend configs are defined in srtctl.backends.configs/ for modularity.
 import builtins
 import itertools
 import logging
+import shlex
 from collections.abc import Iterator, Mapping
 from dataclasses import field
 from enum import Enum
@@ -685,7 +686,7 @@ class ProfilingConfig:
 class DynamoConfig:
     """Dynamo installation configuration.
 
-    Only one of version, hash, or top_of_tree should be specified.
+    Only one of version, hash, top_of_tree, or wheel should be specified.
     Defaults to version="0.8.0" (pip install).
 
     Options:
@@ -694,31 +695,88 @@ class DynamoConfig:
         version: Install specific version from PyPI (e.g., "0.8.0")
         hash: Clone repo and checkout specific commit hash
         top_of_tree: Clone repo at HEAD (latest)
+        wheel: ai-dynamo package version to install via staged wheels. The
+               matching ai-dynamo-runtime wheel is installed automatically.
 
-    If top_of_tree or hash is set, version is automatically cleared.
+    If top_of_tree, hash, or wheel is set, version is automatically cleared.
     """
 
     install: bool = True
     version: str | None = "0.8.0"
     hash: str | None = None
     top_of_tree: bool = False
+    wheel: str | None = None
 
     def __post_init__(self) -> None:
-        # Auto-clear version if hash or top_of_tree is set
-        if self.hash is not None or self.top_of_tree:
+        install_sources = [
+            ("hash", self.hash is not None),
+            ("top_of_tree", self.top_of_tree),
+            ("wheel", self.wheel is not None),
+        ]
+        enabled_sources = [name for name, enabled in install_sources if enabled]
+
+        # Auto-clear version if another install source is set.
+        if enabled_sources:
             object.__setattr__(self, "version", None)
 
         # Validate only one source option is set
-        if self.hash is not None and self.top_of_tree:
-            raise ValueError("Cannot specify both hash and top_of_tree")
+        if len(enabled_sources) > 1:
+            raise ValueError(f"Cannot specify both Dynamo install sources: {', '.join(enabled_sources)}")
+
+        if self.wheel is not None:
+            if not self.wheel.strip():
+                raise ValueError("dynamo.wheel must be a non-empty package version")
+            if Path(self.wheel).name.endswith(".whl") or "/" in self.wheel:
+                raise ValueError("dynamo.wheel must be a package version like '1.2.0.dev20260426', not a filename")
 
     @property
     def needs_source_install(self) -> bool:
         """Whether this config requires a source install (git clone + maturin)."""
-        return self.hash is not None or self.top_of_tree
+        return self.wheel is None and (self.hash is not None or self.top_of_tree)
+
+    @property
+    def wheel_version(self) -> str | None:
+        """Package version requested for staged wheel installation."""
+        return self.wheel
+
+    @property
+    def wheel_name(self) -> str | None:
+        """Return the ai-dynamo wheel filename for the requested package version."""
+        if not self.wheel:
+            return None
+        return f"ai_dynamo-{self.wheel}-py3-none-any.whl"
+
+    def get_wheel_environment(self) -> dict[str, str]:
+        """Environment variables consumed by ai-dynamo prefetch/setup scripts."""
+        if not self.wheel:
+            return {}
+        wheel_name = self.wheel_name
+        env = {"DYNAMO_WHEEL_NAME": wheel_name} if wheel_name else {}
+        version = self.wheel_version
+        if version:
+            env["DYNAMO_VERSION"] = version
+        return env
 
     def get_install_commands(self) -> str:
         """Get the bash commands to install dynamo."""
+        if self.wheel is not None:
+            wheel_name = self.wheel_name or Path(self.wheel).name
+            version = self.wheel_version
+            if not version:
+                raise ValueError("dynamo.wheel must provide an exact package version")
+            start_message = shlex.quote(f"Installing ai-dynamo-runtime and ai-dynamo from wheel {wheel_name}...")
+            done_message = shlex.quote(f"ai-dynamo-runtime and ai-dynamo install path completed for {wheel_name}")
+            return (
+                f"echo {start_message} && "
+                "if [ -f /srtctl-runtime/dynamo_wheels.py ]; then "
+                "python3 /srtctl-runtime/dynamo_wheels.py install; "
+                "else "
+                "echo 'ERROR: /srtctl-runtime/dynamo_wheels.py not found for ai-dynamo wheel install' >&2; "
+                "exit 1; "
+                "fi && "
+                f"echo {done_message}"
+            )
+
         if self.version is not None:
             return (
                 f"echo 'Installing dynamo {self.version}...' && "
