@@ -4,10 +4,13 @@
 
 pip install msgpack
 
-if [ -f /configs/install-ai-dynamo.sh ]; then
-    bash /configs/install-ai-dynamo.sh
-else
-    python3 -m pip install --pre --no-deps --index-url https://pypi.org/simple --extra-index-url https://pypi.nvidia.com "ai-dynamo-runtime==1.2.0.dev20260426" "ai-dynamo==1.2.0.dev20260426"
+if [ -n "${DYNAMO_VERSION:-}" ] || [ -n "${DYNAMO_WHEEL_NAME:-}" ]; then
+    if [ -f /configs/install-ai-dynamo.sh ]; then
+        bash /configs/install-ai-dynamo.sh
+    else
+        echo "ERROR: /configs/install-ai-dynamo.sh not found for ai-dynamo wheel install" >&2
+        exit 1
+    fi
 fi
 
 # Upgrade FlashInfer for the NVLink one-sided all-to-all bf16 dispatch patch.

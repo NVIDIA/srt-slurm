@@ -4,9 +4,15 @@
 
 set -euo pipefail
 
-DYNAMO_VERSION="${DYNAMO_VERSION:-1.2.0.dev20260426}"
-DYNAMO_PACKAGE="${DYNAMO_PACKAGE:-ai-dynamo==${DYNAMO_VERSION}}"
-DYNAMO_RUNTIME_PACKAGE="${DYNAMO_RUNTIME_PACKAGE:-ai-dynamo-runtime==${DYNAMO_VERSION}}"
+DYNAMO_VERSION="${DYNAMO_VERSION:-}"
+
+if [ -z "${DYNAMO_VERSION}" ]; then
+    echo "ERROR: DYNAMO_VERSION must be set for ai-dynamo wheel prefetch" >&2
+    exit 1
+fi
+
+DYNAMO_PACKAGE="ai-dynamo==${DYNAMO_VERSION}"
+DYNAMO_RUNTIME_PACKAGE="ai-dynamo-runtime==${DYNAMO_VERSION}"
 DYNAMO_WHEEL_NAME="${DYNAMO_WHEEL_NAME:-ai_dynamo-${DYNAMO_VERSION}-py3-none-any.whl}"
 DYNAMO_RUNTIME_WHEEL_PATTERN="${DYNAMO_RUNTIME_WHEEL_PATTERN:-ai_dynamo_runtime-${DYNAMO_VERSION}-*.whl}"
 DYNAMO_INDEX_URL="${DYNAMO_INDEX_URL:-https://pypi.org/simple}"

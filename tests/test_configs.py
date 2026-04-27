@@ -156,6 +156,8 @@ class TestDynamoConfig:
         assert "ai-dynamo-runtime==1.2.0.dev20260426" in cmd
         assert "--find-links /configs/wheels" in cmd
         assert "--find-links /configs" in cmd
+        assert "--extra-index-url" not in cmd
+        assert "were not found" in cmd
         assert "maturin" not in cmd
         assert "git clone" not in cmd
 
@@ -229,6 +231,13 @@ fi
 
         with pytest.raises(ValueError, match="package version"):
             DynamoConfig(wheel="ai_dynamo-1.2.0.dev20260426-py3-none-any.whl")
+
+    def test_wheel_version_required(self):
+        """Wheel config must provide an exact package version."""
+        from srtctl.core.schema import DynamoConfig
+
+        with pytest.raises(ValueError, match="non-empty package version"):
+            DynamoConfig(wheel="")
 
     def test_wheel_environment_from_version(self):
         """Wheel version is converted to setup/prefetch environment."""

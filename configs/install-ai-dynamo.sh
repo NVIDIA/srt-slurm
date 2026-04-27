@@ -4,14 +4,18 @@
 
 set -euo pipefail
 
-DYNAMO_VERSION="${DYNAMO_VERSION:-1.2.0.dev20260426}"
-DYNAMO_PACKAGE="${DYNAMO_PACKAGE:-ai-dynamo==${DYNAMO_VERSION}}"
-DYNAMO_RUNTIME_PACKAGE="${DYNAMO_RUNTIME_PACKAGE:-ai-dynamo-runtime==${DYNAMO_VERSION}}"
+DYNAMO_VERSION="${DYNAMO_VERSION:-}"
+
+if [ -z "${DYNAMO_VERSION}" ]; then
+    echo "ERROR: DYNAMO_VERSION must be set for ai-dynamo wheel install" >&2
+    exit 1
+fi
+
+DYNAMO_PACKAGE="ai-dynamo==${DYNAMO_VERSION}"
+DYNAMO_RUNTIME_PACKAGE="ai-dynamo-runtime==${DYNAMO_VERSION}"
 DYNAMO_WHEEL_NAME="${DYNAMO_WHEEL_NAME:-ai_dynamo-${DYNAMO_VERSION}-py3-none-any.whl}"
 DYNAMO_RUNTIME_WHEEL_PATTERN="${DYNAMO_RUNTIME_WHEEL_PATTERN:-ai_dynamo_runtime-${DYNAMO_VERSION}-*.whl}"
 DYNAMO_WHEEL_DIRS="${DYNAMO_WHEEL_DIRS:-/configs/wheels /configs}"
-DYNAMO_INDEX_URL="${DYNAMO_INDEX_URL:-https://pypi.org/simple}"
-DYNAMO_EXTRA_INDEX_URL="${DYNAMO_EXTRA_INDEX_URL:-https://pypi.nvidia.com}"
 PYTHON_BIN="${PYTHON_BIN:-}"
 
 if [ -z "${PYTHON_BIN}" ]; then
@@ -76,14 +80,9 @@ if [ -n "${dynamo_wheel}" ] && [ -n "${runtime_wheel}" ]; then
         "${DYNAMO_RUNTIME_PACKAGE}" \
         "${DYNAMO_PACKAGE}"
 else
-    echo "Installing ai-dynamo-runtime and ai-dynamo ${DYNAMO_VERSION} from package index"
-    "${PYTHON_BIN}" -m pip install \
-        --pre \
-        --no-deps \
-        --index-url "${DYNAMO_INDEX_URL}" \
-        --extra-index-url "${DYNAMO_EXTRA_INDEX_URL}" \
-        "${DYNAMO_RUNTIME_PACKAGE}" \
-        "${DYNAMO_PACKAGE}"
+    echo "ERROR: exact ai-dynamo wheels for ${DYNAMO_VERSION} were not found in ${DYNAMO_WHEEL_DIRS}" >&2
+    echo "ERROR: expected ${DYNAMO_WHEEL_NAME} and ${DYNAMO_RUNTIME_WHEEL_PATTERN}" >&2
+    exit 1
 fi
 
 "${PYTHON_BIN}" - <<'PY'

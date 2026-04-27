@@ -719,8 +719,11 @@ class DynamoConfig:
         if len(enabled_sources) > 1:
             raise ValueError(f"Cannot specify both Dynamo install sources: {', '.join(enabled_sources)}")
 
-        if self.wheel is not None and (Path(self.wheel).name.endswith(".whl") or "/" in self.wheel):
-            raise ValueError("dynamo.wheel must be a package version like '1.2.0.dev20260426', not a filename")
+        if self.wheel is not None:
+            if not self.wheel.strip():
+                raise ValueError("dynamo.wheel must be a non-empty package version")
+            if Path(self.wheel).name.endswith(".whl") or "/" in self.wheel:
+                raise ValueError("dynamo.wheel must be a package version like '1.2.0.dev20260426', not a filename")
 
     @property
     def needs_source_install(self) -> bool:
@@ -792,9 +795,9 @@ class DynamoConfig:
             wheels_path_shell = shlex.quote(f"/configs/wheels/{wheel_name}")
             configs_path_shell = shlex.quote(f"/configs/{wheel_name}")
             version = self.wheel_version
-            package = f"ai-dynamo=={version}" if version else "ai-dynamo"
-            runtime_package = f"ai-dynamo-runtime=={version}" if version else "ai-dynamo-runtime"
-            package_shell = shlex.quote(package)
+            if not version:
+                raise ValueError("dynamo.wheel must provide an exact package version")
+            runtime_package = f"ai-dynamo-runtime=={version}"
             runtime_package_shell = shlex.quote(runtime_package)
             start_message = shlex.quote(f"Installing ai-dynamo-runtime and ai-dynamo from wheel {wheel_name}...")
             done_message = shlex.quote(f"ai-dynamo-runtime and ai-dynamo install path completed for {wheel_name}")
@@ -809,10 +812,8 @@ class DynamoConfig:
                 "python3 -m pip install --pre --no-deps --no-index "
                 f"--find-links /configs {runtime_package_shell} {configs_path_shell}; "
                 "else "
-                "python3 -m pip install --pre --no-deps "
-                "--index-url ${DYNAMO_INDEX_URL:-https://pypi.org/simple} "
-                "--extra-index-url ${DYNAMO_EXTRA_INDEX_URL:-https://pypi.nvidia.com} "
-                f"{runtime_package_shell} {package_shell}; "
+                f"echo 'ERROR: exact ai-dynamo wheels for {version} were not found in /configs/wheels or /configs' >&2; "
+                "exit 1; "
                 "fi && "
                 f"echo {done_message}"
             )
