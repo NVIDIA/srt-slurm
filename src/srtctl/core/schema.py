@@ -948,7 +948,10 @@ def _hash_cached_source_install(dynamo_hash: str) -> str:
         f"mkdir -p {cache} && "
         f"cp /tmp/ai_dynamo_runtime*.whl {cache}/ && "
         f"cd $DYN_BUILD_DIR && "
-        f"tar -czf {cache}/dynamo-src.tar.gz dynamo && "
+        # Exclude cargo's target/ (~2 GB of compiled artifacts; not needed at
+        # install time) and .git/ (~300 MB of pack files). Drops the tarball
+        # from ~3 GB to ~100 MB.
+        f"tar --exclude='target' --exclude='.git' -czf {cache}/dynamo-src.tar.gz dynamo && "
         f"touch {cache}/.complete && "
         f"cd / && rm -rf $DYN_BUILD_DIR; "
         f"fi "
