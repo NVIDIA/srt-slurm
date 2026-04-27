@@ -99,10 +99,10 @@ fi
 echo "Using uv $(uv --version)..."
 
 if [ -n "${DYNAMO_WHEEL_NAME:-}" ] || [ "${SRTCTL_PREFETCH_AI_DYNAMO:-0}" = "1" ]; then
-    if [ -f "${SRTCTL_SOURCE}/configs/prefetch-ai-dynamo-wheel.sh" ]; then
-        bash "${SRTCTL_SOURCE}/configs/prefetch-ai-dynamo-wheel.sh"
+    if [ -f "${SRTCTL_SOURCE}/src/srtctl/runtime_scripts/dynamo_wheels.py" ]; then
+        python3 "${SRTCTL_SOURCE}/src/srtctl/runtime_scripts/dynamo_wheels.py" prefetch
     else
-        echo "WARNING: ${SRTCTL_SOURCE}/configs/prefetch-ai-dynamo-wheel.sh not found"
+        echo "WARNING: ${SRTCTL_SOURCE}/src/srtctl/runtime_scripts/dynamo_wheels.py not found"
     fi
 fi
 

@@ -979,27 +979,17 @@ class DynamoConfig:
         """Get the bash commands to install dynamo."""
         if self.wheel is not None:
             wheel_name = self.wheel_name or Path(self.wheel).name
-            wheels_path_shell = shlex.quote(f"/configs/wheels/{wheel_name}")
-            configs_path_shell = shlex.quote(f"/configs/{wheel_name}")
             version = self.wheel_version
             if not version:
                 raise ValueError("dynamo.wheel must provide an exact package version")
-            runtime_package = f"ai-dynamo-runtime=={version}"
-            runtime_package_shell = shlex.quote(runtime_package)
             start_message = shlex.quote(f"Installing ai-dynamo-runtime and ai-dynamo from wheel {wheel_name}...")
             done_message = shlex.quote(f"ai-dynamo-runtime and ai-dynamo install path completed for {wheel_name}")
             return (
                 f"echo {start_message} && "
-                "if [ -f /configs/install-ai-dynamo.sh ]; then "
-                "bash /configs/install-ai-dynamo.sh; "
-                f"elif [ -f {wheels_path_shell} ]; then "
-                "python3 -m pip install --pre --no-deps --no-index "
-                f"--find-links /configs/wheels {runtime_package_shell} {wheels_path_shell}; "
-                f"elif [ -f {configs_path_shell} ]; then "
-                "python3 -m pip install --pre --no-deps --no-index "
-                f"--find-links /configs {runtime_package_shell} {configs_path_shell}; "
+                "if [ -f /srtctl-runtime/dynamo_wheels.py ]; then "
+                "python3 /srtctl-runtime/dynamo_wheels.py install; "
                 "else "
-                f"echo 'ERROR: exact ai-dynamo wheels for {version} were not found in /configs/wheels or /configs' >&2; "
+                "echo 'ERROR: /srtctl-runtime/dynamo_wheels.py not found for ai-dynamo wheel install' >&2; "
                 "exit 1; "
                 "fi && "
                 f"echo {done_message}"

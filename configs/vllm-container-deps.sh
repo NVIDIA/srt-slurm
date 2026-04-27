@@ -5,10 +5,10 @@
 pip install msgpack
 
 if [ -n "${DYNAMO_VERSION:-}" ] || [ -n "${DYNAMO_WHEEL_NAME:-}" ]; then
-    if [ -f /configs/install-ai-dynamo.sh ]; then
-        bash /configs/install-ai-dynamo.sh
+    if [ -f /srtctl-runtime/dynamo_wheels.py ]; then
+        python3 /srtctl-runtime/dynamo_wheels.py install
     else
-        echo "ERROR: /configs/install-ai-dynamo.sh not found for ai-dynamo wheel install" >&2
+        echo "ERROR: /srtctl-runtime/dynamo_wheels.py not found for ai-dynamo wheel install" >&2
         exit 1
     fi
 fi

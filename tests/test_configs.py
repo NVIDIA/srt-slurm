@@ -175,14 +175,12 @@ class TestDynamoConfig:
 
         assert config.version is None
         assert config.needs_source_install is False
-        assert "install-ai-dynamo.sh" in cmd
+        assert "/srtctl-runtime/dynamo_wheels.py" in cmd
         assert "ai_dynamo-1.2.0.dev20260426-py3-none-any.whl" in cmd
-        assert "--no-deps" in cmd
-        assert "ai-dynamo-runtime==1.2.0.dev20260426" in cmd
-        assert "--find-links /configs/wheels" in cmd
-        assert "--find-links /configs" in cmd
+        assert "install-ai-dynamo.sh" not in cmd
+        assert "--find-links" not in cmd
+        assert "configs/wheels" not in cmd
         assert "--extra-index-url" not in cmd
-        assert "were not found" in cmd
         assert "maturin" not in cmd
         assert "git clone" not in cmd
 
@@ -604,7 +602,8 @@ class TestSetupScript:
 
         assert "export DYNAMO_VERSION=1.2.0.dev20260426" in script
         assert "export DYNAMO_WHEEL_NAME=ai_dynamo-1.2.0.dev20260426-py3-none-any.whl" in script
-        assert "configs/prefetch-ai-dynamo-wheel.sh" in script
+        assert "src/srtctl/runtime_scripts/dynamo_wheels.py" in script
+        assert "configs/prefetch-ai-dynamo-wheel.sh" not in script
 
     def test_setup_script_env_var_override(self, monkeypatch):
         """Test that SRTCTL_SETUP_SCRIPT env var overrides config."""

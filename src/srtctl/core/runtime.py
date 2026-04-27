@@ -212,6 +212,14 @@ class RuntimeContext:
             if configs_dir.exists():
                 container_mounts[configs_dir.resolve()] = Path("/configs")
 
+            wheelhouse_dir = Path(source_dir) / "wheelhouse" / "dynamo"
+            if wheelhouse_dir.exists():
+                container_mounts[wheelhouse_dir.resolve()] = Path("/srtctl-wheels")
+
+        runtime_scripts_dir = Path(__file__).resolve().parent.parent / "runtime_scripts"
+        if runtime_scripts_dir.exists():
+            container_mounts[runtime_scripts_dir.resolve()] = Path("/srtctl-runtime")
+
         # Mount srtctl benchmark scripts
         from srtctl.benchmarks.base import SCRIPTS_DIR
 
