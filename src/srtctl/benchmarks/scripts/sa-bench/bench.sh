@@ -77,6 +77,15 @@ fi
 CHAT_TEMPLATE_ARGS=()
 if [ "$USE_CHAT_TEMPLATE" = "true" ]; then
     CHAT_TEMPLATE_ARGS=(--use-chat-template)
+    if [ -z "$CUSTOM_TOKENIZER" ]; then
+        echo "[sa-bench] notice: use_chat_template=true but no custom_tokenizer set."
+        echo "[sa-bench]   Models without a jinja chat_template (e.g. DeepSeek-V4)"
+        echo "[sa-bench]   will fail fast in benchmark_serving.py with guidance."
+        echo "[sa-bench]   For DSV4, set:"
+        echo "[sa-bench]     benchmark.custom_tokenizer:"
+        echo "[sa-bench]       sa_bench_tokenizers.sglang_deepseek_v4.SGLangDeepseekV4Tokenizer"
+        echo "[sa-bench]   Or set benchmark.use_chat_template: false to skip it."
+    fi
 fi
 
 # Build dataset args
@@ -157,6 +166,7 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
         --percentile-metrics ttft,tpot,itl,e2el \
         --max-concurrency "$concurrency" \
         --trust-remote-code \
+        "${CHAT_TEMPLATE_ARGS[@]}" \
         "${CUSTOM_TOKENIZER_ARGS[@]}"
 
     num_prompts=$((concurrency * NUM_PROMPTS_MULT))
