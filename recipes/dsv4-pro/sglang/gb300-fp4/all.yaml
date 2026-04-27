@@ -1,0 +1,157 @@
+base:
+  name: "dsv4-pro-gb300-fp4"
+
+  slurm:
+    partition: gb300
+    time_limit: "03:00:00"
+
+  frontend:
+    type: sglang
+    enable_multiple_frontends: false
+    args:
+      policy: "cache_aware"
+
+  model:
+    path: "dsv4-pro"
+    container: "dsv4-grace-blackwell"
+    precision: "fp4"
+
+  resources:
+    gpu_type: "gb300"
+    gpus_per_node: 4
+    prefill_nodes: 1
+    prefill_workers: 1
+    decode_nodes: 2
+    decode_workers: 1
+
+  backend:
+    type: sglang
+
+    prefill_environment:
+      PYTHONUNBUFFERED: "1"
+      SGLANG_JIT_DEEPGEMM_PRECOMPILE: "0"
+      SGLANG_ENABLE_THINKING: "1"
+      SGLANG_REASONING_EFFORT: "max"
+      SGLANG_OPT_SWA_SPLIT_LEAF_ON_INSERT: "1"
+      SGLANG_OPT_USE_JIT_NORM: "1"
+      SGLANG_OPT_USE_JIT_INDEXER_METADATA: "1"
+      SGLANG_OPT_USE_TOPK_V2: "1"
+      SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2: "1"
+      SGLANG_OPT_USE_DEEPGEMM_MEGA_MOE: "1"
+      SGLANG_OPT_FIX_HASH_MEGA_MOE: "1"
+      SGLANG_OPT_USE_FAST_MASK_EP: "1"
+      SGLANG_OPT_FIX_MEGA_MOE_MEMORY: "1"
+      SGLANG_OPT_DEEPGEMM_MEGA_MOE_NUM_MAX_TOKENS_PER_RANK: "4096"
+      SGLANG_OPT_FIX_NEXTN_MEGA_MOE: "1"
+      SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK: "0"
+      NCCL_MNNVL_ENABLE: "1"
+      NCCL_CUMEM_ENABLE: "1"
+      SGLANG_MOONCAKE_CUSTOM_MEM_POOL: "True"
+      MC_FORCE_MNNVL: "1"
+
+
+    decode_environment:
+      PYTHONUNBUFFERED: "1"
+      SGLANG_JIT_DEEPGEMM_PRECOMPILE: "0"
+      SGLANG_ENABLE_THINKING: "1"
+      SGLANG_REASONING_EFFORT: "max"
+      SGLANG_OPT_SWA_SPLIT_LEAF_ON_INSERT: "1"
+      SGLANG_OPT_USE_JIT_NORM: "1"
+      SGLANG_OPT_USE_JIT_INDEXER_METADATA: "1"
+      SGLANG_OPT_USE_TOPK_V2: "1"
+      SGLANG_OPT_USE_DEEPGEMM_MEGA_MOE: "1"
+      SGLANG_OPT_FIX_HASH_MEGA_MOE: "1"
+      SGLANG_OPT_USE_FAST_MASK_EP: "1"
+      SGLANG_OPT_FIX_MEGA_MOE_MEMORY: "1"
+      SGLANG_OPT_DEEPGEMM_MEGA_MOE_NUM_MAX_TOKENS_PER_RANK: "4096"
+      SGLANG_OPT_FIX_NEXTN_MEGA_MOE: "1"
+      SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK: "0"
+      NCCL_MNNVL_ENABLE: "1"
+      NCCL_CUMEM_ENABLE: "1"
+      SGLANG_MOONCAKE_CUSTOM_MEM_POOL: "True"
+      MC_FORCE_MNNVL: "1"
+      # SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2 intentionally NOT set: CAR_V2
+      # is single-node only and corrupts results in 2-node decode setups.
+
+    sglang_config:
+      prefill:
+        served-model-name: "deepseek-ai/DeepSeek-V4-Pro"
+        model-path: "/model/"
+        trust-remote-code: true
+
+        # Parallel
+        tensor-parallel-size: 4
+        data-parallel-size: 4
+        expert-parallel-size: 4
+
+        enable-dp-attention: true
+        moe-a2a-backend: "deepep"
+        deepep-config: '{"normal_dispatch":{"num_sms":96},"normal_combine":{"num_sms":96}}'
+
+        disaggregation-mode: "prefill"
+        disaggregation-transfer-backend: mooncake
+
+        mem-fraction-static: 0.90
+        max-running-requests: 512
+        cuda-graph-max-bs: 512
+        chunked-prefill-size: 65536
+        disable-radix-cache: true
+
+      decode:
+        served-model-name: "deepseek-ai/DeepSeek-V4-Pro"
+        model-path: "/model/"
+        trust-remote-code: true
+        disable-radix-cache: true
+
+        disaggregation-mode: "decode"
+        disaggregation-transfer-backend: mooncake
+
+        # Decode: DEP8 (2 nodes)
+        tensor-parallel-size: 8
+        data-parallel-size:   8
+        expert-parallel-size: 8
+
+        # Lower mfs on decode: DEP8 weight memory + KV pool both grow ~2x
+        # vs DEP4, so 0.83 leaves enough headroom for cuda-graph capture
+        # at cgmb=2048.
+        mem-fraction-static: 0.83
+        max-running-requests: 4096
+        cuda-graph-max-bs:    4096
+        swa-full-tokens-ratio: 0.1
+        context-length: 16384
+
+  benchmark:
+    type: "sa-bench"
+    concurrencies: "8192"
+    use_chat_template: false
+
+############ 8k1k ##############
+# [0]is wideep, [1] is narrow ep
+zip_override_8k1k_hightpt:
+  resources:
+    prefill_nodes:   [5, 1]
+    prefill_workers: [5, 1]
+    decode_nodes:    [8, 2]
+    decode_workers:  [1, 1]
+  backend:
+    sglang_config:
+      decode:
+        tensor-parallel-size:     [32, 8]
+        data-parallel-size:       [32, 8]
+        expert-parallel-size:     [32, 8]
+
+        enable-dp-attention: true
+        ep-num-redundant-experts: [32, null]
+        ep-dispatch-algorithm: ["static", null]
+        moe-a2a-backend: "deepep"
+        deepep-config: '{"normal_dispatch":{"num_sms":96},"normal_combine":{"num_sms":96}}'
+
+        max-running-requests: [2048, 256]
+        cuda-graph-max-bs:    [2048, 256]
+
+  benchmark:
+    isl: 8192
+    osl: 1024
+    concurrencies: "4096"
+
+############ 1k1k ###############
