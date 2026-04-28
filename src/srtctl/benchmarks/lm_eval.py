@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 SemiAnalysis LLC. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""lm-eval benchmark runner for InferenceX evals."""
+"""lm-eval benchmark runner for self-contained accuracy evals."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 @register_benchmark("lm-eval")
 class LMEvalRunner(BenchmarkRunner):
-    """lm-eval accuracy evaluation using InferenceX benchmark_lib."""
+    """lm-eval accuracy evaluation for OpenAI-compatible chat APIs."""
 
     @property
     def name(self) -> str:
@@ -46,7 +46,6 @@ class LMEvalRunner(BenchmarkRunner):
             "bash",
             self.script_path,
             endpoint,
-            "/infmax-workspace",
         ]
 
     def get_environment(self, config: SrtConfig, runtime: RuntimeContext) -> dict[str, str]:

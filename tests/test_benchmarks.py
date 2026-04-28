@@ -219,7 +219,7 @@ class TestLMEvalRunner:
         assert "lm-eval" in runner.script_path
 
     def test_build_command(self):
-        """build_command returns the InferenceX lm-eval command."""
+        """build_command returns the self-contained lm-eval command."""
         from unittest.mock import MagicMock
 
         from srtctl.benchmarks.lm_eval import LMEvalRunner
@@ -234,7 +234,6 @@ class TestLMEvalRunner:
             "bash",
             "/srtctl-benchmarks/lm-eval/bench.sh",
             "http://localhost:8000",
-            "/infmax-workspace",
         ]
 
     def test_get_environment_adds_model_defaults(self):
@@ -260,7 +259,7 @@ class TestLMEvalRunner:
 
 
 class TestRunPostEval:
-    """Test SweepOrchestrator InferenceX lm-eval launch path."""
+    """Test SweepOrchestrator lm-eval launch path."""
 
     @staticmethod
     def _make_orchestrator():
@@ -282,7 +281,7 @@ class TestRunPostEval:
             benchmark=BenchmarkConfig(
                 type="lm-eval",
                 concurrencies="128x256",
-                env={"FRAMEWORK": "dynamo-vllm", "EVAL_TASKS_DIR": "utils/evals/gsm8k.yaml"},
+                env={"FRAMEWORK": "dynamo-vllm", "EVAL_TASKS_DIR": "/srtctl-benchmarks/lm-eval/gsm8k.yaml"},
             ),
             health_check=HealthCheckConfig(max_attempts=3, interval_seconds=1),
             frontend=FrontendConfig(type="dynamo"),
@@ -329,7 +328,7 @@ class TestRunPostEval:
         assert command[:2] == ["bash", "/srtctl-benchmarks/lm-eval/bench.sh"]
         assert "/srtctl-benchmarks/gsm8k/bench.sh" not in command
         assert env_to_set["FRAMEWORK"] == "dynamo-vllm"
-        assert env_to_set["EVAL_TASKS_DIR"] == "utils/evals/gsm8k.yaml"
+        assert env_to_set["EVAL_TASKS_DIR"] == "/srtctl-benchmarks/lm-eval/gsm8k.yaml"
         assert env_to_set["MODEL_NAME"] == "test-model"
         assert env_to_set["MODEL_PATH"] == "/model"
         assert env_to_set["EVAL_CONC"] == "256"
@@ -727,6 +726,14 @@ class TestScriptsExist:
         """GSM8K script exists."""
         script = SCRIPTS_DIR / "gsm8k" / "bench.sh"
         assert script.exists()
+
+    def test_lm_eval_bundle_exists(self):
+        """Self-contained lm-eval bundle exists."""
+        bundle = SCRIPTS_DIR / "lm-eval"
+        assert (bundle / "bench.sh").exists()
+        assert (bundle / "gsm8k.yaml").exists()
+        assert (bundle / "thresholds.json").exists()
+        assert (bundle / "validate_scores.py").exists()
 
 
 class TestCustomDatasetLoader:

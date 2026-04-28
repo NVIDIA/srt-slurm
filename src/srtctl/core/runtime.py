@@ -239,13 +239,6 @@ class RuntimeContext:
                 host_path, container_path = mount_spec.split(":", 1)
                 container_mounts[Path(host_path).resolve()] = Path(container_path)
 
-        # Mount InferenceX workspace if available for lm-eval support. Do not
-        # require this path to exist on the login/head node; CI workspaces may
-        # only be visible from the compute nodes through shared storage.
-        infmax_workspace = os.environ.get("INFMAX_WORKSPACE")
-        if infmax_workspace:
-            container_mounts[Path(infmax_workspace)] = Path("/infmax-workspace")
-
         # Add FormattablePath mounts from config.container_mounts
         # These need to be expanded with the runtime context, so we create a
         # temporary context first and then update

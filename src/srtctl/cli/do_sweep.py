@@ -364,7 +364,7 @@ class SweepOrchestrator(
             logger.warning("Model pre-download failed (workers will retry at startup)", exc_info=True)
 
     def _run_post_eval(self, stop_event: threading.Event) -> int:
-        """Run InferenceX lm-eval after benchmark, or directly in eval-only mode."""
+        """Run lm-eval after benchmark, or directly in eval-only mode."""
         from srtctl.benchmarks import get_runner
         from srtctl.core.health import wait_for_model
 
