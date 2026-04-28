@@ -1,4 +1,4 @@
-name: "svf-vllm-disagg-gb200-max-tpt-offload"
+name: "svf-vllm-disagg-gb200-max-tpt"
 setup_script: "vllm-container-deps.sh"
 model:
   path: "deepseekv4-fp4"
@@ -95,7 +95,6 @@ backend:
       data-parallel-size: 8
       data-parallel-rpc-port: 13345
       enable-expert-parallel: true
-      moe-backend: deep_gemm_mega_moe
       max-model-len: 16384
       max-num-seqs: 512
       max-cudagraph-capture-size: 512
