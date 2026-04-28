@@ -1434,7 +1434,9 @@ def main():
                         setup_script=setup_script,
                         tags=tags,
                         output_dir=output_dir,
-                        enforce_preflight=not (mock_mode or is_dry_run),
+                        # Temporarily keep apply unblocked for clusters where
+                        # model paths are only visible from compute nodes.
+                        enforce_preflight=False,
                     )
     except Exception as e:
         # Restore subprocess.run etc. before we exit so in-process test
