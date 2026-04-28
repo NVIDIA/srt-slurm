@@ -133,10 +133,12 @@ class FrontendStageMixin:
         # Install nginx and run it (daemon off keeps nginx in foreground so srun can manage it)
         # Use container path (/logs) since log_dir is mounted there
         container_config_path = "/logs/nginx.conf"
+        # ulimit inlined here because use_bash_wrapper=False bypasses the cluster
+        # default_bash_preamble; tracked for cleanup in a separate issue.
         cmd = [
             "bash",
             "-c",
-            f"nginx -c {container_config_path} -g 'daemon off;'",
+            f"ulimit -n 1048576 && nginx -c {container_config_path} -g 'daemon off;'",
         ]
 
         proc = start_srun_process(

@@ -153,6 +153,7 @@ class TestDynamoConfig:
         assert config.version == "0.8.0"
         assert config.hash is None
         assert config.top_of_tree is False
+        assert config.wheel is None
         assert not config.needs_source_install
 
     def test_version_install_command(self):
@@ -165,22 +166,59 @@ class TestDynamoConfig:
         assert "ai-dynamo-runtime==0.8.0" in cmd
         assert "ai-dynamo==0.8.0" in cmd
 
+    def test_wheel_install_command(self):
+        """Wheel config installs ai-dynamo plus runtime without source build."""
+        from srtctl.core.schema import DynamoConfig
+
+        config = DynamoConfig(wheel="1.2.0.dev20260426")
+        cmd = config.get_install_commands()
+
+        assert config.version is None
+        assert config.needs_source_install is False
+        assert "/srtctl-runtime/dynamo_wheels.py" in cmd
+        assert "ai_dynamo-1.2.0.dev20260426-py3-none-any.whl" in cmd
+        assert "install-ai-dynamo.sh" not in cmd
+        assert "--find-links" not in cmd
+        assert "configs/wheels" not in cmd
+        assert "--extra-index-url" not in cmd
+        assert "maturin" not in cmd
+        assert "git clone" not in cmd
+
     def test_hash_install_command(self):
-        """Hash config generates source install command."""
+        """Hash config generates a cache-aware source-install command.
+
+        The bash should: (1) check the /configs cache, (2) clone+build under
+        flock if cold, (3) install from the cache regardless. Cache is keyed
+        by hash so bumping the hash forces a rebuild.
+        """
         from srtctl.core.schema import DynamoConfig
 
         config = DynamoConfig(hash="abc123")
         assert config.version is None  # Auto-cleared
         assert config.needs_source_install
         cmd = config.get_install_commands()
+
+        # Cache lookup + flock-protected cold build
+        assert "/configs/dynamo-wheels/abc123" in cmd
+        assert "/configs/dynamo-wheels/abc123/.complete" in cmd
+        assert "flock -x 200" in cmd
+        assert "/configs/dynamo-wheels/.abc123.lock" in cmd
+
+        # Cold-cache build still does git clone + checkout + maturin build
         assert "git clone" in cmd
         assert "git checkout abc123" in cmd
         assert "maturin build" in cmd
-        assert "if [ -d /sgl-workspace ]" in cmd
-        assert "/tmp/dynamo_build" in cmd
         assert "protobuf-compiler" in cmd
-        assert "if ! command -v cargo" in cmd
-        assert "if ! command -v maturin" in cmd
+
+        # Cache populate: wheel + tarball + sentinel
+        assert "ai_dynamo_runtime*.whl" in cmd
+        assert "dynamo-src.tar.gz" in cmd
+        assert "touch /configs/dynamo-wheels/abc123/.complete" in cmd
+
+        # Final install from cache
+        assert "pip install --break-system-packages --force-reinstall /configs/dynamo-wheels/abc123/ai_dynamo_runtime-*.whl" in cmd
+        assert "tar -xzf /configs/dynamo-wheels/abc123/dynamo-src.tar.gz" in cmd
+        assert "pip install --break-system-packages -e /tmp/dynamo-src/dynamo" in cmd
 
     def test_top_of_tree_install_command(self):
         """Top-of-tree config generates source install without checkout."""
@@ -204,6 +242,40 @@ class TestDynamoConfig:
 
         with pytest.raises(ValueError, match="Cannot specify both"):
             DynamoConfig(hash="abc123", top_of_tree=True)
+
+    def test_hash_and_wheel_not_allowed(self):
+        """Cannot specify both hash and wheel."""
+        from srtctl.core.schema import DynamoConfig
+
+        with pytest.raises(ValueError, match="Cannot specify both"):
+            DynamoConfig(hash="abc123", wheel="1.2.0.dev20260426")
+
+    def test_wheel_filename_not_allowed(self):
+        """Wheel config takes a package version, not an artifact filename."""
+        from srtctl.core.schema import DynamoConfig
+
+        with pytest.raises(ValueError, match="package version"):
+            DynamoConfig(wheel="ai_dynamo-1.2.0.dev20260426-py3-none-any.whl")
+
+    def test_wheel_version_required(self):
+        """Wheel config must provide an exact package version."""
+        from srtctl.core.schema import DynamoConfig
+
+        with pytest.raises(ValueError, match="non-empty package version"):
+            DynamoConfig(wheel="")
+
+    def test_wheel_environment_from_version(self):
+        """Wheel version is converted to setup/prefetch environment."""
+        from srtctl.core.schema import DynamoConfig
+
+        config = DynamoConfig(wheel="1.2.0.dev20260426")
+
+        assert config.wheel_version == "1.2.0.dev20260426"
+        assert config.wheel_name == "ai_dynamo-1.2.0.dev20260426-py3-none-any.whl"
+        assert config.get_wheel_environment() == {
+            "DYNAMO_VERSION": "1.2.0.dev20260426",
+            "DYNAMO_WHEEL_NAME": "ai_dynamo-1.2.0.dev20260426-py3-none-any.whl",
+        }
 
 
 class TestSGLangProtocol:
@@ -452,6 +524,57 @@ class TestFrontendConfig:
 
         assert resolved["frontend"]["nginx_container"] == "nginx"
 
+    def test_telemetry_container_aliases_resolve(self):
+        from srtctl.core.config import resolve_config_with_defaults
+
+        user_config = {
+            "name": "test",
+            "model": {"path": "/model", "container": "sglang", "precision": "fp8"},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+            "telemetry": {
+                "enabled": True,
+                "container_image": "telemetry-scraper",
+                "dcgm_exporter": {"container_image": "dcgm-exporter", "port": 9401},
+                "node_exporter": {"container_image": "node-exporter", "port": 9101},
+            },
+        }
+        cluster_config = {
+            "containers": {
+                "sglang": "/path/to/sglang.sqsh",
+                "telemetry-scraper": "/path/to/scraper.sqsh",
+                "dcgm-exporter": "/path/to/dcgm.sqsh",
+                "node-exporter": "/path/to/node.sqsh",
+            }
+        }
+
+        resolved = resolve_config_with_defaults(user_config, cluster_config)
+
+        assert resolved["telemetry"]["container_image"] == "/path/to/scraper.sqsh"
+        assert resolved["telemetry"]["dcgm_exporter"]["container_image"] == "/path/to/dcgm.sqsh"
+        assert resolved["telemetry"]["node_exporter"]["container_image"] == "/path/to/node.sqsh"
+
+    def test_telemetry_literal_paths_pass_through(self):
+        from srtctl.core.config import resolve_config_with_defaults
+
+        user_config = {
+            "name": "test",
+            "model": {"path": "/model", "container": "/container.sqsh", "precision": "fp8"},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+            "telemetry": {
+                "enabled": True,
+                "container_image": "/abs/scraper.sqsh",
+                "dcgm_exporter": {"container_image": "/abs/dcgm.sqsh", "port": 9401},
+                "node_exporter": {"container_image": "/abs/node.sqsh", "port": 9101},
+            },
+        }
+        cluster_config = {"containers": {"dcgm-exporter": "/aliased/dcgm.sqsh"}}
+
+        resolved = resolve_config_with_defaults(user_config, cluster_config)
+
+        assert resolved["telemetry"]["container_image"] == "/abs/scraper.sqsh"
+        assert resolved["telemetry"]["dcgm_exporter"]["container_image"] == "/abs/dcgm.sqsh"
+        assert resolved["telemetry"]["node_exporter"]["container_image"] == "/abs/node.sqsh"
+
 
 class TestSetupScript:
     """Tests for setup_script functionality."""
@@ -527,6 +650,31 @@ class TestSetupScript:
             setup_script="install-sglang-main.sh",
         )
         assert 'export SRTCTL_SETUP_SCRIPT="install-sglang-main.sh"' in script
+
+    def test_sbatch_template_prefetches_dynamo_wheel(self):
+        """dynamo.wheel is exported and prefetched before orchestrator launch."""
+        from pathlib import Path
+
+        from srtctl.cli.submit import generate_minimal_sbatch_script
+        from srtctl.core.schema import DynamoConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/container.sqsh", precision="fp8"),
+            resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1),
+            dynamo=DynamoConfig(
+                install=True,
+                wheel="1.2.0.dev20260426",
+            ),
+        )
+
+        script = generate_minimal_sbatch_script(config, Path("/tmp/test.yaml"))
+
+        assert "export DYNAMO_VERSION=1.2.0.dev20260426" in script
+        assert "export DYNAMO_WHEEL_NAME=ai_dynamo-1.2.0.dev20260426-py3-none-any.whl" in script
+        assert 'uv run --no-project --python "${DYNAMO_PYTHON_VERSION:-3.12}" --with pip' in script
+        assert "src/srtctl/runtime_scripts/dynamo_wheels.py" in script
+        assert "configs/prefetch-ai-dynamo-wheel.sh" not in script
 
     def test_setup_script_env_var_override(self, monkeypatch):
         """Test that SRTCTL_SETUP_SCRIPT env var overrides config."""

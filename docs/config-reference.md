@@ -116,8 +116,25 @@ The `srtslurm.yaml` file can contain the following fields:
 | `model_paths`                   | dict   | Model path aliases                                    |
 | `containers`                    | dict   | Container image aliases                               |
 | `default_mounts`                | dict   | Cluster-wide container mounts                         |
+| `default_bash_preamble`         | string | Shell snippet prepended to every container srun       |
 
 **output_dir**: When set, job logs are written to `output_dir/{job_id}/logs` instead of `srtctl_root/outputs/{job_id}/logs`. Useful for CI/CD and ephemeral environments.
+
+**default_bash_preamble**: A shell snippet (e.g. `"ulimit -n 1048576 -s unlimited -u 1048576"`) prepended to every container srun launched by srtctl — workers, frontends, telemetry, benchmark, postprocess. Runs before per-call `bash_preamble` and the main command, so cluster-wide ulimits apply to everything downstream. Silently dropped for distroless containers (e.g. `prom/node-exporter`) that bypass the bash wrapper; a WARNING log is emitted in that case.
+
+### Running without `srtslurm.yaml`
+
+`srtslurm.yaml` is optional. A recipe can be fully self-sustaining as long as it supplies everything the cluster yaml would otherwise provide:
+
+- Set `slurm.account`, `slurm.partition`, and `slurm.time_limit` directly in the recipe (no `default_*` fallback).
+- Use absolute paths for `model.path`, `model.container`, and any other container fields — alias resolution is a no-op without the yaml's `containers:` / `model_paths:` maps.
+- List every cluster-side mount the job needs in `extra_mount` (e.g. the lustre share that holds your model weights and `.sqsh` files). `default_mounts` is the only `srtslurm.yaml` field with no recipe-level equivalent until you spell mounts out yourself.
+- Set `resources.gpus_per_node` explicitly.
+- Status reporting and S3 log upload are skipped (their config lives under `reporting:` in the cluster yaml).
+
+Workers' nats and etcd come from the dynamo/sglang container, not the yaml, so disagg/agg topologies still work end-to-end. `srtctl_root` falls back to the package install path automatically.
+
+This is useful for portable recipes that you want to share across clusters or hand to a teammate without dragging cluster config along.
 
 ---
 

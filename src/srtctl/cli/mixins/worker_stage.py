@@ -64,11 +64,17 @@ class WorkerStageMixin:
         parts = []
 
         # 1. Custom setup script (runs first)
-        if self.config.setup_script:
-            script_path = f"/configs/{self.config.setup_script}"
+        setup_script = getattr(self.config, "setup_script", None)
+        if isinstance(setup_script, str) and setup_script:
+            script_name = shlex.quote(setup_script)
             parts.append(
-                f"echo 'Running setup script: {script_path}' && "
-                f"if [ -f '{script_path}' ]; then bash '{script_path}'; else echo 'WARNING: {script_path} not found'; fi"
+                f"setup_script={script_name} && "
+                'script_path="/configs/${setup_script}" && '
+                'patch_script_path="/configs/patches/${setup_script}" && '
+                'echo "Running setup script: ${script_path} (fallback ${patch_script_path})" && '
+                'if [ -f "${script_path}" ]; then bash "${script_path}"; '
+                'elif [ -f "${patch_script_path}" ]; then bash "${patch_script_path}"; '
+                'else echo "WARNING: ${script_path} or ${patch_script_path} not found"; fi'
             )
 
         # 2. Dynamo installation (required for dynamo.sglang when using dynamo frontend)
@@ -149,6 +155,7 @@ class WorkerStageMixin:
             "NATS_SERVER": f"nats://{self.runtime.nodes.infra}:4222",
             "DYN_SYSTEM_PORT": str(process.sys_port),
             "DYN_REQUEST_PLANE": "nats",
+            "DYN_SKIP_SGLANG_LOG_FORMATTING": "1",
         }
 
         # Add OTEL env vars (before mode-specific env so OTEL_SERVICE_NAME can be overridden)
@@ -278,6 +285,7 @@ class WorkerStageMixin:
             "ETCD_ENDPOINTS": f"http://{self.runtime.nodes.infra}:2379",
             "NATS_SERVER": f"nats://{self.runtime.nodes.infra}:4222",
             "DYN_SYSTEM_PORT": str(leader.sys_port),
+            "DYN_SKIP_SGLANG_LOG_FORMATTING": "1",
         }
 
         # Add OTEL env vars (before mode-specific env so OTEL_SERVICE_NAME can be overridden)
