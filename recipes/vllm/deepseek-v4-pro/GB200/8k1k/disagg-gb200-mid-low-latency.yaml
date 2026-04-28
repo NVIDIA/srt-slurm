@@ -1,4 +1,4 @@
-name: "svf-vllm-disagg-gb200-1p8d-dep8-tp8-offload"
+name: "svf-vllm-disagg-gb200-mid-low-latency"
 setup_script: "vllm-container-deps.sh"
 model:
   path: "deepseekv4-fp4"
@@ -22,6 +22,10 @@ resources:
   decode_workers: 8
   gpus_per_prefill: 8
   gpus_per_decode: 8
+
+infra:
+  etcd_nats_dedicated_node: true
+
 frontend:
   type: dynamo
   enable_multiple_frontends: false
@@ -112,7 +116,7 @@ benchmark:
   type: "sa-bench"
   isl: 8192
   osl: 1024
-  concurrencies: "1x2x4x8x16x32x64x128x256x512"
+  concurrencies: "1x256"
   req_rate: "inf"
   use_chat_template: true
   custom_tokenizer: "sa_bench_tokenizers.vllm_deepseek_v4.VLLMDeepseekV4Tokenizer"
