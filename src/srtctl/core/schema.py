@@ -196,6 +196,11 @@ class ClusterConfig:
     # Cluster-level container mounts (host_path -> container_path)
     # Applied to all jobs on this cluster, useful for cluster-specific paths
     default_mounts: dict[str, str] | None = None
+    # Shell snippet prepended to every container srun (after env exports, before
+    # the main command). Useful for cluster-wide ulimits, e.g.
+    # ``"ulimit -n 1048576 -s unlimited -u 1048576"``. Silently dropped for
+    # sruns that bypass the bash wrapper (distroless containers).
+    default_bash_preamble: str | None = None
     reporting: ReportingConfig | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
