@@ -21,6 +21,7 @@ class TestBenchmarkRegistry:
         assert "mmlu" in benchmarks
         assert "gpqa" in benchmarks
         assert "gsm8k" in benchmarks
+        assert "lm-eval" in benchmarks
         assert "longbenchv2" in benchmarks
         assert "router" in benchmarks
 
@@ -206,6 +207,171 @@ class TestCustomBenchmarkRunner:
         assert runner.build_command(config, runtime) == ["bash", "-lc", "python /bench/run.py --foo bar"]
         assert runner.get_container_image(config, runtime) == "nvcr.io/nvidia/python:3.11"
         assert runner.get_environment(config, runtime) == {"FOO": "bar"}
+
+
+class TestLMEvalRunner:
+    """Test lm-eval runner."""
+
+    def test_get_runner(self):
+        """Can get runner for lm-eval."""
+        runner = get_runner("lm-eval")
+        assert runner.name == "lm-eval"
+        assert "lm-eval" in runner.script_path
+
+    def test_build_command(self):
+        """build_command returns the self-contained lm-eval command."""
+        from unittest.mock import MagicMock
+
+        from srtctl.benchmarks.lm_eval import LMEvalRunner
+
+        runner = LMEvalRunner()
+        runtime = MagicMock()
+        runtime.frontend_port = 8000
+
+        config = MagicMock()
+        cmd = runner.build_command(config, runtime)
+        assert cmd == [
+            "bash",
+            "/srtctl-benchmarks/lm-eval/bench.sh",
+            "http://localhost:8000",
+        ]
+
+    def test_get_environment_adds_model_defaults(self):
+        """Recipe env is preserved and model defaults are added."""
+        from unittest.mock import MagicMock
+
+        from srtctl.benchmarks.lm_eval import LMEvalRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = LMEvalRunner()
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="h100"),
+            benchmark=BenchmarkConfig(type="lm-eval", env={"EVAL_CONC": "128"}),
+        )
+
+        env = runner.get_environment(config, MagicMock())
+
+        assert env["EVAL_CONC"] == "128"
+        assert env["MODEL_NAME"] == "model"
+        assert env["MODEL_PATH"] == "/model"
+
+    def test_bench_script_uses_isolated_eval_venv_with_container_torch(self):
+        """lm-eval deps are isolated without hiding container-native torch."""
+        script = (SCRIPTS_DIR / "lm-eval" / "bench.sh").read_text()
+
+        assert "python3 -m venv --system-site-packages" in script
+        assert "huggingface-hub<1.0" not in script
+        assert '"huggingface-hub>=1.5,<2.0"' in script
+        assert '"${EVAL_PYTHON}" -m lm_eval' in script
+        assert 'for module in ("torch", "transformers", "huggingface_hub", "lm_eval")' in script
+        assert "Skipping score validation because lm-eval failed" in script
+
+
+class TestRunPostEval:
+    """Test SweepOrchestrator lm-eval launch path."""
+
+    @staticmethod
+    def _make_orchestrator():
+        from pathlib import Path
+
+        from srtctl.cli.do_sweep import SweepOrchestrator
+        from srtctl.core.runtime import Nodes, RuntimeContext
+        from srtctl.core.schema import (
+            BenchmarkConfig,
+            FrontendConfig,
+            HealthCheckConfig,
+            ModelConfig,
+            ResourceConfig,
+            SrtConfig,
+        )
+
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model/test-model", container="/image", precision="fp4"),
+            resources=ResourceConfig(
+                gpu_type="h100",
+                gpus_per_node=8,
+                prefill_nodes=1,
+                decode_nodes=1,
+            ),
+            benchmark=BenchmarkConfig(
+                type="lm-eval",
+                concurrencies="128x256",
+                env={"FRAMEWORK": "dynamo-vllm", "EVAL_TASKS_DIR": "/srtctl-benchmarks/lm-eval/gsm8k.yaml"},
+            ),
+            health_check=HealthCheckConfig(max_attempts=3, interval_seconds=1),
+            frontend=FrontendConfig(type="dynamo"),
+        )
+        runtime = RuntimeContext(
+            job_id="12345",
+            run_name="test-run",
+            nodes=Nodes(head="node0", bench="node0", infra="node0", worker=("node0", "node1")),
+            head_node_ip="10.0.0.1",
+            infra_node_ip="10.0.0.1",
+            log_dir=Path("/tmp/logs"),
+            model_path=Path("/model/test-model"),
+            container_image=Path("/path/to/container.sqsh"),
+            gpus_per_node=8,
+            network_interface=None,
+            container_mounts={},
+            environment={},
+        )
+        return SweepOrchestrator(config=config, runtime=runtime)
+
+    def test_post_eval_uses_lm_eval_runner_and_recipe_env(self):
+        import os
+        import threading
+        from unittest.mock import MagicMock, patch
+
+        orch = self._make_orchestrator()
+        stop = threading.Event()
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 0
+        mock_proc.returncode = 0
+        captured_kwargs = {}
+
+        def capture_srun(**kwargs):
+            captured_kwargs.update(kwargs)
+            return mock_proc
+
+        with (
+            patch.dict(os.environ, {"EVAL_ONLY": "false"}, clear=False),
+            patch("srtctl.cli.do_sweep.wait_for_port", return_value=True),
+            patch("srtctl.cli.do_sweep.start_srun_process", side_effect=capture_srun),
+        ):
+            assert orch._run_post_eval(stop) == 0
+
+        command = captured_kwargs["command"]
+        env_to_set = captured_kwargs["env_to_set"]
+        assert command[:2] == ["bash", "/srtctl-benchmarks/lm-eval/bench.sh"]
+        assert "/srtctl-benchmarks/gsm8k/bench.sh" not in command
+        assert env_to_set["FRAMEWORK"] == "dynamo-vllm"
+        assert env_to_set["EVAL_TASKS_DIR"] == "/srtctl-benchmarks/lm-eval/gsm8k.yaml"
+        assert env_to_set["MODEL_NAME"] == "test-model"
+        assert env_to_set["MODEL_PATH"] == "/model"
+        assert env_to_set["EVAL_CONC"] == "256"
+
+    def test_eval_only_waits_for_full_health_check(self):
+        import os
+        import threading
+        from unittest.mock import MagicMock, patch
+
+        orch = self._make_orchestrator()
+        stop = threading.Event()
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 0
+        mock_proc.returncode = 0
+
+        with (
+            patch.dict(os.environ, {"EVAL_ONLY": "true", "EVAL_CONC": "128"}, clear=False),
+            patch("srtctl.core.health.wait_for_model", return_value=True) as mock_wait,
+            patch("srtctl.cli.do_sweep.start_srun_process", return_value=mock_proc),
+        ):
+            assert orch._run_post_eval(stop) == 0
+
+        mock_wait.assert_called_once()
 
 
 class TestSGLangBenchRunner:
@@ -582,6 +748,14 @@ class TestScriptsExist:
         """GSM8K script exists."""
         script = SCRIPTS_DIR / "gsm8k" / "bench.sh"
         assert script.exists()
+
+    def test_lm_eval_bundle_exists(self):
+        """Self-contained lm-eval bundle exists."""
+        bundle = SCRIPTS_DIR / "lm-eval"
+        assert (bundle / "bench.sh").exists()
+        assert (bundle / "gsm8k.yaml").exists()
+        assert (bundle / "thresholds.json").exists()
+        assert (bundle / "validate_scores.py").exists()
 
 
 class TestCustomDatasetLoader:

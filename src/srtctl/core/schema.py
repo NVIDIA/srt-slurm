@@ -235,6 +235,7 @@ class BenchmarkType(str, Enum):
     MMLU = "mmlu"
     GPQA = "gpqa"
     GSM8K = "gsm8k"
+    LM_EVAL = "lm-eval"
     LONGBENCHV2 = "longbenchv2"
 
 
