@@ -23,9 +23,6 @@ resources:
   gpus_per_prefill: 8
   gpus_per_decode: 8
 
-infra:
-  etcd_nats_dedicated_node: true
-
 frontend:
   type: dynamo
   enable_multiple_frontends: false
