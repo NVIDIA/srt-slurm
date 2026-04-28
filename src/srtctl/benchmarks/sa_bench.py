@@ -21,12 +21,13 @@ class SABenchRunner(BenchmarkRunner):
     Tests serving throughput at various concurrency levels.
 
     Required config fields:
-        - benchmark.isl: Input sequence length
-        - benchmark.osl: Output sequence length
         - benchmark.concurrencies: Concurrency levels (e.g., "4x8x16x32")
+        - benchmark.isl / benchmark.osl: Required when dataset_name is "random" (default)
 
     Optional:
         - benchmark.req_rate: Request rate (default: "inf")
+        - benchmark.dataset_name: "random" (default) or "custom"
+        - benchmark.dataset_path: Container path to dataset file (required when dataset_name="custom")
     """
 
     @property
@@ -45,12 +46,17 @@ class SABenchRunner(BenchmarkRunner):
         errors = []
         b = config.benchmark
 
-        if b.isl is None:
-            errors.append("benchmark.isl is required for sa-bench")
-        if b.osl is None:
-            errors.append("benchmark.osl is required for sa-bench")
+        is_custom = b.dataset_name == "custom"
+
+        if not is_custom:
+            if b.isl is None:
+                errors.append("benchmark.isl is required for sa-bench (when dataset_name is not 'custom')")
+            if b.osl is None:
+                errors.append("benchmark.osl is required for sa-bench (when dataset_name is not 'custom')")
         if b.concurrencies is None:
             errors.append("benchmark.concurrencies is required for sa-bench")
+        if is_custom and not b.dataset_path:
+            errors.append("benchmark.dataset_path is required when dataset_name='custom'")
 
         return errors
 
@@ -82,12 +88,14 @@ class SABenchRunner(BenchmarkRunner):
         # Tokenizer path: HF model ID or container mount path
         tokenizer_path = str(runtime.model_path) if runtime.is_hf_model else "/model"
 
+        dataset_name = b.dataset_name or "random"
+
         cmd = [
             "bash",
             self.script_path,
             endpoint,
-            str(b.isl),
-            str(b.osl),
+            str(b.isl or 0),
+            str(b.osl or 0),
             str(concurrencies) if concurrencies else "",
             str(b.req_rate) if b.req_rate else "inf",
             tokenizer_path,
@@ -101,5 +109,7 @@ class SABenchRunner(BenchmarkRunner):
             str(b.num_warmup_mult) if b.num_warmup_mult is not None else "2",
             b.custom_tokenizer or "",
             str(b.use_chat_template).lower(),
+            dataset_name,
+            b.dataset_path or "",
         ]
         return cmd
