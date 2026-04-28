@@ -41,7 +41,8 @@ _install_lm_eval_deps() {
         fi
         EVAL_PYTHON="${EVAL_VENV_DIR}/bin/python"
         export EVAL_PYTHON
-        "${EVAL_PYTHON}" -m pip install -q --no-cache-dir --upgrade pip setuptools wheel
+        "${EVAL_PYTHON}" -m pip install -q --no-cache-dir --upgrade \
+            pip wheel "setuptools>=77.0.3,<81.0.0"
     fi
 
     _pip_install() {
@@ -62,6 +63,7 @@ _install_lm_eval_deps() {
     # breaks import at lm-eval startup.
     _pip_install "lm-eval[api]"
     _pip_install "huggingface-hub>=1.5,<2.0"
+    _pip_install "setuptools>=77.0.3,<81.0.0"
     local lm_eval_ref="b315ef3b05176acc9732bb7fdec116abe1ecc476"
     if command -v git >/dev/null 2>&1; then
         if ! _pip_install --no-deps --force-reinstall \
