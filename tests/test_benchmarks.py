@@ -257,6 +257,17 @@ class TestLMEvalRunner:
         assert env["MODEL_NAME"] == "model"
         assert env["MODEL_PATH"] == "/model"
 
+    def test_bench_script_uses_isolated_eval_venv_with_container_torch(self):
+        """lm-eval deps are isolated without hiding container-native torch."""
+        script = (SCRIPTS_DIR / "lm-eval" / "bench.sh").read_text()
+
+        assert "python3 -m venv --system-site-packages" in script
+        assert "huggingface-hub<1.0" not in script
+        assert '"huggingface-hub>=1.5,<2.0"' in script
+        assert '"${EVAL_PYTHON}" -m lm_eval' in script
+        assert 'for module in ("torch", "transformers", "huggingface_hub", "lm_eval")' in script
+        assert "Skipping score validation because lm-eval failed" in script
+
 
 class TestRunPostEval:
     """Test SweepOrchestrator lm-eval launch path."""

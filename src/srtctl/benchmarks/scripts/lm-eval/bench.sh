@@ -12,11 +12,13 @@ ENDPOINT=$1
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="${LOG_DIR:-/logs}"
 WORK_DIR="${EVAL_WORK_DIR:-${LOG_DIR}/lm-eval-work}"
+EVAL_VENV_DIR="${EVAL_VENV_DIR:-${WORK_DIR}/venv}"
+EVAL_PYTHON="${EVAL_PYTHON:-python3}"
 
 HOST=$(echo "$ENDPOINT" | sed -E 's|https?://||; s|:.*||')
 PORT=$(echo "$ENDPOINT" | sed -E 's|.*:([0-9]+).*|\1|')
 
-echo "lm-eval Config: endpoint=${ENDPOINT}; host=${HOST}; port=${PORT}; work_dir=${WORK_DIR}"
+echo "lm-eval Config: endpoint=${ENDPOINT}; host=${HOST}; port=${PORT}; work_dir=${WORK_DIR}; venv=${EVAL_VENV_DIR}"
 
 if [[ -z "${MODEL_NAME:-}" ]]; then
     DISCOVERED_MODEL=$(curl -sf "${ENDPOINT}/v1/models" 2>/dev/null \
@@ -33,19 +35,33 @@ else
 fi
 
 _install_lm_eval_deps() {
+    if [[ "${EVAL_USE_SYSTEM_PYTHON:-false}" != "true" ]]; then
+        if [[ ! -x "${EVAL_VENV_DIR}/bin/python" ]]; then
+            python3 -m venv --system-site-packages "${EVAL_VENV_DIR}"
+        fi
+        EVAL_PYTHON="${EVAL_VENV_DIR}/bin/python"
+        export EVAL_PYTHON
+        "${EVAL_PYTHON}" -m pip install -q --no-cache-dir --upgrade pip setuptools wheel
+    fi
+
     _pip_install() {
         local pip_args=(-q --no-cache-dir)
         pip_args+=(--index-url "${EVAL_PIP_INDEX_URL:-https://pypi.org/simple}")
         if [[ -n "${EVAL_PIP_EXTRA_INDEX_URL:-}" ]]; then
             pip_args+=(--extra-index-url "${EVAL_PIP_EXTRA_INDEX_URL}")
         fi
-        if python3 -m pip install --help 2>/dev/null | grep -q -- "--break-system-packages"; then
+        if "${EVAL_PYTHON}" -m pip install --help 2>/dev/null | grep -q -- "--break-system-packages"; then
             pip_args+=(--break-system-packages)
         fi
-        python3 -m pip install "${pip_args[@]}" "$@"
+        "${EVAL_PYTHON}" -m pip install "${pip_args[@]}" "$@"
     }
 
-    _pip_install "lm-eval[api]" "huggingface-hub<1.0" || true
+    # Keep eval deps out of the serving environment, but let the venv see
+    # container-native torch/CUDA packages. The vLLM 0.20 image ships
+    # transformers 5.x, which requires huggingface-hub >=1.5; pinning hub<1.0
+    # breaks import at lm-eval startup.
+    _pip_install "lm-eval[api]"
+    _pip_install "huggingface-hub>=1.5,<2.0"
     local lm_eval_ref="b315ef3b05176acc9732bb7fdec116abe1ecc476"
     if command -v git >/dev/null 2>&1; then
         if ! _pip_install --no-deps --force-reinstall \
@@ -57,6 +73,18 @@ _install_lm_eval_deps() {
         _pip_install --no-deps --force-reinstall \
             "https://github.com/EleutherAI/lm-evaluation-harness/archive/${lm_eval_ref}.tar.gz" || true
     fi
+
+    if ! "${EVAL_PYTHON}" - <<'PY'
+import importlib
+
+for module in ("torch", "transformers", "huggingface_hub", "lm_eval"):
+    importlib.import_module(module)
+PY
+    then
+        echo "ERROR: lm-eval dependency import check failed." >&2
+        echo "The eval venv uses --system-site-packages so it can see container torch; set EVAL_USE_SYSTEM_PYTHON=true only if you want to debug the raw container environment." >&2
+        return 1
+    fi
 }
 
 _patch_lm_eval() {
@@ -64,8 +92,6 @@ _patch_lm_eval() {
     patch_dir="$(mktemp -d /tmp/lm_eval_patch-XXXXXX)"
     cat > "${patch_dir}/sitecustomize.py" <<'PY'
 import json
-
-from lm_eval.models.openai_completions import LocalChatCompletion as _LCC
 
 try:
     from lm_eval.filters import extraction as ex
@@ -111,25 +137,29 @@ class _JsonChatStr(str):
     pass
 
 
-_orig_template_call = _LCC._create_payload
+try:
+    from lm_eval.models.openai_completions import LocalChatCompletion as _LCC
+
+    _orig_template_call = _LCC._create_payload
+
+    def _patched_create_payload(self, messages, generate=False, gen_kwargs=None, seed=1234, eos=None, **kwargs):
+        if isinstance(messages, str):
+            try:
+                messages = json.loads(messages)
+            except Exception:
+                pass
+        payload = _orig_template_call(self, messages, generate=generate, gen_kwargs=gen_kwargs, seed=seed, eos=eos, **kwargs)
+        if isinstance(payload.get("messages"), str):
+            try:
+                payload["messages"] = json.loads(payload["messages"])
+            except Exception:
+                pass
+        return payload
 
 
-def _patched_create_payload(self, messages, generate=False, gen_kwargs=None, seed=1234, eos=None, **kwargs):
-    if isinstance(messages, str):
-        try:
-            messages = json.loads(messages)
-        except Exception:
-            pass
-    payload = _orig_template_call(self, messages, generate=generate, gen_kwargs=gen_kwargs, seed=seed, eos=eos, **kwargs)
-    if isinstance(payload.get("messages"), str):
-        try:
-            payload["messages"] = json.loads(payload["messages"])
-        except Exception:
-            pass
-    return payload
-
-
-_LCC._create_payload = _patched_create_payload
+    _LCC._create_payload = _patched_create_payload
+except Exception:
+    pass
 
 try:
     from lm_eval.models import api_models as _api_models
@@ -161,7 +191,7 @@ get_native_max_context_length() {
     if [[ -n "${MODEL_PATH:-}" && -d "${MODEL_PATH}" ]]; then
         model_path="${MODEL_PATH}"
     fi
-    python3 -c "
+    "${EVAL_PYTHON}" -c "
 try:
     from transformers import AutoConfig
     config = AutoConfig.from_pretrained('${model_path}', trust_remote_code=True)
@@ -315,7 +345,7 @@ if [[ -n "${EVAL_NUM_FEWSHOT:-}" ]]; then
     limit_args+=(--num_fewshot "${EVAL_NUM_FEWSHOT}")
 fi
 
-python3 -m lm_eval --model local-chat-completions --apply_chat_template \
+"${EVAL_PYTHON}" -m lm_eval --model local-chat-completions --apply_chat_template \
     --tasks "${TASKS_FILE}" \
     --output_path "${RESULTS_DIR}" \
     --log_samples \
@@ -331,11 +361,13 @@ cp -v meta_env.json "${LOG_DIR}/eval_results/" 2>/dev/null || true
 cp -v results*.json "${LOG_DIR}/eval_results/" 2>/dev/null || true
 cp -v sample*.jsonl "${LOG_DIR}/eval_results/" 2>/dev/null || true
 
-if [[ "${VALIDATE_EVAL_SCORES:-false}" == "true" ]]; then
+if [[ "${VALIDATE_EVAL_SCORES:-false}" == "true" && "$eval_rc" -eq 0 ]]; then
     echo "Validating eval scores..."
-    python3 "${SCRIPT_DIR}/validate_scores.py" \
+    "${EVAL_PYTHON}" "${SCRIPT_DIR}/validate_scores.py" \
         --thresholds "${EVAL_THRESHOLDS:-${SCRIPT_DIR}/thresholds.json}" \
         --results-glob "results*.json"
+elif [[ "${VALIDATE_EVAL_SCORES:-false}" == "true" ]]; then
+    echo "Skipping score validation because lm-eval failed with exit code ${eval_rc}"
 fi
 
 if [[ "$eval_rc" -ne 0 ]]; then
