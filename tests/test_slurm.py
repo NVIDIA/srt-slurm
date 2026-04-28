@@ -137,6 +137,7 @@ def test_worker_stage_wraps_nonfatal_fingerprint_hook(tmp_path: Path) -> None:
         sys_port=5000,
         gpu_indices=list(range(8)),
         cuda_visible_devices="0,1,2,3,4,5,6,7",
+        num_visible_gpus=8,
     )
 
     with (

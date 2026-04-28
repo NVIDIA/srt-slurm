@@ -242,8 +242,11 @@ class VLLMProtocol:
                     )
                     current_sys_port += 1
             else:
-                # DP+EP mode: one process per GPU
-                # Each process gets a single GPU and a unique dp_rank
+                # DP+EP mode: one process per GPU. Each process *owns* one GPU
+                # (gpu_indices, used for telemetry tagging) but is given
+                # visibility to the endpoint's full GPU set on the node via
+                # visible_gpu_indices, so CUDA_VISIBLE_DEVICES isn't constrained
+                # to the rank's single device.
                 dp_rank = 0
                 for _node_rank, node in enumerate(endpoint.nodes):
                     for gpu_idx in sorted(endpoint.gpu_indices):
@@ -260,7 +263,8 @@ class VLLMProtocol:
                         processes.append(
                             Process(
                                 node=node,
-                                gpu_indices=frozenset([gpu_idx]),  # Single GPU per process
+                                gpu_indices=frozenset([gpu_idx]),
+                                visible_gpu_indices=endpoint.gpu_indices,
                                 sys_port=current_sys_port,
                                 http_port=http_port,
                                 endpoint_mode=endpoint.mode,
@@ -365,6 +369,18 @@ class VLLMProtocol:
                 ]
             )
             # Note: --data-parallel-size is added via _config_to_cli_args from vllm_config
+
+            # When the process can see more GPUs than it owns (i.e. CUDA_VISIBLE_DEVICES
+            # exposes the whole local DP group rather than a single device), vLLM can't
+            # infer the local DP rank from CUDA_VISIBLE_DEVICES alone — there may be
+            # multiple GPUs per DP rank, so the local rank doesn't necessarily match
+            # any GPU index. Compute it as the position among DP processes on the same
+            # node, ordered by global dp_rank.
+            if process.visible_gpu_indices is not None and len(process.visible_gpu_indices) > len(process.gpu_indices):
+                local_dp_rank = sum(
+                    1 for p in endpoint_processes if p.node == process.node and p.node_rank < process.node_rank
+                )
+                cmd.extend(["--local-data-parallel-rank", str(local_dp_rank)])
         elif is_multi_node:
             # Standard TP+PP multi-node coordination flags
             node_rank = endpoint_nodes.index(process.node)

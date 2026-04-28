@@ -1161,9 +1161,12 @@ class TestVLLMDataParallelMode:
         # Should create 16 processes (1 per GPU), not 2 (1 per node)
         assert len(processes) == 16
 
-        # Each process should have exactly 1 GPU
+        # Each process owns exactly 1 GPU (for telemetry tagging) but is given
+        # visibility to the endpoint's full GPU set on the node so
+        # CUDA_VISIBLE_DEVICES isn't constrained to that single device.
         for proc in processes:
             assert len(proc.gpu_indices) == 1
+            assert proc.visible_gpu_indices == frozenset(range(8))
 
         # First 8 processes on node0, next 8 on node1
         node0_processes = [p for p in processes if p.node == "node0"]
@@ -1262,6 +1265,85 @@ class TestVLLMDataParallelMode:
         assert "--nnodes" not in cmd
         assert "--node-rank" not in cmd
         assert "--headless" not in cmd
+
+        # Single-GPU visibility (visible_gpu_indices unset): vLLM can infer
+        # the local DP rank from CUDA_VISIBLE_DEVICES, so we don't pass it.
+        assert "--local-data-parallel-rank" not in cmd
+
+    def test_dp_mode_command_includes_local_dp_rank_with_full_visibility(self):
+        """When the process sees the whole local DP group, the command should pass
+        --local-data-parallel-rank (computed as position among same-node DP processes,
+        not as a GPU index)."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Process
+
+        backend = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                prefill={
+                    "data-parallel-size": 16,
+                    "enable-expert-parallel": True,
+                },
+            )
+        )
+
+        # 2 nodes × 8 ranks; pick a process on node1 with global dp_rank=10.
+        # Local DP rank on node1 should be 10 - 8 = 2, regardless of which GPU
+        # this rank happens to own.
+        all_node_gpus = frozenset(range(8))
+        process = Process(
+            node="node1",
+            gpu_indices=frozenset([2]),
+            visible_gpu_indices=all_node_gpus,
+            sys_port=8091,
+            http_port=0,
+            endpoint_mode="prefill",
+            endpoint_index=0,
+            node_rank=10,
+        )
+
+        endpoint_processes = [
+            Process(
+                node="node0",
+                gpu_indices=frozenset([i]),
+                visible_gpu_indices=all_node_gpus,
+                sys_port=8081 + i,
+                http_port=0,
+                endpoint_mode="prefill",
+                endpoint_index=0,
+                node_rank=i,
+            )
+            for i in range(8)
+        ] + [
+            Process(
+                node="node1",
+                gpu_indices=frozenset([i]),
+                visible_gpu_indices=all_node_gpus,
+                sys_port=8089 + i,
+                http_port=0,
+                endpoint_mode="prefill",
+                endpoint_index=0,
+                node_rank=8 + i,
+            )
+            for i in range(8)
+        ]
+
+        mock_runtime = MagicMock()
+        mock_runtime.model_path = Path("/model")
+        mock_runtime.is_hf_model = False
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            cmd = backend.build_worker_command(
+                process=process,
+                endpoint_processes=endpoint_processes,
+                runtime=mock_runtime,
+            )
+
+        assert "--local-data-parallel-rank" in cmd
+        idx = cmd.index("--local-data-parallel-rank")
+        assert cmd[idx + 1] == "2"
 
     def test_standard_tp_mode_still_works(self):
         """Test that standard TP mode (no DP) still creates per-node processes."""

@@ -146,7 +146,7 @@ class Process:
 
     Attributes:
         node: The node hostname this process runs on
-        gpu_indices: GPU indices visible to this process
+        gpu_indices: GPU indices owned/used by this process (drives telemetry tagging)
         sys_port: DYN_SYSTEM_PORT for this process
         http_port: HTTP serving port for this process (avoids conflicts on same node)
         bootstrap_port: P/D coordination port (only for prefill leaders)
@@ -155,6 +155,10 @@ class Process:
         endpoint_mode: The mode of the parent endpoint
         endpoint_index: The index of the parent endpoint
         node_rank: Rank within the endpoint (0 for leader)
+        visible_gpu_indices: Override for CUDA_VISIBLE_DEVICES when the set of
+            GPUs the process should *see* differs from the GPUs it owns (e.g.
+            vLLM DP+EP, where each rank owns one GPU but needs visibility to
+            the whole local group). Defaults to ``gpu_indices``.
     """
 
     node: str
@@ -167,6 +171,7 @@ class Process:
     bootstrap_port: int | None = None
     kv_events_port: int | None = None
     nixl_port: int | None = None
+    visible_gpu_indices: frozenset[int] | None = None
 
     @property
     def is_leader(self) -> bool:
@@ -174,9 +179,18 @@ class Process:
         return self.node_rank == 0
 
     @property
+    def _visible_indices(self) -> frozenset[int]:
+        return self.visible_gpu_indices if self.visible_gpu_indices is not None else self.gpu_indices
+
+    @property
+    def num_visible_gpus(self) -> int:
+        """Number of GPUs visible to this process (for CUDA_VISIBLE_DEVICES decisions)."""
+        return len(self._visible_indices)
+
+    @property
     def cuda_visible_devices(self) -> str:
         """CUDA_VISIBLE_DEVICES string for this process."""
-        return ",".join(str(i) for i in sorted(self.gpu_indices))
+        return ",".join(str(i) for i in sorted(self._visible_indices))
 
 
 def allocate_endpoints(
