@@ -16,6 +16,7 @@ frontend:
   enable_multiple_frontends: true
   num_additional_frontends: 8
   nginx_container: /mnt/home/yangminl/containers/nginx-1.27.4.sqsh
+  nginx_raise_ulimit: true
 
 model:
   path: dsv4-pro
