@@ -115,8 +115,9 @@ benchmark:
   osl: 1024
   concurrencies: "117"
   req_rate: "inf"
+  num_prompts_mult: 16
   custom_tokenizer: "glm_moe_dsa"
-  use_chat_template: false
+  use_chat_template: true
 
 frontend:
   type: "dynamo"

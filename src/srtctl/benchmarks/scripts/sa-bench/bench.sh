@@ -83,7 +83,7 @@ PORT=$(echo "$ENDPOINT" | sed 's|http://||' | cut -d: -f2 | cut -d/ -f1)
 
 WORK_DIR="$(dirname "$0")"
 
-echo "SA-Bench Config: endpoint=${ENDPOINT}; isl=${ISL}; osl=${OSL}; concurrencies=${CONCURRENCIES}; req_rate=${REQ_RATE}; model=${MODEL_NAME}"
+echo "SA-Bench Config: endpoint=${ENDPOINT}; isl=${ISL}; osl=${OSL}; concurrencies=${CONCURRENCIES}; req_rate=${REQ_RATE}; model=${MODEL_NAME}; num_prompts_mult=${NUM_PROMPTS_MULT}; num_warmup_mult=${NUM_WARMUP_MULT}"
 
 # Profiling shared helpers
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -138,7 +138,7 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
         --trust-remote-code \
         "${CUSTOM_TOKENIZER_ARGS[@]}"
 
-    num_prompts=$((concurrency * 10))
+    num_prompts=$((concurrency * NUM_PROMPTS_MULT))
     
     # Generate result filename based on mode
     if [ "$IS_DISAGGREGATED" = "true" ]; then
