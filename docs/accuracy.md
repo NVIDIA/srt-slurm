@@ -1,6 +1,6 @@
 # Accuracy Benchmarks
 
-In srt-slurm, users can run different accuracy benchmarks by setting the benchmark section in the config yaml file. Supported benchmarks include `aime`, `mmlu`, `gpqa` and `longbenchv2`.
+In srt-slurm, users can run different accuracy benchmarks by setting the benchmark section in the config yaml file. Supported benchmarks include `mmlu`, `gpqa`, `longbenchv2`, and AIME (via the script under `configs/aime/`).
 
 ## Table of Contents
 
@@ -36,104 +36,88 @@ accuracy on the same serving setup.
 
 ## AIME
 
-For AIME, the benchmark section in yaml file can be modified in the following way:
-```bash
+AIME runs in the official **NeMo Skills container** (`nvcr.io/nvidia/eval-factory/nemo-skills:26.03`),
+side-by-side with the model server. There is no first-class `type: aime` runner —
+the eval logic lives in `configs/aime/run.sh` and recipes wire it up via
+`type: custom`.
+
+### Recipe shape
+
+```yaml
 benchmark:
-  type: "aime"
-  aime_dataset: "aime25" # One of: aime24, aime25, aime26
-  num_examples: null # Number of examples to run; null means all
-  max_tokens: 24576 # Max number of output tokens
-  repeat: 1 # Number of sampled repetitions
-  num_threads: 30 # Number of parallel requests
+  type: custom
+  container_image: nemo-skills    # alias defined in srtslurm.yaml `containers:`
+                                  # or the full nvcr.io URI for Pyxis auto-pull
+  env:
+    OPENAI_API_KEY: "EMPTY"       # ns/litellm requires it set; value is unused
+    HF_TOKEN: "${HF_TOKEN}"       # for gated HF datasets via ns prepare_data
+    # Optional knob overrides — defaults match the upstream reasoning-eval reference:
+    # MODEL: "dspro"           # must match served-model-name from sglang_config
+    # DATASET: "aime25"        # aime24 | aime25 | aime26
+    # REPEAT: "16"             # pass@k samples per problem
+    # MAX_TOKENS: "400000"     # generous ceiling for reasoning traces
+    # NUM_THREADS: "512"       # client-side concurrency
+    # TEMPERATURE: "1.0"
+    # TOP_P: "1.0"
+    # SEED: "42"               # --starting_seed for reproducibility
+  command: |
+    bash /configs/aime/run.sh
 ```
 
-Then launch the script as usual:
-```bash
-srtctl apply -f config.yaml
+Set the eval container alias in `srtslurm.yaml`:
+
+```yaml
+containers:
+  nemo-skills: "/shared/containers/nvidia+eval-factory+nemo-skills+26.03.sqsh"
 ```
 
-After finishing benchmarking, AIME outputs are written under `/logs/accuracy/<aime_dataset>/` and summarized metrics
-are written to `/logs/accuracy/<aime_dataset>_metrics.json`.
+Pre-cache the squashfs with: `enroot import 'docker://nvcr.io#nvidia/eval-factory/nemo-skills:26.03'`.
 
-### AIME for reasoning models (NeMo Skills container)
+### Reasoning-mode env vars (server side)
 
-The defaults above target greedy non-reasoning evaluation. For reasoning-capable
-models (e.g. DeepSeek-V4-Pro thinking mode, GPT-OSS) you'll want long
-`max_tokens`, sampling temperature, and pass@k — and you'll want the eval
-running inside the official NeMo Skills container so installing `ns eval` and
-its long transitive dependency chain isn't part of every job.
+For reasoning-capable models (DeepSeek-V4-Pro thinking, GPT-OSS, etc.) — without
+these the model emits non-reasoning answers and AIME pass@k drops ~30 points
+below what the model can do.
 
-Run AIME via `type: custom` pointed at the NeMo Skills container:
+```yaml
+backend:
+  prefill_environment:
+    SGLANG_ENABLE_THINKING: "1"
+    SGLANG_REASONING_EFFORT: "max"
+  decode_environment:
+    SGLANG_ENABLE_THINKING: "1"
+    SGLANG_REASONING_EFFORT: "max"
+```
 
-1. **Add the container alias to `srtslurm.yaml`** (optional — let Pyxis auto-pull
-   from NGC if you skip this):
+### What the script does
 
-   ```yaml
-   containers:
-     nemo-skills: "/shared/containers/nvidia+eval-factory+nemo-skills+26.03.sqsh"
-   ```
+1. `ns prepare_data $DATASET` — fetches the dataset into the NeMo Skills install.
+2. `ns eval ...` against `http://localhost:8000/v1` (the in-job dynamo frontend),
+   pass@k=`$REPEAT`, with the upstream reasoning-eval reference's tuning
+   defaults. NeMo Skills' default `\boxed{}` extractor scores the generations.
 
-   Pre-cache with: `enroot import 'docker://nvcr.io#nvidia/eval-factory/nemo-skills:26.03'`.
+Outputs land at `/logs/accuracy/<dataset>/eval-results/<dataset>/metrics.json`
+with pass@1, pass@N, and majority@N.
 
-2. **Enable thinking mode on the workers.** This is a server-side knob — set
-   in both `prefill_environment` and `decode_environment`:
+### Custom answer-extraction regex (not currently applied)
 
-   ```yaml
-   backend:
-     prefill_environment:
-       SGLANG_ENABLE_THINKING: "1"
-       SGLANG_REASONING_EFFORT: "max"
-     decode_environment:
-       SGLANG_ENABLE_THINKING: "1"
-       SGLANG_REASONING_EFFORT: "max"
-   ```
+The SGLang team's reasoning-eval reference suggests broadening the answer extractor with these two `ns eval` overrides:
 
-   Without these, the model emits non-reasoning answers and AIME pass@k drops
-   ~30 points below what the model is capable of.
+```
+++eval_config.extract_from_boxed=False
+++eval_config.extract_regex=(?:\boxed\{|\*\*Answer\*\*[^0-9\-]{0,30}|(?i:final answer)[^0-9\-]{0,30}|(?i:answer)\s*(?:is|=|:)[^0-9\-]{0,30})(-?\d+)
+```
 
-3. **Configure the bench** as a `type: custom` step running `ns eval` in the
-   NeMo Skills container. `HF_TOKEN` propagates from the recipe top-level
-   `environment:` block:
+`run.sh` does **not** pass them. `ns eval` forwards Hydra `++overrides` to parallel
+`python -m nemo_skills.inference.generate` subprocesses through nemo-run, which
+constructs the inner command line **unquoted** — bash strips backslashes from
+the regex before Python `re.compile` sees it, the regex becomes invalid, and
+every generate subprocess crashes on import. Verified on cluster runs that
+produced empty output dirs and a false "Benchmark completed successfully".
 
-   ```yaml
-   environment:
-     HF_TOKEN: "${HF_TOKEN}"   # propagates to bench for `ns prepare_data`
-
-   benchmark:
-     type: custom
-     container_image: nemo-skills   # alias from srtslurm.yaml, or pass the
-                                    # nvcr.io URI directly for auto-pull
-     env:
-       OPENAI_API_KEY: "EMPTY"      # ns/litellm requires it set; value is unused
-     command: |
-       ns prepare_data aime25 && \
-       ns eval \
-         --server_type=openai \
-         --model=dspro \
-         --server_address=http://localhost:8000/v1 \
-         --benchmarks=aime25:16 \
-         --output_dir=/logs/accuracy/aime25 \
-         --starting_seed=42 \
-         ++inference.tokens_to_generate=400000 \
-         ++max_concurrent_requests=512 \
-         ++inference.temperature=1.0 \
-         ++inference.top_p=1.0 \
-         ++inference.timeout=25000000
-   ```
-
-   Notes:
-   - `--model` must match the server's `served-model-name` from
-     `sglang_config` — replace `dspro` with whatever your recipe sets.
-   - `--server_address` always points at the in-job dynamo frontend on
-     `localhost:8000`.
-   - Mounts (`/logs`, `/model`, `/configs`, `/srtctl-benchmarks`) are
-     auto-mounted, so `--output_dir=/logs/...` persists out of the container.
-   - `ns eval` writes its own `metrics.json` under
-     `/logs/accuracy/aime25/aime25/eval-results/<benchmark>/...` —
-     `cat` the deepest `metrics.json` for pass@1 / pass@16 / pass@k.
-   - Tuning knobs (`max_tokens`, `repeat`, `temperature`, `top_p`,
-     `max_concurrent_requests`, `starting_seed`) match the upstream
-     reasoning-eval reference for DeepSeek-V4-Pro / similar.
+If you need a broader extractor for your model, post-process the cached
+`output-rs<seed>.jsonl` files with a Python script (raw-string regex, no shell
+layers).
 
 
 ## MMLU

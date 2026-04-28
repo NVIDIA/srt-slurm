@@ -212,6 +212,14 @@ class RuntimeContext:
             if configs_dir.exists():
                 container_mounts[configs_dir.resolve()] = Path("/configs")
 
+            wheelhouse_dir = Path(source_dir) / "wheelhouse" / "dynamo"
+            if wheelhouse_dir.exists():
+                container_mounts[wheelhouse_dir.resolve()] = Path("/srtctl-wheels")
+
+        runtime_scripts_dir = Path(__file__).resolve().parent.parent / "runtime_scripts"
+        if runtime_scripts_dir.exists():
+            container_mounts[runtime_scripts_dir.resolve()] = Path("/srtctl-runtime")
+
         # Mount srtctl benchmark scripts
         from srtctl.benchmarks.base import SCRIPTS_DIR
 
@@ -234,6 +242,9 @@ class RuntimeContext:
         # Add FormattablePath mounts from config.container_mounts
         # These need to be expanded with the runtime context, so we create a
         # temporary context first and then update
+        environment = config.dynamo.get_wheel_environment()
+        environment.update(config.environment)
+
         temp_context = cls(
             job_id=job_id,
             run_name=run_name,
@@ -247,7 +258,7 @@ class RuntimeContext:
             network_interface=get_srtslurm_setting("network_interface", "eth0"),
             container_mounts={},
             srun_options=dict(config.srun_options),
-            environment=dict(config.environment),
+            environment=environment,
             is_hf_model=is_hf_model,
         )
 
@@ -270,7 +281,7 @@ class RuntimeContext:
             network_interface=get_srtslurm_setting("network_interface", "eth0"),
             container_mounts=container_mounts,
             srun_options=dict(config.srun_options),
-            environment=dict(config.environment),
+            environment=environment,
             is_hf_model=is_hf_model,
         )
 

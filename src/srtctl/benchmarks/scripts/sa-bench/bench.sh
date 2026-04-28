@@ -81,7 +81,10 @@ if [ "$USE_CHAT_TEMPLATE" = "true" ]; then
         echo "[sa-bench] notice: use_chat_template=true but no custom_tokenizer set."
         echo "[sa-bench]   Models without a jinja chat_template (e.g. DeepSeek-V4)"
         echo "[sa-bench]   will fail fast in benchmark_serving.py with guidance."
-        echo "[sa-bench]   For DSV4, set:"
+        echo "[sa-bench]   For vLLM DSV4, set:"
+        echo "[sa-bench]     benchmark.custom_tokenizer:"
+        echo "[sa-bench]       sa_bench_tokenizers.vllm_deepseek_v4.VLLMDeepseekV4Tokenizer"
+        echo "[sa-bench]   For SGLang DSV4, set:"
         echo "[sa-bench]     benchmark.custom_tokenizer:"
         echo "[sa-bench]       sa_bench_tokenizers.sglang_deepseek_v4.SGLangDeepseekV4Tokenizer"
         echo "[sa-bench]   Or set benchmark.use_chat_template: false to skip it."
@@ -234,4 +237,3 @@ done
 stop_all_profiling
 
 echo "SA-Bench complete. Results in $result_dir"
-
