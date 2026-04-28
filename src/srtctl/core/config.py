@@ -148,6 +148,12 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
         config["frontend"] = frontend
         logger.debug(f"Resolved nginx_container alias '{nginx_container}' -> '{resolved_nginx}'")
 
+    # Cluster-level default for nginx nofile ulimit (job yaml wins if present).
+    if "nginx_raise_ulimit" not in frontend and cluster_config.get("nginx_raise_ulimit") is not None:
+        frontend["nginx_raise_ulimit"] = cluster_config["nginx_raise_ulimit"]
+        config["frontend"] = frontend
+        logger.debug(f"Applied cluster nginx_raise_ulimit: {frontend['nginx_raise_ulimit']}")
+
     # Resolve benchmark.container_image alias for benches that ship their own
     # eval container (e.g. NeMo Skills for accuracy benchmarks). Mirrors how
     # model.container and frontend.nginx_container resolve against the same

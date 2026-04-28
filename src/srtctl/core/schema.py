@@ -203,6 +203,9 @@ class ClusterConfig:
     # sruns that bypass the bash wrapper (distroless containers).
     default_bash_preamble: str | None = None
     reporting: ReportingConfig | None = None
+    # When set, applied to job configs that omit ``frontend.nginx_raise_ulimit``.
+    # Clusters that disallow raising nofile for nginx containers should use false.
+    nginx_raise_ulimit: bool | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -1154,6 +1157,9 @@ class FrontendConfig:
             placeholder substitution, so write the URL out literally.
         num_additional_frontends: Additional routers beyond master (default: 9)
         nginx_container: Custom nginx container image (default: nginx:1.27.4)
+        nginx_raise_ulimit: Raise nofile before nginx and set ``worker_rlimit_nofile``
+            in generated nginx.conf. Off by default; enable on clusters that allow it.
+            Override per job or set ``nginx_raise_ulimit`` in srtslurm.yaml for the cluster.
         args: CLI arguments passed to the frontend/router process
         env: Environment variables for frontend processes
     """
@@ -1162,6 +1168,7 @@ class FrontendConfig:
     enable_multiple_frontends: bool = True
     num_additional_frontends: int = 9
     nginx_container: str = "nginx:1.27.4"
+    nginx_raise_ulimit: bool = False
     args: dict[str, Any] | None = None
     env: dict[str, str] | None = None
 

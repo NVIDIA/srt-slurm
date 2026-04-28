@@ -524,6 +524,27 @@ class TestFrontendConfig:
 
         assert resolved["frontend"]["nginx_container"] == "nginx"
 
+    def test_nginx_raise_ulimit_cluster_default(self):
+        """srtslurm.yaml can set nginx_raise_ulimit when job omits frontend key."""
+        from srtctl.core.config import resolve_config_with_defaults
+
+        user_config = {
+            "name": "test",
+            "model": {"path": "/model", "container": "/c.sqsh", "precision": "fp8"},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+            "frontend": {},
+        }
+
+        resolved = resolve_config_with_defaults(user_config, {"nginx_raise_ulimit": True})
+        assert resolved["frontend"]["nginx_raise_ulimit"] is True
+
+        user_explicit = {
+            **user_config,
+            "frontend": {"nginx_raise_ulimit": False},
+        }
+        resolved2 = resolve_config_with_defaults(user_explicit, {"nginx_raise_ulimit": True})
+        assert resolved2["frontend"]["nginx_raise_ulimit"] is False
+
     def test_telemetry_container_aliases_resolve(self):
         from srtctl.core.config import resolve_config_with_defaults
 
