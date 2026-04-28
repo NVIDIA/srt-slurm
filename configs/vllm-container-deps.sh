@@ -2,8 +2,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-apt-get -y update && apt-get install -y --no-install-recommends --allow-change-held-packages numactl
-
 pip install msgpack
 
 if [ -n "${DYNAMO_VERSION:-}" ] || [ -n "${DYNAMO_WHEEL_NAME:-}" ]; then
@@ -18,3 +16,12 @@ fi
 if [ -f /configs/patches/vllm_numa_bind_hash_fix.py ]; then
     python3 /configs/patches/vllm_numa_bind_hash_fix.py
 fi
+
+if [ -f /configs/patches/vllm_nvlink_one_sided_bf16_fix_v20.py ]; then
+    python3 /configs/patches/vllm_nvlink_one_sided_bf16_fix_v20.py
+fi
+
+if [ -f /configs/patches/vllm_cumem_expandable_segments_fix.py ]; then
+    python3 /configs/patches/vllm_cumem_expandable_segments_fix.py
+fi
+
