@@ -3,6 +3,7 @@
 # Defines the group of servers to which NGINX will proxy requests.
 # NGINX will cycle through these servers in a round-robin fashion by default.
 worker_processes auto;
+worker_rlimit_nofile 1048576;
 
 http {
     access_log off;
