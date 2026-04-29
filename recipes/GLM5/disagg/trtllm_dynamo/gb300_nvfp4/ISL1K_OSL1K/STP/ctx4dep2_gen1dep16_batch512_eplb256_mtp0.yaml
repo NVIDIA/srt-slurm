@@ -7,7 +7,9 @@ model:
   path: "nvidia/GLM5-NVFP4"
   container: "nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:1.1.0-dev.3"
   precision: "fp4"
-  
+
+setup_script: "install-trtllm-pip.sh"
+
 resources:
   gpu_type: "gb300"
 
