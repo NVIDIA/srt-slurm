@@ -35,8 +35,8 @@ class NodePortAllocator:
     assignments per node and hands out the next available port.
 
     Port ranges (non-overlapping):
-        - kv_events_port: 5550+  (global) - ZMQ port for kv-events publishing
-        - nixl_port:      6550+  (global) - NIXL side channel for KV transfers (vLLM)
+        - kv_events_port: 20000+ (global) - ZMQ port for kv-events publishing
+        - nixl_port:      21000+ (global) - NIXL side channel for KV transfers (vLLM)
         - http_port:      30000+ (per node) - HTTP serving port
         - bootstrap_port: 31000+ (per node) - P/D coordination port (prefill only)
 
@@ -53,8 +53,8 @@ class NodePortAllocator:
 
     base_http_port: int = 30000
     base_bootstrap_port: int = 31000
-    base_kv_events_port: int = 5550
-    base_nixl_port: int = 6550  # NIXL side channel ports (must not overlap with kv_events)
+    base_kv_events_port: int = 20000
+    base_nixl_port: int = 21000  # NIXL side channel ports (must not overlap with kv_events)
 
     _http_ports: dict[str, int] = field(default_factory=dict, repr=False)
     _bootstrap_ports: dict[str, int] = field(default_factory=dict, repr=False)
