@@ -64,7 +64,7 @@ backend:
     NCCL_P2P_LEVEL: NVL
   vllm_config:
     prefill:
-      kv-transfer-config: '{"kv_connector": "NixlConnector", "kv_role": "kv_both"}'
+      kv-transfer-config: '{"kv_connector": "NixlConnector", "kv_role": "kv_both", "engine_id": "tep8-prefill-1p1d"}'
       served-model-name: "deepseek-ai/DeepSeek-V4-Pro"
       kv-cache-dtype: "fp8"
       tensor-parallel-size: 8
@@ -85,7 +85,7 @@ backend:
       numa-bind: true
       tokenizer-mode: deepseek_v4
     decode:
-      kv-transfer-config: '{"kv_connector": "NixlConnector", "kv_role": "kv_both"}'
+      kv-transfer-config: '{"kv_connector": "NixlConnector", "kv_role": "kv_both", "engine_id": "tep8-decode-1p1d"}'
       served-model-name: "deepseek-ai/DeepSeek-V4-Pro"
       kv-cache-dtype: "fp8"
       tensor-parallel-size: 8
