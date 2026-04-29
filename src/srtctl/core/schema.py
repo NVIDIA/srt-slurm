@@ -65,34 +65,12 @@ class ReportingStatusConfig:
 
 
 @dataclass(frozen=True)
-class LiveMetricsConfig:
-    """Configuration for the in-flight batch-metrics snapshotter.
-
-    When enabled, the orchestrator spawns a daemon thread during the
-    benchmark stage that re-parses prefill/decode worker logs every
-    ``interval_seconds`` and overwrites ``<log_dir>/batch_metrics.png``
-    in place, giving a near-real-time view of the run without any
-    external monitoring stack.
-
-    Lives entirely in :mod:`srtctl.analysis.live_metrics`; this dataclass
-    only defines the user-visible knobs.
-    """
-
-    enabled: bool = False
-    interval_seconds: int = 60
-    downsample: int = 1
-
-    Schema: ClassVar[type[Schema]] = Schema
-
-
-@dataclass(frozen=True)
 class ReportingConfig:
     """Reporting configuration for status updates, AI analysis, and log exports."""
 
     status: ReportingStatusConfig | None = None
     ai_analysis: "AIAnalysisConfig | None" = None
     s3: "S3Config | None" = None
-    live_metrics: LiveMetricsConfig | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -892,11 +870,35 @@ class TelemetryExporterConfig:
 
 
 @dataclass(frozen=True)
+class LiveMetricsConfig:
+    """In-flight batch-metrics snapshotter (a form of lightweight telemetry).
+
+    When enabled, the orchestrator spawns a daemon thread during the benchmark
+    stage that re-parses prefill/decode worker logs every ``interval_seconds``
+    and atomically overwrites ``<log_dir>/batch_metrics.png``, giving a
+    near-real-time view of the run without any external monitoring stack.
+
+    Lives entirely in :mod:`srtctl.analysis.live_metrics`; this dataclass
+    only defines the user-visible knobs.
+    """
+
+    enabled: bool = False
+    interval_seconds: int = 60
+    downsample: int = 1
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
 class TelemetryConfig:
     """Telemetry configuration for benchmark jobs.
 
     The default provider bundles a scraper with dcgm_exporter and node_exporter.
     Other providers can reuse the same top-level contract later.
+
+    ``live_metrics`` is a lightweight complementary signal: it tails worker
+    logs in-process (no external stack required) and writes a per-run
+    ``batch_metrics.png`` during the benchmark.
     """
 
     enabled: bool = False
@@ -910,6 +912,7 @@ class TelemetryConfig:
     extra_metadata: dict[str, str] = field(default_factory=dict)
     dcgm_exporter: TelemetryExporterConfig | None = None
     node_exporter: TelemetryExporterConfig | None = None
+    live_metrics: LiveMetricsConfig | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 

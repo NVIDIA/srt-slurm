@@ -315,7 +315,7 @@ def try_start_snapshotter(
         logger.debug("Live metrics: failed to load cluster config: %s", e)
         return None
 
-    cfg = (cluster_config or {}).get("reporting", {}).get("live_metrics") if cluster_config else None
+    cfg = (cluster_config or {}).get("telemetry", {}).get("live_metrics") if cluster_config else None
     if not cfg or not cfg.get("enabled"):
         return None
 
