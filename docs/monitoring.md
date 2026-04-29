@@ -2,16 +2,78 @@
 
 ## Table of Contents
 
+- [Live Dashboard (srtctl monitor)](#live-dashboard-srtctl-monitor)
 - [Checking Job Status](#checking-job-status)
 - [Log Directory](#log-directory)
 - [Log Structure](#log-structure)
 - [Key Files](#key-files)
-  - [log.out](#logout)
-  - [benchmark.out](#benchmarkout)
-  - [Worker Logs](#worker-logs-node_prefill_w0err-node_decode_w0err)
-  - [config.yaml](#configyaml)
 - [Common Commands](#common-commands)
 - [Connecting to Running Jobs](#connecting-to-running-jobs)
+
+---
+
+## Live Dashboard (srtctl monitor)
+
+`srtctl monitor` is a live terminal dashboard that brings everything into one place: SLURM queue state, job lifecycle stage, worker readiness, and benchmark metrics — all auto-refreshing without juggling `squeue` and `tail -f`.
+
+```bash
+srtctl monitor                          # Active + recently completed jobs
+srtctl monitor --all                    # Also include older jobs from outputs/
+srtctl monitor --outputs /path/to/out   # Override outputs directory
+srtctl monitor --interval 10            # Refresh interval in seconds (default: 5)
+srtctl monitor --once                   # Print snapshot and exit
+srtctl monitor --resume KEY             # Resume a previous session
+```
+
+The outputs directory is auto-detected from `./outputs/` or `../outputs/`.
+
+### Columns
+
+| Column | Description |
+|--------|-------------|
+| Job ID | SLURM job ID (`▶` marks the selected row) |
+| Slurm | Queue state: RUNNING / PENDING / ENDED … |
+| Stage | Lifecycle stage inferred from the sweep log |
+| Workers | Live readiness, e.g. `2/4P  4/4D` |
+| Time | Elapsed wall time |
+| Config | GPU type, topology, benchmark type, ISL/OSL |
+| Metrics | Throughput (tok/s), TTFT, TPOT |
+
+**Lifecycle stages:** Starting → Starting Infra → Head Ready → Starting Workers → Awaiting Workers → Starting Frontend → Benchmarking → Completed / Failed / Killed / Timed Out
+
+### Keybindings
+
+**Main view**
+
+| Key | Action |
+|-----|--------|
+| `↑` / `↓` | Navigate jobs |
+| `↵` | Open detail view |
+| `y` | Open `config.yaml` in vim |
+| `d` | Delete output dir (finished) or cancel job (active) — prompts to confirm |
+| `c` | Toggle last vs all concurrencies in Metrics |
+| `a` | Toggle active-only vs all jobs |
+| `q` | Quit |
+
+**Detail view** (`↵` on a job — sweep log left, worker + benchmark logs right)
+
+| Key | Action |
+|-----|--------|
+| `↑` / `↓` | Cycle panels (sweep / worker / benchmark) |
+| `←` / `→` | Cycle worker files or benchmark concurrency sections |
+| `↵` | Open current log in vim |
+| `r` | Toggle auto-refresh |
+| `ESC` | Back to job list |
+
+### Session Resume
+
+On exit, a session key is printed:
+
+```
+To resume this session, use  srtctl monitor --resume abc123def456
+```
+
+Sessions are saved to `/tmp/srt-dash-<user>.json` and restore the full set of tracked job IDs, including completed jobs.
 
 ---
 

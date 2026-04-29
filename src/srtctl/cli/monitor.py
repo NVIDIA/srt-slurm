@@ -6,11 +6,11 @@
 Live CLI dashboard for srt-slurm jobs.
 
 Usage:
-  python scripts/dashboard.py                     # Active + recently completed jobs
-  python scripts/dashboard.py --all               # Also include older jobs from outputs/
-  python scripts/dashboard.py --outputs PATH      # Override outputs directory
-  python scripts/dashboard.py --interval 10       # 10s refresh (default: 5)
-  python scripts/dashboard.py --once              # Print once and exit
+  srtctl monitor                        # Active + recently completed jobs
+  srtctl monitor --all                  # Also include older jobs from outputs/
+  srtctl monitor --outputs PATH         # Override outputs directory
+  srtctl monitor --interval 10          # 10s refresh (default: 5)
+  srtctl monitor --once                 # Print once and exit
 
 Keybindings (live mode):
   c   Toggle between last concurrency and all concurrencies in Metrics column
@@ -21,9 +21,7 @@ from __future__ import annotations
 
 import argparse
 import bisect
-import hashlib
 import json
-import uuid
 import os
 import re
 import shutil
@@ -31,6 +29,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from collections import Counter
 from datetime import datetime
 from itertools import accumulate
@@ -69,6 +68,7 @@ def _get_term_height() -> int:
         pass
     return 60
 
+
 # ─── Stage detection ──────────────────────────────────────────────────────────
 
 _IN_PROGRESS_PATTERNS: list[tuple[str, str, str, str]] = [
@@ -97,9 +97,6 @@ _BENCH_PATTERNS: list[tuple[str, str]] = [
     (r"request.{0,10}throughput[:\s=]+(\d[\d,]*\.?\d*)\s*req", "request_throughput"),
     (r"ttft.*?mean[:\s=]+(\d[\d,]*\.?\d*)\s*ms", "ttft_mean_ms"),
     (r"tpot.*?mean[:\s=]+(\d[\d,]*\.?\d*)\s*ms", "tpot_mean_ms"),
-    (r"throughput[:\s=]+(\d[\d,]*\.?\d*)\s*tok/s", "throughput_toks"),
-    (r"TTFT[:\s]+(\d[\d,]*\.?\d*)\s*ms", "ttft_mean_ms"),
-    (r"TPOT[:\s]+(\d[\d,]*\.?\d*)\s*ms", "tpot_mean_ms"),
 ]
 
 _ACTIVE_STATES = {"RUNNING", "PENDING", "COMPLETING"}
@@ -123,11 +120,10 @@ class _State:
         self.show_all_concurrencies: bool = False
         self.show_all_jobs: bool = False
         self.seen_job_ids: set[str] = set()
-        self.scroll_offset: int = 0   # viewport position in lines
-        self.selected_idx: int = 0    # cursor position in jobs list
+        self.scroll_offset: int = 0
+        self.selected_idx: int = 0
         self.detail_job_id: str | None = None
         self.detail_sweep_lines: list[str] = []
-        self.detail_bench_lines: list[str] = []
         self.detail_worker_files: list[Path] = []
         self.detail_worker_idx: int = 0
         self.detail_worker_lines: list[str] = []
@@ -138,10 +134,6 @@ class _State:
         self.detail_bench_section_idx: int = 0
         self.delete_confirm_job_id: str | None = None
         self.cancel_confirm_job_id: str | None = None
-        self.log_viewer_active: bool = False
-        self.log_viewer_lines: list[str] = []
-        self.log_viewer_scroll: int = 0
-        self.log_viewer_title: str = ""
 
 
 # ─── Data gathering ────────────────────────────────────────────────────────────
@@ -318,8 +310,6 @@ def _split_bench_sections(lines: list[str]) -> list[tuple[int, list[str]]]:
     if current or current_conc is not None:
         all_sections.append((current_conc, current))
 
-    # Keep only sections with a known concurrency value.
-    # For each concurrency, track first and last occurrence index.
     first_seen: dict[int, int] = {}
     last_seen: dict[int, int] = {}
     for i, (conc, _) in enumerate(all_sections):
@@ -332,20 +322,14 @@ def _split_bench_sections(lines: list[str]) -> list[tuple[int, list[str]]]:
     if not first_seen:
         return [(None, lines)]  # type: ignore[return-value]
 
-    # Return the last (real) run for each concurrency, ordered by first appearance.
-    ordered = sorted(first_seen, key=lambda c: first_seen[c])
-    real_sections = [(c, all_sections[last_seen[c]][1]) for c in ordered]
-
-    # Trim each section at the first pure-dash separator line ("---...").
-    # That separator marks the end of the real run; everything after it is
-    # warmup output from the next concurrency bleeding in.
+    # first_seen is insertion-ordered (Python 3.7+), already in first-appearance order.
     def _trim(sec_lines: list[str]) -> list[str]:
         for i, ln in enumerate(sec_lines):
             if _BENCH_SEP_RE.match(ln):
                 return sec_lines[: i + 1]
         return sec_lines
 
-    return [(c, _trim(sec_lines)) for c, sec_lines in real_sections]
+    return [(c, _trim(all_sections[last_seen[c]][1])) for c in first_seen]
 
 
 def _partial_runs(log_dir: Path) -> list[dict] | None:
@@ -364,10 +348,9 @@ def _partial_runs(log_dir: Path) -> list[dict] | None:
 
 
 def _live_metrics(log_dir: Path) -> dict | None:
-    bench_out = log_dir / "benchmark.out"
-    if not bench_out.exists():
+    lines = _tail(log_dir / "benchmark.out", 100)
+    if not lines:
         return None
-    lines = _tail(bench_out, 100)
     metrics: dict[str, float] = {}
     for line in reversed(lines):
         for pattern, key in _BENCH_PATTERNS:
@@ -462,10 +445,16 @@ def _gather_job_info(job_id: str, outputs_dir: Path, sq: dict | None) -> dict:
     return info
 
 
-def _gather_all(outputs_dir: Path, include_all: bool, state: _State) -> list[dict]:
+def _job_sort_key(j: dict) -> tuple:
+    slurm_order = {"RUNNING": 0, "PENDING": 1, "COMPLETING": 2}.get(j["slurm_state"], 3)
+    done_order = {"completed": 0, "finalizing": 1, "failed": 2}.get(j["stage_id"], 3)
+    return (slurm_order, done_order, -int(j["job_id"]))
+
+
+def _gather_all(outputs_dir: Path, include_all: bool, seen_job_ids: set[str]) -> list[dict]:
     sq_jobs = _squeue_jobs()
-    state.seen_job_ids.update(sq_jobs.keys())
-    job_ids = set(state.seen_job_ids)
+    seen_job_ids.update(sq_jobs.keys())
+    job_ids = set(seen_job_ids)
 
     if include_all and outputs_dir.is_dir():
         for d in outputs_dir.iterdir():
@@ -475,15 +464,10 @@ def _gather_all(outputs_dir: Path, include_all: bool, state: _State) -> list[dic
     jobs = [_gather_job_info(jid, outputs_dir, sq_jobs.get(jid)) for jid in job_ids]
 
     for j in jobs:
-        if j["job_id"] in state.seen_job_ids and j["stage_id"] in _TERMINAL_STAGES:
+        if j["job_id"] in seen_job_ids and j["stage_id"] in _TERMINAL_STAGES:
             j["worker_progress"] = ""
 
-    def _sort_key(j: dict) -> tuple:
-        slurm_order = {"RUNNING": 0, "PENDING": 1, "COMPLETING": 2}.get(j["slurm_state"], 3)
-        done_order = {"completed": 0, "finalizing": 1, "failed": 2}.get(j["stage_id"], 3)
-        return (slurm_order, done_order, -int(j["job_id"]))
-
-    jobs.sort(key=_sort_key)
+    jobs.sort(key=_job_sort_key)
     return jobs
 
 
@@ -601,8 +585,8 @@ def _colorize_log(lines: list[str], empty_msg: str = "(empty)", max_width: int =
 def _close_detail(state: _State) -> None:
     state.detail_job_id = None
     state.detail_sweep_lines = []
-    state.detail_bench_lines = []
     state.detail_worker_files = []
+    state.detail_worker_idx = 0
     state.detail_worker_lines = []
     state.detail_bench_sections = []
     state.detail_bench_section_idx = 0
@@ -612,7 +596,6 @@ def _close_detail(state: _State) -> None:
 def _refresh_detail_lines(state: _State, jid: str, logs_dir: Path) -> None:
     state.detail_sweep_lines = _tail(logs_dir / f"sweep_{jid}.log", 100)
     all_bench = _read_all_lines(logs_dir / "benchmark.out")
-    state.detail_bench_lines = all_bench[-100:]
     sections = _split_bench_sections(all_bench)
     state.detail_bench_sections = sections
     state.detail_bench_section_idx = min(state.detail_bench_section_idx, max(0, len(sections) - 1))
@@ -629,65 +612,7 @@ def _detail_log_path(jid: str, logs_dir: Path, worker_files: list[Path], worker_
     return paths[panel_idx]
 
 
-def _log_viewer_render(
-    lines: list[str],
-    scroll: int,
-    title: str,
-    term_height: int = 50,
-    term_cols: int = 200,
-) -> Layout:
-    """Full-screen scrollable log viewer, like less."""
-    def _kb(bar: Text, key: str, label: str) -> None:
-        bar.append(f" {key} ", style="bold black on white")
-        bar.append(f" {label}  ", style="dim")
-
-    content_h = max(1, term_height - 3)  # panel border (top+bot) + status bar
-    total = len(lines)
-    max_scroll = max(0, total - content_h)
-    scroll = max(0, min(scroll, max_scroll))
-
-    pct = int(100 * (scroll + content_h) / total) if total else 100
-    pct = min(pct, 100)
-    pos_label = f"[dim]line {scroll + 1}–{min(scroll + content_h, total)} / {total}  ({pct}%)[/dim]"
-
-    panel_w = max(40, term_cols - 4)
-    body = _colorize_log(lines[scroll: scroll + content_h], "(empty)", max_width=panel_w)
-    viewer_panel = Panel(
-        body,
-        title=f"[bold white]{title}[/bold white]  {pos_label}",
-        border_style="cyan",
-    )
-
-    bar = Text(" ")
-    _kb(bar, "↑↓", "scroll")
-    _kb(bar, "b/f", "page")
-    _kb(bar, "g/G", "top/bottom")
-    _kb(bar, "ESC", "back")
-    _kb(bar, "q", "quit")
-
-    layout = Layout()
-    layout.split_column(
-        Layout(viewer_panel, name="viewer", ratio=1),
-        Layout(bar, name="bar", size=1),
-    )
-    return layout
-
-
-def _detail_view(
-    job_id: str,
-    jobs: list[dict],
-    sweep_lines: list[str],
-    bench_lines: list[str],
-    worker_files: list[Path],
-    worker_idx: int,
-    worker_lines: list[str],
-    term_height: int = 50,
-    term_cols: int = 200,
-    detail_panel_idx: int = 0,
-    detail_panel_active: bool = False,
-    bench_sections: list[tuple[int | None, list[str]]] | None = None,
-    bench_section_idx: int = 0,
-) -> Layout:
+def _detail_view(job_id: str, jobs: list[dict], state: _State, term_height: int = 50, term_cols: int = 200) -> Layout:
     """Two-column detail layout: sweep (left) | worker/benchmark stacked (right)."""
     job_info = next((j for j in jobs if j["job_id"] == job_id), None)
     name = job_info["name"] if job_info else job_id
@@ -699,20 +624,17 @@ def _detail_view(
         f" [{stage_color}]{stage_label}[/{stage_color}]"
     )
 
-    # Crop lines to what fits in each panel (border = 2 rows each).
     content_h = term_height - 1
     half_h = content_h // 2
     sweep_max = max(1, content_h - 2)
     worker_max = max(1, half_h - 2)
     bench_max = max(1, content_h - half_h - 2)
-
-    # Max line width per panel: each column is ~half the terminal width minus borders/padding.
     panel_w = max(40, term_cols // 2 - 6)
 
     _open_hint = r"  [bold white]\[↵][/bold white]"
 
-    sweep_focused = detail_panel_active and detail_panel_idx == 0
-    sweep_text = _colorize_log(sweep_lines[-sweep_max:], "No sweep log.", max_width=panel_w)
+    sweep_focused = state.detail_panel_active and state.detail_panel_idx == 0
+    sweep_text = _colorize_log(state.detail_sweep_lines[-sweep_max:], "No sweep log.", max_width=panel_w)
     _pad_to_height(sweep_text, sweep_max)
     sweep_panel = Panel(
         sweep_text,
@@ -720,16 +642,15 @@ def _detail_view(
         border_style="white" if sweep_focused else "cyan",
     )
 
-    worker_focused = detail_panel_active and detail_panel_idx == 1
-    if worker_files:
-        wname = worker_files[worker_idx].stem
-        n_w = len(worker_files)
-        worker_title = f"[bold]worker[/bold] [steel_blue]{wname} [{worker_idx + 1}/{n_w}][/steel_blue]"
-        worker_text = _colorize_log(worker_lines[-worker_max:], "(empty)", max_width=panel_w)
+    worker_focused = state.detail_panel_active and state.detail_panel_idx == 1
+    if state.detail_worker_files:
+        wname = state.detail_worker_files[state.detail_worker_idx].stem
+        n_w = len(state.detail_worker_files)
+        worker_title = f"[bold]worker[/bold] [steel_blue]{wname} [{state.detail_worker_idx + 1}/{n_w}][/steel_blue]"
+        worker_text = _colorize_log(state.detail_worker_lines[-worker_max:], "(empty)", max_width=panel_w)
     else:
         worker_title = "[bold]workers[/bold] [steel_blue](none found)[/steel_blue]"
         worker_text = Text("No worker logs found.", style="dim")
-
     _pad_to_height(worker_text, worker_max)
     worker_panel = Panel(
         worker_text,
@@ -737,17 +658,16 @@ def _detail_view(
         border_style="white" if worker_focused else "blue",
     )
 
-    bench_focused = detail_panel_active and detail_panel_idx == 2
-    sections = bench_sections or []
-    n_sections = len(sections)
+    bench_focused = state.detail_panel_active and state.detail_panel_idx == 2
+    sections = state.detail_bench_sections
     if sections:
-        conc, sec_lines = sections[bench_section_idx]
+        conc, sec_lines = sections[state.detail_bench_section_idx]
         bench_content = _colorize_log(sec_lines[-bench_max:], "(empty)", max_width=panel_w)
         conc_label = f"c={conc}" if conc is not None else "log"
-        bench_nav = f"[dim steel_blue] [{bench_section_idx + 1}/{n_sections}][/dim steel_blue]"
+        bench_nav = f"[dim steel_blue] [{state.detail_bench_section_idx + 1}/{len(sections)}][/dim steel_blue]"
         bench_title_str = f"[bold]benchmark[/bold] · [cyan]{conc_label}[/cyan]{bench_nav}"
     else:
-        bench_content = _colorize_log(bench_lines[-bench_max:], "No benchmark output.", max_width=panel_w)
+        bench_content = Text("No benchmark output.", style="dim")
         bench_title_str = "[bold]benchmark[/bold]"
     _pad_to_height(bench_content, bench_max)
     bench_panel = Panel(
@@ -761,12 +681,8 @@ def _detail_view(
         Layout(worker_panel, name="worker", ratio=1),
         Layout(bench_panel, name="bench", ratio=1),
     )
-
     cols = Layout()
-    cols.split_row(
-        Layout(sweep_panel, name="sweep", ratio=1),
-        right,
-    )
+    cols.split_row(Layout(sweep_panel, name="sweep", ratio=1), right)
     return cols
 
 
@@ -833,8 +749,6 @@ def _job_row_height(j: dict, show_all: bool) -> int:
     actual_count = len(runs) if runs else 0
     if show_all and actual_count >= 1:
         metrics_lines = actual_count + (1 if benchmarking else 0)
-    elif show_all and runs:
-        metrics_lines = 1 + (1 if benchmarking else 0)
     elif benchmarking and runs:
         metrics_lines = 2
     else:
@@ -847,9 +761,7 @@ def _compute_viewport(
 ) -> tuple[int, int, int, int]:
     """Cursor-following scroll viewport.
 
-    selected_idx is the cursor (job index). scroll_offset is adjusted so the
-    selected job is always visible.  Returns (scroll_offset, start_idx,
-    selected_idx, n_below).
+    Returns (scroll_offset, start_idx, selected_idx, n_below).
     """
     n = len(jobs)
     if n == 0:
@@ -859,7 +771,6 @@ def _compute_viewport(
     heights = [_job_row_height(j, show_all) for j in jobs]
     prefix = list(accumulate(heights))
 
-    # Keep selected item on screen.
     sel_top = prefix[selected_idx - 1] if selected_idx > 0 else 0
     sel_bot = prefix[selected_idx]
     if sel_top < scroll_offset:
@@ -883,31 +794,11 @@ def _render(
     jobs: list[dict] | None,
     outputs_dir: Path,
     interval: float,
-    show_all: bool,
-    show_all_jobs: bool,
+    state: _State,
     loading: bool = False,
     spin_idx: int = 0,
-    scroll_offset: int = 0,
-    selected_idx: int = 0,
     term_height: int = 50,
-    detail_job_id: str | None = None,
-    detail_sweep_lines: list[str] | None = None,
-    detail_bench_lines: list[str] | None = None,
-    detail_worker_files: list[Path] | None = None,
-    detail_worker_idx: int = 0,
-    detail_worker_lines: list[str] | None = None,
-    detail_auto_refresh: bool = False,
     term_cols: int = 200,
-    detail_panel_idx: int = 0,
-    detail_panel_active: bool = False,
-    detail_bench_sections: list[tuple[int | None, list[str]]] | None = None,
-    detail_bench_section_idx: int = 0,
-    log_viewer_active: bool = False,
-    log_viewer_lines: list[str] | None = None,
-    log_viewer_scroll: int = 0,
-    log_viewer_title: str = "",
-    delete_confirm_job_id: str | None = None,
-    cancel_confirm_job_id: str | None = None,
 ) -> tuple[Layout, int, int]:
     def _kb(bar: Text, key: str, label: str, active: bool = False) -> None:
         bar.append(f" {key} ", style="bold black on cyan" if active else "bold black on white")
@@ -915,42 +806,19 @@ def _render(
 
     jobs = jobs or []
 
-    if log_viewer_active:
-        layout = _log_viewer_render(
-            log_viewer_lines or [],
-            log_viewer_scroll,
-            log_viewer_title,
-            term_height=term_height,
-            term_cols=term_cols,
-        )
-        return layout, scroll_offset, selected_idx
-
-    if detail_job_id is not None:
-        wfiles = detail_worker_files or []
-        bsections = detail_bench_sections or []
-        cols = _detail_view(
-            detail_job_id, jobs,
-            detail_sweep_lines or [],
-            detail_bench_lines or [],
-            wfiles,
-            detail_worker_idx,
-            detail_worker_lines or [],
-            term_height=term_height,
-            term_cols=term_cols,
-            detail_panel_idx=detail_panel_idx,
-            detail_panel_active=detail_panel_active,
-            bench_sections=bsections,
-            bench_section_idx=detail_bench_section_idx,
-        )
+    if state.detail_job_id is not None:
+        cols = _detail_view(state.detail_job_id, jobs, state, term_height=term_height, term_cols=term_cols)
+        wfiles = state.detail_worker_files
+        bsections = state.detail_bench_sections
         bar = Text(" ")
-        _kb(bar, "↑↓", f"panel [{_PANEL_NAMES[detail_panel_idx]}]" if detail_panel_active else "select panel")
-        if detail_panel_active:
-            if detail_panel_idx == 1 and wfiles:
-                _kb(bar, "←→", f"worker [{detail_worker_idx + 1}/{len(wfiles)}]")
-            elif detail_panel_idx == 2 and bsections:
-                _kb(bar, "←→", f"concurrency [{detail_bench_section_idx + 1}/{len(bsections)}]")
+        _kb(bar, "↑↓", f"panel [{_PANEL_NAMES[state.detail_panel_idx]}]" if state.detail_panel_active else "select panel")
+        if state.detail_panel_active:
+            if state.detail_panel_idx == 1 and wfiles:
+                _kb(bar, "←→", f"worker [{state.detail_worker_idx + 1}/{len(wfiles)}]")
+            elif state.detail_panel_idx == 2 and bsections:
+                _kb(bar, "←→", f"concurrency [{state.detail_bench_section_idx + 1}/{len(bsections)}]")
         _kb(bar, "↵", "open log")
-        _kb(bar, "r", "refresh", active=detail_auto_refresh)
+        _kb(bar, "r", "refresh", active=state.detail_auto_refresh)
         _kb(bar, "ESC", "back")
         _kb(bar, "q", "quit")
         layout = Layout()
@@ -958,11 +826,13 @@ def _render(
             Layout(cols, name="content", ratio=1),
             Layout(bar, name="bar", size=1),
         )
-        return layout, scroll_offset, selected_idx
+        return layout, state.scroll_offset, state.selected_idx
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     n_below = 0
     start_idx = 0
+    scroll_offset = state.scroll_offset
+    selected_idx = state.selected_idx
 
     if loading and not jobs:
         spin_char = _SPINNER[spin_idx % len(_SPINNER)]
@@ -971,7 +841,7 @@ def _render(
     else:
         available = max(1, term_height - 1 - _PANEL_OVERHEAD)
         scroll_offset, start_idx, selected_idx, n_below = _compute_viewport(
-            jobs, selected_idx, scroll_offset, available, show_all
+            jobs, state.selected_idx, state.scroll_offset, available, state.show_all_concurrencies
         )
 
         state_counts = Counter(j["slurm_state"] for j in jobs)
@@ -994,31 +864,30 @@ def _render(
         selected_rel = selected_idx - start_idx
 
         first_job_clip = None
-        if display_jobs and show_all and selected_rel != 0:
+        if display_jobs and state.show_all_concurrencies and selected_rel != 0:
             first_j = display_jobs[0]
             actual_count = len(first_j.get("runs") or [])
             if actual_count > 1:
-                H1 = _job_row_height(first_j, show_all)
-                remaining = available - H1  # space after job 1 at natural height
+                H1 = _job_row_height(first_j, state.show_all_concurrencies)
+                remaining = available - H1
                 lines_for_first = H1
                 S = 0
                 for j in display_jobs[1:]:
-                    h = _job_row_height(j, show_all)
+                    h = _job_row_height(j, state.show_all_concurrencies)
                     prev_S = S
                     S += h
                     if prev_S < remaining < S:
-                        # job j is partially visible; clip job 1 to give it room
                         lines_for_first = max(1, H1 - (S - remaining))
                         break
                     if S >= remaining:
-                        break  # job j is off-screen; no clip needed
-                sep = 1 if _metrics_multiline(first_j, show_all) else 0
+                        break
+                sep = 1 if _metrics_multiline(first_j, state.show_all_concurrencies) else 0
                 clip = lines_for_first - sep
                 if 0 < clip < actual_count:
                     first_job_clip = clip
 
         content = (
-            _build_table(display_jobs, show_all, selected_rel=selected_rel, last_job_clip=first_job_clip)
+            _build_table(display_jobs, state.show_all_concurrencies, selected_rel=selected_rel, last_job_clip=first_job_clip)
             if display_jobs
             else Text("No jobs found.", style="dim")
         )
@@ -1031,14 +900,14 @@ def _render(
     )
 
     bar = Text(" ")
-    if cancel_confirm_job_id is not None:
-        bar.append(f"  Shutdown {cancel_confirm_job_id}? ", style="bold yellow")
+    if state.cancel_confirm_job_id is not None:
+        bar.append(f"  Shutdown {state.cancel_confirm_job_id}? ", style="bold yellow")
         bar.append(" y ", style="bold black on yellow")
         bar.append(" yes  ", style="dim")
         bar.append(" n ", style="bold black on white")
         bar.append(" no  ", style="dim")
-    elif delete_confirm_job_id is not None:
-        bar.append(f"  Delete {delete_confirm_job_id}? ", style="bold red")
+    elif state.delete_confirm_job_id is not None:
+        bar.append(f"  Delete {state.delete_confirm_job_id}? ", style="bold red")
         bar.append(" y ", style="bold black on red")
         bar.append(" yes  ", style="dim")
         bar.append(" n ", style="bold black on white")
@@ -1048,8 +917,8 @@ def _render(
         _kb(bar, "↵", "open")
         _kb(bar, "y", "yaml")
         _kb(bar, "d", "delete/shutdown")
-        _kb(bar, "c", "all concurrencies" if show_all else "last concurrency", active=show_all)
-        _kb(bar, "a", "all jobs" if show_all_jobs else "active jobs", active=show_all_jobs)
+        _kb(bar, "c", "all concurrencies" if state.show_all_concurrencies else "last concurrency", active=state.show_all_concurrencies)
+        _kb(bar, "a", "all jobs" if state.show_all_jobs else "active jobs", active=state.show_all_jobs)
         _kb(bar, "q", "quit")
 
     n_above = start_idx
@@ -1086,10 +955,6 @@ def _session_path() -> Path:
     return Path(f"/tmp/srt-dash-{user}.json")
 
 
-def _session_key(outputs_dir: Path) -> str:
-    return hashlib.md5(str(outputs_dir.resolve()).encode()).hexdigest()[:12]
-
-
 def _save_session(session_file: Path, key: str, outputs_dir: Path, job_ids: set[str]) -> None:
     try:
         all_sessions: dict = {}
@@ -1108,7 +973,6 @@ def _save_session(session_file: Path, key: str, outputs_dir: Path, job_ids: set[
 
 
 def _load_session(session_file: Path, key: str) -> tuple[set[str], Path | None]:
-    """Return (job_ids, outputs_dir) for the given key, or (empty, None) if not found."""
     try:
         if session_file.exists():
             entry = json.loads(session_file.read_text()).get(key, {})
@@ -1120,7 +984,6 @@ def _load_session(session_file: Path, key: str) -> tuple[set[str], Path | None]:
 
 
 def _execute(args: argparse.Namespace) -> None:
-    """Run the dashboard with a pre-parsed argparse namespace."""
     session_file = _session_path()
 
     if args.clear_sessions:
@@ -1130,13 +993,16 @@ def _execute(args: argparse.Namespace) -> None:
         else:
             print(f"No session cache found at {session_file}")
         return
+
     outputs_dir = args.outputs or _find_outputs_dir()
     try:
         term_cols = os.get_terminal_size().columns
     except OSError:
         term_cols = shutil.get_terminal_size(fallback=(200, 50)).columns
+
     state = _State()
     state.show_all_jobs = args.all
+    key = ""
     if not args.once:
         if args.resume:
             key = args.resume
@@ -1149,13 +1015,8 @@ def _execute(args: argparse.Namespace) -> None:
 
     if args.once:
         console = Console(width=max(term_cols, 160))
-        jobs = _gather_all(outputs_dir, state.show_all_jobs, state)
-        layout, _, _si = _render(
-            jobs, outputs_dir, args.interval,
-            state.show_all_concurrencies, state.show_all_jobs,
-            term_height=_get_term_height(),
-            term_cols=term_cols,
-        )
+        jobs = _gather_all(outputs_dir, state.show_all_jobs, state.seen_job_ids)
+        layout, _, _ = _render(jobs, outputs_dir, args.interval, state, term_height=_get_term_height(), term_cols=term_cols)
         console.print(layout)
         return
 
@@ -1173,12 +1034,13 @@ def _execute(args: argparse.Namespace) -> None:
         nonlocal _cached_jobs, _is_loading
         while not _stop.is_set():
             try:
-                jobs = _gather_all(outputs_dir, state.show_all_jobs, state)
+                jobs = _gather_all(outputs_dir, state.show_all_jobs, state.seen_job_ids)
+                with _cache_lock:
+                    _cached_jobs = jobs
+                    _is_loading = False
             except Exception:
-                jobs = []
-            with _cache_lock:
-                _cached_jobs = jobs
-                _is_loading = False
+                with _cache_lock:
+                    _is_loading = False  # preserve stale _cached_jobs on error
             _fetch_trigger.clear()
             _fetch_trigger.wait(timeout=args.interval)
 
@@ -1214,36 +1076,11 @@ def _execute(args: argparse.Namespace) -> None:
             quit_requested = False
 
             while not quit_requested:
-                got_input = False
                 if use_tty and _select.select([sys.stdin], [], [], 0)[0]:
                     # os.read bypasses Python buffering; 6 bytes covers single chars, 3-byte arrows.
                     raw = os.read(fd, 6)
-                    got_input = True
 
-                    if state.log_viewer_active:
-                        _lv_content_h = max(1, term_height - 3)
-                        _lv_max = max(0, len(state.log_viewer_lines) - _lv_content_h)
-                        if raw[:3] == b"\x1b[A":  # up arrow
-                            state.log_viewer_scroll = max(0, state.log_viewer_scroll - 1)
-                        elif raw[:3] == b"\x1b[B":  # down arrow
-                            state.log_viewer_scroll = min(_lv_max, state.log_viewer_scroll + 1)
-                        elif raw[:1] == b"\x1b":
-                            state.log_viewer_active = False  # ESC exits log viewer
-                        elif raw[:1] not in (b"",):
-                            ch = raw[:1].decode("utf-8", errors="replace")
-                            if ch == "b":
-                                state.log_viewer_scroll = max(0, state.log_viewer_scroll - _lv_content_h)
-                            elif ch == "f":
-                                state.log_viewer_scroll = min(_lv_max, state.log_viewer_scroll + _lv_content_h)
-                            elif ch == "g":
-                                state.log_viewer_scroll = 0
-                            elif ch == "G":
-                                state.log_viewer_scroll = _lv_max
-                            elif ch in ("q", "Q", "\x03"):
-                                quit_requested = True
-                                continue
-
-                    elif state.detail_job_id is not None:
+                    if state.detail_job_id is not None:
                         if raw[:3] in (b"\x1b[A", b"\x1b[B"):
                             if not state.detail_panel_active:
                                 state.detail_panel_active = True
@@ -1251,6 +1088,12 @@ def _execute(args: argparse.Namespace) -> None:
                             else:
                                 delta = -1 if raw[:3] == b"\x1b[A" else 1
                                 state.detail_panel_idx = (state.detail_panel_idx + delta) % 3
+                        elif raw[:1] == b"\t":
+                            if not state.detail_panel_active:
+                                state.detail_panel_active = True
+                                state.detail_panel_idx = 0
+                            else:
+                                state.detail_panel_idx = (state.detail_panel_idx + 1) % 3
                         elif raw[:3] in (b"\x1b[C", b"\x1b[D"):
                             if state.detail_panel_active:
                                 if state.detail_panel_idx == 1 and state.detail_worker_files:
@@ -1272,12 +1115,6 @@ def _execute(args: argparse.Namespace) -> None:
                             _vpath = _detail_log_path(jid, logs_dir, state.detail_worker_files, state.detail_worker_idx, state.detail_panel_idx)
                             if _vpath is not None:
                                 _launch_vim(_vpath)
-                        elif raw[:1] == b"\t":
-                            if not state.detail_panel_active:
-                                state.detail_panel_active = True
-                                state.detail_panel_idx = 0
-                            else:
-                                state.detail_panel_idx = (state.detail_panel_idx + 1) % 3
                         elif raw[:1] not in (b"\x1b", b""):
                             ch = raw[:1].decode("utf-8", errors="replace")
                             if ch.lower() == "r":
@@ -1361,8 +1198,7 @@ def _execute(args: argparse.Namespace) -> None:
                                 quit_requested = True
                                 continue
 
-                    # Force immediate re-render so input feels instant
-                    last_render = 0.0
+                    last_render = 0.0  # force immediate re-render so input feels instant
 
                 now = time.monotonic()
                 if now >= last_height_check + 2.0:
@@ -1373,15 +1209,6 @@ def _execute(args: argparse.Namespace) -> None:
                         jid = state.detail_job_id
                         logs_dir = outputs_dir / jid / "logs"
                         _refresh_detail_lines(state, jid, logs_dir)
-                        if state.log_viewer_active:
-                            _vp = _detail_log_path(jid, logs_dir, state.detail_worker_files, state.detail_worker_idx, state.detail_panel_idx)
-                            if _vp is not None:
-                                _new_lines = _read_all_lines(_vp)
-                                _vc_h = max(1, term_height - 3)
-                                _at_bottom = state.log_viewer_scroll >= max(0, len(state.log_viewer_lines) - _vc_h)
-                                state.log_viewer_lines = _new_lines
-                                if _at_bottom:
-                                    state.log_viewer_scroll = max(0, len(_new_lines) - _vc_h)
                         last_detail_refresh = now
                         last_render = 0.0
                 if now >= last_render + 0.25:
@@ -1390,30 +1217,9 @@ def _execute(args: argparse.Namespace) -> None:
                         snap_loading = _is_loading
                     try:
                         renderable, clamped_scroll, clamped_sel = _render(
-                            snap_jobs, outputs_dir, args.interval,
-                            state.show_all_concurrencies, state.show_all_jobs,
+                            snap_jobs, outputs_dir, args.interval, state,
                             loading=snap_loading, spin_idx=spin_idx,
-                            scroll_offset=state.scroll_offset,
-                            selected_idx=state.selected_idx,
-                            term_height=term_height,
-                            detail_job_id=state.detail_job_id,
-                            detail_sweep_lines=state.detail_sweep_lines,
-                            detail_bench_lines=state.detail_bench_lines,
-                            detail_worker_files=state.detail_worker_files,
-                            detail_worker_idx=state.detail_worker_idx,
-                            detail_worker_lines=state.detail_worker_lines,
-                            detail_auto_refresh=state.detail_auto_refresh,
-                            term_cols=term_cols,
-                            detail_panel_idx=state.detail_panel_idx,
-                            detail_panel_active=state.detail_panel_active,
-                            detail_bench_sections=state.detail_bench_sections,
-                            detail_bench_section_idx=state.detail_bench_section_idx,
-                            log_viewer_active=state.log_viewer_active,
-                            log_viewer_lines=state.log_viewer_lines,
-                            log_viewer_scroll=state.log_viewer_scroll,
-                            log_viewer_title=state.log_viewer_title,
-                            delete_confirm_job_id=state.delete_confirm_job_id,
-                            cancel_confirm_job_id=state.cancel_confirm_job_id,
+                            term_height=term_height, term_cols=term_cols,
                         )
                         state.scroll_offset = clamped_scroll
                         state.selected_idx = clamped_sel
@@ -1429,14 +1235,14 @@ def _execute(args: argparse.Namespace) -> None:
         pass
     finally:
         _stop.set()
-        if not args.once:
+        if key:
             _save_session(session_file, key, outputs_dir, state.seen_job_ids)
         if old_term is not None:
             try:
                 termios.tcsetattr(fd, termios.TCSADRAIN, old_term)
             except Exception:
                 pass
-        if not args.once:
+        if key:
             console.print(f"[dim]To resume this session, use[/dim] [bold cyan]srtctl monitor --resume {key}[/bold cyan]")
 
 
