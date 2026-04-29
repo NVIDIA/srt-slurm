@@ -1,4 +1,4 @@
-name: "svf-vllm-disagg-gb200-max-tpt-megamoe-2p1d-dep8"
+name: "svf-vllm-disagg-gb200-high-tpt-megamoe"
 setup_script: "vllm-container-deps.sh"
 model:
   path: "deepseekv4-fp4"
