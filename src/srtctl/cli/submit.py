@@ -1353,7 +1353,6 @@ def main():
         _monitor_main()
         return
 
-
     # Parse config arg: supports path:selector format for overrides
     config_path, selector = parse_config_arg(args.config)
 

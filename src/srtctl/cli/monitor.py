@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import bisect
+import contextlib
 import json
 import os
 import re
@@ -60,6 +61,7 @@ def _get_term_height() -> int:
     try:
         import fcntl
         import struct
+
         with open("/dev/tty") as tty:
             rows, _ = struct.unpack("hh", fcntl.ioctl(tty, termios.TIOCGWINSZ, b"\x00\x00\x00\x00"))
         if 10 <= rows <= 500:
@@ -128,7 +130,7 @@ class _State:
         self.detail_worker_idx: int = 0
         self.detail_worker_lines: list[str] = []
         self.detail_auto_refresh: bool = False
-        self.detail_panel_idx: int = 0       # 0=sweep 1=worker 2=bench
+        self.detail_panel_idx: int = 0  # 0=sweep 1=worker 2=bench
         self.detail_panel_active: bool = False
         self.detail_bench_sections: list[tuple[int | None, list[str]]] = []
         self.detail_bench_section_idx: int = 0
@@ -248,6 +250,7 @@ def _read_result_fast(path: Path) -> dict:
     latency fields are written at the end.  Reading head+tail costs <5 KB
     instead of 100-300 MB per file.
     """
+
     def _get(text: str, key: str) -> float | None:
         m = re.search(_RESULT_NUM_RE.format(key=key), text)
         return float(m.group(1)) if m else None
@@ -357,10 +360,8 @@ def _live_metrics(log_dir: Path) -> dict | None:
             if key not in metrics:
                 m = re.search(pattern, line, re.IGNORECASE)
                 if m:
-                    try:
+                    with contextlib.suppress(ValueError):
                         metrics[key] = float(m.group(1).replace(",", ""))
-                    except ValueError:
-                        pass
         if len(metrics) >= 3:
             break
     return metrics or None
@@ -566,7 +567,7 @@ def _colorize_log(lines: list[str], empty_msg: str = "(empty)", max_width: int =
     for line in lines:
         line = _ANSI_RE.sub("", line)
         if max_width and len(line) > max_width:
-            line = line[:max_width - 1] + "…"
+            line = line[: max_width - 1] + "…"
         if _LOG_ERR_RE.search(line):
             t.append(line + "\n", style="bold red")
         elif "[ERROR]" in line:
@@ -603,7 +604,9 @@ def _refresh_detail_lines(state: _State, jid: str, logs_dir: Path) -> None:
         state.detail_worker_lines = _tail(state.detail_worker_files[state.detail_worker_idx], 100)
 
 
-def _detail_log_path(jid: str, logs_dir: Path, worker_files: list[Path], worker_idx: int, panel_idx: int) -> Path | None:
+def _detail_log_path(
+    jid: str, logs_dir: Path, worker_files: list[Path], worker_idx: int, panel_idx: int
+) -> Path | None:
     paths: list[Path | None] = [
         logs_dir / f"sweep_{jid}.log",
         worker_files[worker_idx] if worker_files else None,
@@ -620,8 +623,7 @@ def _detail_view(job_id: str, jobs: list[dict], state: _State, term_height: int 
     stage_color = job_info["stage_color"] if job_info else "dim"
 
     job_title = (
-        f"[bold cyan]{job_id}[/bold cyan] [dim cyan]{name}[/dim cyan]"
-        f" [{stage_color}]{stage_label}[/{stage_color}]"
+        f"[bold cyan]{job_id}[/bold cyan] [dim cyan]{name}[/dim cyan]" f" [{stage_color}]{stage_label}[/{stage_color}]"
     )
 
     content_h = term_height - 1
@@ -811,7 +813,11 @@ def _render(
         wfiles = state.detail_worker_files
         bsections = state.detail_bench_sections
         bar = Text(" ")
-        _kb(bar, "↑↓", f"panel [{_PANEL_NAMES[state.detail_panel_idx]}]" if state.detail_panel_active else "select panel")
+        _kb(
+            bar,
+            "↑↓",
+            f"panel [{_PANEL_NAMES[state.detail_panel_idx]}]" if state.detail_panel_active else "select panel",
+        )
         if state.detail_panel_active:
             if state.detail_panel_idx == 1 and wfiles:
                 _kb(bar, "←→", f"worker [{state.detail_worker_idx + 1}/{len(wfiles)}]")
@@ -879,7 +885,7 @@ def _render(
                     if prev_S < remaining < S:
                         lines_for_first = max(1, H1 - (S - remaining))
                         break
-                    if S >= remaining:
+                    if remaining <= S:
                         break
                 sep = 1 if _metrics_multiline(first_j, state.show_all_concurrencies) else 0
                 clip = lines_for_first - sep
@@ -887,7 +893,9 @@ def _render(
                     first_job_clip = clip
 
         content = (
-            _build_table(display_jobs, state.show_all_concurrencies, selected_rel=selected_rel, last_job_clip=first_job_clip)
+            _build_table(
+                display_jobs, state.show_all_concurrencies, selected_rel=selected_rel, last_job_clip=first_job_clip
+            )
             if display_jobs
             else Text("No jobs found.", style="dim")
         )
@@ -917,7 +925,12 @@ def _render(
         _kb(bar, "↵", "open")
         _kb(bar, "y", "yaml")
         _kb(bar, "d", "delete/shutdown")
-        _kb(bar, "c", "all concurrencies" if state.show_all_concurrencies else "last concurrency", active=state.show_all_concurrencies)
+        _kb(
+            bar,
+            "c",
+            "all concurrencies" if state.show_all_concurrencies else "last concurrency",
+            active=state.show_all_concurrencies,
+        )
         _kb(bar, "a", "all jobs" if state.show_all_jobs else "active jobs", active=state.show_all_jobs)
         _kb(bar, "q", "quit")
 
@@ -959,10 +972,8 @@ def _save_session(session_file: Path, key: str, outputs_dir: Path, job_ids: set[
     try:
         all_sessions: dict = {}
         if session_file.exists():
-            try:
+            with contextlib.suppress(Exception):
                 all_sessions = json.loads(session_file.read_text())
-            except Exception:
-                pass
         all_sessions[key] = {
             "outputs_dir": str(outputs_dir.resolve()),
             "job_ids": sorted(job_ids),
@@ -1016,7 +1027,9 @@ def _execute(args: argparse.Namespace) -> None:
     if args.once:
         console = Console(width=max(term_cols, 160))
         jobs = _gather_all(outputs_dir, state.show_all_jobs, state.seen_job_ids)
-        layout, _, _ = _render(jobs, outputs_dir, args.interval, state, term_height=_get_term_height(), term_cols=term_cols)
+        layout, _, _ = _render(
+            jobs, outputs_dir, args.interval, state, term_height=_get_term_height(), term_cols=term_cols
+        )
         console.print(layout)
         return
 
@@ -1059,6 +1072,7 @@ def _execute(args: argparse.Namespace) -> None:
             tty.setcbreak(fd)
 
         with Live(console=console, refresh_per_second=4, screen=True) as live:
+
             def _launch_vim(path: Path) -> None:
                 live.stop()
                 if use_tty and old_term is not None:
@@ -1112,7 +1126,13 @@ def _execute(args: argparse.Namespace) -> None:
                         elif raw[:1] in (b"\r", b"\n"):
                             jid = state.detail_job_id
                             logs_dir = outputs_dir / jid / "logs"
-                            _vpath = _detail_log_path(jid, logs_dir, state.detail_worker_files, state.detail_worker_idx, state.detail_panel_idx)
+                            _vpath = _detail_log_path(
+                                jid,
+                                logs_dir,
+                                state.detail_worker_files,
+                                state.detail_worker_idx,
+                                state.detail_panel_idx,
+                            )
                             if _vpath is not None:
                                 _launch_vim(_vpath)
                         elif raw[:1] not in (b"\x1b", b""):
@@ -1128,10 +1148,8 @@ def _execute(args: argparse.Namespace) -> None:
                         if state.cancel_confirm_job_id is not None:
                             if raw[:1] in (b"y", b"Y"):
                                 jid = state.cancel_confirm_job_id
-                                try:
+                                with contextlib.suppress(Exception):
                                     subprocess.run(["scancel", jid], timeout=10, capture_output=True)
-                                except Exception:
-                                    pass
                                 state.cancel_confirm_job_id = None
                                 _fetch_trigger.set()
                             elif raw[:1] in (b"n", b"N") or raw[:1] == b"\x1b":
@@ -1204,22 +1222,30 @@ def _execute(args: argparse.Namespace) -> None:
                 if now >= last_height_check + 2.0:
                     term_height = _get_term_height()
                     last_height_check = now
-                if state.detail_auto_refresh and state.detail_job_id is not None:
-                    if now >= last_detail_refresh + args.interval:
-                        jid = state.detail_job_id
-                        logs_dir = outputs_dir / jid / "logs"
-                        _refresh_detail_lines(state, jid, logs_dir)
-                        last_detail_refresh = now
-                        last_render = 0.0
+                if (
+                    state.detail_auto_refresh
+                    and state.detail_job_id is not None
+                    and now >= last_detail_refresh + args.interval
+                ):
+                    jid = state.detail_job_id
+                    logs_dir = outputs_dir / jid / "logs"
+                    _refresh_detail_lines(state, jid, logs_dir)
+                    last_detail_refresh = now
+                    last_render = 0.0
                 if now >= last_render + 0.25:
                     with _cache_lock:
                         snap_jobs = _cached_jobs
                         snap_loading = _is_loading
                     try:
                         renderable, clamped_scroll, clamped_sel = _render(
-                            snap_jobs, outputs_dir, args.interval, state,
-                            loading=snap_loading, spin_idx=spin_idx,
-                            term_height=term_height, term_cols=term_cols,
+                            snap_jobs,
+                            outputs_dir,
+                            args.interval,
+                            state,
+                            loading=snap_loading,
+                            spin_idx=spin_idx,
+                            term_height=term_height,
+                            term_cols=term_cols,
                         )
                         state.scroll_offset = clamped_scroll
                         state.selected_idx = clamped_sel
@@ -1238,12 +1264,12 @@ def _execute(args: argparse.Namespace) -> None:
         if key:
             _save_session(session_file, key, outputs_dir, state.seen_job_ids)
         if old_term is not None:
-            try:
+            with contextlib.suppress(Exception):
                 termios.tcsetattr(fd, termios.TCSADRAIN, old_term)
-            except Exception:
-                pass
         if key:
-            console.print(f"[dim]To resume this session, use[/dim] [bold cyan]srtctl monitor --resume {key}[/bold cyan]")
+            console.print(
+                f"[dim]To resume this session, use[/dim] [bold cyan]srtctl monitor --resume {key}[/bold cyan]"
+            )
 
 
 def main() -> None:
@@ -1257,7 +1283,9 @@ def main() -> None:
     parser.add_argument("--all", "-a", action="store_true", help="Include older jobs from outputs/ on startup")
     parser.add_argument("--once", action="store_true", help="Print once and exit")
     parser.add_argument("--resume", type=str, default=None, metavar="KEY", help="Resume a previous session by key")
-    parser.add_argument("--clear-sessions", action="store_true", help="Delete all saved --resume session state and exit")
+    parser.add_argument(
+        "--clear-sessions", action="store_true", help="Delete all saved --resume session state and exit"
+    )
     _execute(parser.parse_args())
 
 
