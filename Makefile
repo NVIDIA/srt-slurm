@@ -44,7 +44,8 @@ setup:
 	@echo "📦 Setting up configs and logs directories..."
 	@mkdir -p logs
 	@echo "🖥️  Using architecture: $(ARCH)"
-	@case "$(ARCH)" in \
+	@set -e; \
+	case "$(ARCH)" in \
 		x86_64)  ARCH_SHORT="amd64"; ARCH_FILE_PATTERN="x86-64" ;; \
 		aarch64) ARCH_SHORT="arm64"; ARCH_FILE_PATTERN="aarch64" ;; \
 		*) echo "❌ Unsupported architecture: $(ARCH)"; exit 1 ;; \
@@ -97,8 +98,21 @@ setup:
 		echo "⬇️  Downloading uv for $(ARCH)..."; \
 		mkdir -p bin; \
 		UV_URL="https://github.com/astral-sh/uv/releases/latest/download/uv-$(ARCH)-unknown-linux-gnu.tar.gz"; \
-		curl -LsSf "$$UV_URL" | tar -xz --strip-components=1 -C bin; \
-		chmod +x bin/uv bin/uvx 2>/dev/null; \
+		UV_TAR="configs/uv-$(ARCH)-unknown-linux-gnu.tar.gz"; \
+		rm -f "$$UV_TAR"; \
+		wget -q --show-progress --tries=5 --waitretry=5 --timeout=30 --read-timeout=300 "$$UV_URL" -O "$$UV_TAR"; \
+		tar -tzf "$$UV_TAR" >/dev/null; \
+		rm -f bin/uv bin/uvx; \
+		tar -xzf "$$UV_TAR" --strip-components=1 -C bin; \
+		rm "$$UV_TAR"; \
+		chmod +x bin/uv; \
+		[ ! -f bin/uvx ] || chmod +x bin/uvx; \
+		if ! file bin/uv | grep -q "$$ARCH_FILE_PATTERN"; then \
+			echo "❌ bin/uv architecture mismatch after install"; \
+			file bin/uv; \
+			exit 1; \
+		fi; \
+		bin/uv --version >/dev/null; \
 		echo "✅ uv installed to bin/uv ($$(file bin/uv | grep -o 'ARM aarch64\|x86-64'))"; \
 	fi; \
 	echo ""; \
