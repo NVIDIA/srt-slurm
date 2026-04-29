@@ -124,12 +124,22 @@ class FileSeries:
 
     @property
     def label(self) -> str:
-        """Short legend label for plotting (filename minus extension)."""
+        """Short legend label for plotting.
+
+        Tries to extract just the worker index from typical SLURM-named
+        files such as ``slurm-gb300-133-181_prefill_w0.out`` -> ``"p0"``
+        or ``..._decode_w3.out`` -> ``"d3"``. Falls back to the full
+        filename stem when it can't infer a short form.
+        """
         stem = self.path.name
         for ext in (".out", ".err"):
             if stem.endswith(ext):
                 stem = stem[: -len(ext)]
                 break
+        # Match ``<anything>_(prefill|decode|agg)_w<n>``.
+        m = re.search(r"_(prefill|decode|agg)_w(\d+)$", stem)
+        if m:
+            return f"{m.group(1)[0]}{m.group(2)}"
         return stem
 
 

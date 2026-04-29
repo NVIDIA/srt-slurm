@@ -69,35 +69,54 @@ def _global_origin(prefill: Iterable[FileSeries], decode: Iterable[FileSeries]) 
     return first_seen
 
 
+# ---------------------------------------------------------------------------
+# Plot layout: (prefill_metric, decode_metric) row pairs.
+# Use None to leave a cell empty. Only metrics listed here are plotted;
+# all parsed metrics remain available in LogState for other consumers.
+# To add/remove/reorder rows, edit this list — no other code needs to
+# change.
+# ---------------------------------------------------------------------------
+_PLOT_ROWS: list[tuple[str | None, str | None]] = [
+    ("input throughput (token/s)", "gen throughput (token/s)"),
+    ("#new-seq",                   "#running-req"),
+    ("#new-token",                 "#full token"),
+    ("#cached-token",              "full token usage"),
+    ("#prealloc-req",              "#prealloc-req"),
+    ("#queue-req",                 "#queue-req"),
+    ("#inflight-req",              "#transfer-req"),
+]
+
+
 def _render_png(
     state: LogState,
     output_path: Path,
     title: str,
     downsample: int,
 ) -> None:
-    """Render per-worker time-series for every metric to a PNG.
+    """Render per-worker time-series to a PNG.
 
-    Layout: prefill metrics in column 0, decode metrics in column 1, one
-    metric per row. Each axis carries one line per worker file.
+    Layout is driven by ``_PLOT_ROWS``: each entry is a
+    ``(prefill_metric, decode_metric)`` pair drawn on the same row so
+    semantically related metrics sit side-by-side. Either cell can be
+    ``None`` to leave it blank.
     """
-    # Lazy import keeps the analysis subpackage usable for parser-only
-    # consumers (and lets the orchestrator survive matplotlib being
-    # missing — see try_start_snapshotter).
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    import numpy as np
 
     pf_files = [s for s in state.prefill_files.values() if not s.empty]
     dc_files = [s for s in state.decode_files.values() if not s.empty]
 
     origin = _global_origin(pf_files, dc_files)
     if origin is None:
-        return  # nothing to draw — caller already gated on has_data
+        return
 
-    pf_metrics = list(PREFILL_METRICS.keys())
-    dc_metrics = list(DECODE_METRICS.keys())
-    n_rows = max(len(pf_metrics), len(dc_metrics))
+    n_rows = len(_PLOT_ROWS)
+    # Use tab20 so up to 20 workers each get a distinct colour.
+    cmap = plt.cm.get_cmap("tab20", max(len(pf_files), len(dc_files), 1))
+    colors = [cmap(i) for i in range(cmap.N)]
 
     fig, axes = plt.subplots(n_rows, 2, figsize=(20, 3.0 * n_rows), squeeze=False)
     fig.suptitle(
@@ -107,48 +126,41 @@ def _render_png(
         y=1.0,
     )
 
-    colors = plt.cm.tab10.colors
+    def _draw_ax(ax: "plt.Axes", metric: str | None, files: list[FileSeries], side: str) -> None:
+        if metric is None:
+            ax.set_visible(False)
+            return
 
-    def _plot_column(col: int, metrics: list[str], files: list[FileSeries]) -> None:
-        for row, metric in enumerate(metrics):
-            ax = axes[row][col]
-            drawn = False
-            for idx, s in enumerate(files):
-                vs = s.metrics.get(metric)
-                if not vs:
-                    continue
-                pairs = [(t, v) for t, v in zip(s.timestamps, vs, strict=False) if v is not None]
-                if downsample > 1:
-                    pairs = pairs[::downsample]
-                if not pairs:
-                    continue
-                stamps = [p[0] for p in pairs]
-                values = [p[1] for p in pairs]
-                ax.plot(
-                    _elapsed_seconds(stamps, origin),
-                    values,
-                    color=colors[idx % len(colors)],
-                    linewidth=0.8,
-                    alpha=0.85,
-                    label=s.label,
-                )
-                drawn = True
+        drawn = False
+        for idx, s in enumerate(files):
+            vs = s.metrics.get(metric)
+            if not vs:
+                continue
+            pairs = [(t, v) for t, v in zip(s.timestamps, vs, strict=False) if v is not None]
+            if downsample > 1:
+                pairs = pairs[::downsample]
+            if not pairs:
+                continue
+            elapsed = _elapsed_seconds([p[0] for p in pairs], origin)
+            values = [p[1] for p in pairs]
+            ax.plot(elapsed, values, color=colors[idx % len(colors)],
+                    linewidth=0.9, alpha=0.8, label=s.label)
+            drawn = True
 
-            ax.set_title(("Prefill" if col == 0 else "Decode") + f": {metric}", fontsize=10, fontweight="bold")
-            ax.set_xlabel("Elapsed (s)", fontsize=8)
-            ax.set_ylabel(metric, fontsize=8)
-            ax.tick_params(labelsize=7)
-            ax.grid(True, alpha=0.3)
-            if not drawn:
-                ax.text(0.5, 0.5, "no data", ha="center", va="center", transform=ax.transAxes, color="grey", fontsize=9)
-            elif len(files) > 1:
-                ax.legend(fontsize=6, loc="upper right", ncol=2)
+        ax.set_title(f"{side}: {metric}", fontsize=10, fontweight="bold")
+        ax.set_xlabel("Elapsed (s)", fontsize=8)
+        ax.set_ylabel(metric, fontsize=8)
+        ax.tick_params(labelsize=7)
+        ax.grid(True, alpha=0.3)
+        if not drawn:
+            ax.text(0.5, 0.5, "no data", ha="center", va="center",
+                    transform=ax.transAxes, color="grey", fontsize=9)
+        elif files:
+            ax.legend(fontsize=7, loc="upper right", ncol=max(1, len(files) // 8 + 1))
 
-        for hidden in range(len(metrics), n_rows):
-            axes[hidden][col].set_visible(False)
-
-    _plot_column(0, pf_metrics, pf_files)
-    _plot_column(1, dc_metrics, dc_files)
+    for row, (pf_metric, dc_metric) in enumerate(_PLOT_ROWS):
+        _draw_ax(axes[row][0], pf_metric, pf_files, "Prefill")
+        _draw_ax(axes[row][1], dc_metric, dc_files, "Decode")
 
     plt.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
