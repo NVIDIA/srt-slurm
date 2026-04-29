@@ -24,6 +24,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Dynamo runtime (Rust) log filter for worker containers; YAML prefill_environment /
+# decode_environment / aggregated_environment override via the merge below.
+_DEFAULT_WORKER_DYN_LOG = "info,dynamo_runtime::pipeline::network::ingress::push_handler=warn"
+
 
 class WorkerStageMixin:
     """Mixin for worker process startup stage.
@@ -161,6 +165,8 @@ class WorkerStageMixin:
         # Add OTEL env vars (before mode-specific env so OTEL_SERVICE_NAME can be overridden)
         env_to_set.update(build_otel_env(self.config.observability, mode))
 
+        env_to_set.setdefault("DYN_LOG", _DEFAULT_WORKER_DYN_LOG)
+
         # Add mode-specific environment variables from backend
         # Support simple {node} and {node_id} templating
         # Unknown placeholders are left unchanged (no error thrown)
@@ -290,6 +296,8 @@ class WorkerStageMixin:
 
         # Add OTEL env vars (before mode-specific env so OTEL_SERVICE_NAME can be overridden)
         env_to_set.update(build_otel_env(self.config.observability, mode))
+
+        env_to_set.setdefault("DYN_LOG", _DEFAULT_WORKER_DYN_LOG)
 
         # Add mode-specific environment variables from backend
         env_to_set.update(self.backend.get_environment_for_mode(mode))
