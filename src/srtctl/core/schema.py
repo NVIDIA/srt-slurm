@@ -65,12 +65,34 @@ class ReportingStatusConfig:
 
 
 @dataclass(frozen=True)
+class LiveMetricsConfig:
+    """Configuration for the in-flight batch-metrics snapshotter.
+
+    When enabled, the orchestrator spawns a daemon thread during the
+    benchmark stage that re-parses prefill/decode worker logs every
+    ``interval_seconds`` and overwrites ``<log_dir>/batch_metrics.png``
+    in place, giving a near-real-time view of the run without any
+    external monitoring stack.
+
+    Lives entirely in :mod:`srtctl.analysis.live_metrics`; this dataclass
+    only defines the user-visible knobs.
+    """
+
+    enabled: bool = False
+    interval_seconds: int = 60
+    downsample: int = 1
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
 class ReportingConfig:
     """Reporting configuration for status updates, AI analysis, and log exports."""
 
     status: ReportingStatusConfig | None = None
     ai_analysis: "AIAnalysisConfig | None" = None
     s3: "S3Config | None" = None
+    live_metrics: LiveMetricsConfig | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 
