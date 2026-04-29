@@ -117,9 +117,4 @@ benchmark:
   concurrencies: "32x64x128"
   req_rate: "inf"
 
-# benchmark:
-#   type: "gpqa"
-#   num_examples: 198
-#   repeat: 4
-#   num_threads: 32
-#   max_tokens: 64000
+# See configs/gpqa/run.sh + docs/accuracy.md for the script-based GPQA recipe.

@@ -1,6 +1,6 @@
 # Accuracy Benchmarks
 
-In srt-slurm, users can run different accuracy benchmarks by setting the benchmark section in the config yaml file. Supported benchmarks include `mmlu`, `gpqa`, `longbenchv2`, and AIME (via the script under `configs/aime/`).
+In srt-slurm, users can run different accuracy benchmarks by setting the benchmark section in the config yaml file. Supported benchmarks include `mmlu`, `longbenchv2`, AIME (via the script under `configs/aime/`), and GPQA (via the script under `configs/gpqa/`).
 
 ## Table of Contents
 
@@ -154,16 +154,69 @@ MMLU evaluation complete
 
 
 ## GPQA
-For GPQA dataset, the benchmark section in yaml file can be modified in the following way:
-```bash
+
+GPQA runs in the official **NeMo Skills container** (`nvcr.io/nvidia/eval-factory/nemo-skills:26.03`),
+side-by-side with the model server. There is no first-class `type: gpqa` runner —
+the eval logic lives in `configs/gpqa/run.sh` and recipes wire it up via
+`type: custom` (same pattern as AIME above).
+
+### Recipe shape
+
+```yaml
 benchmark:
-  type: "gpqa"
-  num_examples: 198 # Number of examples to run
-  max_tokens: 65536 # We need a larger output token number for GPQA
-  repeat: 8 # Number of repetition
-  num_threads: 128 # Number of parallel threads for running benchmark
+  type: custom
+  container_image: nemo-skills    # alias defined in srtslurm.yaml `containers:`
+                                  # or the full nvcr.io URI for Pyxis auto-pull
+  env:
+    OPENAI_API_KEY: "EMPTY"       # ns/litellm requires it set; value is unused
+    HF_TOKEN: "${HF_TOKEN}"       # REQUIRED: GPQA Diamond is HF-gated
+    # Optional knob overrides — defaults match the upstream reasoning-eval reference:
+    # MODEL: "dspro"           # must match served-model-name from sglang_config
+    # DATASET: "gpqa"          # ns prepare_data target (gpqa → GPQA Diamond)
+    # REPEAT: "32"             # pass@k samples per problem
+    # MAX_TOKENS: "400000"     # generous ceiling for reasoning traces
+    # NUM_THREADS: "512"       # client-side concurrency
+    # TEMPERATURE: "1.0"
+    # TOP_P: "1.0"
+    # SEED: "42"               # --starting_seed for reproducibility
+  command: |
+    bash /configs/gpqa/run.sh
 ```
-The `context-length` argument here should be set to a value larger than `max_tokens`.
+
+Container alias setup is identical to AIME — see the AIME section above for the
+`srtslurm.yaml` `containers:` entry and the `enroot import` pre-cache step.
+
+### HF gating
+
+GPQA Diamond is gated on Hugging Face. The recipe must propagate `HF_TOKEN`
+through `benchmark.env` (already plumbed end-to-end). Without it, `ns
+prepare_data gpqa` aborts during dataset download. The script prints a
+warning at startup if `HF_TOKEN` is unset.
+
+### Reasoning-mode env vars (server side)
+
+For reasoning-capable models, set the same SGLang reasoning env vars as AIME
+(see the AIME "Reasoning-mode env vars" section). Without them, GPQA pass@k
+drops well below what the model can do.
+
+### What the script does
+
+1. `ns prepare_data $DATASET` — fetches GPQA from HF (gated) into the NeMo
+   Skills install.
+2. `ns eval --benchmarks=${DATASET}:${REPEAT} ...` against
+   `http://localhost:8000/v1` (the in-job dynamo frontend) with the
+   upstream reasoning-eval reference's tuning defaults. NeMo Skills' default
+   multi-choice extractor scores the generations.
+
+Outputs land at `/logs/accuracy/<dataset>/eval-results/<dataset>/metrics.json`
+with pass@1, pass@N, and majority@N.
+
+### Custom answer-extraction regex (not currently applied)
+
+Same nemo-run unquoting hazard as AIME — do not pass Hydra `++overrides` with
+backslash-bearing values to `ns eval`. Post-process the cached
+`output-rs<seed>.jsonl` files with a Python script (raw-string regex, no shell
+layers) if you need a broader extractor.
 
 
 ## LongBench-V2
