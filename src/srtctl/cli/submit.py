@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -225,7 +226,8 @@ def show_config_details(config: SrtConfig) -> None:
     console.print(Panel(mounts_table, border_style="green"))
 
     # --- Environment Variables ---
-    has_env = bool(config.environment)
+    dynamo_environment = config.dynamo.get_wheel_environment()
+    has_env = bool(config.environment or dynamo_environment)
     backend = config.backend
     mode_envs: list[tuple[str, dict[str, str]]] = []
     for mode_name, attr in [
@@ -247,6 +249,9 @@ def show_config_details(config: SrtConfig) -> None:
         env_table.add_column("Variable", style="yellow")
         env_table.add_column("Value", style="white")
 
+        for var, val in sorted(dynamo_environment.items()):
+            env_table.add_row("dynamo", var, val)
+
         for var, val in sorted(config.environment.items()):
             env_table.add_row("global", var, val)
 
@@ -263,7 +268,7 @@ def show_config_details(config: SrtConfig) -> None:
         opts = " ".join(f"--{k} {v}" if v else f"--{k}" for k, v in config.srun_options.items())
         console.print(f"[dim]srun options:[/] {opts}")
 
-    if config.benchmark.type == "custom" or config.telemetry.enabled:
+    if config.benchmark.type == "custom" or config.benchmark.container_image or config.telemetry.enabled:
         details = Table(title="Execution Extensions", show_lines=False, pad_edge=False)
         details.add_column("Area", style="dim", width=14)
         details.add_column("Setting", style="yellow")
@@ -273,8 +278,13 @@ def show_config_details(config: SrtConfig) -> None:
             details.add_row("benchmark", "type", config.benchmark.type)
             if config.benchmark.command:
                 details.add_row("benchmark", "command", config.benchmark.command)
-            if config.benchmark.container_image:
-                details.add_row("benchmark", "container_image", config.benchmark.container_image)
+
+        # Surface a non-default benchmark container regardless of type — accuracy
+        # benchmarks like AIME (run via type: custom + the NeMo Skills container)
+        # need this visible at submit time so operators can verify the alias
+        # resolved to the expected sqsh / URI.
+        if config.benchmark.container_image:
+            details.add_row("benchmark", "container_image", config.benchmark.container_image)
 
         if config.telemetry.enabled:
             details.add_row("telemetry", "provider", config.telemetry.provider.value)
@@ -368,6 +378,8 @@ def generate_minimal_sbatch_script(
     container_image = os.path.expandvars(config.model.container)
 
     job_name = get_job_name(config)
+    config_environment = config.dynamo.get_wheel_environment()
+    config_environment.update(config.environment)
 
     rendered = template.render(
         job_name=job_name,
@@ -388,6 +400,7 @@ def generate_minimal_sbatch_script(
         srtctl_source=str(srtctl_source.resolve()),
         output_base=output_base,
         setup_script=setup_script,
+        config_environment={key: shlex.quote(str(value)) for key, value in config_environment.items()},
     )
 
     return rendered
