@@ -1137,7 +1137,12 @@ class TestVLLMDataParallelMode:
         assert backend_dp._get_dp_size("prefill") == 16
 
     def test_dp_mode_creates_per_gpu_processes(self):
-        """Test that DP mode creates one process per GPU instead of per node."""
+        """Test that DP mode creates one process per GPU instead of per node.
+
+        Default behavior (dp_explicit_local_rank=False): each process owns one
+        GPU and visible_gpu_indices is unset, so CUDA_VISIBLE_DEVICES is
+        constrained to that GPU.
+        """
         from srtctl.backends import VLLMProtocol, VLLMServerConfig
         from srtctl.core.topology import Endpoint
 
@@ -1161,12 +1166,11 @@ class TestVLLMDataParallelMode:
         # Should create 16 processes (1 per GPU), not 2 (1 per node)
         assert len(processes) == 16
 
-        # Each process owns exactly 1 GPU (for telemetry tagging) but is given
-        # visibility to the endpoint's full GPU set on the node so
-        # CUDA_VISIBLE_DEVICES isn't constrained to that single device.
+        # Default flag: each process owns 1 GPU, visible_gpu_indices unset
+        # (CUDA_VISIBLE_DEVICES constrained to that GPU — prior behavior).
         for proc in processes:
             assert len(proc.gpu_indices) == 1
-            assert proc.visible_gpu_indices == frozenset(range(8))
+            assert proc.visible_gpu_indices is None
 
         # First 8 processes on node0, next 8 on node1
         node0_processes = [p for p in processes if p.node == "node0"]
@@ -1183,6 +1187,32 @@ class TestVLLMDataParallelMode:
         # dp_rank (stored in node_rank) should go from 0 to 15
         dp_ranks = [p.node_rank for p in processes]
         assert dp_ranks == list(range(16))
+
+    def test_dp_mode_explicit_local_rank_widens_visibility(self):
+        """With dp_explicit_local_rank=True (newer vLLM convention), processes
+        still own one GPU each but are given visibility to the endpoint's full
+        local GPU set so CUDA_VISIBLE_DEVICES isn't constrained per-rank."""
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Endpoint
+
+        backend = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                prefill={"data-parallel-size": 16, "enable-expert-parallel": True},
+            ),
+            dp_explicit_local_rank=True,
+        )
+        endpoint = Endpoint(
+            mode="prefill",
+            index=0,
+            nodes=("node0", "node1"),
+            gpu_indices=frozenset(range(8)),
+            gpus_per_node=8,
+        )
+        processes = backend.endpoints_to_processes([endpoint])
+        assert len(processes) == 16
+        for proc in processes:
+            assert len(proc.gpu_indices) == 1
+            assert proc.visible_gpu_indices == frozenset(range(8))
 
     def test_dp_mode_command_includes_dp_flags(self):
         """Test that DP mode command includes correct DP flags instead of TP flags."""

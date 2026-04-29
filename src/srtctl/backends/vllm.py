@@ -91,6 +91,17 @@ class VLLMProtocol:
     # dynamo 1.0.0+: translated to --kv-transfer-config (--connector was removed).
     connector: str | None = "nixl"
 
+    # DP+EP launch convention. Controls two coupled behaviors that changed
+    # together in newer vLLM versions:
+    #   False (default, vLLM 0.12.0 and earlier): each DP rank's process sees
+    #     only its own GPU via CUDA_VISIBLE_DEVICES, and vLLM infers the local
+    #     rank from that.
+    #   True (vLLM 0.12.1+): each DP rank's process sees the full local DP
+    #     group's GPUs via CUDA_VISIBLE_DEVICES, and the local rank is passed
+    #     explicitly via --local-data-parallel-rank.
+    # Set to True when running a vLLM version that requires the new convention.
+    dp_explicit_local_rank: bool = False
+
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
     # =========================================================================
@@ -243,10 +254,14 @@ class VLLMProtocol:
                     current_sys_port += 1
             else:
                 # DP+EP mode: one process per GPU. Each process *owns* one GPU
-                # (gpu_indices, used for telemetry tagging) but is given
-                # visibility to the endpoint's full GPU set on the node via
-                # visible_gpu_indices, so CUDA_VISIBLE_DEVICES isn't constrained
-                # to the rank's single device.
+                # (gpu_indices, used for telemetry tagging). When
+                # dp_explicit_local_rank is True (newer vLLM convention), the
+                # process is also given visibility to the endpoint's full GPU
+                # set on the node via visible_gpu_indices, so
+                # CUDA_VISIBLE_DEVICES isn't constrained to the rank's single
+                # device — and build_worker_command will pass
+                # --local-data-parallel-rank.
+                visible = endpoint.gpu_indices if self.dp_explicit_local_rank else None
                 dp_rank = 0
                 for _node_rank, node in enumerate(endpoint.nodes):
                     for gpu_idx in sorted(endpoint.gpu_indices):
@@ -264,7 +279,7 @@ class VLLMProtocol:
                             Process(
                                 node=node,
                                 gpu_indices=frozenset([gpu_idx]),
-                                visible_gpu_indices=endpoint.gpu_indices,
+                                visible_gpu_indices=visible,
                                 sys_port=current_sys_port,
                                 http_port=http_port,
                                 endpoint_mode=endpoint.mode,
