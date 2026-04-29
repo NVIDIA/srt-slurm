@@ -203,6 +203,7 @@ class ClusterConfig:
     # sruns that bypass the bash wrapper (distroless containers).
     default_bash_preamble: str | None = None
     reporting: ReportingConfig | None = None
+    telemetry: dict | None = None  # opaque dict, parsed by try_start_snapshotter
     # When set, applied to job configs that omit ``frontend.nginx_raise_ulimit``.
     # Clusters that disallow raising nofile for nginx containers should use false.
     nginx_raise_ulimit: bool | None = None
@@ -1356,7 +1357,7 @@ class SrtConfig:
     def _validate_telemetry(self):
         """Validate telemetry configuration."""
         telemetry = self.telemetry
-        if not telemetry.enabled:
+        if telemetry is None or not telemetry.enabled:
             return
 
         if telemetry.provider != TelemetryProvider.SCRAPER:
