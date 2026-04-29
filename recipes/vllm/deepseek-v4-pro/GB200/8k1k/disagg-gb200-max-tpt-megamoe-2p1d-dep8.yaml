@@ -1,4 +1,4 @@
-name: "svf-vllm-disagg-gb200-max-tpt-megamoe-dep2"
+name: "svf-vllm-disagg-gb200-max-tpt-megamoe-2p1d-dep8"
 setup_script: "vllm-container-deps.sh"
 model:
   path: "deepseekv4-fp4"
@@ -12,12 +12,12 @@ dynamo:
 resources:
   gpu_type: "gb200"
   gpus_per_node: 4
-  prefill_nodes: 1
-  decode_nodes: 1
+  prefill_nodes: 4
+  decode_nodes: 2
   prefill_workers: 2
   decode_workers: 1
-  gpus_per_prefill: 2
-  gpus_per_decode: 2
+  gpus_per_prefill: 8
+  gpus_per_decode: 8
 
 infra:
   etcd_nats_dedicated_node: true
@@ -67,7 +67,7 @@ backend:
       kv-cache-dtype: "fp8"
       tensor-parallel-size: 1
       pipeline-parallel-size: 1
-      data-parallel-size: 2
+      data-parallel-size: 8
       data-parallel-rpc-port: 13345
       enable-expert-parallel: true
       enable-ep-weight-filter: true
@@ -92,7 +92,7 @@ backend:
       kv-cache-dtype: "fp8"
       tensor-parallel-size: 1
       pipeline-parallel-size: 1
-      data-parallel-size: 2
+      data-parallel-size: 8
       data-parallel-rpc-port: 13345
       enable-expert-parallel: true
       enable-ep-weight-filter: true
