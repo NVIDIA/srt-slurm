@@ -1,4 +1,4 @@
-name: "svf-vllm-disagg-gb200-test-1p1d-dep8-dep8-megamoe-mtp"
+name: "svf-vllm-disagg-gb200-test-1p1d-dep8-dep8-megamoe-mtp-c1-c128"
 setup_script: "vllm-container-deps.sh"
 model:
   path: "deepseekv4-fp4"
@@ -117,7 +117,7 @@ benchmark:
   type: "sa-bench"
   isl: 8192
   osl: 1024
-  concurrencies: "256x512x1024"
+  concurrencies: "1x128"
   req_rate: "inf"
   use_chat_template: true
   custom_tokenizer: "sa_bench_tokenizers.vllm_deepseek_v4.VLLMDeepseekV4Tokenizer"
