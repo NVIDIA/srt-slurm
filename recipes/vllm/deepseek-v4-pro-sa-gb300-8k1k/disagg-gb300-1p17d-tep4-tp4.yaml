@@ -1,4 +1,4 @@
-name: "vllm-disagg-gb300-1p1d-tep4-tp4"
+name: "vllm-disagg-gb300-1p17d-tep4-tp4"
 model:
   path: "dsv4_pro"
   container: "vllm/vllm-openai:v0.20.0-cu130"
