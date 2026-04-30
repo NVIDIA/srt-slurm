@@ -191,8 +191,8 @@ class WorkerStageMixin:
             profile_dir = str(self.runtime.log_dir / "profiles")
             env_to_set.update(profiling.get_env_vars(mode, profile_dir))
 
-        # Set CUDA_VISIBLE_DEVICES if not using all GPUs
-        if len(process.gpu_indices) < self.runtime.gpus_per_node:
+        # Set CUDA_VISIBLE_DEVICES if not all GPUs on the node are visible
+        if process.num_visible_gpus < self.runtime.gpus_per_node:
             env_to_set["CUDA_VISIBLE_DEVICES"] = process.cuda_visible_devices
 
         # Add backend-specific process environment variables (e.g., unique ports)
@@ -310,8 +310,8 @@ class WorkerStageMixin:
             profile_dir = str(self.runtime.log_dir / "profiles")
             env_to_set.update(profiling.get_env_vars(mode, profile_dir))
 
-        # Set CUDA_VISIBLE_DEVICES if not using all GPUs on the node
-        if len(leader.gpu_indices) < self.runtime.gpus_per_node:
+        # Set CUDA_VISIBLE_DEVICES if not all GPUs on the node are visible
+        if leader.num_visible_gpus < self.runtime.gpus_per_node:
             env_to_set["CUDA_VISIBLE_DEVICES"] = leader.cuda_visible_devices
 
         self._apply_kvbm_endpoint_env(env_to_set, endpoint_processes)
