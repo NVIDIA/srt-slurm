@@ -1168,6 +1168,8 @@ def main():
   srtctl dry-run -f config.yaml                  # Dry run
   srtctl resolve-override -f config.yaml         # Resolve override YAML (no submit)
   srtctl resolve-override -f config.yaml --stdout  # Print to stdout
+  srtctl monitor                                 # Live job dashboard
+  srtctl monitor --outputs /path/to/outputs      # Dashboard with custom outputs dir
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1230,6 +1232,9 @@ def main():
         dest="config",
         help="YAML config file, or file:selector for overrides",
     )
+
+    monitor_parser = subparsers.add_parser("monitor", help="Live dashboard for srt-slurm jobs", add_help=False)
+    monitor_parser.add_argument("args", nargs=argparse.REMAINDER)
 
     resolve_parser = subparsers.add_parser(
         "resolve-override",
@@ -1340,6 +1345,13 @@ def main():
             console.print(format_check_results([]))
         restore_console()
         sys.exit(1 if all_results else 0)
+
+    if args.command == "monitor":
+        from srtctl.cli.monitor import main as _monitor_main
+
+        sys.argv = [sys.argv[0]] + (args.args or [])
+        _monitor_main()
+        return
 
     # Parse config arg: supports path:selector format for overrides
     config_path, selector = parse_config_arg(args.config)
