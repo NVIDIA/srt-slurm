@@ -37,7 +37,7 @@ backend:
     VLLM_RANDOMIZE_DP_DUMMY_INPUTS: "1"
     VLLM_MOE_ROUTING_SIMULATION_STRATEGY: "uniform_random"
     VLLM_LOG_STATS_INTERVAL: "1"
-    TORCH_SYMMMEM: "NVSHMEM"
+    # TORCH_SYMMMEM: "NVSHMEM"
 
   vllm_config:
     aggregated:
