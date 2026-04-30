@@ -421,7 +421,7 @@ def _config_to_cli_args(config: dict[str, Any]) -> list[str]:
     """Convert config dict to CLI arguments."""
     args: list[str] = []
     for key, value in sorted(config.items()):
-        flag_name = key.replace("_", "-")
+        flag_name = _config_key_to_flag_name(key)
         if isinstance(value, bool):
             if value:
                 args.append(f"--{flag_name}")
@@ -431,3 +431,12 @@ def _config_to_cli_args(config: dict[str, Any]) -> list[str]:
         elif value is not None:
             args.extend([f"--{flag_name}", str(value)])
     return args
+
+
+def _config_key_to_flag_name(key: str) -> str:
+    """Convert config keys to vLLM CLI flags while preserving dotted fields."""
+    prefix, sep, nested_key = key.partition(".")
+    flag_name = prefix.replace("_", "-")
+    if sep:
+        return f"{flag_name}{sep}{nested_key}"
+    return flag_name
