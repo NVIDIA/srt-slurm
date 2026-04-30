@@ -1,0 +1,73 @@
+name: "dsv4-vllm-decode-only-dep8"
+model:
+  path: "deepseek-v4-pro"
+  container: "dsv4-sqsh"
+  precision: "fp4"
+
+dynamo:
+  version: 1.0.2
+  install: true
+
+setup_script: vllm-container-deps.sh
+
+slurm:
+  time_limit: "02:00:00"
+
+resources:
+  gpu_type: "gb200"
+  gpus_per_node: 4
+  agg_nodes: 2
+  agg_workers: 1
+  gpus_per_agg: 8
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+
+backend:
+  type: vllm
+  connector: null
+
+  aggregated_environment:
+    TILELANG_CLEANUP_TEMP_FILES: "1"
+    VLLM_USE_NCCL_SYMM_MEM: "1"
+    NCCL_CUMEM_ENABLE: "1"
+    NCCL_MNNVL_ENABLE: "1"
+    NCCL_NVLS_ENABLE: "1"
+    VLLM_RANDOMIZE_DP_DUMMY_INPUTS: "1"
+    VLLM_MOE_ROUTING_SIMULATION_STRATEGY: "uniform_random"
+    VLLM_LOG_STATS_INTERVAL: "1"
+    TORCH_SYMMMEM: "NVSHMEM"
+
+  vllm_config:
+    aggregated:
+      kv-transfer-config: '{"kv_connector": "DecodeBenchConnector", "kv_role": "kv_both", "kv_connector_extra_config": {"fill_mean": 0.015, "fill_std": 0.0}}'
+      served-model-name: "deepseek-ai/DeepSeek-V4-Pro"
+      kv-cache-dtype: "fp8"
+      tensor-parallel-size: 1
+      pipeline-parallel-size: 1
+      data-parallel-size: 8
+      data-parallel-rpc-port: 13345
+      enable-expert-parallel: true
+      max-model-len: 16384
+      max-num-seqs: 400
+      max-cudagraph-capture-size: 400
+      trust-remote-code: true
+      no-enable-flashinfer-autotune: true
+      no-enable-prefix-caching: true
+      block-size: 256
+      compilation-config: '{"cudagraph_mode":"FULL_DECODE_ONLY","mode":0}'
+      gpu-memory-utilization: 0.98
+      stream-interval: 50
+      no-disable-hybrid-kv-cache-manager: true
+      tokenizer-mode: deepseek_v4
+      enable-ep-weight-filter: true
+      moe-backend: "deep_gemm_mega_moe"
+
+benchmark:
+  type: "vllm-bench"
+  isl: 8192
+  osl: 1024
+  concurrencies: "3200"
+  random_range_ratio: 1.0
+  num_warmups: 256
