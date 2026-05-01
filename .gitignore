@@ -47,6 +47,7 @@ configs/etcdctl
 configs/*.whl
 configs/*.deb
 configs/*.tar.gz
+configs/wheels/
 
 .ruff_cache/
 *.egg-info/

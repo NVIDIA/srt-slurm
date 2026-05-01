@@ -77,6 +77,36 @@ class TestSABenchRunner:
         errors = runner.validate_config(config)
         assert errors == []
 
+    def test_build_command_includes_tokenizer_mode(self):
+        """Passes tokenizer mode through to the SA-Bench script."""
+        from unittest.mock import MagicMock
+
+        from srtctl.benchmarks.sa_bench import SABenchRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = SABenchRunner()
+        runtime = MagicMock()
+        runtime.frontend_port = 8000
+        runtime.is_hf_model = False
+
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="h100"),
+            benchmark=BenchmarkConfig(
+                type="sa-bench",
+                isl=1024,
+                osl=1024,
+                concurrencies=[4, 8],
+                tokenizer_mode="deepseek_v4",
+                use_chat_template=True,
+            ),
+        )
+
+        cmd = runner.build_command(config, runtime)
+
+        assert cmd[-3:] == ["", "true", "deepseek_v4"]
+
 
 class TestSGLangBenchRunner:
     """Test SGLang-Bench runner."""

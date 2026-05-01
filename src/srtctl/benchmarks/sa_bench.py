@@ -101,5 +101,6 @@ class SABenchRunner(BenchmarkRunner):
             str(b.num_warmup_mult) if b.num_warmup_mult is not None else "2",
             b.custom_tokenizer or "",
             str(b.use_chat_template).lower(),
+            b.tokenizer_mode or "auto",
         ]
         return cmd
