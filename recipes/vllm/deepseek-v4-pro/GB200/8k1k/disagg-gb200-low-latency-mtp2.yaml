@@ -1,4 +1,4 @@
-name: svf-vllm-disagg-gb200-1p4d-nooffload-mtp2-fp4idx
+name: svf-vllm-disagg-gb200-low-latency-mtp2
 setup_script: vllm-container-deps.sh
 model:
   path: deepseekv4-fp4

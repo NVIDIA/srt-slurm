@@ -1,4 +1,4 @@
-name: "svf-vllm-disagg-gb200-test-1p1d-dep8-dep8-megamoe-mtp2-fp4idx-pr41189-c64-c128"
+name: "svf-vllm-disagg-gb200-high-tpt-megamoe-mtp2"
 setup_script: "vllm-container-deps.sh"
 model:
   path: "deepseekv4-fp4"
@@ -19,9 +19,9 @@ health_check:
 resources:
   gpu_type: "gb200"
   gpus_per_node: 4
-  prefill_nodes: 2
+  prefill_nodes: 4
   decode_nodes: 2
-  prefill_workers: 1
+  prefill_workers: 2
   decode_workers: 1
   gpus_per_prefill: 8
   gpus_per_decode: 8
@@ -32,7 +32,6 @@ infra:
 frontend:
   type: dynamo
   enable_multiple_frontends: false
-
 backend:
   type: vllm
   connector: null
@@ -47,6 +46,8 @@ backend:
     VLLM_SERVER_DEV_MODE: "1"
     VLLM_SPARSE_INDEXER_MAX_LOGITS_MB: "1024"
     VLLM_MAX_TOKENS_PER_EXPERT_FP4_MOE: "2048"
+    # VLLM_RANDOMIZE_DP_DUMMY_INPUTS: "1"
+    # VLLM_MOE_ROUTING_SIMULATION_STRATEGY: "uniform_random"
     UCX_MEMTYPE_CACHE: "n"
     UCX_MEMTYPE_REG_WHOLE: "n"
     UCX_TLS: "cuda_copy,cuda_ipc,tcp"
@@ -61,6 +62,8 @@ backend:
     NCCL_MNNVL_ENABLE: "1"
     NCCL_NVLS_ENABLE: "1"
     VLLM_SERVER_DEV_MODE: "1"
+    # VLLM_RANDOMIZE_DP_DUMMY_INPUTS: "1"
+    # VLLM_MOE_ROUTING_SIMULATION_STRATEGY: "uniform_random"
     UCX_MEMTYPE_CACHE: "n"
     UCX_MEMTYPE_REG_WHOLE: "n"
     UCX_TLS: "cuda_copy,cuda_ipc,tcp"
@@ -73,7 +76,6 @@ backend:
       kv-cache-dtype: "fp8"
       tensor-parallel-size: 1
       pipeline-parallel-size: 1
-      data-parallel-hybrid-lb: true
       data-parallel-size: 8
       data-parallel-rpc-port: 13345
       enable-expert-parallel: true
@@ -83,14 +85,14 @@ backend:
       speculative-config: '{"method":"mtp","num_speculative_tokens":2}'
       attention-config: '{"use_fp4_indexer_cache":true}'
       max-model-len: 9280
-      max-num-seqs: 8
-      max-num-batched-tokens: 16384
+      max-num-seqs: 16
+      max-num-batched-tokens: 32768
       trust-remote-code: true
       no-enable-prefix-caching: true
       no-enable-flashinfer-autotune: true
       no-async-scheduling: true
       block-size: 256
-      gpu-memory-utilization: 0.9
+      gpu-memory-utilization: 0.94
       no-disable-hybrid-kv-cache-manager: true
       enable-sleep-mode: true
       numa-bind: true
@@ -101,7 +103,6 @@ backend:
       kv-cache-dtype: "fp8"
       tensor-parallel-size: 1
       pipeline-parallel-size: 1
-      data-parallel-hybrid-lb: true
       data-parallel-size: 8
       data-parallel-rpc-port: 13345
       enable-expert-parallel: true
@@ -112,7 +113,7 @@ backend:
       max-model-len: 9280
       max-num-seqs: 512
       max-cudagraph-capture-size: 512
-      max-num-batched-tokens: 512
+      max-num-batched-tokens: 1024
       trust-remote-code: true
       no-enable-prefix-caching: true
       no-enable-flashinfer-autotune: true
@@ -123,12 +124,11 @@ backend:
       no-disable-hybrid-kv-cache-manager: true
       enable-sleep-mode: true
       tokenizer-mode: deepseek_v4
-
 benchmark:
   type: "sa-bench"
   isl: 8192
   osl: 1024
-  concurrencies: "64x128"
+  concurrencies: "1024"
   req_rate: "inf"
   use_chat_template: true
   custom_tokenizer: "sa_bench_tokenizers.vllm_deepseek_v4.VLLMDeepseekV4Tokenizer"

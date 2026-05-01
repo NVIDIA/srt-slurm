@@ -1,4 +1,4 @@
-name: "svf-vllm-agg-gb200-tp8-mtp2-fp4idx-low-latency"
+name: "svf-vllm-agg-gb200-low-latency-mtp2"
 setup_script: "vllm-container-deps.sh"
 model:
   path: "deepseekv4-fp4"
