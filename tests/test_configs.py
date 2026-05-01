@@ -596,6 +596,9 @@ class TestSetupScript:
 
         assert "export DYNAMO_VERSION=1.2.0.dev20260426" in script
         assert "export DYNAMO_WHEEL_NAME=ai_dynamo-1.2.0.dev20260426-py3-none-any.whl" in script
+        assert "Ignoring inherited virtualenv" in script
+        assert 'unset VIRTUAL_ENV' in script
+        assert 'UV_BIN_DIR="${OUTPUT_DIR}/uv-bin"' in script
         assert "configs/prefetch-ai-dynamo-wheel.sh" in script
 
     def test_setup_script_env_var_override(self, monkeypatch):

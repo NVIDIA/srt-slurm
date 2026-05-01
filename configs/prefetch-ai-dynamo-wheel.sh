@@ -29,13 +29,31 @@ runtime_wheel_path() {
     find "${wheel_dir}" -maxdepth 1 -type f -name "${DYNAMO_RUNTIME_WHEEL_PATTERN}" -print -quit
 }
 
+python_with_pip() {
+    if python3 -m pip --version >/dev/null 2>&1; then
+        command -v python3
+        return
+    fi
+
+    if ! command -v uv >/dev/null 2>&1; then
+        echo "ERROR: python3 does not provide pip, and uv is unavailable to create a pip-seeded prefetch venv" >&2
+        return 1
+    fi
+
+    local prefetch_venv="${DYNAMO_PREFETCH_VENV:-${wheel_dir}/.prefetch-venv}"
+    uv venv --seed "${prefetch_venv}" >/dev/null
+    echo "${prefetch_venv}/bin/python"
+}
+
 if [ -f "${wheel_path}" ] && [ -n "$(runtime_wheel_path)" ]; then
     echo "ai-dynamo wheels already staged: ${wheel_dir}"
     exit 0
 fi
 
 download_wheels() {
-    python3 -m pip download \
+    local python_bin
+    python_bin="$(python_with_pip)"
+    "${python_bin}" -m pip download \
         --no-deps \
         --pre \
         --only-binary=:all: \

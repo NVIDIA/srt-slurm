@@ -82,12 +82,37 @@ export {{ key }}={{ value }}
 echo ""
 echo "Preparing srtctl environment..."
 
-# Install uv if not present (single binary, no dependencies)
-if ! command -v uv &> /dev/null; then
-    echo "Installing uv package manager..."
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    export PATH="$HOME/.local/bin:$PATH"
+# SLURM inherits the submitter environment by default. If srtctl was submitted
+# from an activated virtualenv, that venv can point at a pipless or wrong-arch
+# Python on the compute node. Drop it before selecting Python/uv for the job.
+if [ -n "${VIRTUAL_ENV:-}" ]; then
+    echo "Ignoring inherited virtualenv: ${VIRTUAL_ENV}"
+    CLEAN_PATH=""
+    OLD_IFS="${IFS}"
+    IFS=":"
+    for PATH_ENTRY in ${PATH}; do
+        if [ "${PATH_ENTRY}" != "${VIRTUAL_ENV}/bin" ]; then
+            if [ -z "${CLEAN_PATH}" ]; then
+                CLEAN_PATH="${PATH_ENTRY}"
+            else
+                CLEAN_PATH="${CLEAN_PATH}:${PATH_ENTRY}"
+            fi
+        fi
+    done
+    IFS="${OLD_IFS}"
+    export PATH="${CLEAN_PATH}"
+    unset VIRTUAL_ENV
 fi
+
+# Install a job-local uv so inherited submitter binaries cannot shadow the
+# compute-node architecture.
+UV_BIN_DIR="${OUTPUT_DIR}/uv-bin"
+mkdir -p "${UV_BIN_DIR}"
+if ! "${UV_BIN_DIR}/uv" --version >/dev/null 2>&1; then
+    echo "Installing uv package manager..."
+    curl -LsSf https://astral.sh/uv/install.sh | env XDG_BIN_HOME="${UV_BIN_DIR}" INSTALLER_NO_MODIFY_PATH=1 sh
+fi
+export PATH="${UV_BIN_DIR}:$PATH"
 
 echo "Using uv with Python 3.12..."
 
