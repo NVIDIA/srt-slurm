@@ -1,20 +1,27 @@
-name: "svf-vllm-disagg-gb200-max-tpt-megamoe"
+name: "svf-vllm-disagg-gb200-2p1d-megamoe-high-tpt-mtp2-fp4idx"
 setup_script: "vllm-container-deps.sh"
 model:
   path: "deepseekv4-fp4"
-  container: "vllm/vllm-openai:v0.20.0-ubuntu2404@sha256:46da022ce07aae43e4ffae844aeab467a223437e071abadf566555699fbf16c3"
+  container: "/mnt/lustre01/users/slurm-shared/aflowers/containers/vllm-openai-aflowers-pr41189-aarch64-61c3a50f43.sqsh"
   precision: "fp4"
 
 dynamo:
   install: true
   wheel: "1.2.0.dev20260426"
 
+slurm:
+  time_limit: "02:00:00"
+
+health_check:
+  max_attempts: 360
+  interval_seconds: 10
+
 resources:
   gpu_type: "gb200"
   gpus_per_node: 4
-  prefill_nodes: 6
+  prefill_nodes: 4
   decode_nodes: 2
-  prefill_workers: 3
+  prefill_workers: 2
   decode_workers: 1
   gpus_per_prefill: 8
   gpus_per_decode: 8
@@ -29,6 +36,7 @@ backend:
   type: vllm
   connector: null
   prefill_environment:
+    VLLM_ENGINE_READY_TIMEOUT_S: "3600"
     TILELANG_CLEANUP_TEMP_FILES: "1"
     VLLM_USE_NCCL_SYMM_MEM: "1"
     TORCH_SYMMMEM: "NVSHMEM"
@@ -46,6 +54,7 @@ backend:
     UCX_CUDA_IPC_ENABLE_MNNVL: "y"
     NCCL_P2P_LEVEL: NVL
   decode_environment:
+    VLLM_ENGINE_READY_TIMEOUT_S: "3600"
     TILELANG_CLEANUP_TEMP_FILES: "1"
     VLLM_USE_NCCL_SYMM_MEM: "1"
     TORCH_SYMMMEM: "NVSHMEM"
@@ -73,6 +82,8 @@ backend:
       enable-ep-weight-filter: true
       moe-backend: deep_gemm_mega_moe
       enforce-eager: true
+      speculative-config: '{"method":"mtp","num_speculative_tokens":2}'
+      attention-config: '{"use_fp4_indexer_cache":true}'
       max-model-len: 9280
       max-num-seqs: 16
       max-num-batched-tokens: 32768
@@ -81,7 +92,7 @@ backend:
       no-enable-flashinfer-autotune: true
       no-async-scheduling: true
       block-size: 256
-      gpu-memory-utilization: 0.95
+      gpu-memory-utilization: 0.94
       no-disable-hybrid-kv-cache-manager: true
       enable-sleep-mode: true
       numa-bind: true
@@ -97,10 +108,12 @@ backend:
       enable-expert-parallel: true
       enable-ep-weight-filter: true
       moe-backend: deep_gemm_mega_moe
+      speculative-config: '{"method":"mtp","num_speculative_tokens":2}'
+      attention-config: '{"use_fp4_indexer_cache":true}'
       max-model-len: 9280
       max-num-seqs: 512
       max-cudagraph-capture-size: 512
-      max-num-batched-tokens: 512
+      max-num-batched-tokens: 1024
       trust-remote-code: true
       no-enable-prefix-caching: true
       no-enable-flashinfer-autotune: true
@@ -115,7 +128,7 @@ benchmark:
   type: "sa-bench"
   isl: 8192
   osl: 1024
-  concurrencies: "4096"
+  concurrencies: "1024"
   req_rate: "inf"
   use_chat_template: true
   custom_tokenizer: "sa_bench_tokenizers.vllm_deepseek_v4.VLLMDeepseekV4Tokenizer"
@@ -125,8 +138,7 @@ identity:
     repo: "deepseek-ai/DeepSeek-V4-Pro"
     revision: "0366e4e064385807ea86b088a5c6c878ff23343b"
   container:
-    image: "vllm/vllm-openai:v0.20.0-ubuntu2404@sha256:46da022ce07aae43e4ffae844aeab467a223437e071abadf566555699fbf16c3"
+    image: "nvcr.io/nvidian/dynamo-dev/vllm-openai:aflowers-pr41189-aarch64-61c3a50f43"
   frameworks:
     dynamo: "1.2.0.dev20260426"
-    vllm: "0.20.0"
-
+    vllm: "pr41189-aarch64-61c3a50f43"
