@@ -335,13 +335,18 @@ class TestPreflightConfigVariants:
         assert results[0].ok is False
         assert results[0].errors[0].code == "model-not-available"
 
-    def test_missing_container_alias_fails(self, tmp_path):
+    def test_preflight_accepts_docker_uri_container(self, tmp_path):
+        """Container image URIs like ``nvcr.io/fake:latest`` are accepted by
+        preflight — Pyxis/enroot pulls them at srun time (mirrors the
+        runtime classification in runtime.py).  The image may still fail to
+        pull at runtime if it's bogus, but that's an actual srun error, not
+        a preflight one."""
         model_dir = tmp_path / "model"
         model_dir.mkdir()
 
         results = preflight_config_variants(
             {
-                "name": "bad-container",
+                "name": "docker-uri",
                 "model": {
                     "path": str(model_dir),
                     "container": "nvcr.io/fake:latest",
@@ -352,12 +357,109 @@ class TestPreflightConfigVariants:
                     "gpus_per_node": 4,
                     "prefill_nodes": 1,
                     "decode_nodes": 1,
+                    "prefill_workers": 1,
+                    "decode_workers": 1,
+                },
+            },
+        )
+
+        assert results[0].ok is True
+        assert results[0].container.source == "container-uri"
+        assert results[0].container.resolved == "nvcr.io/fake:latest"
+
+    def test_preflight_accepts_hf_prefix_model_path(self, tmp_path):
+        """``hf:org/model`` model paths are accepted — the framework
+        downloads via HF cache at serve time.  Mirrors runtime.py's
+        ``startswith('hf:')`` classification."""
+        container_file = tmp_path / "container.sqsh"
+        container_file.write_text("sqsh")
+
+        results = preflight_config_variants(
+            {
+                "name": "hf-model",
+                "model": {
+                    "path": "hf:meta-llama/Llama-3.1-8B",
+                    "container": str(container_file),
+                    "precision": "bf16",
+                },
+                "resources": {
+                    "gpu_type": "gb200",
+                    "gpus_per_node": 4,
+                    "prefill_nodes": 1,
+                    "decode_nodes": 1,
+                    "prefill_workers": 1,
+                    "decode_workers": 1,
+                },
+            },
+        )
+
+        assert results[0].ok is True
+        assert results[0].model.source == "huggingface"
+        assert results[0].model.resolved == "hf:meta-llama/Llama-3.1-8B"
+
+    def test_preflight_accepts_hf_model_and_docker_container_together(
+        self, tmp_path
+    ):
+        """The full AIB CI shape: ``hf:`` model + Docker URI container, no
+        srtslurm.yaml aliases registered."""
+        results = preflight_config_variants(
+            {
+                "name": "aib-ci-shape",
+                "model": {
+                    "path": "hf:nvidia/Kimi-K2.5-NVFP4",
+                    "container": "nvcr.io/nvidia/ai-dynamo/sglang-runtime:0.8.1",
+                    "precision": "fp4",
+                },
+                "resources": {
+                    "gpu_type": "gb200",
+                    "gpus_per_node": 4,
+                    "prefill_nodes": 1,
+                    "decode_nodes": 1,
+                    "prefill_workers": 1,
+                    "decode_workers": 1,
+                },
+            },
+        )
+
+        assert results[0].ok is True
+        assert results[0].model.source == "huggingface"
+        assert results[0].container.source == "container-uri"
+        assert results[0].errors == []
+
+    def test_preflight_still_rejects_typo_local_path_without_colon(
+        self, tmp_path
+    ):
+        """A bare relative string with no ``:`` and no leading ``./`` is NOT
+        a Docker URI — runtime.py would treat it as an image name too, but
+        if it doesn't even look URI-shaped, that's almost certainly a typo
+        of a local path.  Locks in the ``:`` guard so genuinely-broken
+        configs still get caught at preflight."""
+        model_dir = tmp_path / "model"
+        model_dir.mkdir()
+
+        results = preflight_config_variants(
+            {
+                "name": "typo",
+                "model": {
+                    "path": str(model_dir),
+                    "container": "missing-file",  # no ':' → not URI shape
+                    "precision": "bf16",
+                },
+                "resources": {
+                    "gpu_type": "gb200",
+                    "gpus_per_node": 4,
+                    "prefill_nodes": 1,
+                    "decode_nodes": 1,
+                    "prefill_workers": 1,
+                    "decode_workers": 1,
                 },
             },
         )
 
         assert results[0].ok is False
-        assert any(issue.code == "container-not-available" for issue in results[0].errors)
+        assert any(
+            issue.code == "container-not-available" for issue in results[0].errors
+        )
 
     def test_telemetry_aliases_resolve_and_pass_when_files_exist(self, tmp_path):
         model_dir = tmp_path / "model"
