@@ -21,10 +21,35 @@ Reference: vllm/config/parallel.py, ParallelConfig.compute_hash(),
 ignored_factors set.
 """
 
+import inspect
 import sys
 from pathlib import Path
 
-TARGET = Path("/usr/local/lib/python3.12/dist-packages/vllm/config/parallel.py")
+
+def find_target():
+    try:
+        from vllm.config import ParallelConfig
+
+        source = inspect.getsourcefile(ParallelConfig)
+        if source:
+            return Path(source)
+    except Exception as exc:
+        print(
+            f"[vllm-numa-bind-hash-fix] Could not introspect ParallelConfig: {exc}",
+            file=sys.stderr,
+        )
+
+    candidates = (
+        Path("/usr/local/lib/python3.12/site-packages/vllm/config/parallel.py"),
+        Path("/usr/local/lib/python3.12/dist-packages/vllm/config/parallel.py"),
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[-1]
+
+
+TARGET = find_target()
 
 # Idempotency: if any of our additions is already present, skip.
 MARKER = '"numa_bind",'
