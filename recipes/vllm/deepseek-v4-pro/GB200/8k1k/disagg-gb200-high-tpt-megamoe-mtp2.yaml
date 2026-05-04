@@ -1,8 +1,8 @@
 name: "svf-vllm-disagg-gb200-high-tpt-megamoe-mtp2"
-setup_script: "vllm-container-deps.sh"
+setup_script: "vllm-container-deps-pr41015-fp4-fix.sh"
 model:
   path: "deepseekv4-fp4"
-  container: "/mnt/lustre01/users/slurm-shared/aflowers/containers/vllm-openai-aflowers-pr41189-aarch64-61c3a50f43.sqsh"
+  container: "vllm/vllm-openai:v0.20.1-ubuntu2404"
   precision: "fp4"
 
 dynamo:
@@ -138,7 +138,7 @@ identity:
     repo: "deepseek-ai/DeepSeek-V4-Pro"
     revision: "0366e4e064385807ea86b088a5c6c878ff23343b"
   container:
-    image: "nvcr.io/nvidian/dynamo-dev/vllm-openai:aflowers-pr41189-aarch64-61c3a50f43"
+    image: "vllm/vllm-openai:v0.20.1-ubuntu2404"
   frameworks:
     dynamo: "1.2.0.dev20260426"
-    vllm: "pr41189-aarch64-61c3a50f43"
+    vllm: "0.20.1"
