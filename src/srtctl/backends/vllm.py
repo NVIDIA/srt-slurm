@@ -245,6 +245,8 @@ class VLLMProtocol:
                 # DP+EP mode: one process per GPU
                 # Each process gets a single GPU and a unique dp_rank
                 dp_rank = 0
+                # Allocate a unique DP RPC port for this endpoint's leader node
+                dp_rpc_port = port_allocator.next_dp_rpc_port(endpoint.leader_node)
                 for _node_rank, node in enumerate(endpoint.nodes):
                     for gpu_idx in sorted(endpoint.gpu_indices):
                         is_leader = dp_rank == 0
@@ -269,6 +271,7 @@ class VLLMProtocol:
                                 bootstrap_port=bootstrap_port,
                                 kv_events_port=kv_events_port,
                                 nixl_port=nixl_port,
+                                dp_rpc_port=dp_rpc_port,
                             )
                         )
                         current_sys_port += 1
@@ -352,7 +355,12 @@ class VLLMProtocol:
             # DP+EP mode: each GPU runs its own process
             # process.node_rank is the dp_rank (set in endpoints_to_processes)
             dp_rank = process.node_rank
-            dp_rpc_port = config.pop("data-parallel-rpc-port", None) or config.pop("data_parallel_rpc_port", 13345)
+            # Use the per-endpoint dp_rpc_port allocated by NodePortAllocator
+            # (avoids port collisions when multiple endpoints share a node)
+            dp_rpc_port = process.dp_rpc_port or config.pop("data-parallel-rpc-port", None) or config.pop("data_parallel_rpc_port", 13345)
+            # Pop from config so it doesn't get added again by _config_to_cli_args
+            config.pop("data-parallel-rpc-port", None)
+            config.pop("data_parallel_rpc_port", None)
 
             cmd.extend(
                 [

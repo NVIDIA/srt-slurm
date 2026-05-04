@@ -37,6 +37,7 @@ class NodePortAllocator:
     Port ranges (non-overlapping):
         - kv_events_port: 5550+  (global) - ZMQ port for kv-events publishing
         - nixl_port:      6550+  (global) - NIXL side channel for KV transfers (vLLM)
+        - dp_rpc_port:    13345+ (per node) - DP coordination port (vLLM data-parallel)
         - http_port:      30000+ (per node) - HTTP serving port
         - bootstrap_port: 31000+ (per node) - P/D coordination port (prefill only)
 
@@ -55,9 +56,11 @@ class NodePortAllocator:
     base_bootstrap_port: int = 31000
     base_kv_events_port: int = 5550
     base_nixl_port: int = 6550  # NIXL side channel ports (must not overlap with kv_events)
+    base_dp_rpc_port: int = 13345  # DP coordination port for vLLM data-parallel
 
     _http_ports: dict[str, int] = field(default_factory=dict, repr=False)
     _bootstrap_ports: dict[str, int] = field(default_factory=dict, repr=False)
+    _dp_rpc_ports: dict[str, int] = field(default_factory=dict, repr=False)
     _next_kv_events_port: int = field(default=0, repr=False)  # Global counter
     _next_nixl_port: int = field(default=0, repr=False)  # Global counter for NIXL
 
@@ -91,6 +94,18 @@ class NodePortAllocator:
             self._next_nixl_port = self.base_nixl_port
         port = self._next_nixl_port
         self._next_nixl_port += 1
+        return port
+
+    def next_dp_rpc_port(self, node: str) -> int:
+        """Get next available DP RPC port for a node.
+
+        When multiple DP endpoints share a node, each needs a unique
+        data-parallel-rpc-port to avoid bind collisions.
+        """
+        if node not in self._dp_rpc_ports:
+            self._dp_rpc_ports[node] = self.base_dp_rpc_port
+        port = self._dp_rpc_ports[node]
+        self._dp_rpc_ports[node] += 1
         return port
 
 
@@ -167,6 +182,7 @@ class Process:
     bootstrap_port: int | None = None
     kv_events_port: int | None = None
     nixl_port: int | None = None
+    dp_rpc_port: int | None = None
 
     @property
     def is_leader(self) -> bool:
