@@ -1,0 +1,2 @@
+Config,Total GPU Count,Decode GPU Count,Concurrency,Total Token Throughput,Output Token Throughput,Median TTFT,Median TPOT,Median ITL,P90 Decode Running Requests,Output Token Throughput per User,Total Token Throughput per GPU
+svf-vllm-disagg-gb200-high-tpt-megamoe-mtp2-v0201-ubuntu2404-c1024,24,8,1024,64051.414,7117.426,74154.996,27.311,50.89,,36.616,2668.809

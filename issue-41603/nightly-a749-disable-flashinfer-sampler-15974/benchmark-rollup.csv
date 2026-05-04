@@ -1,0 +1,2 @@
+Config,Total GPU Count,Decode GPU Count,Concurrency,Total Token Throughput,Output Token Throughput,Median TTFT,Median TPOT,Median ITL,P90 Decode Running Requests,Output Token Throughput per User,Total Token Throughput per GPU
+svf-vllm-disagg-gb200-high-tpt-megamoe-mtp2-nightly-a749-disable-flashinfer-sampler,24,8,1024,110541.545,12282.761,2810.494,44.182,78.981,,22.634,4605.898
