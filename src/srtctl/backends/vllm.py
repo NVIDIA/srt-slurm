@@ -65,6 +65,7 @@ class VLLMProtocol:
         backend:
           type: vllm
           connector: nixl  # translated to --kv-transfer-config JSON
+          allow_prefill_decode_colocation: true  # pack P/D on one node when all workers fit
           prefill_environment:
             PYTHONUNBUFFERED: "1"
           vllm_config:
@@ -92,6 +93,11 @@ class VLLMProtocol:
     # Can be overridden per mode by setting "connector" in vllm_config.prefill/decode/aggregated.
     # dynamo 1.0.0+: translated to --kv-transfer-config (--connector was removed).
     connector: str | None = "nixl"
+
+    # Allow prefill and decode workers to share one node when the combined GPU
+    # request fits within gpus_per_node. Defaults off to preserve existing P/D
+    # node separation.
+    allow_prefill_decode_colocation: bool = False
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
@@ -152,6 +158,28 @@ class VLLMProtocol:
                         return name
         return default
 
+    def should_colocate_prefill_decode(
+        self,
+        *,
+        num_prefill: int,
+        num_decode: int,
+        num_agg: int,
+        gpus_per_prefill: int,
+        gpus_per_decode: int,
+        gpus_per_agg: int,
+        gpus_per_node: int,
+    ) -> bool:
+        """Whether all vLLM workers should be packed onto one node."""
+        if not self.allow_prefill_decode_colocation:
+            return False
+        if num_prefill <= 0 or num_decode <= 0 or gpus_per_node <= 0:
+            return False
+
+        total_worker_gpus = (
+            num_prefill * gpus_per_prefill + num_decode * gpus_per_decode + num_agg * gpus_per_agg
+        )
+        return total_worker_gpus <= gpus_per_node
+
     def allocate_endpoints(
         self,
         num_prefill: int,
@@ -177,6 +205,15 @@ class VLLMProtocol:
             gpus_per_node=gpus_per_node,
             available_nodes=available_nodes,
             spread_workers=spread_workers,
+            allow_prefill_decode_colocation=self.should_colocate_prefill_decode(
+                num_prefill=num_prefill,
+                num_decode=num_decode,
+                num_agg=num_agg,
+                gpus_per_prefill=gpus_per_prefill,
+                gpus_per_decode=gpus_per_decode,
+                gpus_per_agg=gpus_per_agg,
+                gpus_per_node=gpus_per_node,
+            ),
         )
 
     def _is_dp_mode(self, mode: WorkerMode) -> bool:
