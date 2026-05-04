@@ -197,7 +197,7 @@ def generate_minimal_sbatch_script(
     env = Environment(loader=FileSystemLoader(str(template_dir)))
     template = env.get_template("job_script_minimal.j2")
 
-    total_nodes = config.resources.total_nodes
+    total_nodes = config.total_nodes
     # Add extra node for dedicated etcd/nats infrastructure
     if config.infra.etcd_nats_dedicated_node:
         total_nodes += 1

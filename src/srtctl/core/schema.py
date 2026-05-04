@@ -940,6 +940,21 @@ class SrtConfig:
         return self.backend.get_served_model_name(default)
 
     @property
+    def total_nodes(self) -> int:
+        """Worker node count, adjusted for backend-specific packing."""
+        if isinstance(self.backend, VLLMProtocol) and self.backend.should_colocate_prefill_decode(
+            num_prefill=self.resources.num_prefill,
+            num_decode=self.resources.num_decode,
+            num_agg=self.resources.num_agg,
+            gpus_per_prefill=self.resources.gpus_per_prefill,
+            gpus_per_decode=self.resources.gpus_per_decode,
+            gpus_per_agg=self.resources.gpus_per_agg,
+            gpus_per_node=self.resources.gpus_per_node,
+        ):
+            return 1
+        return self.resources.total_nodes
+
+    @property
     def backend_type(self) -> str:
         """Get the backend type string."""
         return self.backend.type
