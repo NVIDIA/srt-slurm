@@ -9,7 +9,6 @@ Primary srt-slurm reproducer:
 Recovery patch:
 
 - `configs/patches/vllm-container-deps-pr41015-fp4-fix.sh`
-- `configs/patches/vllm-container-deps-revert-pr41015.sh`
 - `configs/patches/vllm_revert_pr41015_fp4_cvt.py`
 
 Each subdirectory contains the `recipe.lock.yaml` captured by srt-slurm plus
