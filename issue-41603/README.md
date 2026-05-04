@@ -6,8 +6,9 @@ Primary srt-slurm reproducer:
 
 - `recipes/vllm/deepseek-v4-pro/GB200/8k1k/disagg-gb200-high-tpt-megamoe-mtp2.yaml`
 
-Recovery patch tested in job 15975:
+Recovery patch:
 
+- `configs/patches/vllm-container-deps-pr41015-fp4-fix.sh`
 - `configs/patches/vllm-container-deps-revert-pr41015.sh`
 - `configs/patches/vllm_revert_pr41015_fp4_cvt.py`
 
