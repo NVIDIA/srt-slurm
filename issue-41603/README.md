@@ -20,6 +20,3 @@ the `benchmark-rollup.csv` for the same job.
 | `nightly-a749-15902/` | 15902 | `vLLM 0.20.1rc1.dev91+ga749a33d8` nightly | Regression: about 5,305 total tok/s/GPU |
 | `official-v0201-15963/` | 15963 | `vllm/vllm-openai:v0.20.1-ubuntu2404` | Bad high-throughput result: about 2,669 total tok/s/GPU |
 | `nightly-a749-revert-pr41015-15975/` | 15975 | nightly plus local revert of vLLM PR #41015 FP32->FP4 cvt path | Recovers throughput: about 7,326 total tok/s/GPU |
-| `nightly-a749-disable-flashinfer-sampler-15974/` | 15974 | nightly with `VLLM_USE_FLASHINFER_SAMPLER=0` | Completed requests, then failed after results |
-| `nightly-a749-revert-pr41135-15984/` | 15984 | nightly plus local revert of vLLM PR #41135 custom-op wrapper | Completed requests, then failed after results |
-

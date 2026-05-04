@@ -1,2 +1,0 @@
-Config,Total GPU Count,Decode GPU Count,Concurrency,Total Token Throughput,Output Token Throughput,Median TTFT,Median TPOT,Median ITL,P90 Decode Running Requests,Output Token Throughput per User,Total Token Throughput per GPU
-svf-vllm-disagg-gb200-high-tpt-megamoe-mtp2-nightly-a749-revert-pr41135,24,8,1024,106538.668,11836.888,2301.818,48.174,80.435,,20.758,4439.111
