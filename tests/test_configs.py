@@ -1267,6 +1267,87 @@ class TestVLLMPrefillDecodeColocation:
         assert [ep.nodes for ep in decode_eps] == [("node0",), ("node0",)]
         assert [ep.gpu_indices for ep in decode_eps] == [frozenset({4, 5}), frozenset({6, 7})]
 
+    def test_same_node_prefill_decode_ports_do_not_collide(self):
+        """Test same-node vLLM P/D workers get distinct listener ports."""
+        from srtctl.backends import VLLMProtocol
+
+        backend = VLLMProtocol(allow_prefill_decode_colocation=True)
+        endpoints = backend.allocate_endpoints(
+            num_prefill=1,
+            num_decode=1,
+            num_agg=0,
+            gpus_per_prefill=4,
+            gpus_per_decode=4,
+            gpus_per_agg=0,
+            gpus_per_node=8,
+            available_nodes=("node0", "node1"),
+        )
+
+        processes = backend.endpoints_to_processes(endpoints)
+        prefill = next(p for p in processes if p.endpoint_mode == "prefill")
+        decode = next(p for p in processes if p.endpoint_mode == "decode")
+
+        assert prefill.node == decode.node == "node0"
+        assert prefill.http_port == 30000
+        assert decode.http_port == 30001
+        assert prefill.bootstrap_port == 31000
+
+        bound_ports = [
+            port
+            for process in processes
+            for port in (process.http_port, process.bootstrap_port, process.kv_events_port, process.nixl_port)
+            if port
+        ]
+        assert len(bound_ports) == len(set(bound_ports))
+
+    def test_same_node_dp_prefill_decode_ports_do_not_collide(self):
+        """Test same-node DP P/D endpoints get distinct per-endpoint port ranges."""
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+
+        backend = VLLMProtocol(
+            allow_prefill_decode_colocation=True,
+            vllm_config=VLLMServerConfig(
+                prefill={"data-parallel-size": 4, "enable-expert-parallel": True},
+                decode={"data-parallel-size": 4, "enable-expert-parallel": True},
+            ),
+        )
+        endpoints = backend.allocate_endpoints(
+            num_prefill=1,
+            num_decode=1,
+            num_agg=0,
+            gpus_per_prefill=4,
+            gpus_per_decode=4,
+            gpus_per_agg=0,
+            gpus_per_node=8,
+            available_nodes=("node0", "node1"),
+        )
+
+        processes = backend.endpoints_to_processes(endpoints)
+        prefill = [p for p in processes if p.endpoint_mode == "prefill"]
+        decode = [p for p in processes if p.endpoint_mode == "decode"]
+
+        assert len(prefill) == 4
+        assert len(decode) == 4
+        assert {p.node for p in prefill + decode} == {"node0"}
+        assert {p.dp_rpc_port for p in prefill} == {13345}
+        assert {p.dp_rpc_port for p in decode} == {13346}
+        assert {p.nixl_port for p in prefill} == {6550}
+        assert {p.nixl_port for p in decode} == {6554}
+
+        leader_ports = [
+            port
+            for process in prefill + decode
+            for port in (process.http_port, process.bootstrap_port)
+            if port
+        ]
+        assert sorted(leader_ports) == [30000, 30001, 31000]
+
+        prefill_actual_nixl_ports = {next(iter(p.nixl_port for p in prefill)) + p.node_rank for p in prefill}
+        decode_actual_nixl_ports = {next(iter(p.nixl_port for p in decode)) + p.node_rank for p in decode}
+        assert prefill_actual_nixl_ports == {6550, 6551, 6552, 6553}
+        assert decode_actual_nixl_ports == {6554, 6555, 6556, 6557}
+        assert prefill_actual_nixl_ports.isdisjoint(decode_actual_nixl_ports)
+
     def test_enabled_does_not_pack_when_one_node_does_not_fit(self):
         """Test vLLM falls back to separated P/D nodes when total GPUs do not fit."""
         from srtctl.backends import VLLMProtocol
