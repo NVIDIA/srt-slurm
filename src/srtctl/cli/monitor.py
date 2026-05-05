@@ -623,7 +623,7 @@ def _detail_view(job_id: str, jobs: list[dict], state: _State, term_height: int 
     stage_color = job_info["stage_color"] if job_info else "dim"
 
     job_title = (
-        f"[bold cyan]{job_id}[/bold cyan] [dim cyan]{name}[/dim cyan]" f" [{stage_color}]{stage_label}[/{stage_color}]"
+        f"[bold cyan]{job_id}[/bold cyan] [dim cyan]{name}[/dim cyan] [{stage_color}]{stage_label}[/{stage_color}]"
     )
 
     content_h = term_height - 1

@@ -216,11 +216,7 @@ def _preflight_container(
     # --container-image``, which Pyxis/enroot pulls on first use.  The
     # ":" guard distinguishes a URI (registry/...:tag or scheme://...)
     # from a typo'd local relative path.
-    if (
-        isinstance(raw, str)
-        and not raw.startswith(("/", "./"))
-        and ":" in raw
-    ):
+    if isinstance(raw, str) and not raw.startswith(("/", "./")) and ":" in raw:
         return (
             PreflightResolution(
                 field="model.container",
