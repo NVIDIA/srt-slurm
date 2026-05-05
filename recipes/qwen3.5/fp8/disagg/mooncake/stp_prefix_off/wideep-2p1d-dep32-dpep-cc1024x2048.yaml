@@ -3,11 +3,7 @@
 
 name: "qwen3.5-2p1d-dep32-dpep-router-cc1024x2048"
 
-setup_script: setup-router-and-deepep.sh
-
-frontend:
-  type: sglang
-  enable_multiple_frontends: false
+setup_script: rebuild-deepep.sh
 
 model:
   path: "qwen3.5-fp8"
@@ -80,7 +76,6 @@ backend:
       enable-dp-attention: true
       enable-dp-lm-head: true
       moe-dense-tp-size: 1
-      load-balance-method: "total_tokens"
 
       mamba-scheduler-strategy: "no_buffer"
       mamba-track-interval: 2048
@@ -112,7 +107,6 @@ backend:
       enable-dp-attention: true
       enable-dp-lm-head: true
       prefill-round-robin-balance: true
-      load-balance-method: "total_tokens"
 
       mamba-scheduler-strategy: "no_buffer"
       mamba-track-interval: 128
