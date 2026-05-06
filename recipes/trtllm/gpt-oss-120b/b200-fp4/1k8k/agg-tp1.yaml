@@ -1,15 +1,12 @@
 name: "gpt-oss-120b-trtllm-agg-b200-tp1-1k8k"
 
 model:
-  path: "/lustre/fsw/coreai_prod_infbench/common/cache/hub/models--openai--gpt-oss-120b/snapshots/b5c939de8f754692c1647ca79fbf85e8c1e70f8a"
-  container: "/lustre/fsw/coreai_prod_infbench/common/docker/dynamo-trtllm-1.1.0.sqsh"
+  path: "hf:openai/gpt-oss-120b"
+  container: "nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:1.1.0-dev.3"
   precision: "fp4"
 
 dynamo:
   install: false
-
-extra_mount:
-  - "/lustre/fsw/coreai_prod_infbench/common/cache/hub/models--openai--gpt-oss-120b/blobs:/blobs"
 
 resources:
   gpu_type: "b200"
@@ -26,9 +23,6 @@ backend:
   type: trtllm
 
   aggregated_environment:
-    HF_HOME: "/lustre/fsw/coreai_prod_infbench/common/cache"
-    HF_HUB_OFFLINE: "1"
-    TRANSFORMERS_OFFLINE: "1"
     PYTHONUNBUFFERED: "1"
     DYN_HEALTH_CHECK_ENABLED: "false"
     TRTLLM_ENABLE_PDL: "1"
