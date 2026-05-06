@@ -5,6 +5,8 @@ name: "qwen3.5-1p1d-dep16-dpep-router"
 
 setup_script: rebuild-deepep.sh
 
+dynamo:
+  hash: 4e4006138bb9dde377a2bb2cacbcc65aaa616ac1
 
 model:
   path: "qwen3.5-fp8"

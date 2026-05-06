@@ -5,6 +5,9 @@ name: "qwen3.5-6p1d-dep32-dpep-router-cc8192"
 
 setup_script: rebuild-deepep.sh
 
+dynamo:
+  hash: 4e4006138bb9dde377a2bb2cacbcc65aaa616ac1
+
 model:
   path: "qwen3.5-fp8"
   container: "dev"
