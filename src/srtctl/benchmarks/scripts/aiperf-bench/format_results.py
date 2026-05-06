@@ -48,6 +48,9 @@ _FIELD_MAP: dict[str, list[str]] = {
     "e2el_mean":           ["request_latency.avg"],
     "e2el_median":         ["request_latency.p50"],
     "e2el_p99":            ["request_latency.p99"],
+    "total_gpu_power":     ["total_gpu_power.avg"],
+    "total_gpu_energy":    ["total_gpu_energy.avg"],
+    "tokens_per_joule":    ["output_tokens_per_joule.avg"],
 }
 
 # Fields that should display as integers (no decimal point).
@@ -145,6 +148,11 @@ def format_results(artifact_dir: str) -> str:
         itl_mean_val = (num_requests * ttft_avg + (total_out - num_requests) * tpot_avg) / total_out
         itl_mean_str = f"{itl_mean_val:.2f}"
 
+    # Output TPS/User = 1000 / mean_TPOT(ms)
+    tps_per_user_str = "N/A"
+    if isinstance(tpot_avg, (int, float)) and tpot_avg > 0:
+        tps_per_user_str = f"{1000.0 / tpot_avg:.2f}"
+
     lines = [
         f"Traffic request rate: {_fmt(get('request_rate'))}",
         f"Burstiness factor: {burstiness_str}",
@@ -157,6 +165,7 @@ def format_results(artifact_dir: str) -> str:
         _row("Request throughput (req/s)", fmt("request_throughput")),
         _row("Output token throughput (tok/s)", fmt("output_throughput")),
         _row("Total Token throughput (tok/s)", fmt("total_throughput")),
+        _row("Output throughput per user (tok/s)", tps_per_user_str),
         "---------------Time to First Token----------------",
         _row("Mean TTFT (ms)", fmt("ttft_mean")),
         _row("Median TTFT (ms)", fmt("ttft_median")),
@@ -175,6 +184,17 @@ def format_results(artifact_dir: str) -> str:
         _row("P99 E2EL (ms)", fmt("e2el_p99")),
         "==================================================",
     ]
+
+    # Power summary — only shown when GPU telemetry fields are present
+    power_val = get("total_gpu_power")
+    energy_val = get("total_gpu_energy")
+    tpj_val = get("tokens_per_joule")
+    if power_val is not _MISSING or energy_val is not _MISSING or tpj_val is not _MISSING:
+        lines.append("------------------Power Summary--------------------")
+        lines.append(_row("Total GPU Power (W)", _fmt(power_val)))
+        lines.append(_row("Total GPU Energy (J)", _fmt(energy_val)))
+        lines.append(_row("Output Tokens per Joule (tok/J)", _fmt(tpj_val)))
+        lines.append("=="*25)
     return "\n".join(lines)
 
 

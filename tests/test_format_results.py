@@ -82,6 +82,50 @@ class TestFormatResults:
         itl_mean_line = [line for line in lines if "Mean ITL (ms)" in line][0]
         assert "N/A" in itl_mean_line
 
+    def test_output_throughput_per_user(self, format_results, tmp_path):
+        """Output throughput per user is 1000 / mean_TPOT(ms)."""
+        data = {
+            "inter_token_latency": {"avg": 50.0, "p50": 45.0, "p99": 80.0},
+        }
+        (tmp_path / "profile_export_aiperf.json").write_text(json.dumps(data))
+        result = format_results(str(tmp_path))
+        # 1000 / 50 = 20.00 tok/s
+        assert "Output throughput per user (tok/s):" in result
+        lines = result.splitlines()
+        tpu_line = [line for line in lines if "Output throughput per user" in line][0]
+        assert "20.00" in tpu_line
+
+    def test_output_throughput_per_user_na_when_missing(self, format_results, tmp_path):
+        """Output throughput per user is N/A when TPOT is missing."""
+        (tmp_path / "profile_export_aiperf.json").write_text("{}")
+        result = format_results(str(tmp_path))
+        lines = result.splitlines()
+        tpu_line = [line for line in lines if "Output throughput per user" in line][0]
+        assert "N/A" in tpu_line
+
+    def test_power_summary_shown_when_present(self, format_results, tmp_path):
+        """Power summary section appears when GPU telemetry fields are present."""
+        data = {
+            "total_gpu_power": {"unit": "W", "avg": 15879.77},
+            "total_gpu_energy": {"unit": "J", "avg": 11906900.64},
+            "output_tokens_per_joule": {"unit": "tokens/J", "avg": 5.10},
+        }
+        (tmp_path / "profile_export_aiperf.json").write_text(json.dumps(data))
+        result = format_results(str(tmp_path))
+        assert "Power Summary" in result
+        assert "15879.77" in result
+        assert "11906900.64" in result
+        assert "5.10" in result
+
+    def test_power_summary_hidden_when_absent(self, format_results, tmp_path):
+        """Power summary section is omitted when no GPU telemetry fields are present."""
+        data = {
+            "inter_token_latency": {"avg": 10.0, "p50": 9.0, "p99": 20.0},
+        }
+        (tmp_path / "profile_export_aiperf.json").write_text(json.dumps(data))
+        result = format_results(str(tmp_path))
+        assert "Power Summary" not in result
+
     def test_nested_fields(self, format_results, tmp_path):
         """Nested JSON fields resolved via dot-notation using .avg subkey."""
         data = {
