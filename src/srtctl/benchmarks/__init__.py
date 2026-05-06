@@ -8,6 +8,7 @@ from srtctl.benchmarks import (
     custom,
     gpqa,
     gsm8k,
+    lm_eval,
     longbenchv2,
     mmlu,
     mooncake_router,
@@ -30,6 +31,7 @@ __all__ = [
     "register_benchmark",
     # Runners
     "custom",
+    "lm_eval",
     "sa_bench",
     "sglang_bench",
     "mmlu",
