@@ -36,8 +36,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from srtctl.analysis.batch_log_parser import (
-    DECODE_METRICS,
-    PREFILL_METRICS,
     FileSeries,
     LogState,
 )
@@ -104,7 +102,6 @@ def _render_png(
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    import numpy as np
 
     pf_files = [s for s in state.prefill_files.values() if not s.empty]
     dc_files = [s for s in state.decode_files.values() if not s.empty]
@@ -126,7 +123,7 @@ def _render_png(
         y=1.0,
     )
 
-    def _draw_ax(ax: "plt.Axes", metric: str | None, files: list[FileSeries], side: str) -> None:
+    def _draw_ax(ax: plt.Axes, metric: str | None, files: list[FileSeries], side: str) -> None:
         if metric is None:
             ax.set_visible(False)
             return
