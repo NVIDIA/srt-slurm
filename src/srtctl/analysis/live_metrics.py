@@ -316,15 +316,8 @@ def try_start_snapshotter(
     if not cfg or not cfg.get("enabled"):
         return None
 
-    try:
-        import matplotlib  # noqa: F401  -- imported here so we fail fast & loud
-    except ImportError as e:
-        logger.warning(
-            "Live metrics enabled in cluster config but matplotlib is not installed (%s); "
-            "skipping snapshotter",
-            e,
-        )
-        return None
+    # matplotlib is a required srtctl dependency (see pyproject.toml), so we
+    # do not need a runtime presence check here.
 
     try:
         snap = LiveMetricsSnapshotter(
