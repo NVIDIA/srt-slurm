@@ -5,8 +5,8 @@
 
 # Import runners to trigger registration
 from srtctl.benchmarks import (
-    custom,
     aiperf_bench,
+    custom,
     gpqa,
     gsm8k,
     lm_eval,
