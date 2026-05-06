@@ -76,12 +76,12 @@ def _global_origin(prefill: Iterable[FileSeries], decode: Iterable[FileSeries]) 
 # ---------------------------------------------------------------------------
 _PLOT_ROWS: list[tuple[str | None, str | None]] = [
     ("input throughput (token/s)", "gen throughput (token/s)"),
-    ("#new-seq",                   "#running-req"),
-    ("#new-token",                 "#full token"),
-    ("#cached-token",              "full token usage"),
-    ("#prealloc-req",              "#prealloc-req"),
-    ("#queue-req",                 "#queue-req"),
-    ("#inflight-req",              "#transfer-req"),
+    ("#new-seq", "#running-req"),
+    ("#new-token", "#full token"),
+    ("#cached-token", "full token usage"),
+    ("#prealloc-req", "#prealloc-req"),
+    ("#queue-req", "#queue-req"),
+    ("#inflight-req", "#transfer-req"),
 ]
 
 
@@ -140,8 +140,7 @@ def _render_png(
                 continue
             elapsed = _elapsed_seconds([p[0] for p in pairs], origin)
             values = [p[1] for p in pairs]
-            ax.plot(elapsed, values, color=colors[idx % len(colors)],
-                    linewidth=0.9, alpha=0.8, label=s.label)
+            ax.plot(elapsed, values, color=colors[idx % len(colors)], linewidth=0.9, alpha=0.8, label=s.label)
             drawn = True
 
         ax.set_title(f"{side}: {metric}", fontsize=10, fontweight="bold")
@@ -150,8 +149,7 @@ def _render_png(
         ax.tick_params(labelsize=7)
         ax.grid(True, alpha=0.3)
         if not drawn:
-            ax.text(0.5, 0.5, "no data", ha="center", va="center",
-                    transform=ax.transAxes, color="grey", fontsize=9)
+            ax.text(0.5, 0.5, "no data", ha="center", va="center", transform=ax.transAxes, color="grey", fontsize=9)
         elif files:
             ax.legend(fontsize=7, loc="upper right", ncol=max(1, len(files) // 8 + 1))
 
