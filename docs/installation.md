@@ -130,6 +130,9 @@ model_paths:
 containers:
   latest: "/containers/sglang-latest.sqsh"
   stable: "/containers/sglang-stable.sqsh"
+
+# Optional: default for recipes that omit frontend.nginx_raise_ulimit (nginx high-nofile tuning)
+# nginx_raise_ulimit: true
 ```
 
 ## Create a Job Config

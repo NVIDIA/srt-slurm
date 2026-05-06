@@ -1,6 +1,6 @@
 # Accuracy Benchmarks
 
-In srt-slurm, users can run different accuracy benchmarks by setting the benchmark section in the config yaml file. Supported benchmarks include `aime`, `mmlu`, `gpqa` and `longbenchv2`.
+In srt-slurm, users can run different accuracy benchmarks by setting the benchmark section in the config yaml file. Supported benchmarks include `mmlu`, `gpqa`, `longbenchv2`, `lm-eval`, and AIME (via the script under `configs/aime/`).
 
 ## Table of Contents
 
@@ -16,6 +16,7 @@ In srt-slurm, users can run different accuracy benchmarks by setting the benchma
   - [Example: Quick Validation](#example-quick-validation)
   - [Output](#output)
   - [Important Notes](#important-notes)
+- [lm-eval (InferenceX)](#lm-eval-inferencex)
 
 ---
 
@@ -36,104 +37,88 @@ accuracy on the same serving setup.
 
 ## AIME
 
-For AIME, the benchmark section in yaml file can be modified in the following way:
-```bash
+AIME runs in the official **NeMo Skills container** (`nvcr.io/nvidia/eval-factory/nemo-skills:26.03`),
+side-by-side with the model server. There is no first-class `type: aime` runner —
+the eval logic lives in `configs/aime/run.sh` and recipes wire it up via
+`type: custom`.
+
+### Recipe shape
+
+```yaml
 benchmark:
-  type: "aime"
-  aime_dataset: "aime25" # One of: aime24, aime25, aime26
-  num_examples: null # Number of examples to run; null means all
-  max_tokens: 24576 # Max number of output tokens
-  repeat: 1 # Number of sampled repetitions
-  num_threads: 30 # Number of parallel requests
+  type: custom
+  container_image: nemo-skills    # alias defined in srtslurm.yaml `containers:`
+                                  # or the full nvcr.io URI for Pyxis auto-pull
+  env:
+    OPENAI_API_KEY: "EMPTY"       # ns/litellm requires it set; value is unused
+    HF_TOKEN: "${HF_TOKEN}"       # for gated HF datasets via ns prepare_data
+    # Optional knob overrides — defaults match the upstream reasoning-eval reference:
+    # MODEL: "dspro"           # must match served-model-name from sglang_config
+    # DATASET: "aime25"        # aime24 | aime25 | aime26
+    # REPEAT: "16"             # pass@k samples per problem
+    # MAX_TOKENS: "400000"     # generous ceiling for reasoning traces
+    # NUM_THREADS: "512"       # client-side concurrency
+    # TEMPERATURE: "1.0"
+    # TOP_P: "1.0"
+    # SEED: "42"               # --starting_seed for reproducibility
+  command: |
+    bash /configs/aime/run.sh
 ```
 
-Then launch the script as usual:
-```bash
-srtctl apply -f config.yaml
+Set the eval container alias in `srtslurm.yaml`:
+
+```yaml
+containers:
+  nemo-skills: "/shared/containers/nvidia+eval-factory+nemo-skills+26.03.sqsh"
 ```
 
-After finishing benchmarking, AIME outputs are written under `/logs/accuracy/<aime_dataset>/` and summarized metrics
-are written to `/logs/accuracy/<aime_dataset>_metrics.json`.
+Pre-cache the squashfs with: `enroot import 'docker://nvcr.io#nvidia/eval-factory/nemo-skills:26.03'`.
 
-### AIME for reasoning models (NeMo Skills container)
+### Reasoning-mode env vars (server side)
 
-The defaults above target greedy non-reasoning evaluation. For reasoning-capable
-models (e.g. DeepSeek-V4-Pro thinking mode, GPT-OSS) you'll want long
-`max_tokens`, sampling temperature, and pass@k — and you'll want the eval
-running inside the official NeMo Skills container so installing `ns eval` and
-its long transitive dependency chain isn't part of every job.
+For reasoning-capable models (DeepSeek-V4-Pro thinking, GPT-OSS, etc.) — without
+these the model emits non-reasoning answers and AIME pass@k drops ~30 points
+below what the model can do.
 
-Run AIME via `type: custom` pointed at the NeMo Skills container:
+```yaml
+backend:
+  prefill_environment:
+    SGLANG_ENABLE_THINKING: "1"
+    SGLANG_REASONING_EFFORT: "max"
+  decode_environment:
+    SGLANG_ENABLE_THINKING: "1"
+    SGLANG_REASONING_EFFORT: "max"
+```
 
-1. **Add the container alias to `srtslurm.yaml`** (optional — let Pyxis auto-pull
-   from NGC if you skip this):
+### What the script does
 
-   ```yaml
-   containers:
-     nemo-skills: "/shared/containers/nvidia+eval-factory+nemo-skills+26.03.sqsh"
-   ```
+1. `ns prepare_data $DATASET` — fetches the dataset into the NeMo Skills install.
+2. `ns eval ...` against `http://localhost:8000/v1` (the in-job dynamo frontend),
+   pass@k=`$REPEAT`, with the upstream reasoning-eval reference's tuning
+   defaults. NeMo Skills' default `\boxed{}` extractor scores the generations.
 
-   Pre-cache with: `enroot import 'docker://nvcr.io#nvidia/eval-factory/nemo-skills:26.03'`.
+Outputs land at `/logs/accuracy/<dataset>/eval-results/<dataset>/metrics.json`
+with pass@1, pass@N, and majority@N.
 
-2. **Enable thinking mode on the workers.** This is a server-side knob — set
-   in both `prefill_environment` and `decode_environment`:
+### Custom answer-extraction regex (not currently applied)
 
-   ```yaml
-   backend:
-     prefill_environment:
-       SGLANG_ENABLE_THINKING: "1"
-       SGLANG_REASONING_EFFORT: "max"
-     decode_environment:
-       SGLANG_ENABLE_THINKING: "1"
-       SGLANG_REASONING_EFFORT: "max"
-   ```
+The SGLang team's reasoning-eval reference suggests broadening the answer extractor with these two `ns eval` overrides:
 
-   Without these, the model emits non-reasoning answers and AIME pass@k drops
-   ~30 points below what the model is capable of.
+```
+++eval_config.extract_from_boxed=False
+++eval_config.extract_regex=(?:\boxed\{|\*\*Answer\*\*[^0-9\-]{0,30}|(?i:final answer)[^0-9\-]{0,30}|(?i:answer)\s*(?:is|=|:)[^0-9\-]{0,30})(-?\d+)
+```
 
-3. **Configure the bench** as a `type: custom` step running `ns eval` in the
-   NeMo Skills container. `HF_TOKEN` propagates from the recipe top-level
-   `environment:` block:
+`run.sh` does **not** pass them. `ns eval` forwards Hydra `++overrides` to parallel
+`python -m nemo_skills.inference.generate` subprocesses through nemo-run, which
+constructs the inner command line **unquoted** — bash strips backslashes from
+the regex before Python `re.compile` sees it, the regex becomes invalid, and
+every generate subprocess crashes on import. Verified on cluster runs that
+produced empty output dirs and a false "Benchmark completed successfully".
 
-   ```yaml
-   environment:
-     HF_TOKEN: "${HF_TOKEN}"   # propagates to bench for `ns prepare_data`
-
-   benchmark:
-     type: custom
-     container_image: nemo-skills   # alias from srtslurm.yaml, or pass the
-                                    # nvcr.io URI directly for auto-pull
-     env:
-       OPENAI_API_KEY: "EMPTY"      # ns/litellm requires it set; value is unused
-     command: |
-       ns prepare_data aime25 && \
-       ns eval \
-         --server_type=openai \
-         --model=dspro \
-         --server_address=http://localhost:8000/v1 \
-         --benchmarks=aime25:16 \
-         --output_dir=/logs/accuracy/aime25 \
-         --starting_seed=42 \
-         ++inference.tokens_to_generate=400000 \
-         ++max_concurrent_requests=512 \
-         ++inference.temperature=1.0 \
-         ++inference.top_p=1.0 \
-         ++inference.timeout=25000000
-   ```
-
-   Notes:
-   - `--model` must match the server's `served-model-name` from
-     `sglang_config` — replace `dspro` with whatever your recipe sets.
-   - `--server_address` always points at the in-job dynamo frontend on
-     `localhost:8000`.
-   - Mounts (`/logs`, `/model`, `/configs`, `/srtctl-benchmarks`) are
-     auto-mounted, so `--output_dir=/logs/...` persists out of the container.
-   - `ns eval` writes its own `metrics.json` under
-     `/logs/accuracy/aime25/aime25/eval-results/<benchmark>/...` —
-     `cat` the deepest `metrics.json` for pass@1 / pass@16 / pass@k.
-   - Tuning knobs (`max_tokens`, `repeat`, `temperature`, `top_p`,
-     `max_concurrent_requests`, `starting_seed`) match the upstream
-     reasoning-eval reference for DeepSeek-V4-Pro / similar.
+If you need a broader extractor for your model, post-process the cached
+`output-rs<seed>.jsonl` files with a Python script (raw-string regex, no shell
+layers).
 
 
 ## MMLU
@@ -306,3 +291,85 @@ The output includes per-category scores and aggregate metrics:
 3. **Throughput**: Increase `num_threads` for faster evaluation, but monitor for OOM errors
 4. **Categories**: Running specific categories is useful for targeted validation (e.g., just testing summarization capabilities)
 
+
+## lm-eval (InferenceX)
+
+The `lm-eval` benchmark runner integrates [EleutherAI/lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-harness) via InferenceX's `benchmark_lib.sh`. Unlike the built-in benchmarks above, this runner sources evaluation logic from an external InferenceX workspace mounted at `/infmax-workspace`.
+
+This is used by InferenceX CI to run evals such as GSM8K and GPQA against NVIDIA multi-node disaggregated deployments on GB200, GB300, B200, B300, H100, and H200. AMD MI355X multi-node evals are handled by InferenceX's upstreamed AMD Slurm path, not by this srt-slurm runner.
+
+In InferenceX CI, recipes normally keep their throughput benchmark configuration. `do_sweep.py` invokes the registered `lm-eval` runner as a post-step when `RUN_EVAL=true`, or as the only benchmark-like step when `EVAL_ONLY=true`. There is no separate `infmax-eval` benchmark type.
+
+### How it works
+
+1. `RuntimeContext` mounts the host path from `INFMAX_WORKSPACE` at `/infmax-workspace` inside the Slurm container.
+2. `do_sweep.py` starts infrastructure, workers, and the frontend for the normal recipe topology.
+3. For `EVAL_ONLY=true`, `do_sweep.py` skips the throughput benchmark stage and runs `_run_post_eval()` directly after frontend startup.
+4. `_run_post_eval()` waits for the OpenAI-compatible endpoint on port 8000 and, in eval-only mode, performs the full `wait_for_model()` health check for the configured prefill/decode or aggregated topology.
+5. `_run_post_eval()` launches the registered `lm-eval` runner on the head node and passes through InferenceX metadata such as framework, precision, sequence length, prefill/decode topology, and eval concurrency.
+6. The runner script (`benchmarks/scripts/lm-eval/bench.sh`) uses `MODEL_NAME` from `do_sweep.py`, or auto-discovers the served model from `/v1/models` as a fallback.
+7. The runner sources `/infmax-workspace/benchmarks/benchmark_lib.sh`, runs `run_eval --framework lm-eval`, and calls `append_lm_eval_summary`.
+8. Eval artifacts are copied to `/logs/eval_results/` for InferenceX launcher-side artifact pickup.
+
+### EVAL_ONLY mode
+
+srt-slurm supports an `EVAL_ONLY` mode for CI jobs that should only validate accuracy. This is controlled by environment variables from the InferenceX workflow:
+
+| Env var | Description |
+|---------|-------------|
+| `EVAL_ONLY` | Set to `true` to skip the throughput benchmark stage and run eval only |
+| `RUN_EVAL` | Set to `true` to run eval after the throughput benchmark completes |
+| `EVAL_CONC` | Concurrent requests for lm-eval, normally set by InferenceX from the generated `eval-conc` value |
+| `INFMAX_WORKSPACE` | Host path to the InferenceX checkout that should be mounted at `/infmax-workspace` |
+| `MODEL_NAME` | Served model alias for OpenAI-compatible requests; set by `do_sweep.py` from `config.served_model_name` |
+
+When `EVAL_ONLY=true`:
+- Stage 4 skips the throughput benchmark entirely. No throughput result JSON is expected from srt-slurm.
+- The eval path uses the full `wait_for_model()` health check before starting lm-eval.
+- `_run_post_eval()` launches the `lm-eval` runner and returns its exit code.
+- Eval failure is fatal because eval is the only purpose of the job.
+
+When `RUN_EVAL=true` (without `EVAL_ONLY`):
+- Throughput benchmark runs normally
+- After benchmark completes successfully, eval runs as a post-step
+- Eval failure is non-fatal; the benchmark job still succeeds if throughput passed
+
+### Environment variables
+
+The following env vars are passed through to the lm-eval runner container:
+
+| Env var | Purpose |
+|---------|---------|
+| `RUN_EVAL`, `EVAL_ONLY`, `IS_MULTINODE` | Control whether eval runs and how InferenceX classifies the artifact |
+| `FRAMEWORK`, `PRECISION`, `MODEL_PREFIX`, `RUNNER_TYPE`, `SPEC_DECODING` | Benchmark identity metadata for `meta_env.json` |
+| `ISL`, `OSL`, `RESULT_FILENAME` | Sequence length and result-file metadata |
+| `MODEL`, `MODEL_PATH`, `MODEL_NAME` | Model metadata and the served model alias used for requests |
+| `MAX_MODEL_LEN`, `EVAL_MAX_MODEL_LEN` | Context-length metadata used by InferenceX eval helpers when available |
+| `PREFILL_TP`, `PREFILL_EP`, `PREFILL_NUM_WORKERS`, `PREFILL_DP_ATTN` | Prefill-side topology metadata |
+| `DECODE_TP`, `DECODE_EP`, `DECODE_NUM_WORKERS`, `DECODE_DP_ATTN` | Decode-side topology metadata |
+| `EVAL_CONC`, `EVAL_CONCURRENT_REQUESTS` | Eval concurrency controls |
+
+The runner maps srt-slurm's `PREFILL_DP_ATTN` and `DECODE_DP_ATTN` names to InferenceX's `PREFILL_DP_ATTENTION` and `DECODE_DP_ATTENTION` names before calling `append_lm_eval_summary`. This is required for multi-node summary tables to preserve prefill/decode DPA state.
+
+### Concurrency
+
+Eval concurrency is ultimately read by InferenceX's `benchmark_lib.sh` from `EVAL_CONCURRENT_REQUESTS`. The runner script sets that value from `EVAL_CONC` when present, preserves an existing `EVAL_CONCURRENT_REQUESTS` otherwise, and falls back to `256` only if neither variable is set:
+
+```bash
+export EVAL_CONCURRENT_REQUESTS="${EVAL_CONC:-${EVAL_CONCURRENT_REQUESTS:-256}}"
+```
+
+The InferenceX workflow sets `EVAL_CONC` from the generated `eval-conc` value. For multi-node configs, InferenceX selects the `8k1k` entry with the highest max eligible concurrency for each `(model, runner, framework, precision, spec-decoding, prefill-dp-attn, decode-dp-attn)` group, then sets `eval-conc` to the upper median of that config's eligible concurrency list. If `EVAL_CONC` is not set in the environment, `do_sweep.py` falls back to the max of the recipe benchmark concurrency list.
+
+### Output
+
+Eval artifacts are written to `/logs/eval_results/` inside the container:
+- `meta_env.json` - metadata used by InferenceX aggregation and summary tables
+- `results*.json` - lm-eval scores per task
+- `sample*.jsonl` - per-sample outputs
+
+These are collected by the InferenceX NVIDIA launch scripts and uploaded as workflow artifacts. In eval-only mode the InferenceX workflow expects eval artifacts, not throughput benchmark artifacts.
+
+### Intricacies
+1. Eval floor of 16
+  - There is 1 sweep config of conc: [1], which causes evals to take >4hrs to complete.

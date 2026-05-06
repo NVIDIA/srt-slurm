@@ -5,10 +5,10 @@
 
 # Import runners to trigger registration
 from srtctl.benchmarks import (
-    aime,
     custom,
     gpqa,
     gsm8k,
+    lm_eval,
     longbenchv2,
     mmlu,
     mooncake_router,
@@ -30,8 +30,8 @@ __all__ = [
     "list_benchmarks",
     "register_benchmark",
     # Runners
-    "aime",
     "custom",
+    "lm_eval",
     "sa_bench",
     "sglang_bench",
     "mmlu",

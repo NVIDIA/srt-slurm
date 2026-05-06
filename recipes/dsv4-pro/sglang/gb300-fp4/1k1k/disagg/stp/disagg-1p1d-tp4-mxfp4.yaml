@@ -1,0 +1,82 @@
+# DeepSeek-V4-Pro disaggregated on GB300 (1P1D, TP=4, MXFP4) — dynamo frontend.
+#
+# 1 prefill node + 1 decode node, each TP=4 on a single GB300 (4 GPUs).
+# Frontend is dynamo with an nginx fan-in container; KV transfer over NIXL.
+# Companion to the agg-* recipes in this directory: same model + workload, same
+# MXFP4 MoE kernels, but split prefill / decode across two nodes for steady
+# decode TPOT under high concurrency.
+name: "dsv4-pro-gb300-disagg-1p1d-tp4-mxfp4-1k1k"
+
+slurm:
+  partition: gb300
+  time_limit: "4:00:00"
+
+frontend:
+  type: dynamo
+  # `nginx` resolves to nginx:latest from Docker Hub via enroot — no local alias
+  # required. dynamo uses it as the fan-in / health-check entrypoint.
+  nginx_container: nginx
+
+model:
+  path: "dsv4-pro"
+  container: "dsv4-grace-blackwell"
+  precision: "mxfp4"
+
+resources:
+  gpu_type: "gb300"
+  prefill_nodes: 1
+  decode_nodes: 1
+  prefill_workers: 1
+  decode_workers: 1
+  gpus_per_node: 4
+
+backend:
+  type: sglang
+
+  prefill_environment:
+    SGLANG_JIT_DEEPGEMM_PRECOMPILE: "0"
+
+  decode_environment:
+    SGLANG_JIT_DEEPGEMM_PRECOMPILE: "0"
+
+  sglang_config:
+    prefill:
+      served-model-name: "deepseek-ai/DeepSeek-V4-Pro"
+      model-path: "/model/"
+      trust-remote-code: true
+      tensor-parallel-size: 4
+      disaggregation-mode: "prefill"
+      disaggregation-transfer-backend: nixl
+      moe-runner-backend: "flashinfer_mxfp4"
+      disable-flashinfer-autotune: true
+      mem-fraction-static: 0.90
+      max-running-requests: 128
+      cuda-graph-max-bs: 128
+      chunked-prefill-size: 8192
+      disable-radix-cache: true
+
+    decode:
+      served-model-name: "deepseek-ai/DeepSeek-V4-Pro"
+      model-path: "/model/"
+      trust-remote-code: true
+      tensor-parallel-size: 4
+      disaggregation-mode: "decode"
+      disaggregation-transfer-backend: nixl
+      moe-runner-backend: "flashinfer_mxfp4"
+      disable-flashinfer-autotune: true
+      mem-fraction-static: 0.90
+      max-running-requests: 128
+      cuda-graph-max-bs: 128
+      chunked-prefill-size: 8192
+      disable-radix-cache: true
+
+benchmark:
+  type: "sa-bench"
+  isl: 1024
+  osl: 1024
+  random_range_ratio: 0.8
+  # Low-latency band only — TP4 1P1D saturates near conc=128 on GB300;
+  # for high-concurrency Pareto use the DEP variants.
+  concurrencies: "4x8x16x32x64x128"
+  req_rate: "inf"
+  use_chat_template: false

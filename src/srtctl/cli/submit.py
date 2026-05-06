@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -225,7 +226,8 @@ def show_config_details(config: SrtConfig) -> None:
     console.print(Panel(mounts_table, border_style="green"))
 
     # --- Environment Variables ---
-    has_env = bool(config.environment)
+    dynamo_environment = config.dynamo.get_wheel_environment()
+    has_env = bool(config.environment or dynamo_environment)
     backend = config.backend
     mode_envs: list[tuple[str, dict[str, str]]] = []
     for mode_name, attr in [
@@ -246,6 +248,9 @@ def show_config_details(config: SrtConfig) -> None:
         env_table.add_column("Scope", style="dim", width=14)
         env_table.add_column("Variable", style="yellow")
         env_table.add_column("Value", style="white")
+
+        for var, val in sorted(dynamo_environment.items()):
+            env_table.add_row("dynamo", var, val)
 
         for var, val in sorted(config.environment.items()):
             env_table.add_row("global", var, val)
@@ -373,6 +378,8 @@ def generate_minimal_sbatch_script(
     container_image = os.path.expandvars(config.model.container)
 
     job_name = get_job_name(config)
+    config_environment = config.dynamo.get_wheel_environment()
+    config_environment.update(config.environment)
 
     rendered = template.render(
         job_name=job_name,
@@ -393,6 +400,7 @@ def generate_minimal_sbatch_script(
         srtctl_source=str(srtctl_source.resolve()),
         output_base=output_base,
         setup_script=setup_script,
+        config_environment={key: shlex.quote(str(value)) for key, value in config_environment.items()},
     )
 
     return rendered
@@ -1160,6 +1168,8 @@ def main():
   srtctl dry-run -f config.yaml                  # Dry run
   srtctl resolve-override -f config.yaml         # Resolve override YAML (no submit)
   srtctl resolve-override -f config.yaml --stdout  # Print to stdout
+  srtctl monitor                                 # Live job dashboard
+  srtctl monitor --outputs /path/to/outputs      # Dashboard with custom outputs dir
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1222,6 +1232,9 @@ def main():
         dest="config",
         help="YAML config file, or file:selector for overrides",
     )
+
+    monitor_parser = subparsers.add_parser("monitor", help="Live dashboard for srt-slurm jobs", add_help=False)
+    monitor_parser.add_argument("args", nargs=argparse.REMAINDER)
 
     resolve_parser = subparsers.add_parser(
         "resolve-override",
@@ -1332,6 +1345,13 @@ def main():
             console.print(format_check_results([]))
         restore_console()
         sys.exit(1 if all_results else 0)
+
+    if args.command == "monitor":
+        from srtctl.cli.monitor import main as _monitor_main
+
+        sys.argv = [sys.argv[0]] + (args.args or [])
+        _monitor_main()
+        return
 
     # Parse config arg: supports path:selector format for overrides
     config_path, selector = parse_config_arg(args.config)

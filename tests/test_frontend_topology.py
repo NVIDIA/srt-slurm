@@ -17,6 +17,7 @@ def make_config(
     enable_multiple_frontends: bool = True,
     num_additional_frontends: int = 9,
     frontend_type: str = "dynamo",
+    nginx_raise_ulimit: bool = False,
 ) -> SrtConfig:
     """Create a minimal SrtConfig for testing."""
     return SrtConfig(
@@ -32,6 +33,7 @@ def make_config(
             type=frontend_type,
             enable_multiple_frontends=enable_multiple_frontends,
             num_additional_frontends=num_additional_frontends,
+            nginx_raise_ulimit=nginx_raise_ulimit,
         ),
     )
 
@@ -195,6 +197,26 @@ class TestNginxConfigGeneration:
 
         assert "server 10.0.0.1:8180" in nginx_config
         assert "listen 8000" in nginx_config
+        assert "worker_rlimit_nofile" not in nginx_config
+
+    def test_nginx_config_raises_nofile_when_enabled(self):
+        """worker_rlimit_nofile appears only when nginx_raise_ulimit is set."""
+        config = make_config(enable_multiple_frontends=True, nginx_raise_ulimit=True)
+        runtime = make_runtime(["node0", "node1"])
+
+        orchestrator = SweepOrchestrator(config=config, runtime=runtime)
+        topology = FrontendTopology(
+            nginx_node="node0",
+            frontend_nodes=["node1"],
+            frontend_port=8180,
+            public_port=8000,
+        )
+
+        with patch.object(orchestrator, "runtime", runtime):
+            with patch("srtctl.cli.mixins.frontend_stage.get_hostname_ip", side_effect=lambda x: f"10.0.0.{x[-1]}"):
+                nginx_config = orchestrator._generate_nginx_config(topology)
+
+        assert "worker_rlimit_nofile 1048576" in nginx_config
 
     def test_nginx_config_multiple_frontends(self):
         """Nginx config with multiple frontend backends."""
@@ -305,6 +327,44 @@ class TestStartFrontendIntegration:
 
         # Verify nginx config was written
         assert (tmp_path / "nginx.conf").exists()
+
+        # Default: no shell ulimit before nginx (restricted clusters)
+        nginx_cmd = mock_mixin_srun.call_args_list[0].kwargs["command"]
+        assert nginx_cmd[0] == "bash" and nginx_cmd[1] == "-c"
+        assert "ulimit" not in nginx_cmd[2]
+
+    @patch("srtctl.frontends.dynamo.start_srun_process")
+    @patch("srtctl.cli.mixins.frontend_stage.start_srun_process")
+    def test_multi_node_nginx_ulimit_when_opt_in(self, mock_mixin_srun, mock_dynamo_srun, tmp_path):
+        mock_mixin_srun.return_value = MagicMock()
+        mock_dynamo_srun.return_value = MagicMock()
+
+        config = make_config(
+            enable_multiple_frontends=True,
+            frontend_type="dynamo",
+            nginx_raise_ulimit=True,
+        )
+        runtime = make_runtime(["node0", "node1", "node2"])
+        runtime = RuntimeContext(
+            job_id=runtime.job_id,
+            run_name=runtime.run_name,
+            nodes=runtime.nodes,
+            head_node_ip=runtime.head_node_ip,
+            infra_node_ip=runtime.infra_node_ip,
+            log_dir=tmp_path,
+            model_path=runtime.model_path,
+            container_image=runtime.container_image,
+            gpus_per_node=runtime.gpus_per_node,
+            network_interface=runtime.network_interface,
+            container_mounts=runtime.container_mounts,
+            environment=runtime.environment,
+        )
+        orchestrator = SweepOrchestrator(config=config, runtime=runtime)
+
+        orchestrator.start_frontend(MagicMock())
+
+        nginx_cmd = mock_mixin_srun.call_args_list[0].kwargs["command"]
+        assert "ulimit -n 1048576" in nginx_cmd[2]
 
     @patch("srtctl.frontends.sglang.start_srun_process")
     @patch("srtctl.cli.mixins.frontend_stage.start_srun_process")
