@@ -26,22 +26,46 @@ from typing import Literal
 WorkerMode = Literal["prefill", "decode", "agg"]
 
 
-PORT_JITTER_MOD = 10000  # Spread per-job http port over a 10k range; collision prob ~1e-4.
+PORT_JITTER_MOD = 5000  # Spread per-job http port over 5000 odd values (1, 3, …, 9999).
 
 
 def compute_port_jitter(job_id: str | None, mod: int = PORT_JITTER_MOD) -> int:
-    """Deterministic per-job offset to avoid cross-job port collisions.
+    """Deterministic per-job ODD offset to avoid cross-job port collisions.
 
     SGLang's DP-attention path derives ZMQ TCP ports from --port (rpc_port =
-    port + 236). When every job uses the same --port (30000) and a previous
-    run leaks a process on the recycled physical node, the new run can't
-    bind. Jittering the base by job id makes different runs land on
-    different ports.
+    port + 236). Two failure modes drive this jitter:
+
+    1. **Cross-job leak** — when every job uses --port 30000, a leaked
+       process from a previous run on the recycled physical node holds
+       the deterministic rpc_port and the new run can't bind.
+    2. **Kernel even-port preference** — Linux ``__inet_hash_connect``
+       allocates ports for outbound connect() in two passes: even ports
+       first, odd ports only after the entire even pool is exhausted (see
+       ``net/ipv4/inet_hashtables.c`` — ``offset &= ~1U`` then
+       ``port += 2``). NIXL/UCX/NCCL/torch.distributed open many outbound
+       sockets during prefill engine init; if our planned ``rpc_port`` is
+       both inside the kernel's ephemeral range
+       (``/proc/sys/net/ipv4/ip_local_port_range``, default 32768-60999)
+       AND even, the kernel happily hands it to one of those connect()
+       calls before SGLang's later ``bind('tcp://127.0.0.1:<port>')`` can
+       claim it (see ``engine.py:225``). Result: ``zmq.error.ZMQError:
+       Address already in use`` ~15 min into engine init, after model load.
+
+    Forcing the offset ODD (since 236 is even, parity is preserved
+    rpc_port == http_port mod 2) keeps rpc_port out of the kernel's
+    first-pass connect() pool. Empirically: the 5 jobs that hit failure
+    mode 2 in the 145859-145876 sweep all had even job IDs (and thus
+    even rpc_ports under the previous mod=10000 jitter); the matching
+    odd-id jobs all succeeded the prefill stage.
+
+    Mapping: ``((job_id % 5000) * 2) + 1`` → distinct odd values in
+    [1, 9999], period 5000 jobs. Two consecutive job IDs always land on
+    different odd offsets (delta = 2).
     """
     if job_id is None:
         return 0
     try:
-        return int(job_id) % mod
+        return ((int(job_id) % mod) * 2) + 1
     except (TypeError, ValueError):
         # Non-numeric job id (tests, manual invocations) — no jitter.
         return 0
