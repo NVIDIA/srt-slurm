@@ -38,6 +38,8 @@ if [ -n "${AIPERF_SERVER_METRICS_URLS:-}" ]; then
     if [ ${#server_metrics_urls[@]} -gt 0 ]; then
         SERVER_METRICS_ARGS+=(--server-metrics "${server_metrics_urls[@]}")
     fi
+else:
+    SERVER_METRICS_ARGS+=("--no-server-metrics")
 fi
 
 # Setup directories (BASE_DIR defaults to /logs inside container, overridable for testing)
