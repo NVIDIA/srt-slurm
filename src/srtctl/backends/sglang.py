@@ -25,7 +25,7 @@ from marshmallow_dataclass import dataclass
 if TYPE_CHECKING:
     from srtctl.backends.base import SrunConfig
     from srtctl.core.runtime import RuntimeContext
-    from srtctl.core.topology import Endpoint, Process
+    from srtctl.core.topology import Endpoint, NodePortAllocator, Process
 
 # Type alias for worker modes
 WorkerMode = Literal["prefill", "decode", "agg"]
@@ -264,11 +264,33 @@ class SGLangProtocol:
         self,
         endpoints: list["Endpoint"],
         base_sys_port: int = 8081,
+        port_allocator: "NodePortAllocator | None" = None,
     ) -> list["Process"]:
         """Convert endpoints to processes."""
         from srtctl.core.topology import endpoints_to_processes
 
-        return endpoints_to_processes(endpoints, base_sys_port=base_sys_port)
+        return endpoints_to_processes(endpoints, base_sys_port=base_sys_port, port_allocator=port_allocator)
+
+    def dp_attention_tcp_ports(self, process: "Process") -> list[int] | None:
+        """Return TCP ports SGLang's DP-attention path would bind from --port.
+
+        SGLang's PortArgs.init_new (server_args.py) computes:
+            dist_init_port  = port + 233
+            port_base       = port + 234
+            detokenizer_port = port + 235
+            rpc_port        = port + 236
+            metrics_port    = port + 237
+        when ``enable-dp-attention=true``. We surface all six (incl. --port
+        itself, which SGLang's HTTP server binds) so preflight can flag any
+        collision.
+        """
+        if not process.is_leader:
+            return None
+        config = self.get_config_for_mode(process.endpoint_mode)
+        if not config.get("enable-dp-attention") and not config.get("enable_dp_attention"):
+            return None
+        base = process.http_port
+        return [base, base + 233, base + 234, base + 235, base + 236, base + 237]
 
     def build_worker_command(
         self,

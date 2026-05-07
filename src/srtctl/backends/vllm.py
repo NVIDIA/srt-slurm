@@ -27,7 +27,7 @@ from marshmallow_dataclass import dataclass
 if TYPE_CHECKING:
     from srtctl.backends.base import SrunConfig
     from srtctl.core.runtime import RuntimeContext
-    from srtctl.core.topology import Endpoint, Process
+    from srtctl.core.topology import Endpoint, NodePortAllocator, Process
 
 # Type alias for worker modes
 WorkerMode = Literal["prefill", "decode", "agg"]
@@ -193,6 +193,7 @@ class VLLMProtocol:
         self,
         endpoints: list[Endpoint],
         base_sys_port: int = 8081,
+        port_allocator: NodePortAllocator | None = None,
     ) -> list[Process]:
         """Convert endpoints to processes.
 
@@ -206,12 +207,13 @@ class VLLMProtocol:
 
         if not has_dp_mode:
             # Standard TP mode: one process per node
-            return endpoints_to_processes(endpoints, base_sys_port=base_sys_port)
+            return endpoints_to_processes(endpoints, base_sys_port=base_sys_port, port_allocator=port_allocator)
 
         # DP+EP mode: one process per GPU
         processes: list[Process] = []
         current_sys_port = base_sys_port
-        port_allocator = NodePortAllocator()
+        if port_allocator is None:
+            port_allocator = NodePortAllocator()
 
         for endpoint in endpoints:
             if not self._is_dp_mode(endpoint.mode):

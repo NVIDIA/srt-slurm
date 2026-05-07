@@ -557,6 +557,7 @@ class TestJobStageEnum:
         """Stage values match API spec."""
         assert JobStage.STARTING.value == "starting"
         assert JobStage.HEAD_INFRASTRUCTURE.value == "head_infrastructure"
+        assert JobStage.PREFLIGHT.value == "preflight"
         assert JobStage.WORKERS.value == "workers"
         assert JobStage.FRONTEND.value == "frontend"
         assert JobStage.BENCHMARK.value == "benchmark"

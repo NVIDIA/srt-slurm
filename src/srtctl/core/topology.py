@@ -26,6 +26,27 @@ from typing import Literal
 WorkerMode = Literal["prefill", "decode", "agg"]
 
 
+PORT_JITTER_MOD = 10000  # Spread per-job http port over a 10k range; collision prob ~1e-4.
+
+
+def compute_port_jitter(job_id: str | None, mod: int = PORT_JITTER_MOD) -> int:
+    """Deterministic per-job offset to avoid cross-job port collisions.
+
+    SGLang's DP-attention path derives ZMQ TCP ports from --port (rpc_port =
+    port + 236). When every job uses the same --port (30000) and a previous
+    run leaks a process on the recycled physical node, the new run can't
+    bind. Jittering the base by job id makes different runs land on
+    different ports.
+    """
+    if job_id is None:
+        return 0
+    try:
+        return int(job_id) % mod
+    except (TypeError, ValueError):
+        # Non-numeric job id (tests, manual invocations) — no jitter.
+        return 0
+
+
 @dataclass
 class NodePortAllocator:
     """Allocates unique ports per node to avoid conflicts.
@@ -49,6 +70,10 @@ class NodePortAllocator:
 
         # Different node starts fresh
         port3 = allocator.next_http_port("node1")  # 30000
+
+    Use ``NodePortAllocator.from_job_id(job_id)`` to construct an allocator
+    whose ``base_http_port`` and ``base_bootstrap_port`` are shifted by a
+    deterministic per-job offset — see ``compute_port_jitter``.
     """
 
     base_http_port: int = 30000
@@ -60,6 +85,20 @@ class NodePortAllocator:
     _bootstrap_ports: dict[str, int] = field(default_factory=dict, repr=False)
     _next_kv_events_port: int = field(default=0, repr=False)  # Global counter
     _next_nixl_port: int = field(default=0, repr=False)  # Global counter for NIXL
+
+    @classmethod
+    def from_job_id(cls, job_id: str | None) -> "NodePortAllocator":
+        """Build an allocator with per-job jitter applied to base_http/bootstrap ports.
+
+        Within one job, http_base and bootstrap_base move by the same offset,
+        preserving the 1000-port gap that keeps them from colliding (rpc_port
+        only reaches +237 from http_base).
+        """
+        jitter = compute_port_jitter(job_id)
+        return cls(
+            base_http_port=30000 + jitter,
+            base_bootstrap_port=31000 + jitter,
+        )
 
     def next_http_port(self, node: str) -> int:
         """Get next available HTTP port for a node."""

@@ -44,7 +44,7 @@ from srtctl.core.runtime import RuntimeContext
 from srtctl.core.schema import SrtConfig
 from srtctl.core.slurm import get_slurm_job_id, start_srun_process
 from srtctl.core.status import JobStage, JobStatus, StatusReporter
-from srtctl.core.topology import Endpoint, Process
+from srtctl.core.topology import Endpoint, NodePortAllocator, Process
 from srtctl.logging_utils import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -95,8 +95,86 @@ class SweepOrchestrator(
 
     @functools.cached_property
     def backend_processes(self) -> list[Process]:
-        """Compute physical process topology from endpoints (cached)."""
-        return self.backend.endpoints_to_processes(self.endpoints)
+        """Compute physical process topology from endpoints (cached).
+
+        Builds a per-job-jittered ``NodePortAllocator`` so different SLURM
+        jobs land on different ``--port`` values. SGLang derives ZMQ TCP
+        ports (rpc/metrics/etc.) from --port in DP-attention mode, so a
+        leaked process from a previous job that holds the old port no
+        longer collides with the new job. See
+        ``compute_port_jitter`` in ``srtctl.core.topology``.
+        """
+        allocator = NodePortAllocator.from_job_id(self.runtime.job_id)
+        return self.backend.endpoints_to_processes(self.endpoints, port_allocator=allocator)
+
+    def preflight_check_ports(self) -> None:
+        """Verify SGLang DP-attention TCP ports are free on each prefill node.
+
+        SGLang's PortArgs.init_new() probes ports early (during engine init)
+        but doesn't bind them until ~15 min later in
+        engine.py:`self.send_to_rpc = get_zmq_socket(... bind=True)`. If a
+        leaked process from a previous job (or any concurrent listener)
+        grabs the port in that window, the engine crashes. We pre-flight
+        each prefill node here and fail-fast with diagnostic info instead
+        of letting the worker crash 15 minutes later.
+
+        Skips cleanly for backends that don't expose
+        ``dp_attention_tcp_ports`` (only SGLang implements it today —
+        TRTLLM/vLLM port-derivation behavior hasn't been verified).
+        """
+        from srtctl.runtime_scripts import check_ports as _check_ports_module
+
+        get_ports = getattr(self.backend, "dp_attention_tcp_ports", None)
+        if get_ports is None:
+            logger.debug("preflight: backend does not expose dp_attention_tcp_ports; skipping")
+            return
+
+        script_path = Path(_check_ports_module.__file__).resolve()
+        targets: list[tuple[Process, list[int]]] = []
+        for process in self.backend_processes:
+            ports = get_ports(process)
+            if ports:
+                targets.append((process, ports))
+        if not targets:
+            logger.debug("preflight: no DP-attention TCP ports to check (backend skipped)")
+            return
+
+        for process, ports in targets:
+            cmd = ["python3", str(script_path), "--ports", *(str(p) for p in ports)]
+            # Run on the bare host (no --container-image): pyxis startup adds
+            # tens of seconds and is unnecessary — pyxis containers use host
+            # networking, so a host-side scan sees container-bound ports too.
+            # --time 1:00 (1 minute) gives generous headroom; the helper itself
+            # finishes in well under a second.
+            proc = start_srun_process(
+                command=cmd,
+                nodelist=[process.node],
+                container_image=None,
+                container_mounts=None,
+                use_bash_wrapper=False,
+                srun_options={"time": "1:00"},
+            )
+            stdout, _ = proc.communicate(timeout=120)
+            output = (stdout or b"").decode(errors="replace").rstrip()
+            if proc.returncode == 0:
+                logger.info(
+                    "preflight: ports %s free on %s",
+                    ",".join(str(p) for p in ports),
+                    process.node,
+                )
+                if output:
+                    logger.debug("preflight stdout (%s):\n%s", process.node, output)
+                continue
+
+            # Busy or helper failure: surface every line for diagnosis. Each
+            # PORT_BUSY row carries pid/uid/user/name/cmdline/state of the
+            # offending listener, parsed by the helper from /proc.
+            for line in output.splitlines() or [f"<no output, rc={proc.returncode}>"]:
+                logger.warning("preflight %s: %s", process.node, line)
+            raise RuntimeError(
+                f"preflight: port collision on {process.node} (rc={proc.returncode}). "
+                f"Ports checked: {ports}. See preflight log lines above for the offending process."
+            )
 
     def start_head_infrastructure(self, registry: ProcessRegistry) -> ManagedProcess:
         """Start NATS and etcd on the infra node.
@@ -589,6 +667,16 @@ class SweepOrchestrator(
             if self.runtime.is_hf_model:
                 self._clean_stale_hf_locks()
                 self._ensure_model_cached()
+
+            # Stage 1.5: Preflight port collision check on prefill nodes
+            # before launching workers (catches leaked listeners from prior
+            # jobs that would otherwise crash the engine 15 min into init).
+            try:
+                self.preflight_check_ports()
+            except RuntimeError as e:
+                logger.error("Preflight failed: %s", e)
+                reporter.report(JobStatus.FAILED, JobStage.PREFLIGHT, str(e))
+                raise
 
             # Stage 2: Workers
             reporter.report(JobStatus.WORKERS, JobStage.WORKERS, "Starting workers")

@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from srtctl.core.runtime import RuntimeContext
-    from srtctl.core.topology import Endpoint, Process
+    from srtctl.core.topology import Endpoint, NodePortAllocator, Process
 
 
 class BackendType(str, Enum):
@@ -92,9 +92,20 @@ class BackendProtocol(Protocol):
         self,
         endpoints: list["Endpoint"],
         base_sys_port: int = 8081,
+        port_allocator: Optional["NodePortAllocator"] = None,
     ) -> list["Process"]:
-        """Convert logical endpoints to physical processes."""
+        """Convert logical endpoints to physical processes.
+
+        ``port_allocator`` lets callers (the orchestrator) inject a jittered
+        allocator built from the SLURM job id; backends that don't pass it
+        through retain the default ``NodePortAllocator()`` behavior.
+        """
         ...
+
+    # Optional duck-typed extension: ``dp_attention_tcp_ports(process)``.
+    # Implemented by SGLang to surface the TCP ports its DP-attention path
+    # derives from --port (rpc/metrics/etc.). Other backends omit it; the
+    # preflight caller checks via getattr and skips backends that don't.
 
     def build_worker_command(
         self,
