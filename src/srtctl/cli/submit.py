@@ -243,6 +243,11 @@ def show_config_details(config: SrtConfig) -> None:
         has_env = True
         mode_envs.append(("benchmark", dict(config.benchmark.env)))
 
+    mooncake_cfg = getattr(backend, "mooncake_kv_store", None)
+    if mooncake_cfg is not None and mooncake_cfg.env:
+        has_env = True
+        mode_envs.append(("mooncake", dict(mooncake_cfg.env)))
+
     if has_env:
         env_table = Table(title="Environment Variables", show_lines=False, pad_edge=False)
         env_table.add_column("Scope", style="dim", width=14)
@@ -268,7 +273,13 @@ def show_config_details(config: SrtConfig) -> None:
         opts = " ".join(f"--{k} {v}" if v else f"--{k}" for k, v in config.srun_options.items())
         console.print(f"[dim]srun options:[/] {opts}")
 
-    if config.benchmark.type == "custom" or config.benchmark.container_image or config.telemetry.enabled:
+    show_extensions = (
+        config.benchmark.type == "custom"
+        or config.benchmark.container_image
+        or config.telemetry.enabled
+        or mooncake_cfg is not None
+    )
+    if show_extensions:
         details = Table(title="Execution Extensions", show_lines=False, pad_edge=False)
         details.add_column("Area", style="dim", width=14)
         details.add_column("Setting", style="yellow")
@@ -291,6 +302,10 @@ def show_config_details(config: SrtConfig) -> None:
             details.add_row("telemetry", "container_image", config.telemetry.container_image or "<unset>")
             details.add_row("telemetry", "storage_subdir", config.telemetry.storage_subdir)
             details.add_row("telemetry", "frequency", str(config.telemetry.default_frequency))
+
+        if mooncake_cfg is not None:
+            details.add_row("mooncake", "container", mooncake_cfg.container or "<job container>")
+            details.add_row("mooncake", "master_port", "50051 (auto)")
 
         console.print(Panel(details, border_style="blue"))
 

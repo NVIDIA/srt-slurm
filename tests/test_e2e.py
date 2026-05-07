@@ -467,6 +467,16 @@ class TestMooncakeKVStore:
         env = backend.get_mooncake_worker_env("10.0.0.1")
         assert env == {"MOONCAKE_MASTER": f"10.0.0.1:{MOONCAKE_MASTER_PORT}"}
 
+    def test_mooncake_worker_env_master_always_overrides_user(self):
+        """User-supplied MOONCAKE_MASTER in env is always overridden by srtslurm."""
+        from srtctl.backends.sglang import MOONCAKE_MASTER_PORT, MooncakeKVStoreConfig, SGLangProtocol
+
+        backend = SGLangProtocol(
+            mooncake_kv_store=MooncakeKVStoreConfig(env={"MOONCAKE_MASTER": "should-be-ignored:9999"})
+        )
+        env = backend.get_mooncake_worker_env("10.0.0.1")
+        assert env["MOONCAKE_MASTER"] == f"10.0.0.1:{MOONCAKE_MASTER_PORT}"
+
     def test_mooncake_worker_env_passthrough(self):
         """mooncake_kv_store.env values are merged with MOONCAKE_MASTER."""
         from srtctl.backends.sglang import MOONCAKE_MASTER_PORT, MooncakeKVStoreConfig, SGLangProtocol
@@ -489,7 +499,6 @@ class TestMooncakeKVStore:
     def test_mooncake_kv_store_loads_from_yaml(self):
         """mooncake_kv_store round-trips through YAML deserialization."""
         import yaml
-        from marshmallow import ValidationError
 
         from srtctl.core.schema import SrtConfig
 

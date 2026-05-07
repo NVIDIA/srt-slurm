@@ -160,13 +160,14 @@ class SGLangProtocol:
 
         Returns empty dict if mooncake_kv_store is not configured.
         Otherwise injects MOONCAKE_MASTER (computed from infra node IP) plus
-        any passthrough env vars from mooncake_kv_store.env.
+        any passthrough env vars from mooncake_kv_store.env. MOONCAKE_MASTER
+        is always set by srtslurm and overrides any user-supplied value.
         """
         if self.mooncake_kv_store is None:
             return {}
         return {
-            "MOONCAKE_MASTER": f"{infra_node_ip}:{MOONCAKE_MASTER_PORT}",
             **self.mooncake_kv_store.env,
+            "MOONCAKE_MASTER": f"{infra_node_ip}:{MOONCAKE_MASTER_PORT}",
         }
 
     def is_grpc_mode(self, mode: WorkerMode) -> bool:
