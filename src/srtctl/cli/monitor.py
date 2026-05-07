@@ -1026,7 +1026,7 @@ def _execute(args: argparse.Namespace) -> None:
             key = uuid.uuid4().hex[:12]
 
     if args.once:
-        console = Console(width=max(term_cols, 160))
+        console = Console(width=term_cols)
         jobs = _gather_all(outputs_dir, state.show_all_jobs, state.seen_job_ids)
         layout, _, _ = _render(jobs, outputs_dir, args.interval, state, term_height=term_height, term_cols=term_cols)
         console.print(layout)
@@ -1034,7 +1034,7 @@ def _execute(args: argparse.Namespace) -> None:
 
     # force_terminal=True ensures Rich renders escape codes even if stdout
     # detection is ambiguous (tmux, remote sessions, etc.)
-    console = Console(width=max(term_cols, 160), force_terminal=True, force_jupyter=False)
+    console = Console(width=term_cols, force_terminal=True, force_jupyter=False)
 
     _cache_lock = threading.Lock()
     _cached_jobs: list[dict] | None = None
@@ -1221,7 +1221,7 @@ def _execute(args: argparse.Namespace) -> None:
                     new_cols, new_rows = _get_term_size()
                     if new_cols != term_cols or new_rows != term_height:
                         term_cols, term_height = new_cols, new_rows
-                        console._width = max(term_cols, 160)
+                        console._width = term_cols
                         last_render = 0.0  # force redraw at new size
                     last_size_check = now
                 if (
