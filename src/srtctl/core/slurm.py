@@ -24,6 +24,18 @@ from .ip_utils import get_node_ip
 logger = logging.getLogger(__name__)
 
 
+def _get_cluster_bash_preamble() -> str | None:
+    """Look up the cluster-wide default_bash_preamble.
+
+    Imported lazily to avoid a circular dependency (config.py imports schema,
+    which transitively imports from this module's siblings).
+    """
+    from .config import get_srtslurm_setting
+
+    value = get_srtslurm_setting("default_bash_preamble")
+    return value if isinstance(value, str) and value else None
+
+
 # ============================================================================
 # SLURM Environment
 # ============================================================================
@@ -250,8 +262,14 @@ def start_srun_process(
             for name, value in env_to_set.items():
                 bash_parts.append(f"export {name}={shlex.quote(value)}")
 
-        # Add preamble if provided. It runs after exports so setup/fingerprint
-        # hooks observe the same environment as the main command.
+        # Cluster-wide preamble (e.g. ulimits) runs first so it applies to
+        # exports, the local preamble, and the main command alike.
+        cluster_preamble = _get_cluster_bash_preamble()
+        if cluster_preamble:
+            bash_parts.insert(0, cluster_preamble)
+
+        # Add per-call preamble if provided. It runs after exports so setup
+        # / fingerprint hooks observe the same environment as the main command.
         if bash_preamble:
             bash_parts.append(bash_preamble)
 
@@ -262,9 +280,20 @@ def start_srun_process(
         bash_command = " && ".join(bash_parts)
         srun_cmd.extend(["bash", "-c", bash_command])
     else:
+        cluster_preamble = _get_cluster_bash_preamble()
+        if cluster_preamble:
+            logger.warning(
+                "Cluster default_bash_preamble is set but this srun bypasses the bash wrapper "
+                "(use_bash_wrapper=False); preamble will not be applied. command=%s",
+                shlex.join(command),
+            )
         srun_cmd.extend(command)
 
-    logger.info("srun command: %s", shlex.join(srun_cmd))
+    # Demoted to debug — every worker srun line is multi-KB once the
+    # fingerprint heredoc is inlined (see core/fingerprint.generate_capture_script),
+    # which dominates the orchestrator log. Re-enable with `--verbose` / by setting
+    # the srtctl logger to DEBUG when troubleshooting srun arg construction.
+    logger.debug("srun command: %s", shlex.join(srun_cmd))
 
     # Start the process
     proc = subprocess.Popen(

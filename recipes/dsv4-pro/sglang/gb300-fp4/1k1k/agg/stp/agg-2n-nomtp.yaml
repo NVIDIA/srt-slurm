@@ -1,4 +1,4 @@
-# DeepSeek-V4-Pro aggregated on GB300 2 nodes (TP=8) - MTP enabled
+# DeepSeek-V4-Pro aggregated on GB300 2 nodes (TP=8)
 name: "dsv4-pro-gb300-2n-agg-nomtp-1k1k-official"
 
 slurm:

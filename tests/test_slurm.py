@@ -22,6 +22,7 @@ def _built_bash_command(mock_popen: MagicMock) -> str:
 def test_start_srun_exports_env_before_preamble() -> None:
     with (
         patch("srtctl.core.slurm.get_slurm_job_id", return_value="12345"),
+        patch("srtctl.core.slurm._get_cluster_bash_preamble", return_value=None),
         patch("subprocess.Popen") as mock_popen,
     ):
         mock_popen.return_value = MagicMock()
@@ -34,6 +35,65 @@ def test_start_srun_exports_env_before_preamble() -> None:
     bash_cmd = _built_bash_command(mock_popen)
     assert bash_cmd.index("export NCCL_DEBUG=INFO") < bash_cmd.index("echo preamble")
     assert bash_cmd.index("echo preamble") < bash_cmd.index("python3 -m server")
+
+
+def test_cluster_bash_preamble_runs_before_exports_and_local_preamble() -> None:
+    with (
+        patch("srtctl.core.slurm.get_slurm_job_id", return_value="12345"),
+        patch(
+            "srtctl.core.slurm._get_cluster_bash_preamble",
+            return_value="ulimit -n 1048576",
+        ),
+        patch("subprocess.Popen") as mock_popen,
+    ):
+        mock_popen.return_value = MagicMock()
+        start_srun_process(
+            ["python3", "-m", "server"],
+            env_to_set={"NCCL_DEBUG": "INFO"},
+            bash_preamble="echo local",
+        )
+
+    bash_cmd = _built_bash_command(mock_popen)
+    # ulimit must come first so it applies to everything downstream.
+    assert bash_cmd.index("ulimit -n 1048576") < bash_cmd.index("export NCCL_DEBUG=INFO")
+    assert bash_cmd.index("export NCCL_DEBUG=INFO") < bash_cmd.index("echo local")
+    assert bash_cmd.index("echo local") < bash_cmd.index("python3 -m server")
+
+
+def test_cluster_bash_preamble_applied_when_only_cluster_set() -> None:
+    """Cluster preamble alone should land in the bash wrapper even with no local preamble or env."""
+    with (
+        patch("srtctl.core.slurm.get_slurm_job_id", return_value="12345"),
+        patch(
+            "srtctl.core.slurm._get_cluster_bash_preamble",
+            return_value="ulimit -n 1048576",
+        ),
+        patch("subprocess.Popen") as mock_popen,
+    ):
+        mock_popen.return_value = MagicMock()
+        start_srun_process(["python3", "-m", "server"])
+
+    bash_cmd = _built_bash_command(mock_popen)
+    assert bash_cmd.startswith("ulimit -n 1048576 && python3 -m server")
+
+
+def test_cluster_bash_preamble_warns_when_bash_wrapper_disabled(caplog) -> None:
+    with (
+        patch("srtctl.core.slurm.get_slurm_job_id", return_value="12345"),
+        patch(
+            "srtctl.core.slurm._get_cluster_bash_preamble",
+            return_value="ulimit -n 1048576",
+        ),
+        patch("subprocess.Popen") as mock_popen,
+        caplog.at_level("WARNING", logger="srtctl.core.slurm"),
+    ):
+        mock_popen.return_value = MagicMock()
+        start_srun_process(["/bin/node_exporter"], use_bash_wrapper=False)
+
+    srun_cmd = mock_popen.call_args.args[0]
+    # Distroless path runs the binary directly; preamble cannot apply.
+    assert "bash" not in srun_cmd
+    assert any("default_bash_preamble" in record.message for record in caplog.records)
 
 
 def test_wrapped_nonfatal_hook_does_not_mask_prior_preamble_failure() -> None:
@@ -88,4 +148,5 @@ def test_worker_stage_wraps_nonfatal_fingerprint_hook(tmp_path: Path) -> None:
 
     bash_preamble = mock_srun.call_args.kwargs["bash_preamble"]
     assert "setup.sh" in bash_preamble
+    assert "/configs/patches/${setup_script}" in bash_preamble
     assert bash_preamble.endswith("&& ( fingerprint || true )")

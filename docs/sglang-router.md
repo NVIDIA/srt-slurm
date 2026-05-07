@@ -138,6 +138,8 @@ frontend:
 - nginx round-robins requests to routers
 - Routers distributed across nodes using same logic as Dynamo frontends
 
+If the cluster rejects raising open-file limits inside the nginx container, keep the default (`frontend.nginx_raise_ulimit: false` or unset). If you need the previous high-nofile behavior, set `frontend.nginx_raise_ulimit: true` or a cluster default in `srtslurm.yaml` — see [Configuration Reference](config-reference.md#frontend).
+
 ## How Router Distribution Works
 
 The `num_additional_frontends` setting controls how many additional routers spawn beyond the first:

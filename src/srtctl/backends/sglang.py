@@ -277,8 +277,12 @@ class SGLangProtocol:
         # Add disaggregation mode for prefill/decode workers (both dynamo and sglang frontend)
         if mode != "agg":
             cmd.extend(["--disaggregation-mode", mode])
-            # Bootstrap port only needed for sglang frontend (dynamo handles internally)
-            if frontend_type == "sglang" and mode == "prefill" and process.bootstrap_port is not None:
+            # Always pass bootstrap port for prefill workers regardless of frontend type.
+            # Dynamo does NOT handle this internally — SGLang's CommonKVBootstrapServer
+            # still runs on every prefill node for KV transfer coordination, and workers
+            # must register to it. Without an explicit port, the default (8998) collides
+            # with Dynamo services (etcd/NATS) on the head node, breaking multi-node prefill.
+            if mode == "prefill" and process.bootstrap_port is not None:
                 cmd.extend(["--disaggregation-bootstrap-port", str(process.bootstrap_port)])
 
         # Add multi-node coordination flags

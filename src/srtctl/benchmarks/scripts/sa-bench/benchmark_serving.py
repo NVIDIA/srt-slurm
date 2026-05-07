@@ -48,6 +48,7 @@ from backend_request_func import (
     ASYNC_REQUEST_FUNCS,
     RequestFuncInput,
     RequestFuncOutput,
+    get_tokenizer as get_sa_bench_tokenizer,
 )
 from datasets import load_dataset
 from PIL.Image import Image
@@ -55,9 +56,9 @@ from tqdm.asyncio import tqdm
 from transformers import PreTrainedTokenizerBase
 
 try:
-    from vllm.transformers_utils.tokenizer import get_tokenizer
+    from vllm.transformers_utils.tokenizer import get_tokenizer as get_vllm_tokenizer
 except ImportError:
-    from backend_request_func import get_tokenizer
+    get_vllm_tokenizer = get_sa_bench_tokenizer
 
 try:
     from vllm.utils import FlexibleArgumentParser
@@ -67,6 +68,29 @@ except ImportError:
 from benchmark_utils import convert_to_pytorch_benchmark_format
 
 MILLISECONDS_TO_SECONDS_CONVERSION = 1000
+
+
+def load_tokenizer(
+    tokenizer_id: str,
+    tokenizer_mode: str,
+    trust_remote_code: bool,
+    custom_tokenizer: str | None,
+):
+    """Load the benchmark tokenizer, honoring sa-bench custom adapters.
+
+    vLLM containers provide their own get_tokenizer() helper, but its
+    custom-tokenizer path can return a cached wrapper that hides
+    apply_chat_template(). The sa-bench loader imports module.path.ClassName
+    adapters directly, which is what the DeepSeek-V4 chat-template adapters
+    rely on.
+    """
+    loader = get_sa_bench_tokenizer if custom_tokenizer else get_vllm_tokenizer
+    return loader(
+        tokenizer_id,
+        tokenizer_mode=tokenizer_mode,
+        trust_remote_code=trust_remote_code,
+        custom_tokenizer=custom_tokenizer,
+    )
 
 
 @dataclass
@@ -341,44 +365,52 @@ def sample_random_requests(
     tokenizer: PreTrainedTokenizerBase,
     use_chat_template: bool = False,
 ) -> list[tuple[str, int, int]]:
-    prefix_token_ids = np.random.randint(0, tokenizer.vocab_size, size=prefix_len).tolist()
     if use_chat_template:
-        chat_template_dummy = tokenizer.apply_chat_template(
-            [{"role": "user", "content": "a"}],
-            add_generation_prompt=True,
-            tokenize=False,
-        )
-        tokenized_chat_template_dummy = tokenizer.encode(chat_template_dummy, add_special_tokens=False)
-        chat_template_len = len(tokenized_chat_template_dummy) - 1
+        chat_template_len = len(tokenizer.encode(
+            tokenizer.apply_chat_template(
+                [{"role": "user", "content": "a"}],
+                add_generation_prompt=True,
+                tokenize=False,
+            ), add_special_tokens=False,
+        )) - 1
         input_len = input_len - chat_template_len
 
     input_lens = np.random.randint(
-        int(input_len * range_ratio),
+        int(input_len * range_ratio) if input_len > 1 else 1,
         input_len + 1,
         size=num_prompts,
     )
     output_lens = np.random.randint(
-        int(output_len * range_ratio),
+        int(output_len * range_ratio) if output_len > 1 else 1,
         output_len + 1,
         size=num_prompts,
     )
     offsets = np.random.randint(0, tokenizer.vocab_size, size=num_prompts)
     input_requests = []
-    for i in range(num_prompts):
-        prompt = tokenizer.decode(
-            prefix_token_ids + [(offsets[i] + i + j) % tokenizer.vocab_size for j in range(input_lens[i])]
-        )
-        re_encoded_sequence = tokenizer.encode(prompt, add_special_tokens=False)[: (prefix_len + input_lens[i])]
-        prompt = tokenizer.decode(re_encoded_sequence)
-        if use_chat_template:
+
+    if use_chat_template:
+        for i in range(num_prompts):
+            origin_text = tokenizer.decode(
+                [(offsets[i] + i + j) % tokenizer.vocab_size for j in range(int(input_lens[i] * 1.5))]
+            )
+            re_encoded_sequence = tokenizer.encode(origin_text, add_special_tokens=False)[: input_lens[i]]
+            prompt_text = tokenizer.decode(re_encoded_sequence)
             prompt = tokenizer.apply_chat_template(
-                [{"role": "user", "content": prompt}],
+                [{"role": "user", "content": prompt_text}],
                 add_generation_prompt=True,
                 tokenize=False,
             )
             input_lens[i] += chat_template_len
-
-        input_requests.append((prompt, int(prefix_len + input_lens[i]), int(output_lens[i]), None))
+            input_requests.append((prompt, int(input_lens[i]), int(output_lens[i]), None))
+    else:
+        prefix_token_ids = np.random.randint(0, tokenizer.vocab_size, size=prefix_len).tolist()
+        for i in range(num_prompts):
+            prompt = tokenizer.decode(
+                prefix_token_ids + [(offsets[i] + i + j) % tokenizer.vocab_size for j in range(input_lens[i])]
+            )
+            re_encoded_sequence = tokenizer.encode(prompt, add_special_tokens=False)[: (prefix_len + input_lens[i])]
+            prompt = tokenizer.decode(re_encoded_sequence)
+            input_requests.append((prompt, int(prefix_len + input_lens[i]), int(output_lens[i]), None))
 
     return input_requests
 
@@ -833,7 +865,7 @@ def main(args: argparse.Namespace):
         api_url = f"http://{args.host}:{args.port}{args.endpoint}"
         base_url = f"http://{args.host}:{args.port}"
 
-    tokenizer = get_tokenizer(
+    tokenizer = load_tokenizer(
         tokenizer_id,
         tokenizer_mode=tokenizer_mode,
         trust_remote_code=args.trust_remote_code,
@@ -857,7 +889,12 @@ def main(args: argparse.Namespace):
                 f"({type(tokenizer).__name__}) has no jinja chat_template and "
                 "does not override apply_chat_template().\n"
                 "\n"
-                "For DeepSeek-V4 / DSV4-Pro, set in your recipe:\n"
+                "For vLLM DeepSeek-V4 / DSV4-Pro, set in your recipe:\n"
+                "  benchmark:\n"
+                "    custom_tokenizer: "
+                "sa_bench_tokenizers.vllm_deepseek_v4.VLLMDeepseekV4Tokenizer\n"
+                "\n"
+                "For SGLang DeepSeek-V4 / DSV4-Pro, set in your recipe:\n"
                 "  benchmark:\n"
                 "    custom_tokenizer: "
                 "sa_bench_tokenizers.sglang_deepseek_v4.SGLangDeepseekV4Tokenizer\n"

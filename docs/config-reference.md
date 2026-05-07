@@ -116,8 +116,28 @@ The `srtslurm.yaml` file can contain the following fields:
 | `model_paths`                   | dict   | Model path aliases                                    |
 | `containers`                    | dict   | Container image aliases                               |
 | `default_mounts`                | dict   | Cluster-wide container mounts                         |
+| `default_bash_preamble`         | string | Shell snippet prepended to every container srun       |
+| `nginx_raise_ulimit`          | bool   | Optional default for `frontend.nginx_raise_ulimit`  |
 
 **output_dir**: When set, job logs are written to `output_dir/{job_id}/logs` instead of `srtctl_root/outputs/{job_id}/logs`. Useful for CI/CD and ephemeral environments.
+
+**default_bash_preamble**: A shell snippet (e.g. `"ulimit -n 1048576 -s unlimited -u 1048576"`) prepended to every container srun launched by srtctl — workers, frontends, telemetry, benchmark, postprocess. Runs before per-call `bash_preamble` and the main command, so cluster-wide ulimits apply to everything downstream. Silently dropped for distroless containers (e.g. `prom/node-exporter`) that bypass the bash wrapper; a WARNING log is emitted in that case.
+
+**nginx_raise_ulimit**: When set to `true` or `false`, this value is applied to jobs that omit `frontend.nginx_raise_ulimit` in the recipe. Use `true` on clusters where raising the nginx container’s open-file limit is allowed; leave unset if each job should rely on the frontend default (`false`). A recipe that sets `frontend.nginx_raise_ulimit` always wins.
+
+### Running without `srtslurm.yaml`
+
+`srtslurm.yaml` is optional. A recipe can be fully self-sustaining as long as it supplies everything the cluster yaml would otherwise provide:
+
+- Set `slurm.account`, `slurm.partition`, and `slurm.time_limit` directly in the recipe (no `default_*` fallback).
+- Use absolute paths for `model.path`, `model.container`, and any other container fields — alias resolution is a no-op without the yaml's `containers:` / `model_paths:` maps.
+- List every cluster-side mount the job needs in `extra_mount` (e.g. the lustre share that holds your model weights and `.sqsh` files). `default_mounts` is the only `srtslurm.yaml` field with no recipe-level equivalent until you spell mounts out yourself.
+- Set `resources.gpus_per_node` explicitly.
+- Status reporting and S3 log upload are skipped (their config lives under `reporting:` in the cluster yaml).
+
+Workers' nats and etcd come from the dynamo/sglang container, not the yaml, so disagg/agg topologies still work end-to-end. `srtctl_root` falls back to the package install path automatically.
+
+This is useful for portable recipes that you want to share across clusters or hand to a teammate without dragging cluster config along.
 
 ---
 
@@ -245,6 +265,10 @@ frontend:
   enable_multiple_frontends: true     # Enable nginx + multiple routers
   num_additional_frontends: 9         # Additional routers (total = 1 + this)
 
+  # Optional: raise nofile for nginx (shell ulimit + worker_rlimit_nofile in nginx.conf).
+  # Default false. Set true on clusters that allow it; can also set nginx_raise_ulimit in srtslurm.yaml.
+  # nginx_raise_ulimit: true
+
   # CLI args passed to the frontend/router
   args:
     router-mode: "kv"                 # dynamo: router-mode
@@ -262,6 +286,7 @@ frontend:
 | `enable_multiple_frontends` | bool | true          | Scale with nginx + multiple routers |
 | `num_additional_frontends`  | int  | 9             | Additional routers beyond master    |
 | `nginx_container`           | str  | nginx:1.27.4  | Custom nginx container image        |
+| `nginx_raise_ulimit`      | bool | false         | When true with nginx in use, run `ulimit -n 1048576` before nginx and emit `worker_rlimit_nofile 1048576` in generated `nginx.conf`. Off by default so restrictive clusters do not fail. Cluster `srtslurm.yaml` may set `nginx_raise_ulimit` for jobs that omit this field. |
 | `args`                      | dict | null          | CLI args for the frontend           |
 | `env`                       | dict | null          | Env vars for frontend processes     |
 
@@ -419,7 +444,6 @@ Benchmark configuration. The `type` field determines which benchmark runner is u
 | `manual`          | No benchmark (default), manual testing mode    |
 | `sa-bench`        | Throughput/latency serving benchmark           |
 | `sglang-bench`    | SGLang bench_serving benchmark                 |
-| `aime`            | AIME math accuracy evaluation                  |
 | `mmlu`            | MMLU accuracy evaluation                       |
 | `gpqa`            | GPQA (Graduate-level science QA) evaluation    |
 | `longbenchv2`     | Long-context evaluation benchmark              |
@@ -518,37 +542,6 @@ benchmark:
 | `max_tokens`   | int  | No       | 32768   | Max tokens per response      |
 | `repeat`       | int  | No       | 8       | Number of repeats            |
 | `num_threads`  | int  | No       | 128     | Concurrent threads           |
-
-### aime
-
-AIME math accuracy evaluation using NVIDIA NeMo Skills.
-
-```yaml
-benchmark:
-  type: "aime"
-  aime_dataset: "aime25"             # Optional: aime24, aime25, or aime26
-  num_examples: null                 # Optional: Number of examples (all if null)
-  max_tokens: 24576                  # Optional: Max tokens per response
-  repeat: 1                          # Optional: Number of sampled repeats
-  num_threads: 30                    # Optional: Concurrent requests
-  temperature: null                  # Optional: 0.0 for repeat=1, 0.7 for repeat>1
-  top_p: null                        # Optional: NeMo Skills/default sampler value
-  top_k: null                        # Optional: NeMo Skills/default sampler value
-```
-
-| Field          | Type  | Required | Default | Description                         |
-| -------------- | ----- | -------- | ------- | ----------------------------------- |
-| `aime_dataset` | str   | No       | aime25  | NeMo Skills dataset to run          |
-| `num_examples` | int   | No       | all     | Number of examples to run           |
-| `max_tokens`   | int   | No       | 24576   | Max tokens per response             |
-| `repeat`       | int   | No       | 1       | Number of sampled repeats           |
-| `num_threads`  | int   | No       | 30      | Concurrent requests                 |
-| `temperature`  | float | No       | auto    | Sampling temperature                 |
-| `top_p`        | float | No       | default | Nucleus sampling threshold          |
-| `top_k`        | int   | No       | default | Top-k sampling                      |
-
-Results are written to `/logs/accuracy/<aime_dataset>/`; summarized metrics are also copied to
-`/logs/accuracy/<aime_dataset>_metrics.json`.
 
 ### longbenchv2
 
