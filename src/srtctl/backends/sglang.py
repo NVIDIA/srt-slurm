@@ -30,6 +30,32 @@ if TYPE_CHECKING:
 # Type alias for worker modes
 WorkerMode = Literal["prefill", "decode", "agg"]
 
+MOONCAKE_MASTER_PORT = 50051
+
+
+@dataclass(frozen=True)
+class MooncakeKVStoreConfig:
+    """Mooncake KV store configuration.
+
+    When present, srtslurm launches mooncake_master on the infra node and
+    injects MOONCAKE_MASTER=<infra_ip>:<port> on all workers automatically.
+
+    Example YAML:
+        backend:
+          type: sglang
+          mooncake_kv_store:
+            container: nvcr.io/nvidia/mooncake:latest  # optional
+            env:
+              MOONCAKE_PROTOCOL: rdma
+              MOONCAKE_GLOBAL_SEGMENT_SIZE: "4gb"
+              MOONCAKE_DEVICE: mlx5_0
+    """
+
+    container: str | None = None
+    env: dict[str, str] = field(default_factory=dict)
+
+    Schema: ClassVar[type[Schema]] = Schema
+
 
 @dataclass(frozen=True)
 class SGLangServerConfig:
@@ -82,6 +108,10 @@ class SGLangProtocol:
     # Or global: true (enables for prefill+decode with defaults)
     kv_events_config: bool | dict[str, Any] | None = None
 
+    # Mooncake KV store - launches mooncake_master on infra node and injects
+    # MOONCAKE_MASTER env var on all workers automatically
+    mooncake_kv_store: MooncakeKVStoreConfig | None = None
+
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
     # =========================================================================
@@ -124,6 +154,20 @@ class SGLangProtocol:
         additional process-specific env vars are needed here.
         """
         return {}
+
+    def get_mooncake_worker_env(self, infra_node_ip: str) -> dict[str, str]:
+        """Get mooncake env vars to inject on all workers.
+
+        Returns empty dict if mooncake_kv_store is not configured.
+        Otherwise injects MOONCAKE_MASTER (computed from infra node IP) plus
+        any passthrough env vars from mooncake_kv_store.env.
+        """
+        if self.mooncake_kv_store is None:
+            return {}
+        return {
+            "MOONCAKE_MASTER": f"{infra_node_ip}:{MOONCAKE_MASTER_PORT}",
+            **self.mooncake_kv_store.env,
+        }
 
     def is_grpc_mode(self, mode: WorkerMode) -> bool:
         """Check if gRPC mode is enabled for a worker mode."""

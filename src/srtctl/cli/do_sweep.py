@@ -23,6 +23,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from srtctl.backends.sglang import MOONCAKE_MASTER_PORT, SGLangProtocol
 from srtctl.cli.mixins import (
     BenchmarkStageMixin,
     FrontendStageMixin,
@@ -157,6 +158,47 @@ class SweepOrchestrator(
         if not wait_for_port(infra_node, 2379, timeout=300):
             raise RuntimeError("etcd failed to start")
         logger.info("etcd is ready")
+
+        return managed
+
+    def start_mooncake_master(self, registry: ProcessRegistry) -> ManagedProcess | None:
+        """Launch mooncake_master on the infra node if mooncake_kv_store is configured.
+
+        Runs on the same node as etcd/nats. Uses mooncake_kv_store.container if set,
+        otherwise falls back to the job container.
+        """
+        if not isinstance(self.config.backend, SGLangProtocol):
+            return None
+        mooncake_cfg = self.config.backend.mooncake_kv_store
+        if mooncake_cfg is None:
+            return None
+
+        infra_node = self.runtime.nodes.infra
+        container = mooncake_cfg.container or str(self.runtime.container_image)
+        mooncake_log = self.runtime.log_dir / "mooncake_master.out"
+
+        logger.info("Starting mooncake_master on %s (port %d)", infra_node, MOONCAKE_MASTER_PORT)
+
+        proc = start_srun_process(
+            command=["mooncake_master", "--port", str(MOONCAKE_MASTER_PORT)],
+            nodelist=[infra_node],
+            output=str(mooncake_log),
+            container_image=container,
+            container_mounts=self.runtime.container_mounts,
+        )
+
+        managed = ManagedProcess(
+            name="mooncake_master",
+            popen=proc,
+            log_file=mooncake_log,
+            node=infra_node,
+            critical=True,
+        )
+
+        logger.info("Waiting for mooncake_master (port %d) on %s...", MOONCAKE_MASTER_PORT, infra_node)
+        if not wait_for_port(infra_node, MOONCAKE_MASTER_PORT, timeout=120):
+            raise RuntimeError("mooncake_master failed to start")
+        logger.info("mooncake_master is ready")
 
         return managed
 
@@ -506,6 +548,11 @@ class SweepOrchestrator(
             reporter.report(JobStatus.STARTING, JobStage.HEAD_INFRASTRUCTURE, "Starting head infrastructure")
             head_proc = self.start_head_infrastructure(registry)
             registry.add_process(head_proc)
+
+            # Stage 1b: Mooncake master (optional, co-located with infra node)
+            mooncake_proc = self.start_mooncake_master(registry)
+            if mooncake_proc is not None:
+                registry.add_process(mooncake_proc)
 
             # Pre-worker: Ensure HF model is cached before starting workers.
             # 1. Clean stale lock files from previous crashed downloads

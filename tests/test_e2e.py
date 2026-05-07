@@ -447,3 +447,99 @@ class TestQwen32BCluster:
                     f"Need {total_gpus_needed} GPUs but only have {total_gpus_available} "
                     f"({r.total_nodes} nodes × {r.gpus_per_node} GPUs)"
                 )
+
+
+class TestMooncakeKVStore:
+    """Tests for mooncake_kv_store configuration on SGLangProtocol."""
+
+    def test_mooncake_worker_env_not_set(self):
+        """No mooncake_kv_store → get_mooncake_worker_env returns empty dict."""
+        from srtctl.backends.sglang import SGLangProtocol
+
+        backend = SGLangProtocol()
+        assert backend.get_mooncake_worker_env("10.0.0.1") == {}
+
+    def test_mooncake_worker_env_minimal(self):
+        """mooncake_kv_store with no env → only MOONCAKE_MASTER is injected."""
+        from srtctl.backends.sglang import MOONCAKE_MASTER_PORT, MooncakeKVStoreConfig, SGLangProtocol
+
+        backend = SGLangProtocol(mooncake_kv_store=MooncakeKVStoreConfig())
+        env = backend.get_mooncake_worker_env("10.0.0.1")
+        assert env == {"MOONCAKE_MASTER": f"10.0.0.1:{MOONCAKE_MASTER_PORT}"}
+
+    def test_mooncake_worker_env_passthrough(self):
+        """mooncake_kv_store.env values are merged with MOONCAKE_MASTER."""
+        from srtctl.backends.sglang import MOONCAKE_MASTER_PORT, MooncakeKVStoreConfig, SGLangProtocol
+
+        backend = SGLangProtocol(
+            mooncake_kv_store=MooncakeKVStoreConfig(
+                env={
+                    "MOONCAKE_PROTOCOL": "rdma",
+                    "MOONCAKE_GLOBAL_SEGMENT_SIZE": "4gb",
+                    "MOONCAKE_DEVICE": "mlx5_0",
+                }
+            )
+        )
+        env = backend.get_mooncake_worker_env("192.168.1.5")
+        assert env["MOONCAKE_MASTER"] == f"192.168.1.5:{MOONCAKE_MASTER_PORT}"
+        assert env["MOONCAKE_PROTOCOL"] == "rdma"
+        assert env["MOONCAKE_GLOBAL_SEGMENT_SIZE"] == "4gb"
+        assert env["MOONCAKE_DEVICE"] == "mlx5_0"
+
+    def test_mooncake_kv_store_loads_from_yaml(self):
+        """mooncake_kv_store round-trips through YAML deserialization."""
+        import yaml
+        from marshmallow import ValidationError
+
+        from srtctl.core.schema import SrtConfig
+
+        raw = yaml.safe_load("""
+name: test
+model:
+  path: /model
+  container: nvcr.io/test:latest
+  precision: bf16
+resources:
+  agg_nodes: 1
+  agg_workers: 1
+  gpu_type: h100
+backend:
+  type: sglang
+  mooncake_kv_store:
+    container: nvcr.io/nvidia/mooncake:latest
+    env:
+      MOONCAKE_PROTOCOL: rdma
+      MOONCAKE_GLOBAL_SEGMENT_SIZE: "4gb"
+""")
+        config = SrtConfig.Schema().load(raw)
+        assert config.backend.mooncake_kv_store is not None
+        assert config.backend.mooncake_kv_store.container == "nvcr.io/nvidia/mooncake:latest"
+        assert config.backend.mooncake_kv_store.env["MOONCAKE_PROTOCOL"] == "rdma"
+        assert config.backend.mooncake_kv_store.env["MOONCAKE_GLOBAL_SEGMENT_SIZE"] == "4gb"
+
+    def test_mooncake_kv_store_no_container(self):
+        """mooncake_kv_store without container field defaults to None."""
+        import yaml
+
+        from srtctl.core.schema import SrtConfig
+
+        raw = yaml.safe_load("""
+name: test
+model:
+  path: /model
+  container: nvcr.io/test:latest
+  precision: bf16
+resources:
+  agg_nodes: 1
+  agg_workers: 1
+  gpu_type: h100
+backend:
+  type: sglang
+  mooncake_kv_store:
+    env:
+      MOONCAKE_PROTOCOL: rdma
+""")
+        config = SrtConfig.Schema().load(raw)
+        assert config.backend.mooncake_kv_store is not None
+        assert config.backend.mooncake_kv_store.container is None
+        assert config.backend.mooncake_kv_store.env["MOONCAKE_PROTOCOL"] == "rdma"

@@ -198,6 +198,10 @@ class WorkerStageMixin:
         # Add backend-specific process environment variables (e.g., unique ports)
         env_to_set.update(self.backend.get_process_environment(process))
 
+        # Add mooncake worker env vars if configured (SGLang only)
+        if hasattr(self.backend, "get_mooncake_worker_env"):
+            env_to_set.update(self.backend.get_mooncake_worker_env(self.runtime.infra_node_ip))
+
         self._apply_kvbm_endpoint_env(env_to_set, endpoint_processes)
 
         # Log env vars in the format: VAR=value VAR2=value2
@@ -313,6 +317,10 @@ class WorkerStageMixin:
         # Set CUDA_VISIBLE_DEVICES if not using all GPUs on the node
         if len(leader.gpu_indices) < self.runtime.gpus_per_node:
             env_to_set["CUDA_VISIBLE_DEVICES"] = leader.cuda_visible_devices
+
+        # Add mooncake worker env vars if configured (SGLang only)
+        if hasattr(self.backend, "get_mooncake_worker_env"):
+            env_to_set.update(self.backend.get_mooncake_worker_env(self.runtime.infra_node_ip))
 
         self._apply_kvbm_endpoint_env(env_to_set, endpoint_processes)
 

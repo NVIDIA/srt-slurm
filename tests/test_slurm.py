@@ -123,6 +123,7 @@ def test_worker_stage_wraps_nonfatal_fingerprint_hook(tmp_path: Path) -> None:
     mixin.runtime = SimpleNamespace(
         log_dir=tmp_path,
         head_node_ip="10.0.0.1",
+        infra_node_ip="10.0.0.1",
         nodes=SimpleNamespace(infra="infra-node", worker=["node-a"]),
         gpus_per_node=8,
         environment={},
