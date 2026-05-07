@@ -176,6 +176,8 @@ backend:
 
 `MOONCAKE_MASTER` is always computed from the runtime infra node IP — do not set it manually in `env`.
 
+**Validation:** In disaggregated mode, srtslurm rejects configs that set `mooncake_kv_store` without `disaggregation-transfer-backend: mooncake` on `sglang_config.prefill` or `sglang_config.decode`. This catches the common misconfiguration where the master process gets launched but workers fall back to default transport.
+
 ### ResourceConfig
 
 Supports explicit GPUs per worker (overrides computed values):

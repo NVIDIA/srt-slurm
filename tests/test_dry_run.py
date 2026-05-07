@@ -266,6 +266,10 @@ class TestDryRunExecutionExtensions:
                             "MOONCAKE_GLOBAL_SEGMENT_SIZE": "4gb",
                         },
                     },
+                    "sglang_config": {
+                        "prefill": {"disaggregation-transfer-backend": "mooncake"},
+                        "decode": {"disaggregation-transfer-backend": "mooncake"},
+                    },
                 }
             }
         )
@@ -287,6 +291,10 @@ class TestDryRunExecutionExtensions:
                 "backend": {
                     "type": "sglang",
                     "mooncake_kv_store": {"env": {"MOONCAKE_PROTOCOL": "tcp"}},
+                    "sglang_config": {
+                        "prefill": {"disaggregation-transfer-backend": "mooncake"},
+                        "decode": {"disaggregation-transfer-backend": "mooncake"},
+                    },
                 }
             }
         )

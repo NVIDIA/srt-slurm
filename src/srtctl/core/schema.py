@@ -1309,6 +1309,42 @@ class SrtConfig:
         """Validate configuration after initialization."""
         self._validate_profiling()
         self._validate_telemetry()
+        self._validate_mooncake_kv_store()
+
+    def _validate_mooncake_kv_store(self):
+        """Catch the common misconfiguration: mooncake_kv_store set without a
+        matching disaggregation-transfer-backend in sglang_config.
+
+        Without --disaggregation-transfer-backend mooncake on the worker CLI,
+        the master we launch is unused and the workers fall back to default
+        transport — almost never what the user intends.
+        """
+        mooncake_cfg = getattr(self.backend, "mooncake_kv_store", None)
+        if mooncake_cfg is None:
+            return
+
+        sglang_cfg = getattr(self.backend, "sglang_config", None)
+
+        def _has_mooncake_transfer(mode_cfg: dict | None) -> bool:
+            if not mode_cfg:
+                return False
+            # SGLang accepts both "disaggregation-transfer-backend" and the
+            # underscore form; _config_to_cli_args normalizes them.
+            for key in ("disaggregation-transfer-backend", "disaggregation_transfer_backend"):
+                if mode_cfg.get(key) == "mooncake":
+                    return True
+            return False
+
+        prefill_ok = sglang_cfg is not None and _has_mooncake_transfer(sglang_cfg.prefill)
+        decode_ok = sglang_cfg is not None and _has_mooncake_transfer(sglang_cfg.decode)
+
+        if self.resources.is_disaggregated and not (prefill_ok or decode_ok):
+            raise ValidationError(
+                "mooncake_kv_store is set but neither sglang_config.prefill nor "
+                "sglang_config.decode has 'disaggregation-transfer-backend: mooncake'. "
+                "Add it to both modes (and 'disaggregation-ib-device') so workers "
+                "actually use the mooncake master srtslurm launches for you."
+            )
 
     def _validate_profiling(self):
         """Validate profiling configuration matches serving mode."""

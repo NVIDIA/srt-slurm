@@ -526,6 +526,101 @@ backend:
         assert config.backend.mooncake_kv_store.env["MOONCAKE_PROTOCOL"] == "rdma"
         assert config.backend.mooncake_kv_store.env["MOONCAKE_GLOBAL_SEGMENT_SIZE"] == "4gb"
 
+    def test_mooncake_kv_store_disagg_without_transfer_backend_raises(self):
+        """Disagg mode + mooncake_kv_store but no transfer-backend flag → ValidationError."""
+        import yaml
+        from marshmallow import ValidationError
+
+        from srtctl.core.schema import SrtConfig
+
+        raw = yaml.safe_load("""
+name: test
+model:
+  path: /model
+  container: nvcr.io/test:latest
+  precision: bf16
+resources:
+  prefill_nodes: 1
+  decode_nodes: 1
+  prefill_workers: 1
+  decode_workers: 1
+  gpu_type: h100
+backend:
+  type: sglang
+  mooncake_kv_store:
+    env:
+      MOONCAKE_PROTOCOL: rdma
+""")
+        try:
+            SrtConfig.Schema().load(raw)
+        except ValidationError as e:
+            assert "mooncake_kv_store" in str(e)
+            assert "disaggregation-transfer-backend" in str(e)
+        else:
+            raise AssertionError("expected ValidationError")
+
+    def test_mooncake_kv_store_disagg_with_transfer_backend_passes(self):
+        """Disagg mode + mooncake_kv_store + transfer-backend on prefill+decode → OK."""
+        import yaml
+
+        from srtctl.core.schema import SrtConfig
+
+        raw = yaml.safe_load("""
+name: test
+model:
+  path: /model
+  container: nvcr.io/test:latest
+  precision: bf16
+resources:
+  prefill_nodes: 1
+  decode_nodes: 1
+  prefill_workers: 1
+  decode_workers: 1
+  gpu_type: h100
+backend:
+  type: sglang
+  mooncake_kv_store:
+    env:
+      MOONCAKE_PROTOCOL: rdma
+  sglang_config:
+    prefill:
+      disaggregation-transfer-backend: mooncake
+    decode:
+      disaggregation-transfer-backend: mooncake
+""")
+        config = SrtConfig.Schema().load(raw)
+        assert config.backend.mooncake_kv_store is not None
+
+    def test_mooncake_kv_store_underscore_form_accepted(self):
+        """Underscore form 'disaggregation_transfer_backend' is also accepted."""
+        import yaml
+
+        from srtctl.core.schema import SrtConfig
+
+        raw = yaml.safe_load("""
+name: test
+model:
+  path: /model
+  container: nvcr.io/test:latest
+  precision: bf16
+resources:
+  prefill_nodes: 1
+  decode_nodes: 1
+  prefill_workers: 1
+  decode_workers: 1
+  gpu_type: h100
+backend:
+  type: sglang
+  mooncake_kv_store: {}
+  sglang_config:
+    prefill:
+      disaggregation_transfer_backend: mooncake
+    decode:
+      disaggregation_transfer_backend: mooncake
+""")
+        # Should not raise.
+        SrtConfig.Schema().load(raw)
+
     def test_mooncake_kv_store_no_container(self):
         """mooncake_kv_store without container field defaults to None."""
         import yaml
