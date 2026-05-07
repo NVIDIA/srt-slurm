@@ -56,19 +56,23 @@ except ImportError:
 _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 
-def _get_term_height() -> int:
-    """/dev/tty works over SSH where stdin/stdout may not be a real PTY."""
+def _get_term_size() -> tuple[int, int]:
+    """(cols, rows) — /dev/tty works over SSH where stdin/stdout may not be a real PTY."""
     try:
         import fcntl
         import struct
 
         with open("/dev/tty") as tty:
-            rows, _ = struct.unpack("hh", fcntl.ioctl(tty, termios.TIOCGWINSZ, b"\x00\x00\x00\x00"))
-        if 10 <= rows <= 500:
-            return rows
+            rows, cols = struct.unpack("hh", fcntl.ioctl(tty, termios.TIOCGWINSZ, b"\x00\x00\x00\x00"))
+        if 10 <= rows <= 500 and 20 <= cols <= 1000:
+            return cols, rows
     except Exception:
         pass
-    return 60
+    try:
+        sz = os.get_terminal_size()
+        return sz.columns, sz.lines
+    except OSError:
+        return 200, 60
 
 
 # ─── Stage detection ──────────────────────────────────────────────────────────
@@ -1006,10 +1010,7 @@ def _execute(args: argparse.Namespace) -> None:
         return
 
     outputs_dir = args.outputs or _find_outputs_dir()
-    try:
-        term_cols = os.get_terminal_size().columns
-    except OSError:
-        term_cols = shutil.get_terminal_size(fallback=(200, 50)).columns
+    term_cols, term_height = _get_term_size()
 
     state = _State()
     state.show_all_jobs = args.all
@@ -1027,9 +1028,7 @@ def _execute(args: argparse.Namespace) -> None:
     if args.once:
         console = Console(width=max(term_cols, 160))
         jobs = _gather_all(outputs_dir, state.show_all_jobs, state.seen_job_ids)
-        layout, _, _ = _render(
-            jobs, outputs_dir, args.interval, state, term_height=_get_term_height(), term_cols=term_cols
-        )
+        layout, _, _ = _render(jobs, outputs_dir, args.interval, state, term_height=term_height, term_cols=term_cols)
         console.print(layout)
         return
 
@@ -1085,8 +1084,7 @@ def _execute(args: argparse.Namespace) -> None:
             spin_idx = 0
             last_render = 0.0
             last_detail_refresh = 0.0
-            term_height = _get_term_height()
-            last_height_check = time.monotonic()
+            last_size_check = time.monotonic()
             quit_requested = False
 
             while not quit_requested:
@@ -1219,9 +1217,13 @@ def _execute(args: argparse.Namespace) -> None:
                     last_render = 0.0  # force immediate re-render so input feels instant
 
                 now = time.monotonic()
-                if now >= last_height_check + 2.0:
-                    term_height = _get_term_height()
-                    last_height_check = now
+                if now >= last_size_check + 1.0:
+                    new_cols, new_rows = _get_term_size()
+                    if new_cols != term_cols or new_rows != term_height:
+                        term_cols, term_height = new_cols, new_rows
+                        console._width = max(term_cols, 160)
+                        last_render = 0.0  # force redraw at new size
+                    last_size_check = now
                 if (
                     state.detail_auto_refresh
                     and state.detail_job_id is not None
