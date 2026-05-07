@@ -155,17 +155,26 @@ class SGLangProtocol:
         """
         return {}
 
-    def get_mooncake_worker_env(self, infra_node_ip: str) -> dict[str, str]:
-        """Get mooncake env vars to inject on all workers.
+    def get_mooncake_worker_env(self, infra_node_ip: str, local_hostname: str) -> dict[str, str]:
+        """Get mooncake env vars to inject on a specific worker.
 
-        Returns empty dict if mooncake_kv_store is not configured.
-        Otherwise injects MOONCAKE_MASTER (computed from infra node IP) plus
-        any passthrough env vars from mooncake_kv_store.env. MOONCAKE_MASTER
-        is always set by srtslurm and overrides any user-supplied value.
+        Returns empty dict if mooncake_kv_store is not configured. Otherwise:
+        - MOONCAKE_LOCAL_HOSTNAME defaults to the worker's resolved IP, but the
+          user can override it in mooncake_kv_store.env if they need something
+          custom (e.g. a specific RDMA NIC IP).
+        - MOONCAKE_MASTER is always set by srtslurm to <infra_ip>:<port> and
+          overrides any user-supplied value (the user can't know the infra IP
+          at config time).
+
+        Args:
+            infra_node_ip: Resolved IP of the infra node where mooncake_master runs.
+            local_hostname: Resolved IP of the worker's own node, for peer-to-peer
+                transfers. Defaults to the worker's primary network interface IP.
         """
         if self.mooncake_kv_store is None:
             return {}
         return {
+            "MOONCAKE_LOCAL_HOSTNAME": local_hostname,
             **self.mooncake_kv_store.env,
             "MOONCAKE_MASTER": f"{infra_node_ip}:{MOONCAKE_MASTER_PORT}",
         }
