@@ -526,17 +526,20 @@ class TestSweepRunEvalIntegration:
 
         orch = self._make_orchestrator()
 
-        with patch.dict(os.environ, {"EVAL_ONLY": "true"}, clear=False):
-            with patch.object(orch, "start_head_infrastructure") as mock_head:
-                mock_head.return_value = MagicMock()
-                with patch.object(orch, "start_all_workers", return_value={}):
-                    with patch.object(orch, "start_frontend", return_value=[]):
-                        with patch.object(orch, "_run_post_eval", return_value=0) as mock_eval:
-                            with patch.object(orch, "run_benchmark") as mock_bench:
-                                with patch.object(orch, "run_postprocess"):
-                                    with patch("srtctl.cli.do_sweep.StatusReporter") as mock_reporter_cls:
-                                        mock_reporter_cls.from_config.return_value = MagicMock()
-                                        exit_code = orch.run()
+        with (
+            patch.dict(os.environ, {"EVAL_ONLY": "true"}, clear=False),
+            patch.object(orch, "prewarm_container_image"),
+            patch.object(orch, "start_head_infrastructure") as mock_head,
+            patch.object(orch, "start_all_workers", return_value={}),
+            patch.object(orch, "start_frontend", return_value=[]),
+            patch.object(orch, "_run_post_eval", return_value=0) as mock_eval,
+            patch.object(orch, "run_benchmark") as mock_bench,
+            patch.object(orch, "run_postprocess"),
+            patch("srtctl.cli.do_sweep.StatusReporter") as mock_reporter_cls,
+        ):
+            mock_head.return_value = MagicMock()
+            mock_reporter_cls.from_config.return_value = MagicMock()
+            exit_code = orch.run()
 
         mock_eval.assert_called_once()
         mock_bench.assert_not_called()
@@ -549,17 +552,20 @@ class TestSweepRunEvalIntegration:
 
         orch = self._make_orchestrator()
 
-        with patch.dict(os.environ, {"EVAL_ONLY": "false", "RUN_EVAL": "true"}, clear=False):
-            with patch.object(orch, "start_head_infrastructure") as mock_head:
-                mock_head.return_value = MagicMock()
-                with patch.object(orch, "start_all_workers", return_value={}):
-                    with patch.object(orch, "start_frontend", return_value=[]):
-                        with patch.object(orch, "run_benchmark", return_value=0) as mock_bench:
-                            with patch.object(orch, "_run_post_eval", return_value=0) as mock_eval:
-                                with patch.object(orch, "run_postprocess"):
-                                    with patch("srtctl.cli.do_sweep.StatusReporter") as mock_reporter_cls:
-                                        mock_reporter_cls.from_config.return_value = MagicMock()
-                                        exit_code = orch.run()
+        with (
+            patch.dict(os.environ, {"EVAL_ONLY": "false", "RUN_EVAL": "true"}, clear=False),
+            patch.object(orch, "prewarm_container_image"),
+            patch.object(orch, "start_head_infrastructure") as mock_head,
+            patch.object(orch, "start_all_workers", return_value={}),
+            patch.object(orch, "start_frontend", return_value=[]),
+            patch.object(orch, "run_benchmark", return_value=0) as mock_bench,
+            patch.object(orch, "_run_post_eval", return_value=0) as mock_eval,
+            patch.object(orch, "run_postprocess"),
+            patch("srtctl.cli.do_sweep.StatusReporter") as mock_reporter_cls,
+        ):
+            mock_head.return_value = MagicMock()
+            mock_reporter_cls.from_config.return_value = MagicMock()
+            exit_code = orch.run()
 
         mock_bench.assert_called_once()
         mock_eval.assert_called_once()
@@ -572,16 +578,19 @@ class TestSweepRunEvalIntegration:
 
         orch = self._make_orchestrator()
 
-        with patch.dict(os.environ, {"EVAL_ONLY": "true"}, clear=False):
-            with patch.object(orch, "start_head_infrastructure") as mock_head:
-                mock_head.return_value = MagicMock()
-                with patch.object(orch, "start_all_workers", return_value={}):
-                    with patch.object(orch, "start_frontend", return_value=[]):
-                        with patch.object(orch, "_run_post_eval", return_value=1):
-                            with patch.object(orch, "run_postprocess"):
-                                with patch("srtctl.cli.do_sweep.StatusReporter") as mock_reporter_cls:
-                                    mock_reporter_cls.from_config.return_value = MagicMock()
-                                    exit_code = orch.run()
+        with (
+            patch.dict(os.environ, {"EVAL_ONLY": "true"}, clear=False),
+            patch.object(orch, "prewarm_container_image"),
+            patch.object(orch, "start_head_infrastructure") as mock_head,
+            patch.object(orch, "start_all_workers", return_value={}),
+            patch.object(orch, "start_frontend", return_value=[]),
+            patch.object(orch, "_run_post_eval", return_value=1),
+            patch.object(orch, "run_postprocess"),
+            patch("srtctl.cli.do_sweep.StatusReporter") as mock_reporter_cls,
+        ):
+            mock_head.return_value = MagicMock()
+            mock_reporter_cls.from_config.return_value = MagicMock()
+            exit_code = orch.run()
 
         assert exit_code == 1
 
@@ -592,17 +601,20 @@ class TestSweepRunEvalIntegration:
 
         orch = self._make_orchestrator()
 
-        with patch.dict(os.environ, {"EVAL_ONLY": "false", "RUN_EVAL": "true"}, clear=False):
-            with patch.object(orch, "start_head_infrastructure") as mock_head:
-                mock_head.return_value = MagicMock()
-                with patch.object(orch, "start_all_workers", return_value={}):
-                    with patch.object(orch, "start_frontend", return_value=[]):
-                        with patch.object(orch, "run_benchmark", return_value=0):
-                            with patch.object(orch, "_run_post_eval", return_value=1):
-                                with patch.object(orch, "run_postprocess"):
-                                    with patch("srtctl.cli.do_sweep.StatusReporter") as mock_reporter_cls:
-                                        mock_reporter_cls.from_config.return_value = MagicMock()
-                                        exit_code = orch.run()
+        with (
+            patch.dict(os.environ, {"EVAL_ONLY": "false", "RUN_EVAL": "true"}, clear=False),
+            patch.object(orch, "prewarm_container_image"),
+            patch.object(orch, "start_head_infrastructure") as mock_head,
+            patch.object(orch, "start_all_workers", return_value={}),
+            patch.object(orch, "start_frontend", return_value=[]),
+            patch.object(orch, "run_benchmark", return_value=0),
+            patch.object(orch, "_run_post_eval", return_value=1),
+            patch.object(orch, "run_postprocess"),
+            patch("srtctl.cli.do_sweep.StatusReporter") as mock_reporter_cls,
+        ):
+            mock_head.return_value = MagicMock()
+            mock_reporter_cls.from_config.return_value = MagicMock()
+            exit_code = orch.run()
 
         assert exit_code == 0
 
@@ -613,17 +625,20 @@ class TestSweepRunEvalIntegration:
 
         orch = self._make_orchestrator()
 
-        with patch.dict(os.environ, {"EVAL_ONLY": "false", "RUN_EVAL": "true"}, clear=False):
-            with patch.object(orch, "start_head_infrastructure") as mock_head:
-                mock_head.return_value = MagicMock()
-                with patch.object(orch, "start_all_workers", return_value={}):
-                    with patch.object(orch, "start_frontend", return_value=[]):
-                        with patch.object(orch, "run_benchmark", return_value=1):
-                            with patch.object(orch, "_run_post_eval") as mock_eval:
-                                with patch.object(orch, "run_postprocess"):
-                                    with patch("srtctl.cli.do_sweep.StatusReporter") as mock_reporter_cls:
-                                        mock_reporter_cls.from_config.return_value = MagicMock()
-                                        exit_code = orch.run()
+        with (
+            patch.dict(os.environ, {"EVAL_ONLY": "false", "RUN_EVAL": "true"}, clear=False),
+            patch.object(orch, "prewarm_container_image"),
+            patch.object(orch, "start_head_infrastructure") as mock_head,
+            patch.object(orch, "start_all_workers", return_value={}),
+            patch.object(orch, "start_frontend", return_value=[]),
+            patch.object(orch, "run_benchmark", return_value=1),
+            patch.object(orch, "_run_post_eval") as mock_eval,
+            patch.object(orch, "run_postprocess"),
+            patch("srtctl.cli.do_sweep.StatusReporter") as mock_reporter_cls,
+        ):
+            mock_head.return_value = MagicMock()
+            mock_reporter_cls.from_config.return_value = MagicMock()
+            exit_code = orch.run()
 
         mock_eval.assert_not_called()
         assert exit_code == 1
