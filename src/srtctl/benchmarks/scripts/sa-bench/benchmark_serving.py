@@ -565,8 +565,6 @@ def calculate_metrics(
                     tokens_per_second[second_bucket] += num_tokens
 
         if tokens_per_second:
-            # for i in range(len(tokens_per_second)):
-            #     print(f"Time {i}: {tokens_per_second[i]} tokens")
             smoothed_tokens_per_second = np.convolve(tokens_per_second, np.ones(peak_output_smooth_factor) / peak_output_smooth_factor, mode='valid')
             peak_output_tokens_per_s = float(max(smoothed_tokens_per_second))
 

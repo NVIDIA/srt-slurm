@@ -311,21 +311,15 @@ class PostProcessStageMixin:
         q_req = shlex.quote(str(requirements))
         q_run = shlex.quote(run_path)
         return f"""
-set -u
-set -o pipefail
+set -euo pipefail
 
 VENV_DIR=$(mktemp -d)
 cleanup() {{ rm -rf "$VENV_DIR"; }}
 trap cleanup EXIT
 
-echo "Creating ephemeral venv for node metrics export..."
 python3 -m venv "$VENV_DIR"
-
-echo "Installing dependencies from {q_req}..."
 "$VENV_DIR/bin/pip" install -q -r {q_req}
-
 export PYTHONPATH={q_root}
-echo "Running analysis.srtlog.export_node_metrics {q_run}..."
 "$VENV_DIR/bin/python" -m analysis.srtlog.export_node_metrics {q_run}
 """
 

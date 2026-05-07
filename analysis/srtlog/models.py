@@ -142,7 +142,6 @@ class RunMetadata:
         formats = (
             "%Y%m%d_%H%M%S",
             "%Y-%m-%d %H:%M:%S",
-            "%Y-%m-%d %H:%M:%S.%f",
         )
         for fmt in formats:
             try:
