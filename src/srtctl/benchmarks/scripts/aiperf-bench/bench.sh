@@ -38,7 +38,7 @@ if [ -n "${AIPERF_SERVER_METRICS_URLS:-}" ]; then
     if [ ${#server_metrics_urls[@]} -gt 0 ]; then
         SERVER_METRICS_ARGS+=(--server-metrics "${server_metrics_urls[@]}")
     fi
-else:
+else
     SERVER_METRICS_ARGS+=("--no-server-metrics")
 fi
 
