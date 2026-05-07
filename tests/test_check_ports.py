@@ -117,12 +117,59 @@ class TestProcessInfo:
 
 class TestFormatBusy:
     def test_format_busy_unknown_owner(self):
-        # When pid resolution fails (e.g. another user's process), the script
-        # must still emit a PORT_BUSY row with placeholder fields rather than
-        # crashing. This is the diagnostic-fallback path.
+        # When pid AND uid resolution fail, the script must still emit a
+        # PORT_BUSY row with all-placeholder fields rather than crashing.
         line = check_ports._format_busy(("127.0.0.1", 30236), None)
         assert line.startswith("PORT_BUSY")
         assert "127.0.0.1:30236" in line
         assert "pid=?" in line
         assert "user=?" in line
         assert "cmdline=" in line
+
+
+class TestUidFallback:
+    """Verify the cross-user fallback path emits user= even without pid."""
+
+    def test_info_from_uid_resolves_username(self):
+        # uid 0 is root on every Linux system.
+        info = check_ports._info_from_uid(0)
+        assert info["uid"] == "0"
+        assert info["user"] == "root"
+
+    def test_info_from_uid_missing_user_falls_back(self):
+        # Pick a uid extremely unlikely to exist in /etc/passwd.
+        info = check_ports._info_from_uid(2**31 - 2)
+        # Either "?" if the lookup failed, or some unusual entry — accept both.
+        assert info["uid"] == str(2**31 - 2)
+        assert "user" in info
+
+    def test_info_from_uid_negative_means_unknown(self):
+        info = check_ports._info_from_uid(-1)
+        assert info["uid"] == "?"
+        assert "user" not in info  # No uid -> can't even attempt lookup.
+
+    def test_busy_with_uid_only(self, monkeypatch, capsys, listening_socket):
+        """Simulate the cross-user case: /proc/net/tcp shows the listener but
+        we can't walk /proc/<pid>/fd to get the pid.
+
+        We do this by monkeypatching ``_find_owner_pid`` to return {} (as if
+        every fd directory was permission-denied). The script must still emit
+        a PORT_BUSY line with user= populated from the uid recorded in
+        /proc/net/tcp (which we own — it's our test process).
+        """
+        port = listening_socket
+        free = _free_port()
+
+        monkeypatch.setattr(check_ports, "_find_owner_pid", lambda inodes: {})
+        rc = check_ports.check_ports([port, free])
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert f"PORT_OK    127.0.0.1:{free}" in out
+        # Pid is "?" (we faked the lookup) but uid+user must be filled from
+        # /proc/net/tcp's column 7 — which is our own uid.
+        busy = next(line for line in out.splitlines() if line.startswith("PORT_BUSY"))
+        assert f":{port}" in busy
+        assert "pid=?" in busy
+        assert f"uid={os.getuid()}" in busy
+        # User name should resolve since the test runs under a real user.
+        assert "user=?" not in busy

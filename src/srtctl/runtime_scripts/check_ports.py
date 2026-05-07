@@ -74,19 +74,24 @@ def _decode_local_address(field: str) -> tuple[str, int] | None:
     return None
 
 
-def _read_listening_inodes(proc_net_path: str, target_ports: set[int]) -> dict[int, list[tuple[str, int]]]:
-    """Return ``{inode: [(local_ip, port), ...]}`` for each LISTEN entry on a target port.
+def _read_listening_inodes(proc_net_path: str, target_ports: set[int]) -> dict[int, list[tuple[str, int, int]]]:
+    """Return ``{inode: [(local_ip, port, uid), ...]}`` for each LISTEN entry on a target port.
+
+    The ``uid`` is the socket owner's uid as reported by the kernel in
+    /proc/net/tcp column 7. We capture it here so that even when we can't
+    walk ``/proc/<pid>/fd`` (cross-user collision), the diagnostic still
+    surfaces who owns the offending listener.
 
     Multiple entries can map to the same inode if the kernel double-lists
     (rare); we keep all addresses for diagnostic output.
     """
-    result: dict[int, list[tuple[str, int]]] = {}
+    result: dict[int, list[tuple[str, int, int]]] = {}
     try:
         with open(proc_net_path) as fh:
             next(fh)  # skip header
             for line in fh:
                 cols = line.split()
-                # Columns: sl local_address rem_address st tx_q rx_q tr tm->when retrnsmt uid timeout inode
+                # Columns: sl local_address rem_address st tx_q:rx_q tr:tm->when retrnsmt uid timeout inode
                 if len(cols) < 12:
                     continue
                 if cols[3] != TCP_LISTEN:
@@ -98,7 +103,11 @@ def _read_listening_inodes(proc_net_path: str, target_ports: set[int]) -> dict[i
                     inode = int(cols[9])
                 except ValueError:
                     continue
-                result.setdefault(inode, []).append(local)
+                try:
+                    uid = int(cols[7])
+                except ValueError:
+                    uid = -1
+                result.setdefault(inode, []).append((local[0], local[1], uid))
     except FileNotFoundError:
         pass
     return result
@@ -183,6 +192,23 @@ def _process_info(pid: int) -> dict[str, str]:
     return info
 
 
+def _info_from_uid(uid: int) -> dict[str, str]:
+    """Build a minimal ``{uid, user}`` info dict for the cross-user fallback.
+
+    Used when we know the socket's owner uid (from /proc/net/tcp) but can't
+    walk ``/proc/<pid>/fd`` to map the inode to a pid (typical when the
+    offending listener belongs to another user — e.g. a system daemon, or
+    a leftover process from a different SLURM user on a shared node).
+    """
+    info: dict[str, str] = {"uid": str(uid) if uid >= 0 else "?"}
+    if uid >= 0:
+        try:
+            info["user"] = pwd.getpwuid(uid).pw_name
+        except (KeyError, ValueError):
+            info["user"] = "?"
+    return info
+
+
 def _format_busy(addr: tuple[str, int], info: dict[str, str] | None) -> str:
     ip, port = addr
     fields = ["pid", "uid", "user", "name", "cmdline", "state"]
@@ -203,21 +229,24 @@ def check_ports(ports: list[int]) -> int:
     """Check each port; print one line per port; return non-zero if any busy."""
     target_set = set(ports)
 
-    # Aggregate listening inodes across IPv4 and IPv6 (host network namespace).
-    inode_to_addrs: dict[int, list[tuple[str, int]]] = {}
+    # Aggregate listening sockets across IPv4 and IPv6 (host network namespace).
+    # Each entry is (ip, port, uid) so the cross-user fallback path can still
+    # surface "user=root" / "user=nginx" even when /proc/<pid>/fd is unreadable.
+    inode_to_sockets: dict[int, list[tuple[str, int, int]]] = {}
     for path in ("/proc/net/tcp", "/proc/net/tcp6"):
-        for inode, addrs in _read_listening_inodes(path, target_set).items():
-            inode_to_addrs.setdefault(inode, []).extend(addrs)
+        for inode, sockets in _read_listening_inodes(path, target_set).items():
+            inode_to_sockets.setdefault(inode, []).extend(sockets)
 
-    # Build port -> (inode, addrs) map. A port can have multiple inodes
-    # (IPv4+IPv6 dual-stack); we report each separately.
-    port_to_entries: dict[int, list[tuple[int, tuple[str, int]]]] = {}
-    for inode, addrs in inode_to_addrs.items():
-        for addr in addrs:
-            port_to_entries.setdefault(addr[1], []).append((inode, addr))
+    # port -> [(inode, ip, uid), ...]. A port can have multiple inodes (IPv4 +
+    # IPv6 dual-stack); we report each separately.
+    port_to_entries: dict[int, list[tuple[int, str, int]]] = {}
+    for inode, sockets in inode_to_sockets.items():
+        for ip, port, uid in sockets:
+            port_to_entries.setdefault(port, []).append((inode, ip, uid))
 
-    # Resolve owner pids for any busy ports.
-    busy_inodes = {inode for entries in port_to_entries.values() for inode, _ in entries}
+    # Resolve owner pids for any busy ports. Fails silently for inodes whose
+    # owning pid belongs to another user (we can't read their /proc/<pid>/fd).
+    busy_inodes = {inode for entries in port_to_entries.values() for (inode, *_) in entries}
     inode_to_pid = _find_owner_pid(busy_inodes)
 
     # Emit one line per requested port (in input order).
@@ -228,10 +257,23 @@ def check_ports(ports: list[int]) -> int:
             print(f"PORT_OK    127.0.0.1:{port}", flush=True)
             continue
         any_busy = True
-        for inode, addr in entries:
+        for inode, ip, uid in entries:
             pid = inode_to_pid.get(inode)
-            info = _process_info(pid) if pid is not None else None
-            print(_format_busy(addr, info), flush=True)
+            if pid is not None:
+                info = _process_info(pid)
+                # Backfill uid/user from /proc/net/tcp if /proc/<pid>/status
+                # didn't yield them (rare, but be defensive).
+                info.setdefault("uid", str(uid) if uid >= 0 else "?")
+                if "user" not in info and uid >= 0:
+                    try:
+                        info["user"] = pwd.getpwuid(uid).pw_name
+                    except (KeyError, ValueError):
+                        info["user"] = "?"
+            else:
+                # Cross-user case: pid resolution failed. We still have uid
+                # from /proc/net/tcp, so at minimum emit user=<owner>.
+                info = _info_from_uid(uid)
+            print(_format_busy((ip, port), info), flush=True)
     return 1 if any_busy else 0
 
 
