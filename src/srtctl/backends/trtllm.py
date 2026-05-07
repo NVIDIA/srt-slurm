@@ -176,16 +176,19 @@ class TRTLLMProtocol:
         container_config_path = Path("/logs") / config_filename
         container_model_path = Path("/model")
 
-        cmd = [
-            "trtllm-llmapi-launch",
-            "python3",
-            "-m",
-            "dynamo.trtllm",
-            "--model-path",
-            str(container_model_path),
-            "--served-model-name",
-            runtime.model_path.name,
-        ]
+        cmd: list[str] = list(nsys_prefix) if nsys_prefix else []
+        cmd.extend(
+            [
+                "trtllm-llmapi-launch",
+                "python3",
+                "-m",
+                "dynamo.trtllm",
+                "--model-path",
+                str(container_model_path),
+                "--served-model-name",
+                runtime.model_path.name,
+            ]
+        )
 
         # Only add disaggregation mode for prefill/decode, not for agg
         if mode != "agg":
