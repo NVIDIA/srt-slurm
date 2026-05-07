@@ -133,7 +133,7 @@ class _State:
         self.detail_worker_files: list[Path] = []
         self.detail_worker_idx: int = 0
         self.detail_worker_lines: list[str] = []
-        self.detail_auto_refresh: bool = False
+        self.detail_auto_refresh: bool = True
         self.detail_panel_idx: int = 0  # 0=sweep 1=worker 2=bench
         self.detail_panel_active: bool = False
         self.detail_bench_sections: list[tuple[int | None, list[str]]] = []
@@ -747,6 +747,10 @@ def _build_table(jobs: list[dict], show_all: bool, selected_rel: int = -1, last_
 _PANEL_OVERHEAD = 4  # panel top border + table header + table separator + panel bottom border
 # The keybinding bar is pinned via Layout (always 1 line); term_height - 1 goes to the panel.
 
+# Detail-view log refresh cadence. Decoupled from --interval (which paces squeue) so log tails
+# stay snappy regardless of how slow the table refresh is.
+_DETAIL_REFRESH_SEC = 1.0
+
 
 def _job_row_height(j: dict, show_all: bool) -> int:
     cfg_lines = len([p for p in (j.get("gpu_info", ""), j.get("bench_config", "")) if p]) or 1
@@ -1227,7 +1231,7 @@ def _execute(args: argparse.Namespace) -> None:
                 if (
                     state.detail_auto_refresh
                     and state.detail_job_id is not None
-                    and now >= last_detail_refresh + args.interval
+                    and now >= last_detail_refresh + _DETAIL_REFRESH_SEC
                 ):
                     jid = state.detail_job_id
                     logs_dir = outputs_dir / jid / "logs"
