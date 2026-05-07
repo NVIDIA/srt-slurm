@@ -310,8 +310,12 @@ def try_start_snapshotter(
         logger.debug("Live metrics: failed to load cluster config: %s", e)
         return None
 
-    cfg = (cluster_config or {}).get("telemetry", {}).get("live_metrics") if cluster_config else None
-    if not cfg or not cfg.get("enabled"):
+    telemetry = cluster_config.get("telemetry") if isinstance(cluster_config, dict) else None
+    if not isinstance(telemetry, dict):
+        return None
+
+    cfg = telemetry.get("live_metrics")
+    if not isinstance(cfg, dict) or not cfg.get("enabled"):
         return None
 
     # matplotlib is a required srtctl dependency (see pyproject.toml), so we
