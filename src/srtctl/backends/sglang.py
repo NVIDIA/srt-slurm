@@ -198,11 +198,12 @@ class SGLangProtocol:
         self,
         endpoints: list["Endpoint"],
         base_sys_port: int = 8081,
+        sys_port_stride: int = 1,
     ) -> list["Process"]:
         """Convert endpoints to processes."""
         from srtctl.core.topology import endpoints_to_processes
 
-        return endpoints_to_processes(endpoints, base_sys_port=base_sys_port)
+        return endpoints_to_processes(endpoints, base_sys_port=base_sys_port, sys_port_stride=sys_port_stride)
 
     def build_worker_command(
         self,
