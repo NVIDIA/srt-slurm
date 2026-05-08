@@ -9,6 +9,8 @@ Handles benchmark execution and profiling.
 
 import logging
 import shlex
+import signal
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -158,9 +160,15 @@ class BenchmarkStageMixin:
 
         logger.info("Running %s benchmark", runner.name)
 
+        # Start perf monitoring on all worker nodes (non-fatal if it fails)
+        perf_procs = self._start_perf_monitor()
+
         # Run the benchmark script
         benchmark_log = self.runtime.log_dir / "benchmark.out"
         exit_code = self._run_benchmark_script(runner, benchmark_log, stop_event)
+
+        # Stop monitoring regardless of benchmark outcome
+        self._stop_perf_monitor(perf_procs)
 
         if exit_code != 0:
             logger.error("Benchmark failed with exit code %d", exit_code)
@@ -168,6 +176,78 @@ class BenchmarkStageMixin:
             logger.info("Benchmark completed successfully")
 
         return exit_code
+
+    def _start_perf_monitor(self) -> list[tuple[str, "subprocess.Popen"]]:
+        """Start one perfmon process per worker node.
+
+        Failures are non-fatal: a warning is logged and that node is skipped.
+
+        Returns:
+            List of (node, Popen) pairs for processes that started successfully.
+        """
+        m = self.config.monitoring
+        if m is None or not m.enabled:
+            return []
+
+        worker_nodes = list(self.runtime.nodes.worker)
+        if not worker_nodes:
+            logger.warning("No worker nodes to monitor")
+            return []
+
+        perfmon_script = Path(__file__).parent.parent.parent / "monitor" / "perfmon.py"
+        mounts = dict(self.runtime.container_mounts)
+        mounts[perfmon_script] = Path("/tmp/srt_perfmon.py")
+
+        procs: list[tuple[str, subprocess.Popen]] = []
+        for node in worker_nodes:
+            cmd = [
+                "python3", "/tmp/srt_perfmon.py",
+                "--output-csv", f"/logs/perf_samples_{node}.csv",
+                "--output-json", f"/logs/perf_summary_{node}.json",
+                "--interval", str(m.sample_interval),
+            ]
+            perf_log = self.runtime.log_dir / f"perf_monitor_{node}.out"
+            try:
+                proc = start_srun_process(
+                    command=cmd,
+                    nodelist=[node],
+                    output=str(perf_log),
+                    container_image=str(self.runtime.container_image),
+                    container_mounts=mounts,
+                )
+                procs.append((node, proc))
+                logger.info("perf monitor started on %s (interval=%.1fs)", node, m.sample_interval)
+            except Exception as e:
+                logger.warning("Failed to start perf monitor on %s: %s - monitoring skipped for this node", node, e)
+
+        return procs
+
+    def _stop_perf_monitor(self, procs: list[tuple[str, "subprocess.Popen"]]) -> None:
+        """Stop all perfmon processes, allowing each to write its summary JSON.
+
+        Sends SIGINT (triggers perfmon's exit handler) and waits up to 30s.
+        Falls back to SIGKILL if the process does not exit cleanly.
+        """
+        if not procs:
+            return
+
+        logger.info("Stopping perf monitoring on %d node(s)", len(procs))
+        for node, proc in procs:
+            if proc.poll() is not None:
+                logger.warning("perf monitor on %s already exited (code %d)", node, proc.returncode)
+                continue
+            try:
+                proc.send_signal(signal.SIGINT)
+            except ProcessLookupError:
+                logger.warning("perf monitor on %s vanished before SIGINT", node)
+                continue
+            try:
+                proc.wait(timeout=30)
+                logger.info("perf monitor on %s stopped cleanly", node)
+            except subprocess.TimeoutExpired:
+                logger.warning("perf monitor on %s did not stop within 30s, killing", node)
+                proc.kill()
+                proc.wait()
 
     def _run_benchmark_script(
         self,
