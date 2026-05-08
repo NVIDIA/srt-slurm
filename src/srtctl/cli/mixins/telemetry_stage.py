@@ -97,15 +97,47 @@ class TelemetryStageMixin:
         return managed
 
     def start_telemetry(self) -> list[ManagedProcess]:
-        """Start the configured telemetry provider."""
+        """Start the configured telemetry provider.
+
+        ``dcgm_exporter`` is always launched when telemetry is enabled. The
+        ``node_exporter`` and the scraper (``container_image``) are optional —
+        each only runs when configured.
+        """
         telemetry = self.config.telemetry
         if not telemetry.enabled:
             logger.info("Telemetry disabled")
             return []
-        if telemetry.dcgm_exporter is None or telemetry.node_exporter is None or telemetry.container_image is None:
-            raise ValueError("Telemetry is enabled but required provider configuration is missing")
 
         logger.info("Starting telemetry provider: %s", telemetry.provider.value)
+
+        if telemetry.dcgm_exporter is None:
+            raise ValueError("Telemetry is enabled but telemetry.dcgm_exporter is not configured")
+
+        worker_nodes = sorted({process.node for process in self.backend_processes})
+        processes: list[ManagedProcess] = []
+        processes.append(
+            self._start_exporter_container(
+                exporter_config=telemetry.dcgm_exporter,
+                name="telemetry_dcgm_exporter",
+                nodelist=worker_nodes,
+                log_file=self.runtime.log_dir / "telemetry_dcgm_exporter.out",
+                default_command_template="dcgm-exporter --collect-interval=100 --address :{port}",
+            )
+        )
+
+        if telemetry.node_exporter is not None:
+            processes.append(
+                self._start_exporter_container(
+                    exporter_config=telemetry.node_exporter,
+                    name="telemetry_node_exporter",
+                    nodelist=worker_nodes,
+                    log_file=self.runtime.log_dir / "telemetry_node_exporter.out",
+                    default_command_template=(
+                        "/bin/node_exporter --web.listen-address=:{port} "
+                        "--collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo"
+                    ),
+                )
+            )
 
         topology = self._compute_frontend_topology()
         config_path = self.runtime.log_dir / "telemetry_config.toml"
@@ -134,18 +166,24 @@ class TelemetryStageMixin:
                 default_command_template="dcgm-exporter --collect-interval=100 --address :{port}",
             )
         )
-        processes.extend(
-            self._start_exporter_container(
-                exporter_config=telemetry.node_exporter,
-                name="telemetry_node_exporter",
-                nodelist=worker_nodes,
-                log_file=self.runtime.log_dir / "telemetry_node_exporter.out",
-                default_command_template=(
-                    "/bin/node_exporter --web.listen-address=:{port} "
-                    "--collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo"
-                ),
+
+        if telemetry.node_exporter is not None:
+            processes.extend(
+                self._start_exporter_container(
+                    exporter_config=telemetry.node_exporter,
+                    name="telemetry_node_exporter",
+                    nodelist=worker_nodes,
+                    log_file=self.runtime.log_dir / "telemetry_node_exporter.out",
+                    default_command_template=(
+                        "/bin/node_exporter --web.listen-address=:{port} "
+                        "--collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo"
+                    ),
+                )
             )
-        )
+
+        if telemetry.container_image is None:
+            logger.info("Telemetry scraper not configured; running exporters only")
+            return processes
 
         cmd = [
             telemetry.binary_path,
@@ -181,5 +219,5 @@ class TelemetryStageMixin:
                 node=self.runtime.nodes.head,
             )
         )
-        logger.info("Telemetry started with artifacts under %s", telemetry_dir)
+        logger.info("Telemetry scraper started with artifacts under %s", telemetry_dir)
         return processes
