@@ -325,7 +325,7 @@ def start_srun_process(
     # fingerprint heredoc is inlined (see core/fingerprint.generate_capture_script),
     # which dominates the orchestrator log. Re-enable with `--verbose` / by setting
     # the srtctl logger to DEBUG when troubleshooting srun arg construction.
-    logger.debug("srun command: %s", shlex.join(srun_cmd))
+    logger.info("srun command: %s", shlex.join(srun_cmd))
 
     # Start the process
     proc = subprocess.Popen(
