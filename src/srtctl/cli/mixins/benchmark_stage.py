@@ -176,6 +176,7 @@ class BenchmarkStageMixin:
         stop_event: threading.Event,
     ) -> int:
         """Run the actual benchmark script."""
+        from srtctl.analysis.live_metrics import try_start_snapshotter
 
         cmd = runner.build_command(self.config, self.runtime)
         env_to_set = self._get_benchmark_env(runner)
@@ -187,6 +188,10 @@ class BenchmarkStageMixin:
         logger.info("Command: %s", shlex.join(cmd))
         logger.info("Log: %s", log_file)
 
+        # Optional in-flight batch-metrics snapshotter — no-op unless
+        # opted in via reporting.live_metrics in the cluster config.
+        snapshotter = try_start_snapshotter(self.runtime.log_dir, stop_event)
+
         proc = start_srun_process(
             command=cmd,
             nodelist=[self.runtime.nodes.head],
@@ -196,15 +201,17 @@ class BenchmarkStageMixin:
             env_to_set=env_to_set,
         )
 
-        # Wait for benchmark to complete
-        while proc.poll() is None:
-            if stop_event.is_set():
-                logger.info("Stop requested, terminating benchmark")
-                proc.terminate()
-                return 1
-            time.sleep(1)
-
-        return proc.returncode or 0
+        try:
+            while proc.poll() is None:
+                if stop_event.is_set():
+                    logger.info("Stop requested, terminating benchmark")
+                    proc.terminate()
+                    return 1
+                time.sleep(1)
+            return proc.returncode or 0
+        finally:
+            if snapshotter is not None:
+                snapshotter.stop()
 
     def _get_benchmark_profiling_env(self, runner: "BenchmarkRunner") -> dict[str, str]:
         """Get environment variables for the benchmark script."""

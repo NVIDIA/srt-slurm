@@ -133,11 +133,15 @@ class FrontendStageMixin:
         # Install nginx and run it (daemon off keeps nginx in foreground so srun can manage it)
         # Use container path (/logs) since log_dir is mounted there
         container_config_path = "/logs/nginx.conf"
-        cmd = [
-            "bash",
-            "-c",
-            f"nginx -c {container_config_path} -g 'daemon off;'",
-        ]
+        # Optional ulimit: use_bash_wrapper=False bypasses default_bash_preamble;
+        # some clusters reject raising nofile inside the nginx container.
+        fe = self.config.frontend
+        inner = (
+            f"ulimit -n 1048576 && nginx -c {container_config_path} -g 'daemon off;'"
+            if fe.nginx_raise_ulimit
+            else f"nginx -c {container_config_path} -g 'daemon off;'"
+        )
+        cmd = ["bash", "-c", inner]
 
         proc = start_srun_process(
             command=cmd,
@@ -174,6 +178,7 @@ class FrontendStageMixin:
             frontend_hosts=frontend_hosts,
             backend_port=topology.frontend_port,
             listen_port=topology.public_port,
+            nginx_raise_ulimit=self.config.frontend.nginx_raise_ulimit,
         )
 
     def start_frontend(self, registry: "ProcessRegistry") -> list[ManagedProcess]:

@@ -1,0 +1,5 @@
+# Dashboard (analysis/dashboard/) dependencies — install in addition to requirements.txt
+-r requirements.txt
+numpy>=1.24.0
+plotly>=5.18.0
+streamlit>=1.28.0

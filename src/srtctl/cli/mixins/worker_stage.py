@@ -24,6 +24,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Dynamo runtime (Rust) log filter for worker containers; YAML prefill_environment /
+# decode_environment / aggregated_environment override via the merge below.
+_DEFAULT_WORKER_DYN_LOG = "info,dynamo_runtime::pipeline::network::ingress::push_handler=warn"
+
 
 class WorkerStageMixin:
     """Mixin for worker process startup stage.
@@ -155,10 +159,13 @@ class WorkerStageMixin:
             "NATS_SERVER": f"nats://{self.runtime.nodes.infra}:4222",
             "DYN_SYSTEM_PORT": str(process.sys_port),
             "DYN_REQUEST_PLANE": "nats",
+            "DYN_SKIP_SGLANG_LOG_FORMATTING": "1",
         }
 
         # Add OTEL env vars (before mode-specific env so OTEL_SERVICE_NAME can be overridden)
         env_to_set.update(build_otel_env(self.config.observability, mode))
+
+        env_to_set.setdefault("DYN_LOG", _DEFAULT_WORKER_DYN_LOG)
 
         # Add mode-specific environment variables from backend
         # Support simple {node} and {node_id} templating
@@ -190,6 +197,13 @@ class WorkerStageMixin:
 
         # Add backend-specific process environment variables (e.g., unique ports)
         env_to_set.update(self.backend.get_process_environment(process))
+
+        # Add mooncake worker env vars if configured (SGLang only). Resolve the
+        # worker's own IP so MOONCAKE_LOCAL_HOSTNAME is correct for multi-node
+        # peer-to-peer transfers (defaulting to "localhost" silently breaks them).
+        if hasattr(self.backend, "get_mooncake_worker_env"):
+            local_hostname = get_hostname_ip(process.node, self.runtime.network_interface)
+            env_to_set.update(self.backend.get_mooncake_worker_env(self.runtime.infra_node_ip, local_hostname))
 
         self._apply_kvbm_endpoint_env(env_to_set, endpoint_processes)
 
@@ -284,10 +298,13 @@ class WorkerStageMixin:
             "ETCD_ENDPOINTS": f"http://{self.runtime.nodes.infra}:2379",
             "NATS_SERVER": f"nats://{self.runtime.nodes.infra}:4222",
             "DYN_SYSTEM_PORT": str(leader.sys_port),
+            "DYN_SKIP_SGLANG_LOG_FORMATTING": "1",
         }
 
         # Add OTEL env vars (before mode-specific env so OTEL_SERVICE_NAME can be overridden)
         env_to_set.update(build_otel_env(self.config.observability, mode))
+
+        env_to_set.setdefault("DYN_LOG", _DEFAULT_WORKER_DYN_LOG)
 
         # Add mode-specific environment variables from backend
         env_to_set.update(self.backend.get_environment_for_mode(mode))
@@ -303,6 +320,14 @@ class WorkerStageMixin:
         # Set CUDA_VISIBLE_DEVICES if not using all GPUs on the node
         if len(leader.gpu_indices) < self.runtime.gpus_per_node:
             env_to_set["CUDA_VISIBLE_DEVICES"] = leader.cuda_visible_devices
+
+        # Add mooncake worker env vars if configured (SGLang only). For MPI-style
+        # endpoint launching we use the leader node's IP — mooncake's per-worker
+        # hostname is fundamentally per-process, but TRTLLM-style launching uses
+        # one srun for the whole endpoint, so leader IP is the best we can do.
+        if hasattr(self.backend, "get_mooncake_worker_env"):
+            local_hostname = get_hostname_ip(leader.node, self.runtime.network_interface)
+            env_to_set.update(self.backend.get_mooncake_worker_env(self.runtime.infra_node_ip, local_hostname))
 
         self._apply_kvbm_endpoint_env(env_to_set, endpoint_processes)
 

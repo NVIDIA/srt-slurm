@@ -83,6 +83,7 @@ class DynamoFrontend:
                 "ETCD_ENDPOINTS": f"http://{runtime.nodes.infra}:2379",
                 "NATS_SERVER": f"nats://{runtime.nodes.infra}:4222",
                 "DYN_REQUEST_PLANE": "nats",
+                "DYN_SKIP_SGLANG_LOG_FORMATTING": "1",
             }
 
             # Add OTEL env vars (before frontend env so OTEL_SERVICE_NAME can be overridden)

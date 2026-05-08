@@ -40,10 +40,12 @@ class RequestFuncOutput:
     # output_tokens: int = 0
     output_tokens: int | None = None
     ttft: float = 0.0  # Time to first token
-    itl: list[float] = field(default_factory=list)  # List of inter-token latencies
+    itl: list[float] = field(default_factory=list)  # List of inter-token latencies (one per SSE chunk)
     tpot: float = 0.0  # avg next-token latencies
     prompt_len: int = 0
     error: str = ""
+    start_time: float = 0.0  # absolute perf_counter time when request was sent
+    text_chunks: list[str] = field(default_factory=list)  # text content of each SSE chunk (incl. first), same length as itl+1
 
 
 async def async_request_tgi(
@@ -141,6 +143,7 @@ async def async_request_trt_llm(
 
         ttft = 0.0
         st = time.perf_counter()
+        output.start_time = st
         most_recent_timestamp = st
         try:
             async with session.post(url=api_url, json=payload) as response:
@@ -153,7 +156,8 @@ async def async_request_trt_llm(
                         chunk = chunk_bytes.decode("utf-8").removeprefix("data:")
 
                         data = json.loads(chunk)
-                        output.generated_text += data["text_output"]
+                        chunk_text = data["text_output"]
+                        output.generated_text += chunk_text
                         timestamp = time.perf_counter()
                         # First token
                         if ttft == 0.0:
@@ -164,6 +168,7 @@ async def async_request_trt_llm(
                         else:
                             output.itl.append(timestamp - most_recent_timestamp)
 
+                        output.text_chunks.append(chunk_text)
                         most_recent_timestamp = timestamp
 
                     output.latency = most_recent_timestamp - st
@@ -257,6 +262,7 @@ async def async_request_openai_completions(
 
         generated_text = ""
         st = time.perf_counter()
+        output.start_time = st
         most_recent_timestamp = st
         try:
             async with session.post(url=api_url, json=payload, headers=headers) as response:
@@ -291,6 +297,7 @@ async def async_request_openai_completions(
 
                                 most_recent_timestamp = timestamp
                                 generated_text += text or ""
+                                output.text_chunks.append(text or "")
                             elif usage := data.get("usage"):
                                 output.output_tokens = usage.get("completion_tokens")
                     if first_chunk_received:
@@ -348,6 +355,7 @@ async def async_request_dynamo_completions(
 
         generated_text = ""
         st = time.perf_counter()
+        output.start_time = st
         most_recent_timestamp = st
         try:
             async with session.post(url=api_url, json=payload, headers=headers) as response:
@@ -388,6 +396,7 @@ async def async_request_dynamo_completions(
 
                                 most_recent_timestamp = timestamp
                                 generated_text += text or ""
+                                output.text_chunks.append(text or "")
                             if usage := data.get("usage"):
                                 output.output_tokens = usage.get("completion_tokens")
                     if first_chunk_received:
@@ -450,6 +459,7 @@ async def async_request_openai_chat_completions(
         generated_text = ""
         ttft = 0.0
         st = time.perf_counter()
+        output.start_time = st
         most_recent_timestamp = st
         try:
             async with session.post(url=api_url, json=payload, headers=headers) as response:
@@ -476,6 +486,7 @@ async def async_request_openai_chat_completions(
                                     output.itl.append(timestamp - most_recent_timestamp)
 
                                 generated_text += content or ""
+                                output.text_chunks.append(content or "")
                             elif usage := data.get("usage"):
                                 output.output_tokens = usage.get("completion_tokens")
 

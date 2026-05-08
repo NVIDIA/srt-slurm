@@ -524,6 +524,27 @@ class TestFrontendConfig:
 
         assert resolved["frontend"]["nginx_container"] == "nginx"
 
+    def test_nginx_raise_ulimit_cluster_default(self):
+        """srtslurm.yaml can set nginx_raise_ulimit when job omits frontend key."""
+        from srtctl.core.config import resolve_config_with_defaults
+
+        user_config = {
+            "name": "test",
+            "model": {"path": "/model", "container": "/c.sqsh", "precision": "fp8"},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+            "frontend": {},
+        }
+
+        resolved = resolve_config_with_defaults(user_config, {"nginx_raise_ulimit": True})
+        assert resolved["frontend"]["nginx_raise_ulimit"] is True
+
+        user_explicit = {
+            **user_config,
+            "frontend": {"nginx_raise_ulimit": False},
+        }
+        resolved2 = resolve_config_with_defaults(user_explicit, {"nginx_raise_ulimit": True})
+        assert resolved2["frontend"]["nginx_raise_ulimit"] is False
+
     def test_telemetry_container_aliases_resolve(self):
         from srtctl.core.config import resolve_config_with_defaults
 
@@ -1751,3 +1772,113 @@ class TestHuggingFaceModelSupport:
 
         idx = cmd.index("--model-path")
         assert cmd[idx + 1] == "/model"
+
+
+class TestInfmaxWorkspaceMount:
+    """Test that INFMAX_WORKSPACE env var creates a container mount."""
+
+    def test_infmax_workspace_mount_added(self, tmp_path):
+        """RuntimeContext includes /infmax-workspace mount when env var is set."""
+        import os
+        import subprocess
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.core.runtime import RuntimeContext
+        from srtctl.core.schema import ModelConfig, ResourceConfig, SrtConfig
+
+        model_path = tmp_path / "model"
+        model_path.mkdir()
+        container_path = tmp_path / "container.sqsh"
+        container_path.touch()
+
+        slurm_env = {
+            "SLURM_JOB_ID": "12345",
+            "SLURM_JOBID": "12345",
+            "SLURM_NODELIST": "gpu-[01-02]",
+            "SLURM_JOB_NUM_NODES": "2",
+            "SRTCTL_SOURCE_DIR": str(Path(__file__).parent.parent),
+            "INFMAX_WORKSPACE": "/actions/runner/workspace",
+        }
+
+        def mock_scontrol(cmd, **kwargs):
+            if cmd[0] == "scontrol" and "hostnames" in cmd:
+                result = MagicMock()
+                result.stdout = "gpu-01\ngpu-02"
+                result.returncode = 0
+                return result
+            raise subprocess.CalledProcessError(1, cmd)
+
+        with patch.dict(os.environ, slurm_env):
+            with patch("subprocess.run", mock_scontrol):
+                with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+                    config = SrtConfig(
+                        name="test",
+                        model=ModelConfig(
+                            path=str(model_path),
+                            container=str(container_path),
+                            precision="fp8",
+                        ),
+                        resources=ResourceConfig(
+                            gpu_type="h100",
+                            gpus_per_node=8,
+                            prefill_nodes=1,
+                            decode_nodes=1,
+                        ),
+                    )
+                    runtime = RuntimeContext.from_config(config, job_id="12345")
+
+                    assert Path("/infmax-workspace") in runtime.container_mounts.values()
+
+    def test_infmax_workspace_mount_not_added_without_env(self, tmp_path):
+        """RuntimeContext does not include /infmax-workspace without env var."""
+        import os
+        import subprocess
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.core.runtime import RuntimeContext
+        from srtctl.core.schema import ModelConfig, ResourceConfig, SrtConfig
+
+        model_path = tmp_path / "model"
+        model_path.mkdir()
+        container_path = tmp_path / "container.sqsh"
+        container_path.touch()
+
+        slurm_env = {
+            "SLURM_JOB_ID": "12345",
+            "SLURM_JOBID": "12345",
+            "SLURM_NODELIST": "gpu-[01-02]",
+            "SLURM_JOB_NUM_NODES": "2",
+            "SRTCTL_SOURCE_DIR": str(Path(__file__).parent.parent),
+        }
+
+        def mock_scontrol(cmd, **kwargs):
+            if cmd[0] == "scontrol" and "hostnames" in cmd:
+                result = MagicMock()
+                result.stdout = "gpu-01\ngpu-02"
+                result.returncode = 0
+                return result
+            raise subprocess.CalledProcessError(1, cmd)
+
+        with patch.dict(os.environ, slurm_env):
+            os.environ.pop("INFMAX_WORKSPACE", None)
+            with patch("subprocess.run", mock_scontrol):
+                with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+                    config = SrtConfig(
+                        name="test",
+                        model=ModelConfig(
+                            path=str(model_path),
+                            container=str(container_path),
+                            precision="fp8",
+                        ),
+                        resources=ResourceConfig(
+                            gpu_type="h100",
+                            gpus_per_node=8,
+                            prefill_nodes=1,
+                            decode_nodes=1,
+                        ),
+                    )
+                    runtime = RuntimeContext.from_config(config, job_id="12345")
+
+                    assert Path("/infmax-workspace") not in runtime.container_mounts.values()

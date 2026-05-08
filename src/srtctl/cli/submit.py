@@ -243,6 +243,11 @@ def show_config_details(config: SrtConfig) -> None:
         has_env = True
         mode_envs.append(("benchmark", dict(config.benchmark.env)))
 
+    mooncake_cfg = getattr(backend, "mooncake_kv_store", None)
+    if mooncake_cfg is not None and mooncake_cfg.env:
+        has_env = True
+        mode_envs.append(("mooncake", dict(mooncake_cfg.env)))
+
     if has_env:
         env_table = Table(title="Environment Variables", show_lines=False, pad_edge=False)
         env_table.add_column("Scope", style="dim", width=14)
@@ -268,7 +273,13 @@ def show_config_details(config: SrtConfig) -> None:
         opts = " ".join(f"--{k} {v}" if v else f"--{k}" for k, v in config.srun_options.items())
         console.print(f"[dim]srun options:[/] {opts}")
 
-    if config.benchmark.type == "custom" or config.benchmark.container_image or config.telemetry.enabled:
+    show_extensions = (
+        config.benchmark.type == "custom"
+        or config.benchmark.container_image
+        or config.telemetry.enabled
+        or mooncake_cfg is not None
+    )
+    if show_extensions:
         details = Table(title="Execution Extensions", show_lines=False, pad_edge=False)
         details.add_column("Area", style="dim", width=14)
         details.add_column("Setting", style="yellow")
@@ -291,6 +302,10 @@ def show_config_details(config: SrtConfig) -> None:
             details.add_row("telemetry", "container_image", config.telemetry.container_image or "<unset>")
             details.add_row("telemetry", "storage_subdir", config.telemetry.storage_subdir)
             details.add_row("telemetry", "frequency", str(config.telemetry.default_frequency))
+
+        if mooncake_cfg is not None:
+            details.add_row("mooncake", "container", mooncake_cfg.container or "<job container>")
+            details.add_row("mooncake", "master_port", "50051 (auto)")
 
         console.print(Panel(details, border_style="blue"))
 
@@ -1168,6 +1183,8 @@ def main():
   srtctl dry-run -f config.yaml                  # Dry run
   srtctl resolve-override -f config.yaml         # Resolve override YAML (no submit)
   srtctl resolve-override -f config.yaml --stdout  # Print to stdout
+  srtctl monitor                                 # Live job dashboard
+  srtctl monitor --outputs /path/to/outputs      # Dashboard with custom outputs dir
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1230,6 +1247,9 @@ def main():
         dest="config",
         help="YAML config file, or file:selector for overrides",
     )
+
+    monitor_parser = subparsers.add_parser("monitor", help="Live dashboard for srt-slurm jobs", add_help=False)
+    monitor_parser.add_argument("args", nargs=argparse.REMAINDER)
 
     resolve_parser = subparsers.add_parser(
         "resolve-override",
@@ -1340,6 +1360,13 @@ def main():
             console.print(format_check_results([]))
         restore_console()
         sys.exit(1 if all_results else 0)
+
+    if args.command == "monitor":
+        from srtctl.cli.monitor import main as _monitor_main
+
+        sys.argv = [sys.argv[0]] + (args.args or [])
+        _monitor_main()
+        return
 
     # Parse config arg: supports path:selector format for overrides
     config_path, selector = parse_config_arg(args.config)

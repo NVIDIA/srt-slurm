@@ -252,3 +252,53 @@ class TestDryRunExecutionExtensions:
         assert "telemetry" in output
         assert "scraper" in output
         assert "storage_subdir" in output
+
+    def test_mooncake_kv_store_details_shown(self, capsys):
+        """mooncake_kv_store should appear in env vars and execution extensions."""
+        config = _make_config(
+            {
+                "backend": {
+                    "type": "sglang",
+                    "mooncake_kv_store": {
+                        "container": "nvcr.io/nvidia/mooncake:latest",
+                        "env": {
+                            "MOONCAKE_PROTOCOL": "rdma",
+                            "MOONCAKE_GLOBAL_SEGMENT_SIZE": "4gb",
+                        },
+                    },
+                    "sglang_config": {
+                        "prefill": {"disaggregation-transfer-backend": "mooncake"},
+                        "decode": {"disaggregation-transfer-backend": "mooncake"},
+                    },
+                }
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        # Env table shows mooncake-scoped env vars
+        assert "mooncake" in output
+        assert "MOONCAKE_PROTOCOL" in output
+        assert "rdma" in output
+        assert "MOONCAKE_GLOBAL_SEGMENT_SIZE" in output
+        # Execution extensions shows master + container
+        assert "nvcr.io/nvidia/mooncake:latest" in output
+        assert "master_port" in output
+
+    def test_mooncake_kv_store_no_container_shows_default(self, capsys):
+        """mooncake_kv_store without explicit container falls back to job container label."""
+        config = _make_config(
+            {
+                "backend": {
+                    "type": "sglang",
+                    "mooncake_kv_store": {"env": {"MOONCAKE_PROTOCOL": "tcp"}},
+                    "sglang_config": {
+                        "prefill": {"disaggregation-transfer-backend": "mooncake"},
+                        "decode": {"disaggregation-transfer-backend": "mooncake"},
+                    },
+                }
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "<job container>" in output
+        assert "MOONCAKE_PROTOCOL" in output

@@ -30,6 +30,32 @@ if TYPE_CHECKING:
 # Type alias for worker modes
 WorkerMode = Literal["prefill", "decode", "agg"]
 
+MOONCAKE_MASTER_PORT = 50051
+
+
+@dataclass(frozen=True)
+class MooncakeKVStoreConfig:
+    """Mooncake KV store configuration.
+
+    When present, srtslurm launches mooncake_master on the infra node and
+    injects MOONCAKE_MASTER=<infra_ip>:<port> on all workers automatically.
+
+    Example YAML:
+        backend:
+          type: sglang
+          mooncake_kv_store:
+            container: nvcr.io/nvidia/mooncake:latest  # optional
+            env:
+              MOONCAKE_PROTOCOL: rdma
+              MOONCAKE_GLOBAL_SEGMENT_SIZE: "4gb"
+              MOONCAKE_DEVICE: mlx5_0
+    """
+
+    container: str | None = None
+    env: dict[str, str] = field(default_factory=dict)
+
+    Schema: ClassVar[type[Schema]] = Schema
+
 
 @dataclass(frozen=True)
 class SGLangServerConfig:
@@ -82,6 +108,10 @@ class SGLangProtocol:
     # Or global: true (enables for prefill+decode with defaults)
     kv_events_config: bool | dict[str, Any] | None = None
 
+    # Mooncake KV store - launches mooncake_master on infra node and injects
+    # MOONCAKE_MASTER env var on all workers automatically
+    mooncake_kv_store: MooncakeKVStoreConfig | None = None
+
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
     # =========================================================================
@@ -124,6 +154,30 @@ class SGLangProtocol:
         additional process-specific env vars are needed here.
         """
         return {}
+
+    def get_mooncake_worker_env(self, infra_node_ip: str, local_hostname: str) -> dict[str, str]:
+        """Get mooncake env vars to inject on a specific worker.
+
+        Returns empty dict if mooncake_kv_store is not configured. Otherwise:
+        - MOONCAKE_LOCAL_HOSTNAME defaults to the worker's resolved IP, but the
+          user can override it in mooncake_kv_store.env if they need something
+          custom (e.g. a specific RDMA NIC IP).
+        - MOONCAKE_MASTER is always set by srtslurm to <infra_ip>:<port> and
+          overrides any user-supplied value (the user can't know the infra IP
+          at config time).
+
+        Args:
+            infra_node_ip: Resolved IP of the infra node where mooncake_master runs.
+            local_hostname: Resolved IP of the worker's own node, for peer-to-peer
+                transfers. Defaults to the worker's primary network interface IP.
+        """
+        if self.mooncake_kv_store is None:
+            return {}
+        return {
+            "MOONCAKE_LOCAL_HOSTNAME": local_hostname,
+            **self.mooncake_kv_store.env,
+            "MOONCAKE_MASTER": f"{infra_node_ip}:{MOONCAKE_MASTER_PORT}",
+        }
 
     def is_grpc_mode(self, mode: WorkerMode) -> bool:
         """Check if gRPC mode is enabled for a worker mode."""
@@ -277,8 +331,12 @@ class SGLangProtocol:
         # Add disaggregation mode for prefill/decode workers (both dynamo and sglang frontend)
         if mode != "agg":
             cmd.extend(["--disaggregation-mode", mode])
-            # Bootstrap port only needed for sglang frontend (dynamo handles internally)
-            if frontend_type == "sglang" and mode == "prefill" and process.bootstrap_port is not None:
+            # Always pass bootstrap port for prefill workers regardless of frontend type.
+            # Dynamo does NOT handle this internally — SGLang's CommonKVBootstrapServer
+            # still runs on every prefill node for KV transfer coordination, and workers
+            # must register to it. Without an explicit port, the default (8998) collides
+            # with Dynamo services (etcd/NATS) on the head node, breaking multi-node prefill.
+            if mode == "prefill" and process.bootstrap_port is not None:
                 cmd.extend(["--disaggregation-bootstrap-port", str(process.bootstrap_port)])
 
         # Add multi-node coordination flags

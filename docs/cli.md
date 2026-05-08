@@ -36,6 +36,9 @@ srtctl apply -f recipes/gb200-fp8/sglang-1p4d.yaml
 
 # Preview without submitting
 srtctl dry-run -f config.yaml
+
+# Live dashboard - monitor all jobs in one place
+srtctl monitor
 ```
 
 ## Interactive Mode
@@ -343,6 +346,18 @@ srtctl resolve-override -f config.yaml:zip_override_tp_sweep[0] --stdout
 The resolved YAML preserves the field order and comments from the source file. Base fields appear first in their original order; override-only fields are appended at the end. Output files follow the same `{stem}_{suffix}.yaml` naming convention used by `apply`.
 
 See [Config Overrides — Resolving Without Submitting](overrides.md#resolving-overrides-without-submitting) for details.
+
+### `srtctl monitor`
+
+Live terminal dashboard for all your jobs. See [Monitoring](monitoring.md) for full documentation.
+
+```bash
+srtctl monitor                          # Active + recently completed jobs
+srtctl monitor --all                    # Include older jobs from outputs/
+srtctl monitor --interval 10            # Refresh every 10s (default: 5)
+srtctl monitor --once                   # Snapshot and exit
+srtctl monitor --resume KEY             # Resume a previous session
+```
 
 ## Output
 

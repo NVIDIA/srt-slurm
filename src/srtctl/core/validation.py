@@ -120,6 +120,25 @@ def _preflight_model(
             [issue],
         )
 
+    # HuggingFace model IDs (e.g. "hf:meta-llama/Llama-3.1-8B").  Mirrors
+    # the runtime classification in runtime.py (RuntimeContext.from_config),
+    # which strips the prefix and hands the model ID to the framework — the
+    # framework downloads via HF_HOME at serve time.  Preflight cannot
+    # filesystem-check a remote ID, so accept and let runtime fail loudly
+    # if the ID is bogus.
+    if isinstance(raw, str) and raw.startswith("hf:"):
+        return (
+            PreflightResolution(
+                field="model.path",
+                raw=raw,
+                resolved=raw,
+                source="huggingface",
+                ok=True,
+                message=f"HuggingFace model ID: {raw[3:]}",
+            ),
+            [],
+        )
+
     ok, detail = _check_path(_expand_path(resolved), expect="dir")
     if ok:
         return (
@@ -188,6 +207,26 @@ def _preflight_container(
                 message=issue.message,
             ),
             [issue],
+        )
+
+    # Container image URIs (e.g. "nvcr.io/nvidia/sglang-runtime:0.8.1",
+    # "vllm/vllm-openai:latest", "docker://...").  Mirrors the runtime
+    # classification in runtime.py (RuntimeContext.from_config): anything
+    # not starting with "/" or "./" is forwarded to ``srun
+    # --container-image``, which Pyxis/enroot pulls on first use.  The
+    # ":" guard distinguishes a URI (registry/...:tag or scheme://...)
+    # from a typo'd local relative path.
+    if isinstance(raw, str) and not raw.startswith(("/", "./")) and ":" in raw:
+        return (
+            PreflightResolution(
+                field="model.container",
+                raw=raw,
+                resolved=raw,
+                source="container-uri",
+                ok=True,
+                message=f"Container image URI: {raw}",
+            ),
+            [],
         )
 
     ok, detail = _check_path(_expand_path(resolved), expect="file")

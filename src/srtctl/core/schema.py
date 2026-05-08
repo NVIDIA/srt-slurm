@@ -203,6 +203,10 @@ class ClusterConfig:
     # sruns that bypass the bash wrapper (distroless containers).
     default_bash_preamble: str | None = None
     reporting: ReportingConfig | None = None
+    telemetry: dict | None = None  # opaque dict, parsed by try_start_snapshotter
+    # When set, applied to job configs that omit ``frontend.nginx_raise_ulimit``.
+    # Clusters that disallow raising nofile for nginx containers should use false.
+    nginx_raise_ulimit: bool | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -625,6 +629,8 @@ class BenchmarkConfig:
     aiperf_package: str | None = None
     # Extra aiperf CLI flags passed through to bench.sh (e.g., benchmark-duration: 600, workers-max: 200)
     aiperf_args: dict[str, Any] = field(default_factory=dict)
+    # Post-process: export analysis/srtlog per-node batch CSVs + gen_throughput.csv (see postprocess_stage)
+    export_node_metrics: bool = False
     # SA-Bench: optional SGLang /slow_down on decode workers (sglang frontend only; see benchmark_stage)
     slow_down_sleep_time: float | None = None  # forward_sleep_time (seconds); unset = feature off
     slow_down_wait_time: float | None = None  # seconds until POST clears slow_down; unset = feature off
@@ -661,6 +667,9 @@ class ProfilingConfig:
     """
 
     type: str = "none"  # "none", "nsys", "nsys-time", or "torch"
+
+    # Extra arguments passed to nsys profile (appended before `-o`; see get_nsys_prefix)
+    extra_nsys_args: list[str] | None = None
 
     # Phase-specific profiling step configs (not used for nsys-time)
     prefill: ProfilingPhaseConfig | None = None
@@ -775,6 +784,9 @@ class ProfilingConfig:
                 "stop",
             ]
 
+        if self.extra_nsys_args:
+            cmd.extend(self.extra_nsys_args)
+
         cmd += [
             "--kill",
             "none",
@@ -821,9 +833,12 @@ class ProfilingConfig:
             "stop",
             "--force-overwrite",
             "true",
-            "-o",
-            output_file,
         ]
+
+        if self.extra_nsys_args:
+            cmd.extend(self.extra_nsys_args)
+
+        cmd.extend(["-o", output_file])
 
         if frontend_type == "dynamo":
             cmd.insert(-2, "--trace-fork-before-exec=true")
@@ -870,11 +885,35 @@ class TelemetryExporterConfig:
 
 
 @dataclass(frozen=True)
+class LiveMetricsConfig:
+    """In-flight batch-metrics snapshotter (a form of lightweight telemetry).
+
+    When enabled, the orchestrator spawns a daemon thread during the benchmark
+    stage that re-parses prefill/decode worker logs every ``interval_seconds``
+    and atomically overwrites ``<log_dir>/batch_metrics.png``, giving a
+    near-real-time view of the run without any external monitoring stack.
+
+    Lives entirely in :mod:`srtctl.analysis.live_metrics`; this dataclass
+    only defines the user-visible knobs.
+    """
+
+    enabled: bool = False
+    interval_seconds: int = 60
+    downsample: int = 1
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
 class TelemetryConfig:
     """Telemetry configuration for benchmark jobs.
 
     The default provider bundles a scraper with dcgm_exporter and node_exporter.
     Other providers can reuse the same top-level contract later.
+
+    ``live_metrics`` is a lightweight complementary signal: it tails worker
+    logs in-process (no external stack required) and writes a per-run
+    ``batch_metrics.png`` during the benchmark.
     """
 
     enabled: bool = False
@@ -888,6 +927,7 @@ class TelemetryConfig:
     extra_metadata: dict[str, str] = field(default_factory=dict)
     dcgm_exporter: TelemetryExporterConfig | None = None
     node_exporter: TelemetryExporterConfig | None = None
+    live_metrics: LiveMetricsConfig | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -1157,6 +1197,9 @@ class FrontendConfig:
             placeholder substitution, so write the URL out literally.
         num_additional_frontends: Additional routers beyond master (default: 9)
         nginx_container: Custom nginx container image (default: nginx:1.27.4)
+        nginx_raise_ulimit: Raise nofile before nginx and set ``worker_rlimit_nofile``
+            in generated nginx.conf. Off by default; enable on clusters that allow it.
+            Override per job or set ``nginx_raise_ulimit`` in srtslurm.yaml for the cluster.
         args: CLI arguments passed to the frontend/router process
         env: Environment variables for frontend processes
     """
@@ -1165,6 +1208,7 @@ class FrontendConfig:
     enable_multiple_frontends: bool = True
     num_additional_frontends: int = 9
     nginx_container: str = "nginx:1.27.4"
+    nginx_raise_ulimit: bool = False
     args: dict[str, Any] | None = None
     env: dict[str, str] | None = None
 
@@ -1268,6 +1312,42 @@ class SrtConfig:
         """Validate configuration after initialization."""
         self._validate_profiling()
         self._validate_telemetry()
+        self._validate_mooncake_kv_store()
+
+    def _validate_mooncake_kv_store(self):
+        """Catch the common misconfiguration: mooncake_kv_store set without a
+        matching disaggregation-transfer-backend in sglang_config.
+
+        Without --disaggregation-transfer-backend mooncake on the worker CLI,
+        the master we launch is unused and the workers fall back to default
+        transport — almost never what the user intends.
+        """
+        mooncake_cfg = getattr(self.backend, "mooncake_kv_store", None)
+        if mooncake_cfg is None:
+            return
+
+        sglang_cfg = getattr(self.backend, "sglang_config", None)
+
+        def _has_mooncake_transfer(mode_cfg: dict | None) -> bool:
+            if not mode_cfg:
+                return False
+            # SGLang accepts both "disaggregation-transfer-backend" and the
+            # underscore form; _config_to_cli_args normalizes them.
+            for key in ("disaggregation-transfer-backend", "disaggregation_transfer_backend"):
+                if mode_cfg.get(key) == "mooncake":
+                    return True
+            return False
+
+        prefill_ok = sglang_cfg is not None and _has_mooncake_transfer(sglang_cfg.prefill)
+        decode_ok = sglang_cfg is not None and _has_mooncake_transfer(sglang_cfg.decode)
+
+        if self.resources.is_disaggregated and not (prefill_ok or decode_ok):
+            raise ValidationError(
+                "mooncake_kv_store is set but neither sglang_config.prefill nor "
+                "sglang_config.decode has 'disaggregation-transfer-backend: mooncake'. "
+                "Add it to both modes (and 'disaggregation-ib-device') so workers "
+                "actually use the mooncake master srtslurm launches for you."
+            )
 
     def _validate_profiling(self):
         """Validate profiling configuration matches serving mode."""
@@ -1327,7 +1407,7 @@ class SrtConfig:
     def _validate_telemetry(self):
         """Validate telemetry configuration."""
         telemetry = self.telemetry
-        if not telemetry.enabled:
+        if telemetry is None or not telemetry.enabled:
             return
 
         if telemetry.provider != TelemetryProvider.SCRAPER:

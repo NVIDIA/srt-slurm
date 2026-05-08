@@ -149,6 +149,37 @@ infra:
   etcd_nats_dedicated_node: true  # Reserve first node for infra services
 ```
 
+### Mooncake KV Store (SGLang only)
+
+When `mooncake_kv_store` is set under an SGLang backend, srtslurm:
+1. Launches `mooncake_master` on the infra node (same node as etcd/nats)
+2. Injects `MOONCAKE_MASTER=<infra_ip>:50051` on all workers automatically
+3. Passes through any env vars in `mooncake_kv_store.env` to all workers
+
+```yaml
+backend:
+  type: sglang
+  mooncake_kv_store:
+    container: nvcr.io/nvidia/mooncake:latest  # optional, defaults to job container
+    env:                                        # direct MOONCAKE_* / SGLANG_* env vars
+      MOONCAKE_PROTOCOL: rdma
+      MOONCAKE_GLOBAL_SEGMENT_SIZE: "4gb"
+      MOONCAKE_DEVICE: mlx5_0
+  sglang_config:
+    prefill:
+      disaggregation-transfer-backend: mooncake  # user still sets this
+      disaggregation-ib-device: "mlx5_0,mlx5_1"
+    decode:
+      disaggregation-transfer-backend: mooncake
+      disaggregation-ib-device: "mlx5_0,mlx5_1"
+```
+
+`MOONCAKE_MASTER` is always computed from the runtime infra node IP — do not set it manually in `env`.
+
+`MOONCAKE_LOCAL_HOSTNAME` is auto-resolved per-worker to that worker's own IP (using `runtime.network_interface`), so multi-node peer transfers don't fall back to `localhost`. If you need a specific NIC IP, set `MOONCAKE_LOCAL_HOSTNAME` in `env` to override the default.
+
+**Validation:** In disaggregated mode, srtslurm rejects configs that set `mooncake_kv_store` without `disaggregation-transfer-backend: mooncake` on `sglang_config.prefill` or `sglang_config.decode`. This catches the common misconfiguration where the master process gets launched but workers fall back to default transport.
+
 ### ResourceConfig
 
 Supports explicit GPUs per worker (overrides computed values):
