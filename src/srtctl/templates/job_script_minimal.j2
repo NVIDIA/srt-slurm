@@ -49,6 +49,9 @@ mkdir -p "${LOG_DIR}"
 
 # Export for Python orchestrator to use the same paths
 export SRTCTL_OUTPUT_DIR="${OUTPUT_DIR}"
+{% if srtslurm_config %}
+export SRTSLURM_CONFIG="{{ srtslurm_config }}"
+{% endif %}
 
 # Redirect stderr to stdout (SLURM captures both via --output)
 exec 2>&1

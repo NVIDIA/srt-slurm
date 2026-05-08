@@ -197,6 +197,13 @@ def generate_minimal_sbatch_script(
     env = Environment(loader=FileSystemLoader(str(template_dir)))
     template = env.get_template("job_script_minimal.j2")
 
+    srtslurm_config = None
+    env_srtslurm_config = os.environ.get("SRTSLURM_CONFIG")
+    if env_srtslurm_config:
+        srtslurm_path = Path(os.path.expanduser(os.path.expandvars(env_srtslurm_config))).resolve()
+        if srtslurm_path.exists():
+            srtslurm_config = str(srtslurm_path)
+
     total_nodes = config.resources.total_nodes
     # Add extra node for dedicated etcd/nats infrastructure
     if config.infra.etcd_nats_dedicated_node:
@@ -227,6 +234,7 @@ def generate_minimal_sbatch_script(
         srtctl_source=str(srtctl_source.resolve()),
         output_base=output_base,
         setup_script=setup_script,
+        srtslurm_config=srtslurm_config,
     )
 
     return rendered
