@@ -31,14 +31,25 @@ if TYPE_CHECKING:
 WorkerMode = Literal["prefill", "decode", "agg"]
 
 MOONCAKE_MASTER_PORT = 50051
+MOONCAKE_HTTP_METADATA_PORT = 8080
 
 
 @dataclass(frozen=True)
 class MooncakeKVStoreConfig:
     """Mooncake KV store configuration.
 
-    When present, srtslurm launches mooncake_master on the infra node and
-    injects MOONCAKE_MASTER=<infra_ip>:<port> on all workers automatically.
+    When present, srtslurm launches mooncake_master on the infra node with
+    its embedded HTTP metadata server (so a separate metadata service is not
+    required), and injects on every worker:
+
+        MOONCAKE_MASTER              = <infra_ip>:50051
+        MOONCAKE_TE_META_DATA_SERVER = http://<infra_ip>:8080/metadata
+        MOONCAKE_LOCAL_HOSTNAME      = <worker_ip>
+
+    The HTTP metadata server is also what Dynamo's KV router calls into for
+    its `/batch_query_keys` shared-cache lookup path
+    (`lib/llm/src/kv_router/shared_cache.rs`), so enabling it here is what
+    lets `--shared-cache-type hicache` actually return non-zero hits.
 
     Example YAML:
         backend:
@@ -162,9 +173,9 @@ class SGLangProtocol:
         - MOONCAKE_LOCAL_HOSTNAME defaults to the worker's resolved IP, but the
           user can override it in mooncake_kv_store.env if they need something
           custom (e.g. a specific RDMA NIC IP).
-        - MOONCAKE_MASTER is always set by srtslurm to <infra_ip>:<port> and
-          overrides any user-supplied value (the user can't know the infra IP
-          at config time).
+        - MOONCAKE_MASTER and MOONCAKE_TE_META_DATA_SERVER are always set by
+          srtslurm to point at the infra-node mooncake_master, and override any
+          user-supplied value (the user can't know the infra IP at config time).
 
         Args:
             infra_node_ip: Resolved IP of the infra node where mooncake_master runs.
@@ -177,6 +188,7 @@ class SGLangProtocol:
             "MOONCAKE_LOCAL_HOSTNAME": local_hostname,
             **self.mooncake_kv_store.env,
             "MOONCAKE_MASTER": f"{infra_node_ip}:{MOONCAKE_MASTER_PORT}",
+            "MOONCAKE_TE_META_DATA_SERVER": (f"http://{infra_node_ip}:{MOONCAKE_HTTP_METADATA_PORT}/metadata"),
         }
 
     def is_grpc_mode(self, mode: WorkerMode) -> bool:

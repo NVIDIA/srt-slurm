@@ -23,7 +23,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from srtctl.backends.sglang import MOONCAKE_MASTER_PORT, SGLangProtocol
+from srtctl.backends.sglang import MOONCAKE_HTTP_METADATA_PORT, MOONCAKE_MASTER_PORT, SGLangProtocol
 from srtctl.cli.mixins import (
     BenchmarkStageMixin,
     FrontendStageMixin,
@@ -166,6 +166,16 @@ class SweepOrchestrator(
 
         Runs on the same node as etcd/nats. Uses mooncake_kv_store.container if set,
         otherwise falls back to the job container.
+
+        We always start the master with its embedded HTTP metadata server enabled
+        (`--enable_http_metadata_server=true`) so:
+
+        1. Workers can use ``MOONCAKE_TE_META_DATA_SERVER=http://infra:8080/metadata``
+           without a separate metadata service.
+        2. Dynamo's KV router shared-cache path
+           (`lib/llm/src/kv_router/shared_cache.rs`) can call the master's
+           ``/batch_query_keys`` endpoint for L3 reach when
+           ``--shared-cache-type hicache`` is set on the frontend.
         """
         if not isinstance(self.config.backend, SGLangProtocol):
             return None
@@ -177,10 +187,21 @@ class SweepOrchestrator(
         container = mooncake_cfg.container or str(self.runtime.container_image)
         mooncake_log = self.runtime.log_dir / "mooncake_master.out"
 
-        logger.info("Starting mooncake_master on %s (port %d)", infra_node, MOONCAKE_MASTER_PORT)
+        logger.info(
+            "Starting mooncake_master on %s (rpc=%d, http_metadata=%d)",
+            infra_node,
+            MOONCAKE_MASTER_PORT,
+            MOONCAKE_HTTP_METADATA_PORT,
+        )
 
         proc = start_srun_process(
-            command=["mooncake_master", "--port", str(MOONCAKE_MASTER_PORT)],
+            command=[
+                "mooncake_master",
+                f"--port={MOONCAKE_MASTER_PORT}",
+                "--enable_http_metadata_server=true",
+                f"--http_metadata_server_port={MOONCAKE_HTTP_METADATA_PORT}",
+                "--eviction_high_watermark_ratio=0.95",
+            ],
             nodelist=[infra_node],
             output=str(mooncake_log),
             container_image=container,
@@ -195,9 +216,16 @@ class SweepOrchestrator(
             critical=True,
         )
 
-        logger.info("Waiting for mooncake_master (port %d) on %s...", MOONCAKE_MASTER_PORT, infra_node)
+        logger.info("Waiting for mooncake_master RPC (port %d) on %s...", MOONCAKE_MASTER_PORT, infra_node)
         if not wait_for_port(infra_node, MOONCAKE_MASTER_PORT, timeout=120):
-            raise RuntimeError("mooncake_master failed to start")
+            raise RuntimeError("mooncake_master RPC failed to start")
+        logger.info(
+            "Waiting for mooncake_master HTTP metadata (port %d) on %s...",
+            MOONCAKE_HTTP_METADATA_PORT,
+            infra_node,
+        )
+        if not wait_for_port(infra_node, MOONCAKE_HTTP_METADATA_PORT, timeout=120):
+            raise RuntimeError("mooncake_master HTTP metadata server failed to start")
         logger.info("mooncake_master is ready")
 
         return managed

@@ -460,25 +460,42 @@ class TestMooncakeKVStore:
         assert backend.get_mooncake_worker_env("10.0.0.1", "10.0.0.2") == {}
 
     def test_mooncake_worker_env_minimal(self):
-        """mooncake_kv_store with no env → MOONCAKE_MASTER + auto-resolved hostname."""
-        from srtctl.backends.sglang import MOONCAKE_MASTER_PORT, MooncakeKVStoreConfig, SGLangProtocol
+        """mooncake_kv_store with no env → MOONCAKE_MASTER + metadata URL + auto-resolved hostname."""
+        from srtctl.backends.sglang import (
+            MOONCAKE_HTTP_METADATA_PORT,
+            MOONCAKE_MASTER_PORT,
+            MooncakeKVStoreConfig,
+            SGLangProtocol,
+        )
 
         backend = SGLangProtocol(mooncake_kv_store=MooncakeKVStoreConfig())
         env = backend.get_mooncake_worker_env("10.0.0.1", "10.0.0.42")
         assert env == {
             "MOONCAKE_MASTER": f"10.0.0.1:{MOONCAKE_MASTER_PORT}",
+            "MOONCAKE_TE_META_DATA_SERVER": f"http://10.0.0.1:{MOONCAKE_HTTP_METADATA_PORT}/metadata",
             "MOONCAKE_LOCAL_HOSTNAME": "10.0.0.42",
         }
 
     def test_mooncake_worker_env_master_always_overrides_user(self):
-        """User-supplied MOONCAKE_MASTER in env is always overridden by srtslurm."""
-        from srtctl.backends.sglang import MOONCAKE_MASTER_PORT, MooncakeKVStoreConfig, SGLangProtocol
+        """User-supplied MOONCAKE_MASTER and metadata URL are always overridden by srtslurm."""
+        from srtctl.backends.sglang import (
+            MOONCAKE_HTTP_METADATA_PORT,
+            MOONCAKE_MASTER_PORT,
+            MooncakeKVStoreConfig,
+            SGLangProtocol,
+        )
 
         backend = SGLangProtocol(
-            mooncake_kv_store=MooncakeKVStoreConfig(env={"MOONCAKE_MASTER": "should-be-ignored:9999"})
+            mooncake_kv_store=MooncakeKVStoreConfig(
+                env={
+                    "MOONCAKE_MASTER": "should-be-ignored:9999",
+                    "MOONCAKE_TE_META_DATA_SERVER": "http://should-be-ignored:9999/metadata",
+                }
+            )
         )
         env = backend.get_mooncake_worker_env("10.0.0.1", "10.0.0.42")
         assert env["MOONCAKE_MASTER"] == f"10.0.0.1:{MOONCAKE_MASTER_PORT}"
+        assert env["MOONCAKE_TE_META_DATA_SERVER"] == f"http://10.0.0.1:{MOONCAKE_HTTP_METADATA_PORT}/metadata"
 
     def test_mooncake_worker_env_local_hostname_user_can_override(self):
         """User-supplied MOONCAKE_LOCAL_HOSTNAME in env overrides the auto-resolved value."""
