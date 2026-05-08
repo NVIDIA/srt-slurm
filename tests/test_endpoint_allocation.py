@@ -137,6 +137,45 @@ class TestAllocateEndpoints:
             assert ep.mode == "agg"
             assert ep.total_gpus == 4
 
+    def test_spread_workers_partial_node(self):
+        """spread_workers=True forces each partial-node worker onto its own node."""
+        endpoints = allocate_endpoints(
+            num_prefill=1,
+            num_decode=2,
+            num_agg=0,
+            gpus_per_prefill=1,
+            gpus_per_decode=2,
+            gpus_per_agg=0,
+            gpus_per_node=4,
+            available_nodes=("node0", "node1", "node2"),
+            spread_workers=True,
+        )
+
+        decode_eps = [e for e in endpoints if e.mode == "decode"]
+        assert len(decode_eps) == 2
+        # Without spread_workers both decode workers would land on node1.
+        assert decode_eps[0].nodes == ("node1",)
+        assert decode_eps[1].nodes == ("node2",)
+        assert decode_eps[0].gpu_indices == frozenset({0, 1})
+        assert decode_eps[1].gpu_indices == frozenset({0, 1})
+
+    def test_spread_workers_default_packs(self):
+        """spread_workers=False (default) packs partial-node workers onto the same node."""
+        endpoints = allocate_endpoints(
+            num_prefill=0,
+            num_decode=2,
+            num_agg=0,
+            gpus_per_prefill=0,
+            gpus_per_decode=2,
+            gpus_per_agg=0,
+            gpus_per_node=4,
+            available_nodes=("node0", "node1"),
+        )
+
+        decode_eps = [e for e in endpoints if e.mode == "decode"]
+        assert decode_eps[0].nodes == ("node0",)
+        assert decode_eps[1].nodes == ("node0",)
+
     def test_prefill_decode_never_share_node_partial_allocation(self):
         """Test that prefill and decode workers are never colocated on the same node.
 
