@@ -108,8 +108,8 @@ class SGLangFrontend:
 
         processes: list[ManagedProcess] = []
 
-        for idx, node in enumerate(topology.frontend_nodes):
-            logger.info("Starting sglang-router %d on %s", idx, node)
+        for idx, (node, port) in enumerate(zip(topology.frontend_nodes, topology.frontend_ports)):
+            logger.info("Starting sglang-router %d on %s (port %d)", idx, node, port)
 
             router_log = runtime.log_dir / f"{node}_router_{idx}.out"
 
@@ -127,10 +127,10 @@ class SGLangFrontend:
                     cmd.extend(["--decode", f"{decode_scheme}{ip}:{http_port}"])
             else:
                 # Aggregated mode: --worker-urls with space-separated URLs
-                worker_urls = [f"{agg_scheme}{ip}:{port}" for ip, port in agg_workers]
+                worker_urls = [f"{agg_scheme}{ip}:{p}" for ip, p in agg_workers]
                 cmd.extend(["--worker-urls"] + worker_urls)
 
-            cmd.extend(["--host", "0.0.0.0", "--port", str(topology.frontend_port)])
+            cmd.extend(["--host", "0.0.0.0", "--port", str(port)])
             cmd.extend(self.get_frontend_args_list(config.frontend.args))
 
             logger.info("Router command: %s", shlex.join(cmd))

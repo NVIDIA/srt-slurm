@@ -186,7 +186,11 @@ class MockTopology:
     """Mock FrontendTopology for testing."""
 
     frontend_nodes: list[str]
-    frontend_port: int = 8180
+    frontend_ports: list[int] | None = None
+
+    def __post_init__(self):
+        if self.frontend_ports is None:
+            self.frontend_ports = [8180] * len(self.frontend_nodes)
 
 
 @dataclass

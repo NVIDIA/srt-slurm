@@ -63,7 +63,7 @@ class TestFrontendTopologyDataclass:
         topology = FrontendTopology(
             nginx_node="node0",
             frontend_nodes=["node1"],
-            frontend_port=8180,
+            frontend_ports=[8180],
             public_port=8000,
         )
         assert topology.uses_nginx is True
@@ -72,7 +72,7 @@ class TestFrontendTopologyDataclass:
         topology = FrontendTopology(
             nginx_node=None,
             frontend_nodes=["node0"],
-            frontend_port=8000,
+            frontend_ports=[8000],
             public_port=8000,
         )
         assert topology.uses_nginx is False
@@ -81,9 +81,9 @@ class TestFrontendTopologyDataclass:
 class TestComputeFrontendTopology:
     """Tests for _compute_frontend_topology method."""
 
-    def test_single_node_no_nginx(self):
-        """Single node: no nginx, 1 frontend on head at port 8000."""
-        config = make_config(enable_multiple_frontends=True)
+    def test_single_node_no_additional(self):
+        """Single node, num_additional_frontends=0: no nginx, 1 frontend."""
+        config = make_config(enable_multiple_frontends=True, num_additional_frontends=0)
         runtime = make_runtime(["node0"])
 
         orchestrator = SweepOrchestrator(config=config, runtime=runtime)
@@ -91,9 +91,23 @@ class TestComputeFrontendTopology:
 
         assert topology.nginx_node is None
         assert topology.frontend_nodes == ["node0"]
-        assert topology.frontend_port == 8000
+        assert topology.frontend_ports == [8000]
         assert topology.public_port == 8000
         assert topology.uses_nginx is False
+
+    def test_single_node_multiple_frontends(self):
+        """Single node with num_additional_frontends=3: nginx + 4 frontends on head."""
+        config = make_config(enable_multiple_frontends=True, num_additional_frontends=3)
+        runtime = make_runtime(["node0"])
+
+        orchestrator = SweepOrchestrator(config=config, runtime=runtime)
+        topology = orchestrator._compute_frontend_topology()
+
+        assert topology.nginx_node == "node0"
+        assert topology.frontend_nodes == ["node0", "node0", "node0", "node0"]
+        assert topology.frontend_ports == [8180, 8181, 8182, 8183]
+        assert topology.public_port == 8000
+        assert topology.uses_nginx is True
 
     def test_multi_node_frontends_disabled(self):
         """Multi-node with enable_multiple_frontends=False: no nginx, 1 frontend on head."""
@@ -105,27 +119,41 @@ class TestComputeFrontendTopology:
 
         assert topology.nginx_node is None
         assert topology.frontend_nodes == ["node0"]
-        assert topology.frontend_port == 8000
+        assert topology.frontend_ports == [8000]
+        assert topology.public_port == 8000
+        assert topology.uses_nginx is False
+
+    def test_two_nodes_single_frontend(self):
+        """2 nodes + num_additional=0: single frontend on head, no nginx."""
+        config = make_config(enable_multiple_frontends=True, num_additional_frontends=0)
+        runtime = make_runtime(["node0", "node1"])
+
+        orchestrator = SweepOrchestrator(config=config, runtime=runtime)
+        topology = orchestrator._compute_frontend_topology()
+
+        assert topology.nginx_node is None
+        assert topology.frontend_nodes == ["node0"]
+        assert topology.frontend_ports == [8000]
         assert topology.public_port == 8000
         assert topology.uses_nginx is False
 
     def test_two_nodes_with_nginx(self):
-        """2 nodes + enable_multiple_frontends: nginx on head, 1 frontend on node1."""
-        config = make_config(enable_multiple_frontends=True)
+        """2 nodes + num_additional=1: nginx on head, 2 frontends on node1."""
+        config = make_config(enable_multiple_frontends=True, num_additional_frontends=1)
         runtime = make_runtime(["node0", "node1"])
 
         orchestrator = SweepOrchestrator(config=config, runtime=runtime)
         topology = orchestrator._compute_frontend_topology()
 
         assert topology.nginx_node == "node0"
-        assert topology.frontend_nodes == ["node1"]
-        assert topology.frontend_port == 8180  # Behind nginx
+        assert topology.frontend_nodes == ["node1", "node1"]
+        assert topology.frontend_ports == [8180, 8181]
         assert topology.public_port == 8000
         assert topology.uses_nginx is True
 
     def test_three_nodes_with_nginx(self):
         """3 nodes + enable_multiple_frontends: nginx on head, frontends on node1 and node2."""
-        config = make_config(enable_multiple_frontends=True)
+        config = make_config(enable_multiple_frontends=True, num_additional_frontends=1)
         runtime = make_runtime(["node0", "node1", "node2"])
 
         orchestrator = SweepOrchestrator(config=config, runtime=runtime)
@@ -133,12 +161,12 @@ class TestComputeFrontendTopology:
 
         assert topology.nginx_node == "node0"
         assert topology.frontend_nodes == ["node1", "node2"]
-        assert topology.frontend_port == 8180
+        assert topology.frontend_ports == [8180, 8180]
         assert topology.public_port == 8000
         assert topology.uses_nginx is True
 
     def test_many_nodes_with_nginx(self):
-        """Many nodes: nginx on head, frontends on remaining nodes."""
+        """Many nodes: nginx on head, frontends wrap across remaining nodes."""
         config = make_config(enable_multiple_frontends=True, num_additional_frontends=9)
         runtime = make_runtime(["node0", "node1", "node2", "node3", "node4", "node5"])
 
@@ -146,8 +174,13 @@ class TestComputeFrontendTopology:
         topology = orchestrator._compute_frontend_topology()
 
         assert topology.nginx_node == "node0"
-        assert topology.frontend_nodes == ["node1", "node2", "node3", "node4", "node5"]
-        assert len(topology.frontend_nodes) == 5
+        assert len(topology.frontend_nodes) == 10
+        # First 5 fill nodes 1-5, next 5 wrap around
+        assert topology.frontend_nodes[:5] == ["node1", "node2", "node3", "node4", "node5"]
+        assert topology.frontend_nodes[5:] == ["node1", "node2", "node3", "node4", "node5"]
+        # First pass gets 8180, second pass gets 8181
+        assert topology.frontend_ports[:5] == [8180, 8180, 8180, 8180, 8180]
+        assert topology.frontend_ports[5:] == [8181, 8181, 8181, 8181, 8181]
 
     def test_frontend_count_limited_by_config(self):
         """Frontend count limited by num_additional_frontends config."""
@@ -160,19 +193,22 @@ class TestComputeFrontendTopology:
         # num_additional_frontends=1 means max 2 frontends total (1 + 1 additional)
         assert topology.nginx_node == "node0"
         assert topology.frontend_nodes == ["node1", "node2"]
+        assert topology.frontend_ports == [8180, 8180]
         assert len(topology.frontend_nodes) == 2
 
-    def test_frontend_count_limited_by_available_nodes(self):
-        """Frontend count limited by available nodes when fewer than config allows."""
-        config = make_config(enable_multiple_frontends=True, num_additional_frontends=100)
+    def test_frontends_wrap_around_available_nodes(self):
+        """Frontends wrap around available nodes when more requested than nodes."""
+        config = make_config(enable_multiple_frontends=True, num_additional_frontends=5)
         runtime = make_runtime(["node0", "node1", "node2"])
 
         orchestrator = SweepOrchestrator(config=config, runtime=runtime)
         topology = orchestrator._compute_frontend_topology()
 
-        # Only 2 nodes available for frontends (node1, node2)
-        assert topology.frontend_nodes == ["node1", "node2"]
-        assert len(topology.frontend_nodes) == 2
+        # 6 frontends across 2 available nodes, wrapping
+        assert len(topology.frontend_nodes) == 6
+        assert topology.frontend_nodes == ["node1", "node2", "node1", "node2", "node1", "node2"]
+        # Ports increment per node: node1 gets 8180,8181,8182; node2 gets 8180,8181,8182
+        assert topology.frontend_ports == [8180, 8180, 8181, 8181, 8182, 8182]
 
 
 class TestNginxConfigGeneration:
@@ -187,7 +223,7 @@ class TestNginxConfigGeneration:
         topology = FrontendTopology(
             nginx_node="node0",
             frontend_nodes=["node1"],
-            frontend_port=8180,
+            frontend_ports=[8180],
             public_port=8000,
         )
 
@@ -208,7 +244,7 @@ class TestNginxConfigGeneration:
         topology = FrontendTopology(
             nginx_node="node0",
             frontend_nodes=["node1"],
-            frontend_port=8180,
+            frontend_ports=[8180],
             public_port=8000,
         )
 
@@ -219,7 +255,7 @@ class TestNginxConfigGeneration:
         assert "worker_rlimit_nofile 1048576" in nginx_config
 
     def test_nginx_config_multiple_frontends(self):
-        """Nginx config with multiple frontend backends."""
+        """Nginx config with multiple frontend backends on different nodes."""
         config = make_config(enable_multiple_frontends=True)
         runtime = make_runtime(["node0", "node1", "node2", "node3"])
 
@@ -227,7 +263,7 @@ class TestNginxConfigGeneration:
         topology = FrontendTopology(
             nginx_node="node0",
             frontend_nodes=["node1", "node2", "node3"],
-            frontend_port=8180,
+            frontend_ports=[8180, 8180, 8180],
             public_port=8000,
         )
 
@@ -240,6 +276,26 @@ class TestNginxConfigGeneration:
         assert "server 10.0.0.3:8180" in nginx_config
         assert "listen 8000" in nginx_config
 
+    def test_nginx_config_colocated_frontends_unique_ports(self):
+        """Nginx config with co-located frontends gets unique host:port pairs."""
+        config = make_config(enable_multiple_frontends=True)
+        runtime = make_runtime(["node0", "node1"])
+
+        orchestrator = SweepOrchestrator(config=config, runtime=runtime)
+        topology = FrontendTopology(
+            nginx_node="node0",
+            frontend_nodes=["node1", "node1", "node1"],
+            frontend_ports=[8180, 8181, 8182],
+            public_port=8000,
+        )
+
+        with patch("srtctl.cli.mixins.frontend_stage.get_hostname_ip", side_effect=lambda x: f"10.0.0.{x[-1]}"):
+            nginx_config = orchestrator._generate_nginx_config(topology)
+
+        assert "server 10.0.0.1:8180" in nginx_config
+        assert "server 10.0.0.1:8181" in nginx_config
+        assert "server 10.0.0.1:8182" in nginx_config
+
 
 class TestStartFrontendIntegration:
     """Integration tests for start_frontend method."""
@@ -251,7 +307,7 @@ class TestStartFrontendIntegration:
         mock_mixin_srun.return_value = MagicMock()
         mock_dynamo_srun.return_value = MagicMock()
 
-        config = make_config(enable_multiple_frontends=True, frontend_type="dynamo")
+        config = make_config(enable_multiple_frontends=True, frontend_type="dynamo", num_additional_frontends=0)
         runtime = make_runtime(["node0"])
         orchestrator = SweepOrchestrator(config=config, runtime=runtime)
 
@@ -269,7 +325,7 @@ class TestStartFrontendIntegration:
         mock_mixin_srun.return_value = MagicMock()
         mock_sglang_srun.return_value = MagicMock()
 
-        config = make_config(enable_multiple_frontends=True, frontend_type="sglang")
+        config = make_config(enable_multiple_frontends=True, frontend_type="sglang", num_additional_frontends=0)
         runtime = make_runtime(["node0"])
         orchestrator = SweepOrchestrator(config=config, runtime=runtime)
         orchestrator._backend_processes = []  # No workers for this test
@@ -288,7 +344,7 @@ class TestStartFrontendIntegration:
         mock_mixin_srun.return_value = MagicMock()
         mock_dynamo_srun.return_value = MagicMock()
 
-        config = make_config(enable_multiple_frontends=True, frontend_type="dynamo")
+        config = make_config(enable_multiple_frontends=True, frontend_type="dynamo", num_additional_frontends=1)
         runtime = make_runtime(["node0", "node1", "node2"])
         # Use tmp_path for log_dir so nginx config can be written
         runtime = RuntimeContext(
@@ -342,6 +398,7 @@ class TestStartFrontendIntegration:
         config = make_config(
             enable_multiple_frontends=True,
             frontend_type="dynamo",
+            num_additional_frontends=1,
             nginx_raise_ulimit=True,
         )
         runtime = make_runtime(["node0", "node1", "node2"])
@@ -373,7 +430,7 @@ class TestStartFrontendIntegration:
         mock_mixin_srun.return_value = MagicMock()
         mock_sglang_srun.return_value = MagicMock()
 
-        config = make_config(enable_multiple_frontends=True, frontend_type="sglang")
+        config = make_config(enable_multiple_frontends=True, frontend_type="sglang", num_additional_frontends=1)
         runtime = make_runtime(["node0", "node1", "node2"])
         # Use tmp_path for log_dir so nginx config can be written
         runtime = RuntimeContext(
