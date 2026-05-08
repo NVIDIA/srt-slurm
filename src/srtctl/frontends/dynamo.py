@@ -84,6 +84,7 @@ class DynamoFrontend:
                 "NATS_SERVER": f"nats://{runtime.nodes.infra}:4222",
                 "DYN_REQUEST_PLANE": config.dynamo.request_plane,
                 "DYN_SKIP_SGLANG_LOG_FORMATTING": "1",
+                "DYN_TCP_POOL_SIZE": "2048",
             }
 
             # Add OTEL env vars (before frontend env so OTEL_SERVICE_NAME can be overridden)
