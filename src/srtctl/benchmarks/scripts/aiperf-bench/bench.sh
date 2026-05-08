@@ -118,11 +118,6 @@ echo "Warmup complete"
 MODEL_BASE_NAME="${MODEL_NAME##*/}"
 TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
 
-if [ -n "$DEBUG_MODE" ]; then
-    echo "WARNING: DEBUG_MODE ENABLED! MAKE SURE TO CANCEL YOUR JOB WHEN YOU ARE DONE!"
-    sleep inf
-fi
-
 # Parse concurrencies (comma-separated)
 IFS=',' read -r -a CONCURRENCY_LIST <<< "${CONCURRENCIES}"
 

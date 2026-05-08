@@ -640,8 +640,6 @@ class BenchmarkConfig:
     slow_down_wait_time: float | None = None  # seconds until POST clears slow_down; unset = feature off
     # Enable GPU telemetry via dcgm-exporter (starts it on each node if not running)
     enable_dcgm: bool = False
-    # Force benchmark to stop after warm up for active debug.
-    debug_mode: bool = False
 
     def get_concurrency_list(self) -> list[int]:
         if self.concurrencies is None:
