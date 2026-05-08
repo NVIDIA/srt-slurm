@@ -40,6 +40,15 @@ from srtctl.logging_utils import setup_logging
 
 logger = logging.getLogger(__name__)
 
+DYNAMO_SYSTEM_PORT_BASE = 8081
+
+
+def _backend_system_port_base(frontend_type: str, frontend_count: int, sys_port_stride: int) -> int:
+    """Return the first backend system port for the configured frontend."""
+    if frontend_type == "dynamo":
+        return DYNAMO_SYSTEM_PORT_BASE + (frontend_count * sys_port_stride)
+    return 8081
+
 
 @dataclass
 class SweepOrchestrator(WorkerStageMixin, FrontendStageMixin, BenchmarkStageMixin, PostProcessStageMixin):
@@ -81,7 +90,15 @@ class SweepOrchestrator(WorkerStageMixin, FrontendStageMixin, BenchmarkStageMixi
     @functools.cached_property
     def backend_processes(self) -> list[Process]:
         """Compute physical process topology from endpoints (cached)."""
-        return self.backend.endpoints_to_processes(self.endpoints)
+        sys_port_stride = max(self.runtime.gpus_per_node, 1)
+        frontend_count = 0
+        if self.config.frontend.type == "dynamo":
+            frontend_count = len(self._compute_frontend_topology().frontend_nodes)
+        return self.backend.endpoints_to_processes(
+            self.endpoints,
+            base_sys_port=_backend_system_port_base(self.config.frontend.type, frontend_count, sys_port_stride),
+            sys_port_stride=sys_port_stride if self.config.frontend.type == "dynamo" else 1,
+        )
 
     def start_head_infrastructure(self, registry: ProcessRegistry) -> ManagedProcess:
         """Start NATS and etcd on the infra node.

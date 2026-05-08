@@ -366,6 +366,7 @@ def allocate_endpoints(
 def endpoints_to_processes(
     endpoints: list[Endpoint],
     base_sys_port: int = 8081,
+    sys_port_stride: int = 1,
     port_allocator: NodePortAllocator | None = None,
 ) -> list[Process]:
     """Convert endpoints to physical processes.
@@ -379,6 +380,7 @@ def endpoints_to_processes(
     Args:
         endpoints: List of Endpoint objects
         base_sys_port: Starting port for DYN_SYSTEM_PORT assignment
+        sys_port_stride: Distance between assigned DYN_SYSTEM_PORT base values
         port_allocator: NodePortAllocator for HTTP/bootstrap ports (created if None)
 
     Returns:
@@ -424,6 +426,6 @@ def endpoints_to_processes(
                     nixl_port=node_nixl_port,
                 )
             )
-            current_sys_port += 1
+            current_sys_port += sys_port_stride
 
     return processes

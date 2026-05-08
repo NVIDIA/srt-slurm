@@ -20,6 +20,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+DYNAMO_SYSTEM_PORT_BASE = 8081
+
 
 class DynamoFrontend:
     """Dynamo frontend implementation.
@@ -81,6 +83,7 @@ class DynamoFrontend:
                 "ETCD_ENDPOINTS": f"http://{runtime.nodes.infra}:2379",
                 "NATS_SERVER": f"nats://{runtime.nodes.infra}:4222",
                 "DYN_REQUEST_PLANE": "nats",
+                "DYN_SYSTEM_PORT": str(DYNAMO_SYSTEM_PORT_BASE + idx),
             }
 
             # Add frontend env from config
