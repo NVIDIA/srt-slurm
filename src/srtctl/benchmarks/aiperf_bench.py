@@ -108,8 +108,10 @@ class AIPerfBenchRunner(AIPerfBenchmarkRunner):
 
         self.append_aiperf_args(cmd, config)
 
-        if config.benchmark.enable_dcgm:
-            dcgm_urls = [f"http://{node}:9400/metrics" for node in runtime.nodes.worker]
+        telemetry = config.telemetry
+        if telemetry.enabled and telemetry.dcgm_exporter is not None:
+            port = telemetry.dcgm_exporter.port
+            dcgm_urls = [f"http://{node}:{port}/metrics" for node in runtime.nodes.worker]
             cmd.extend(["--gpu-telemetry"] + dcgm_urls)
 
         return cmd
