@@ -394,10 +394,6 @@ class BenchmarkStageMixin:
             if self.config.benchmark.aiperf_package:
                 env["AIPERF_PACKAGE"] = self.config.benchmark.aiperf_package
 
-        # Add debug sleep to force benchmark to "hang" so debug can occur.
-        if self.config.benchmark.debug_mode:
-            env["DEBUG_MODE"] = "1"
-
         return env
 
     def _start_dcgm_if_needed(self) -> int:
