@@ -5,7 +5,7 @@ base:
 
   model:
     path: "glm5-fp8"
-    container: "sglang-v0.5.10-cu130.post1"
+    container: "sglang-v0.5.11-cu130"
     precision: "fp8"
 
   identity:
@@ -13,8 +13,8 @@ base:
       repo: "zai-org/GLM-5-FP8"
       revision: "4f96cc5eec29dcee5d6ded54f7ffe889438f9516"
     frameworks:
-      dynamo: "1.1.0.dev2"
-      sglang: "0.5.10.post1"
+      dynamo: "1.1.0"
+      sglang: "0.5.11"
 
   resources:
     gpu_type: "b200"
@@ -23,7 +23,7 @@ base:
   frontend:
     type: "dynamo"
   dynamo:
-    version: "1.1.0.dev2"
+    version: "1.1.0"
 
   backend:
     prefill_environment:
@@ -85,6 +85,7 @@ base:
 
         # Other flags
         enable-flashinfer-allreduce-fusion: true
+        weight-loader-prefetch-checkpoints: true
         disable-radix-cache: true
         stream-interval: 30
         model-loader-extra-config: '{"enable_multithread_load": true}'
@@ -116,6 +117,7 @@ base:
 
         # Other flags
         enable-flashinfer-allreduce-fusion: true
+        weight-loader-prefetch-checkpoints: true
         disable-radix-cache: true
         stream-interval: 30
         model-loader-extra-config: '{"enable_multithread_load": true}'
