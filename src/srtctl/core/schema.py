@@ -1417,12 +1417,10 @@ class SrtConfig:
         if telemetry.provider != TelemetryProvider.SCRAPER:
             raise ValidationError(f"Unsupported telemetry provider: {telemetry.provider}")
 
-        if not telemetry.container_image:
-            raise ValidationError("telemetry.container_image is required when telemetry is enabled")
         if telemetry.dcgm_exporter is None:
             raise ValidationError("telemetry.dcgm_exporter is required when telemetry is enabled")
-        if telemetry.node_exporter is None:
-            raise ValidationError("telemetry.node_exporter is required when telemetry is enabled")
+        if telemetry.node_exporter is not None and not telemetry.container_image:
+            raise ValidationError("telemetry.container_image (scraper) is required when telemetry.node_exporter is set")
         if telemetry.default_frequency <= 0:
             raise ValidationError("telemetry.default_frequency must be positive")
         if telemetry.sync_interval_secs < 0:

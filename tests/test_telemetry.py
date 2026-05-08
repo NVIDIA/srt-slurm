@@ -36,8 +36,13 @@ def _make_config(*, telemetry: TelemetryConfig | None = None) -> SrtConfig:
 class TestTelemetryConfig:
     """Telemetry schema validation."""
 
-    def test_requires_container_image_when_enabled(self):
-        with pytest.raises(ValidationError, match="telemetry.container_image"):
+    def test_requires_dcgm_exporter_when_enabled(self):
+        with pytest.raises(ValidationError, match="telemetry.dcgm_exporter"):
+            _make_config(telemetry=TelemetryConfig(enabled=True))
+
+    def test_node_exporter_requires_scraper(self):
+        """Setting node_exporter without container_image is an error: nothing reads it."""
+        with pytest.raises(ValidationError, match="container_image"):
             _make_config(
                 telemetry=TelemetryConfig(
                     enabled=True,
@@ -45,6 +50,18 @@ class TestTelemetryConfig:
                     node_exporter=TelemetryExporterConfig(container_image="node:latest", port=9101),
                 )
             )
+
+    def test_dcgm_only_is_valid(self):
+        """dcgm-exporter alone (no scraper, no node-exporter) is a valid config."""
+        config = _make_config(
+            telemetry=TelemetryConfig(
+                enabled=True,
+                dcgm_exporter=TelemetryExporterConfig(container_image="dcgm:latest", port=9401),
+            )
+        )
+        assert config.telemetry.enabled is True
+        assert config.telemetry.container_image is None
+        assert config.telemetry.node_exporter is None
 
 
 class TestTelemetryConfigGeneration:
@@ -162,3 +179,54 @@ class TestTelemetryStageMixin:
         assert (tmp_path / "telemetry_config.toml").exists()
         assert (tmp_path / "telemetry" / "local").exists()
         assert mock_srun.call_count == 3
+
+    @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
+    def test_start_telemetry_dcgm_only(self, mock_srun, tmp_path):
+        """With only dcgm_exporter configured, start dcgm and skip scraper/node-exporter."""
+
+        class Harness(TelemetryStageMixin):
+            def __init__(self):
+                self.config = _make_config(
+                    telemetry=TelemetryConfig(
+                        enabled=True,
+                        dcgm_exporter=TelemetryExporterConfig(container_image="dcgm:latest", port=9401),
+                    )
+                )
+                self.runtime = MagicMock()
+                self.runtime.log_dir = tmp_path
+                self.runtime.nodes.head = "node-a"
+                self.runtime.srun_options = {}
+                self.runtime.container_mounts = {Path(tmp_path): Path("/logs")}
+                self._backend_processes = [
+                    Process(
+                        node="node-a",
+                        gpu_indices=frozenset({0}),
+                        sys_port=8081,
+                        http_port=30000,
+                        endpoint_mode="agg",
+                        endpoint_index=0,
+                        node_rank=0,
+                    )
+                ]
+
+            @property
+            def backend_processes(self):
+                return self._backend_processes
+
+            def _compute_frontend_topology(self):
+                return FrontendTopology(
+                    nginx_node=None,
+                    frontend_nodes=["node-a"],
+                    frontend_port=8000,
+                    public_port=8000,
+                )
+
+        mock_srun.return_value = MagicMock()
+        harness = Harness()
+
+        procs = harness.start_telemetry()
+
+        assert len(procs) == 1
+        assert procs[0].name == "telemetry_dcgm_exporter"
+        assert not (tmp_path / "telemetry_config.toml").exists()
+        assert mock_srun.call_count == 1
