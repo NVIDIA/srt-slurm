@@ -479,6 +479,39 @@ class TestSetupScript:
         )
         assert 'export SRTCTL_SETUP_SCRIPT="install-sglang-main.sh"' in script
 
+    def test_sbatch_template_canonicalizes_srtslurm_config_env_var(self, monkeypatch, tmp_path):
+        """Test that sbatch preserves SRTSLURM_CONFIG as an absolute path."""
+        from pathlib import Path
+
+        from srtctl.cli.submit import generate_minimal_sbatch_script
+        from srtctl.core.schema import (
+            ModelConfig,
+            ResourceConfig,
+            SrtConfig,
+        )
+
+        config_dir = tmp_path / "out" / "srt_slurm"
+        config_dir.mkdir(parents=True)
+        cluster_config = config_dir / "srtslurm_infarch.yaml"
+        cluster_config.write_text('cluster: "test"\n')
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("SRTSLURM_CONFIG", "out/srt_slurm/srtslurm_infarch.yaml")
+
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/container.sqsh", precision="fp8"),
+            resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1),
+        )
+
+        script = generate_minimal_sbatch_script(
+            config=config,
+            config_path=Path("/tmp/test.yaml"),
+            setup_script=None,
+        )
+
+        assert f'export SRTSLURM_CONFIG="{cluster_config.resolve()}"' in script
+
     def test_setup_script_env_var_override(self, monkeypatch):
         """Test that SRTCTL_SETUP_SCRIPT env var overrides config."""
         import os
