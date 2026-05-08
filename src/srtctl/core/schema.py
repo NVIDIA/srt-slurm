@@ -465,6 +465,11 @@ class ResourceConfig:
     agg_nodes: int | None = None
     agg_workers: int | None = None
 
+    # If True, place each partial-node worker on its own node instead of
+    # packing multiple onto the same node. Caller must reserve enough nodes
+    # (e.g. set decode_nodes=decode_workers when gpus_per_decode<gpus_per_node).
+    spread_workers: bool = False
+
     # Explicit GPUs per worker (override computed values)
     # Use data_key to map from YAML field names to internal attribute names
     _explicit_gpus_per_prefill: int | None = field(

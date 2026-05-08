@@ -98,6 +98,7 @@ class SweepOrchestrator(
             gpus_per_agg=r.gpus_per_agg,
             gpus_per_node=r.gpus_per_node,
             available_nodes=self.runtime.nodes.worker,
+            spread_workers=r.spread_workers,
         )
 
     @functools.cached_property
