@@ -328,6 +328,8 @@ class VLLMProtocol:
                 model_arg,
                 "--served-model-name",
                 served_model_name,
+                "--request-plane",
+                runtime.request_plane,
             ]
         )
 

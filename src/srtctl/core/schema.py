@@ -1081,17 +1081,28 @@ class DynamoConfig:
         top_of_tree: Clone repo at HEAD (latest)
         wheel: ai-dynamo package version to install via staged wheels. The
                matching ai-dynamo-runtime wheel is installed automatically.
+        request_plane: Communication plane for dynamo workers. "nats" (default)
+                       uses the NATS message bus; "tcp" uses direct TCP connections;
+                       "http" uses HTTP-based communication.
 
     If top_of_tree, hash, or wheel is set, version is automatically cleared.
     """
+
+    _VALID_REQUEST_PLANES = ("nats", "tcp", "http")
 
     install: bool = True
     version: str | None = "0.8.0"
     hash: str | None = None
     top_of_tree: bool = False
     wheel: str | None = None
+    request_plane: str = "nats"
 
     def __post_init__(self) -> None:
+        if self.request_plane not in self._VALID_REQUEST_PLANES:
+            raise ValueError(
+                f"Invalid request_plane '{self.request_plane}', must be one of: {', '.join(self._VALID_REQUEST_PLANES)}"
+            )
+
         install_sources = [
             ("hash", self.hash is not None),
             ("top_of_tree", self.top_of_tree),

@@ -199,7 +199,7 @@ class TRTLLMProtocol:
                 "--extra-engine-args",
                 str(container_config_path),
                 "--request-plane",
-                "nats",
+                runtime.request_plane,
             ]
         )
 
