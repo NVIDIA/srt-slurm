@@ -90,7 +90,7 @@ class TestTelemetryConfigGeneration:
         topology = FrontendTopology(
             nginx_node=None,
             frontend_nodes=["node-a"],
-            frontend_port=8000,
+            frontend_ports=[8000],
             public_port=8000,
         )
 
@@ -149,7 +149,7 @@ class TestTelemetryStageMixin:
                 return FrontendTopology(
                     nginx_node=None,
                     frontend_nodes=["node-a"],
-                    frontend_port=8000,
+                    frontend_ports=[8000],
                     public_port=8000,
                 )
 

@@ -101,7 +101,9 @@ def generate_telemetry_config(
             )
         )
 
-    for frontend_index, node in enumerate(frontend_topology.frontend_nodes):
+    for frontend_index, (node, port) in enumerate(
+        zip(frontend_topology.frontend_nodes, frontend_topology.frontend_ports)
+    ):
         node_ip = get_hostname_ip(node, runtime.network_interface)
         node_metadata = {
             "frontend_index": str(frontend_index),
@@ -111,7 +113,7 @@ def generate_telemetry_config(
         endpoints.append(
             TelemetryEndpoint(
                 name=f"frontend{frontend_index}",
-                url=f"http://{node_ip}:{frontend_topology.frontend_port}/metrics",
+                url=f"http://{node_ip}:{port}/metrics",
                 frequency=telemetry.default_frequency,
                 filter="frontend",
                 node_metadata=node_metadata,

@@ -32,11 +32,14 @@ class FrontendTopology:
     Topology rules:
     - Single node OR multiple_frontends disabled: 1 frontend on head, no nginx
     - 2+ nodes AND multiple_frontends enabled: nginx on head, frontends on other nodes
+
+    frontend_nodes and frontend_ports are parallel lists — entry *i* in each
+    describes the i-th frontend process.
     """
 
     nginx_node: str | None  # Node running nginx, or None if no nginx
     frontend_nodes: list[str]  # Nodes running frontends
-    frontend_port: int  # Port frontends listen on
+    frontend_ports: list[int]  # Per-frontend listen ports (unique per node)
     public_port: int  # Public-facing port (nginx or direct frontend)
 
     @property
@@ -73,8 +76,9 @@ class FrontendStageMixin:
         """Determine where nginx and frontends should run.
 
         Topology rules:
-        - Single node OR multiple_frontends disabled: 1 frontend on head, no nginx
-        - 2+ nodes AND multiple_frontends enabled: nginx on head, frontends on other nodes
+        - multiple_frontends disabled: 1 frontend on head, no nginx
+        - multiple_frontends enabled: nginx on head, frontends distributed
+          across all available nodes (including head on single-node clusters)
 
         Returns:
             FrontendTopology describing where to run nginx and frontends.
@@ -83,25 +87,42 @@ class FrontendStageMixin:
         head = self.runtime.nodes.head
         fe_config = self.config.frontend
 
-        # Single node or multiple frontends disabled: single frontend, no nginx
-        if len(nodes) == 1 or not fe_config.enable_multiple_frontends:
+        # Multiple frontends disabled: single frontend, no nginx
+        if not fe_config.enable_multiple_frontends:
             return FrontendTopology(
                 nginx_node=None,
                 frontend_nodes=[head],
-                frontend_port=8000,
+                frontend_ports=[8000],
                 public_port=8000,
             )
 
-        # Multiple nodes with multiple frontends enabled:
-        # nginx on head, frontends on other nodes
-        other_nodes = [n for n in nodes if n != head]
+        total_frontends = fe_config.num_additional_frontends + 1
 
-        # Limit number of frontends based on config (num_additional_frontends is extra beyond first)
-        max_frontends = min(
-            fe_config.num_additional_frontends + 1,
-            len(other_nodes),
-        )
-        frontend_nodes = other_nodes[:max_frontends]
+        # Single frontend requested: no nginx needed
+        if total_frontends == 1:
+            return FrontendTopology(
+                nginx_node=None,
+                frontend_nodes=[head],
+                frontend_ports=[8000],
+                public_port=8000,
+            )
+
+        # Multiple frontends: nginx on head, frontends on available nodes.
+        # On single-node clusters, frontends co-locate with nginx on head.
+        other_nodes = [n for n in nodes if n != head]
+        pool = other_nodes if other_nodes else [head]
+
+        # Distribute frontends evenly across the node pool
+        frontend_nodes = [pool[i % len(pool)] for i in range(total_frontends)]
+
+        # Assign unique ports per node: base 8180, increment for co-located frontends.
+        base_port = 8180
+        node_port_counter: dict[str, int] = {}
+        frontend_ports: list[int] = []
+        for node in frontend_nodes:
+            offset = node_port_counter.get(node, 0)
+            frontend_ports.append(base_port + offset)
+            node_port_counter[node] = offset + 1
 
         logger.info(
             "Frontend topology: nginx on %s, %d frontends on %s",
@@ -113,7 +134,7 @@ class FrontendStageMixin:
         return FrontendTopology(
             nginx_node=head,
             frontend_nodes=frontend_nodes,
-            frontend_port=8180,  # Internal port behind nginx
+            frontend_ports=frontend_ports,
             public_port=8000,  # Public port exposed by nginx
         )
 
@@ -171,12 +192,14 @@ class FrontendStageMixin:
         env = Environment(loader=FileSystemLoader(str(template_dir)))
         template = env.get_template("nginx.conf.j2")
 
-        # Get IPs for frontend nodes
-        frontend_hosts = [get_hostname_ip(node) for node in topology.frontend_nodes]
+        # Build (ip, port) pairs for each frontend
+        upstreams = [
+            (get_hostname_ip(node), port)
+            for node, port in zip(topology.frontend_nodes, topology.frontend_ports)
+        ]
 
         return template.render(
-            frontend_hosts=frontend_hosts,
-            backend_port=topology.frontend_port,
+            upstreams=upstreams,
             listen_port=topology.public_port,
             nginx_raise_ulimit=self.config.frontend.nginx_raise_ulimit,
         )

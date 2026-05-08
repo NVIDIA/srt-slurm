@@ -72,11 +72,11 @@ class DynamoFrontend:
 
         processes: list[ManagedProcess] = []
 
-        for idx, node in enumerate(topology.frontend_nodes):
-            logger.info("Starting dynamo frontend %d on %s", idx, node)
+        for idx, (node, port) in enumerate(zip(topology.frontend_nodes, topology.frontend_ports)):
+            logger.info("Starting dynamo frontend %d on %s (port %d)", idx, node, port)
 
             frontend_log = runtime.log_dir / f"{node}_frontend_{idx}.out"
-            cmd = ["python3", "-m", "dynamo.frontend", f"--http-port={topology.frontend_port}"]
+            cmd = ["python3", "-m", "dynamo.frontend", f"--http-port={port}"]
             cmd.extend(self.get_frontend_args_list(config.frontend.args))
 
             env_to_set = {
