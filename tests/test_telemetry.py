@@ -116,9 +116,10 @@ class TestTelemetryConfigGeneration:
             frontend_topology=topology,
             runtime=runtime,
             telemetry=telemetry,
+            storage_path="/logs/telemetry/2026-04-27/test_12345",
         )
 
-        assert 'storage = "/logs/telemetry"' in config_text
+        assert 'storage = "/logs/telemetry/2026-04-27/test_12345"' in config_text
         assert 'name = "dcgm_node-a"' in config_text
         assert 'url = "http://10.0.0.1:8081/metrics"' in config_text
         assert '"cluster" = "pdx"' in config_text
@@ -128,19 +129,26 @@ class TestTelemetryConfigGeneration:
 class TestTelemetryStageMixin:
     """Telemetry stage startup."""
 
-    @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
-    @patch("srtctl.cli.mixins.telemetry_stage.generate_telemetry_config", return_value='storage = "/logs/telemetry"\n')
-    def test_start_telemetry_starts_exporters_and_scraper(self, _mock_config, mock_srun, tmp_path):
+    @staticmethod
+    def _make_harness(
+        tmp_path: Path,
+        *,
+        worker_nodes: list[str],
+        scraper: bool = True,
+        node_exporter: bool = True,
+    ) -> TelemetryStageMixin:
+        telemetry_kwargs: dict[str, object] = {
+            "enabled": True,
+            "dcgm_exporter": TelemetryExporterConfig(container_image="dcgm:latest", port=9401),
+        }
+        if scraper:
+            telemetry_kwargs["container_image"] = "telemetry:latest"
+        if node_exporter:
+            telemetry_kwargs["node_exporter"] = TelemetryExporterConfig(container_image="node:latest", port=9101)
+
         class Harness(TelemetryStageMixin):
-            def __init__(self):
-                self.config = _make_config(
-                    telemetry=TelemetryConfig(
-                        enabled=True,
-                        container_image="telemetry:latest",
-                        dcgm_exporter=TelemetryExporterConfig(container_image="dcgm:latest", port=9401),
-                        node_exporter=TelemetryExporterConfig(container_image="node:latest", port=9101),
-                    )
-                )
+            def __init__(self) -> None:
+                self.config = _make_config(telemetry=TelemetryConfig(**telemetry_kwargs))
                 self.runtime = MagicMock()
                 self.runtime.log_dir = tmp_path
                 self.runtime.nodes.head = "node-a"
@@ -149,14 +157,15 @@ class TestTelemetryStageMixin:
                 self.runtime.container_mounts = {Path(tmp_path): Path("/logs")}
                 self._backend_processes = [
                     Process(
-                        node="node-a",
+                        node=node,
                         gpu_indices=frozenset({0}),
-                        sys_port=8081,
+                        sys_port=8081 + i,
                         http_port=30000,
                         endpoint_mode="agg",
-                        endpoint_index=0,
+                        endpoint_index=i,
                         node_rank=0,
                     )
+                    for i, node in enumerate(worker_nodes)
                 ]
 
             @property
@@ -166,64 +175,36 @@ class TestTelemetryStageMixin:
             def _compute_frontend_topology(self):
                 return FrontendTopology(
                     nginx_node=None,
-                    frontend_nodes=["node-a"],
+                    frontend_nodes=[worker_nodes[0]],
                     frontend_port=8000,
                     public_port=8000,
                 )
 
+        return Harness()
+
+    @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
+    @patch(
+        "srtctl.cli.mixins.telemetry_stage.generate_telemetry_config",
+        return_value='storage = "/logs/telemetry/2026-04-27/test_12345"\n',
+    )
+    def test_start_telemetry_starts_exporters_and_scraper(self, _mock_config, mock_srun, tmp_path):
         mock_srun.return_value = MagicMock()
-        harness = Harness()
+        harness = self._make_harness(tmp_path, worker_nodes=["node-a"])
 
         procs = harness.start_telemetry()
 
         assert len(procs) == 3
         assert (tmp_path / "telemetry_config.toml").exists()
+        # Local working dir is pre-created; storage dir is NOT (scraper rejects existing).
         assert (tmp_path / "telemetry" / "local").exists()
+        assert not (tmp_path / "telemetry" / "2026-04-27").exists()
         assert mock_srun.call_count == 3
 
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
     def test_start_telemetry_dcgm_only(self, mock_srun, tmp_path):
         """With only dcgm_exporter configured, start dcgm and skip scraper/node-exporter."""
-
-        class Harness(TelemetryStageMixin):
-            def __init__(self):
-                self.config = _make_config(
-                    telemetry=TelemetryConfig(
-                        enabled=True,
-                        dcgm_exporter=TelemetryExporterConfig(container_image="dcgm:latest", port=9401),
-                    )
-                )
-                self.runtime = MagicMock()
-                self.runtime.log_dir = tmp_path
-                self.runtime.nodes.head = "node-a"
-                self.runtime.srun_options = {}
-                self.runtime.container_mounts = {Path(tmp_path): Path("/logs")}
-                self._backend_processes = [
-                    Process(
-                        node="node-a",
-                        gpu_indices=frozenset({0}),
-                        sys_port=8081,
-                        http_port=30000,
-                        endpoint_mode="agg",
-                        endpoint_index=0,
-                        node_rank=0,
-                    )
-                ]
-
-            @property
-            def backend_processes(self):
-                return self._backend_processes
-
-            def _compute_frontend_topology(self):
-                return FrontendTopology(
-                    nginx_node=None,
-                    frontend_nodes=["node-a"],
-                    frontend_port=8000,
-                    public_port=8000,
-                )
-
         mock_srun.return_value = MagicMock()
-        harness = Harness()
+        harness = self._make_harness(tmp_path, worker_nodes=["node-a"], scraper=False, node_exporter=False)
 
         procs = harness.start_telemetry()
 
@@ -231,3 +212,50 @@ class TestTelemetryStageMixin:
         assert procs[0].name == "telemetry_dcgm_exporter"
         assert not (tmp_path / "telemetry_config.toml").exists()
         assert mock_srun.call_count == 1
+
+    @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
+    @patch(
+        "srtctl.cli.mixins.telemetry_stage.generate_telemetry_config",
+        return_value='storage = "/logs/telemetry/2026-04-27/test_12345"\n',
+    )
+    def test_exporter_srun_passes_nodes_arg_matching_nodelist(self, _mock_config, mock_srun, tmp_path):
+        """Regression: exporter srun must pass nodes=N when nodelist has N entries.
+
+        Without it, srun gets ``--nodes 1 --ntasks N --nodelist <N nodes>`` and
+        SLURM rejects with 'Requested node configuration is not available'.
+        """
+        mock_srun.return_value = MagicMock()
+        nodes = ["node-a", "node-b", "node-c", "node-d"]
+        harness = self._make_harness(tmp_path, worker_nodes=nodes)
+
+        harness.start_telemetry()
+
+        exporter_calls = [call for call in mock_srun.call_args_list if call.kwargs.get("nodelist") == nodes]
+        assert len(exporter_calls) == 2
+        for call in exporter_calls:
+            assert call.kwargs.get("nodes") == 4
+            assert call.kwargs.get("ntasks") == 4
+            # Distroless images (e.g. prom/node-exporter) have no bash, so we
+            # must invoke the binary directly rather than via `bash -c`.
+            assert call.kwargs.get("use_bash_wrapper") is False
+
+    @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
+    @patch(
+        "srtctl.cli.mixins.telemetry_stage.generate_telemetry_config",
+        return_value='storage = "/logs/telemetry/2026-04-27/test_12345"\n',
+    )
+    def test_storage_path_is_nested_with_date_and_run_name(self, mock_config, mock_srun, tmp_path):
+        """Regression: storage path passed to TOML generator must nest under <base>/<date>/<run-name>.
+
+        Newer tachometer-scraper rejects pre-existing storage dirs and demands
+        the nested form.
+        """
+        mock_srun.return_value = MagicMock()
+        harness = self._make_harness(tmp_path, worker_nodes=["node-a"])
+        harness.start_telemetry()
+
+        storage_path = mock_config.call_args.kwargs["storage_path"]
+        assert storage_path.startswith("/logs/telemetry/")
+        assert storage_path.endswith("/test_12345")
+        date_segment = storage_path.split("/")[3]
+        assert len(date_segment) == 10 and date_segment[4] == "-" and date_segment[7] == "-"
