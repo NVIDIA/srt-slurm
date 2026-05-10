@@ -72,7 +72,8 @@ _PATTERN_CACHE: dict[str, re.Pattern[str]] = {}
 
 # Two timestamp variants seen across SGLang versions.
 _TS_ANSI = re.compile(r"\[2m(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2}\.\d+)")
-_TS_BRACKET = re.compile(r"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
+_TS_BRACKET = re.compile(r"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?)")
+_DP_RANK = re.compile(r"\bDP(\d+)\b")
 
 
 def _pattern(raw: str) -> re.Pattern[str]:
@@ -92,11 +93,23 @@ def _parse_timestamp(line: str) -> datetime | None:
             return None
     m = _TS_BRACKET.search(line)
     if m:
+        raw = m.group(1)
+        fmt = "%Y-%m-%d %H:%M:%S.%f" if "." in raw else "%Y-%m-%d %H:%M:%S"
         try:
-            return datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")
+            return datetime.strptime(raw, fmt)
         except ValueError:
             return None
     return None
+
+
+def _parse_dp_rank(line: str) -> int | None:
+    m = _DP_RANK.search(line)
+    if m is None:
+        return None
+    try:
+        return int(m.group(1))
+    except ValueError:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +128,7 @@ class FileSeries:
 
     path: Path
     timestamps: list[datetime] = field(default_factory=list)
+    dp_ranks: list[int | None] = field(default_factory=list)
     metrics: dict[str, list[float | None]] = field(default_factory=dict)
     byte_offset: int = 0
 
@@ -168,6 +182,7 @@ def parse_file_incremental(series: FileSeries, keyword: str, metrics_def: dict[s
                 ts = _parse_timestamp(line)
                 if ts is None:
                     continue
+                dp_rank = _parse_dp_rank(line)
 
                 values: dict[str, float | None] = {}
                 any_value = False
@@ -186,6 +201,7 @@ def parse_file_incremental(series: FileSeries, keyword: str, metrics_def: dict[s
                     continue
 
                 series.timestamps.append(ts)
+                series.dp_ranks.append(dp_rank)
                 for name in metrics_def:
                     series.metrics[name].append(values[name])
                 new_rows += 1

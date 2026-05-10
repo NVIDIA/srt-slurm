@@ -4,6 +4,7 @@
 """Reusable benchmark-log analysis utilities.
 
 Currently exposes the in-flight batch-metrics live snapshotter
-(:mod:`.live_metrics`) and its underlying log parser
-(:mod:`.batch_log_parser`).
+(:mod:`.live_metrics`), its underlying log parser
+(:mod:`.batch_log_parser`), and the shared plot renderer
+(:mod:`.batch_plot_matrix`).
 """

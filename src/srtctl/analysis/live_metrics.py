@@ -28,146 +28,14 @@ the parser.
 from __future__ import annotations
 
 import logging
-import os
 import threading
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
 
-from srtctl.analysis.batch_log_parser import (
-    FileSeries,
-    LogState,
-)
-
-if TYPE_CHECKING:
-    from collections.abc import Iterable
+from srtctl.analysis.batch_log_parser import LogState
+from srtctl.analysis.batch_plot_matrix import default_batch_plot_title, render_batch_plot_matrix
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Plotting (lazy matplotlib import)
-# ---------------------------------------------------------------------------
-
-
-def _elapsed_seconds(stamps: list[datetime], origin: datetime) -> list[float]:
-    return [(t - origin).total_seconds() for t in stamps]
-
-
-def _global_origin(prefill: Iterable[FileSeries], decode: Iterable[FileSeries]) -> datetime | None:
-    """Earliest timestamp seen across all worker files, or ``None`` if empty."""
-    first_seen: datetime | None = None
-    for s in (*prefill, *decode):
-        if s.empty:
-            continue
-        candidate = s.timestamps[0]
-        if first_seen is None or candidate < first_seen:
-            first_seen = candidate
-    return first_seen
-
-
-# ---------------------------------------------------------------------------
-# Plot layout: (prefill_metric, decode_metric) row pairs.
-# Use None to leave a cell empty. Only metrics listed here are plotted;
-# all parsed metrics remain available in LogState for other consumers.
-# To add/remove/reorder rows, edit this list — no other code needs to
-# change.
-# ---------------------------------------------------------------------------
-_PLOT_ROWS: list[tuple[str | None, str | None]] = [
-    ("input throughput (token/s)", "gen throughput (token/s)"),
-    ("#new-seq", "#running-req"),
-    ("#new-token", "#full token"),
-    ("#cached-token", "full token usage"),
-    ("#prealloc-req", "#prealloc-req"),
-    ("#queue-req", "#queue-req"),
-    ("#inflight-req", "#transfer-req"),
-]
-
-
-def _render_png(
-    state: LogState,
-    output_path: Path,
-    title: str,
-    downsample: int,
-) -> None:
-    """Render per-worker time-series to a PNG.
-
-    Layout is driven by ``_PLOT_ROWS``: each entry is a
-    ``(prefill_metric, decode_metric)`` pair drawn on the same row so
-    semantically related metrics sit side-by-side. Either cell can be
-    ``None`` to leave it blank.
-    """
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    pf_files = [s for s in state.prefill_files.values() if not s.empty]
-    dc_files = [s for s in state.decode_files.values() if not s.empty]
-
-    origin = _global_origin(pf_files, dc_files)
-    if origin is None:
-        return
-
-    n_rows = len(_PLOT_ROWS)
-    # Use tab20 so up to 20 workers each get a distinct colour.
-    cmap = plt.cm.get_cmap("tab20", max(len(pf_files), len(dc_files), 1))
-    colors = [cmap(i) for i in range(cmap.N)]
-
-    fig, axes = plt.subplots(n_rows, 2, figsize=(20, 3.0 * n_rows), squeeze=False)
-    fig.suptitle(
-        f"{title}\nprefill: {len(pf_files)} workers · decode: {len(dc_files)} workers",
-        fontsize=13,
-        fontweight="bold",
-        y=1.0,
-    )
-
-    def _draw_ax(ax: plt.Axes, metric: str | None, files: list[FileSeries], side: str) -> None:
-        if metric is None:
-            ax.set_visible(False)
-            return
-
-        drawn = False
-        for idx, s in enumerate(files):
-            vs = s.metrics.get(metric)
-            if not vs:
-                continue
-            pairs = [(t, v) for t, v in zip(s.timestamps, vs, strict=False) if v is not None]
-            if downsample > 1:
-                pairs = pairs[::downsample]
-            if not pairs:
-                continue
-            elapsed = _elapsed_seconds([p[0] for p in pairs], origin)
-            values = [p[1] for p in pairs]
-            ax.plot(elapsed, values, color=colors[idx % len(colors)], linewidth=0.9, alpha=0.8, label=s.label)
-            drawn = True
-
-        ax.set_title(f"{side}: {metric}", fontsize=10, fontweight="bold")
-        ax.set_xlabel("Elapsed (s)", fontsize=8)
-        ax.set_ylabel(metric, fontsize=8)
-        ax.tick_params(labelsize=7)
-        ax.grid(True, alpha=0.3)
-        if not drawn:
-            ax.text(0.5, 0.5, "no data", ha="center", va="center", transform=ax.transAxes, color="grey", fontsize=9)
-        elif files:
-            ax.legend(fontsize=7, loc="upper right", ncol=max(1, len(files) // 8 + 1))
-
-    for row, (pf_metric, dc_metric) in enumerate(_PLOT_ROWS):
-        _draw_ax(axes[row][0], pf_metric, pf_files, "Prefill")
-        _draw_ax(axes[row][1], dc_metric, dc_files, "Decode")
-
-    plt.tight_layout()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    # Atomic-ish write: render to a sibling tmp file then rename, so
-    # readers (e.g. an image viewer with auto-reload) never see a
-    # half-written PNG. Append ``.tmp`` to the full filename rather than
-    # replacing the suffix (which would confuse matplotlib's format
-    # inference).
-    tmp = output_path.parent / (output_path.name + ".tmp")
-    fig.savefig(tmp, dpi=110, bbox_inches="tight", format="png")
-    plt.close(fig)
-    os.replace(tmp, output_path)
 
 
 # ---------------------------------------------------------------------------
@@ -206,7 +74,7 @@ class LiveMetricsSnapshotter:
             interval_seconds=max(5, int(interval_seconds)),
             downsample=max(1, int(downsample)),
         )
-        self._title = title or f"{Path(log_dir).resolve().parent.name} batch metrics"
+        self._title = title or default_batch_plot_title(log_dir)
         self._state = LogState(log_dir=self._params.log_dir)
         self._stop_event: threading.Event | None = None
         self._thread: threading.Thread | None = None
@@ -243,7 +111,7 @@ class LiveMetricsSnapshotter:
             self._state.refresh()
             if not self._state.has_data:
                 return
-            _render_png(
+            render_batch_plot_matrix(
                 state=self._state,
                 output_path=self._params.output_path,
                 title=self._title,
