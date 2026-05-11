@@ -104,10 +104,11 @@ if [ "$DATASET_NAME" = "random" ]; then
         --random-input-len "$ISL"
         --random-output-len "$OSL"
         --random-range-ratio "${RANDOM_RANGE_RATIO}"
-        # Parallel random prompt generation. Default 48 saturates a 144-core
-        # GB300 host. Override via env: RANDOM_NUM_WORKERS=8 etc. 0 = auto =
+        # Parallel random prompt generation. Default 0 delegates to auto:
         # min(cpu_count, 8). 1 = serial (no multiprocessing).
-        --random-num-workers "${RANDOM_NUM_WORKERS:-48}"
+        # Override via env for host-specific tuning, e.g. RANDOM_NUM_WORKERS=48
+        # on a 144-core GB300 host.
+        --random-num-workers "${RANDOM_NUM_WORKERS:-0}"
     )
 fi
 
