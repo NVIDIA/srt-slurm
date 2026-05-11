@@ -782,7 +782,12 @@ class ProfilingConfig:
         return cmd
 
     def get_nsys_prefix(
-        self, output_file: str, *, frontend_type: str | None = None, backend_type: str | None = None
+        self,
+        output_file: str,
+        *,
+        frontend_type: str | None = None,
+        backend_type: str | None = None,
+        mode: str | None = None,
     ) -> list[str]:
         """Get nsys profiling command prefix.
 
@@ -792,6 +797,9 @@ class ProfilingConfig:
                 with a non-trtllm backend, adds --trace-fork-before-exec=true.
             backend_type: Backend type (e.g., "trtllm", "sglang"). When set to "trtllm",
                 uses TRTLLM-specific nsys flags (ucx traces, --kill none, --wait all).
+            mode: Endpoint mode ("prefill", "decode", "aggregated"). For vLLM disagg
+                modes, use --capture-range-end=repeat to capture across multiple
+                cudaProfilerStart/Stop windows.
 
         Returns:
             Command prefix list for nsys profiling
@@ -801,6 +809,12 @@ class ProfilingConfig:
 
         if backend_type == "trtllm":
             return self._get_nsys_prefix_trtllm(output_file)
+
+        # vLLM disagg workers trigger cudaProfilerStart/Stop once per
+        # (delay_iterations, max_iterations) window; "repeat" lets nsys keep
+        # capturing across multiple such windows in one run. Aggregated mode
+        # only emits a single window, so "stop" remains correct.
+        capture_range_end = "repeat" if backend_type == "vllm" and mode in ("prefill", "decode") else "stop"
 
         # SGLang / default path — keep existing behavior
         cmd = [
@@ -812,7 +826,7 @@ class ProfilingConfig:
             "-c",
             "cudaProfilerApi",
             "--capture-range-end",
-            "stop",
+            capture_range_end,
             "--force-overwrite",
             "true",
             "-o",
