@@ -780,6 +780,20 @@ class TestCopyConfigToLogs:
         assert (log_dir / "12345.json").exists()
         assert (log_dir / "12345.json").read_text() == '{"job_id": "12345"}\n'
 
+    def test_copies_git_state_txt(self, tmp_path):
+        """Test git_state.txt is copied from output dir to log dir."""
+        from srtctl.core.git_state import GIT_STATE_FILENAME
+
+        mixin, log_dir = self._create_mixin_with_runtime(tmp_path)
+
+        git_state_src = tmp_path / GIT_STATE_FILENAME
+        git_state_src.write_text("# srtctl git state snapshot\n")
+
+        mixin._copy_config_to_logs()
+
+        assert (log_dir / GIT_STATE_FILENAME).exists()
+        assert (log_dir / GIT_STATE_FILENAME).read_text() == "# srtctl git state snapshot\n"
+
     def test_copy_failure_does_not_raise(self, tmp_path):
         """Test graceful handling when copy fails."""
         mixin, log_dir = self._create_mixin_with_runtime(tmp_path)

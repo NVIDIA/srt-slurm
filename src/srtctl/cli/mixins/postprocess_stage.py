@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 
 from srtctl.benchmarks.base import SCRIPTS_DIR
 from srtctl.core.config import get_srtslurm_setting, load_cluster_config
+from srtctl.core.git_state import GIT_STATE_FILENAME
 from srtctl.core.lockfile import collect_worker_fingerprints, generate_reproduction_report, write_lockfile
 from srtctl.core.schema import AIAnalysisConfig, S3Config
 from srtctl.core.slurm import start_srun_process
@@ -130,7 +131,7 @@ class PostProcessStageMixin:
         into logs/ so they get uploaded alongside benchmark results and worker logs.
         """
         output_dir = self.runtime.log_dir.parent
-        files_to_copy = ["config.yaml", "sbatch_script.sh", f"{self.runtime.job_id}.json"]
+        files_to_copy = ["config.yaml", "sbatch_script.sh", f"{self.runtime.job_id}.json", GIT_STATE_FILENAME]
         for name in files_to_copy:
             src = output_dir / name
             if not src.exists():

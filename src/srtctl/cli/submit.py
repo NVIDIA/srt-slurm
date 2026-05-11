@@ -50,6 +50,11 @@ from srtctl.core.fingerprint import (
     format_check_results,
     format_diff,
 )
+from srtctl.core.git_state import (
+    GIT_STATE_FILENAME,
+    git_snapshot_sources_from_extra_mounts,
+    write_git_state_snapshot,
+)
 from srtctl.core.lockfile import load_lockfile_fingerprints
 from srtctl.core.schema import SrtConfig
 from srtctl.core.status import create_job_record
@@ -600,6 +605,9 @@ def submit_with_orchestrator(
             runtime_config_path = job_output_dir / runtime_config_filename
             runtime_config_path.write_text(resolved_runtime_config_text)
         shutil.copy(script_path, job_output_dir / "sbatch_script.sh")
+        git_sources = git_snapshot_sources_from_extra_mounts(config)
+        if git_sources:
+            write_git_state_snapshot(job_output_dir / GIT_STATE_FILENAME, git_sources)
 
         job_name = get_job_name(config)
 
