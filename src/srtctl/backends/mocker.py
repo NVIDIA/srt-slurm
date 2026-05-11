@@ -27,6 +27,8 @@ from typing import (
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
+from srtctl.backends.base import BackendProtocol
+
 if TYPE_CHECKING:
     from srtctl.backends.base import SrunConfig
     from srtctl.core.runtime import RuntimeContext
@@ -53,7 +55,7 @@ class MockerServerConfig:
 
 
 @dataclass(frozen=True)
-class MockerProtocol:
+class MockerProtocol(BackendProtocol):
     """Dynamo Mocker protocol - implements BackendProtocol.
 
     This frozen dataclass both holds configuration AND implements the
