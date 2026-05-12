@@ -253,7 +253,7 @@ cuda_graph_config:
     - 2
     - 4
 moe_config:
-  backend: TRTLLM
+  backend: CUTEDSL
   use_low_precision_moe_combine: true
 kv_cache_config:
   dtype: fp8

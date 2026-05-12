@@ -1,0 +1,196 @@
+--- a/tensorrt_llm/executor/postproc_worker.py
++++ b/tensorrt_llm/executor/postproc_worker.py
+@@ -45,6 +45,7 @@
+     ''' The config for the postprocess worker. '''
+     num_postprocess_workers: int = 0
+     postprocess_tokenizer_dir: Optional[str] = None
++    custom_tokenizer: Optional[str] = None
+
+     @property
+     def enabled(self) -> bool:
+@@ -82,6 +83,7 @@
+         tokenizer_dir: str,
+         record_creator: Callable[
+             ["PostprocWorker.Input", TransformersTokenizer], Any],
++        custom_tokenizer: Optional[str] = None,
+     ):
+         '''
+         Args:
+@@ -90,6 +92,9 @@
+             tokenizer_dir (str): The directory to load tokenizer.
+             record_creator (Callable[["ResponsePostprocessWorker.Input"], Any]): A creator for creating a record for a request.
+             result_handler (Optional[Callable[[GenerationResultBase], Any]]): A callback handles the final result.
++            custom_tokenizer (Optional[str]): Identifier (alias or import path) of a custom
++                tokenizer class to use instead of the default HF AutoTokenizer. Required for
++                models like GLM-5 whose tokenizer class is not registered with HF.
+         '''
+
+         self._records: Dict[int, GenerationResult] = {}
+@@ -107,8 +112,21 @@
+
+         self._q = deque()
+
+-        # Load the tokenizer and share in all records
+-        self._tokenizer = load_hf_tokenizer(tokenizer_dir)
++        # Load the tokenizer and share in all records. When the model requires a custom
++        # tokenizer class (e.g. glm_moe_dsa), the HF AutoTokenizer path raises; dispatch
++        # to load_custom_tokenizer so we end up with a real tokenizer instead of None,
++        # which would silently skip detokenization downstream and yield empty content.
++        if custom_tokenizer:
++            from tensorrt_llm.tokenizer.tokenizer import load_custom_tokenizer
++            self._tokenizer = load_custom_tokenizer(custom_tokenizer, tokenizer_dir)
++        else:
++            self._tokenizer = load_hf_tokenizer(tokenizer_dir)
++        if self._tokenizer is None:
++            raise RuntimeError(
++                f"PostprocWorker failed to load tokenizer "
++                f"(custom_tokenizer={custom_tokenizer!r}, tokenizer_dir={tokenizer_dir!r}). "
++                f"Refusing to start: a None tokenizer here produces empty response content."
++            )
+
+     @staticmethod
+     def default_record_creator(
+@@ -258,9 +276,12 @@
+ @print_traceback_on_error
+ def postproc_worker_main(feedin_ipc_addr: tuple[str, Optional[bytes]],
+                          feedout_ipc_addr: tuple[str, Optional[bytes]],
+-                         tokenizer_dir: str, record_creator: Callable):
++                         tokenizer_dir: str,
++                         record_creator: Callable,
++                         custom_tokenizer: Optional[str] = None):
+     worker = PostprocWorker(feedin_ipc_addr,
+                             feedout_ipc_addr,
+                             tokenizer_dir=tokenizer_dir,
+-                            record_creator=record_creator)
++                            record_creator=record_creator,
++                            custom_tokenizer=custom_tokenizer)
+     worker.start()
+
+--- a/tensorrt_llm/executor/worker.py
++++ b/tensorrt_llm/executor/worker.py
+@@ -261,6 +261,7 @@
+                 proxy_result_queue,
+                 postproc_worker_config.postprocess_tokenizer_dir,
+                 PostprocWorker.default_record_creator,
++                postproc_worker_config.custom_tokenizer,
+             )
+             postprocess_worker_futures.append(fut)
+
+
+--- a/tensorrt_llm/llmapi/llm.py
++++ b/tensorrt_llm/llmapi/llm.py
+@@ -1396,6 +1396,7 @@
+             postproc_worker_config=PostprocWorkerConfig(
+                 num_postprocess_workers=self.args.num_postprocess_workers,
+                 postprocess_tokenizer_dir=self.args.postprocess_tokenizer_dir,
++                custom_tokenizer=self.args.custom_tokenizer,
+             ),
+             is_llm_executor=True)
+
+@@ -1540,6 +1541,7 @@
+             postproc_worker_config=PostprocWorkerConfig(
+                 num_postprocess_workers=self.args.num_postprocess_workers,
+                 postprocess_tokenizer_dir=self.args.postprocess_tokenizer_dir,
++                custom_tokenizer=self.args.custom_tokenizer,
+             ),
+             is_llm_executor=True,
+             hf_model_dir=self._hf_model_dir,
+
+rihuo@dlcluster-login-03:/home/scratch.jiant_gpu/debug$ cat custom_tokenizer_postproc_worker.patch
+--- a/tensorrt_llm/executor/postproc_worker.py
++++ b/tensorrt_llm/executor/postproc_worker.py
+@@ -45,6 +45,7 @@
+     ''' The config for the postprocess worker. '''
+     num_postprocess_workers: int = 0
+     postprocess_tokenizer_dir: Optional[str] = None
++    custom_tokenizer: Optional[str] = None
+
+     @property
+     def enabled(self) -> bool:
+@@ -82,6 +83,7 @@
+         tokenizer_dir: str,
+         record_creator: Callable[
+             ["PostprocWorker.Input", TransformersTokenizer], Any],
++        custom_tokenizer: Optional[str] = None,
+     ):
+         '''
+         Args:
+@@ -90,6 +92,9 @@
+             tokenizer_dir (str): The directory to load tokenizer.
+             record_creator (Callable[["ResponsePostprocessWorker.Input"], Any]): A creator for creating a record for a request.
+             result_handler (Optional[Callable[[GenerationResultBase], Any]]): A callback handles the final result.
++            custom_tokenizer (Optional[str]): Identifier (alias or import path) of a custom
++                tokenizer class to use instead of the default HF AutoTokenizer. Required for
++                models like GLM-5 whose tokenizer class is not registered with HF.
+         '''
+
+         self._records: Dict[int, GenerationResult] = {}
+@@ -107,8 +112,21 @@
+
+         self._q = deque()
+
+-        # Load the tokenizer and share in all records
+-        self._tokenizer = load_hf_tokenizer(tokenizer_dir)
++        # Load the tokenizer and share in all records. When the model requires a custom
++        # tokenizer class (e.g. glm_moe_dsa), the HF AutoTokenizer path raises; dispatch
++        # to load_custom_tokenizer so we end up with a real tokenizer instead of None,
++        # which would silently skip detokenization downstream and yield empty content.
++        if custom_tokenizer:
++            from tensorrt_llm.tokenizer.tokenizer import load_custom_tokenizer
++            self._tokenizer = load_custom_tokenizer(custom_tokenizer, tokenizer_dir)
++        else:
++            self._tokenizer = load_hf_tokenizer(tokenizer_dir)
++        if self._tokenizer is None:
++            raise RuntimeError(
++                f"PostprocWorker failed to load tokenizer "
++                f"(custom_tokenizer={custom_tokenizer!r}, tokenizer_dir={tokenizer_dir!r}). "
++                f"Refusing to start: a None tokenizer here produces empty response content."
++            )
+
+     @staticmethod
+     def default_record_creator(
+@@ -258,9 +276,12 @@
+ @print_traceback_on_error
+ def postproc_worker_main(feedin_ipc_addr: tuple[str, Optional[bytes]],
+                          feedout_ipc_addr: tuple[str, Optional[bytes]],
+-                         tokenizer_dir: str, record_creator: Callable):
++                         tokenizer_dir: str,
++                         record_creator: Callable,
++                         custom_tokenizer: Optional[str] = None):
+     worker = PostprocWorker(feedin_ipc_addr,
+                             feedout_ipc_addr,
+                             tokenizer_dir=tokenizer_dir,
+-                            record_creator=record_creator)
++                            record_creator=record_creator,
++                            custom_tokenizer=custom_tokenizer)
+     worker.start()
+
+--- a/tensorrt_llm/executor/worker.py
++++ b/tensorrt_llm/executor/worker.py
+@@ -261,6 +261,7 @@
+                 proxy_result_queue,
+                 postproc_worker_config.postprocess_tokenizer_dir,
+                 PostprocWorker.default_record_creator,
++                postproc_worker_config.custom_tokenizer,
+             )
+             postprocess_worker_futures.append(fut)
+
+
+--- a/tensorrt_llm/llmapi/llm.py
++++ b/tensorrt_llm/llmapi/llm.py
+@@ -1396,6 +1396,7 @@
+             postproc_worker_config=PostprocWorkerConfig(
+                 num_postprocess_workers=self.args.num_postprocess_workers,
+                 postprocess_tokenizer_dir=self.args.postprocess_tokenizer_dir,
++                custom_tokenizer=self.args.custom_tokenizer,
+             ),
+             is_llm_executor=True)
+
+@@ -1540,6 +1541,7 @@
+             postproc_worker_config=PostprocWorkerConfig(
+                 num_postprocess_workers=self.args.num_postprocess_workers,
+                 postprocess_tokenizer_dir=self.args.postprocess_tokenizer_dir,
++                custom_tokenizer=self.args.custom_tokenizer,
+             ),
+             is_llm_executor=True,
+             hf_model_dir=self._hf_model_dir,

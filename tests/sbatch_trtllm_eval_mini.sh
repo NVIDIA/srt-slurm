@@ -14,12 +14,16 @@
 
 set -euo pipefail
 
+SRTCTL_SOURCE="/data/home/rihuo/srt-slurm"
 OUTPUT_BASE="/data/home/rihuo/srt-slurm/outputs"
 OUTPUT_DIR="${OUTPUT_BASE}/${SLURM_JOB_ID}"
 LOG_DIR="${OUTPUT_DIR}/logs"
 CONTAINER_IMAGE="/data/home/rihuo/tensorrt-llm-release-1-3-0rc14.sqsh"
 MODEL_PATH="/data/home/rihuo/nvidia_GLM-5-NVFP4"
-SCRIPT_MOUNTS="${LOG_DIR}:/logs,${MODEL_PATH}:/model,${SRTCTL_SOURCE}/configs:/configs"
+PATCH_FILE="/data/home/rihuo/srt-slurm/custom_tokenizer_postproc_worker.patch"
+SCRIPT_MOUNTS="${LOG_DIR}:/logs,${MODEL_PATH}:/model,${SRTCTL_SOURCE}/configs:/configs,${PATCH_FILE}:/tmp/postproc.patch"
+TRTLLM_SITE_PACKAGES="/usr/local/lib/python3.12/dist-packages"
+APPLY_PATCH="patch -p1 -d ${TRTLLM_SITE_PACKAGES} -N < /tmp/postproc.patch || true"
 TRTLLM_COMMON_ENV="export ENROOT_ALLOW_DEV=yes && export MIMALLOC_PURGE_DELAY=0 && export NCCL_GRAPH_MIXING_SUPPORT=0 && export TLLM_LOG_LEVEL=INFO && export TRTLLM_ENABLE_PDL=1 && export TRTLLM_SERVER_DISABLE_GC=1 && export TRTLLM_WORKER_DISABLE_GC=1"
 
 mkdir -p "${LOG_DIR}"
@@ -147,7 +151,7 @@ cuda_graph_config:
     - 2
     - 4
 moe_config:
-  backend: TRTLLM
+  backend: CUTEDSL
   use_low_precision_moe_combine: true
 kv_cache_config:
   dtype: fp8
@@ -215,7 +219,7 @@ start_bg srun \
     --no-container-entrypoint \
     --no-container-mount-home \
     --container-mounts "${SCRIPT_MOUNTS}" \
-    bash -c "${TRTLLM_COMMON_ENV} && export CUDA_VISIBLE_DEVICES=0,1 && trtllm-llmapi-launch trtllm-serve serve /model --backend pytorch --host 0.0.0.0 --port ${CTX_PORT} --extra_llm_api_options /logs/trtllm_prefill.yaml"
+    bash -c "${APPLY_PATCH} && ${TRTLLM_COMMON_ENV} && export CUDA_VISIBLE_DEVICES=0,1 && trtllm-llmapi-launch trtllm-serve serve /model --backend pytorch --host 0.0.0.0 --port ${CTX_PORT} --extra_llm_api_options /logs/trtllm_prefill.yaml"
 CTX_PID="${SRUN_PIDS[-1]}"
 
 echo "Starting generation server on ${DECODE_NODELIST}"
@@ -231,7 +235,7 @@ start_bg srun \
     --no-container-entrypoint \
     --no-container-mount-home \
     --container-mounts "${SCRIPT_MOUNTS}" \
-    bash -c "${TRTLLM_COMMON_ENV} && trtllm-llmapi-launch trtllm-serve serve /model --backend pytorch --host 0.0.0.0 --port ${GEN_PORT} --extra_llm_api_options /logs/trtllm_decode.yaml"
+    bash -c "${APPLY_PATCH} && ${TRTLLM_COMMON_ENV} && trtllm-llmapi-launch trtllm-serve serve /model --backend pytorch --host 0.0.0.0 --port ${GEN_PORT} --extra_llm_api_options /logs/trtllm_decode.yaml"
 GEN_PID="${SRUN_PIDS[-1]}"
 
 require_alive "${CTX_PID}" "CTX_PID"
@@ -253,7 +257,7 @@ start_bg srun \
     --no-container-entrypoint \
     --no-container-mount-home \
     --container-mounts "${SCRIPT_MOUNTS}" \
-    bash -c "${TRTLLM_COMMON_ENV} && trtllm-serve disaggregated -c /logs/trtllm_disagg.yaml -t 7200 -r 7200"
+    bash -c "${APPLY_PATCH} && ${TRTLLM_COMMON_ENV} && trtllm-serve disaggregated -c /logs/trtllm_disagg.yaml -t 7200 -r 7200"
 DISAGG_PID="${SRUN_PIDS[-1]}"
 require_alive "${DISAGG_PID}" "DISAGG_PID"
 

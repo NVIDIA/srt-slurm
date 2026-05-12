@@ -1,12 +1,12 @@
 #!/bin/bash
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-#SBATCH --job-name=glm5_nvfp4_ISL8K_OSL1K_ctx1dep2_gen4tep8_batch4_allconc_eplb0_mtp3
-#SBATCH --nodes=10
-#SBATCH --ntasks=40
+#SBATCH --job-name=glm5_nvfp4_1P1D_eval
+#SBATCH --nodes=3
+#SBATCH --ntasks=12
 #SBATCH --ntasks-per-node=4
 #SBATCH --gpus-per-node=4
-#SBATCH --segment=10
+#SBATCH --segment=3
 #SBATCH --account=restricted
 #SBATCH --time=0
 #SBATCH --output=/data/home/rihuo/srt-slurm/outputs/%j/logs/sweep_%j.log
@@ -23,7 +23,7 @@ EVAL_CONTAINER_IMAGE="/data/home/rihuo/sglang-v0.5.10.post1-cu130.sqsh"
 MODEL_PATH="/data/home/rihuo/nvidia_GLM-5-NVFP4"
 MODEL_NAME="nvidia_GLM-5-NVFP4"
 INFMAX_WORKSPACE="/data/home/rihuo/InferenceMAX"
-PATCH_FILE="${SRTCTL_SOURCE}/custom_tokenizer_postproc_worker.patch"
+PATCH_FILE="${SRTCTL_SOURCE}/tests/custom_tokenizer_postproc_worker.patch"
 SCRIPT_MOUNTS="${LOG_DIR}:/logs,${MODEL_PATH}:/model,${SRTCTL_SOURCE}/configs:/configs,${SRTCTL_SOURCE}/src/srtctl/benchmarks/scripts:/srtctl-benchmarks,${INFMAX_WORKSPACE}:/infmax-workspace,${PATCH_FILE}:/tmp/postproc.patch"
 TRTLLM_SITE_PACKAGES="/usr/local/lib/python3.12/dist-packages"
 APPLY_PATCH="patch -p1 -d ${TRTLLM_SITE_PACKAGES} -N < /tmp/postproc.patch || true"
@@ -33,27 +33,17 @@ mkdir -p "${LOG_DIR}"
 exec 2>&1
 
 mapfile -t ALL_NODES < <(scontrol show hostnames "${SLURM_NODELIST}")
-if [ "${#ALL_NODES[@]}" -lt 10 ]; then
-    echo "ERROR: expected at least 10 nodes, got ${#ALL_NODES[@]}"
+if [ "${#ALL_NODES[@]}" -lt 3 ]; then
+    echo "ERROR: expected at least 3 nodes, got ${#ALL_NODES[@]}"
     exit 1
 fi
 
-HEAD_NODE="${ALL_NODES[0]}"
-PREFILL_NODE="${ALL_NODES[1]}"
-DECODE_NODES_0=("${ALL_NODES[2]}" "${ALL_NODES[3]}")
-DECODE_NODES_1=("${ALL_NODES[4]}" "${ALL_NODES[5]}")
-DECODE_NODES_2=("${ALL_NODES[6]}" "${ALL_NODES[7]}")
-DECODE_NODES_3=("${ALL_NODES[8]}" "${ALL_NODES[9]}")
-DECODE_NODELIST_0="$(IFS=,; echo "${DECODE_NODES_0[*]}")"
-DECODE_NODELIST_1="$(IFS=,; echo "${DECODE_NODES_1[*]}")"
-DECODE_NODELIST_2="$(IFS=,; echo "${DECODE_NODES_2[*]}")"
-DECODE_NODELIST_3="$(IFS=,; echo "${DECODE_NODES_3[*]}")"
+PREFILL_NODE="${ALL_NODES[0]}"
+DECODE_NODES=("${ALL_NODES[1]}" "${ALL_NODES[2]}")
+DECODE_NODELIST="$(IFS=,; echo "${DECODE_NODES[*]}")"
 
-CTX0_PORT=8001
-GEN0_PORT=8002
-GEN1_PORT=8003
-GEN2_PORT=8004
-GEN3_PORT=8005
+CTX_PORT=8001
+GEN_PORT=8002
 DISAGG_PORT=8000
 
 SRUN_PIDS=()
@@ -69,9 +59,9 @@ cleanup() {
     fi
 
     if [ $exit_code -eq 0 ]; then
-        echo "✓ Sweep completed successfully"
+        echo "Done"
     else
-        echo "✗ Sweep failed (exit code: $exit_code)"
+        echo "Exited with code: $exit_code"
     fi
     echo "End: $(date)"
 }
@@ -194,19 +184,16 @@ backend: pytorch
 context_servers:
   num_instances: 1
   urls:
-    - "${PREFILL_NODE}:${CTX0_PORT}"
+    - "${PREFILL_NODE}:${CTX_PORT}"
 generation_servers:
-  num_instances: 4
+  num_instances: 1
   urls:
-    - "${DECODE_NODES_0[0]}:${GEN0_PORT}"
-    - "${DECODE_NODES_1[0]}:${GEN1_PORT}"
-    - "${DECODE_NODES_2[0]}:${GEN2_PORT}"
-    - "${DECODE_NODES_3[0]}:${GEN3_PORT}"
+    - "${DECODE_NODES[0]}:${GEN_PORT}"
 EOF
 }
 
 echo "=========================================="
-echo "🚀 TensorRT-LLM Disaggregated Sweep"
+echo "TensorRT-LLM Disaggregated (1P 1D Eval)"
 echo "=========================================="
 echo "Job ID: ${SLURM_JOB_ID}"
 echo "Nodes: ${SLURM_JOB_NUM_NODES}"
@@ -214,16 +201,15 @@ echo "Container: ${CONTAINER_IMAGE}"
 echo "Start: $(date)"
 echo "=========================================="
 echo ""
-echo "Head node: ${HEAD_NODE}"
-echo "Prefill node: ${PREFILL_NODE}"
-echo "Decode nodes: ${DECODE_NODELIST_0}, ${DECODE_NODELIST_1}, ${DECODE_NODELIST_2}, ${DECODE_NODELIST_3}"
+echo "Prefill node (+ disagg + eval): ${PREFILL_NODE}"
+echo "Decode nodes: ${DECODE_NODELIST}"
 echo ""
 
 write_prefill_config "${LOG_DIR}/trtllm_prefill.yaml"
 write_decode_config "${LOG_DIR}/trtllm_decode.yaml"
 write_disagg_config "${LOG_DIR}/trtllm_disagg.yaml"
 
-echo "Starting context server"
+echo "Starting context server on ${PREFILL_NODE}"
 start_bg srun \
     --jobid "${SLURM_JOB_ID}" \
     --overlap \
@@ -231,94 +217,45 @@ start_bg srun \
     --nodes 1 \
     --ntasks 2 \
     --nodelist "${PREFILL_NODE}" \
-    --output "${LOG_DIR}/${PREFILL_NODE}_prefill_w0.out" \
+    --output "${LOG_DIR}/${PREFILL_NODE}_prefill.out" \
     --container-image "${CONTAINER_IMAGE}" \
     --no-container-entrypoint \
     --no-container-mount-home \
     --container-mounts "${SCRIPT_MOUNTS}" \
-    bash -c "${APPLY_PATCH} && ${TRTLLM_COMMON_ENV} && export CUDA_VISIBLE_DEVICES=0,1 && trtllm-llmapi-launch trtllm-serve serve /model --backend pytorch --host 0.0.0.0 --port ${CTX0_PORT} --extra_llm_api_options /logs/trtllm_prefill.yaml"
-CTX0_PID="${SRUN_PIDS[-1]}"
+    bash -c "${APPLY_PATCH} && ${TRTLLM_COMMON_ENV} && export CUDA_VISIBLE_DEVICES=0,1 && trtllm-llmapi-launch trtllm-serve serve /model --backend pytorch --host 0.0.0.0 --port ${CTX_PORT} --extra_llm_api_options /logs/trtllm_prefill.yaml"
+CTX_PID="${SRUN_PIDS[-1]}"
 
-echo "Starting generation servers"
+echo "Starting generation server on ${DECODE_NODELIST}"
 start_bg srun \
     --jobid "${SLURM_JOB_ID}" \
     --overlap \
     --mpi pmix \
     --nodes 2 \
     --ntasks 8 \
-    --nodelist "${DECODE_NODELIST_0}" \
-    --output "${LOG_DIR}/${DECODE_NODES_0[0]}_decode_w0.out" \
+    --nodelist "${DECODE_NODELIST}" \
+    --output "${LOG_DIR}/${DECODE_NODES[0]}_decode.out" \
     --container-image "${CONTAINER_IMAGE}" \
     --no-container-entrypoint \
     --no-container-mount-home \
     --container-mounts "${SCRIPT_MOUNTS}" \
-    bash -c "${APPLY_PATCH} && ${TRTLLM_COMMON_ENV} && trtllm-llmapi-launch trtllm-serve serve /model --backend pytorch --host 0.0.0.0 --port ${GEN0_PORT} --extra_llm_api_options /logs/trtllm_decode.yaml"
-GEN0_PID="${SRUN_PIDS[-1]}"
+    bash -c "${APPLY_PATCH} && ${TRTLLM_COMMON_ENV} && trtllm-llmapi-launch trtllm-serve serve /model --backend pytorch --host 0.0.0.0 --port ${GEN_PORT} --extra_llm_api_options /logs/trtllm_decode.yaml"
+GEN_PID="${SRUN_PIDS[-1]}"
 
-start_bg srun \
-    --jobid "${SLURM_JOB_ID}" \
-    --overlap \
-    --mpi pmix \
-    --nodes 2 \
-    --ntasks 8 \
-    --nodelist "${DECODE_NODELIST_1}" \
-    --output "${LOG_DIR}/${DECODE_NODES_1[0]}_decode_w1.out" \
-    --container-image "${CONTAINER_IMAGE}" \
-    --no-container-entrypoint \
-    --no-container-mount-home \
-    --container-mounts "${SCRIPT_MOUNTS}" \
-    bash -c "${APPLY_PATCH} && ${TRTLLM_COMMON_ENV} && trtllm-llmapi-launch trtllm-serve serve /model --backend pytorch --host 0.0.0.0 --port ${GEN1_PORT} --extra_llm_api_options /logs/trtllm_decode.yaml"
-GEN1_PID="${SRUN_PIDS[-1]}"
+require_alive "${CTX_PID}" "CTX_PID"
+require_alive "${GEN_PID}" "GEN_PID"
 
-start_bg srun \
-    --jobid "${SLURM_JOB_ID}" \
-    --overlap \
-    --mpi pmix \
-    --nodes 2 \
-    --ntasks 8 \
-    --nodelist "${DECODE_NODELIST_2}" \
-    --output "${LOG_DIR}/${DECODE_NODES_2[0]}_decode_w2.out" \
-    --container-image "${CONTAINER_IMAGE}" \
-    --no-container-entrypoint \
-    --no-container-mount-home \
-    --container-mounts "${SCRIPT_MOUNTS}" \
-    bash -c "${APPLY_PATCH} && ${TRTLLM_COMMON_ENV} && trtllm-llmapi-launch trtllm-serve serve /model --backend pytorch --host 0.0.0.0 --port ${GEN2_PORT} --extra_llm_api_options /logs/trtllm_decode.yaml"
-GEN2_PID="${SRUN_PIDS[-1]}"
+echo "Waiting for context and generation servers..."
+wait_for_http_ok "${PREFILL_NODE}" "${CTX_PORT}" "/health" 2700
+wait_for_http_ok "${DECODE_NODES[0]}" "${GEN_PORT}" "/health" 2700
 
-start_bg srun \
-    --jobid "${SLURM_JOB_ID}" \
-    --overlap \
-    --mpi pmix \
-    --nodes 2 \
-    --ntasks 8 \
-    --nodelist "${DECODE_NODELIST_3}" \
-    --output "${LOG_DIR}/${DECODE_NODES_3[0]}_decode_w3.out" \
-    --container-image "${CONTAINER_IMAGE}" \
-    --no-container-entrypoint \
-    --no-container-mount-home \
-    --container-mounts "${SCRIPT_MOUNTS}" \
-    bash -c "${APPLY_PATCH} && ${TRTLLM_COMMON_ENV} && trtllm-llmapi-launch trtllm-serve serve /model --backend pytorch --host 0.0.0.0 --port ${GEN3_PORT} --extra_llm_api_options /logs/trtllm_decode.yaml"
-GEN3_PID="${SRUN_PIDS[-1]}"
-
-for pid_name in CTX0_PID GEN0_PID GEN1_PID GEN2_PID GEN3_PID; do
-    require_alive "${!pid_name}" "${pid_name}"
-done
-
-echo "Waiting for context and generation servers"
-wait_for_http_ok "${PREFILL_NODE}" "${CTX0_PORT}" "/health" 2700
-wait_for_http_ok "${DECODE_NODES_0[0]}" "${GEN0_PORT}" "/health" 2700
-wait_for_http_ok "${DECODE_NODES_1[0]}" "${GEN1_PORT}" "/health" 2700
-wait_for_http_ok "${DECODE_NODES_2[0]}" "${GEN2_PORT}" "/health" 2700
-wait_for_http_ok "${DECODE_NODES_3[0]}" "${GEN3_PORT}" "/health" 2700
-
-echo "Starting disaggregated orchestration server"
+echo "Starting disaggregated orchestration server on ${PREFILL_NODE}"
 start_bg srun \
     --jobid "${SLURM_JOB_ID}" \
     --overlap \
     --nodes 1 \
     --ntasks 1 \
-    --nodelist "${HEAD_NODE}" \
-    --output "${LOG_DIR}/${HEAD_NODE}_disagg.out" \
+    --nodelist "${PREFILL_NODE}" \
+    --output "${LOG_DIR}/${PREFILL_NODE}_disagg.out" \
     --container-image "${CONTAINER_IMAGE}" \
     --no-container-entrypoint \
     --no-container-mount-home \
@@ -328,7 +265,7 @@ DISAGG_PID="${SRUN_PIDS[-1]}"
 require_alive "${DISAGG_PID}" "DISAGG_PID"
 
 echo "Waiting for disaggregated server to be ready..."
-if ! wait_for_http_ok "${HEAD_NODE}" "${DISAGG_PORT}" "/health" 2700; then
+if ! wait_for_http_ok "${PREFILL_NODE}" "${DISAGG_PORT}" "/health" 2700; then
     echo "ERROR: disaggregated server did not become healthy"
     exit 1
 fi
@@ -339,11 +276,11 @@ srun \
     --overlap \
     --nodes 1 \
     --ntasks 1 \
-    --nodelist "${HEAD_NODE}" \
+    --nodelist "${PREFILL_NODE}" \
     --output "${LOG_DIR}/eval.out" \
     --container-image "${EVAL_CONTAINER_IMAGE}" \
     --no-container-entrypoint \
     --no-container-mount-home \
     --container-mounts "${SCRIPT_MOUNTS}" \
-    --export="ALL,MODEL_NAME=${MODEL_NAME},EVAL_CONC=24,RUN_EVAL=true,IS_MULTINODE=true,FRAMEWORK=trtllm,PRECISION=fp4,MODEL=/model,PREFILL_TP=2,PREFILL_EP=2,PREFILL_DP_ATTN=true,PREFILL_NUM_WORKERS=1,DECODE_TP=8,DECODE_EP=8,DECODE_DP_ATTN=false,DECODE_NUM_WORKERS=4" \
+    --export="ALL,MODEL_NAME=${MODEL_NAME},EVAL_CONC=24,RUN_EVAL=true,IS_MULTINODE=true,FRAMEWORK=trtllm,PRECISION=fp4,MODEL=/model,PREFILL_TP=2,PREFILL_EP=2,PREFILL_DP_ATTN=true,PREFILL_NUM_WORKERS=1,DECODE_TP=8,DECODE_EP=8,DECODE_DP_ATTN=false,DECODE_NUM_WORKERS=1" \
     bash -c "bash /srtctl-benchmarks/lm-eval/bench.sh http://localhost:${DISAGG_PORT} /infmax-workspace"
