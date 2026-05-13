@@ -38,6 +38,7 @@ import random
 import time
 import warnings
 from collections.abc import AsyncGenerator, Collection
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime
 from multiprocessing import Pool, cpu_count
@@ -50,6 +51,8 @@ from backend_request_func import (
     ASYNC_REQUEST_FUNCS,
     RequestFuncInput,
     RequestFuncOutput,
+)
+from backend_request_func import (
     get_tokenizer as get_sa_bench_tokenizer,
 )
 from datasets import load_dataset
@@ -660,8 +663,8 @@ def calculate_metrics(
             valid_metrics.append(e2els)
             slo_values.append(goodput_config_dict["e2el"] / MILLISECONDS_TO_SECONDS_CONVERSION)
 
-        for req_metric in zip(*valid_metrics):
-            is_good_req = all([s >= r for s, r in zip(slo_values, req_metric)])
+        for req_metric in zip(*valid_metrics, strict=False):
+            is_good_req = all(s >= r for s, r in zip(slo_values, req_metric, strict=False))
             if is_good_req:
                 good_completed += 1
 
@@ -828,10 +831,7 @@ async def benchmark(
         if profile_output.success:
             print("Profiler started")
 
-    if burstiness == 1.0:
-        distribution = "Poisson process"
-    else:
-        distribution = "Gamma distribution"
+    distribution = "Poisson process" if burstiness == 1.0 else "Gamma distribution"
 
     print(f"Traffic request rate: {request_rate}")
     print(f"Burstiness factor: {burstiness} ({distribution})")
@@ -936,10 +936,8 @@ async def benchmark(
 
     if slow_down_task is not None and not slow_down_task.done():
         slow_down_task.cancel()
-        try:
+        with suppress(asyncio.CancelledError):
             await slow_down_task
-        except asyncio.CancelledError:
-            pass
         await _post_slow_down_all_aiohttp(slow_bases, None)
 
     if profile:
@@ -1131,10 +1129,7 @@ def main(args: argparse.Namespace):
     if args.api_urls:
         api_urls = args.api_urls
         api_url = api_urls[0]
-        if api_url.endswith(args.endpoint):
-            base_url = api_url[: -len(args.endpoint)]
-        else:
-            base_url = api_url.rsplit("/", 1)[0]
+        base_url = api_url[: -len(args.endpoint)] if api_url.endswith(args.endpoint) else api_url.rsplit("/", 1)[0]
     elif args.base_url is not None:
         api_url = f"{args.base_url}{args.endpoint}"
         base_url = f"{args.base_url}"
