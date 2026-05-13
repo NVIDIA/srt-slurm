@@ -219,9 +219,11 @@ def show_config_details(config: SrtConfig) -> None:
         for mount_spec in config.extra_mount:
             parts = mount_spec.split(":", 1)
             if len(parts) == 2:
-                mounts_table.add_row("recipe", parts[0], parts[1])
+                expanded_host = os.path.expanduser(os.path.expandvars(parts[0]))
+                mounts_table.add_row("recipe", expanded_host, parts[1])
             else:
-                mounts_table.add_row("recipe", mount_spec, mount_spec)
+                expanded_host = os.path.expanduser(os.path.expandvars(mount_spec))
+                mounts_table.add_row("recipe", expanded_host, mount_spec)
 
     # Recipe container_mounts (FormattablePath mounts)
     if config.container_mounts:

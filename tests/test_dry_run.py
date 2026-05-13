@@ -3,6 +3,7 @@
 
 """Tests for dry-run config details display (mounts, env vars)."""
 
+import os
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -66,6 +67,16 @@ class TestDryRunMounts:
         assert "/shared/cache" in output
         assert "/cache" in output
         assert "recipe" in output
+
+    def test_extra_mount_expands_env_and_user_in_dry_run(self, capsys):
+        with patch.dict(os.environ, {"SRT_EXTRA_ROOT": "/expanded/extra", "HOME": "/home/tester"}):
+            config = _make_config({"extra_mount": ["$SRT_EXTRA_ROOT:/extra", "~/cache:/cache"]})
+            show_config_details(config)
+        output = capsys.readouterr().out
+        assert "/expanded/extra" in output
+        assert "/home/tester/cache" in output
+        assert "$SRT_EXTRA_ROOT" not in output
+        assert "~/cache" not in output
 
     def test_cluster_mounts_from_srtslurm_yaml(self, capsys):
         cluster_mounts = {"/shared/datasets": "/datasets", "/shared/models": "/models"}
