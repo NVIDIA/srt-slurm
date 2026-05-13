@@ -58,7 +58,3 @@ class CustomBenchmarkRunner(BenchmarkRunner):
 
     def get_container_image(self, config: SrtConfig, runtime: RuntimeContext) -> str | Path:
         return config.benchmark.container_image or runtime.container_image
-
-    def get_environment(self, config: SrtConfig, runtime: RuntimeContext) -> dict[str, str]:
-        del runtime
-        return dict(config.benchmark.env)
