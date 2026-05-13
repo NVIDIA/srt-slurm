@@ -38,7 +38,7 @@ import random
 import time
 import warnings
 from collections.abc import AsyncGenerator, Collection
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from multiprocessing import Pool, cpu_count
 from typing import Any
@@ -72,6 +72,47 @@ from benchmark_utils import convert_to_pytorch_benchmark_format
 MILLISECONDS_TO_SECONDS_CONVERSION = 1000
 
 
+@dataclass
+class ClientStats:
+    scheduled: int = 0
+    started: int = 0
+    completed: int = 0
+    success: int = 0
+    error: int = 0
+    error_types: dict[str, int] = field(default_factory=dict)
+    last_print: float = field(default_factory=time.perf_counter)
+
+    def record_output(self, output: RequestFuncOutput) -> None:
+        self.completed += 1
+        if output.success:
+            self.success += 1
+        else:
+            self.error += 1
+            lines = [line.strip() for line in (output.error or "").splitlines() if line.strip()]
+            summary = (lines[-1] if lines else "<empty error>")[:160]
+            self.error_types[summary] = self.error_types.get(summary, 0) + 1
+
+    def maybe_print(self, *, final: bool = False) -> None:
+        now = time.perf_counter()
+        if not final and now - self.last_print < 5:
+            return
+        inflight = self.started - self.completed
+        print(
+            "[client-stats] "
+            f"scheduled={self.scheduled} started={self.started} completed={self.completed} "
+            f"success={self.success} error={self.error} inflight={inflight}",
+            flush=True,
+        )
+        self.last_print = now
+
+    def print_error_summary(self) -> None:
+        if not self.error_types:
+            return
+        print("[client-stats] error summary:", flush=True)
+        for error, count in sorted(self.error_types.items(), key=lambda item: item[1], reverse=True)[:10]:
+            print(f"[client-stats]   {count}x {error}", flush=True)
+
+
 async def _post_slow_down_all_aiohttp(
     server_bases: list[str],
     forward_sleep_time: float | None,
@@ -98,9 +139,7 @@ async def _post_slow_down_all_aiohttp(
                     ) as resp:
                         if resp.status >= 400:
                             body = await resp.text()
-                            print(
-                                f"Warning: slow_down POST {url} -> HTTP {resp.status}: {body[:500]}"
-                            )
+                            print(f"Warning: slow_down POST {url} -> HTTP {resp.status}: {body[:500]}")
                 except aiohttp.ClientError as e:
                     print(f"Warning: slow_down POST {url} failed: {e}")
     except aiohttp.ClientError as e:
@@ -310,7 +349,7 @@ def sample_vision_arena_requests(
         output_len = fixed_output_len
 
         assert isinstance(data["images"][0], Image), (
-            "Input image format must be `PIL.Image.Image`, " f"given {type(data['image'])}."
+            f"Input image format must be `PIL.Image.Image`, given {type(data['image'])}."
         )
         image: Image = data["images"][0]
         image = image.convert("RGB")
@@ -410,9 +449,7 @@ def _process_random_no_chat(args):
     serial loop in ``sample_random_requests``."""
     i, offset, input_len, output_len, prefix_token_ids, prefix_len, vocab_size = args
     tokenizer = _worker_tokenizer
-    prompt = tokenizer.decode(
-        prefix_token_ids + [(offset + i + j) % vocab_size for j in range(input_len)]
-    )
+    prompt = tokenizer.decode(prefix_token_ids + [(offset + i + j) % vocab_size for j in range(input_len)])
     re_encoded_sequence = tokenizer.encode(prompt, add_special_tokens=False)[: (prefix_len + input_len)]
     prompt = tokenizer.decode(re_encoded_sequence)
     return (prompt, int(prefix_len + input_len), int(output_len), None)
@@ -423,10 +460,8 @@ def _process_random_chat(args):
     existing serial loop in ``sample_random_requests``."""
     i, offset, input_len, output_len, chat_template_len, vocab_size = args
     tokenizer = _worker_tokenizer
-    origin_text = tokenizer.decode(
-        [(offset + i + j) % vocab_size for j in range(int(input_len * 1.5))]
-    )
-    re_encoded_sequence = tokenizer.encode(origin_text, add_special_tokens=False)[: input_len]
+    origin_text = tokenizer.decode([(offset + i + j) % vocab_size for j in range(int(input_len * 1.5))])
+    re_encoded_sequence = tokenizer.encode(origin_text, add_special_tokens=False)[:input_len]
     prompt_text = tokenizer.decode(re_encoded_sequence)
     prompt = tokenizer.apply_chat_template(
         [{"role": "user", "content": prompt_text}],
@@ -451,13 +486,19 @@ def sample_random_requests(
     custom_tokenizer: str | None = None,
 ) -> list[tuple[str, int, int]]:
     if use_chat_template:
-        chat_template_len = len(tokenizer.encode(
-            tokenizer.apply_chat_template(
-                [{"role": "user", "content": "a"}],
-                add_generation_prompt=True,
-                tokenize=False,
-            ), add_special_tokens=False,
-        )) - 1
+        chat_template_len = (
+            len(
+                tokenizer.encode(
+                    tokenizer.apply_chat_template(
+                        [{"role": "user", "content": "a"}],
+                        add_generation_prompt=True,
+                        tokenize=False,
+                    ),
+                    add_special_tokens=False,
+                )
+            )
+            - 1
+        )
         input_len = input_len - chat_template_len
 
     input_lens = np.random.randint(
@@ -478,16 +519,14 @@ def sample_random_requests(
     # worker function so behavior is identical in both.
     if use_chat_template:
         args_list = [
-            (i, int(offsets[i]), int(input_lens[i]), int(output_lens[i]),
-             chat_template_len, vocab_size)
+            (i, int(offsets[i]), int(input_lens[i]), int(output_lens[i]), chat_template_len, vocab_size)
             for i in range(num_prompts)
         ]
         worker_fn = _process_random_chat
     else:
         prefix_token_ids = np.random.randint(0, vocab_size, size=prefix_len).tolist()
         args_list = [
-            (i, int(offsets[i]), int(input_lens[i]), int(output_lens[i]),
-             prefix_token_ids, prefix_len, vocab_size)
+            (i, int(offsets[i]), int(input_lens[i]), int(output_lens[i]), prefix_token_ids, prefix_len, vocab_size)
             for i in range(num_prompts)
         ]
         worker_fn = _process_random_no_chat
@@ -504,7 +543,8 @@ def sample_random_requests(
             initargs=(tokenizer_id, tokenizer_mode, trust_remote_code, custom_tokenizer),
         ) as pool:
             input_requests = pool.map(
-                worker_fn, args_list,
+                worker_fn,
+                args_list,
                 chunksize=max(1, num_prompts // (num_workers * 4)),
             )
     else:
@@ -627,7 +667,7 @@ def calculate_metrics(
 
     if completed == 0:
         warnings.warn(
-            "All requests failed. This is likely due to a misconfiguration " "on the benchmark arguments.",
+            "All requests failed. This is likely due to a misconfiguration on the benchmark arguments.",
             stacklevel=2,
         )
 
@@ -667,7 +707,9 @@ def calculate_metrics(
                     tokens_per_second[second_bucket] += num_tokens
 
         if tokens_per_second:
-            smoothed_tokens_per_second = np.convolve(tokens_per_second, np.ones(peak_output_smooth_factor) / peak_output_smooth_factor, mode='valid')
+            smoothed_tokens_per_second = np.convolve(
+                tokens_per_second, np.ones(peak_output_smooth_factor) / peak_output_smooth_factor, mode="valid"
+            )
             peak_output_tokens_per_s = float(max(smoothed_tokens_per_second))
 
     metrics = BenchmarkMetrics(
@@ -703,6 +745,7 @@ def calculate_metrics(
 async def benchmark(
     backend: str,
     api_url: str,
+    api_urls: list[str] | None,
     base_url: str,
     model_id: str,
     model_name: str,
@@ -729,32 +772,39 @@ async def benchmark(
     else:
         raise ValueError(f"Unknown backend: {backend}")
 
+    request_api_urls = api_urls or [api_url]
+    if not request_api_urls:
+        raise ValueError("At least one API URL is required.")
+    if profile and len(request_api_urls) > 1:
+        raise ValueError("--profile is not supported with multiple --api-url targets.")
+
     print("Starting initial single prompt test run...")
     test_prompt, test_prompt_len, test_output_len, test_mm_content = input_requests[0]
     if backend != "openai-chat" and test_mm_content is not None:
         # multi-modal benchmark is only available on OpenAI Chat backend.
         raise ValueError("Multi-modal content is only supported on 'openai-chat' backend.")
-    test_input = RequestFuncInput(
-        model=model_id,
-        model_name=model_name,
-        prompt=test_prompt,
-        api_url=api_url,
-        prompt_len=test_prompt_len,
-        output_len=test_output_len,
-        logprobs=logprobs,
-        best_of=best_of,
-        multi_modal_content=test_mm_content,
-        ignore_eos=ignore_eos,
-    )
 
-    test_output = await request_func(request_func_input=test_input)
-    if not test_output.success:
-        raise ValueError(
-            "Initial test run failed - Please make sure benchmark arguments "
-            f"are correctly specified. Error: {test_output.error}"
+    for test_api_url in request_api_urls:
+        test_input = RequestFuncInput(
+            model=model_id,
+            model_name=model_name,
+            prompt=test_prompt,
+            api_url=test_api_url,
+            prompt_len=test_prompt_len,
+            output_len=test_output_len,
+            logprobs=logprobs,
+            best_of=best_of,
+            multi_modal_content=test_mm_content,
+            ignore_eos=ignore_eos,
         )
-    else:
-        print("Initial test run completed. Starting main benchmark run...")
+
+        test_output = await request_func(request_func_input=test_input)
+        if not test_output.success:
+            raise ValueError(
+                "Initial test run failed - Please make sure benchmark arguments "
+                f"are correctly specified. url={test_api_url} Error: {test_output.error}"
+            )
+    print("Initial test run completed. Starting main benchmark run...")
 
     if lora_modules:
         # For each input request, choose a LoRA module at random.
@@ -786,6 +836,10 @@ async def benchmark(
     print(f"Traffic request rate: {request_rate}")
     print(f"Burstiness factor: {burstiness} ({distribution})")
     print(f"Maximum request concurrency: {max_concurrency}")
+    if len(request_api_urls) > 1:
+        print(f"Sharding requests across {len(request_api_urls)} API URLs:")
+        for idx, target_url in enumerate(request_api_urls):
+            print(f"  [{idx}] {target_url}")
 
     slow_bases = [s.strip() for s in (slow_down_servers or []) if s.strip()]
     slow_down_task: asyncio.Task | None = None
@@ -806,10 +860,7 @@ async def benchmark(
 
             async def _slow_down_disable_after_wait():
                 await asyncio.sleep(slow_down_wait_time)
-                print(
-                    f"slow_down auto-disabled after {slow_down_wait_time}s "
-                    f"({len(bases_snapshot)} server(s))."
-                )
+                print(f"slow_down auto-disabled after {slow_down_wait_time}s ({len(bases_snapshot)} server(s)).")
                 await _post_slow_down_all_aiohttp(bases_snapshot, None)
 
             slow_down_task = asyncio.create_task(_slow_down_disable_after_wait())
@@ -821,37 +872,68 @@ async def benchmark(
     #    semaphore = (asyncio.Semaphore(max_concurrency)
     #                 if max_concurrency else contextlib.nullcontext())
     semaphore = asyncio.Semaphore(max_concurrency) if max_concurrency else None
+    stats = ClientStats()
 
     async def limited_request_func(request_func_input, pbar):
+        async def run_request():
+            stats.started += 1
+            stats.maybe_print()
+            output = await request_func(request_func_input=request_func_input, pbar=pbar, session=session)
+            stats.record_output(output)
+            stats.maybe_print()
+            return output
+
         if semaphore is None:
-            return await request_func(request_func_input=request_func_input, pbar=pbar)
+            return await run_request()
         async with semaphore:
-            return await request_func(request_func_input=request_func_input, pbar=pbar)
+            return await run_request()
 
     benchmark_start_time = time.perf_counter()
     tasks: list[asyncio.Task] = []
-    async for request in get_request(input_requests, request_rate, burstiness):
-        prompt, prompt_len, output_len, mm_content = request
-        req_model_id, req_model_name = model_id, model_name
-        if lora_modules:
-            req_lora_module = next(lora_modules)
-            req_model_id, req_model_name = req_lora_module, req_lora_module
 
-        request_func_input = RequestFuncInput(
-            model=req_model_id,
-            model_name=req_model_name,
-            prompt=prompt,
-            api_url=api_url,
-            prompt_len=prompt_len,
-            output_len=output_len,
-            logprobs=logprobs,
-            best_of=best_of,
-            multi_modal_content=mm_content,
-            ignore_eos=ignore_eos,
-        )
-        tasks.append(asyncio.create_task(limited_request_func(request_func_input=request_func_input, pbar=pbar)))
-    outputs: list[RequestFuncOutput] = await asyncio.gather(*tasks)
-    
+    conn_limit_env = os.environ.get("SA_BENCH_AIOHTTP_CONN_LIMIT")
+    connector_limit = int(conn_limit_env) if conn_limit_env else 0
+    print(
+        f"SA-Bench shared aiohttp session: connector_limit={connector_limit} limit_per_host=0 ttl_dns_cache=300",
+        flush=True,
+    )
+    connector = aiohttp.TCPConnector(
+        limit=connector_limit,
+        limit_per_host=0,
+        ttl_dns_cache=300,
+        enable_cleanup_closed=True,
+    )
+    timeout = aiohttp.ClientTimeout(total=6 * 60 * 60)
+    async with aiohttp.ClientSession(trust_env=True, timeout=timeout, connector=connector) as session:
+        request_idx = 0
+        async for request in get_request(input_requests, request_rate, burstiness):
+            prompt, prompt_len, output_len, mm_content = request
+            req_model_id, req_model_name = model_id, model_name
+            if lora_modules:
+                req_lora_module = next(lora_modules)
+                req_model_id, req_model_name = req_lora_module, req_lora_module
+            target_api_url = request_api_urls[request_idx % len(request_api_urls)]
+            request_idx += 1
+
+            request_func_input = RequestFuncInput(
+                model=req_model_id,
+                model_name=req_model_name,
+                prompt=prompt,
+                api_url=target_api_url,
+                prompt_len=prompt_len,
+                output_len=output_len,
+                logprobs=logprobs,
+                best_of=best_of,
+                multi_modal_content=mm_content,
+                ignore_eos=ignore_eos,
+            )
+            stats.scheduled += 1
+            stats.maybe_print()
+            tasks.append(asyncio.create_task(limited_request_func(request_func_input=request_func_input, pbar=pbar)))
+        outputs: list[RequestFuncOutput] = await asyncio.gather(*tasks)
+        stats.maybe_print(final=True)
+        stats.print_error_summary()
+
     if slow_down_task is not None and not slow_down_task.done():
         slow_down_task.cancel()
         try:
@@ -919,6 +1001,8 @@ async def benchmark(
         "generated_texts": [output.generated_text for output in outputs],
         "errors": [output.error for output in outputs],
     }
+    if len(request_api_urls) > 1:
+        result["api_urls"] = request_api_urls
 
     def process_one_metric(
         # E.g., "ttft"
@@ -1044,12 +1128,21 @@ def main(args: argparse.Namespace):
     tokenizer_id = args.tokenizer if args.tokenizer is not None else args.model
     tokenizer_mode = args.tokenizer_mode
 
-    if args.base_url is not None:
+    if args.api_urls:
+        api_urls = args.api_urls
+        api_url = api_urls[0]
+        if api_url.endswith(args.endpoint):
+            base_url = api_url[: -len(args.endpoint)]
+        else:
+            base_url = api_url.rsplit("/", 1)[0]
+    elif args.base_url is not None:
         api_url = f"{args.base_url}{args.endpoint}"
         base_url = f"{args.base_url}"
+        api_urls = None
     else:
         api_url = f"http://{args.host}:{args.port}{args.endpoint}"
         base_url = f"http://{args.host}:{args.port}"
+        api_urls = None
 
     tokenizer = load_tokenizer(
         tokenizer_id,
@@ -1064,11 +1157,9 @@ def main(args: argparse.Namespace):
         # HF DeepSeek-V4 tokenizer has no jinja chat_template and would otherwise
         # crash deep inside transformers with a generic ValueError.
         from transformers.tokenization_utils_base import PreTrainedTokenizerBase
+
         has_jinja = bool(getattr(tokenizer, "chat_template", None))
-        has_method_override = (
-            type(tokenizer).apply_chat_template
-            is not PreTrainedTokenizerBase.apply_chat_template
-        )
+        has_method_override = type(tokenizer).apply_chat_template is not PreTrainedTokenizerBase.apply_chat_template
         if not has_jinja and not has_method_override:
             raise ValueError(
                 "--use-chat-template was set, but the loaded tokenizer "
@@ -1099,7 +1190,6 @@ def main(args: argparse.Namespace):
             num_requests=args.num_prompts,
         )
     else:
-
         if args.dataset is not None:
             warnings.warn(
                 "The '--dataset' argument will be deprecated in the next "
@@ -1146,9 +1236,9 @@ def main(args: argparse.Namespace):
                     for prompt, prompt_formatted, prompt_len, output_len, _ in input_requests
                 ]
             else:
-                assert (
-                    tokenizer.chat_template or tokenizer.default_chat_template
-                ), "Tokenizer/model must have chat template for sonnet dataset."
+                assert tokenizer.chat_template or tokenizer.default_chat_template, (
+                    "Tokenizer/model must have chat template for sonnet dataset."
+                )
                 input_requests = sample_sonnet_requests(
                     dataset_path=args.dataset_path,
                     num_requests=args.num_prompts,
@@ -1202,6 +1292,7 @@ def main(args: argparse.Namespace):
         benchmark(
             backend=backend,
             api_url=api_url,
+            api_urls=api_urls,
             base_url=base_url,
             model_id=model_id,
             model_name=model_name,
@@ -1251,6 +1342,8 @@ def main(args: argparse.Namespace):
         result_json["request_rate"] = args.request_rate if args.request_rate < float("inf") else "inf"
         result_json["burstiness"] = args.burstiness
         result_json["max_concurrency"] = args.max_concurrency
+        if args.api_urls:
+            result_json["api_urls"] = args.api_urls
 
         # Merge with benchmark result
         result_json = {**result_json, **benchmark_result}
@@ -1282,6 +1375,17 @@ if __name__ == "__main__":
         default=None,
         help="Server or API base url if not using http host and port.",
     )
+    parser.add_argument(
+        "--api-url",
+        action="append",
+        dest="api_urls",
+        default=None,
+        help=(
+            "Full API URL to send requests to. Repeat to shard requests "
+            "round-robin across multiple frontend endpoints. Overrides "
+            "--base-url/--host/--port for request traffic."
+        ),
+    )
     # Use 127.0.0.1 here instead of localhost to force the use of ipv4
     parser.add_argument("--host", type=str, default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
@@ -1295,7 +1399,7 @@ if __name__ == "__main__":
         "--dataset",
         type=str,
         default=None,
-        help="Path to the ShareGPT dataset, will be deprecated in the " "next release.",
+        help="Path to the ShareGPT dataset, will be deprecated in the next release.",
     )
     parser.add_argument(
         "--dataset-name",
@@ -1308,7 +1412,7 @@ if __name__ == "__main__":
         "--dataset-path",
         type=str,
         default=None,
-        help="Path to the sharegpt/sonnet dataset. " "Or the huggingface dataset ID if using HF dataset.",
+        help="Path to the sharegpt/sonnet dataset. Or the huggingface dataset ID if using HF dataset.",
     )
     parser.add_argument(
         "--max-concurrency",
@@ -1362,7 +1466,7 @@ if __name__ == "__main__":
         "--best-of",
         type=int,
         default=1,
-        help="Generates `best_of` sequences per prompt and " "returns the best one.",
+        help="Generates `best_of` sequences per prompt and returns the best one.",
     )
     parser.add_argument("--use-beam-search", action="store_true")
     parser.add_argument(
@@ -1418,7 +1522,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--profile",
         action="store_true",
-        help="Use Torch Profiler. The endpoint must be launched with " "VLLM_TORCH_PROFILER_DIR to enable profiler.",
+        help="Use Torch Profiler. The endpoint must be launched with VLLM_TORCH_PROFILER_DIR to enable profiler.",
     )
     parser.add_argument(
         "--save-result",
@@ -1512,7 +1616,7 @@ if __name__ == "__main__":
         "--sharegpt-output-len",
         type=int,
         default=None,
-        help="Output length for each request. Overrides the output length " "from the ShareGPT dataset.",
+        help="Output length for each request. Overrides the output length from the ShareGPT dataset.",
     )
 
     random_group = parser.add_argument_group("random dataset options")
@@ -1532,7 +1636,7 @@ if __name__ == "__main__":
         "--random-range-ratio",
         type=float,
         default=1.0,
-        help="Range of sampled ratio of input/output length, " "used only for random sampling.",
+        help="Range of sampled ratio of input/output length, used only for random sampling.",
     )
     random_group.add_argument(
         "--random-prefix-len",
@@ -1564,7 +1668,7 @@ if __name__ == "__main__":
         "--hf-output-len",
         type=int,
         default=None,
-        help="Output length for each request. Overrides the output lengths " "from the sampled HF dataset.",
+        help="Output length for each request. Overrides the output lengths from the sampled HF dataset.",
     )
 
     parser.add_argument(

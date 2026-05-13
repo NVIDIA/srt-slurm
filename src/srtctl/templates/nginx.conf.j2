@@ -13,6 +13,7 @@ http {
         {% for frontend_host in frontend_hosts %}
         server {{ frontend_host }}:{{ backend_port | default(8000) }};
         {% endfor %}
+        keepalive 4096;
     }
 
     # The main server block that listens for incoming traffic.
@@ -23,6 +24,8 @@ http {
             # Pass the request to the upstream group defined above.
             proxy_pass http://backend_servers;
 
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
             proxy_buffering off;
             proxy_read_timeout 24h;
             proxy_send_timeout 24h;
@@ -37,7 +40,7 @@ events {
     # (Max clients = worker_connections * worker_processes)
     # Should be equal to `ulimit -n / worker_processes`
     #
-    worker_connections 65535;
+    worker_connections 1048576;
 
     #
     # Let each process accept multiple connections.
