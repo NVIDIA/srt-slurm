@@ -116,10 +116,9 @@ class TestTelemetryConfigGeneration:
             frontend_topology=topology,
             runtime=runtime,
             telemetry=telemetry,
-            storage_path="/logs/telemetry/2026-04-27/test_12345",
         )
 
-        assert 'storage = "/logs/telemetry/2026-04-27/test_12345"' in config_text
+        assert 'storage = "/logs/telemetry"' in config_text
         assert 'name = "dcgm_node-a"' in config_text
         assert 'url = "http://10.0.0.1:8081/metrics"' in config_text
         assert '"cluster" = "pdx"' in config_text
@@ -185,7 +184,7 @@ class TestTelemetryStageMixin:
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
     @patch(
         "srtctl.cli.mixins.telemetry_stage.generate_telemetry_config",
-        return_value='storage = "/logs/telemetry/2026-04-27/test_12345"\n',
+        return_value='storage = "/logs/telemetry"\n',
     )
     def test_start_telemetry_starts_exporters_and_scraper(self, _mock_config, mock_srun, tmp_path):
         mock_srun.return_value = MagicMock()
@@ -195,9 +194,7 @@ class TestTelemetryStageMixin:
 
         assert len(procs) == 3
         assert (tmp_path / "telemetry_config.toml").exists()
-        # Local working dir is pre-created; storage dir is NOT (scraper rejects existing).
         assert (tmp_path / "telemetry" / "local").exists()
-        assert not (tmp_path / "telemetry" / "2026-04-27").exists()
         assert mock_srun.call_count == 3
 
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
@@ -216,7 +213,7 @@ class TestTelemetryStageMixin:
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
     @patch(
         "srtctl.cli.mixins.telemetry_stage.generate_telemetry_config",
-        return_value='storage = "/logs/telemetry/2026-04-27/test_12345"\n',
+        return_value='storage = "/logs/telemetry"\n',
     )
     def test_exporter_srun_passes_nodes_arg_matching_nodelist(self, _mock_config, mock_srun, tmp_path):
         """Regression: exporter srun must pass nodes=N when nodelist has N entries.
@@ -239,23 +236,3 @@ class TestTelemetryStageMixin:
             # must invoke the binary directly rather than via `bash -c`.
             assert call.kwargs.get("use_bash_wrapper") is False
 
-    @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
-    @patch(
-        "srtctl.cli.mixins.telemetry_stage.generate_telemetry_config",
-        return_value='storage = "/logs/telemetry/2026-04-27/test_12345"\n',
-    )
-    def test_storage_path_is_nested_with_date_and_run_name(self, mock_config, mock_srun, tmp_path):
-        """Regression: storage path passed to TOML generator must nest under <base>/<date>/<run-name>.
-
-        Newer tachometer-scraper rejects pre-existing storage dirs and demands
-        the nested form.
-        """
-        mock_srun.return_value = MagicMock()
-        harness = self._make_harness(tmp_path, worker_nodes=["node-a"])
-        harness.start_telemetry()
-
-        storage_path = mock_config.call_args.kwargs["storage_path"]
-        assert storage_path.startswith("/logs/telemetry/")
-        assert storage_path.endswith("/test_12345")
-        date_segment = storage_path.split("/")[3]
-        assert len(date_segment) == 10 and date_segment[4] == "-" and date_segment[7] == "-"

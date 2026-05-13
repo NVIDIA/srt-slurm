@@ -36,15 +36,8 @@ def generate_telemetry_config(
     frontend_topology: FrontendTopology,
     runtime: RuntimeContext,
     telemetry: TelemetryConfig,
-    storage_path: str,
 ) -> str:
-    """Generate telemetry TOML from backend and frontend topology.
-
-    storage_path is the container-side absolute path the scraper writes
-    final parquets to. Must be a fresh nested path (e.g.
-    ``/logs/telemetry/2026-04-27/myrun_4845``) — the scraper rejects
-    pre-existing storage directories.
-    """
+    """Generate telemetry TOML from backend and frontend topology."""
     dcgm_exporter = telemetry.dcgm_exporter
     node_exporter = telemetry.node_exporter
     if dcgm_exporter is None:
@@ -128,7 +121,7 @@ def generate_telemetry_config(
 
     return _dump_toml(
         endpoints=endpoints,
-        storage=storage_path,
+        storage=f"/logs/{telemetry.storage_subdir}",
     )
 
 
