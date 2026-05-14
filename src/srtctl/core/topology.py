@@ -22,53 +22,17 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Literal
 
+from srtctl.ports import (
+    DYN_SYSTEM_PORT_BASE,
+    KV_EVENTS_PORT_BASE,
+    SGLANG_BOOTSTRAP_PORT_BASE,
+    SGLANG_HTTP_PORT_BASE,
+    SGLANG_HTTP_PORT_STRIDE,
+    VLLM_NIXL_PORT_BASE,
+)
+
 # Worker mode type
 WorkerMode = Literal["prefill", "decode", "agg"]
-
-
-PORT_JITTER_MOD = 5000  # Spread per-job http port over 5000 odd values (1, 3, …, 9999).
-
-
-def compute_port_jitter(job_id: str | None, mod: int = PORT_JITTER_MOD) -> int:
-    """Deterministic per-job ODD offset to avoid cross-job port collisions.
-
-    SGLang's DP-attention path derives ZMQ TCP ports from --port (rpc_port =
-    port + 236). Two failure modes drive this jitter:
-
-    1. **Cross-job leak** — when every job uses --port 30000, a leaked
-       process from a previous run on the recycled physical node holds
-       the deterministic rpc_port and the new run can't bind.
-    2. **Kernel even-port preference** — Linux ``__inet_hash_connect``
-       allocates ports for outbound connect() in two passes: even ports
-       first, odd ports only after the entire even pool is exhausted (see
-       ``net/ipv4/inet_hashtables.c`` — ``offset &= ~1U`` then
-       ``port += 2``). NIXL/UCX/NCCL/torch.distributed open many outbound
-       sockets during prefill engine init; if our planned ``rpc_port`` is
-       both inside the kernel's ephemeral range
-       (``/proc/sys/net/ipv4/ip_local_port_range``, default 32768-60999)
-       AND even, the kernel happily hands it to one of those connect()
-       calls before SGLang's later ``bind('tcp://127.0.0.1:<port>')`` can
-       claim it (see ``engine.py:225``). Result: ``zmq.error.ZMQError:
-       Address already in use`` ~15 min into engine init, after model load.
-
-    Forcing the offset ODD (since 236 is even, parity is preserved
-    rpc_port == http_port mod 2) keeps rpc_port out of the kernel's
-    first-pass connect() pool. Empirically: the 5 jobs that hit failure
-    mode 2 in the 145859-145876 sweep all had even job IDs (and thus
-    even rpc_ports under the previous mod=10000 jitter); the matching
-    odd-id jobs all succeeded the prefill stage.
-
-    Mapping: ``((job_id % 5000) * 2) + 1`` → distinct odd values in
-    [1, 9999], period 5000 jobs. Two consecutive job IDs always land on
-    different odd offsets (delta = 2).
-    """
-    if job_id is None:
-        return 0
-    try:
-        return ((int(job_id) % mod) * 2) + 1
-    except (TypeError, ValueError):
-        # Non-numeric job id (tests, manual invocations) — no jitter.
-        return 0
 
 
 @dataclass
@@ -79,57 +43,39 @@ class NodePortAllocator:
     on an 8-GPU node), they need unique ports. This allocator tracks port
     assignments per node and hands out the next available port.
 
-    Port ranges (non-overlapping):
-        - kv_events_port: 5550+  (global) - ZMQ port for kv-events publishing
-        - nixl_port:      6550+  (global) - NIXL side channel for KV transfers (vLLM)
-        - http_port:      30000+ (per node) - HTTP serving port
-        - bootstrap_port: 31000+ (per node) - P/D coordination port (prefill only)
+    Default port ranges (non-overlapping):
+        - kv_events_port: 5200+ (global) - ZMQ port for kv-events publishing
+        - nixl_port:      5400+ (global) - NIXL side channel for KV transfers (vLLM)
+        - http_port:      6100+ (per node) - HTTP serving port
+        - bootstrap_port: 7200+ (per node) - P/D coordination port (prefill only)
 
     Example:
         allocator = NodePortAllocator()
 
         # Two workers on same node get different ports
-        port1 = allocator.next_http_port("node0")  # 30000
-        port2 = allocator.next_http_port("node0")  # 30001
+        port1 = allocator.next_http_port("node0")  # 6100
+        port2 = allocator.next_http_port("node0")  # 6132
 
         # Different node starts fresh
-        port3 = allocator.next_http_port("node1")  # 30000
-
-    Use ``NodePortAllocator.from_job_id(job_id)`` to construct an allocator
-    whose ``base_http_port`` and ``base_bootstrap_port`` are shifted by a
-    deterministic per-job offset — see ``compute_port_jitter``.
+        port3 = allocator.next_http_port("node1")  # 6100
     """
 
-    base_http_port: int = 30000
-    base_bootstrap_port: int = 31000
-    base_kv_events_port: int = 5550
-    base_nixl_port: int = 6550  # NIXL side channel ports (must not overlap with kv_events)
+    base_http_port: int = SGLANG_HTTP_PORT_BASE
+    base_bootstrap_port: int = SGLANG_BOOTSTRAP_PORT_BASE
+    base_kv_events_port: int = KV_EVENTS_PORT_BASE
+    base_nixl_port: int = VLLM_NIXL_PORT_BASE
 
     _http_ports: dict[str, int] = field(default_factory=dict, repr=False)
     _bootstrap_ports: dict[str, int] = field(default_factory=dict, repr=False)
     _next_kv_events_port: int = field(default=0, repr=False)  # Global counter
     _next_nixl_port: int = field(default=0, repr=False)  # Global counter for NIXL
 
-    @classmethod
-    def from_job_id(cls, job_id: str | None) -> "NodePortAllocator":
-        """Build an allocator with per-job jitter applied to base_http/bootstrap ports.
-
-        Within one job, http_base and bootstrap_base move by the same offset,
-        preserving the 1000-port gap that keeps them from colliding (rpc_port
-        only reaches +237 from http_base).
-        """
-        jitter = compute_port_jitter(job_id)
-        return cls(
-            base_http_port=30000 + jitter,
-            base_bootstrap_port=31000 + jitter,
-        )
-
     def next_http_port(self, node: str) -> int:
         """Get next available HTTP port for a node."""
         if node not in self._http_ports:
             self._http_ports[node] = self.base_http_port
         port = self._http_ports[node]
-        self._http_ports[node] += 1000
+        self._http_ports[node] += SGLANG_HTTP_PORT_STRIDE
         return port
 
     def next_bootstrap_port(self, node: str) -> int:
@@ -428,7 +374,7 @@ def allocate_endpoints(
 
 def endpoints_to_processes(
     endpoints: list[Endpoint],
-    base_sys_port: int = 8081,
+    base_sys_port: int = DYN_SYSTEM_PORT_BASE,
     port_allocator: NodePortAllocator | None = None,
 ) -> list[Process]:
     """Convert endpoints to physical processes.
