@@ -1598,6 +1598,310 @@ class TestVLLMDataParallelMode:
         assert "--is-decode-worker" not in cmd
 
 
+class TestVLLMDataParallelHybridLB:
+    """Tests for vLLM Data Parallel with hybrid load balancing mode."""
+
+    def test_hybrid_lb_mode_detection(self):
+        """Test that hybrid LB mode is correctly detected from config."""
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+
+        # Not hybrid LB when only data-parallel-size is set (standard DP)
+        backend_dp = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                decode={"data-parallel-size": 8},
+            )
+        )
+        assert backend_dp._is_dp_mode("decode") is True
+        assert backend_dp._is_dp_hybrid_lb_mode("decode") is False
+
+        # Hybrid LB when both data-parallel-size and data-parallel-hybrid-lb are set
+        backend_hybrid = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                decode={"data-parallel-size": 8, "data-parallel-hybrid-lb": True},
+            )
+        )
+        assert backend_hybrid._is_dp_mode("decode") is True
+        assert backend_hybrid._is_dp_hybrid_lb_mode("decode") is True
+
+        # Not hybrid LB when data-parallel-hybrid-lb is False
+        backend_false = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                decode={"data-parallel-size": 8, "data-parallel-hybrid-lb": False},
+            )
+        )
+        assert backend_false._is_dp_hybrid_lb_mode("decode") is False
+
+        # Not hybrid LB when no DP at all
+        backend_none = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                decode={"tensor-parallel-size": 4},
+            )
+        )
+        assert backend_none._is_dp_hybrid_lb_mode("decode") is False
+
+    def test_hybrid_lb_creates_per_node_processes(self):
+        """Hybrid LB should create one process per node (not per GPU)."""
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Endpoint
+
+        backend = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                decode={
+                    "data-parallel-size": 8,
+                    "data-parallel-hybrid-lb": True,
+                    "tensor-parallel-size": 2,
+                },
+            )
+        )
+
+        endpoint = Endpoint(
+            mode="decode",
+            index=0,
+            nodes=("node0", "node1"),
+            gpu_indices=frozenset(range(8)),
+            gpus_per_node=8,
+        )
+
+        processes = backend.endpoints_to_processes([endpoint])
+
+        # Should create 2 processes (1 per node), NOT 16 (1 per GPU)
+        assert len(processes) == 2
+        assert processes[0].node == "node0"
+        assert processes[1].node == "node1"
+        assert len(processes[0].gpu_indices) == 8
+        assert len(processes[1].gpu_indices) == 8
+
+    def test_hybrid_lb_command_includes_local_dp_flags(self):
+        """Hybrid LB command should include --data-parallel-size-local and --data-parallel-start-rank."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Process
+
+        backend = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                decode={
+                    "data-parallel-size": 8,
+                    "data-parallel-hybrid-lb": True,
+                    "tensor-parallel-size": 2,
+                },
+            )
+        )
+
+        # Two nodes, each with 8 GPUs, TP=2 → 4 local DP instances per node
+        proc0 = Process(
+            node="node0",
+            gpu_indices=frozenset(range(8)),
+            sys_port=8081,
+            http_port=30000,
+            endpoint_mode="decode",
+            endpoint_index=0,
+            node_rank=0,
+        )
+        proc1 = Process(
+            node="node1",
+            gpu_indices=frozenset(range(8)),
+            sys_port=8082,
+            http_port=31000,
+            endpoint_mode="decode",
+            endpoint_index=0,
+            node_rank=1,
+        )
+        endpoint_processes = [proc0, proc1]
+
+        mock_runtime = MagicMock()
+        mock_runtime.model_path = Path("/model")
+        mock_runtime.is_hf_model = False
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            cmd0 = backend.build_worker_command(
+                process=proc0, endpoint_processes=endpoint_processes, runtime=mock_runtime,
+            )
+            cmd1 = backend.build_worker_command(
+                process=proc1, endpoint_processes=endpoint_processes, runtime=mock_runtime,
+            )
+
+        # Node 0: local_dp=4, start_rank=0
+        assert "--data-parallel-size-local" in cmd0
+        idx = cmd0.index("--data-parallel-size-local")
+        assert cmd0[idx + 1] == "4"
+        assert "--data-parallel-start-rank" in cmd0
+        idx = cmd0.index("--data-parallel-start-rank")
+        assert cmd0[idx + 1] == "0"
+
+        # Node 1: local_dp=4, start_rank=4
+        assert "--data-parallel-size-local" in cmd1
+        idx = cmd1.index("--data-parallel-size-local")
+        assert cmd1[idx + 1] == "4"
+        assert "--data-parallel-start-rank" in cmd1
+        idx = cmd1.index("--data-parallel-start-rank")
+        assert cmd1[idx + 1] == "4"
+
+        # Both should include the passthrough flags
+        for cmd in [cmd0, cmd1]:
+            assert "--data-parallel-size" in cmd
+            assert "--data-parallel-hybrid-lb" in cmd
+
+        # Should NOT include per-GPU DP flags
+        for cmd in [cmd0, cmd1]:
+            assert "--data-parallel-rank" not in cmd
+            assert "--data-parallel-address" not in cmd
+            assert "--data-parallel-rpc-port" not in cmd
+
+        # Should NOT include TP multi-node flags
+        for cmd in [cmd0, cmd1]:
+            assert "--master-addr" not in cmd
+            assert "--nnodes" not in cmd
+            assert "--headless" not in cmd
+
+    def test_hybrid_lb_single_node(self):
+        """Hybrid LB on a single node should set start_rank=0 and correct local size."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Process
+
+        backend = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                decode={
+                    "data-parallel-size": 4,
+                    "data-parallel-hybrid-lb": True,
+                    "tensor-parallel-size": 2,
+                },
+            )
+        )
+
+        proc = Process(
+            node="node0",
+            gpu_indices=frozenset(range(8)),
+            sys_port=8081,
+            http_port=30000,
+            endpoint_mode="decode",
+            endpoint_index=0,
+            node_rank=0,
+        )
+
+        mock_runtime = MagicMock()
+        mock_runtime.model_path = Path("/model")
+        mock_runtime.is_hf_model = False
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            cmd = backend.build_worker_command(
+                process=proc, endpoint_processes=[proc], runtime=mock_runtime,
+            )
+
+        idx = cmd.index("--data-parallel-size-local")
+        assert cmd[idx + 1] == "4"  # 8 GPUs / TP=2 = 4
+        idx = cmd.index("--data-parallel-start-rank")
+        assert cmd[idx + 1] == "0"
+
+    def test_hybrid_lb_tp1_default(self):
+        """When tensor-parallel-size is not set, default to 1 (each GPU is a DP instance)."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Process
+
+        backend = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                decode={
+                    "data-parallel-size": 8,
+                    "data-parallel-hybrid-lb": True,
+                    # No tensor-parallel-size → defaults to 1
+                },
+            )
+        )
+
+        proc = Process(
+            node="node0",
+            gpu_indices=frozenset(range(8)),
+            sys_port=8081,
+            http_port=30000,
+            endpoint_mode="decode",
+            endpoint_index=0,
+            node_rank=0,
+        )
+
+        mock_runtime = MagicMock()
+        mock_runtime.model_path = Path("/model")
+        mock_runtime.is_hf_model = False
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            cmd = backend.build_worker_command(
+                process=proc, endpoint_processes=[proc], runtime=mock_runtime,
+            )
+
+        idx = cmd.index("--data-parallel-size-local")
+        assert cmd[idx + 1] == "8"  # 8 GPUs / TP=1 = 8
+
+    def test_hybrid_lb_uneven_gpu_distribution(self):
+        """Hybrid LB with workers having different GPU counts computes correct ranks."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Process
+
+        backend = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                decode={
+                    "data-parallel-size": 6,
+                    "data-parallel-hybrid-lb": True,
+                    "tensor-parallel-size": 2,
+                },
+            )
+        )
+
+        # Worker with 8 GPUs → 4 local DP instances
+        proc0 = Process(
+            node="node0",
+            gpu_indices=frozenset(range(8)),
+            sys_port=8081,
+            http_port=30000,
+            endpoint_mode="decode",
+            endpoint_index=0,
+            node_rank=0,
+        )
+        # Worker with 4 GPUs → 2 local DP instances
+        proc1 = Process(
+            node="node1",
+            gpu_indices=frozenset(range(4)),
+            sys_port=8082,
+            http_port=31000,
+            endpoint_mode="decode",
+            endpoint_index=0,
+            node_rank=1,
+        )
+        endpoint_processes = [proc0, proc1]
+
+        mock_runtime = MagicMock()
+        mock_runtime.model_path = Path("/model")
+        mock_runtime.is_hf_model = False
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            cmd0 = backend.build_worker_command(
+                process=proc0, endpoint_processes=endpoint_processes, runtime=mock_runtime,
+            )
+            cmd1 = backend.build_worker_command(
+                process=proc1, endpoint_processes=endpoint_processes, runtime=mock_runtime,
+            )
+
+        # Node 0: 8 GPUs / TP=2 = 4 local, start=0
+        idx = cmd0.index("--data-parallel-size-local")
+        assert cmd0[idx + 1] == "4"
+        idx = cmd0.index("--data-parallel-start-rank")
+        assert cmd0[idx + 1] == "0"
+
+        # Node 1: 4 GPUs / TP=2 = 2 local, start=4
+        idx = cmd1.index("--data-parallel-size-local")
+        assert cmd1[idx + 1] == "2"
+        idx = cmd1.index("--data-parallel-start-rank")
+        assert cmd1[idx + 1] == "4"
+
+
 class TestHuggingFaceModelSupport:
     """Tests for HuggingFace model (hf:prefix) support across all backends."""
 

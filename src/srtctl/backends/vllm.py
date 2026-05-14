@@ -184,6 +184,20 @@ class VLLMProtocol:
         config = self.get_config_for_mode(mode)
         return config.get("data-parallel-size") is not None or config.get("data_parallel_size") is not None
 
+    def _is_dp_hybrid_lb_mode(self, mode: WorkerMode) -> bool:
+        """Check if this mode uses Data Parallel with hybrid load balancing.
+
+        Hybrid LB mode is detected when both data-parallel-size and
+        data-parallel-hybrid-lb are set. Unlike standard DP mode (one process
+        per GPU), hybrid LB uses one process per node — each node internally
+        manages multiple DP instances via --data-parallel-size-local and
+        --data-parallel-start-rank.
+        """
+        config = self.get_config_for_mode(mode)
+        has_dp = config.get("data-parallel-size") is not None or config.get("data_parallel_size") is not None
+        has_hybrid_lb = config.get("data-parallel-hybrid-lb", config.get("data_parallel_hybrid_lb", False))
+        return has_dp and bool(has_hybrid_lb)
+
     def _get_dp_size(self, mode: WorkerMode) -> int | None:
         """Get the data-parallel-size for a mode, or None if not in DP mode."""
         config = self.get_config_for_mode(mode)
@@ -202,8 +216,8 @@ class VLLMProtocol:
         """
         from srtctl.core.topology import NodePortAllocator, Process, endpoints_to_processes
 
-        # Check if any endpoint uses DP mode
-        has_dp_mode = any(self._is_dp_mode(ep.mode) for ep in endpoints)
+        # Check if any endpoint uses DP mode (excluding hybrid LB, which uses per-node processes)
+        has_dp_mode = any(self._is_dp_mode(ep.mode) and not self._is_dp_hybrid_lb_mode(ep.mode) for ep in endpoints)
 
         if not has_dp_mode:
             # Standard TP mode: one process per node
@@ -349,8 +363,42 @@ class VLLMProtocol:
 
         # Check if this is DP+EP mode (data-parallel-size set)
         is_dp_mode = self._is_dp_mode(mode)
+        is_dp_hybrid_lb = self._is_dp_hybrid_lb_mode(mode)
 
-        if is_dp_mode:
+        if is_dp_hybrid_lb:
+            # Hybrid LB mode: one process per node, each manages local DP instances.
+            # Compute data-parallel-size-local and data-parallel-start-rank from
+            # the GPU count and tensor-parallel-size.
+            tp_size = config.get("tensor-parallel-size") or config.get("tensor_parallel_size") or 1
+            local_dp_size = len(process.gpu_indices) // tp_size
+
+            # Compute start rank: sum of local DP sizes for all preceding processes
+            sorted_procs = sorted(endpoint_processes, key=lambda p: (p.node, min(p.gpu_indices)))
+            start_rank = 0
+            for p in sorted_procs:
+                if p.node == process.node and p.gpu_indices == process.gpu_indices:
+                    break
+                start_rank += len(p.gpu_indices) // tp_size
+
+            # Remove any user-specified values (we compute them)
+            for key in (
+                "data-parallel-size-local",
+                "data_parallel_size_local",
+                "data-parallel-start-rank",
+                "data_parallel_start_rank",
+            ):
+                config.pop(key, None)
+
+            cmd.extend(
+                [
+                    "--data-parallel-size-local",
+                    str(local_dp_size),
+                    "--data-parallel-start-rank",
+                    str(start_rank),
+                ]
+            )
+            # --data-parallel-size and --data-parallel-hybrid-lb are added via _config_to_cli_args
+        elif is_dp_mode:
             # DP+EP mode: each GPU runs its own process
             # process.node_rank is the dp_rank (set in endpoints_to_processes)
             dp_rank = process.node_rank
