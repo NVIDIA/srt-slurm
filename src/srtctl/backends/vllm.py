@@ -138,6 +138,8 @@ class VLLMProtocol:
             env["DYN_VLLM_KV_EVENT_PORT"] = str(process.kv_events_port)
         if process.nixl_port is not None:
             env["VLLM_NIXL_SIDE_CHANNEL_PORT"] = str(process.nixl_port)
+        if self._is_dp_mode(process.endpoint_mode):
+            env["DYN_FORWARDPASS_METRIC_PORT"] = str(20380 + process.node_rank)
         return env
 
     def get_served_model_name(self, default: str) -> str:

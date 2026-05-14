@@ -1344,6 +1344,53 @@ class TestVLLMDataParallelMode:
         assert "DYN_VLLM_KV_EVENT_PORT" not in env
         assert "VLLM_NIXL_SIDE_CHANNEL_PORT" not in env
 
+    def test_vllm_dp_mode_sets_forwardpass_metric_port(self):
+        """Test DP mode sets DYN_FORWARDPASS_METRIC_PORT = 20380 + dp_rank."""
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Process
+
+        backend = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                prefill={"data-parallel-size": 8},
+            )
+        )
+
+        for dp_rank in [0, 3, 7]:
+            process = Process(
+                node="node0",
+                gpu_indices=frozenset([dp_rank]),
+                sys_port=8081,
+                http_port=30000,
+                endpoint_mode="prefill",
+                endpoint_index=0,
+                node_rank=dp_rank,
+            )
+            env = backend.get_process_environment(process)
+            assert env["DYN_FORWARDPASS_METRIC_PORT"] == str(20380 + dp_rank)
+
+    def test_vllm_non_dp_mode_no_forwardpass_metric_port(self):
+        """Test non-DP mode does not set DYN_FORWARDPASS_METRIC_PORT."""
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Process
+
+        backend = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                prefill={"tensor-parallel-size": 8},
+            )
+        )
+
+        process = Process(
+            node="node0",
+            gpu_indices=frozenset(range(8)),
+            sys_port=8081,
+            http_port=30000,
+            endpoint_mode="prefill",
+            endpoint_index=0,
+            node_rank=0,
+        )
+        env = backend.get_process_environment(process)
+        assert "DYN_FORWARDPASS_METRIC_PORT" not in env
+
     def test_tp_mode_command_includes_multinode_flags(self):
         """Test standard TP mode includes multi-node coordination flags."""
         from pathlib import Path
