@@ -205,6 +205,16 @@ class VLLMProtocol:
         config = self.get_config_for_mode(mode)
         return config.get("data-parallel-size") or config.get("data_parallel_size")
 
+    def _get_dp_size_local(self, mode: WorkerMode) -> int | None:
+        """Get explicit data-parallel-size-local for a mode, or None if not set."""
+        config = self.get_config_for_mode(mode)
+        return config.get("data-parallel-size-local") or config.get("data_parallel_size_local")
+
+    def _get_tp_size(self, mode: WorkerMode) -> int:
+        """Get tensor-parallel-size for a mode, defaulting to 1."""
+        config = self.get_config_for_mode(mode)
+        return config.get("tensor-parallel-size") or config.get("tensor_parallel_size") or 1
+
     def endpoints_to_processes(
         self,
         endpoints: list[Endpoint],
@@ -213,36 +223,111 @@ class VLLMProtocol:
     ) -> list[Process]:
         """Convert endpoints to processes.
 
-        For DP+EP mode (data-parallel-size set), creates one process per GPU.
-        For standard TP mode, creates one process per node.
+        Three DP-related modes:
+        - Standard DP (data-parallel-size, no hybrid-lb): one process per GPU.
+        - Hybrid LB with explicit local size: splits each node into chunks of
+          ``data-parallel-size-local * tensor-parallel-size`` GPUs.
+        - Hybrid LB without explicit local size: one process per node (standard).
+        - No DP: one process per node (standard).
         """
         from srtctl.core.topology import NodePortAllocator, Process, endpoints_to_processes
 
-        # Check if any endpoint uses DP mode (excluding hybrid LB, which uses per-node processes)
-        has_dp_mode = any(self._is_dp_mode(ep.mode) and not self._is_dp_hybrid_lb_mode(ep.mode) for ep in endpoints)
+        needs_custom = any(
+            (self._is_dp_mode(ep.mode) and not self._is_dp_hybrid_lb_mode(ep.mode))
+            or (self._is_dp_hybrid_lb_mode(ep.mode) and self._get_dp_size_local(ep.mode) is not None)
+            for ep in endpoints
+        )
 
-        if not has_dp_mode:
-            # Standard TP mode: one process per node
+        if not needs_custom:
             return endpoints_to_processes(endpoints, base_sys_port=base_sys_port, port_allocator=port_allocator)
 
-        # DP+EP mode: one process per GPU
         processes: list[Process] = []
         current_sys_port = base_sys_port
         if port_allocator is None:
             port_allocator = NodePortAllocator()
 
         for endpoint in endpoints:
-            if not self._is_dp_mode(endpoint.mode):
-                # Non-DP endpoints get standard processing
-                # (This shouldn't happen in practice since all modes should be consistent)
+            is_standard_dp = self._is_dp_mode(endpoint.mode) and not self._is_dp_hybrid_lb_mode(endpoint.mode)
+            is_hybrid_lb_local = (
+                self._is_dp_hybrid_lb_mode(endpoint.mode) and self._get_dp_size_local(endpoint.mode) is not None
+            )
+
+            if is_hybrid_lb_local:
+                # Hybrid LB with explicit data-parallel-size-local: split each
+                # node's GPUs into chunks so each process manages local_dp_size
+                # DP instances, each using tp_size GPUs.
+                local_dp_size = self._get_dp_size_local(endpoint.mode)
+                tp_size = self._get_tp_size(endpoint.mode)
+                gpus_per_process = local_dp_size * tp_size
+
+                process_rank = 0
+                for node in endpoint.nodes:
+                    gpu_list = sorted(endpoint.gpu_indices)
+                    for chunk_start in range(0, len(gpu_list), gpus_per_process):
+                        chunk_gpus = frozenset(gpu_list[chunk_start : chunk_start + gpus_per_process])
+                        is_leader = process_rank == 0
+                        http_port = port_allocator.next_http_port(node) if is_leader else 0
+                        bootstrap_port = (
+                            port_allocator.next_bootstrap_port(node)
+                            if endpoint.mode == "prefill" and is_leader
+                            else None
+                        )
+
+                        processes.append(
+                            Process(
+                                node=node,
+                                gpu_indices=chunk_gpus,
+                                sys_port=current_sys_port,
+                                http_port=http_port,
+                                endpoint_mode=endpoint.mode,
+                                endpoint_index=endpoint.index,
+                                node_rank=process_rank,
+                                bootstrap_port=bootstrap_port,
+                                kv_events_port=port_allocator.next_kv_events_port(),
+                                nixl_port=port_allocator.next_nixl_port(),
+                            )
+                        )
+                        current_sys_port += 1
+                        process_rank += 1
+            elif is_standard_dp:
+                # DP+EP mode: one process per GPU
+                dp_rank = 0
+                for _node_rank, node in enumerate(endpoint.nodes):
+                    for gpu_idx in sorted(endpoint.gpu_indices):
+                        is_leader = dp_rank == 0
+                        http_port = port_allocator.next_http_port(node) if is_leader else 0
+                        bootstrap_port = (
+                            port_allocator.next_bootstrap_port(node)
+                            if endpoint.mode == "prefill" and is_leader
+                            else None
+                        )
+
+                        processes.append(
+                            Process(
+                                node=node,
+                                gpu_indices=frozenset([gpu_idx]),
+                                sys_port=current_sys_port,
+                                http_port=http_port,
+                                endpoint_mode=endpoint.mode,
+                                endpoint_index=endpoint.index,
+                                node_rank=dp_rank,
+                                bootstrap_port=bootstrap_port,
+                                kv_events_port=port_allocator.next_kv_events_port(),
+                                nixl_port=port_allocator.next_nixl_port(),
+                            )
+                        )
+                        current_sys_port += 1
+                        dp_rank += 1
+            else:
+                # Standard per-node processing (TP or hybrid LB without explicit local)
                 for node_rank, node in enumerate(endpoint.nodes):
                     is_leader = node_rank == 0
                     http_port = port_allocator.next_http_port(node) if is_leader else 0
                     bootstrap_port = (
-                        port_allocator.next_bootstrap_port(node) if endpoint.mode == "prefill" and is_leader else None
+                        port_allocator.next_bootstrap_port(node)
+                        if endpoint.mode == "prefill" and is_leader
+                        else None
                     )
-                    kv_events_port = port_allocator.next_kv_events_port()
-                    nixl_port = port_allocator.next_nixl_port()
 
                     processes.append(
                         Process(
@@ -254,43 +339,11 @@ class VLLMProtocol:
                             endpoint_index=endpoint.index,
                             node_rank=node_rank,
                             bootstrap_port=bootstrap_port,
-                            kv_events_port=kv_events_port,
-                            nixl_port=nixl_port,
+                            kv_events_port=port_allocator.next_kv_events_port(),
+                            nixl_port=port_allocator.next_nixl_port(),
                         )
                     )
                     current_sys_port += 1
-            else:
-                # DP+EP mode: one process per GPU
-                # Each process gets a single GPU and a unique dp_rank
-                dp_rank = 0
-                for _node_rank, node in enumerate(endpoint.nodes):
-                    for gpu_idx in sorted(endpoint.gpu_indices):
-                        is_leader = dp_rank == 0
-                        http_port = port_allocator.next_http_port(node) if is_leader else 0
-                        bootstrap_port = (
-                            port_allocator.next_bootstrap_port(node)
-                            if endpoint.mode == "prefill" and is_leader
-                            else None
-                        )
-                        kv_events_port = port_allocator.next_kv_events_port()
-                        nixl_port = port_allocator.next_nixl_port()
-
-                        processes.append(
-                            Process(
-                                node=node,
-                                gpu_indices=frozenset([gpu_idx]),  # Single GPU per process
-                                sys_port=current_sys_port,
-                                http_port=http_port,
-                                endpoint_mode=endpoint.mode,
-                                endpoint_index=endpoint.index,
-                                node_rank=dp_rank,  # dp_rank stored in node_rank for now
-                                bootstrap_port=bootstrap_port,
-                                kv_events_port=kv_events_port,
-                                nixl_port=nixl_port,
-                            )
-                        )
-                        current_sys_port += 1
-                        dp_rank += 1
 
         return processes
 

@@ -1949,6 +1949,208 @@ class TestVLLMDataParallelHybridLB:
         assert cmd1[idx + 1] == "4"
 
 
+    def test_hybrid_lb_explicit_local_splits_node_into_processes(self):
+        """Explicit data-parallel-size-local splits each node into multiple processes."""
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Endpoint
+
+        # dp_size=4, dp_size_local=2, TP=1, 4 GPUs per node
+        # → each node gets 2 processes, each with 2 GPUs
+        backend = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                aggregated={
+                    "data-parallel-size": 4,
+                    "data-parallel-hybrid-lb": True,
+                    "data-parallel-size-local": 2,
+                },
+            )
+        )
+
+        endpoint = Endpoint(
+            mode="agg",
+            index=0,
+            nodes=("node0",),
+            gpu_indices=frozenset(range(4)),
+            gpus_per_node=4,
+        )
+
+        processes = backend.endpoints_to_processes([endpoint])
+
+        # 4 GPUs / (local=2 * TP=1) = 2 processes per node
+        assert len(processes) == 2
+        assert processes[0].node == "node0"
+        assert processes[1].node == "node0"
+        assert processes[0].gpu_indices == frozenset([0, 1])
+        assert processes[1].gpu_indices == frozenset([2, 3])
+        assert processes[0].node_rank == 0
+        assert processes[1].node_rank == 1
+
+    def test_hybrid_lb_explicit_local_with_tp(self):
+        """Explicit local size with tensor-parallel-size allocates correct GPU chunks."""
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Endpoint
+
+        # dp_size=4, dp_size_local=2, TP=2, 8 GPUs per node
+        # → gpus_per_process = 2 * 2 = 4, so 2 processes per node
+        backend = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                decode={
+                    "data-parallel-size": 4,
+                    "data-parallel-hybrid-lb": True,
+                    "data-parallel-size-local": 2,
+                    "tensor-parallel-size": 2,
+                },
+            )
+        )
+
+        endpoint = Endpoint(
+            mode="decode",
+            index=0,
+            nodes=("node0",),
+            gpu_indices=frozenset(range(8)),
+            gpus_per_node=8,
+        )
+
+        processes = backend.endpoints_to_processes([endpoint])
+
+        # 8 GPUs / (local=2 * TP=2) = 2 processes
+        assert len(processes) == 2
+        assert processes[0].gpu_indices == frozenset([0, 1, 2, 3])
+        assert processes[1].gpu_indices == frozenset([4, 5, 6, 7])
+
+    def test_hybrid_lb_explicit_local_multi_node(self):
+        """Explicit local size on multi-node endpoint splits each node."""
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Endpoint
+
+        # 2 nodes × 4 GPUs, local=2, TP=1 → 2 processes per node = 4 total
+        backend = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                aggregated={
+                    "data-parallel-size": 8,
+                    "data-parallel-hybrid-lb": True,
+                    "data-parallel-size-local": 2,
+                },
+            )
+        )
+
+        endpoint = Endpoint(
+            mode="agg",
+            index=0,
+            nodes=("node0", "node1"),
+            gpu_indices=frozenset(range(4)),
+            gpus_per_node=4,
+        )
+
+        processes = backend.endpoints_to_processes([endpoint])
+
+        assert len(processes) == 4
+        assert [p.node for p in processes] == ["node0", "node0", "node1", "node1"]
+        assert processes[0].gpu_indices == frozenset([0, 1])
+        assert processes[1].gpu_indices == frozenset([2, 3])
+        assert processes[2].gpu_indices == frozenset([0, 1])
+        assert processes[3].gpu_indices == frozenset([2, 3])
+        # Sequential process ranks across the endpoint
+        assert [p.node_rank for p in processes] == [0, 1, 2, 3]
+
+    def test_hybrid_lb_explicit_local_command_flags(self):
+        """Explicit local size produces correct --data-parallel-size-local and --data-parallel-start-rank."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Process
+
+        # dp_size=4, dp_size_local=2, TP=1
+        backend = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                aggregated={
+                    "data-parallel-size": 4,
+                    "data-parallel-hybrid-lb": True,
+                    "data-parallel-size-local": 2,
+                },
+            )
+        )
+
+        # Two processes on the same node, split by endpoints_to_processes
+        proc0 = Process(
+            node="node0",
+            gpu_indices=frozenset([0, 1]),
+            sys_port=8081,
+            http_port=30000,
+            endpoint_mode="agg",
+            endpoint_index=0,
+            node_rank=0,
+        )
+        proc1 = Process(
+            node="node0",
+            gpu_indices=frozenset([2, 3]),
+            sys_port=8082,
+            http_port=0,
+            endpoint_mode="agg",
+            endpoint_index=0,
+            node_rank=1,
+        )
+        endpoint_processes = [proc0, proc1]
+
+        mock_runtime = MagicMock()
+        mock_runtime.model_path = Path("/model")
+        mock_runtime.is_hf_model = False
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            cmd0 = backend.build_worker_command(
+                process=proc0, endpoint_processes=endpoint_processes, runtime=mock_runtime,
+            )
+            cmd1 = backend.build_worker_command(
+                process=proc1, endpoint_processes=endpoint_processes, runtime=mock_runtime,
+            )
+
+        # Process 0: GPUs 0,1 → local_dp=2, start_rank=0
+        idx = cmd0.index("--data-parallel-size-local")
+        assert cmd0[idx + 1] == "2"
+        idx = cmd0.index("--data-parallel-start-rank")
+        assert cmd0[idx + 1] == "0"
+
+        # Process 1: GPUs 2,3 → local_dp=2, start_rank=2
+        idx = cmd1.index("--data-parallel-size-local")
+        assert cmd1[idx + 1] == "2"
+        idx = cmd1.index("--data-parallel-start-rank")
+        assert cmd1[idx + 1] == "2"
+
+        # data-parallel-size-local from config should NOT be duplicated
+        # (it's popped and replaced with computed value)
+        assert cmd0.count("--data-parallel-size-local") == 1
+        assert cmd1.count("--data-parallel-size-local") == 1
+
+    def test_hybrid_lb_explicit_local_forwardpass_metric_port(self):
+        """Each process in explicit-local mode gets unique DYN_FORWARDPASS_METRIC_PORT."""
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Process
+
+        backend = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                aggregated={
+                    "data-parallel-size": 4,
+                    "data-parallel-hybrid-lb": True,
+                    "data-parallel-size-local": 2,
+                },
+            )
+        )
+
+        for rank in [0, 1]:
+            proc = Process(
+                node="node0",
+                gpu_indices=frozenset([rank * 2, rank * 2 + 1]),
+                sys_port=8081 + rank,
+                http_port=30000 if rank == 0 else 0,
+                endpoint_mode="agg",
+                endpoint_index=0,
+                node_rank=rank,
+            )
+            env = backend.get_process_environment(proc)
+            assert env["DYN_FORWARDPASS_METRIC_PORT"] == str(20380 + rank)
+
+
 class TestHuggingFaceModelSupport:
     """Tests for HuggingFace model (hf:prefix) support across all backends."""
 
