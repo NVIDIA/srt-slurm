@@ -1733,6 +1733,54 @@ class TestHuggingFaceModelSupport:
         count = cmd.count("--served-model-name")
         assert count == 1, f"--served-model-name appears {count} times: {cmd}"
 
+    def test_sglang_bootstrap_port_recipe_value_is_overridden_by_jitter(self, caplog):
+        """Recipe-pinned disaggregation-bootstrap-port must be overridden by the jittered allocator value.
+
+        Recipes should NOT specify ``disaggregation-bootstrap-port`` — the port is
+        owned by ``NodePortAllocator`` (per-job jitter) so cross-job leaked
+        processes don't collide. This test exists to guard the
+        backward-compatibility override for legacy recipes that still pin it:
+        without the pop+override, argparse last-wins would silently restore the
+        recipe value, leaving prefill bound to the recipe port while router/decode
+        connect to the jittered port (connection refused).
+        """
+        import logging
+        from unittest.mock import patch
+
+        from srtctl.backends import SGLangProtocol, SGLangServerConfig
+        from srtctl.core.topology import Process
+
+        backend = SGLangProtocol(
+            sglang_config=SGLangServerConfig(prefill={"disaggregation-bootstrap-port": 31000}),
+        )
+        process = Process(
+            node="node0",
+            gpu_indices=frozenset([0, 1, 2, 3]),
+            sys_port=8081,
+            http_port=34399,  # jittered
+            endpoint_mode="prefill",
+            endpoint_index=0,
+            node_rank=0,
+            bootstrap_port=35399,  # jittered, must win
+        )
+        runtime = self._make_runtime(is_hf=False)
+
+        with caplog.at_level(logging.WARNING, logger="srtctl.backends.sglang"):
+            with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+                cmd = backend.build_worker_command(
+                    process=process, endpoint_processes=[process], runtime=runtime
+                )
+
+        count = cmd.count("--disaggregation-bootstrap-port")
+        assert count == 1, f"--disaggregation-bootstrap-port appears {count} times: {cmd}"
+        idx = cmd.index("--disaggregation-bootstrap-port")
+        assert cmd[idx + 1] == "35399", f"expected jittered 35399, got {cmd[idx + 1]}"
+        assert any(
+            "ignoring recipe disaggregation-bootstrap-port=31000" in r.message
+            and "35399" in r.message
+            for r in caplog.records
+        ), f"expected warning naming both ports, got: {[r.message for r in caplog.records]}"
+
     # --- TRTLLM ---
 
     def test_trtllm_hf_model_uses_model_id(self):
