@@ -1,0 +1,75 @@
+name: "dsv4-vllm-disagg-gb300-prefill-dep4"
+
+model:
+  path: "deepseek-v4-pro"
+  container: "dsv4-sqsh"
+  precision: "fp4"
+
+# dynamo:
+#   hash: 6a159fedd8e4a1563aa647c31f622aedbf254b5b
+#   # Install handled by our custom vllm-container-deps.sh, which builds
+#   # the dynamo wheel ONCE on /mnt/vast and lets every rank pip-install
+#   # from cache. See runners/gb300-cw-vllm-container-deps.sh.
+#   install: false
+dynamo:
+  version: 1.0.2
+  install: true
+
+setup_script: vllm-container-deps.sh
+
+slurm:
+  time_limit: "02:00:00"
+
+resources:
+  gpu_type: "gb300"
+  gpus_per_node: 4
+  agg_nodes: 2
+  agg_workers: 1
+  gpus_per_agg: 8
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+
+backend:
+  type: vllm
+  connector: null
+
+  aggregated_environment:
+    VLLM_USE_NCCL_SYMM_MEM: "1"
+    NCCL_CUMEM_ENABLE: "1"
+    NCCL_MNNVL_ENABLE: "1"
+    NCCL_NVLS_ENABLE: "1"
+    VLLM_RANDOMIZE_DP_DUMMY_INPUTS: "1"
+    VLLM_MOE_ROUTING_SIMULATION_STRATEGY: "uniform_random"
+
+  vllm_config:
+    aggregated:
+      served-model-name: "deepseek-ai/DeepSeek-V4-Pro"
+      kv-cache-dtype: "fp8"
+      tensor-parallel-size: 1
+      pipeline-parallel-size: 1
+      data-parallel-size: 8
+      data-parallel-rpc-port: 13345
+      enable-expert-parallel: true
+      enforce-eager: true
+      max-model-len: 9216
+      max-num-seqs: 16
+      max-num-batched-tokens: 24576
+      trust-remote-code: true
+      no-enable-prefix-caching: true
+      no-enable-flashinfer-autotune: true
+      no-async-scheduling: true
+      block-size: 256
+      gpu-memory-utilization: 0.92
+      no-disable-hybrid-kv-cache-manager: true
+      tokenizer-mode: deepseek_v4
+      enable-ep-weight-filter: true
+      all2all-backend: "flashinfer_nvlink_one_sided"
+
+benchmark:
+  type: "vllm-bench"
+  isl: 8192
+  osl: 1
+  concurrencies: "64"
+  num_prompts_mult: 100
