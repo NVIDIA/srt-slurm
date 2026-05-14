@@ -22,6 +22,10 @@ from typing import (
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
+# Re-exported so existing `from srtctl.backends.sglang import MOONCAKE_*` paths keep working.
+# Canonical home is srtctl.backends.mooncake.
+from srtctl.backends.mooncake import MOONCAKE_HTTP_METADATA_PORT, MOONCAKE_MASTER_PORT  # noqa: F401
+
 if TYPE_CHECKING:
     from srtctl.backends.base import SrunConfig
     from srtctl.core.runtime import RuntimeContext
@@ -29,9 +33,6 @@ if TYPE_CHECKING:
 
 # Type alias for worker modes
 WorkerMode = Literal["prefill", "decode", "agg"]
-
-MOONCAKE_MASTER_PORT = 50051
-MOONCAKE_HTTP_METADATA_PORT = 8080
 
 
 @dataclass(frozen=True)

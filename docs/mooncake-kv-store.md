@@ -1,13 +1,15 @@
 # Mooncake KV Store
 
-First-class support for [Mooncake](https://github.com/kvcache-ai/Mooncake) as the KV transfer backend for SGLang prefill-decode disaggregation. When `mooncake_kv_store` is set under an SGLang backend, srtslurm launches and configures the mooncake master automatically and wires up worker env vars so peer-to-peer transfers work across multiple nodes.
+First-class support for [Mooncake](https://github.com/kvcache-ai/Mooncake) as the KV transfer backend for prefill-decode disaggregation. When `mooncake_kv_store` is set under an SGLang or vLLM backend, srtslurm launches and configures the mooncake master automatically and wires up worker env vars so peer-to-peer transfers work across multiple nodes.
 
 ## Table of Contents
 
 - [Overview](#overview)
-- [Quick Start](#quick-start)
+- [Quick Start (SGLang)](#quick-start-sglang)
+- [Quick Start (vLLM)](#quick-start-vllm)
 - [What srtslurm Owns vs What You Set](#what-srtslurm-owns-vs-what-you-set)
 - [Configuration Reference](#configuration-reference)
+- [Master Metrics Endpoint](#master-metrics-endpoint)
 - [Validation](#validation)
 - [Common Configurations](#common-configurations)
   - [RDMA / InfiniBand](#rdma--infiniband)
@@ -30,7 +32,7 @@ Without first-class support, running mooncake with srtslurm meant:
 
 The `mooncake_kv_store` block automates 1–3. You still set the SGLang flags in step 4 because they're SGLang's CLI surface, not srtslurm's — but srtslurm validates that you did.
 
-## Quick Start
+## Quick Start (SGLang)
 
 Minimum config to run mooncake:
 
@@ -63,18 +65,52 @@ backend:
       disaggregation-transfer-backend: mooncake
 ```
 
+## Quick Start (vLLM)
+
+vLLM's `MooncakeStoreConnector` reads its configuration from a JSON file pointed to by `MOONCAKE_CONFIG_PATH` rather than directly from env vars, so the vLLM block takes an extra `store_config:` section that srtslurm renders into that JSON at job start:
+
+```yaml
+backend:
+  type: vllm
+  mooncake_kv_store:
+    env:                                  # injected on every vLLM worker
+      MOONCAKE_PROTOCOL: rdma
+      MC_ENABLE_DEST_DEVICE_AFFINITY: "1"
+    store_config:                         # → MOONCAKE_CONFIG_PATH JSON
+      metadata_server: "P2PHANDSHAKE"
+      global_segment_size: "50GB"
+      local_buffer_size: "4GB"
+      protocol: "rdma"
+      device_name: "mlx5_0,mlx5_1"
+  vllm_config:
+    prefill:
+      kv-transfer-config: '{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_producer"}'
+    decode:
+      kv-transfer-config: '{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_consumer"}'
+```
+
+srtslurm stamps `MOONCAKE_MASTER`, `MOONCAKE_TE_META_DATA_SERVER`, `MOONCAKE_LOCAL_HOSTNAME`, and `MOONCAKE_CONFIG_PATH` on every worker; you supply the rest. `master_server_address` in `store_config` is also auto-filled from the infra node IP and ignored if set by hand.
+
+The `env:` map is injected on every vLLM worker (not on the standalone `mooncake_master` daemon — the master srun passes no env). Use it for in-process Mooncake C++ knobs like `MC_ENABLE_DEST_DEVICE_AFFINITY`, `MC_STORE_CLIENT_METRIC`, `MC_TE_METRIC`.
+
 ## What srtslurm Owns vs What You Set
 
 | Concern                                         | Owner     | Notes                                                                                                |
 | ----------------------------------------------- | --------- | ---------------------------------------------------------------------------------------------------- |
-| Launching `mooncake_master`                     | srtslurm  | Runs on the infra node (same node as etcd/nats; respects `infra.etcd_nats_dedicated_node`). Port 50051. |
+| Launching `mooncake_master`                     | srtslurm  | Runs on the infra node (same node as etcd/nats; respects `infra.etcd_nats_dedicated_node`). RPC `50051`, HTTP metadata `8080`, admin HTTP `9003`. |
 | `MOONCAKE_MASTER` env var on workers            | srtslurm  | Always computed as `<infra_node_ip>:50051`. User values in `env` are overridden.                      |
+| `MOONCAKE_TE_META_DATA_SERVER` env var          | srtslurm  | Always computed as `http://<infra_node_ip>:8080/metadata`.                                            |
 | `MOONCAKE_LOCAL_HOSTNAME` env var               | srtslurm  | Auto-resolved per-worker via `runtime.network_interface`. User can override in `env` for custom NICs. |
+| `MOONCAKE_CONFIG_PATH` (vLLM only)               | srtslurm  | Always points to the JSON file srtslurm renders from `store_config:`. Mounted under `/logs` in every worker. |
+| `master_server_address` in `store_config` (vLLM)| srtslurm  | Always overridden with `<infra_node_ip>:50051`. User values are ignored.                              |
 | `MOONCAKE_PROTOCOL`, `MOONCAKE_DEVICE`, etc.    | User      | Passed through `mooncake_kv_store.env` to all workers.                                               |
-| `disaggregation-transfer-backend: mooncake`     | User      | Set on `sglang_config.prefill` and `sglang_config.decode`. srtslurm validates this is present.       |
-| `disaggregation-ib-device`                      | User      | Set on `sglang_config.prefill` and `sglang_config.decode`. Format: `"mlx5_0,mlx5_1"` or JSON map.    |
+| `disaggregation-transfer-backend: mooncake`     | User      | (SGLang only) Set on `sglang_config.prefill` and `sglang_config.decode`. srtslurm validates this is present. |
+| `disaggregation-ib-device`                      | User      | (SGLang only) Set on `sglang_config.prefill` and `sglang_config.decode`. Format: `"mlx5_0,mlx5_1"` or JSON map. |
+| `kv-transfer-config`                            | User      | (vLLM only) Set on `vllm_config.prefill` and `vllm_config.decode` to wire vLLM's `MooncakeStoreConnector`. |
 
 ## Configuration Reference
+
+### SGLang
 
 ```yaml
 backend:
@@ -93,10 +129,45 @@ backend:
       SGLANG_DISAGG_STAGING_POOL_SIZE_MB: "4096"
 ```
 
+### vLLM
+
+```yaml
+backend:
+  type: vllm
+  mooncake_kv_store:
+    container: ...                       # optional, default: job container
+    env:                                 # optional, injected on every vLLM worker
+      MOONCAKE_PROTOCOL: rdma
+      MC_ENABLE_DEST_DEVICE_AFFINITY: "1"
+      MC_STORE_CLIENT_METRIC: "1"        # default 1 (enabled)
+      MC_TE_METRIC: "0"                  # default 0 (disabled)
+    store_config:                        # optional, rendered into MOONCAKE_CONFIG_PATH JSON
+      metadata_server: "P2PHANDSHAKE"    # default "P2PHANDSHAKE"
+      global_segment_size: "4GB"         # default "4GB"
+      local_buffer_size: "4GB"           # default "4GB"
+      protocol: "rdma"                   # default "rdma"
+      device_name: "mlx5_0,mlx5_1"       # default ""
+```
+
 ### Fields
 
-- **`container`** (`str`, optional): Container image used for the `mooncake_master` srun. Defaults to the job container if unset. Useful when mooncake needs a different runtime than your SGLang container.
-- **`env`** (`dict[str, str]`, optional): Pass-through env vars injected on every prefill and decode worker. Keys map directly to mooncake's environment variable names — see the [SGLang server_args.py](https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/environ.py) and [mooncake_store.py](https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/mem_cache/storage/mooncake_store/mooncake_store.py) for the full list. Setting `MOONCAKE_MASTER` here is a no-op (srtslurm always wins).
+- **`container`** (`str`, optional): Container image used for the `mooncake_master` srun. Defaults to the job container if unset. Useful when mooncake needs a different runtime than your worker container.
+- **`env`** (`dict[str, str]`, optional): Pass-through env vars injected on every prefill and decode worker.
+  - For **SGLang**, keys map directly to mooncake's environment variable names — see the [SGLang server_args.py](https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/environ.py) and [mooncake_store.py](https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/mem_cache/storage/mooncake_store/mooncake_store.py) for the full list.
+  - For **vLLM**, this is for in-process Mooncake C++ knobs (`MC_*`) read by the transfer engine / store client. vLLM's connector itself reads configuration from `MOONCAKE_CONFIG_PATH` (the JSON rendered from `store_config:`), not from these env vars.
+  - Setting `MOONCAKE_MASTER`, `MOONCAKE_TE_META_DATA_SERVER`, or `MOONCAKE_CONFIG_PATH` here is a no-op (srtslurm always wins).
+- **`store_config`** (vLLM only, `dict[str, str]`, optional): Rendered as JSON into the file pointed to by `MOONCAKE_CONFIG_PATH`. Keys map 1:1 to vLLM's `MooncakeStoreConfig` dataclass. `master_server_address` is auto-filled and any user value is ignored.
+
+## Master Metrics Endpoint
+
+The `mooncake_master` admin HTTP server is always exposed on port `9003` on the infra node and starts before workers do (srtslurm waits for it). It serves:
+
+- `GET /metrics` — Prometheus text format (master + transfer-engine counters)
+- `GET /metrics/summary` — human-readable summary
+- `GET /health`, `/role`, `/ha_status`, `/leader`
+- `GET /query_key` — used by Dynamo's KV router shared-cache path
+
+To scrape from outside the cluster, point your collector at `http://<infra_node_ip>:9003/metrics`. The infra node IP is logged at job start.
 
 ## Validation
 
