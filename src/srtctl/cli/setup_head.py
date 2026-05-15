@@ -1,6 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-
 """
 Head node infrastructure setup.
 
@@ -17,10 +16,15 @@ import sys
 import time
 from pathlib import Path
 
+try:
+    from srtctl.ports import ETCD_CLIENT_PORT, ETCD_PEER_PORT, NATS_PORT
+except ModuleNotFoundError:
+    # This file is also copied into containers and run as /tmp/setup_head.py.
+    ETCD_CLIENT_PORT = 2379
+    ETCD_PEER_PORT = 2380
+    NATS_PORT = 4222
+
 # Network configurations
-ETCD_CLIENT_PORT = 2379
-ETCD_PEER_PORT = 2380
-NATS_PORT = 4222
 ETCD_LISTEN_ADDR = "http://0.0.0.0"
 
 logger = logging.getLogger(__name__)
