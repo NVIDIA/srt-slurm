@@ -130,7 +130,7 @@ backend:
       # cc2048 smoke: per-DP = 2048/16 = 128
       chunked-prefill-size: 4096
       context-length: 4096
-      mem-fraction-static: 0.80  # lowered from 0.85; cuda-graph capture OOM at 0.85 (DeepEP ~25GB non-PyTorch)
+      mem-fraction-static: 0.75  # DEP16+ DeepEP buffers scale with ep_size; 0.80 OOM at cuda-graph capture (~25GB non-PyTorch)
       max-mamba-cache-size: 2048  # sglang divides by dp_size=16 → 128 per-DP
       max-running-requests: 2048  # sglang divides by dp_size=16 → 128 per-DP
       cuda-graph-max-bs: 128
