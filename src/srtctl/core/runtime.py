@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from srtctl.ports import FRONTEND_PUBLIC_PORT
+
 from .config import get_srtslurm_setting
 from .slurm import get_hostname_ip, get_slurm_nodelist
 
@@ -118,7 +120,7 @@ class RuntimeContext:
     environment: dict[str, str] = field(default_factory=dict)
 
     # Frontend port (for benchmark endpoint)
-    frontend_port: int = 8000
+    frontend_port: int = FRONTEND_PUBLIC_PORT
 
     @classmethod
     def from_config(

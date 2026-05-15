@@ -24,10 +24,12 @@ from typing import (
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
-# vLLM reuses the same mooncake_master launch command and port pair as SGLang.
-# Disjoint port pairs can be reintroduced if we ever need to colocate an SGLang
-# and vLLM job on the same infra node.
-from srtctl.backends.mooncake import MOONCAKE_HTTP_METADATA_PORT, MOONCAKE_MASTER_PORT
+from srtctl.ports import (
+    DYN_SYSTEM_PORT_BASE,
+    MOONCAKE_HTTP_METADATA_PORT,
+    MOONCAKE_MASTER_PORT,
+    VLLM_DATA_PARALLEL_RPC_PORT,
+)
 
 if TYPE_CHECKING:
     from srtctl.backends.base import SrunConfig
@@ -52,8 +54,8 @@ class VLLMMooncakeKVStoreConfig:
     (co-located with etcd/nats) using the shared SGLang launch command and
     injects on every vLLM worker::
 
-        MOONCAKE_MASTER              = <infra_ip>:50051
-        MOONCAKE_TE_META_DATA_SERVER = http://<infra_ip>:8080/metadata
+        MOONCAKE_MASTER              = <infra_ip>:8700
+        MOONCAKE_TE_META_DATA_SERVER = http://<infra_ip>:8701/metadata
         MOONCAKE_LOCAL_HOSTNAME      = <worker_ip>
         MOONCAKE_CONFIG_PATH         = /logs/mooncake_store_config.json
 
@@ -313,7 +315,7 @@ class VLLMProtocol:
     def endpoints_to_processes(
         self,
         endpoints: list[Endpoint],
-        base_sys_port: int = 8081,
+        base_sys_port: int = DYN_SYSTEM_PORT_BASE,
         port_allocator: NodePortAllocator | None = None,
     ) -> list[Process]:
         """Convert endpoints to processes.
@@ -475,7 +477,10 @@ class VLLMProtocol:
             # DP+EP mode: each GPU runs its own process
             # process.node_rank is the dp_rank (set in endpoints_to_processes)
             dp_rank = process.node_rank
-            dp_rpc_port = config.pop("data-parallel-rpc-port", None) or config.pop("data_parallel_rpc_port", 13345)
+            dp_rpc_port = config.pop("data-parallel-rpc-port", None) or config.pop(
+                "data_parallel_rpc_port",
+                VLLM_DATA_PARALLEL_RPC_PORT,
+            )
 
             cmd.extend(
                 [

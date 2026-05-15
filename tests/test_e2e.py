@@ -691,14 +691,12 @@ class TestVLLMMooncakeKVStore:
         assert backend.get_mooncake_worker_env("10.0.0.1", "10.0.0.2") == {}
 
     def test_vllm_mooncake_worker_env_uses_shared_ports(self):
-        """vLLM reuses the shared mooncake_master port pair (50051/8080)."""
-        from srtctl.backends.mooncake import MOONCAKE_HTTP_METADATA_PORT, MOONCAKE_MASTER_PORT
+        """vLLM reuses the shared mooncake_master port pair from srtctl.ports."""
         from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMProtocol
+        from srtctl.ports import MOONCAKE_HTTP_METADATA_PORT, MOONCAKE_MASTER_PORT
 
         backend = VLLMProtocol(mooncake_kv_store=VLLMMooncakeKVStoreConfig())
         env = backend.get_mooncake_worker_env("10.0.0.1", "10.0.0.42")
-        assert MOONCAKE_MASTER_PORT == 50051
-        assert MOONCAKE_HTTP_METADATA_PORT == 8080
         assert env == {
             "MOONCAKE_MASTER": f"10.0.0.1:{MOONCAKE_MASTER_PORT}",
             "MOONCAKE_TE_META_DATA_SERVER": f"http://10.0.0.1:{MOONCAKE_HTTP_METADATA_PORT}/metadata",
@@ -708,8 +706,8 @@ class TestVLLMMooncakeKVStore:
 
     def test_vllm_mooncake_master_overrides_user_env(self):
         """User-supplied MOONCAKE_MASTER is always overridden by srtslurm."""
-        from srtctl.backends.mooncake import MOONCAKE_MASTER_PORT
         from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMProtocol
+        from srtctl.ports import MOONCAKE_MASTER_PORT
 
         backend = VLLMProtocol(
             mooncake_kv_store=VLLMMooncakeKVStoreConfig(
@@ -880,12 +878,13 @@ backend:
     def test_vllm_mooncake_store_config_defaults(self):
         """build_mooncake_store_config returns defaults when store_config is unset."""
         from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMProtocol
+        from srtctl.ports import MOONCAKE_MASTER_PORT
 
         backend = VLLMProtocol(mooncake_kv_store=VLLMMooncakeKVStoreConfig())
         cfg = backend.build_mooncake_store_config("10.0.0.1")
         assert cfg == {
             "metadata_server": "P2PHANDSHAKE",
-            "master_server_address": "10.0.0.1:50051",
+            "master_server_address": f"10.0.0.1:{MOONCAKE_MASTER_PORT}",
             "global_segment_size": "4GB",
             "local_buffer_size": "4GB",
             "protocol": "rdma",
@@ -895,6 +894,7 @@ backend:
     def test_vllm_mooncake_store_config_user_overrides(self):
         """User store_config values pass through; master_server_address is always auto."""
         from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMProtocol
+        from srtctl.ports import MOONCAKE_MASTER_PORT
 
         backend = VLLMProtocol(
             mooncake_kv_store=VLLMMooncakeKVStoreConfig(
@@ -911,7 +911,7 @@ backend:
         cfg = backend.build_mooncake_store_config("10.0.0.1")
         assert cfg["metadata_server"] == "http://my-metadata:9000"
         # master_server_address is always auto-filled, never user-controlled
-        assert cfg["master_server_address"] == "10.0.0.1:50051"
+        assert cfg["master_server_address"] == f"10.0.0.1:{MOONCAKE_MASTER_PORT}"
         assert cfg["global_segment_size"] == "100GB"
         assert cfg["local_buffer_size"] == "8GB"
         assert cfg["protocol"] == "tcp"

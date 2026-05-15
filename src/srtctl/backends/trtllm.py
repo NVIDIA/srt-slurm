@@ -11,6 +11,8 @@ import yaml
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
+from srtctl.ports import DYN_SYSTEM_PORT_BASE
+
 if TYPE_CHECKING:
     from srtctl.backends.base import SrunConfig
     from srtctl.core.runtime import RuntimeContext
@@ -145,7 +147,7 @@ class TRTLLMProtocol:
     def endpoints_to_processes(
         self,
         endpoints: list["Endpoint"],
-        base_sys_port: int = 8081,
+        base_sys_port: int = DYN_SYSTEM_PORT_BASE,
         port_allocator: "NodePortAllocator | None" = None,
     ) -> list["Process"]:
         """Convert endpoints to processes."""

@@ -97,12 +97,12 @@ The `env:` map is injected on every vLLM worker (not on the standalone `mooncake
 
 | Concern                                         | Owner     | Notes                                                                                                |
 | ----------------------------------------------- | --------- | ---------------------------------------------------------------------------------------------------- |
-| Launching `mooncake_master`                     | srtslurm  | Runs on the infra node (same node as etcd/nats; respects `infra.etcd_nats_dedicated_node`). RPC `50051`, HTTP metadata `8080`, admin HTTP `9003`. |
-| `MOONCAKE_MASTER` env var on workers            | srtslurm  | Always computed as `<infra_node_ip>:50051`. User values in `env` are overridden.                      |
-| `MOONCAKE_TE_META_DATA_SERVER` env var          | srtslurm  | Always computed as `http://<infra_node_ip>:8080/metadata`.                                            |
+| Launching `mooncake_master`                     | srtslurm  | Runs on the infra node (same node as etcd/nats; respects `infra.etcd_nats_dedicated_node`). RPC `8700`, HTTP metadata `8701`, admin HTTP `8702`. |
+| `MOONCAKE_MASTER` env var on workers            | srtslurm  | Always computed as `<infra_node_ip>:8700`. User values in `env` are overridden.                       |
+| `MOONCAKE_TE_META_DATA_SERVER` env var          | srtslurm  | Always computed as `http://<infra_node_ip>:8701/metadata`.                                            |
 | `MOONCAKE_LOCAL_HOSTNAME` env var               | srtslurm  | Auto-resolved per-worker via `runtime.network_interface`. User can override in `env` for custom NICs. |
 | `MOONCAKE_CONFIG_PATH` (vLLM only)               | srtslurm  | Always points to the JSON file srtslurm renders from `store_config:`. Mounted under `/logs` in every worker. |
-| `master_server_address` in `store_config` (vLLM)| srtslurm  | Always overridden with `<infra_node_ip>:50051`. User values are ignored.                              |
+| `master_server_address` in `store_config` (vLLM)| srtslurm  | Always overridden with `<infra_node_ip>:8700`. User values are ignored.                               |
 | `MOONCAKE_PROTOCOL`, `MOONCAKE_DEVICE`, etc.    | User      | Passed through `mooncake_kv_store.env` to all workers.                                               |
 | `disaggregation-transfer-backend: mooncake`     | User      | (SGLang only) Set on `sglang_config.prefill` and `sglang_config.decode`. srtslurm validates this is present. |
 | `disaggregation-ib-device`                      | User      | (SGLang only) Set on `sglang_config.prefill` and `sglang_config.decode`. Format: `"mlx5_0,mlx5_1"` or JSON map. |
@@ -122,7 +122,6 @@ backend:
       MOONCAKE_GLOBAL_SEGMENT_SIZE: "4gb"
       MOONCAKE_DEVICE: mlx5_0
       MOONCAKE_TE_META_DATA_SERVER: P2PHANDSHAKE
-      MOONCAKE_MASTER_METRICS_PORT: "9003"
       # SGLang-specific staging buffer knobs:
       SGLANG_DISAGG_STAGING_BUFFER: "true"
       SGLANG_DISAGG_STAGING_BUFFER_SIZE_MB: "64"
@@ -160,14 +159,14 @@ backend:
 
 ## Master Metrics Endpoint
 
-The `mooncake_master` admin HTTP server is always exposed on port `9003` on the infra node and starts before workers do (srtslurm waits for it). It serves:
+The `mooncake_master` admin HTTP server is always exposed on port `8702` on the infra node and starts before workers do (srtslurm waits for it). It serves:
 
 - `GET /metrics` — Prometheus text format (master + transfer-engine counters)
 - `GET /metrics/summary` — human-readable summary
 - `GET /health`, `/role`, `/ha_status`, `/leader`
 - `GET /query_key` — used by Dynamo's KV router shared-cache path
 
-To scrape from outside the cluster, point your collector at `http://<infra_node_ip>:9003/metrics`. The infra node IP is logged at job start.
+To scrape from outside the cluster, point your collector at `http://<infra_node_ip>:8702/metrics`. The infra node IP is logged at job start.
 
 ## Validation
 
@@ -250,11 +249,11 @@ The workers continue to use the job's main container — only the master process
 
 ### Master fails to start within 120s
 
-srtslurm waits up to 120 seconds for `mooncake_master` to bind on port 50051. If it times out, check:
+srtslurm waits up to 120 seconds for `mooncake_master` to bind on port 8700. If it times out, check:
 
 - `mooncake_master.out` in the run's log directory — usually shows a binary-not-found or RDMA setup error
 - Whether `mooncake_master` is on `$PATH` inside the master container. If you're using a custom container, verify it has the mooncake binaries installed.
-- Whether port 50051 is already in use on the infra node from a previous failed run (rare, but can happen if cleanup was interrupted)
+- Whether port 8700 is already in use on the infra node from a previous failed run (rare, but can happen if cleanup was interrupted)
 
 ### Workers connect but transfers stall
 

@@ -315,7 +315,9 @@ class TestDryRunExecutionExtensions:
         assert "MOONCAKE_PROTOCOL" in output
 
     def test_vllm_mooncake_kv_store_dry_run(self, capsys):
-        """vLLM mooncake_kv_store renders the shared master port (50051)."""
+        """vLLM mooncake_kv_store renders the shared master port (8700)."""
+        from srtctl.ports import MOONCAKE_MASTER_PORT
+
         kv_cfg = '{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both"}'
         config = _make_config(
             {
@@ -339,7 +341,7 @@ class TestDryRunExecutionExtensions:
         # Rich truncates long values with an ellipsis; assert on the stable prefix.
         assert "inferactinc/public:mk-int-202605" in output
         # Shared with the SGLang launch — same port pair.
-        assert "50051" in output
+        assert str(MOONCAKE_MASTER_PORT) in output
 
     def test_vllm_mooncake_store_config_in_dry_run(self, capsys):
         """vLLM store_config + MOONCAKE_CONFIG_PATH appear in the dry-run extensions panel."""

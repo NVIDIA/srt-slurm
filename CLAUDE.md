@@ -153,7 +153,7 @@ infra:
 
 When `mooncake_kv_store` is set under an SGLang backend, srtslurm:
 1. Launches `mooncake_master` on the infra node (same node as etcd/nats)
-2. Injects `MOONCAKE_MASTER=<infra_ip>:50051` on all workers automatically
+2. Injects `MOONCAKE_MASTER=<infra_ip>:8700` on all workers automatically
 3. Passes through any env vars in `mooncake_kv_store.env` to all workers
 
 ```yaml

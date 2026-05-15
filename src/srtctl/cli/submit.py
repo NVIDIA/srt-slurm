@@ -35,7 +35,6 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.syntax import Syntax
 from rich.table import Table
 
-# Import from srtctl modules
 from srtctl.core.config import (
     generate_override_configs,
     get_srtslurm_setting,
@@ -59,6 +58,7 @@ from srtctl.core.lockfile import load_lockfile_fingerprints
 from srtctl.core.schema import SrtConfig
 from srtctl.core.status import create_job_record
 from srtctl.core.validation import preflight_config_variants
+from srtctl.ports import MOONCAKE_MASTER_PORT
 
 console = Console()
 logger = logging.getLogger(__name__)
@@ -312,7 +312,7 @@ def show_config_details(config: SrtConfig) -> None:
 
         if mooncake_cfg is not None:
             details.add_row("mooncake", "container", mooncake_cfg.container or "<job container>")
-            details.add_row("mooncake", "master_port", "50051 (auto)")
+            details.add_row("mooncake", "master_port", f"{MOONCAKE_MASTER_PORT} (auto)")
             if hasattr(backend, "build_mooncake_store_config"):
                 # vLLM workers need MOONCAKE_CONFIG_PATH pointing at a JSON file
                 # — srtslurm writes this at job start. Show the resolved JSON
