@@ -134,9 +134,6 @@ class TelemetryStageMixin:
         )
 
         telemetry_dir = self.runtime.log_dir / telemetry.storage_subdir / self.runtime.job_id
-        telemetry_dir.mkdir(parents=True, exist_ok=True)
-        local_dir = telemetry_dir / "local"
-        local_dir.mkdir(parents=True, exist_ok=True)
 
         cmd = [
             telemetry.binary_path,

@@ -118,7 +118,7 @@ class TestTelemetryConfigGeneration:
             telemetry=telemetry,
         )
 
-        assert 'storage = "/logs/telemetry"' in config_text
+        assert 'storage = "/logs/telemetry/12345"' in config_text
         assert 'name = "dcgm_node-a"' in config_text
         assert 'url = "http://10.0.0.1:8081/metrics"' in config_text
         assert '"cluster" = "pdx"' in config_text
@@ -185,7 +185,7 @@ class TestTelemetryStageMixin:
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
     @patch(
         "srtctl.cli.mixins.telemetry_stage.generate_telemetry_config",
-        return_value='storage = "/logs/telemetry"\n',
+        return_value='storage = "/logs/telemetry/12345"\n',
     )
     def test_start_telemetry_starts_exporters_and_scraper(self, _mock_config, mock_srun, tmp_path):
         mock_srun.return_value = MagicMock()
@@ -196,8 +196,9 @@ class TestTelemetryStageMixin:
         assert len(procs) == 3
         config_path = tmp_path / "telemetry_config.toml"
         container_config_path = Path("/telemetry_config.toml")
+        storage_path = tmp_path / "telemetry" / "12345"
         assert config_path.exists()
-        assert (tmp_path / "telemetry" / "12345" / "local").exists()
+        assert not storage_path.exists()
         assert mock_srun.call_count == 3
         scraper_call = mock_srun.call_args_list[-1]
         assert scraper_call.kwargs["command"][2] == str(container_config_path)
@@ -220,7 +221,7 @@ class TestTelemetryStageMixin:
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
     @patch(
         "srtctl.cli.mixins.telemetry_stage.generate_telemetry_config",
-        return_value='storage = "/logs/telemetry"\n',
+        return_value='storage = "/logs/telemetry/12345"\n',
     )
     def test_exporter_srun_passes_nodes_arg_matching_nodelist(self, _mock_config, mock_srun, tmp_path):
         """Regression: exporter srun must pass nodes=N when nodelist has N entries.
