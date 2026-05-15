@@ -3,13 +3,14 @@
 
 """Tests for frontend topology logic (nginx + multiple frontends)."""
 
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from srtctl.cli.do_sweep import SweepOrchestrator
 from srtctl.cli.mixins.frontend_stage import FrontendTopology
 from srtctl.core.runtime import Nodes, RuntimeContext
-from srtctl.core.schema import FrontendConfig, ResourceConfig, SrtConfig
+from srtctl.core.schema import BenchmarkConfig, FrontendConfig, ResourceConfig, SrtConfig
 
 
 def make_config(
@@ -191,9 +192,11 @@ class TestNginxConfigGeneration:
             public_port=8000,
         )
 
-        with patch.object(orchestrator, "runtime", runtime):
-            with patch("srtctl.cli.mixins.frontend_stage.get_hostname_ip", side_effect=lambda x: f"10.0.0.{x[-1]}"):
-                nginx_config = orchestrator._generate_nginx_config(topology)
+        with (
+            patch.object(orchestrator, "runtime", runtime),
+            patch("srtctl.cli.mixins.frontend_stage.get_hostname_ip", side_effect=lambda x: f"10.0.0.{x[-1]}"),
+        ):
+            nginx_config = orchestrator._generate_nginx_config(topology)
 
         assert "server 10.0.0.1:8180" in nginx_config
         assert "listen 8000" in nginx_config
@@ -212,9 +215,11 @@ class TestNginxConfigGeneration:
             public_port=8000,
         )
 
-        with patch.object(orchestrator, "runtime", runtime):
-            with patch("srtctl.cli.mixins.frontend_stage.get_hostname_ip", side_effect=lambda x: f"10.0.0.{x[-1]}"):
-                nginx_config = orchestrator._generate_nginx_config(topology)
+        with (
+            patch.object(orchestrator, "runtime", runtime),
+            patch("srtctl.cli.mixins.frontend_stage.get_hostname_ip", side_effect=lambda x: f"10.0.0.{x[-1]}"),
+        ):
+            nginx_config = orchestrator._generate_nginx_config(topology)
 
         assert "worker_rlimit_nofile 1048576" in nginx_config
 
@@ -239,6 +244,47 @@ class TestNginxConfigGeneration:
         assert "server 10.0.0.2:8180" in nginx_config
         assert "server 10.0.0.3:8180" in nginx_config
         assert "listen 8000" in nginx_config
+
+
+class TestSABenchShardedApiUrls:
+    """Tests for SA-Bench API URL generation from frontend topology."""
+
+    def test_generates_sa_bench_urls_from_frontend_topology(self):
+        config = make_config(enable_multiple_frontends=True)
+        config = replace(
+            config,
+            benchmark=BenchmarkConfig(type="sa-bench", env={"SA_BENCH_SHARD_FRONTENDS": "true"}),
+        )
+        runtime = make_runtime(["node0", "node1", "node2", "node3"])
+        orchestrator = SweepOrchestrator(config=config, runtime=runtime)
+
+        with patch("srtctl.cli.mixins.benchmark_stage.get_hostname_ip", side_effect=lambda x, _: f"10.0.0.{x[-1]}"):
+            env = orchestrator._get_sa_bench_api_url_env()
+
+        assert env == {
+            "SA_BENCH_API_URLS": (
+                "http://10.0.0.1:8180/v1/completions,"
+                "http://10.0.0.2:8180/v1/completions,"
+                "http://10.0.0.3:8180/v1/completions"
+            )
+        }
+
+    def test_explicit_sa_bench_urls_win(self):
+        config = make_config(enable_multiple_frontends=True)
+        config = replace(
+            config,
+            benchmark=BenchmarkConfig(
+                type="sa-bench",
+                env={
+                    "SA_BENCH_SHARD_FRONTENDS": "true",
+                    "SA_BENCH_API_URLS": "http://nginx0:8000/v1/completions",
+                },
+            ),
+        )
+        runtime = make_runtime(["node0", "node1", "node2"])
+        orchestrator = SweepOrchestrator(config=config, runtime=runtime)
+
+        assert orchestrator._get_sa_bench_api_url_env() == {}
 
 
 class TestStartFrontendIntegration:

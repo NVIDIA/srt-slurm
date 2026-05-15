@@ -333,6 +333,25 @@ class BenchmarkStageMixin:
             "SA_BENCH_SLOW_DOWN_WAIT_TIME": str(b.slow_down_wait_time),
         }
 
+    def _get_sa_bench_api_url_env(self) -> dict[str, str]:
+        """Build SA-Bench sharded API URLs from srt-slurm frontend topology."""
+        b = self.config.benchmark
+        shard_frontends = str(b.env.get("SA_BENCH_SHARD_FRONTENDS", "")).lower() in ("1", "true", "yes", "on")
+        if not shard_frontends or b.env.get("SA_BENCH_API_URLS"):
+            return {}
+
+        topology = self._compute_frontend_topology()
+        urls = [
+            f"http://{get_hostname_ip(node, self.runtime.network_interface)}:{topology.frontend_port}/v1/completions"
+            for node in topology.frontend_nodes
+        ]
+        if not urls:
+            logger.warning("SA_BENCH_SHARD_FRONTENDS requested but no frontend nodes were found")
+            return {}
+
+        logger.info("SA-Bench sharded API targets from frontend topology: %s", ", ".join(urls))
+        return {"SA_BENCH_API_URLS": ",".join(urls)}
+
     def _get_aiperf_server_metrics_env(self) -> dict[str, str]:
         """Build server metrics URLs for AIPerf benchmarks.
 
@@ -375,6 +394,7 @@ class BenchmarkStageMixin:
             env[key] = value
 
         if runner.name == "SA-Bench":
+            env.update(self._get_sa_bench_api_url_env())
             env.update(self._get_sa_bench_slow_down_env())
 
         # Add AIPerf-specific env vars for AIPerf-driven benchmarks only
