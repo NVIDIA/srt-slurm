@@ -118,7 +118,7 @@ class TestTelemetryConfigGeneration:
             telemetry=telemetry,
         )
 
-        assert 'storage = "/logs/telemetry"' in config_text
+        assert 'storage = "/logs/telemetry/12345"' in config_text
         assert 'name = "dcgm_node-a"' in config_text
         assert 'url = "http://10.0.0.1:8081/metrics"' in config_text
         assert '"cluster" = "pdx"' in config_text
@@ -149,6 +149,7 @@ class TestTelemetryStageMixin:
             def __init__(self) -> None:
                 self.config = _make_config(telemetry=TelemetryConfig(**telemetry_kwargs))
                 self.runtime = MagicMock()
+                self.runtime.job_id = "12345"
                 self.runtime.log_dir = tmp_path
                 self.runtime.nodes.head = "node-a"
                 self.runtime.nodes.het = False
@@ -184,7 +185,7 @@ class TestTelemetryStageMixin:
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
     @patch(
         "srtctl.cli.mixins.telemetry_stage.generate_telemetry_config",
-        return_value='storage = "/logs/telemetry"\n',
+        return_value='storage = "/logs/telemetry/12345"\n',
     )
     def test_start_telemetry_starts_exporters_and_scraper(self, _mock_config, mock_srun, tmp_path):
         mock_srun.return_value = MagicMock()
@@ -193,9 +194,15 @@ class TestTelemetryStageMixin:
         procs = harness.start_telemetry()
 
         assert len(procs) == 3
-        assert (tmp_path / "telemetry_config.toml").exists()
-        assert (tmp_path / "telemetry" / "local").exists()
+        config_path = tmp_path / "telemetry_config.toml"
+        container_config_path = Path("/telemetry_config.toml")
+        assert config_path.exists()
+        assert (tmp_path / "telemetry" / "12345" / "local").exists()
         assert mock_srun.call_count == 3
+        scraper_call = mock_srun.call_args_list[-1]
+        assert scraper_call.kwargs["command"][2] == str(container_config_path)
+        assert scraper_call.kwargs["command"][4] == "/logs/telemetry/12345/local"
+        assert scraper_call.kwargs["container_mounts"][config_path] == container_config_path
 
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
     def test_start_telemetry_dcgm_only(self, mock_srun, tmp_path):
@@ -213,7 +220,7 @@ class TestTelemetryStageMixin:
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
     @patch(
         "srtctl.cli.mixins.telemetry_stage.generate_telemetry_config",
-        return_value='storage = "/logs/telemetry"\n',
+        return_value='storage = "/logs/telemetry/12345"\n',
     )
     def test_exporter_srun_passes_nodes_arg_matching_nodelist(self, _mock_config, mock_srun, tmp_path):
         """Regression: exporter srun must pass nodes=N when nodelist has N entries.
@@ -235,4 +242,3 @@ class TestTelemetryStageMixin:
             # Distroless images (e.g. prom/node-exporter) have no bash, so we
             # must invoke the binary directly rather than via `bash -c`.
             assert call.kwargs.get("use_bash_wrapper") is False
-
