@@ -114,6 +114,13 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
         slurm["time_limit"] = cluster_config["default_time_limit"]
         logger.debug(f"Applied default time_limit: {slurm['time_limit']}")
 
+    default_sbatch_directives = cluster_config.get("default_sbatch_directives")
+    if isinstance(default_sbatch_directives, dict):
+        sbatch_directives = config.setdefault("sbatch_directives", {})
+        for key, value in default_sbatch_directives.items():
+            sbatch_directives.setdefault(key, value)
+        logger.debug("Applied default sbatch_directives: %s", default_sbatch_directives)
+
     # Resolve model path alias
     model = config.get("model", {})
     model_path = model.get("path", "")

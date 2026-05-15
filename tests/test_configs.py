@@ -545,6 +545,64 @@ class TestFrontendConfig:
         resolved2 = resolve_config_with_defaults(user_explicit, {"nginx_raise_ulimit": True})
         assert resolved2["frontend"]["nginx_raise_ulimit"] is False
 
+    def test_default_sbatch_directives_apply_as_defaults(self):
+        """srtslurm.yaml can provide default sbatch directives for every job."""
+        from srtctl.core.config import resolve_config_with_defaults
+
+        user_config = {
+            "name": "test",
+            "model": {"path": "/model", "container": "/c.sqsh", "precision": "fp8"},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+        }
+
+        resolved = resolve_config_with_defaults(
+            user_config,
+            {"default_sbatch_directives": {"exclude": "gpu-[1,5]", "qos": "normal"}},
+        )
+
+        assert resolved["sbatch_directives"] == {
+            "exclude": "gpu-[1,5]",
+            "qos": "normal",
+        }
+
+    def test_default_sbatch_directives_do_not_override_job_values(self):
+        """Job-level sbatch directives take precedence over srtslurm.yaml defaults."""
+        from srtctl.core.config import resolve_config_with_defaults
+
+        user_config = {
+            "name": "test",
+            "model": {"path": "/model", "container": "/c.sqsh", "precision": "fp8"},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+            "sbatch_directives": {"exclude": "gpu-9"},
+        }
+
+        resolved = resolve_config_with_defaults(
+            user_config,
+            {"default_sbatch_directives": {"exclude": "gpu-[1,5]", "constraint": "h100"}},
+        )
+
+        assert resolved["sbatch_directives"] == {
+            "exclude": "gpu-9",
+            "constraint": "h100",
+        }
+
+    def test_cluster_sbatch_directives_are_not_treated_as_defaults(self):
+        """srtslurm.yaml defaults must use default_sbatch_directives explicitly."""
+        from srtctl.core.config import resolve_config_with_defaults
+
+        user_config = {
+            "name": "test",
+            "model": {"path": "/model", "container": "/c.sqsh", "precision": "fp8"},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+        }
+
+        resolved = resolve_config_with_defaults(
+            user_config,
+            {"sbatch_directives": {"exclude": "gpu-[1,5]"}},
+        )
+
+        assert "sbatch_directives" not in resolved
+
     def test_telemetry_container_aliases_resolve(self):
         from srtctl.core.config import resolve_config_with_defaults
 
