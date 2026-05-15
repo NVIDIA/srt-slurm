@@ -133,7 +133,7 @@ class TelemetryStageMixin:
             )
         )
 
-        telemetry_dir = self.runtime.log_dir / telemetry.storage_subdir
+        telemetry_dir = self.runtime.log_dir / telemetry.storage_subdir / self.runtime.job_id
         telemetry_dir.mkdir(parents=True, exist_ok=True)
         local_dir = telemetry_dir / "local"
         local_dir.mkdir(parents=True, exist_ok=True)
@@ -143,7 +143,7 @@ class TelemetryStageMixin:
             "--config",
             "/telemetry_config.toml",
             "--local-dir",
-            f"/logs/{telemetry.storage_subdir}/local",
+            f"/logs/{telemetry.storage_subdir}/{self.runtime.job_id}/local",
         ]
         if telemetry.sync_interval_secs > 0:
             cmd.extend(["--sync-interval", str(telemetry.sync_interval_secs)])
