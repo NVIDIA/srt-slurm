@@ -121,7 +121,7 @@ def generate_telemetry_config(
 
     return _dump_toml(
         endpoints=endpoints,
-        storage=f"/logs/{telemetry.storage_subdir}/{runtime.job_id}",
+        storage=f"/logs/{telemetry.storage_subdir}",
     )
 
 
