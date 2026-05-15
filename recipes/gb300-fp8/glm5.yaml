@@ -27,7 +27,6 @@ base:
 
   backend:
     prefill_environment:
-      UCX_TLS: "cuda_copy,cuda_ipc,sm,self,tcp"  # machine specific
       TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: "1800"
       PYTHONUNBUFFERED: "1"
       DYN_SKIP_SGLANG_LOG_FORMATTING: "1"
@@ -44,7 +43,6 @@ base:
       DYN_REQUEST_PLANE: "nats"
 
     decode_environment:
-      UCX_TLS: "cuda_copy,cuda_ipc,sm,self,tcp" # machine specific
       TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: "1800"
       PYTHONUNBUFFERED: "1"
       DYN_SKIP_SGLANG_LOG_FORMATTING: "1"
@@ -144,9 +142,9 @@ base:
 
 zip_override_8k1k_hightpt:
   resources:
-    prefill_nodes:   [14, 12, 10, 8,  6]
-    prefill_workers: [14, 12, 10, 8,  6]
-    decode_nodes:    [4,  6,  8,  10, 12]
+    prefill_nodes:   [14, 12, 10,  8]
+    prefill_workers: [14, 12, 10,  8]
+    decode_nodes:    [4,  6,  8,  10]
     decode_workers:  1
   frontend:
     enable_multiple_frontends: true
@@ -156,9 +154,9 @@ zip_override_8k1k_hightpt:
       decode:
 
         # Parallelism
-        tensor-parallel-size: [16, 24, 32, 40, 48]
-        expert-parallel-size: [16, 24, 32, 40, 48]
-        data-parallel-size:   [16, 24, 32, 40, 48]
+        tensor-parallel-size: [16, 24, 32, 40]
+        expert-parallel-size: [16, 24, 32, 40]
+        data-parallel-size:   [16, 24, 32, 40]
 
         # dp
         enable-dp-lm-head: true
@@ -167,7 +165,7 @@ zip_override_8k1k_hightpt:
         # load-balance-method: "total_tokens"
 
         # ep
-        ep-num-redundant-experts: [32, 32, 32, 24, 32]
+        ep-num-redundant-experts: [32, 32, 32, 24]
         ep-dispatch-algorithm: "static"
         # eplb-algorithm: "deepseek"
 
@@ -175,20 +173,20 @@ zip_override_8k1k_hightpt:
         deepep-mode: "low_latency"
         deepep-config: "/configs/deepep_config.json"
 
-        max-running-requests: [2800, 1700, 1300, 900, 880]
-        cuda-graph-max-bs:    [175,  70,   40,   22,  18]
+        max-running-requests: [2800, 1700, 1300, 900]
+        cuda-graph-max-bs:    [ 175,   70,   40,  22]
 
   benchmark:
     isl: 8192
     osl: 1024
-    concurrencies: ["2800", "1700", "1300", "900", "880"]
+    concurrencies: ["2800", "1700", "1300", "900"]
 
 zip_override_8k1k_lowlat:
   resources:
     prefill_nodes:   1
     prefill_workers: 1
-    decode_nodes:   [3, 5, 9, 15]
-    decode_workers: [3, 5, 9, 15]
+    decode_nodes:   [9, 17, 17]
+    decode_workers: [9, 17, 17]
   backend:
     sglang_config:
       decode:
@@ -200,13 +198,13 @@ zip_override_8k1k_lowlat:
 
         moe-runner-backend: "flashinfer_trtllm"
 
-        max-running-requests: 2048
-        cuda-graph-max-bs:    2048
+        max-running-requests: [15, 8, 1]
+        cuda-graph-max-bs:    [15, 8, 1]
 
   benchmark:
     isl: 8192
     osl: 1024
-    concurrencies: ["2048"]
+    concurrencies: ["150", "128x64x32", "24"]
 
 
 
@@ -214,9 +212,9 @@ zip_override_8k1k_lowlat:
 
 zip_override_1k1k_hightpt:
   resources:
-    prefill_nodes:   [14, 12, 10,  8,  6]
-    prefill_workers: [14, 12, 10,  8,  6]
-    decode_nodes:    [ 4,  6,  8, 10, 12]
+    prefill_nodes:   [12, 10,  8,  6,  4]
+    prefill_workers: [12, 10,  8,  6,  4]
+    decode_nodes:    [ 6,  8, 10, 12, 14]
     decode_workers:  1
   frontend:
     enable_multiple_frontends: true
@@ -226,9 +224,9 @@ zip_override_1k1k_hightpt:
       decode:
 
         # Parallelism
-        tensor-parallel-size: [16, 24, 32, 40, 48]
-        expert-parallel-size: [16, 24, 32, 40, 48]
-        data-parallel-size:   [16, 24, 32, 40, 48]
+        tensor-parallel-size: [24, 32, 40, 48, 56]
+        expert-parallel-size: [24, 32, 40, 48, 56]
+        data-parallel-size:   [24, 32, 40, 48, 56]
 
         # dp
         enable-dp-lm-head: true
@@ -237,7 +235,7 @@ zip_override_1k1k_hightpt:
         # load-balance-method: "total_tokens"
 
         # ep
-        ep-num-redundant-experts: 32
+        ep-num-redundant-experts: [32, 32, 24, 32, 24]
         ep-dispatch-algorithm: "static"
         # eplb-algorithm: "deepseek"
 
@@ -245,13 +243,13 @@ zip_override_1k1k_hightpt:
         deepep-mode: "low_latency"
         deepep-config: "/configs/deepep_config.json"
 
-        max-running-requests: 4096
-        cuda-graph-max-bs:    256
+        max-running-requests: [8192, 8192, 256, 6500, 5700]
+        cuda-graph-max-bs:    [512,   256, 180,  128,  100]
 
   benchmark:
     isl: 1024
     osl: 1024
-    concurrencies: ["4096"]
+    concurrencies: ["8192", "7500", "7300", "6500", "5700"]
 
 
 zip_override_1k1k_lowlat:
