@@ -156,7 +156,7 @@ backend:
   - For **SGLang**, keys map directly to mooncake's environment variable names — see the [SGLang server_args.py](https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/environ.py) and [mooncake_store.py](https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/mem_cache/storage/mooncake_store/mooncake_store.py) for the full list.
   - For **vLLM**, this is for in-process Mooncake C++ knobs (`MC_*`) read by the transfer engine / store client. vLLM's connector itself reads configuration from `MOONCAKE_CONFIG_PATH` (the JSON rendered from `store_config:`), not from these env vars.
   - Setting `MOONCAKE_MASTER`, `MOONCAKE_TE_META_DATA_SERVER`, or `MOONCAKE_CONFIG_PATH` here is a no-op (srtslurm always wins).
-- **`store_config`** (vLLM only, `dict[str, str]`, optional): Rendered as JSON into the file pointed to by `MOONCAKE_CONFIG_PATH`. Keys map 1:1 to vLLM's `MooncakeStoreConfig` dataclass. `master_server_address` is auto-filled and any user value is ignored.
+- **`store_config`** (vLLM only, `dict[str, Any]`, optional): Rendered as JSON into the file pointed to by `MOONCAKE_CONFIG_PATH`. Keys map 1:1 to vLLM's `MooncakeStoreConfig` dataclass — a mix of `str` (e.g. `protocol`), `int` (e.g. `port`), and human-readable size strings (e.g. `"4GB"`). `master_server_address` is auto-filled and any user value is ignored.
 
 ## Master Metrics Endpoint
 

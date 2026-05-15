@@ -32,7 +32,7 @@ from srtctl.backends.mooncake import MOONCAKE_HTTP_METADATA_PORT, MOONCAKE_MASTE
 if TYPE_CHECKING:
     from srtctl.backends.base import SrunConfig
     from srtctl.core.runtime import RuntimeContext
-    from srtctl.core.topology import Endpoint, Process
+    from srtctl.core.topology import Endpoint, NodePortAllocator, Process
 
 # Type alias for worker modes
 WorkerMode = Literal["prefill", "decode", "agg"]
@@ -92,7 +92,12 @@ class VLLMMooncakeKVStoreConfig:
 
     container: str | None = None
     env: dict[str, str] = field(default_factory=dict)
-    store_config: dict[str, str] | None = None
+    # ``store_config`` values are JSON-serialized into MOONCAKE_CONFIG_PATH and
+    # parsed by vLLM's ``MooncakeStoreConfig`` dataclass — fields are a mix of
+    # str (e.g. ``protocol``), int (e.g. ``port``), and human-readable sizes
+    # (e.g. ``"4GB"``). Type as ``dict[str, Any]`` to avoid forcing users to
+    # quote numeric values.
+    store_config: dict[str, Any] | None = None
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
@@ -201,16 +206,12 @@ class VLLMProtocol:
         vLLM with dynamo requires unique ports for each worker:
         - DYN_VLLM_KV_EVENT_PORT: ZMQ port for KV events publishing
         - VLLM_NIXL_SIDE_CHANNEL_PORT: Port for NIXL side channel transfers
-        - VLLM_NIXL_SIDE_CHANNEL_HOST: Routable IP for NIXL side channel (not 0.0.0.0/localhost)
         """
-        from srtctl.core.slurm import get_hostname_ip
-
         env: dict[str, str] = {}
         if process.kv_events_port is not None:
             env["DYN_VLLM_KV_EVENT_PORT"] = str(process.kv_events_port)
         if process.nixl_port is not None:
             env["VLLM_NIXL_SIDE_CHANNEL_PORT"] = str(process.nixl_port)
-            env["VLLM_NIXL_SIDE_CHANNEL_HOST"] = get_hostname_ip(process.node)
         return env
 
     def get_mooncake_worker_env(self, infra_node_ip: str, local_hostname: str) -> dict[str, str]:
@@ -238,7 +239,7 @@ class VLLMProtocol:
             "MOONCAKE_CONFIG_PATH": MOONCAKE_STORE_CONFIG_CONTAINER_PATH,
         }
 
-    def build_mooncake_store_config(self, infra_node_ip: str) -> dict[str, str]:
+    def build_mooncake_store_config(self, infra_node_ip: str) -> dict[str, Any]:
         """Build the JSON payload for vLLM's ``MooncakeStoreConfig.load_from_env()``.
 
         Keys map 1:1 to vLLM's ``MooncakeStoreConfig`` dataclass. Values come
@@ -247,7 +248,7 @@ class VLLMProtocol:
         infra node IP (any user-provided value is overridden — the user can't
         know the infra IP at config time).
         """
-        user_cfg: dict[str, str] = {}
+        user_cfg: dict[str, Any] = {}
         if self.mooncake_kv_store is not None and self.mooncake_kv_store.store_config:
             user_cfg = dict(self.mooncake_kv_store.store_config)
 
@@ -313,6 +314,7 @@ class VLLMProtocol:
         self,
         endpoints: list[Endpoint],
         base_sys_port: int = 8081,
+        port_allocator: NodePortAllocator | None = None,
     ) -> list[Process]:
         """Convert endpoints to processes.
 
@@ -326,12 +328,13 @@ class VLLMProtocol:
 
         if not has_dp_mode:
             # Standard TP mode: one process per node
-            return endpoints_to_processes(endpoints, base_sys_port=base_sys_port)
+            return endpoints_to_processes(endpoints, base_sys_port=base_sys_port, port_allocator=port_allocator)
 
         # DP+EP mode: one process per GPU
         processes: list[Process] = []
         current_sys_port = base_sys_port
-        port_allocator = NodePortAllocator()
+        if port_allocator is None:
+            port_allocator = NodePortAllocator()
 
         for endpoint in endpoints:
             if not self._is_dp_mode(endpoint.mode):
