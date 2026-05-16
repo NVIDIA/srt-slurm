@@ -917,6 +917,19 @@ backend:
         assert cfg["protocol"] == "tcp"
         assert cfg["device_name"] == "mlx5_0"
 
+    def test_vllm_mooncake_store_config_passes_unknown_keys_through(self):
+        """Unknown keys in store_config pass through so new vLLM fields work without code changes."""
+        from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMProtocol
+
+        backend = VLLMProtocol(
+            mooncake_kv_store=VLLMMooncakeKVStoreConfig(
+                store_config={"new_upstream_field": "some_value", "another_new_field": 42}
+            )
+        )
+        cfg = backend.build_mooncake_store_config("10.0.0.1")
+        assert cfg["new_upstream_field"] == "some_value"
+        assert cfg["another_new_field"] == 42
+
     def test_vllm_mooncake_config_path_injected_into_worker_env(self):
         """MOONCAKE_CONFIG_PATH is auto-injected so vLLM workers find the JSON config."""
         from srtctl.backends.vllm import (

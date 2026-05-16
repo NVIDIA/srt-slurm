@@ -244,24 +244,26 @@ class VLLMProtocol:
     def build_mooncake_store_config(self, infra_node_ip: str) -> dict[str, Any]:
         """Build the JSON payload for vLLM's ``MooncakeStoreConfig.load_from_env()``.
 
-        Keys map 1:1 to vLLM's ``MooncakeStoreConfig`` dataclass. Values come
-        from ``mooncake_kv_store.store_config`` when set; missing keys fall back
-        to defaults. ``master_server_address`` is always auto-filled from the
-        infra node IP (any user-provided value is overridden — the user can't
-        know the infra IP at config time).
+        Defaults cover the keys vLLM's ``MooncakeStoreConfig`` dataclass
+        requires today; the user dict is merged on top, so any new fields
+        vLLM adds upstream pass through without code changes here.
+        ``master_server_address`` is always auto-filled from the infra node
+        IP (any user-provided value is overridden — the user can't know the
+        infra IP at config time).
         """
+        defaults: dict[str, Any] = {
+            "metadata_server": "P2PHANDSHAKE",
+            "global_segment_size": "4GB",
+            "local_buffer_size": "4GB",
+            "protocol": "rdma",
+            "device_name": "",
+        }
         user_cfg: dict[str, Any] = {}
         if self.mooncake_kv_store is not None and self.mooncake_kv_store.store_config:
             user_cfg = dict(self.mooncake_kv_store.store_config)
-
-        return {
-            "metadata_server": user_cfg.get("metadata_server", "P2PHANDSHAKE"),
-            "master_server_address": f"{infra_node_ip}:{MOONCAKE_MASTER_PORT}",
-            "global_segment_size": user_cfg.get("global_segment_size", "4GB"),
-            "local_buffer_size": user_cfg.get("local_buffer_size", "4GB"),
-            "protocol": user_cfg.get("protocol", "rdma"),
-            "device_name": user_cfg.get("device_name", ""),
-        }
+        result = {**defaults, **user_cfg}
+        result["master_server_address"] = f"{infra_node_ip}:{MOONCAKE_MASTER_PORT}"
+        return result
 
     def get_served_model_name(self, default: str) -> str:
         """Get served model name from vLLM config, or return default."""
