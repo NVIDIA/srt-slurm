@@ -19,6 +19,7 @@ from srtctl.core.health import wait_for_model
 from srtctl.core.lockfile import collect_worker_fingerprints
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
 from srtctl.core.status import JobStage, JobStatus, StatusReporter
+from srtctl.ports import FRONTEND_PUBLIC_PORT, SGLANG_HTTP_PORT_BASE
 
 if TYPE_CHECKING:
     from srtctl.benchmarks.base import BenchmarkRunner
@@ -80,7 +81,7 @@ class BenchmarkStageMixin:
         hc = self.config.health_check
         if not wait_for_model(
             host=self.runtime.nodes.head,
-            port=8000,
+            port=FRONTEND_PUBLIC_PORT,
             n_prefill=n_prefill,
             n_decode=n_decode,
             poll_interval=float(hc.interval_seconds),
@@ -130,7 +131,7 @@ class BenchmarkStageMixin:
 
         if benchmark_type == "manual":
             logger.info("Benchmark type is 'manual' - server is ready for testing")
-            logger.info("Frontend URL: http://%s:8000", self.runtime.nodes.head)
+            logger.info("Frontend URL: http://%s:%d", self.runtime.nodes.head, FRONTEND_PUBLIC_PORT)
             logger.info("Press Ctrl+C to stop the job")
 
             while not stop_event.is_set():
@@ -293,6 +294,7 @@ class BenchmarkStageMixin:
             env["BENCH_MODEL_NAME"] = self.config.served_model_name
             env["HEAD_NODE"] = self.runtime.nodes.head
             env["HEAD_PORT"] = str(self.runtime.frontend_port)
+            env["PROFILE_WORKER_PORT"] = str(SGLANG_HTTP_PORT_BASE)
 
         # Let benchmark scripts know the backend type so they can select the right profiling lib
         if self.config.backend_type == "trtllm":

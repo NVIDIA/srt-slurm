@@ -2,8 +2,8 @@ base:
   name: "gb300-fp4-glm5"
 
   model:
-    path: "glm5-nvfp4"
-    container: "sglang-v0.5.10-cu130.post1"
+    path: "glm-5-fp4"
+    container: "v0.5.11"
     precision: "fp4"
 
   identity:
@@ -11,8 +11,8 @@ base:
       repo: "nvidia/GLM-5-NVFP4"
       revision: "dc54ff55a7e9e71b85db953d8bc22eca894b44c6"
     frameworks:
-      dynamo: "1.1.0.dev2"
-      sglang: "0.5.10.post1"
+      dynamo: "1.1.0"
+      sglang: "0.5.11"
 
   resources:
     gpu_type: "gb300"
@@ -20,8 +20,9 @@ base:
 
   frontend:
     type: "dynamo"
+
   dynamo:
-    version: "1.1.0.dev2"
+    version: "1.1.0"
 
   backend:
     prefill_environment:
@@ -94,7 +95,7 @@ base:
         # disable-shared-experts-fusion: true
         enable-flashinfer-allreduce-fusion: true
         disable-radix-cache: true
-        stream-interval: 30
+        weight-loader-prefetch-checkpoints: true
         model-loader-extra-config: '{"enable_multithread_load": true}'
 
       decode:
@@ -119,11 +120,14 @@ base:
         moe-runner-backend: "flashinfer_cutedsl"
         fp4-gemm-backend: "flashinfer_cutlass"
 
+        # Detokenizer
+        skip-tokenizer-init: true
+        stream-interval: 30
+
         # Other flags
         # disable-shared-experts-fusion: true
-        enable-flashinfer-allreduce-fusion: true
         disable-radix-cache: true
-        stream-interval: 30
+        weight-loader-prefetch-checkpoints: true
         model-loader-extra-config: '{"enable_multithread_load": true}'
 
   health_check:
@@ -142,6 +146,11 @@ zip_override_8k1k_hightpt:
     prefill_workers: [5, 7, 10]
     decode_nodes:    [8]
     decode_workers:  1
+
+  frontend:
+    enable_multiple_frontends: true
+    num_additional_frontends: 9
+
   backend:
     sglang_config:
       decode:
@@ -155,7 +164,6 @@ zip_override_8k1k_hightpt:
         enable-dp-lm-head: true
         enable-dp-attention: true
         moe-dense-tp-size: 1
-        load-balance-method: "total_tokens"
 
         # ep
         ep-num-redundant-experts: 32
@@ -187,10 +195,8 @@ zip_override_8k1k_lowlat:
         tensor-parallel-size: 4
         expert-parallel-size: 1
         data-parallel-size:   1
+        enable-flashinfer-allreduce-fusion: true
 
-        # base decode uses flashinfer_cutedsl which requires deepep a2a for NVFP4
-        # (nvfp4_expert_quant.cuh:572 dimension mismatch with ep=1). Override to
-        # flashinfer_trtllm which has a registered fused func for ("none", ...).
         moe-runner-backend: "flashinfer_trtllm"
 
         max-running-requests: 4096
@@ -207,42 +213,68 @@ zip_override_8k1k_lowlat:
 
 zip_override_1k1k_hightpt:
   resources:
-    prefill_nodes:   [1, 1, 1, 1]
-    prefill_workers: [1, 1, 1, 1]
-    decode_nodes:    [1, 2, 3, 4]
-    decode_workers:  [1, 2, 3, 4]
+    prefill_nodes:   [3, 2, 1]
+    prefill_workers: [3, 2, 1]
+    decode_nodes:    [8]
+    decode_workers:  1
+
+  frontend:
+    enable_multiple_frontends: true
+    num_additional_frontends: 9
+
   backend:
     sglang_config:
       decode:
-        data-parallel-size: 8
+
+        # Parallelism
+        tensor-parallel-size: 32
+        expert-parallel-size: 32
+        data-parallel-size:   32
+
+        # dp
         enable-dp-lm-head: true
         enable-dp-attention: true
-        load-balance-method: "total_tokens"
+        moe-dense-tp-size: 1
 
-        max-running-requests: [2560, 1232, 784, 560]
-        cuda-graph-max-bs:    [2560, 1232, 784, 560]
+        # ep
+        ep-num-redundant-experts: 32
+        ep-dispatch-algorithm: "static"
+        # eplb-algorithm: "deepseek"
+
+        moe-a2a-backend: "deepep"
+        deepep-mode: "low_latency"
+        deepep-config: "/configs/deepep_config.json"
+
+        max-running-requests: [16384, 8192, 2304]
+        cuda-graph-max-bs:    [512  , 256,  72  ]
 
   benchmark:
     isl: 1024
     osl: 1024
-    concurrencies: ["2576", "1248", "800", "576"]
+    concurrencies: ["16500", "8300", "2500x1024x512x256"]
 
 
 zip_override_1k1k_lowlat:
   resources:
     prefill_nodes:   1
     prefill_workers: 1
-    decode_nodes:    [8, 8]
-    decode_workers:  [8, 8]
+    decode_nodes:   17
+    decode_workers: 17
   backend:
     sglang_config:
       decode:
-        data-parallel-size: 1
+        # Parallelism
+        tensor-parallel-size: 4
+        expert-parallel-size: 1
+        data-parallel-size:   1
+        enable-flashinfer-allreduce-fusion: true
 
-        max-running-requests: [64, 1]
-        cuda-graph-max-bs:    [64, 1]
+        moe-runner-backend: "flashinfer_trtllm"
+
+        max-running-requests: [32, 1]
+        cuda-graph-max-bs:    [32, 1]
 
   benchmark:
     isl: 1024
     osl: 1024
-    concurrencies: ["512x256x128x64x32", "16"]
+    concurrencies: ["512x256x128x64", "32"]

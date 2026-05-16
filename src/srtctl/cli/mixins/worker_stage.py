@@ -16,6 +16,7 @@ from srtctl.core.fingerprint import generate_capture_script
 from srtctl.core.processes import ManagedProcess, NamedProcesses
 from srtctl.core.schema import build_otel_env
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
+from srtctl.ports import ETCD_CLIENT_PORT, KV_EVENTS_PORT_BASE, KVBM_ZMQ_PORT_BASE, NATS_PORT
 
 if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
@@ -98,7 +99,7 @@ class WorkerStageMixin:
         single-node endpoints, but multi-node endpoints need every worker to
         connect to the leader node. Also assign deterministic per-endpoint ports
         when the user did not set them, so co-located KVBM endpoints do not fight
-        over the default 56001/56002 pair.
+        over the default KVBM leader ZMQ pair.
         """
         if env_to_set.get("DYN_CONNECTOR", "").lower() != "kvbm" or not endpoint_processes:
             return
@@ -113,8 +114,8 @@ class WorkerStageMixin:
         if leader.kv_events_port is None:
             return
 
-        port_offset = max(0, leader.kv_events_port - 5550)
-        pub_port = 56001 + (port_offset * 2)
+        port_offset = max(0, leader.kv_events_port - KV_EVENTS_PORT_BASE)
+        pub_port = KVBM_ZMQ_PORT_BASE + (port_offset * 2)
         ack_port = pub_port + 1
         if ack_port <= 65535:
             env_to_set.setdefault("DYN_KVBM_LEADER_ZMQ_PUB_PORT", str(pub_port))
@@ -155,8 +156,8 @@ class WorkerStageMixin:
         # Environment variables
         env_to_set = {
             "HEAD_NODE_IP": self.runtime.head_node_ip,
-            "ETCD_ENDPOINTS": f"http://{self.runtime.nodes.infra}:2379",
-            "NATS_SERVER": f"nats://{self.runtime.nodes.infra}:4222",
+            "ETCD_ENDPOINTS": f"http://{self.runtime.nodes.infra}:{ETCD_CLIENT_PORT}",
+            "NATS_SERVER": f"nats://{self.runtime.nodes.infra}:{NATS_PORT}",
             "DYN_SYSTEM_PORT": str(process.sys_port),
             "DYN_REQUEST_PLANE": "nats",
             "DYN_SKIP_SGLANG_LOG_FORMATTING": "1",
@@ -295,8 +296,8 @@ class WorkerStageMixin:
         # Environment variables
         env_to_set = {
             "HEAD_NODE_IP": self.runtime.head_node_ip,
-            "ETCD_ENDPOINTS": f"http://{self.runtime.nodes.infra}:2379",
-            "NATS_SERVER": f"nats://{self.runtime.nodes.infra}:4222",
+            "ETCD_ENDPOINTS": f"http://{self.runtime.nodes.infra}:{ETCD_CLIENT_PORT}",
+            "NATS_SERVER": f"nats://{self.runtime.nodes.infra}:{NATS_PORT}",
             "DYN_SYSTEM_PORT": str(leader.sys_port),
             "DYN_SKIP_SGLANG_LOG_FORMATTING": "1",
         }

@@ -236,7 +236,14 @@ def render_batch_plot_matrix(
         if not drawn:
             ax.text(0.5, 0.5, "no data", ha="center", va="center", transform=ax.transAxes, color="grey", fontsize=9)
         elif files:
-            ax.legend(fontsize=7, loc="upper right", ncol=max(1, len(files) // 8 + 1))
+            ax.legend(
+                fontsize=7,
+                loc="upper right",
+                ncol=max(1, len(files) // 8 + 1),
+                framealpha=0.35,
+                facecolor="white",
+                edgecolor="0.7",
+            )
 
     for row, (pf_metric, dc_metric) in enumerate(PLOT_ROWS):
         _draw_ax(axes[row][0], pf_metric, pf_files, "Prefill")

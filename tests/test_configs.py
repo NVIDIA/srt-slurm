@@ -545,6 +545,64 @@ class TestFrontendConfig:
         resolved2 = resolve_config_with_defaults(user_explicit, {"nginx_raise_ulimit": True})
         assert resolved2["frontend"]["nginx_raise_ulimit"] is False
 
+    def test_default_sbatch_directives_apply_as_defaults(self):
+        """srtslurm.yaml can provide default sbatch directives for every job."""
+        from srtctl.core.config import resolve_config_with_defaults
+
+        user_config = {
+            "name": "test",
+            "model": {"path": "/model", "container": "/c.sqsh", "precision": "fp8"},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+        }
+
+        resolved = resolve_config_with_defaults(
+            user_config,
+            {"default_sbatch_directives": {"exclude": "gpu-[1,5]", "qos": "normal"}},
+        )
+
+        assert resolved["sbatch_directives"] == {
+            "exclude": "gpu-[1,5]",
+            "qos": "normal",
+        }
+
+    def test_default_sbatch_directives_do_not_override_job_values(self):
+        """Job-level sbatch directives take precedence over srtslurm.yaml defaults."""
+        from srtctl.core.config import resolve_config_with_defaults
+
+        user_config = {
+            "name": "test",
+            "model": {"path": "/model", "container": "/c.sqsh", "precision": "fp8"},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+            "sbatch_directives": {"exclude": "gpu-9"},
+        }
+
+        resolved = resolve_config_with_defaults(
+            user_config,
+            {"default_sbatch_directives": {"exclude": "gpu-[1,5]", "constraint": "h100"}},
+        )
+
+        assert resolved["sbatch_directives"] == {
+            "exclude": "gpu-9",
+            "constraint": "h100",
+        }
+
+    def test_cluster_sbatch_directives_are_not_treated_as_defaults(self):
+        """srtslurm.yaml defaults must use default_sbatch_directives explicitly."""
+        from srtctl.core.config import resolve_config_with_defaults
+
+        user_config = {
+            "name": "test",
+            "model": {"path": "/model", "container": "/c.sqsh", "precision": "fp8"},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+        }
+
+        resolved = resolve_config_with_defaults(
+            user_config,
+            {"sbatch_directives": {"exclude": "gpu-[1,5]"}},
+        )
+
+        assert "sbatch_directives" not in resolved
+
     def test_telemetry_container_aliases_resolve(self):
         from srtctl.core.config import resolve_config_with_defaults
 
@@ -1882,3 +1940,63 @@ class TestInfmaxWorkspaceMount:
                     runtime = RuntimeContext.from_config(config, job_id="12345")
 
                     assert Path("/infmax-workspace") not in runtime.container_mounts.values()
+
+
+class TestExtraMountExpansion:
+    """Test path expansion for recipe extra_mount entries."""
+
+    def test_extra_mount_host_path_expands_environment_variables(self, tmp_path):
+        import os
+        import subprocess
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.core.runtime import RuntimeContext
+        from srtctl.core.schema import ModelConfig, ResourceConfig, SrtConfig
+
+        model_path = tmp_path / "model"
+        model_path.mkdir()
+        container_path = tmp_path / "container.sqsh"
+        container_path.touch()
+        extra_root = tmp_path / "extra"
+        extra_root.mkdir()
+
+        slurm_env = {
+            "SLURM_JOB_ID": "12345",
+            "SLURM_JOBID": "12345",
+            "SLURM_NODELIST": "gpu-[01-02]",
+            "SLURM_JOB_NUM_NODES": "2",
+            "SRTCTL_SOURCE_DIR": str(Path(__file__).parent.parent),
+            "SRT_EXTRA_ROOT": str(extra_root),
+        }
+
+        def mock_scontrol(cmd, **kwargs):
+            if cmd[0] == "scontrol" and "hostnames" in cmd:
+                result = MagicMock()
+                result.stdout = "gpu-01\ngpu-02"
+                result.returncode = 0
+                return result
+            raise subprocess.CalledProcessError(1, cmd)
+
+        with patch.dict(os.environ, slurm_env):
+            with patch("subprocess.run", mock_scontrol):
+                with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+                    config = SrtConfig(
+                        name="test",
+                        model=ModelConfig(
+                            path=str(model_path),
+                            container=str(container_path),
+                            precision="fp8",
+                        ),
+                        resources=ResourceConfig(
+                            gpu_type="h100",
+                            gpus_per_node=8,
+                            prefill_nodes=1,
+                            decode_nodes=1,
+                        ),
+                        extra_mount=("$SRT_EXTRA_ROOT:/extra",),
+                    )
+                    runtime = RuntimeContext.from_config(config, job_id="12345")
+
+                    assert extra_root.resolve() in runtime.container_mounts
+                    assert runtime.container_mounts[extra_root.resolve()] == Path("/extra")

@@ -35,7 +35,6 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.syntax import Syntax
 from rich.table import Table
 
-# Import from srtctl modules
 from srtctl.core.config import (
     generate_override_configs,
     get_srtslurm_setting,
@@ -59,6 +58,7 @@ from srtctl.core.lockfile import load_lockfile_fingerprints
 from srtctl.core.schema import SrtConfig
 from srtctl.core.status import create_job_record
 from srtctl.core.validation import preflight_config_variants
+from srtctl.ports import MOONCAKE_MASTER_PORT
 
 console = Console()
 logger = logging.getLogger(__name__)
@@ -219,9 +219,11 @@ def show_config_details(config: SrtConfig) -> None:
         for mount_spec in config.extra_mount:
             parts = mount_spec.split(":", 1)
             if len(parts) == 2:
-                mounts_table.add_row("recipe", parts[0], parts[1])
+                expanded_host = os.path.expanduser(os.path.expandvars(parts[0]))
+                mounts_table.add_row("recipe", expanded_host, parts[1])
             else:
-                mounts_table.add_row("recipe", mount_spec, mount_spec)
+                expanded_host = os.path.expanduser(os.path.expandvars(mount_spec))
+                mounts_table.add_row("recipe", expanded_host, mount_spec)
 
     # Recipe container_mounts (FormattablePath mounts)
     if config.container_mounts:
@@ -310,7 +312,7 @@ def show_config_details(config: SrtConfig) -> None:
 
         if mooncake_cfg is not None:
             details.add_row("mooncake", "container", mooncake_cfg.container or "<job container>")
-            details.add_row("mooncake", "master_port", "50051 (auto)")
+            details.add_row("mooncake", "master_port", f"{MOONCAKE_MASTER_PORT} (auto)")
 
         console.print(Panel(details, border_style="blue"))
 

@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 from srtctl.core.health import WorkerHealthResult, check_dynamo_health
 from srtctl.core.schema import build_otel_env
 from srtctl.core.slurm import start_srun_process
+from srtctl.ports import ETCD_CLIENT_PORT, NATS_PORT
 
 if TYPE_CHECKING:
     from srtctl.core.processes import ManagedProcess
@@ -80,8 +81,8 @@ class DynamoFrontend:
             cmd.extend(self.get_frontend_args_list(config.frontend.args))
 
             env_to_set = {
-                "ETCD_ENDPOINTS": f"http://{runtime.nodes.infra}:2379",
-                "NATS_SERVER": f"nats://{runtime.nodes.infra}:4222",
+                "ETCD_ENDPOINTS": f"http://{runtime.nodes.infra}:{ETCD_CLIENT_PORT}",
+                "NATS_SERVER": f"nats://{runtime.nodes.infra}:{NATS_PORT}",
                 "DYN_REQUEST_PLANE": "nats",
                 "DYN_SKIP_SGLANG_LOG_FORMATTING": "1",
             }
