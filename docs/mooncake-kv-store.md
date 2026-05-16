@@ -84,10 +84,12 @@ backend:
       device_name: "mlx5_0,mlx5_1"
   vllm_config:
     prefill:
-      kv-transfer-config: '{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_producer"}'
+      kv-transfer-config: '{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_load_failure_policy":"fail","kv_buffer_device":"cuda","kv_connector_extra_config":{"enforce_handshake_compat":false}},{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both","kv_connector_extra_config":{"load_async":true}}]}}'
     decode:
-      kv-transfer-config: '{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_consumer"}'
+      kv-transfer-config: '{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_load_failure_policy":"fail","kv_buffer_device":"cuda","kv_connector_extra_config":{"enforce_handshake_compat":false}},{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both","kv_connector_extra_config":{"load_async":true}}]}}'
 ```
+
+Real-world production form: `MultiConnector` wraps `NixlConnector` (P2P transfer between prefill→decode) **and** `MooncakeStoreConnector` (shared store for cross-instance reuse), both with `kv_role: "kv_both"` so prefill and decode workers run identical connector stacks. srtslurm's validator accepts `MooncakeStoreConnector` standalone or wrapped in `MultiConnector`.
 
 srtslurm stamps `MOONCAKE_MASTER`, `MOONCAKE_TE_META_DATA_SERVER`, `MOONCAKE_LOCAL_HOSTNAME`, and `MOONCAKE_CONFIG_PATH` on every worker; you supply the rest. `master_server_address` in `store_config` is also auto-filled from the infra node IP and ignored if set by hand.
 
