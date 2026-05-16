@@ -875,21 +875,17 @@ backend:
         config = SrtConfig.Schema().load(raw)
         assert config.backend.vllm_config.prefill["kv-transfer-config"]
 
-    def test_vllm_mooncake_store_config_defaults(self):
-        """build_mooncake_store_config returns defaults when store_config is unset."""
+    def test_vllm_mooncake_store_config_unset_yields_only_master_address(self):
+        """No store_config from user → JSON only contains the auto-injected master_server_address."""
         from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMProtocol
         from srtctl.ports import MOONCAKE_MASTER_PORT
 
         backend = VLLMProtocol(mooncake_kv_store=VLLMMooncakeKVStoreConfig())
         cfg = backend.build_mooncake_store_config("10.0.0.1")
-        assert cfg == {
-            "metadata_server": "P2PHANDSHAKE",
-            "master_server_address": f"10.0.0.1:{MOONCAKE_MASTER_PORT}",
-            "global_segment_size": "100GB",
-            "local_buffer_size": "4GB",
-            "protocol": "rdma",
-            "device_name": "",
-        }
+        # srtslurm intentionally does not default hardware-specific fields
+        # (protocol, device_name, global_segment_size, …) — users must set
+        # them in YAML. vLLM will fail loudly if they're missing.
+        assert cfg == {"master_server_address": f"10.0.0.1:{MOONCAKE_MASTER_PORT}"}
 
     def test_vllm_mooncake_store_config_user_overrides(self):
         """User store_config values pass through; master_server_address is always auto."""

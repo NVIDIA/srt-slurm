@@ -243,24 +243,18 @@ class VLLMProtocol:
     def build_mooncake_store_config(self, infra_node_ip: str) -> dict[str, Any]:
         """Build the JSON payload for vLLM's ``MooncakeStoreConfig.load_from_env()``.
 
-        Defaults cover the keys vLLM's ``MooncakeStoreConfig`` dataclass
-        requires today; the user dict is merged on top, so any new fields
-        vLLM adds upstream pass through without code changes here.
-        ``master_server_address`` is always auto-filled from the infra node
-        IP (any user-provided value is overridden — the user can't know the
-        infra IP at config time).
+        Pass-through of ``mooncake_kv_store.store_config`` with
+        ``master_server_address`` force-overridden to the infra node IP
+        (the user can't know that at config time). srtslurm intentionally
+        does not provide defaults for the other fields — values like
+        ``global_segment_size``, ``protocol``, and ``device_name`` are
+        hardware-specific and silently using a default is worse than
+        failing loudly. Set them explicitly in YAML; see
+        ``docs/mooncake-kv-store.md``.
         """
-        defaults: dict[str, Any] = {
-            "metadata_server": "P2PHANDSHAKE",
-            "global_segment_size": "100GB",
-            "local_buffer_size": "4GB",
-            "protocol": "rdma",
-            "device_name": "",
-        }
-        user_cfg: dict[str, Any] = {}
+        result: dict[str, Any] = {}
         if self.mooncake_kv_store is not None and self.mooncake_kv_store.store_config:
-            user_cfg = dict(self.mooncake_kv_store.store_config)
-        result = {**defaults, **user_cfg}
+            result.update(self.mooncake_kv_store.store_config)
         result["master_server_address"] = f"{infra_node_ip}:{MOONCAKE_MASTER_PORT}"
         return result
 
