@@ -80,9 +80,8 @@ class VLLMMooncakeKVStoreConfig:
           mooncake_kv_store:
             container: inferactinc/public:mk-int-20260507  # optional
             env:                              # injected on every worker
-              MOONCAKE_PROTOCOL: rdma
-              MOONCAKE_GLOBAL_SEGMENT_SIZE: "4gb"
-              MOONCAKE_DEVICE: mlx5_0
+              MC_ENABLE_DEST_DEVICE_AFFINITY: "1"   # in-process Mooncake C++ knobs
+              MC_STORE_CLIENT_METRIC: "1"
             store_config:                     # MooncakeStoreConfig JSON keys
               metadata_server: "P2PHANDSHAKE"
               global_segment_size: "100GB"
@@ -253,7 +252,7 @@ class VLLMProtocol:
         """
         defaults: dict[str, Any] = {
             "metadata_server": "P2PHANDSHAKE",
-            "global_segment_size": "4GB",
+            "global_segment_size": "100GB",
             "local_buffer_size": "4GB",
             "protocol": "rdma",
             "device_name": "",

@@ -885,7 +885,7 @@ backend:
         assert cfg == {
             "metadata_server": "P2PHANDSHAKE",
             "master_server_address": f"10.0.0.1:{MOONCAKE_MASTER_PORT}",
-            "global_segment_size": "4GB",
+            "global_segment_size": "100GB",
             "local_buffer_size": "4GB",
             "protocol": "rdma",
             "device_name": "",

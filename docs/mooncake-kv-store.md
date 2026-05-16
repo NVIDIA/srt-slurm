@@ -74,11 +74,11 @@ backend:
   type: vllm
   mooncake_kv_store:
     env:                                  # injected on every vLLM worker
-      MOONCAKE_PROTOCOL: rdma
       MC_ENABLE_DEST_DEVICE_AFFINITY: "1"
+      MC_STORE_CLIENT_METRIC: "1"
     store_config:                         # → MOONCAKE_CONFIG_PATH JSON
       metadata_server: "P2PHANDSHAKE"
-      global_segment_size: "50GB"
+      global_segment_size: "100GB"
       local_buffer_size: "4GB"
       protocol: "rdma"
       device_name: "mlx5_0,mlx5_1"
@@ -135,14 +135,13 @@ backend:
   type: vllm
   mooncake_kv_store:
     container: ...                       # optional, default: job container
-    env:                                 # optional, injected on every vLLM worker
-      MOONCAKE_PROTOCOL: rdma
+    env:                                 # optional, injected on every vLLM worker (in-process Mooncake C++ knobs)
       MC_ENABLE_DEST_DEVICE_AFFINITY: "1"
       MC_STORE_CLIENT_METRIC: "1"        # default 1 (enabled)
       MC_TE_METRIC: "0"                  # default 0 (disabled)
     store_config:                        # optional, rendered into MOONCAKE_CONFIG_PATH JSON
       metadata_server: "P2PHANDSHAKE"    # default "P2PHANDSHAKE"
-      global_segment_size: "4GB"         # default "4GB"
+      global_segment_size: "100GB"       # default "100GB"
       local_buffer_size: "4GB"           # default "4GB"
       protocol: "rdma"                   # default "rdma"
       device_name: "mlx5_0,mlx5_1"       # default ""
