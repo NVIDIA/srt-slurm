@@ -28,6 +28,9 @@ class SABenchRunner(BenchmarkRunner):
         - benchmark.req_rate: Request rate (default: "inf")
         - benchmark.dataset_name: "random" (default) or "custom"
         - benchmark.dataset_path: Container path to dataset file (required when dataset_name="custom")
+        - benchmark.env.SA_BENCH_API_URLS: Comma-separated API URLs or bases for multi-target traffic.
+        - benchmark.env.SA_BENCH_SHARD_FRONTENDS: When true, srt-slurm fills SA_BENCH_API_URLS
+          from its frontend topology unless SA_BENCH_API_URLS is explicitly set.
         - benchmark.slow_down_sleep_time / benchmark.slow_down_wait_time: When both are set and
           frontend is sglang, SA-Bench POSTs /slow_down on each decode worker leader (framework-derived
           URLs). Omit either field to disable slow_down.
@@ -92,6 +95,9 @@ class SABenchRunner(BenchmarkRunner):
         tokenizer_path = str(runtime.model_path) if runtime.is_hf_model else "/model"
 
         dataset_name = b.dataset_name or "random"
+        model_name = str(runtime.model_path) if runtime.is_hf_model else config.served_model_name
+        if config.backend_type == "mocker" and not runtime.is_hf_model:
+            model_name = "/model"
 
         cmd = [
             "bash",
@@ -102,7 +108,7 @@ class SABenchRunner(BenchmarkRunner):
             str(concurrencies) if concurrencies else "",
             str(b.req_rate) if b.req_rate else "inf",
             tokenizer_path,
-            config.served_model_name,
+            model_name,
             str(is_disaggregated).lower(),
             str(total_gpus),
             str(prefill_gpus),
