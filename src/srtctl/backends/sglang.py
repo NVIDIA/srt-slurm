@@ -9,6 +9,7 @@ Implements BackendProtocol for SGLang inference serving with prefill/decode disa
 
 import builtins
 import json
+import logging
 from collections.abc import Sequence
 from dataclasses import field
 from pathlib import Path
@@ -33,6 +34,8 @@ if TYPE_CHECKING:
     from srtctl.backends.base import SrunConfig
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.topology import Endpoint, NodePortAllocator, Process
+
+logger = logging.getLogger(__name__)
 
 # Type alias for worker modes
 WorkerMode = Literal["prefill", "decode", "agg"]
@@ -304,6 +307,42 @@ class SGLangProtocol:
         config.pop("model_path", None)
         config.pop("served-model-name", None)
         config.pop("served_model_name", None)
+
+        # disaggregation-bootstrap-port should NOT be set in recipes — it is owned by
+        # NodePortAllocator (jittered per-job) and injected below from
+        # process.bootstrap_port. The override-and-warn logic here exists only for
+        # backward compatibility with legacy recipes that still pin the value: without
+        # the pop, the recipe value would land *after* the explicit flag in
+        # _config_to_cli_args output and argparse last-wins would silently override the
+        # jittered port — leaving router/decode trying to reach the prefill on a port
+        # it isn't listening on.
+        recipe_bootstrap = config.pop("disaggregation-bootstrap-port", None)
+        recipe_bootstrap_snake = config.pop("disaggregation_bootstrap_port", None)
+        recipe_bootstrap = recipe_bootstrap or recipe_bootstrap_snake
+        if recipe_bootstrap is None:
+            pass  # no recipe override — jittered allocator value is the only source
+        elif mode == "prefill" and process.bootstrap_port is not None:
+            if str(recipe_bootstrap) != str(process.bootstrap_port):
+                logger.warning(
+                    "sglang[%s on %s]: ignoring recipe disaggregation-bootstrap-port=%s; "
+                    "using NodePortAllocator value %s (job-jittered)",
+                    mode,
+                    process.node,
+                    recipe_bootstrap,
+                    process.bootstrap_port,
+                )
+        else:
+            # Entered when the recipe pinned a value AND this process is not a prefill
+            # leader (decode/agg mode, or a prefill follower with no allocated bootstrap
+            # port). Only prefill leaders bind the bootstrap server, so the value would
+            # be silently ignored anyway — warn so the recipe author can clean it up.
+            logger.warning(
+                "sglang[%s on %s]: ignoring recipe disaggregation-bootstrap-port=%s; "
+                "bootstrap server is bound only by prefill workers",
+                mode,
+                process.node,
+                recipe_bootstrap,
+            )
 
         # Determine if multi-node
         endpoint_nodes = list(dict.fromkeys(p.node for p in endpoint_processes))
