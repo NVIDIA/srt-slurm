@@ -54,14 +54,20 @@ class TelemetryStageMixin:
         else:
             cmd_str = exporter_config.command
 
+        # Exporter images can be distroless (e.g. prom/node-exporter has no
+        # shell), so we run the binary directly via execve instead of the
+        # default bash wrapper. Pass nodes=len(nodelist) so SLURM places one
+        # task per node (default nodes=1 contradicts a multi-node nodelist).
         proc = start_srun_process(
             command=shlex.split(cmd_str),
+            nodes=len(nodelist),
             ntasks=len(nodelist),
             nodelist=nodelist,
             output=str(log_file),
             container_image=exporter_config.container_image,
             container_mounts=self.runtime.container_mounts,
             srun_options=self.runtime.srun_options,
+            use_bash_wrapper=False,
         )
         return ManagedProcess(
             name=name,
@@ -71,31 +77,20 @@ class TelemetryStageMixin:
         )
 
     def start_telemetry(self) -> list[ManagedProcess]:
-        """Start the configured telemetry provider."""
+        """Start the configured telemetry provider.
+
+        ``dcgm_exporter`` is always launched when telemetry is enabled. The
+        ``node_exporter`` and the scraper (``container_image``) are optional —
+        each only runs when configured.
+        """
         telemetry = self.config.telemetry
         if not telemetry.enabled:
             logger.info("Telemetry disabled")
             return []
-        if telemetry.dcgm_exporter is None or telemetry.node_exporter is None or telemetry.container_image is None:
-            raise ValueError("Telemetry is enabled but required provider configuration is missing")
+        if telemetry.dcgm_exporter is None:
+            raise ValueError("Telemetry is enabled but telemetry.dcgm_exporter is not configured")
 
         logger.info("Starting telemetry provider: %s", telemetry.provider.value)
-
-        topology = self._compute_frontend_topology()
-        config_path = self.runtime.log_dir / "telemetry_config.toml"
-        config_path.write_text(
-            generate_telemetry_config(
-                processes=self.backend_processes,
-                frontend_topology=topology,
-                runtime=self.runtime,
-                telemetry=telemetry,
-            )
-        )
-
-        telemetry_dir = self.runtime.log_dir / telemetry.storage_subdir
-        telemetry_dir.mkdir(parents=True, exist_ok=True)
-        local_dir = telemetry_dir / "local"
-        local_dir.mkdir(parents=True, exist_ok=True)
 
         worker_nodes = sorted({process.node for process in self.backend_processes})
         processes: list[ManagedProcess] = []
@@ -108,25 +103,44 @@ class TelemetryStageMixin:
                 default_command_template="dcgm-exporter --collect-interval=100 --address :{port}",
             )
         )
-        processes.append(
-            self._start_exporter_container(
-                exporter_config=telemetry.node_exporter,
-                name="telemetry_node_exporter",
-                nodelist=worker_nodes,
-                log_file=self.runtime.log_dir / "telemetry_node_exporter.out",
-                default_command_template=(
-                    "/bin/node_exporter --web.listen-address=:{port} "
-                    "--collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo"
-                ),
+
+        if telemetry.node_exporter is not None:
+            processes.append(
+                self._start_exporter_container(
+                    exporter_config=telemetry.node_exporter,
+                    name="telemetry_node_exporter",
+                    nodelist=worker_nodes,
+                    log_file=self.runtime.log_dir / "telemetry_node_exporter.out",
+                    default_command_template=(
+                        "/bin/node_exporter --web.listen-address=:{port} "
+                        "--collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo"
+                    ),
+                )
+            )
+
+        if telemetry.container_image is None:
+            logger.info("Telemetry scraper not configured; running exporters only")
+            return processes
+
+        topology = self._compute_frontend_topology()
+        config_path = self.runtime.log_dir / "telemetry_config.toml"
+        config_path.write_text(
+            generate_telemetry_config(
+                processes=self.backend_processes,
+                frontend_topology=topology,
+                runtime=self.runtime,
+                telemetry=telemetry,
             )
         )
+
+        telemetry_dir = self.runtime.log_dir / telemetry.storage_subdir / self.runtime.job_id
 
         cmd = [
             telemetry.binary_path,
             "--config",
             "/telemetry_config.toml",
             "--local-dir",
-            f"/logs/{telemetry.storage_subdir}/local",
+            f"/logs/{telemetry.storage_subdir}/{self.runtime.job_id}/local",
         ]
         if telemetry.sync_interval_secs > 0:
             cmd.extend(["--sync-interval", str(telemetry.sync_interval_secs)])
@@ -154,5 +168,5 @@ class TelemetryStageMixin:
                 node=self.runtime.nodes.head,
             )
         )
-        logger.info("Telemetry started with artifacts under %s", telemetry_dir)
+        logger.info("Telemetry scraper started with artifacts under %s", telemetry_dir)
         return processes

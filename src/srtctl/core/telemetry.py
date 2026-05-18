@@ -40,8 +40,8 @@ def generate_telemetry_config(
     """Generate telemetry TOML from backend and frontend topology."""
     dcgm_exporter = telemetry.dcgm_exporter
     node_exporter = telemetry.node_exporter
-    if dcgm_exporter is None or node_exporter is None:
-        raise ValueError("Telemetry exporters must be configured before generating telemetry config")
+    if dcgm_exporter is None:
+        raise ValueError("telemetry.dcgm_exporter must be configured before generating telemetry config")
 
     endpoints: list[TelemetryEndpoint] = []
     physical_nodes: dict[str, list[Process]] = {}
@@ -72,15 +72,16 @@ def generate_telemetry_config(
                 gpu_metadata=gpu_metadata,
             )
         )
-        endpoints.append(
-            TelemetryEndpoint(
-                name=f"node_exporter_{node}",
-                url=f"http://{node}:{node_exporter.port}/metrics",
-                frequency=telemetry.default_frequency,
-                filter="node_exporter",
-                node_metadata=node_metadata,
+        if node_exporter is not None:
+            endpoints.append(
+                TelemetryEndpoint(
+                    name=f"node_exporter_{node}",
+                    url=f"http://{node}:{node_exporter.port}/metrics",
+                    frequency=telemetry.default_frequency,
+                    filter="node_exporter",
+                    node_metadata=node_metadata,
+                )
             )
-        )
 
     for process in sorted(processes, key=lambda p: (p.endpoint_mode, p.endpoint_index, p.node_rank, p.node)):
         node_ip = get_hostname_ip(process.node, runtime.network_interface)
@@ -120,7 +121,7 @@ def generate_telemetry_config(
 
     return _dump_toml(
         endpoints=endpoints,
-        storage=f"/logs/{telemetry.storage_subdir}",
+        storage=f"/logs/{telemetry.storage_subdir}/{runtime.job_id}",
     )
 
 
