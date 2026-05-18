@@ -313,3 +313,63 @@ class TestDryRunExecutionExtensions:
         output = capsys.readouterr().out
         assert "<job container>" in output
         assert "MOONCAKE_PROTOCOL" in output
+
+    def test_vllm_mooncake_kv_store_dry_run(self, capsys):
+        """vLLM mooncake_kv_store renders the shared master port (8700)."""
+        from srtctl.ports import MOONCAKE_MASTER_PORT
+
+        kv_cfg = '{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both"}'
+        config = _make_config(
+            {
+                "backend": {
+                    "type": "vllm",
+                    "mooncake_kv_store": {
+                        "container": "inferactinc/public:mk-int-20260507",
+                        "env": {"MOONCAKE_PROTOCOL": "rdma"},
+                    },
+                    "vllm_config": {
+                        "prefill": {"kv-transfer-config": kv_cfg},
+                        "decode": {"kv-transfer-config": kv_cfg},
+                    },
+                }
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "mooncake" in output
+        assert "MOONCAKE_PROTOCOL" in output
+        # Rich truncates long values with an ellipsis; assert on the stable prefix.
+        assert "inferactinc/public:mk-int-202605" in output
+        # Shared with the SGLang launch — same port pair.
+        assert str(MOONCAKE_MASTER_PORT) in output
+
+    def test_vllm_mooncake_store_config_in_dry_run(self, capsys):
+        """vLLM store_config + MOONCAKE_CONFIG_PATH appear in the dry-run extensions panel."""
+        kv_cfg = '{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both"}'
+        config = _make_config(
+            {
+                "backend": {
+                    "type": "vllm",
+                    "mooncake_kv_store": {
+                        "env": {"MOONCAKE_PROTOCOL": "rdma"},
+                        "store_config": {
+                            "metadata_server": "P2PHANDSHAKE",
+                            "global_segment_size": "100GB",
+                            "local_buffer_size": "4GB",
+                            "protocol": "rdma",
+                            "device_name": "",
+                        },
+                    },
+                    "vllm_config": {
+                        "prefill": {"kv-transfer-config": kv_cfg},
+                        "decode": {"kv-transfer-config": kv_cfg},
+                    },
+                }
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "MOONCAKE_CONFIG_PATH" in output
+        assert "/logs/mooncake_store_config.json" in output
+        assert "P2PHANDSHAKE" in output
+        assert "100GB" in output
