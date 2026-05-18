@@ -112,7 +112,6 @@ backend:
       chunked-prefill-size: 65536
       load-balance-method: "round_robin"
       watchdog-timeout: 1000000
-      disable-cuda-graph: true
       log-level: "info"
       page-size: 64
       attention-backend: "trtllm_mha"
@@ -154,7 +153,6 @@ backend:
       mem-fraction-static: 0.8
       max-mamba-cache-size: 512
       max-running-requests: 512
-      disable-cuda-graph: true
       watchdog-timeout: 1000000
 
       page-size: 64

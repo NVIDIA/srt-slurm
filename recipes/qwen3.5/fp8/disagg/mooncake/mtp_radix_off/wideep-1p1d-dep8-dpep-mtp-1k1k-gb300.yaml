@@ -91,11 +91,10 @@ backend:
       disaggregation-mode: "prefill"
       disable-radix-cache: true
       disaggregation-bootstrap-port: 31000
-      mem-fraction-static: 0.8
+      mem-fraction-static: 0.7
       chunked-prefill-size: 65536
       load-balance-method: "round_robin"
       watchdog-timeout: 1000000
-      disable-cuda-graph: true
       log-level: "info"
       page-size: 64
       attention-backend: "trtllm_mha"
@@ -131,10 +130,9 @@ backend:
 
       chunked-prefill-size: 4096
       context-length: 4096
-      mem-fraction-static: 0.8
+      mem-fraction-static: 0.7
       max-mamba-cache-size: 1024
       max-running-requests: 1024
-      disable-cuda-graph: true
       watchdog-timeout: 1000000
 
       page-size: 64
