@@ -1,0 +1,109 @@
+# DSv4-Pro 1k/1k MTP-off SA recipe — TEP8 c=1
+# Engine fields byte-translated from the executed-sweep ctx_config.yaml + gen_config.yaml.
+# Additions on top of the verbatim engine config:
+#   - trust_remote_code: true (DSV4-Pro safety)
+#   - host_cache_size: 0 in tep8 prefill kv_cache_config
+#   - 3 allowed env-var deviations on workers (UCX_*, TLLM_BENCHMARK_REQ_QUEUES_SIZE)
+#   - 4 srt-slurm default overrides (dynamo.install, multi_frontend, prompts_mult, chat_template)
+name: dsv4_pro_nvfp4_ISL1K_OSL1K_tep8_c1_eplb0_mtp0
+model:
+  path: /lustre/share/coreai_comparch_aarwlt/hf_repos/deepseek-ai/DeepSeek-V4-Pro
+  container: nvcr.io/nvstaging/ai-dynamo/tensorrtllm-runtime@sha256:fe8206357ef9ede1f011893e9641d04907a218f1abf1a14663087ff93dd1c895
+  precision: fp4
+resources:
+  gpu_type: gb200
+  gpus_per_node: 4
+  prefill_nodes: 2
+  prefill_workers: 1
+  gpus_per_prefill: 8
+  decode_nodes: 2
+  decode_workers: 1
+  gpus_per_decode: 8
+backend:
+  type: trtllm
+  prefill_environment:
+    TRTLLM_ENABLE_PDL: '1'
+    TRTLLM_KVCACHE_HOST_SIZE_OVERRIDE: '0'
+    TRTLLM_DISABLE_KV_CACHE_TRANSFER_OVERLAP: '1'
+    UCX_CUDA_IPC_ENABLE_MNNVL: n
+    UCX_RNDV_SCHEME: put_zcopy
+    PYTHONUNBUFFERED: '1'
+  decode_environment:
+    TRTLLM_ENABLE_PDL: '1'
+    TRTLLM_KVCACHE_HOST_SIZE_OVERRIDE: '0'
+    TRTLLM_DISABLE_KV_CACHE_TRANSFER_OVERLAP: '1'
+    UCX_CUDA_IPC_ENABLE_MNNVL: n
+    UCX_RNDV_SCHEME: put_zcopy
+    PYTHONUNBUFFERED: '1'
+    TLLM_BENCHMARK_REQ_QUEUES_SIZE: '1'
+  trtllm_config:
+    prefill:
+      allreduce_strategy: AUTO
+      cache_transceiver_config:
+        backend: NIXL
+        max_tokens_in_buffer: 1152
+        transceiver_runtime: PYTHON
+      cuda_graph_config:
+        enable_padding: false
+      disable_overlap_scheduler: true
+      enable_attention_dp: true
+      kv_cache_config:
+        dtype: fp8
+        enable_block_reuse: false
+        free_gpu_memory_fraction: 0.5
+        host_cache_size: 0
+        tokens_per_block: 128
+      max_batch_size: 8
+      max_num_tokens: 8512
+      max_seq_len: 1128
+      moe_config:
+        backend: TRTLLM
+      moe_expert_parallel_size: 8
+      pipeline_parallel_size: 1
+      print_iter_log: true
+      tensor_parallel_size: 8
+      trust_remote_code: true
+    decode:
+      allreduce_strategy: AUTO
+      cache_transceiver_config:
+        backend: NIXL
+        max_tokens_in_buffer: 1152
+        transceiver_runtime: PYTHON
+      cuda_graph_config:
+        enable_padding: true
+        max_batch_size: 1
+      disable_overlap_scheduler: false
+      enable_attention_dp: false
+      kv_cache_config:
+        dtype: fp8
+        enable_block_reuse: false
+        free_gpu_memory_fraction: 0.55
+        host_cache_size: 0
+        tokens_per_block: 128
+      max_batch_size: 1
+      max_num_tokens: 1
+      max_seq_len: 2176
+      moe_config:
+        backend: TRTLLM
+      moe_expert_parallel_size: 8
+      pipeline_parallel_size: 1
+      print_iter_log: true
+      stream_interval: 20
+      tensor_parallel_size: 8
+      trust_remote_code: true
+benchmark:
+  type: sa-bench
+  isl: 1024
+  osl: 1024
+  concurrencies: '1'
+  req_rate: inf
+  num_prompts_mult: 1
+  use_chat_template: false
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+health_check:
+  max_attempts: 360
+  interval_seconds: 10
+dynamo:
+  install: false
