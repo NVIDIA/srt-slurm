@@ -45,7 +45,7 @@ PREFILL_METRICS: dict[str, str] = {
     "#new-seq": r"#new-seq:\s*([\d.]+)",
     "#new-token": r"#new-token:\s*([\d.]+)",
     "#cached-token": r"#cached-token:\s*([\d.]+)",
-    "full token usage": r"full token usage:\s*([\d.]+)",
+    "full token usage": r"(?:full\s+)?token usage:\s*([\d.]+)",
     "#running-req": r"#running-req:\s*([\d.]+)",
     "#queue-req": r"#queue-req:\s*([\d.]+)",
     "#prealloc-req": r"#prealloc-req:\s*([\d.]+)",
@@ -55,8 +55,8 @@ PREFILL_METRICS: dict[str, str] = {
 
 DECODE_METRICS: dict[str, str] = {
     "#running-req": r"#running-req:\s*([\d.]+)",
-    "#full token": r"#full token:\s*([\d.]+)",
-    "full token usage": r"full token usage:\s*([\d.]+)",
+    "#full token": r"#(?:full\s+)?token:\s*([\d.]+)",
+    "full token usage": r"(?:full\s+)?token usage:\s*([\d.]+)",
     "#prealloc-req": r"#prealloc-req:\s*([\d.]+)",
     "#transfer-req": r"#transfer-req:\s*([\d.]+)",
     "#retracted-req": r"#retracted-req:\s*([\d.]+)",
