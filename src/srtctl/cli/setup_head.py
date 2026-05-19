@@ -151,10 +151,10 @@ def start_nats(
             f.write(f"max_payload: {max_payload_bytes}\n")
             f.write(f'jetstream {{ store_dir: "{nats_store_dir}" }}\n')
         logger.info("Starting NATS server (max_payload: %dMB)...", max_payload_mb)
-        cmd = [binary_path, "-c", nats_config_path]
+        cmd = ["taskset", "-c", "140-143", binary_path, "-c", nats_config_path]  # OMC_CPU_PIN_PATCH_APPLIED
     else:
         logger.info("Starting NATS server...")
-        cmd = [binary_path, "-js", "-sd", nats_store_dir]
+        cmd = ["taskset", "-c", "140-143", binary_path, "-js", "-sd", nats_store_dir]
 
     proc = subprocess.Popen(
         cmd,
@@ -192,7 +192,10 @@ def start_etcd(
     etcd_data_dir = "/tmp/etcd"
     os.makedirs(etcd_data_dir, exist_ok=True)
 
+    # OMC_ETCD_TIMEOUT_PATCH: relax heartbeat/election timeouts to survive transient CPU starvation
+    # under multi-prefill load (default 100ms/1s too tight at dep16/dep32 scale).
     cmd = [
+        "taskset", "-c", "140-143",  # OMC_CPU_PIN_PATCH_APPLIED
         binary_path,
         "--data-dir",
         etcd_data_dir,
@@ -200,6 +203,8 @@ def start_etcd(
         f"{ETCD_LISTEN_ADDR}:{ETCD_CLIENT_PORT}",
         "--advertise-client-urls",
         f"http://{host_ip}:{ETCD_CLIENT_PORT}",  # Must be reachable IP, not 0.0.0.0
+        "--heartbeat-interval", "1000",
+        "--election-timeout", "10000",
     ]
 
     # Set up output handling
