@@ -6,6 +6,8 @@
 - [Clone and Install](#clone-and-install)
 - [Gather your cluster user and target partition](#gather-your-cluster-user-and-target-partition)
 - [Run Setup](#run-setup)
+- [Review srtslurm.yaml Defaults](#review-srtslurmyaml-defaults)
+- [Install Model + Container Artifacts](#install-model--container-artifacts)
 - [Configure srtslurm.yaml](#configure-srtslurmyaml)
   - [Adding Model Paths](#adding-model-paths)
   - [Adding Containers](#adding-containers)
@@ -62,9 +64,111 @@ The setup will:
 3. Create `srtslurm.yaml` with your settings
 4. Auto-detect and set `srtctl_root` path
 
+## Review srtslurm.yaml Defaults
+
+Before artifact install, open `srtslurm.yaml` once and confirm cluster-level defaults are correct for your environment:
+
+- `default_account`
+- `default_partition`
+- `default_time_limit`
+- `gpus_per_node`
+
+`srtctl install` reads these values when generating the sbatch script.
+
+## Install Model + Container Artifacts
+
+Use `srtctl install` to download model weights, import the container `.sqsh`, and register aliases in `srtslurm.yaml`.
+
+Flow order:
+
+1. Run `make setup` (creates `srtslurm.yaml`)
+2. Review/update cluster defaults in `srtslurm.yaml`
+3. Run `srtctl install ...` (downloads artifacts and auto-registers aliases)
+
+### Prerequisites for `srtctl install`
+
+- Hugging Face token exported in your shell:
+
+  ```bash
+  export HF_TOKEN=hf_xxx
+  ```
+
+- For `nvcr.io/*` container images, registry credentials must be configured for enroot/docker.
+  Typical locations:
+  - `~/.config/enroot/.credentials`
+  - `~/.docker/config.json`
+
+### Generic install (any model + any container)
+
+Provide all three artifact fields explicitly (`--hf-repo-id`, `--model-alias`, `--container-image`):
+
+```bash
+srtctl install my-model \
+  --hf-repo-id org/model-repo \
+  --model-alias org/model-alias \
+  --container-image docker.io/org/runtime:tag
+```
+
+`--container-image` accepts standard Docker image references (the same value you use in `docker pull`).
+
+Common forms:
+
+- Docker Hub image (recommended style): `lmsysorg/sglang:gemma4-mtp-cu13`
+- Docker Hub image (equivalent explicit form): `docker.io/lmsysorg/sglang:gemma4-mtp-cu13`
+- NGC image (must include registry): `nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:1.1.0-dev.3`
+
+Rule of thumb:
+- For Docker Hub images, use the same short form shown on Docker Hub pages.
+- For `nvcr.io` images, always include the `nvcr.io/` prefix.
+
+Optional flags:
+- `--strict-auth-preflight` (fail early if common nvcr.io credential files are missing; default is warning-only and still attempts pull)
+
+### Execution mode
+
+`srtctl install` is SLURM-only and always submits an `sbatch` job.
+The old `--slurm` flag is no longer needed.
+
+```bash
+srtctl install my-model \
+  --hf-repo-id org/model-repo \
+  --model-alias org/model-alias \
+  --container-image docker.io/org/runtime:tag \
+  --venv /path/to/venv
+```
+
+Monitor with:
+
+```bash
+squeue -u $USER
+tail -f install/install_<model>_<jobid>.log
+```
+
 ## Configure srtslurm.yaml
 
-After setup, edit `srtslurm.yaml` to add model paths, containers, and cluster-specific settings:
+`srtslurm.yaml` contains cluster defaults plus model/container alias mappings.
+
+If you used `srtctl install`, model/container aliases are added automatically after a successful install.
+You only need to edit alias entries manually when:
+
+- You did not run `srtctl install`, or
+- You want to point aliases at pre-existing model/container paths, or
+- You want to rename aliases used by recipes.
+
+You should still review cluster-level defaults (`default_account`, `default_partition`, etc.) manually.
+
+### Automatic alias registration (recommended)
+
+After a successful `srtctl install ...`, aliases are written to:
+
+- `model_paths[<model-alias>] = <downloaded-model-path>`
+- `containers[<container-image>] = <downloaded-sqsh-path>`
+
+No manual alias editing is required for the installed model/container pair.
+
+### Manual alias configuration (optional)
+
+Use this only when you manage models/containers yourself and want to map aliases manually.
 
 ### Adding Model Paths
 
