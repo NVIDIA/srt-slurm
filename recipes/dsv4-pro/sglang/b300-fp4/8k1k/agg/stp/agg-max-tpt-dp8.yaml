@@ -1,0 +1,129 @@
+# DeepSeek-V4-Pro B300 1-node aggregate DP8/DeepEP recipe.
+# Target workload: 8k input / 1k output, no MTP, high-throughput sweep.
+# Uses the container-provided SGLang and DeepGEMM stack; no local source mounts.
+name: "dsv4-pro-b300-agg-dp8-8k1k"
+
+slurm:
+  partition: batch
+  time_limit: "05:00:00"
+
+health_check:
+  max_attempts: 540
+  interval_seconds: 10
+
+sbatch_directives:
+  cpus-per-task: "256"
+  mem: "0"
+
+dynamo:
+  hash: "9d3c913d300eb368cda28b3f98a23a5762621e0d"
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+
+model:
+  path: "dsv4-pro"
+  container: "lmsysorg+sglang+deepseek-v4-b300-dev"
+  precision: "fp4"
+
+resources:
+  gpu_type: "b300"
+  gpus_per_node: 8
+  agg_nodes: 1
+  agg_workers: 1
+
+backend:
+  type: sglang
+
+  aggregated_environment:
+    PYTHONUNBUFFERED: "1"
+    DYN_LOG: "info,dynamo_runtime::pipeline::network::ingress::push_handler=warn"
+    DYN_SKIP_SGLANG_LOG_FORMATTING: "1"
+    SGLANG_REQUEST_STATE_WAIT_TIMEOUT: "60"
+
+    SGLANG_ENABLE_THINKING: "1"
+    SGLANG_REASONING_EFFORT: "max"
+
+    SGLANG_JIT_DEEPGEMM_PRECOMPILE: "0"
+    SGLANG_JIT_DEEPGEMM_FAST_WARMUP: "1"
+    SGLANG_DG_CACHE_DIR: "/configs/deepgemm_cache_dg250"
+    SGLANG_OPT_DEEPGEMM_HC_PRENORM: "1"
+    SGLANG_OPT_USE_TILELANG_MHC_PRE: "1"
+    SGLANG_OPT_USE_DEEPGEMM_MEGA_MOE: "1"
+    SGLANG_OPT_DEEPGEMM_MEGA_MOE_NUM_MAX_TOKENS_PER_RANK: "2048"
+    SGLANG_OPT_FIX_HASH_MEGA_MOE: "1"
+    SGLANG_OPT_FIX_MEGA_MOE_MEMORY: "1"
+    SGLANG_OPT_FIX_NEXTN_MEGA_MOE: "1"
+    SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK: "0"
+    SGLANG_EXPERIMENTAL_ENABLE_PIECEWISE_CUDA_GRAPH_MOE_A2A: "1"
+
+    SGLANG_OPT_USE_ONLINE_COMPRESS: "1"
+    SGLANG_CLIP_MAX_NEW_TOKENS_ESTIMATION: "8"
+    SGLANG_OPT_SWA_EVICT_DROP_PAGE_MARGIN: "1"
+    SGLANG_OPT_SWA_RELEASE_LEAF_LOCK_AFTER_WINDOW: "1"
+    SGLANG_OPT_SWA_SPLIT_LEAF_ON_INSERT: "1"
+    SGLANG_OPT_USE_FAST_MASK_EP: "1"
+    SGLANG_OPT_USE_TOPK_V2: "1"
+    SGLANG_OPT_USE_JIT_NORM: "1"
+    SGLANG_OPT_USE_JIT_INDEXER_METADATA: "1"
+    SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2: "1"
+
+    NCCL_MNNVL_ENABLE: "1"
+    NCCL_CUMEM_ENABLE: "1"
+    SGLANG_MOONCAKE_CUSTOM_MEM_POOL: "True"
+    MC_FORCE_MNNVL: "1"
+    NVSHMEM_DISABLE_IB: "1"
+
+    SGLANG_LOG_FORWARD_ITERS: "0"
+    SGLANG_LOG_MS: "0"
+
+  sglang_config:
+    aggregated:
+      served-model-name: "deepseek-ai/DeepSeek-V4-Pro"
+      model-path: "/model/"
+      trust-remote-code: true
+      watchdog-timeout: 86400
+      skip-tokenizer-init: true
+      stream-interval: 30
+
+      tensor-parallel-size: 8
+      data-parallel-size: 8
+      expert-parallel-size: 8
+      enable-dp-attention: true
+      moe-a2a-backend: "deepep"
+      deepep-config: '{"normal_dispatch":{"num_sms":96},"normal_combine":{"num_sms":96}}'
+
+      cuda-graph-max-bs: 544
+      max-running-requests: 4352
+      mem-fraction-static: 0.835
+      swa-full-tokens-ratio: 0.075
+
+      enable-mixed-chunk: true
+      chunked-prefill-size: 16384
+      max-prefill-tokens: 16384
+
+      tokenizer-worker-num: 8
+      decode-log-interval: 60
+      context-length: 16384
+
+benchmark:
+  type: sa-bench
+  isl: 8192
+  osl: 1024
+  random_range_ratio: 0.8
+  concurrencies: "1x2x4x8x16x32x64x128x256x512x768x1024x1536x2048"
+  req_rate: inf
+  num_warmup_mult: 1
+  num_prompts_mult: 10
+  use_chat_template: false
+
+identity:
+  model:
+    repo: "deepseek-ai/DeepSeek-V4-Pro"
+    revision: "0366e4e064385807ea86b088a5c6c878ff23343b"
+  container:
+    image: "lmsysorg/sglang:deepseek-v4-b300-dev"
+  frameworks:
+    dynamo: "1.1.0"
+    sglang: "0.5.10rc0"
