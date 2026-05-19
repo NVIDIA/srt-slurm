@@ -29,9 +29,17 @@
 ## Clone and Install
 
 ```bash
-git clone https://github.com/ishandhanani/srt-slurm.git
+git clone https://github.com/NVIDIA/srt-slurm.git
 cd srt-slurm
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -e .
+```
+
+For every new shell session, activate the same venv before running `srtctl` commands:
+
+```bash
+source .venv/bin/activate
 ```
 
 ## Gather your cluster user and target partition
@@ -127,7 +135,16 @@ Optional flags:
 ### Execution mode
 
 `srtctl install` is SLURM-only and always submits an `sbatch` job.
-The old `--slurm` flag is no longer needed.
+By default, it uses `<srtctl_root>/.venv` on the compute node.
+
+```bash
+srtctl install my-model \
+  --hf-repo-id org/model-repo \
+  --model-alias org/model-alias \
+  --container-image docker.io/org/runtime:tag
+```
+
+If your compute-node environment is in a different venv path, pass it explicitly:
 
 ```bash
 srtctl install my-model \
