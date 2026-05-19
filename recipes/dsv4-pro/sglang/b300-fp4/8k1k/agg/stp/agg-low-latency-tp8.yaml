@@ -1,0 +1,112 @@
+# DeepSeek-V4-Pro B300 1-node aggregate TP8 recipe.
+# Target workload: 8k input / 1k output, no MTP, low-latency sweep.
+# Note: the extra mounts below reflect the BIA validation environment. Once the
+# corresponding SGLang/DeepGEMM changes are baked into the container, these can
+# be replaced by a clean container-only setup.
+name: "dsv4-pro-b300-agg-tp8-8k1k-low-latency"
+
+slurm:
+  partition: batch
+  time_limit: "05:00:00"
+
+health_check:
+  max_attempts: 1440
+  interval_seconds: 10
+
+sbatch_directives:
+  cpus-per-task: "256"
+  mem: "0"
+
+dynamo:
+  hash: "9d3c913d300eb368cda28b3f98a23a5762621e0d"
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+
+model:
+  path: "dsv4-pro"
+  container: "lmsysorg+sglang+deepseek-v4-b300-dev"
+  precision: "fp4"
+
+resources:
+  gpu_type: "b300"
+  gpus_per_node: 8
+  agg_nodes: 1
+  agg_workers: 1
+
+extra_mount:
+  - "/lustre/fsw/coreai_comparch_inferencex/yangminl/python-metadata-shims/sglang_kernel-0.4.2.post1.dist-info:/usr/local/lib/python3.12/dist-packages/sglang_kernel-0.4.2.post1.dist-info"
+  - "/lustre/fsw/coreai_comparch_inferencex/yangminl/DeepGEMM-v250-build/install/deep_gemm:/usr/local/lib/python3.12/dist-packages/deep_gemm"
+  - "/lustre/fsw/coreai_comparch_inferencex/yangminl/deepgemm_patches/barrier_dg250_timeout.cuh:/usr/local/lib/python3.12/dist-packages/deep_gemm/include/deep_gemm/comm/barrier.cuh"
+  - "/lustre/fsw/coreai_comparch_inferencex/yangminl/sglang-bia-final-conc-sweep-20260517:/sgl-workspace/sglang"
+  - "/lustre/fsw/coreai_comparch_inferencex/yangminl/sglang-bia-final-conc-sweep-20260517:/workspace/sglang"
+
+backend:
+  type: sglang
+
+  aggregated_environment:
+    PYTHONUNBUFFERED: "1"
+    DYN_LOG: "info,dynamo_runtime::pipeline::network::ingress::push_handler=warn"
+    DYN_SKIP_SGLANG_LOG_FORMATTING: "1"
+    SGLANG_REQUEST_STATE_WAIT_TIMEOUT: "60"
+
+    SGLANG_ENABLE_THINKING: "1"
+    SGLANG_REASONING_EFFORT: "max"
+
+    SGLANG_JIT_DEEPGEMM_PRECOMPILE: "0"
+    SGLANG_DG_CACHE_DIR: "/configs/deepgemm_cache_dg250"
+    SGLANG_OPT_SWA_SPLIT_LEAF_ON_INSERT: "1"
+    SGLANG_OPT_USE_JIT_NORM: "1"
+    SGLANG_OPT_USE_JIT_INDEXER_METADATA: "1"
+    SGLANG_OPT_USE_TOPK_V2: "1"
+    SGLANG_OPT_SWA_RELEASE_LEAF_LOCK_AFTER_WINDOW: "1"
+
+  sglang_config:
+    aggregated:
+      served-model-name: "deepseek-ai/DeepSeek-V4-Pro"
+      model-path: "/model/"
+      trust-remote-code: true
+      watchdog-timeout: 86400
+      skip-tokenizer-init: true
+      stream-interval: 30
+
+      tensor-parallel-size: 8
+      data-parallel-size: 1
+      expert-parallel-size: 1
+      moe-runner-backend: "flashinfer_mxfp4"
+      disable-flashinfer-autotune: true
+
+      cuda-graph-max-bs: 512
+      max-running-requests: 512
+      mem-fraction-static: 0.9
+      swa-full-tokens-ratio: 0.1
+
+      enable-mixed-chunk: true
+      chunked-prefill-size: 2048
+      max-prefill-tokens: 2048
+
+      tokenizer-worker-num: 8
+      decode-log-interval: 60
+      context-length: 16384
+
+benchmark:
+  type: sa-bench
+  isl: 8192
+  osl: 1024
+  random_range_ratio: 0.8
+  concurrencies: "1x2x4x8x16x32x64x128x256x512"
+  req_rate: inf
+  num_warmup_mult: 1
+  num_prompts_mult: 10
+  use_chat_template: false
+
+identity:
+  model:
+    repo: "deepseek-ai/DeepSeek-V4-Pro"
+    revision: "0366e4e064385807ea86b088a5c6c878ff23343b"
+  container:
+    image: "lmsysorg/sglang:deepseek-v4-b300-dev"
+  frameworks:
+    dynamo: "1.1.0"
+    sglang: "0.5.10rc0"
