@@ -173,8 +173,55 @@ zip_override_8k1k_hightpt:
         deepep-mode: "low_latency"
         deepep-config: "/configs/deepep_config.json"
 
-        max-running-requests: [2800, 1700, 1300, 900]
+        max-running-requests: [2800, 1680, 1280, 880]
         cuda-graph-max-bs:    [ 175,   70,   40,  22]
+
+  benchmark:
+    isl: 8192
+    osl: 1024
+    concurrencies: ["2800", "1700", "1300", "900"]
+
+
+zip_override_mtp_8k1k_hightpt:
+  resources:
+    prefill_nodes:   [14, 12, 10,  8]
+    prefill_workers: [14, 12, 10,  8]
+    decode_nodes:    [4,  6,  8,  10]
+    decode_workers:  1
+  frontend:
+    enable_multiple_frontends: true
+    num_additional_frontends: 9
+  backend:
+    sglang_config:
+      decode:
+
+        # Parallelism
+        tensor-parallel-size: [16, 24, 32, 40]
+        expert-parallel-size: [16, 24, 32, 40]
+        data-parallel-size:   [16, 24, 32, 40]
+
+        # dp
+        enable-dp-lm-head: true
+        enable-dp-attention: true
+        moe-dense-tp-size: 1
+        # load-balance-method: "total_tokens"
+
+        # ep
+        ep-num-redundant-experts: [32, 32, 32, 24]
+        ep-dispatch-algorithm: "static"
+        # eplb-algorithm: "deepseek"
+
+        moe-a2a-backend: "deepep"
+        deepep-mode: "low_latency"
+        deepep-config: "/configs/deepep_config.json"
+
+        max-running-requests: [2800, 1680, 1280, 880]
+        cuda-graph-max-bs:    [ 175,   70,   40,  22]
+
+        speculative-algorithm: "EAGLE"
+        speculative-num-steps: 2
+        speculative-eagle-topk: 1
+        speculative-num-draft-tokens: 3
 
   benchmark:
     isl: 8192
@@ -200,6 +247,37 @@ zip_override_8k1k_lowlat:
 
         max-running-requests: [15, 8, 1]
         cuda-graph-max-bs:    [15, 8, 1]
+
+  benchmark:
+    isl: 8192
+    osl: 1024
+    concurrencies: ["150", "128x64x32", "24"]
+
+
+zip_override_mtp_8k1k_lowlat:
+  resources:
+    prefill_nodes:   1
+    prefill_workers: 1
+    decode_nodes:   [9, 17, 17]
+    decode_workers: [9, 17, 17]
+  backend:
+    sglang_config:
+      decode:
+        # Parallelism
+        tensor-parallel-size: 4
+        expert-parallel-size: 1
+        data-parallel-size:   1
+        enable-flashinfer-allreduce-fusion: true
+
+        moe-runner-backend: "flashinfer_trtllm"
+
+        max-running-requests: [15, 8, 1]
+        cuda-graph-max-bs:    [15, 8, 1]
+
+        speculative-algorithm: "EAGLE"
+        speculative-num-steps: 2
+        speculative-eagle-topk: 1
+        speculative-num-draft-tokens: 3
 
   benchmark:
     isl: 8192
@@ -243,8 +321,55 @@ zip_override_1k1k_hightpt:
         deepep-mode: "low_latency"
         deepep-config: "/configs/deepep_config.json"
 
-        max-running-requests: [8192, 8192, 256, 6500, 5700]
+        max-running-requests: [8192, 8192, 7200, 6144, 5600]
         cuda-graph-max-bs:    [512,   256, 180,  128,  100]
+
+  benchmark:
+    isl: 1024
+    osl: 1024
+    concurrencies: ["8192", "7500", "7300", "6500", "5700"]
+
+
+zip_override_mtp_1k1k_hightpt:
+  resources:
+    prefill_nodes:   [12, 10,  8,  6,  4]
+    prefill_workers: [12, 10,  8,  6,  4]
+    decode_nodes:    [ 6,  8, 10, 12, 14]
+    decode_workers:  1
+  frontend:
+    enable_multiple_frontends: true
+    num_additional_frontends: 9
+  backend:
+    sglang_config:
+      decode:
+
+        # Parallelism
+        tensor-parallel-size: [24, 32, 40, 48, 56]
+        expert-parallel-size: [24, 32, 40, 48, 56]
+        data-parallel-size:   [24, 32, 40, 48, 56]
+
+        # dp
+        enable-dp-lm-head: true
+        enable-dp-attention: true
+        moe-dense-tp-size: 1
+        # load-balance-method: "total_tokens"
+
+        # ep
+        ep-num-redundant-experts: [32, 32, 24, 32, 24]
+        ep-dispatch-algorithm: "static"
+        # eplb-algorithm: "deepseek"
+
+        moe-a2a-backend: "deepep"
+        deepep-mode: "low_latency"
+        deepep-config: "/configs/deepep_config.json"
+
+        max-running-requests: [8192, 8192, 7200, 6144, 5600]
+        cuda-graph-max-bs:    [512,   256, 180,  128,  100]
+
+        speculative-algorithm: "EAGLE"
+        speculative-num-steps: 2
+        speculative-eagle-topk: 1
+        speculative-num-draft-tokens: 3
 
   benchmark:
     isl: 1024
@@ -271,6 +396,37 @@ zip_override_1k1k_lowlat:
 
         max-running-requests: [32, 1]
         cuda-graph-max-bs:    [32, 1]
+
+  benchmark:
+    isl: 1024
+    osl: 1024
+    concurrencies: ["512x256x128x64", "32"]
+
+
+zip_override_mtp_1k1k_lowlat:
+  resources:
+    prefill_nodes:   1
+    prefill_workers: 1
+    decode_nodes:   17
+    decode_workers: 17
+  backend:
+    sglang_config:
+      decode:
+        # Parallelism
+        tensor-parallel-size: 4
+        expert-parallel-size: 1
+        data-parallel-size:   1
+        enable-flashinfer-allreduce-fusion: true
+
+        moe-runner-backend: "flashinfer_trtllm"
+
+        max-running-requests: [32, 1]
+        cuda-graph-max-bs:    [32, 1]
+
+        speculative-algorithm: "EAGLE"
+        speculative-num-steps: 2
+        speculative-eagle-topk: 1
+        speculative-num-draft-tokens: 3
 
   benchmark:
     isl: 1024
