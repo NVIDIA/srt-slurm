@@ -93,6 +93,17 @@ class VLLMProtocol:
     # dynamo 1.0.0+: translated to --kv-transfer-config (--connector was removed).
     connector: str | None = "nixl"
 
+    # DP+EP launch convention. Controls two coupled behaviors that changed
+    # together in newer vLLM versions:
+    #   False (default, vLLM 0.12.0 and earlier): each DP rank's process sees
+    #     only its own GPU via CUDA_VISIBLE_DEVICES, and vLLM infers the local
+    #     rank from that.
+    #   True (vLLM 0.12.1+): each DP rank's process sees the full local DP
+    #     group's GPUs via CUDA_VISIBLE_DEVICES, and the local rank is passed
+    #     explicitly via --local-data-parallel-rank.
+    # Set to True when running a vLLM version that requires the new convention.
+    dp_explicit_local_rank: bool = False
+
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
     # =========================================================================
@@ -246,8 +257,15 @@ class VLLMProtocol:
                     )
                     current_sys_port += 1
             else:
-                # DP+EP mode: one process per GPU
-                # Each process gets a single GPU and a unique dp_rank
+                # DP+EP mode: one process per GPU. Each process *owns* one GPU
+                # (gpu_indices, used for telemetry tagging). When
+                # dp_explicit_local_rank is True (newer vLLM convention), the
+                # process is also given visibility to the endpoint's full GPU
+                # set on the node via visible_gpu_indices, so
+                # CUDA_VISIBLE_DEVICES isn't constrained to the rank's single
+                # device — and build_worker_command will pass
+                # --local-data-parallel-rank.
+                visible = endpoint.gpu_indices if self.dp_explicit_local_rank else None
                 dp_rank = 0
                 for _node_rank, node in enumerate(endpoint.nodes):
                     for gpu_idx in sorted(endpoint.gpu_indices):
@@ -264,7 +282,8 @@ class VLLMProtocol:
                         processes.append(
                             Process(
                                 node=node,
-                                gpu_indices=frozenset([gpu_idx]),  # Single GPU per process
+                                gpu_indices=frozenset([gpu_idx]),
+                                visible_gpu_indices=visible,
                                 sys_port=current_sys_port,
                                 http_port=http_port,
                                 endpoint_mode=endpoint.mode,
@@ -372,6 +391,18 @@ class VLLMProtocol:
                 ]
             )
             # Note: --data-parallel-size is added via _config_to_cli_args from vllm_config
+
+            # When the process can see more GPUs than it owns (i.e. CUDA_VISIBLE_DEVICES
+            # exposes the whole local DP group rather than a single device), vLLM can't
+            # infer the local DP rank from CUDA_VISIBLE_DEVICES alone — there may be
+            # multiple GPUs per DP rank, so the local rank doesn't necessarily match
+            # any GPU index. Compute it as the position among DP processes on the same
+            # node, ordered by global dp_rank.
+            if process.visible_gpu_indices is not None and len(process.visible_gpu_indices) > len(process.gpu_indices):
+                local_dp_rank = sum(
+                    1 for p in endpoint_processes if p.node == process.node and p.node_rank < process.node_rank
+                )
+                cmd.extend(["--local-data-parallel-rank", str(local_dp_rank)])
         elif is_multi_node:
             # Standard TP+PP multi-node coordination flags
             node_rank = endpoint_nodes.index(process.node)
