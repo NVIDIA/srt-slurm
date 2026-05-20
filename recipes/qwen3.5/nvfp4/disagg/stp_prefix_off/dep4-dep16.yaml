@@ -8,7 +8,7 @@
 
 name: "nvfp4-disagg-dep4-dep16"
 
-setup_script: pr-main-setup-warmup-timeout.sh
+setup_script: qwen35-nvfp4-wideep-setup.sh
 
 dynamo:
   hash: 4e4006138bb9dde377a2bb2cacbcc65aaa616ac1
