@@ -1,12 +1,13 @@
-# Qwen3.5-397B-A17B-NVFP4 4P1D disaggregated benchmark on GB200.
-# Topology: 4 prefill workers (1 node each, DEP4) + 1 decode worker (4 nodes, DEP16) = 8 nodes / 32 GPUs.
-# Prefill: trtllm_mha + flashinfer_trtllm MoE runner. Each worker stays DEP4.
-# Decode:  trtllm_mha + flashinfer_cutedsl MoE runner + DeepEP low_latency. DEP16 across 4 nodes.
+# Qwen3.5-397B-A17B-NVFP4 1P1D disaggregated benchmark on GB200 (low cc).
+# Topology: 1 prefill worker (1 node, DEP4) + 1 decode worker (8 nodes, DEP32) = 9 nodes / 36 GPUs.
+# Prefill: trtllm_mha + flashinfer_trtllm MoE runner. DEP4.
+# Decode:  trtllm_mha + flashinfer_cutedsl MoE runner + DeepEP low_latency. DEP32 across 8 nodes.
 # Setup script bumps dynamo prefill warmup timeout 1800s -> 7200s (needed for multi-prefill cold start).
 # Post-process: export_node_metrics emits gen_throughput.csv + per-node CSVs.
-# Full cc sweep 1..4096; max-running-requests=8192 caps with headroom.
+# cc sweep 1..1024. One DEP4 prefill worker sustains ~89K tok/s input, above
+# top output here (~56K tok/s at cc=1024). For cc>=2048 use dep4-dep32-highcc.yaml.
 
-name: "nvfp4-disagg-dep4-dep16"
+name: "nvfp4-disagg-dep4-dep32-lowcc"
 
 setup_script: qwen35-nvfp4-wideep-setup.sh
 
@@ -25,9 +26,9 @@ frontend:
 resources:
   gpu_type: "gb200"
   gpus_per_node: 4
-  prefill_nodes: 4
-  decode_nodes: 4
-  prefill_workers: 4
+  prefill_nodes: 1
+  decode_nodes: 8
+  prefill_workers: 1
   decode_workers: 1
 
 backend:
@@ -130,10 +131,10 @@ backend:
       moe-runner-backend: "flashinfer_cutedsl"
       page-size: 64
 
-      # DEP16 decode: TP16 + DP16 + EP16 + dp-attention across 4 nodes
-      tensor-parallel-size: 16
-      data-parallel-size: 16
-      expert-parallel-size: 16
+      # DEP32 decode: TP32 + DP32 + EP32 + dp-attention across 8 nodes
+      tensor-parallel-size: 32
+      data-parallel-size: 32
+      expert-parallel-size: 32
       enable-dp-attention: true
       enable-dp-lm-head: true
       moe-dense-tp-size: 1
@@ -156,8 +157,8 @@ backend:
       chunked-prefill-size: 4096
       context-length: 8192
       cuda-graph-max-bs: 512
-      max-running-requests: 8192
-      max-mamba-cache-size: 8192
+      max-running-requests: 1024   # sized to top of cc sweep
+      max-mamba-cache-size: 1024
       watchdog-timeout: 1000000
 
       decode-log-interval: 1
@@ -167,7 +168,7 @@ benchmark:
   type: "sa-bench"
   isl: 1000
   osl: 1000
-  concurrencies: "1x2x4x8x16x32x64x128x256x512x1024x2048x4096"
+  concurrencies: "1x2x4x8x16x32x64x128x256x512x1024"
   req_rate: "inf"
   random_range_ratio: 1.0
   export_node_metrics: true
