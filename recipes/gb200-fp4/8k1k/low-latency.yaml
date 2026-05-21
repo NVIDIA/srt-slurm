@@ -1,7 +1,7 @@
 name: "gb200-fp4-8k1k-low-latency"
 
 dynamo:
-  version: 0.8.1
+  top_of_tree: true
 
 frontend:
   type: dynamo
@@ -67,8 +67,9 @@ backend:
       quantization: "modelopt_fp4"
       moe-runner-backend: "flashinfer_trtllm"
       stream-interval: 50
+      incremental-streaming-output: true
       watchdog-timeout: 1000000
-      context-length: 9600 
+      context-length: 9600
       mem-fraction-static: 0.95
       max-total-tokens: 32768 
       chunked-prefill-size: 24576 
