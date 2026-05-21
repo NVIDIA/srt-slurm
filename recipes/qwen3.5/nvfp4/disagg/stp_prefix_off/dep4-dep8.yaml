@@ -2,14 +2,12 @@
 # Topology: 1 prefill worker (1 node, DEP4) + 1 decode worker (2 nodes, DEP8) = 3 nodes / 12 GPUs.
 # Prefill: trtllm_mha + flashinfer_trtllm MoE runner. DEP4.
 # Decode:  trtllm_mha + flashinfer_cutedsl MoE runner + DeepEP low_latency. DEP8 across 2 nodes.
-# Setup script bumps dynamo prefill warmup timeout 1800s -> 7200s (needed for multi-prefill cold start).
 # Post-process: export_node_metrics emits gen_throughput.csv + per-node CSVs.
 # Full cc sweep 1..2048. One DEP4 prefill worker sustains ~89K tok/s input, well above
 # top output (~50K tok/s at cc=2048).
 
 name: "nvfp4-disagg-dep4-dep8"
 
-setup_script: qwen35-nvfp4-wideep-setup.sh
 
 dynamo:
   hash: 4e4006138bb9dde377a2bb2cacbcc65aaa616ac1
