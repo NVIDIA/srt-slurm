@@ -208,4 +208,4 @@ zip_override_8k1k_hightpt:
         max-running-requests: 18432
         cuda-graph-max-bs: 1280
   benchmark:
-    concurrencies: ["16384", "16384", "3000", "4096", "2048"]
+    concurrencies: ["12000", "8192", "3000", "2500", "2048"]
