@@ -22,13 +22,13 @@ SRTCTL_SOURCE="/data/home/rihuo/srt-slurm"
 OUTPUT_BASE="/data/home/rihuo/srt-slurm/outputs"
 OUTPUT_DIR="${OUTPUT_BASE}/${SLURM_JOB_ID}"
 LOG_DIR="${OUTPUT_DIR}/logs"
-CONTAINER_IMAGE="/data/home/rihuo/tensorrtllm-runtime-1-1-0-dev-3.sqsh"
+CONTAINER_IMAGE="/data/home/rihuo/dynamo-trtllm-rihuo-arm64-1-2-0-rc14-accfix.sqsh"
 EVAL_CONTAINER_IMAGE="/data/home/rihuo/sglang-v0.5.10.post1-cu130.sqsh"
 MODEL_PATH="/data/home/rihuo/nvidia_GLM-5-NVFP4"
 MODEL_NAME="nvidia_GLM-5-NVFP4"
 INFMAX_WORKSPACE="/data/home/rihuo/InferenceMAX"
 SCRIPT_MOUNTS="${LOG_DIR}:/logs,${MODEL_PATH}:/model,${SRTCTL_SOURCE}/configs:/configs,${SRTCTL_SOURCE}/src/srtctl/benchmarks/scripts:/srtctl-benchmarks,${INFMAX_WORKSPACE}:/infmax-workspace"
-TRTLLM_COMMON_ENV="export ENROOT_ALLOW_DEV=yes && export MIMALLOC_PURGE_DELAY=0 && export NCCL_GRAPH_MIXING_SUPPORT=0 && export TLLM_LOG_LEVEL=INFO && export TRTLLM_ENABLE_PDL=1 && export TRTLLM_SERVER_DISABLE_GC=1 && export TRTLLM_WORKER_DISABLE_GC=1"
+TRTLLM_COMMON_ENV="export ENROOT_ALLOW_DEV=yes && export MIMALLOC_PURGE_DELAY=0 && export NCCL_GRAPH_MIXING_SUPPORT=0 && export TLLM_LOG_LEVEL=INFO && export TRTLLM_ENABLE_PDL=1 && export TRTLLM_SERVER_DISABLE_GC=1 && export TRTLLM_WORKER_DISABLE_GC=1 && export PYTORCH_ALLOC_CONF=garbage_collection_threshold:0.99999 && export TORCH_ALLOW_TF32_CUBLAS_OVERRIDE=1 && export TORCH_NCCL_USE_COMM_NONBLOCKING=0 && export CUDA_MODULE_LOADING=LAZY && export CUDA_BINARY_LOADER_THREAD_COUNT=8 && export UCC_CL_BASIC_TLS=^sharp && export UCC_EC_CUDA_EXEC_NUM_THREADS=256 && export NVPL_LAPACK_MATH_MODE=PEDANTIC && export TORCHINDUCTOR_LOOP_ORDERING_AFTER_FUSION=0"
 
 # Dynamo ports
 ETCD_PORT=2379
