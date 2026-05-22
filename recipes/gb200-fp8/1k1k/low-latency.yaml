@@ -1,7 +1,7 @@
 name: "gb200-fp8-1k1k-low-latency"
 
 dynamo:
-  version: 0.8.1
+  top_of_tree: true
 
 frontend:
   type: dynamo
@@ -69,6 +69,7 @@ backend:
       moe-runner-backend: "flashinfer_trtllm"
       disable-radix-cache: true
       stream-interval: 10
+      incremental-streaming-output: true
       watchdog-timeout: 1000000
       context-length: 2200
       disaggregation-mode: "prefill"
