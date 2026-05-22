@@ -8,9 +8,6 @@ base:
     cpus-per-task: '144'
     mem: '0'
 
-  srun_options:
-    container-remap-root: ""
-
   dynamo:
     hash: "34d55a596fb8d3d44daefe425ec1e303131f4d2c"
     install: true
