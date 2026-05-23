@@ -2,7 +2,7 @@ base:
   name: "gb200-fp8-8k1k-low-latency"
 
   dynamo:
-    version: 0.8.1
+    top_of_tree: true
 
   frontend:
     type: dynamo
