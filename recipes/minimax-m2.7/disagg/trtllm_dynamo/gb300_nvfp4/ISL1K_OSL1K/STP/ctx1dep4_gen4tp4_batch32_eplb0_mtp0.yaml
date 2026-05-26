@@ -1,0 +1,102 @@
+name: "minimax_m267_nvfp4_ISL1K_OSL1K_ctx1dep4_gen4tp4_batch32_eplb0_mtp0"
+
+# Validate gb300 benchmark: tp4, DNum=4, Conc=32
+# Expected: 9391.6 total tok/s, 552.4 tok/s/gpu
+
+model:
+  path: "nvidia/MiniMax-M2.7-NVFP4"
+  container: "nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:1.1.0-dev.3"
+  precision: "fp4"
+
+resources:
+  gpu_type: "gb300"
+  prefill_nodes: 1
+  prefill_workers: 1
+  gpus_per_prefill: 1
+  decode_workers: 4
+  decode_nodes: 4
+  gpus_per_decode: 4
+  gpus_per_node: 4
+
+backend:
+  type: trtllm
+
+  trtllm_config:
+    prefill:
+      tensor_parallel_size: 1
+      moe_expert_parallel_size: 1
+      pipeline_parallel_size: 1
+      trust_remote_code: true
+      enable_attention_dp: false
+      disable_overlap_scheduler: true
+      max_num_tokens: 2048
+      max_seq_len: 2048
+      print_iter_log: true
+      torch_compile_config:
+        capture_num_tokens: [1, 2, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 1152, 1280, 1408, 1536, 1664, 1792, 1920, 2048]
+        enable_piecewise_cuda_graph: true
+      scheduler_config:
+        capacity_scheduler_policy: MAX_UTILIZATION
+        context_chunking_policy: FIRST_COME_FIRST_SERVED
+      moe_config:
+        backend: TRTLLM
+      kv_cache_config:
+        enable_block_reuse: false
+        free_gpu_memory_fraction: 0.9
+        dtype: fp8
+      cache_transceiver_config:
+        backend: UCX
+        max_tokens_in_buffer: 1024
+        kv_transfer_timeout_ms: 300000
+
+    decode:
+      tensor_parallel_size: 4
+      moe_expert_parallel_size: 1
+      pipeline_parallel_size: 1
+      trust_remote_code: true
+      enable_attention_dp: false
+      max_batch_size: 32
+      max_num_tokens: 32
+      max_seq_len: 2048
+      print_iter_log: true
+      stream_interval: 100
+      num_postprocess_workers: 4
+      cuda_graph_config:
+        enable_padding: true
+        batch_sizes:
+          - 1
+          - 2
+          - 4
+          - 8
+          - 12
+          - 16
+          - 24
+          - 32
+      moe_config:
+        backend: TRTLLM
+      kv_cache_config:
+        enable_block_reuse: false
+        free_gpu_memory_fraction: 0.9
+        dtype: fp8
+      cache_transceiver_config:
+        backend: UCX
+        max_tokens_in_buffer: 1024
+        kv_transfer_timeout_ms: 300000
+
+benchmark:
+  type: "sa-bench"
+  isl: 1024
+  osl: 1024
+  concurrencies: "32"
+  req_rate: "inf"
+
+frontend:
+  type: "dynamo"
+  enable_multiple_frontends: false
+
+health_check:
+  max_attempts: 360
+  interval_seconds: 10
+
+dynamo:
+  install: false
