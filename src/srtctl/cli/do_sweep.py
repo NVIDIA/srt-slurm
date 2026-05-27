@@ -125,6 +125,8 @@ class SweepOrchestrator(
         ]
         if self.config.infra.nats_max_payload_mb is not None:
             cmd += ["--nats-max-payload-mb", str(self.config.infra.nats_max_payload_mb)]
+        if self.config.infra.etcd_cpu_affinity:
+            cmd += ["--etcd-cpu-affinity", self.config.infra.etcd_cpu_affinity]
 
         mounts = dict(self.runtime.container_mounts)
         mounts[setup_script] = setup_script_container

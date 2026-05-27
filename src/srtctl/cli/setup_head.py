@@ -151,10 +151,10 @@ def start_nats(
             f.write(f"max_payload: {max_payload_bytes}\n")
             f.write(f'jetstream {{ store_dir: "{nats_store_dir}" }}\n')
         logger.info("Starting NATS server (max_payload: %dMB)...", max_payload_mb)
-        cmd = ["taskset", "-c", "140-143", binary_path, "-c", nats_config_path]  # OMC_CPU_PIN_PATCH_APPLIED
+        cmd = [binary_path, "-c", nats_config_path]
     else:
         logger.info("Starting NATS server...")
-        cmd = ["taskset", "-c", "140-143", binary_path, "-js", "-sd", nats_store_dir]
+        cmd = [binary_path, "-js", "-sd", nats_store_dir]
 
     proc = subprocess.Popen(
         cmd,
@@ -168,6 +168,7 @@ def start_etcd(
     host_ip: str,
     binary_path: str = "/configs/etcd",
     log_dir: Path | None = None,
+    cpu_affinity: str | None = None,
 ) -> subprocess.Popen:
     """Start etcd server.
 
@@ -175,6 +176,7 @@ def start_etcd(
         host_ip: IP address of this node (for peer URLs)
         binary_path: Path to etcd binary
         log_dir: Optional log directory
+        cpu_affinity: Optional CPU affinity passed to ``taskset -c``
 
     Returns:
         Popen object for the etcd process
@@ -192,10 +194,7 @@ def start_etcd(
     etcd_data_dir = "/tmp/etcd"
     os.makedirs(etcd_data_dir, exist_ok=True)
 
-    # OMC_ETCD_TIMEOUT_PATCH: relax heartbeat/election timeouts to survive transient CPU starvation
-    # under multi-prefill load (default 100ms/1s too tight at dep16/dep32 scale).
     cmd = [
-        "taskset", "-c", "140-143",  # OMC_CPU_PIN_PATCH_APPLIED
         binary_path,
         "--data-dir",
         etcd_data_dir,
@@ -203,9 +202,9 @@ def start_etcd(
         f"{ETCD_LISTEN_ADDR}:{ETCD_CLIENT_PORT}",
         "--advertise-client-urls",
         f"http://{host_ip}:{ETCD_CLIENT_PORT}",  # Must be reachable IP, not 0.0.0.0
-        "--heartbeat-interval", "1000",
-        "--election-timeout", "10000",
     ]
+    if cpu_affinity:
+        cmd = ["taskset", "-c", cpu_affinity, *cmd]
 
     # Set up output handling
     stdout = None
@@ -272,6 +271,12 @@ def main():
         default=None,
         help="NATS max message payload in MB (default: NATS default 1MB)",
     )
+    parser.add_argument(
+        "--etcd-cpu-affinity",
+        type=str,
+        default=None,
+        help='CPU affinity for etcd passed to taskset -c, e.g. "140-143"',
+    )
 
     args = parser.parse_args()
 
@@ -291,7 +296,7 @@ def main():
 
     try:
         nats_proc = start_nats(args.nats_binary, max_payload_mb=args.nats_max_payload_mb)
-        etcd_proc = start_etcd(host_ip, args.etcd_binary, log_dir)
+        etcd_proc = start_etcd(host_ip, args.etcd_binary, log_dir, cpu_affinity=args.etcd_cpu_affinity)
 
         # Wait for services
         if not wait_for_service("localhost", NATS_PORT, "NATS"):
