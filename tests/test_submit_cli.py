@@ -83,9 +83,16 @@ def test_apply_bash_outputs_standalone_script(monkeypatch, tmp_path: Path, capsy
     assert captured.err == ""
     assert output.startswith("#!/bin/bash\n")
     assert "DRY-RUN" not in output
-    assert 'cat > "${OUTPUT_DIR}/config.yaml" <<\'SRTCTL_RUNTIME_CONFIG_' in output
+    assert "srt_lifecycle_exit_trap" in output
+    assert "srt_start_tachometer" in output
+    assert "srt_wait_workers_ready" in output
+    assert 'cat > "${OUTPUT_DIR}/config_server.yaml" <<\'SRTCTL_RUNTIME_CONFIG_' in output
+    assert 'cat > "${OUTPUT_DIR}/config.yaml" <<\'SRTCTL_BENCHMARK_CONFIG_' in output
+    assert "type: manual" in output
+    assert "type: custom" in output
     assert "name: stdin-dry-run" in output
-    assert 'srtctl.cli.do_sweep "${OUTPUT_DIR}/config.yaml"' in output
+    assert 'srtctl.cli.do_sweep "${OUTPUT_DIR}/config_server.yaml"' in output
+    assert 'srtctl.cli.run_benchmark "${OUTPUT_DIR}/config.yaml"' in output
 
 
 def test_load_config_rejects_empty_yaml(tmp_path: Path) -> None:

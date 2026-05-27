@@ -41,6 +41,8 @@ srtctl dry-run -f config.yaml
 
 # Emit standalone sbatch/bash script without submitting
 srtctl apply -f config.yaml --bash > job.sh
+# The emitted script traps cleanup, starts optional tachometer telemetry,
+# waits for workers, then runs the configured benchmark.
 
 # Launch analysis dashboard
 uv run streamlit run analysis/dashboard/app.py

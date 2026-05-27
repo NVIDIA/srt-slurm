@@ -15,7 +15,6 @@ Usage:
 
 import argparse
 import contextlib
-import hashlib
 import json
 import logging
 import os
@@ -60,6 +59,7 @@ from srtctl.core.schema import SrtConfig
 from srtctl.core.status import create_job_record
 from srtctl.core.validation import preflight_config_variants
 from srtctl.ports import MOONCAKE_MASTER_PORT
+from srtctl.render.lifecycle import build_lifecycle_render_context, heredoc_marker
 
 console = Console()
 logger = logging.getLogger(__name__)
@@ -345,15 +345,6 @@ def validate_setup(srtctl_source: Path) -> None:
         raise SystemExit(1)
 
 
-def _runtime_config_heredoc_marker(runtime_config_text: str) -> str:
-    """Return a here-doc marker that cannot collide with the config payload."""
-    digest = hashlib.sha256(runtime_config_text.encode("utf-8")).hexdigest()[:16]
-    marker = f"SRTCTL_RUNTIME_CONFIG_{digest}"
-    while marker in runtime_config_text:
-        marker = f"{marker}_END"
-    return marker
-
-
 def generate_minimal_sbatch_script(
     config: SrtConfig,
     config_path: Path,
@@ -361,6 +352,15 @@ def generate_minimal_sbatch_script(
     output_dir: Path | None = None,
     runtime_config_filename: str = "config.yaml",
     embedded_runtime_config_text: str | None = None,
+    benchmark_config_filename: str | None = None,
+    embedded_benchmark_config_text: str | None = None,
+    lifecycle_runtime_text: str | None = None,
+    lifecycle_expected_prefill: int | None = None,
+    lifecycle_expected_decode: int | None = None,
+    lifecycle_frontend_type: str | None = None,
+    lifecycle_frontend_port: int | None = None,
+    lifecycle_health_timeout_seconds: int | None = None,
+    lifecycle_health_interval_seconds: int | None = None,
 ) -> str:
     """Generate minimal sbatch script that calls the Python orchestrator.
 
@@ -376,6 +376,12 @@ def generate_minimal_sbatch_script(
         embedded_runtime_config_text: Optional YAML payload to write into
                                       runtime_config_filename from inside the
                                       generated script.
+        benchmark_config_filename: Optional original benchmark config file name
+                                   used by standalone lifecycle scripts.
+        embedded_benchmark_config_text: Optional benchmark YAML payload to write
+                                        into benchmark_config_filename.
+        lifecycle_runtime_text: Optional bash function library for standalone
+                                lifecycle scripts.
 
     Returns:
         Rendered sbatch script as string
@@ -420,6 +426,10 @@ def generate_minimal_sbatch_script(
     runtime_config_embed = (
         embedded_runtime_config_text.rstrip("\n") if embedded_runtime_config_text is not None else None
     )
+    benchmark_config_embed = (
+        embedded_benchmark_config_text.rstrip("\n") if embedded_benchmark_config_text is not None else None
+    )
+    lifecycle_runtime_embed = lifecycle_runtime_text.rstrip("\n") if lifecycle_runtime_text is not None else None
 
     rendered = template.render(
         job_name=job_name,
@@ -443,10 +453,22 @@ def generate_minimal_sbatch_script(
         config_environment={key: shlex.quote(str(value)) for key, value in config_environment.items()},
         runtime_config_embed=runtime_config_embed,
         runtime_config_heredoc_marker=(
-            _runtime_config_heredoc_marker(embedded_runtime_config_text)
-            if embedded_runtime_config_text is not None
+            heredoc_marker(embedded_runtime_config_text) if embedded_runtime_config_text is not None else None
+        ),
+        benchmark_config_filename=benchmark_config_filename,
+        benchmark_config_embed=benchmark_config_embed,
+        benchmark_config_heredoc_marker=(
+            heredoc_marker(embedded_benchmark_config_text, prefix="SRTCTL_BENCHMARK_CONFIG")
+            if embedded_benchmark_config_text is not None
             else None
         ),
+        lifecycle_runtime_embed=lifecycle_runtime_embed,
+        lifecycle_expected_prefill=lifecycle_expected_prefill,
+        lifecycle_expected_decode=lifecycle_expected_decode,
+        lifecycle_frontend_type=lifecycle_frontend_type,
+        lifecycle_frontend_port=lifecycle_frontend_port,
+        lifecycle_health_timeout_seconds=lifecycle_health_timeout_seconds,
+        lifecycle_health_interval_seconds=lifecycle_health_interval_seconds,
     )
 
     return rendered
@@ -1130,13 +1152,28 @@ def render_bash_script(
 
         resolved_config = resolve_config_with_defaults(yaml.safe_load(runtime_config_text), load_cluster_config())
         config = SrtConfig.Schema().load(resolved_config)
+        lifecycle = build_lifecycle_render_context(
+            config,
+            runtime_config_text,
+            server_config_filename=f"config_server_{suffix}.yaml",
+            benchmark_config_filename=f"config_{suffix}.yaml",
+        )
         return generate_minimal_sbatch_script(
             config=config,
             config_path=config_path,
             setup_script=setup_script,
             output_dir=output_dir,
-            runtime_config_filename=f"config_{suffix}.yaml",
-            embedded_runtime_config_text=runtime_config_text,
+            runtime_config_filename=lifecycle.server_config_filename,
+            embedded_runtime_config_text=lifecycle.server_config_text,
+            benchmark_config_filename=lifecycle.benchmark_config_filename,
+            embedded_benchmark_config_text=lifecycle.benchmark_config_text,
+            lifecycle_runtime_text=lifecycle.lifecycle_runtime_text,
+            lifecycle_expected_prefill=lifecycle.expected_prefill,
+            lifecycle_expected_decode=lifecycle.expected_decode,
+            lifecycle_frontend_type=lifecycle.frontend_type,
+            lifecycle_frontend_port=lifecycle.frontend_port,
+            lifecycle_health_timeout_seconds=lifecycle.health_timeout_seconds,
+            lifecycle_health_interval_seconds=lifecycle.health_interval_seconds,
         )
 
     if selector:
@@ -1147,12 +1184,23 @@ def render_bash_script(
 
     runtime_config_text = config_path.read_text()
     config = load_config(config_path)
+    lifecycle = build_lifecycle_render_context(config, runtime_config_text)
     return generate_minimal_sbatch_script(
         config=config,
         config_path=config_path,
         setup_script=setup_script,
         output_dir=output_dir,
-        embedded_runtime_config_text=runtime_config_text,
+        runtime_config_filename=lifecycle.server_config_filename,
+        embedded_runtime_config_text=lifecycle.server_config_text,
+        benchmark_config_filename=lifecycle.benchmark_config_filename,
+        embedded_benchmark_config_text=lifecycle.benchmark_config_text,
+        lifecycle_runtime_text=lifecycle.lifecycle_runtime_text,
+        lifecycle_expected_prefill=lifecycle.expected_prefill,
+        lifecycle_expected_decode=lifecycle.expected_decode,
+        lifecycle_frontend_type=lifecycle.frontend_type,
+        lifecycle_frontend_port=lifecycle.frontend_port,
+        lifecycle_health_timeout_seconds=lifecycle.health_timeout_seconds,
+        lifecycle_health_interval_seconds=lifecycle.health_interval_seconds,
     )
 
 
