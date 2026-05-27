@@ -67,6 +67,11 @@ echo ""
 # submit.py always copies the original submission config to OUTPUT_DIR/config.yaml.
 # For override jobs it also writes the resolved runtime config below.
 echo "Runtime config: ${OUTPUT_DIR}/{{ runtime_config_filename }}"
+{% if runtime_config_embed is not none %}
+cat > "${OUTPUT_DIR}/{{ runtime_config_filename }}" <<'{{ runtime_config_heredoc_marker }}'
+{{ runtime_config_embed }}
+{{ runtime_config_heredoc_marker }}
+{% endif %}
 
 # Get head node
 HEAD_NODE=$(scontrol show hostnames ${SLURM_NODELIST} | head -n1)
