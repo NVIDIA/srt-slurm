@@ -20,6 +20,7 @@ dependencies = [
     "questionary>=2.0.0",
     "ruamel.yaml>=0.18.0",
     "matplotlib>=3.7.0",
+    "huggingface_hub>=0.24.0",
 ]
 
 [project.scripts]

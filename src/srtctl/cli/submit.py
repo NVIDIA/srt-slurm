@@ -59,6 +59,7 @@ from srtctl.core.lockfile import load_lockfile_fingerprints
 from srtctl.core.schema import SrtConfig
 from srtctl.core.status import create_job_record
 from srtctl.core.validation import preflight_config_variants
+from srtctl.cli.install import add_install_parser, cmd_install
 
 console = Console()
 logger = logging.getLogger(__name__)
@@ -1288,6 +1289,9 @@ def main():
     check_parser.add_argument("path", type=Path, help="Lockfile or output dir to check against")
     check_parser.add_argument("--json", action="store_true", dest="json_output", help="Output as JSON")
 
+    # Model install: srtctl install <model>
+    add_install_parser(subparsers)
+
     args = parser.parse_args()
 
     json_mode = bool(getattr(args, "json_output", False))
@@ -1375,6 +1379,11 @@ def main():
         sys.argv = [sys.argv[0]] + (args.args or [])
         _monitor_main()
         return
+
+    if args.command == "install":
+        exit_code = cmd_install(args)
+        restore_console()
+        sys.exit(exit_code)
 
     # Parse config arg: supports path:selector format for overrides
     config_path, selector = parse_config_arg(args.config)
