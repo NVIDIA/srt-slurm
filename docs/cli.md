@@ -249,6 +249,7 @@ srtctl apply -f <config.yaml> [options]
 | `--sweep` | Force sweep mode (usually auto-detected) |
 | `--setup-script` | Custom setup script from `configs/` |
 | `--tags` | Comma-separated tags for the run |
+| `--bash` | Print a standalone generated sbatch/bash script to stdout without submitting |
 | `-y, --yes` | Skip confirmation prompts |
 
 **Examples:**
@@ -268,6 +269,9 @@ srtctl apply -f config.yaml:override_tp64
 
 # Submit only the base config (ignore overrides)
 srtctl apply -f config.yaml:base
+
+# Emit standalone sbatch/bash script without submitting
+srtctl apply -f config.yaml --bash > job.sh
 
 # With tags
 srtctl apply -f config.yaml --tags "experiment-1,baseline"
@@ -427,4 +431,3 @@ grep -E "Env:|Command:" outputs/<job_id>/logs/sweep_<job_id>.log
 - Use `srtctl apply -f` for scripting and CI pipelines
 - Always `dry-run` first for sweeps to check job count
 - Check `outputs/<job_id>/` for submitted configs and metadata
-
