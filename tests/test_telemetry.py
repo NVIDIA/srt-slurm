@@ -127,6 +127,7 @@ class TestTelemetryStageMixin:
                 self.runtime = MagicMock()
                 self.runtime.log_dir = tmp_path
                 self.runtime.nodes.head = "node-a"
+                self.runtime.nodes.het = False
                 self.runtime.srun_options = {}
                 self.runtime.container_mounts = {Path(tmp_path): Path("/logs")}
                 self._backend_processes = [

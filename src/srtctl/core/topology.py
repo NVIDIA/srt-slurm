@@ -154,6 +154,10 @@ class Endpoint:
     nodes: tuple[str, ...]
     gpu_indices: frozenset[int] = field(default_factory=lambda: frozenset(range(8)))
     gpus_per_node: int = 8
+    # SLURM heterogeneous-job component index (0=prefill side, 1=decode side).
+    # None when the job is non-het — callers that pass this to srun treat None
+    # as "omit --het-group".
+    het_group: int | None = None
 
     @property
     def leader_node(self) -> str:
@@ -207,6 +211,8 @@ class Process:
     kv_events_port: int | None = None
     nixl_port: int | None = None
     dp_rpc_port: int | None = None
+    # Inherited from the parent Endpoint when the job is heterogeneous.
+    het_group: int | None = None
 
     @property
     def is_leader(self) -> bool:
@@ -410,6 +416,75 @@ def allocate_endpoints(
     return endpoints
 
 
+def allocate_endpoints_het(
+    *,
+    num_prefill: int,
+    gpus_per_prefill: int,
+    prefill_nodes: Sequence[str],
+    num_decode: int,
+    gpus_per_decode: int,
+    decode_nodes: Sequence[str],
+    gpus_per_node: int,
+) -> list[Endpoint]:
+    """Allocate endpoints for a SLURM heterogeneous job.
+
+    Prefill workers come from ``prefill_nodes`` (het component 0); decode
+    workers come from ``decode_nodes`` (het component 1). Side pools are
+    independent — no gpu-offset bleed across sides — so SLURM places each side
+    inside its own topology segment.
+
+    Each returned Endpoint is tagged with ``het_group`` (0 for prefill, 1 for
+    decode) for downstream srun ``--het-group=`` threading.
+
+    Aggregated mode is unsupported under het and rejected at config validation.
+    """
+    prefill_eps = allocate_endpoints(
+        num_prefill=num_prefill,
+        num_decode=0,
+        num_agg=0,
+        gpus_per_prefill=gpus_per_prefill,
+        gpus_per_decode=gpus_per_decode,
+        gpus_per_agg=0,
+        gpus_per_node=gpus_per_node,
+        available_nodes=prefill_nodes,
+    )
+    decode_eps = allocate_endpoints(
+        num_prefill=0,
+        num_decode=num_decode,
+        num_agg=0,
+        gpus_per_prefill=gpus_per_prefill,
+        gpus_per_decode=gpus_per_decode,
+        gpus_per_agg=0,
+        gpus_per_node=gpus_per_node,
+        available_nodes=decode_nodes,
+    )
+    # Endpoint is frozen; re-emit with het_group set.
+    tagged: list[Endpoint] = []
+    for ep in prefill_eps:
+        tagged.append(
+            Endpoint(
+                mode=ep.mode,
+                index=ep.index,
+                nodes=ep.nodes,
+                gpu_indices=ep.gpu_indices,
+                gpus_per_node=ep.gpus_per_node,
+                het_group=0,
+            )
+        )
+    for ep in decode_eps:
+        tagged.append(
+            Endpoint(
+                mode=ep.mode,
+                index=ep.index,
+                nodes=ep.nodes,
+                gpu_indices=ep.gpu_indices,
+                gpus_per_node=ep.gpus_per_node,
+                het_group=1,
+            )
+        )
+    return tagged
+
+
 def endpoints_to_processes(
     endpoints: list[Endpoint],
     base_sys_port: int = DYN_SYSTEM_PORT_BASE,
@@ -469,6 +544,7 @@ def endpoints_to_processes(
                     bootstrap_port=endpoint_bootstrap_port,
                     kv_events_port=node_kv_events_port,
                     nixl_port=node_nixl_port,
+                    het_group=endpoint.het_group,
                 )
             )
             current_sys_port += 1
