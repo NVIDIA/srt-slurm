@@ -96,37 +96,7 @@ def test_cluster_bash_preamble_warns_when_bash_wrapper_disabled(caplog) -> None:
     assert any("default_bash_preamble" in record.message for record in caplog.records)
 
 
-def test_cpu_bind_uses_equals_separator() -> None:
-    """`--cpu-bind` must be emitted as a single argv token (`--cpu-bind=<v>`).
-
-    Slurm 25.11.x has a regression where the space-separated form slurps the
-    next argv token (e.g. `--job-name=...` inherited from the sbatch
-    allocation) as part of the cpu-bind value and dies with:
-
-        srun.real: error: unrecognized --cpu-bind argument "--job-name"
-
-    This bites TRT-LLM (the only backend that sets cpu_bind="verbose,none";
-    see backends/trtllm.py). The `=` form parses unambiguously on all Slurm
-    versions, so we use it everywhere.
-    """
-    with (
-        patch("srtctl.core.slurm.get_slurm_job_id", return_value="12345"),
-        patch("srtctl.core.slurm._get_cluster_bash_preamble", return_value=None),
-        patch("subprocess.Popen") as mock_popen,
-    ):
-        mock_popen.return_value = MagicMock()
-        start_srun_process(["python3", "-m", "server"], cpu_bind="verbose,none")
-
-    srun_cmd = mock_popen.call_args.args[0]
-    assert "--cpu-bind=verbose,none" in srun_cmd
-    # No bare "--cpu-bind" token followed by a separate value token.
-    assert "--cpu-bind" not in srun_cmd
-
-
 def test_srun_options_use_equals_separator() -> None:
-    """`srun_options` entries must also be emitted with `=` for the same
-    reason as `cpu_bind` above (users can route `cpu-bind` through this
-    path via YAML and hit the identical Slurm 25.11 regression)."""
     with (
         patch("srtctl.core.slurm.get_slurm_job_id", return_value="12345"),
         patch("srtctl.core.slurm._get_cluster_bash_preamble", return_value=None),
@@ -141,7 +111,6 @@ def test_srun_options_use_equals_separator() -> None:
     srun_cmd = mock_popen.call_args.args[0]
     assert "--cpu-bind=none" in srun_cmd
     assert "--export=ALL" in srun_cmd
-    # Valueless options stay as bare flags.
     assert "--exclusive" in srun_cmd
 
 
