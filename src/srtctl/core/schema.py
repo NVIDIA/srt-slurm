@@ -465,6 +465,11 @@ class ResourceConfig:
     agg_nodes: int | None = None
     agg_workers: int | None = None
 
+    # If True, place each partial-node worker on its own node instead of
+    # packing multiple onto the same node. Caller must reserve enough nodes
+    # (e.g. set decode_nodes=decode_workers when gpus_per_decode<gpus_per_node).
+    spread_workers: bool = False
+
     # Explicit GPUs per worker (override computed values)
     # Use data_key to map from YAML field names to internal attribute names
     _explicit_gpus_per_prefill: int | None = field(
@@ -1439,6 +1444,21 @@ class SrtConfig:
         """Get the served model name from backend config or model path."""
         default = Path(self.model.path).name
         return self.backend.get_served_model_name(default)
+
+    @property
+    def total_nodes(self) -> int:
+        """Worker node count, adjusted for backend-specific packing."""
+        if isinstance(self.backend, VLLMProtocol) and self.backend.should_colocate_prefill_decode(
+            num_prefill=self.resources.num_prefill,
+            num_decode=self.resources.num_decode,
+            num_agg=self.resources.num_agg,
+            gpus_per_prefill=self.resources.gpus_per_prefill,
+            gpus_per_decode=self.resources.gpus_per_decode,
+            gpus_per_agg=self.resources.gpus_per_agg,
+            gpus_per_node=self.resources.gpus_per_node,
+        ):
+            return 1
+        return self.resources.total_nodes
 
     @property
     def backend_type(self) -> str:
