@@ -276,8 +276,10 @@ def show_config_details(config: SrtConfig) -> None:
         console.print("[dim]No custom environment variables configured.[/]")
 
     # --- srun options ---
+    # Render with `=` to mirror what core/slurm.py emits at runtime; the
+    # space-separated form misparses `cpu-bind` on Slurm 25.11.x.
     if config.srun_options:
-        opts = " ".join(f"--{k} {v}" if v else f"--{k}" for k, v in config.srun_options.items())
+        opts = " ".join(f"--{k}={v}" if v else f"--{k}" for k, v in config.srun_options.items())
         console.print(f"[dim]srun options:[/] {opts}")
 
     show_extensions = (

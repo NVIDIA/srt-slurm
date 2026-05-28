@@ -220,7 +220,14 @@ def start_srun_process(
     if oversubscribe:
         srun_cmd.append("--oversubscribe")
     if cpu_bind:
-        srun_cmd.extend(["--cpu-bind", cpu_bind])
+        # Use `--cpu-bind=<value>` (single argv token) rather than
+        # `--cpu-bind <value>` (two tokens). Slurm 25.11.x has a regression
+        # where the space-separated form slurps the *next* argv token (e.g.
+        # `--job-name=...` inherited from the sbatch allocation) as part of
+        # the cpu-bind value, failing with
+        # `srun.real: error: unrecognized --cpu-bind argument "--job-name"`.
+        # The `=` form parses unambiguously on all Slurm versions.
+        srun_cmd.append(f"--cpu-bind={cpu_bind}")
 
     srun_cmd.extend(["--nodes", str(nodes)])
     srun_cmd.extend(["--ntasks", str(ntasks)])
@@ -244,11 +251,13 @@ def start_srun_process(
             mount_str = ",".join(f"{host}:{container}" for host, container in container_mounts.items())
             srun_cmd.extend(["--container-mounts", mount_str])
 
-    # Additional srun options
+    # Additional srun options. Use `--key=value` (single argv token) so
+    # options like `cpu-bind` parse correctly on Slurm 25.11.x; see the
+    # `cpu_bind` block above for the regression details.
     if srun_options:
         for key, value in srun_options.items():
             if value:
-                srun_cmd.extend([f"--{key}", value])
+                srun_cmd.append(f"--{key}={value}")
             else:
                 srun_cmd.append(f"--{key}")
 

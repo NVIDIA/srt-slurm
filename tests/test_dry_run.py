@@ -218,8 +218,10 @@ class TestDryRunSrunOptions:
         config = _make_config({"srun_options": {"export": "ALL", "cpu-bind": "none"}})
         show_config_details(config)
         output = capsys.readouterr().out
-        assert "--export ALL" in output
-        assert "--cpu-bind none" in output
+        # `=` form, not space, because Slurm 25.11.x misparses
+        # `--cpu-bind <value>` and slurps the next argv token.
+        assert "--export=ALL" in output
+        assert "--cpu-bind=none" in output
 
     def test_no_srun_options_no_output(self, capsys):
         config = _make_config()
