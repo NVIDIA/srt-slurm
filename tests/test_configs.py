@@ -10,6 +10,13 @@ import pytest
 
 from srtctl.backends import SGLangProtocol, SGLangServerConfig
 from srtctl.core.schema import SrtConfig
+from srtctl.ports import (
+    SGLANG_BOOTSTRAP_PORT_BASE,
+    SGLANG_HTTP_PORT_BASE,
+    SGLANG_HTTP_PORT_STRIDE,
+    VLLM_DATA_PARALLEL_RPC_PORT,
+    VLLM_NIXL_PORT_BASE,
+)
 
 
 class TestConfigLoading:
@@ -1305,9 +1312,9 @@ class TestVLLMPrefillDecodeColocation:
         decode = next(p for p in processes if p.endpoint_mode == "decode")
 
         assert prefill.node == decode.node == "node0"
-        assert prefill.http_port == 30000
-        assert decode.http_port == 30001
-        assert prefill.bootstrap_port == 31000
+        assert prefill.http_port == SGLANG_HTTP_PORT_BASE
+        assert decode.http_port == SGLANG_HTTP_PORT_BASE + SGLANG_HTTP_PORT_STRIDE
+        assert prefill.bootstrap_port == SGLANG_BOOTSTRAP_PORT_BASE
 
         bound_ports = [
             port
@@ -1346,10 +1353,10 @@ class TestVLLMPrefillDecodeColocation:
         assert len(prefill) == 4
         assert len(decode) == 4
         assert {p.node for p in prefill + decode} == {"node0"}
-        assert {p.dp_rpc_port for p in prefill} == {13345}
-        assert {p.dp_rpc_port for p in decode} == {13346}
-        assert {p.nixl_port for p in prefill} == {21000}
-        assert {p.nixl_port for p in decode} == {21004}
+        assert {p.dp_rpc_port for p in prefill} == {VLLM_DATA_PARALLEL_RPC_PORT}
+        assert {p.dp_rpc_port for p in decode} == {VLLM_DATA_PARALLEL_RPC_PORT + 1}
+        assert {p.nixl_port for p in prefill} == {VLLM_NIXL_PORT_BASE}
+        assert {p.nixl_port for p in decode} == {VLLM_NIXL_PORT_BASE + 4}
 
         leader_ports = [
             port
@@ -1357,12 +1364,16 @@ class TestVLLMPrefillDecodeColocation:
             for port in (process.http_port, process.bootstrap_port)
             if port
         ]
-        assert sorted(leader_ports) == [30000, 30001, 31000]
+        assert sorted(leader_ports) == [
+            SGLANG_HTTP_PORT_BASE,
+            SGLANG_HTTP_PORT_BASE + SGLANG_HTTP_PORT_STRIDE,
+            SGLANG_BOOTSTRAP_PORT_BASE,
+        ]
 
         prefill_actual_nixl_ports = {next(iter(p.nixl_port for p in prefill)) + p.node_rank for p in prefill}
         decode_actual_nixl_ports = {next(iter(p.nixl_port for p in decode)) + p.node_rank for p in decode}
-        assert prefill_actual_nixl_ports == {21000, 21001, 21002, 21003}
-        assert decode_actual_nixl_ports == {21004, 21005, 21006, 21007}
+        assert prefill_actual_nixl_ports == {VLLM_NIXL_PORT_BASE + i for i in range(4)}
+        assert decode_actual_nixl_ports == {VLLM_NIXL_PORT_BASE + 4 + i for i in range(4)}
         assert prefill_actual_nixl_ports.isdisjoint(decode_actual_nixl_ports)
 
     def test_enabled_does_not_pack_when_one_node_does_not_fit(self):
@@ -1492,10 +1503,10 @@ class TestVLLMDataParallelMode:
         first_endpoint = [p for p in processes if p.endpoint_index == 0]
         second_endpoint = [p for p in processes if p.endpoint_index == 1]
 
-        assert {p.dp_rpc_port for p in first_endpoint} == {13345}
-        assert {p.dp_rpc_port for p in second_endpoint} == {13346}
-        assert {p.nixl_port for p in first_endpoint} == {21000}
-        assert {p.nixl_port for p in second_endpoint} == {21004}
+        assert {p.dp_rpc_port for p in first_endpoint} == {VLLM_DATA_PARALLEL_RPC_PORT}
+        assert {p.dp_rpc_port for p in second_endpoint} == {VLLM_DATA_PARALLEL_RPC_PORT + 1}
+        assert {p.nixl_port for p in first_endpoint} == {VLLM_NIXL_PORT_BASE}
+        assert {p.nixl_port for p in second_endpoint} == {VLLM_NIXL_PORT_BASE + 4}
         assert [p.node_rank for p in first_endpoint] == list(range(4))
         assert [p.node_rank for p in second_endpoint] == list(range(4))
 
