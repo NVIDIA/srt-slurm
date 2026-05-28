@@ -4,8 +4,8 @@ name: "minimax_m267_nvfp4_ISL1K_OSL1K_ctx1dep4_gen8tp1_batch16_eplb0_mtp0"
 # Expected: 5020.1 total tok/s, 557.8 tok/s/gpu
 
 model:
-  path: "nvidia/MiniMax-M2.7-NVFP4"
-  container: "nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:1.1.0-dev.3"
+  path: "/lustre/fsw/core_dlfw_ci/rihuo/nvidia_MiniMax-M2.7-NVFP4"
+  container: "/lustre/fsw/core_dlfw_ci/rihuo/dynamo-trtllm-arm64-v1-3-0rc15.sqsh"
   precision: "fp4"
 
 resources:
