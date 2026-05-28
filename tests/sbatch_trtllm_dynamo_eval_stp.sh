@@ -5,12 +5,12 @@
 # Dynamo TRTLLM variant of sbatch_trtllm_eval.sh
 # Uses etcd + nats + dynamo frontend instead of trtllm-serve disaggregated
 #
-#SBATCH --job-name=glm5_nvfp4_dynamo_ISL8K_OSL1K_ctx1dep2_gen4tep8_batch4_allconc_eplb0_mtp3
-#SBATCH --nodes=10
-#SBATCH --ntasks=40
+#SBATCH --job-name=glm5_nvfp4_dynamo_ISL8K_OSL1K_ctx4dep2_gen3tep8_batch64_eplb0_mtp0
+#SBATCH --nodes=9
+#SBATCH --ntasks=36
 #SBATCH --ntasks-per-node=4
 #SBATCH --gpus-per-node=4
-#SBATCH --segment=10
+#SBATCH --segment=9
 #SBATCH --account=restricted
 #SBATCH --time=0
 #SBATCH --output=/data/home/rihuo/srt-slurm/outputs/%j/logs/sweep_%j.log
@@ -37,30 +37,31 @@ FRONTEND_PORT=8000
 
 # DYN_SYSTEM_PORT assignments (one per worker)
 DYN_SYS_PORT_CTX0=8081
-DYN_SYS_PORT_GEN0=8082
-DYN_SYS_PORT_GEN1=8083
-DYN_SYS_PORT_GEN2=8084
-DYN_SYS_PORT_GEN3=8085
+DYN_SYS_PORT_CTX1=8082
+DYN_SYS_PORT_CTX2=8083
+DYN_SYS_PORT_CTX3=8084
+DYN_SYS_PORT_GEN0=8085
+DYN_SYS_PORT_GEN1=8086
+DYN_SYS_PORT_GEN2=8087
 
 mkdir -p "${LOG_DIR}"
 exec 2>&1
 
 mapfile -t ALL_NODES < <(scontrol show hostnames "${SLURM_NODELIST}")
-if [ "${#ALL_NODES[@]}" -lt 10 ]; then
-    echo "ERROR: expected at least 10 nodes, got ${#ALL_NODES[@]}"
+if [ "${#ALL_NODES[@]}" -lt 9 ]; then
+    echo "ERROR: expected at least 9 nodes, got ${#ALL_NODES[@]}"
     exit 1
 fi
 
 HEAD_NODE="${ALL_NODES[0]}"
-PREFILL_NODE="${ALL_NODES[1]}"
-DECODE_NODES_0=("${ALL_NODES[2]}" "${ALL_NODES[3]}")
-DECODE_NODES_1=("${ALL_NODES[4]}" "${ALL_NODES[5]}")
-DECODE_NODES_2=("${ALL_NODES[6]}" "${ALL_NODES[7]}")
-DECODE_NODES_3=("${ALL_NODES[8]}" "${ALL_NODES[9]}")
+PREFILL_NODE_0="${ALL_NODES[1]}"
+PREFILL_NODE_1="${ALL_NODES[2]}"
+DECODE_NODES_0=("${ALL_NODES[3]}" "${ALL_NODES[4]}")
+DECODE_NODES_1=("${ALL_NODES[5]}" "${ALL_NODES[6]}")
+DECODE_NODES_2=("${ALL_NODES[7]}" "${ALL_NODES[8]}")
 DECODE_NODELIST_0="$(IFS=,; echo "${DECODE_NODES_0[*]}")"
 DECODE_NODELIST_1="$(IFS=,; echo "${DECODE_NODES_1[*]}")"
 DECODE_NODELIST_2="$(IFS=,; echo "${DECODE_NODES_2[*]}")"
-DECODE_NODELIST_3="$(IFS=,; echo "${DECODE_NODES_3[*]}")"
 
 SRUN_PIDS=()
 
@@ -208,7 +209,6 @@ pipeline_parallel_size: 1
 enable_attention_dp: true
 disable_overlap_scheduler: true
 trust_remote_code: true
-custom_tokenizer: "glm_moe_dsa"
 max_batch_size: 2
 max_num_tokens: 16640
 max_seq_len: 8232
@@ -223,9 +223,6 @@ kv_cache_config:
 cache_transceiver_config:
   backend: UCX
   max_tokens_in_buffer: 16384
-speculative_config:
-  decoding_type: MTP
-  num_nextn_predict_layers: 3
 EOF
 }
 
@@ -239,9 +236,8 @@ pipeline_parallel_size: 1
 enable_attention_dp: false
 enable_lm_head_tp_in_adp: false
 trust_remote_code: true
-custom_tokenizer: "glm_moe_dsa"
-max_batch_size: 4
-max_num_tokens: 16
+max_batch_size: 64
+max_num_tokens: 64
 max_seq_len: 9256
 print_iter_log: true
 stream_interval: 100
@@ -252,8 +248,16 @@ cuda_graph_config:
     - 1
     - 2
     - 4
+    - 8
+    - 16
+    - 24
+    - 32
+    - 40
+    - 48
+    - 56
+    - 64
 moe_config:
-  backend: CUTEDSL
+  backend: TRTLLM
   use_low_precision_moe_combine: true
 kv_cache_config:
   dtype: fp8
@@ -268,9 +272,6 @@ nvfp4_gemm_config:
     - cublaslt
     - cutedsl
     - cuda_core
-speculative_config:
-  decoding_type: MTP
-  num_nextn_predict_layers: 3
 EOF
 }
 
@@ -284,8 +285,8 @@ echo "Start: $(date)"
 echo "=========================================="
 echo ""
 echo "Head node (infra + frontend): ${HEAD_NODE}"
-echo "Prefill node: ${PREFILL_NODE}"
-echo "Decode nodes: ${DECODE_NODELIST_0}, ${DECODE_NODELIST_1}, ${DECODE_NODELIST_2}, ${DECODE_NODELIST_3}"
+echo "Prefill nodes: ${PREFILL_NODE_0}, ${PREFILL_NODE_1}"
+echo "Decode nodes: ${DECODE_NODELIST_0}, ${DECODE_NODELIST_1}, ${DECODE_NODELIST_2}"
 echo ""
 
 write_prefill_config "${LOG_DIR}/trtllm_prefill.yaml"
@@ -357,7 +358,7 @@ echo "Infrastructure services are ready"
 # ==============================================================================
 DYNAMO_WORKER_ENV="export ETCD_ENDPOINTS=http://${HEAD_NODE}:${ETCD_PORT} && export NATS_SERVER=nats://${HEAD_NODE}:${NATS_PORT} && export DYN_REQUEST_PLANE=nats"
 
-echo "Starting prefill worker (1x TP2/EP2)"
+echo "Starting prefill workers (4x TP2/EP2, 2 per node)"
 
 start_bg srun \
     --jobid "${SLURM_JOB_ID}" \
@@ -365,8 +366,8 @@ start_bg srun \
     --mpi pmix \
     --nodes 1 \
     --ntasks 2 \
-    --nodelist "${PREFILL_NODE}" \
-    --output "${LOG_DIR}/${PREFILL_NODE}_prefill_w0.out" \
+    --nodelist "${PREFILL_NODE_0}" \
+    --output "${LOG_DIR}/${PREFILL_NODE_0}_prefill_w0.out" \
     --container-image "${CONTAINER_IMAGE}" \
     --no-container-entrypoint \
     --no-container-mount-home \
@@ -374,7 +375,52 @@ start_bg srun \
     bash -c "${TRTLLM_COMMON_ENV} && ${DYNAMO_WORKER_ENV} && export DYN_SYSTEM_PORT=${DYN_SYS_PORT_CTX0} && export CUDA_VISIBLE_DEVICES=0,1 && trtllm-llmapi-launch python3 -m dynamo.trtllm --model-path /model --served-model-name ${MODEL_NAME} --disaggregation-mode prefill --extra-engine-args /logs/trtllm_prefill.yaml --request-plane nats"
 CTX0_PID="${SRUN_PIDS[-1]}"
 
-echo "Starting decode workers (4x TP8/EP8 MNNVL, 2 nodes each)"
+start_bg srun \
+    --jobid "${SLURM_JOB_ID}" \
+    --overlap \
+    --mpi pmix \
+    --nodes 1 \
+    --ntasks 2 \
+    --nodelist "${PREFILL_NODE_0}" \
+    --output "${LOG_DIR}/${PREFILL_NODE_0}_prefill_w1.out" \
+    --container-image "${CONTAINER_IMAGE}" \
+    --no-container-entrypoint \
+    --no-container-mount-home \
+    --container-mounts "${SCRIPT_MOUNTS}" \
+    bash -c "${TRTLLM_COMMON_ENV} && ${DYNAMO_WORKER_ENV} && export DYN_SYSTEM_PORT=${DYN_SYS_PORT_CTX1} && export CUDA_VISIBLE_DEVICES=2,3 && trtllm-llmapi-launch python3 -m dynamo.trtllm --model-path /model --served-model-name ${MODEL_NAME} --disaggregation-mode prefill --extra-engine-args /logs/trtllm_prefill.yaml --request-plane nats"
+CTX1_PID="${SRUN_PIDS[-1]}"
+
+start_bg srun \
+    --jobid "${SLURM_JOB_ID}" \
+    --overlap \
+    --mpi pmix \
+    --nodes 1 \
+    --ntasks 2 \
+    --nodelist "${PREFILL_NODE_1}" \
+    --output "${LOG_DIR}/${PREFILL_NODE_1}_prefill_w2.out" \
+    --container-image "${CONTAINER_IMAGE}" \
+    --no-container-entrypoint \
+    --no-container-mount-home \
+    --container-mounts "${SCRIPT_MOUNTS}" \
+    bash -c "${TRTLLM_COMMON_ENV} && ${DYNAMO_WORKER_ENV} && export DYN_SYSTEM_PORT=${DYN_SYS_PORT_CTX2} && export CUDA_VISIBLE_DEVICES=0,1 && trtllm-llmapi-launch python3 -m dynamo.trtllm --model-path /model --served-model-name ${MODEL_NAME} --disaggregation-mode prefill --extra-engine-args /logs/trtllm_prefill.yaml --request-plane nats"
+CTX2_PID="${SRUN_PIDS[-1]}"
+
+start_bg srun \
+    --jobid "${SLURM_JOB_ID}" \
+    --overlap \
+    --mpi pmix \
+    --nodes 1 \
+    --ntasks 2 \
+    --nodelist "${PREFILL_NODE_1}" \
+    --output "${LOG_DIR}/${PREFILL_NODE_1}_prefill_w3.out" \
+    --container-image "${CONTAINER_IMAGE}" \
+    --no-container-entrypoint \
+    --no-container-mount-home \
+    --container-mounts "${SCRIPT_MOUNTS}" \
+    bash -c "${TRTLLM_COMMON_ENV} && ${DYNAMO_WORKER_ENV} && export DYN_SYSTEM_PORT=${DYN_SYS_PORT_CTX3} && export CUDA_VISIBLE_DEVICES=2,3 && trtllm-llmapi-launch python3 -m dynamo.trtllm --model-path /model --served-model-name ${MODEL_NAME} --disaggregation-mode prefill --extra-engine-args /logs/trtllm_prefill.yaml --request-plane nats"
+CTX3_PID="${SRUN_PIDS[-1]}"
+
+echo "Starting decode workers (3x TP8/EP8 MNNVL, 2 nodes each)"
 
 start_bg srun \
     --jobid "${SLURM_JOB_ID}" \
@@ -421,22 +467,7 @@ start_bg srun \
     bash -c "${TRTLLM_COMMON_ENV} && ${DYNAMO_WORKER_ENV} && export DYN_SYSTEM_PORT=${DYN_SYS_PORT_GEN2} && trtllm-llmapi-launch python3 -m dynamo.trtllm --model-path /model --served-model-name ${MODEL_NAME} --disaggregation-mode decode --extra-engine-args /logs/trtllm_decode.yaml --request-plane nats"
 GEN2_PID="${SRUN_PIDS[-1]}"
 
-start_bg srun \
-    --jobid "${SLURM_JOB_ID}" \
-    --overlap \
-    --mpi pmix \
-    --nodes 2 \
-    --ntasks 8 \
-    --nodelist "${DECODE_NODELIST_3}" \
-    --output "${LOG_DIR}/${DECODE_NODES_3[0]}_decode_w3.out" \
-    --container-image "${CONTAINER_IMAGE}" \
-    --no-container-entrypoint \
-    --no-container-mount-home \
-    --container-mounts "${SCRIPT_MOUNTS}" \
-    bash -c "${TRTLLM_COMMON_ENV} && ${DYNAMO_WORKER_ENV} && export DYN_SYSTEM_PORT=${DYN_SYS_PORT_GEN3} && trtllm-llmapi-launch python3 -m dynamo.trtllm --model-path /model --served-model-name ${MODEL_NAME} --disaggregation-mode decode --extra-engine-args /logs/trtllm_decode.yaml --request-plane nats"
-GEN3_PID="${SRUN_PIDS[-1]}"
-
-for pid_name in CTX0_PID GEN0_PID GEN1_PID GEN2_PID GEN3_PID; do
+for pid_name in CTX0_PID CTX1_PID CTX2_PID CTX3_PID GEN0_PID GEN1_PID GEN2_PID; do
     require_alive "${!pid_name}" "${pid_name}"
 done
 
@@ -464,8 +495,8 @@ require_alive "${FRONTEND_PID}" "FRONTEND_PID"
 # ==============================================================================
 # Stage 4: Wait for all workers to register, then verify model is serving
 # ==============================================================================
-EXPECTED_PREFILL=1
-EXPECTED_DECODE=4
+EXPECTED_PREFILL=4
+EXPECTED_DECODE=3
 
 echo "Waiting for ${EXPECTED_PREFILL} prefill and ${EXPECTED_DECODE} decode workers to register..."
 if ! wait_for_dynamo_workers "${HEAD_NODE}" "${FRONTEND_PORT}" "${EXPECTED_PREFILL}" "${EXPECTED_DECODE}" 2700 60; then
@@ -494,5 +525,5 @@ srun \
     --no-container-entrypoint \
     --no-container-mount-home \
     --container-mounts "${SCRIPT_MOUNTS}" \
-    --export="ALL,MODEL_NAME=${MODEL_NAME},EVAL_CONC=24,RUN_EVAL=true,IS_MULTINODE=true,FRAMEWORK=trtllm,PRECISION=fp4,MODEL=/model,PREFILL_TP=2,PREFILL_EP=2,PREFILL_DP_ATTN=true,PREFILL_NUM_WORKERS=1,DECODE_TP=8,DECODE_EP=8,DECODE_DP_ATTN=false,DECODE_NUM_WORKERS=4" \
+    --export="ALL,MODEL_NAME=${MODEL_NAME},EVAL_CONC=231,RUN_EVAL=true,IS_MULTINODE=true,FRAMEWORK=trtllm,PRECISION=fp4,MODEL=/model,PREFILL_TP=2,PREFILL_EP=2,PREFILL_DP_ATTN=true,PREFILL_NUM_WORKERS=4,DECODE_TP=8,DECODE_EP=8,DECODE_DP_ATTN=false,DECODE_NUM_WORKERS=3,DECODE_ALLREDUCE=MNNVL" \
     bash -c "bash /srtctl-benchmarks/lm-eval/bench.sh http://localhost:${FRONTEND_PORT} /infmax-workspace"

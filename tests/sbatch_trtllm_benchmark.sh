@@ -1,7 +1,11 @@
 #!/bin/bash
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-#SBATCH --job-name=glm5_nvfp4_ISL8K_OSL1K_ctx1dep2_gen4tep8_batch4_allconc_eplb0_mtp3
+#
+# Dynamo TRTLLM variant of sbatch_trtllm_eval.sh
+# Uses etcd + nats + dynamo frontend instead of trtllm-serve disaggregated
+#
+#SBATCH --job-name=glm5_nvfp4_dynamo_ISL8K_OSL1K_ctx1dep2_gen4tep8_batch4_allconc_eplb0_mtp3
 #SBATCH --nodes=10
 #SBATCH --ntasks=40
 #SBATCH --ntasks-per-node=4
@@ -18,15 +22,12 @@ SRTCTL_SOURCE="/data/home/rihuo/srt-slurm"
 OUTPUT_BASE="/data/home/rihuo/srt-slurm/outputs"
 OUTPUT_DIR="${OUTPUT_BASE}/${SLURM_JOB_ID}"
 LOG_DIR="${OUTPUT_DIR}/logs"
-CONTAINER_IMAGE="/data/home/rihuo/dynamo-trtllm-rihuo-arm64-1-2-0-rc15.sqsh"
+CONTAINER_IMAGE="/data/home/rihuo/tensorrt-llm-release-1-3-0rc15.sqsh"
 EVAL_CONTAINER_IMAGE="/data/home/rihuo/sglang-v0.5.10.post1-cu130.sqsh"
 MODEL_PATH="/data/home/rihuo/nvidia_GLM-5-NVFP4"
 MODEL_NAME="nvidia_GLM-5-NVFP4"
 INFMAX_WORKSPACE="/data/home/rihuo/InferenceMAX"
-LIBTRTLLM_SO="/data/home/rihuo/D40_libtensorrt_llm.so"
-TRTLLM_SITE_PACKAGES="/usr/local/lib/python3.12/dist-packages"
-RC14_FIX="/data/home/rihuo/rc14_fix"
-SCRIPT_MOUNTS="${LOG_DIR}:/logs,${MODEL_PATH}:/model,${SRTCTL_SOURCE}/configs:/configs,${SRTCTL_SOURCE}/src/srtctl/benchmarks/scripts:/srtctl-benchmarks,${INFMAX_WORKSPACE}:/infmax-workspace,${LIBTRTLLM_SO}:${TRTLLM_SITE_PACKAGES}/tensorrt_llm/libs/libtensorrt_llm.so,${RC14_FIX}/postproc_worker.py:${TRTLLM_SITE_PACKAGES}/tensorrt_llm/executor/postproc_worker.py:ro,${RC14_FIX}/worker.py:${TRTLLM_SITE_PACKAGES}/tensorrt_llm/executor/worker.py:ro,${RC14_FIX}/llm.py:${TRTLLM_SITE_PACKAGES}/tensorrt_llm/llmapi/llm.py:ro"
+SCRIPT_MOUNTS="${LOG_DIR}:/logs,${MODEL_PATH}:/model,${SRTCTL_SOURCE}/configs:/configs,${SRTCTL_SOURCE}/src/srtctl/benchmarks/scripts:/srtctl-benchmarks,${INFMAX_WORKSPACE}:/infmax-workspace"
 TRTLLM_COMMON_ENV="export ENROOT_ALLOW_DEV=yes && export MIMALLOC_PURGE_DELAY=0 && export NCCL_GRAPH_MIXING_SUPPORT=0 && export TLLM_LOG_LEVEL=INFO && export TRTLLM_ENABLE_PDL=1 && export TRTLLM_SERVER_DISABLE_GC=1 && export TRTLLM_WORKER_DISABLE_GC=1"
 
 mkdir -p "${LOG_DIR}"
@@ -119,7 +120,6 @@ pipeline_parallel_size: 1
 enable_attention_dp: true
 disable_overlap_scheduler: true
 trust_remote_code: true
-custom_tokenizer: "glm_moe_dsa"
 max_batch_size: 2
 max_num_tokens: 16640
 max_seq_len: 8232
@@ -143,14 +143,13 @@ EOF
 write_decode_config() {
     local output_path="$1"
     cat > "${output_path}" <<'EOF'
-allreduce_strategy: MNNVL
+allreduce_strategy: NCCL
 tensor_parallel_size: 8
 moe_expert_parallel_size: 8
 pipeline_parallel_size: 1
 enable_attention_dp: false
 enable_lm_head_tp_in_adp: false
 trust_remote_code: true
-custom_tokenizer: "glm_moe_dsa"
 max_batch_size: 4
 max_num_tokens: 16
 max_seq_len: 9256
@@ -333,17 +332,18 @@ if ! wait_for_http_ok "${HEAD_NODE}" "${DISAGG_PORT}" "/health" 2700; then
     exit 1
 fi
 
-echo "Server is healthy - starting post eval (lm-eval)"
+# ==============================================================================
+# Stage 5: Run benchmark (sa-bench)
+# ==============================================================================
 srun \
     --jobid "${SLURM_JOB_ID}" \
     --overlap \
     --nodes 1 \
     --ntasks 1 \
     --nodelist "${HEAD_NODE}" \
-    --output "${LOG_DIR}/eval.out" \
-    --container-image "${EVAL_CONTAINER_IMAGE}" \
+    --output "${LOG_DIR}/benchmark.out" \
+    --container-image "${CONTAINER_IMAGE}" \
     --no-container-entrypoint \
     --no-container-mount-home \
     --container-mounts "${SCRIPT_MOUNTS}" \
-    --export="ALL,MODEL_NAME=${MODEL_NAME},EVAL_CONC=24,RUN_EVAL=true,IS_MULTINODE=true,FRAMEWORK=trtllm,PRECISION=fp4,MODEL=/model,PREFILL_TP=2,PREFILL_EP=2,PREFILL_DP_ATTN=true,PREFILL_NUM_WORKERS=1,DECODE_TP=8,DECODE_EP=8,DECODE_DP_ATTN=false,DECODE_NUM_WORKERS=4" \
-    bash -c "bash /srtctl-benchmarks/lm-eval/bench.sh http://localhost:${DISAGG_PORT} /infmax-workspace"
+    bash -c "bash /srtctl-benchmarks/sa-bench/bench.sh http://localhost:8000 8192 1024 4x24 inf /model ${MODEL_NAME} true 34 2 32 0.8 16 2 '' true random ''"
