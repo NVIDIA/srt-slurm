@@ -35,8 +35,9 @@ class NodePortAllocator:
     assignments per node and hands out the next available port.
 
     Port ranges (non-overlapping):
-        - kv_events_port: 5550+  (global) - ZMQ port for kv-events publishing
-        - nixl_port:      6550+  (global) - NIXL side channel for KV transfers (vLLM)
+        - kv_events_port: 20000+ (global) - ZMQ port for kv-events publishing
+        - nixl_port:      21000+ (global) - NIXL side channel for KV transfers (vLLM)
+        - dp_rpc_port:    13345+ (per node) - DP coordination port (vLLM data-parallel)
         - http_port:      30000+ (per node) - HTTP serving port
         - bootstrap_port: 31000+ (per node) - P/D coordination port (prefill only)
 
@@ -53,11 +54,13 @@ class NodePortAllocator:
 
     base_http_port: int = 30000
     base_bootstrap_port: int = 31000
-    base_kv_events_port: int = 5550
-    base_nixl_port: int = 6550  # NIXL side channel ports (must not overlap with kv_events)
+    base_kv_events_port: int = 20000
+    base_nixl_port: int = 21000  # NIXL side channel ports (must not overlap with kv_events)
+    base_dp_rpc_port: int = 13345  # DP coordination port for vLLM data-parallel
 
     _http_ports: dict[str, int] = field(default_factory=dict, repr=False)
     _bootstrap_ports: dict[str, int] = field(default_factory=dict, repr=False)
+    _dp_rpc_ports: dict[str, int] = field(default_factory=dict, repr=False)
     _next_kv_events_port: int = field(default=0, repr=False)  # Global counter
     _next_nixl_port: int = field(default=0, repr=False)  # Global counter for NIXL
 
@@ -66,7 +69,7 @@ class NodePortAllocator:
         if node not in self._http_ports:
             self._http_ports[node] = self.base_http_port
         port = self._http_ports[node]
-        self._http_ports[node] += 1000
+        self._http_ports[node] += 1
         return port
 
     def next_bootstrap_port(self, node: str) -> int:
@@ -91,6 +94,32 @@ class NodePortAllocator:
             self._next_nixl_port = self.base_nixl_port
         port = self._next_nixl_port
         self._next_nixl_port += 1
+        return port
+
+    def next_nixl_port_block(self, size: int) -> int:
+        """Reserve a block of consecutive NIXL ports, return the base port.
+
+        Used in DP mode where vLLM computes:
+            actual_port = VLLM_NIXL_SIDE_CHANNEL_PORT + data_parallel_rank
+        All DP ranks within an endpoint share the same base port, so we
+        must reserve `size` ports to avoid collisions with other endpoints.
+        """
+        if self._next_nixl_port == 0:
+            self._next_nixl_port = self.base_nixl_port
+        port = self._next_nixl_port
+        self._next_nixl_port += size
+        return port
+
+    def next_dp_rpc_port(self, node: str) -> int:
+        """Get next available DP RPC port for a node.
+
+        When multiple DP endpoints share a node, each needs a unique
+        data-parallel-rpc-port to avoid bind collisions.
+        """
+        if node not in self._dp_rpc_ports:
+            self._dp_rpc_ports[node] = self.base_dp_rpc_port
+        port = self._dp_rpc_ports[node]
+        self._dp_rpc_ports[node] += 1
         return port
 
 
@@ -167,6 +196,7 @@ class Process:
     bootstrap_port: int | None = None
     kv_events_port: int | None = None
     nixl_port: int | None = None
+    dp_rpc_port: int | None = None
 
     @property
     def is_leader(self) -> bool:
@@ -188,6 +218,8 @@ def allocate_endpoints(
     gpus_per_agg: int,
     gpus_per_node: int,
     available_nodes: Sequence[str],
+    spread_workers: bool = False,
+    allow_prefill_decode_colocation: bool = False,
 ) -> list[Endpoint]:
     """Allocate endpoints to nodes based on GPU requirements.
 
@@ -202,6 +234,11 @@ def allocate_endpoints(
         gpus_per_agg: GPUs per agg worker
         gpus_per_node: GPUs available per node
         available_nodes: List of available node hostnames
+        spread_workers: If True, place each partial-node worker on its own
+            node instead of packing multiple onto the same node. Requires the
+            caller to reserve enough nodes (one per worker per mode).
+        allow_prefill_decode_colocation: If True, decode workers may use
+            remaining GPUs on a node already used by prefill workers.
 
     Returns:
         List of Endpoint objects with node assignments
@@ -326,7 +363,7 @@ def allocate_endpoints(
                 gpu_indices = frozenset(range(gpu_offset, gpu_offset + gpus_per_worker))
                 gpu_offset += gpus_per_worker
 
-                if gpu_offset >= gpus_per_node:
+                if gpu_offset >= gpus_per_node or spread_workers:
                     node_idx += 1
                     gpu_offset = 0
 
@@ -346,13 +383,13 @@ def allocate_endpoints(
     if num_prefill > 0:
         endpoints.extend(allocate_workers_simple("prefill", num_prefill, gpus_per_prefill))
 
-    # When there's a partial allocation on the current node (gpu_offset > 0) and
-    # there are more nodes available, advance to ensure prefill and decode don't
-    # share a node. This prevents the bug where a multi-node decode worker overlaps
-    # with a partial-node prefill worker.
+    # By default, when there's a partial allocation on the current node
+    # (gpu_offset > 0) and there are more nodes available, advance to ensure
+    # prefill and decode don't share a node. This prevents the bug where a
+    # multi-node decode worker overlaps with a partial-node prefill worker.
     # When there are no more nodes (decode_nodes=0 config), allow sharing.
     if num_decode > 0:
-        if gpu_offset > 0 and (node_idx + 1) < len(available_nodes):
+        if not allow_prefill_decode_colocation and gpu_offset > 0 and (node_idx + 1) < len(available_nodes):
             node_idx += 1
             gpu_offset = 0
         endpoints.extend(allocate_workers_simple("decode", num_decode, gpus_per_decode))

@@ -137,6 +137,45 @@ class TestAllocateEndpoints:
             assert ep.mode == "agg"
             assert ep.total_gpus == 4
 
+    def test_spread_workers_partial_node(self):
+        """spread_workers=True forces each partial-node worker onto its own node."""
+        endpoints = allocate_endpoints(
+            num_prefill=1,
+            num_decode=2,
+            num_agg=0,
+            gpus_per_prefill=1,
+            gpus_per_decode=2,
+            gpus_per_agg=0,
+            gpus_per_node=4,
+            available_nodes=("node0", "node1", "node2"),
+            spread_workers=True,
+        )
+
+        decode_eps = [e for e in endpoints if e.mode == "decode"]
+        assert len(decode_eps) == 2
+        # Without spread_workers both decode workers would land on node1.
+        assert decode_eps[0].nodes == ("node1",)
+        assert decode_eps[1].nodes == ("node2",)
+        assert decode_eps[0].gpu_indices == frozenset({0, 1})
+        assert decode_eps[1].gpu_indices == frozenset({0, 1})
+
+    def test_spread_workers_default_packs(self):
+        """spread_workers=False (default) packs partial-node workers onto the same node."""
+        endpoints = allocate_endpoints(
+            num_prefill=0,
+            num_decode=2,
+            num_agg=0,
+            gpus_per_prefill=0,
+            gpus_per_decode=2,
+            gpus_per_agg=0,
+            gpus_per_node=4,
+            available_nodes=("node0", "node1"),
+        )
+
+        decode_eps = [e for e in endpoints if e.mode == "decode"]
+        assert decode_eps[0].nodes == ("node0",)
+        assert decode_eps[1].nodes == ("node0",)
+
     def test_prefill_decode_never_share_node_partial_allocation(self):
         """Test that prefill and decode workers are never colocated on the same node.
 
@@ -317,9 +356,9 @@ class TestEndpointsToProcesses:
         assert all(port is not None for port in kv_ports), "All processes should have kv_events_port"
         assert len(kv_ports) == len(set(kv_ports)), "All kv_events_ports should be globally unique"
 
-        # Ports should be sequential starting from 5550
+        # Ports should be sequential starting from 20000
         # With 2 prefill + 2 decode workers, each on single node = 4 processes = 4 ports
-        assert sorted(kv_ports) == [5550, 5551, 5552, 5553]
+        assert sorted(kv_ports) == [20000, 20001, 20002, 20003]
 
     def test_kv_events_port_same_node_unique(self):
         """Test kv_events_port is unique even when workers share a node."""
@@ -341,11 +380,11 @@ class TestEndpointsToProcesses:
         assert len(processes) == 2
         assert processes[0].node == processes[1].node == "node0"
         assert processes[0].kv_events_port != processes[1].kv_events_port
-        assert processes[0].kv_events_port == 5550
-        assert processes[1].kv_events_port == 5551
+        assert processes[0].kv_events_port == 20000
+        assert processes[1].kv_events_port == 20001
 
     def test_nixl_port_allocation(self):
-        """Test NIXL ports are allocated globally unique starting at 6550."""
+        """Test NIXL ports are allocated globally unique starting at 21000."""
         from srtctl.core.topology import Endpoint
 
         endpoints = [
@@ -371,5 +410,5 @@ class TestEndpointsToProcesses:
         nixl_ports = [p.nixl_port for p in processes]
         assert all(port is not None for port in nixl_ports), "All processes should have nixl_port"
         assert len(nixl_ports) == len(set(nixl_ports))  # All unique
-        assert min(nixl_ports) == 6550  # Starts at base
-        assert nixl_ports == [6550, 6551]  # Sequential
+        assert min(nixl_ports) == 21000  # Starts at base
+        assert nixl_ports == [21000, 21001]  # Sequential
