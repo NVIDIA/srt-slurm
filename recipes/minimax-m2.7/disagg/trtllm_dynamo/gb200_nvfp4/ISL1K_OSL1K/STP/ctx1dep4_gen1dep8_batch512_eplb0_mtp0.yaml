@@ -1,7 +1,7 @@
-name: "minimax_m267_nvfp4_ISL1K_OSL1K_ctx1dep4_gen2dep8_batch512_eplb0_mtp0"
+name: "minimax_m267_nvfp4_ISL1K_OSL1K_ctx1dep4_gen1dep8_batch512_eplb0_mtp0"
 
-# Validate gb300 benchmark: dep8-tp8, DNum=2, Conc=512
-# Expected: 80262.3 total tok/s, 4721.3 tok/s/gpu
+# Validate gb200 benchmark: dep8-tp8, DNum=1, Conc=512
+# Expected: 71145.4 total tok/s, 7905.0 tok/s/gpu
 
 model:
   path: "nvidia/MiniMax-M2.7-NVFP4"
@@ -9,12 +9,12 @@ model:
   precision: "fp4"
 
 resources:
-  gpu_type: "gb300"
+  gpu_type: "gb200"
   prefill_nodes: 1
   prefill_workers: 1
   gpus_per_prefill: 1
-  decode_workers: 2
-  decode_nodes: 4
+  decode_workers: 1
+  decode_nodes: 2
   gpus_per_decode: 8
   gpus_per_node: 4
 

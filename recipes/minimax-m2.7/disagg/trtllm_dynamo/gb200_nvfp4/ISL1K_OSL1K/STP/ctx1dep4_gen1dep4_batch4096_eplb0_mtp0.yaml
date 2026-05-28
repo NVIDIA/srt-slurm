@@ -1,7 +1,7 @@
-name: "minimax_m267_nvfp4_ISL1K_OSL1K_ctx1dep4_gen2dep8_batch512_eplb0_mtp0"
+name: "minimax_m267_nvfp4_ISL1K_OSL1K_ctx1dep4_gen1dep4_batch4096_eplb0_mtp0"
 
-# Validate gb300 benchmark: dep8-tp8, DNum=2, Conc=512
-# Expected: 80262.3 total tok/s, 4721.3 tok/s/gpu
+# Validate gb200 benchmark: dep4-tp4, DNum=1, Conc=4096
+# Expected: 122929.7 total tok/s, 24585.9 tok/s/gpu
 
 model:
   path: "nvidia/MiniMax-M2.7-NVFP4"
@@ -9,13 +9,13 @@ model:
   precision: "fp4"
 
 resources:
-  gpu_type: "gb300"
+  gpu_type: "gb200"
   prefill_nodes: 1
   prefill_workers: 1
   gpus_per_prefill: 1
-  decode_workers: 2
-  decode_nodes: 4
-  gpus_per_decode: 8
+  decode_workers: 1
+  decode_nodes: 1
+  gpus_per_decode: 4
   gpus_per_node: 4
 
 backend:
@@ -50,13 +50,13 @@ backend:
         kv_transfer_timeout_ms: 300000
 
     decode:
-      tensor_parallel_size: 8
-      moe_expert_parallel_size: 8
+      tensor_parallel_size: 4
+      moe_expert_parallel_size: 4
       pipeline_parallel_size: 1
       trust_remote_code: true
       enable_attention_dp: true
-      max_batch_size: 512
-      max_num_tokens: 512
+      max_batch_size: 4096
+      max_num_tokens: 4096
       max_seq_len: 2048
       print_iter_log: true
       stream_interval: 100
@@ -116,6 +116,66 @@ backend:
           - 480
           - 496
           - 512
+          - 544
+          - 576
+          - 608
+          - 640
+          - 672
+          - 704
+          - 736
+          - 768
+          - 832
+          - 896
+          - 960
+          - 1024
+          - 1088
+          - 1152
+          - 1216
+          - 1280
+          - 1344
+          - 1408
+          - 1472
+          - 1536
+          - 1600
+          - 1664
+          - 1728
+          - 1792
+          - 1856
+          - 1920
+          - 1984
+          - 2048
+          - 2112
+          - 2176
+          - 2240
+          - 2304
+          - 2368
+          - 2432
+          - 2496
+          - 2560
+          - 2624
+          - 2688
+          - 2752
+          - 2816
+          - 2880
+          - 2944
+          - 3008
+          - 3072
+          - 3136
+          - 3200
+          - 3264
+          - 3328
+          - 3392
+          - 3456
+          - 3520
+          - 3584
+          - 3648
+          - 3712
+          - 3776
+          - 3840
+          - 3904
+          - 3968
+          - 4032
+          - 4096
       moe_config:
         backend: TRTLLM
       kv_cache_config:
@@ -131,7 +191,7 @@ benchmark:
   type: "sa-bench"
   isl: 1024
   osl: 1024
-  concurrencies: "512"
+  concurrencies: "4096"
   req_rate: "inf"
 
 frontend:

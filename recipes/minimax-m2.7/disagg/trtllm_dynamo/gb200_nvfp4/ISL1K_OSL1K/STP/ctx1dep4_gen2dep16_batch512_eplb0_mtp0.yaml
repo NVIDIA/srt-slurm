@@ -1,7 +1,7 @@
-name: "minimax_m267_nvfp4_ISL1K_OSL1K_ctx1dep4_gen2dep8_batch512_eplb0_mtp0"
+name: "minimax_m267_nvfp4_ISL1K_OSL1K_ctx1dep4_gen2dep16_batch512_eplb0_mtp0"
 
-# Validate gb300 benchmark: dep8-tp8, DNum=2, Conc=512
-# Expected: 80262.3 total tok/s, 4721.3 tok/s/gpu
+# Validate gb200 benchmark: dep16-tp16, DNum=2, Conc=512
+# Expected: 90204.5 total tok/s, 2733.5 tok/s/gpu
 
 model:
   path: "nvidia/MiniMax-M2.7-NVFP4"
@@ -9,13 +9,13 @@ model:
   precision: "fp4"
 
 resources:
-  gpu_type: "gb300"
+  gpu_type: "gb200"
   prefill_nodes: 1
   prefill_workers: 1
   gpus_per_prefill: 1
   decode_workers: 2
-  decode_nodes: 4
-  gpus_per_decode: 8
+  decode_nodes: 8
+  gpus_per_decode: 16
   gpus_per_node: 4
 
 backend:
@@ -50,8 +50,8 @@ backend:
         kv_transfer_timeout_ms: 300000
 
     decode:
-      tensor_parallel_size: 8
-      moe_expert_parallel_size: 8
+      tensor_parallel_size: 16
+      moe_expert_parallel_size: 16
       pipeline_parallel_size: 1
       trust_remote_code: true
       enable_attention_dp: true
