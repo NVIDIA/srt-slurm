@@ -586,6 +586,41 @@ class TestFrontendConfig:
             "constraint": "h100",
         }
 
+    def test_default_health_check_applies_when_recipe_omits_it(self):
+        """srtslurm.yaml can provide a default health_check block."""
+        from srtctl.core.config import resolve_config_with_defaults
+
+        user_config = {
+            "name": "test",
+            "model": {"path": "/model", "container": "/c.sqsh", "precision": "fp8"},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+        }
+
+        resolved = resolve_config_with_defaults(
+            user_config,
+            {"default_health_check": {"max_attempts": 540, "interval_seconds": 10}},
+        )
+
+        assert resolved["health_check"] == {"max_attempts": 540, "interval_seconds": 10}
+
+    def test_default_health_check_does_not_override_recipe(self):
+        """Recipe-level health_check wins over the cluster default."""
+        from srtctl.core.config import resolve_config_with_defaults
+
+        user_config = {
+            "name": "test",
+            "model": {"path": "/model", "container": "/c.sqsh", "precision": "fp8"},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+            "health_check": {"max_attempts": 720, "interval_seconds": 10},
+        }
+
+        resolved = resolve_config_with_defaults(
+            user_config,
+            {"default_health_check": {"max_attempts": 540, "interval_seconds": 10}},
+        )
+
+        assert resolved["health_check"] == {"max_attempts": 720, "interval_seconds": 10}
+
     def test_cluster_sbatch_directives_are_not_treated_as_defaults(self):
         """srtslurm.yaml defaults must use default_sbatch_directives explicitly."""
         from srtctl.core.config import resolve_config_with_defaults

@@ -145,6 +145,10 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
         config["reporting"] = cluster_config["reporting"]
         logger.debug("Applied cluster reporting config")
 
+    if "health_check" not in config and cluster_config.get("default_health_check"):
+        config["health_check"] = cluster_config["default_health_check"]
+        logger.debug("Applied default_health_check: %s", config["health_check"])
+
     # Resolve frontend nginx_container alias
     frontend = config.get("frontend", {})
     nginx_container = frontend.get("nginx_container", "")
