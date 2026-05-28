@@ -1244,6 +1244,23 @@ class TestVLLMPrefillDecodeColocation:
         assert endpoints[1].mode == "decode"
         assert endpoints[1].nodes == ("node1",)
 
+    def test_colocation_requires_prefill_decode_and_valid_node_size(self):
+        """Test vLLM colocation stays off for incomplete or invalid P/D topology."""
+        from srtctl.backends import VLLMProtocol
+
+        backend = VLLMProtocol(allow_prefill_decode_colocation=True)
+
+        for num_prefill, num_decode, gpus_per_node in ((0, 1, 8), (1, 0, 8), (1, 1, 0)):
+            assert not backend.should_colocate_prefill_decode(
+                num_prefill=num_prefill,
+                num_decode=num_decode,
+                num_agg=0,
+                gpus_per_prefill=4,
+                gpus_per_decode=4,
+                gpus_per_agg=0,
+                gpus_per_node=gpus_per_node,
+            )
+
     def test_enabled_packs_prefill_and_decode_when_one_node_fits(self):
         """Test vLLM packs P/D workers together when requested and all fit."""
         from srtctl.backends import VLLMProtocol
