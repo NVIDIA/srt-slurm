@@ -1057,8 +1057,8 @@ class TestVLLMPrefillDecodeColocation:
         assert {p.node for p in prefill + decode} == {"node0"}
         assert {p.dp_rpc_port for p in prefill} == {13345}
         assert {p.dp_rpc_port for p in decode} == {13346}
-        assert {p.nixl_port for p in prefill} == {6550}
-        assert {p.nixl_port for p in decode} == {6554}
+        assert {p.nixl_port for p in prefill} == {21000}
+        assert {p.nixl_port for p in decode} == {21004}
 
         leader_ports = [
             port
@@ -1070,8 +1070,8 @@ class TestVLLMPrefillDecodeColocation:
 
         prefill_actual_nixl_ports = {next(iter(p.nixl_port for p in prefill)) + p.node_rank for p in prefill}
         decode_actual_nixl_ports = {next(iter(p.nixl_port for p in decode)) + p.node_rank for p in decode}
-        assert prefill_actual_nixl_ports == {6550, 6551, 6552, 6553}
-        assert decode_actual_nixl_ports == {6554, 6555, 6556, 6557}
+        assert prefill_actual_nixl_ports == {21000, 21001, 21002, 21003}
+        assert decode_actual_nixl_ports == {21004, 21005, 21006, 21007}
         assert prefill_actual_nixl_ports.isdisjoint(decode_actual_nixl_ports)
 
     def test_enabled_does_not_pack_when_one_node_does_not_fit(self):
@@ -1203,8 +1203,8 @@ class TestVLLMDataParallelMode:
 
         assert {p.dp_rpc_port for p in first_endpoint} == {13345}
         assert {p.dp_rpc_port for p in second_endpoint} == {13346}
-        assert {p.nixl_port for p in first_endpoint} == {6550}
-        assert {p.nixl_port for p in second_endpoint} == {6554}
+        assert {p.nixl_port for p in first_endpoint} == {21000}
+        assert {p.nixl_port for p in second_endpoint} == {21004}
         assert [p.node_rank for p in first_endpoint] == list(range(4))
         assert [p.node_rank for p in second_endpoint] == list(range(4))
 

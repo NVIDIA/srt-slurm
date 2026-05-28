@@ -363,10 +363,7 @@ def allocate_endpoints(
                 gpu_indices = frozenset(range(gpu_offset, gpu_offset + gpus_per_worker))
                 gpu_offset += gpus_per_worker
 
-                if gpu_offset >= gpus_per_node:
-                    node_idx += 1
-                    gpu_offset = 0
-                elif spread_workers:
+                if gpu_offset >= gpus_per_node or spread_workers:
                     node_idx += 1
                     gpu_offset = 0
 

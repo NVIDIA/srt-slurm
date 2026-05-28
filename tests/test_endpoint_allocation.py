@@ -356,9 +356,9 @@ class TestEndpointsToProcesses:
         assert all(port is not None for port in kv_ports), "All processes should have kv_events_port"
         assert len(kv_ports) == len(set(kv_ports)), "All kv_events_ports should be globally unique"
 
-        # Ports should be sequential starting from 5550
+        # Ports should be sequential starting from 20000
         # With 2 prefill + 2 decode workers, each on single node = 4 processes = 4 ports
-        assert sorted(kv_ports) == [5550, 5551, 5552, 5553]
+        assert sorted(kv_ports) == [20000, 20001, 20002, 20003]
 
     def test_kv_events_port_same_node_unique(self):
         """Test kv_events_port is unique even when workers share a node."""
@@ -380,11 +380,11 @@ class TestEndpointsToProcesses:
         assert len(processes) == 2
         assert processes[0].node == processes[1].node == "node0"
         assert processes[0].kv_events_port != processes[1].kv_events_port
-        assert processes[0].kv_events_port == 5550
-        assert processes[1].kv_events_port == 5551
+        assert processes[0].kv_events_port == 20000
+        assert processes[1].kv_events_port == 20001
 
     def test_nixl_port_allocation(self):
-        """Test NIXL ports are allocated globally unique starting at 6550."""
+        """Test NIXL ports are allocated globally unique starting at 21000."""
         from srtctl.core.topology import Endpoint
 
         endpoints = [
@@ -410,5 +410,5 @@ class TestEndpointsToProcesses:
         nixl_ports = [p.nixl_port for p in processes]
         assert all(port is not None for port in nixl_ports), "All processes should have nixl_port"
         assert len(nixl_ports) == len(set(nixl_ports))  # All unique
-        assert min(nixl_ports) == 6550  # Starts at base
-        assert nixl_ports == [6550, 6551]  # Sequential
+        assert min(nixl_ports) == 21000  # Starts at base
+        assert nixl_ports == [21000, 21001]  # Sequential

@@ -177,9 +177,7 @@ class VLLMProtocol:
         if num_prefill <= 0 or num_decode <= 0 or gpus_per_node <= 0:
             return False
 
-        total_worker_gpus = (
-            num_prefill * gpus_per_prefill + num_decode * gpus_per_decode + num_agg * gpus_per_agg
-        )
+        total_worker_gpus = num_prefill * gpus_per_prefill + num_decode * gpus_per_decode + num_agg * gpus_per_agg
         return total_worker_gpus <= gpus_per_node
 
     def allocate_endpoints(
@@ -405,7 +403,11 @@ class VLLMProtocol:
             dp_rank = process.node_rank
             # Use the per-endpoint dp_rpc_port allocated by NodePortAllocator
             # (avoids port collisions when multiple endpoints share a node)
-            dp_rpc_port = process.dp_rpc_port or config.pop("data-parallel-rpc-port", None) or config.pop("data_parallel_rpc_port", 13345)
+            dp_rpc_port = (
+                process.dp_rpc_port
+                or config.pop("data-parallel-rpc-port", None)
+                or config.pop("data_parallel_rpc_port", 13345)
+            )
             # Pop from config so it doesn't get added again by _config_to_cli_args
             config.pop("data-parallel-rpc-port", None)
             config.pop("data_parallel_rpc_port", None)
