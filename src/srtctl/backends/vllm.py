@@ -175,9 +175,7 @@ class VLLMProtocol:
         if num_prefill <= 0 or num_decode <= 0 or gpus_per_node <= 0:
             return False
 
-        total_worker_gpus = (
-            num_prefill * gpus_per_prefill + num_decode * gpus_per_decode + num_agg * gpus_per_agg
-        )
+        total_worker_gpus = num_prefill * gpus_per_prefill + num_decode * gpus_per_decode + num_agg * gpus_per_agg
         return total_worker_gpus <= gpus_per_node
 
     def allocate_endpoints(
