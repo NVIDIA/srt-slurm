@@ -124,7 +124,7 @@ class Nodes:
         """
         if len(het_lists) != 2:
             raise ValueError(
-                f"het_jobs expects exactly 2 components (prefill, decode); " f"SLURM_HET_SIZE reported {len(het_lists)}"
+                f"het_jobs expects exactly 2 components (prefill, decode); SLURM_HET_SIZE reported {len(het_lists)}"
             )
         group0, group1 = het_lists
         if not group0 or not group1:
