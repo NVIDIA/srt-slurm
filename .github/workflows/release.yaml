@@ -28,9 +28,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # Bump from the latest GitHub Release (independent of the in-code version).
-          # First run only (no release yet): seed the start at v1.0.0.
-          latest=$(gh release list --limit 1 --json tagName --jq '.[0].tagName // ""')
+          # Bump the patch of the HIGHEST existing GitHub Release (independent of
+          # the in-code version). Only the patch increments, so you can publish a
+          # higher major/minor by hand (e.g. v1.1.0) and the next merge continues
+          # from there (-> v1.1.1). First run only (no release yet): seed v1.0.0.
+          latest=$(gh release list --limit 1000 --json tagName --jq '.[].tagName' | sort -V | tail -n1)
           if [ -z "$latest" ]; then
             next="v1.0.0"
           else
