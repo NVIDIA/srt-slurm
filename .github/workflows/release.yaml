@@ -1,0 +1,51 @@
+name: Release
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # need full tag history
+
+      - name: Compute next version
+        id: ver
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Bump from the latest GitHub Release (independent of the in-code version).
+          # First run only (no release yet): seed the start from pyproject.toml.
+          latest=$(gh release list --limit 1 --json tagName --jq '.[0].tagName // ""')
+          if [ -z "$latest" ]; then
+            next="v$(grep -m1 -E '^version = ' pyproject.toml | sed -E 's/^version = "([^"]+)".*/\1/')"
+          else
+            core=${latest#v}; core=${core%%.post*}; core=${core%%-*}
+            IFS='.' read -r major minor patch <<< "$core"
+            next="v${major}.${minor}.$((patch + 1))"
+          fi
+          echo "Latest release: ${latest:-none}  Next: $next"
+          echo "tag=$next" >> "$GITHUB_OUTPUT"
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.ver.outputs.tag }}" \
+            --target "${{ github.event.pull_request.merge_commit_sha }}" \
+            --title "${{ steps.ver.outputs.tag }}" \
+            --generate-notes
