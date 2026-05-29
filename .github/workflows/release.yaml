@@ -29,10 +29,10 @@ jobs:
         run: |
           set -euo pipefail
           # Bump from the latest GitHub Release (independent of the in-code version).
-          # First run only (no release yet): seed the start from pyproject.toml.
+          # First run only (no release yet): seed the start at v1.0.0.
           latest=$(gh release list --limit 1 --json tagName --jq '.[0].tagName // ""')
           if [ -z "$latest" ]; then
-            next="v$(grep -m1 -E '^version = ' pyproject.toml | sed -E 's/^version = "([^"]+)".*/\1/')"
+            next="v1.0.0"
           else
             core=${latest#v}; core=${core%%.post*}; core=${core%%-*}
             IFS='.' read -r major minor patch <<< "$core"
