@@ -233,6 +233,7 @@ class WorkerStageMixin:
             env_to_set=env_to_set,
             bash_preamble=bash_preamble,
             srun_options=self.runtime.srun_options,
+            het_group=process.het_group,
         )
 
         return ManagedProcess(
@@ -364,6 +365,7 @@ class WorkerStageMixin:
             mpi=srun_config.mpi,
             oversubscribe=srun_config.oversubscribe,
             cpu_bind=srun_config.cpu_bind,
+            het_group=leader.het_group,
         )
 
         return ManagedProcess(

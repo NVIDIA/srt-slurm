@@ -232,6 +232,31 @@ def show_config_details(config: SrtConfig) -> None:
 
     console.print(Panel(mounts_table, border_style="green"))
 
+    # --- SLURM heterogeneous job structure ---
+    het_components = config.resources.het_components(
+        infra_dedicated=config.infra.etcd_nats_dedicated_node,
+        cluster_default=get_srtslurm_setting("use_het_jobs", False),
+    )
+    if het_components is not None:
+        het_table = Table(title="SLURM Heterogeneous Job", show_lines=False, pad_edge=False)
+        het_table.add_column("Group", style="dim", width=5)
+        het_table.add_column("Side", style="cyan", width=8)
+        het_table.add_column("Nodes", style="white", justify="right", width=6)
+        het_table.add_column("Segment", style="white", justify="right", width=8)
+        het_table.add_column("GPUs/node", style="white", justify="right", width=10)
+        het_table.add_column("Infra", style="dim")
+        for c in het_components:
+            infra_note = "first node" if c.name == "prefill" and config.infra.etcd_nats_dedicated_node else ""
+            het_table.add_row(
+                str(c.group),
+                c.name,
+                str(c.nodes),
+                str(c.segment),
+                str(c.gpus_per_node),
+                infra_note,
+            )
+        console.print(Panel(het_table, border_style="magenta"))
+
     # --- Environment Variables ---
     dynamo_environment = config.dynamo.get_wheel_environment()
     has_env = bool(config.environment or dynamo_environment)
@@ -390,10 +415,19 @@ def generate_minimal_sbatch_script(
     env = Environment(loader=FileSystemLoader(str(template_dir)))
     template = env.get_template("job_script_minimal.j2")
 
-    total_nodes = config.total_nodes
-    # Add extra node for dedicated etcd/nats infrastructure
-    if config.infra.etcd_nats_dedicated_node:
-        total_nodes += 1
+    het_components = config.resources.het_components(
+        infra_dedicated=config.infra.etcd_nats_dedicated_node,
+        cluster_default=get_srtslurm_setting("use_het_jobs", False),
+    )
+    if het_components is None:
+        total_nodes = config.total_nodes
+        # Add extra node for dedicated etcd/nats infrastructure
+        if config.infra.etcd_nats_dedicated_node:
+            total_nodes += 1
+    else:
+        # Sum is informational only — the template iterates het_components and
+        # ignores total_nodes when het_components is set.
+        total_nodes = sum(c.nodes for c in het_components)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     # Resolve container image path (expand aliases from srtslurm.yaml)
@@ -406,6 +440,7 @@ def generate_minimal_sbatch_script(
     rendered = template.render(
         job_name=job_name,
         total_nodes=total_nodes,
+        het_components=het_components,
         gpus_per_node=config.resources.gpus_per_node,
         backend_type=config.backend_type,
         account=config.slurm.account or os.environ.get("SLURM_ACCOUNT", "default"),

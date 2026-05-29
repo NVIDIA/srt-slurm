@@ -147,6 +147,7 @@ class SGLangFrontend:
                 container_image=str(runtime.container_image),
                 container_mounts=runtime.container_mounts,
                 env_to_set=env_to_set if env_to_set else None,
+                het_group=runtime.nodes.het_group_for(node),
             )
 
             processes.append(
