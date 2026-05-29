@@ -10,6 +10,13 @@ import pytest
 
 from srtctl.backends import SGLangProtocol, SGLangServerConfig
 from srtctl.core.schema import SrtConfig
+from srtctl.ports import (
+    SGLANG_BOOTSTRAP_PORT_BASE,
+    SGLANG_HTTP_PORT_BASE,
+    SGLANG_HTTP_PORT_STRIDE,
+    VLLM_DATA_PARALLEL_RPC_PORT,
+    VLLM_NIXL_PORT_BASE,
+)
 
 
 class TestConfigLoading:
@@ -93,6 +100,55 @@ class TestSrtConfigStructure:
         assert total_needed <= total_available
 
 
+class TestIdentityConfig:
+    """Tests for the identity block (virtual identity for runtime verification)."""
+
+    def test_defaults_to_empty(self):
+        """IdentityConfig has empty defaults."""
+        from srtctl.core.schema import IdentityConfig
+
+        config = IdentityConfig()
+        assert config.model.repo is None
+        assert config.model.revision is None
+        assert config.frameworks == {}
+
+    def test_with_values(self):
+        """IdentityConfig stores model and framework info."""
+        from srtctl.core.schema import IdentityConfig, IdentityModelConfig
+
+        config = IdentityConfig(
+            model=IdentityModelConfig(repo="nvidia/Kimi-K2.5-NVFP4", revision="abc123"),
+            frameworks={"dynamo": "1.0.0", "tensorrt_llm": "1.3.0rc9"},
+        )
+        assert config.model.repo == "nvidia/Kimi-K2.5-NVFP4"
+        assert config.model.revision == "abc123"
+        assert config.frameworks["dynamo"] == "1.0.0"
+        assert config.frameworks["tensorrt_llm"] == "1.3.0rc9"
+
+    def test_marshmallow_roundtrip(self):
+        """Schema dump/load preserves identity fields."""
+        from srtctl.core.schema import IdentityConfig, IdentityModelConfig
+
+        original = IdentityConfig(
+            model=IdentityModelConfig(repo="nvidia/Kimi-K2.5-NVFP4", revision="abc123"),
+            frameworks={"dynamo": "1.0.0"},
+        )
+        schema = IdentityConfig.Schema()
+        dumped = schema.dump(original)
+        loaded = schema.load(dumped)
+        assert loaded.model.repo == "nvidia/Kimi-K2.5-NVFP4"
+        assert loaded.frameworks["dynamo"] == "1.0.0"
+
+    def test_model_config_is_clean(self):
+        """ModelConfig has no virtual identity fields (moved to IdentityConfig)."""
+        from srtctl.core.schema import ModelConfig
+
+        config = ModelConfig(path="/model", container="/c.sqsh", precision="fp8")
+        assert not hasattr(config, "name")
+        assert not hasattr(config, "container_image")
+        assert not hasattr(config, "container_digest")
+
+
 class TestDynamoConfig:
     """Tests for DynamoConfig."""
 
@@ -104,6 +160,7 @@ class TestDynamoConfig:
         assert config.version == "0.8.0"
         assert config.hash is None
         assert config.top_of_tree is False
+        assert config.wheel is None
         assert not config.needs_source_install
 
     def test_version_install_command(self):
@@ -116,22 +173,66 @@ class TestDynamoConfig:
         assert "ai-dynamo-runtime==0.8.0" in cmd
         assert "ai-dynamo==0.8.0" in cmd
 
+    def test_wheel_install_command(self):
+        """Wheel config installs ai-dynamo plus runtime without source build."""
+        from srtctl.core.schema import DynamoConfig
+
+        config = DynamoConfig(wheel="1.2.0.dev20260426")
+        cmd = config.get_install_commands()
+
+        assert config.version is None
+        assert config.needs_source_install is False
+        assert "/srtctl-runtime/dynamo_wheels.py" in cmd
+        assert "ai_dynamo-1.2.0.dev20260426-py3-none-any.whl" in cmd
+        assert "install-ai-dynamo.sh" not in cmd
+        assert "--find-links" not in cmd
+        assert "configs/wheels" not in cmd
+        assert "--extra-index-url" not in cmd
+        assert "maturin" not in cmd
+        assert "git clone" not in cmd
+
     def test_hash_install_command(self):
-        """Hash config generates source install command."""
+        """Hash config generates a cache-aware source-install command.
+
+        The bash should: (1) check the /configs cache, (2) clone+build under
+        flock if cold, (3) install from the cache regardless. Cache is keyed
+        by hash so bumping the hash forces a rebuild.
+        """
         from srtctl.core.schema import DynamoConfig
 
         config = DynamoConfig(hash="abc123")
         assert config.version is None  # Auto-cleared
         assert config.needs_source_install
         cmd = config.get_install_commands()
+
+        # Cache lookup + flock-protected cold build
+        assert "/configs/dynamo-wheels/abc123" in cmd
+        assert "/configs/dynamo-wheels/abc123/.complete" in cmd
+        assert "flock -x 200" in cmd
+        assert "/configs/dynamo-wheels/.abc123.lock" in cmd
+
+        # Cold-cache build still does git clone + checkout + maturin build
         assert "git clone" in cmd
         assert "git checkout abc123" in cmd
         assert "maturin build" in cmd
-        assert "if [ -d /sgl-workspace ]" in cmd
-        assert "/tmp/dynamo_build" in cmd
         assert "protobuf-compiler" in cmd
-        assert "if ! command -v cargo" in cmd
-        assert "if ! command -v maturin" in cmd
+
+        # maturin must be force-reinstalled — a plain install no-ops on images
+        # shipping the module without a console script (see schema.py).
+        assert "--force-reinstall --quiet maturin" in cmd
+
+        # Cache populate: wheel + tarball + sentinel
+        assert "ai_dynamo_runtime*.whl" in cmd
+        assert "dynamo-src.tar.gz" in cmd
+        assert "touch /configs/dynamo-wheels/abc123/.complete" in cmd
+
+        # Final install from cache
+        assert (
+            "pip install --break-system-packages --force-reinstall /configs/dynamo-wheels/abc123/ai_dynamo_runtime-*.whl"
+            in cmd
+        )
+        assert "tar -xzf /configs/dynamo-wheels/abc123/dynamo-src.tar.gz" in cmd
+        assert "pip install --break-system-packages -e /tmp/dynamo-src/dynamo" in cmd
 
     def test_top_of_tree_install_command(self):
         """Top-of-tree config generates source install without checkout."""
@@ -149,12 +250,53 @@ class TestDynamoConfig:
         assert "--break-system-packages" in cmd
         assert "--force-reinstall" in cmd
 
+        # Both branches (sglang + portable) must force-reinstall maturin — the
+        # portable branch previously used a guarded plain install that no-ops on
+        # images shipping maturin without a console script.
+        sglang_branch, portable_branch = cmd.split("else", 1)
+        assert "--force-reinstall --quiet maturin" in sglang_branch
+        assert "--force-reinstall --quiet maturin" in portable_branch
+
     def test_hash_and_top_of_tree_not_allowed(self):
         """Cannot specify both hash and top_of_tree."""
         from srtctl.core.schema import DynamoConfig
 
         with pytest.raises(ValueError, match="Cannot specify both"):
             DynamoConfig(hash="abc123", top_of_tree=True)
+
+    def test_hash_and_wheel_not_allowed(self):
+        """Cannot specify both hash and wheel."""
+        from srtctl.core.schema import DynamoConfig
+
+        with pytest.raises(ValueError, match="Cannot specify both"):
+            DynamoConfig(hash="abc123", wheel="1.2.0.dev20260426")
+
+    def test_wheel_filename_not_allowed(self):
+        """Wheel config takes a package version, not an artifact filename."""
+        from srtctl.core.schema import DynamoConfig
+
+        with pytest.raises(ValueError, match="package version"):
+            DynamoConfig(wheel="ai_dynamo-1.2.0.dev20260426-py3-none-any.whl")
+
+    def test_wheel_version_required(self):
+        """Wheel config must provide an exact package version."""
+        from srtctl.core.schema import DynamoConfig
+
+        with pytest.raises(ValueError, match="non-empty package version"):
+            DynamoConfig(wheel="")
+
+    def test_wheel_environment_from_version(self):
+        """Wheel version is converted to setup/prefetch environment."""
+        from srtctl.core.schema import DynamoConfig
+
+        config = DynamoConfig(wheel="1.2.0.dev20260426")
+
+        assert config.wheel_version == "1.2.0.dev20260426"
+        assert config.wheel_name == "ai_dynamo-1.2.0.dev20260426-py3-none-any.whl"
+        assert config.get_wheel_environment() == {
+            "DYNAMO_VERSION": "1.2.0.dev20260426",
+            "DYNAMO_WHEEL_NAME": "ai_dynamo-1.2.0.dev20260426-py3-none-any.whl",
+        }
 
 
 class TestSGLangProtocol:
@@ -403,6 +545,189 @@ class TestFrontendConfig:
 
         assert resolved["frontend"]["nginx_container"] == "nginx"
 
+    def test_nginx_raise_ulimit_cluster_default(self):
+        """srtslurm.yaml can set nginx_raise_ulimit when job omits frontend key."""
+        from srtctl.core.config import resolve_config_with_defaults
+
+        user_config = {
+            "name": "test",
+            "model": {"path": "/model", "container": "/c.sqsh", "precision": "fp8"},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+            "frontend": {},
+        }
+
+        resolved = resolve_config_with_defaults(user_config, {"nginx_raise_ulimit": True})
+        assert resolved["frontend"]["nginx_raise_ulimit"] is True
+
+        user_explicit = {
+            **user_config,
+            "frontend": {"nginx_raise_ulimit": False},
+        }
+        resolved2 = resolve_config_with_defaults(user_explicit, {"nginx_raise_ulimit": True})
+        assert resolved2["frontend"]["nginx_raise_ulimit"] is False
+
+    def test_default_sbatch_directives_apply_as_defaults(self):
+        """srtslurm.yaml can provide default sbatch directives for every job."""
+        from srtctl.core.config import resolve_config_with_defaults
+
+        user_config = {
+            "name": "test",
+            "model": {"path": "/model", "container": "/c.sqsh", "precision": "fp8"},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+        }
+
+        resolved = resolve_config_with_defaults(
+            user_config,
+            {"default_sbatch_directives": {"exclude": "gpu-[1,5]", "qos": "normal"}},
+        )
+
+        assert resolved["sbatch_directives"] == {
+            "exclude": "gpu-[1,5]",
+            "qos": "normal",
+        }
+
+    def test_default_sbatch_directives_do_not_override_job_values(self):
+        """Job-level sbatch directives take precedence over srtslurm.yaml defaults."""
+        from srtctl.core.config import resolve_config_with_defaults
+
+        user_config = {
+            "name": "test",
+            "model": {"path": "/model", "container": "/c.sqsh", "precision": "fp8"},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+            "sbatch_directives": {"exclude": "gpu-9"},
+        }
+
+        resolved = resolve_config_with_defaults(
+            user_config,
+            {"default_sbatch_directives": {"exclude": "gpu-[1,5]", "constraint": "h100"}},
+        )
+
+        assert resolved["sbatch_directives"] == {
+            "exclude": "gpu-9",
+            "constraint": "h100",
+        }
+
+    def test_default_health_check_applies_when_recipe_omits_it(self):
+        """srtslurm.yaml can provide a default health_check block."""
+        from srtctl.core.config import resolve_config_with_defaults
+
+        user_config = {
+            "name": "test",
+            "model": {"path": "/model", "container": "/c.sqsh", "precision": "fp8"},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+        }
+
+        resolved = resolve_config_with_defaults(
+            user_config,
+            {"default_health_check": {"max_attempts": 540, "interval_seconds": 10}},
+        )
+
+        assert resolved["health_check"] == {"max_attempts": 540, "interval_seconds": 10}
+
+    def test_default_health_check_does_not_override_recipe(self):
+        """Recipe-level health_check wins over the cluster default."""
+        from srtctl.core.config import resolve_config_with_defaults
+
+        user_config = {
+            "name": "test",
+            "model": {"path": "/model", "container": "/c.sqsh", "precision": "fp8"},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+            "health_check": {"max_attempts": 720, "interval_seconds": 10},
+        }
+
+        resolved = resolve_config_with_defaults(
+            user_config,
+            {"default_health_check": {"max_attempts": 540, "interval_seconds": 10}},
+        )
+
+        assert resolved["health_check"] == {"max_attempts": 720, "interval_seconds": 10}
+
+    def test_extra_mount_model_path_alias_resolution(self):
+        """extra_mount host paths can resolve through srtslurm.yaml model_paths."""
+        from srtctl.core.config import resolve_config_with_defaults
+
+        user_config = {
+            "name": "test",
+            "model": {"path": "/model", "container": "/c.sqsh", "precision": "fp8"},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+            "extra_mount": ["glm5-eagle:/eagle", "/literal/path:/literal"],
+        }
+
+        resolved = resolve_config_with_defaults(
+            user_config,
+            {"model_paths": {"glm5-eagle": "/models/glm5-eagle"}},
+        )
+
+        assert resolved["extra_mount"] == ["/models/glm5-eagle:/eagle", "/literal/path:/literal"]
+
+    def test_cluster_sbatch_directives_are_not_treated_as_defaults(self):
+        """srtslurm.yaml defaults must use default_sbatch_directives explicitly."""
+        from srtctl.core.config import resolve_config_with_defaults
+
+        user_config = {
+            "name": "test",
+            "model": {"path": "/model", "container": "/c.sqsh", "precision": "fp8"},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+        }
+
+        resolved = resolve_config_with_defaults(
+            user_config,
+            {"sbatch_directives": {"exclude": "gpu-[1,5]"}},
+        )
+
+        assert "sbatch_directives" not in resolved
+
+    def test_telemetry_container_aliases_resolve(self):
+        from srtctl.core.config import resolve_config_with_defaults
+
+        user_config = {
+            "name": "test",
+            "model": {"path": "/model", "container": "sglang", "precision": "fp8"},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+            "telemetry": {
+                "enabled": True,
+                "container_image": "telemetry-scraper",
+                "dcgm_exporter": {"container_image": "dcgm-exporter", "port": 9401},
+                "node_exporter": {"container_image": "node-exporter", "port": 9101},
+            },
+        }
+        cluster_config = {
+            "containers": {
+                "sglang": "/path/to/sglang.sqsh",
+                "telemetry-scraper": "/path/to/scraper.sqsh",
+                "dcgm-exporter": "/path/to/dcgm.sqsh",
+                "node-exporter": "/path/to/node.sqsh",
+            }
+        }
+
+        resolved = resolve_config_with_defaults(user_config, cluster_config)
+
+        assert resolved["telemetry"]["container_image"] == "/path/to/scraper.sqsh"
+        assert resolved["telemetry"]["dcgm_exporter"]["container_image"] == "/path/to/dcgm.sqsh"
+        assert resolved["telemetry"]["node_exporter"]["container_image"] == "/path/to/node.sqsh"
+
+    def test_telemetry_literal_paths_pass_through(self):
+        from srtctl.core.config import resolve_config_with_defaults
+
+        user_config = {
+            "name": "test",
+            "model": {"path": "/model", "container": "/container.sqsh", "precision": "fp8"},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+            "telemetry": {
+                "enabled": True,
+                "container_image": "/abs/scraper.sqsh",
+                "dcgm_exporter": {"container_image": "/abs/dcgm.sqsh", "port": 9401},
+                "node_exporter": {"container_image": "/abs/node.sqsh", "port": 9101},
+            },
+        }
+        cluster_config = {"containers": {"dcgm-exporter": "/aliased/dcgm.sqsh"}}
+
+        resolved = resolve_config_with_defaults(user_config, cluster_config)
+
+        assert resolved["telemetry"]["container_image"] == "/abs/scraper.sqsh"
+        assert resolved["telemetry"]["dcgm_exporter"]["container_image"] == "/abs/dcgm.sqsh"
+        assert resolved["telemetry"]["node_exporter"]["container_image"] == "/abs/node.sqsh"
+
 
 class TestSetupScript:
     """Tests for setup_script functionality."""
@@ -479,6 +804,31 @@ class TestSetupScript:
         )
         assert 'export SRTCTL_SETUP_SCRIPT="install-sglang-main.sh"' in script
 
+    def test_sbatch_template_prefetches_dynamo_wheel(self):
+        """dynamo.wheel is exported and prefetched before orchestrator launch."""
+        from pathlib import Path
+
+        from srtctl.cli.submit import generate_minimal_sbatch_script
+        from srtctl.core.schema import DynamoConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/container.sqsh", precision="fp8"),
+            resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1),
+            dynamo=DynamoConfig(
+                install=True,
+                wheel="1.2.0.dev20260426",
+            ),
+        )
+
+        script = generate_minimal_sbatch_script(config, Path("/tmp/test.yaml"))
+
+        assert "export DYNAMO_VERSION=1.2.0.dev20260426" in script
+        assert "export DYNAMO_WHEEL_NAME=ai_dynamo-1.2.0.dev20260426-py3-none-any.whl" in script
+        assert 'uv run --no-project --python "${DYNAMO_PYTHON_VERSION:-3.12}" --with pip' in script
+        assert "src/srtctl/runtime_scripts/dynamo_wheels.py" in script
+        assert "configs/prefetch-ai-dynamo-wheel.sh" not in script
+
     def test_setup_script_env_var_override(self, monkeypatch):
         """Test that SRTCTL_SETUP_SCRIPT env var overrides config."""
         import os
@@ -549,109 +899,111 @@ class TestWorkerEnvironmentTemplating:
                 return result
             raise subprocess.CalledProcessError(1, cmd)
 
-        with patch.dict(os.environ, slurm_env):
-            with patch("subprocess.run", mock_scontrol):
-                with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
-                    # Create config with templated environment variables
-                    config = SrtConfig(
-                        name="test",
-                        model=ModelConfig(
-                            path=str(model_path),
-                            container=str(container_path),
-                            precision="fp8",
-                        ),
-                        resources=ResourceConfig(
-                            gpu_type="h100",
-                            gpus_per_node=8,
-                            prefill_nodes=1,
-                            decode_nodes=2,
-                        ),
-                        backend=SGLangProtocol(
-                            prefill_environment={
-                                "SGLANG_DG_CACHE_DIR": "/configs/dg-{node_id}",
-                                "WORKER_NODE": "{node}",
-                            },
-                            decode_environment={
-                                "SGLANG_DG_CACHE_DIR": "/configs/dg-{node_id}",
-                            },
-                        ),
-                    )
+        with (
+            patch.dict(os.environ, slurm_env),
+            patch("subprocess.run", mock_scontrol),
+            patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
+        ):
+            # Create config with templated environment variables
+            config = SrtConfig(
+                name="test",
+                model=ModelConfig(
+                    path=str(model_path),
+                    container=str(container_path),
+                    precision="fp8",
+                ),
+                resources=ResourceConfig(
+                    gpu_type="h100",
+                    gpus_per_node=8,
+                    prefill_nodes=1,
+                    decode_nodes=2,
+                ),
+                backend=SGLangProtocol(
+                    prefill_environment={
+                        "SGLANG_DG_CACHE_DIR": "/configs/dg-{node_id}",
+                        "WORKER_NODE": "{node}",
+                    },
+                    decode_environment={
+                        "SGLANG_DG_CACHE_DIR": "/configs/dg-{node_id}",
+                    },
+                ),
+            )
 
-                    runtime = RuntimeContext.from_config(config, job_id="12345")
+            runtime = RuntimeContext.from_config(config, job_id="12345")
 
-                    # Create a mock worker stage
-                    class MockWorkerStage(WorkerStageMixin):
-                        def __init__(self, config, runtime):
-                            self.config = config
-                            self.runtime = runtime
+            # Create a mock worker stage
+            class MockWorkerStage(WorkerStageMixin):
+                def __init__(self, config, runtime):
+                    self.config = config
+                    self.runtime = runtime
 
-                    worker_stage = MockWorkerStage(config, runtime)
+            worker_stage = MockWorkerStage(config, runtime)
 
-                    # Create test processes on different nodes
-                    processes = [
-                        Process(
-                            node="gpu-01",
-                            gpu_indices=frozenset([0, 1, 2, 3, 4, 5, 6, 7]),
-                            sys_port=8081,
-                            http_port=30000,
-                            endpoint_mode="prefill",
-                            endpoint_index=0,
-                            node_rank=0,
-                        ),
-                        Process(
-                            node="gpu-02",
-                            gpu_indices=frozenset([0, 1, 2, 3, 4, 5, 6, 7]),
-                            sys_port=8082,
-                            http_port=30001,
-                            endpoint_mode="decode",
-                            endpoint_index=0,
-                            node_rank=0,
-                        ),
-                        Process(
-                            node="gpu-03",
-                            gpu_indices=frozenset([0, 1, 2, 3, 4, 5, 6, 7]),
-                            sys_port=8083,
-                            http_port=30002,
-                            endpoint_mode="decode",
-                            endpoint_index=1,
-                            node_rank=0,
-                        ),
-                    ]
+            # Create test processes on different nodes
+            processes = [
+                Process(
+                    node="gpu-01",
+                    gpu_indices=frozenset([0, 1, 2, 3, 4, 5, 6, 7]),
+                    sys_port=8081,
+                    http_port=30000,
+                    endpoint_mode="prefill",
+                    endpoint_index=0,
+                    node_rank=0,
+                ),
+                Process(
+                    node="gpu-02",
+                    gpu_indices=frozenset([0, 1, 2, 3, 4, 5, 6, 7]),
+                    sys_port=8082,
+                    http_port=30001,
+                    endpoint_mode="decode",
+                    endpoint_index=0,
+                    node_rank=0,
+                ),
+                Process(
+                    node="gpu-03",
+                    gpu_indices=frozenset([0, 1, 2, 3, 4, 5, 6, 7]),
+                    sys_port=8083,
+                    http_port=30002,
+                    endpoint_mode="decode",
+                    endpoint_index=1,
+                    node_rank=0,
+                ),
+            ]
 
-                    # Mock backend command builder and srun process to capture environment variables
-                    mock_backend = MagicMock()
-                    mock_backend.get_environment_for_mode.side_effect = config.backend.get_environment_for_mode
-                    mock_backend.build_worker_command.return_value = ["echo", "test"]
+            # Mock backend command builder and srun process to capture environment variables
+            mock_backend = MagicMock()
+            mock_backend.get_environment_for_mode.side_effect = config.backend.get_environment_for_mode
+            mock_backend.build_worker_command.return_value = ["echo", "test"]
 
-                    with patch.object(worker_stage, "config") as mock_config:
-                        mock_config.backend = mock_backend
-                        mock_config.profiling = config.profiling
+            with patch.object(worker_stage, "config") as mock_config:
+                mock_config.backend = mock_backend
+                mock_config.profiling = config.profiling
 
-                        with patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun:
-                            mock_srun.return_value = MagicMock()
+                with patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun:
+                    mock_srun.return_value = MagicMock()
 
-                            # Test prefill worker on gpu-01 (index 0)
-                            worker_stage.start_worker(processes[0], [])
-                            call_kwargs = mock_srun.call_args.kwargs
-                            env_vars = call_kwargs.get("env_to_set", {})
+                    # Test prefill worker on gpu-01 (index 0)
+                    worker_stage.start_worker(processes[0], [])
+                    call_kwargs = mock_srun.call_args.kwargs
+                    env_vars = call_kwargs.get("env_to_set", {})
 
-                            assert "SGLANG_DG_CACHE_DIR" in env_vars
-                            assert env_vars["SGLANG_DG_CACHE_DIR"] == "/configs/dg-0"
-                            assert env_vars["WORKER_NODE"] == "gpu-01"
+                    assert "SGLANG_DG_CACHE_DIR" in env_vars
+                    assert env_vars["SGLANG_DG_CACHE_DIR"] == "/configs/dg-0"
+                    assert env_vars["WORKER_NODE"] == "gpu-01"
 
-                            # Test decode worker on gpu-02 (index 1)
-                            worker_stage.start_worker(processes[1], [])
-                            call_kwargs = mock_srun.call_args.kwargs
-                            env_vars = call_kwargs.get("env_to_set", {})
+                    # Test decode worker on gpu-02 (index 1)
+                    worker_stage.start_worker(processes[1], [])
+                    call_kwargs = mock_srun.call_args.kwargs
+                    env_vars = call_kwargs.get("env_to_set", {})
 
-                            assert env_vars["SGLANG_DG_CACHE_DIR"] == "/configs/dg-1"
+                    assert env_vars["SGLANG_DG_CACHE_DIR"] == "/configs/dg-1"
 
-                            # Test decode worker on gpu-03 (index 2)
-                            worker_stage.start_worker(processes[2], [])
-                            call_kwargs = mock_srun.call_args.kwargs
-                            env_vars = call_kwargs.get("env_to_set", {})
+                    # Test decode worker on gpu-03 (index 2)
+                    worker_stage.start_worker(processes[2], [])
+                    call_kwargs = mock_srun.call_args.kwargs
+                    env_vars = call_kwargs.get("env_to_set", {})
 
-                            assert env_vars["SGLANG_DG_CACHE_DIR"] == "/configs/dg-2"
+                    assert env_vars["SGLANG_DG_CACHE_DIR"] == "/configs/dg-2"
 
     def test_environment_variable_unsupported_placeholder(self, monkeypatch, tmp_path):
         """Test that unsupported placeholders like {foo} remain unchanged and don't throw errors."""
@@ -688,77 +1040,79 @@ class TestWorkerEnvironmentTemplating:
                 return result
             raise subprocess.CalledProcessError(1, cmd)
 
-        with patch.dict(os.environ, slurm_env):
-            with patch("subprocess.run", mock_scontrol):
-                with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
-                    # Create config with unsupported template placeholders
-                    config = SrtConfig(
-                        name="test",
-                        model=ModelConfig(
-                            path=str(model_path),
-                            container=str(container_path),
-                            precision="fp8",
-                        ),
-                        resources=ResourceConfig(
-                            gpu_type="h100",
-                            gpus_per_node=8,
-                            prefill_nodes=1,
-                            decode_nodes=1,
-                        ),
-                        backend=SGLangProtocol(
-                            prefill_environment={
-                                # Mix of supported and unsupported placeholders
-                                "CACHE_DIR": "/cache/{node_id}/data",
-                                "UNSUPPORTED": "/path/{foo}/bar/{baz}",
-                                "MIXED": "{node}-{unsupported_var}-cache",
-                            },
-                        ),
-                    )
+        with (
+            patch.dict(os.environ, slurm_env),
+            patch("subprocess.run", mock_scontrol),
+            patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
+        ):
+            # Create config with unsupported template placeholders
+            config = SrtConfig(
+                name="test",
+                model=ModelConfig(
+                    path=str(model_path),
+                    container=str(container_path),
+                    precision="fp8",
+                ),
+                resources=ResourceConfig(
+                    gpu_type="h100",
+                    gpus_per_node=8,
+                    prefill_nodes=1,
+                    decode_nodes=1,
+                ),
+                backend=SGLangProtocol(
+                    prefill_environment={
+                        # Mix of supported and unsupported placeholders
+                        "CACHE_DIR": "/cache/{node_id}/data",
+                        "UNSUPPORTED": "/path/{foo}/bar/{baz}",
+                        "MIXED": "{node}-{unsupported_var}-cache",
+                    },
+                ),
+            )
 
-                    runtime = RuntimeContext.from_config(config, job_id="12345")
+            runtime = RuntimeContext.from_config(config, job_id="12345")
 
-                    class MockWorkerStage(WorkerStageMixin):
-                        def __init__(self, config, runtime):
-                            self.config = config
-                            self.runtime = runtime
+            class MockWorkerStage(WorkerStageMixin):
+                def __init__(self, config, runtime):
+                    self.config = config
+                    self.runtime = runtime
 
-                    worker_stage = MockWorkerStage(config, runtime)
+            worker_stage = MockWorkerStage(config, runtime)
 
-                    process = Process(
-                        node="gpu-01",
-                        gpu_indices=frozenset([0, 1, 2, 3, 4, 5, 6, 7]),
-                        sys_port=8081,
-                        http_port=30000,
-                        endpoint_mode="prefill",
-                        endpoint_index=0,
-                        node_rank=0,
-                    )
+            process = Process(
+                node="gpu-01",
+                gpu_indices=frozenset([0, 1, 2, 3, 4, 5, 6, 7]),
+                sys_port=8081,
+                http_port=30000,
+                endpoint_mode="prefill",
+                endpoint_index=0,
+                node_rank=0,
+            )
 
-                    # Mock backend command builder and srun process to capture environment variables
-                    mock_backend = MagicMock()
-                    mock_backend.get_environment_for_mode.side_effect = config.backend.get_environment_for_mode
-                    mock_backend.build_worker_command.return_value = ["echo", "test"]
+            # Mock backend command builder and srun process to capture environment variables
+            mock_backend = MagicMock()
+            mock_backend.get_environment_for_mode.side_effect = config.backend.get_environment_for_mode
+            mock_backend.build_worker_command.return_value = ["echo", "test"]
 
-                    with patch.object(worker_stage, "config") as mock_config:
-                        mock_config.backend = mock_backend
-                        mock_config.profiling = config.profiling
+            with patch.object(worker_stage, "config") as mock_config:
+                mock_config.backend = mock_backend
+                mock_config.profiling = config.profiling
 
-                        with patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun:
-                            mock_srun.return_value = MagicMock()
+                with patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun:
+                    mock_srun.return_value = MagicMock()
 
-                            # This should NOT throw an error
-                            worker_stage.start_worker(process, [])
-                            call_kwargs = mock_srun.call_args.kwargs
-                            env_vars = call_kwargs.get("env_to_set", {})
+                    # This should NOT throw an error
+                    worker_stage.start_worker(process, [])
+                    call_kwargs = mock_srun.call_args.kwargs
+                    env_vars = call_kwargs.get("env_to_set", {})
 
-                            # Supported placeholder should be replaced
-                            assert env_vars["CACHE_DIR"] == "/cache/0/data"
+                    # Supported placeholder should be replaced
+                    assert env_vars["CACHE_DIR"] == "/cache/0/data"
 
-                            # Unsupported placeholders should remain unchanged
-                            assert env_vars["UNSUPPORTED"] == "/path/{foo}/bar/{baz}"
+                    # Unsupported placeholders should remain unchanged
+                    assert env_vars["UNSUPPORTED"] == "/path/{foo}/bar/{baz}"
 
-                            # Mixed case: supported replaced, unsupported kept
-                            assert env_vars["MIXED"] == "gpu-01-{unsupported_var}-cache"
+                    # Mixed case: supported replaced, unsupported kept
+                    assert env_vars["MIXED"] == "gpu-01-{unsupported_var}-cache"
 
 
 class TestInfraConfig:
@@ -829,9 +1183,11 @@ class TestNodesInfraAllocation:
 
         from srtctl.core.runtime import Nodes
 
-        with patch("srtctl.core.runtime.get_slurm_nodelist", return_value=["node0"]):
-            with pytest.raises(ValueError, match="at least 2 nodes"):
-                Nodes.from_slurm(etcd_nats_dedicated_node=True)
+        with (
+            patch("srtctl.core.runtime.get_slurm_nodelist", return_value=["node0"]),
+            pytest.raises(ValueError, match="at least 2 nodes"),
+        ):
+            Nodes.from_slurm(etcd_nats_dedicated_node=True)
 
 
 class TestSbatchNodeCount:
@@ -1031,9 +1387,9 @@ class TestVLLMPrefillDecodeColocation:
         decode = next(p for p in processes if p.endpoint_mode == "decode")
 
         assert prefill.node == decode.node == "node0"
-        assert prefill.http_port == 30000
-        assert decode.http_port == 30001
-        assert prefill.bootstrap_port == 31000
+        assert prefill.http_port == SGLANG_HTTP_PORT_BASE
+        assert decode.http_port == SGLANG_HTTP_PORT_BASE + SGLANG_HTTP_PORT_STRIDE
+        assert prefill.bootstrap_port == SGLANG_BOOTSTRAP_PORT_BASE
 
         bound_ports = [
             port
@@ -1072,10 +1428,10 @@ class TestVLLMPrefillDecodeColocation:
         assert len(prefill) == 4
         assert len(decode) == 4
         assert {p.node for p in prefill + decode} == {"node0"}
-        assert {p.dp_rpc_port for p in prefill} == {13345}
-        assert {p.dp_rpc_port for p in decode} == {13346}
-        assert {p.nixl_port for p in prefill} == {21000}
-        assert {p.nixl_port for p in decode} == {21004}
+        assert {p.dp_rpc_port for p in prefill} == {VLLM_DATA_PARALLEL_RPC_PORT}
+        assert {p.dp_rpc_port for p in decode} == {VLLM_DATA_PARALLEL_RPC_PORT + 1}
+        assert {p.nixl_port for p in prefill} == {VLLM_NIXL_PORT_BASE}
+        assert {p.nixl_port for p in decode} == {VLLM_NIXL_PORT_BASE + 4}
 
         leader_ports = [
             port
@@ -1083,12 +1439,16 @@ class TestVLLMPrefillDecodeColocation:
             for port in (process.http_port, process.bootstrap_port)
             if port
         ]
-        assert sorted(leader_ports) == [30000, 30001, 31000]
+        assert sorted(leader_ports) == [
+            SGLANG_HTTP_PORT_BASE,
+            SGLANG_HTTP_PORT_BASE + SGLANG_HTTP_PORT_STRIDE,
+            SGLANG_BOOTSTRAP_PORT_BASE,
+        ]
 
         prefill_actual_nixl_ports = {next(iter(p.nixl_port for p in prefill)) + p.node_rank for p in prefill}
         decode_actual_nixl_ports = {next(iter(p.nixl_port for p in decode)) + p.node_rank for p in decode}
-        assert prefill_actual_nixl_ports == {21000, 21001, 21002, 21003}
-        assert decode_actual_nixl_ports == {21004, 21005, 21006, 21007}
+        assert prefill_actual_nixl_ports == {VLLM_NIXL_PORT_BASE + i for i in range(4)}
+        assert decode_actual_nixl_ports == {VLLM_NIXL_PORT_BASE + 4 + i for i in range(4)}
         assert prefill_actual_nixl_ports.isdisjoint(decode_actual_nixl_ports)
 
     def test_enabled_does_not_pack_when_one_node_does_not_fit(self):
@@ -1110,6 +1470,302 @@ class TestVLLMPrefillDecodeColocation:
         assert endpoints[0].nodes == ("node0",)
         assert endpoints[1].mode == "decode"
         assert endpoints[1].nodes == ("node1",)
+
+
+class TestHetJobsValidation:
+    """SrtConfig.__post_init__ validation for `resources.het_jobs: true`."""
+
+    def _make(self, **resource_overrides):
+        from srtctl.core.schema import ModelConfig, ResourceConfig, SrtConfig
+
+        resources_kwargs = dict(
+            gpu_type="gb200",
+            gpus_per_node=4,
+            prefill_nodes=12,
+            decode_nodes=10,
+            prefill_workers=12,
+            decode_workers=10,
+            het_jobs=True,
+        )
+        backend = resource_overrides.pop("backend", None)
+        resources_kwargs.update(resource_overrides)
+        kwargs = dict(
+            name="t",
+            model=ModelConfig(path="/m", container="/c.sqsh", precision="fp8"),
+            resources=ResourceConfig(**resources_kwargs),
+        )
+        if backend is not None:
+            kwargs["backend"] = backend
+        return SrtConfig, kwargs
+
+    def test_het_jobs_passes_with_disagg_sglang(self):
+        SrtConfig, kwargs = self._make()
+        cfg = SrtConfig(**kwargs)
+        assert cfg.resources.het_jobs is True
+
+    def test_het_jobs_rejected_in_agg_mode(self):
+        import pytest
+        from marshmallow import ValidationError
+
+        SrtConfig, kwargs = self._make(
+            prefill_nodes=None,
+            decode_nodes=None,
+            prefill_workers=None,
+            decode_workers=None,
+            agg_nodes=2,
+            agg_workers=2,
+        )
+        with pytest.raises(ValidationError, match="disaggregated layout"):
+            SrtConfig(**kwargs)
+
+    def test_het_jobs_rejected_on_trtllm(self):
+        import pytest
+        from marshmallow import ValidationError
+
+        from srtctl.backends import TRTLLMProtocol
+
+        SrtConfig, kwargs = self._make(backend=TRTLLMProtocol())
+        with pytest.raises(ValidationError, match="only supported on the sglang backend"):
+            SrtConfig(**kwargs)
+
+    def test_het_jobs_rejected_with_zero_nodes(self):
+        import pytest
+        from marshmallow import ValidationError
+
+        SrtConfig, kwargs = self._make(prefill_nodes=0)
+        with pytest.raises(ValidationError, match="prefill_nodes >= 1"):
+            SrtConfig(**kwargs)
+
+    def test_het_jobs_off_is_unrestricted(self):
+        """Recipe with het_jobs=None or False should not trigger het validation."""
+        from srtctl.backends import TRTLLMProtocol
+        from srtctl.core.schema import ModelConfig, ResourceConfig, SrtConfig
+
+        # trtllm + agg is fine when het is off — would only fail if het_jobs were True.
+        cfg = SrtConfig(
+            name="t",
+            model=ModelConfig(path="/m", container="/c.sqsh", precision="fp8"),
+            resources=ResourceConfig(
+                gpu_type="gb200",
+                gpus_per_node=4,
+                agg_nodes=2,
+                agg_workers=2,
+                het_jobs=False,
+            ),
+            backend=TRTLLMProtocol(),
+        )
+        assert cfg.resources.het_jobs is False
+
+
+class TestHetComponents:
+    """ResourceConfig.het_components() shape."""
+
+    def _resources(self, **overrides):
+        from srtctl.core.schema import ResourceConfig
+
+        base = dict(
+            gpu_type="gb200",
+            gpus_per_node=4,
+            prefill_nodes=12,
+            decode_nodes=10,
+            prefill_workers=12,
+            decode_workers=10,
+            het_jobs=True,
+        )
+        base.update(overrides)
+        return ResourceConfig(**base)
+
+    def test_het_components_returns_two_components(self):
+        r = self._resources()
+        components = r.het_components(infra_dedicated=False)
+        assert components is not None
+        prefill, decode = components
+        assert prefill.name == "prefill"
+        assert prefill.group == 0
+        assert prefill.nodes == 12
+        assert prefill.segment == 12
+        assert decode.name == "decode"
+        assert decode.group == 1
+        assert decode.nodes == 10
+        assert decode.segment == 10
+
+    def test_het_components_folds_infra_into_prefill(self):
+        r = self._resources()
+        components = r.het_components(infra_dedicated=True)
+        assert components is not None
+        prefill, decode = components
+        # prefill_nodes (12) + 1 dedicated infra
+        assert prefill.nodes == 13
+        assert prefill.segment == 13
+        # decode unchanged
+        assert decode.nodes == 10
+        assert decode.segment == 10
+
+    def test_het_components_none_when_off(self):
+        from srtctl.core.schema import ResourceConfig
+
+        r = ResourceConfig(
+            gpu_type="gb200",
+            gpus_per_node=4,
+            prefill_nodes=12,
+            decode_nodes=10,
+            prefill_workers=12,
+            decode_workers=10,
+            het_jobs=False,
+        )
+        assert r.het_components(infra_dedicated=False) is None
+
+    def test_het_components_cluster_default_applies_when_recipe_none(self):
+        from srtctl.core.schema import ResourceConfig
+
+        r = ResourceConfig(
+            gpu_type="gb200",
+            gpus_per_node=4,
+            prefill_nodes=12,
+            decode_nodes=10,
+            prefill_workers=12,
+            decode_workers=10,
+            het_jobs=None,
+        )
+        # cluster_default=False -> off
+        assert r.het_components(infra_dedicated=False) is None
+        # cluster_default=True -> on
+        assert r.het_components(infra_dedicated=False, cluster_default=True) is not None
+
+
+class TestHetJobsSbatchScript:
+    """generate_minimal_sbatch_script() emits het structure when het_jobs is True."""
+
+    def _config(self, *, het_jobs, infra_dedicated):
+        from srtctl.core.schema import InfraConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        return SrtConfig(
+            name="t",
+            model=ModelConfig(path="/m", container="/c.sqsh", precision="fp8"),
+            resources=ResourceConfig(
+                gpu_type="gb200",
+                gpus_per_node=4,
+                prefill_nodes=12,
+                decode_nodes=10,
+                prefill_workers=12,
+                decode_workers=10,
+                het_jobs=het_jobs,
+            ),
+            infra=InfraConfig(etcd_nats_dedicated_node=infra_dedicated),
+        )
+
+    def test_emits_hetjob_separator_and_two_segments(self):
+        from pathlib import Path
+
+        from srtctl.cli.submit import generate_minimal_sbatch_script
+
+        cfg = self._config(het_jobs=True, infra_dedicated=False)
+        script = generate_minimal_sbatch_script(cfg, Path("/tmp/test.yaml"))
+
+        assert script.count("#SBATCH hetjob") == 1
+        assert "#SBATCH --segment=12" in script
+        assert "#SBATCH --segment=10" in script
+        # SLURM het-jobs need --account/--time/--partition repeated per component
+        # (each #SBATCH directive applies to the component it follows, not the job).
+        assert script.count("#SBATCH --account=") == 2
+        assert script.count("#SBATCH --partition=") == 2
+        # --output is job-wide (only one log file), so it appears once at the top.
+        assert script.count("#SBATCH --output=") == 1
+        # Per-component --nodes lines
+        assert "#SBATCH --nodes=12" in script
+        assert "#SBATCH --nodes=10" in script
+
+    def test_infra_folds_into_prefill_component(self):
+        from pathlib import Path
+
+        from srtctl.cli.submit import generate_minimal_sbatch_script
+
+        cfg = self._config(het_jobs=True, infra_dedicated=True)
+        script = generate_minimal_sbatch_script(cfg, Path("/tmp/test.yaml"))
+
+        # prefill component grows by 1 for the dedicated infra node
+        assert "#SBATCH --nodes=13" in script
+        assert "#SBATCH --segment=13" in script
+        assert "#SBATCH --nodes=10" in script
+        assert "#SBATCH --segment=10" in script
+
+    def test_no_hetjob_block_when_off(self):
+        from pathlib import Path
+
+        from srtctl.cli.submit import generate_minimal_sbatch_script
+
+        cfg = self._config(het_jobs=False, infra_dedicated=False)
+        script = generate_minimal_sbatch_script(cfg, Path("/tmp/test.yaml"))
+        assert "#SBATCH hetjob" not in script
+        # Single --nodes line (12 prefill + 10 decode = 22)
+        assert "#SBATCH --nodes=22" in script
+
+
+class TestNodesHetGroupParsing:
+    """Nodes.from_slurm reads SLURM_HET_SIZE/SLURM_JOB_NODELIST_HET_GROUP_*."""
+
+    def test_from_slurm_returns_het_layout(self):
+        from unittest.mock import patch
+
+        from srtctl.core.runtime import Nodes
+
+        het_lists = [
+            ["gb200-01", "gb200-02", "gb200-03"],  # group 0: prefill (+ infra)
+            ["gb200-04", "gb200-05"],  # group 1: decode
+        ]
+        with patch("srtctl.core.runtime.get_slurm_het_nodelists", return_value=het_lists):
+            nodes = Nodes.from_slurm(etcd_nats_dedicated_node=False)
+
+        assert nodes.het is True
+        assert nodes.prefill_group == ("gb200-01", "gb200-02", "gb200-03")
+        assert nodes.decode_group == ("gb200-04", "gb200-05")
+        assert nodes.worker == ("gb200-01", "gb200-02", "gb200-03", "gb200-04", "gb200-05")
+
+    def test_from_slurm_het_with_dedicated_infra(self):
+        from unittest.mock import patch
+
+        from srtctl.core.runtime import Nodes
+
+        het_lists = [
+            ["gb200-00", "gb200-01", "gb200-02"],  # group 0: [infra, prefill...]
+            ["gb200-03", "gb200-04"],  # group 1: decode
+        ]
+        with patch("srtctl.core.runtime.get_slurm_het_nodelists", return_value=het_lists):
+            nodes = Nodes.from_slurm(etcd_nats_dedicated_node=True)
+
+        assert nodes.infra == "gb200-00"
+        assert nodes.head == "gb200-01"
+        assert nodes.prefill_group == ("gb200-01", "gb200-02")
+        assert nodes.decode_group == ("gb200-03", "gb200-04")
+        # Infra node carved out of worker pool
+        assert "gb200-00" not in nodes.worker
+
+    def test_het_group_for_returns_correct_group(self):
+        from unittest.mock import patch
+
+        from srtctl.core.runtime import Nodes
+
+        het_lists = [["p0", "p1"], ["d0", "d1"]]
+        with patch("srtctl.core.runtime.get_slurm_het_nodelists", return_value=het_lists):
+            nodes = Nodes.from_slurm(etcd_nats_dedicated_node=False)
+
+        assert nodes.het_group_for("p0") == 0
+        assert nodes.het_group_for("d0") == 1
+        assert nodes.het_group_for("unknown") is None
+
+    def test_het_group_for_returns_none_on_non_het(self):
+        from unittest.mock import patch
+
+        from srtctl.core.runtime import Nodes
+
+        with (
+            patch("srtctl.core.runtime.get_slurm_het_nodelists", return_value=None),
+            patch("srtctl.core.runtime.get_slurm_nodelist", return_value=["n0", "n1"]),
+        ):
+            nodes = Nodes.from_slurm(etcd_nats_dedicated_node=False)
+
+        assert nodes.het is False
+        assert nodes.het_group_for("n0") is None
 
 
 class TestVLLMDataParallelMode:
@@ -1218,10 +1874,10 @@ class TestVLLMDataParallelMode:
         first_endpoint = [p for p in processes if p.endpoint_index == 0]
         second_endpoint = [p for p in processes if p.endpoint_index == 1]
 
-        assert {p.dp_rpc_port for p in first_endpoint} == {13345}
-        assert {p.dp_rpc_port for p in second_endpoint} == {13346}
-        assert {p.nixl_port for p in first_endpoint} == {21000}
-        assert {p.nixl_port for p in second_endpoint} == {21004}
+        assert {p.dp_rpc_port for p in first_endpoint} == {VLLM_DATA_PARALLEL_RPC_PORT}
+        assert {p.dp_rpc_port for p in second_endpoint} == {VLLM_DATA_PARALLEL_RPC_PORT + 1}
+        assert {p.nixl_port for p in first_endpoint} == {VLLM_NIXL_PORT_BASE}
+        assert {p.nixl_port for p in second_endpoint} == {VLLM_NIXL_PORT_BASE + 4}
         assert [p.node_rank for p in first_endpoint] == list(range(4))
         assert [p.node_rank for p in second_endpoint] == list(range(4))
 
@@ -1282,6 +1938,7 @@ class TestVLLMDataParallelMode:
         # Mock runtime context
         mock_runtime = MagicMock()
         mock_runtime.model_path = Path("/model")
+        mock_runtime.is_hf_model = False
 
         with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
             cmd = backend.build_worker_command(
@@ -1340,8 +1997,6 @@ class TestVLLMDataParallelMode:
 
     def test_vllm_get_process_environment(self):
         """Test vLLM sets port environment variables from process."""
-        from unittest.mock import patch
-
         from srtctl.backends import VLLMProtocol
         from srtctl.core.topology import Process
 
@@ -1360,12 +2015,10 @@ class TestVLLMDataParallelMode:
             nixl_port=6550,
         )
 
-        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
-            env = backend.get_process_environment(process)
+        env = backend.get_process_environment(process)
 
         assert env["DYN_VLLM_KV_EVENT_PORT"] == "5550"
         assert env["VLLM_NIXL_SIDE_CHANNEL_PORT"] == "6550"
-        assert env["VLLM_NIXL_SIDE_CHANNEL_HOST"] == "10.0.0.1"
 
     def test_vllm_get_process_environment_none_ports(self):
         """Test vLLM handles None ports gracefully."""
@@ -1441,6 +2094,7 @@ class TestVLLMDataParallelMode:
 
         mock_runtime = MagicMock()
         mock_runtime.model_path = Path("/model")
+        mock_runtime.is_hf_model = False
 
         with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
             cmd = backend.build_worker_command(
@@ -1503,6 +2157,7 @@ class TestVLLMDataParallelMode:
 
         mock_runtime = MagicMock()
         mock_runtime.model_path = Path("/model")
+        mock_runtime.is_hf_model = False
 
         with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
             cmd = backend.build_worker_command(
@@ -1583,7 +2238,6 @@ class TestVLLMDataParallelMode:
 
     def test_connector_custom_json_passthrough(self):
         """connector set to a raw JSON string is passed through as-is."""
-        import json
 
         custom = '{"kv_connector":"MyCustomConnector","kv_role":"kv_both"}'
         cmd = self._build_cmd_with_connector(custom)
@@ -1644,6 +2298,186 @@ class TestVLLMDataParallelMode:
         assert "--is-decode-worker" not in cmd
 
 
+class TestHuggingFaceModelSupport:
+    """Tests for HuggingFace model (hf:prefix) support across all backends."""
+
+    @staticmethod
+    def _make_process(mode="agg"):
+        from srtctl.core.topology import Process
+
+        return Process(
+            node="node0",
+            gpu_indices=frozenset([0, 1, 2, 3]),
+            sys_port=8081,
+            http_port=30000,
+            endpoint_mode=mode,
+            endpoint_index=0,
+            node_rank=0,
+        )
+
+    @staticmethod
+    def _make_runtime(*, is_hf: bool):
+        from pathlib import Path
+        from unittest.mock import MagicMock
+
+        runtime = MagicMock()
+        if is_hf:
+            runtime.model_path = Path("facebook/opt-125m")
+            runtime.is_hf_model = True
+        else:
+            runtime.model_path = Path("/models/my-model")
+            runtime.is_hf_model = False
+        return runtime
+
+    # --- vLLM ---
+
+    def test_vllm_hf_model_uses_model_id(self):
+        """vLLM passes HF model ID when is_hf_model=True."""
+        from unittest.mock import patch
+
+        from srtctl.backends import VLLMProtocol
+
+        backend = VLLMProtocol(connector=None)
+        process = self._make_process()
+        runtime = self._make_runtime(is_hf=True)
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            cmd = backend.build_worker_command(process=process, endpoint_processes=[process], runtime=runtime)
+
+        idx = cmd.index("--model")
+        assert cmd[idx + 1] == "facebook/opt-125m"
+
+    def test_vllm_local_model_uses_container_mount(self):
+        """vLLM passes /model when is_hf_model=False."""
+        from unittest.mock import patch
+
+        from srtctl.backends import VLLMProtocol
+
+        backend = VLLMProtocol(connector=None)
+        process = self._make_process()
+        runtime = self._make_runtime(is_hf=False)
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            cmd = backend.build_worker_command(process=process, endpoint_processes=[process], runtime=runtime)
+
+        idx = cmd.index("--model")
+        assert cmd[idx + 1] == "/model"
+
+    # --- SGLang ---
+
+    def test_sglang_hf_model_uses_model_id(self):
+        """SGLang passes HF model ID when is_hf_model=True."""
+        from unittest.mock import patch
+
+        from srtctl.backends import SGLangProtocol
+
+        backend = SGLangProtocol()
+        process = self._make_process()
+        runtime = self._make_runtime(is_hf=True)
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            cmd = backend.build_worker_command(process=process, endpoint_processes=[process], runtime=runtime)
+
+        idx = cmd.index("--model-path")
+        assert cmd[idx + 1] == "facebook/opt-125m"
+
+    def test_sglang_local_model_uses_container_mount(self):
+        """SGLang passes /model when is_hf_model=False."""
+        from unittest.mock import patch
+
+        from srtctl.backends import SGLangProtocol
+
+        backend = SGLangProtocol()
+        process = self._make_process()
+        runtime = self._make_runtime(is_hf=False)
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            cmd = backend.build_worker_command(process=process, endpoint_processes=[process], runtime=runtime)
+
+        idx = cmd.index("--model-path")
+        assert cmd[idx + 1] == "/model"
+
+    def test_sglang_model_path_not_duplicated_from_config(self):
+        """SGLang does not duplicate --model-path when user provides it in sglang_config."""
+        from unittest.mock import patch
+
+        from srtctl.backends import SGLangProtocol, SGLangServerConfig
+
+        backend = SGLangProtocol(
+            sglang_config=SGLangServerConfig(aggregated={"model-path": "/custom/model"}),
+        )
+        process = self._make_process()
+        runtime = self._make_runtime(is_hf=False)
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            cmd = backend.build_worker_command(process=process, endpoint_processes=[process], runtime=runtime)
+
+        count = cmd.count("--model-path")
+        assert count == 1, f"--model-path appears {count} times: {cmd}"
+
+    def test_sglang_served_model_name_not_duplicated(self):
+        """SGLang does not duplicate --served-model-name when user provides it in sglang_config."""
+        from unittest.mock import patch
+
+        from srtctl.backends import SGLangProtocol, SGLangServerConfig
+
+        backend = SGLangProtocol(
+            sglang_config=SGLangServerConfig(aggregated={"served-model-name": "MyModel"}),
+        )
+        process = self._make_process()
+        runtime = self._make_runtime(is_hf=False)
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            cmd = backend.build_worker_command(process=process, endpoint_processes=[process], runtime=runtime)
+
+        count = cmd.count("--served-model-name")
+        assert count == 1, f"--served-model-name appears {count} times: {cmd}"
+
+    # --- TRTLLM ---
+
+    def test_trtllm_hf_model_uses_model_id(self):
+        """TRTLLM passes HF model ID when is_hf_model=True."""
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from srtctl.backends import TRTLLMProtocol
+
+        backend = TRTLLMProtocol()
+        process = self._make_process()
+        runtime = self._make_runtime(is_hf=True)
+        runtime.log_dir = Path("/tmp/test-logs")
+
+        with (
+            patch("pathlib.Path.write_text"),
+            patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
+        ):
+            cmd = backend.build_worker_command(process=process, endpoint_processes=[process], runtime=runtime)
+
+        idx = cmd.index("--model-path")
+        assert cmd[idx + 1] == "facebook/opt-125m"
+
+    def test_trtllm_local_model_uses_container_mount(self):
+        """TRTLLM passes /model when is_hf_model=False."""
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from srtctl.backends import TRTLLMProtocol
+
+        backend = TRTLLMProtocol()
+        process = self._make_process()
+        runtime = self._make_runtime(is_hf=False)
+        runtime.log_dir = Path("/tmp/test-logs")
+
+        with (
+            patch("pathlib.Path.write_text"),
+            patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
+        ):
+            cmd = backend.build_worker_command(process=process, endpoint_processes=[process], runtime=runtime)
+
+        idx = cmd.index("--model-path")
+        assert cmd[idx + 1] == "/model"
+
+
 class TestInfmaxWorkspaceMount:
     """Test that INFMAX_WORKSPACE env var creates a container mount."""
 
@@ -1679,26 +2513,28 @@ class TestInfmaxWorkspaceMount:
                 return result
             raise subprocess.CalledProcessError(1, cmd)
 
-        with patch.dict(os.environ, slurm_env):
-            with patch("subprocess.run", mock_scontrol):
-                with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
-                    config = SrtConfig(
-                        name="test",
-                        model=ModelConfig(
-                            path=str(model_path),
-                            container=str(container_path),
-                            precision="fp8",
-                        ),
-                        resources=ResourceConfig(
-                            gpu_type="h100",
-                            gpus_per_node=8,
-                            prefill_nodes=1,
-                            decode_nodes=1,
-                        ),
-                    )
-                    runtime = RuntimeContext.from_config(config, job_id="12345")
+        with (
+            patch.dict(os.environ, slurm_env),
+            patch("subprocess.run", mock_scontrol),
+            patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
+        ):
+            config = SrtConfig(
+                name="test",
+                model=ModelConfig(
+                    path=str(model_path),
+                    container=str(container_path),
+                    precision="fp8",
+                ),
+                resources=ResourceConfig(
+                    gpu_type="h100",
+                    gpus_per_node=8,
+                    prefill_nodes=1,
+                    decode_nodes=1,
+                ),
+            )
+            runtime = RuntimeContext.from_config(config, job_id="12345")
 
-                    assert Path("/infmax-workspace") in runtime.container_mounts.values()
+            assert Path("/infmax-workspace") in runtime.container_mounts.values()
 
     def test_infmax_workspace_mount_not_added_without_env(self, tmp_path):
         """RuntimeContext does not include /infmax-workspace without env var."""
@@ -1733,22 +2569,86 @@ class TestInfmaxWorkspaceMount:
 
         with patch.dict(os.environ, slurm_env):
             os.environ.pop("INFMAX_WORKSPACE", None)
-            with patch("subprocess.run", mock_scontrol):
-                with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
-                    config = SrtConfig(
-                        name="test",
-                        model=ModelConfig(
-                            path=str(model_path),
-                            container=str(container_path),
-                            precision="fp8",
-                        ),
-                        resources=ResourceConfig(
-                            gpu_type="h100",
-                            gpus_per_node=8,
-                            prefill_nodes=1,
-                            decode_nodes=1,
-                        ),
-                    )
-                    runtime = RuntimeContext.from_config(config, job_id="12345")
+            with (
+                patch("subprocess.run", mock_scontrol),
+                patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
+            ):
+                config = SrtConfig(
+                    name="test",
+                    model=ModelConfig(
+                        path=str(model_path),
+                        container=str(container_path),
+                        precision="fp8",
+                    ),
+                    resources=ResourceConfig(
+                        gpu_type="h100",
+                        gpus_per_node=8,
+                        prefill_nodes=1,
+                        decode_nodes=1,
+                    ),
+                )
+                runtime = RuntimeContext.from_config(config, job_id="12345")
 
-                    assert Path("/infmax-workspace") not in runtime.container_mounts.values()
+                assert Path("/infmax-workspace") not in runtime.container_mounts.values()
+
+
+class TestExtraMountExpansion:
+    """Test path expansion for recipe extra_mount entries."""
+
+    def test_extra_mount_host_path_expands_environment_variables(self, tmp_path):
+        import os
+        import subprocess
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.core.runtime import RuntimeContext
+        from srtctl.core.schema import ModelConfig, ResourceConfig, SrtConfig
+
+        model_path = tmp_path / "model"
+        model_path.mkdir()
+        container_path = tmp_path / "container.sqsh"
+        container_path.touch()
+        extra_root = tmp_path / "extra"
+        extra_root.mkdir()
+
+        slurm_env = {
+            "SLURM_JOB_ID": "12345",
+            "SLURM_JOBID": "12345",
+            "SLURM_NODELIST": "gpu-[01-02]",
+            "SLURM_JOB_NUM_NODES": "2",
+            "SRTCTL_SOURCE_DIR": str(Path(__file__).parent.parent),
+            "SRT_EXTRA_ROOT": str(extra_root),
+        }
+
+        def mock_scontrol(cmd, **kwargs):
+            if cmd[0] == "scontrol" and "hostnames" in cmd:
+                result = MagicMock()
+                result.stdout = "gpu-01\ngpu-02"
+                result.returncode = 0
+                return result
+            raise subprocess.CalledProcessError(1, cmd)
+
+        with (
+            patch.dict(os.environ, slurm_env),
+            patch("subprocess.run", mock_scontrol),
+            patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
+        ):
+            config = SrtConfig(
+                name="test",
+                model=ModelConfig(
+                    path=str(model_path),
+                    container=str(container_path),
+                    precision="fp8",
+                ),
+                resources=ResourceConfig(
+                    gpu_type="h100",
+                    gpus_per_node=8,
+                    prefill_nodes=1,
+                    decode_nodes=1,
+                ),
+                extra_mount=("$SRT_EXTRA_ROOT:/extra",),
+            )
+            runtime = RuntimeContext.from_config(config, job_id="12345")
+
+            assert extra_root.resolve() in runtime.container_mounts
+            assert runtime.container_mounts[extra_root.resolve()] == Path("/extra")

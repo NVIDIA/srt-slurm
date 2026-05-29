@@ -10,11 +10,13 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Optional, Protocol
 
+from srtctl.ports import DYN_SYSTEM_PORT_BASE
+
 if TYPE_CHECKING:
     from pathlib import Path
 
     from srtctl.core.runtime import RuntimeContext
-    from srtctl.core.topology import Endpoint, Process
+    from srtctl.core.topology import Endpoint, NodePortAllocator, Process
 
 
 class BackendType(str, Enum):
@@ -22,6 +24,8 @@ class BackendType(str, Enum):
 
     SGLANG = "sglang"
     TRTLLM = "trtllm"
+    VLLM = "vllm"
+    MOCKER = "mocker"
 
 
 @dataclass
@@ -90,7 +94,8 @@ class BackendProtocol(Protocol):
     def endpoints_to_processes(
         self,
         endpoints: list["Endpoint"],
-        base_sys_port: int = 8081,
+        base_sys_port: int = DYN_SYSTEM_PORT_BASE,
+        port_allocator: Optional["NodePortAllocator"] = None,
     ) -> list["Process"]:
         """Convert logical endpoints to physical processes."""
         ...

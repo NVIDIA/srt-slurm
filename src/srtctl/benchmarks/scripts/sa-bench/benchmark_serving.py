@@ -40,14 +40,17 @@ import warnings
 from collections.abc import AsyncGenerator, Collection
 from dataclasses import dataclass
 from datetime import datetime
+from multiprocessing import Pool, cpu_count
 from typing import Any
 
+import aiohttp
 import numpy as np
 import pandas as pd
 from backend_request_func import (
     ASYNC_REQUEST_FUNCS,
     RequestFuncInput,
     RequestFuncOutput,
+    get_tokenizer as get_sa_bench_tokenizer,
 )
 from datasets import load_dataset
 from PIL.Image import Image
@@ -55,9 +58,9 @@ from tqdm.asyncio import tqdm
 from transformers import PreTrainedTokenizerBase
 
 try:
-    from vllm.transformers_utils.tokenizer import get_tokenizer
+    from vllm.transformers_utils.tokenizer import get_tokenizer as get_vllm_tokenizer
 except ImportError:
-    from backend_request_func import get_tokenizer
+    get_vllm_tokenizer = get_sa_bench_tokenizer
 
 try:
     from vllm.utils import FlexibleArgumentParser
@@ -67,6 +70,64 @@ except ImportError:
 from benchmark_utils import convert_to_pytorch_benchmark_format
 
 MILLISECONDS_TO_SECONDS_CONVERSION = 1000
+
+
+async def _post_slow_down_all_aiohttp(
+    server_bases: list[str],
+    forward_sleep_time: float | None,
+) -> None:
+    """POST /slow_down on SGLang HTTP servers (admin/testing)."""
+    headers: dict[str, str] = {}
+    key = os.environ.get("OPENAI_API_KEY")
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    else:
+        api_key = os.environ.get("API_KEY")
+        if api_key:
+            headers["Authorization"] = str(api_key)
+    timeout = aiohttp.ClientTimeout(total=60)
+    try:
+        async with aiohttp.ClientSession(trust_env=True, timeout=timeout) as session:
+            for base in server_bases:
+                url = base.rstrip("/") + "/slow_down"
+                try:
+                    async with session.post(
+                        url,
+                        json={"forward_sleep_time": forward_sleep_time},
+                        headers=headers,
+                    ) as resp:
+                        if resp.status >= 400:
+                            body = await resp.text()
+                            print(
+                                f"Warning: slow_down POST {url} -> HTTP {resp.status}: {body[:500]}"
+                            )
+                except aiohttp.ClientError as e:
+                    print(f"Warning: slow_down POST {url} failed: {e}")
+    except aiohttp.ClientError as e:
+        print(f"Warning: slow_down session error: {e}")
+
+
+def load_tokenizer(
+    tokenizer_id: str,
+    tokenizer_mode: str,
+    trust_remote_code: bool,
+    custom_tokenizer: str | None,
+):
+    """Load the benchmark tokenizer, honoring sa-bench custom adapters.
+
+    vLLM containers provide their own get_tokenizer() helper, but its
+    custom-tokenizer path can return a cached wrapper that hides
+    apply_chat_template(). The sa-bench loader imports module.path.ClassName
+    adapters directly, which is what the DeepSeek-V4 chat-template adapters
+    rely on.
+    """
+    loader = get_sa_bench_tokenizer if custom_tokenizer else get_vllm_tokenizer
+    return loader(
+        tokenizer_id,
+        tokenizer_mode=tokenizer_mode,
+        trust_remote_code=trust_remote_code,
+        custom_tokenizer=custom_tokenizer,
+    )
 
 
 @dataclass
@@ -97,6 +158,7 @@ class BenchmarkMetrics:
     median_e2el_ms: float
     std_e2el_ms: float
     percentiles_e2el_ms: list[tuple[float, float]]
+    peak_output_tokens_per_s: float = 0.0
 
 
 def sample_sharegpt_requests(
@@ -332,6 +394,48 @@ def sample_hf_requests(
     return sampled_requests
 
 
+# Worker-side tokenizer set by `_init_random_worker` (one per Pool worker
+# process). The serial fallback below also writes here so the worker
+# functions can be called identically in both paths.
+_worker_tokenizer: PreTrainedTokenizerBase | None = None
+
+
+def _init_random_worker(tokenizer_id, tokenizer_mode, trust_remote_code, custom_tokenizer):
+    global _worker_tokenizer
+    _worker_tokenizer = load_tokenizer(tokenizer_id, tokenizer_mode, trust_remote_code, custom_tokenizer)
+
+
+def _process_random_no_chat(args):
+    """Per-prompt body for the non-chat path — verbatim from the existing
+    serial loop in ``sample_random_requests``."""
+    i, offset, input_len, output_len, prefix_token_ids, prefix_len, vocab_size = args
+    tokenizer = _worker_tokenizer
+    prompt = tokenizer.decode(
+        prefix_token_ids + [(offset + i + j) % vocab_size for j in range(input_len)]
+    )
+    re_encoded_sequence = tokenizer.encode(prompt, add_special_tokens=False)[: (prefix_len + input_len)]
+    prompt = tokenizer.decode(re_encoded_sequence)
+    return (prompt, int(prefix_len + input_len), int(output_len), None)
+
+
+def _process_random_chat(args):
+    """Per-prompt body for the chat-template path — verbatim from the
+    existing serial loop in ``sample_random_requests``."""
+    i, offset, input_len, output_len, chat_template_len, vocab_size = args
+    tokenizer = _worker_tokenizer
+    origin_text = tokenizer.decode(
+        [(offset + i + j) % vocab_size for j in range(int(input_len * 1.5))]
+    )
+    re_encoded_sequence = tokenizer.encode(origin_text, add_special_tokens=False)[: input_len]
+    prompt_text = tokenizer.decode(re_encoded_sequence)
+    prompt = tokenizer.apply_chat_template(
+        [{"role": "user", "content": prompt_text}],
+        add_generation_prompt=True,
+        tokenize=False,
+    )
+    return (prompt, int(input_len + chat_template_len), int(output_len), None)
+
+
 def sample_random_requests(
     prefix_len: int,
     input_len: int,
@@ -340,6 +444,11 @@ def sample_random_requests(
     range_ratio: float,
     tokenizer: PreTrainedTokenizerBase,
     use_chat_template: bool = False,
+    num_workers: int = 0,
+    tokenizer_id: str | None = None,
+    tokenizer_mode: str = "auto",
+    trust_remote_code: bool = False,
+    custom_tokenizer: str | None = None,
 ) -> list[tuple[str, int, int]]:
     if use_chat_template:
         chat_template_len = len(tokenizer.encode(
@@ -362,31 +471,49 @@ def sample_random_requests(
         size=num_prompts,
     )
     offsets = np.random.randint(0, tokenizer.vocab_size, size=num_prompts)
-    input_requests = []
+    vocab_size = tokenizer.vocab_size
 
+    # Build (i, offset, input_len, output_len, ...) tuples to feed the
+    # per-prompt worker function. Serial and parallel paths run the same
+    # worker function so behavior is identical in both.
     if use_chat_template:
-        for i in range(num_prompts):
-            origin_text = tokenizer.decode(
-                [(offsets[i] + i + j) % tokenizer.vocab_size for j in range(int(input_lens[i] * 1.5))]
-            )
-            re_encoded_sequence = tokenizer.encode(origin_text, add_special_tokens=False)[: input_lens[i]]
-            prompt_text = tokenizer.decode(re_encoded_sequence)
-            prompt = tokenizer.apply_chat_template(
-                [{"role": "user", "content": prompt_text}],
-                add_generation_prompt=True,
-                tokenize=False,
-            )
-            input_lens[i] += chat_template_len
-            input_requests.append((prompt, int(input_lens[i]), int(output_lens[i]), None))
+        args_list = [
+            (i, int(offsets[i]), int(input_lens[i]), int(output_lens[i]),
+             chat_template_len, vocab_size)
+            for i in range(num_prompts)
+        ]
+        worker_fn = _process_random_chat
     else:
-        prefix_token_ids = np.random.randint(0, tokenizer.vocab_size, size=prefix_len).tolist()
-        for i in range(num_prompts):
-            prompt = tokenizer.decode(
-                prefix_token_ids + [(offsets[i] + i + j) % tokenizer.vocab_size for j in range(input_lens[i])]
+        prefix_token_ids = np.random.randint(0, vocab_size, size=prefix_len).tolist()
+        args_list = [
+            (i, int(offsets[i]), int(input_lens[i]), int(output_lens[i]),
+             prefix_token_ids, prefix_len, vocab_size)
+            for i in range(num_prompts)
+        ]
+        worker_fn = _process_random_no_chat
+
+    # num_workers <= 0 means auto: cap at 8 (matches sglang/vllm bench defaults).
+    if num_workers <= 0:
+        num_workers = min(cpu_count() or 1, 8)
+    use_parallel = num_workers > 1 and tokenizer_id is not None
+
+    if use_parallel:
+        with Pool(
+            processes=num_workers,
+            initializer=_init_random_worker,
+            initargs=(tokenizer_id, tokenizer_mode, trust_remote_code, custom_tokenizer),
+        ) as pool:
+            input_requests = pool.map(
+                worker_fn, args_list,
+                chunksize=max(1, num_prompts // (num_workers * 4)),
             )
-            re_encoded_sequence = tokenizer.encode(prompt, add_special_tokens=False)[: (prefix_len + input_lens[i])]
-            prompt = tokenizer.decode(re_encoded_sequence)
-            input_requests.append((prompt, int(prefix_len + input_lens[i]), int(output_lens[i]), None))
+    else:
+        # Serial path: reuse the worker function with the parent-process
+        # tokenizer published into the module global so behavior matches
+        # the parallel path exactly.
+        global _worker_tokenizer
+        _worker_tokenizer = tokenizer
+        input_requests = [worker_fn(a) for a in args_list]
 
     return input_requests
 
@@ -503,6 +630,46 @@ def calculate_metrics(
             "All requests failed. This is likely due to a misconfiguration " "on the benchmark arguments.",
             stacklevel=2,
         )
+
+    # Peak output token throughput: reconstruct per-chunk arrival times from
+    # start_time + ttft + cumulative ITL, then tokenize each chunk's text to
+    # get the token count per chunk and bucket into 1-second windows.
+    # ITL in sa-bench is per SSE chunk (not per token), so we must tokenize
+    # chunk text to know how many tokens each bucket receives.
+    peak_output_tokens_per_s = 0.0
+    peak_output_smooth_factor = 10
+    successful_outputs = [o for o in outputs if o.success and o.start_time > 0]
+    if successful_outputs:
+        min_start_time = min(o.start_time for o in successful_outputs)
+        max_end_time = max(o.start_time + o.latency for o in successful_outputs)
+        duration_seconds = int(np.ceil(max_end_time - min_start_time)) + 1
+        tokens_per_second: list[float] = [0.0] * duration_seconds
+
+        for output in successful_outputs:
+            # Reconstruct absolute arrival time for each SSE chunk.
+            # chunk_times[0] = first chunk (TTFT); chunk_times[k] = chunk_times[k-1] + itl[k-1]
+            chunk_times = [output.start_time + output.ttft]
+            for itl_val in output.itl:
+                chunk_times.append(chunk_times[-1] + itl_val)
+
+            for i, chunk_time in enumerate(chunk_times):
+                if output.text_chunks and i < len(output.text_chunks) and output.text_chunks[i]:
+                    num_tokens = len(tokenizer(output.text_chunks[i], add_special_tokens=False).input_ids)
+                else:
+                    # Fallback when text_chunks is unavailable (e.g. TGI backend):
+                    # distribute output tokens evenly across chunks.
+                    total_tokens = output.output_tokens or len(chunk_times)
+                    num_chunks = len(chunk_times)
+                    base = total_tokens // num_chunks
+                    num_tokens = base + (1 if i < total_tokens % num_chunks else 0)
+                second_bucket = int(chunk_time - min_start_time)
+                if 0 <= second_bucket < duration_seconds:
+                    tokens_per_second[second_bucket] += num_tokens
+
+        if tokens_per_second:
+            smoothed_tokens_per_second = np.convolve(tokens_per_second, np.ones(peak_output_smooth_factor) / peak_output_smooth_factor, mode='valid')
+            peak_output_tokens_per_s = float(max(smoothed_tokens_per_second))
+
     metrics = BenchmarkMetrics(
         completed=completed,
         total_input=total_input,
@@ -527,6 +694,7 @@ def calculate_metrics(
         std_e2el_ms=np.std(e2els or 0) * 1000,
         median_e2el_ms=np.median(e2els or 0) * 1000,
         percentiles_e2el_ms=[(p, np.percentile(e2els or 0, p) * 1000) for p in selected_percentiles],
+        peak_output_tokens_per_s=peak_output_tokens_per_s,
     )
 
     return metrics, actual_output_lens
@@ -552,6 +720,9 @@ async def benchmark(
     goodput_config_dict: dict[str, float],
     max_concurrency: int | None,
     lora_modules: list[str] | None,
+    slow_down_servers: list[str] | None = None,
+    slow_down_sleep_time: float = 1.0,
+    slow_down_wait_time: float = 60.0,
 ):
     if backend in ASYNC_REQUEST_FUNCS:
         request_func = ASYNC_REQUEST_FUNCS[backend]
@@ -616,6 +787,33 @@ async def benchmark(
     print(f"Burstiness factor: {burstiness} ({distribution})")
     print(f"Maximum request concurrency: {max_concurrency}")
 
+    slow_bases = [s.strip() for s in (slow_down_servers or []) if s.strip()]
+    slow_down_task: asyncio.Task | None = None
+    if slow_bases:
+        if os.environ.get("SRTCTL_FRONTEND_TYPE") != "sglang":
+            print(
+                "Warning: --slow-down-server ignored (SRTCTL_FRONTEND_TYPE is not sglang; "
+                "slow_down applies to SGLang worker HTTP /slow_down only)."
+            )
+        else:
+            listed = ", ".join(f"{b.rstrip('/')}/slow_down" for b in slow_bases)
+            print(
+                f"Enabling slow_down (forward_sleep_time={slow_down_sleep_time}s) on {listed}; "
+                f"will auto-disable after {slow_down_wait_time}s."
+            )
+            await _post_slow_down_all_aiohttp(slow_bases, slow_down_sleep_time)
+            bases_snapshot = list(slow_bases)
+
+            async def _slow_down_disable_after_wait():
+                await asyncio.sleep(slow_down_wait_time)
+                print(
+                    f"slow_down auto-disabled after {slow_down_wait_time}s "
+                    f"({len(bases_snapshot)} server(s))."
+                )
+                await _post_slow_down_all_aiohttp(bases_snapshot, None)
+
+            slow_down_task = asyncio.create_task(_slow_down_disable_after_wait())
+
     pbar = None if disable_tqdm else tqdm(total=len(input_requests))
 
     # This can be used once the minimum Python version is 3.10 or higher,
@@ -653,6 +851,14 @@ async def benchmark(
         )
         tasks.append(asyncio.create_task(limited_request_func(request_func_input=request_func_input, pbar=pbar)))
     outputs: list[RequestFuncOutput] = await asyncio.gather(*tasks)
+    
+    if slow_down_task is not None and not slow_down_task.done():
+        slow_down_task.cancel()
+        try:
+            await slow_down_task
+        except asyncio.CancelledError:
+            pass
+        await _post_slow_down_all_aiohttp(slow_bases, None)
 
     if profile:
         print("Stopping profiler...")
@@ -693,6 +899,7 @@ async def benchmark(
     if goodput_config_dict:
         print("{:<40} {:<10.2f}".format("Request goodput (req/s):", metrics.request_goodput))
     print("{:<40} {:<10.2f}".format("Output token throughput (tok/s):", metrics.output_throughput))
+    print("{:<40} {:<10.2f}".format("Peak output token throughput (tok/s):", metrics.peak_output_tokens_per_s))
     print("{:<40} {:<10.2f}".format("Total Token throughput (tok/s):", metrics.total_token_throughput))
 
     result = {
@@ -703,6 +910,7 @@ async def benchmark(
         "request_throughput": metrics.request_throughput,
         "request_goodput": metrics.request_goodput if goodput_config_dict else None,
         "output_throughput": metrics.output_throughput,
+        "peak_output_tokens_per_s": metrics.peak_output_tokens_per_s,
         "total_token_throughput": metrics.total_token_throughput,
         "input_lens": [output.prompt_len for output in outputs],
         "output_lens": actual_output_lens,
@@ -825,6 +1033,8 @@ def save_to_pytorch_benchmark_format(args: argparse.Namespace, results: dict[str
 
 def main(args: argparse.Namespace):
     print(args)
+    if args.slow_down_servers is None:
+        args.slow_down_servers = []
     random.seed(args.seed)
     np.random.seed(args.seed)
 
@@ -841,99 +1051,146 @@ def main(args: argparse.Namespace):
         api_url = f"http://{args.host}:{args.port}{args.endpoint}"
         base_url = f"http://{args.host}:{args.port}"
 
-    tokenizer = get_tokenizer(
+    tokenizer = load_tokenizer(
         tokenizer_id,
         tokenizer_mode=tokenizer_mode,
         trust_remote_code=args.trust_remote_code,
         custom_tokenizer=args.custom_tokenizer,
     )
 
-    if args.dataset is not None:
-        warnings.warn(
-            "The '--dataset' argument will be deprecated in the next "
-            "release. Please use '--dataset-name' and "
-            "'--dataset-path' in the future runs.",
-            stacklevel=2,
+    if args.use_chat_template:
+        # Fail fast with an actionable message when --use-chat-template is set
+        # but the loaded tokenizer cannot render a chat template. The default
+        # HF DeepSeek-V4 tokenizer has no jinja chat_template and would otherwise
+        # crash deep inside transformers with a generic ValueError.
+        from transformers.tokenization_utils_base import PreTrainedTokenizerBase
+        has_jinja = bool(getattr(tokenizer, "chat_template", None))
+        has_method_override = (
+            type(tokenizer).apply_chat_template
+            is not PreTrainedTokenizerBase.apply_chat_template
         )
-        input_requests = sample_sharegpt_requests(
-            dataset_path=args.dataset,
-            num_requests=args.num_prompts,
-            tokenizer=tokenizer,
-            fixed_output_len=args.sharegpt_output_len,
-        )
-
-    elif args.dataset_name == "sharegpt":
-        input_requests = sample_sharegpt_requests(
-            dataset_path=args.dataset_path,
-            num_requests=args.num_prompts,
-            tokenizer=tokenizer,
-            fixed_output_len=args.sharegpt_output_len,
-        )
-
-    elif args.dataset_name == "burstgpt":
-        input_requests = sample_burstgpt_requests(
-            dataset_path=args.dataset_path,
-            num_requests=args.num_prompts,
-            random_seed=args.seed,
-            tokenizer=tokenizer,
-        )
-
-    elif args.dataset_name == "sonnet":
-        # Do not format the prompt, pass to message directly
-        if args.backend == "openai-chat":
-            input_requests = sample_sonnet_requests(
-                dataset_path=args.dataset_path,
-                num_requests=args.num_prompts,
-                input_len=args.sonnet_input_len,
-                output_len=args.sonnet_output_len,
-                prefix_len=args.sonnet_prefix_len,
-                tokenizer=tokenizer,
+        if not has_jinja and not has_method_override:
+            raise ValueError(
+                "--use-chat-template was set, but the loaded tokenizer "
+                f"({type(tokenizer).__name__}) has no jinja chat_template and "
+                "does not override apply_chat_template().\n"
+                "\n"
+                "For vLLM DeepSeek-V4 / DSV4-Pro, set in your recipe:\n"
+                "  benchmark:\n"
+                "    custom_tokenizer: "
+                "sa_bench_tokenizers.vllm_deepseek_v4.VLLMDeepseekV4Tokenizer\n"
+                "\n"
+                "For SGLang DeepSeek-V4 / DSV4-Pro, set in your recipe:\n"
+                "  benchmark:\n"
+                "    custom_tokenizer: "
+                "sa_bench_tokenizers.sglang_deepseek_v4.SGLangDeepseekV4Tokenizer\n"
+                "\n"
+                "Or, to skip chat-template formatting entirely (random tokens "
+                "sent raw, mirrors pre-DSV4 behavior):\n"
+                "  benchmark:\n"
+                "    use_chat_template: false\n"
             )
-            input_requests = [
-                (prompt, prompt_len, output_len, None)
-                for prompt, prompt_formatted, prompt_len, output_len, _ in input_requests
-            ]
-        else:
-            assert (
-                tokenizer.chat_template or tokenizer.default_chat_template
-            ), "Tokenizer/model must have chat template for sonnet dataset."
-            input_requests = sample_sonnet_requests(
-                dataset_path=args.dataset_path,
-                num_requests=args.num_prompts,
-                input_len=args.sonnet_input_len,
-                output_len=args.sonnet_output_len,
-                prefix_len=args.sonnet_prefix_len,
-                tokenizer=tokenizer,
-            )
-            input_requests = [
-                (prompt_formatted, prompt_len, output_len, None)
-                for prompt, prompt_formatted, prompt_len, output_len, _ in input_requests
-            ]
 
-    elif args.dataset_name == "hf":
-        input_requests = sample_hf_requests(
+    if args.dataset_name == "custom":
+        from benchmark_dataset import sample_custom_requests
+
+        input_requests = sample_custom_requests(
             dataset_path=args.dataset_path,
-            dataset_subset=args.hf_subset,
-            dataset_split=args.hf_split,
             num_requests=args.num_prompts,
-            tokenizer=tokenizer,
-            random_seed=args.seed,
-            fixed_output_len=args.hf_output_len,
         )
-
-    elif args.dataset_name == "random":
-        input_requests = sample_random_requests(
-            prefix_len=args.random_prefix_len,
-            input_len=args.random_input_len,
-            output_len=args.random_output_len,
-            num_prompts=args.num_prompts,
-            range_ratio=args.random_range_ratio,
-            tokenizer=tokenizer,
-            use_chat_template=args.use_chat_template,
-        )
-
     else:
-        raise ValueError(f"Unknown dataset: {args.dataset_name}")
+
+        if args.dataset is not None:
+            warnings.warn(
+                "The '--dataset' argument will be deprecated in the next "
+                "release. Please use '--dataset-name' and "
+                "'--dataset-path' in the future runs.",
+                stacklevel=2,
+            )
+            input_requests = sample_sharegpt_requests(
+                dataset_path=args.dataset,
+                num_requests=args.num_prompts,
+                tokenizer=tokenizer,
+                fixed_output_len=args.sharegpt_output_len,
+            )
+
+        elif args.dataset_name == "sharegpt":
+            input_requests = sample_sharegpt_requests(
+                dataset_path=args.dataset_path,
+                num_requests=args.num_prompts,
+                tokenizer=tokenizer,
+                fixed_output_len=args.sharegpt_output_len,
+            )
+
+        elif args.dataset_name == "burstgpt":
+            input_requests = sample_burstgpt_requests(
+                dataset_path=args.dataset_path,
+                num_requests=args.num_prompts,
+                random_seed=args.seed,
+                tokenizer=tokenizer,
+            )
+
+        elif args.dataset_name == "sonnet":
+            # Do not format the prompt, pass to message directly
+            if args.backend == "openai-chat":
+                input_requests = sample_sonnet_requests(
+                    dataset_path=args.dataset_path,
+                    num_requests=args.num_prompts,
+                    input_len=args.sonnet_input_len,
+                    output_len=args.sonnet_output_len,
+                    prefix_len=args.sonnet_prefix_len,
+                    tokenizer=tokenizer,
+                )
+                input_requests = [
+                    (prompt, prompt_len, output_len, None)
+                    for prompt, prompt_formatted, prompt_len, output_len, _ in input_requests
+                ]
+            else:
+                assert (
+                    tokenizer.chat_template or tokenizer.default_chat_template
+                ), "Tokenizer/model must have chat template for sonnet dataset."
+                input_requests = sample_sonnet_requests(
+                    dataset_path=args.dataset_path,
+                    num_requests=args.num_prompts,
+                    input_len=args.sonnet_input_len,
+                    output_len=args.sonnet_output_len,
+                    prefix_len=args.sonnet_prefix_len,
+                    tokenizer=tokenizer,
+                )
+                input_requests = [
+                    (prompt_formatted, prompt_len, output_len, None)
+                    for prompt, prompt_formatted, prompt_len, output_len, _ in input_requests
+                ]
+
+        elif args.dataset_name == "hf":
+            input_requests = sample_hf_requests(
+                dataset_path=args.dataset_path,
+                dataset_subset=args.hf_subset,
+                dataset_split=args.hf_split,
+                num_requests=args.num_prompts,
+                tokenizer=tokenizer,
+                random_seed=args.seed,
+                fixed_output_len=args.hf_output_len,
+            )
+
+        elif args.dataset_name == "random":
+            input_requests = sample_random_requests(
+                prefix_len=args.random_prefix_len,
+                input_len=args.random_input_len,
+                output_len=args.random_output_len,
+                num_prompts=args.num_prompts,
+                range_ratio=args.random_range_ratio,
+                tokenizer=tokenizer,
+                use_chat_template=args.use_chat_template,
+                num_workers=args.random_num_workers,
+                tokenizer_id=tokenizer_id,
+                tokenizer_mode=args.tokenizer_mode,
+                trust_remote_code=args.trust_remote_code,
+                custom_tokenizer=args.custom_tokenizer,
+            )
+
+        else:
+            raise ValueError(f"Unknown dataset: {args.dataset_name}")
 
     goodput_config_dict = check_goodput_args(args)
 
@@ -962,6 +1219,9 @@ def main(args: argparse.Namespace):
             goodput_config_dict=goodput_config_dict,
             max_concurrency=args.max_concurrency,
             lora_modules=args.lora_modules,
+            slow_down_servers=args.slow_down_servers,
+            slow_down_sleep_time=args.slow_down_sleep_time,
+            slow_down_wait_time=args.slow_down_wait_time,
         )
     )
 
@@ -1041,7 +1301,7 @@ if __name__ == "__main__":
         "--dataset-name",
         type=str,
         default="sharegpt",
-        choices=["sharegpt", "burstgpt", "sonnet", "random", "hf"],
+        choices=["sharegpt", "burstgpt", "sonnet", "random", "hf", "custom"],
         help="Name of the dataset to benchmark on.",
     )
     parser.add_argument(
@@ -1062,6 +1322,29 @@ if __name__ == "__main__":
         "to execute at a time. This means that when used in combination, the "
         "actual request rate may be lower than specified with --request-rate, "
         "if the server is not processing requests fast enough to keep up.",
+    )
+    parser.add_argument(
+        "--slow-down-server",
+        action="append",
+        dest="slow_down_servers",
+        default=None,
+        metavar="URL",
+        help=(
+            "SGLang worker HTTP base URL for POST /slow_down (repeatable). "
+            "Only effective when SRTCTL_FRONTEND_TYPE=sglang."
+        ),
+    )
+    parser.add_argument(
+        "--slow-down-sleep-time",
+        type=float,
+        default=1.0,
+        help="forward_sleep_time (seconds) for /slow_down when decode URLs are set.",
+    )
+    parser.add_argument(
+        "--slow-down-wait-time",
+        type=float,
+        default=60.0,
+        help="Seconds until POST clears slow_down; benchmark end also clears.",
     )
 
     parser.add_argument(
@@ -1264,6 +1547,14 @@ if __name__ == "__main__":
         "--use-chat-template",
         action="store_true",
         help="Use chat template to format the prompt.",
+    )
+    random_group.add_argument(
+        "--random-num-workers",
+        type=int,
+        default=0,
+        help="Number of worker processes for parallel random prompt "
+        "generation. Only used with --dataset-name random. "
+        "0 (default) = auto (min(cpu_count, 8)). 1 = serial.",
     )
 
     hf_group = parser.add_argument_group("hf dataset options")

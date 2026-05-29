@@ -270,10 +270,11 @@ def run_interactive() -> int:
     console.print()
 
     # Select config
-    config_path = select_recipe()
-    if not config_path:
+    selected_config_path = select_recipe()
+    if not selected_config_path:
         console.print("[yellow]No config selected. Exiting.[/]")
         return 0
+    config_path = selected_config_path
 
     if not config_path.exists():
         console.print(f"[red]Config not found: {config_path}[/]")
@@ -310,9 +311,10 @@ def run_interactive() -> int:
             return 0
 
         elif action == "reselect":
-            config_path = select_recipe()
-            if not config_path:
+            selected_config_path = select_recipe()
+            if not selected_config_path:
                 continue
+            config_path = selected_config_path
             with open(config_path) as f:
                 config = yaml.safe_load(f)
             is_sweep = "sweep" in config

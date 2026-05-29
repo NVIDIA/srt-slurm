@@ -241,7 +241,7 @@ All configs are **frozen dataclasses** with marshmallow validation:
 | `ModelConfig`     | Model settings      | path, container, precision                            |
 | `ResourceConfig`  | GPU/node allocation | gpu_type, gpus_per_node, prefill/decode nodes/workers |
 | `BackendConfig`   | Polymorphic backend | type, sglang_config, environment per mode             |
-| `FrontendConfig`  | Router settings     | type, enable_multiple_frontends, args, env            |
+| `FrontendConfig`  | Router settings     | type, enable_multiple_frontends, nginx_raise_ulimit, args, env |
 | `BenchmarkConfig` | Benchmark params    | type, isl, osl, concurrencies, sweep                  |
 | `ProfilingConfig` | Profiling settings  | type (nsys/torch), phase configs                      |
 
@@ -1087,6 +1087,7 @@ src/srtctl/
 |   |-- __init__.py          # Registry and exports
 |   |-- base.py              # BenchmarkRunner ABC, register_benchmark
 |   |-- sa_bench.py          # SA-Bench throughput benchmark
+|   |-- aime.py              # AIME math accuracy benchmark
 |   |-- mmlu.py              # MMLU accuracy benchmark
 |   |-- gpqa.py              # GPQA benchmark
 |   |-- longbenchv2.py       # LongBench v2 benchmark

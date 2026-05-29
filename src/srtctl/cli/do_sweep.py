@@ -16,15 +16,24 @@ import argparse
 import functools
 import logging
 import os
+import subprocess
 import sys
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from srtctl.cli.mixins import BenchmarkStageMixin, FrontendStageMixin, PostProcessStageMixin, WorkerStageMixin
+from srtctl.backends.sglang import SGLangProtocol
+from srtctl.cli.mixins import (
+    BenchmarkStageMixin,
+    FrontendStageMixin,
+    PostProcessStageMixin,
+    TelemetryStageMixin,
+    WorkerStageMixin,
+)
 from srtctl.core.config import load_config
 from srtctl.core.health import wait_for_port
+from srtctl.core.lockfile import write_lockfile
 from srtctl.core.processes import (
     ManagedProcess,
     ProcessRegistry,
@@ -35,14 +44,27 @@ from srtctl.core.runtime import RuntimeContext
 from srtctl.core.schema import SrtConfig
 from srtctl.core.slurm import get_slurm_job_id, start_srun_process
 from srtctl.core.status import JobStage, JobStatus, StatusReporter
-from srtctl.core.topology import Endpoint, Process
+from srtctl.core.topology import Endpoint, NodePortAllocator, Process, allocate_endpoints_het
 from srtctl.logging_utils import setup_logging
+from srtctl.ports import (
+    ETCD_CLIENT_PORT,
+    FRONTEND_PUBLIC_PORT,
+    MOONCAKE_HTTP_METADATA_PORT,
+    MOONCAKE_MASTER_PORT,
+    NATS_PORT,
+)
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
-class SweepOrchestrator(WorkerStageMixin, FrontendStageMixin, BenchmarkStageMixin, PostProcessStageMixin):
+class SweepOrchestrator(
+    WorkerStageMixin,
+    FrontendStageMixin,
+    TelemetryStageMixin,
+    BenchmarkStageMixin,
+    PostProcessStageMixin,
+):
     """Main orchestrator for benchmark sweeps.
 
     Usage:
@@ -64,9 +86,22 @@ class SweepOrchestrator(WorkerStageMixin, FrontendStageMixin, BenchmarkStageMixi
     def endpoints(self) -> list[Endpoint]:
         """Compute endpoint allocation topology (cached).
 
-        This is the single source of truth for endpoint assignments.
+        This is the single source of truth for endpoint assignments. Under
+        SLURM heterogeneous jobs, prefill and decode workers are allocated
+        from their own component nodelists so neither side bleeds into the
+        other's topology segment.
         """
         r = self.config.resources
+        if self.runtime.nodes.het:
+            return allocate_endpoints_het(
+                num_prefill=r.num_prefill,
+                gpus_per_prefill=r.gpus_per_prefill,
+                prefill_nodes=self.runtime.nodes.prefill_group,
+                num_decode=r.num_decode,
+                gpus_per_decode=r.gpus_per_decode,
+                decode_nodes=self.runtime.nodes.decode_group,
+                gpus_per_node=r.gpus_per_node,
+            )
         return self.backend.allocate_endpoints(
             num_prefill=r.num_prefill,
             num_decode=r.num_decode,
@@ -81,8 +116,13 @@ class SweepOrchestrator(WorkerStageMixin, FrontendStageMixin, BenchmarkStageMixi
 
     @functools.cached_property
     def backend_processes(self) -> list[Process]:
-        """Compute physical process topology from endpoints (cached)."""
-        return self.backend.endpoints_to_processes(self.endpoints)
+        """Compute physical process topology from endpoints (cached).
+
+        Port defaults come from ``srtctl.ports`` and are allocated
+        deterministically within a job.
+        """
+        allocator = NodePortAllocator()
+        return self.backend.endpoints_to_processes(self.endpoints, port_allocator=allocator)
 
     def start_head_infrastructure(self, registry: ProcessRegistry) -> ManagedProcess:
         """Start NATS and etcd on the infra node.
@@ -109,6 +149,8 @@ class SweepOrchestrator(WorkerStageMixin, FrontendStageMixin, BenchmarkStageMixi
             "--log-dir",
             str(self.runtime.log_dir),
         ]
+        if self.config.infra.nats_max_payload_mb is not None:
+            cmd += ["--nats-max-payload-mb", str(self.config.infra.nats_max_payload_mb)]
 
         mounts = dict(self.runtime.container_mounts)
         mounts[setup_script] = setup_script_container
@@ -122,6 +164,7 @@ class SweepOrchestrator(WorkerStageMixin, FrontendStageMixin, BenchmarkStageMixi
             output=str(infra_log),
             container_image=str(self.runtime.container_image),
             container_mounts=mounts,
+            het_group=self.runtime.nodes.het_group_for(infra_node),
         )
 
         managed = ManagedProcess(
@@ -133,15 +176,85 @@ class SweepOrchestrator(WorkerStageMixin, FrontendStageMixin, BenchmarkStageMixi
         )
 
         # 300s timeout to handle slow container imports on first run
-        logger.info("Waiting for NATS (port 4222) on %s...", infra_node)
-        if not wait_for_port(infra_node, 4222, timeout=300):
+        logger.info("Waiting for NATS (port %d) on %s...", NATS_PORT, infra_node)
+        if not wait_for_port(infra_node, NATS_PORT, timeout=300):
             raise RuntimeError("NATS failed to start")
         logger.info("NATS is ready")
 
-        logger.info("Waiting for etcd (port 2379) on %s...", infra_node)
-        if not wait_for_port(infra_node, 2379, timeout=300):
+        logger.info("Waiting for etcd (port %d) on %s...", ETCD_CLIENT_PORT, infra_node)
+        if not wait_for_port(infra_node, ETCD_CLIENT_PORT, timeout=300):
             raise RuntimeError("etcd failed to start")
         logger.info("etcd is ready")
+
+        return managed
+
+    def start_mooncake_master(self, registry: ProcessRegistry) -> ManagedProcess | None:
+        """Launch mooncake_master on the infra node if mooncake_kv_store is configured.
+
+        Runs on the same node as etcd/nats. Uses mooncake_kv_store.container if set,
+        otherwise falls back to the job container.
+
+        We always start the master with its embedded HTTP metadata server enabled
+        (`--enable_http_metadata_server=true`) so:
+
+        1. Workers can use ``MOONCAKE_TE_META_DATA_SERVER=http://infra:<metadata-port>/metadata``
+           without a separate metadata service.
+        2. Dynamo's KV router shared-cache path
+           (`lib/llm/src/kv_router/shared_cache.rs`) can call the master's
+           ``/batch_query_keys`` endpoint for L3 reach when
+           ``--shared-cache-type hicache`` is set on the frontend.
+        """
+        if not isinstance(self.config.backend, SGLangProtocol):
+            return None
+        mooncake_cfg = self.config.backend.mooncake_kv_store
+        if mooncake_cfg is None:
+            return None
+
+        infra_node = self.runtime.nodes.infra
+        container = mooncake_cfg.container or str(self.runtime.container_image)
+        mooncake_log = self.runtime.log_dir / "mooncake_master.out"
+
+        logger.info(
+            "Starting mooncake_master on %s (rpc=%d, http_metadata=%d)",
+            infra_node,
+            MOONCAKE_MASTER_PORT,
+            MOONCAKE_HTTP_METADATA_PORT,
+        )
+
+        proc = start_srun_process(
+            command=[
+                "mooncake_master",
+                f"--port={MOONCAKE_MASTER_PORT}",
+                "--enable_http_metadata_server=true",
+                f"--http_metadata_server_port={MOONCAKE_HTTP_METADATA_PORT}",
+                "--eviction_high_watermark_ratio=0.95",
+            ],
+            nodelist=[infra_node],
+            output=str(mooncake_log),
+            container_image=container,
+            container_mounts=self.runtime.container_mounts,
+            het_group=self.runtime.nodes.het_group_for(infra_node),
+        )
+
+        managed = ManagedProcess(
+            name="mooncake_master",
+            popen=proc,
+            log_file=mooncake_log,
+            node=infra_node,
+            critical=True,
+        )
+
+        logger.info("Waiting for mooncake_master RPC (port %d) on %s...", MOONCAKE_MASTER_PORT, infra_node)
+        if not wait_for_port(infra_node, MOONCAKE_MASTER_PORT, timeout=120):
+            raise RuntimeError("mooncake_master RPC failed to start")
+        logger.info(
+            "Waiting for mooncake_master HTTP metadata (port %d) on %s...",
+            MOONCAKE_HTTP_METADATA_PORT,
+            infra_node,
+        )
+        if not wait_for_port(infra_node, MOONCAKE_HTTP_METADATA_PORT, timeout=120):
+            raise RuntimeError("mooncake_master HTTP metadata server failed to start")
+        logger.info("mooncake_master is ready")
 
         return managed
 
@@ -156,7 +269,7 @@ class SweepOrchestrator(WorkerStageMixin, FrontendStageMixin, BenchmarkStageMixi
         logger.info("=" * 60)
         logger.info("Connection Commands")
         logger.info("=" * 60)
-        logger.info("Frontend URL: http://%s:8000", self.runtime.nodes.head)
+        logger.info("Frontend URL: http://%s:%d", self.runtime.nodes.head, FRONTEND_PUBLIC_PORT)
         logger.info("")
         logger.info("To connect to head node (%s):", self.runtime.nodes.head)
         logger.info(
@@ -181,6 +294,174 @@ class SweepOrchestrator(WorkerStageMixin, FrontendStageMixin, BenchmarkStageMixi
         logger.info("=" * 60)
         logger.info("")
 
+    def _get_hf_home(self) -> str | None:
+        """Get HF_HOME from backend environment config."""
+        for mode in ("prefill", "decode", "agg"):
+            env = self.config.backend.get_environment_for_mode(mode)
+            if "HF_HOME" in env:
+                return env["HF_HOME"]
+        return None
+
+    def _get_hf_env(self) -> dict[str, str]:
+        """Collect HF-related environment variables from backend config.
+
+        Merges environment from all modes (prefill/decode/agg), keeping
+        only HuggingFace-relevant keys (HF_*, HUGGING_FACE_*) so the
+        pre-download srun runs with the same auth/endpoint context as workers.
+        """
+        hf_env: dict[str, str] = {}
+        for mode in ("prefill", "decode", "agg"):
+            for key, val in self.config.backend.get_environment_for_mode(mode).items():
+                if key.startswith(("HF_", "HUGGING_FACE_")):
+                    hf_env[key] = val
+        return hf_env
+
+    def _clean_stale_hf_locks(self) -> None:
+        """Clean stale HuggingFace download lock files from shared cache.
+
+        When multiple workers share a HF cache on a networked filesystem,
+        stale .lock files from crashed jobs block all future downloads with
+        "Lock acquisition failed". This removes locks older than 30 minutes
+        (no legitimate download takes that long).
+        """
+        hf_home = self._get_hf_home()
+        if not hf_home:
+            return
+
+        cache_dir = Path(hf_home)
+        if not cache_dir.is_dir():
+            return
+
+        import time
+
+        threshold = time.time() - 30 * 60  # 30 minutes ago
+        removed = 0
+        for lock_file in cache_dir.rglob("*.lock"):
+            try:
+                if lock_file.stat().st_mtime < threshold:
+                    lock_file.unlink()
+                    removed += 1
+            except OSError:
+                pass  # Permission denied or already deleted
+
+        if removed > 0:
+            logger.info("Cleaned %d stale .lock files from HF cache: %s", removed, hf_home)
+
+    def _ensure_model_cached(self) -> None:
+        """Pre-download HuggingFace model on a single node before starting workers.
+
+        srt-slurm launches multiple workers that each independently call
+        dynamo's fetch_model(). Without pre-caching, all workers race to
+        download the same model on the shared filesystem, causing lock
+        contention and "Lock acquisition failed" errors.
+
+        This method runs huggingface-cli download on ONE compute node
+        (synchronously, blocking) so the model is fully cached before
+        any worker starts. Subsequent worker startups find the model
+        in cache and skip downloading entirely - no locks created.
+        """
+        if not self.runtime.is_hf_model:
+            return
+
+        hf_home = self._get_hf_home()
+        if not hf_home:
+            logger.warning(
+                "HF model '%s' specified but HF_HOME is not set in backend environment config. "
+                "Workers will use the default HuggingFace cache (~/.cache/huggingface) which may not "
+                "be shared across nodes. Set HF_HOME in prefill_environment/decode_environment to use "
+                "a shared cache directory (e.g., HF_HOME: /lustre/fsw/.../common/cache).",
+                self.runtime.model_path,
+            )
+            return
+
+        model_id = str(self.runtime.model_path)
+
+        # Check if model is already fully cached using huggingface_hub API.
+        # snapshot_download with local_files_only=True succeeds only if every
+        # file in the model repo is already present in the local cache.
+        # Note: HF_HOME stores models in $HF_HOME/hub/, so we pass cache_dir=$HF_HOME/hub
+        # to match the actual storage location used by workers.
+        try:
+            from huggingface_hub import snapshot_download  # type: ignore[import-untyped]
+
+            snapshot_download(model_id, cache_dir=str(Path(hf_home) / "hub"), local_files_only=True)
+            logger.info("Model '%s' already cached at %s, skipping pre-download", model_id, hf_home)
+            return
+        except ImportError:
+            logger.debug("huggingface_hub not installed on host, will use container to check/download")
+        except Exception:
+            logger.debug("Model '%s' not fully cached, will pre-download", model_id)
+
+        download_node = self.runtime.nodes.worker[0]
+
+        logger.info("Ensuring model '%s' is cached on %s (cache: %s)", model_id, download_node, hf_home)
+
+        # The srun command uses HF_HOME (not --cache-dir) to match the exact
+        # cache path workers use ($HF_HOME/hub/models--*/).
+        # It first checks with HF_HUB_OFFLINE=1 (fast, no network). Only if
+        # that fails does it actually download.
+        # Uses 'hf download' (new CLI) with 'huggingface-cli download' as fallback.
+        import shlex
+
+        q_hf_home = shlex.quote(hf_home)
+        q_model_id = shlex.quote(model_id)
+        download_cmd = [
+            "bash",
+            "-c",
+            f"export HF_HOME={q_hf_home}; "
+            f"find {q_hf_home} -name '*.lock' -mmin +30 -delete 2>/dev/null; "
+            f"DL_CMD='hf download'; "
+            f"command -v hf >/dev/null 2>&1 || DL_CMD='huggingface-cli download'; "
+            f"if HF_HUB_OFFLINE=1 $DL_CMD {q_model_id} --quiet 2>/dev/null; then "
+            f"echo 'Model already cached'; "
+            f"else "
+            f"echo 'Downloading model...'; "
+            f"$DL_CMD {q_model_id} --quiet; "
+            f"fi",
+        ]
+
+        download_log = self.runtime.log_dir / "model_download.out"
+
+        # Pass all HF-related env vars (HF_TOKEN, HF_ENDPOINT, etc.) so the
+        # pre-download runs with the same auth/endpoint context as workers.
+        hf_env = self._get_hf_env()
+
+        try:
+            proc = start_srun_process(
+                command=download_cmd,
+                nodelist=[download_node],
+                output=str(download_log),
+                container_image=str(self.runtime.container_image),
+                container_mounts=self.runtime.container_mounts,
+                env_to_set=hf_env,
+                use_bash_wrapper=False,  # command is already bash -c
+                het_group=self.runtime.nodes.het_group_for(download_node),
+            )
+
+            timeout_sec = 60 * 60  # 1 hour; large models can take a while
+            try:
+                rc = proc.wait(timeout=timeout_sec)
+            except subprocess.TimeoutExpired:
+                logger.warning(
+                    "Model pre-download timed out after %d seconds, killing (workers will retry at startup). Log: %s",
+                    timeout_sec,
+                    download_log,
+                )
+                proc.kill()
+                proc.wait()
+                return
+
+            if rc != 0:
+                logger.warning(
+                    "Model pre-download exited with code %d (workers will retry at startup). Log: %s",
+                    rc,
+                    download_log,
+                )
+            else:
+                logger.info("Model pre-download complete")
+        except Exception:
+            logger.warning("Model pre-download failed (workers will retry at startup)", exc_info=True)
+
     def _run_post_eval(self, stop_event: threading.Event) -> int:
         """Run lm-eval after the main benchmark completes (or directly in eval-only mode)."""
         from srtctl.benchmarks import get_runner
@@ -197,7 +478,7 @@ class SweepOrchestrator(WorkerStageMixin, FrontendStageMixin, BenchmarkStageMixi
             logger.info("EVAL_ONLY: Waiting for server health before eval...")
             if not wait_for_model(
                 host=self.runtime.nodes.head,
-                port=8000,
+                port=FRONTEND_PUBLIC_PORT,
                 n_prefill=n_prefill,
                 n_decode=n_decode,
                 poll_interval=float(hc.interval_seconds),
@@ -209,7 +490,7 @@ class SweepOrchestrator(WorkerStageMixin, FrontendStageMixin, BenchmarkStageMixi
                 logger.error("Server did not become healthy for eval")
                 return 1
         else:
-            if not wait_for_port(self.runtime.nodes.head, 8000, timeout=30):
+            if not wait_for_port(self.runtime.nodes.head, FRONTEND_PUBLIC_PORT, timeout=30):
                 logger.error("Server health check failed before eval - skipping")
                 return 1
 
@@ -291,6 +572,7 @@ class SweepOrchestrator(WorkerStageMixin, FrontendStageMixin, BenchmarkStageMixi
             container_mounts=self.runtime.container_mounts,
             env_to_set=env_to_set,
             bash_preamble=bash_preamble,
+            het_group=self.runtime.nodes.het_group_for(self.runtime.nodes.head),
         )
 
         while proc.poll() is None:
@@ -318,6 +600,9 @@ class SweepOrchestrator(WorkerStageMixin, FrontendStageMixin, BenchmarkStageMixi
         if self.config.profiling.enabled:
             logger.info("Profiling: %s", self.config.profiling.type)
 
+        # Write initial lockfile with config + SLURM context (fingerprint added after run)
+        write_lockfile(self.runtime.log_dir.parent, self.config)
+
         registry = ProcessRegistry(job_id=self.runtime.job_id)
         stop_event = threading.Event()
         setup_signal_handlers(stop_event, registry)
@@ -331,6 +616,19 @@ class SweepOrchestrator(WorkerStageMixin, FrontendStageMixin, BenchmarkStageMixi
             head_proc = self.start_head_infrastructure(registry)
             registry.add_process(head_proc)
 
+            # Stage 1b: Mooncake master (optional, co-located with infra node)
+            mooncake_proc = self.start_mooncake_master(registry)
+            if mooncake_proc is not None:
+                registry.add_process(mooncake_proc)
+
+            # Pre-worker: Ensure HF model is cached before starting workers.
+            # 1. Clean stale lock files from previous crashed downloads
+            # 2. Download model on a single node (blocks until complete)
+            # This prevents lock contention when multiple workers start.
+            if self.runtime.is_hf_model:
+                self._clean_stale_hf_locks()
+                self._ensure_model_cached()
+
             # Stage 2: Workers
             reporter.report(JobStatus.WORKERS, JobStage.WORKERS, "Starting workers")
             worker_procs = self.start_all_workers()
@@ -340,6 +638,10 @@ class SweepOrchestrator(WorkerStageMixin, FrontendStageMixin, BenchmarkStageMixi
             reporter.report(JobStatus.FRONTEND, JobStage.FRONTEND, "Starting frontend")
             frontend_procs = self.start_frontend(registry)
             for proc in frontend_procs:
+                registry.add_process(proc)
+
+            telemetry_procs = self.start_telemetry()
+            for proc in telemetry_procs:
                 registry.add_process(proc)
 
             self._print_connection_info()
@@ -373,13 +675,18 @@ class SweepOrchestrator(WorkerStageMixin, FrontendStageMixin, BenchmarkStageMixi
 
         finally:
             logger.info("Cleanup")
-            reporter.report_completed(exit_code)
             stop_event.set()
             registry.cleanup()
             if exit_code != 0:
                 registry.print_failure_details()
-            # Run post-processing (AI analysis if enabled)
-            self.run_postprocess(exit_code)
+            # Post-process first: generate rollup, upload logs to S3, eagerly
+            # push logs_url to the status API. Runs before report_completed so
+            # the final PUT can reassert the artifact pointer.
+            self.run_postprocess(exit_code, reporter=reporter)
+            reporter.report_completed(
+                exit_code,
+                logs_url=getattr(self, "_last_logs_url", None),
+            )
 
         return exit_code
 

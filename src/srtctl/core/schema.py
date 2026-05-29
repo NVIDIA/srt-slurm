@@ -14,6 +14,7 @@ Backend configs are defined in srtctl.backends.configs/ for modularity.
 import builtins
 import itertools
 import logging
+import shlex
 from collections.abc import Iterator, Mapping
 from dataclasses import field
 from enum import Enum
@@ -32,6 +33,7 @@ from marshmallow_dataclass import dataclass
 
 from srtctl.backends import (
     BackendConfig,
+    MockerProtocol,
     SGLangProtocol,
     TRTLLMProtocol,
     VLLMProtocol,
@@ -187,6 +189,14 @@ class ClusterConfig:
     use_gpus_per_node_directive: bool = True
     use_segment_sbatch_directive: bool = True
     use_exclusive_sbatch_directive: bool = False
+    # Default for ``ResourceConfig.het_jobs`` when the recipe doesn't set it.
+    # When True (and recipe doesn't override), the prefill side and decode side
+    # are submitted as two SLURM heterogeneous-job components, each with its
+    # own ``--segment``. Lets asymmetric layouts (e.g. prefill 12 + decode 10
+    # nodes on GB200/GB300) preserve NVL72 affinity per side.
+    use_het_jobs: bool = False
+    default_sbatch_directives: dict[str, str] | None = None
+    default_health_check: dict[str, int] | None = None
     srtctl_root: str | None = None
     output_dir: str | None = None  # Custom output directory for job logs
     model_paths: dict[str, str] | None = None
@@ -195,7 +205,16 @@ class ClusterConfig:
     # Cluster-level container mounts (host_path -> container_path)
     # Applied to all jobs on this cluster, useful for cluster-specific paths
     default_mounts: dict[str, str] | None = None
+    # Shell snippet prepended to every container srun (after env exports, before
+    # the main command). Useful for cluster-wide ulimits, e.g.
+    # ``"ulimit -n 1048576 -s unlimited -u 1048576"``. Silently dropped for
+    # sruns that bypass the bash wrapper (distroless containers).
+    default_bash_preamble: str | None = None
     reporting: ReportingConfig | None = None
+    telemetry: dict | None = None  # opaque dict, parsed by try_start_snapshotter
+    # When set, applied to job configs that omit ``frontend.nginx_raise_ulimit``.
+    # Clusters that disallow raising nofile for nginx containers should use false.
+    nginx_raise_ulimit: bool | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -220,11 +239,14 @@ class Precision(str, Enum):
 
 class BenchmarkType(str, Enum):
     MANUAL = "manual"
+    CUSTOM = "custom"
     SA_BENCH = "sa-bench"
     ROUTER = "router"
     MOONCAKE_ROUTER = "mooncake-router"
+    TRACE_REPLAY = "trace-replay"
     MMLU = "mmlu"
     GPQA = "gpqa"
+    GSM8K = "gsm8k"
     LONGBENCHV2 = "longbenchv2"
 
 
@@ -232,6 +254,10 @@ class ProfilingType(str, Enum):
     NSYS = "nsys"
     TORCH = "torch"
     NONE = "none"
+
+
+class TelemetryProvider(str, Enum):
+    SCRAPER = "scraper"
 
 
 # ============================================================================
@@ -254,7 +280,7 @@ class BackendConfigField(fields.Field):
             # Default to SGLang
             return SGLangProtocol()
 
-        if isinstance(value, SGLangProtocol | TRTLLMProtocol | VLLMProtocol):
+        if isinstance(value, SGLangProtocol | TRTLLMProtocol | VLLMProtocol | MockerProtocol):
             return value
 
         if not isinstance(value, dict):
@@ -272,8 +298,13 @@ class BackendConfigField(fields.Field):
         elif backend_type == "vllm":
             schema = VLLMProtocol.Schema()
             return schema.load(value)
+        elif backend_type == "mocker":
+            schema = MockerProtocol.Schema()
+            return schema.load(value)
         else:
-            raise ValidationError(f"Unknown backend type: {backend_type!r}. Supported types: sglang, trtllm, vllm")
+            raise ValidationError(
+                f"Unknown backend type: {backend_type!r}. Supported types: sglang, trtllm, vllm, mocker"
+            )
 
     def _serialize(self, value: Any | None, attr: str | None, obj: Any, **kwargs) -> Any:
         """Serialize backend config to dict."""
@@ -285,6 +316,8 @@ class BackendConfigField(fields.Field):
             return TRTLLMProtocol.Schema().dump(value)
         if isinstance(value, VLLMProtocol):
             return VLLMProtocol.Schema().dump(value)
+        if isinstance(value, MockerProtocol):
+            return MockerProtocol.Schema().dump(value)
         return value
 
 
@@ -380,6 +413,69 @@ class ModelConfig:
 
 
 @dataclass(frozen=True)
+class IdentityModelConfig:
+    """Virtual model identity for runtime verification."""
+
+    repo: str | None = None  # HuggingFace model ID, e.g. "nvidia/Kimi-K2.5-NVFP4"
+    revision: str | None = None  # HuggingFace git commit SHA
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
+class IdentityContainerConfig:
+    """Container identity for reproduction (not verified at runtime).
+
+    Recorded so others can pull the same container image to reproduce.
+    Cannot be verified at runtime — Pyxis/enroot strips provenance during import.
+    """
+
+    image: str | None = None  # Docker URI, e.g. "gitlab-master:5005/.../trtllm-arm64"
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
+class IdentityConfig:
+    """Virtual identity for runtime verification and reproduction.
+
+    These fields declare what *should* be running. They are not used for
+    launching — only for verifying the runtime fingerprint matches expectations
+    and for helping others reproduce the run.
+
+    - model: HF repo + revision (verified against download metadata at runtime)
+    - container: Docker image URI (recorded for reproduction, not verified)
+    - frameworks: expected versions for dynamo + one engine (verified via importlib.metadata)
+    """
+
+    model: IdentityModelConfig = field(default_factory=IdentityModelConfig)
+    container: IdentityContainerConfig = field(default_factory=IdentityContainerConfig)
+    frameworks: dict[str, str] = field(default_factory=dict)
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
+class HetComponent:
+    """One component of a SLURM heterogeneous job.
+
+    A het job is submitted as multiple `#SBATCH` blocks separated by
+    `#SBATCH hetjob`. SLURM places each component within a single topology
+    segment, so we get per-side NVL72 affinity. At runtime each component
+    exposes its own `SLURM_JOB_NODELIST_HET_GROUP_<group>`, and worker srun
+    calls target a component with `--het-group=<group>`.
+    """
+
+    name: Literal["prefill", "decode"]
+    group: int
+    nodes: int
+    segment: int
+    gpus_per_node: int
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
 class ResourceConfig:
     """Resource allocation configuration."""
 
@@ -400,6 +496,13 @@ class ResourceConfig:
     # packing multiple onto the same node. Caller must reserve enough nodes
     # (e.g. set decode_nodes=decode_workers when gpus_per_decode<gpus_per_node).
     spread_workers: bool = False
+
+    # SLURM heterogeneous-job opt-in. Tri-state: None defers to the cluster
+    # default `use_het_jobs` on ClusterConfig; True/False overrides per recipe.
+    # When effectively True (and we are in disaggregated mode), the prefill and
+    # decode sides are submitted as two het components each with their own
+    # `--segment`. See HetComponent above and docs/slurm-faq.md.
+    het_jobs: bool | None = None
 
     # Explicit GPUs per worker (override computed values)
     # Use data_key to map from YAML field names to internal attribute names
@@ -500,6 +603,46 @@ class ResourceConfig:
         """Total GPUs used by all decode workers."""
         return self.num_decode * self.gpus_per_decode
 
+    def het_components(
+        self,
+        *,
+        infra_dedicated: bool,
+        cluster_default: bool = False,
+    ) -> tuple[HetComponent, HetComponent] | None:
+        """Return the (prefill, decode) het components, or None when het is off.
+
+        Het is enabled when ``self.het_jobs`` is True, or when it is None and
+        ``cluster_default`` is True. Only valid in disaggregated mode. Group 0
+        is prefill (folds in the dedicated infra node when present); group 1 is
+        decode. Segment matches each component's node count, so each side lands
+        in its own topology segment (NVL72 domain on GB200/GB300).
+
+        Pass ``cluster_default=get_srtslurm_setting("use_het_jobs", False)``
+        from callers that have access to the cluster config; schema.py cannot
+        import from core.config without a cycle.
+        """
+        enabled = self.het_jobs if self.het_jobs is not None else cluster_default
+        if not enabled or not self.is_disaggregated:
+            return None
+        prefill_nodes = (self.prefill_nodes or 0) + (1 if infra_dedicated else 0)
+        decode_nodes = self.decode_nodes or 0
+        return (
+            HetComponent(
+                name="prefill",
+                group=0,
+                nodes=prefill_nodes,
+                segment=prefill_nodes,
+                gpus_per_node=self.gpus_per_node,
+            ),
+            HetComponent(
+                name="decode",
+                group=1,
+                nodes=decode_nodes,
+                segment=decode_nodes,
+                gpus_per_node=self.gpus_per_node,
+            ),
+        )
+
     Schema: ClassVar[type[Schema]] = Schema
 
 
@@ -523,7 +666,7 @@ class BenchmarkConfig:
     osl: int | None = None
     concurrencies: list[int] | str | None = None
     req_rate: str | int | None = "inf"
-    sweep: Annotated[SweepConfig, SweepConfigField()] | None = None
+    sweep: Annotated[SweepConfig, SweepConfigField(allow_none=True, load_default=None, dump_default=None)] | None = None
     # Accuracy benchmark fields
     num_examples: int | None = None
     max_tokens: int | None = None
@@ -546,10 +689,31 @@ class BenchmarkConfig:
     random_range_ratio: float | None = None  # Random input/output length range ratio (default: 0.8)
     num_prompts_mult: int | None = None  # Multiplier for num_prompts = concurrency * mult (default: 10)
     num_warmup_mult: int | None = None  # Multiplier for warmup prompts = concurrency * mult (default: 2)
+    # Custom dataset fields (sa-bench)
+    dataset_name: str | None = None  # "random" (default) or "custom"
+    dataset_path: str | None = None  # Container path to dataset file (mount via extra_mount)
     # Trace replay benchmark fields (uses aiperf with mooncake_trace dataset type)
     trace_file: str | None = None  # Path to trace JSONL file (container path, e.g., /traces/dataset.jsonl)
     custom_tokenizer: str | None = None  # Custom tokenizer class (e.g., "module.path.ClassName")
     use_chat_template: bool = True  # Pass --use-chat-template to benchmark (default: true)
+    # Custom benchmark hook.
+    # ``command`` is passed to ``bash -lc`` verbatim; srtctl does NOT
+    # substitute placeholders like ``{nginx_url}`` or ``{slurm_job_id}``.
+    # Render any parameters when generating the recipe. See
+    # srtctl.benchmarks.custom.CustomBenchmarkRunner for details.
+    command: str | None = None
+    container_image: str | None = None
+    env: dict[str, str] = field(default_factory=dict)
+    # aiperf pip install spec (e.g., "aiperf>=0.7.0", "aiperf @ git+https://...@commit")
+    # If set, runs pip install <spec> before benchmarking. Upgrades if already installed.
+    aiperf_package: str | None = None
+    # Extra aiperf CLI flags passed through to bench.sh (e.g., benchmark-duration: 600, workers-max: 200)
+    aiperf_args: dict[str, Any] = field(default_factory=dict)
+    # Post-process: export analysis/srtlog per-node batch CSVs + gen_throughput.csv (see postprocess_stage)
+    export_node_metrics: bool = False
+    # SA-Bench: optional SGLang /slow_down on decode workers (sglang frontend only; see benchmark_stage)
+    slow_down_sleep_time: float | None = None  # forward_sleep_time (seconds); unset = feature off
+    slow_down_wait_time: float | None = None  # seconds until POST clears slow_down; unset = feature off
 
     def get_concurrency_list(self) -> list[int]:
         if self.concurrencies is None:
@@ -582,12 +746,20 @@ class ProfilingConfig:
     Per-phase start_step/stop_step are specified in the prefill/decode/aggregated sections.
     """
 
-    type: str = "none"  # "none", "nsys", or "torch"
+    type: str = "none"  # "none", "nsys", "nsys-time", or "torch"
 
-    # Phase-specific profiling step configs
+    # Extra arguments passed to nsys profile (appended before `-o`; see get_nsys_prefix)
+    extra_nsys_args: list[str] | None = None
+
+    # Phase-specific profiling step configs (not used for nsys-time)
     prefill: ProfilingPhaseConfig | None = None
     decode: ProfilingPhaseConfig | None = None
     aggregated: ProfilingPhaseConfig | None = None
+
+    # nsys-time fields: time-based capture window, same on all workers
+    delay_secs: int | None = None  # nsys --delay: seconds from worker launch before capture starts
+    duration_secs: int | None = None  # nsys --duration: seconds to capture after delay
+    benchmark_duration_secs: int = 300  # total traffic generation duration (must cover delay + duration)
 
     @property
     def enabled(self) -> bool:
@@ -596,8 +768,13 @@ class ProfilingConfig:
 
     @property
     def is_nsys(self) -> bool:
-        """Check if using NVIDIA Nsight Systems profiling."""
-        return self.type == "nsys"
+        """Check if using NVIDIA Nsight Systems profiling (includes nsys-time)."""
+        return self.type in ("nsys", "nsys-time")
+
+    @property
+    def is_nsys_time(self) -> bool:
+        """Check if using time-based nsys capture (--delay/--duration instead of cudaProfilerApi)."""
+        return self.type == "nsys-time"
 
     @property
     def is_torch(self) -> bool:
@@ -641,15 +818,78 @@ class ProfilingConfig:
         if self.is_torch:
             env["SGLANG_TORCH_PROFILER_DIR"] = f"{profile_dir}/{mode}"
 
+        if self.is_nsys_time:
+            env["PROFILE_BENCHMARK_DURATION_SECS"] = str(self.benchmark_duration_secs)
+        elif (
+            self.is_nsys and phase_config and phase_config.start_step is not None and phase_config.stop_step is not None
+        ):
+            # TRTLLM iteration-based nsys: PyExecutor triggers cudaProfilerStart/Stop at these boundaries.
+            # Harmless on SGLang workers (unknown env vars are ignored).
+            env["TLLM_PROFILE_START_STOP"] = f"{phase_config.start_step}-{phase_config.stop_step}"
+            env["TLLM_LLMAPI_ENABLE_NVTX"] = "1"
+
         return env
 
-    def get_nsys_prefix(self, output_file: str, *, frontend_type: str | None = None) -> list[str]:
+    def _get_nsys_prefix_trtllm(self, output_file: str) -> list[str]:
+        """Get nsys command prefix for TRTLLM workers.
+
+        Supports both iteration-based (cudaProfilerApi trigger via TLLM_PROFILE_START_STOP)
+        and time-based (--delay/--duration) capture modes.
+        """
+        if self.is_nsys_time:
+            cmd = [
+                "nsys",
+                "profile",
+                "-t",
+                "cuda,nvtx,ucx",
+                "--sample=none",
+                "--cuda-graph-trace=node",
+            ]
+            if self.delay_secs is not None:
+                cmd += ["--delay", str(self.delay_secs)]
+            if self.duration_secs is not None:
+                cmd += ["--duration", str(self.duration_secs)]
+        else:
+            # Iteration-based: TLLM_PROFILE_START_STOP env var triggers cudaProfilerStart/Stop
+            cmd = [
+                "nsys",
+                "profile",
+                "-t",
+                "cuda,nvtx,ucx",
+                "--sample=none",
+                "--cuda-graph-trace=node",
+                "-c",
+                "cudaProfilerApi",
+                "--capture-range-end",
+                "stop",
+            ]
+
+        if self.extra_nsys_args:
+            cmd.extend(self.extra_nsys_args)
+
+        cmd += [
+            "--kill",
+            "none",
+            "--wait",
+            "all",
+            "--force-overwrite",
+            "true",
+            "-o",
+            output_file,
+        ]
+        return cmd
+
+    def get_nsys_prefix(
+        self, output_file: str, *, frontend_type: str | None = None, backend_type: str | None = None
+    ) -> list[str]:
         """Get nsys profiling command prefix.
 
         Args:
             output_file: Path for nsys output file (without extension)
-            frontend_type: Frontend type (e.g., "dynamo", "sglangrouter"). When set to "dynamo",
-                add flags required for Dynamo's process model.
+            frontend_type: Frontend type (e.g., "dynamo", "sglang"). When set to "dynamo"
+                with a non-trtllm backend, adds --trace-fork-before-exec=true.
+            backend_type: Backend type (e.g., "trtllm", "sglang"). When set to "trtllm",
+                uses TRTLLM-specific nsys flags (ucx traces, --kill none, --wait all).
 
         Returns:
             Command prefix list for nsys profiling
@@ -657,6 +897,10 @@ class ProfilingConfig:
         if not self.is_nsys:
             return []
 
+        if backend_type == "trtllm":
+            return self._get_nsys_prefix_trtllm(output_file)
+
+        # SGLang / default path — keep existing behavior
         cmd = [
             "nsys",
             "profile",
@@ -669,9 +913,12 @@ class ProfilingConfig:
             "stop",
             "--force-overwrite",
             "true",
-            "-o",
-            output_file,
         ]
+
+        if self.extra_nsys_args:
+            cmd.extend(self.extra_nsys_args)
+
+        cmd.extend(["-o", output_file])
 
         if frontend_type == "dynamo":
             cmd.insert(-2, "--trace-fork-before-exec=true")
@@ -681,11 +928,229 @@ class ProfilingConfig:
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
 
+@dataclass(frozen=True)
+class ObservabilityConfig:
+    """Observability configuration for OTEL tracing.
+
+    When enable_otel is True, OTEL environment variables (DYN_LOGGING_JSONL,
+    OTEL_EXPORT_ENABLED, OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, OTEL_SERVICE_NAME)
+    are automatically injected into all workers and frontends.
+
+    OTEL_SERVICE_NAME defaults to "dynamo-{component}" (e.g. dynamo-prefill,
+    dynamo-decode, dynamo-frontend) and can be overridden per-component via
+    prefill_environment, decode_environment, or frontend.env.
+
+    Attributes:
+        enable_otel: If True, inject OTEL environment variables into all workers
+            and frontends. Requires otel_endpoint to be set. Default: False.
+        otel_endpoint: OTEL collector endpoint (e.g. "http://10.0.0.1:4317").
+            Required when enable_otel is True.
+    """
+
+    enable_otel: bool = False
+    otel_endpoint: str | None = None
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
+class TelemetryExporterConfig:
+    """Configuration for telemetry exporters deployed on worker nodes."""
+
+    container_image: str
+    port: int
+    command: str | None = None
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
+class LiveMetricsConfig:
+    """In-flight batch-metrics snapshotter (a form of lightweight telemetry).
+
+    When enabled, the orchestrator spawns a daemon thread during the benchmark
+    stage that re-parses prefill/decode worker logs every ``interval_seconds``
+    and atomically overwrites ``<log_dir>/batch_metrics.png``, giving a
+    near-real-time view of the run without any external monitoring stack.
+
+    Lives entirely in :mod:`srtctl.analysis.live_metrics`; this dataclass
+    only defines the user-visible knobs.
+    """
+
+    enabled: bool = False
+    interval_seconds: int = 60
+    downsample: int = 1
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
+class TelemetryConfig:
+    """Telemetry configuration for benchmark jobs.
+
+    The default provider bundles a scraper with dcgm_exporter and node_exporter.
+    Other providers can reuse the same top-level contract later.
+
+    ``live_metrics`` is a lightweight complementary signal: it tails worker
+    logs in-process (no external stack required) and writes a per-run
+    ``batch_metrics.png`` during the benchmark.
+    """
+
+    enabled: bool = False
+    provider: TelemetryProvider = TelemetryProvider.SCRAPER
+    container_image: str | None = None
+    binary_path: str = "/usr/local/bin/telemetry-scraper"
+    default_frequency: float = 5.0
+    sync_interval_secs: int = 120
+    compaction_threads: int = 4
+    storage_subdir: str = "telemetry"
+    extra_metadata: dict[str, str] = field(default_factory=dict)
+    dcgm_exporter: TelemetryExporterConfig | None = None
+    node_exporter: TelemetryExporterConfig | None = None
+    live_metrics: LiveMetricsConfig | None = None
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+def build_otel_env(observability: ObservabilityConfig, component: str) -> dict[str, str]:
+    """Build OTEL environment variables for a component.
+
+    Returns an empty dict if OTEL is disabled. Otherwise returns env vars
+    with OTEL_SERVICE_NAME set to "dynamo-{component}".
+    """
+    if not observability.enable_otel or not observability.otel_endpoint:
+        return {}
+    return {
+        "DYN_LOGGING_JSONL": "1",
+        "OTEL_EXPORT_ENABLED": "1",
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": observability.otel_endpoint,
+        "OTEL_SERVICE_NAME": f"dynamo-{component}",
+    }
+
+
+# /configs/dynamo-wheels is the lustre-mounted cache for hash-pinned dynamo
+# source builds. The bench/frontend container always mounts srtslurm's
+# `configs/` dir at /configs (see RuntimeContext.container_mounts), so this
+# path is reachable from every node without any extra recipe wiring.
+_DYNAMO_CACHE_ROOT = "/configs/dynamo-wheels"
+
+
+def _hash_cached_source_install(dynamo_hash: str) -> str:
+    """Bash for hash-pinned source install with a /configs/dynamo-wheels cache.
+
+    Cache layout: ``{root}/<hash>/`` contains the maturin wheel
+    (``ai_dynamo_runtime-*.whl``), a tarball of the dynamo source tree
+    (``dynamo-src.tar.gz``), and a ``.complete`` sentinel that's only touched
+    on a successful build. flock on the per-hash lock file serializes the
+    cold-cache build across multiple frontends starting in parallel.
+    """
+    cache = f"{_DYNAMO_CACHE_ROOT}/{dynamo_hash}"
+    lock = f"{_DYNAMO_CACHE_ROOT}/.{dynamo_hash}.lock"
+    return (
+        f"echo 'Installing dynamo from source ({dynamo_hash}, /configs cache)...' && "
+        f"mkdir -p {_DYNAMO_CACHE_ROOT} && "
+        # Subshell + flock-FD pattern: only the first frontend in a cold-cache
+        # job builds; later frontends block on the lock then read .complete.
+        f"( "
+        f"flock -x 200; "
+        f"if [ ! -f {cache}/.complete ]; then "
+        # Build tools — install on cold cache only. apt + protoc + cargo + maturin.
+        f"apt-get update -qq && apt-get install -y -qq libclang-dev curl git protobuf-compiler > /dev/null 2>&1 && "
+        f"if ! command -v cargo &>/dev/null; then "
+        f"curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable -q && "
+        f". $HOME/.cargo/env; fi && "
+        # Force-reinstall maturin: some images ship the module without the
+        # console-script, so `command -v maturin` fails AND a plain pip
+        # install reports "already satisfied".
+        f"pip install --break-system-packages --force-reinstall --quiet maturin && "
+        # Clone + build the runtime wheel.
+        f"DYN_BUILD_DIR=$(mktemp -d) && cd $DYN_BUILD_DIR && "
+        f"git clone https://github.com/ai-dynamo/dynamo.git && "
+        f"cd dynamo && git checkout {dynamo_hash} && "
+        f"cd lib/bindings/python/ && "
+        f'export RUSTFLAGS="${{RUSTFLAGS:-}} -C target-cpu=native --cfg tokio_unstable" && '
+        f"rm -f /tmp/ai_dynamo_runtime*.whl && "
+        f"maturin build -o /tmp && "
+        # Populate cache atomically: copy artifacts first, touch .complete last.
+        f"mkdir -p {cache} && "
+        f"cp /tmp/ai_dynamo_runtime*.whl {cache}/ && "
+        f"cd $DYN_BUILD_DIR && "
+        # Exclude cargo's target/ (~2 GB of compiled artifacts; not needed at
+        # install time) and .git/ (~300 MB of pack files). Drops the tarball
+        # from ~3 GB to ~100 MB.
+        f"tar --exclude='target' --exclude='.git' -czf {cache}/dynamo-src.tar.gz dynamo && "
+        f"touch {cache}/.complete && "
+        f"cd / && rm -rf $DYN_BUILD_DIR; "
+        f"fi "
+        f") 200>{lock} && "
+        # Install from the (now warm) cache. Both branches above land here.
+        f"pip install --break-system-packages --force-reinstall {cache}/ai_dynamo_runtime-*.whl && "
+        f"rm -rf /tmp/dynamo-src && mkdir -p /tmp/dynamo-src && "
+        f"tar -xzf {cache}/dynamo-src.tar.gz -C /tmp/dynamo-src && "
+        f"pip install --break-system-packages -e /tmp/dynamo-src/dynamo && "
+        f"echo 'Dynamo installed from source ({dynamo_hash})'"
+    )
+
+
+def _live_source_install_for_top_of_tree() -> str:
+    """Bash for live source install at HEAD — no cache (no stable key).
+
+    Keeps the original SGLang-vs-portable bifurcation: SGLang containers
+    already have rust + maturin in the right places at /sgl-workspace; other
+    containers (vLLM, etc.) install everything from scratch into /tmp.
+    """
+    sglang = (
+        # protobuf-compiler is required by modelexpress-common's build.rs (prost-build).
+        # Some SGLang images ship without /usr/bin/protoc; install it unconditionally.
+        "apt-get update -qq && apt-get install -y -qq libclang-dev curl protobuf-compiler > /dev/null 2>&1 && "
+        "if ! command -v cargo &>/dev/null; then curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable -q && source $HOME/.cargo/env; fi && "
+        # Force-reinstall maturin: see _hash_cached_source_install.
+        "pip install --break-system-packages --force-reinstall --quiet maturin && "
+        "cd /sgl-workspace/ && "
+        "git clone https://github.com/ai-dynamo/dynamo.git && "
+        "cd dynamo && "
+        "cd lib/bindings/python/ && "
+        'export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native --cfg tokio_unstable" && '
+        "maturin build -o /tmp && "
+        "pip install /tmp/ai_dynamo_runtime*.whl && "
+        "cd /sgl-workspace/dynamo/ && "
+        "pip install -e . && "
+        "cd /sgl-workspace/sglang/ && "
+        "echo 'Dynamo installed from source (HEAD)'"
+    )
+
+    portable = (
+        "if ! command -v cargo &> /dev/null || ! command -v maturin &> /dev/null; then "
+        "apt-get update -qq && apt-get install -y -qq git curl libclang-dev protobuf-compiler > /dev/null 2>&1 && "
+        "if ! command -v cargo &> /dev/null; then "
+        "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && source $HOME/.cargo/env; fi; fi && "
+        # Force-reinstall maturin: see _hash_cached_source_install.
+        "pip install --break-system-packages --force-reinstall --quiet maturin && "
+        "ORIG_DIR=$(pwd) && rm -rf /tmp/dynamo_build && mkdir -p /tmp/dynamo_build && cd /tmp/dynamo_build && "
+        "git clone https://github.com/ai-dynamo/dynamo.git && "
+        "cd dynamo && "
+        "cd lib/bindings/python/ && "
+        'export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native --cfg tokio_unstable" && '
+        "rm -f /tmp/ai_dynamo_runtime*.whl && "
+        "maturin build -o /tmp && "
+        "pip install --break-system-packages /tmp/ai_dynamo_runtime*.whl --force-reinstall && "
+        "cd /tmp/dynamo_build/dynamo/ && "
+        "pip install --break-system-packages -e . && "
+        "cd $ORIG_DIR && "
+        "echo 'Dynamo installed from source (HEAD)'"
+    )
+
+    return (
+        "echo 'Installing dynamo from source (HEAD)...' && "
+        f"if [ -d /sgl-workspace ]; then {sglang}; else {portable}; fi"
+    )
+
+
 @dataclass
 class DynamoConfig:
     """Dynamo installation configuration.
 
-    Only one of version, hash, or top_of_tree should be specified.
+    Only one of version, hash, top_of_tree, or wheel should be specified.
     Defaults to version="0.8.0" (pip install).
 
     Options:
@@ -694,31 +1159,88 @@ class DynamoConfig:
         version: Install specific version from PyPI (e.g., "0.8.0")
         hash: Clone repo and checkout specific commit hash
         top_of_tree: Clone repo at HEAD (latest)
+        wheel: ai-dynamo package version to install via staged wheels. The
+               matching ai-dynamo-runtime wheel is installed automatically.
 
-    If top_of_tree or hash is set, version is automatically cleared.
+    If top_of_tree, hash, or wheel is set, version is automatically cleared.
     """
 
     install: bool = True
     version: str | None = "0.8.0"
     hash: str | None = None
     top_of_tree: bool = False
+    wheel: str | None = None
 
     def __post_init__(self) -> None:
-        # Auto-clear version if hash or top_of_tree is set
-        if self.hash is not None or self.top_of_tree:
+        install_sources = [
+            ("hash", self.hash is not None),
+            ("top_of_tree", self.top_of_tree),
+            ("wheel", self.wheel is not None),
+        ]
+        enabled_sources = [name for name, enabled in install_sources if enabled]
+
+        # Auto-clear version if another install source is set.
+        if enabled_sources:
             object.__setattr__(self, "version", None)
 
         # Validate only one source option is set
-        if self.hash is not None and self.top_of_tree:
-            raise ValueError("Cannot specify both hash and top_of_tree")
+        if len(enabled_sources) > 1:
+            raise ValueError(f"Cannot specify both Dynamo install sources: {', '.join(enabled_sources)}")
+
+        if self.wheel is not None:
+            if not self.wheel.strip():
+                raise ValueError("dynamo.wheel must be a non-empty package version")
+            if Path(self.wheel).name.endswith(".whl") or "/" in self.wheel:
+                raise ValueError("dynamo.wheel must be a package version like '1.2.0.dev20260426', not a filename")
 
     @property
     def needs_source_install(self) -> bool:
         """Whether this config requires a source install (git clone + maturin)."""
-        return self.hash is not None or self.top_of_tree
+        return self.wheel is None and (self.hash is not None or self.top_of_tree)
+
+    @property
+    def wheel_version(self) -> str | None:
+        """Package version requested for staged wheel installation."""
+        return self.wheel
+
+    @property
+    def wheel_name(self) -> str | None:
+        """Return the ai-dynamo wheel filename for the requested package version."""
+        if not self.wheel:
+            return None
+        return f"ai_dynamo-{self.wheel}-py3-none-any.whl"
+
+    def get_wheel_environment(self) -> dict[str, str]:
+        """Environment variables consumed by ai-dynamo prefetch/setup scripts."""
+        if not self.wheel:
+            return {}
+        wheel_name = self.wheel_name
+        env = {"DYNAMO_WHEEL_NAME": wheel_name} if wheel_name else {}
+        version = self.wheel_version
+        if version:
+            env["DYNAMO_VERSION"] = version
+        return env
 
     def get_install_commands(self) -> str:
         """Get the bash commands to install dynamo."""
+        if self.wheel is not None:
+            wheel_name = self.wheel_name or Path(self.wheel).name
+            version = self.wheel_version
+            if not version:
+                raise ValueError("dynamo.wheel must provide an exact package version")
+            start_message = shlex.quote(f"Installing ai-dynamo-runtime and ai-dynamo from wheel {wheel_name}...")
+            done_message = shlex.quote(f"ai-dynamo-runtime and ai-dynamo install path completed for {wheel_name}")
+            return (
+                f"echo {start_message} && "
+                "if [ -f /srtctl-runtime/dynamo_wheels.py ]; then "
+                "python3 /srtctl-runtime/dynamo_wheels.py install; "
+                "else "
+                "echo 'ERROR: /srtctl-runtime/dynamo_wheels.py not found for ai-dynamo wheel install' >&2; "
+                "exit 1; "
+                "fi && "
+                f"echo {done_message}"
+            )
+
         if self.version is not None:
             return (
                 f"echo 'Installing dynamo {self.version}...' && "
@@ -726,54 +1248,16 @@ class DynamoConfig:
                 f"echo 'Dynamo {self.version} installed'"
             )
 
-        # Source install (hash or top-of-tree)
-        git_ref = self.hash if self.hash else "HEAD"
-        checkout_cmd = f"git checkout {self.hash}" if self.hash else ""
+        # Source install. When pinned to an immutable hash, cache the build on
+        # /configs (lustre, shared by every job) keyed by hash. First frontend
+        # in any job hitting a cold cache builds under flock; everyone else
+        # reuses the artifacts. Drops bootstrap from ~5 min + flaky github clone
+        # to ~10 sec lustre access for repeat hashes. top_of_tree skips the
+        # cache (no stable key) and always live-builds.
+        if self.hash is not None:
+            return _hash_cached_source_install(self.hash)
 
-        # Original SGLang container path, UNCHANGED
-        sglang = (
-            "apt-get update -qq && apt-get install -y -qq libclang-dev > /dev/null 2>&1 && "
-            "cd /sgl-workspace/ && "
-            "git clone https://github.com/ai-dynamo/dynamo.git && "
-            "cd dynamo && "
-            f"{checkout_cmd + ' && ' if checkout_cmd else ''}"
-            "cd lib/bindings/python/ && "
-            'export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native --cfg tokio_unstable" && '
-            "maturin build -o /tmp && "
-            "pip install /tmp/ai_dynamo_runtime*.whl && "
-            "cd /sgl-workspace/dynamo/ && "
-            "pip install -e . && "
-            "cd /sgl-workspace/sglang/ && "
-            f"echo 'Dynamo installed from source ({git_ref})'"
-        )
-
-        # Portable path for non-SGLang containers (vLLM, etc.)
-        portable = (
-            "if ! command -v cargo &> /dev/null || ! command -v maturin &> /dev/null; then "
-            "apt-get update -qq && apt-get install -y -qq git curl libclang-dev protobuf-compiler > /dev/null 2>&1 && "
-            "if ! command -v cargo &> /dev/null; then "
-            "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && source $HOME/.cargo/env; fi && "
-            "if ! command -v maturin &> /dev/null; then "
-            "pip install --break-system-packages maturin; fi; fi && "
-            "ORIG_DIR=$(pwd) && rm -rf /tmp/dynamo_build && mkdir -p /tmp/dynamo_build && cd /tmp/dynamo_build && "
-            "git clone https://github.com/ai-dynamo/dynamo.git && "
-            "cd dynamo && "
-            f"{checkout_cmd + ' && ' if checkout_cmd else ''}"
-            "cd lib/bindings/python/ && "
-            'export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native --cfg tokio_unstable" && '
-            "rm -f /tmp/ai_dynamo_runtime*.whl && "
-            "maturin build -o /tmp && "
-            "pip install --break-system-packages /tmp/ai_dynamo_runtime*.whl --force-reinstall && "
-            "cd /tmp/dynamo_build/dynamo/ && "
-            "pip install --break-system-packages -e . && "
-            "cd $ORIG_DIR && "
-            f"echo 'Dynamo installed from source ({git_ref})'"
-        )
-
-        return (
-            f"echo 'Installing dynamo from source ({git_ref})...' && "
-            f"if [ -d /sgl-workspace ]; then {sglang}; else {portable}; fi"
-        )
+        return _live_source_install_for_top_of_tree()
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -784,9 +1268,18 @@ class FrontendConfig:
 
     Attributes:
         type: Frontend type - "dynamo" (default) or "sglang"
-        enable_multiple_frontends: Scale with nginx + multiple routers
+        enable_multiple_frontends: Scale with nginx + multiple routers.
+            When ``True`` (default), srtctl stands up nginx and fans out
+            to ``num_additional_frontends + 1`` router replicas. When
+            ``False``, there is NO nginx proxy — the benchmark must
+            target the single master router (or a worker) directly at
+            ``http://localhost:<port>``. ``benchmark.command`` has no
+            placeholder substitution, so write the URL out literally.
         num_additional_frontends: Additional routers beyond master (default: 9)
         nginx_container: Custom nginx container image (default: nginx:1.27.4)
+        nginx_raise_ulimit: Raise nofile before nginx and set ``worker_rlimit_nofile``
+            in generated nginx.conf. Off by default; enable on clusters that allow it.
+            Override per job or set ``nginx_raise_ulimit`` in srtslurm.yaml for the cluster.
         args: CLI arguments passed to the frontend/router process
         env: Environment variables for frontend processes
     """
@@ -795,6 +1288,7 @@ class FrontendConfig:
     enable_multiple_frontends: bool = True
     num_additional_frontends: int = 9
     nginx_container: str = "nginx:1.27.4"
+    nginx_raise_ulimit: bool = False
     args: dict[str, Any] | None = None
     env: dict[str, str] | None = None
 
@@ -830,9 +1324,13 @@ class InfraConfig:
         etcd_nats_dedicated_node: If True, run etcd and nats on a dedicated node
             instead of the head node. This reserves the first node exclusively
             for infrastructure services. Default: False.
+        nats_max_payload_mb: Maximum NATS message payload in MB. Default: None (uses
+            NATS default of 1MB). Set to 24+ for disaggregated serving with long ISL
+            (e.g. 65K+ tokens where prompt data exceeds 1MB in NATS messages).
     """
 
     etcd_nats_dedicated_node: bool = False
+    nats_max_payload_mb: int | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -865,6 +1363,8 @@ class SrtConfig:
     output: OutputConfig = field(default_factory=OutputConfig)
     health_check: HealthCheckConfig = field(default_factory=HealthCheckConfig)
     infra: InfraConfig = field(default_factory=InfraConfig)
+    observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
+    telemetry: TelemetryConfig = field(default_factory=TelemetryConfig)
 
     environment: dict[str, str] = field(default_factory=dict)
     container_mounts: dict[
@@ -880,6 +1380,9 @@ class SrtConfig:
     # e.g. "custom-setup.sh" -> runs /configs/custom-setup.sh
     setup_script: str | None = None
 
+    # Virtual identity — declares what *should* be running (verified against fingerprint)
+    identity: IdentityConfig = field(default_factory=IdentityConfig)
+
     # Reporting configuration (status API, future: logs to S3, etc.)
     reporting: ReportingConfig | None = None
 
@@ -888,11 +1391,89 @@ class SrtConfig:
     def __post_init__(self):
         """Validate configuration after initialization."""
         self._validate_profiling()
+        self._validate_telemetry()
+        self._validate_mooncake_kv_store()
+        self._validate_het_jobs()
+
+    def _validate_het_jobs(self):
+        """When ``resources.het_jobs`` is set to True, enforce supported shape.
+
+        Validation runs only when the per-recipe override is explicitly True;
+        a cluster-level default still in effect (recipe None) is permissive at
+        load-time and resolved later by callers that pass the cluster default
+        into ``het_components()``. This keeps a single recipe that disables het
+        via ``het_jobs: false`` from tripping on a cluster default.
+        """
+        if self.resources.het_jobs is not True:
+            return
+        if not self.resources.is_disaggregated:
+            raise ValidationError(
+                "het_jobs=true requires a disaggregated layout (set resources.prefill_nodes and resources.decode_nodes)"
+            )
+        if (self.resources.prefill_nodes or 0) < 1 or (self.resources.decode_nodes or 0) < 1:
+            raise ValidationError("het_jobs=true requires prefill_nodes >= 1 and decode_nodes >= 1")
+        if self.backend_type != "sglang":
+            raise ValidationError(
+                f"het_jobs=true is only supported on the sglang backend; got backend.type={self.backend_type!r}"
+            )
+
+    def _validate_mooncake_kv_store(self):
+        """Catch the common misconfiguration: mooncake_kv_store set without a
+        matching disaggregation-transfer-backend in sglang_config.
+
+        Without --disaggregation-transfer-backend mooncake on the worker CLI,
+        the master we launch is unused and the workers fall back to default
+        transport — almost never what the user intends.
+        """
+        mooncake_cfg = getattr(self.backend, "mooncake_kv_store", None)
+        if mooncake_cfg is None:
+            return
+
+        sglang_cfg = getattr(self.backend, "sglang_config", None)
+
+        def _has_mooncake_transfer(mode_cfg: dict | None) -> bool:
+            if not mode_cfg:
+                return False
+            # SGLang accepts both "disaggregation-transfer-backend" and the
+            # underscore form; _config_to_cli_args normalizes them.
+            for key in ("disaggregation-transfer-backend", "disaggregation_transfer_backend"):
+                if mode_cfg.get(key) == "mooncake":
+                    return True
+            return False
+
+        prefill_ok = sglang_cfg is not None and _has_mooncake_transfer(sglang_cfg.prefill)
+        decode_ok = sglang_cfg is not None and _has_mooncake_transfer(sglang_cfg.decode)
+
+        if self.resources.is_disaggregated and not (prefill_ok or decode_ok):
+            raise ValidationError(
+                "mooncake_kv_store is set but neither sglang_config.prefill nor "
+                "sglang_config.decode has 'disaggregation-transfer-backend: mooncake'. "
+                "Add it to both modes (and 'disaggregation-ib-device') so workers "
+                "actually use the mooncake master srtslurm launches for you."
+            )
 
     def _validate_profiling(self):
         """Validate profiling configuration matches serving mode."""
         prof = self.profiling
         if not prof.enabled:
+            return
+
+        backend_type = self.backend.type
+
+        # torch profiling is SGLang-only (uses SGLANG_TORCH_PROFILER_DIR)
+        if prof.is_torch and backend_type == "trtllm":
+            raise ValidationError("torch profiling is not supported for the trtllm backend; use nsys instead")
+
+        # nsys-time is TRTLLM-only (time-based capture via nsys --delay/--duration)
+        if prof.is_nsys_time and backend_type != "trtllm":
+            raise ValidationError("nsys-time profiling is only supported for the trtllm backend")
+
+        # nsys-time uses top-level delay/duration — no per-phase step configs needed
+        if prof.is_nsys_time:
+            if prof.delay_secs is None or prof.duration_secs is None:
+                raise ValidationError(
+                    "profiling.delay_secs and profiling.duration_secs are required for nsys-time mode"
+                )
             return
 
         r = self.resources
@@ -925,6 +1506,28 @@ class SrtConfig:
                 )
             if (r.agg_workers or 0) <= 0:
                 raise ValidationError("Aggregated mode requires agg_workers to be > 0.")
+
+    def _validate_telemetry(self):
+        """Validate telemetry configuration."""
+        telemetry = self.telemetry
+        if telemetry is None or not telemetry.enabled:
+            return
+
+        if telemetry.provider != TelemetryProvider.SCRAPER:
+            raise ValidationError(f"Unsupported telemetry provider: {telemetry.provider}")
+
+        if not telemetry.container_image:
+            raise ValidationError("telemetry.container_image is required when telemetry is enabled")
+        if telemetry.dcgm_exporter is None:
+            raise ValidationError("telemetry.dcgm_exporter is required when telemetry is enabled")
+        if telemetry.node_exporter is None:
+            raise ValidationError("telemetry.node_exporter is required when telemetry is enabled")
+        if telemetry.default_frequency <= 0:
+            raise ValidationError("telemetry.default_frequency must be positive")
+        if telemetry.sync_interval_secs < 0:
+            raise ValidationError("telemetry.sync_interval_secs must be >= 0")
+        if telemetry.compaction_threads < 0:
+            raise ValidationError("telemetry.compaction_threads must be >= 0")
 
     @classmethod
     def from_yaml(cls, yaml_path: Path) -> "SrtConfig":

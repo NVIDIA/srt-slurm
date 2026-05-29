@@ -15,10 +15,12 @@ class TestBenchmarkRegistry:
     def test_list_benchmarks(self):
         """All expected benchmarks are registered."""
         benchmarks = list_benchmarks()
+        assert "custom" in benchmarks
         assert "sa-bench" in benchmarks
         assert "sglang-bench" in benchmarks
         assert "mmlu" in benchmarks
         assert "gpqa" in benchmarks
+        assert "gsm8k" in benchmarks
         assert "longbenchv2" in benchmarks
         assert "router" in benchmarks
 
@@ -76,6 +78,134 @@ class TestSABenchRunner:
         )
         errors = runner.validate_config(config)
         assert errors == []
+
+    def test_validate_custom_dataset_requires_path(self):
+        """Custom dataset requires dataset_path."""
+        from srtctl.benchmarks.sa_bench import SABenchRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = SABenchRunner()
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="h100"),
+            benchmark=BenchmarkConfig(type="sa-bench", dataset_name="custom", concurrencies="4x8"),
+        )
+        errors = runner.validate_config(config)
+        assert any("dataset_path" in e for e in errors)
+        assert not any("isl" in e for e in errors)
+
+    def test_validate_custom_dataset_valid(self):
+        """Custom dataset with path passes validation (isl/osl not required)."""
+        from srtctl.benchmarks.sa_bench import SABenchRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = SABenchRunner()
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="h100"),
+            benchmark=BenchmarkConfig(
+                type="sa-bench", dataset_name="custom", dataset_path="/data/bench.jsonl", concurrencies="4x8"
+            ),
+        )
+        errors = runner.validate_config(config)
+        assert errors == []
+
+    def test_build_command_custom_dataset(self):
+        """build_command passes dataset_path through as container path."""
+        from unittest.mock import MagicMock
+
+        from srtctl.benchmarks.sa_bench import SABenchRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = SABenchRunner()
+        runtime = MagicMock()
+        runtime.frontend_port = 8000
+        runtime.model_path = "/model"
+        runtime.is_hf_model = False
+
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="h100"),
+            benchmark=BenchmarkConfig(
+                type="sa-bench",
+                dataset_name="custom",
+                dataset_path="/glm5_datasets/bench.jsonl",
+                concurrencies="4x8",
+            ),
+        )
+        cmd = runner.build_command(config, runtime)
+        assert "custom" in cmd
+        assert "/glm5_datasets/bench.jsonl" in cmd
+
+    def test_build_command_default_dataset_random(self):
+        """Default dataset_name is 'random' when not specified."""
+        from unittest.mock import MagicMock
+
+        from srtctl.benchmarks.sa_bench import SABenchRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = SABenchRunner()
+        runtime = MagicMock()
+        runtime.frontend_port = 8000
+        runtime.model_path = "/model"
+        runtime.is_hf_model = False
+
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="h100"),
+            benchmark=BenchmarkConfig(type="sa-bench", isl=1024, osl=128, concurrencies="4x8"),
+        )
+        cmd = runner.build_command(config, runtime)
+        assert "random" in cmd
+        assert cmd[-1] == ""  # empty dataset path
+
+
+class TestCustomBenchmarkRunner:
+    """Test custom benchmark runner."""
+
+    def test_validate_config_requires_command(self):
+        from srtctl.benchmarks.custom import CustomBenchmarkRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = CustomBenchmarkRunner()
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="h100"),
+            benchmark=BenchmarkConfig(type="custom"),
+        )
+        errors = runner.validate_config(config)
+        assert errors == ["benchmark.command is required for benchmark.type=custom"]
+
+    def test_build_command_uses_custom_container_and_env(self):
+        from unittest.mock import MagicMock
+
+        from srtctl.benchmarks.custom import CustomBenchmarkRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = CustomBenchmarkRunner()
+        runtime = MagicMock()
+        runtime.container_image = "/default-image"
+
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="h100"),
+            benchmark=BenchmarkConfig(
+                type="custom",
+                command="python /bench/run.py --foo bar",
+                container_image="nvcr.io/nvidia/python:3.11",
+                env={"FOO": "bar"},
+            ),
+        )
+
+        assert runner.build_command(config, runtime) == ["bash", "-lc", "python /bench/run.py --foo bar"]
+        assert runner.get_container_image(config, runtime) == "nvcr.io/nvidia/python:3.11"
+        assert runner.get_environment(config, runtime) == {"FOO": "bar"}
 
 
 class TestSGLangBenchRunner:
@@ -193,6 +323,244 @@ class TestMooncakeRouterRunner:
         assert cmd[7] == "/model"  # tokenizer path
 
 
+class TestTraceReplayRunner:
+    """Test Trace Replay benchmark runner."""
+
+    def test_in_registry(self):
+        """trace-replay is registered in benchmark list."""
+        benchmarks = list_benchmarks()
+        assert "trace-replay" in benchmarks
+
+    def test_get_runner(self):
+        """Can get runner for trace-replay."""
+        runner = get_runner("trace-replay")
+        assert runner.name == "Trace-Replay-Bench"
+        assert "trace-replay" in runner.script_path
+
+    def test_validate_missing_trace_file(self):
+        """Validates that trace_file is required."""
+        from srtctl.benchmarks.trace_replay import TraceReplayRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = TraceReplayRunner()
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="gb200"),
+            benchmark=BenchmarkConfig(type="trace-replay", concurrencies=[4, 8]),
+        )
+        errors = runner.validate_config(config)
+        assert any("trace_file" in e for e in errors)
+
+    def test_validate_missing_concurrencies(self):
+        """Validates that concurrencies is required."""
+        from srtctl.benchmarks.trace_replay import TraceReplayRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = TraceReplayRunner()
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="gb200"),
+            benchmark=BenchmarkConfig(type="trace-replay", trace_file="/traces/dataset.jsonl"),
+        )
+        errors = runner.validate_config(config)
+        assert any("concurrencies" in e for e in errors)
+
+    def test_validate_valid(self):
+        """Valid config passes validation."""
+        from srtctl.benchmarks.trace_replay import TraceReplayRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = TraceReplayRunner()
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="gb200"),
+            benchmark=BenchmarkConfig(
+                type="trace-replay",
+                trace_file="/traces/dataset.jsonl",
+                concurrencies=[4, 8],
+            ),
+        )
+        errors = runner.validate_config(config)
+        assert errors == []
+
+    def test_build_command(self):
+        """Build command includes all expected arguments."""
+        from unittest.mock import MagicMock
+
+        from srtctl.benchmarks.trace_replay import TraceReplayRunner
+
+        runner = TraceReplayRunner()
+        runtime = MagicMock()
+        runtime.frontend_port = 8000
+        runtime.is_hf_model = False
+
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model/kimi-k25", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="gb200"),
+            benchmark=BenchmarkConfig(
+                type="trace-replay",
+                trace_file="/traces/dataset.jsonl",
+                concurrencies=[4, 8],
+                ttft_threshold_ms=3000,
+                itl_threshold_ms=7,
+            ),
+        )
+
+        cmd = runner.build_command(config, runtime)
+
+        assert cmd[0] == "bash"
+        assert "trace-replay" in cmd[1]
+        assert cmd[2] == "http://localhost:8000"  # endpoint
+        assert cmd[3] == "kimi-k25"  # model name (from path)
+        assert cmd[4] == "/traces/dataset.jsonl"  # trace file
+        assert cmd[5] == "4,8"  # concurrencies
+        assert cmd[6] == "3000"  # ttft threshold
+        assert cmd[7] == "7"  # itl threshold
+        assert cmd[8] == "/model"  # tokenizer path (local model)
+
+    def test_build_command_default_thresholds(self):
+        """Build command uses default thresholds when not specified."""
+        from unittest.mock import MagicMock
+
+        from srtctl.benchmarks.trace_replay import TraceReplayRunner
+
+        runner = TraceReplayRunner()
+        runtime = MagicMock()
+        runtime.frontend_port = 8000
+        runtime.is_hf_model = False
+
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model/test", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="gb200"),
+            benchmark=BenchmarkConfig(
+                type="trace-replay",
+                trace_file="/traces/dataset.jsonl",
+                concurrencies=[1],
+            ),
+        )
+
+        cmd = runner.build_command(config, runtime)
+        assert cmd[6] == "2000"  # default ttft
+        assert cmd[7] == "25"  # default itl
+
+    def test_build_command_with_aiperf_args(self):
+        """aiperf_args are passed through as CLI flags."""
+        from unittest.mock import MagicMock
+
+        from srtctl.benchmarks.trace_replay import TraceReplayRunner
+
+        runner = TraceReplayRunner()
+        runtime = MagicMock()
+        runtime.frontend_port = 8000
+        runtime.is_hf_model = False
+
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model/kimi", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="gb200"),
+            benchmark=BenchmarkConfig(
+                type="trace-replay",
+                trace_file="/traces/dataset.jsonl",
+                concurrencies=[4],
+                aiperf_args={
+                    "benchmark-duration": 600,
+                    "workers-max": 200,
+                    "request-timeout-seconds": 1200,
+                    "profile-export-level": "raw",
+                },
+            ),
+        )
+
+        cmd = runner.build_command(config, runtime)
+
+        # Positional args come first (9 of them)
+        assert cmd[8] == "/model"  # tokenizer path
+
+        # aiperf_args appended after positional args
+        extra = cmd[9:]
+        assert "--benchmark-duration" in extra
+        assert extra[extra.index("--benchmark-duration") + 1] == "600"
+        assert "--workers-max" in extra
+        assert extra[extra.index("--workers-max") + 1] == "200"
+        assert "--request-timeout-seconds" in extra
+        assert "--profile-export-level" in extra
+        assert extra[extra.index("--profile-export-level") + 1] == "raw"
+
+    def test_build_command_aiperf_args_bool(self):
+        """Boolean aiperf_args are passed as flags without values."""
+        from unittest.mock import MagicMock
+
+        from srtctl.benchmarks.trace_replay import TraceReplayRunner
+
+        runner = TraceReplayRunner()
+        runtime = MagicMock()
+        runtime.frontend_port = 8000
+        runtime.is_hf_model = False
+
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model/test", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="gb200"),
+            benchmark=BenchmarkConfig(
+                type="trace-replay",
+                trace_file="/traces/dataset.jsonl",
+                concurrencies=[1],
+                aiperf_args={"export-http-trace": True, "disabled-flag": False},
+            ),
+        )
+
+        cmd = runner.build_command(config, runtime)
+        extra = cmd[9:]
+        assert "--export-http-trace" in extra
+        assert "--disabled-flag" not in extra
+
+    def test_config_roundtrip(self):
+        """Config with trace-replay loads correctly from YAML."""
+        import tempfile
+        from pathlib import Path
+
+        import yaml
+
+        from srtctl.core.schema import SrtConfig
+
+        config_data = {
+            "name": "trace-test",
+            "model": {"path": "/model", "container": "/image", "precision": "fp4"},
+            "resources": {"gpu_type": "gb200"},
+            "benchmark": {
+                "type": "trace-replay",
+                "trace_file": "/traces/dataset.jsonl",
+                "concurrencies": [4, 8],
+                "ttft_threshold_ms": 3000,
+                "itl_threshold_ms": 7,
+            },
+        }
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            yaml.dump(config_data, f)
+            tmp_path = Path(f.name)
+
+        config = SrtConfig.from_yaml(tmp_path)
+        assert config.benchmark.type == "trace-replay"
+        assert config.benchmark.trace_file == "/traces/dataset.jsonl"
+        assert config.benchmark.concurrencies == [4, 8]
+        assert config.benchmark.ttft_threshold_ms == 3000
+        assert config.benchmark.itl_threshold_ms == 7
+
+
 class TestLMEvalRunner:
     """Test LM-Eval runner."""
 
@@ -265,6 +633,146 @@ class TestScriptsExist:
         """MMLU script exists."""
         script = SCRIPTS_DIR / "mmlu" / "bench.sh"
         assert script.exists()
+
+    def test_gsm8k_script_exists(self):
+        """GSM8K script exists."""
+        script = SCRIPTS_DIR / "gsm8k" / "bench.sh"
+        assert script.exists()
+
+
+class TestCustomDatasetLoader:
+    """Test benchmark_dataset.py custom JSONL loader."""
+
+    def test_trtllm_format(self, tmp_path):
+        """Loads TRT-LLM OpenAI-style JSONL."""
+        import sys
+
+        scripts_dir = str(SCRIPTS_DIR / "sa-bench")
+        sys.path.insert(0, scripts_dir)
+        try:
+            from benchmark_dataset import sample_custom_requests
+        finally:
+            sys.path.pop(0)
+
+        dataset_file = tmp_path / "data.jsonl"
+        dataset_file.write_text(
+            '{"input": {"messages": [{"role": "user", "content": "Hello world"}], "max_tokens": 64}}\n'
+            '{"input": {"messages": [{"role": "user", "content": "How are you?"}], "max_tokens": 128}}\n'
+        )
+
+        results = sample_custom_requests(str(dataset_file), num_requests=10)
+        assert len(results) == 2
+        assert all(len(r) == 4 for r in results)
+        assert results[0][3] is None
+
+    def test_flat_format(self, tmp_path):
+        """Loads flat prompt/output_len JSONL."""
+        import sys
+
+        scripts_dir = str(SCRIPTS_DIR / "sa-bench")
+        sys.path.insert(0, scripts_dir)
+        try:
+            from benchmark_dataset import sample_custom_requests
+        finally:
+            sys.path.pop(0)
+
+        dataset_file = tmp_path / "data.jsonl"
+        dataset_file.write_text(
+            '{"prompt": "Summarize this article", "expected_output_len": 256}\n'
+            '{"prompt": "Translate to French", "max_tokens": 100}\n'
+        )
+
+        results = sample_custom_requests(str(dataset_file), num_requests=10)
+        assert len(results) == 2
+        output_lens = {r[2] for r in results}
+        assert 256 in output_lens
+        assert 100 in output_lens
+
+    def test_num_requests_limit(self, tmp_path):
+        """Respects num_requests cap."""
+        import sys
+
+        scripts_dir = str(SCRIPTS_DIR / "sa-bench")
+        sys.path.insert(0, scripts_dir)
+        try:
+            from benchmark_dataset import sample_custom_requests
+        finally:
+            sys.path.pop(0)
+
+        lines = [f'{{"prompt": "request {i}", "expected_output_len": 64}}\n' for i in range(50)]
+        dataset_file = tmp_path / "data.jsonl"
+        dataset_file.write_text("".join(lines))
+
+        results = sample_custom_requests(str(dataset_file), num_requests=5)
+        assert len(results) == 5
+
+    def test_precomputed_token_lengths(self, tmp_path):
+        """Uses precomputed num_tokens when available in TRT-LLM format."""
+        import sys
+
+        scripts_dir = str(SCRIPTS_DIR / "sa-bench")
+        sys.path.insert(0, scripts_dir)
+        try:
+            from benchmark_dataset import sample_custom_requests
+        finally:
+            sys.path.pop(0)
+
+        dataset_file = tmp_path / "data.jsonl"
+        dataset_file.write_text(
+            '{"input": {"messages": [{"role": "user", "content": "Hello"}], "max_tokens": 64, "num_tokens": 42}}\n'
+        )
+
+        results = sample_custom_requests(str(dataset_file), num_requests=10)
+        assert len(results) == 1
+        assert results[0][1] == 42
+
+    def test_prompt_len_estimated_when_missing(self, tmp_path):
+        """Estimates prompt_len from text length when not provided."""
+        import sys
+
+        scripts_dir = str(SCRIPTS_DIR / "sa-bench")
+        sys.path.insert(0, scripts_dir)
+        try:
+            from benchmark_dataset import sample_custom_requests
+        finally:
+            sys.path.pop(0)
+
+        dataset_file = tmp_path / "data.jsonl"
+        dataset_file.write_text('{"prompt": "abcdefghijklmnop", "expected_output_len": 64}\n')
+
+        results = sample_custom_requests(str(dataset_file), num_requests=10)
+        assert len(results) == 1
+        assert results[0][1] == 4  # len("abcdefghijklmnop") // 4
+
+    def test_config_roundtrip_custom_dataset(self):
+        """Config with custom dataset loads correctly from YAML."""
+        import tempfile
+        from pathlib import Path
+
+        import yaml
+
+        from srtctl.core.schema import SrtConfig
+
+        config_data = {
+            "name": "custom-dataset-test",
+            "model": {"path": "/model", "container": "/image", "precision": "fp4"},
+            "resources": {"gpu_type": "h100"},
+            "benchmark": {
+                "type": "sa-bench",
+                "dataset_name": "custom",
+                "dataset_path": "/data/my_dataset.jsonl",
+                "concurrencies": [4, 8],
+            },
+        }
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            yaml.dump(config_data, f)
+            tmp_path = Path(f.name)
+
+        config = SrtConfig.from_yaml(tmp_path)
+        assert config.benchmark.dataset_name == "custom"
+        assert config.benchmark.dataset_path == "/data/my_dataset.jsonl"
+        assert config.benchmark.concurrencies == [4, 8]
 
 
 class TestRunPostEval:
@@ -375,6 +883,36 @@ class TestRunPostEval:
                 with patch("srtctl.cli.do_sweep.start_srun_process", return_value=mock_proc):
                     result = orch._run_post_eval(stop)
         assert result == 0
+
+    def test_post_eval_setup_script_preamble(self):
+        """setup_script runs before post-eval inside the eval container."""
+        import os
+        import threading
+        from dataclasses import replace
+        from unittest.mock import MagicMock, patch
+
+        orch = self._make_orchestrator()
+        orch.config = replace(orch.config, setup_script="install-trtllm-pip.sh")
+        stop = threading.Event()
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 0
+        mock_proc.returncode = 0
+
+        captured_kwargs = {}
+
+        def capture_srun(**kwargs):
+            captured_kwargs.update(kwargs)
+            return mock_proc
+
+        with patch.dict(os.environ, {"EVAL_ONLY": "false"}, clear=False):
+            with patch("srtctl.cli.do_sweep.wait_for_port", return_value=True):
+                with patch("srtctl.cli.do_sweep.start_srun_process", side_effect=capture_srun):
+                    result = orch._run_post_eval(stop)
+
+        assert result == 0
+        assert "Running setup script: /configs/install-trtllm-pip.sh" in captured_kwargs["bash_preamble"]
+        assert "bash '/configs/install-trtllm-pip.sh'" in captured_kwargs["bash_preamble"]
 
     def test_eval_only_successful(self):
         """Returns 0 in eval-only mode when health check and eval succeed."""

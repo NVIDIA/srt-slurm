@@ -12,8 +12,11 @@ import shlex
 from collections import defaultdict
 from typing import TYPE_CHECKING, Any
 
+from srtctl.core.fingerprint import generate_capture_script
 from srtctl.core.processes import ManagedProcess, NamedProcesses
-from srtctl.core.slurm import start_srun_process
+from srtctl.core.schema import build_otel_env
+from srtctl.core.slurm import get_hostname_ip, start_srun_process
+from srtctl.ports import ETCD_CLIENT_PORT, KV_EVENTS_PORT_BASE, KVBM_ZMQ_PORT_BASE, NATS_PORT
 
 if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
@@ -21,6 +24,10 @@ if TYPE_CHECKING:
     from srtctl.core.topology import Endpoint, Process
 
 logger = logging.getLogger(__name__)
+
+# Dynamo runtime (Rust) log filter for worker containers; YAML prefill_environment /
+# decode_environment / aggregated_environment override via the merge below.
+_DEFAULT_WORKER_DYN_LOG = "info,dynamo_runtime::pipeline::network::ingress::push_handler=warn"
 
 
 class WorkerStageMixin:
@@ -62,11 +69,17 @@ class WorkerStageMixin:
         parts = []
 
         # 1. Custom setup script (runs first)
-        if self.config.setup_script:
-            script_path = f"/configs/{self.config.setup_script}"
+        setup_script = getattr(self.config, "setup_script", None)
+        if isinstance(setup_script, str) and setup_script:
+            script_name = shlex.quote(setup_script)
             parts.append(
-                f"echo 'Running setup script: {script_path}' && "
-                f"if [ -f '{script_path}' ]; then bash '{script_path}'; else echo 'WARNING: {script_path} not found'; fi"
+                f"setup_script={script_name} && "
+                'script_path="/configs/${setup_script}" && '
+                'patch_script_path="/configs/patches/${setup_script}" && '
+                'echo "Running setup script: ${script_path} (fallback ${patch_script_path})" && '
+                'if [ -f "${script_path}" ]; then bash "${script_path}"; '
+                'elif [ -f "${patch_script_path}" ]; then bash "${patch_script_path}"; '
+                'else echo "WARNING: ${script_path} or ${patch_script_path} not found"; fi'
             )
 
         # 2. Dynamo installation (required for dynamo.sglang when using dynamo frontend)
@@ -78,6 +91,35 @@ class WorkerStageMixin:
             return None
 
         return " && ".join(parts)
+
+    def _apply_kvbm_endpoint_env(self, env_to_set: dict[str, str], endpoint_processes: list["Process"]) -> None:
+        """Fill KVBM leader ZMQ settings for an endpoint.
+
+        KVBM defaults its leader control sockets to 127.0.0.1. That works for
+        single-node endpoints, but multi-node endpoints need every worker to
+        connect to the leader node. Also assign deterministic per-endpoint ports
+        when the user did not set them, so co-located KVBM endpoints do not fight
+        over the default KVBM leader ZMQ pair.
+        """
+        if env_to_set.get("DYN_CONNECTOR", "").lower() != "kvbm" or not endpoint_processes:
+            return
+
+        leader = endpoint_processes[0]
+        endpoint_nodes = list(dict.fromkeys(p.node for p in endpoint_processes))
+
+        if len(endpoint_nodes) > 1:
+            leader_host = get_hostname_ip(leader.node, self.runtime.network_interface)
+            env_to_set.setdefault("DYN_KVBM_LEADER_ZMQ_HOST", leader_host)
+
+        if leader.kv_events_port is None:
+            return
+
+        port_offset = max(0, leader.kv_events_port - KV_EVENTS_PORT_BASE)
+        pub_port = KVBM_ZMQ_PORT_BASE + (port_offset * 2)
+        ack_port = pub_port + 1
+        if ack_port <= 65535:
+            env_to_set.setdefault("DYN_KVBM_LEADER_ZMQ_PUB_PORT", str(pub_port))
+            env_to_set.setdefault("DYN_KVBM_LEADER_ZMQ_ACK_PORT", str(ack_port))
 
     def start_worker(self, process: "Process", endpoint_processes: list["Process"]) -> ManagedProcess:
         """Start a single worker process (one srun per node, used by SGLang)."""
@@ -97,7 +139,9 @@ class WorkerStageMixin:
             (self.runtime.log_dir / "profiles" / mode).mkdir(parents=True, exist_ok=True)
         if profiling.is_nsys:
             nsys_output = f"/logs/profiles/{mode}/{process.node}_{mode}_w{index}_profile"
-            nsys_prefix = profiling.get_nsys_prefix(nsys_output, frontend_type=self.config.frontend.type)
+            nsys_prefix = profiling.get_nsys_prefix(
+                nsys_output, frontend_type=self.config.frontend.type, backend_type=self.config.backend_type
+            )
 
         # Build command using backend's method
         cmd = self.backend.build_worker_command(
@@ -112,11 +156,17 @@ class WorkerStageMixin:
         # Environment variables
         env_to_set = {
             "HEAD_NODE_IP": self.runtime.head_node_ip,
-            "ETCD_ENDPOINTS": f"http://{self.runtime.nodes.infra}:2379",
-            "NATS_SERVER": f"nats://{self.runtime.nodes.infra}:4222",
+            "ETCD_ENDPOINTS": f"http://{self.runtime.nodes.infra}:{ETCD_CLIENT_PORT}",
+            "NATS_SERVER": f"nats://{self.runtime.nodes.infra}:{NATS_PORT}",
             "DYN_SYSTEM_PORT": str(process.sys_port),
             "DYN_REQUEST_PLANE": "nats",
+            "DYN_SKIP_SGLANG_LOG_FORMATTING": "1",
         }
+
+        # Add OTEL env vars (before mode-specific env so OTEL_SERVICE_NAME can be overridden)
+        env_to_set.update(build_otel_env(self.config.observability, mode))
+
+        env_to_set.setdefault("DYN_LOG", _DEFAULT_WORKER_DYN_LOG)
 
         # Add mode-specific environment variables from backend
         # Support simple {node} and {node_id} templating
@@ -149,6 +199,15 @@ class WorkerStageMixin:
         # Add backend-specific process environment variables (e.g., unique ports)
         env_to_set.update(self.backend.get_process_environment(process))
 
+        # Add mooncake worker env vars if configured (SGLang only). Resolve the
+        # worker's own IP so MOONCAKE_LOCAL_HOSTNAME is correct for multi-node
+        # peer-to-peer transfers (defaulting to "localhost" silently breaks them).
+        if hasattr(self.backend, "get_mooncake_worker_env"):
+            local_hostname = get_hostname_ip(process.node, self.runtime.network_interface)
+            env_to_set.update(self.backend.get_mooncake_worker_env(self.runtime.infra_node_ip, local_hostname))
+
+        self._apply_kvbm_endpoint_env(env_to_set, endpoint_processes)
+
         # Log env vars in the format: VAR=value VAR2=value2
         env_str = " ".join(f"{k}={v}" for k, v in sorted(env_to_set.items()))
         logger.info("Env: %s", env_str)
@@ -157,8 +216,13 @@ class WorkerStageMixin:
         if profiling.enabled:
             logger.info("Profiling: %s mode", profiling.type)
 
-        # Build bash preamble (setup script + dynamo install)
+        # Build bash preamble (setup script + dynamo install + fingerprint)
         bash_preamble = self._build_worker_preamble()
+        fp_cmd = generate_capture_script(f"/logs/fingerprint_{mode}_w{index}.json")
+        # Keep fingerprint failures non-fatal, but do not let its `|| true`
+        # mask failures from setup/dynamo install commands before it.
+        fp_cmd = f"( {fp_cmd} )"
+        bash_preamble = f"{bash_preamble} && {fp_cmd}" if bash_preamble else fp_cmd
 
         proc = start_srun_process(
             command=cmd,
@@ -169,6 +233,7 @@ class WorkerStageMixin:
             env_to_set=env_to_set,
             bash_preamble=bash_preamble,
             srun_options=self.runtime.srun_options,
+            het_group=process.het_group,
         )
 
         return ManagedProcess(
@@ -214,8 +279,10 @@ class WorkerStageMixin:
         if profiling.enabled:
             (self.runtime.log_dir / "profiles" / mode).mkdir(parents=True, exist_ok=True)
         if profiling.is_nsys:
-            nsys_output = f"/logs/profiles/{mode}/{leader.node}_{mode}_w{index}_profile"
-            nsys_prefix = profiling.get_nsys_prefix(nsys_output, frontend_type=self.config.frontend.type)
+            nsys_output = f"/logs/profiles/{mode}/{leader.node}_{mode}_w{index}_profile_rank%q{{SLURM_PROCID}}"
+            nsys_prefix = profiling.get_nsys_prefix(
+                nsys_output, frontend_type=self.config.frontend.type, backend_type=self.config.backend_type
+            )
 
         # Build command using backend's method
         cmd = self.backend.build_worker_command(
@@ -230,10 +297,16 @@ class WorkerStageMixin:
         # Environment variables
         env_to_set = {
             "HEAD_NODE_IP": self.runtime.head_node_ip,
-            "ETCD_ENDPOINTS": f"http://{self.runtime.nodes.infra}:2379",
-            "NATS_SERVER": f"nats://{self.runtime.nodes.infra}:4222",
+            "ETCD_ENDPOINTS": f"http://{self.runtime.nodes.infra}:{ETCD_CLIENT_PORT}",
+            "NATS_SERVER": f"nats://{self.runtime.nodes.infra}:{NATS_PORT}",
             "DYN_SYSTEM_PORT": str(leader.sys_port),
+            "DYN_SKIP_SGLANG_LOG_FORMATTING": "1",
         }
+
+        # Add OTEL env vars (before mode-specific env so OTEL_SERVICE_NAME can be overridden)
+        env_to_set.update(build_otel_env(self.config.observability, mode))
+
+        env_to_set.setdefault("DYN_LOG", _DEFAULT_WORKER_DYN_LOG)
 
         # Add mode-specific environment variables from backend
         env_to_set.update(self.backend.get_environment_for_mode(mode))
@@ -250,6 +323,16 @@ class WorkerStageMixin:
         if len(leader.gpu_indices) < self.runtime.gpus_per_node:
             env_to_set["CUDA_VISIBLE_DEVICES"] = leader.cuda_visible_devices
 
+        # Add mooncake worker env vars if configured (SGLang only). For MPI-style
+        # endpoint launching we use the leader node's IP — mooncake's per-worker
+        # hostname is fundamentally per-process, but TRTLLM-style launching uses
+        # one srun for the whole endpoint, so leader IP is the best we can do.
+        if hasattr(self.backend, "get_mooncake_worker_env"):
+            local_hostname = get_hostname_ip(leader.node, self.runtime.network_interface)
+            env_to_set.update(self.backend.get_mooncake_worker_env(self.runtime.infra_node_ip, local_hostname))
+
+        self._apply_kvbm_endpoint_env(env_to_set, endpoint_processes)
+
         # Log env vars in the format: VAR=value VAR2=value2
         env_str = " ".join(f"{k}={v}" for k, v in sorted(env_to_set.items()))
         logger.info("Env: %s", env_str)
@@ -258,8 +341,13 @@ class WorkerStageMixin:
         if profiling.enabled:
             logger.info("Profiling: %s mode", profiling.type)
 
-        # Build bash preamble (setup script + dynamo install)
+        # Build bash preamble (setup script + dynamo install + fingerprint)
         bash_preamble = self._build_worker_preamble()
+        fp_cmd = generate_capture_script(f"/logs/fingerprint_{mode}_w{index}.json")
+        # Keep fingerprint failures non-fatal, but do not let its `|| true`
+        # mask failures from setup/dynamo install commands before it.
+        fp_cmd = f"( {fp_cmd} )"
+        bash_preamble = f"{bash_preamble} && {fp_cmd}" if bash_preamble else fp_cmd
 
         # Get srun config from backend
         srun_config = self.backend.get_srun_config()
@@ -277,6 +365,7 @@ class WorkerStageMixin:
             mpi=srun_config.mpi,
             oversubscribe=srun_config.oversubscribe,
             cpu_bind=srun_config.cpu_bind,
+            het_group=leader.het_group,
         )
 
         return ManagedProcess(

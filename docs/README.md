@@ -30,6 +30,12 @@ When you run `srtctl apply -f config.yaml`, the tool:
 3. Generates a SLURM batch script and SGLang configuration files
 4. Submits to SLURM
 
+The `srtctl-mcp` server is different from `srtctl apply`: it is a schema and
+recipe-authoring helper. It does not use host-side `srtslurm.yaml` for cluster
+defaults, aliases, containers, model paths, filesystem checks, or dry-run
+behavior. Run `srtctl` on the compute side, or use an orchestrator remote
+preflight path, for those checks.
+
 Once allocated, workers launch inside containers, discover each other through ETCD and NATS, and begin serving. If you've configured a benchmark, it runs automatically against the serving endpoint and saves results to the log directory.
 
 ## Commands

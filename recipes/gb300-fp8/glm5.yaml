@@ -1,0 +1,434 @@
+# GB300-FP8 GLM5 disaggregated recipe
+
+base:
+  name: "gb300-fp8-glm5"
+
+  model:
+    path: "glm-5-fp8"
+    container: "v0.5.11"
+    precision: "fp8"
+
+  identity:
+    model:
+      repo: "zai-org/GLM-5-FP8"
+      revision: "4f96cc5eec29dcee5d6ded54f7ffe889438f9516"
+    frameworks:
+      dynamo: "1.1.0"
+      sglang: "0.5.11"
+
+  resources:
+    gpu_type: "gb300"
+    gpus_per_node: 4
+
+  frontend:
+    type: "dynamo"
+  dynamo:
+    version: "1.1.0"
+
+  backend:
+    prefill_environment:
+      TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: "1800"
+      PYTHONUNBUFFERED: "1"
+      DYN_SKIP_SGLANG_LOG_FORMATTING: "1"
+      SGLANG_DISAGGREGATION_HEARTBEAT_MAX_FAILURE: "100000"
+      SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT: "100000"
+      SGLANG_DISAGGREGATION_WAITING_TIMEOUT: "100000"
+      MC_TE_METRIC: "true"
+      MC_FORCE_MNNVL: "1"
+      NCCL_MNNVL_ENABLE: "1"
+      NCCL_CUMEM_ENABLE: "1"
+      SGLANG_MOONCAKE_CUSTOM_MEM_POOL: "True"
+      SGLANG_USE_MESSAGE_QUEUE_BROADCASTER: "0"
+      SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK: "1"
+      DYN_REQUEST_PLANE: "nats"
+
+    decode_environment:
+      TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: "1800"
+      PYTHONUNBUFFERED: "1"
+      DYN_SKIP_SGLANG_LOG_FORMATTING: "1"
+      SGLANG_DISAGGREGATION_HEARTBEAT_MAX_FAILURE: "100000"
+      SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT: "100000"
+      SGLANG_DISAGGREGATION_WAITING_TIMEOUT: "100000"
+      MC_TE_METRIC: "true"
+      MC_FORCE_MNNVL: "1"
+      NCCL_MNNVL_ENABLE: "1"
+      NCCL_CUMEM_ENABLE: "1"
+      SGLANG_MOONCAKE_CUSTOM_MEM_POOL: "True"
+      SGLANG_USE_MESSAGE_QUEUE_BROADCASTER: "0"
+      SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK: "1"
+      DYN_REQUEST_PLANE: "nats"
+      # DeepEP per-rank dispatch buffer; must be >= ceil(cuda_graph_max_bs / dp_size).
+      # Default 128 overflows with large DP + batch (e.g. 4096/24 ~= 171 > 128). Limit 1024.
+      SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK: "512"
+
+    sglang_config:
+      prefill:
+        # Model configuration
+        served-model-name: "GLM-5-FP8"
+        trust-remote-code: true
+        quantization: "fp8"
+        kv-cache-dtype: "fp8_e4m3"
+
+        # Disaggregation mode
+        disaggregation-mode: "prefill"
+        disaggregation-transfer-backend: "nixl"
+
+        # Size limits
+        max-running-requests: 256
+        cuda-graph-max-bs: 256
+        mem-fraction-static: 0.7
+        context-length: 9600
+        chunked-prefill-size: 32768
+        max-prefill-tokens: 8192
+
+        # Parallelism
+        tensor-parallel-size: 4
+        data-parallel-size: 4
+        expert-parallel-size: 1
+        enable-dp-attention: true
+        enable-dp-lm-head: true
+        load-balance-method: "total_tokens"
+
+        # Backend
+        nsa-decode-backend: "trtllm"
+        nsa-prefill-backend: "trtllm"
+        moe-runner-backend: "flashinfer_trtllm"
+
+        # Other flags
+        enable-flashinfer-allreduce-fusion: true
+        disable-radix-cache: true
+        weight-loader-prefetch-checkpoints: true
+        model-loader-extra-config: '{"enable_multithread_load": true}'
+
+      decode:
+        # Model configuration
+        served-model-name: "GLM-5-FP8"
+        trust-remote-code: true
+
+        quantization: "fp8"
+        kv-cache-dtype: "fp8_e4m3"
+
+        # Disaggregation mode
+        disaggregation-mode: "decode"
+        disaggregation-transfer-backend: "nixl"
+
+        # Memory and token limits
+        mem-fraction-static: 0.8
+        context-length: 9600
+
+        # Backend
+        nsa-decode-backend: "trtllm"
+        nsa-prefill-backend: "trtllm"
+        # moe-runner-backend: "cutedsl"
+
+        # Detokenizer
+        skip-tokenizer-init: true
+        stream-interval: 30
+
+        # Other flags
+        disable-radix-cache: true
+        weight-loader-prefetch-checkpoints: true
+        model-loader-extra-config: '{"enable_multithread_load": true}'
+
+  health_check:
+    max_attempts: 360
+    interval_seconds: 10
+
+  benchmark:
+    type: "sa-bench"
+    req_rate: "inf"
+
+################# 8k1k ######################
+
+zip_override_8k1k_hightpt:
+  resources:
+    prefill_nodes:   [14, 12, 10,  8]
+    prefill_workers: [14, 12, 10,  8]
+    decode_nodes:    [4,  6,  8,  10]
+    decode_workers:  1
+  frontend:
+    enable_multiple_frontends: true
+    num_additional_frontends: 9
+  backend:
+    sglang_config:
+      decode:
+
+        # Parallelism
+        tensor-parallel-size: [16, 24, 32, 40]
+        expert-parallel-size: [16, 24, 32, 40]
+        data-parallel-size:   [16, 24, 32, 40]
+
+        # dp
+        enable-dp-lm-head: true
+        enable-dp-attention: true
+        moe-dense-tp-size: 1
+        # load-balance-method: "total_tokens"
+
+        # ep
+        ep-num-redundant-experts: [32, 32, 32, 24]
+        ep-dispatch-algorithm: "static"
+        # eplb-algorithm: "deepseek"
+
+        moe-a2a-backend: "deepep"
+        deepep-mode: "low_latency"
+        deepep-config: "/configs/deepep_config.json"
+
+        max-running-requests: [2800, 1680, 1280, 880]
+        cuda-graph-max-bs:    [ 175,   70,   40,  22]
+
+  benchmark:
+    isl: 8192
+    osl: 1024
+    concurrencies: ["2800", "1700", "1300", "900"]
+
+
+zip_override_mtp_8k1k_hightpt:
+  resources:
+    prefill_nodes:   [14, 12, 10,  8]
+    prefill_workers: [14, 12, 10,  8]
+    decode_nodes:    [4,  6,  8,  10]
+    decode_workers:  1
+  frontend:
+    enable_multiple_frontends: true
+    num_additional_frontends: 9
+  backend:
+    sglang_config:
+      decode:
+
+        # Parallelism
+        tensor-parallel-size: [16, 24, 32, 40]
+        expert-parallel-size: [16, 24, 32, 40]
+        data-parallel-size:   [16, 24, 32, 40]
+
+        # dp
+        enable-dp-lm-head: true
+        enable-dp-attention: true
+        moe-dense-tp-size: 1
+        # load-balance-method: "total_tokens"
+
+        # ep
+        ep-num-redundant-experts: [32, 32, 32, 24]
+        ep-dispatch-algorithm: "static"
+        # eplb-algorithm: "deepseek"
+
+        moe-a2a-backend: "deepep"
+        deepep-mode: "low_latency"
+        deepep-config: "/configs/deepep_config.json"
+
+        max-running-requests: [2800, 1680, 1280, 880]
+        cuda-graph-max-bs:    [ 175,   70,   40,  22]
+
+        speculative-algorithm: "EAGLE"
+        speculative-num-steps: 2
+        speculative-eagle-topk: 1
+        speculative-num-draft-tokens: 3
+
+  benchmark:
+    isl: 8192
+    osl: 1024
+    concurrencies: ["2800", "1700", "1300", "900"]
+
+zip_override_8k1k_lowlat:
+  resources:
+    prefill_nodes:   1
+    prefill_workers: 1
+    decode_nodes:   [9, 17, 17]
+    decode_workers: [9, 17, 17]
+  backend:
+    sglang_config:
+      decode:
+        # Parallelism
+        tensor-parallel-size: 4
+        expert-parallel-size: 1
+        data-parallel-size:   1
+        enable-flashinfer-allreduce-fusion: true
+
+        moe-runner-backend: "flashinfer_trtllm"
+
+        max-running-requests: [15, 8, 1]
+        cuda-graph-max-bs:    [15, 8, 1]
+
+  benchmark:
+    isl: 8192
+    osl: 1024
+    concurrencies: ["150", "128x64x32", "24"]
+
+
+zip_override_mtp_8k1k_lowlat:
+  resources:
+    prefill_nodes:   1
+    prefill_workers: 1
+    decode_nodes:   [9, 17, 17]
+    decode_workers: [9, 17, 17]
+  backend:
+    sglang_config:
+      decode:
+        # Parallelism
+        tensor-parallel-size: 4
+        expert-parallel-size: 1
+        data-parallel-size:   1
+        enable-flashinfer-allreduce-fusion: true
+
+        moe-runner-backend: "flashinfer_trtllm"
+
+        max-running-requests: [15, 8, 1]
+        cuda-graph-max-bs:    [15, 8, 1]
+
+        speculative-algorithm: "EAGLE"
+        speculative-num-steps: 2
+        speculative-eagle-topk: 1
+        speculative-num-draft-tokens: 3
+
+  benchmark:
+    isl: 8192
+    osl: 1024
+    concurrencies: ["150", "128x64x32", "24"]
+
+
+
+################# 1k1k #################
+
+zip_override_1k1k_hightpt:
+  resources:
+    prefill_nodes:   [12, 10,  8,  6,  4]
+    prefill_workers: [12, 10,  8,  6,  4]
+    decode_nodes:    [ 6,  8, 10, 12, 14]
+    decode_workers:  1
+  frontend:
+    enable_multiple_frontends: true
+    num_additional_frontends: 9
+  backend:
+    sglang_config:
+      decode:
+
+        # Parallelism
+        tensor-parallel-size: [24, 32, 40, 48, 56]
+        expert-parallel-size: [24, 32, 40, 48, 56]
+        data-parallel-size:   [24, 32, 40, 48, 56]
+
+        # dp
+        enable-dp-lm-head: true
+        enable-dp-attention: true
+        moe-dense-tp-size: 1
+        # load-balance-method: "total_tokens"
+
+        # ep
+        ep-num-redundant-experts: [32, 32, 24, 32, 24]
+        ep-dispatch-algorithm: "static"
+        # eplb-algorithm: "deepseek"
+
+        moe-a2a-backend: "deepep"
+        deepep-mode: "low_latency"
+        deepep-config: "/configs/deepep_config.json"
+
+        max-running-requests: [8192, 8192, 7200, 6144, 5600]
+        cuda-graph-max-bs:    [512,   256, 180,  128,  100]
+
+  benchmark:
+    isl: 1024
+    osl: 1024
+    concurrencies: ["8192", "7500", "7300", "6500", "5700"]
+
+
+zip_override_mtp_1k1k_hightpt:
+  resources:
+    prefill_nodes:   [12, 10,  8,  6,  4]
+    prefill_workers: [12, 10,  8,  6,  4]
+    decode_nodes:    [ 6,  8, 10, 12, 14]
+    decode_workers:  1
+  frontend:
+    enable_multiple_frontends: true
+    num_additional_frontends: 9
+  backend:
+    sglang_config:
+      decode:
+
+        # Parallelism
+        tensor-parallel-size: [24, 32, 40, 48, 56]
+        expert-parallel-size: [24, 32, 40, 48, 56]
+        data-parallel-size:   [24, 32, 40, 48, 56]
+
+        # dp
+        enable-dp-lm-head: true
+        enable-dp-attention: true
+        moe-dense-tp-size: 1
+        # load-balance-method: "total_tokens"
+
+        # ep
+        ep-num-redundant-experts: [32, 32, 24, 32, 24]
+        ep-dispatch-algorithm: "static"
+        # eplb-algorithm: "deepseek"
+
+        moe-a2a-backend: "deepep"
+        deepep-mode: "low_latency"
+        deepep-config: "/configs/deepep_config.json"
+
+        max-running-requests: [8192, 8192, 7200, 6144, 5600]
+        cuda-graph-max-bs:    [512,   256, 180,  128,  100]
+
+        speculative-algorithm: "EAGLE"
+        speculative-num-steps: 2
+        speculative-eagle-topk: 1
+        speculative-num-draft-tokens: 3
+
+  benchmark:
+    isl: 1024
+    osl: 1024
+    concurrencies: ["8192", "7500", "7300", "6500", "5700"]
+
+
+zip_override_1k1k_lowlat:
+  resources:
+    prefill_nodes:   1
+    prefill_workers: 1
+    decode_nodes:   17
+    decode_workers: 17
+  backend:
+    sglang_config:
+      decode:
+        # Parallelism
+        tensor-parallel-size: 4
+        expert-parallel-size: 1
+        data-parallel-size:   1
+        enable-flashinfer-allreduce-fusion: true
+
+        moe-runner-backend: "flashinfer_trtllm"
+
+        max-running-requests: [32, 1]
+        cuda-graph-max-bs:    [32, 1]
+
+  benchmark:
+    isl: 1024
+    osl: 1024
+    concurrencies: ["512x256x128x64", "32"]
+
+
+zip_override_mtp_1k1k_lowlat:
+  resources:
+    prefill_nodes:   1
+    prefill_workers: 1
+    decode_nodes:   17
+    decode_workers: 17
+  backend:
+    sglang_config:
+      decode:
+        # Parallelism
+        tensor-parallel-size: 4
+        expert-parallel-size: 1
+        data-parallel-size:   1
+        enable-flashinfer-allreduce-fusion: true
+
+        moe-runner-backend: "flashinfer_trtllm"
+
+        max-running-requests: [32, 1]
+        cuda-graph-max-bs:    [32, 1]
+
+        speculative-algorithm: "EAGLE"
+        speculative-num-steps: 2
+        speculative-eagle-topk: 1
+        speculative-num-draft-tokens: 3
+
+  benchmark:
+    isl: 1024
+    osl: 1024
+    concurrencies: ["512x256x128x64", "32"]

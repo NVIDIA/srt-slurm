@@ -3,18 +3,21 @@
 # Defines the group of servers to which NGINX will proxy requests.
 # NGINX will cycle through these servers in a round-robin fashion by default.
 worker_processes auto;
+{% if nginx_raise_ulimit %}
+worker_rlimit_nofile 1048576;
+{% endif %}
 
 http {
     access_log off;
     upstream backend_servers {
         {% for frontend_host in frontend_hosts %}
-        server {{ frontend_host }}:{{ backend_port | default(8000) }};
+        server {{ frontend_host }}:{{ backend_port }};
         {% endfor %}
     }
 
     # The main server block that listens for incoming traffic.
     server {
-        listen {{ listen_port | default(8000) }}; # Public-facing port for incoming HTTP requests.
+        listen {{ listen_port }}; # Public-facing port for incoming HTTP requests.
 
         location / {
             # Pass the request to the upstream group defined above.

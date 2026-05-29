@@ -1,9 +1,11 @@
 # Accuracy Benchmarks
 
-In srt-slurm, users can run different accuracy benchmarks by setting the benchmark section in the config yaml file. Supported benchmarks include `mmlu`, `gpqa`, `longbenchv2`, and `lm-eval`.
+In srt-slurm, users can run different accuracy benchmarks by setting the benchmark section in the config yaml file. Supported benchmarks include `mmlu`, `gpqa`, `longbenchv2`, `lm-eval`, and AIME (via the script under `configs/aime/`).
 
 ## Table of Contents
 
+- [How Scoring Works](#how-scoring-works)
+- [AIME](#aime)
 - [MMLU](#mmlu)
 - [GPQA](#gpqa)
 - [LongBench-V2](#longbench-v2)
@@ -19,6 +21,104 @@ In srt-slurm, users can run different accuracy benchmarks by setting the benchma
 ---
 
 **Note**: The `context-length` argument in the config yaml needs to be larger than the `max_tokens` argument of accuracy benchmark.
+
+
+## How Scoring Works
+
+Accuracy benchmarks send a fixed dataset through the running OpenAI-compatible endpoint and compare each model
+response against the benchmark's expected answer. For AIME, NeMo Skills prompts the model to put the final answer in
+`\boxed{...}`, extracts that final boxed answer, and grades it with its math evaluator. There is no LLM judge in the
+default AIME path; the score is computed from exact/symbolic correctness.
+
+When `repeat` is greater than 1, the benchmark runs multiple sampled generations per problem. NeMo Skills summarizes
+metrics across those generations, which is useful for comparing pass@1-style deterministic accuracy and sampled
+accuracy on the same serving setup.
+
+
+## AIME
+
+AIME runs in the official **NeMo Skills container** (`nvcr.io/nvidia/eval-factory/nemo-skills:26.03`),
+side-by-side with the model server. There is no first-class `type: aime` runner —
+the eval logic lives in `configs/aime/run.sh` and recipes wire it up via
+`type: custom`.
+
+### Recipe shape
+
+```yaml
+benchmark:
+  type: custom
+  container_image: nemo-skills    # alias defined in srtslurm.yaml `containers:`
+                                  # or the full nvcr.io URI for Pyxis auto-pull
+  env:
+    OPENAI_API_KEY: "EMPTY"       # ns/litellm requires it set; value is unused
+    HF_TOKEN: "${HF_TOKEN}"       # for gated HF datasets via ns prepare_data
+    # Optional knob overrides — defaults match the upstream reasoning-eval reference:
+    # MODEL: "dspro"           # must match served-model-name from sglang_config
+    # DATASET: "aime25"        # aime24 | aime25 | aime26
+    # REPEAT: "16"             # pass@k samples per problem
+    # MAX_TOKENS: "400000"     # generous ceiling for reasoning traces
+    # NUM_THREADS: "512"       # client-side concurrency
+    # TEMPERATURE: "1.0"
+    # TOP_P: "1.0"
+    # SEED: "42"               # --starting_seed for reproducibility
+  command: |
+    bash /configs/aime/run.sh
+```
+
+Set the eval container alias in `srtslurm.yaml`:
+
+```yaml
+containers:
+  nemo-skills: "/shared/containers/nvidia+eval-factory+nemo-skills+26.03.sqsh"
+```
+
+Pre-cache the squashfs with: `enroot import 'docker://nvcr.io#nvidia/eval-factory/nemo-skills:26.03'`.
+
+### Reasoning-mode env vars (server side)
+
+For reasoning-capable models (DeepSeek-V4-Pro thinking, GPT-OSS, etc.) — without
+these the model emits non-reasoning answers and AIME pass@k drops ~30 points
+below what the model can do.
+
+```yaml
+backend:
+  prefill_environment:
+    SGLANG_ENABLE_THINKING: "1"
+    SGLANG_REASONING_EFFORT: "max"
+  decode_environment:
+    SGLANG_ENABLE_THINKING: "1"
+    SGLANG_REASONING_EFFORT: "max"
+```
+
+### What the script does
+
+1. `ns prepare_data $DATASET` — fetches the dataset into the NeMo Skills install.
+2. `ns eval ...` against `http://localhost:8000/v1` (the in-job dynamo frontend),
+   pass@k=`$REPEAT`, with the upstream reasoning-eval reference's tuning
+   defaults. NeMo Skills' default `\boxed{}` extractor scores the generations.
+
+Outputs land at `/logs/accuracy/<dataset>/eval-results/<dataset>/metrics.json`
+with pass@1, pass@N, and majority@N.
+
+### Custom answer-extraction regex (not currently applied)
+
+The SGLang team's reasoning-eval reference suggests broadening the answer extractor with these two `ns eval` overrides:
+
+```
+++eval_config.extract_from_boxed=False
+++eval_config.extract_regex=(?:\boxed\{|\*\*Answer\*\*[^0-9\-]{0,30}|(?i:final answer)[^0-9\-]{0,30}|(?i:answer)\s*(?:is|=|:)[^0-9\-]{0,30})(-?\d+)
+```
+
+`run.sh` does **not** pass them. `ns eval` forwards Hydra `++overrides` to parallel
+`python -m nemo_skills.inference.generate` subprocesses through nemo-run, which
+constructs the inner command line **unquoted** — bash strips backslashes from
+the regex before Python `re.compile` sees it, the regex becomes invalid, and
+every generate subprocess crashes on import. Verified on cluster runs that
+produced empty output dirs and a false "Benchmark completed successfully".
+
+If you need a broader extractor for your model, post-process the cached
+`output-rs<seed>.jsonl` files with a Python script (raw-string regex, no shell
+layers).
 
 
 ## MMLU

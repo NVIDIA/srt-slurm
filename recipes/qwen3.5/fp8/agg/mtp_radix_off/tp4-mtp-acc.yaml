@@ -1,0 +1,63 @@
+# Qwen3.5-397B-A17B-FP8 Aggregated TP4 + MTP Accuracy Verification (GSM8K)
+# NEXTN MTP speculative decoding, radix cache OFF
+
+name: "qwen3.5-agg-tp4-mtp-acc"
+
+model:
+  path: "qwen3.5-fp8"
+  container: "dev"
+  precision: "fp8"
+
+resources:
+  gpu_type: "gb200"
+  gpus_per_node: 4
+  agg_nodes: 1
+  agg_workers: 1
+
+backend:
+  type: sglang
+
+  aggregated_environment:
+    SGLANG_ENABLE_SPEC_V2: "1"
+    PYTHONUNBUFFERED: "1"
+    NCCL_MNNVL_ENABLE: "1"
+    NCCL_CUMEM_ENABLE: "1"
+    SGLANG_DG_CACHE_DIR: "/configs/deepgemm-cache"
+    FLASHINFER_WORKSPACE_BASE: "/configs/flashinfer-cache"
+
+  sglang_config:
+    aggregated:
+      served-model-name: "Qwen/Qwen3.5-397B-A17B-FP8"
+      model-path: "/model/"
+
+      attention-backend: "trtllm_mha"
+      quantization: "fp8"
+      kv-cache-dtype: "fp8_e4m3"
+
+      tensor-parallel-size: 4
+
+      mamba-ssm-dtype: "bfloat16"
+      moe-runner-backend: "flashinfer_trtllm"
+
+      speculative-algorithm: "NEXTN"
+      speculative-num-steps: 3
+      speculative-eagle-topk: 1
+      speculative-num-draft-tokens: 4
+
+      disable-radix-cache: true
+      mamba-scheduler-strategy: "no_buffer"
+      max-running-requests: 128
+      mem-fraction-static: 0.8
+      chunked-prefill-size: 16384
+      max-prefill-tokens: 16384
+      cuda-graph-max-bs: 128
+
+      decode-log-interval: 1
+      stream-interval: 50
+
+benchmark:
+  type: "gsm8k"
+  num_examples: 1319
+  max_tokens: 16000
+  num_threads: 128
+  num_shots: 8

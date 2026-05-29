@@ -22,8 +22,8 @@ def _make_yaml() -> YAML:
     y = YAML()
     y.preserve_quotes = True
     y.width = 120
-    y.best_sequence_indent = 2
-    y.best_map_flow_style = False
+    object.__setattr__(y, "best_sequence_indent", 2)
+    object.__setattr__(y, "best_map_flow_style", False)
     return y
 
 
@@ -67,7 +67,7 @@ def comment_aware_merge(base: CommentedMap, override: CommentedMap | dict[str, A
             val = override[key]
             if val is None:
                 continue  # None → delete key
-            if isinstance(base[key], CommentedMap) and isinstance(val, (dict, CommentedMap)):
+            if isinstance(base[key], CommentedMap) and isinstance(val, dict | CommentedMap):
                 result[key] = comment_aware_merge(base[key], val)
             else:
                 result[key] = copy.deepcopy(val)

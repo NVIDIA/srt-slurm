@@ -21,49 +21,46 @@ from typing import Any
 import yaml
 from ruamel.yaml.comments import CommentedMap
 
+from .lockfile import verify_lock_integrity
 from .schema import ClusterConfig, SrtConfig
 
 logger = logging.getLogger(__name__)
+
+
+def find_cluster_config_path() -> Path | None:
+    """Locate srtslurm.yaml using the standard search order."""
+    # Check env var first (highest priority)
+    env_config = os.environ.get("SRTSLURM_CONFIG")
+    if env_config:
+        env_path = Path(env_config)
+        if env_path.exists():
+            logger.debug(f"Using srtslurm.yaml from SRTSLURM_CONFIG: {env_path}")
+            return env_path
+        logger.warning(f"SRTSLURM_CONFIG set but file not found: {env_config}")
+        return None
+
+    search_paths = [
+        Path.cwd() / "srtslurm.yaml",
+        Path.cwd().parent / "srtslurm.yaml",
+        Path.cwd().parent.parent / "srtslurm.yaml",
+    ]
+    for path in search_paths:
+        if path.exists():
+            return path
+
+    logger.debug("No srtslurm.yaml found - using config as-is")
+    return None
 
 
 def load_cluster_config() -> dict[str, Any] | None:
     """
     Load cluster configuration from srtslurm.yaml if it exists.
 
-    Searches for srtslurm.yaml in order:
-    1. SRTSLURM_CONFIG environment variable (if set)
-    2. Current working directory
-    3. Parent directories up to 3 levels
-
     Returns None if file doesn't exist (graceful degradation).
     """
-    # Check env var first (highest priority)
-    env_config = os.environ.get("SRTSLURM_CONFIG")
-    if env_config:
-        env_path = Path(env_config)
-        if env_path.exists():
-            cluster_config_path = env_path
-            logger.debug(f"Using srtslurm.yaml from SRTSLURM_CONFIG: {cluster_config_path}")
-        else:
-            logger.warning(f"SRTSLURM_CONFIG set but file not found: {env_config}")
-            return None
-    else:
-        # Search paths
-        search_paths = [
-            Path.cwd() / "srtslurm.yaml",
-            Path.cwd().parent / "srtslurm.yaml",
-            Path.cwd().parent.parent / "srtslurm.yaml",
-        ]
-
-        cluster_config_path = None
-        for path in search_paths:
-            if path.exists():
-                cluster_config_path = path
-                break
-
-        if not cluster_config_path:
-            logger.debug("No srtslurm.yaml found - using config as-is")
-            return None
+    cluster_config_path = find_cluster_config_path()
+    if not cluster_config_path:
+        return None
 
     try:
         with open(cluster_config_path) as f:
@@ -117,6 +114,25 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
         slurm["time_limit"] = cluster_config["default_time_limit"]
         logger.debug(f"Applied default time_limit: {slurm['time_limit']}")
 
+    default_sbatch_directives = cluster_config.get("default_sbatch_directives")
+    if isinstance(default_sbatch_directives, dict):
+        sbatch_directives = config.setdefault("sbatch_directives", {})
+        for key, value in default_sbatch_directives.items():
+            sbatch_directives.setdefault(key, value)
+        logger.debug("Applied default sbatch_directives: %s", default_sbatch_directives)
+
+    # Apply cluster-level het-job default. Without this, a recipe with
+    # `het_jobs: None` would defer the cluster default at render-time but skip
+    # SrtConfig validation (which only fires on `het_jobs is True`). Writing
+    # the cluster value into the resolved recipe ensures __post_init__ catches
+    # bad combinations (het + trtllm, het + agg, ...) at load time.
+    resources = config.get("resources")
+    if isinstance(resources, dict) and resources.get("het_jobs") is None:
+        cluster_het = cluster_config.get("use_het_jobs")
+        if cluster_het is not None:
+            resources["het_jobs"] = bool(cluster_het)
+            logger.debug("Applied cluster use_het_jobs default: %s", cluster_het)
+
     # Resolve model path alias
     model = config.get("model", {})
     model_path = model.get("path", "")
@@ -136,12 +152,8 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
         model["container"] = resolved_container
         logger.debug(f"Resolved container alias '{container}' -> '{resolved_container}'")
 
-    # Apply reporting defaults (if not specified in user config)
-    if "reporting" not in config and cluster_config.get("reporting"):
-        config["reporting"] = cluster_config["reporting"]
-        logger.debug("Applied cluster reporting config")
-
-    # Resolve extra_mount host path aliases through model_paths
+    # Resolve extra_mount host path aliases through model_paths. This lets
+    # recipes mount secondary model assets by alias rather than cluster path.
     extra_mounts = config.get("extra_mount", [])
     if model_paths and extra_mounts:
         resolved_mounts = []
@@ -155,6 +167,15 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
                 resolved_mounts.append(mount_spec)
         config["extra_mount"] = resolved_mounts
 
+    # Apply reporting defaults (if not specified in user config)
+    if "reporting" not in config and cluster_config.get("reporting"):
+        config["reporting"] = cluster_config["reporting"]
+        logger.debug("Applied cluster reporting config")
+
+    if "health_check" not in config and cluster_config.get("default_health_check"):
+        config["health_check"] = cluster_config["default_health_check"]
+        logger.debug("Applied default_health_check: %s", config["health_check"])
+
     # Resolve frontend nginx_container alias
     frontend = config.get("frontend", {})
     nginx_container = frontend.get("nginx_container", "")
@@ -164,6 +185,48 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
         frontend["nginx_container"] = resolved_nginx
         config["frontend"] = frontend
         logger.debug(f"Resolved nginx_container alias '{nginx_container}' -> '{resolved_nginx}'")
+
+    # Cluster-level default for nginx nofile ulimit (job yaml wins if present).
+    if "nginx_raise_ulimit" not in frontend and cluster_config.get("nginx_raise_ulimit") is not None:
+        frontend["nginx_raise_ulimit"] = cluster_config["nginx_raise_ulimit"]
+        config["frontend"] = frontend
+        logger.debug(f"Applied cluster nginx_raise_ulimit: {frontend['nginx_raise_ulimit']}")
+
+    # Resolve benchmark.container_image alias for benches that ship their own
+    # eval container (e.g. NeMo Skills for accuracy benchmarks). Mirrors how
+    # model.container and frontend.nginx_container resolve against the same
+    # `containers:` map.
+    benchmark = config.get("benchmark", {})
+    benchmark_container = benchmark.get("container_image", "")
+
+    if containers and benchmark_container in containers:
+        resolved_bench = containers[benchmark_container]
+        benchmark["container_image"] = resolved_bench
+        config["benchmark"] = benchmark
+        logger.debug(f"Resolved benchmark.container_image alias '{benchmark_container}' -> '{resolved_bench}'")
+
+    # Resolve telemetry container aliases (scraper + dcgm/node exporters). All
+    # three are nullable in the schema; only resolve fields that are set.
+    telemetry = config.get("telemetry")
+    if telemetry and containers:
+        scraper_image = telemetry.get("container_image")
+        if scraper_image and scraper_image in containers:
+            resolved_scraper = containers[scraper_image]
+            telemetry["container_image"] = resolved_scraper
+            logger.debug(f"Resolved telemetry.container_image alias '{scraper_image}' -> '{resolved_scraper}'")
+
+        for exporter_key in ("dcgm_exporter", "node_exporter"):
+            exporter = telemetry.get(exporter_key)
+            if not exporter:
+                continue
+            exporter_image = exporter.get("container_image")
+            if exporter_image and exporter_image in containers:
+                resolved_exporter = containers[exporter_image]
+                exporter["container_image"] = resolved_exporter
+                logger.debug(
+                    f"Resolved telemetry.{exporter_key}.container_image alias "
+                    f"'{exporter_image}' -> '{resolved_exporter}'"
+                )
 
     return config
 
@@ -546,6 +609,20 @@ def load_config(path: Path | str) -> SrtConfig:
     # Load raw user config
     with open(path) as f:
         user_config = yaml.safe_load(f)
+    if user_config is None:
+        raise ValueError(f"Invalid config in {path}: YAML file is empty")
+    if not isinstance(user_config, dict):
+        raise ValueError(f"Invalid config in {path}: top-level YAML must be a mapping")
+
+    # Strip lock: section if present (lockfiles are valid recipes)
+    # Preserved for comparison after the new run completes
+    lock_data = user_config.pop("lock", None)
+    if lock_data:
+        if verify_lock_integrity(lock_data):
+            logger.info("Loaded lockfile — integrity verified, will compare after benchmark")
+        else:
+            logger.warning("Loaded lockfile — integrity check FAILED (lock section may have been edited)")
+            logger.warning("Comparison results may not reflect the original run")
 
     # Load cluster defaults (optional)
     cluster_config = load_cluster_config()
@@ -559,6 +636,11 @@ def load_config(path: Path | str) -> SrtConfig:
         config = schema.load(resolved_config)
         assert isinstance(config, SrtConfig)
         logger.info(f"Loaded config: {config.name}")
+        # Attach lock data for post-run comparison. Uses object.__setattr__
+        # because SrtConfig is frozen — this is the standard Python pattern for
+        # adding metadata to frozen dataclasses without modifying the schema.
+        # Retrieved via getattr(config, "_lock_data", None) in postprocess.
+        object.__setattr__(config, "_lock_data", lock_data)
         return config
     except Exception as e:
         raise ValueError(f"Invalid config in {path}: {e}") from e

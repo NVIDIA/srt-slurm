@@ -59,16 +59,18 @@ class GSM8KRunner(BenchmarkRunner):
         runtime: RuntimeContext,
     ) -> list[str]:
         b = config.benchmark
+        # TODO: support overriding endpoint via config to target external servers;
+        # mmlu/gpqa/longbenchv2 share the same limitation today.
         endpoint = f"http://localhost:{runtime.frontend_port}"
 
         return [
             "bash",
             self.script_path,
             endpoint,
-            str(1319 if b.num_examples is None else b.num_examples),
-            str(16384 if b.max_tokens is None else b.max_tokens),
-            str(512 if b.num_threads is None else b.num_threads),
-            str(5 if b.num_shots is None else b.num_shots),
+            str(b.num_examples or 1319),
+            str(b.max_tokens or 16384),
+            str(b.num_threads or 512),
+            str(b.num_shots if b.num_shots is not None else 5),
             str(b.temperature) if b.temperature is not None else "",
             str(b.top_p) if b.top_p is not None else "",
             str(b.top_k) if b.top_k is not None else "",

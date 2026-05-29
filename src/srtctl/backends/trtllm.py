@@ -11,10 +11,12 @@ import yaml
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
+from srtctl.ports import DYN_SYSTEM_PORT_BASE
+
 if TYPE_CHECKING:
     from srtctl.backends.base import SrunConfig
     from srtctl.core.runtime import RuntimeContext
-    from srtctl.core.topology import Endpoint, Process
+    from srtctl.core.topology import Endpoint, NodePortAllocator, Process
 
 # Type alias for worker modes
 WorkerMode = Literal["prefill", "decode", "agg"]
@@ -147,12 +149,13 @@ class TRTLLMProtocol:
     def endpoints_to_processes(
         self,
         endpoints: list["Endpoint"],
-        base_sys_port: int = 8081,
+        base_sys_port: int = DYN_SYSTEM_PORT_BASE,
+        port_allocator: "NodePortAllocator | None" = None,
     ) -> list["Process"]:
         """Convert endpoints to processes."""
         from srtctl.core.topology import endpoints_to_processes
 
-        return endpoints_to_processes(endpoints, base_sys_port=base_sys_port)
+        return endpoints_to_processes(endpoints, base_sys_port=base_sys_port, port_allocator=port_allocator)
 
     def build_worker_command(
         self,
@@ -173,18 +176,21 @@ class TRTLLMProtocol:
         host_config_path = runtime.log_dir / config_filename
         host_config_path.write_text(yaml.safe_dump(config))
 
-        # Use container paths for the command
-        # (model_path is mounted to /model, log_dir is mounted to /logs)
+        # Use container paths for the command (log_dir is mounted to /logs)
         container_config_path = Path("/logs") / config_filename
-        container_model_path = Path("/model")
 
-        cmd = [
-            "trtllm-llmapi-launch",
+        # Determine model path: HF model ID or container mount path
+        # For HF models (hf:prefix), model_path contains the HF model ID (e.g., "facebook/opt-125m")
+        # For local models, model is mounted to /model in the container
+        model_arg = str(runtime.model_path) if runtime.is_hf_model else "/model"
+
+        cmd = list(nsys_prefix) + ["trtllm-llmapi-launch"] if nsys_prefix else ["trtllm-llmapi-launch"]
+        cmd += [
             "python3",
             "-m",
             "dynamo.trtllm",
             "--model-path",
-            str(container_model_path),
+            model_arg,
             "--served-model-name",
             runtime.model_path.name,
         ]
@@ -201,5 +207,7 @@ class TRTLLMProtocol:
                 "nats",
             ]
         )
+
+        cmd.append("--publish-events-and-metrics")
 
         return cmd

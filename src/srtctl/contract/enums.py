@@ -28,6 +28,7 @@ class JobStage(str, Enum):
 
     STARTING = "starting"
     HEAD_INFRASTRUCTURE = "head_infrastructure"
+    PREFLIGHT = "preflight"
     WORKERS = "workers"
     FRONTEND = "frontend"
     BENCHMARK = "benchmark"

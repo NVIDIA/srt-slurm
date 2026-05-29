@@ -1,0 +1,156 @@
+# Qwen3.5-397B-A17B-FP8 disaggregated 1P1D: TP4 prefill + DEP4 decode (Mooncake).
+# Model / resources / backend / sglang_config: copied from
+#   recipes/qwen3.5/fp8/disagg/mooncake/profile/1p1d-dep4-nsys-profile.yaml
+# This file changes frontend + profiling + benchmark, and disables staging buffer, to pair nsys with SGLang decode /slow_down.
+#
+# Slow-down is meant to be used with SA-Bench warmup skipped (num_warmup_mult: 0). The
+# separate benchmark warmup is disabled so step indices stay predictable; the role of
+# "warming up" decode (graphs, batching) is instead covered by a short span of real
+# forwards *after* slow_down auto-clears and *before* the nsys decode window.
+#
+# Choose profiling.decode.start_step as:
+#   decode.start_step = bootstrap_steps + slow_down_steps + warmup_steps
+# In this example (osl=1024, slow_down window ≈4 steps, post-slowdown warmup ≈72 steps):
+#   1100 = 1024 + 4 + 72
+#   — bootstrap_steps is taken as osl (decode gen length) for this workload;
+#   — slow_down_steps: forwards while /slow_down is active (tune with slow_down_*);
+#   — warmup_steps: extra forwards after slow_down ends so decode is hot before capture.
+# Adjust the three terms if you change osl, concurrency, or slow_down timing.
+
+name: "qwen3.5-1p1d-dep4-nsys-profile-slowdown"
+
+model:
+  path: "qwen3.5-fp8"
+  container: "dev-0318"
+  precision: "fp8"
+
+resources:
+  gpu_type: "gb200"
+  gpus_per_node: 4
+  prefill_nodes: 1
+  decode_nodes: 1
+  prefill_workers: 1
+  decode_workers: 1
+
+frontend:
+  type: "sglang"
+  enable_multiple_frontends: false
+
+backend:
+
+  prefill_environment:
+    TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: "1800"
+    PYTHONUNBUFFERED: "1"
+    NCCL_MNNVL_ENABLE: "1"
+    NCCL_CUMEM_ENABLE: "1"
+    MC_FORCE_MNNVL: "1"
+    SGLANG_DG_CACHE_DIR: "/configs/deepgemm-cache"
+    FLASHINFER_WORKSPACE_BASE: "/configs/flashinfer-cache"
+    SGLANG_DISAGGREGATION_HEARTBEAT_MAX_FAILURE: "100000"
+    SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT: "100000"
+    SGLANG_DISAGGREGATION_WAITING_TIMEOUT: "100000"
+    SGLANG_MOONCAKE_CUSTOM_MEM_POOL: "True"
+    SGLANG_USE_MESSAGE_QUEUE_BROADCASTER: "0"
+    SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK: "1"
+    # SGLANG_DISAGG_STAGING_BUFFER: "1"
+    # SGLANG_DISAGG_STAGING_BUFFER_SIZE_MB: "128"
+    SGLANG_LOG_FORWARD_ITERS: "1"
+
+  decode_environment:
+    TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: "1800"
+    PYTHONUNBUFFERED: "1"
+    NCCL_MNNVL_ENABLE: "1"
+    NCCL_CUMEM_ENABLE: "1"
+    MC_FORCE_MNNVL: "1"
+    SGLANG_DG_CACHE_DIR: "/configs/deepgemm-cache"
+    FLASHINFER_WORKSPACE_BASE: "/configs/flashinfer-cache"
+    SGLANG_DISAGGREGATION_HEARTBEAT_MAX_FAILURE: "100000"
+    SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT: "100000"
+    SGLANG_DISAGGREGATION_WAITING_TIMEOUT: "100000"
+    SGLANG_DECODE_BOOTSTRAP_TIMEOUT: "1000"
+    SGLANG_HACK_SEQ_BOOTSTRAP_ROOM: "1"
+    SGLANG_MOONCAKE_CUSTOM_MEM_POOL: "True"
+    SGLANG_USE_MESSAGE_QUEUE_BROADCASTER: "0"
+    SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK: "1"
+    # SGLANG_DISAGG_STAGING_BUFFER: "1"
+    # SGLANG_DISAGG_STAGING_BUFFER_SIZE_MB: "128"
+    SGLANG_LOG_FORWARD_ITERS: "1"
+
+  sglang_config:
+    prefill:
+      served-model-name: "Qwen/Qwen3.5-397B-A17B-FP8"
+      model-path: "/model/"
+
+      attention-backend: "trtllm_mha"
+      kv-cache-dtype: "fp8_e4m3"
+
+      tensor-parallel-size: 4
+      data-parallel-size: 1
+      expert-parallel-size: 1
+
+      mamba-scheduler-strategy: "no_buffer"
+      disable-radix-cache: true
+      mamba-track-interval: 2048
+      mamba-ssm-dtype: "bfloat16"
+
+      disaggregation-mode: "prefill"
+
+      mem-fraction-static: 0.80
+      chunked-prefill-size: 16384
+      context-length: 4096
+      load-balance-method: "round_robin"
+      watchdog-timeout: 1000000
+
+    decode:
+      served-model-name: "Qwen/Qwen3.5-397B-A17B-FP8"
+      model-path: "/model/"
+
+      attention-backend: "trtllm_mha"
+      quantization: "fp8"
+      kv-cache-dtype: "fp8_e4m3"
+      moe-runner-backend: "flashinfer_trtllm"
+
+      # DEP4: DP4 + TP4 + EP4 with dp-attention
+      tensor-parallel-size: 4
+      data-parallel-size: 4
+      expert-parallel-size: 4
+      enable-dp-attention: true
+      enable-dp-lm-head: true
+      moe-dense-tp-size: 1
+
+      mamba-scheduler-strategy: "no_buffer"
+      disable-radix-cache: true
+      mamba-track-interval: 2048  # must be > isl+osl to avoid checkpointing
+      mamba-ssm-dtype: "bfloat16"
+
+      disaggregation-mode: "decode"
+
+      mem-fraction-static: 0.80
+      chunked-prefill-size: 16384
+      context-length: 4096
+      cuda-graph-max-bs: 1024
+      decode-log-interval: 1
+      stream-interval: 50
+      watchdog-timeout: 1000000
+
+profiling:
+  type: "nsys"
+  prefill:
+    start_step: 10
+    stop_step: 30
+  decode:
+    # nsys starts after bootstrap (≈osl) + slow_down (4) + post-slowdown warmup (72) — see file header
+    start_step: 1100
+    stop_step: 1120
+
+benchmark:
+  type: "sa-bench"
+  isl: 1024
+  osl: 1024
+  concurrencies: "2048"
+  req_rate: "inf"
+  random_range_ratio: 1.0
+  num_warmup_mult: 0  # skip SA-Bench warmup; use slow_down then post-slowdown steps as warmup
+  num_prompts_mult: 1
+  slow_down_sleep_time: 30.0  # s per forward while slow_down is on
+  slow_down_wait_time: 120.0  # then clear slow_down

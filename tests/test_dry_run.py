@@ -3,6 +3,7 @@
 
 """Tests for dry-run config details display (mounts, env vars)."""
 
+import os
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -67,6 +68,16 @@ class TestDryRunMounts:
         assert "/cache" in output
         assert "recipe" in output
 
+    def test_extra_mount_expands_env_and_user_in_dry_run(self, capsys):
+        with patch.dict(os.environ, {"SRT_EXTRA_ROOT": "/expanded/extra", "HOME": "/home/tester"}):
+            config = _make_config({"extra_mount": ["$SRT_EXTRA_ROOT:/extra", "~/cache:/cache"]})
+            show_config_details(config)
+        output = capsys.readouterr().out
+        assert "/expanded/extra" in output
+        assert "/home/tester/cache" in output
+        assert "$SRT_EXTRA_ROOT" not in output
+        assert "~/cache" not in output
+
     def test_cluster_mounts_from_srtslurm_yaml(self, capsys):
         cluster_mounts = {"/shared/datasets": "/datasets", "/shared/models": "/models"}
         with patch("srtctl.cli.submit.get_srtslurm_setting", return_value=cluster_mounts):
@@ -116,18 +127,20 @@ class TestDryRunEnvironment:
         assert "global" in output
 
     def test_backend_prefill_decode_environment(self, capsys):
-        config = _make_config({
-            "backend": {
-                "type": "sglang",
-                "prefill_environment": {
-                    "TORCH_DISTRIBUTED_DEFAULT_TIMEOUT": "1800",
-                    "PYTHONUNBUFFERED": "1",
+        config = _make_config(
+            {
+                "backend": {
+                    "type": "sglang",
+                    "prefill_environment": {
+                        "TORCH_DISTRIBUTED_DEFAULT_TIMEOUT": "1800",
+                        "PYTHONUNBUFFERED": "1",
+                    },
+                    "decode_environment": {
+                        "SGLANG_ENABLE_FLASHINFER_GEMM": "1",
+                    },
                 },
-                "decode_environment": {
-                    "SGLANG_ENABLE_FLASHINFER_GEMM": "1",
-                },
-            },
-        })
+            }
+        )
         show_config_details(config)
         output = capsys.readouterr().out
         assert "TORCH_DISTRIBUTED_DEFAULT_TIMEOUT" in output
@@ -138,13 +151,15 @@ class TestDryRunEnvironment:
 
     def test_global_and_backend_env_together(self, capsys):
         """Global environment AND backend per-mode env should both appear."""
-        config = _make_config({
-            "environment": {"GLOBAL_VAR": "global_val"},
-            "backend": {
-                "type": "sglang",
-                "prefill_environment": {"PREFILL_VAR": "prefill_val"},
-            },
-        })
+        config = _make_config(
+            {
+                "environment": {"GLOBAL_VAR": "global_val"},
+                "backend": {
+                    "type": "sglang",
+                    "prefill_environment": {"PREFILL_VAR": "prefill_val"},
+                },
+            }
+        )
         show_config_details(config)
         output = capsys.readouterr().out
         assert "GLOBAL_VAR" in output
@@ -159,24 +174,41 @@ class TestDryRunEnvironment:
         assert "No custom environment variables configured" in output
 
     def test_trtllm_backend_environment(self, capsys):
-        config = _make_config({
-            "backend": {
-                "type": "trtllm",
-                "prefill_environment": {
-                    "TRTLLM_ENABLE_PDL": "1",
-                    "NCCL_GRAPH_MIXING_SUPPORT": "0",
+        config = _make_config(
+            {
+                "backend": {
+                    "type": "trtllm",
+                    "prefill_environment": {
+                        "TRTLLM_ENABLE_PDL": "1",
+                        "NCCL_GRAPH_MIXING_SUPPORT": "0",
+                    },
+                    "decode_environment": {
+                        "TRTLLM_SERVER_DISABLE_GC": "1",
+                    },
                 },
-                "decode_environment": {
-                    "TRTLLM_SERVER_DISABLE_GC": "1",
-                },
-            },
-        })
+            }
+        )
         show_config_details(config)
         output = capsys.readouterr().out
         assert "TRTLLM_ENABLE_PDL" in output
         assert "prefill" in output
         assert "TRTLLM_SERVER_DISABLE_GC" in output
         assert "decode" in output
+
+    def test_custom_benchmark_environment(self, capsys):
+        config = _make_config(
+            {
+                "benchmark": {
+                    "type": "custom",
+                    "command": "python /bench/run.py",
+                    "env": {"BENCH_FOO": "bar"},
+                }
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "BENCH_FOO" in output
+        assert "benchmark" in output
 
 
 class TestDryRunSrunOptions:
@@ -186,11 +218,149 @@ class TestDryRunSrunOptions:
         config = _make_config({"srun_options": {"export": "ALL", "cpu-bind": "none"}})
         show_config_details(config)
         output = capsys.readouterr().out
-        assert "--export ALL" in output
-        assert "--cpu-bind none" in output
+        assert "--export=ALL" in output
+        assert "--cpu-bind=none" in output
 
     def test_no_srun_options_no_output(self, capsys):
         config = _make_config()
         show_config_details(config)
         output = capsys.readouterr().out
         assert "srun options" not in output
+
+
+class TestDryRunExecutionExtensions:
+    """Test custom benchmark and telemetry details display."""
+
+    def test_custom_benchmark_details_shown(self, capsys):
+        config = _make_config(
+            {
+                "benchmark": {
+                    "type": "custom",
+                    "command": "python /bench/run.py",
+                    "container_image": "nvcr.io/nvidia/python:3.11",
+                }
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "Execution Extensions" in output
+        assert "container_image" in output
+        assert "nvcr.io/nvidia/python:3.11" in output
+
+    def test_telemetry_details_shown(self, capsys):
+        config = _make_config(
+            {
+                "telemetry": {
+                    "enabled": True,
+                    "container_image": "telemetry:latest",
+                    "dcgm_exporter": {"container_image": "dcgm:latest", "port": 9401},
+                    "node_exporter": {"container_image": "node:latest", "port": 9101},
+                }
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "telemetry" in output
+        assert "scraper" in output
+        assert "storage_subdir" in output
+
+    def test_mooncake_kv_store_details_shown(self, capsys):
+        """mooncake_kv_store should appear in env vars and execution extensions."""
+        config = _make_config(
+            {
+                "backend": {
+                    "type": "sglang",
+                    "mooncake_kv_store": {
+                        "container": "nvcr.io/nvidia/mooncake:latest",
+                        "env": {
+                            "MOONCAKE_PROTOCOL": "rdma",
+                            "MOONCAKE_GLOBAL_SEGMENT_SIZE": "4gb",
+                        },
+                    },
+                    "sglang_config": {
+                        "prefill": {"disaggregation-transfer-backend": "mooncake"},
+                        "decode": {"disaggregation-transfer-backend": "mooncake"},
+                    },
+                }
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        # Env table shows mooncake-scoped env vars
+        assert "mooncake" in output
+        assert "MOONCAKE_PROTOCOL" in output
+        assert "rdma" in output
+        assert "MOONCAKE_GLOBAL_SEGMENT_SIZE" in output
+        # Execution extensions shows master + container
+        assert "nvcr.io/nvidia/mooncake:latest" in output
+        assert "master_port" in output
+
+    def test_mooncake_kv_store_no_container_shows_default(self, capsys):
+        """mooncake_kv_store without explicit container falls back to job container label."""
+        config = _make_config(
+            {
+                "backend": {
+                    "type": "sglang",
+                    "mooncake_kv_store": {"env": {"MOONCAKE_PROTOCOL": "tcp"}},
+                    "sglang_config": {
+                        "prefill": {"disaggregation-transfer-backend": "mooncake"},
+                        "decode": {"disaggregation-transfer-backend": "mooncake"},
+                    },
+                }
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "<job container>" in output
+        assert "MOONCAKE_PROTOCOL" in output
+
+
+class TestDryRunHetJobs:
+    """Het structure panel appears only when het is enabled."""
+
+    def test_het_panel_rendered_when_enabled(self, capsys):
+        config = _make_config(
+            {
+                "resources": {
+                    "gpu_type": "gb200",
+                    "gpus_per_node": 4,
+                    "prefill_nodes": 12,
+                    "decode_nodes": 10,
+                    "prefill_workers": 12,
+                    "decode_workers": 10,
+                    "het_jobs": True,
+                },
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "Heterogeneous Job" in output
+        assert "prefill" in output
+        assert "decode" in output
+
+    def test_het_panel_hidden_when_disabled(self, capsys):
+        """No het panel when het_jobs is unset (recipe default)."""
+        config = _make_config()
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "Heterogeneous Job" not in output
+
+    def test_het_panel_shows_infra_folded_into_prefill(self, capsys):
+        config = _make_config(
+            {
+                "resources": {
+                    "gpu_type": "gb200",
+                    "gpus_per_node": 4,
+                    "prefill_nodes": 12,
+                    "decode_nodes": 10,
+                    "prefill_workers": 12,
+                    "decode_workers": 10,
+                    "het_jobs": True,
+                },
+                "infra": {"etcd_nats_dedicated_node": True},
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "Heterogeneous Job" in output
+        assert "first node" in output  # infra note on the prefill row

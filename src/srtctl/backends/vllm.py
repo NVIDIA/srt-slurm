@@ -24,10 +24,12 @@ from typing import (
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
+from srtctl.ports import DYN_SYSTEM_PORT_BASE, VLLM_DATA_PARALLEL_RPC_PORT
+
 if TYPE_CHECKING:
     from srtctl.backends.base import SrunConfig
     from srtctl.core.runtime import RuntimeContext
-    from srtctl.core.topology import Endpoint, Process
+    from srtctl.core.topology import Endpoint, NodePortAllocator, Process
 
 # Type alias for worker modes
 WorkerMode = Literal["prefill", "decode", "agg"]
@@ -138,16 +140,12 @@ class VLLMProtocol:
         vLLM with dynamo requires unique ports for each worker:
         - DYN_VLLM_KV_EVENT_PORT: ZMQ port for KV events publishing
         - VLLM_NIXL_SIDE_CHANNEL_PORT: Port for NIXL side channel transfers
-        - VLLM_NIXL_SIDE_CHANNEL_HOST: Routable IP for NIXL side channel (not 0.0.0.0/localhost)
         """
-        from srtctl.core.slurm import get_hostname_ip
-
         env: dict[str, str] = {}
         if process.kv_events_port is not None:
             env["DYN_VLLM_KV_EVENT_PORT"] = str(process.kv_events_port)
         if process.nixl_port is not None:
             env["VLLM_NIXL_SIDE_CHANNEL_PORT"] = str(process.nixl_port)
-            env["VLLM_NIXL_SIDE_CHANNEL_HOST"] = get_hostname_ip(process.node)
         return env
 
     def get_served_model_name(self, default: str) -> str:
@@ -233,7 +231,8 @@ class VLLMProtocol:
     def endpoints_to_processes(
         self,
         endpoints: list[Endpoint],
-        base_sys_port: int = 8081,
+        base_sys_port: int = DYN_SYSTEM_PORT_BASE,
+        port_allocator: NodePortAllocator | None = None,
     ) -> list[Process]:
         """Convert endpoints to processes.
 
@@ -247,12 +246,13 @@ class VLLMProtocol:
 
         if not has_dp_mode:
             # Standard TP mode: one process per node
-            return endpoints_to_processes(endpoints, base_sys_port=base_sys_port)
+            return endpoints_to_processes(endpoints, base_sys_port=base_sys_port, port_allocator=port_allocator)
 
         # DP+EP mode: one process per GPU
         processes: list[Process] = []
         current_sys_port = base_sys_port
-        port_allocator = NodePortAllocator()
+        if port_allocator is None:
+            port_allocator = NodePortAllocator()
 
         for endpoint in endpoints:
             if not self._is_dp_mode(endpoint.mode):
@@ -406,7 +406,7 @@ class VLLMProtocol:
             dp_rpc_port = (
                 process.dp_rpc_port
                 or config.pop("data-parallel-rpc-port", None)
-                or config.pop("data_parallel_rpc_port", 13345)
+                or config.pop("data_parallel_rpc_port", VLLM_DATA_PARALLEL_RPC_PORT)
             )
             # Pop from config so it doesn't get added again by _config_to_cli_args
             config.pop("data-parallel-rpc-port", None)

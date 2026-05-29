@@ -2,6 +2,45 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #SBATCH --job-name={{ job_name }}
+#SBATCH --output={{ output_base }}/%j/logs/sweep_%j.log
+{% if het_components %}
+{# SLURM applies each `#SBATCH ...` to the component immediately preceding it.
+   Per-component required scheduling directives (--account/--partition/--time
+   and per-side --nodes/--ntasks/--segment) repeat inside the loop; --output
+   above is job-wide and applies once. #}
+{% for c in het_components %}
+{% if not loop.first %}
+#SBATCH hetjob
+{% endif %}
+#SBATCH --nodes={{ c.nodes }}
+{% if backend_type == "trtllm" %}
+#SBATCH --ntasks={{ c.gpus_per_node * c.nodes }}
+#SBATCH --ntasks-per-node={{ c.gpus_per_node }}
+{% else %}
+#SBATCH --ntasks={{ c.nodes }}
+#SBATCH --ntasks-per-node=1
+{% endif %}
+{% if use_gpus_per_node_directive %}
+#SBATCH --gpus-per-node={{ c.gpus_per_node }}
+{% endif %}
+{% if use_segment_sbatch_directive %}
+#SBATCH --segment={{ c.segment }}
+{% endif %}
+{% if use_exclusive_sbatch_directive %}
+#SBATCH --exclusive
+{% endif %}
+#SBATCH --account={{ account }}
+#SBATCH --time={{ time_limit }}
+#SBATCH --partition={{ partition }}
+{% for key, value in sbatch_directives.items() %}
+{% if value %}
+#SBATCH --{{ key }}={{ value }}
+{% else %}
+#SBATCH --{{ key }}
+{% endif %}
+{% endfor %}
+{% endfor %}
+{% else %}
 #SBATCH --nodes={{ total_nodes }}
 {% if backend_type == "trtllm" %}
 #SBATCH --ntasks={{ gpus_per_node * total_nodes }}
@@ -21,7 +60,6 @@
 {% endif %}
 #SBATCH --account={{ account }}
 #SBATCH --time={{ time_limit }}
-#SBATCH --output={{ output_base }}/%j/logs/sweep_%j.log
 #SBATCH --partition={{ partition }}
 {% for key, value in sbatch_directives.items() %}
 {% if value %}
@@ -30,6 +68,7 @@
 #SBATCH --{{ key }}
 {% endif %}
 {% endfor %}
+{% endif %}
 
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
@@ -75,17 +114,37 @@ echo "Head node: ${HEAD_NODE}"
 # Set source directory for container mounts (/configs)
 export SRTCTL_SOURCE_DIR="${SRTCTL_SOURCE}"
 
+{% for key, value in config_environment.items() %}
+export {{ key }}={{ value }}
+{% endfor %}
+
 echo ""
 echo "Preparing srtctl environment..."
 
-# Install uv if not present (single binary, no dependencies)
+# Use compute-arch uv from srt-slurm/bin (installed by make setup ARCH=<compute_arch>)
+# This avoids arch mismatch when login node (x86_64) != compute node (aarch64)
+export PATH="${SRTCTL_SOURCE}/bin:$HOME/.local/bin:$PATH"
+
+# Use a compute-specific venv so we don't pick up the login node's .venv/
+# (which may be built for a different arch, e.g. x86_64 login vs aarch64 compute)
+export UV_PROJECT_ENVIRONMENT="${SRTCTL_SOURCE}/.venv-compute"
+
 if ! command -v uv &> /dev/null; then
-    echo "Installing uv package manager..."
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    export PATH="$HOME/.local/bin:$PATH"
+    echo "ERROR: uv not found. Run 'make setup ARCH=<compute_arch>' first."
+    echo "  e.g., make setup ARCH=aarch64  (for GB200/Grace compute nodes)"
+    exit 1
 fi
 
-echo "Using uv with Python 3.12..."
+echo "Using uv $(uv --version)..."
+
+if [ -n "${DYNAMO_WHEEL_NAME:-}" ] || [ "${SRTCTL_PREFETCH_AI_DYNAMO:-0}" = "1" ]; then
+    if [ -f "${SRTCTL_SOURCE}/src/srtctl/runtime_scripts/dynamo_wheels.py" ]; then
+        uv run --no-project --python "${DYNAMO_PYTHON_VERSION:-3.12}" --with pip \
+            python "${SRTCTL_SOURCE}/src/srtctl/runtime_scripts/dynamo_wheels.py" prefetch
+    else
+        echo "WARNING: ${SRTCTL_SOURCE}/src/srtctl/runtime_scripts/dynamo_wheels.py not found"
+    fi
+fi
 
 {% if setup_script %}
 # Custom setup script override from CLI
@@ -100,7 +159,15 @@ echo ""
 # Output goes to SLURM's --output (sweep_%j.log)
 set +e  # Temporarily disable exit-on-error to capture exit code
 cd "${SRTCTL_SOURCE}"
-uv run --python 3.12 --no-dev -m srtctl.cli.do_sweep "${OUTPUT_DIR}/{{ runtime_config_filename }}"
+# Lock-protected venv sync to avoid concurrent .venv-compute teardown/recreate
+# races across simultaneous SLURM jobs sharing this directory. uv may decide
+# the existing venv is invalid (broken python interpreter symlink) and tear
+# it down + rebuild; if N jobs do that at once they stomp each other with
+# "Directory not empty" / "Failed to spawn 'python -m'" / missing CACHEDIR.TAG
+# errors. The flock serializes only the venv init; the lock is released
+# before the actual sweep so jobs still run in parallel.
+flock -x "${SRTCTL_SOURCE}/.venv-compute.lock" uv sync --python 3.12 --no-dev
+uv run --python 3.12 --no-dev --no-sync -m srtctl.cli.do_sweep "${OUTPUT_DIR}/{{ runtime_config_filename }}"
 EXIT_CODE=$?
 set -e  # Re-enable exit-on-error
 
