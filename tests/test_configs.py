@@ -217,6 +217,10 @@ class TestDynamoConfig:
         assert "maturin build" in cmd
         assert "protobuf-compiler" in cmd
 
+        # maturin must be force-reinstalled — a plain install no-ops on images
+        # shipping the module without a console script (see schema.py).
+        assert "--force-reinstall --quiet maturin" in cmd
+
         # Cache populate: wheel + tarball + sentinel
         assert "ai_dynamo_runtime*.whl" in cmd
         assert "dynamo-src.tar.gz" in cmd
@@ -242,6 +246,13 @@ class TestDynamoConfig:
         assert "/tmp/dynamo_build" in cmd
         assert "--break-system-packages" in cmd
         assert "--force-reinstall" in cmd
+
+        # Both branches (sglang + portable) must force-reinstall maturin — the
+        # portable branch previously used a guarded plain install that no-ops on
+        # images shipping maturin without a console script.
+        sglang_branch, portable_branch = cmd.split("else", 1)
+        assert "--force-reinstall --quiet maturin" in sglang_branch
+        assert "--force-reinstall --quiet maturin" in portable_branch
 
     def test_hash_and_top_of_tree_not_allowed(self):
         """Cannot specify both hash and top_of_tree."""
