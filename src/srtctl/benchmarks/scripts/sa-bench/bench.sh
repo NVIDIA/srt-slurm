@@ -8,24 +8,20 @@
 set -e
 
 # Ensure benchmark dependencies are available.
-# Creates an isolated venv with --system-site-packages so container packages are
-# reused and only missing deps get installed — without touching system Python.
-SA_BENCH_VENV="/tmp/sa-bench-venv"
 SA_BENCH_DEPS=(aiohttp numpy pandas datasets Pillow tqdm transformers huggingface_hub)
 
 ensure_sa_bench_deps() {
-    # Quick check: if all deps import fine in current Python, skip venv entirely
+    # Quick check: if all deps import fine in current Python, skip install entirely.
     if python3 -c "import aiohttp, numpy, pandas, datasets, PIL, tqdm, transformers, huggingface_hub" 2>/dev/null; then
-        echo "All sa-bench deps already available — skipping venv setup"
+        echo "All sa-bench deps already available"
         return
     fi
 
-    echo "Missing sa-bench deps — installing into venv at $SA_BENCH_VENV ..."
-    if [ ! -d "$SA_BENCH_VENV" ]; then
-        python3 -m venv --system-site-packages "$SA_BENCH_VENV"
+    echo "Missing sa-bench deps; installing into current Python environment ..."
+    if ! python3 -m pip install --break-system-packages "${SA_BENCH_DEPS[@]}"; then
+        python3 -m pip install "${SA_BENCH_DEPS[@]}"
     fi
-    source "$SA_BENCH_VENV/bin/activate"
-    pip install "${SA_BENCH_DEPS[@]}"
+    python3 -c "import aiohttp, numpy, pandas, datasets, PIL, tqdm, transformers, huggingface_hub"
     echo "sa-bench deps ready"
 }
 

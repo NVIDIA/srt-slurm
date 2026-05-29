@@ -629,6 +629,13 @@ class TestScriptsExist:
         script = SCRIPTS_DIR / "sa-bench" / "bench.sh"
         assert script.exists()
 
+    def test_sa_bench_deps_do_not_require_venv(self):
+        """SA-Bench dependency install works in containers without python3-venv."""
+        script = SCRIPTS_DIR / "sa-bench" / "bench.sh"
+        text = script.read_text()
+        assert "python3 -m venv" not in text
+        assert "--break-system-packages" in text
+
     def test_mmlu_script_exists(self):
         """MMLU script exists."""
         script = SCRIPTS_DIR / "mmlu" / "bench.sh"
