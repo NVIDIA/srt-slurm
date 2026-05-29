@@ -36,6 +36,23 @@ class TestExpandTemplate:
         result = expand_template("{val}", {"val": 0.85})
         assert result == "0.85"
 
+    def test_bool_value_as_whole_placeholder(self):
+        """Test that boolean values replace entire placeholder without stringifying."""
+        result = expand_template("{enabled}", {"enabled": True})
+        assert result is True
+
+    def test_bool_value_embedded_in_string(self):
+        """Test that boolean values are stringified when embedded in text."""
+        result = expand_template("enabled-{enabled}", {"enabled": True})
+        assert result == "enabled-True"
+
+    def test_bool_placeholder_becomes_vllm_flag(self):
+        """Test vLLM boolean flags from sweeps don't receive a string value."""
+        from srtctl.backends.vllm import _config_to_cli_args
+
+        config = expand_template({"enable-expert-parallel": "{ep}"}, {"ep": True})
+        assert _config_to_cli_args(config) == ["--enable-expert-parallel"]
+
     def test_nested_dict(self):
         """Test placeholder replacement in nested dicts."""
         template = {
