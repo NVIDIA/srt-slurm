@@ -16,6 +16,8 @@ NUM_EXAMPLES=${2:-198}
 MAX_TOKENS=${3:-32768}
 REPEAT=${4:-8}
 NUM_THREADS=${5:-128}
+TEMPERATURE=${6:-}                # optional: forwarded to sgl-eval --temperature
+TOP_P=${7:-}                      # optional: forwarded to sgl-eval --top-p
 
 # The gated GPQA dataset (Idavidrein/gpqa) is Xet-backed and the HF Xet client
 # hangs on this cluster; force the plain download path. HF_TOKEN comes from the
@@ -58,12 +60,21 @@ echo "Using base-url: ${BASE_URL}"
 echo "GPQA Config (sgl-eval): base_url=${BASE_URL} num_examples=${NUM_EXAMPLES} max_tokens=${MAX_TOKENS} n_repeats=${REPEAT} num_threads=${NUM_THREADS}"
 echo "Running GPQA evaluation via sgl-eval..."
 
+SAMPLING_ARGS=()
+if [ -n "$TEMPERATURE" ]; then
+    SAMPLING_ARGS+=(--temperature "$TEMPERATURE")
+fi
+if [ -n "$TOP_P" ]; then
+    SAMPLING_ARGS+=(--top-p "$TOP_P")
+fi
+
 sgl-eval run gpqa \
     --base-url "${BASE_URL}" \
     --num-examples "${NUM_EXAMPLES}" \
     --n-repeats "${REPEAT}" \
     --max-tokens "${MAX_TOKENS}" \
     --num-threads "${NUM_THREADS}" \
+    "${SAMPLING_ARGS[@]}" \
     --out-dir "$result_dir"
 
 echo "Results saved under: $result_dir"

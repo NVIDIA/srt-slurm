@@ -28,6 +28,8 @@ class GPQARunner(BenchmarkRunner):
         - benchmark.max_tokens: Max tokens per response (default: 32768)
         - benchmark.repeat: Number of repeats -> sgl-eval --n-repeats (default: 8)
         - benchmark.num_threads: Concurrent threads (default: 128)
+        - benchmark.temperature: sgl-eval --temperature (default: sgl-eval's, 0.0 greedy)
+        - benchmark.top_p: sgl-eval --top-p (default: sgl-eval's, 1.0)
     """
 
     @property
@@ -62,4 +64,6 @@ class GPQARunner(BenchmarkRunner):
             str(b.max_tokens or 32768),
             str(b.repeat or 8),
             str(b.num_threads or 128),
+            "" if b.temperature is None else str(b.temperature),
+            "" if b.top_p is None else str(b.top_p),
         ]
