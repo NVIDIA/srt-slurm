@@ -23,6 +23,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _wrap_command_with_rank_system_port(cmd: list[str], base_port: int) -> list[str]:
+    """Set one Dynamo system port per Slurm local rank for MPI endpoint launches."""
+    inner = f"export DYN_SYSTEM_PORT=$(({base_port} + ${{SLURM_LOCALID:-0}})); exec {shlex.join(cmd)}"
+    return ["bash", "-lc", inner]
+
+
 class WorkerStageMixin:
     """Mixin for worker process startup stage.
 
@@ -227,13 +233,20 @@ class WorkerStageMixin:
             dump_config_path=config_dump,
         )
 
+        use_rank_system_port = self.config.frontend.type == "dynamo"
+        if use_rank_system_port:
+            cmd = _wrap_command_with_rank_system_port(cmd, leader.sys_port)
+
         # Environment variables
         env_to_set = {
             "HEAD_NODE_IP": self.runtime.head_node_ip,
             "ETCD_ENDPOINTS": f"http://{self.runtime.nodes.infra}:2379",
             "NATS_SERVER": f"nats://{self.runtime.nodes.infra}:4222",
-            "DYN_SYSTEM_PORT": str(leader.sys_port),
         }
+        if use_rank_system_port:
+            env_to_set["DYN_SYSTEM_PORT_BASE"] = str(leader.sys_port)
+        else:
+            env_to_set["DYN_SYSTEM_PORT"] = str(leader.sys_port)
 
         # Add mode-specific environment variables from backend
         env_to_set.update(self.backend.get_environment_for_mode(mode))

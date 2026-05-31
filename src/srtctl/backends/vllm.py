@@ -234,6 +234,7 @@ class VLLMProtocol:
         self,
         endpoints: list[Endpoint],
         base_sys_port: int = 8081,
+        sys_port_stride: int = 1,
     ) -> list[Process]:
         """Convert endpoints to processes.
 
@@ -247,7 +248,7 @@ class VLLMProtocol:
 
         if not has_dp_mode:
             # Standard TP mode: one process per node
-            return endpoints_to_processes(endpoints, base_sys_port=base_sys_port)
+            return endpoints_to_processes(endpoints, base_sys_port=base_sys_port, sys_port_stride=sys_port_stride)
 
         # DP+EP mode: one process per GPU
         processes: list[Process] = []
@@ -281,7 +282,7 @@ class VLLMProtocol:
                             nixl_port=nixl_port,
                         )
                     )
-                    current_sys_port += 1
+                    current_sys_port += sys_port_stride
             else:
                 # DP+EP mode: one process per GPU
                 # Each process gets a single GPU and a unique dp_rank
@@ -320,7 +321,7 @@ class VLLMProtocol:
                                 dp_rpc_port=dp_rpc_port,
                             )
                         )
-                        current_sys_port += 1
+                        current_sys_port += sys_port_stride
                         dp_rank += 1
 
         return processes

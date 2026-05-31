@@ -91,6 +91,7 @@ class BackendProtocol(Protocol):
         self,
         endpoints: list["Endpoint"],
         base_sys_port: int = 8081,
+        sys_port_stride: int = 1,
     ) -> list["Process"]:
         """Convert logical endpoints to physical processes."""
         ...
