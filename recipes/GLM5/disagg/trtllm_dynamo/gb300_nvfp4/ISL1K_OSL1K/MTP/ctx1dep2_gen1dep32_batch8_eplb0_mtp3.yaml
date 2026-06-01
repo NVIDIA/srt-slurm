@@ -1,7 +1,7 @@
 name: glm5_nvfp4_ISL1K_OSL1K_ctx1dep2_gen1dep32_batch8_eplb0_mtp3
 model:
-  path: nvidia/GLM5-NVFP4
-  container: "nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:1.1.0-dev.3"
+  path: /data/home/rihuo/nvidia_GLM-5-NVFP4
+  container: /data/home/rihuo/dynamo-trtllm-arm64-tot-8c830c9.sqsh
   precision: fp4
 resources:
   gpu_type: gb300
