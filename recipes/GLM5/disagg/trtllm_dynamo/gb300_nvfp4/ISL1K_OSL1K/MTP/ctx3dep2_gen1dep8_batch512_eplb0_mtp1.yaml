@@ -168,7 +168,7 @@ benchmark:
   use_chat_template: true
 frontend:
   type: dynamo
-  enable_multiple_frontends: false
+  enable_multiple_frontends: true
 health_check:
   max_attempts: 360
   interval_seconds: 10
