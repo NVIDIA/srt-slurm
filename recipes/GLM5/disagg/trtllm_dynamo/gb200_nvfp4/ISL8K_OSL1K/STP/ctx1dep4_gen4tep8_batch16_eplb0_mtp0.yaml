@@ -1,7 +1,7 @@
 name: glm5_nvfp4_ISL8K_OSL1K_ctx1dep4_gen4tep8_batch16_eplb0_mtp0
 model:
   path: nvidia/GLM5-NVFP4
-  container: nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:1.1.0-dev.3
+  container: "nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:1.1.0-dev.3"
   precision: fp4
 resources:
   gpu_type: gb200
@@ -38,7 +38,6 @@ backend:
       enable_attention_dp: true
       disable_overlap_scheduler: true
       trust_remote_code: true
-      custom_tokenizer: "glm_moe_dsa"
       max_batch_size: 2
       max_num_tokens: 16640
       max_seq_len: 8232
@@ -60,7 +59,6 @@ backend:
       enable_attention_dp: false
       enable_lm_head_tp_in_adp: false
       trust_remote_code: true
-      custom_tokenizer: "glm_moe_dsa"
       max_batch_size: 16
       max_num_tokens: 16
       max_seq_len: 9256
@@ -70,11 +68,11 @@ backend:
       cuda_graph_config:
         enable_padding: true
         batch_sizes:
-        - 1
-        - 2
-        - 4
-        - 8
-        - 16
+          - 1
+          - 2
+          - 4
+          - 8
+          - 16
       moe_config:
         backend: TRTLLM
         use_low_precision_moe_combine: true
@@ -87,20 +85,19 @@ backend:
         max_tokens_in_buffer: 16384
       nvfp4_gemm_config:
         allowed_backends:
-        - cutlass
-        - cublaslt
-        - cutedsl
-        - cuda_core
+          - cutlass
+          - cublaslt
+          - cutedsl
+          - cuda_core
       allreduce_strategy: MNNVL
 benchmark:
   type: sa-bench
   isl: 8192
   osl: 1024
-  concurrencies: "84"
-  req_rate: inf
+  concurrencies: '84'
+  req_rate: 'inf'
   num_prompts_mult: 16
   use_chat_template: true
-  custom_tokenizer: "glm_moe_dsa"
 frontend:
   type: dynamo
   enable_multiple_frontends: false
