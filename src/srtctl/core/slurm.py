@@ -52,11 +52,14 @@ def get_slurm_nodelist() -> list[str]:
     Returns:
         List of node hostnames, or empty list if not in SLURM.
     """
-    nodelist_raw = os.environ.get("SLURM_NODELIST", "")
+    return _expand_nodelist(os.environ.get("SLURM_NODELIST", ""))
+
+
+def _expand_nodelist(nodelist_raw: str) -> list[str]:
+    """Expand a SLURM ranged nodelist via ``scontrol show hostnames``."""
     if not nodelist_raw:
         return []
 
-    # Use scontrol to expand the nodelist
     try:
         result = subprocess.run(
             ["scontrol", "show", "hostnames", nodelist_raw],
@@ -68,6 +71,30 @@ def get_slurm_nodelist() -> list[str]:
     except (subprocess.CalledProcessError, FileNotFoundError):
         # Fallback: try simple parsing for non-ranged formats
         return [nodelist_raw]
+
+
+def get_slurm_het_nodelists() -> list[list[str]] | None:
+    """Per-component nodelists for a SLURM heterogeneous job, else None.
+
+    Returns one expanded nodelist per het component when ``SLURM_HET_SIZE`` is
+    set to a value greater than 1. Returns None for non-het jobs so callers can
+    fall back to ``get_slurm_nodelist()``.
+    """
+    het_size_raw = os.environ.get("SLURM_HET_SIZE", "")
+    if not het_size_raw:
+        return None
+    try:
+        het_size = int(het_size_raw)
+    except ValueError:
+        return None
+    if het_size < 2:
+        return None
+
+    groups: list[list[str]] = []
+    for i in range(het_size):
+        nodelist_raw = os.environ.get(f"SLURM_JOB_NODELIST_HET_GROUP_{i}", "")
+        groups.append(_expand_nodelist(nodelist_raw))
+    return groups
 
 
 # ============================================================================
@@ -166,6 +193,7 @@ def start_srun_process(
     mpi: str | None = None,
     oversubscribe: bool = False,
     cpu_bind: str | None = None,
+    het_group: int | None = None,
 ) -> subprocess.Popen:
     """Start a process via srun with container support.
 
@@ -230,6 +258,11 @@ def start_srun_process(
 
     if nodelist:
         srun_cmd.extend(["--nodelist", ",".join(nodelist)])
+
+    # Route this srun to a specific component of a SLURM heterogeneous job.
+    # Omitted (None) for non-het jobs; safe to always pass-through from callers.
+    if het_group is not None:
+        srun_cmd.append(f"--het-group={het_group}")
 
     if output:
         srun_cmd.extend(["--output", output])
