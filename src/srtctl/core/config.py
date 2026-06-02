@@ -121,6 +121,18 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
             sbatch_directives.setdefault(key, value)
         logger.debug("Applied default sbatch_directives: %s", default_sbatch_directives)
 
+    # Apply cluster-level het-job default. Without this, a recipe with
+    # `het_jobs: None` would defer the cluster default at render-time but skip
+    # SrtConfig validation (which only fires on `het_jobs is True`). Writing
+    # the cluster value into the resolved recipe ensures __post_init__ catches
+    # bad combinations (het + trtllm, het + agg, ...) at load time.
+    resources = config.get("resources")
+    if isinstance(resources, dict) and resources.get("het_jobs") is None:
+        cluster_het = cluster_config.get("use_het_jobs")
+        if cluster_het is not None:
+            resources["het_jobs"] = bool(cluster_het)
+            logger.debug("Applied cluster use_het_jobs default: %s", cluster_het)
+
     # Resolve model path alias
     model = config.get("model", {})
     model_path = model.get("path", "")

@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 from srtctl.ports import FRONTEND_PUBLIC_PORT
 
 from .config import get_srtslurm_setting
-from .slurm import get_hostname_ip, get_slurm_nodelist
+from .slurm import get_hostname_ip, get_slurm_het_nodelists, get_slurm_nodelist
 
 if TYPE_CHECKING:
     from srtctl.core.schema import SrtConfig
@@ -32,12 +32,40 @@ class Nodes:
         infra: Infrastructure node hostname (runs NATS, etcd). Same as head unless
                etcd_nats_dedicated_node is enabled.
         worker: Tuple of all worker node hostnames (prefill + decode)
+        het: True when the job was submitted as a SLURM heterogeneous job. In
+             this mode worker srun calls need ``--het-group=<group>`` so SLURM
+             routes them to the right component.
+        prefill_group: Worker nodes that belong to het component 0 (prefill +
+             optionally the dedicated infra node). Empty tuple when het=False.
+        decode_group: Worker nodes that belong to het component 1 (decode).
+             Empty tuple when het=False.
     """
 
     head: str
     bench: str
     infra: str
     worker: tuple[str, ...]
+    het: bool = False
+    prefill_group: tuple[str, ...] = ()
+    decode_group: tuple[str, ...] = ()
+
+    def het_group_for(self, node: str) -> int | None:
+        """Return the het component (0 or 1) a node belongs to, or None.
+
+        Returns None for non-het jobs so callers can pass the result directly
+        to ``start_srun_process(het_group=...)`` as a no-op fallback.
+        """
+        if not self.het:
+            return None
+        if node in self.prefill_group:
+            return 0
+        if node in self.decode_group:
+            return 1
+        # Head and infra share group 0 under het (infra is folded into the
+        # prefill component, head sits on the prefill side).
+        if node == self.infra or node == self.head:
+            return 0
+        return None
 
     @classmethod
     def from_slurm(
@@ -53,6 +81,10 @@ class Nodes:
             etcd_nats_dedicated_node: If True, dedicate first node for etcd/nats,
                                       second node is head, rest are workers.
         """
+        het_lists = get_slurm_het_nodelists()
+        if het_lists is not None:
+            return cls._from_het_slurm(het_lists, etcd_nats_dedicated_node)
+
         nodelist = get_slurm_nodelist()
         if not nodelist:
             raise RuntimeError("SLURM_NODELIST not set - are we running in SLURM?")
@@ -78,6 +110,48 @@ class Nodes:
             worker = tuple(nodelist[:])
 
         return cls(head=head, bench=bench, infra=infra, worker=worker)
+
+    @classmethod
+    def _from_het_slurm(
+        cls,
+        het_lists: list[list[str]],
+        etcd_nats_dedicated_node: bool,
+    ) -> "Nodes":
+        """Carve a Nodes from a SLURM heterogeneous-job allocation.
+
+        Group 0 holds prefill (and the dedicated infra node when configured);
+        group 1 holds decode. Head/bench live on group 0.
+        """
+        if len(het_lists) != 2:
+            raise ValueError(
+                f"het_jobs expects exactly 2 components (prefill, decode); SLURM_HET_SIZE reported {len(het_lists)}"
+            )
+        group0, group1 = het_lists
+        if not group0 or not group1:
+            raise RuntimeError("Empty SLURM_JOB_NODELIST_HET_GROUP_* — are we inside a het job?")
+
+        if etcd_nats_dedicated_node:
+            if len(group0) < 2:
+                raise ValueError("etcd_nats_dedicated_node requires >= 2 nodes in het group 0")
+            infra = group0[0]
+            head = group0[1]
+            prefill_group = tuple(group0[1:])
+        else:
+            infra = group0[0]
+            head = group0[0]
+            prefill_group = tuple(group0)
+        bench = head
+        decode_group = tuple(group1)
+        worker = prefill_group + decode_group
+        return cls(
+            head=head,
+            bench=bench,
+            infra=infra,
+            worker=worker,
+            het=True,
+            prefill_group=prefill_group,
+            decode_group=decode_group,
+        )
 
 
 @dataclass(frozen=True)

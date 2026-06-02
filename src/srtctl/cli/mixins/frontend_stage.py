@@ -154,6 +154,7 @@ class FrontendStageMixin:
             srun_options={
                 "container-remap-root": "",
             },
+            het_group=self.runtime.nodes.het_group_for(topology.nginx_node),
         )
 
         return ManagedProcess(

@@ -2,6 +2,45 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #SBATCH --job-name={{ job_name }}
+#SBATCH --output={{ output_base }}/%j/logs/sweep_%j.log
+{% if het_components %}
+{# SLURM applies each `#SBATCH ...` to the component immediately preceding it.
+   Per-component required scheduling directives (--account/--partition/--time
+   and per-side --nodes/--ntasks/--segment) repeat inside the loop; --output
+   above is job-wide and applies once. #}
+{% for c in het_components %}
+{% if not loop.first %}
+#SBATCH hetjob
+{% endif %}
+#SBATCH --nodes={{ c.nodes }}
+{% if backend_type == "trtllm" %}
+#SBATCH --ntasks={{ c.gpus_per_node * c.nodes }}
+#SBATCH --ntasks-per-node={{ c.gpus_per_node }}
+{% else %}
+#SBATCH --ntasks={{ c.nodes }}
+#SBATCH --ntasks-per-node=1
+{% endif %}
+{% if use_gpus_per_node_directive %}
+#SBATCH --gpus-per-node={{ c.gpus_per_node }}
+{% endif %}
+{% if use_segment_sbatch_directive %}
+#SBATCH --segment={{ c.segment }}
+{% endif %}
+{% if use_exclusive_sbatch_directive %}
+#SBATCH --exclusive
+{% endif %}
+#SBATCH --account={{ account }}
+#SBATCH --time={{ time_limit }}
+#SBATCH --partition={{ partition }}
+{% for key, value in sbatch_directives.items() %}
+{% if value %}
+#SBATCH --{{ key }}={{ value }}
+{% else %}
+#SBATCH --{{ key }}
+{% endif %}
+{% endfor %}
+{% endfor %}
+{% else %}
 #SBATCH --nodes={{ total_nodes }}
 {% if backend_type == "trtllm" %}
 #SBATCH --ntasks={{ gpus_per_node * total_nodes }}
@@ -21,7 +60,6 @@
 {% endif %}
 #SBATCH --account={{ account }}
 #SBATCH --time={{ time_limit }}
-#SBATCH --output={{ output_base }}/%j/logs/sweep_%j.log
 #SBATCH --partition={{ partition }}
 {% for key, value in sbatch_directives.items() %}
 {% if value %}
@@ -30,6 +68,7 @@
 #SBATCH --{{ key }}
 {% endif %}
 {% endfor %}
+{% endif %}
 
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
