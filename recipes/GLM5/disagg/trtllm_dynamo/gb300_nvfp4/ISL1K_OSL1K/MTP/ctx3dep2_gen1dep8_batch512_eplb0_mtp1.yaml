@@ -59,8 +59,8 @@ backend:
       tensor_parallel_size: 8
       moe_expert_parallel_size: 8
       pipeline_parallel_size: 1
-      enable_attention_dp: false
-      enable_lm_head_tp_in_adp: false
+      enable_attention_dp: true
+      enable_lm_head_tp_in_adp: true
       trust_remote_code: true
       max_batch_size: 512
       max_num_tokens: 1024
@@ -139,12 +139,12 @@ backend:
           - 504
           - 512
       moe_config:
-        backend: TRTLLM
+        backend: CUTEDSL
         use_low_precision_moe_combine: true
       kv_cache_config:
         dtype: fp8
         enable_block_reuse: false
-        free_gpu_memory_fraction: 0.9
+        free_gpu_memory_fraction: 0.8
       cache_transceiver_config:
         backend: UCX
         max_tokens_in_buffer: 16384
@@ -157,7 +157,6 @@ backend:
       speculative_config:
         decoding_type: MTP
         num_nextn_predict_layers: 1
-      allreduce_strategy: MNNVL
 benchmark:
   type: sa-bench
   isl: 1024

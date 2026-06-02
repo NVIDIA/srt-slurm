@@ -60,7 +60,7 @@ backend:
       moe_expert_parallel_size: 16
       pipeline_parallel_size: 1
       enable_attention_dp: true
-      enable_lm_head_tp_in_adp: false
+      enable_lm_head_tp_in_adp: true
       trust_remote_code: true
       max_batch_size: 64
       max_num_tokens: 128
@@ -88,7 +88,7 @@ backend:
       kv_cache_config:
         dtype: fp8
         enable_block_reuse: false
-        free_gpu_memory_fraction: 0.8
+        free_gpu_memory_fraction: 0.7
       cache_transceiver_config:
         backend: UCX
         max_tokens_in_buffer: 16384
