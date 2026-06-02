@@ -694,13 +694,16 @@ class DynamoConfig:
         version: Install specific version from PyPI (e.g., "0.8.0")
         hash: Clone repo and checkout specific commit hash
         top_of_tree: Clone repo at HEAD (latest)
-        wheel: Install from a pre-built wheel file
-        request_plane: Request plane to use (default: "nats"). Valid values: "nats", "tcp", "http"
+        wheel: ai-dynamo package version to install via staged wheels. The
+               matching ai-dynamo-runtime wheel is installed automatically.
+        request_plane: Communication plane for dynamo workers. "nats" (default)
+                       uses the NATS message bus; "tcp" uses direct TCP connections;
+                       "http" uses HTTP-based communication.
 
-    If top_of_tree or hash is set, version is automatically cleared.
+    If top_of_tree, hash, or wheel is set, version is automatically cleared.
     """
 
-    _VALID_REQUEST_PLANES: ClassVar[tuple[str, ...]] = ("nats", "tcp", "http")
+    _VALID_REQUEST_PLANES = ("nats", "tcp", "http")
 
     install: bool = True
     version: str | None = "0.8.0"
@@ -709,6 +712,11 @@ class DynamoConfig:
     request_plane: str = "nats"
 
     def __post_init__(self) -> None:
+        if self.request_plane not in self._VALID_REQUEST_PLANES:
+            raise ValueError(
+                f"Invalid request_plane '{self.request_plane}', must be one of: {', '.join(self._VALID_REQUEST_PLANES)}"
+            )
+
         # Auto-clear version if hash or top_of_tree is set
         if self.hash is not None or self.top_of_tree:
             object.__setattr__(self, "version", None)

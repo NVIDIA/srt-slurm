@@ -640,6 +640,12 @@ def get_tokenizer(
     if custom_tokenizer:
         if custom_tokenizer == "glm_moe_dsa":
             return _load_glm_moe_dsa_tokenizer(pretrained_model_name_or_path)
+        if custom_tokenizer == "deepseek_v4":
+            from tensorrt_llm.tokenizer.deepseek_v4 import DeepseekV4Tokenizer
+
+            return DeepseekV4Tokenizer.from_pretrained(
+                pretrained_model_name_or_path, trust_remote_code=True
+            )
         from importlib import import_module
         try:
             module_path, class_name = custom_tokenizer.rsplit('.', 1)

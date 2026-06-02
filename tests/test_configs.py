@@ -157,21 +157,21 @@ class TestDynamoConfig:
             DynamoConfig(hash="abc123", top_of_tree=True)
 
     def test_request_plane_default_nats(self):
-        """Default request_plane is 'nats'."""
+        """Default request_plane is nats."""
         from srtctl.core.schema import DynamoConfig
 
         config = DynamoConfig()
         assert config.request_plane == "nats"
 
     def test_request_plane_tcp(self):
-        """request_plane='tcp' is accepted."""
+        """request_plane can be set to tcp."""
         from srtctl.core.schema import DynamoConfig
 
         config = DynamoConfig(request_plane="tcp")
         assert config.request_plane == "tcp"
 
     def test_request_plane_http(self):
-        """request_plane='http' is accepted."""
+        """request_plane can be set to http."""
         from srtctl.core.schema import DynamoConfig
 
         config = DynamoConfig(request_plane="http")

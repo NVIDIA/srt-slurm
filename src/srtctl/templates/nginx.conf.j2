@@ -1,7 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-# Defines the group of servers to which NGINX will proxy requests.
-# NGINX will cycle through these servers in a round-robin fashion by default.
 worker_processes auto;
 
 http {
@@ -10,16 +8,20 @@ http {
         {% for frontend_host in frontend_hosts %}
         server {{ frontend_host }}:{{ backend_port | default(8000) }};
         {% endfor %}
+        keepalive 16384;
     }
 
-    # The main server block that listens for incoming traffic.
     server {
-        listen {{ listen_port | default(8000) }}; # Public-facing port for incoming HTTP requests.
+        listen {{ listen_port | default(8000) }};
+        keepalive_requests 100000;
+        keepalive_timeout 75s;
 
         location / {
-            # Pass the request to the upstream group defined above.
             proxy_pass http://backend_servers;
 
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_request_buffering off;
             proxy_buffering off;
             proxy_read_timeout 24h;
             proxy_send_timeout 24h;
@@ -28,25 +30,7 @@ http {
 }
 
 events {
-
-    #
-    # Determines how many clients will be served by each worker process.
-    # (Max clients = worker_connections * worker_processes)
-    # Should be equal to `ulimit -n / worker_processes`
-    #
     worker_connections 65535;
-
-    #
-    # Let each process accept multiple connections.
-    # Accept as many connections as possible, after nginx gets notification
-    # about a new connection.
-    # May flood worker_connections, if that option is set too low.
-    #
     multi_accept on;
-
-    #
-    # Preferred connection method for newer linux versions.
-    # Essential for linux, optmized to serve many clients with each thread.
-    #
     use epoll;
 }

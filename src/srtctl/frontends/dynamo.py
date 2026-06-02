@@ -81,6 +81,8 @@ class DynamoFrontend:
                 "ETCD_ENDPOINTS": f"http://{runtime.nodes.infra}:2379",
                 "NATS_SERVER": f"nats://{runtime.nodes.infra}:4222",
                 "DYN_REQUEST_PLANE": config.dynamo.request_plane,
+                "DYN_SKIP_SGLANG_LOG_FORMATTING": "1",
+                "DYN_TCP_POOL_SIZE": "2048",
             }
 
             # Add frontend env from config
