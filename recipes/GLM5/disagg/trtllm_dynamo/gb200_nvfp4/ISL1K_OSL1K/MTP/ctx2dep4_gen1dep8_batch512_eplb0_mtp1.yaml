@@ -60,7 +60,7 @@ backend:
       moe_expert_parallel_size: 8
       pipeline_parallel_size: 1
       enable_attention_dp: true
-      enable_lm_head_tp_in_adp: false
+      enable_lm_head_tp_in_adp: true
       trust_remote_code: true
       max_batch_size: 512
       max_num_tokens: 1024

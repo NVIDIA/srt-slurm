@@ -80,7 +80,7 @@ backend:
       kv_cache_config:
         dtype: fp8
         enable_block_reuse: false
-        free_gpu_memory_fraction: 0.9
+        free_gpu_memory_fraction: 0.85
       cache_transceiver_config:
         backend: UCX
         max_tokens_in_buffer: 16384
