@@ -24,16 +24,16 @@ SRTCTL_SOURCE="/home/rihuo/srt-slurm"
 OUTPUT_BASE="/home/rihuo/srt-slurm/outputs"
 OUTPUT_DIR="${OUTPUT_BASE}/${SLURM_JOB_ID}"
 LOG_DIR="${OUTPUT_DIR}/logs"
-CONTAINER_IMAGE="/lustre/fsw/portfolios/coreai/projects/coreai_comparch_aarwlt/users/rihuo/dynamo-trtllm-rihuo-arm64-tot-8c830c9.sqsh"
-EVAL_CONTAINER_IMAGE="/lustre/fsw/portfolios/coreai/projects/coreai_comparch_aarwlt/users/rihuo/dynamo-trtllm-rihuo-arm64-tot-8c830c9.sqsh"
+CONTAINER_IMAGE="/lustre/fsw/portfolios/coreai/projects/coreai_comparch_aarwlt/users/rihuo/dynamo-trtllm-rihuo-arm64-v1-3-0rc16.sqsh"
+EVAL_CONTAINER_IMAGE="/lustre/fsw/portfolios/coreai/projects/coreai_comparch_aarwlt/users/rihuo/dynamo-trtllm-rihuo-arm64-v1-3-0rc16.sqsh"
 MODEL_PATH="/lustre/fsw/portfolios/coreai/projects/coreai_comparch_aarwlt/users/rihuo/deepseek-ai_DeepSeek-R1-0528"
 MODEL_NAME="deepseek-ai/DeepSeek-R1-0528"
 INFMAX_WORKSPACE="/home/rihuo/InferenceMAX"
 SCRIPT_MOUNTS="${LOG_DIR}:/logs,${MODEL_PATH}:/model,${SRTCTL_SOURCE}/configs:/configs,${SRTCTL_SOURCE}/src/srtctl/benchmarks/scripts:/srtctl-benchmarks,${INFMAX_WORKSPACE}:/infmax-workspace"
 
 # Environment variables from config
-PREFILL_ENV="export TLLM_OVERRIDE_LAYER_NUM=61 && export TLLM_LOG_LEVEL=INFO && export TRTLLM_SERVER_DISABLE_GC=1 && export TRTLLM_WORKER_DISABLE_GC=1 && export TRTLLM_ENABLE_PDL=1 && export ENROOT_ALLOW_DEV=yes && export NCCL_GRAPH_MIXING_SUPPORT=0 && export TRTLLM_FORCE_COMM_METHOD=NVLINK_TWO_SIDED && export UCX_TLS=cuda_ipc,cuda_copy,sm,self,tcp"
-DECODE_ENV="export TLLM_OVERRIDE_LAYER_NUM=61 && export TLLM_LOG_LEVEL=INFO && export TRTLLM_SERVER_DISABLE_GC=1 && export TRTLLM_WORKER_DISABLE_GC=1 && export TRTLLM_ENABLE_PDL=1 && export ENROOT_ALLOW_DEV=yes && export NCCL_GRAPH_MIXING_SUPPORT=0 && export TRTLLM_FORCE_COMM_METHOD=NVLINK_TWO_SIDED && export ENABLE_CONFIGURABLE_MOE=1 && export UCX_TLS=cuda_ipc,cuda_copy,sm,self,tcp"
+PREFILL_ENV="export TLLM_OVERRIDE_LAYER_NUM=61 && export TLLM_LOG_LEVEL=INFO && export TRTLLM_SERVER_DISABLE_GC=1 && export TRTLLM_WORKER_DISABLE_GC=1 && export TRTLLM_ENABLE_PDL=1 && export ENROOT_ALLOW_DEV=yes && export NCCL_GRAPH_MIXING_SUPPORT=0"
+DECODE_ENV="export TLLM_OVERRIDE_LAYER_NUM=61 && export TLLM_LOG_LEVEL=INFO && export TRTLLM_SERVER_DISABLE_GC=1 && export TRTLLM_WORKER_DISABLE_GC=1 && export TRTLLM_ENABLE_PDL=1 && export ENROOT_ALLOW_DEV=yes && export NCCL_GRAPH_MIXING_SUPPORT=0 && export TRTLLM_FORCE_COMM_METHOD=NVLINK_TWO_SIDED && export ENABLE_CONFIGURABLE_MOE=1"
 
 # Dynamo ports
 ETCD_PORT=2379
@@ -221,7 +221,7 @@ kv_cache_config:
   enable_block_reuse: false
   free_gpu_memory_fraction: 0.1
 max_batch_size: 2
-max_num_tokens: 16384
+max_num_tokens: 8232
 max_seq_len: 8232
 moe_config:
   backend: DEEPGEMM
