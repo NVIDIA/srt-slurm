@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING, Any
 
 from srtctl.core.processes import ManagedProcess
 from srtctl.core.slurm import start_srun_process
-from srtctl.core.telemetry import generate_telemetry_config
 
 if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
