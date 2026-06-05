@@ -80,7 +80,7 @@ class DynamoFrontend:
             env_to_set = {
                 "ETCD_ENDPOINTS": f"http://{runtime.nodes.infra}:2379",
                 "NATS_SERVER": f"nats://{runtime.nodes.infra}:4222",
-                "DYN_REQUEST_PLANE": "nats",
+                "DYN_REQUEST_PLANE": config.dynamo.request_plane,
             }
 
             # Add frontend env from config

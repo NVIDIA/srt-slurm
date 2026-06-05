@@ -441,6 +441,9 @@ class VLLMProtocol:
             if node_rank > 0:
                 cmd.append("--headless")
 
+        # Add request plane
+        cmd.extend(["--request-plane", runtime.request_plane])
+
         # Add config dump path
         if dump_config_path:
             cmd.extend(["--dump-config-to", str(dump_config_path)])
