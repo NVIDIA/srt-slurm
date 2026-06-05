@@ -135,8 +135,7 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
         --request-rate 250 \
         --percentile-metrics ttft,tpot,itl,e2el \
         --max-concurrency "$concurrency" \
-        --trust-remote-code \
-        "${CUSTOM_TOKENIZER_ARGS[@]}"
+        --trust-remote-code
 
     num_prompts=$((concurrency * NUM_PROMPTS_MULT))
     
