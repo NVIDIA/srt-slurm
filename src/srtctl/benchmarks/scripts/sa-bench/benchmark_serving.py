@@ -157,11 +157,17 @@ def sample_burstgpt_requests(
         gpt4_df = gpt4_df.sample(n=num_requests, random_state=random_seed, replace=True)
     # Convert the dataframe to a list of tuples
     dataset = gpt4_df.values.tolist()
+    try:
+        vocab_size = tokenizer.vocab_size
+    except (AttributeError, NotImplementedError):
+        # Custom tokenizers wrap an inner HF tokenizer
+        vocab_size = tokenizer.tokenizer.vocab_size
+
     input_requests = []
     for i in range(num_requests):
         input_len = int(dataset[i][2])
         output_len = int(dataset[i][3])
-        prompt = tokenizer.decode([(i + j) % tokenizer.vocab_size for j in range(input_len)])
+        prompt = tokenizer.decode([(i + j) % vocab_size for j in range(input_len)])
         input_requests.append((prompt, input_len, output_len, None))
     return input_requests
 
@@ -341,6 +347,12 @@ def sample_random_requests(
     tokenizer: PreTrainedTokenizerBase,
     use_chat_template: bool = False,
 ) -> list[tuple[str, int, int]]:
+    try:
+        vocab_size = tokenizer.vocab_size
+    except (AttributeError, NotImplementedError):
+        # Custom tokenizers wrap an inner HF tokenizer
+        vocab_size = tokenizer.tokenizer.vocab_size
+
     if use_chat_template:
         chat_template_len = len(tokenizer.encode(
             tokenizer.apply_chat_template(
@@ -361,13 +373,13 @@ def sample_random_requests(
         output_len + 1,
         size=num_prompts,
     )
-    offsets = np.random.randint(0, tokenizer.vocab_size, size=num_prompts)
+    offsets = np.random.randint(0, vocab_size, size=num_prompts)
     input_requests = []
 
     if use_chat_template:
         for i in range(num_prompts):
             origin_text = tokenizer.decode(
-                [(offsets[i] + i + j) % tokenizer.vocab_size for j in range(int(input_lens[i] * 1.5))]
+                [(offsets[i] + i + j) % vocab_size for j in range(int(input_lens[i] * 1.5))]
             )
             re_encoded_sequence = tokenizer.encode(origin_text, add_special_tokens=False)[: input_lens[i]]
             prompt_text = tokenizer.decode(re_encoded_sequence)
@@ -379,10 +391,10 @@ def sample_random_requests(
             input_lens[i] += chat_template_len
             input_requests.append((prompt, int(input_lens[i]), int(output_lens[i]), None))
     else:
-        prefix_token_ids = np.random.randint(0, tokenizer.vocab_size, size=prefix_len).tolist()
+        prefix_token_ids = np.random.randint(0, vocab_size, size=prefix_len).tolist()
         for i in range(num_prompts):
             prompt = tokenizer.decode(
-                prefix_token_ids + [(offsets[i] + i + j) % tokenizer.vocab_size for j in range(input_lens[i])]
+                prefix_token_ids + [(offsets[i] + i + j) % vocab_size for j in range(input_lens[i])]
             )
             re_encoded_sequence = tokenizer.encode(prompt, add_special_tokens=False)[: (prefix_len + input_lens[i])]
             prompt = tokenizer.decode(re_encoded_sequence)
