@@ -694,14 +694,19 @@ class DynamoConfig:
         version: Install specific version from PyPI (e.g., "0.8.0")
         hash: Clone repo and checkout specific commit hash
         top_of_tree: Clone repo at HEAD (latest)
+        wheel: Install from a pre-built wheel file
+        request_plane: Request plane to use (default: "nats"). Valid values: "nats", "tcp", "http"
 
     If top_of_tree or hash is set, version is automatically cleared.
     """
+
+    _VALID_REQUEST_PLANES: ClassVar[tuple[str, ...]] = ("nats", "tcp", "http")
 
     install: bool = True
     version: str | None = "0.8.0"
     hash: str | None = None
     top_of_tree: bool = False
+    request_plane: str = "nats"
 
     def __post_init__(self) -> None:
         # Auto-clear version if hash or top_of_tree is set
@@ -711,6 +716,11 @@ class DynamoConfig:
         # Validate only one source option is set
         if self.hash is not None and self.top_of_tree:
             raise ValueError("Cannot specify both hash and top_of_tree")
+
+        if self.request_plane not in self._VALID_REQUEST_PLANES:
+            raise ValueError(
+                f"Invalid request_plane '{self.request_plane}', must be one of: {', '.join(self._VALID_REQUEST_PLANES)}"
+            )
 
     @property
     def needs_source_install(self) -> bool:
