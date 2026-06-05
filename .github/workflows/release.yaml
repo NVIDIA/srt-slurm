@@ -1,7 +1,12 @@
 name: Release
 
+# pull_request_target (not pull_request): on a fork-PR merge, the plain
+# pull_request token is forced read-only and ignores `permissions:`, so
+# `gh release create` 403s. pull_request_target runs in the base-repo context
+# with a write-capable token. Safe here: we never check out or run PR code,
+# only call the GitHub API.
 on:
-  pull_request:
+  pull_request_target:
     types: [closed]
     branches: [main]
 
