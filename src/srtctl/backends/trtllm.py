@@ -178,7 +178,12 @@ class TRTLLMProtocol:
         container_config_path = Path("/logs") / config_filename
         container_model_path = Path("/model")
 
+        numactl_prefix = (
+            ["numactl", "-m", "0,1"] if runtime.gpu_type in ("gb200", "gb300") and mode in ("prefill", "decode") else []
+        )
+
         cmd = [
+            *numactl_prefix,
             "trtllm-llmapi-launch",
             "python3",
             "-m",

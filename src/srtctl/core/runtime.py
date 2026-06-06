@@ -123,6 +123,9 @@ class RuntimeContext:
     # Request plane for dynamo workers
     request_plane: str = "nats"
 
+    # GPU type (e.g. "gb200", "gb300", "h100")
+    gpu_type: str = ""
+
     @classmethod
     def from_config(
         cls,
@@ -261,6 +264,7 @@ class RuntimeContext:
             environment=dict(config.environment),
             is_hf_model=is_hf_model,
             request_plane=config.dynamo.request_plane,
+            gpu_type=config.resources.gpu_type,
         )
 
         # Expand FormattablePath mounts
@@ -285,6 +289,7 @@ class RuntimeContext:
             environment=dict(config.environment),
             is_hf_model=is_hf_model,
             request_plane=config.dynamo.request_plane,
+            gpu_type=config.resources.gpu_type,
         )
 
     def format_string(self, template: str, **extra_kwargs) -> str:
