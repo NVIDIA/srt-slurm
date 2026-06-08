@@ -207,6 +207,57 @@ class TestCustomBenchmarkRunner:
         assert runner.get_container_image(config, runtime) == "nvcr.io/nvidia/python:3.11"
         assert runner.get_environment(config, runtime) == {"FOO": "bar"}
 
+    def test_build_command_wraps_with_profiling_when_enabled(self):
+        from unittest.mock import MagicMock
+
+        from srtctl.benchmarks.custom import CustomBenchmarkRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ProfilingConfig, ProfilingPhaseConfig, ResourceConfig, SrtConfig
+
+        runner = CustomBenchmarkRunner()
+        runtime = MagicMock()
+
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="h100"),
+            benchmark=BenchmarkConfig(type="custom", command="python /bench/run.py"),
+            profiling=ProfilingConfig(
+                type="nsys",
+                prefill=ProfilingPhaseConfig(start_step=5, stop_step=10),
+                decode=ProfilingPhaseConfig(start_step=5, stop_step=10),
+            ),
+        )
+
+        cmd = runner.build_command(config, runtime)
+        assert cmd[0] == "bash"
+        assert cmd[1] == "-lc"
+        script = cmd[2]
+        assert "source /srtctl-benchmarks/lib/profiling.sh" in script
+        assert "profiling_init_from_env" in script
+        assert "start_all_profiling" in script
+        assert "stop_all_profiling" in script
+        assert "python /bench/run.py" in script
+
+    def test_build_command_no_profiling_wrapper_when_disabled(self):
+        from unittest.mock import MagicMock
+
+        from srtctl.benchmarks.custom import CustomBenchmarkRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ProfilingConfig, ResourceConfig, SrtConfig
+
+        runner = CustomBenchmarkRunner()
+        runtime = MagicMock()
+
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="h100"),
+            benchmark=BenchmarkConfig(type="custom", command="python /bench/run.py"),
+            profiling=ProfilingConfig(type="none"),
+        )
+
+        cmd = runner.build_command(config, runtime)
+        assert cmd == ["bash", "-lc", "python /bench/run.py"]
+
 
 class TestSGLangBenchRunner:
     """Test SGLang-Bench runner."""

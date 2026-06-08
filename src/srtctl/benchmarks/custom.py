@@ -54,7 +54,18 @@ class CustomBenchmarkRunner(BenchmarkRunner):
     def build_command(self, config: SrtConfig, runtime: RuntimeContext) -> list[str]:
         del runtime
         assert config.benchmark.command is not None
-        return ["bash", "-lc", config.benchmark.command]
+        if not config.profiling.enabled:
+            return ["bash", "-lc", config.benchmark.command]
+        wrapped = (
+            "source /srtctl-benchmarks/lib/profiling.sh\n"
+            "profiling_init_from_env\n"
+            "start_all_profiling\n"
+            f"( {config.benchmark.command} )\n"
+            "_exitcode=$?\n"
+            "stop_all_profiling\n"
+            "exit $_exitcode\n"
+        )
+        return ["bash", "-lc", wrapped]
 
     def get_container_image(self, config: SrtConfig, runtime: RuntimeContext) -> str | Path:
         return config.benchmark.container_image or runtime.container_image
