@@ -5,8 +5,8 @@ name: "dsv4pro_mxfp4_ISL8K_OSL1K_ctx1dep4_gen5tep4_batch4_eplb0_mtp3"
 # concurrency: 30
 
 model:
-  path: "deepseek-ai/DeepSeek-V4-Pro"
-  container: "nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:1.3.0-deepseek-v4-dev.1"
+  path: "/scratch/models/DeepSeek-V4-Pro"
+  container: "/data/home/rihuo/dynamo-trtllm-arm64-staging-feat-dsv4.sqsh"
   precision: "fp4"
 resources:
   gpu_type: "gb300"
