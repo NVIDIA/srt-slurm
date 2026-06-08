@@ -5,8 +5,8 @@ name: "dsv4pro_mxfp4_ISL1K_OSL1K_ctx3dep4_gen1dep16_batch256_eplb384_mtp1"
 # concurrency: 4301
 
 model:
-  path: "/scratch/models/DeepSeek-V4-Pro"
-  container: "/data/home/rihuo/dynamo-trtllm-arm64-staging-feat-dsv4.sqsh"
+  path: "deepseek-ai/DeepSeek-V4-Pro"
+  container: "nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:1.3.0-deepseek-v4-dev.1"
   precision: "fp4"
 
 extra_mount:
