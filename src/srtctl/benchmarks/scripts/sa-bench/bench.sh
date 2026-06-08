@@ -64,6 +64,7 @@ NUM_PROMPTS_MULT=${13:-10}
 NUM_WARMUP_MULT=${14:-2}
 CUSTOM_TOKENIZER=${15:-}
 USE_CHAT_TEMPLATE=${16:-true}
+WARMUP_REQ_RATE=${17:-250}
 
 # Build optional custom tokenizer args
 CUSTOM_TOKENIZER_ARGS=()
@@ -83,7 +84,7 @@ PORT=$(echo "$ENDPOINT" | sed 's|http://||' | cut -d: -f2 | cut -d/ -f1)
 
 WORK_DIR="$(dirname "$0")"
 
-echo "SA-Bench Config: endpoint=${ENDPOINT}; isl=${ISL}; osl=${OSL}; concurrencies=${CONCURRENCIES}; req_rate=${REQ_RATE}; model=${MODEL_NAME}; num_prompts_mult=${NUM_PROMPTS_MULT}; num_warmup_mult=${NUM_WARMUP_MULT}"
+echo "SA-Bench Config: endpoint=${ENDPOINT}; isl=${ISL}; osl=${OSL}; concurrencies=${CONCURRENCIES}; req_rate=${REQ_RATE}; model=${MODEL_NAME}; num_prompts_mult=${NUM_PROMPTS_MULT}; num_warmup_mult=${NUM_WARMUP_MULT}; warmup_req_rate=${WARMUP_REQ_RATE}"
 
 # Profiling shared helpers
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -120,7 +121,7 @@ start_all_profiling
 
 for concurrency in "${CONCURRENCY_LIST[@]}"; do
 
-    num_warmup_prompts=$((concurrency * 2))
+    num_warmup_prompts=$((concurrency * NUM_WARMUP_MULT))
     python3 -u "${WORK_DIR}/benchmark_serving.py" \
         --model "${MODEL_NAME}" --tokenizer "${MODEL_PATH}" \
         --host "$HOST" --port "$PORT" \
@@ -132,7 +133,7 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
         --random-output-len "$OSL" \
         --random-range-ratio "${RANDOM_RANGE_RATIO}" \
         --ignore-eos \
-        --request-rate 250 \
+        --request-rate "${WARMUP_REQ_RATE}" \
         --percentile-metrics ttft,tpot,itl,e2el \
         --max-concurrency "$concurrency" \
         --trust-remote-code
