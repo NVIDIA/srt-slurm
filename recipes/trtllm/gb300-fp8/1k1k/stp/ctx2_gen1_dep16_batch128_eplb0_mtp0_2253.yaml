@@ -1,8 +1,8 @@
 name: ctx2_gen1_dep16_batch128_eplb0_mtp0_2253
 
 model:
-  path: "dsr1-fp8"
-  container: "dynamo-trtllm"
+  path: "/data/home/rihuo/deepseek-ai_DeepSeek-R1-0528"
+  container: "/data/home/rihuo/dynamo-trtllm-arm64-0-8-1-post2.sqsh"
   precision: "fp8"
 
 resources:
