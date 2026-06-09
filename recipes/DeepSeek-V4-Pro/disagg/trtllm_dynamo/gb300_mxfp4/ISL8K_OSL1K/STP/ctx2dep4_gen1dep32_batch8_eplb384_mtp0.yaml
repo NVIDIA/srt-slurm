@@ -122,7 +122,7 @@ benchmark:
   req_rate: "inf"
   num_prompts_mult: 10
   num_warmup_mult: 20
-  warmup_req_rate: 308
+  warmup_req_rate: "inf"
   custom_tokenizer: "deepseek_v4"
   use_chat_template: true
 
