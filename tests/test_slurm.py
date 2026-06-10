@@ -3,6 +3,7 @@
 
 """Tests for SLURM command construction."""
 
+import shlex
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -77,7 +78,7 @@ def test_cluster_bash_preamble_applied_when_only_cluster_set() -> None:
     assert bash_cmd.startswith("ulimit -n 1048576 && python3 -m server")
 
 
-def test_cluster_bash_preamble_warns_when_bash_wrapper_disabled(caplog) -> None:
+def test_cluster_bash_preamble_wraps_command_when_bash_wrapper_disabled() -> None:
     with (
         patch("srtctl.core.slurm.get_slurm_job_id", return_value="12345"),
         patch(
@@ -85,15 +86,13 @@ def test_cluster_bash_preamble_warns_when_bash_wrapper_disabled(caplog) -> None:
             return_value="ulimit -n 1048576",
         ),
         patch("subprocess.Popen") as mock_popen,
-        caplog.at_level("WARNING", logger="srtctl.core.slurm"),
     ):
         mock_popen.return_value = MagicMock()
-        start_srun_process(["/bin/node_exporter"], use_bash_wrapper=False)
+        command = ["bash", "-c", "nginx -c /logs/nginx.conf -g 'daemon off;'"]
+        start_srun_process(command, use_bash_wrapper=False)
 
-    srun_cmd = mock_popen.call_args.args[0]
-    # Distroless path runs the binary directly; preamble cannot apply.
-    assert "bash" not in srun_cmd
-    assert any("default_bash_preamble" in record.message for record in caplog.records)
+    bash_cmd = _built_bash_command(mock_popen)
+    assert bash_cmd == " && ".join(["ulimit -n 1048576", shlex.join(command)])
 
 
 def test_srun_options_use_equals_separator() -> None:

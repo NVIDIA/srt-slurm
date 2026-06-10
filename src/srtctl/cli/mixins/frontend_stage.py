@@ -134,8 +134,8 @@ class FrontendStageMixin:
         # Install nginx and run it (daemon off keeps nginx in foreground so srun can manage it)
         # Use container path (/logs) since log_dir is mounted there
         container_config_path = "/logs/nginx.conf"
-        # Optional ulimit: use_bash_wrapper=False bypasses default_bash_preamble;
-        # some clusters reject raising nofile inside the nginx container.
+        # Optional nginx-specific ulimit; some clusters reject raising nofile
+        # inside the nginx container.
         fe = self.config.frontend
         inner = (
             f"ulimit -n 1048576 && nginx -c {container_config_path} -g 'daemon off;'"
