@@ -15,6 +15,7 @@ class TestBenchmarkRegistry:
     def test_list_benchmarks(self):
         """All expected benchmarks are registered."""
         benchmarks = list_benchmarks()
+        assert "agentx" in benchmarks
         assert "custom" in benchmarks
         assert "sa-bench" in benchmarks
         assert "sglang-bench" in benchmarks
@@ -29,6 +30,10 @@ class TestBenchmarkRegistry:
         runner = get_runner("sa-bench")
         assert runner.name == "SA-Bench"
         assert "sa-bench" in runner.script_path
+
+        runner = get_runner("agentx")
+        assert runner.name == "AgentX"
+        assert "agentx" in runner.script_path
 
     def test_get_runner_invalid(self):
         """Raises ValueError for unknown benchmark type."""
@@ -162,6 +167,88 @@ class TestSABenchRunner:
         cmd = runner.build_command(config, runtime)
         assert "random" in cmd
         assert cmd[-1] == ""  # empty dataset path
+
+
+class TestAgentXRunner:
+    """Test AgentX runner."""
+
+    def test_validate_config_requires_single_concurrency(self):
+        from srtctl.benchmarks.agentx import AgentXRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = AgentXRunner()
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="h100"),
+            benchmark=BenchmarkConfig(type="agentx", concurrencies="4x8"),
+        )
+
+        errors = runner.validate_config(config)
+
+        assert any("benchmark.concurrency is required" in e for e in errors)
+        assert any("do not set benchmark.concurrencies" in e for e in errors)
+
+    def test_validate_config_valid(self):
+        from srtctl.benchmarks.agentx import AgentXRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = AgentXRunner()
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="h100"),
+            benchmark=BenchmarkConfig(type="agentx", concurrency=32),
+        )
+
+        assert runner.validate_config(config) == []
+
+    def test_build_command(self):
+        from unittest.mock import MagicMock
+
+        from srtctl.benchmarks.agentx import AgentXRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = AgentXRunner()
+        runtime = MagicMock()
+        runtime.frontend_port = 8000
+        runtime.model_path = "/model"
+        runtime.is_hf_model = False
+
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="h100"),
+            benchmark=BenchmarkConfig(
+                type="agentx",
+                concurrency=64,
+                benchmark_duration=1200,
+                max_context_length=128000,
+                agentx_dataset="semianalysis_cc_traces_weka_with_subagents_256k",
+                num_dataset_entries=470,
+                failed_request_threshold=0.05,
+                env={"AIPERF_DATASET_MMAP_CACHE_DIR": "/cache"},
+                aiperf_args={"workers-max": 128, "export-http-trace": True},
+            ),
+        )
+
+        cmd = runner.build_command(config, runtime)
+
+        assert cmd[:3] == ["bash", "/srtctl-benchmarks/agentx/bench.sh", "http://localhost:8000"]
+        assert cmd[3:11] == [
+            "model",
+            "64",
+            "1200",
+            "128000",
+            "/model",
+            "semianalysis_cc_traces_weka_with_subagents_256k",
+            "470",
+            "0.05",
+        ]
+        assert "--workers-max" in cmd
+        assert cmd[cmd.index("--workers-max") + 1] == "128"
+        assert "--export-http-trace" in cmd
+        assert runner.get_environment(config, runtime) == {"AIPERF_DATASET_MMAP_CACHE_DIR": "/cache"}
 
 
 class TestCustomBenchmarkRunner:
