@@ -18,18 +18,13 @@ if TYPE_CHECKING:
 class GPQARunner(BenchmarkRunner):
     """GPQA (Graduate-level science QA) accuracy evaluation.
 
-    Uses sgl-eval (`sgl-eval run gpqa`) against the OpenAI-compatible endpoint.
-    bench.sh installs sgl-eval and maps the args below to sgl-eval flags
-    (repeat -> --n-repeats). HF_TOKEN must be set via the recipe `environment:`
-    block (the GPQA dataset is gated on HuggingFace).
+    Uses sglang.test.run_eval with gpqa task.
 
     Optional config fields:
         - benchmark.num_examples: Number of examples (default: 198)
         - benchmark.max_tokens: Max tokens per response (default: 32768)
-        - benchmark.repeat: Number of repeats -> sgl-eval --n-repeats (default: 8)
+        - benchmark.repeat: Number of repeats (default: 8)
         - benchmark.num_threads: Concurrent threads (default: 128)
-        - benchmark.temperature: sgl-eval --temperature (default: sgl-eval's, 0.0 greedy)
-        - benchmark.top_p: sgl-eval --top-p (default: sgl-eval's, 1.0)
     """
 
     @property
@@ -64,6 +59,4 @@ class GPQARunner(BenchmarkRunner):
             str(b.max_tokens or 32768),
             str(b.repeat or 8),
             str(b.num_threads or 128),
-            "" if b.temperature is None else str(b.temperature),
-            "" if b.top_p is None else str(b.top_p),
         ]

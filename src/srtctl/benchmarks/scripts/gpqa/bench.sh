@@ -2,80 +2,52 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# GPQA accuracy evaluation via sgl-eval (https://github.com/sgl-project/sgl-eval).
-# sgl-eval talks to an OpenAI-compatible endpoint (no model-name detection) and
-# vendors NeMo-Skills scoring. Replaces the old `python3 -m sglang.test.run_eval`.
-#
-# Args (from srtctl GPQARunner.build_command):
-#   endpoint [num_examples] [max_tokens] [repeat] [num_threads]
+# GPQA accuracy evaluation
+# Expects: endpoint [num_examples] [max_tokens] [repeat] [num_threads]
 
 set -e
 
-ENDPOINT=$1                       # http://localhost:8000 (nginx) -- used as fallback
+ENDPOINT=$1
 NUM_EXAMPLES=${2:-198}
 MAX_TOKENS=${3:-32768}
 REPEAT=${4:-8}
 NUM_THREADS=${5:-128}
-TEMPERATURE=${6:-}                # optional: forwarded to sgl-eval --temperature
-TOP_P=${7:-}                      # optional: forwarded to sgl-eval --top-p
 
-# The gated GPQA dataset (Idavidrein/gpqa) is Xet-backed and the HF Xet client
-# hangs on this cluster; force the plain download path. HF_TOKEN comes from the
-# recipe `environment:` block (gated dataset).
-export HF_HUB_DISABLE_XET=1
+# Auto-detect model name from /v1/models endpoint; fall back to default
+MODEL_NAME=$(curl -s "${ENDPOINT}/v1/models" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['data'][0]['id'])" 2>/dev/null || echo "")
+if [ -z "${MODEL_NAME}" ]; then
+    MODEL_NAME="deepseek-ai/DeepSeek-R1"
+    echo "Warning: Could not auto-detect model name, using default: ${MODEL_NAME}"
+fi
 
+echo "GPQA Config: endpoint=${ENDPOINT}; model=${MODEL_NAME}; num_examples=${NUM_EXAMPLES}; max_tokens=${MAX_TOKENS}; repeat=${REPEAT}; num_threads=${NUM_THREADS}"
+
+# Create results directory
 result_dir="/logs/accuracy"
 mkdir -p "$result_dir"
 
-echo "Installing sgl-eval..."
-pip install --break-system-packages -q git+https://github.com/sgl-project/sgl-eval 2>&1 | tail -2
+# Set OPENAI_API_KEY if not set
+export OPENAI_API_KEY="${OPENAI_API_KEY:-EMPTY}"
 
-# Bypass nginx round-robin (some frontends hang on /v1/models, or list the model
-# but 404 on chat completions). Read the frontend upstreams from the mounted
-# nginx.conf and probe each with an actual chat completion (the real path the
-# eval will use). /v1/models alone is NOT a reliable health check -- a frontend
-# can return the model on /v1/models yet 404 chat. Pin to the first frontend
-# that returns 200 on chat. Fall back to the nginx endpoint if none answer.
-MODEL_NAME="deepseek-ai/DeepSeek-V4-Pro"
-PROBE_BODY="{\"model\":\"${MODEL_NAME}\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":8}"
-BASE_URL="${ENDPOINT}/v1"
-NGINX_CONF="/logs/nginx.conf"
-if [ -f "$NGINX_CONF" ]; then
-    FRONTENDS=$(grep -oE 'server +[0-9.]+:[0-9]+' "$NGINX_CONF" | awk '{print $2}')
-    echo "Selecting a frontend that actually serves chat (bypassing nginx round-robin)..."
-    for fe in $FRONTENDS; do
-        code=$(curl -s -m 25 -o /dev/null -w '%{http_code}' \
-            "http://${fe}/v1/chat/completions" \
-            -H 'Content-Type: application/json' \
-            -d "$PROBE_BODY" 2>/dev/null || echo 000)
-        echo "  probe http://${fe}/v1/chat/completions -> ${code}"
-        if [ "$code" = "200" ]; then
-            BASE_URL="http://${fe}/v1"
-            break
-        fi
-    done
-fi
-echo "Using base-url: ${BASE_URL}"
+echo "Running GPQA evaluation..."
 
-echo "GPQA Config (sgl-eval): base_url=${BASE_URL} num_examples=${NUM_EXAMPLES} max_tokens=${MAX_TOKENS} n_repeats=${REPEAT} num_threads=${NUM_THREADS}"
-echo "Running GPQA evaluation via sgl-eval..."
-
-SAMPLING_ARGS=()
-if [ -n "$TEMPERATURE" ]; then
-    SAMPLING_ARGS+=(--temperature "$TEMPERATURE")
-fi
-if [ -n "$TOP_P" ]; then
-    SAMPLING_ARGS+=(--top-p "$TOP_P")
-fi
-
-sgl-eval run gpqa \
-    --base-url "${BASE_URL}" \
+python3 -m sglang.test.run_eval \
+    --base-url "${ENDPOINT}" \
+    --model "${MODEL_NAME}" \
+    --eval-name gpqa \
     --num-examples "${NUM_EXAMPLES}" \
-    --n-repeats "${REPEAT}" \
     --max-tokens "${MAX_TOKENS}" \
-    --num-threads "${NUM_THREADS}" \
-    "${SAMPLING_ARGS[@]}" \
-    --out-dir "$result_dir"
+    --repeat "${REPEAT}" \
+    --num-threads "${NUM_THREADS}"
 
-echo "Results saved under: $result_dir"
+# Copy result file
+result_file=$(ls -t /tmp/gpqa_*.json 2>/dev/null | head -n1)
+if [ -f "$result_file" ]; then
+    cp "$result_file" "$result_dir/"
+    echo "Results saved to: $result_dir/$(basename "$result_file")"
+else
+    echo "Warning: Could not find result file in /tmp"
+fi
+
 echo "GPQA evaluation complete"
+
