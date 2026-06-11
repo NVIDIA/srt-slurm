@@ -698,7 +698,7 @@ class BenchmarkConfig:
     use_chat_template: bool = True  # Pass --use-chat-template to benchmark (default: true)
     # AgentX benchmark fields (uses aiperf's inferencex-agentx-mvp scenario)
     agentx_dataset: str | None = None  # AIPerf --public-dataset alias
-    benchmark_duration: int | None = None  # AIPerf --benchmark-duration in seconds (default: 900)
+    benchmark_duration: int | None = None  # AIPerf --benchmark-duration in seconds (default: 1800)
     num_dataset_entries: int | None = None  # AIPerf --num-dataset-entries (default: 472)
     failed_request_threshold: float | None = None  # AIPerf --failed-request-threshold (default: 0.10)
     # Custom benchmark hook.

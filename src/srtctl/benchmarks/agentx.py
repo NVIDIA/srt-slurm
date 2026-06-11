@@ -69,7 +69,7 @@ class AgentXRunner(AIPerfBenchmarkRunner):
             endpoint,
             model_name,
             str(b.concurrency or ""),
-            str(b.benchmark_duration or 900),
+            str(b.benchmark_duration or 1800),
             str(b.max_context_length or 0),
             tokenizer_path,
             b.agentx_dataset or b.dataset_name or "semianalysis_cc_traces_weka_with_subagents",

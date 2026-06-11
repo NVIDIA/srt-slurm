@@ -14,7 +14,7 @@ set -euo pipefail
 ENDPOINT=$1
 MODEL_NAME=$2
 CONCURRENCY=$3
-DURATION=${4:-900}
+DURATION=${4:-1800}
 MAX_CONTEXT_LENGTH=${5:-0}
 TOKENIZER_PATH=${6:-/model}
 PUBLIC_DATASET=${7:-semianalysis_cc_traces_weka_with_subagents}
