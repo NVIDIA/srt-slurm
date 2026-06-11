@@ -91,8 +91,8 @@ base:
         enable-dp-attention: false
         enable-dp-lm-head: false
         load-balance-method: round_robin
-        max-running-requests: 37
-        cuda-graph-max-bs: 37
+        max-running-requests: 32
+        cuda-graph-max-bs: 32
         chunked-prefill-size: 64
         context-length: 9600
         nsa-prefill-backend: trtllm
@@ -120,7 +120,7 @@ zip_override_8k1k_hightpt:
       SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK: '1024'
     sglang_config:
       decode:
-        cuda-graph-max-bs: [544, 512, 832, 1568]
+        cuda-graph-max-bs: [599, 512, 914, 1712]
         data-parallel-size: 32
         deepep-config: /configs/deepep_config.json
         deepep-mode: low_latency
@@ -130,7 +130,7 @@ zip_override_8k1k_hightpt:
         ep-dispatch-algorithm: static
         ep-num-redundant-experts: 0
         expert-parallel-size: 32
-        max-running-requests: [544, 512, 832, 1568]
+        max-running-requests: [599, 512, 914, 1712]
         mem-fraction-static: 0.812
         moe-a2a-backend: deepep
         moe-dense-tp-size: 1
@@ -139,7 +139,7 @@ zip_override_8k1k_hightpt:
       prefill:
         mem-fraction-static: 0.812
   benchmark:
-    concurrencies: [[988], [686], [1495], [2672]]
+    concurrencies: [[989], [686], [1497], [2674]]
     isl: 8192
     osl: 1024
   resources:
@@ -152,8 +152,8 @@ zip_override_8k1k_lowlat:
   backend:
     sglang_config:
       decode:
-        cuda-graph-max-bs: [32, 24, 16, 16, 8, 1]
-        max-running-requests: [32, 24, 16, 16, 8, 1]
+        cuda-graph-max-bs: [32, 22, 16, 15, 6, 1]
+        max-running-requests: [32, 22, 16, 15, 6, 1]
         mem-fraction-static: [0.94, 0.94, 0.94, 0.94, 0.919, 0.919]
       prefill:
         mem-fraction-static: [0.8, 0.8, 0.8, 0.8, 0.785, 0.785]
@@ -195,7 +195,7 @@ zip_override_1k1k_hightpt:
         max-running-requests: 128
         mem-fraction-static: 0.812
   benchmark:
-    concurrencies: [[3157]]
+    concurrencies: [[3160]]
     isl: 1024
     osl: 1024
   resources:
@@ -208,7 +208,8 @@ zip_override_1k1k_lowlat:
   backend:
     sglang_config:
       decode:
-        cuda-graph-max-bs: [1856, 1024, 512, 1, 16, 4]
+        context-length: 2112
+        cuda-graph-max-bs: [2023, 1024, 512, 1, 16, 4]
         data-parallel-size: [16, 32, 32, 1, 1, 1]
         deepep-config: [/configs/deepep_config.json, /configs/deepep_config.json, /configs/deepep_config.json, null, null, null]
         deepep-mode: [low_latency, low_latency, low_latency, null, null, null]
@@ -218,7 +219,7 @@ zip_override_1k1k_lowlat:
         ep-dispatch-algorithm: [static, static, static, null, null, null]
         ep-num-redundant-experts: [0, 0, 0, null, null, null]
         expert-parallel-size: [16, 32, 32, 1, 1, 1]
-        max-running-requests: [1856, 1024, 512, 1, 16, 4]
+        max-running-requests: [2023, 1024, 512, 1, 16, 4]
         mem-fraction-static: [0.866, 0.858, 0.858, 0.918, 0.918, 0.918]
         moe-a2a-backend: [deepep, deepep, deepep, null, null, null]
         moe-dense-tp-size: [1, 1, 1, null, null, null]
@@ -230,7 +231,7 @@ zip_override_1k1k_lowlat:
         max-running-requests: 128
         mem-fraction-static: 0.785
   benchmark:
-    concurrencies: [[2113], [1155], [556], [23], [290], [73]]
+    concurrencies: [[2115], [1156], [556], [23], [290], [73]]
     isl: 1024
     osl: 1024
   resources:
