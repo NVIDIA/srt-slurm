@@ -7,7 +7,7 @@ name: "kimi_k25_nvfp4_ISL8K_OSL1K_ctx1dep4_gen4tep8_batch4_eplb0_mtp0"
 
 model:
   path: "nvidia/Kimi-K2.5-NVFP4"
-  container: "nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:1.1.0-dev.2"
+  container: "nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:1.3.0-dev.1-cuda13"
   precision: "fp4"
 
 resources:
@@ -35,15 +35,18 @@ backend:
     TRTLLM_ENABLE_PDL: "1"
     TRTLLM_SERVER_DISABLE_GC: "1"
     TRTLLM_WORKER_DISABLE_GC: "1"
+    MIMALLOC_PURGE_DELAY: "0"
+    UCX_TLS: "cuda_ipc,cuda_copy,sm,self,tcp"
 
   decode_environment:
     ENROOT_ALLOW_DEV: "yes"
     NCCL_GRAPH_MIXING_SUPPORT: "0"
-    TLLM_AUTOTUNER_LOG_LEVEL_DEBUG_TO_INFO: "1"
     TLLM_LOG_LEVEL: "INFO"
     TRTLLM_ENABLE_PDL: "1"
     TRTLLM_SERVER_DISABLE_GC: "1"
     TRTLLM_WORKER_DISABLE_GC: "1"
+    MIMALLOC_PURGE_DELAY: "0"
+    UCX_TLS: "cuda_ipc,cuda_copy,sm,self,tcp"
 
   trtllm_config:
     prefill:
@@ -59,13 +62,14 @@ backend:
       print_iter_log: true
       cuda_graph_config: null
       moe_config:
-        backend: TRTLLM
+        backend: CUTEDSL
       kv_cache_config:
         dtype: fp8
         enable_block_reuse: false
         free_gpu_memory_fraction: 0.4
       cache_transceiver_config:
-        backend: UCX
+        backend: DEFAULT
+        kv_transfer_timeout_ms: 600000
         max_tokens_in_buffer: 16384
 
     decode:
@@ -96,7 +100,8 @@ backend:
         enable_block_reuse: false
         free_gpu_memory_fraction: 0.9
       cache_transceiver_config:
-        backend: UCX
+        backend: DEFAULT
+        kv_transfer_timeout_ms: 600000
         max_tokens_in_buffer: 16384
       nvfp4_gemm_config:
         allowed_backends:
@@ -121,4 +126,5 @@ health_check:
   interval_seconds: 10
 
 dynamo:
+  request_plane: tcp
   install: false
