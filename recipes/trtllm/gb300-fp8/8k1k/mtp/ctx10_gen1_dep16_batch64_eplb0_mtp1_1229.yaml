@@ -1,8 +1,8 @@
 name: ctx10_gen1_dep16_batch64_eplb0_mtp1_1229
 
 model:
-  path: "/data/home/rihuo/deepseek-ai_DeepSeek-R1-0528"
-  container: "/data/home/rihuo/dynamo-trtllm-arm64-1-3-0dev1-staging.sqsh"
+  path: "/lustre/fsw/coreai_comparch_inferencex/rihuo/deepseek-ai_DeepSeek-R1-0528"
+  container: "/lustre/fsw/coreai_comparch_inferencex/rihuo/dynamo-trtllm-arm64-1-3-0dev1.sqsh"
   precision: "fp8"
 
 resources:
