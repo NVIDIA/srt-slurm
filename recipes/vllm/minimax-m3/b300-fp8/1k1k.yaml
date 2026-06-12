@@ -5,6 +5,8 @@ model:
   container: "/lustre/fsw/coreai_comparch_inferencex/rihuo/dynamo-vllm-arm64-minimax-m3-dev1.sqsh"
   precision: "fp8"
 
+setup_script: setup_nixl.sh
+
 resources:
   gpu_type: "b300"
   gpus_per_node: 8
