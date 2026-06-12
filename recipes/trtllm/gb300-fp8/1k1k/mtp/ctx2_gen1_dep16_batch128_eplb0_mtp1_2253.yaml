@@ -28,6 +28,7 @@ backend:
     TRTLLM_ENABLE_PDL: "1"
     ENROOT_ALLOW_DEV: "yes"
     NCCL_GRAPH_MIXING_SUPPORT: "0"
+    UCX_TLS: "cuda_ipc,cuda_copy,sm,self,tcp"
 
   decode_environment:
     TLLM_OVERRIDE_LAYER_NUM: "61"
@@ -37,6 +38,7 @@ backend:
     TRTLLM_ENABLE_PDL: "1"
     ENROOT_ALLOW_DEV: "yes"
     NCCL_GRAPH_MIXING_SUPPORT: "0"
+    UCX_TLS: "cuda_ipc,cuda_copy,sm,self,tcp"
 
   trtllm_config:
     prefill:
