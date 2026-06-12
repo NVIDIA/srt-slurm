@@ -56,7 +56,7 @@ backend:
       trust-remote-code: true
       no-enable-prefix-caching: true
       kv-transfer-config: '{"kv_connector": "NixlConnector", "kv_role": "kv_both"}'
-      kv-cache-dtype: "fp8"
+      attention-backend: "FLASH_ATTN"
       compilation-config: '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
       enable-expert-parallel: true
       block-size: 128
