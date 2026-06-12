@@ -15,6 +15,9 @@ resources:
   gpus_per_prefill: 4
   gpus_per_decode: 4
 
+dynamo:
+  install: false
+
 frontend:
   type: dynamo
   enable_multiple_frontends: false
