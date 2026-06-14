@@ -2,10 +2,13 @@ name: "minimax-m3-vllm-disagg-gb300-1p1d-fp8-8k1k"
 
 model:
   path: "/lustre/fsw/coreai_comparch_inferencex/rihuo/MiniMaxAI_MiniMax-M3-MXFP8"
-  container: "/lustre/fsw/coreai_comparch_inferencex/rihuo/dynamo-vllm-arm64-minimax-m3-dev1.sqsh"
+  container: "/lustre/fsw/coreai_comparch_inferencex/rihuo/vllm-openai-minimax-m3.sqsh"
   precision: "fp8"
 
-setup_script: setup_nixl.sh
+setup_script: install_minimax_dynamo_wheel.sh
+
+extra_mount:
+  - "/lustre/fsw/coreai_comparch_inferencex/rihuo/minimax_wheels:/wheels"
 
 resources:
   gpu_type: "b300"
@@ -44,30 +47,31 @@ backend:
       trust-remote-code: true
       no-enable-prefix-caching: true
       kv-transfer-config: '{"kv_connector": "NixlConnector", "kv_role": "kv_both"}'
-      attention-backend: "FLASH_ATTN"
       block-size: 128
-      gpu-memory-utilization: 0.95
-      max-model-len: 2048
+      gpu-memory-utilization: 0.90
+      max-model-len: 2304
       max-cudagraph-capture-size: 2048
       max-num-batched-tokens: 2048
+      language-model-only: true
+      stream-interval: 20
 
     decode:
       tensor-parallel-size: 8
       trust-remote-code: true
       no-enable-prefix-caching: true
       kv-transfer-config: '{"kv_connector": "NixlConnector", "kv_role": "kv_both"}'
-      attention-backend: "FLASH_ATTN"
-      compilation-config: '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
       enable-expert-parallel: true
       block-size: 128
       max-cudagraph-capture-size: 2048
       max-num-batched-tokens: 2048
-      gpu-memory-utilization: 0.95
-      max-model-len: 2048
+      gpu-memory-utilization: 0.90
+      max-model-len: 2304
+      language-model-only: true
+      stream-interval: 20
 
 benchmark:
   type: "sa-bench"
   isl: 1024
   osl: 1024
-  concurrencies: "1x2x4x8x16x32x64x128x256x512x1024"
+  concurrencies: "1x2x4x8x16x32x64x128x256x512x1024x2048"
   req_rate: "inf"
