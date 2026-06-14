@@ -71,6 +71,10 @@ backend:
       language-model-only: true
       stream-interval: 20
 
+health_check:
+  max_attempts: 360
+  interval_seconds: 10
+
 benchmark:
   type: "sa-bench"
   isl: 1024
