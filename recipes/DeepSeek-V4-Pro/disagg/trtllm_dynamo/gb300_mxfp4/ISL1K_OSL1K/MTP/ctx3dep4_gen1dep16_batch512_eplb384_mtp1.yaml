@@ -10,6 +10,7 @@ model:
   precision: "fp4"
 
 extra_mount:
+  - "tmpfs:/dev/shm:size=100%"
   - "configs/dsv4-moe-load-balancer-configs:/dsv4-eplb-configs"
 resources:
   gpu_type: "gb300"
