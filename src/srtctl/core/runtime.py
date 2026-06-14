@@ -235,7 +235,12 @@ class RuntimeContext:
         if config.extra_mount:
             for mount_spec in config.extra_mount:
                 host_path, container_path = mount_spec.split(":", 1)
-                container_mounts[Path(host_path).resolve()] = Path(container_path)
+                # tmpfs pseudo-mounts (e.g. "tmpfs:/dev/shm:size=100%") are passed
+                # to pyxis verbatim; "tmpfs" is a fs type, not a host path to resolve.
+                if host_path == "tmpfs":
+                    container_mounts[Path(host_path)] = Path(container_path)
+                else:
+                    container_mounts[Path(host_path).resolve()] = Path(container_path)
 
         # Mount InferenceX workspace if available (for lm-eval support).
         # Skip exists() check: the orchestrator runs on the SLURM head node
