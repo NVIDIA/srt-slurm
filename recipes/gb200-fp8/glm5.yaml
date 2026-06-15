@@ -1,0 +1,233 @@
+base:
+  name: gb200-fp8-glm5
+  model:
+    path: glm-5-fp8
+    container: v0.5.12
+    precision: fp8
+  identity:
+    model:
+      repo: zai-org/GLM-5-FP8
+      revision: 4f96cc5eec29dcee5d6ded54f7ffe889438f9516
+    frameworks:
+      dynamo: 1.1.0
+      sglang: 0.5.12
+  resources:
+    gpu_type: gb200
+    gpus_per_node: 4
+  frontend:
+    type: dynamo
+  dynamo:
+    version: 1.1.0
+  backend:
+    prefill_environment:
+      TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: '1800'
+      PYTHONUNBUFFERED: '1'
+      DYN_SKIP_SGLANG_LOG_FORMATTING: '1'
+      SGLANG_DISAGGREGATION_HEARTBEAT_MAX_FAILURE: '100000'
+      SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT: '100000'
+      SGLANG_DISAGGREGATION_WAITING_TIMEOUT: '100000'
+      MC_TE_METRIC: 'true'
+      MC_FORCE_MNNVL: '1'
+      NCCL_MNNVL_ENABLE: '1'
+      NCCL_CUMEM_ENABLE: '1'
+      SGLANG_MOONCAKE_CUSTOM_MEM_POOL: 'True'
+      SGLANG_USE_MESSAGE_QUEUE_BROADCASTER: '0'
+      SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK: '1'
+      DYN_REQUEST_PLANE: nats
+    decode_environment:
+      TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: '1800'
+      PYTHONUNBUFFERED: '1'
+      DYN_SKIP_SGLANG_LOG_FORMATTING: '1'
+      SGLANG_DISAGGREGATION_HEARTBEAT_MAX_FAILURE: '100000'
+      SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT: '100000'
+      SGLANG_DISAGGREGATION_WAITING_TIMEOUT: '100000'
+      MC_TE_METRIC: 'true'
+      MC_FORCE_MNNVL: '1'
+      NCCL_MNNVL_ENABLE: '1'
+      NCCL_CUMEM_ENABLE: '1'
+      SGLANG_MOONCAKE_CUSTOM_MEM_POOL: 'True'
+      SGLANG_USE_MESSAGE_QUEUE_BROADCASTER: '0'
+      SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK: '1'
+      DYN_REQUEST_PLANE: nats
+    sglang_config:
+      prefill:
+        served-model-name: GLM-5-FP8
+        trust-remote-code: true
+        quantization: fp8
+        kv-cache-dtype: fp8_e4m3
+        disaggregation-mode: prefill
+        disaggregation-transfer-backend: nixl
+        tensor-parallel-size: 8
+        data-parallel-size: 8
+        expert-parallel-size: 1
+        enable-dp-attention: true
+        enable-dp-lm-head: true
+        enable-flashinfer-allreduce-fusion: false
+        chunked-prefill-size: 131072
+        max-prefill-tokens: 16384
+        context-length: 9280
+        nsa-prefill-backend: trtllm
+        nsa-decode-backend: trtllm
+        moe-runner-backend: flashinfer_trtllm
+        max-running-requests: 128
+        cuda-graph-max-bs: 128
+        mem-fraction-static: 0.7
+        weight-loader-prefetch-checkpoints: true
+        model-loader-extra-config: '{"enable_multithread_load": true}'
+      decode:
+        served-model-name: GLM-5-FP8
+        trust-remote-code: true
+        quantization: fp8
+        kv-cache-dtype: fp8_e4m3
+        disaggregation-mode: decode
+        disaggregation-transfer-backend: nixl
+        tensor-parallel-size: 8
+        data-parallel-size: 1
+        expert-parallel-size: 1
+        enable-flashinfer-allreduce-fusion: false
+        nsa-decode-backend: trtllm
+        nsa-prefill-backend: trtllm
+        moe-runner-backend: flashinfer_trtllm
+        mem-fraction-static: 0.943
+        context-length: 9280
+        chunked-prefill-size: 64
+        max-running-requests: 1
+        cuda-graph-max-bs: 1
+        skip-tokenizer-init: true
+        stream-interval: 30
+        disable-radix-cache: true
+        weight-loader-prefetch-checkpoints: true
+        model-loader-extra-config: '{"enable_multithread_load": true}'
+  health_check:
+    max_attempts: 360
+    interval_seconds: 10
+  benchmark:
+    type: sa-bench
+    req_rate: inf
+# ################# 8k1k #################
+zip_override_8k1k_hightpt:
+  name: [8k1k-3p1d_dep32-mrr256, 8k1k-4p1d_dep16, 8k1k-5p1d_dep32, 8k1k-7p1d_dep16]
+  backend:
+    decode_environment:
+      SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK: '512'
+    sglang_config:
+      decode:
+        cuda-graph-max-bs: [256, 802, 828, 1514]
+        data-parallel-size: [32, 16, 32, 16]
+        deepep-config: /configs/deepep_config.json
+        deepep-mode: low_latency
+        enable-dp-attention: true
+        enable-dp-lm-head: true
+        ep-dispatch-algorithm: static
+        ep-num-redundant-experts: 0
+        expert-parallel-size: [32, 16, 32, 16]
+        max-running-requests: [256, 802, 828, 1514]
+        mem-fraction-static: 0.89
+        moe-a2a-backend: deepep
+        moe-dense-tp-size: 1
+        moe-runner-backend: deep_gemm
+        tensor-parallel-size: [32, 16, 32, 16]
+      prefill:
+        disable-radix-cache: true
+    type: sglang
+  benchmark:
+    concurrencies: [[519], [1484], [1688], [2699]]
+    isl: 8192
+    osl: 1024
+    random_range_ratio: 1.0
+  resources:
+    decode_nodes: [8, 4, 8, 4]
+    decode_workers: 1
+    prefill_nodes: [6, 8, 10, 14]
+    prefill_workers: [3, 4, 5, 7]
+zip_override_8k1k_lowlat:
+  name: [8k1k-1p8d_tp8-mrr1, 8k1k-1p8d_tp8-mrr16, 8k1k-1p8d_tp8-mrr4]
+  backend:
+    sglang_config:
+      decode:
+        cuda-graph-max-bs: [1, 16, 4]
+        max-running-requests: [1, 16, 4]
+  benchmark:
+    concurrencies: [[8], [90], [9]]
+    isl: 8192
+    osl: 1024
+  resources:
+    decode_nodes: 16
+    decode_workers: 8
+    prefill_nodes: 2
+    prefill_workers: 1
+# ################# 1k1k #################
+zip_override_1k1k_hightpt:
+  name: [1k1k-2p1d_dep32-mrr1024]
+  backend:
+    decode_environment:
+      SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK: '512'
+    sglang_config:
+      decode:
+        context-length: 2112
+        cuda-graph-max-bs: 1024
+        data-parallel-size: 32
+        deepep-config: /configs/deepep_config.json
+        deepep-mode: low_latency
+        enable-dp-attention: true
+        enable-dp-lm-head: true
+        ep-dispatch-algorithm: static
+        ep-num-redundant-experts: 0
+        expert-parallel-size: 32
+        max-running-requests: 1024
+        mem-fraction-static: 0.886
+        moe-a2a-backend: deepep
+        moe-dense-tp-size: 1
+        moe-runner-backend: deep_gemm
+        tensor-parallel-size: 32
+      prefill:
+        context-length: 2112
+        disable-radix-cache: true
+    type: sglang
+  benchmark:
+    concurrencies: [[2161]]
+    isl: 1024
+    osl: 1024
+    random_range_ratio: 1.0
+  resources:
+    decode_nodes: 8
+    decode_workers: 1
+    prefill_nodes: 4
+    prefill_workers: 2
+zip_override_1k1k_lowlat:
+  name: [1k1k-1p1d_dep16, 1k1k-1p1d_dep16-mrr1024, 1k1k-1p1d_dep16-mrr256, 1k1k-1p6d_tp8-mrr1, 1k1k-1p6d_tp8-mrr16, 1k1k-1p6d_tp8-mrr4]
+  backend:
+    decode_environment:
+      SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK: ['512', '512', '512', null, null, null]
+    sglang_config:
+      decode:
+        context-length: 2112
+        cuda-graph-max-bs: [1815, 1024, 256, 1, 16, 4]
+        data-parallel-size: [16, 16, 16, 1, 1, 1]
+        deepep-config: [/configs/deepep_config.json, /configs/deepep_config.json, /configs/deepep_config.json, null, null, null]
+        deepep-mode: [low_latency, low_latency, low_latency, null, null, null]
+        enable-dp-attention: [true, true, true, false, false, false]
+        enable-dp-lm-head: [true, true, true, false, false, false]
+        ep-dispatch-algorithm: [static, static, static, null, null, null]
+        ep-num-redundant-experts: [0, 0, 0, null, null, null]
+        expert-parallel-size: [16, 16, 16, 1, 1, 1]
+        max-running-requests: [1815, 1024, 256, 1, 16, 4]
+        mem-fraction-static: [0.89, 0.89, 0.89, 0.942, 0.942, 0.942]
+        moe-a2a-backend: [deepep, deepep, deepep, null, null, null]
+        moe-dense-tp-size: [1, 1, 1, null, null, null]
+        moe-runner-backend: [deep_gemm, deep_gemm, deep_gemm, flashinfer_trtllm, flashinfer_trtllm, flashinfer_trtllm]
+        tensor-parallel-size: [16, 16, 16, 8, 8, 8]
+      prefill:
+        context-length: 2112
+        disable-radix-cache: true
+    type: sglang
+  benchmark:
+    concurrencies: [[1955], [1170], [298], [8], [72], [20]]
+    isl: 1024
+    osl: 1024
+    random_range_ratio: 1.0
+  resources:
+    decode_nodes: [4, 4, 4, 12, 12, 12]
+    decode_workers: [1, 1, 1, 6, 6, 6]
+    prefill_nodes: 2
+    prefill_workers: 1
