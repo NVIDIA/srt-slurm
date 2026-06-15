@@ -54,9 +54,7 @@ backend:
       gpu-memory-utilization: 0.90
       max-model-len: 2304
       language-model-only: true
-      stream-interval: 32
-      max-cudagraph-capture-size: 2048
-      max-num-batched-tokens: 2048
+      stream-interval: 20
 
     decode:
       tensor-parallel-size: 8
@@ -68,10 +66,9 @@ backend:
       gpu-memory-utilization: 0.90
       max-model-len: 2304
       language-model-only: true
-      stream-interval: 32
-      max-num-seqs: 1024
-      max-num-batched-tokens: 16384
-      max-cudagraph-capture-size: 8196
+      stream-interval: 20
+      max-num-batched-tokens: 2048
+      max-cudagraph-capture-size: 256
 
 health_check:
   max_attempts: 360
