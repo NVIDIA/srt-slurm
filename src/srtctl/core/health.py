@@ -164,8 +164,8 @@ def check_dynamo_health(
     else:
         message = (
             f"Model is not ready, waiting for "
-            f"{expected_prefill - prefill_count} prefills and "
-            f"{expected_decode - decode_count} decodes. "
+            f"{max(0, expected_prefill - prefill_count)} prefills and "
+            f"{max(0, expected_decode - decode_count)} decodes. "
             f"Have {prefill_count} prefills and {decode_count} decodes."
         )
 

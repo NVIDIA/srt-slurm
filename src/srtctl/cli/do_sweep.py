@@ -191,8 +191,20 @@ class SweepOrchestrator(WorkerStageMixin, FrontendStageMixin, BenchmarkStageMixi
         # check is sufficient since the server already served traffic.
         if os.environ.get("EVAL_ONLY", "false").lower() == "true":
             r = self.config.resources
-            n_prefill = 0 if r.num_agg > 0 else r.num_prefill
-            n_decode = r.num_agg if r.num_agg > 0 else r.num_decode
+            from srtctl.backends.vllm import VLLMProtocol
+
+            if isinstance(self.config.backend, VLLMProtocol):
+                n_prefill, n_decode = self.config.backend.get_expected_health_counts(
+                    r.num_prefill,
+                    r.num_decode,
+                    r.num_agg,
+                    r.gpus_per_prefill,
+                    r.gpus_per_decode,
+                    r.gpus_per_agg,
+                )
+            else:
+                n_prefill = 0 if r.num_agg > 0 else r.num_prefill
+                n_decode = r.num_agg if r.num_agg > 0 else r.num_decode
             hc = self.config.health_check
             logger.info("EVAL_ONLY: Waiting for server health before eval...")
             if not wait_for_model(
