@@ -1,14 +1,14 @@
 name: "minimax-m3-vllm-disagg-b300-4p3d-fp8-dep2-tep4-8k1k"
 
 model:
-  path: "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/MiniMaxAI_MiniMax-M3-MXFP8"
-  container: "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/vllm-openai-minimax-m3.sqsh"
+  path: "/lustre/fsw/coreai_comparch_inferencex/rihuo/MiniMaxAI_MiniMax-M3-MXFP8"
+  container: "/lustre/fsw/coreai_comparch_inferencex/rihuo/vllm-openai-minimax-m3.sqsh"
   precision: "fp8"
 
 setup_script: install_minimax_dynamo_wheel.sh
 
 extra_mount:
-  - "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/minimax_wheels:/wheels"
+  - "/lustre/fsw/coreai_comparch_inferencex/rihuo/minimax_wheels:/wheels"
 
 resources:
   gpu_type: "b300"
