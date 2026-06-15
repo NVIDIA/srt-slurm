@@ -74,8 +74,12 @@ class BenchmarkStageMixin:
 
         if isinstance(self.config.backend, VLLMProtocol):
             n_prefill, n_decode = self.config.backend.get_expected_health_counts(
-                r.num_prefill, r.num_decode, r.num_agg,
-                r.gpus_per_prefill, r.gpus_per_decode, r.gpus_per_agg,
+                r.num_prefill,
+                r.num_decode,
+                r.num_agg,
+                r.gpus_per_prefill,
+                r.gpus_per_decode,
+                r.gpus_per_agg,
             )
         elif r.num_agg > 0:
             n_prefill = 0
