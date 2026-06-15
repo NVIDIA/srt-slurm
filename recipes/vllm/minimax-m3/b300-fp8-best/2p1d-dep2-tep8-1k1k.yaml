@@ -79,5 +79,5 @@ benchmark:
   type: "sa-bench"
   isl: 1024
   osl: 1024
-  concurrencies: "8x16x32"
+  concurrencies: "32"
   req_rate: "inf"
