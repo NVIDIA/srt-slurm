@@ -66,9 +66,18 @@ class BenchmarkStageMixin:
 
         logger.info("Waiting for server health (expecting %d workers: %s)...", num_workers, worker_desc)
 
-        # For aggregated mode: expect 0 prefill, N decode (backend workers count as decode)
-        # For disaggregated mode: expect N prefill, M decode
-        if r.num_agg > 0:
+        # For disaggregated mode: expect N prefill, M decode.
+        # For aggregated mode: expect 0 prefill, N decode.
+        # In vLLM DP+EP mode each logical endpoint registers once per DP rank, so
+        # the expected counts are scaled by dp_size to match actual registrations.
+        from srtctl.backends.vllm import VLLMProtocol
+
+        if isinstance(self.config.backend, VLLMProtocol):
+            n_prefill, n_decode = self.config.backend.get_expected_health_counts(
+                r.num_prefill, r.num_decode, r.num_agg,
+                r.gpus_per_prefill, r.gpus_per_decode, r.gpus_per_agg,
+            )
+        elif r.num_agg > 0:
             n_prefill = 0
             n_decode = r.num_agg
         else:

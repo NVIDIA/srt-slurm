@@ -216,6 +216,32 @@ class VLLMProtocol:
             ),
         )
 
+    def get_expected_health_counts(
+        self,
+        num_prefill: int,
+        num_decode: int,
+        num_agg: int,
+        gpus_per_prefill: int = 1,
+        gpus_per_decode: int = 1,
+        gpus_per_agg: int = 1,
+    ) -> tuple[int, int]:
+        """Return (n_prefill, n_decode) expected for health checks.
+
+        In DP+EP mode each logical endpoint spawns one vLLM process per DP rank,
+        and each process registers independently with the frontend (Dynamo/SGLang).
+        The expected counts must be scaled accordingly so wait_for_model knows when
+        all workers are truly ready.
+        """
+        if num_agg > 0:
+            if self._is_dp_mode("agg"):
+                dp = self._get_dp_size("agg") or gpus_per_agg
+                return 0, num_agg * dp
+            return 0, num_agg
+
+        prefill_dp = (self._get_dp_size("prefill") or gpus_per_prefill) if self._is_dp_mode("prefill") else 1
+        decode_dp = (self._get_dp_size("decode") or gpus_per_decode) if self._is_dp_mode("decode") else 1
+        return num_prefill * prefill_dp, num_decode * decode_dp
+
     def _is_dp_mode(self, mode: WorkerMode) -> bool:
         """Check if this mode uses Data Parallel + Expert Parallel pattern.
 
