@@ -5,6 +5,11 @@ model:
   container: "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/vllm-openai-minimax-m3.sqsh"
   precision: "fp8"
 
+setup_script: install_minimax_dynamo_wheel.sh
+
+extra_mount:
+  - "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/minimax_m3:/wheels"
+
 
 
 resources:
@@ -18,8 +23,7 @@ resources:
   gpus_per_decode: 8
 
 dynamo:
-  install: true
-  version: "1.3.0.dev20260614"
+  install: false
 
 frontend:
   type: dynamo
