@@ -19,7 +19,7 @@ resources:
 
 dynamo:
   install: true
-  wheel: "1.3.0.dev20260614"
+  version: "1.3.0.dev20260614"
 
 frontend:
   type: dynamo
