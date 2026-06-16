@@ -52,8 +52,8 @@ backend:
         dtype: fp8
         enable_block_reuse: false
         free_gpu_memory_fraction: 0.1
-      max_batch_size: 16
-      max_num_tokens: 16384
+      max_batch_size: 8
+      max_num_tokens: 8192
       max_seq_len: 1064
       moe_config:
         backend: DEEPGEMM
