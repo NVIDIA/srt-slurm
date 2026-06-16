@@ -314,12 +314,10 @@ def start_srun_process(
     else:
         cluster_preamble = _get_cluster_bash_preamble()
         if cluster_preamble:
-            logger.warning(
-                "Cluster default_bash_preamble is set but this srun bypasses the bash wrapper "
-                "(use_bash_wrapper=False); preamble will not be applied. command=%s",
-                shlex.join(command),
-            )
-        srun_cmd.extend(command)
+            bash_command = " && ".join([cluster_preamble, shlex.join(command)])
+            srun_cmd.extend(["bash", "-c", bash_command])
+        else:
+            srun_cmd.extend(command)
 
     # Demoted to debug — every worker srun line is multi-KB once the
     # fingerprint heredoc is inlined (see core/fingerprint.generate_capture_script),
