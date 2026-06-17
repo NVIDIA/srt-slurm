@@ -37,8 +37,6 @@ backend:
     TRTLLM_ENABLE_PDL: "1"
     ENROOT_ALLOW_DEV: "yes"
     NCCL_GRAPH_MIXING_SUPPORT: "0"
-    TRTLLM_FORCE_COMM_METHOD: "NVLINK_TWO_SIDED"
-    ENABLE_CONFIGURABLE_MOE: "1"
 
   trtllm_config:
     prefill:
