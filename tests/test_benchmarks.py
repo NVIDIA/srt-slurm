@@ -884,6 +884,36 @@ class TestRunPostEval:
                     result = orch._run_post_eval(stop)
         assert result == 0
 
+    def test_post_eval_setup_script_preamble(self):
+        """setup_script runs before post-eval inside the eval container."""
+        import os
+        import threading
+        from dataclasses import replace
+        from unittest.mock import MagicMock, patch
+
+        orch = self._make_orchestrator()
+        orch.config = replace(orch.config, setup_script="install-trtllm-pip.sh")
+        stop = threading.Event()
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 0
+        mock_proc.returncode = 0
+
+        captured_kwargs = {}
+
+        def capture_srun(**kwargs):
+            captured_kwargs.update(kwargs)
+            return mock_proc
+
+        with patch.dict(os.environ, {"EVAL_ONLY": "false"}, clear=False):
+            with patch("srtctl.cli.do_sweep.wait_for_port", return_value=True):
+                with patch("srtctl.cli.do_sweep.start_srun_process", side_effect=capture_srun):
+                    result = orch._run_post_eval(stop)
+
+        assert result == 0
+        assert "Running setup script: /configs/install-trtllm-pip.sh" in captured_kwargs["bash_preamble"]
+        assert "bash '/configs/install-trtllm-pip.sh'" in captured_kwargs["bash_preamble"]
+
     def test_eval_only_successful(self):
         """Returns 0 in eval-only mode when health check and eval succeed."""
         import os

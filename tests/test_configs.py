@@ -642,6 +642,24 @@ class TestFrontendConfig:
 
         assert resolved["health_check"] == {"max_attempts": 720, "interval_seconds": 10}
 
+    def test_extra_mount_model_path_alias_resolution(self):
+        """extra_mount host paths can resolve through srtslurm.yaml model_paths."""
+        from srtctl.core.config import resolve_config_with_defaults
+
+        user_config = {
+            "name": "test",
+            "model": {"path": "/model", "container": "/c.sqsh", "precision": "fp8"},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+            "extra_mount": ["glm5-eagle:/eagle", "/literal/path:/literal"],
+        }
+
+        resolved = resolve_config_with_defaults(
+            user_config,
+            {"model_paths": {"glm5-eagle": "/models/glm5-eagle"}},
+        )
+
+        assert resolved["extra_mount"] == ["/models/glm5-eagle:/eagle", "/literal/path:/literal"]
+
     def test_cluster_sbatch_directives_are_not_treated_as_defaults(self):
         """srtslurm.yaml defaults must use default_sbatch_directives explicitly."""
         from srtctl.core.config import resolve_config_with_defaults

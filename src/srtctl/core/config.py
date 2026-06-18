@@ -152,6 +152,21 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
         model["container"] = resolved_container
         logger.debug(f"Resolved container alias '{container}' -> '{resolved_container}'")
 
+    # Resolve extra_mount host path aliases through model_paths. This lets
+    # recipes mount secondary model assets by alias rather than cluster path.
+    extra_mounts = config.get("extra_mount", [])
+    if model_paths and extra_mounts:
+        resolved_mounts = []
+        for mount_spec in extra_mounts:
+            host_path, container_path = mount_spec.split(":", 1)
+            if host_path in model_paths:
+                resolved_host = model_paths[host_path]
+                resolved_mounts.append(f"{resolved_host}:{container_path}")
+                logger.debug(f"Resolved extra_mount alias '{host_path}' -> '{resolved_host}'")
+            else:
+                resolved_mounts.append(mount_spec)
+        config["extra_mount"] = resolved_mounts
+
     # Apply reporting defaults (if not specified in user config)
     if "reporting" not in config and cluster_config.get("reporting"):
         config["reporting"] = cluster_config["reporting"]
