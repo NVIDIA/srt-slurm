@@ -172,6 +172,7 @@ def start_etcd(
     host_ip: str,
     binary_path: str = "/configs/etcd",
     log_dir: Path | None = None,
+    cpu_affinity: str | None = None,
 ) -> subprocess.Popen:
     """Start etcd server.
 
@@ -179,6 +180,7 @@ def start_etcd(
         host_ip: IP address of this node (for peer URLs)
         binary_path: Path to etcd binary
         log_dir: Optional log directory
+        cpu_affinity: Optional CPU affinity passed to ``taskset -c``
 
     Returns:
         Popen object for the etcd process
@@ -205,6 +207,8 @@ def start_etcd(
         "--advertise-client-urls",
         f"http://{host_ip}:{ETCD_CLIENT_PORT}",  # Must be reachable IP, not 0.0.0.0
     ]
+    if cpu_affinity:
+        cmd = ["taskset", "-c", cpu_affinity, *cmd]
 
     # Set up output handling
     stdout = None
@@ -271,6 +275,12 @@ def main():
         default=None,
         help="NATS max message payload in MB (default: NATS default 1MB)",
     )
+    parser.add_argument(
+        "--etcd-cpu-affinity",
+        type=str,
+        default=None,
+        help='CPU affinity for etcd passed to taskset -c, e.g. "140-143"',
+    )
 
     args = parser.parse_args()
 
@@ -290,7 +300,7 @@ def main():
 
     try:
         nats_proc = start_nats(args.nats_binary, max_payload_mb=args.nats_max_payload_mb)
-        etcd_proc = start_etcd(host_ip, args.etcd_binary, log_dir)
+        etcd_proc = start_etcd(host_ip, args.etcd_binary, log_dir, cpu_affinity=args.etcd_cpu_affinity)
 
         # Wait for services
         if not wait_for_service("localhost", NATS_PORT, "NATS"):
