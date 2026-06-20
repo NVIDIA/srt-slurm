@@ -119,7 +119,40 @@ def setup_logging():
     )
 
 
-def start_nats(binary_path: str = "/configs/nats-server") -> subprocess.Popen:
+def resolve_binary(requested_path: str, executable_name: str, fallback_path: str) -> str:
+    """Resolve an infra binary from PATH first, then the mounted configs dir.
+
+    Dynamo runtime images often package NATS/etcd already. Keep /configs as a
+    fallback for older images or cluster packaging that stages binaries there.
+    """
+    if "/" not in requested_path:
+        if path := shutil.which(requested_path):
+            logger.info("Using %s from PATH: %s", executable_name, path)
+            return path
+        if os.path.exists(fallback_path):
+            logger.info("Using %s from fallback path: %s", executable_name, fallback_path)
+            return fallback_path
+    elif os.path.exists(requested_path):
+        logger.info("Using %s from configured path: %s", executable_name, requested_path)
+        return requested_path
+
+    if path := shutil.which(executable_name):
+        logger.info("Using %s from PATH: %s", executable_name, path)
+        return path
+    if os.path.exists(fallback_path):
+        logger.info("Using %s from fallback path: %s", executable_name, fallback_path)
+        return fallback_path
+
+    raise FileNotFoundError(
+        f"{executable_name} not found. Tried requested path/name {requested_path!r}, "
+        f"PATH lookup for {executable_name!r}, and fallback {fallback_path!r}."
+    )
+
+
+def start_nats(
+    binary_path: str = "nats-server",
+    max_payload_mb: int | None = None,
+) -> subprocess.Popen:
     """Start NATS server.
 
     Args:
@@ -128,8 +161,7 @@ def start_nats(binary_path: str = "/configs/nats-server") -> subprocess.Popen:
     Returns:
         Popen object for the NATS process
     """
-    if not os.path.exists(binary_path):
-        raise FileNotFoundError(f"NATS binary not found: {binary_path}")
+    binary_path = resolve_binary(binary_path, "nats-server", "/configs/nats-server")
 
     # Use /tmp for JetStream storage - avoids "Temporary storage directory" warning
     # and ensures we're using fast local storage'
@@ -151,7 +183,7 @@ def start_nats(binary_path: str = "/configs/nats-server") -> subprocess.Popen:
 
 def start_etcd(
     host_ip: str,
-    binary_path: str = "/configs/etcd",
+    binary_path: str = "etcd",
     log_dir: Path | None = None,
 ) -> subprocess.Popen:
     """Start etcd server.
@@ -164,8 +196,7 @@ def start_etcd(
     Returns:
         Popen object for the etcd process
     """
-    if not os.path.exists(binary_path):
-        raise FileNotFoundError(f"etcd binary not found: {binary_path}")
+    binary_path = resolve_binary(binary_path, "etcd", "/configs/etcd")
 
     logger.info("Starting etcd server...")
 
@@ -237,14 +268,14 @@ def main():
     parser.add_argument(
         "--nats-binary",
         type=str,
-        default="/configs/nats-server",
-        help="Path to NATS binary",
+        default="nats-server",
+        help="NATS binary name or path. Defaults to PATH lookup, then /configs/nats-server.",
     )
     parser.add_argument(
         "--etcd-binary",
         type=str,
-        default="/configs/etcd",
-        help="Path to etcd binary",
+        default="etcd",
+        help="etcd binary name or path. Defaults to PATH lookup, then /configs/etcd.",
     )
 
     args = parser.parse_args()

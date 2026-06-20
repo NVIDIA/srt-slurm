@@ -145,6 +145,39 @@ class SweepOrchestrator(WorkerStageMixin, FrontendStageMixin, BenchmarkStageMixi
 
         return managed
 
+    def prewarm_container_image(self) -> None:
+        """Serially import/materialize the runtime container on allocated nodes.
+
+        Pyxis can race when many concurrent srun steps import the same registry
+        image into a shared cache. A cheap per-node warmup avoids that before
+        the real infra and worker steps launch in parallel.
+        """
+        if os.environ.get("SRTCTL_PREWARM_CONTAINER", "1").lower() in {"0", "false", "no"}:
+            logger.info("Skipping container prewarm (SRTCTL_PREWARM_CONTAINER disabled)")
+            return
+
+        nodes = list(dict.fromkeys((self.runtime.nodes.infra, *self.runtime.nodes.worker)))
+        logger.info("Prewarming container image on %d node(s)", len(nodes))
+        logger.info("Container image: %s", self.runtime.container_image)
+
+        for node in nodes:
+            log_file = self.runtime.log_dir / f"container_prewarm_{node}.out"
+            logger.info("Prewarming container on %s", node)
+            proc = start_srun_process(
+                command=["true"],
+                nodelist=[node],
+                output=str(log_file),
+                container_image=str(self.runtime.container_image),
+                container_mounts=self.runtime.container_mounts,
+                srun_options=self.runtime.srun_options,
+                use_bash_wrapper=False,
+            )
+            exit_code = proc.wait()
+            if exit_code != 0:
+                raise RuntimeError(f"Container prewarm failed on {node} with exit code {exit_code}; see {log_file}")
+
+        logger.info("Container prewarm complete")
+
     def _print_connection_info(self) -> None:
         """Print srun commands for connecting to nodes."""
         container_args = f"--container-image={self.runtime.container_image}"
@@ -340,6 +373,7 @@ class SweepOrchestrator(WorkerStageMixin, FrontendStageMixin, BenchmarkStageMixi
         try:
             # Stage 1: Head infrastructure (NATS, etcd)
             reporter.report(JobStatus.STARTING, JobStage.HEAD_INFRASTRUCTURE, "Starting head infrastructure")
+            self.prewarm_container_image()
             head_proc = self.start_head_infrastructure(registry)
             registry.add_process(head_proc)
 
