@@ -134,10 +134,43 @@ fi
 # Parse endpoint into host:port
 HOST=$(echo "$ENDPOINT" | sed 's|http://||' | cut -d: -f1)
 PORT=$(echo "$ENDPOINT" | sed 's|http://||' | cut -d: -f2 | cut -d/ -f1)
+API_ENDPOINT="/v1/completions"
+
+# Optional API-target sharding to avoid single-destination ephemeral port limits.
+#   SA_BENCH_API_URLS: comma-separated full API URLs or API base URLs.
+# srt-slurm may populate SA_BENCH_API_URLS from its frontend topology when
+# SA_BENCH_SHARD_FRONTENDS=true. SA-Bench itself does not parse nginx config.
+API_URL_ARGS=()
+add_api_url_arg() {
+    local url="$1"
+    url="$(echo "$url" | xargs)"
+    if [ -z "$url" ]; then
+        return
+    fi
+    if [[ "$url" == *"/v1/"* ]]; then
+        API_URL_ARGS+=(--api-url "$url")
+    else
+        API_URL_ARGS+=(--api-url "${url%/}${API_ENDPOINT}")
+    fi
+}
+
+if [ -n "${SA_BENCH_API_URLS:-}" ]; then
+    IFS=',' read -r -a _api_urls <<< "${SA_BENCH_API_URLS}"
+    for u in "${_api_urls[@]}"; do
+        add_api_url_arg "$u"
+    done
+elif [ "${SA_BENCH_SHARD_FRONTENDS:-false}" = "true" ]; then
+    echo "ERROR: SA_BENCH_SHARD_FRONTENDS=true but SA_BENCH_API_URLS is empty." >&2
+    echo "srt-slurm should populate SA_BENCH_API_URLS from frontend topology." >&2
+    exit 1
+fi
 
 WORK_DIR="$(dirname "$0")"
 
 echo "SA-Bench Config: endpoint=${ENDPOINT}; isl=${ISL}; osl=${OSL}; concurrencies=${CONCURRENCIES}; req_rate=${REQ_RATE}; model=${MODEL_NAME}; dataset=${DATASET_NAME}; dataset_path=${DATASET_PATH}"
+if [ ${#API_URL_ARGS[@]} -gt 0 ]; then
+    echo "SA-Bench API target sharding enabled: $(( ${#API_URL_ARGS[@]} / 2 )) target(s)"
+fi
 
 # Profiling shared helpers
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -184,7 +217,8 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
         python3 -u "${WORK_DIR}/benchmark_serving.py" \
             --model "${MODEL_NAME}" --tokenizer "${MODEL_PATH}" \
             --host "$HOST" --port "$PORT" \
-            --backend "dynamo" --endpoint /v1/completions \
+            --backend "dynamo" --endpoint "$API_ENDPOINT" \
+            "${API_URL_ARGS[@]}" \
             --disable-tqdm \
             "${DATASET_ARGS[@]}" \
             --num-prompts "$num_warmup_prompts" \
@@ -214,7 +248,8 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
     python3 -u "${WORK_DIR}/benchmark_serving.py" \
         --model "${MODEL_NAME}" --tokenizer "${MODEL_PATH}" \
         --host "$HOST" --port "$PORT" \
-        --backend "dynamo" --endpoint /v1/completions \
+        --backend "dynamo" --endpoint "$API_ENDPOINT" \
+        "${API_URL_ARGS[@]}" \
         --disable-tqdm \
         "${DATASET_ARGS[@]}" \
         --num-prompts "$num_prompts" \

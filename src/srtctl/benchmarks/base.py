@@ -69,7 +69,8 @@ class BenchmarkRunner(ABC):
 
     def get_environment(self, config: SrtConfig, runtime: RuntimeContext) -> dict[str, str]:
         """Get benchmark-specific environment variables."""
-        return {}
+        del runtime
+        return dict(config.benchmark.env)
 
 
 class AIPerfBenchmarkRunner(BenchmarkRunner):
