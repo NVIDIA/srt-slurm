@@ -1,9 +1,9 @@
 # Qwen3.5-397B-A17B-FP8 1P1D DEP4 (prefill) + DEP16 (decode) + deepep (low_latency)
 # Phase 4a: smoke cc2048; flip concurrencies to full sweep for Phase 4b.
 
-name: "qwen3.5-1p1d-dep16-dpep-router"
+name: "qwen3.5-wideep-1p1d-dep16-dpep-ccsweep"
 
-setup_script: rebuild-deepep.sh
+setup_script: setup-router-and-deepep.sh
 
 dynamo:
   hash: 4e4006138bb9dde377a2bb2cacbcc65aaa616ac1
@@ -12,6 +12,14 @@ model:
   path: "qwen3.5-fp8"
   container: "dev"
   precision: "fp8"
+
+identity:
+  model:
+    repo: "Qwen/Qwen3.5-397B-A17B-FP8"
+  container:
+    image: "lmsysorg/sglang:0.5.10.post1"
+  frameworks:
+    sglang: "0.5.10.post1"
 
 resources:
   gpu_type: "gb200"
@@ -110,7 +118,6 @@ backend:
       moe-dense-tp-size: 1
       enable-dp-attention: true
       enable-dp-lm-head: true
-      prefill-round-robin-balance: true
 
       mamba-scheduler-strategy: "no_buffer"
       mamba-track-interval: 128
@@ -123,7 +130,7 @@ backend:
       # cc2048 smoke: per-DP = 2048/16 = 128
       chunked-prefill-size: 4096
       context-length: 4096
-      mem-fraction-static: 0.80  # lowered from 0.85; cuda-graph capture OOM at 0.85 (DeepEP ~25GB non-PyTorch)
+      mem-fraction-static: 0.75  # DEP16+ DeepEP buffers scale with ep_size; 0.80 OOM at cuda-graph capture (~25GB non-PyTorch)
       max-mamba-cache-size: 2048  # sglang divides by dp_size=16 → 128 per-DP
       max-running-requests: 2048  # sglang divides by dp_size=16 → 128 per-DP
       cuda-graph-max-bs: 128
