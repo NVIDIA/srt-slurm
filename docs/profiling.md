@@ -110,10 +110,21 @@ When using `nsys`, workers are wrapped with:
 
 ```bash
 nsys profile -t cuda,nvtx --cuda-graph-trace=node \
-  -c cudaProfilerApi --capture-range-end stop \
+  -c cudaProfilerApi --capture-range-end stop --force-overwrite true \
   -o /logs/profiles/{mode}/{name} \
   python3 -m sglang.launch_server ...
 ```
+
+TRT-LLM uses MPI-style endpoint launches (`srun --mpi pmix --ntasks N`).
+For those launches, srtctl includes Slurm rank expansion in the nsys output
+base name:
+
+```bash
+-o /logs/profiles/{mode}/{node}_{mode}_w{index}_rank%q{SLURM_PROCID}_local%q{SLURM_LOCALID}_profile
+```
+
+This produces one report per Slurm rank and avoids multiple ranks writing the
+same `.nsys-rep` file.
 
 ## Example Configurations
 

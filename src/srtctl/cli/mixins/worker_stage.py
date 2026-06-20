@@ -23,6 +23,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _build_nsys_output_path(mode: str, node: str, index: int, *, rank_qualified: bool = False) -> str:
+    """Build a container-local Nsight Systems output path."""
+    rank_suffix = ""
+    if rank_qualified:
+        rank_suffix = "_rank%q{SLURM_PROCID}_local%q{SLURM_LOCALID}"
+    return f"/logs/profiles/{mode}/{node}_{mode}_w{index}{rank_suffix}_profile"
+
+
 class WorkerStageMixin:
     """Mixin for worker process startup stage.
 
@@ -96,7 +104,7 @@ class WorkerStageMixin:
         if profiling.enabled:
             (self.runtime.log_dir / "profiles" / mode).mkdir(parents=True, exist_ok=True)
         if profiling.is_nsys:
-            nsys_output = f"/logs/profiles/{mode}/{process.node}_{mode}_w{index}_profile"
+            nsys_output = _build_nsys_output_path(mode, process.node, index)
             nsys_prefix = profiling.get_nsys_prefix(nsys_output, frontend_type=self.config.frontend.type)
 
         # Build command using backend's method
@@ -214,7 +222,7 @@ class WorkerStageMixin:
         if profiling.enabled:
             (self.runtime.log_dir / "profiles" / mode).mkdir(parents=True, exist_ok=True)
         if profiling.is_nsys:
-            nsys_output = f"/logs/profiles/{mode}/{leader.node}_{mode}_w{index}_profile"
+            nsys_output = _build_nsys_output_path(mode, leader.node, index, rank_qualified=True)
             nsys_prefix = profiling.get_nsys_prefix(nsys_output, frontend_type=self.config.frontend.type)
 
         # Build command using backend's method
