@@ -78,6 +78,9 @@
 # Generated: {{ timestamp }}
 
 set -e
+{% if lifecycle_runtime_embed is not none %}
+{{ lifecycle_runtime_embed }}
+{% endif %}
 
 # Setup directories
 SRTCTL_SOURCE="{{ srtctl_source }}"
@@ -91,6 +94,9 @@ export SRTCTL_OUTPUT_DIR="${OUTPUT_DIR}"
 
 # Redirect stderr to stdout (SLURM captures both via --output)
 exec 2>&1
+{% if lifecycle_runtime_embed is not none %}
+srt_lifecycle_init
+{% endif %}
 
 echo "=========================================="
 echo "🚀 srtctl Sweep Orchestrator"
@@ -103,9 +109,20 @@ echo "Start: $(date)"
 echo "=========================================="
 echo ""
 
-# submit.py always copies the original submission config to OUTPUT_DIR/config.yaml.
-# For override jobs it also writes the resolved runtime config below.
+# submit.py normally copies config files into OUTPUT_DIR after sbatch accepts
+# the job. Standalone --bash renders embed those configs directly here.
 echo "Runtime config: ${OUTPUT_DIR}/{{ runtime_config_filename }}"
+{% if runtime_config_embed is not none %}
+cat > "${OUTPUT_DIR}/{{ runtime_config_filename }}" <<'{{ runtime_config_heredoc_marker }}'
+{{ runtime_config_embed }}
+{{ runtime_config_heredoc_marker }}
+{% endif %}
+{% if benchmark_config_embed is not none %}
+echo "Benchmark config: ${OUTPUT_DIR}/{{ benchmark_config_filename }}"
+cat > "${OUTPUT_DIR}/{{ benchmark_config_filename }}" <<'{{ benchmark_config_heredoc_marker }}'
+{{ benchmark_config_embed }}
+{{ benchmark_config_heredoc_marker }}
+{% endif %}
 
 # Get head node
 HEAD_NODE=$(scontrol show hostnames ${SLURM_NODELIST} | head -n1)
@@ -167,8 +184,32 @@ cd "${SRTCTL_SOURCE}"
 # errors. The flock serializes only the venv init; the lock is released
 # before the actual sweep so jobs still run in parallel.
 flock -x "${SRTCTL_SOURCE}/.venv-compute.lock" uv sync --python 3.12 --no-dev
+{% if lifecycle_runtime_embed is not none %}
+set -e  # Re-enable exit-on-error before lifecycle readiness gates
+srt_start_tachometer "${LOG_DIR}/tachometer"
+uv run --python 3.12 --no-dev --no-sync -m srtctl.cli.do_sweep "${OUTPUT_DIR}/{{ runtime_config_filename }}" &
+ORCHESTRATOR_PID=$!
+
+srt_wait_workers_ready \
+  "{{ lifecycle_frontend_type }}" \
+  "${HEAD_NODE}" \
+  "{{ lifecycle_frontend_port }}" \
+  "{{ lifecycle_expected_prefill }}" \
+  "{{ lifecycle_expected_decode }}" \
+  "{{ lifecycle_health_timeout_seconds }}" \
+  "{{ lifecycle_health_interval_seconds }}"
+
+set +e
+srt_run_benchmark_command \
+  uv run --python 3.12 --no-dev --no-sync -m srtctl.cli.run_benchmark "${OUTPUT_DIR}/{{ benchmark_config_filename }}"
+EXIT_CODE=$?
+set -e
+
+srt_stop_pid "orchestrator" "${ORCHESTRATOR_PID}"
+{% else %}
 uv run --python 3.12 --no-dev --no-sync -m srtctl.cli.do_sweep "${OUTPUT_DIR}/{{ runtime_config_filename }}"
 EXIT_CODE=$?
+{% endif %}
 set -e  # Re-enable exit-on-error
 
 echo ""
