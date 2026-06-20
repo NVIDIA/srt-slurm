@@ -426,6 +426,66 @@ class TestPreflightConfigVariants:
         assert results[0].container.source == "container-uri"
         assert results[0].errors == []
 
+    def test_preflight_accepts_model_alias_resolving_to_hf_model(self, tmp_path):
+        container_file = tmp_path / "container.sqsh"
+        container_file.write_text("sqsh")
+
+        results = preflight_config_variants(
+            {
+                "name": "hf-model-alias",
+                "model": {
+                    "path": "qwen32b",
+                    "container": str(container_file),
+                    "precision": "bf16",
+                },
+                "resources": {
+                    "gpu_type": "gb200",
+                    "gpus_per_node": 4,
+                    "prefill_nodes": 1,
+                    "decode_nodes": 1,
+                    "prefill_workers": 1,
+                    "decode_workers": 1,
+                },
+            },
+            cluster_config={"model_paths": {"qwen32b": "hf:Qwen/Qwen3-32B"}},
+        )
+
+        assert results[0].ok is True
+        assert results[0].model.raw == "qwen32b"
+        assert results[0].model.resolved == "hf:Qwen/Qwen3-32B"
+        assert results[0].model.source == "srtslurm.yaml:model_paths"
+        assert results[0].errors == []
+
+    def test_preflight_accepts_container_alias_resolving_to_remote_image(self, tmp_path):
+        model_dir = tmp_path / "model"
+        model_dir.mkdir()
+
+        results = preflight_config_variants(
+            {
+                "name": "remote-container-alias",
+                "model": {
+                    "path": str(model_dir),
+                    "container": "sglang-latest",
+                    "precision": "bf16",
+                },
+                "resources": {
+                    "gpu_type": "gb200",
+                    "gpus_per_node": 4,
+                    "prefill_nodes": 1,
+                    "decode_nodes": 1,
+                    "prefill_workers": 1,
+                    "decode_workers": 1,
+                },
+            },
+            cluster_config={"containers": {"sglang-latest": "nvcr.io/nvidia/sglang-runtime:latest"}},
+        )
+
+        assert results[0].ok is True
+        assert results[0].container.raw == "sglang-latest"
+        assert results[0].container.resolved == "nvcr.io/nvidia/sglang-runtime:latest"
+        assert results[0].container.source == "srtslurm.yaml:containers"
+        assert results[0].errors == []
+
     def test_preflight_still_rejects_typo_local_path_without_colon(
         self, tmp_path
     ):

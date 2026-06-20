@@ -126,15 +126,16 @@ def _preflight_model(
     # framework downloads via HF_HOME at serve time.  Preflight cannot
     # filesystem-check a remote ID, so accept and let runtime fail loudly
     # if the ID is bogus.
-    if isinstance(raw, str) and raw.startswith("hf:"):
+    if isinstance(resolved, str) and resolved.startswith("hf:"):
+        resolved_source = source if source != "literal" else "huggingface"
         return (
             PreflightResolution(
                 field="model.path",
                 raw=raw,
-                resolved=raw,
-                source="huggingface",
+                resolved=resolved,
+                source=resolved_source,
                 ok=True,
-                message=f"HuggingFace model ID: {raw[3:]}",
+                message=f"HuggingFace model ID: {resolved[3:]}",
             ),
             [],
         )
@@ -216,15 +217,16 @@ def _preflight_container(
     # --container-image``, which Pyxis/enroot pulls on first use.  The
     # ":" guard distinguishes a URI (registry/...:tag or scheme://...)
     # from a typo'd local relative path.
-    if isinstance(raw, str) and not raw.startswith(("/", "./")) and ":" in raw:
+    if isinstance(resolved, str) and not resolved.startswith(("/", "./")) and ":" in resolved:
+        resolved_source = source if source != "literal" else "container-uri"
         return (
             PreflightResolution(
                 field="model.container",
                 raw=raw,
-                resolved=raw,
-                source="container-uri",
+                resolved=resolved,
+                source=resolved_source,
                 ok=True,
-                message=f"Container image URI: {raw}",
+                message=f"Container image URI: {resolved}",
             ),
             [],
         )
