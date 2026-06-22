@@ -66,7 +66,7 @@ backend:
       kv-transfer-config: '{"kv_connector": "NixlConnector", "kv_role": "kv_both"}'
       attention-config: '{"backend": "FLASHINFER", "use_trtllm_attention": true}'
       tensor-parallel-size: 4
-      enable-expert-parallel: true
+      enable-expert-parallel: false
       trust-remote-code: true
       no-enable-prefix-caching: true
       block-size: 128
