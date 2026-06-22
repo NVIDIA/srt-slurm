@@ -65,9 +65,7 @@ backend:
     prefill:
       kv-transfer-config: '{"kv_connector": "NixlConnector", "kv_role": "kv_both"}'
       attention-config: '{"backend": "FLASHINFER", "use_trtllm_attention": true}'
-      tensor-parallel-size: 1
-      data-parallel-size: 2
-      data-parallel-rpc-port: 13345
+      tensor-parallel-size: 4
       enable-expert-parallel: true
       trust-remote-code: true
       no-enable-prefix-caching: true
@@ -94,9 +92,9 @@ backend:
       language-model-only: true
       kv-cache-dtype: fp8
       stream-interval: 128
-      max-num-seqs: 2048
+      max-num-seqs: 4096
       max-num-batched-tokens: 16384
-      max-cudagraph-capture-size: 2048
+      max-cudagraph-capture-size: 4096
 
 benchmark:
   type: "sa-bench"
