@@ -93,8 +93,8 @@ backend:
       max-model-len: 9472
       language-model-only: true
       kv-cache-dtype: fp8
-      stream-interval: 32
-      max-num-seqs: 256
+      stream-interval: 20
+      max-num-seqs: 2048
       max-num-batched-tokens: 16384
       max-cudagraph-capture-size: 2048
 
