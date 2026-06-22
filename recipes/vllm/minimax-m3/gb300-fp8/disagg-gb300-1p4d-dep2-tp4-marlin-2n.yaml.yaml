@@ -12,12 +12,6 @@ dynamo:
   install: true
   version: 1.3.0.dev20260614
 
-sbatch_directives:
-  mem: "0"
-  cpus-per-task: "72"
-srun_options:
-  mem: "0"
-
 slurm:
   time_limit: "8:00:00"
 
@@ -29,9 +23,9 @@ resources:
   gpu_type: "gb300"
   gpus_per_node: 4
   prefill_nodes: 1
-  decode_nodes: 1
+  decode_nodes: 4
   prefill_workers: 1
-  decode_workers: 1
+  decode_workers: 4
   gpus_per_prefill: 4
   gpus_per_decode: 4
 
