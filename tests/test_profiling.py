@@ -79,6 +79,47 @@ class TestProfilingConfig:
         assert "--stats=true" in prefix
         assert prefix.index("--stats=true") < prefix.index("-o")
 
+    def test_nsys_time_vllm_dynamo_path(self, monkeypatch):
+        """nsys-time on a non-TRTLLM backend (vllm) drives capture purely via
+        --delay/--duration (no cudaProfilerApi range), and adds
+        --trace-fork-before-exec for the dynamo frontend."""
+        from srtctl.core.schema import ProfilingConfig
+
+        monkeypatch.delenv("SRTCTL_NSYS_BIN", raising=False)
+        profiling = ProfilingConfig(type="nsys-time", delay_secs=120, duration_secs=30)
+        assert profiling.is_nsys_time is True
+
+        prefix = profiling.get_nsys_prefix("/out/w0", frontend_type="dynamo", backend_type="vllm")
+        assert prefix[0] == "nsys"
+        assert "profile" in prefix
+        assert "--delay" in prefix and "120" in prefix
+        assert "--duration" in prefix and "30" in prefix
+        # Time-based capture — no cudaProfilerApi capture-range trigger.
+        assert "cudaProfilerApi" not in prefix
+        assert "--capture-range-end" not in prefix
+        assert "--trace-fork-before-exec=true" in prefix
+        # Output file is the last token (-o <output>).
+        assert prefix[-1] == "/out/w0"
+
+        # sglangrouter / non-dynamo frontend omits the fork flag.
+        prefix_router = profiling.get_nsys_prefix("/out/w0", frontend_type="sglangrouter", backend_type="vllm")
+        assert "--trace-fork-before-exec=true" not in prefix_router
+
+    def test_nsys_binary_override(self, monkeypatch):
+        """SRTCTL_NSYS_BIN overrides the nsys executable across every code path."""
+        from srtctl.core.schema import ProfilingConfig
+
+        monkeypatch.setenv("SRTCTL_NSYS_BIN", "/opt/nsight/nsys")
+        # default (vllm/sglang) path
+        assert ProfilingConfig(type="nsys").get_nsys_prefix("/out/w0", backend_type="vllm")[0] == "/opt/nsight/nsys"
+        # time-based path
+        time_prefix = ProfilingConfig(type="nsys-time", delay_secs=1, duration_secs=1).get_nsys_prefix(
+            "/out/w0", backend_type="vllm"
+        )
+        assert time_prefix[0] == "/opt/nsight/nsys"
+        # trtllm path
+        assert ProfilingConfig(type="nsys").get_nsys_prefix("/out/w0", backend_type="trtllm")[0] == "/opt/nsight/nsys"
+
     def test_torch_profiling(self):
         """Test torch profiling configuration."""
         from srtctl.core.schema import ProfilingConfig, ProfilingPhaseConfig
@@ -259,6 +300,32 @@ class TestProfilingValidation:
             ),
         )
         assert config.profiling.enabled
+
+    def test_nsys_time_allowed_for_non_trtllm_backend(self):
+        """nsys-time is no longer TRTLLM-only — it must validate for the default
+        (non-TRTLLM) backend so vllm+dynamo can use time-based capture."""
+        from srtctl.core.schema import (
+            ModelConfig,
+            ProfilingConfig,
+            ResourceConfig,
+            SrtConfig,
+        )
+
+        # Should not raise (previously rejected with "only supported for trtllm").
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/container", precision="fp8"),
+            resources=ResourceConfig(
+                gpu_type="gb200",
+                prefill_nodes=1,
+                decode_nodes=1,
+                prefill_workers=1,
+                decode_workers=1,
+            ),
+            profiling=ProfilingConfig(type="nsys-time", delay_secs=120, duration_secs=30),
+        )
+        assert config.profiling.is_nsys_time
+        assert config.backend.type != "trtllm"
 
 
 class TestProfilingIntegration:

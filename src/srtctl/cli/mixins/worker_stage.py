@@ -138,7 +138,11 @@ class WorkerStageMixin:
         if profiling.enabled:
             (self.runtime.log_dir / "profiles" / mode).mkdir(parents=True, exist_ok=True)
         if profiling.is_nsys:
-            nsys_output = f"/logs/profiles/{mode}/{process.node}_{mode}_w{index}_profile"
+            # Include CUDA_VISIBLE_DEVICES in the output name so per-DP-rank nsys
+            # files don't collide: with data parallelism (e.g. vLLM DP=4) several
+            # ranks share one logical endpoint and the same worker index on a node,
+            # so without the %q{} GPU qualifier they'd all write the same file.
+            nsys_output = f"/logs/profiles/{mode}/{process.node}_{mode}_w{index}_profile_gpu%q{{CUDA_VISIBLE_DEVICES}}"
             nsys_prefix = profiling.get_nsys_prefix(
                 nsys_output, frontend_type=self.config.frontend.type, backend_type=self.config.backend_type
             )
