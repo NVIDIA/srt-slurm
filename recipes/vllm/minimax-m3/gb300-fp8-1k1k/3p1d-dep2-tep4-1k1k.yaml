@@ -5,8 +5,8 @@ name: "minimax-m3-vllm-disagg-gb300-3p1d-dep2-tep4-fp8-1k1k"
 # Nodes: 2 prefill + 1 decode (+ head/infra).
 
 model:
-  path: "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/MiniMaxAI_MiniMax-M3-MXFP8"
-  container: "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/vllm-openai-minimax-m3-perf-arm64-13-0-1-7a67223.sqsh"
+  path: "/lustre/fsw/coreai_comparch_inferencex/rihuo/MiniMaxAI_MiniMax-M3-MXFP8"
+  container: "/lustre/fsw/coreai_comparch_inferencex/rihuo/vllm-openai-minimax-m3-perf-arm64-13-0-1-7a67223.sqsh"
   precision: "fp8"
 
 dynamo:
