@@ -88,7 +88,7 @@ backend:
       kv-cache-dtype: fp8
       stream-interval: 32
       max-num-seqs: 1024
-      max-num-batched-tokens: 16384
+      max-num-batched-tokens: 4096
       max-cudagraph-capture-size: 4096
 
 benchmark:

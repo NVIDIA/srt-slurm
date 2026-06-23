@@ -91,7 +91,7 @@ backend:
       stream-interval: 32
       max-num-seqs: 1024
       max-num-batched-tokens: 16384
-      max-cudagraph-capture-size: 4096
+      max-cudagraph-capture-size: 2048
 
 benchmark:
   type: "sa-bench"
