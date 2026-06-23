@@ -1,0 +1,46 @@
+name: "nemotron-super-120b-vllm-agg-b200-tp1-1k1k"
+
+model:
+  path: "hf:nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4"
+  container: "nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.2.0-deepseek-v4-cuda13-dev.3"
+  precision: "fp4"
+
+dynamo:
+  install: false
+
+resources:
+  gpu_type: "b200"
+  gpus_per_node: 1
+  agg_nodes: 1
+  agg_workers: 1
+  gpus_per_agg: 1
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+
+backend:
+  type: vllm
+  connector: null
+
+  aggregated_environment:
+    PYTHONUNBUFFERED: "1"
+    DYN_HEALTH_CHECK_ENABLED: "false"
+
+  vllm_config:
+    aggregated:
+      served-model-name: "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4"
+      tensor-parallel-size: 1
+      max-num-seqs: 1024
+      max-model-len: 2020
+      trust-remote-code: true
+
+benchmark:
+  type: "sa-bench"
+  isl: 1024
+  osl: 1024
+  concurrencies: "1024"
+  req_rate: "inf"
+  random_range_ratio: 0.8
+  num_prompts_mult: 3
+  num_warmup_mult: 1

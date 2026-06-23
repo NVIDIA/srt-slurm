@@ -8,6 +8,7 @@ import pytest
 from srtctl.core.topology import (
     NodePortAllocator,
     allocate_endpoints,
+    allocate_endpoints_het,
     endpoints_to_processes,
 )
 from srtctl.ports import (
@@ -148,6 +149,45 @@ class TestAllocateEndpoints:
         for ep in endpoints:
             assert ep.mode == "agg"
             assert ep.total_gpus == 4
+
+    def test_spread_workers_partial_node(self):
+        """spread_workers=True forces each partial-node worker onto its own node."""
+        endpoints = allocate_endpoints(
+            num_prefill=1,
+            num_decode=2,
+            num_agg=0,
+            gpus_per_prefill=1,
+            gpus_per_decode=2,
+            gpus_per_agg=0,
+            gpus_per_node=4,
+            available_nodes=("node0", "node1", "node2"),
+            spread_workers=True,
+        )
+
+        decode_eps = [e for e in endpoints if e.mode == "decode"]
+        assert len(decode_eps) == 2
+        # Without spread_workers both decode workers would land on node1.
+        assert decode_eps[0].nodes == ("node1",)
+        assert decode_eps[1].nodes == ("node2",)
+        assert decode_eps[0].gpu_indices == frozenset({0, 1})
+        assert decode_eps[1].gpu_indices == frozenset({0, 1})
+
+    def test_spread_workers_default_packs(self):
+        """spread_workers=False (default) packs partial-node workers onto the same node."""
+        endpoints = allocate_endpoints(
+            num_prefill=0,
+            num_decode=2,
+            num_agg=0,
+            gpus_per_prefill=0,
+            gpus_per_decode=2,
+            gpus_per_agg=0,
+            gpus_per_node=4,
+            available_nodes=("node0", "node1"),
+        )
+
+        decode_eps = [e for e in endpoints if e.mode == "decode"]
+        assert decode_eps[0].nodes == ("node0",)
+        assert decode_eps[1].nodes == ("node0",)
 
     def test_prefill_decode_never_share_node_partial_allocation(self):
         """Test that prefill and decode workers are never colocated on the same node.
@@ -423,3 +463,89 @@ class TestDefaultPorts:
         processes = endpoints_to_processes(endpoints)
 
         assert [p.sys_port for p in processes] == [DYN_SYSTEM_PORT_BASE, DYN_SYSTEM_PORT_BASE + 1]
+
+
+class TestAllocateEndpointsHet:
+    """Per-side heterogeneous-job allocation."""
+
+    def test_prefill_and_decode_isolated_to_own_pools(self):
+        """Prefill workers only land on prefill_nodes; decode only on decode_nodes."""
+        # Asymmetric: 12 prefill nodes + 10 decode nodes (the 48+40 case)
+        prefill_nodes = tuple(f"p-{i:02d}" for i in range(12))
+        decode_nodes = tuple(f"d-{i:02d}" for i in range(10))
+
+        endpoints = allocate_endpoints_het(
+            num_prefill=12,
+            gpus_per_prefill=4,
+            prefill_nodes=prefill_nodes,
+            num_decode=10,
+            gpus_per_decode=4,
+            decode_nodes=decode_nodes,
+            gpus_per_node=4,
+        )
+
+        prefill_eps = [e for e in endpoints if e.mode == "prefill"]
+        decode_eps = [e for e in endpoints if e.mode == "decode"]
+        assert len(prefill_eps) == 12
+        assert len(decode_eps) == 10
+
+        # Side isolation: no prefill endpoint lands on a decode node, and vice versa.
+        for ep in prefill_eps:
+            for node in ep.nodes:
+                assert node in prefill_nodes, f"prefill ep on decode node {node}"
+        for ep in decode_eps:
+            for node in ep.nodes:
+                assert node in decode_nodes, f"decode ep on prefill node {node}"
+
+    def test_het_group_tagged_on_endpoints(self):
+        prefill_nodes = ("p0", "p1")
+        decode_nodes = ("d0", "d1")
+        endpoints = allocate_endpoints_het(
+            num_prefill=2,
+            gpus_per_prefill=4,
+            prefill_nodes=prefill_nodes,
+            num_decode=2,
+            gpus_per_decode=4,
+            decode_nodes=decode_nodes,
+            gpus_per_node=4,
+        )
+        for ep in endpoints:
+            if ep.mode == "prefill":
+                assert ep.het_group == 0
+            elif ep.mode == "decode":
+                assert ep.het_group == 1
+
+    def test_het_group_propagates_to_processes(self):
+        endpoints = allocate_endpoints_het(
+            num_prefill=1,
+            gpus_per_prefill=4,
+            prefill_nodes=("p0",),
+            num_decode=1,
+            gpus_per_decode=4,
+            decode_nodes=("d0",),
+            gpus_per_node=4,
+        )
+        processes = endpoints_to_processes(endpoints)
+        for proc in processes:
+            if proc.endpoint_mode == "prefill":
+                assert proc.het_group == 0
+            elif proc.endpoint_mode == "decode":
+                assert proc.het_group == 1
+
+    def test_multi_node_prefill_worker_stays_in_prefill_pool(self):
+        # Single prefill worker with TP8 (2 nodes) — confirm it pulls from prefill_nodes only.
+        prefill_nodes = ("p0", "p1", "p2", "p3")
+        decode_nodes = ("d0", "d1")
+        endpoints = allocate_endpoints_het(
+            num_prefill=1,
+            gpus_per_prefill=8,
+            prefill_nodes=prefill_nodes,
+            num_decode=2,
+            gpus_per_decode=4,
+            decode_nodes=decode_nodes,
+            gpus_per_node=4,
+        )
+        prefill_ep = next(e for e in endpoints if e.mode == "prefill")
+        assert len(prefill_ep.nodes) == 2
+        for node in prefill_ep.nodes:
+            assert node in prefill_nodes

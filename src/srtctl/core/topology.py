@@ -28,6 +28,7 @@ from srtctl.ports import (
     SGLANG_BOOTSTRAP_PORT_BASE,
     SGLANG_HTTP_PORT_BASE,
     SGLANG_HTTP_PORT_STRIDE,
+    VLLM_DATA_PARALLEL_RPC_PORT,
     VLLM_NIXL_PORT_BASE,
 )
 
@@ -46,6 +47,7 @@ class NodePortAllocator:
     Default port ranges (non-overlapping):
         - kv_events_port: 5200+ (global) - ZMQ port for kv-events publishing
         - nixl_port:      5400+ (global) - NIXL side channel for KV transfers (vLLM)
+        - dp_rpc_port:    8400+ (per node) - DP coordination port (vLLM data-parallel)
         - http_port:      6100+ (per node) - HTTP serving port
         - bootstrap_port: 7200+ (per node) - P/D coordination port (prefill only)
 
@@ -64,9 +66,11 @@ class NodePortAllocator:
     base_bootstrap_port: int = SGLANG_BOOTSTRAP_PORT_BASE
     base_kv_events_port: int = KV_EVENTS_PORT_BASE
     base_nixl_port: int = VLLM_NIXL_PORT_BASE
+    base_dp_rpc_port: int = VLLM_DATA_PARALLEL_RPC_PORT
 
     _http_ports: dict[str, int] = field(default_factory=dict, repr=False)
     _bootstrap_ports: dict[str, int] = field(default_factory=dict, repr=False)
+    _dp_rpc_ports: dict[str, int] = field(default_factory=dict, repr=False)
     _next_kv_events_port: int = field(default=0, repr=False)  # Global counter
     _next_nixl_port: int = field(default=0, repr=False)  # Global counter for NIXL
 
@@ -102,6 +106,32 @@ class NodePortAllocator:
         self._next_nixl_port += 1
         return port
 
+    def next_nixl_port_block(self, size: int) -> int:
+        """Reserve a block of consecutive NIXL ports, return the base port.
+
+        Used in DP mode where vLLM computes:
+            actual_port = VLLM_NIXL_SIDE_CHANNEL_PORT + data_parallel_rank
+        All DP ranks within an endpoint share the same base port, so we
+        must reserve `size` ports to avoid collisions with other endpoints.
+        """
+        if self._next_nixl_port == 0:
+            self._next_nixl_port = self.base_nixl_port
+        port = self._next_nixl_port
+        self._next_nixl_port += size
+        return port
+
+    def next_dp_rpc_port(self, node: str) -> int:
+        """Get next available DP RPC port for a node.
+
+        When multiple DP endpoints share a node, each needs a unique
+        data-parallel-rpc-port to avoid bind collisions.
+        """
+        if node not in self._dp_rpc_ports:
+            self._dp_rpc_ports[node] = self.base_dp_rpc_port
+        port = self._dp_rpc_ports[node]
+        self._dp_rpc_ports[node] += 1
+        return port
+
 
 @dataclass(frozen=True)
 class Endpoint:
@@ -124,6 +154,10 @@ class Endpoint:
     nodes: tuple[str, ...]
     gpu_indices: frozenset[int] = field(default_factory=lambda: frozenset(range(8)))
     gpus_per_node: int = 8
+    # SLURM heterogeneous-job component index (0=prefill side, 1=decode side).
+    # None when the job is non-het — callers that pass this to srun treat None
+    # as "omit --het-group".
+    het_group: int | None = None
 
     @property
     def leader_node(self) -> str:
@@ -176,6 +210,9 @@ class Process:
     bootstrap_port: int | None = None
     kv_events_port: int | None = None
     nixl_port: int | None = None
+    dp_rpc_port: int | None = None
+    # Inherited from the parent Endpoint when the job is heterogeneous.
+    het_group: int | None = None
 
     @property
     def is_leader(self) -> bool:
@@ -197,6 +234,8 @@ def allocate_endpoints(
     gpus_per_agg: int,
     gpus_per_node: int,
     available_nodes: Sequence[str],
+    spread_workers: bool = False,
+    allow_prefill_decode_colocation: bool = False,
 ) -> list[Endpoint]:
     """Allocate endpoints to nodes based on GPU requirements.
 
@@ -211,6 +250,11 @@ def allocate_endpoints(
         gpus_per_agg: GPUs per agg worker
         gpus_per_node: GPUs available per node
         available_nodes: List of available node hostnames
+        spread_workers: If True, place each partial-node worker on its own
+            node instead of packing multiple onto the same node. Requires the
+            caller to reserve enough nodes (one per worker per mode).
+        allow_prefill_decode_colocation: If True, decode workers may use
+            remaining GPUs on a node already used by prefill workers.
 
     Returns:
         List of Endpoint objects with node assignments
@@ -335,7 +379,7 @@ def allocate_endpoints(
                 gpu_indices = frozenset(range(gpu_offset, gpu_offset + gpus_per_worker))
                 gpu_offset += gpus_per_worker
 
-                if gpu_offset >= gpus_per_node:
+                if gpu_offset >= gpus_per_node or spread_workers:
                     node_idx += 1
                     gpu_offset = 0
 
@@ -355,13 +399,13 @@ def allocate_endpoints(
     if num_prefill > 0:
         endpoints.extend(allocate_workers_simple("prefill", num_prefill, gpus_per_prefill))
 
-    # When there's a partial allocation on the current node (gpu_offset > 0) and
-    # there are more nodes available, advance to ensure prefill and decode don't
-    # share a node. This prevents the bug where a multi-node decode worker overlaps
-    # with a partial-node prefill worker.
+    # By default, when there's a partial allocation on the current node
+    # (gpu_offset > 0) and there are more nodes available, advance to ensure
+    # prefill and decode don't share a node. This prevents the bug where a
+    # multi-node decode worker overlaps with a partial-node prefill worker.
     # When there are no more nodes (decode_nodes=0 config), allow sharing.
     if num_decode > 0:
-        if gpu_offset > 0 and (node_idx + 1) < len(available_nodes):
+        if not allow_prefill_decode_colocation and gpu_offset > 0 and (node_idx + 1) < len(available_nodes):
             node_idx += 1
             gpu_offset = 0
         endpoints.extend(allocate_workers_simple("decode", num_decode, gpus_per_decode))
@@ -370,6 +414,75 @@ def allocate_endpoints(
         endpoints.extend(allocate_workers_simple("agg", num_agg, gpus_per_agg))
 
     return endpoints
+
+
+def allocate_endpoints_het(
+    *,
+    num_prefill: int,
+    gpus_per_prefill: int,
+    prefill_nodes: Sequence[str],
+    num_decode: int,
+    gpus_per_decode: int,
+    decode_nodes: Sequence[str],
+    gpus_per_node: int,
+) -> list[Endpoint]:
+    """Allocate endpoints for a SLURM heterogeneous job.
+
+    Prefill workers come from ``prefill_nodes`` (het component 0); decode
+    workers come from ``decode_nodes`` (het component 1). Side pools are
+    independent — no gpu-offset bleed across sides — so SLURM places each side
+    inside its own topology segment.
+
+    Each returned Endpoint is tagged with ``het_group`` (0 for prefill, 1 for
+    decode) for downstream srun ``--het-group=`` threading.
+
+    Aggregated mode is unsupported under het and rejected at config validation.
+    """
+    prefill_eps = allocate_endpoints(
+        num_prefill=num_prefill,
+        num_decode=0,
+        num_agg=0,
+        gpus_per_prefill=gpus_per_prefill,
+        gpus_per_decode=gpus_per_decode,
+        gpus_per_agg=0,
+        gpus_per_node=gpus_per_node,
+        available_nodes=prefill_nodes,
+    )
+    decode_eps = allocate_endpoints(
+        num_prefill=0,
+        num_decode=num_decode,
+        num_agg=0,
+        gpus_per_prefill=gpus_per_prefill,
+        gpus_per_decode=gpus_per_decode,
+        gpus_per_agg=0,
+        gpus_per_node=gpus_per_node,
+        available_nodes=decode_nodes,
+    )
+    # Endpoint is frozen; re-emit with het_group set.
+    tagged: list[Endpoint] = []
+    for ep in prefill_eps:
+        tagged.append(
+            Endpoint(
+                mode=ep.mode,
+                index=ep.index,
+                nodes=ep.nodes,
+                gpu_indices=ep.gpu_indices,
+                gpus_per_node=ep.gpus_per_node,
+                het_group=0,
+            )
+        )
+    for ep in decode_eps:
+        tagged.append(
+            Endpoint(
+                mode=ep.mode,
+                index=ep.index,
+                nodes=ep.nodes,
+                gpu_indices=ep.gpu_indices,
+                gpus_per_node=ep.gpus_per_node,
+                het_group=1,
+            )
+        )
+    return tagged
 
 
 def endpoints_to_processes(
@@ -431,6 +544,7 @@ def endpoints_to_processes(
                     bootstrap_port=endpoint_bootstrap_port,
                     kv_events_port=node_kv_events_port,
                     nixl_port=node_nixl_port,
+                    het_group=endpoint.het_group,
                 )
             )
             current_sys_port += 1

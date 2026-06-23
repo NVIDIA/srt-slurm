@@ -46,7 +46,7 @@ from srtctl.core.runtime import RuntimeContext
 from srtctl.core.schema import SrtConfig
 from srtctl.core.slurm import get_slurm_job_id, start_srun_process
 from srtctl.core.status import JobStage, JobStatus, StatusReporter
-from srtctl.core.topology import Endpoint, NodePortAllocator, Process
+from srtctl.core.topology import Endpoint, NodePortAllocator, Process, allocate_endpoints_het
 from srtctl.logging_utils import setup_logging
 from srtctl.ports import (
     ETCD_CLIENT_PORT,
@@ -89,9 +89,22 @@ class SweepOrchestrator(
     def endpoints(self) -> list[Endpoint]:
         """Compute endpoint allocation topology (cached).
 
-        This is the single source of truth for endpoint assignments.
+        This is the single source of truth for endpoint assignments. Under
+        SLURM heterogeneous jobs, prefill and decode workers are allocated
+        from their own component nodelists so neither side bleeds into the
+        other's topology segment.
         """
         r = self.config.resources
+        if self.runtime.nodes.het:
+            return allocate_endpoints_het(
+                num_prefill=r.num_prefill,
+                gpus_per_prefill=r.gpus_per_prefill,
+                prefill_nodes=self.runtime.nodes.prefill_group,
+                num_decode=r.num_decode,
+                gpus_per_decode=r.gpus_per_decode,
+                decode_nodes=self.runtime.nodes.decode_group,
+                gpus_per_node=r.gpus_per_node,
+            )
         return self.backend.allocate_endpoints(
             num_prefill=r.num_prefill,
             num_decode=r.num_decode,
@@ -101,6 +114,7 @@ class SweepOrchestrator(
             gpus_per_agg=r.gpus_per_agg,
             gpus_per_node=r.gpus_per_node,
             available_nodes=self.runtime.nodes.worker,
+            spread_workers=r.spread_workers,
         )
 
     @functools.cached_property
@@ -153,6 +167,7 @@ class SweepOrchestrator(
             output=str(infra_log),
             container_image=str(self.runtime.container_image),
             container_mounts=mounts,
+            het_group=self.runtime.nodes.het_group_for(infra_node),
         )
 
         managed = ManagedProcess(
@@ -236,6 +251,7 @@ class SweepOrchestrator(
             output=str(mooncake_log),
             container_image=container,
             container_mounts=self.runtime.container_mounts,
+            het_group=self.runtime.nodes.het_group_for(infra_node),
         )
 
         managed = ManagedProcess(
@@ -444,6 +460,7 @@ class SweepOrchestrator(
                 container_mounts=self.runtime.container_mounts,
                 env_to_set=hf_env,
                 use_bash_wrapper=False,  # command is already bash -c
+                het_group=self.runtime.nodes.het_group_for(download_node),
             )
 
             timeout_sec = 60 * 60  # 1 hour; large models can take a while
@@ -571,6 +588,7 @@ class SweepOrchestrator(
             container_image=str(self.runtime.container_image),
             container_mounts=self.runtime.container_mounts,
             env_to_set=env_to_set,
+            het_group=self.runtime.nodes.het_group_for(self.runtime.nodes.head),
         )
 
         while proc.poll() is None:

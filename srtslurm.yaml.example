@@ -11,6 +11,14 @@ default_account: "your-gpu-account"
 default_partition: "gpu"
 default_time_limit: "04:00:00"
 
+# Default health check window for jobs that don't override `health_check:`
+# in the recipe. Useful on clusters with slow storage where large MoE models
+# need >30 min to cold-load (the schema default is max_attempts=180, ~30 min).
+# Recipes that set their own `health_check:` block override this.
+# default_health_check:
+#   max_attempts: 540        # 540 * 10s = 90 min
+#   interval_seconds: 10
+
 # SLURM directive compatibility
 # Set to false if your cluster doesn't support --gpus-per-node
 use_gpus_per_node_directive: true  # Default: true

@@ -91,6 +91,33 @@ def test_batch_log_parser_keeps_millisecond_timestamps_and_dp_ranks(tmp_path):
     assert series.timestamps[1].microsecond == 901000
 
 
+def test_batch_log_parser_accepts_legacy_token_field_names(tmp_path):
+    """Current production SGLang logs may still use #token/token usage."""
+    logs_dir = tmp_path / "461674" / "logs"
+    logs_dir.mkdir(parents=True)
+    (logs_dir / "nvl72d068-T01_prefill_w0.out").write_text(
+        "[2026-05-19 00:32:50 DP0 TP0] Prefill batch, #new-seq: 1, #new-token: 64, "
+        "#cached-token: 0, token usage: 0.10, #running-req: 0, #queue-req: 0, "
+        "#pending-token: 0, #prealloc-req: 0, #inflight-req: 1, cuda graph: False, "
+        "input throughput (token/s): 0.16\n"
+    )
+    (logs_dir / "nvl72d068-T04_decode_w0.out").write_text(
+        "[2026-05-19 00:34:42 DP0 TP0 EP0] Decode batch [2], #running-req: 1, "
+        "#token: 64, token usage: 0.20, pre-allocated usage: 0.00, #prealloc-req: 0, "
+        "#transfer-req: 0, #retracted-req: 0, cuda graph: True, gen throughput (token/s): 58.87, "
+        "#queue-req: 0\n"
+    )
+
+    state = LogState(log_dir=logs_dir)
+    assert state.refresh() == (1, 1)
+
+    prefill = next(iter(state.prefill_files.values()))
+    decode = next(iter(state.decode_files.values()))
+    assert prefill.metrics["full token usage"] == [0.10]
+    assert decode.metrics["#full token"] == [64.0]
+    assert decode.metrics["full token usage"] == [0.20]
+
+
 def test_renderer_splits_agg_logs_by_dp_and_derives_input_throughput(tmp_path):
     """The plot matrix should expose one line per DP rank in a single agg log."""
     logs_dir = tmp_path / "461673" / "logs"

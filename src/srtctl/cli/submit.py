@@ -232,6 +232,31 @@ def show_config_details(config: SrtConfig) -> None:
 
     console.print(Panel(mounts_table, border_style="green"))
 
+    # --- SLURM heterogeneous job structure ---
+    het_components = config.resources.het_components(
+        infra_dedicated=config.infra.etcd_nats_dedicated_node,
+        cluster_default=get_srtslurm_setting("use_het_jobs", False),
+    )
+    if het_components is not None:
+        het_table = Table(title="SLURM Heterogeneous Job", show_lines=False, pad_edge=False)
+        het_table.add_column("Group", style="dim", width=5)
+        het_table.add_column("Side", style="cyan", width=8)
+        het_table.add_column("Nodes", style="white", justify="right", width=6)
+        het_table.add_column("Segment", style="white", justify="right", width=8)
+        het_table.add_column("GPUs/node", style="white", justify="right", width=10)
+        het_table.add_column("Infra", style="dim")
+        for c in het_components:
+            infra_note = "first node" if c.name == "prefill" and config.infra.etcd_nats_dedicated_node else ""
+            het_table.add_row(
+                str(c.group),
+                c.name,
+                str(c.nodes),
+                str(c.segment),
+                str(c.gpus_per_node),
+                infra_note,
+            )
+        console.print(Panel(het_table, border_style="magenta"))
+
     # --- Environment Variables ---
     dynamo_environment = config.dynamo.get_wheel_environment()
     has_env = bool(config.environment or dynamo_environment)
@@ -277,7 +302,7 @@ def show_config_details(config: SrtConfig) -> None:
 
     # --- srun options ---
     if config.srun_options:
-        opts = " ".join(f"--{k} {v}" if v else f"--{k}" for k, v in config.srun_options.items())
+        opts = " ".join(f"--{k}={v}" if v else f"--{k}" for k, v in config.srun_options.items())
         console.print(f"[dim]srun options:[/] {opts}")
 
     show_extensions = (
@@ -407,10 +432,19 @@ def generate_minimal_sbatch_script(
     env = Environment(loader=FileSystemLoader(str(template_dir)))
     template = env.get_template("job_script_minimal.j2")
 
-    total_nodes = config.resources.total_nodes
-    # Add extra node for dedicated etcd/nats infrastructure
-    if config.infra.etcd_nats_dedicated_node:
-        total_nodes += 1
+    het_components = config.resources.het_components(
+        infra_dedicated=config.infra.etcd_nats_dedicated_node,
+        cluster_default=get_srtslurm_setting("use_het_jobs", False),
+    )
+    if het_components is None:
+        total_nodes = config.total_nodes
+        # Add extra node for dedicated etcd/nats infrastructure
+        if config.infra.etcd_nats_dedicated_node:
+            total_nodes += 1
+    else:
+        # Sum is informational only — the template iterates het_components and
+        # ignores total_nodes when het_components is set.
+        total_nodes = sum(c.nodes for c in het_components)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     # Resolve container image path (expand aliases from srtslurm.yaml)
@@ -423,6 +457,7 @@ def generate_minimal_sbatch_script(
     rendered = template.render(
         job_name=job_name,
         total_nodes=total_nodes,
+        het_components=het_components,
         gpus_per_node=config.resources.gpus_per_node,
         backend_type=config.backend_type,
         account=config.slurm.account or os.environ.get("SLURM_ACCOUNT", "default"),
@@ -797,6 +832,7 @@ def submit_sweep(
     setup_script: str | None = None,
     tags: list[str] | None = None,
     output_dir: Path | None = None,
+    enforce_preflight: bool = True,
 ):
     """Submit parameter sweep.
 
@@ -806,6 +842,8 @@ def submit_sweep(
         setup_script: Optional custom setup script name
         tags: Optional list of tags
         output_dir: Custom output directory (CLI flag, highest priority)
+        enforce_preflight: When False, skip the pre-submit model/container/telemetry
+            FS checks for every variant (propagated to submit_single).
     """
     from srtctl.core.sweep import generate_sweep_configs
 
@@ -866,24 +904,25 @@ def submit_sweep(
             job_name = config_dict.get("name", f"job_{i}")
             progress.update(task, description=f"[{i}/{len(configs)}] {job_name}")
 
-        # Save temp config and submit
-        fd, temp_config_path = tempfile.mkstemp(suffix=".yaml", prefix="srtctl_sweep_", text=True)
-        try:
-            with os.fdopen(fd, "w") as f:
-                yaml.dump(config_dict, f)
+            # Save temp config and submit
+            fd, temp_config_path = tempfile.mkstemp(suffix=".yaml", prefix="srtctl_sweep_", text=True)
+            try:
+                with os.fdopen(fd, "w") as f:
+                    yaml.dump(config_dict, f)
 
-            config = load_config(Path(temp_config_path))
-            submit_single(
-                config_path=Path(temp_config_path),
-                config=config,
-                dry_run=False,
-                setup_script=setup_script,
-                tags=tags,
-                output_dir=output_dir,
-            )
-        finally:
-            with contextlib.suppress(OSError):
-                os.remove(temp_config_path)
+                config = load_config(Path(temp_config_path))
+                submit_single(
+                    config_path=Path(temp_config_path),
+                    config=config,
+                    dry_run=False,
+                    setup_script=setup_script,
+                    tags=tags,
+                    output_dir=output_dir,
+                    enforce_preflight=enforce_preflight,
+                )
+            finally:
+                with contextlib.suppress(OSError):
+                    os.remove(temp_config_path)
 
             progress.advance(task)
 
@@ -910,6 +949,7 @@ def submit_directory(
     tags: list[str] | None = None,
     force_sweep: bool = False,
     output_dir: Path | None = None,
+    enforce_preflight: bool = True,
 ) -> None:
     """Submit all YAML configs in a directory recursively.
 
@@ -920,6 +960,9 @@ def submit_directory(
         tags: Optional list of tags
         force_sweep: If True, treat all configs as sweeps
         output_dir: Custom output directory (CLI flag, highest priority)
+        enforce_preflight: When False, skip the pre-submit model/container/telemetry
+            FS checks for every config (propagated to submit_single / submit_sweep /
+            submit_override).
     """
     yaml_files = find_yaml_files(directory)
 
@@ -959,12 +1002,31 @@ def submit_directory(
 
         try:
             if is_override_config(yaml_file):
-                submit_override(yaml_file, dry_run=dry_run, setup_script=setup_script, tags=tags, output_dir=output_dir)
+                submit_override(
+                    yaml_file,
+                    dry_run=dry_run,
+                    setup_script=setup_script,
+                    tags=tags,
+                    output_dir=output_dir,
+                    enforce_preflight=enforce_preflight,
+                )
             elif force_sweep or is_sweep_config(yaml_file):
-                submit_sweep(yaml_file, dry_run=dry_run, setup_script=setup_script, tags=tags, output_dir=output_dir)
+                submit_sweep(
+                    yaml_file,
+                    dry_run=dry_run,
+                    setup_script=setup_script,
+                    tags=tags,
+                    output_dir=output_dir,
+                    enforce_preflight=enforce_preflight,
+                )
             else:
                 submit_single(
-                    config_path=yaml_file, dry_run=dry_run, setup_script=setup_script, tags=tags, output_dir=output_dir
+                    config_path=yaml_file,
+                    dry_run=dry_run,
+                    setup_script=setup_script,
+                    tags=tags,
+                    output_dir=output_dir,
+                    enforce_preflight=enforce_preflight,
                 )
             success_count += 1
         except Exception as e:
@@ -1067,6 +1129,7 @@ def submit_override(
     setup_script: str | None = None,
     tags: list[str] | None = None,
     output_dir: Path | None = None,
+    enforce_preflight: bool = True,
 ) -> None:
     """Expand an override config file and submit each variant.
 
@@ -1080,6 +1143,9 @@ def submit_override(
         setup_script: Optional custom setup script name
         tags: Optional list of tags
         output_dir: Custom output directory
+        enforce_preflight: When False, skip the pre-submit model/container/telemetry
+            FS checks for every expanded variant (propagated to submit_single /
+            submit_sweep).
     """
     with open(config_path) as f:
         raw_config = yaml.safe_load(f)
@@ -1129,6 +1195,7 @@ def submit_override(
                     setup_script=setup_script,
                     tags=tags,
                     output_dir=output_dir,
+                    enforce_preflight=enforce_preflight,
                 )
             finally:
                 with contextlib.suppress(OSError):
@@ -1144,6 +1211,7 @@ def submit_override(
                 variant_suffix=suffix,
                 source_config_path=config_path,
                 runtime_config_text=runtime_config_text,
+                enforce_preflight=enforce_preflight,
             )
 
 
@@ -1257,6 +1325,18 @@ def main():
         default=0.2,
         dest="mock_tick_s",
         help="Per-phase wall time used by the detached mock worker.",
+    )
+    apply_parser.add_argument(
+        "--no-preflight",
+        action="store_true",
+        dest="no_preflight",
+        help=(
+            "Skip the pre-submit model.path / model.container / telemetry filesystem "
+            "checks. Useful when those paths only exist on compute nodes (e.g. node-local "
+            "NVMe like /scratch/models/...) and not on the node invoking srtctl. The "
+            "framework itself will still fail loudly at runtime if a path is genuinely "
+            "missing on the compute node."
+        ),
     )
 
     dry_run_parser = subparsers.add_parser("dry-run", help="Validate without submitting")
@@ -1448,6 +1528,13 @@ def main():
             setup_script = getattr(args, "setup_script", None)
             output_dir = getattr(args, "output_dir", None)
 
+            # --no-preflight is only registered on the apply parser, so
+            # dry-run / preflight / resolve-override won't carry it. Default
+            # to False on those subcommands; dry-run already implies no
+            # enforcement via the is_dry_run branch below.
+            no_preflight = getattr(args, "no_preflight", False)
+            enforce_preflight = not (mock_mode or is_dry_run or no_preflight)
+
             # Handle directory input
             if effective_config_path.is_dir():
                 if selector:
@@ -1459,6 +1546,7 @@ def main():
                     tags=tags,
                     force_sweep=args.sweep,
                     output_dir=output_dir,
+                    enforce_preflight=enforce_preflight,
                 )
             elif is_override_config(effective_config_path):
                 submit_override(
@@ -1468,6 +1556,7 @@ def main():
                     setup_script=setup_script,
                     tags=tags,
                     output_dir=output_dir,
+                    enforce_preflight=enforce_preflight,
                 )
             else:
                 if selector:
@@ -1480,6 +1569,7 @@ def main():
                         setup_script=setup_script,
                         tags=tags,
                         output_dir=output_dir,
+                        enforce_preflight=enforce_preflight,
                     )
                 else:
                     submit_single(
@@ -1488,7 +1578,7 @@ def main():
                         setup_script=setup_script,
                         tags=tags,
                         output_dir=output_dir,
-                        enforce_preflight=not (mock_mode or is_dry_run),
+                        enforce_preflight=enforce_preflight,
                     )
     except Exception as e:
         # Restore subprocess.run etc. before we exit so in-process test

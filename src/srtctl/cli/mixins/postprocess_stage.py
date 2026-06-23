@@ -129,9 +129,15 @@ class PostProcessStageMixin:
         At submit time, config.yaml, sbatch_script.sh, and {job_id}.json are saved
         to outputs/{job_id}/, but S3 syncs outputs/{job_id}/logs/. This copies them
         into logs/ so they get uploaded alongside benchmark results and worker logs.
+
+        Override/zip submissions also write a resolved runtime config next to the
+        source as config_{suffix}.yaml (or config_resolved.yaml). Glob all
+        config*.yaml files so the actually-executed resolved config is uploaded
+        too, not just the unresolved source config.yaml.
         """
         output_dir = self.runtime.log_dir.parent
-        files_to_copy = ["config.yaml", "sbatch_script.sh", f"{self.runtime.job_id}.json", GIT_STATE_FILENAME]
+        config_files = sorted(p.name for p in output_dir.glob("config*.yaml"))
+        files_to_copy = [*config_files, "sbatch_script.sh", f"{self.runtime.job_id}.json", GIT_STATE_FILENAME]
         for name in files_to_copy:
             src = output_dir / name
             if not src.exists():
@@ -436,6 +442,7 @@ export PYTHONPATH={q_root}
                 container_image="python:3.11",
                 container_mounts={self.runtime.log_dir: Path("/logs")},
                 env_to_set=env,
+                het_group=self.runtime.nodes.het_group_for(self.runtime.nodes.head),
             )
             proc.wait(timeout=600)  # 10 min timeout for install + parse + full sync
 
@@ -588,6 +595,7 @@ echo "AI analysis complete."
                 container_image="python:3.11",
                 container_mounts={self.runtime.log_dir: Path("/logs")},
                 env_to_set=env_to_set,
+                het_group=self.runtime.nodes.het_group_for(self.runtime.nodes.head),
             )
 
             # Wait for completion with timeout (15 minutes for install + analysis)

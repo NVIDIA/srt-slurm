@@ -189,6 +189,14 @@ class ClusterConfig:
     use_gpus_per_node_directive: bool = True
     use_segment_sbatch_directive: bool = True
     use_exclusive_sbatch_directive: bool = False
+    # Default for ``ResourceConfig.het_jobs`` when the recipe doesn't set it.
+    # When True (and recipe doesn't override), the prefill side and decode side
+    # are submitted as two SLURM heterogeneous-job components, each with its
+    # own ``--segment``. Lets asymmetric layouts (e.g. prefill 12 + decode 10
+    # nodes on GB200/GB300) preserve NVL72 affinity per side.
+    use_het_jobs: bool = False
+    default_sbatch_directives: dict[str, str] | None = None
+    default_health_check: dict[str, int] | None = None
     srtctl_root: str | None = None
     output_dir: str | None = None  # Custom output directory for job logs
     model_paths: dict[str, str] | None = None
@@ -448,6 +456,26 @@ class IdentityConfig:
 
 
 @dataclass(frozen=True)
+class HetComponent:
+    """One component of a SLURM heterogeneous job.
+
+    A het job is submitted as multiple `#SBATCH` blocks separated by
+    `#SBATCH hetjob`. SLURM places each component within a single topology
+    segment, so we get per-side NVL72 affinity. At runtime each component
+    exposes its own `SLURM_JOB_NODELIST_HET_GROUP_<group>`, and worker srun
+    calls target a component with `--het-group=<group>`.
+    """
+
+    name: Literal["prefill", "decode"]
+    group: int
+    nodes: int
+    segment: int
+    gpus_per_node: int
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
 class ResourceConfig:
     """Resource allocation configuration."""
 
@@ -463,6 +491,18 @@ class ResourceConfig:
     # Aggregated mode
     agg_nodes: int | None = None
     agg_workers: int | None = None
+
+    # If True, place each partial-node worker on its own node instead of
+    # packing multiple onto the same node. Caller must reserve enough nodes
+    # (e.g. set decode_nodes=decode_workers when gpus_per_decode<gpus_per_node).
+    spread_workers: bool = False
+
+    # SLURM heterogeneous-job opt-in. Tri-state: None defers to the cluster
+    # default `use_het_jobs` on ClusterConfig; True/False overrides per recipe.
+    # When effectively True (and we are in disaggregated mode), the prefill and
+    # decode sides are submitted as two het components each with their own
+    # `--segment`. See HetComponent above and docs/slurm-faq.md.
+    het_jobs: bool | None = None
 
     # Explicit GPUs per worker (override computed values)
     # Use data_key to map from YAML field names to internal attribute names
@@ -563,6 +603,46 @@ class ResourceConfig:
         """Total GPUs used by all decode workers."""
         return self.num_decode * self.gpus_per_decode
 
+    def het_components(
+        self,
+        *,
+        infra_dedicated: bool,
+        cluster_default: bool = False,
+    ) -> tuple[HetComponent, HetComponent] | None:
+        """Return the (prefill, decode) het components, or None when het is off.
+
+        Het is enabled when ``self.het_jobs`` is True, or when it is None and
+        ``cluster_default`` is True. Only valid in disaggregated mode. Group 0
+        is prefill (folds in the dedicated infra node when present); group 1 is
+        decode. Segment matches each component's node count, so each side lands
+        in its own topology segment (NVL72 domain on GB200/GB300).
+
+        Pass ``cluster_default=get_srtslurm_setting("use_het_jobs", False)``
+        from callers that have access to the cluster config; schema.py cannot
+        import from core.config without a cycle.
+        """
+        enabled = self.het_jobs if self.het_jobs is not None else cluster_default
+        if not enabled or not self.is_disaggregated:
+            return None
+        prefill_nodes = (self.prefill_nodes or 0) + (1 if infra_dedicated else 0)
+        decode_nodes = self.decode_nodes or 0
+        return (
+            HetComponent(
+                name="prefill",
+                group=0,
+                nodes=prefill_nodes,
+                segment=prefill_nodes,
+                gpus_per_node=self.gpus_per_node,
+            ),
+            HetComponent(
+                name="decode",
+                group=1,
+                nodes=decode_nodes,
+                segment=decode_nodes,
+                gpus_per_node=self.gpus_per_node,
+            ),
+        )
+
     Schema: ClassVar[type[Schema]] = Schema
 
 
@@ -586,7 +666,7 @@ class BenchmarkConfig:
     osl: int | None = None
     concurrencies: list[int] | str | None = None
     req_rate: str | int | None = "inf"
-    sweep: Annotated[SweepConfig, SweepConfigField()] | None = None
+    sweep: Annotated[SweepConfig, SweepConfigField(allow_none=True, load_default=None, dump_default=None)] | None = None
     # Accuracy benchmark fields
     num_examples: int | None = None
     max_tokens: int | None = None
@@ -1043,9 +1123,9 @@ def _live_source_install_for_top_of_tree() -> str:
         "if ! command -v cargo &> /dev/null || ! command -v maturin &> /dev/null; then "
         "apt-get update -qq && apt-get install -y -qq git curl libclang-dev protobuf-compiler > /dev/null 2>&1 && "
         "if ! command -v cargo &> /dev/null; then "
-        "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && source $HOME/.cargo/env; fi && "
-        "if ! command -v maturin &> /dev/null; then "
-        "pip install --break-system-packages maturin; fi; fi && "
+        "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && source $HOME/.cargo/env; fi; fi && "
+        # Force-reinstall maturin: see _hash_cached_source_install.
+        "pip install --break-system-packages --force-reinstall --quiet maturin && "
         "ORIG_DIR=$(pwd) && rm -rf /tmp/dynamo_build && mkdir -p /tmp/dynamo_build && cd /tmp/dynamo_build && "
         "git clone https://github.com/ai-dynamo/dynamo.git && "
         "cd dynamo && "
@@ -1313,6 +1393,29 @@ class SrtConfig:
         self._validate_profiling()
         self._validate_telemetry()
         self._validate_mooncake_kv_store()
+        self._validate_het_jobs()
+
+    def _validate_het_jobs(self):
+        """When ``resources.het_jobs`` is set to True, enforce supported shape.
+
+        Validation runs only when the per-recipe override is explicitly True;
+        a cluster-level default still in effect (recipe None) is permissive at
+        load-time and resolved later by callers that pass the cluster default
+        into ``het_components()``. This keeps a single recipe that disables het
+        via ``het_jobs: false`` from tripping on a cluster default.
+        """
+        if self.resources.het_jobs is not True:
+            return
+        if not self.resources.is_disaggregated:
+            raise ValidationError(
+                "het_jobs=true requires a disaggregated layout (set resources.prefill_nodes and resources.decode_nodes)"
+            )
+        if (self.resources.prefill_nodes or 0) < 1 or (self.resources.decode_nodes or 0) < 1:
+            raise ValidationError("het_jobs=true requires prefill_nodes >= 1 and decode_nodes >= 1")
+        if self.backend_type != "sglang":
+            raise ValidationError(
+                f"het_jobs=true is only supported on the sglang backend; got backend.type={self.backend_type!r}"
+            )
 
     def _validate_mooncake_kv_store(self):
         """Catch the common misconfiguration: mooncake_kv_store set but the
@@ -1472,6 +1575,21 @@ class SrtConfig:
         """Get the served model name from backend config or model path."""
         default = Path(self.model.path).name
         return self.backend.get_served_model_name(default)
+
+    @property
+    def total_nodes(self) -> int:
+        """Worker node count, adjusted for backend-specific packing."""
+        if isinstance(self.backend, VLLMProtocol) and self.backend.should_colocate_prefill_decode(
+            num_prefill=self.resources.num_prefill,
+            num_decode=self.resources.num_decode,
+            num_agg=self.resources.num_agg,
+            gpus_per_prefill=self.resources.gpus_per_prefill,
+            gpus_per_decode=self.resources.gpus_per_decode,
+            gpus_per_agg=self.resources.gpus_per_agg,
+            gpus_per_node=self.resources.gpus_per_node,
+        ):
+            return 1
+        return self.resources.total_nodes
 
     @property
     def backend_type(self) -> str:

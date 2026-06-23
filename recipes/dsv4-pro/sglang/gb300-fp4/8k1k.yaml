@@ -1,0 +1,211 @@
+base:
+  name: dsv4-pro-gb300-fp4_8k1k_disagg_dep16
+
+  slurm:
+    time_limit: "04:00:00"
+
+  sbatch_directives:
+    cpus-per-task: '144'
+    mem: '0'
+
+  dynamo:
+    hash: "34d55a596fb8d3d44daefe425ec1e303131f4d2c"
+    install: true
+
+  frontend:
+    type: dynamo
+    enable_multiple_frontends: true
+    num_additional_frontends: 8
+    env:
+      DYN_ROUTER_LOAD_BLOCK_SIZE: "1"
+    args:
+      router-mode: "kv"
+      router-kv-overlap-score-weight: 0
+      router-queue-threshold: 64
+      router-temperature: 0.5
+      no-kv-events: true
+
+  model:
+    path: dsv4-pro
+    container: "sglang-nightly-dev-cu13-20260510"
+    precision: fp4
+
+  resources:
+    gpu_type: gb300
+    gpus_per_node: 4
+
+  environment:
+    RANDOM_NUM_WORKERS: "96"
+
+  backend:
+    type: sglang
+
+    prefill_environment:
+      PYTHONUNBUFFERED: '1'
+      SGLANG_DG_CACHE_DIR: /configs/deepgemm_cache
+      SGLANG_RADIX_DISABLE_REUSE: '1'
+      SGLANG_JIT_DEEPGEMM_FAST_WARMUP: '1'
+      SGLANG_DEFAULT_THINKING: '1'
+      SGLANG_DSV4_REASONING_EFFORT: max
+      SGLANG_OPT_SWA_SPLIT_LEAF_ON_INSERT: '1'
+      SGLANG_OPT_SWA_EVICT_DROP_PAGE_MARGIN: '1'
+      SGLANG_OPT_USE_JIT_NORM: '1'
+      SGLANG_OPT_USE_JIT_INDEXER_METADATA: '1'
+      SGLANG_OPT_USE_TOPK_V2: '1'
+      SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2: '1'
+      SGLANG_OPT_USE_DEEPGEMM_MEGA_MOE: '1'
+      SGLANG_OPT_FIX_HASH_MEGA_MOE: '1'
+      SGLANG_OPT_USE_FAST_MASK_EP: '1'
+      SGLANG_OPT_FIX_MEGA_MOE_MEMORY: '1'
+      SGLANG_OPT_DEEPGEMM_MEGA_MOE_NUM_MAX_TOKENS_PER_RANK: "8192"
+      SGLANG_OPT_FIX_NEXTN_MEGA_MOE: '1'
+      SGLANG_OPT_USE_ONLINE_COMPRESS: "1"
+      SGLANG_OPT_FP8_WO_A_GEMM: '1'
+      SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK: '0'
+      NCCL_MNNVL_ENABLE: '1'
+      NCCL_CUMEM_ENABLE: '1'
+      SGLANG_MOONCAKE_CUSTOM_MEM_POOL: 'True'
+      MC_FORCE_MNNVL: '1'
+      SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT: '100000'
+      SGLANG_DISAGGREGATION_WAITING_TIMEOUT: '100000'
+      SGLANG_OPT_SWA_RELEASE_LEAF_LOCK_AFTER_WINDOW: '1'
+      DYN_SKIP_SGLANG_LOG_FORMATTING: '1'
+      SGLANG_LOG_FORWARD_ITERS: '1'
+      SGLANG_LOG_MS: '1'
+      SGLANG_REQUEST_STATE_WAIT_TIMEOUT: '60'
+      DYN_LOG: 'info,dynamo_runtime::pipeline::network::ingress::push_handler=warn'
+      # SGLANG_REQ_LIFECYCLE_LOG: "1"
+
+    decode_environment:
+      PYTHONUNBUFFERED: '1'
+      SGLANG_DG_CACHE_DIR: /configs/deepgemm_cache
+      SGLANG_RADIX_DISABLE_REUSE: '1'
+      SGLANG_JIT_DEEPGEMM_FAST_WARMUP: '1'
+      SGLANG_DEFAULT_THINKING: '1'
+      SGLANG_DSV4_REASONING_EFFORT: max
+      SGLANG_OPT_SWA_SPLIT_LEAF_ON_INSERT: '1'
+      SGLANG_OPT_SWA_EVICT_DROP_PAGE_MARGIN: '1'
+      SGLANG_OPT_USE_JIT_NORM: '1'
+      SGLANG_OPT_USE_JIT_INDEXER_METADATA: '1'
+      SGLANG_OPT_USE_TOPK_V2: '1'
+      SGLANG_OPT_USE_DEEPGEMM_MEGA_MOE: '1'
+      SGLANG_OPT_FIX_HASH_MEGA_MOE: '1'
+      SGLANG_OPT_USE_FAST_MASK_EP: '1'
+      SGLANG_OPT_FIX_MEGA_MOE_MEMORY: '1'
+      SGLANG_OPT_DEEPGEMM_MEGA_MOE_NUM_MAX_TOKENS_PER_RANK: '1280'
+      SGLANG_OPT_FIX_NEXTN_MEGA_MOE: '1'
+      SGLANG_OPT_USE_ONLINE_COMPRESS: "1"
+      SGLANG_OPT_FP8_WO_A_GEMM: '1'
+      SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK: '0'
+      NCCL_MNNVL_ENABLE: '1'
+      NCCL_CUMEM_ENABLE: '1'
+      SGLANG_MOONCAKE_CUSTOM_MEM_POOL: 'True'
+      SGLANG_CLIP_MAX_NEW_TOKENS_ESTIMATION: "8"
+      MC_FORCE_MNNVL: '1'
+      SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT: '100000'
+      SGLANG_DISAGGREGATION_WAITING_TIMEOUT: '100000'
+      SGLANG_OPT_SWA_RELEASE_LEAF_LOCK_AFTER_WINDOW: '1'
+      DYN_SKIP_SGLANG_LOG_FORMATTING: '1'
+      SGLANG_LOG_FORWARD_ITERS: '1'
+      SGLANG_LOG_MS: '1'
+      SGLANG_REQUEST_STATE_WAIT_TIMEOUT: '60'
+      DYN_LOG: 'info,dynamo_runtime::pipeline::network::ingress::push_handler=warn'
+      # SGLANG_REQ_LIFECYCLE_LOG: "1"
+      # SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2 intentionally NOT set: CAR_V2
+      # is single-node only and corrupts results in 2-node decode setups.
+
+    sglang_config:
+      prefill:
+        served-model-name: deepseek-ai/DeepSeek-V4-Pro
+        trust-remote-code: true
+        watchdog-timeout: 86400
+        # disable-radix-cache: true # NOTE try to enable radix cache
+
+        # Tokenizer
+        skip-tokenizer-init: true
+        stream-interval: 60
+        # tokenizer-worker-num: 16  # need this if we run tokenizer
+
+        # Parallel
+        tensor-parallel-size: 4
+        data-parallel-size: 4
+        expert-parallel-size: 4
+        # dp
+        enable-dp-attention: true
+        moe-dense-tp-size: 1
+        enable-dp-lm-head: true
+        # ep
+        moe-a2a-backend: deepep
+        deepep-config: '{"normal_dispatch":{"num_sms":88,"num_max_nvl_chunked_send_tokens":28,"num_max_nvl_chunked_recv_tokens":512},"normal_combine": {"num_sms":88,"num_max_nvl_chunked_send_tokens":16,"num_max_nvl_chunked_recv_tokens":512}}'
+
+        # Disagg
+        disaggregation-mode: prefill
+        disaggregation-transfer-backend: mooncake
+
+        # Size
+        mem-fraction-static: 0.9
+        max-running-requests: 512
+        cuda-graph-max-bs: 512
+        chunked-prefill-size: 32768
+
+      decode:
+        served-model-name: deepseek-ai/DeepSeek-V4-Pro
+        trust-remote-code: true
+        watchdog-timeout: 86400
+        # disable-radix-cache: true # NOTE try to enable radix cache
+
+        # Tokenizer
+        skip-tokenizer-init: true
+        stream-interval: 60
+
+        # Parallel
+        tensor-parallel-size: 16
+        data-parallel-size: 16
+        expert-parallel-size: 16
+        # dp
+        enable-dp-attention: true
+        enable-dp-lm-head: true
+        moe-dense-tp-size: 1
+        # ep
+        moe-a2a-backend: deepep
+        deepep-config: '{"normal_dispatch":{"num_sms":88,"num_max_nvl_chunked_send_tokens":28,"num_max_nvl_chunked_recv_tokens":512},"normal_combine": {"num_sms":88,"num_max_nvl_chunked_send_tokens":16,"num_max_nvl_chunked_recv_tokens":512}}'
+
+        # Disagg
+        disaggregation-mode: decode
+        disaggregation-transfer-backend: mooncake
+        disaggregation-decode-polling-interval: 8
+
+        # Size
+        mem-fraction-static: 0.94
+        swa-full-tokens-ratio: 0.20
+        context-length: 9216
+        max-running-requests: 18432
+        cuda-graph-max-bs: 1280
+
+  benchmark:
+    type: "sa-bench"
+    isl: 8192
+    osl: 1024
+    random_range_ratio: 0.8
+    num_prompts_mult: 10
+    req_rate: "inf"
+    custom_tokenizer: "sa_bench_tokenizers.sglang_deepseek_v4.SGLangDeepseekV4Tokenizer"
+    use_chat_template: false
+
+zip_override_8k1k_hightpt:
+  resources:
+    prefill_nodes:   [15, 14, 12, 10,  8]
+    prefill_workers: [15, 14, 12, 10,  8]
+    decode_nodes:    [3,   4,  6,  8, 10]
+    decode_workers: 1
+  backend:
+    sglang_config:
+      decode:
+        tensor-parallel-size: [12, 16, 24, 32, 40]
+        data-parallel-size:   [12, 16, 24, 32, 40]
+        expert-parallel-size: [12, 16, 24, 32, 40]
+        ep-num-redundant-experts: [0, 0, 0, 0, 16]
+        max-running-requests: 18432
+        cuda-graph-max-bs: 1280
+  benchmark:
+    concurrencies: ["12000", "8192", "3000", "2500", "2048"]

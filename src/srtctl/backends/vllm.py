@@ -133,6 +133,7 @@ class VLLMProtocol:
         backend:
           type: vllm
           connector: nixl  # translated to --kv-transfer-config JSON
+          allow_prefill_decode_colocation: true  # pack P/D on one node when all workers fit
           prefill_environment:
             PYTHONUNBUFFERED: "1"
           vllm_config:
@@ -165,6 +166,11 @@ class VLLMProtocol:
     # infra node and auto-injects MOONCAKE_MASTER / MOONCAKE_TE_META_DATA_SERVER
     # / MOONCAKE_LOCAL_HOSTNAME on every vLLM worker.
     mooncake_kv_store: VLLMMooncakeKVStoreConfig | None = None
+
+    # Allow prefill and decode workers to share one node when the combined GPU
+    # request fits within gpus_per_node. Defaults off to preserve existing P/D
+    # node separation.
+    allow_prefill_decode_colocation: bool = False
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
@@ -268,6 +274,26 @@ class VLLMProtocol:
                         return name
         return default
 
+    def should_colocate_prefill_decode(
+        self,
+        *,
+        num_prefill: int,
+        num_decode: int,
+        num_agg: int,
+        gpus_per_prefill: int,
+        gpus_per_decode: int,
+        gpus_per_agg: int,
+        gpus_per_node: int,
+    ) -> bool:
+        """Whether all vLLM workers should be packed onto one node."""
+        if not self.allow_prefill_decode_colocation:
+            return False
+        if num_prefill <= 0 or num_decode <= 0 or gpus_per_node <= 0:
+            return False
+
+        total_worker_gpus = num_prefill * gpus_per_prefill + num_decode * gpus_per_decode + num_agg * gpus_per_agg
+        return total_worker_gpus <= gpus_per_node
+
     def allocate_endpoints(
         self,
         num_prefill: int,
@@ -278,6 +304,7 @@ class VLLMProtocol:
         gpus_per_agg: int,
         gpus_per_node: int,
         available_nodes: Sequence[str],
+        spread_workers: bool = False,
     ) -> list[Endpoint]:
         """Allocate endpoints to nodes."""
         from srtctl.core.topology import allocate_endpoints
@@ -291,6 +318,16 @@ class VLLMProtocol:
             gpus_per_agg=gpus_per_agg,
             gpus_per_node=gpus_per_node,
             available_nodes=available_nodes,
+            spread_workers=spread_workers,
+            allow_prefill_decode_colocation=self.should_colocate_prefill_decode(
+                num_prefill=num_prefill,
+                num_decode=num_decode,
+                num_agg=num_agg,
+                gpus_per_prefill=gpus_per_prefill,
+                gpus_per_decode=gpus_per_decode,
+                gpus_per_agg=gpus_per_agg,
+                gpus_per_node=gpus_per_node,
+            ),
         )
 
     def _is_dp_mode(self, mode: WorkerMode) -> bool:
@@ -365,6 +402,13 @@ class VLLMProtocol:
                 # DP+EP mode: one process per GPU
                 # Each process gets a single GPU and a unique dp_rank
                 dp_rank = 0
+                # Allocate a unique DP RPC port for this endpoint's leader node
+                dp_rpc_port = port_allocator.next_dp_rpc_port(endpoint.leader_node)
+                # Allocate a single NIXL base port for this endpoint.
+                # vLLM internally computes: actual_port = base + data_parallel_rank
+                # so all DP ranks in the endpoint share the same base port.
+                dp_size = self._get_dp_size(endpoint.mode) or len(endpoint.gpu_indices)
+                nixl_base_port = port_allocator.next_nixl_port_block(dp_size)
                 for _node_rank, node in enumerate(endpoint.nodes):
                     for gpu_idx in sorted(endpoint.gpu_indices):
                         is_leader = dp_rank == 0
@@ -375,7 +419,7 @@ class VLLMProtocol:
                             else None
                         )
                         kv_events_port = port_allocator.next_kv_events_port()
-                        nixl_port = port_allocator.next_nixl_port()
+                        nixl_port = nixl_base_port
 
                         processes.append(
                             Process(
@@ -389,6 +433,7 @@ class VLLMProtocol:
                                 bootstrap_port=bootstrap_port,
                                 kv_events_port=kv_events_port,
                                 nixl_port=nixl_port,
+                                dp_rpc_port=dp_rpc_port,
                             )
                         )
                         current_sys_port += 1
@@ -472,10 +517,16 @@ class VLLMProtocol:
             # DP+EP mode: each GPU runs its own process
             # process.node_rank is the dp_rank (set in endpoints_to_processes)
             dp_rank = process.node_rank
-            dp_rpc_port = config.pop("data-parallel-rpc-port", None) or config.pop(
-                "data_parallel_rpc_port",
-                VLLM_DATA_PARALLEL_RPC_PORT,
+            # Use the per-endpoint dp_rpc_port allocated by NodePortAllocator
+            # (avoids port collisions when multiple endpoints share a node)
+            dp_rpc_port = (
+                process.dp_rpc_port
+                or config.pop("data-parallel-rpc-port", None)
+                or config.pop("data_parallel_rpc_port", VLLM_DATA_PARALLEL_RPC_PORT)
             )
+            # Pop from config so it doesn't get added again by _config_to_cli_args
+            config.pop("data-parallel-rpc-port", None)
+            config.pop("data_parallel_rpc_port", None)
 
             cmd.extend(
                 [

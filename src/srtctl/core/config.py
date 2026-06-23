@@ -114,6 +114,25 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
         slurm["time_limit"] = cluster_config["default_time_limit"]
         logger.debug(f"Applied default time_limit: {slurm['time_limit']}")
 
+    default_sbatch_directives = cluster_config.get("default_sbatch_directives")
+    if isinstance(default_sbatch_directives, dict):
+        sbatch_directives = config.setdefault("sbatch_directives", {})
+        for key, value in default_sbatch_directives.items():
+            sbatch_directives.setdefault(key, value)
+        logger.debug("Applied default sbatch_directives: %s", default_sbatch_directives)
+
+    # Apply cluster-level het-job default. Without this, a recipe with
+    # `het_jobs: None` would defer the cluster default at render-time but skip
+    # SrtConfig validation (which only fires on `het_jobs is True`). Writing
+    # the cluster value into the resolved recipe ensures __post_init__ catches
+    # bad combinations (het + trtllm, het + agg, ...) at load time.
+    resources = config.get("resources")
+    if isinstance(resources, dict) and resources.get("het_jobs") is None:
+        cluster_het = cluster_config.get("use_het_jobs")
+        if cluster_het is not None:
+            resources["het_jobs"] = bool(cluster_het)
+            logger.debug("Applied cluster use_het_jobs default: %s", cluster_het)
+
     # Resolve model path alias
     model = config.get("model", {})
     model_path = model.get("path", "")
@@ -137,6 +156,10 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
     if "reporting" not in config and cluster_config.get("reporting"):
         config["reporting"] = cluster_config["reporting"]
         logger.debug("Applied cluster reporting config")
+
+    if "health_check" not in config and cluster_config.get("default_health_check"):
+        config["health_check"] = cluster_config["default_health_check"]
+        logger.debug("Applied default_health_check: %s", config["health_check"])
 
     # Resolve frontend nginx_container alias
     frontend = config.get("frontend", {})

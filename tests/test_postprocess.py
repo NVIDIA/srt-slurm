@@ -749,6 +749,26 @@ class TestCopyConfigToLogs:
         assert (log_dir / "config.yaml").exists()
         assert (log_dir / "config.yaml").read_text() == "name: test-config\n"
 
+    def test_copies_resolved_override_config(self, tmp_path):
+        """Test resolved override/zip configs (config_{suffix}.yaml) are copied too.
+
+        Override/zip submissions write the unresolved source as config.yaml and the
+        actually-executed resolved variant as config_{suffix}.yaml. Both must reach
+        the log dir so the resolved config is uploaded to S3, not just the source.
+        """
+        mixin, log_dir = self._create_mixin_with_runtime(tmp_path)
+
+        (tmp_path / "config.yaml").write_text("base:\n  name: test\n")
+        (tmp_path / "config_tp_0.yaml").write_text("name: test\ntensor_parallel_size: 4\n")
+        (tmp_path / "config_resolved.yaml").write_text("name: test\nresolved: true\n")
+
+        mixin._copy_config_to_logs()
+
+        assert (log_dir / "config.yaml").exists()
+        assert (log_dir / "config_tp_0.yaml").exists()
+        assert (log_dir / "config_tp_0.yaml").read_text() == "name: test\ntensor_parallel_size: 4\n"
+        assert (log_dir / "config_resolved.yaml").exists()
+
     def test_copies_sbatch_script(self, tmp_path):
         """Test sbatch_script.sh is also copied."""
         mixin, log_dir = self._create_mixin_with_runtime(tmp_path)

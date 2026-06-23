@@ -1,0 +1,66 @@
+name: Release
+
+# pull_request_target (not pull_request): on a fork-PR merge, the plain
+# pull_request token is forced read-only and ignores `permissions:`, so
+# `gh release create` 403s. pull_request_target runs in the base-repo context
+# with a write-capable token. Safe here: we never check out or run PR code,
+# only call the GitHub API.
+on:
+  pull_request_target:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # need full tag history
+
+      - name: Compute next version
+        id: ver
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # "true" when the merged PR carries the new-feature label -> minor bump.
+          IS_FEATURE: ${{ contains(github.event.pull_request.labels.*.name, 'new-feature') }}
+        run: |
+          set -euo pipefail
+          # Bump from the HIGHEST existing GitHub Release (independent of the
+          # in-code version). A PR labeled "new-feature" bumps the MINOR and
+          # resets patch (v1.0.5 -> v1.1.0); otherwise the PATCH bumps
+          # (v1.0.5 -> v1.0.6). MAJOR is never bumped automatically -- publish a
+          # higher major by hand and the next merge continues from there.
+          # First run only (no release yet): seed v1.0.0.
+          latest=$(gh release list --limit 1000 --json tagName --jq '.[].tagName' | sort -V | tail -n1)
+          if [ -z "$latest" ]; then
+            next="v1.0.0"
+          else
+            core=${latest#v}; core=${core%%.post*}; core=${core%%-*}
+            IFS='.' read -r major minor patch <<< "$core"
+            if [ "$IS_FEATURE" = "true" ]; then
+              next="v${major}.$((minor + 1)).0"
+            else
+              next="v${major}.${minor}.$((patch + 1))"
+            fi
+          fi
+          echo "Latest release: ${latest:-none}  new-feature: $IS_FEATURE  Next: $next"
+          echo "tag=$next" >> "$GITHUB_OUTPUT"
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.ver.outputs.tag }}" \
+            --target "${{ github.event.pull_request.merge_commit_sha }}" \
+            --title "${{ steps.ver.outputs.tag }}" \
+            --generate-notes

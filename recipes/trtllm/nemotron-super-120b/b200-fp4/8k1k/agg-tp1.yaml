@@ -1,0 +1,51 @@
+name: "nemotron-super-120b-trtllm-agg-b200-tp1-8k1k"
+
+model:
+  path: "hf:nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4"
+  container: "nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:1.1.1"
+  precision: "fp4"
+
+dynamo:
+  install: false
+
+resources:
+  gpu_type: "b200"
+  gpus_per_node: 1
+  agg_nodes: 1
+  agg_workers: 1
+  gpus_per_agg: 1
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+
+backend:
+  type: trtllm
+
+  aggregated_environment:
+    PYTHONUNBUFFERED: "1"
+    DYN_HEALTH_CHECK_ENABLED: "false"
+    TRTLLM_ENABLE_PDL: "1"
+    TRTLLM_SERVER_DISABLE_GC: "1"
+    TRTLLM_WORKER_DISABLE_GC: "1"
+    TLLM_LOG_LEVEL: "INFO"
+
+  trtllm_config:
+    aggregated:
+      backend: "pytorch"
+      tensor_parallel_size: 1
+      moe_expert_parallel_size: 1
+      max_batch_size: 256
+      max_num_tokens: 20000
+      max_seq_len: 9216
+      trust_remote_code: true
+
+benchmark:
+  type: "sa-bench"
+  isl: 8192
+  osl: 1024
+  concurrencies: "256"
+  req_rate: "inf"
+  random_range_ratio: 0.8
+  num_prompts_mult: 10
+  num_warmup_mult: 2

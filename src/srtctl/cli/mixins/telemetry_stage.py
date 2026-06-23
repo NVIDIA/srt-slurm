@@ -45,8 +45,14 @@ class TelemetryStageMixin:
         nodelist: list[str],
         log_file: Path,
         default_command_template: str,
-    ) -> ManagedProcess:
-        """Start one exporter container across the requested nodes."""
+    ) -> list[ManagedProcess]:
+        """Start one exporter container across the requested nodes.
+
+        Under SLURM heterogeneous jobs the nodelist may span both het
+        components (prefill on group 0, decode on group 1). A single srun
+        cannot target multiple het components, so we split the launch into
+        one srun per group when needed.
+        """
         if exporter_config.command is None:
             cmd_str = default_command_template.format(port=exporter_config.port)
         elif "{port}" in exporter_config.command:
@@ -54,21 +60,41 @@ class TelemetryStageMixin:
         else:
             cmd_str = exporter_config.command
 
-        proc = start_srun_process(
-            command=shlex.split(cmd_str),
-            ntasks=len(nodelist),
-            nodelist=nodelist,
-            output=str(log_file),
-            container_image=exporter_config.container_image,
-            container_mounts=self.runtime.container_mounts,
-            srun_options=self.runtime.srun_options,
-        )
-        return ManagedProcess(
-            name=name,
-            popen=proc,
-            log_file=log_file,
-            node=",".join(nodelist),
-        )
+        if self.runtime.nodes.het:
+            groups: dict[int, list[str]] = {}
+            for node in nodelist:
+                g = self.runtime.nodes.het_group_for(node)
+                if g is None:
+                    raise RuntimeError(f"node {node!r} not in any het component")
+                groups.setdefault(g, []).append(node)
+            chunks = sorted(groups.items())
+        else:
+            chunks = [(-1, nodelist)]  # sentinel: no --het-group
+
+        managed: list[ManagedProcess] = []
+        for group_id, nodes in chunks:
+            het_group = group_id if group_id >= 0 else None
+            chunk_log = log_file if len(chunks) == 1 else log_file.with_suffix(f".g{group_id}.out")
+            proc = start_srun_process(
+                command=shlex.split(cmd_str),
+                ntasks=len(nodes),
+                nodelist=nodes,
+                output=str(chunk_log),
+                container_image=exporter_config.container_image,
+                container_mounts=self.runtime.container_mounts,
+                srun_options=self.runtime.srun_options,
+                het_group=het_group,
+            )
+            chunk_name = name if len(chunks) == 1 else f"{name}_g{group_id}"
+            managed.append(
+                ManagedProcess(
+                    name=chunk_name,
+                    popen=proc,
+                    log_file=chunk_log,
+                    node=",".join(nodes),
+                )
+            )
+        return managed
 
     def start_telemetry(self) -> list[ManagedProcess]:
         """Start the configured telemetry provider."""
@@ -99,7 +125,7 @@ class TelemetryStageMixin:
 
         worker_nodes = sorted({process.node for process in self.backend_processes})
         processes: list[ManagedProcess] = []
-        processes.append(
+        processes.extend(
             self._start_exporter_container(
                 exporter_config=telemetry.dcgm_exporter,
                 name="telemetry_dcgm_exporter",
@@ -108,7 +134,7 @@ class TelemetryStageMixin:
                 default_command_template="dcgm-exporter --collect-interval=100 --address :{port}",
             )
         )
-        processes.append(
+        processes.extend(
             self._start_exporter_container(
                 exporter_config=telemetry.node_exporter,
                 name="telemetry_node_exporter",
@@ -149,6 +175,7 @@ class TelemetryStageMixin:
                     container_mounts=scraper_mounts,
                     env_to_set=env_to_set,
                     srun_options=self.runtime.srun_options,
+                    het_group=self.runtime.nodes.het_group_for(self.runtime.nodes.head),
                 ),
                 log_file=self.runtime.log_dir / "telemetry.out",
                 node=self.runtime.nodes.head,
