@@ -38,7 +38,6 @@ backend:
   connector: null
 
   prefill_environment:
-    UCX_TLS: "cuda_ipc,cuda_copy,sm,self,tcp"
     VLLM_ENGINE_READY_TIMEOUT_S: "3600"
     VLLM_FLOAT32_MATMUL_PRECISION: "high"
     VLLM_FLASHINFER_ALLREDUCE_BACKEND: "mnnvl"
@@ -48,7 +47,6 @@ backend:
     NCCL_NVLS_ENABLE: "1"
 
   decode_environment:
-    UCX_TLS: "cuda_ipc,cuda_copy,sm,self,tcp"
     VLLM_ENGINE_READY_TIMEOUT_S: "3600"
     VLLM_FLOAT32_MATMUL_PRECISION: "high"
     VLLM_FLASHINFER_ALLREDUCE_BACKEND: "mnnvl"
@@ -60,6 +58,7 @@ backend:
   vllm_config:
     prefill:
       kv-transfer-config: '{"kv_connector": "NixlConnector", "kv_role": "kv_both"}'
+      attention-config: '{"backend": "FLASHINFER", "use_trtllm_attention": true, "indexer_kv_dtype": "fp8"}'
       tensor-parallel-size: 1
       data-parallel-size: 2
       data-parallel-rpc-port: 13345
@@ -77,6 +76,7 @@ backend:
 
     decode:
       kv-transfer-config: '{"kv_connector": "NixlConnector", "kv_role": "kv_both"}'
+      attention-config: '{"backend": "FLASHINFER", "use_trtllm_attention": true, "indexer_kv_dtype": "fp8"}'
       tensor-parallel-size: 1
       data-parallel-size: 4
       data-parallel-rpc-port: 13345

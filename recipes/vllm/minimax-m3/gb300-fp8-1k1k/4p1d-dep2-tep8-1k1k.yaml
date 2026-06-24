@@ -5,8 +5,8 @@ name: "minimax-m3-vllm-disagg-gb300-4p1d-dep2-tep8-fp8-1k1k"
 # Nodes: 2 prefill + 2 decode (+ head/infra).
 
 model:
-  path: "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/MiniMaxAI_MiniMax-M3-MXFP8"
-  container: "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/vllm-openai-minimax-m3-perf-arm64-13-0-1-7a67223.sqsh"
+  path: "/lustre/fsw/coreai_comparch_inferencex/rihuo/MiniMaxAI_MiniMax-M3-MXFP8"
+  container: "/lustre/fsw/coreai_comparch_inferencex/rihuo/vllm-openai-minimax-m3-perf-arm64-13-0-1-7a67223.sqsh"
   precision: "fp8"
 
 setup_script: "minimax-m3-gb300-vllm-fixes.sh"
@@ -38,7 +38,6 @@ backend:
   connector: null
 
   prefill_environment:
-    UCX_TLS: "cuda_ipc,cuda_copy,sm,self,tcp"
     VLLM_ENGINE_READY_TIMEOUT_S: "3600"
     VLLM_FLOAT32_MATMUL_PRECISION: "high"
     VLLM_FLASHINFER_ALLREDUCE_BACKEND: "mnnvl"
@@ -48,7 +47,6 @@ backend:
     NCCL_NVLS_ENABLE: "1"
 
   decode_environment:
-    UCX_TLS: "cuda_ipc,cuda_copy,sm,self,tcp"
     VLLM_ENGINE_READY_TIMEOUT_S: "3600"
     VLLM_FLOAT32_MATMUL_PRECISION: "high"
     VLLM_FLASHINFER_ALLREDUCE_BACKEND: "mnnvl"
@@ -60,6 +58,7 @@ backend:
   vllm_config:
     prefill:
       kv-transfer-config: '{"kv_connector": "NixlConnector", "kv_role": "kv_both"}'
+      attention-config: '{"backend": "FLASHINFER", "use_trtllm_attention": true, "indexer_kv_dtype": "fp8"}'
       tensor-parallel-size: 1
       data-parallel-size: 2
       data-parallel-rpc-port: 13345
@@ -71,12 +70,13 @@ backend:
       max-model-len: 2304
       language-model-only: true
       kv-cache-dtype: fp8
-      stream-interval: 100
+      stream-interval: 32
       max-cudagraph-capture-size: 2048
       max-num-batched-tokens: 2048
 
     decode:
       kv-transfer-config: '{"kv_connector": "NixlConnector", "kv_role": "kv_both"}'
+      attention-config: '{"backend": "FLASHINFER", "use_trtllm_attention": true, "indexer_kv_dtype": "fp8"}'
       tensor-parallel-size: 8
       enable-expert-parallel: true
       trust-remote-code: true
@@ -86,7 +86,7 @@ backend:
       max-model-len: 2304
       language-model-only: true
       kv-cache-dtype: fp8
-      stream-interval: 100
+      stream-interval: 32
       max-num-seqs: 4096
       max-num-batched-tokens: 16384
       max-cudagraph-capture-size: 8196
