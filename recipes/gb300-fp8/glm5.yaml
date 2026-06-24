@@ -40,7 +40,6 @@ base:
       SGLANG_MOONCAKE_CUSTOM_MEM_POOL: "True"
       SGLANG_USE_MESSAGE_QUEUE_BROADCASTER: "0"
       SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK: "1"
-      DYN_REQUEST_PLANE: "nats"
 
     decode_environment:
       TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: "1800"
@@ -56,7 +55,6 @@ base:
       SGLANG_MOONCAKE_CUSTOM_MEM_POOL: "True"
       SGLANG_USE_MESSAGE_QUEUE_BROADCASTER: "0"
       SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK: "1"
-      DYN_REQUEST_PLANE: "nats"
       # DeepEP per-rank dispatch buffer; must be >= ceil(cuda_graph_max_bs / dp_size).
       # Default 128 overflows with large DP + batch (e.g. 4096/24 ~= 171 > 128). Limit 1024.
       SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK: "512"

@@ -45,7 +45,6 @@ base:
       MC_FORCE_MNNVL: "1"
       NCCL_MNNVL_ENABLE: "1"
       NCCL_CUMEM_ENABLE: "1"
-      DYN_REQUEST_PLANE: nats
     decode_environment:
       TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: "1800"
       PYTHONUNBUFFERED: "1"
@@ -61,7 +60,6 @@ base:
       MC_FORCE_MNNVL: "1"
       NCCL_MNNVL_ENABLE: "1"
       NCCL_CUMEM_ENABLE: "1"
-      DYN_REQUEST_PLANE: nats
     sglang_config:
       prefill:
         # Model configuration
