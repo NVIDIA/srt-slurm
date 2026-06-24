@@ -27,7 +27,7 @@ resources:
   decode_nodes: 1
   prefill_workers: 1
   decode_workers: 1
-  gpus_per_prefill: 2
+  gpus_per_prefill: 4
   gpus_per_decode: 4
 
 frontend:
