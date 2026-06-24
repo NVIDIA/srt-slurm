@@ -249,6 +249,9 @@ def start_srun_process(
         if bash_preamble:
             bash_parts.append(bash_preamble)
 
+        # Unset variables that may interfere with container networking
+        bash_parts.append("unset UCX_TLS")
+
         # Export environment variables
         if env_to_set:
             for name, value in env_to_set.items():
