@@ -457,6 +457,93 @@ class TestServedModelName:
         assert config.served_model_name == "Qwen3-32B"
 
 
+class TestDefaultEnvironment:
+    """Tests for cluster-level default_environment merging."""
+
+    def test_cluster_env_applied_when_recipe_has_none(self):
+        """Cluster default_environment is applied when recipe has no environment."""
+        from srtctl.core.config import resolve_config_with_defaults
+
+        user_config = {
+            "name": "test",
+            "model": {"path": "/model", "container": "/c.sqsh", "precision": "fp8"},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+        }
+        cluster_config = {
+            "default_environment": {"NCCL_DEBUG": "INFO", "CUDA_LAUNCH_BLOCKING": "0"},
+        }
+
+        resolved = resolve_config_with_defaults(user_config, cluster_config)
+
+        assert resolved["environment"] == {"NCCL_DEBUG": "INFO", "CUDA_LAUNCH_BLOCKING": "0"}
+
+    def test_recipe_env_overrides_cluster_env(self):
+        """Recipe environment takes precedence over cluster defaults on conflict."""
+        from srtctl.core.config import resolve_config_with_defaults
+
+        user_config = {
+            "name": "test",
+            "model": {"path": "/model", "container": "/c.sqsh", "precision": "fp8"},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+            "environment": {"NCCL_DEBUG": "WARN", "MY_VAR": "hello"},
+        }
+        cluster_config = {
+            "default_environment": {"NCCL_DEBUG": "INFO", "CUDA_LAUNCH_BLOCKING": "0"},
+        }
+
+        resolved = resolve_config_with_defaults(user_config, cluster_config)
+
+        assert resolved["environment"]["NCCL_DEBUG"] == "WARN"
+        assert resolved["environment"]["CUDA_LAUNCH_BLOCKING"] == "0"
+        assert resolved["environment"]["MY_VAR"] == "hello"
+
+    def test_no_cluster_env_preserves_recipe_env(self):
+        """Without cluster default_environment, recipe environment is unchanged."""
+        from srtctl.core.config import resolve_config_with_defaults
+
+        user_config = {
+            "name": "test",
+            "model": {"path": "/model", "container": "/c.sqsh", "precision": "fp8"},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+            "environment": {"MY_VAR": "hello"},
+        }
+        cluster_config = {}
+
+        resolved = resolve_config_with_defaults(user_config, cluster_config)
+
+        assert resolved["environment"] == {"MY_VAR": "hello"}
+
+    def test_no_cluster_config_at_all(self):
+        """With cluster_config=None, environment is untouched."""
+        from srtctl.core.config import resolve_config_with_defaults
+
+        user_config = {
+            "name": "test",
+            "model": {"path": "/model", "container": "/c.sqsh", "precision": "fp8"},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+            "environment": {"MY_VAR": "hello"},
+        }
+
+        resolved = resolve_config_with_defaults(user_config, None)
+
+        assert resolved["environment"] == {"MY_VAR": "hello"}
+
+    def test_empty_cluster_env_no_effect(self):
+        """Empty default_environment dict has no effect (falsy)."""
+        from srtctl.core.config import resolve_config_with_defaults
+
+        user_config = {
+            "name": "test",
+            "model": {"path": "/model", "container": "/c.sqsh", "precision": "fp8"},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+        }
+        cluster_config = {"default_environment": {}}
+
+        resolved = resolve_config_with_defaults(user_config, cluster_config)
+
+        assert "environment" not in resolved or resolved.get("environment") == {}
+
+
 class TestFrontendConfig:
     """Tests for FrontendConfig."""
 
