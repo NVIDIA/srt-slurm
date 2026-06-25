@@ -45,8 +45,6 @@ backend:
     NCCL_CUMEM_ENABLE: "1"
     NCCL_MNNVL_ENABLE: "1"
     NCCL_NVLS_ENABLE: "1"
-    UCX_MEMTYPE_CACHE: "n"
-    UCX_MEMTYPE_REG_WHOLE: "n"
 
   decode_environment:
     VLLM_ENGINE_READY_TIMEOUT_S: "3600"
@@ -56,8 +54,6 @@ backend:
     NCCL_CUMEM_ENABLE: "1"
     NCCL_MNNVL_ENABLE: "1"
     NCCL_NVLS_ENABLE: "1"
-    UCX_MEMTYPE_CACHE: "n"
-    UCX_MEMTYPE_REG_WHOLE: "n"
 
   vllm_config:
     prefill:
