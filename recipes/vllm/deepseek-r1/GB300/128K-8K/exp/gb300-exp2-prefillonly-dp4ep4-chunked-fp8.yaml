@@ -1,0 +1,80 @@
+name: "gb300-exp2-prefillonly-dp4ep4-chunked-fp8"
+
+model:
+  path: "deepseek-r1-0528-fp4-v2"
+  container: ""
+  precision: "fp4"
+
+dynamo:
+  version: 1.0.0
+  install: true
+
+setup_script: configs/patches/vllm-container-deps.sh
+
+slurm:
+  partition: "gb300"
+
+resources:
+  gpu_type: "gb300"
+  gpus_per_node: 4
+  agg_nodes: 1
+  agg_workers: 1
+  gpus_per_agg: 4
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+
+backend:
+  type: vllm
+  connector: null
+
+  aggregated_environment:
+    TRITON_PTXAS_PATH: "/usr/local/cuda/bin/ptxas"
+    FLASHINFER_WORKSPACE_BASE: "/configs/flashinfer-cache"
+    VLLM_USE_FLASHINFER_MOE_FP4: "1"
+    VLLM_USE_NCCL_SYMM_MEM: "1"
+    VLLM_FLASHINFER_MOE_BACKEND: "throughput"
+    NCCL_CUMEM_ENABLE: "1"
+    NCCL_MNNVL_ENABLE: "1"
+    NCCL_NVLS_ENABLE: "1"
+    VLLM_RPC_TIMEOUT: "600000"
+    VLLM_ENGINE_ITERATION_TIMEOUT_S: "1200"
+    VLLM_ENGINE_READY_TIMEOUT_S: "3600"
+    VLLM_ENABLE_MOE_DP_CHUNK: "0"
+
+  vllm_config:
+    aggregated:
+      served-model-name: "deepseek-r1-0528-fp4"
+      kv-cache-dtype: "fp8"
+      tensor-parallel-size: 1
+      pipeline-parallel-size: 1
+      data-parallel-size: 4
+      data-parallel-rpc-port: 13345
+      enable-expert-parallel: true
+      max-model-len: 136001
+      max-num-seqs: 32
+      enforce-eager: true
+      async-scheduling: true
+      compilation-config: '{"custom_ops":["+quant_fp8","+rms_norm","+rotary_embedding"],"pass_config":{"fuse_attn_quant":true,"fuse_allreduce_rms":true}}'
+      enable-chunked-prefill: true
+      max-num-batched-tokens: 49152
+      safetensors-load-strategy: "prefetch"
+      trust-remote-code: true
+      no-enable-prefix-caching: true
+      attention-backend: "FLASHINFER_MLA"
+      block-size: 64
+      attention-config: '{"use_trtllm_ragged_deepseek_prefill": true, "use_prefill_query_quantization": true}'
+      all2all-backend: "allgather_reducescatter"
+      gpu-memory-utilization: 0.86
+
+benchmark:
+  type: "sa-bench"
+  isl: 128000
+  osl: 1
+  concurrencies: "1x4x8x16x32"
+  req_rate: "inf"
+  random_range_ratio: 1.0
+  use_chat_template: false
+  num_prompts: 256
+  warmup_prompts: 1
