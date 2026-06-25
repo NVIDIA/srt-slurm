@@ -5,6 +5,7 @@
 
 # Import runners to trigger registration
 from srtctl.benchmarks import (
+    aime25,
     custom,
     gpqa,
     gsm8k,
@@ -36,6 +37,7 @@ __all__ = [
     "sglang_bench",
     "mmlu",
     "gpqa",
+    "aime25",
     "gsm8k",
     "longbenchv2",
     "router",
