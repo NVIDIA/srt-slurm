@@ -8,6 +8,12 @@ worker_rlimit_nofile 1048576;
 {% endif %}
 
 http {
+    # Raise the request-body cap (nginx default is 1 MiB) so the load balancer
+    # does not reject large client requests with 413 before they reach the
+    # frontend. Agentic replay traces (e.g. multi-turn cc-traces warmup bodies)
+    # exceed 1 MiB; this mirrors the dynamo frontend's own body limit so nginx
+    # is never the bottleneck and is never more permissive than the backend.
+    client_max_body_size 45m;
     access_log off;
     upstream backend_servers {
         {% for frontend_host in frontend_hosts %}
