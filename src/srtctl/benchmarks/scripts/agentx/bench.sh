@@ -6,7 +6,7 @@
 #
 # Usage:
 #   bench.sh ENDPOINT MODEL_NAME CONCURRENCY DURATION MAX_CONTEXT_LENGTH \
-#            TOKENIZER_PATH PUBLIC_DATASET NUM_DATASET_ENTRIES \
+#            TOKENIZER_PATH PUBLIC_DATASET [NUM_DATASET_ENTRIES|auto] \
 #            FAILED_REQUEST_THRESHOLD [EXTRA_AIPERF_ARGS...]
 
 set -euo pipefail
@@ -18,7 +18,7 @@ DURATION=${4:-1800}
 MAX_CONTEXT_LENGTH=${5:-0}
 TOKENIZER_PATH=${6:-/model}
 PUBLIC_DATASET=${7:-semianalysis_cc_traces_weka_with_subagents}
-NUM_DATASET_ENTRIES=${8:-472}
+NUM_DATASET_ENTRIES=${8:-auto}
 FAILED_REQUEST_THRESHOLD=${9:-0.10}
 shift 9 2>/dev/null || true
 EXTRA_ARGS=("$@")
@@ -143,24 +143,24 @@ cmd=(
     --benchmark-duration "${DURATION}"
     --random-seed "${AIPERF_RANDOM_SEED:-42}"
     --failed-request-threshold "${FAILED_REQUEST_THRESHOLD}"
-    --trajectory-start-min-ratio 0.25
-    --trajectory-start-max-ratio 0.75
     --use-server-token-count
-    --no-gpu-telemetry
-    --num-dataset-entries "${NUM_DATASET_ENTRIES}"
+    --use-dynamo-conv-aware-routing
+    --dynamo-session-timeout-seconds "${AIPERF_DYNAMO_SESSION_TIMEOUT_SECONDS:-3600}"
     --slice-duration 1.0
     --output-artifact-dir "${ARTIFACT_DIR}"
     --public-dataset "${PUBLIC_DATASET}"
     "${SERVER_METRICS_ARGS[@]}"
 )
 
+if [ -n "${NUM_DATASET_ENTRIES}" ] && [ "${NUM_DATASET_ENTRIES}" != "0" ] && [ "${NUM_DATASET_ENTRIES}" != "auto" ]; then
+    cmd+=(--num-dataset-entries "${NUM_DATASET_ENTRIES}")
+fi
+
 if [ "${MAX_CONTEXT_LENGTH}" != "0" ] && [ -n "${MAX_CONTEXT_LENGTH}" ]; then
     cmd+=(--max-context-length "${MAX_CONTEXT_LENGTH}")
 fi
 
-if [ "${DURATION}" -lt 900 ] || [ "${AIPERF_UNSAFE_OVERRIDE:-false}" = "true" ]; then
-    cmd+=(--unsafe-override)
-fi
+cmd+=(--unsafe-override)
 
 cmd+=("${EXTRA_ARGS[@]}")
 

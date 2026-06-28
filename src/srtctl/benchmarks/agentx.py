@@ -73,7 +73,7 @@ class AgentXRunner(AIPerfBenchmarkRunner):
             str(b.max_context_length or 0),
             tokenizer_path,
             b.agentx_dataset or b.dataset_name or "semianalysis_cc_traces_weka_with_subagents",
-            str(b.num_dataset_entries or 472),
+            str(b.num_dataset_entries) if b.num_dataset_entries is not None else "auto",
             str(b.failed_request_threshold if b.failed_request_threshold is not None else 0.10),
         ]
 
