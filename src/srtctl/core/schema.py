@@ -1365,10 +1365,13 @@ class InfraConfig:
         nats_max_payload_mb: Maximum NATS message payload in MB. Default: None (uses
             NATS default of 1MB). Set to 24+ for disaggregated serving with long ISL
             (e.g. 65K+ tokens where prompt data exceeds 1MB in NATS messages).
+        etcd_cpu_affinity: Optional CPU affinity for etcd, passed to ``taskset -c``.
+            Example: "140-143". Default: None (do not pin etcd).
     """
 
     etcd_nats_dedicated_node: bool = False
     nats_max_payload_mb: int | None = None
+    etcd_cpu_affinity: str | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 
