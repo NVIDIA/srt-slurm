@@ -59,6 +59,7 @@ from srtctl.core.schema import SrtConfig
 from srtctl.core.status import create_job_record
 from srtctl.core.validation import preflight_config_variants
 from srtctl.ports import MOONCAKE_MASTER_PORT
+from srtctl.render.lifecycle import build_lifecycle_render_context, heredoc_marker
 
 console = Console()
 logger = logging.getLogger(__name__)
@@ -375,6 +376,16 @@ def generate_minimal_sbatch_script(
     setup_script: str | None = None,
     output_dir: Path | None = None,
     runtime_config_filename: str = "config.yaml",
+    embedded_runtime_config_text: str | None = None,
+    benchmark_config_filename: str | None = None,
+    embedded_benchmark_config_text: str | None = None,
+    lifecycle_runtime_text: str | None = None,
+    lifecycle_expected_prefill: int | None = None,
+    lifecycle_expected_decode: int | None = None,
+    lifecycle_frontend_type: str | None = None,
+    lifecycle_frontend_port: int | None = None,
+    lifecycle_health_timeout_seconds: int | None = None,
+    lifecycle_health_interval_seconds: int | None = None,
 ) -> str:
     """Generate minimal sbatch script that calls the Python orchestrator.
 
@@ -387,6 +398,15 @@ def generate_minimal_sbatch_script(
         setup_script: Optional setup script override (passed via env var)
         output_dir: Custom output directory (CLI flag, highest priority)
         runtime_config_filename: Config file name under OUTPUT_DIR used by do_sweep
+        embedded_runtime_config_text: Optional YAML payload to write into
+                                      runtime_config_filename from inside the
+                                      generated script.
+        benchmark_config_filename: Optional original benchmark config file name
+                                   used by standalone lifecycle scripts.
+        embedded_benchmark_config_text: Optional benchmark YAML payload to write
+                                        into benchmark_config_filename.
+        lifecycle_runtime_text: Optional bash function library for standalone
+                                lifecycle scripts.
 
     Returns:
         Rendered sbatch script as string
@@ -437,6 +457,14 @@ def generate_minimal_sbatch_script(
     config_environment = config.dynamo.get_wheel_environment()
     config_environment.update(config.environment)
 
+    runtime_config_embed = (
+        embedded_runtime_config_text.rstrip("\n") if embedded_runtime_config_text is not None else None
+    )
+    benchmark_config_embed = (
+        embedded_benchmark_config_text.rstrip("\n") if embedded_benchmark_config_text is not None else None
+    )
+    lifecycle_runtime_embed = lifecycle_runtime_text.rstrip("\n") if lifecycle_runtime_text is not None else None
+
     rendered = template.render(
         job_name=job_name,
         total_nodes=total_nodes,
@@ -458,6 +486,24 @@ def generate_minimal_sbatch_script(
         output_base=output_base,
         setup_script=setup_script,
         config_environment={key: shlex.quote(str(value)) for key, value in config_environment.items()},
+        runtime_config_embed=runtime_config_embed,
+        runtime_config_heredoc_marker=(
+            heredoc_marker(embedded_runtime_config_text) if embedded_runtime_config_text is not None else None
+        ),
+        benchmark_config_filename=benchmark_config_filename,
+        benchmark_config_embed=benchmark_config_embed,
+        benchmark_config_heredoc_marker=(
+            heredoc_marker(embedded_benchmark_config_text, prefix="SRTCTL_BENCHMARK_CONFIG")
+            if embedded_benchmark_config_text is not None
+            else None
+        ),
+        lifecycle_runtime_embed=lifecycle_runtime_embed,
+        lifecycle_expected_prefill=lifecycle_expected_prefill,
+        lifecycle_expected_decode=lifecycle_expected_decode,
+        lifecycle_frontend_type=lifecycle_frontend_type,
+        lifecycle_frontend_port=lifecycle_frontend_port,
+        lifecycle_health_timeout_seconds=lifecycle_health_timeout_seconds,
+        lifecycle_health_interval_seconds=lifecycle_health_interval_seconds,
     )
 
     return rendered
@@ -1105,6 +1151,94 @@ def materialize_config_path(config_path: Path):
             os.remove(temp_path)
 
 
+def render_bash_script(
+    config_path: Path,
+    selector: str | None = None,
+    setup_script: str | None = None,
+    output_dir: Path | None = None,
+) -> str:
+    """Render a standalone sbatch/bash script for one concrete config.
+
+    The rendered script embeds the runtime YAML that submit.py would normally
+    stage beside the submitted job, so callers can redirect stdout to a file and
+    submit or inspect it without an extra config-copy side channel.
+    """
+    if config_path.is_dir():
+        raise ValueError("--bash expects a single config file, not a directory")
+
+    if is_override_config(config_path):
+        from srtctl.core.config import resolve_override_yaml
+        from srtctl.core.yaml_utils import dump_yaml_with_comments
+
+        resolved_variants = resolve_override_yaml(config_path, selector=selector)
+        if len(resolved_variants) != 1:
+            raise ValueError(
+                "--bash for override configs requires a selector that resolves to exactly one variant "
+                "(for example: -f config.yaml:base or -f config.yaml:override_name)"
+            )
+
+        suffix, config_cm = resolved_variants[0]
+        if "sweep" in config_cm:
+            raise ValueError("--bash does not support override variants that contain a sweep")
+
+        runtime_config_text = dump_yaml_with_comments(config_cm)
+        if runtime_config_text is None:
+            raise RuntimeError("dump_yaml_with_comments returned None unexpectedly")
+
+        resolved_config = resolve_config_with_defaults(yaml.safe_load(runtime_config_text), load_cluster_config())
+        config = SrtConfig.Schema().load(resolved_config)
+        lifecycle = build_lifecycle_render_context(
+            config,
+            runtime_config_text,
+            server_config_filename=f"config_server_{suffix}.yaml",
+            benchmark_config_filename=f"config_{suffix}.yaml",
+        )
+        return generate_minimal_sbatch_script(
+            config=config,
+            config_path=config_path,
+            setup_script=setup_script,
+            output_dir=output_dir,
+            runtime_config_filename=lifecycle.server_config_filename,
+            embedded_runtime_config_text=lifecycle.server_config_text,
+            benchmark_config_filename=lifecycle.benchmark_config_filename,
+            embedded_benchmark_config_text=lifecycle.benchmark_config_text,
+            lifecycle_runtime_text=lifecycle.lifecycle_runtime_text,
+            lifecycle_expected_prefill=lifecycle.expected_prefill,
+            lifecycle_expected_decode=lifecycle.expected_decode,
+            lifecycle_frontend_type=lifecycle.frontend_type,
+            lifecycle_frontend_port=lifecycle.frontend_port,
+            lifecycle_health_timeout_seconds=lifecycle.health_timeout_seconds,
+            lifecycle_health_interval_seconds=lifecycle.health_interval_seconds,
+        )
+
+    if selector:
+        logger.warning(f"Selector ':{selector}' ignored — config is not an override file")
+
+    if is_sweep_config(config_path):
+        raise ValueError("--bash currently supports single-job configs only; sweeps expand to multiple sbatch jobs")
+
+    runtime_config_text = config_path.read_text()
+    config = load_config(config_path)
+    lifecycle = build_lifecycle_render_context(config, runtime_config_text)
+    return generate_minimal_sbatch_script(
+        config=config,
+        config_path=config_path,
+        setup_script=setup_script,
+        output_dir=output_dir,
+        runtime_config_filename=lifecycle.server_config_filename,
+        embedded_runtime_config_text=lifecycle.server_config_text,
+        benchmark_config_filename=lifecycle.benchmark_config_filename,
+        embedded_benchmark_config_text=lifecycle.benchmark_config_text,
+        lifecycle_runtime_text=lifecycle.lifecycle_runtime_text,
+        lifecycle_expected_prefill=lifecycle.expected_prefill,
+        lifecycle_expected_decode=lifecycle.expected_decode,
+        lifecycle_frontend_type=lifecycle.frontend_type,
+        lifecycle_frontend_port=lifecycle.frontend_port,
+        lifecycle_health_timeout_seconds=lifecycle.health_timeout_seconds,
+        lifecycle_health_interval_seconds=lifecycle.health_interval_seconds,
+    )
+
+
 def submit_override(
     config_path: Path,
     selector: str | None = None,
@@ -1255,6 +1389,7 @@ def main():
         epilog="""Examples:
   srtctl                                         # Interactive mode
   srtctl apply -f config.yaml                    # Submit job
+  srtctl apply -f config.yaml --bash             # Print standalone sbatch/bash script
   srtctl apply -f ./configs/                     # Submit all YAMLs in directory
   srtctl apply -f config.yaml --sweep            # Submit sweep
   srtctl preflight -f config.yaml                # Check model/container availability
@@ -1286,6 +1421,12 @@ def main():
     add_common_args(apply_parser)
     apply_parser.add_argument("--setup-script", type=str, help="Custom setup script in configs/")
     apply_parser.add_argument("--tags", type=str, help="Comma-separated tags")
+    apply_parser.add_argument(
+        "--bash",
+        action="store_true",
+        dest="bash_output",
+        help="Print a standalone generated sbatch/bash script to stdout and exit without submitting.",
+    )
     apply_parser.add_argument(
         "--json",
         action="store_true",
@@ -1374,13 +1515,21 @@ def main():
 
     json_mode = bool(getattr(args, "json_output", False))
     mock_mode = bool(getattr(args, "mock_mode", False))
+    bash_mode = bool(getattr(args, "bash_output", False))
+    if bash_mode and json_mode:
+        parser.error("--bash cannot be combined with --json")
+    if bash_mode and mock_mode:
+        parser.error("--bash cannot be combined with --mock")
+    if bash_mode and getattr(args, "sweep", False):
+        parser.error("--bash currently supports single-job configs only; sweeps expand to multiple sbatch jobs")
+
     # Always rebind the module console on each invocation so json-mode prose
     # goes to stderr and non-json prose returns to stdout. Save the original
     # so we can restore it on exit — direct library callers of submit_single /
     # submit_override (tests, etc.) must not see a leaked stderr binding.
     global console
     _original_console = console
-    console = Console(file=sys.stderr) if json_mode else Console()
+    console = Console(file=sys.stderr) if json_mode or bash_mode else Console()
 
     def restore_console() -> None:
         global console
@@ -1510,6 +1659,20 @@ def main():
 
             setup_script = getattr(args, "setup_script", None)
             output_dir = getattr(args, "output_dir", None)
+
+            if bash_mode:
+                script_content = render_bash_script(
+                    effective_config_path,
+                    selector=selector,
+                    setup_script=setup_script,
+                    output_dir=output_dir,
+                )
+                sys.stdout.write(script_content)
+                if not script_content.endswith("\n"):
+                    sys.stdout.write("\n")
+                sys.stdout.flush()
+                restore_console()
+                return
 
             # --no-preflight is only registered on the apply parser, so
             # dry-run / preflight / resolve-override won't carry it. Default

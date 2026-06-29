@@ -1,0 +1,78 @@
+# Qwen3-0.6B aggregated SGLang smoke benchmark for a local 2x L40S host.
+# Mirrors Dynamo's examples/backends/sglang/launch/agg.sh, with TP=2 to use
+# both local GPUs when rendered through srtctl.
+
+name: "qwen3-0.6b-l40s-agg-aiperf"
+
+slurm:
+  time_limit: "00:30:00"
+
+model:
+  path: "hf:Qwen/Qwen3-0.6B"
+  container: "0.5.6.post2"
+  precision: "bf16"
+
+identity:
+  model:
+    repo: "Qwen/Qwen3-0.6B"
+    revision: "c1899de289a04d12100db370d81485cdf75e47ca"
+  frameworks:
+    dynamo: "1.2.0"
+    sglang: "0.5.12"
+
+resources:
+  gpu_type: "l40s"
+  gpus_per_node: 2
+  agg_nodes: 1
+  agg_workers: 1
+  gpus_per_agg: 2
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+  args:
+    router-reset-states: true
+
+backend:
+  type: sglang
+
+  aggregated_environment:
+    DYN_HEALTH_CHECK_ENABLED: "false"
+    PYTHONUNBUFFERED: "1"
+
+  sglang_config:
+    aggregated:
+      model-path: "Qwen/Qwen3-0.6B"
+      served-model-name: "Qwen/Qwen3-0.6B"
+      page-size: 16
+      tensor-parallel-size: 2
+      trust-remote-code: true
+      enable-metrics: true
+      disable-piecewise-cuda-graph: true
+      mem-fraction-static: 0.90
+      max-total-tokens: 4096
+
+benchmark:
+  type: "custom"
+  command: |
+    set -euo pipefail
+    ARTIFACT_DIR="${AIPERF_ARTIFACT_DIR:-/logs/aiperf/agg}"
+    mkdir -p "$ARTIFACT_DIR"
+    aiperf profile Qwen/Qwen3-0.6B \
+      --url http://localhost:8000 \
+      --endpoint-type chat \
+      --streaming \
+      --concurrency "${AIPERF_CONCURRENCY:-2}" \
+      --request-count "${AIPERF_REQUEST_COUNT:-8}" \
+      --warmup-request-count "${AIPERF_WARMUP_REQUEST_COUNT:-1}" \
+      --isl "${AIPERF_ISL:-128}" \
+      --osl "${AIPERF_OSL:-32}" \
+      --image-batch-size 0 \
+      --audio-batch-size 0 \
+      --video-batch-size 0 \
+      --request-timeout-seconds 300 \
+      --tokenizer-trust-remote-code \
+      --output-artifact-dir "$ARTIFACT_DIR" \
+      --profile-export-prefix agg-aiperf \
+      --ui none \
+      --no-server-metrics
