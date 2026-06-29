@@ -1,8 +1,8 @@
 name: "minimax-m3-vllm-disagg-b300-2p2d-fp8-dep2-dep8-8k1k"
 
 model:
-  path: "MiniMaxAI/MiniMax-M3-MXFP8"
-  container: "vllm/vllm-openai:vllm-minimax-m3-perf-x86_64-13.0.1-7a67223"
+  path: "/lustre/fsw/coreai_comparch_inferencex/rihuo/MiniMaxAI_MiniMax-M3-MXFP8"
+  container: "/lustre/fsw/coreai_comparch_inferencex/rihuo/vllm-openai-minimax-m3-perf-x86-64-13-0-1-7a67223.sqsh"
   precision: "fp8"
 
 resources:
