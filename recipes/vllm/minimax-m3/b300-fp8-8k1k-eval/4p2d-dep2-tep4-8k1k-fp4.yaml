@@ -5,17 +5,15 @@ model:
   container: "/lustre/fsw/coreai_comparch_inferencex/rihuo/vllm-openai-minimax-m3-perf-x86-64-13-0-1-8b00f41.sqsh"
   precision: "fp4"
 
-setup_script: "minimax-m3-gb300-vllm-fixes.sh"
-
 resources:
   gpu_type: "b300"
   gpus_per_node: 8
   prefill_nodes: 1
-  decode_nodes: 1
+  decode_nodes: 2
   prefill_workers: 4
   decode_workers: 2
   gpus_per_prefill: 2
-  gpus_per_decode: 4
+  gpus_per_decode: 8
 
 dynamo:
   install: true
@@ -59,7 +57,7 @@ backend:
 
     decode:
       no-enable-flashinfer-autotune: true
-      tensor-parallel-size: 4
+      tensor-parallel-size: 8
       enable-expert-parallel: true
       trust-remote-code: true
       no-enable-prefix-caching: true
