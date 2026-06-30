@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 from srtctl.core.fingerprint import generate_capture_script
 from srtctl.core.processes import ManagedProcess, NamedProcesses
 from srtctl.core.schema import build_otel_env
-from srtctl.core.slurm import get_hostname_ip, start_srun_process
+from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, get_hostname_ip, start_srun_process
 from srtctl.ports import ETCD_CLIENT_PORT, KV_EVENTS_PORT_BASE, KVBM_ZMQ_PORT_BASE, NATS_PORT
 
 if TYPE_CHECKING:
@@ -59,6 +59,14 @@ class WorkerStageMixin:
         """Endpoint allocation topology."""
         raise NotImplementedError
 
+    def _installs_dynamo(self) -> bool:
+        """Whether worker containers run the dynamo install (needs root inside the container).
+
+        Single source of truth for both the preamble gate and the ENROOT_REMAP_ROOT
+        srun injection, so they cannot drift.
+        """
+        return self.config.frontend.type == "dynamo" and self.config.dynamo.install
+
     def _build_worker_preamble(self) -> str | None:
         """Build bash preamble for worker processes.
 
@@ -84,7 +92,7 @@ class WorkerStageMixin:
 
         # 2. Dynamo installation (required for dynamo.sglang when using dynamo frontend)
         # Skip if dynamo.install is False (container already has dynamo installed)
-        if self.config.frontend.type == "dynamo" and self.config.dynamo.install:
+        if self._installs_dynamo():
             parts.append(self.config.dynamo.get_install_commands())
 
         if not parts:
@@ -237,6 +245,7 @@ class WorkerStageMixin:
             env_to_set=env_to_set,
             bash_preamble=bash_preamble,
             srun_options=self.runtime.srun_options,
+            srun_export_env=CONTAINER_REMAP_ROOT_EXPORT if self._installs_dynamo() else None,
             het_group=process.het_group,
         )
 
@@ -366,6 +375,7 @@ class WorkerStageMixin:
             container_mounts=self.runtime.container_mounts,
             env_to_set=env_to_set,
             bash_preamble=bash_preamble,
+            srun_export_env=CONTAINER_REMAP_ROOT_EXPORT if self._installs_dynamo() else None,
             mpi=srun_config.mpi,
             oversubscribe=srun_config.oversubscribe,
             cpu_bind=srun_config.cpu_bind,

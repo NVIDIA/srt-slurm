@@ -305,6 +305,13 @@ def show_config_details(config: SrtConfig) -> None:
         opts = " ".join(f"--{k}={v}" if v else f"--{k}" for k, v in config.srun_options.items())
         console.print(f"[dim]srun options:[/] {opts}")
 
+    # Dynamo install runs apt-get/pip as root inside the container, so srtctl injects
+    # ENROOT_REMAP_ROOT=yes (via srun --export) on the worker + dynamo-frontend launches.
+    if config.frontend.type == "dynamo" and config.dynamo.install:
+        console.print(
+            "[dim]srun --export (dynamo install):[/] ALL,ENROOT_REMAP_ROOT=yes [dim](workers + dynamo frontend)[/]"
+        )
+
     show_extensions = (
         config.benchmark.type == "custom"
         or config.benchmark.container_image

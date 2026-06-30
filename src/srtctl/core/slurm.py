@@ -173,6 +173,13 @@ def get_node_ips(
 # Process Launching
 # ============================================================================
 
+# enroot env var that remaps the unprivileged user to root inside the container
+# at container-creation time. Injected (via srun --export) only on launches that
+# install dynamo, whose cold build needs apt-get/pip-to-system as root. Passing an
+# env var (not the pyxis --container-remap-root flag) degrades gracefully: srun
+# never parses it, so an unsupporting cluster no-ops instead of failing the step.
+CONTAINER_REMAP_ROOT_EXPORT = {"ENROOT_REMAP_ROOT": "yes"}
+
 
 def start_srun_process(
     command: list[str],
@@ -188,6 +195,7 @@ def start_srun_process(
     env_to_set: dict[str, str] | None = None,
     bash_preamble: str | None = None,
     srun_options: dict[str, str] | None = None,
+    srun_export_env: dict[str, str] | None = None,
     overlap: bool = True,
     use_bash_wrapper: bool = True,
     mpi: str | None = None,
@@ -213,6 +221,10 @@ def start_srun_process(
         env_to_set: Environment variables to set (name -> value)
         bash_preamble: Bash commands to run before the main command
         srun_options: Additional srun options as dict
+        srun_export_env: Env vars to set in the srun *task* environment (rendered as
+            ``--export=ALL,K=V,...``). Unlike env_to_set (which exports inside the
+            container after it starts), these reach the container runtime at creation
+            time — required for vars like ENROOT_REMAP_ROOT that enroot reads up front.
         overlap: Use --overlap flag (default: True)
         use_bash_wrapper: Wrap command in bash -c (default: True)
         mpi: MPI type (e.g., "pmix" for TRTLLM)
@@ -283,6 +295,13 @@ def start_srun_process(
                 srun_cmd.append(f"--{key}={value}")
             else:
                 srun_cmd.append(f"--{key}")
+
+    # Set env vars in the task environment so the container runtime (enroot/pyxis)
+    # sees them at container-creation time. Prefix ALL to preserve srun's normal
+    # full-environment propagation and only add these on top.
+    if srun_export_env:
+        exports = ",".join(f"{k}={v}" for k, v in srun_export_env.items())
+        srun_cmd.append(f"--export=ALL,{exports}")
 
     # Build the actual command to run
     if use_bash_wrapper:
