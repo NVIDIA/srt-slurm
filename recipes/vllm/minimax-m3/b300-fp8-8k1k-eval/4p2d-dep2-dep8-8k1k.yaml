@@ -5,7 +5,7 @@ model:
   container: "/lustre/fsw/coreai_comparch_inferencex/rihuo/vllm-openai-minimax-m3-perf-x86-64-13-0-1-7a67223.sqsh"
   precision: "fp8"
 
-setup_script: "minimax-m3-b300-vllm-fixes.sh"
+setup_script: "minimax-m3-gb300-vllm-fixes.sh"
 
 resources:
   gpu_type: "b300"
