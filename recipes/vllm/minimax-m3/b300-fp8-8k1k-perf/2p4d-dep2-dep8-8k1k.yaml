@@ -57,9 +57,7 @@ backend:
       max-num-batched-tokens: 16384
 
     decode:
-      tensor-parallel-size: 1
-      data-parallel-size: 8
-      data-parallel-rpc-port: 13345
+      tensor-parallel-size: 8
       enable-expert-parallel: true
       trust-remote-code: true
       no-enable-prefix-caching: true
@@ -71,7 +69,7 @@ backend:
       max-model-len: 9472
       language-model-only: true
       stream-interval: 32
-      max-num-seqs: 1024  # Per DP rank: 2 workers x DP8 = 16 ranks.
+      max-num-seqs: 1024
       max-num-batched-tokens: 16384
       max-cudagraph-capture-size: 4096
 
