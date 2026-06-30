@@ -5,7 +5,7 @@ model:
   container: "/lustre/fsw/coreai_comparch_inferencex/rihuo/vllm-openai-minimax-m3-perf-x86-64-13-0-1-7a67223.sqsh"
   precision: "fp8"
 
-setup_script: "minimax-m3-gb300-vllm-fixes.sh"
+setup_script: "minimax-m3-b300-vllm-fixes.sh"
 
 resources:
   gpu_type: "b300"
@@ -31,11 +31,13 @@ backend:
 
   prefill_environment:
     VLLM_FLOAT32_MATMUL_PRECISION: high
-    UCX_TLS: "cuda_copy,rc"
+    UCX_NET_DEVICES: "all"
+    UCX_TLS: "rc,cuda_ipc,cuda_copy,sm,self,tcp"
 
   decode_environment:
     VLLM_FLOAT32_MATMUL_PRECISION: high
-    UCX_TLS: "cuda_copy,rc"
+    UCX_NET_DEVICES: "all"
+    UCX_TLS: "rc,cuda_ipc,cuda_copy,sm,self,tcp"
 
   vllm_config:
     prefill:
