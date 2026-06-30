@@ -1,4 +1,4 @@
-name: "minimax-m3-vllm-disagg-b300-4p2d-fp8-dep2-dep8-8k1k"
+name: "minimax-m3-vllm-disagg-b300-2p6d-fp8-dep2-tep8-8k1k"
 
 model:
   path: "/lustre/fsw/coreai_comparch_inferencex/rihuo/MiniMaxAI_MiniMax-M3-MXFP8"
@@ -9,9 +9,9 @@ resources:
   gpu_type: "b300"
   gpus_per_node: 8
   prefill_nodes: 1
-  decode_nodes: 5
+  decode_nodes: 6
   prefill_workers: 2
-  decode_workers: 5
+  decode_workers: 6
   gpus_per_prefill: 2
   gpus_per_decode: 8
 
