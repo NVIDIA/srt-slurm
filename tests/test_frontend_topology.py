@@ -18,6 +18,7 @@ def make_config(
     num_additional_frontends: int = 9,
     frontend_type: str = "dynamo",
     nginx_raise_ulimit: bool = False,
+    nginx_session_affinity: bool = False,
 ) -> SrtConfig:
     """Create a minimal SrtConfig for testing."""
     return SrtConfig(
@@ -34,6 +35,7 @@ def make_config(
             enable_multiple_frontends=enable_multiple_frontends,
             num_additional_frontends=num_additional_frontends,
             nginx_raise_ulimit=nginx_raise_ulimit,
+            nginx_session_affinity=nginx_session_affinity,
         ),
     )
 
@@ -198,6 +200,26 @@ class TestNginxConfigGeneration:
         assert "server 10.0.0.1:8180" in nginx_config
         assert "listen 8000" in nginx_config
         assert "worker_rlimit_nofile" not in nginx_config
+        assert "hash $frontend_hash_key consistent" not in nginx_config
+
+    def test_nginx_config_session_affinity(self):
+        """Session affinity hashes session IDs and keeps anonymous traffic distributed."""
+        config = make_config(enable_multiple_frontends=True, nginx_session_affinity=True)
+        runtime = make_runtime(["node0", "node1"])
+        topology = FrontendTopology(
+            nginx_node="node0",
+            frontend_nodes=["node1"],
+            frontend_port=8180,
+            public_port=8000,
+        )
+
+        orchestrator = SweepOrchestrator(config=config, runtime=runtime)
+        with patch("srtctl.cli.mixins.frontend_stage.get_hostname_ip", return_value="10.0.0.1"):
+            nginx_config = orchestrator._generate_nginx_config(topology)
+
+        assert "map $http_x_dynamo_session_id $frontend_hash_key" in nginx_config
+        assert '"" $request_id' in nginx_config
+        assert "hash $frontend_hash_key consistent" in nginx_config
 
     def test_nginx_config_raises_nofile_when_enabled(self):
         """worker_rlimit_nofile appears only when nginx_raise_ulimit is set."""

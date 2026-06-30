@@ -15,7 +15,19 @@ http {
     # is never the bottleneck and is never more permissive than the backend.
     client_max_body_size 45m;
     access_log off;
+{% if nginx_session_affinity %}
+    # Keep a Dynamo session on one frontend. Anonymous requests use NGINX's
+    # generated request ID so an empty session header cannot pin all traffic.
+    map $http_x_dynamo_session_id $frontend_hash_key {
+        default $http_x_dynamo_session_id;
+        "" $request_id;
+    }
+{% endif %}
+
     upstream backend_servers {
+{% if nginx_session_affinity %}
+        hash $frontend_hash_key consistent;
+{% endif %}
         {% for frontend_host in frontend_hosts %}
         server {{ frontend_host }}:{{ backend_port }};
         {% endfor %}

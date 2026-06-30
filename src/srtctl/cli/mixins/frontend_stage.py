@@ -181,6 +181,7 @@ class FrontendStageMixin:
             backend_port=topology.frontend_port,
             listen_port=topology.public_port,
             nginx_raise_ulimit=self.config.frontend.nginx_raise_ulimit,
+            nginx_session_affinity=self.config.frontend.nginx_session_affinity,
         )
 
     def start_frontend(self, registry: "ProcessRegistry") -> list[ManagedProcess]:
