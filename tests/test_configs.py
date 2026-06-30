@@ -1938,6 +1938,8 @@ class TestVLLMDataParallelMode:
         assert "13345" in cmd
         assert "--data-parallel-size" in cmd
         assert "16" in cmd
+        expert_parallel_idx = cmd.index("--enable-expert-parallel")
+        assert expert_parallel_idx == len(cmd) - 1 or cmd[expert_parallel_idx + 1].startswith("--")
 
         # Should NOT include TP multi-node flags
         assert "--master-addr" not in cmd
