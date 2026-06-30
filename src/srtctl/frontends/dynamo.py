@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from srtctl.core.health import WorkerHealthResult, check_dynamo_health
 from srtctl.core.schema import build_otel_env
-from srtctl.core.slurm import start_srun_process
+from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, start_srun_process
 from srtctl.ports import ETCD_CLIENT_PORT, NATS_PORT
 
 if TYPE_CHECKING:
@@ -109,6 +109,9 @@ class DynamoFrontend:
                 container_mounts=runtime.container_mounts,
                 env_to_set=env_to_set,
                 bash_preamble=bash_preamble,
+                # Frontend container runs the dynamo install (see _build_preamble), whose
+                # cold build needs root inside the container. Remap via enroot env var.
+                srun_export_env=CONTAINER_REMAP_ROOT_EXPORT if config.dynamo.install else None,
                 # TODO(jthomson): I don't have the faintest clue of
                 # why this is needed in later versions of Dynamo, but it is.
                 mpi="pmix",
