@@ -15,7 +15,20 @@ http {
     # is never the bottleneck and is never more permissive than the backend.
     client_max_body_size 45m;
     access_log off;
+{% if nginx_session_affinity %}
+{% set _sess_key = "$http_" ~ (nginx_session_affinity_header | lower | replace("-", "_")) %}
+    # Pin a conversation to one frontend so a session-aware router keeps its
+    # per-frontend affinity for the whole conversation. Anonymous requests fall
+    # back to the request id so they stay distributed.
+    map {{ _sess_key }} $frontend_hash_key {
+        default {{ _sess_key }};
+        "" $request_id;
+    }
+{% endif %}
     upstream backend_servers {
+{% if nginx_session_affinity %}
+        hash $frontend_hash_key consistent;
+{% endif %}
         {% for frontend_host in frontend_hosts %}
         server {{ frontend_host }}:{{ backend_port }};
         {% endfor %}
