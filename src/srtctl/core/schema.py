@@ -1450,8 +1450,7 @@ class SrtConfig:
             )
         if self.frontend.enable_multiple_frontends:
             raise ValidationError(
-                "frontend.type: trtllm_serve runs a single orchestrator; "
-                "set frontend.enable_multiple_frontends: false"
+                "frontend.type: trtllm_serve runs a single orchestrator; set frontend.enable_multiple_frontends: false"
             )
         if not self.resources.is_disaggregated:
             raise ValidationError(
