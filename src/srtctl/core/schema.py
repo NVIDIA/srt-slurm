@@ -1318,8 +1318,11 @@ class FrontendConfig:
         nginx_raise_ulimit: Raise nofile before nginx and set ``worker_rlimit_nofile``
             in generated nginx.conf. Off by default; enable on clusters that allow it.
             Override per job or set ``nginx_raise_ulimit`` in srtslurm.yaml for the cluster.
-        nginx_session_affinity: Consistently hash ``X-Dynamo-Session-ID`` to a frontend.
-            Requests without a session ID use a generated request ID and remain distributed.
+        nginx_session_affinity: Consistently hash ``nginx_session_affinity_header`` to a
+            frontend. Requests without that header use a generated request ID and stay distributed.
+        nginx_session_affinity_header: Header hashed when affinity is on (default
+            ``X-Dynamo-Session-ID``). Set ``X-Correlation-ID`` for clients (e.g. aiperf) that
+            carry the session id in that header instead.
         args: CLI arguments passed to the frontend/router process
         env: Environment variables for frontend processes
     """
@@ -1330,6 +1333,7 @@ class FrontendConfig:
     nginx_container: str = "nginx:1.27.4"
     nginx_raise_ulimit: bool = False
     nginx_session_affinity: bool = False
+    nginx_session_affinity_header: str = "X-Dynamo-Session-ID"
     args: dict[str, Any] | None = None
     env: dict[str, str] | None = None
 

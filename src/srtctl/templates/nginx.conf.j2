@@ -18,8 +18,9 @@ http {
 {% if nginx_session_affinity %}
     # Keep a Dynamo session on one frontend. Anonymous requests use NGINX's
     # generated request ID so an empty session header cannot pin all traffic.
-    map $http_x_dynamo_session_id $frontend_hash_key {
-        default $http_x_dynamo_session_id;
+{% set _sess_key = "$http_" ~ (nginx_session_affinity_header | lower | replace("-", "_")) %}
+    map {{ _sess_key }} $frontend_hash_key {
+        default {{ _sess_key }};
         "" $request_id;
     }
 {% endif %}
