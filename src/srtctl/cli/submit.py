@@ -740,9 +740,17 @@ def submit_with_orchestrator(
             metadata=metadata,
         )
 
+        log_dir = f"{job_output_dir}/logs"
+        os.makedirs(log_dir, exist_ok=True)
+        log = f"{log_dir}/sweep_{job_id}.log"
+        result = subprocess.run(
+            ["touch", log],
+            check=False,
+        )
+
         console.print(f"[bold green]✅ Job {job_id} submitted![/]")
-        console.print(f"[dim]📁 Logs:[/] {job_output_dir}/logs")
-        console.print(f"[dim]📋 Monitor:[/] tail -f {job_output_dir}/logs/sweep_{job_id}.log")
+        console.print(f"[dim]📁 Logs:[/] {log_dir}")
+        console.print(f"[dim]📋 Monitor:[/] tail -f {log}")
         console.print(f"[dim]📊 Queue:[/] squeue --job {job_id}")
 
         _print_running_summary(config, console)
