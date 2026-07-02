@@ -145,11 +145,7 @@ class VLLMProtocol:
             return None
 
         if isinstance(self.kv_events_config, dict):
-            mode_cfg = (
-                self.kv_events_config.get("aggregated")
-                if mode == "agg"
-                else self.kv_events_config.get(mode)
-            )
+            mode_cfg = self.kv_events_config.get("aggregated") if mode == "agg" else self.kv_events_config.get(mode)
             if mode_cfg is None:
                 return None
             if mode_cfg is True:

@@ -1417,10 +1417,7 @@ class TestVLLMPrefillDecodeColocation:
         assert {p.nixl_port for p in decode} == {VLLM_NIXL_PORT_BASE + 4}
 
         leader_ports = [
-            port
-            for process in prefill + decode
-            for port in (process.http_port, process.bootstrap_port)
-            if port
+            port for process in prefill + decode for port in (process.http_port, process.bootstrap_port) if port
         ]
         assert sorted(leader_ports) == [
             SGLANG_HTTP_PORT_BASE,
