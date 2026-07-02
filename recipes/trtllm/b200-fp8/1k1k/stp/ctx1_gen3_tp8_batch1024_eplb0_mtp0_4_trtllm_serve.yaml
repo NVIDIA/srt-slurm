@@ -120,6 +120,3 @@ frontend:
 health_check:
   max_attempts: 360
   interval_seconds: 10
-
-dynamo:
-  install: false

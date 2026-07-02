@@ -194,6 +194,9 @@ def check_trtllm_serve_health(
     trtllm-serve's /health returns HTTP 200 once the orchestrator is up (the body may
     be empty). The trtllm_serve frontend already gates each worker for readiness before
     starting the orchestrator, so a 200 here means the stack is ready.
+
+    Note: wait_for_model() short-circuits to ready on the 200 for trtllm_serve and does
+    not call this, so this exists mainly as the FrontendProtocol.parse_health hook.
     """
     return WorkerHealthResult(
         ready=True,

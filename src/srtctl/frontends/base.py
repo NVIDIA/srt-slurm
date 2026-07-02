@@ -10,6 +10,7 @@ Frontend types handle:
 - Building CLI arguments from config
 """
 
+import threading
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 if TYPE_CHECKING:
@@ -57,6 +58,7 @@ class FrontendProtocol(Protocol):
         config: Any,  # SrtConfig
         backend: Any,  # BackendProtocol
         backend_processes: list["Process"],
+        stop_event: "threading.Event | None" = None,
     ) -> list["ManagedProcess"]:
         """Start frontend processes on designated nodes.
 
@@ -66,6 +68,8 @@ class FrontendProtocol(Protocol):
             config: Full SrtConfig
             backend: Backend protocol for mode-specific info
             backend_processes: List of backend worker processes
+            stop_event: Optional event to abort any readiness waits a frontend
+                performs while starting (frontends that return immediately ignore it)
 
         Returns:
             List of ManagedProcess instances for started frontends

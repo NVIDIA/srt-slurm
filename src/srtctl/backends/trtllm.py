@@ -209,6 +209,9 @@ class TRTLLMProtocol:
                 value = config.get(key)
                 if value is not None:
                     cmd.extend([flag, str(value)])
+            # Engine config file. Verified against tensorrt-llm 1.3.0rc15/rc17 and the
+            # ai-dynamo tensorrtllm-runtime 1.3.0-dev.1 container, which accept --config;
+            # some trtllm-serve builds spell this --extra_llm_api_options.
             cmd.extend(["--config", str(container_config_path)])
             return cmd
 

@@ -627,7 +627,7 @@ class SweepOrchestrator(
 
             # Stage 3: Frontend
             reporter.report(JobStatus.FRONTEND, JobStage.FRONTEND, "Starting frontend")
-            frontend_procs = self.start_frontend(registry)
+            frontend_procs = self.start_frontend(registry, stop_event)
             for proc in frontend_procs:
                 registry.add_process(proc)
 

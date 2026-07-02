@@ -12,6 +12,7 @@ backend worker leaders, then launch the orchestrator on the head frontend node.
 
 import logging
 import shlex
+import threading
 from typing import TYPE_CHECKING, Any
 
 import yaml
@@ -71,9 +72,14 @@ class TRTLLMServeFrontend:
         config: Any,  # SrtConfig
         backend: Any,  # BackendProtocol
         backend_processes: list["Process"],
+        stop_event: "threading.Event | None" = None,
     ) -> list["ManagedProcess"]:
         """Write ser.yaml from worker leaders and launch the disaggregated orchestrator."""
         from srtctl.core.processes import ManagedProcess
+
+        # trtllm-serve disaggregated fronts trtllm workers; it can't route to other backends.
+        if config.backend.type != "trtllm":
+            raise ValueError(f"frontend.type: trtllm_serve requires backend.type: trtllm (got {config.backend.type!r})")
 
         # trtllm-serve disaggregated is a single orchestrator process; nginx-splitting
         # across multiple frontends is not supported.
@@ -111,7 +117,10 @@ class TRTLLMServeFrontend:
                 int(port),
                 max_attempts=config.health_check.max_attempts,
                 interval=config.health_check.interval_seconds,
+                stop_event=stop_event,
             ):
+                if stop_event is not None and stop_event.is_set():
+                    raise RuntimeError("trtllm-serve worker wait aborted")
                 raise RuntimeError(f"trtllm-serve worker {url} did not become healthy")
 
         # Build ser.yaml (host path in log_dir, mounted to /logs in the container).
