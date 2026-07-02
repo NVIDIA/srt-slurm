@@ -81,12 +81,14 @@ class TRTLLMServeFrontend:
         if config.backend.type != "trtllm":
             raise ValueError(f"frontend.type: trtllm_serve requires backend.type: trtllm (got {config.backend.type!r})")
 
-        # trtllm-serve disaggregated is a single orchestrator process; nginx-splitting
-        # across multiple frontends is not supported.
-        if len(topology.frontend_nodes) != 1:
+        # trtllm-serve disaggregated is a single orchestrator process; the nginx +
+        # multi-frontend path is not supported. uses_nginx also catches the 2-node case
+        # where the topology is nginx + a single frontend node (frontend_nodes len == 1).
+        if topology.uses_nginx or len(topology.frontend_nodes) != 1:
             raise ValueError(
-                "trtllm_serve frontend runs a single disaggregated orchestrator; "
-                "set frontend.enable_multiple_frontends: false"
+                "trtllm_serve frontend runs a single disaggregated orchestrator and does "
+                "not support the nginx/multi-frontend path; set "
+                "frontend.enable_multiple_frontends: false"
             )
         frontend_node = topology.frontend_nodes[0]
 
