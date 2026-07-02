@@ -184,8 +184,37 @@ class TRTLLMProtocol:
         # For local models, model is mounted to /model in the container
         model_arg = str(runtime.model_path) if runtime.is_hf_model else "/model"
 
-        cmd = list(nsys_prefix) + ["trtllm-llmapi-launch"] if nsys_prefix else ["trtllm-llmapi-launch"]
-        cmd += [
+        base_prefix = list(nsys_prefix) + ["trtllm-llmapi-launch"] if nsys_prefix else ["trtllm-llmapi-launch"]
+
+        # trtllm-serve path: launch an OpenAI-compatible trtllm-serve worker. The
+        # trtllm_serve frontend fronts these via a static ser.yaml (context/generation
+        # server URLs), so there is no dynamo request plane and no --disaggregation-mode:
+        # a worker is prefill or decode purely by which list it appears in in ser.yaml.
+        if frontend_type == "trtllm_serve":
+            cmd = base_prefix + [
+                "trtllm-serve",
+                model_arg,
+                "--host",
+                "0.0.0.0",
+                "--port",
+                str(process.http_port),
+            ]
+            # Parallelism also lives in the engine yaml, but pass it explicitly to match
+            # the trtllm-serve CLI contract (srun --ntasks == TP*PP is set by the worker stage).
+            for flag, key in (
+                ("--tensor_parallel_size", "tensor_parallel_size"),
+                ("--moe_expert_parallel_size", "moe_expert_parallel_size"),
+                ("--pipeline_parallel_size", "pipeline_parallel_size"),
+            ):
+                value = config.get(key)
+                if value is not None:
+                    cmd.extend([flag, str(value)])
+            cmd.extend(["--config", str(container_config_path)])
+            return cmd
+
+        # dynamo.trtllm path (default): workers register into etcd/NATS and the dynamo
+        # frontend discovers them.
+        cmd = base_prefix + [
             "python3",
             "-m",
             "dynamo.trtllm",
