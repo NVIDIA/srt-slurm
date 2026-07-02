@@ -55,7 +55,7 @@ from srtctl.core.git_state import (
     write_git_state_snapshot,
 )
 from srtctl.core.lockfile import load_lockfile_fingerprints
-from srtctl.core.schema import SrtConfig
+from srtctl.core.schema import SrtConfig, installs_dynamo
 from srtctl.core.status import create_job_record
 from srtctl.core.validation import preflight_config_variants
 from srtctl.ports import MOONCAKE_MASTER_PORT
@@ -307,7 +307,7 @@ def show_config_details(config: SrtConfig) -> None:
 
     # Dynamo install runs apt-get/pip as root inside the container, so srtctl injects
     # ENROOT_REMAP_ROOT=yes (via srun --export) on the worker + dynamo-frontend launches.
-    if config.frontend.type == "dynamo" and config.dynamo.install:
+    if installs_dynamo(config):
         console.print(
             "[dim]srun --export (dynamo install):[/] ALL,ENROOT_REMAP_ROOT=yes [dim](workers + dynamo frontend)[/]"
         )

@@ -1601,3 +1601,13 @@ class SrtConfig:
     def backend_type(self) -> str:
         """Get the backend type string."""
         return self.backend.type
+
+
+def installs_dynamo(config: SrtConfig) -> bool:
+    """Whether this config installs dynamo into its containers (needs root inside).
+
+    Single source of truth for the ENROOT_REMAP_ROOT srun injection (workers +
+    dynamo frontend) and its dry-run display: dynamo is only installed when the
+    dynamo frontend is selected and install isn't disabled.
+    """
+    return config.frontend.type == "dynamo" and config.dynamo.install
