@@ -9,7 +9,7 @@ base:
       repo: nvidia/GLM-5-NVFP4
       revision: dc54ff55a7e9e71b85db953d8bc22eca894b44c6
     frameworks:
-      dynamo: 1.1.0
+      dynamo: 1.2.1
       sglang: 0.5.11
   resources:
     gpu_type: gb200
@@ -17,7 +17,7 @@ base:
   frontend:
     type: dynamo
   dynamo:
-    version: 1.1.0
+    version: 1.2.1
   backend:
     type: sglang
     prefill_environment:
