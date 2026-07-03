@@ -9,7 +9,7 @@ base:
       repo: zai-org/GLM-5-FP8
       revision: 4f96cc5eec29dcee5d6ded54f7ffe889438f9516
     frameworks:
-      dynamo: 1.1.0
+      dynamo: 1.2.1
       sglang: 0.5.13.post1
   resources:
     gpu_type: gb200
@@ -17,7 +17,7 @@ base:
   frontend:
     type: dynamo
   dynamo:
-    version: 1.1.0
+    version: 1.2.1
   backend:
     prefill_environment:
       TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: '1800'
