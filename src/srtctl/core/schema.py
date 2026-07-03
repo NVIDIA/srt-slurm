@@ -1332,6 +1332,10 @@ class FrontendConfig:
     nginx_raise_ulimit: bool = False
     args: dict[str, Any] | None = None
     env: dict[str, str] | None = None
+    # trtllm_serve orchestrator (ser.yaml) options; ignored by other frontends.
+    ctx_router: dict[str, Any] | None = None  # context_servers.router, e.g. {type: conversation}
+    gen_router: dict[str, Any] | None = None  # generation_servers.router
+    server_config_extra: dict[str, Any] | None = None  # extra top-level ser.yaml keys
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
