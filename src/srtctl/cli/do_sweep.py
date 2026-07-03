@@ -347,6 +347,38 @@ class SweepOrchestrator(
         if removed > 0:
             logger.info("Cleaned %d stale .lock files from HF cache: %s", removed, hf_home)
 
+    def _stage_model(self) -> None:
+        """Copy the model from shared storage to node-local storage on every
+        worker node before workers start (model.stage_dir). One srun per node,
+        idempotent (manifest match => skip). Fails the job if any node fails."""
+        staged = self.runtime.staged_model_path
+        if staged is None:
+            return
+        worker_nodes = list(dict.fromkeys(self.runtime.nodes.worker))
+        src, dest = "/model", str(staged)
+        logger.info("Staging model /model -> %s on %d node(s)", dest, len(worker_nodes))
+        procs = []
+        for node in worker_nodes:
+            log = self.runtime.log_dir / f"stage_model_{node}.out"
+            proc = start_srun_process(
+                command=["bash", "/srtctl-runtime/stage_model.sh", src, dest],
+                nodelist=[node],
+                output=str(log),
+                container_image=str(self.runtime.container_image),
+                container_mounts=self.runtime.container_mounts,
+                het_group=self.runtime.nodes.het_group_for(node),
+            )
+            procs.append((node, proc, log))
+        failures = []
+        for node, proc, log in procs:
+            if proc.wait() != 0:
+                failures.append((node, log))
+        if failures:
+            raise RuntimeError(
+                "Model staging failed on: " + ", ".join(f"{n} (see {log})" for n, log in failures)
+            )
+        logger.info("Model staging complete on %d node(s)", len(worker_nodes))
+
     def _ensure_model_cached(self) -> None:
         """Pre-download HuggingFace model on a single node before starting workers.
 
@@ -623,6 +655,10 @@ class SweepOrchestrator(
             if self.runtime.is_hf_model:
                 self._clean_stale_hf_locks()
                 self._ensure_model_cached()
+
+            # Pre-worker: stage the model to node-local storage (if configured).
+            if self.runtime.staged_model_path is not None:
+                self._stage_model()
 
             # Stage 2: Workers
             reporter.report(JobStatus.WORKERS, JobStage.WORKERS, "Starting workers")

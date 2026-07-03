@@ -196,6 +196,10 @@ class RuntimeContext:
     # Frontend port (for benchmark endpoint)
     frontend_port: int = FRONTEND_PUBLIC_PORT
 
+    # Optional lustre->node-local model staging (see model.stage_dir)
+    stage_dir: str | None = None
+    staged_model_path: Path | None = None
+
     @classmethod
     def from_config(
         cls,
@@ -279,6 +283,17 @@ class RuntimeContext:
         # Only mount local model paths - HF models are downloaded at runtime
         if not is_hf_model:
             container_mounts[model_path] = Path("/model")
+
+        # Optional: stage the model to node-local storage before workers start.
+        # Mount the node-local ROOT (parent of stage_dir; it pre-exists on nodes)
+        # so the staged copy is visible in-container at its real path; workers read
+        # <stage_dir>/<model_name> instead of the /model mount. See _stage_model().
+        stage_dir: str | None = None
+        staged_model_path: Path | None = None
+        if not is_hf_model and config.model.stage_dir:
+            stage_dir = os.path.expandvars(config.model.stage_dir)
+            staged_model_path = Path(stage_dir) / model_path.name
+            container_mounts[Path(stage_dir).parent] = Path(stage_dir).parent
 
         # Add configs directory (NATS, etcd binaries) from source root
         # SRTCTL_SOURCE_DIR is set by the sbatch script
@@ -368,7 +383,19 @@ class RuntimeContext:
             srun_options=dict(config.srun_options),
             environment=environment,
             is_hf_model=is_hf_model,
+            stage_dir=stage_dir,
+            staged_model_path=staged_model_path,
         )
+
+    @property
+    def worker_model_arg(self) -> str:
+        """Model path passed to the serving worker: the staged node-local path
+        when model staging is enabled, else the "/model" mount (or the HF id)."""
+        if self.is_hf_model:
+            return str(self.model_path)
+        if self.staged_model_path is not None:
+            return str(self.staged_model_path)
+        return "/model"
 
     def format_string(self, template: str, **extra_kwargs) -> str:
         """Format a template string with runtime values.

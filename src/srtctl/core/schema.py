@@ -409,6 +409,9 @@ class ModelConfig:
     path: str
     container: str
     precision: str
+    # Optional: stage the model from shared storage to this node-local dir
+    # before workers start (e.g. "/raid/scratch/models"). None = use path directly.
+    stage_dir: str | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 
