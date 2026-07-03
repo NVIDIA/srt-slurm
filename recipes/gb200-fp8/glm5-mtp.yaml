@@ -197,27 +197,24 @@ zip_override_mtp_1k1k_hightpt:
     prefill_nodes: 2
     prefill_workers: 1
 zip_override_mtp_1k1k_lowlat:
-  name: [1k1k-1p4d_dtp8-conc1, 1k1k-1p4d_dtp8-conc16, 1k1k-1p4d_dtp8-conc4]
+  name: [1k1k-1p8d_tp8-conc1, 1k1k-1p8d_tp8-conc16, 1k1k-1p8d_tp8-conc4]
   backend:
     sglang_config:
       decode:
         context-length: 2112
-        cuda-graph-max-bs: [8, 16, 8]
-        data-parallel-size: 8
-        enable-dp-attention: true
-        enable-dp-lm-head: true
-        max-running-requests: [8, 16, 8]
+        cuda-graph-max-bs: [1, 8, 2]
+        max-running-requests: [1, 8, 2]
+        mem-fraction-static: 0.8
       prefill:
         context-length: 2112
         cuda-graph-max-bs: 256
         max-running-requests: 256
   benchmark:
-    concurrencies: [[37], [88], [41]]
+    concurrencies: [[13], [113], [32]]
     isl: 1024
     osl: 1024
-    random_range_ratio: 1.0
   resources:
-    decode_nodes: 8
-    decode_workers: 4
+    decode_nodes: 16
+    decode_workers: 8
     prefill_nodes: 2
     prefill_workers: 1
