@@ -9,6 +9,7 @@ Uses NATS/etcd for communication between frontend and backend workers.
 
 import logging
 import shlex
+import threading
 from typing import TYPE_CHECKING, Any
 
 from srtctl.core.health import WorkerHealthResult, check_dynamo_health
@@ -67,6 +68,7 @@ class DynamoFrontend:
         config: Any,  # SrtConfig
         backend: Any,  # BackendProtocol
         backend_processes: list["Process"],
+        stop_event: "threading.Event | None" = None,  # unused: returns immediately
     ) -> list["ManagedProcess"]:
         """Start dynamo frontends on designated nodes."""
         from srtctl.core.processes import ManagedProcess

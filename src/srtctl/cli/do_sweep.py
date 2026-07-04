@@ -602,10 +602,14 @@ class SweepOrchestrator(
         exit_code = 1
 
         try:
-            # Stage 1: Head infrastructure (NATS, etcd)
-            reporter.report(JobStatus.STARTING, JobStage.HEAD_INFRASTRUCTURE, "Starting head infrastructure")
-            head_proc = self.start_head_infrastructure(registry)
-            registry.add_process(head_proc)
+            # Stage 1: Head infrastructure (NATS, etcd). Only the dynamo request
+            # plane uses it; trtllm_serve routes via a static ser.yaml, so skip it.
+            if self.config.frontend.type == "trtllm_serve":
+                logger.info("Skipping NATS/etcd infrastructure (frontend.type=trtllm_serve)")
+            else:
+                reporter.report(JobStatus.STARTING, JobStage.HEAD_INFRASTRUCTURE, "Starting head infrastructure")
+                head_proc = self.start_head_infrastructure(registry)
+                registry.add_process(head_proc)
 
             # Stage 1b: Mooncake master (optional, co-located with infra node)
             mooncake_proc = self.start_mooncake_master(registry)
@@ -627,7 +631,7 @@ class SweepOrchestrator(
 
             # Stage 3: Frontend
             reporter.report(JobStatus.FRONTEND, JobStage.FRONTEND, "Starting frontend")
-            frontend_procs = self.start_frontend(registry)
+            frontend_procs = self.start_frontend(registry, stop_event)
             for proc in frontend_procs:
                 registry.add_process(proc)
 

@@ -258,7 +258,7 @@ Frontend/router configuration.
 
 ```yaml
 frontend:
-  # Frontend type: "dynamo" (default) or "sglang"
+  # Frontend type: "dynamo" (default), "sglang", or "trtllm_serve"
   type: dynamo
 
   # Scaling
@@ -282,7 +282,7 @@ frontend:
 
 | Field                       | Type | Default       | Description                         |
 | --------------------------- | ---- | ------------- | ----------------------------------- |
-| `type`                      | str  | dynamo        | Frontend type: "dynamo" or "sglang" |
+| `type`                      | str  | dynamo        | Frontend type: "dynamo", "sglang", or "trtllm_serve" |
 | `enable_multiple_frontends` | bool | true          | Scale with nginx + multiple routers |
 | `num_additional_frontends`  | int  | 9             | Additional routers beyond master    |
 | `nginx_container`           | str  | nginx:1.27.4  | Custom nginx container image        |
@@ -291,6 +291,21 @@ frontend:
 | `env`                       | dict | null          | Env vars for frontend processes     |
 
 See [SGLang Router](sglang-router.md) for detailed architecture.
+
+### trtllm_serve frontend
+
+`type: trtllm_serve` runs the `trtllm-serve disaggregated` orchestrator as the
+router (for `backend.type: trtllm`). Instead of the dynamo request plane, srtctl
+collects the prefill/decode worker addresses and writes a static `ser.yaml`
+(`context_servers` = prefill, `generation_servers` = decode), then launches the
+orchestrator on the head node. The trtllm workers are started as `trtllm-serve`
+OpenAI servers rather than `dynamo.trtllm`.
+
+Because the orchestrator is a single process, set
+`enable_multiple_frontends: false` (the nginx + multi-router path is not
+supported). A recipe can be switched between the two TRT-LLM serving stacks by
+changing only `frontend.type` between `dynamo` and `trtllm_serve`. See the sample
+recipe `recipes/trtllm/b200-fp8/1k1k/stp/ctx1_gen3_tp8_batch1024_eplb0_mtp0_4_trtllm_serve.yaml`.
 
 ---
 
