@@ -85,11 +85,22 @@ class FrontendStageMixin:
         head = self.runtime.nodes.head
         fe_config = self.config.frontend
 
-        # Single node or multiple frontends disabled: single frontend, no nginx
+        # Single node or multiple frontends disabled: single frontend, no nginx.
+        # The orchestrator node honors frontend.orchestrator_placement (default
+        # "head" -> unchanged; "first_decode" -> first GEN worker-leader node).
         if len(nodes) == 1 or not fe_config.enable_multiple_frontends:
+            placement = getattr(fe_config, "orchestrator_placement", "head")
+            if placement == "head":
+                orchestrator_node = head
+            else:
+                from srtctl.core.topology import placed_node
+
+                orchestrator_node = placed_node(
+                    self.backend_processes, placement, head, kind="frontend.orchestrator_placement"
+                )
             return FrontendTopology(
                 nginx_node=None,
-                frontend_nodes=[head],
+                frontend_nodes=[orchestrator_node],
                 frontend_port=FRONTEND_PUBLIC_PORT,
                 public_port=FRONTEND_PUBLIC_PORT,
             )
