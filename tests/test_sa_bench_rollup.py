@@ -32,47 +32,43 @@ def test_sa_bench_rollup_generates_json_and_csv_without_metadata(tmp_path):
 
     valid_low_concurrency = {
         "model_id": "GLM-5-FP8",
-        "random_input_len": 8192,
-        "random_output_len": 1024,
         "max_concurrency": 16,
         "output_throughput": 1234.5,
         "total_token_throughput": 9876.0,
         "request_throughput": 1.25,
         "mean_ttft_ms": 100.0,
+        "p99_ttft_ms": 150.0,
         "mean_tpot_ms": 10.0,
+        "p99_tpot_ms": 15.0,
         "mean_itl_ms": 20.0,
+        "p99_itl_ms": 30.0,
         "mean_e2el_ms": 200.0,
         "median_ttft_ms": 95.0,
         "median_tpot_ms": 8.0,
         "median_itl_ms": 12.5,
         "completed": 160,
-        "total_input": None,
-        "total_output": None,
-        "percentiles_ttft_ms": [(99.0, 150.0)],
-        "percentiles_tpot_ms": [(99.0, 15.0)],
-        "percentiles_itl_ms": [(99.0, 30.0)],
+        "total_input_tokens": 1310720,
+        "total_output_tokens": 163840,
     }
     valid_high_concurrency = {
         "model_id": "GLM-5-FP8",
-        "random_input_len": 8192,
-        "random_output_len": 1024,
         "max_concurrency": 32,
         "output_throughput": 2222.25,
         "total_token_throughput": 11111.0,
         "request_throughput": 2.5,
         "mean_ttft_ms": 110.0,
+        "p99_ttft_ms": 151.0,
         "mean_tpot_ms": 11.0,
+        "p99_tpot_ms": 16.0,
         "mean_itl_ms": 21.0,
+        "p99_itl_ms": 31.0,
         "mean_e2el_ms": 210.0,
         "median_ttft_ms": 96.0,
         "median_tpot_ms": 9.5,
         "median_itl_ms": 13.0,
         "completed": 320,
-        "total_input": 1,
-        "total_output": 2,
-        "percentiles_ttft_ms": [(99.0, 151.0)],
-        "percentiles_tpot_ms": [(99.0, 16.0)],
-        "percentiles_itl_ms": [(99.0, 31.0)],
+        "total_input_tokens": 2621440,
+        "total_output_tokens": 327680,
     }
 
     (result_dir / "results_concurrency_32_gpus_48_ctx_8_gen_40.json").write_text(json.dumps(valid_high_concurrency))
@@ -88,9 +84,27 @@ def test_sa_bench_rollup_generates_json_and_csv_without_metadata(tmp_path):
 
     json_data = json.loads(json_rollup.read_text())
     assert json_data["benchmark_type"] == "sa-bench"
+
+    # ISL/OSL are parsed from the result-dir name, not from the results JSON.
+    assert json_data["config"] == {"model": "GLM-5-FP8", "isl": 8192, "osl": 1024}
+
     assert [run["concurrency"] for run in json_data["runs"]] == [16, 32]
-    assert json_data["runs"][0]["ttft_mean_ms"] == 100.0
-    assert json_data["runs"][1]["ttft_p99_ms"] == 151.0
+
+    low = json_data["runs"][0]
+    assert low["ttft_mean_ms"] == 100.0
+    assert low["ttft_p99_ms"] == 150.0
+    assert low["tpot_p99_ms"] == 15.0
+    assert low["itl_p99_ms"] == 30.0
+    assert low["total_input_tokens"] == 1310720
+    assert low["total_output_tokens"] == 163840
+
+    high = json_data["runs"][1]
+    assert high["ttft_mean_ms"] == 110.0
+    assert high["ttft_p99_ms"] == 151.0
+    assert high["tpot_p99_ms"] == 16.0
+    assert high["itl_p99_ms"] == 31.0
+    assert high["total_input_tokens"] == 2621440
+    assert high["total_output_tokens"] == 327680
 
     rows = _read_csv_rows(csv_rollup)
     assert [row["Concurrency"] for row in rows] == ["16", "32"]

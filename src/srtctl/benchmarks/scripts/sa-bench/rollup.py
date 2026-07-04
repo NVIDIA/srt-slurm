@@ -35,14 +35,15 @@ OUTPUT_FIELDS = [
 RUNNING_REQ_PATTERN = re.compile(r"#running-req:\s*(\d+)")
 
 
-def _get_percentile(percentiles: list, target: float) -> float | None:
-    """Extract a specific percentile value from the percentiles list."""
-    if not percentiles:
-        return None
-    for p, v in percentiles:
-        if p == target:
-            return v
-    return None
+_ISL_OSL_RE = re.compile(r"sa-bench_isl_(\d+)_osl_(\d+)")
+
+
+def _parse_isl_osl(dir_name: str) -> tuple[int | None, int | None]:
+    """Parse ISL/OSL from the result dir name; (None, None) if absent."""
+    m = _ISL_OSL_RE.search(dir_name)
+    if not m:
+        return None, None
+    return int(m.group(1)), int(m.group(2))
 
 
 def _read_job_metadata(log_dir: Path) -> dict[str, Any] | None:
@@ -220,10 +221,11 @@ def main(log_dir: Path) -> None:
             continue
 
         if not config:
+            isl, osl = _parse_isl_osl(result_file.parent.name)
             config = {
                 "model": data.get("model_id"),
-                "isl": data.get("random_input_len"),
-                "osl": data.get("random_output_len"),
+                "isl": isl,
+                "osl": osl,
             }
 
         runs.append({
@@ -231,15 +233,15 @@ def main(log_dir: Path) -> None:
             "throughput_toks": data.get("output_throughput"),
             "request_throughput": data.get("request_throughput"),
             "ttft_mean_ms": data.get("mean_ttft_ms"),
-            "ttft_p99_ms": _get_percentile(data.get("percentiles_ttft_ms", []), 99.0),
+            "ttft_p99_ms": data.get("p99_ttft_ms"),
             "tpot_mean_ms": data.get("mean_tpot_ms"),
-            "tpot_p99_ms": _get_percentile(data.get("percentiles_tpot_ms", []), 99.0),
+            "tpot_p99_ms": data.get("p99_tpot_ms"),
             "itl_mean_ms": data.get("mean_itl_ms"),
-            "itl_p99_ms": _get_percentile(data.get("percentiles_itl_ms", []), 99.0),
+            "itl_p99_ms": data.get("p99_itl_ms"),
             "e2el_mean_ms": data.get("mean_e2el_ms"),
             "completed_requests": data.get("completed"),
-            "total_input_tokens": data.get("total_input"),
-            "total_output_tokens": data.get("total_output"),
+            "total_input_tokens": data.get("total_input_tokens"),
+            "total_output_tokens": data.get("total_output_tokens"),
         })
 
         csv_rows.append(
