@@ -7,6 +7,7 @@ import os
 import sys
 import time
 import traceback
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 
 import aiohttp
@@ -15,6 +16,15 @@ from tqdm.asyncio import tqdm
 from transformers import AutoTokenizer, PreTrainedTokenizer, PreTrainedTokenizerFast
 
 AIOHTTP_TIMEOUT = aiohttp.ClientTimeout(total=6 * 60 * 60)
+
+
+@asynccontextmanager
+async def _get_session(session: aiohttp.ClientSession | None = None):
+    if session is not None:
+        yield session
+    else:
+        async with aiohttp.ClientSession(trust_env=True, timeout=AIOHTTP_TIMEOUT) as local_session:
+            yield local_session
 
 
 @dataclass
@@ -45,17 +55,20 @@ class RequestFuncOutput:
     prompt_len: int = 0
     error: str = ""
     start_time: float = 0.0  # absolute perf_counter time when request was sent
-    text_chunks: list[str] = field(default_factory=list)  # text content of each SSE chunk (incl. first), same length as itl+1
+    text_chunks: list[str] = field(
+        default_factory=list
+    )  # text content of each SSE chunk (incl. first), same length as itl+1
 
 
 async def async_request_tgi(
     request_func_input: RequestFuncInput,
     pbar: tqdm | None = None,
+    session: aiohttp.ClientSession | None = None,
 ) -> RequestFuncOutput:
     api_url = request_func_input.api_url
     assert api_url.endswith("generate_stream")
 
-    async with aiohttp.ClientSession(trust_env=True, timeout=AIOHTTP_TIMEOUT) as session:
+    async with _get_session(session) as session:
         params = {
             "best_of": request_func_input.best_of,
             "max_new_tokens": request_func_input.output_len,
@@ -122,11 +135,12 @@ async def async_request_tgi(
 async def async_request_trt_llm(
     request_func_input: RequestFuncInput,
     pbar: tqdm | None = None,
+    session: aiohttp.ClientSession | None = None,
 ) -> RequestFuncOutput:
     api_url = request_func_input.api_url
     assert api_url.endswith("generate_stream")
 
-    async with aiohttp.ClientSession(trust_env=True, timeout=AIOHTTP_TIMEOUT) as session:
+    async with _get_session(session) as session:
         assert request_func_input.best_of == 1
         payload = {
             "accumulate_tokens": True,
@@ -190,8 +204,9 @@ async def async_request_trt_llm(
 async def async_request_deepspeed_mii(
     request_func_input: RequestFuncInput,
     pbar: tqdm | None = None,
+    session: aiohttp.ClientSession | None = None,
 ) -> RequestFuncOutput:
-    async with aiohttp.ClientSession(trust_env=True, timeout=AIOHTTP_TIMEOUT) as session:
+    async with _get_session(session) as session:
         assert request_func_input.best_of == 1
 
         payload = {
@@ -232,13 +247,14 @@ async def async_request_deepspeed_mii(
 async def async_request_openai_completions(
     request_func_input: RequestFuncInput,
     pbar: tqdm | None = None,
+    session: aiohttp.ClientSession | None = None,
 ) -> RequestFuncOutput:
     api_url = request_func_input.api_url
-    assert api_url.endswith(
-        ("completions", "profile")
-    ), "OpenAI Completions API URL must end with 'completions' or 'profile'."
+    assert api_url.endswith(("completions", "profile")), (
+        "OpenAI Completions API URL must end with 'completions' or 'profile'."
+    )
 
-    async with aiohttp.ClientSession(trust_env=True, timeout=AIOHTTP_TIMEOUT) as session:
+    async with _get_session(session) as session:
         payload = {
             "model": request_func_input.model_name if request_func_input.model_name else request_func_input.model,
             "prompt": request_func_input.prompt,
@@ -305,7 +321,7 @@ async def async_request_openai_completions(
                     else:
                         output.success = False
                         output.error = (
-                            "Never received a valid chunk to calculate TTFT." "This response will be marked as failed!"
+                            "Never received a valid chunk to calculate TTFT.This response will be marked as failed!"
                         )
                     output.generated_text = generated_text
                     output.latency = most_recent_timestamp - st
@@ -325,13 +341,14 @@ async def async_request_openai_completions(
 async def async_request_dynamo_completions(
     request_func_input: RequestFuncInput,
     pbar: tqdm | None = None,
+    session: aiohttp.ClientSession | None = None,
 ) -> RequestFuncOutput:
     api_url = request_func_input.api_url
-    assert api_url.endswith(
-        ("completions", "profile")
-    ), "OpenAI Completions API URL must end with 'completions' or 'profile'."
+    assert api_url.endswith(("completions", "profile")), (
+        "OpenAI Completions API URL must end with 'completions' or 'profile'."
+    )
 
-    async with aiohttp.ClientSession(trust_env=True, timeout=AIOHTTP_TIMEOUT) as session:
+    async with _get_session(session) as session:
         payload = {
             "model": request_func_input.model_name if request_func_input.model_name else request_func_input.model,
             "prompt": request_func_input.prompt,
@@ -404,7 +421,7 @@ async def async_request_dynamo_completions(
                     else:
                         output.success = False
                         output.error = (
-                            "Never received a valid chunk to calculate TTFT." "This response will be marked as failed!"
+                            "Never received a valid chunk to calculate TTFT.This response will be marked as failed!"
                         )
                     output.generated_text = generated_text
                     output.latency = most_recent_timestamp - st
@@ -424,11 +441,12 @@ async def async_request_dynamo_completions(
 async def async_request_openai_chat_completions(
     request_func_input: RequestFuncInput,
     pbar: tqdm | None = None,
+    session: aiohttp.ClientSession | None = None,
 ) -> RequestFuncOutput:
     api_url = request_func_input.api_url
     assert api_url.endswith("chat/completions"), "OpenAI Chat Completions API URL must end with 'chat/completions'."
 
-    async with aiohttp.ClientSession(trust_env=True, timeout=AIOHTTP_TIMEOUT) as session:
+    async with _get_session(session) as session:
         content = [{"type": "text", "text": request_func_input.prompt}]
         if request_func_input.multi_modal_content:
             content.append(request_func_input.multi_modal_content)
@@ -589,17 +607,24 @@ def _load_glm_moe_dsa_tokenizer(pretrained_model_name_or_path: str) -> "PreTrain
     from transformers import PreTrainedTokenizerFast
 
     _SAFE_CONFIG_KEYS = (
-        "pad_token", "pad_token_id", "eos_token", "eos_token_id",
-        "bos_token", "bos_token_id", "unk_token", "unk_token_id",
-        "model_max_length", "padding_side", "truncation_side",
+        "pad_token",
+        "pad_token_id",
+        "eos_token",
+        "eos_token_id",
+        "bos_token",
+        "bos_token_id",
+        "unk_token",
+        "unk_token_id",
+        "model_max_length",
+        "padding_side",
+        "truncation_side",
     )
 
     path = Path(pretrained_model_name_or_path)
     tokenizer_json = path / "tokenizer.json"
     if not tokenizer_json.exists():
         raise FileNotFoundError(
-            f"Expected tokenizer.json at {tokenizer_json}. "
-            "GlmMoeDsaTokenizer loads from tokenizer.json only."
+            f"Expected tokenizer.json at {tokenizer_json}. GlmMoeDsaTokenizer loads from tokenizer.json only."
         )
 
     rust_tok = RustTokenizer.from_file(str(tokenizer_json))
@@ -651,8 +676,9 @@ def get_tokenizer(
         if custom_tokenizer == "glm_moe_dsa":
             return _load_glm_moe_dsa_tokenizer(pretrained_model_name_or_path)
         from importlib import import_module
+
         try:
-            module_path, class_name = custom_tokenizer.rsplit('.', 1)
+            module_path, class_name = custom_tokenizer.rsplit(".", 1)
             module = import_module(module_path)
             tokenizer_class = getattr(module, class_name)
             return tokenizer_class.from_pretrained(
@@ -663,7 +689,8 @@ def get_tokenizer(
         except (ValueError, ImportError, AttributeError) as e:
             raise ValueError(
                 f"Failed to load custom_tokenizer '{custom_tokenizer}'. "
-                "Expected 'glm_moe_dsa' or 'module.path.ClassName'.") from e
+                "Expected 'glm_moe_dsa' or 'module.path.ClassName'."
+            ) from e
 
     tokenizer = AutoTokenizer.from_pretrained(
         pretrained_model_name_or_path,
