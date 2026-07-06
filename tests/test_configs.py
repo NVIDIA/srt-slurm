@@ -267,6 +267,14 @@ class TestDynamoConfig:
         assert "--force-reinstall --quiet maturin" in sglang_branch
         assert "--force-reinstall --quiet maturin" in portable_branch
 
+        # Per-node serialization guard: both branches clone/build/install into
+        # shared paths (/sgl-workspace or /tmp + site-packages), so only the
+        # first local task installs. No hash key for top-of-tree → fixed sentinel.
+        assert "flock -x 201" in cmd
+        assert "if [ ! -f /tmp/.dynamo-installed-top-of-tree ]" in cmd
+        assert "touch /tmp/.dynamo-installed-top-of-tree" in cmd
+        assert "201>/tmp/.dynamo-install-top-of-tree.lock" in cmd
+
     def test_hash_and_top_of_tree_not_allowed(self):
         """Cannot specify both hash and top_of_tree."""
         from srtctl.core.schema import DynamoConfig

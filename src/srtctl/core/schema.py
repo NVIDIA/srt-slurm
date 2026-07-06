@@ -1194,9 +1194,25 @@ def _live_source_install_for_top_of_tree() -> str:
         "echo 'Dynamo installed from source (HEAD)'"
     )
 
-    return (
+    install_once = (
         "echo 'Installing dynamo from source (HEAD)...' && "
         f"if [ -d /sgl-workspace ]; then {sglang}; else {portable}; fi"
+    )
+    # Serialize per node. Both branches clone/build/pip-install into shared
+    # locations (/sgl-workspace or /tmp, and the container's site-packages) that
+    # every task on a node shares, so N concurrent per-task installs race — one
+    # git-cloning into a dir another is deleting, or --force-reinstall tearing
+    # down a shared dependency file mid-read (OSError). Node-local flock +
+    # sentinel: the first local task does the whole install, the rest block then
+    # skip. No hash key here (this is HEAD), so use a fixed sentinel — a
+    # container instance only ever installs one top-of-tree build. Mirrors the
+    # guard in _hash_cached_source_install.
+    return (
+        "( flock -x 201; "
+        "if [ ! -f /tmp/.dynamo-installed-top-of-tree ]; then "
+        f"{install_once} && touch /tmp/.dynamo-installed-top-of-tree; "
+        "fi "
+        ") 201>/tmp/.dynamo-install-top-of-tree.lock"
     )
 
 
