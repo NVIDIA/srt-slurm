@@ -1,0 +1,240 @@
+base:
+  name: gb300-fp4-glm5-mtp
+  model:
+    path: glm-5-fp4
+    container: v0.5.13.post1
+    precision: fp4
+  identity:
+    model:
+      repo: nvidia/GLM-5-NVFP4
+      revision: dc54ff55a7e9e71b85db953d8bc22eca894b44c6
+    frameworks:
+      dynamo: 1.2.1
+      sglang: 0.5.13.post1
+  resources:
+    gpu_type: gb300
+    gpus_per_node: 4
+  frontend:
+    type: dynamo
+  dynamo:
+    version: 1.2.1
+  backend:
+    prefill_environment:
+      TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: '1800'
+      PYTHONUNBUFFERED: '1'
+      DYN_SKIP_SGLANG_LOG_FORMATTING: '1'
+      SGLANG_DISAGGREGATION_HEARTBEAT_MAX_FAILURE: '100000'
+      SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT: '100000'
+      SGLANG_DISAGGREGATION_WAITING_TIMEOUT: '100000'
+      MC_TE_METRIC: 'true'
+      MC_FORCE_MNNVL: '1'
+      NCCL_MNNVL_ENABLE: '1'
+      NCCL_CUMEM_ENABLE: '1'
+      SGLANG_MOONCAKE_CUSTOM_MEM_POOL: 'True'
+      SGLANG_USE_MESSAGE_QUEUE_BROADCASTER: '0'
+      SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK: '1'
+      UCX_TLS: cuda_copy,cuda_ipc,sm,self,tcp
+      UCX_LOG_LEVEL: info
+    decode_environment:
+      TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: '1800'
+      PYTHONUNBUFFERED: '1'
+      DYN_SKIP_SGLANG_LOG_FORMATTING: '1'
+      SGLANG_DISAGGREGATION_HEARTBEAT_MAX_FAILURE: '100000'
+      SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT: '100000'
+      SGLANG_DISAGGREGATION_WAITING_TIMEOUT: '100000'
+      MC_TE_METRIC: 'true'
+      MC_FORCE_MNNVL: '1'
+      NCCL_MNNVL_ENABLE: '1'
+      NCCL_CUMEM_ENABLE: '1'
+      SGLANG_MOONCAKE_CUSTOM_MEM_POOL: 'True'
+      SGLANG_USE_MESSAGE_QUEUE_BROADCASTER: '0'
+      SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK: '1'
+      SGLANG_MOE_NVFP4_DISPATCH: '1'
+      UCX_TLS: cuda_copy,cuda_ipc,sm,self,tcp
+      UCX_LOG_LEVEL: info
+    sglang_config:
+      prefill:
+        served-model-name: GLM-5-FP4
+        trust-remote-code: true
+        quantization: modelopt_fp4
+        kv-cache-dtype: fp8_e4m3
+        disaggregation-mode: prefill
+        disaggregation-transfer-backend: nixl
+        tensor-parallel-size: 2
+        data-parallel-size: 2
+        expert-parallel-size: 2
+        enable-dp-attention: true
+        enable-dp-lm-head: true
+        load-balance-method: total_tokens
+        chunked-prefill-size: 16384
+        max-prefill-tokens: 8192
+        max-running-requests: 72
+        cuda-graph-max-bs: 72
+        mem-fraction-static: 0.95
+        context-length: 9280
+        nsa-prefill-backend: trtllm
+        nsa-decode-backend: trtllm
+        moe-runner-backend: flashinfer_trtllm
+        fp4-gemm-backend: flashinfer_cutlass
+        enable-flashinfer-allreduce-fusion: true
+        disable-radix-cache: true
+        weight-loader-prefetch-checkpoints: true
+        model-loader-extra-config: '{"enable_multithread_load": true}'
+      decode:
+        served-model-name: GLM-5-FP4
+        trust-remote-code: true
+        quantization: modelopt_fp4
+        kv-cache-dtype: fp8_e4m3
+        disaggregation-mode: decode
+        disaggregation-transfer-backend: nixl
+        mem-fraction-static: 0.946
+        context-length: 9280
+        chunked-prefill-size: 64
+        tensor-parallel-size: 4
+        data-parallel-size: 1
+        expert-parallel-size: 1
+        enable-flashinfer-allreduce-fusion: true
+        speculative-algorithm: EAGLE
+        speculative-num-steps: 2
+        speculative-eagle-topk: 1
+        speculative-num-draft-tokens: 3
+        max-running-requests: 5
+        cuda-graph-max-bs: 5
+        nsa-decode-backend: trtllm
+        nsa-prefill-backend: trtllm
+        moe-runner-backend: flashinfer_trtllm
+        fp4-gemm-backend: flashinfer_cutlass
+        skip-tokenizer-init: true
+        stream-interval: 30
+        disable-radix-cache: true
+        weight-loader-prefetch-checkpoints: true
+        model-loader-extra-config: '{"enable_multithread_load": true}'
+  health_check:
+    max_attempts: 360
+    interval_seconds: 10
+  benchmark:
+    type: sa-bench
+    req_rate: inf
+# ################# 8k1k #################
+zip_override_mtp_8k1k_hightpt:
+  name: [8k1k-4p1d_dep16, 8k1k-8p1d_dep16]
+  backend:
+    decode_environment:
+      SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK: '1024'
+      SGLANG_NVFP4_CKPT_FP8_NEXTN_MOE: '1'
+    sglang_config:
+      decode:
+        cuda-graph-max-bs: [253, 500]
+        data-parallel-size: 16
+        deepep-mode: low_latency
+        enable-dp-attention: true
+        enable-dp-lm-head: true
+        enable-flashinfer-allreduce-fusion: false
+        expert-parallel-size: 16
+        max-running-requests: [253, 500]
+        mem-fraction-static: 0.7
+        moe-a2a-backend: deepep
+        moe-dense-tp-size: 1
+        moe-runner-backend: flashinfer_cutedsl
+        speculative-moe-a2a-backend: deepep
+        speculative-moe-runner-backend: deep_gemm
+        tensor-parallel-size: 16
+  benchmark:
+    concurrencies: [[364], [512]]
+    isl: 8192
+    osl: 1024
+  resources:
+    decode_nodes: 4
+    decode_workers: 1
+    prefill_nodes: [2, 4]
+    prefill_workers: [4, 8]
+zip_override_mtp_8k1k_lowlat:
+  name: [8k1k-1p2d_tp4, 8k1k-1p2d_tp4-conc16, 8k1k-1p4d_tp4, 8k1k-1p4d_tp4-conc4, 8k1k-1p8d_tp4, 8k1k-1p8d_tp4-conc1]
+  backend:
+    decode_environment:
+      SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK: ['512', '512', '1024', '1024', null, null]
+    sglang_config:
+      decode:
+        cuda-graph-max-bs: [30, 16, 12, 4, 5, 1]
+        enable-dp-attention: [false, false, null, null, null, null]
+        enable-dp-lm-head: [false, false, null, null, null, null]
+        max-running-requests: [30, 16, 12, 4, 5, 1]
+    type: [sglang, sglang, null, null, null, null]
+  benchmark:
+    concurrencies: [[66], [41], [55], [23], [44], [12]]
+    isl: 8192
+    osl: 1024
+    random_range_ratio: [1.0, 1.0, null, null, null, null]
+  resources:
+    decode_nodes: [2, 2, 4, 4, 8, 8]
+    decode_workers: [2, 2, 4, 4, 8, 8]
+    prefill_nodes: 1
+    prefill_workers: 1
+# ################# 1k1k #################
+zip_override_mtp_1k1k_hightpt:
+  name: [1k1k-1p1d_dep16, 1k1k-1p1d_dep16-conc512, 1k1k-1p1d_dep32, 1k1k-2p1d_dep16, 1k1k-2p1d_dep16-conc1024]
+  backend:
+    decode_environment:
+      SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK: '1024'
+      SGLANG_NVFP4_CKPT_FP8_NEXTN_MOE: '1'
+    sglang_config:
+      decode:
+        context-length: 2112
+        cuda-graph-max-bs: [712, 482, 611, 2048, 964]
+        data-parallel-size: [16, 16, 32, 16, 16]
+        deepep-mode: low_latency
+        enable-dp-attention: true
+        enable-dp-lm-head: true
+        enable-flashinfer-allreduce-fusion: false
+        ep-dispatch-algorithm: static
+        ep-num-redundant-experts: 0
+        expert-parallel-size: [16, 16, 32, 16, 16]
+        max-running-requests: [712, 482, 611, 2048, 964]
+        mem-fraction-static: [0.75, 0.75, 0.7, 0.75, 0.75]
+        moe-a2a-backend: deepep
+        moe-dense-tp-size: 1
+        moe-runner-backend: flashinfer_cutedsl
+        speculative-moe-a2a-backend: deepep
+        speculative-moe-runner-backend: deep_gemm
+        tensor-parallel-size: [16, 16, 32, 16, 16]
+      prefill:
+        context-length: 2112
+        cuda-graph-max-bs: 256
+        max-running-requests: 256
+  benchmark:
+    concurrencies: [[773], [578], [677], [2048], [1362]]
+    isl: 1024
+    osl: 1024
+  resources:
+    decode_nodes: [4, 4, 8, 4, 4]
+    decode_workers: 1
+    prefill_nodes: 1
+    prefill_workers: [1, 1, 1, 2, 2]
+zip_override_mtp_1k1k_lowlat:
+  name: [1k1k-1p8d_tp4-conc1, 1k1k-1p8d_tp4-conc16, 1k1k-1p8d_tp4-conc4]
+  backend:
+    decode_environment:
+      SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK: '1024'
+    sglang_config:
+      decode:
+        context-length: 2112
+        cuda-graph-max-bs: [1, 16, 4]
+        enable-dp-attention: false
+        enable-dp-lm-head: false
+        max-running-requests: [1, 16, 4]
+        mem-fraction-static: 0.8
+      prefill:
+        context-length: 2112
+        cuda-graph-max-bs: 512
+        max-running-requests: 512
+    type: sglang
+  benchmark:
+    concurrencies: [[13], [162], [44]]
+    isl: 1024
+    osl: 1024
+    random_range_ratio: 1.0
+  resources:
+    decode_nodes: 8
+    decode_workers: 8
+    prefill_nodes: 1
+    prefill_workers: 1
