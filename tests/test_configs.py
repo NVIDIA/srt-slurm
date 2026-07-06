@@ -192,6 +192,34 @@ class TestDynamoConfig:
         assert "maturin" not in cmd
         assert "git clone" not in cmd
 
+    def test_install_command_serialized_with_flock(self):
+        """Install command is wrapped in a per-environment flock + sentinel.
+
+        With --ntasks-per-node > 1 (e.g. TRTLLM), co-located tasks race
+        concurrent pip installs into the shared container site-packages. The
+        wrapper serializes them and lets tasks after the first skip. The lock
+        is anchored in the Python env (sys.prefix), NOT /tmp, so co-located
+        containers with a bind-mounted /tmp don't collide.
+        """
+        from srtctl.core.schema import DynamoConfig
+
+        for config in (
+            DynamoConfig(version="0.8.0"),
+            DynamoConfig(wheel="1.2.0.dev20260426"),
+        ):
+            cmd = config.get_install_commands()
+            # Lock dir resolved from the active Python env, not /tmp.
+            assert "sys.prefix" in cmd
+            assert "/tmp/srtctl_dynamo_install" not in cmd
+            # FD 200 node-local; the hash source install nests flock -x 201 on
+            # the /configs cache lock; distinct FDs keep the locks independent.
+            assert "flock -x 200" in cmd
+            assert '$DYN_LOCK_DIR/.srtctl_dynamo_install.lock' in cmd
+            assert '$DYN_LOCK_DIR/.srtctl_dynamo_install.complete' in cmd
+            # Sentinel short-circuits repeat installs; touched on success.
+            assert 'touch "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete"' in cmd
+            assert '200>"$DYN_LOCK_DIR/.srtctl_dynamo_install.lock"' in cmd
+
     def test_hash_install_command(self):
         """Hash config generates a cache-aware source-install command.
 
@@ -209,7 +237,7 @@ class TestDynamoConfig:
         # Cache lookup + flock-protected cold build
         assert "/configs/dynamo-wheels/abc123" in cmd
         assert "/configs/dynamo-wheels/abc123/.complete" in cmd
-        assert "flock -x 200" in cmd
+        assert "flock -x 201" in cmd
         assert "/configs/dynamo-wheels/.abc123.lock" in cmd
 
         # Cold-cache build still does git clone + checkout + maturin build
@@ -254,7 +282,7 @@ class TestDynamoConfig:
         # Both branches (sglang + portable) must force-reinstall maturin — the
         # portable branch previously used a guarded plain install that no-ops on
         # images shipping maturin without a console script.
-        sglang_branch, portable_branch = cmd.split("else", 1)
+        sglang_branch, portable_branch = config._build_install_commands().split("else", 1)
         assert "--force-reinstall --quiet maturin" in sglang_branch
         assert "--force-reinstall --quiet maturin" in portable_branch
 
