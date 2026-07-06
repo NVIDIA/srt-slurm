@@ -374,9 +374,7 @@ class SweepOrchestrator(
             if proc.wait() != 0:
                 failures.append((node, log))
         if failures:
-            raise RuntimeError(
-                "Model staging failed on: " + ", ".join(f"{n} (see {log})" for n, log in failures)
-            )
+            raise RuntimeError("Model staging failed on: " + ", ".join(f"{n} (see {log})" for n, log in failures))
         logger.info("Model staging complete on %d node(s)", len(worker_nodes))
 
     def _ensure_model_cached(self) -> None:

@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 # Stage a model directory from (slow, shared) storage to node-local storage.
 #
 # Runs once per allocated worker node (srun --ntasks-per-node=1) inside the
