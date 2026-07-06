@@ -1121,11 +1121,27 @@ def _hash_cached_source_install(dynamo_hash: str) -> str:
         f"cd / && rm -rf $DYN_BUILD_DIR; "
         f"fi "
         f") 200>{lock} && "
-        # Install from the (now warm) cache. Both branches above land here.
+        # Install from the (now warm) cache. The build above is serialized on the
+        # shared /configs lock (one build per job); the pip installs below write
+        # into the container's site-packages, which is SHARED by every task on a
+        # node, so serialize them per node too. Only the first local task
+        # installs; the rest block on the node-local lock, then skip via the
+        # sentinel. Without this, the N concurrent per-task
+        # `pip install --force-reinstall` race on shared dependency files (e.g.
+        # uninstalling typing_extensions) and fail with "OSError: [Errno 2] No
+        # such file" on containers that pre-ship ai-dynamo's Python deps at
+        # conflicting versions (e.g. the TRT-LLM release image). Lock + sentinel
+        # live in node-local /tmp (site-packages is per node), so the install
+        # runs exactly once on each node.
+        f"( flock -x 201; "
+        f"if [ ! -f /tmp/.dynamo-installed-{dynamo_hash} ]; then "
         f"pip install --break-system-packages --force-reinstall {cache}/ai_dynamo_runtime-*.whl && "
         f"rm -rf /tmp/dynamo-src && mkdir -p /tmp/dynamo-src && "
         f"tar -xzf {cache}/dynamo-src.tar.gz -C /tmp/dynamo-src && "
         f"pip install --break-system-packages -e /tmp/dynamo-src/dynamo && "
+        f"touch /tmp/.dynamo-installed-{dynamo_hash}; "
+        f"fi "
+        f") 201>/tmp/.dynamo-install-{dynamo_hash}.lock && "
         f"echo 'Dynamo installed from source ({dynamo_hash})'"
     )
 
@@ -1178,9 +1194,25 @@ def _live_source_install_for_top_of_tree() -> str:
         "echo 'Dynamo installed from source (HEAD)'"
     )
 
-    return (
+    install_once = (
         "echo 'Installing dynamo from source (HEAD)...' && "
         f"if [ -d /sgl-workspace ]; then {sglang}; else {portable}; fi"
+    )
+    # Serialize per node. Both branches clone/build/pip-install into shared
+    # locations (/sgl-workspace or /tmp, and the container's site-packages) that
+    # every task on a node shares, so N concurrent per-task installs race — one
+    # git-cloning into a dir another is deleting, or --force-reinstall tearing
+    # down a shared dependency file mid-read (OSError). Node-local flock +
+    # sentinel: the first local task does the whole install, the rest block then
+    # skip. No hash key here (this is HEAD), so use a fixed sentinel — a
+    # container instance only ever installs one top-of-tree build. Mirrors the
+    # guard in _hash_cached_source_install.
+    return (
+        "( flock -x 201; "
+        "if [ ! -f /tmp/.dynamo-installed-top-of-tree ]; then "
+        f"{install_once} && touch /tmp/.dynamo-installed-top-of-tree; "
+        "fi "
+        ") 201>/tmp/.dynamo-install-top-of-tree.lock"
     )
 
 

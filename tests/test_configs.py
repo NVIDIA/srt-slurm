@@ -235,6 +235,15 @@ class TestDynamoConfig:
         assert "tar -xzf /configs/dynamo-wheels/abc123/dynamo-src.tar.gz" in cmd
         assert "pip install --break-system-packages -e /tmp/dynamo-src/dynamo" in cmd
 
+        # Post-build pip installs are serialized per node: site-packages is shared
+        # by every task on a node, so only the first local task installs (under a
+        # node-local flock + sentinel) and the rest block then skip. Guards against
+        # concurrent --force-reinstall racing on shared dependency files.
+        assert "flock -x 201" in cmd
+        assert "if [ ! -f /tmp/.dynamo-installed-abc123 ]" in cmd
+        assert "touch /tmp/.dynamo-installed-abc123" in cmd
+        assert "201>/tmp/.dynamo-install-abc123.lock" in cmd
+
     def test_top_of_tree_install_command(self):
         """Top-of-tree config generates source install without checkout."""
         from srtctl.core.schema import DynamoConfig
@@ -257,6 +266,14 @@ class TestDynamoConfig:
         sglang_branch, portable_branch = cmd.split("else", 1)
         assert "--force-reinstall --quiet maturin" in sglang_branch
         assert "--force-reinstall --quiet maturin" in portable_branch
+
+        # Per-node serialization guard: both branches clone/build/install into
+        # shared paths (/sgl-workspace or /tmp + site-packages), so only the
+        # first local task installs. No hash key for top-of-tree → fixed sentinel.
+        assert "flock -x 201" in cmd
+        assert "if [ ! -f /tmp/.dynamo-installed-top-of-tree ]" in cmd
+        assert "touch /tmp/.dynamo-installed-top-of-tree" in cmd
+        assert "201>/tmp/.dynamo-install-top-of-tree.lock" in cmd
 
     def test_hash_and_top_of_tree_not_allowed(self):
         """Cannot specify both hash and top_of_tree."""
