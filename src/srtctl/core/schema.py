@@ -1121,11 +1121,27 @@ def _hash_cached_source_install(dynamo_hash: str) -> str:
         f"cd / && rm -rf $DYN_BUILD_DIR; "
         f"fi "
         f") 200>{lock} && "
-        # Install from the (now warm) cache. Both branches above land here.
+        # Install from the (now warm) cache. The build above is serialized on the
+        # shared /configs lock (one build per job); the pip installs below write
+        # into the container's site-packages, which is SHARED by every task on a
+        # node, so serialize them per node too. Only the first local task
+        # installs; the rest block on the node-local lock, then skip via the
+        # sentinel. Without this, the N concurrent per-task
+        # `pip install --force-reinstall` race on shared dependency files (e.g.
+        # uninstalling typing_extensions) and fail with "OSError: [Errno 2] No
+        # such file" on containers that pre-ship ai-dynamo's Python deps at
+        # conflicting versions (e.g. the TRT-LLM release image). Lock + sentinel
+        # live in node-local /tmp (site-packages is per node), so the install
+        # runs exactly once on each node.
+        f"( flock -x 201; "
+        f"if [ ! -f /tmp/.dynamo-installed-{dynamo_hash} ]; then "
         f"pip install --break-system-packages --force-reinstall {cache}/ai_dynamo_runtime-*.whl && "
         f"rm -rf /tmp/dynamo-src && mkdir -p /tmp/dynamo-src && "
         f"tar -xzf {cache}/dynamo-src.tar.gz -C /tmp/dynamo-src && "
         f"pip install --break-system-packages -e /tmp/dynamo-src/dynamo && "
+        f"touch /tmp/.dynamo-installed-{dynamo_hash}; "
+        f"fi "
+        f") 201>/tmp/.dynamo-install-{dynamo_hash}.lock && "
         f"echo 'Dynamo installed from source ({dynamo_hash})'"
     )
 

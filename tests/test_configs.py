@@ -235,6 +235,15 @@ class TestDynamoConfig:
         assert "tar -xzf /configs/dynamo-wheels/abc123/dynamo-src.tar.gz" in cmd
         assert "pip install --break-system-packages -e /tmp/dynamo-src/dynamo" in cmd
 
+        # Post-build pip installs are serialized per node: site-packages is shared
+        # by every task on a node, so only the first local task installs (under a
+        # node-local flock + sentinel) and the rest block then skip. Guards against
+        # concurrent --force-reinstall racing on shared dependency files.
+        assert "flock -x 201" in cmd
+        assert "if [ ! -f /tmp/.dynamo-installed-abc123 ]" in cmd
+        assert "touch /tmp/.dynamo-installed-abc123" in cmd
+        assert "201>/tmp/.dynamo-install-abc123.lock" in cmd
+
     def test_top_of_tree_install_command(self):
         """Top-of-tree config generates source install without checkout."""
         from srtctl.core.schema import DynamoConfig
