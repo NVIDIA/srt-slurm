@@ -1108,7 +1108,7 @@ def _hash_cached_source_install(dynamo_hash: str) -> str:
         f"cd lib/bindings/python/ && "
         f'export RUSTFLAGS="${{RUSTFLAGS:-}} -C target-cpu=native --cfg tokio_unstable" && '
         f"rm -f /tmp/ai_dynamo_runtime*.whl && "
-        f"maturin build -o /tmp && "
+        f"maturin build --release -o /tmp && "
         # Populate cache atomically: copy artifacts first, touch .complete last.
         f"mkdir -p {cache} && "
         f"cp /tmp/ai_dynamo_runtime*.whl {cache}/ && "
@@ -1149,7 +1149,7 @@ def _live_source_install_for_top_of_tree() -> str:
         "cd dynamo && "
         "cd lib/bindings/python/ && "
         'export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native --cfg tokio_unstable" && '
-        "maturin build -o /tmp && "
+        "maturin build --release -o /tmp && "
         "pip install /tmp/ai_dynamo_runtime*.whl && "
         "cd /sgl-workspace/dynamo/ && "
         "pip install -e . && "
@@ -1170,7 +1170,7 @@ def _live_source_install_for_top_of_tree() -> str:
         "cd lib/bindings/python/ && "
         'export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native --cfg tokio_unstable" && '
         "rm -f /tmp/ai_dynamo_runtime*.whl && "
-        "maturin build -o /tmp && "
+        "maturin build --release -o /tmp && "
         "pip install --break-system-packages /tmp/ai_dynamo_runtime*.whl --force-reinstall && "
         "cd /tmp/dynamo_build/dynamo/ && "
         "pip install --break-system-packages -e . && "
