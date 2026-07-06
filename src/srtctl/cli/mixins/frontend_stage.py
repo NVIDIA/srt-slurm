@@ -193,6 +193,8 @@ class FrontendStageMixin:
             backend_port=topology.frontend_port,
             listen_port=topology.public_port,
             nginx_raise_ulimit=self.config.frontend.nginx_raise_ulimit,
+            nginx_session_affinity=self.config.frontend.nginx_session_affinity,
+            nginx_session_affinity_header=self.config.frontend.nginx_session_affinity_header,
         )
 
     def start_frontend(

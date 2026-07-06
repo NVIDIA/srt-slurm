@@ -1328,6 +1328,11 @@ class FrontendConfig:
         nginx_raise_ulimit: Raise nofile before nginx and set ``worker_rlimit_nofile``
             in generated nginx.conf. Off by default; enable on clusters that allow it.
             Override per job or set ``nginx_raise_ulimit`` in srtslurm.yaml for the cluster.
+        nginx_session_affinity: Consistently hash ``nginx_session_affinity_header`` to a
+            frontend. Requests without that header use a generated request ID and stay distributed.
+        nginx_session_affinity_header: Header hashed when affinity is on (default
+            ``X-Dynamo-Session-ID``). Set ``X-Correlation-ID`` for clients (e.g. aiperf) that
+            carry the session id in that header instead.
         args: CLI arguments passed to the frontend/router process
         env: Environment variables for frontend processes
     """
@@ -1337,6 +1342,8 @@ class FrontendConfig:
     num_additional_frontends: int = 9
     nginx_container: str = "nginx:1.27.4"
     nginx_raise_ulimit: bool = False
+    nginx_session_affinity: bool = False
+    nginx_session_affinity_header: str = "X-Dynamo-Session-ID"
     args: dict[str, Any] | None = None
     env: dict[str, str] | None = None
     # trtllm_serve orchestrator (ser.yaml) options; ignored by other frontends.
@@ -1644,3 +1651,13 @@ class SrtConfig:
     def backend_type(self) -> str:
         """Get the backend type string."""
         return self.backend.type
+
+
+def installs_dynamo(config: SrtConfig) -> bool:
+    """Whether this config installs dynamo into its containers (needs root inside).
+
+    Single source of truth for the ENROOT_REMAP_ROOT srun injection (workers +
+    dynamo frontend) and its dry-run display: dynamo is only installed when the
+    dynamo frontend is selected and install isn't disabled.
+    """
+    return config.frontend.type == "dynamo" and config.dynamo.install
