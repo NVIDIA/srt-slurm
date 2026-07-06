@@ -1212,11 +1212,7 @@ def _serialize_node_install(install_cmd: str) -> str:
     """
     # Resolve the env dir at runtime; fall back to $HOME (also container-private)
     # if python3 is somehow unavailable before the install runs.
-    resolve_dir = (
-        'DYN_LOCK_DIR="$(python3 -c '
-        "'import sys; print(sys.prefix)'"
-        ' 2>/dev/null || echo "${HOME:-/root}")"'
-    )
+    resolve_dir = 'DYN_LOCK_DIR="$(python3 -c \'import sys; print(sys.prefix)\' 2>/dev/null || echo "${HOME:-/root}")"'
     lock = '"$DYN_LOCK_DIR/.srtctl_dynamo_install.lock"'
     sentinel = '"$DYN_LOCK_DIR/.srtctl_dynamo_install.complete"'
     return (
