@@ -167,6 +167,12 @@ class VLLMProtocol:
     # / MOONCAKE_LOCAL_HOSTNAME on every vLLM worker.
     mooncake_kv_store: VLLMMooncakeKVStoreConfig | None = None
 
+    # KV events config - enables --kv-events-config with auto-allocated ports.
+    # Required for Dynamo's event-driven KV-aware routing.
+    # Global true enables defaults for prefill and decode workers.
+    # Per-mode: {"prefill": true, "decode": {"topic": "custom"}}
+    kv_events_config: bool | dict[str, Any] | None = None
+
     # Allow prefill and decode workers to share one node when the combined GPU
     # request fits within gpus_per_node. Defaults off to preserve existing P/D
     # node separation.
@@ -197,6 +203,41 @@ class VLLMProtocol:
             return dict(self.vllm_config.aggregated or {})
         return {}
 
+    def get_kv_events_config_for_mode(self, mode: WorkerMode) -> dict[str, Any] | None:
+        """Get --kv-events-config payload for a worker mode."""
+        if not self.kv_events_config:
+            return None
+
+        if self.kv_events_config is True:
+            if mode in ("prefill", "decode"):
+                return {
+                    "publisher": "zmq",
+                    "topic": "kv-events",
+                    "enable_kv_cache_events": True,
+                }
+            return None
+
+        if isinstance(self.kv_events_config, dict):
+            mode_cfg = self.kv_events_config.get("aggregated") if mode == "agg" else self.kv_events_config.get(mode)
+            if mode_cfg is None:
+                return None
+            if mode_cfg is True:
+                return {
+                    "publisher": "zmq",
+                    "topic": "kv-events",
+                    "enable_kv_cache_events": True,
+                }
+            if isinstance(mode_cfg, dict):
+                result = {
+                    "publisher": "zmq",
+                    "topic": "kv-events",
+                    "enable_kv_cache_events": True,
+                }
+                result.update(mode_cfg)
+                return result
+
+        return None
+
     def get_environment_for_mode(self, mode: WorkerMode) -> dict[str, str]:
         """Get environment variables for a worker mode."""
         if mode == "prefill":
@@ -213,12 +254,18 @@ class VLLMProtocol:
         vLLM with dynamo requires unique ports for each worker:
         - DYN_VLLM_KV_EVENT_PORT: ZMQ port for KV events publishing
         - VLLM_NIXL_SIDE_CHANNEL_PORT: Port for NIXL side channel transfers
+        - VLLM_NIXL_SIDE_CHANNEL_HOST: Routable IP for NIXL side channel
+          (vLLM defaults to ``0.0.0.0`` / ``localhost`` which breaks the
+          multi-node NIXL handshake)
         """
+        from srtctl.core.slurm import get_hostname_ip
+
         env: dict[str, str] = {}
         if process.kv_events_port is not None:
             env["DYN_VLLM_KV_EVENT_PORT"] = str(process.kv_events_port)
         if process.nixl_port is not None:
             env["VLLM_NIXL_SIDE_CHANNEL_PORT"] = str(process.nixl_port)
+            env["VLLM_NIXL_SIDE_CHANNEL_HOST"] = get_hostname_ip(process.node)
         return env
 
     def get_mooncake_worker_env(self, infra_node_ip: str, local_hostname: str) -> dict[str, str]:
@@ -560,6 +607,11 @@ class VLLMProtocol:
         # Add config dump path
         if dump_config_path:
             cmd.extend(["--dump-config-to", str(dump_config_path)])
+
+        kv_cfg = self.get_kv_events_config_for_mode(mode)
+        if kv_cfg and process.kv_events_port is not None:
+            kv_cfg["endpoint"] = f"tcp://*:{process.kv_events_port}"
+            cmd.extend(["--kv-events-config", json.dumps(kv_cfg)])
 
         # Add all config flags from vllm_config
         cmd.extend(_config_to_cli_args(config))

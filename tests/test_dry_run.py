@@ -424,3 +424,25 @@ class TestDryRunHetJobs:
         output = capsys.readouterr().out
         assert "Heterogeneous Job" in output
         assert "first node" in output  # infra note on the prefill row
+
+
+class TestDryRunRemapRoot:
+    """ENROOT_REMAP_ROOT is surfaced only when dynamo will be installed."""
+
+    def test_remap_root_shown_for_dynamo_install(self, capsys):
+        config = _make_config({"frontend": {"type": "dynamo"}, "dynamo": {"install": True}})
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "ENROOT_REMAP_ROOT" in output
+
+    def test_remap_root_absent_for_sglang_frontend(self, capsys):
+        config = _make_config({"frontend": {"type": "sglang"}})
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "ENROOT_REMAP_ROOT" not in output
+
+    def test_remap_root_absent_when_install_false(self, capsys):
+        config = _make_config({"frontend": {"type": "dynamo"}, "dynamo": {"install": False}})
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "ENROOT_REMAP_ROOT" not in output

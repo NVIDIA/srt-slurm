@@ -14,6 +14,7 @@ Backend configs are defined in srtctl.backends.configs/ for modularity.
 import builtins
 import itertools
 import logging
+import os
 import shlex
 from collections.abc import Iterator, Mapping
 from dataclasses import field
@@ -830,6 +831,17 @@ class ProfilingConfig:
 
         return env
 
+    @property
+    def nsys_binary(self) -> str:
+        """nsys executable to invoke.
+
+        Defaults to ``nsys`` (resolved on PATH). Override via the
+        ``SRTCTL_NSYS_BIN`` environment variable when running inside a
+        container that doesn't ship nsys on PATH — e.g. mount the host's
+        Nsight Systems install and point this at the absolute path.
+        """
+        return os.environ.get("SRTCTL_NSYS_BIN", "nsys")
+
     def _get_nsys_prefix_trtllm(self, output_file: str) -> list[str]:
         """Get nsys command prefix for TRTLLM workers.
 
@@ -838,7 +850,7 @@ class ProfilingConfig:
         """
         if self.is_nsys_time:
             cmd = [
-                "nsys",
+                self.nsys_binary,
                 "profile",
                 "-t",
                 "cuda,nvtx,ucx",
@@ -852,7 +864,7 @@ class ProfilingConfig:
         else:
             # Iteration-based: TLLM_PROFILE_START_STOP env var triggers cudaProfilerStart/Stop
             cmd = [
-                "nsys",
+                self.nsys_binary,
                 "profile",
                 "-t",
                 "cuda,nvtx,ucx",
@@ -900,9 +912,35 @@ class ProfilingConfig:
         if backend_type == "trtllm":
             return self._get_nsys_prefix_trtllm(output_file)
 
+        # Time-based capture for non-TRTLLM backends (vllm, sglang). Required
+        # for vllm+dynamo because dynamo's HTTP frontend doesn't proxy
+        # /start_profile to the vllm worker (returns 404), so cudaProfilerApi
+        # capture can't be triggered from the bench client — we drive capture
+        # purely by --delay/--duration instead.
+        if self.is_nsys_time:
+            cmd = [
+                self.nsys_binary,
+                "profile",
+                "-t",
+                "cuda,nvtx",
+                "--cuda-graph-trace=node",
+                "--force-overwrite",
+                "true",
+            ]
+            if self.delay_secs is not None:
+                cmd += ["--delay", str(self.delay_secs)]
+            if self.duration_secs is not None:
+                cmd += ["--duration", str(self.duration_secs)]
+            if self.extra_nsys_args:
+                cmd.extend(self.extra_nsys_args)
+            cmd.extend(["-o", output_file])
+            if frontend_type == "dynamo":
+                cmd.insert(-2, "--trace-fork-before-exec=true")
+            return cmd
+
         # SGLang / default path — keep existing behavior
         cmd = [
-            "nsys",
+            self.nsys_binary,
             "profile",
             "-t",
             "cuda,nvtx",
@@ -1070,7 +1108,7 @@ def _hash_cached_source_install(dynamo_hash: str) -> str:
         f"cd lib/bindings/python/ && "
         f'export RUSTFLAGS="${{RUSTFLAGS:-}} -C target-cpu=native --cfg tokio_unstable" && '
         f"rm -f /tmp/ai_dynamo_runtime*.whl && "
-        f"maturin build -o /tmp && "
+        f"maturin build --release -o /tmp && "
         # Populate cache atomically: copy artifacts first, touch .complete last.
         f"mkdir -p {cache} && "
         f"cp /tmp/ai_dynamo_runtime*.whl {cache}/ && "
@@ -1111,7 +1149,7 @@ def _live_source_install_for_top_of_tree() -> str:
         "cd dynamo && "
         "cd lib/bindings/python/ && "
         'export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native --cfg tokio_unstable" && '
-        "maturin build -o /tmp && "
+        "maturin build --release -o /tmp && "
         "pip install /tmp/ai_dynamo_runtime*.whl && "
         "cd /sgl-workspace/dynamo/ && "
         "pip install -e . && "
@@ -1132,7 +1170,7 @@ def _live_source_install_for_top_of_tree() -> str:
         "cd lib/bindings/python/ && "
         'export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native --cfg tokio_unstable" && '
         "rm -f /tmp/ai_dynamo_runtime*.whl && "
-        "maturin build -o /tmp && "
+        "maturin build --release -o /tmp && "
         "pip install --break-system-packages /tmp/ai_dynamo_runtime*.whl --force-reinstall && "
         "cd /tmp/dynamo_build/dynamo/ && "
         "pip install --break-system-packages -e . && "
@@ -1280,6 +1318,11 @@ class FrontendConfig:
         nginx_raise_ulimit: Raise nofile before nginx and set ``worker_rlimit_nofile``
             in generated nginx.conf. Off by default; enable on clusters that allow it.
             Override per job or set ``nginx_raise_ulimit`` in srtslurm.yaml for the cluster.
+        nginx_session_affinity: Consistently hash ``nginx_session_affinity_header`` to a
+            frontend. Requests without that header use a generated request ID and stay distributed.
+        nginx_session_affinity_header: Header hashed when affinity is on (default
+            ``X-Dynamo-Session-ID``). Set ``X-Correlation-ID`` for clients (e.g. aiperf) that
+            carry the session id in that header instead.
         args: CLI arguments passed to the frontend/router process
         env: Environment variables for frontend processes
     """
@@ -1289,6 +1332,8 @@ class FrontendConfig:
     num_additional_frontends: int = 9
     nginx_container: str = "nginx:1.27.4"
     nginx_raise_ulimit: bool = False
+    nginx_session_affinity: bool = False
+    nginx_session_affinity_header: str = "X-Dynamo-Session-ID"
     args: dict[str, Any] | None = None
     env: dict[str, str] | None = None
 
@@ -1394,6 +1439,31 @@ class SrtConfig:
         self._validate_telemetry()
         self._validate_mooncake_kv_store()
         self._validate_het_jobs()
+        self._validate_trtllm_serve()
+
+    def _validate_trtllm_serve(self):
+        """Catch trtllm_serve misconfigurations at load time (dry-run) instead of
+        failing mid-job at the frontend stage.
+
+        The trtllm_serve frontend runs a single ``trtllm-serve disaggregated``
+        orchestrator, so it needs the trtllm backend, a disaggregated layout, and the
+        single-frontend path (no nginx/multi-frontend).
+        """
+        if self.frontend.type != "trtllm_serve":
+            return
+        if self.backend_type != "trtllm":
+            raise ValidationError(
+                f"frontend.type: trtllm_serve requires backend.type: trtllm; got {self.backend_type!r}"
+            )
+        if self.frontend.enable_multiple_frontends:
+            raise ValidationError(
+                "frontend.type: trtllm_serve runs a single orchestrator; set frontend.enable_multiple_frontends: false"
+            )
+        if not self.resources.is_disaggregated:
+            raise ValidationError(
+                "frontend.type: trtllm_serve requires a disaggregated layout "
+                "(set resources.prefill_nodes/prefill_workers and decode_nodes/decode_workers)"
+            )
 
     def _validate_het_jobs(self):
         """When ``resources.het_jobs`` is set to True, enforce supported shape.
@@ -1498,9 +1568,11 @@ class SrtConfig:
         if prof.is_torch and backend_type == "trtllm":
             raise ValidationError("torch profiling is not supported for the trtllm backend; use nsys instead")
 
-        # nsys-time is TRTLLM-only (time-based capture via nsys --delay/--duration)
-        if prof.is_nsys_time and backend_type != "trtllm":
-            raise ValidationError("nsys-time profiling is only supported for the trtllm backend")
+        # nsys-time (time-based capture via nsys --delay/--duration) is supported
+        # for all backends. get_nsys_prefix() emits a time-based command for the
+        # non-TRTLLM (vllm/sglang) path too, which is the only option for
+        # vllm+dynamo where /start_profile returns 404 and cudaProfilerApi-triggered
+        # capture can't fire.
 
         # nsys-time uses top-level delay/duration — no per-phase step configs needed
         if prof.is_nsys_time:
@@ -1595,3 +1667,13 @@ class SrtConfig:
     def backend_type(self) -> str:
         """Get the backend type string."""
         return self.backend.type
+
+
+def installs_dynamo(config: SrtConfig) -> bool:
+    """Whether this config installs dynamo into its containers (needs root inside).
+
+    Single source of truth for the ENROOT_REMAP_ROOT srun injection (workers +
+    dynamo frontend) and its dry-run display: dynamo is only installed when the
+    dynamo frontend is selected and install isn't disabled.
+    """
+    return config.frontend.type == "dynamo" and config.dynamo.install

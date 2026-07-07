@@ -14,8 +14,8 @@ from typing import TYPE_CHECKING, Any
 
 from srtctl.core.fingerprint import generate_capture_script
 from srtctl.core.processes import ManagedProcess, NamedProcesses
-from srtctl.core.schema import build_otel_env
-from srtctl.core.slurm import get_hostname_ip, start_srun_process
+from srtctl.core.schema import build_otel_env, installs_dynamo
+from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, get_hostname_ip, start_srun_process
 from srtctl.ports import ETCD_CLIENT_PORT, KV_EVENTS_PORT_BASE, KVBM_ZMQ_PORT_BASE, NATS_PORT
 
 if TYPE_CHECKING:
@@ -84,7 +84,7 @@ class WorkerStageMixin:
 
         # 2. Dynamo installation (required for dynamo.sglang when using dynamo frontend)
         # Skip if dynamo.install is False (container already has dynamo installed)
-        if self.config.frontend.type == "dynamo" and self.config.dynamo.install:
+        if installs_dynamo(self.config):
             parts.append(self.config.dynamo.get_install_commands())
 
         if not parts:
@@ -138,7 +138,11 @@ class WorkerStageMixin:
         if profiling.enabled:
             (self.runtime.log_dir / "profiles" / mode).mkdir(parents=True, exist_ok=True)
         if profiling.is_nsys:
-            nsys_output = f"/logs/profiles/{mode}/{process.node}_{mode}_w{index}_profile"
+            # Include CUDA_VISIBLE_DEVICES in the output name so per-DP-rank nsys
+            # files don't collide: with data parallelism (e.g. vLLM DP=4) several
+            # ranks share one logical endpoint and the same worker index on a node,
+            # so without the %q{} GPU qualifier they'd all write the same file.
+            nsys_output = f"/logs/profiles/{mode}/{process.node}_{mode}_w{index}_profile_gpu%q{{CUDA_VISIBLE_DEVICES}}"
             nsys_prefix = profiling.get_nsys_prefix(
                 nsys_output, frontend_type=self.config.frontend.type, backend_type=self.config.backend_type
             )
@@ -233,6 +237,7 @@ class WorkerStageMixin:
             env_to_set=env_to_set,
             bash_preamble=bash_preamble,
             srun_options=self.runtime.srun_options,
+            srun_export_env=CONTAINER_REMAP_ROOT_EXPORT if installs_dynamo(self.config) else None,
             het_group=process.het_group,
         )
 
@@ -362,6 +367,7 @@ class WorkerStageMixin:
             container_mounts=self.runtime.container_mounts,
             env_to_set=env_to_set,
             bash_preamble=bash_preamble,
+            srun_export_env=CONTAINER_REMAP_ROOT_EXPORT if installs_dynamo(self.config) else None,
             mpi=srun_config.mpi,
             oversubscribe=srun_config.oversubscribe,
             cpu_bind=srun_config.cpu_bind,

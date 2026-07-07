@@ -4,6 +4,7 @@
 """Tests for configuration loading and validation."""
 
 import glob
+import json
 from pathlib import Path
 
 import pytest
@@ -1416,10 +1417,7 @@ class TestVLLMPrefillDecodeColocation:
         assert {p.nixl_port for p in decode} == {VLLM_NIXL_PORT_BASE + 4}
 
         leader_ports = [
-            port
-            for process in prefill + decode
-            for port in (process.http_port, process.bootstrap_port)
-            if port
+            port for process in prefill + decode for port in (process.http_port, process.bootstrap_port) if port
         ]
         assert sorted(leader_ports) == [
             SGLANG_HTTP_PORT_BASE,
@@ -1979,6 +1977,8 @@ class TestVLLMDataParallelMode:
 
     def test_vllm_get_process_environment(self):
         """Test vLLM sets port environment variables from process."""
+        from unittest.mock import patch
+
         from srtctl.backends import VLLMProtocol
         from srtctl.core.topology import Process
 
@@ -1997,10 +1997,12 @@ class TestVLLMDataParallelMode:
             nixl_port=6550,
         )
 
-        env = backend.get_process_environment(process)
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            env = backend.get_process_environment(process)
 
         assert env["DYN_VLLM_KV_EVENT_PORT"] == "5550"
         assert env["VLLM_NIXL_SIDE_CHANNEL_PORT"] == "6550"
+        assert env["VLLM_NIXL_SIDE_CHANNEL_HOST"] == "10.0.0.1"
 
     def test_vllm_get_process_environment_none_ports(self):
         """Test vLLM handles None ports gracefully."""
@@ -2025,6 +2027,84 @@ class TestVLLMDataParallelMode:
 
         assert "DYN_VLLM_KV_EVENT_PORT" not in env
         assert "VLLM_NIXL_SIDE_CHANNEL_PORT" not in env
+        assert "VLLM_NIXL_SIDE_CHANNEL_HOST" not in env
+
+    def test_vllm_kv_events_config_global_bool(self):
+        """Test kv_events_config=True enables prefill+decode with vLLM defaults."""
+        from srtctl.backends import VLLMProtocol
+
+        config = VLLMProtocol(kv_events_config=True)
+
+        assert config.get_kv_events_config_for_mode("prefill") == {
+            "publisher": "zmq",
+            "topic": "kv-events",
+            "enable_kv_cache_events": True,
+        }
+        assert config.get_kv_events_config_for_mode("decode") == {
+            "publisher": "zmq",
+            "topic": "kv-events",
+            "enable_kv_cache_events": True,
+        }
+        assert config.get_kv_events_config_for_mode("agg") is None
+
+    def test_vllm_kv_events_config_custom_settings(self):
+        """Test kv_events_config per-mode settings merge with vLLM defaults."""
+        from srtctl.backends import VLLMProtocol
+
+        config = VLLMProtocol(
+            kv_events_config={
+                "prefill": {"topic": "prefill-events"},
+                "decode": {"publisher": "custom", "topic": "decode-events"},
+            }
+        )
+
+        prefill_cfg = config.get_kv_events_config_for_mode("prefill")
+        assert prefill_cfg["publisher"] == "zmq"
+        assert prefill_cfg["topic"] == "prefill-events"
+        assert prefill_cfg["enable_kv_cache_events"] is True
+
+        decode_cfg = config.get_kv_events_config_for_mode("decode")
+        assert decode_cfg["publisher"] == "custom"
+        assert decode_cfg["topic"] == "decode-events"
+        assert decode_cfg["enable_kv_cache_events"] is True
+
+    def test_vllm_command_includes_kv_events_config_with_allocated_port(self):
+        """Test vLLM command injects --kv-events-config with the worker port."""
+        from pathlib import Path
+        from unittest.mock import MagicMock
+
+        from srtctl.backends import VLLMProtocol
+        from srtctl.core.topology import Process
+
+        backend = VLLMProtocol(kv_events_config=True)
+        process = Process(
+            node="node0",
+            gpu_indices=frozenset([0]),
+            sys_port=8081,
+            http_port=30000,
+            endpoint_mode="prefill",
+            endpoint_index=0,
+            node_rank=0,
+            kv_events_port=5550,
+        )
+        mock_runtime = MagicMock()
+        mock_runtime.model_path = Path("/model")
+        mock_runtime.is_hf_model = False
+
+        cmd = backend.build_worker_command(
+            process=process,
+            endpoint_processes=[process],
+            runtime=mock_runtime,
+        )
+
+        flag_index = cmd.index("--kv-events-config")
+        kv_cfg = json.loads(cmd[flag_index + 1])
+        assert kv_cfg == {
+            "publisher": "zmq",
+            "topic": "kv-events",
+            "enable_kv_cache_events": True,
+            "endpoint": "tcp://*:5550",
+        }
 
     def test_tp_mode_command_includes_multinode_flags(self):
         """Test standard TP mode includes multi-node coordination flags."""

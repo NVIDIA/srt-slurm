@@ -8,6 +8,7 @@ Handles frontend/router and nginx startup.
 """
 
 import logging
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -181,10 +182,19 @@ class FrontendStageMixin:
             backend_port=topology.frontend_port,
             listen_port=topology.public_port,
             nginx_raise_ulimit=self.config.frontend.nginx_raise_ulimit,
+            nginx_session_affinity=self.config.frontend.nginx_session_affinity,
+            nginx_session_affinity_header=self.config.frontend.nginx_session_affinity_header,
         )
 
-    def start_frontend(self, registry: "ProcessRegistry") -> list[ManagedProcess]:
+    def start_frontend(
+        self, registry: "ProcessRegistry", stop_event: "threading.Event | None" = None
+    ) -> list[ManagedProcess]:
         """Start the frontend layer (nginx + frontends if applicable).
+
+        Args:
+            registry: Process registry.
+            stop_event: Optional event to abort readiness waits a frontend performs
+                while starting (e.g. trtllm_serve waiting for workers).
 
         Returns:
             List of ManagedProcess instances for all frontend processes.
@@ -206,6 +216,7 @@ class FrontendStageMixin:
             config=self.config,
             backend=self.backend,
             backend_processes=self.backend_processes,
+            stop_event=stop_event,
         )
 
         processes.extend(frontend_procs)
