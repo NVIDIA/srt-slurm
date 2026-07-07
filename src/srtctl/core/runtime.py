@@ -197,6 +197,9 @@ class RuntimeContext:
     # Frontend port (for benchmark endpoint)
     frontend_port: int = FRONTEND_PUBLIC_PORT
 
+    # Request plane for dynamo workers
+    request_plane: str = "nats"
+
     @classmethod
     def from_config(
         cls,
@@ -347,6 +350,7 @@ class RuntimeContext:
             srun_options=dict(config.srun_options),
             environment=environment,
             is_hf_model=is_hf_model,
+            request_plane=config.dynamo.request_plane,
         )
 
         # Expand FormattablePath mounts
@@ -371,6 +375,7 @@ class RuntimeContext:
             srun_options=dict(config.srun_options),
             environment=environment,
             is_hf_model=is_hf_model,
+            request_plane=config.dynamo.request_plane,
         )
 
     def format_string(self, template: str, **extra_kwargs) -> str:

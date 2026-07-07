@@ -327,6 +327,34 @@ class TestDynamoConfig:
             "DYNAMO_WHEEL_NAME": "ai_dynamo-1.2.0.dev20260426-py3-none-any.whl",
         }
 
+    def test_request_plane_default_nats(self):
+        """Default request_plane is 'nats'."""
+        from srtctl.core.schema import DynamoConfig
+
+        config = DynamoConfig()
+        assert config.request_plane == "nats"
+
+    def test_request_plane_tcp(self):
+        """request_plane='tcp' is accepted."""
+        from srtctl.core.schema import DynamoConfig
+
+        config = DynamoConfig(request_plane="tcp")
+        assert config.request_plane == "tcp"
+
+    def test_request_plane_http(self):
+        """request_plane='http' is accepted."""
+        from srtctl.core.schema import DynamoConfig
+
+        config = DynamoConfig(request_plane="http")
+        assert config.request_plane == "http"
+
+    def test_request_plane_invalid(self):
+        """Invalid request_plane raises ValueError."""
+        from srtctl.core.schema import DynamoConfig
+
+        with pytest.raises(ValueError, match="Invalid request_plane"):
+            DynamoConfig(request_plane="grpc")
+
 
 class TestSGLangProtocol:
     """Tests for SGLangProtocol."""

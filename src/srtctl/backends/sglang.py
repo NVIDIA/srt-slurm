@@ -383,6 +383,10 @@ class SGLangProtocol:
             kv_cfg["endpoint"] = f"tcp://*:{process.kv_events_port}"
             cmd.extend(["--kv-events-config", json.dumps(kv_cfg)])
 
+        # Add request plane (dynamo frontend only)
+        if not use_sglang:
+            cmd.extend(["--request-plane", runtime.request_plane])
+
         # Add all config flags
         cmd.extend(_config_to_cli_args(config))
 
