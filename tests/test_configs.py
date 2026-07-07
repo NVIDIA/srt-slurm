@@ -2445,6 +2445,9 @@ class TestHuggingFaceModelSupport:
         else:
             runtime.model_path = Path("/models/my-model")
             runtime.is_hf_model = False
+        # build_worker_command reads runtime.worker_model_arg (a real
+        # RuntimeContext property); the mock must provide it. No staging here.
+        runtime.worker_model_arg = str(runtime.model_path) if is_hf else "/model"
         return runtime
 
     # --- vLLM ---

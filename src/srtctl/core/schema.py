@@ -409,6 +409,9 @@ class ModelConfig:
     path: str
     container: str
     precision: str
+    # Optional: stage the model from shared storage to this node-local dir
+    # before workers start (e.g. "/raid/scratch/models"). None = use path directly.
+    stage_dir: str | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -667,6 +670,13 @@ class BenchmarkConfig:
     osl: int | None = None
     concurrencies: list[int] | str | None = None
     req_rate: str | int | None = "inf"
+    # Which node runs the benchmark client:
+    #   "head" (default) -> nodes.head (co-located with orchestrator by default)
+    #   "last_decode"    -> last decode/GEN worker-leader node (isolate the client
+    #                       off the CTX/orchestrator node). When the client lands on
+    #                       a different node than the orchestrator, use the injected
+    #                       $SRT_FRONTEND_HOST env in the benchmark command's URL.
+    client_placement: str = "head"
     sweep: Annotated[SweepConfig, SweepConfigField(allow_none=True, load_default=None, dump_default=None)] | None = None
     # Accuracy benchmark fields
     num_examples: int | None = None
@@ -1396,6 +1406,14 @@ class FrontendConfig:
     nginx_session_affinity_header: str = "X-Dynamo-Session-ID"
     args: dict[str, Any] | None = None
     env: dict[str, str] | None = None
+    # trtllm_serve orchestrator (ser.yaml) options; ignored by other frontends.
+    ctx_router: dict[str, Any] | None = None  # context_servers.router, e.g. {type: conversation}
+    gen_router: dict[str, Any] | None = None  # generation_servers.router
+    server_config_extra: dict[str, Any] | None = None  # extra top-level ser.yaml keys
+    # trtllm_serve: which node runs the disaggregated orchestrator.
+    #   "head" (default) -> nodes.head (first prefill/CTX node)
+    #   "first_decode"   -> first decode/GEN worker-leader node
+    orchestrator_placement: str = "head"
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
