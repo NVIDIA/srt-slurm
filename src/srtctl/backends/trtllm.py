@@ -184,7 +184,10 @@ class TRTLLMProtocol:
         # For local models, model is mounted to /model in the container
         model_arg = str(runtime.model_path) if runtime.is_hf_model else "/model"
 
-        base_prefix = list(nsys_prefix) + ["trtllm-llmapi-launch"] if nsys_prefix else ["trtllm-llmapi-launch"]
+        numactl_prefix = (
+            ["numactl", "-m", "0,1"] if runtime.gpu_type in ("gb200", "gb300") and mode in ("prefill", "decode") else []
+        )
+        base_prefix = list(nsys_prefix or []) + numactl_prefix + ["trtllm-llmapi-launch"]
 
         # trtllm-serve path: launch an OpenAI-compatible trtllm-serve worker. The
         # trtllm_serve frontend fronts these via a static ser.yaml (context/generation
