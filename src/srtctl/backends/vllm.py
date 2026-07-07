@@ -391,6 +391,16 @@ class VLLMProtocol:
         config = self.get_config_for_mode(mode)
         return config.get("data-parallel-size") or config.get("data_parallel_size")
 
+    def should_set_cuda_visible_devices(self, process: Process) -> bool:
+        """Whether worker_stage should narrow CUDA_VISIBLE_DEVICES.
+
+        vLLM DP+EP launches one process per DP rank, but DeepGEMM Mega-MoE
+        symmetric memory needs every rank to keep a consistent node-wide CUDA
+        device namespace. In that mode we select the rank's GPU with
+        ``--device-ids`` instead of CUDA_VISIBLE_DEVICES.
+        """
+        return not self._is_dp_mode(process.endpoint_mode)
+
     def endpoints_to_processes(
         self,
         endpoints: list[Endpoint],
@@ -564,6 +574,9 @@ class VLLMProtocol:
             # DP+EP mode: each GPU runs its own process
             # process.node_rank is the dp_rank (set in endpoints_to_processes)
             dp_rank = process.node_rank
+            device_ids = ",".join(str(i) for i in sorted(process.gpu_indices))
+            if device_ids:
+                cmd.extend(["--device-ids", device_ids])
             # Use the per-endpoint dp_rpc_port allocated by NodePortAllocator
             # (avoids port collisions when multiple endpoints share a node)
             dp_rpc_port = (
