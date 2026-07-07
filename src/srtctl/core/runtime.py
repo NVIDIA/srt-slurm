@@ -200,6 +200,8 @@ class RuntimeContext:
     # Optional lustre->node-local model staging (see model.stage_dir)
     stage_dir: str | None = None
     staged_model_path: Path | None = None
+    # Request plane for dynamo workers
+    request_plane: str = "nats"
 
     @classmethod
     def from_config(
@@ -362,6 +364,7 @@ class RuntimeContext:
             srun_options=dict(config.srun_options),
             environment=environment,
             is_hf_model=is_hf_model,
+            request_plane=config.dynamo.request_plane,
         )
 
         # Expand FormattablePath mounts
@@ -388,6 +391,7 @@ class RuntimeContext:
             is_hf_model=is_hf_model,
             stage_dir=stage_dir,
             staged_model_path=staged_model_path,
+            request_plane=config.dynamo.request_plane,
         )
 
     @property

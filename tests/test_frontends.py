@@ -524,7 +524,7 @@ def _dynamo_frontend_call(*, dynamo_install: bool):
     config = SimpleNamespace(
         frontend=SimpleNamespace(args=None, env=None),
         observability=ObservabilityConfig(),
-        dynamo=SimpleNamespace(install=dynamo_install, get_install_commands=lambda: "echo install-dynamo"),
+        dynamo=SimpleNamespace(install=dynamo_install, get_install_commands=lambda: "echo install-dynamo", request_plane="nats"),
         setup_script=None,
     )
     with patch("srtctl.frontends.dynamo.start_srun_process") as mock_srun:

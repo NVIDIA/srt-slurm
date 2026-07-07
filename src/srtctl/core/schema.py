@@ -1091,6 +1091,9 @@ def _hash_cached_source_install(dynamo_hash: str) -> str:
     (``dynamo-src.tar.gz``), and a ``.complete`` sentinel that's only touched
     on a successful build. flock on the per-hash lock file serializes the
     cold-cache build across multiple frontends starting in parallel.
+
+    Uses FD 201 (not 200) so it nests cleanly inside the node-local
+    ``flock -x 200`` from ``_serialize_node_install``.
     """
     cache = f"{_DYNAMO_CACHE_ROOT}/{dynamo_hash}"
     lock = f"{_DYNAMO_CACHE_ROOT}/.{dynamo_hash}.lock"
@@ -1100,7 +1103,7 @@ def _hash_cached_source_install(dynamo_hash: str) -> str:
         # Subshell + flock-FD pattern: only the first frontend in a cold-cache
         # job builds; later frontends block on the lock then read .complete.
         f"( "
-        f"flock -x 200; "
+        f"flock -x 201; "
         f"if [ ! -f {cache}/.complete ]; then "
         # Build tools — install on cold cache only. apt + protoc + cargo + maturin.
         f"apt-get update -qq && apt-get install -y -qq libclang-dev curl git protobuf-compiler > /dev/null 2>&1 && "
@@ -1130,7 +1133,7 @@ def _hash_cached_source_install(dynamo_hash: str) -> str:
         f"touch {cache}/.complete && "
         f"cd / && rm -rf $DYN_BUILD_DIR; "
         f"fi "
-        f") 200>{lock} && "
+        f") 201>{lock} && "
         # Install from the (now warm) cache. Both branches above land here.
         f"pip install --break-system-packages --force-reinstall {cache}/ai_dynamo_runtime-*.whl && "
         f"rm -rf /tmp/dynamo-src && mkdir -p /tmp/dynamo-src && "
@@ -1194,6 +1197,44 @@ def _live_source_install_for_top_of_tree() -> str:
     )
 
 
+def _serialize_node_install(install_cmd: str) -> str:
+    """Serialize a node-shared dynamo install across co-located srun tasks.
+
+    With ``--ntasks-per-node > 1`` (e.g. TRTLLM's MPI-style launch, one task
+    per GPU), every task on a node runs the worker preamble concurrently
+    against the same shared container root. Concurrent pip installs into the
+    same site-packages race and corrupt each other. An exclusive ``flock``
+    serializes them; a sentinel lets every task after the first short-circuit
+    the (idempotent) install entirely.
+
+    The lock/sentinel are anchored in the active Python environment
+    (``sys.prefix``) — the exact resource being protected. That location is
+    part of the container root filesystem, so it is:
+      * shared by every task sharing that site-packages (correct serialization),
+      * private to each container instance, so co-located containers with a
+        bind-mounted /tmp neither over-serialize nor wrongly skip each other's
+        install, and distinct across jobs (no cross-job/version staleness).
+
+    FD 200 (node-local) is kept distinct from the ``flock -x 201`` that the
+    hash-pinned source install nests on the /configs cache lock inside a
+    subshell. Distinct FDs keep the two node-local and cross-node locks
+    independent and refactor-proof even if that inner subshell is removed.
+    """
+    # Resolve the env dir at runtime; fall back to $HOME (also container-private)
+    # if python3 is somehow unavailable before the install runs.
+    resolve_dir = 'DYN_LOCK_DIR="$(python3 -c \'import sys; print(sys.prefix)\' 2>/dev/null || echo "${HOME:-/root}")"'
+    lock = '"$DYN_LOCK_DIR/.srtctl_dynamo_install.lock"'
+    sentinel = '"$DYN_LOCK_DIR/.srtctl_dynamo_install.complete"'
+    return (
+        f"{resolve_dir} && "
+        f"( flock -x 200; "
+        f"if [ -f {sentinel} ]; then "
+        f"echo 'dynamo install already completed in this environment, skipping'; "
+        f"else {{ {install_cmd} ; }} && touch {sentinel}; fi "
+        f") 200>{lock}"
+    )
+
+
 @dataclass
 class DynamoConfig:
     """Dynamo installation configuration.
@@ -1209,15 +1250,19 @@ class DynamoConfig:
         top_of_tree: Clone repo at HEAD (latest)
         wheel: ai-dynamo package version to install via staged wheels. The
                matching ai-dynamo-runtime wheel is installed automatically.
+        request_plane: Request plane to use (default: "nats"). Valid values: "nats", "tcp", "http"
 
     If top_of_tree, hash, or wheel is set, version is automatically cleared.
     """
+
+    _VALID_REQUEST_PLANES: ClassVar[tuple[str, ...]] = ("nats", "tcp", "http")
 
     install: bool = True
     version: str | None = "0.8.0"
     hash: str | None = None
     top_of_tree: bool = False
     wheel: str | None = None
+    request_plane: str = "nats"
 
     def __post_init__(self) -> None:
         install_sources = [
@@ -1240,6 +1285,11 @@ class DynamoConfig:
                 raise ValueError("dynamo.wheel must be a non-empty package version")
             if Path(self.wheel).name.endswith(".whl") or "/" in self.wheel:
                 raise ValueError("dynamo.wheel must be a package version like '1.2.0.dev20260426', not a filename")
+
+        if self.request_plane not in self._VALID_REQUEST_PLANES:
+            raise ValueError(
+                f"Invalid request_plane '{self.request_plane}', must be one of: {', '.join(self._VALID_REQUEST_PLANES)}"
+            )
 
     @property
     def needs_source_install(self) -> bool:
@@ -1270,7 +1320,17 @@ class DynamoConfig:
         return env
 
     def get_install_commands(self) -> str:
-        """Get the bash commands to install dynamo."""
+        """Get the bash commands to install dynamo.
+
+        The returned command is wrapped in a node-local flock + sentinel so
+        that co-located srun tasks (``--ntasks-per-node > 1``, e.g. TRTLLM)
+        install once per node instead of racing concurrent pip installs into
+        the shared container site-packages. See ``_serialize_node_install``.
+        """
+        return _serialize_node_install(self._build_install_commands())
+
+    def _build_install_commands(self) -> str:
+        """Build the raw (unserialized) dynamo install command."""
         if self.wheel is not None:
             wheel_name = self.wheel_name or Path(self.wheel).name
             version = self.wheel_version

@@ -85,7 +85,7 @@ class DynamoFrontend:
             env_to_set = {
                 "ETCD_ENDPOINTS": f"http://{runtime.nodes.infra}:{ETCD_CLIENT_PORT}",
                 "NATS_SERVER": f"nats://{runtime.nodes.infra}:{NATS_PORT}",
-                "DYN_REQUEST_PLANE": "nats",
+                "DYN_REQUEST_PLANE": config.dynamo.request_plane,
                 "DYN_SKIP_SGLANG_LOG_FORMATTING": "1",
             }
 
