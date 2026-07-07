@@ -1118,7 +1118,7 @@ def _hash_cached_source_install(dynamo_hash: str) -> str:
         f"cd lib/bindings/python/ && "
         f'export RUSTFLAGS="${{RUSTFLAGS:-}} -C target-cpu=native --cfg tokio_unstable" && '
         f"rm -f /tmp/ai_dynamo_runtime*.whl && "
-        f"maturin build -o /tmp && "
+        f"maturin build --release -o /tmp && "
         # Populate cache atomically: copy artifacts first, touch .complete last.
         f"mkdir -p {cache} && "
         f"cp /tmp/ai_dynamo_runtime*.whl {cache}/ && "
@@ -1159,7 +1159,7 @@ def _live_source_install_for_top_of_tree() -> str:
         "cd dynamo && "
         "cd lib/bindings/python/ && "
         'export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native --cfg tokio_unstable" && '
-        "maturin build -o /tmp && "
+        "maturin build --release -o /tmp && "
         "pip install /tmp/ai_dynamo_runtime*.whl && "
         "cd /sgl-workspace/dynamo/ && "
         "pip install -e . && "
@@ -1180,7 +1180,7 @@ def _live_source_install_for_top_of_tree() -> str:
         "cd lib/bindings/python/ && "
         'export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native --cfg tokio_unstable" && '
         "rm -f /tmp/ai_dynamo_runtime*.whl && "
-        "maturin build -o /tmp && "
+        "maturin build --release -o /tmp && "
         "pip install --break-system-packages /tmp/ai_dynamo_runtime*.whl --force-reinstall && "
         "cd /tmp/dynamo_build/dynamo/ && "
         "pip install --break-system-packages -e . && "
@@ -1506,39 +1506,73 @@ class SrtConfig:
             )
 
     def _validate_mooncake_kv_store(self):
-        """Catch the common misconfiguration: mooncake_kv_store set without a
-        matching disaggregation-transfer-backend in sglang_config.
+        """Catch the common misconfiguration: mooncake_kv_store set but the
+        worker-side config doesn't actually wire mooncake into KV transfer.
 
-        Without --disaggregation-transfer-backend mooncake on the worker CLI,
-        the master we launch is unused and the workers fall back to default
-        transport — almost never what the user intends.
+        Without the per-mode flag (SGLang's ``disaggregation-transfer-backend:
+        mooncake`` or vLLM's ``kv-transfer-config`` pointing at
+        ``MooncakeConnector``), the master we launch is unused and workers fall
+        back to the default transport — almost never what the user intends.
         """
         mooncake_cfg = getattr(self.backend, "mooncake_kv_store", None)
         if mooncake_cfg is None:
             return
+        if not self.resources.is_disaggregated:
+            return
 
-        sglang_cfg = getattr(self.backend, "sglang_config", None)
+        backend_type = self.backend.type
+        if backend_type == "sglang":
+            sglang_cfg = getattr(self.backend, "sglang_config", None)
 
-        def _has_mooncake_transfer(mode_cfg: dict | None) -> bool:
-            if not mode_cfg:
+            def _sglang_has_mooncake(mode_cfg: dict | None) -> bool:
+                if not mode_cfg:
+                    return False
+                # SGLang accepts both "disaggregation-transfer-backend" and the
+                # underscore form; _config_to_cli_args normalizes them.
+                for key in ("disaggregation-transfer-backend", "disaggregation_transfer_backend"):
+                    if mode_cfg.get(key) == "mooncake":
+                        return True
                 return False
-            # SGLang accepts both "disaggregation-transfer-backend" and the
-            # underscore form; _config_to_cli_args normalizes them.
-            for key in ("disaggregation-transfer-backend", "disaggregation_transfer_backend"):
-                if mode_cfg.get(key) == "mooncake":
-                    return True
-            return False
 
-        prefill_ok = sglang_cfg is not None and _has_mooncake_transfer(sglang_cfg.prefill)
-        decode_ok = sglang_cfg is not None and _has_mooncake_transfer(sglang_cfg.decode)
+            prefill_ok = sglang_cfg is not None and _sglang_has_mooncake(sglang_cfg.prefill)
+            decode_ok = sglang_cfg is not None and _sglang_has_mooncake(sglang_cfg.decode)
 
-        if self.resources.is_disaggregated and not (prefill_ok or decode_ok):
-            raise ValidationError(
-                "mooncake_kv_store is set but neither sglang_config.prefill nor "
-                "sglang_config.decode has 'disaggregation-transfer-backend: mooncake'. "
-                "Add it to both modes (and 'disaggregation-ib-device') so workers "
-                "actually use the mooncake master srtslurm launches for you."
-            )
+            if not (prefill_ok or decode_ok):
+                raise ValidationError(
+                    "mooncake_kv_store is set but neither sglang_config.prefill nor "
+                    "sglang_config.decode has 'disaggregation-transfer-backend: mooncake'. "
+                    "Add it to both modes (and 'disaggregation-ib-device') so workers "
+                    "actually use the mooncake master srtslurm launches for you."
+                )
+        elif backend_type == "vllm":
+            vllm_cfg = getattr(self.backend, "vllm_config", None)
+
+            def _vllm_has_mooncake(mode_cfg: dict | None) -> bool:
+                if not mode_cfg:
+                    return False
+                # vLLM uses --kv-transfer-config (raw JSON). Mooncake shows up
+                # as either ``MooncakeStoreConnector`` / ``MooncakeConnector``
+                # at the top level, or nested inside a ``MultiConnector``'s
+                # ``kv_connector_extra_config.connectors`` list. A case-insensitive
+                # substring match covers all three forms without re-parsing JSON.
+                for key in ("kv-transfer-config", "kv_transfer_config"):
+                    val = mode_cfg.get(key)
+                    if isinstance(val, str) and "mooncake" in val.lower():
+                        return True
+                return False
+
+            prefill_ok = vllm_cfg is not None and _vllm_has_mooncake(vllm_cfg.prefill)
+            decode_ok = vllm_cfg is not None and _vllm_has_mooncake(vllm_cfg.decode)
+
+            if not (prefill_ok or decode_ok):
+                raise ValidationError(
+                    "mooncake_kv_store is set but neither vllm_config.prefill nor "
+                    "vllm_config.decode has a kv-transfer-config that references a "
+                    "Mooncake connector. Set kv-transfer-config to a JSON value whose "
+                    "kv_connector is MooncakeStoreConnector (or MultiConnector wrapping "
+                    "one) so workers actually use the mooncake master srtslurm launches "
+                    "for you."
+                )
 
     def _validate_profiling(self):
         """Validate profiling configuration matches serving mode."""

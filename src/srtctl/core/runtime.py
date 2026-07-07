@@ -183,6 +183,7 @@ class RuntimeContext:
     # Fields with defaults must come after required fields
     # HuggingFace model support - True if model.path was "hf:model/name"
     is_hf_model: bool = False
+    gpu_type: str | None = None
 
     # Container mounts: host_path -> container_path
     container_mounts: dict[Path, Path] = field(default_factory=dict)
@@ -355,6 +356,7 @@ class RuntimeContext:
             model_path=model_path,
             container_image=container_image,
             gpus_per_node=config.resources.gpus_per_node,
+            gpu_type=config.resources.gpu_type,
             network_interface=get_srtslurm_setting("network_interface", "eth0"),
             container_mounts={},
             srun_options=dict(config.srun_options),
@@ -378,6 +380,7 @@ class RuntimeContext:
             model_path=model_path,
             container_image=container_image,
             gpus_per_node=config.resources.gpus_per_node,
+            gpu_type=config.resources.gpu_type,
             network_interface=get_srtslurm_setting("network_interface", "eth0"),
             container_mounts=container_mounts,
             srun_options=dict(config.srun_options),
