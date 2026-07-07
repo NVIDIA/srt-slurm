@@ -23,6 +23,8 @@ resources:
 
 # until prefill router goes in 0.8.0
 dynamo:
+  # Use NATS for a recipe prior to Dynamo commit 39d2a68.
+  request_plane: "nats"
   hash: "0b33c1dfa0c1c88b4c728e600aa62a1be594b0c6"
 
 frontend:

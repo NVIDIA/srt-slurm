@@ -1,6 +1,8 @@
 name: b200-fp8-mtp-low-latency-tep8-1p-4d
 
 dynamo:
+  # Use NATS for a recipe prior to Dynamo commit 39d2a68.
+  request_plane: "nats"
   version: 0.9.1
 
 model:
