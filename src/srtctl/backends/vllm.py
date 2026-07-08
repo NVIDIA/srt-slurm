@@ -4,7 +4,8 @@
 vLLM backend configuration.
 
 Implements BackendProtocol for vLLM inference serving with prefill/decode disaggregation.
-Uses dynamo.vllm integration module.
+Supports either Dynamo's vLLM integration module or direct `vllm serve` for
+aggregate jobs.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from typing import (
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
-from srtctl.ports import DYN_SYSTEM_PORT_BASE, VLLM_DATA_PARALLEL_RPC_PORT
+from srtctl.ports import DYN_SYSTEM_PORT_BASE, FRONTEND_PUBLIC_PORT, VLLM_DATA_PARALLEL_RPC_PORT
 
 if TYPE_CHECKING:
     from srtctl.backends.base import SrunConfig
@@ -280,13 +281,19 @@ class VLLMProtocol:
         endpoints: list[Endpoint],
         base_sys_port: int = DYN_SYSTEM_PORT_BASE,
         port_allocator: NodePortAllocator | None = None,
+        frontend_type: str = "dynamo",
     ) -> list[Process]:
         """Convert endpoints to processes.
 
-        For DP+EP mode (data-parallel-size set), creates one process per GPU.
+        For Dynamo DP+EP mode (data-parallel-size set), creates one process per GPU.
+        For direct vLLM aggregate jobs, `vllm serve` manages local DP ranks from
+        one process, so keep the standard one-process-per-node topology.
         For standard TP mode, creates one process per node.
         """
         from srtctl.core.topology import NodePortAllocator, Process, endpoints_to_processes
+
+        if frontend_type == "vllm":
+            return endpoints_to_processes(endpoints, base_sys_port=base_sys_port, port_allocator=port_allocator)
 
         # Check if any endpoint uses DP mode
         has_dp_mode = any(self._is_dp_mode(ep.mode) for ep in endpoints)
@@ -387,7 +394,7 @@ class VLLMProtocol:
             process: The process to start
             endpoint_processes: All processes for this endpoint (for multi-node)
             runtime: Runtime context with paths and settings
-            frontend_type: Frontend type (currently only "dynamo" supported for vLLM)
+            frontend_type: Frontend type ("dynamo" or direct "vllm")
             nsys_prefix: Optional nsys profiling command prefix
             dump_config_path: Path to dump config JSON
         """
@@ -413,6 +420,31 @@ class VLLMProtocol:
 
         # Start with nsys prefix if provided
         cmd: list[str] = list(nsys_prefix) if nsys_prefix else []
+
+        if frontend_type == "vllm":
+            if mode != "agg":
+                raise ValueError("frontend.type: vllm supports aggregate vLLM jobs only")
+            if is_multi_node:
+                raise ValueError("frontend.type: vllm currently supports single-node aggregate jobs only")
+
+            config.pop("host", None)
+            config.pop("port", None)
+            config.pop("connector", None)
+            config.setdefault("served-model-name", served_model_name)
+
+            cmd.extend(
+                [
+                    "vllm",
+                    "serve",
+                    model_arg,
+                    "--host",
+                    "0.0.0.0",
+                    "--port",
+                    str(FRONTEND_PUBLIC_PORT),
+                ]
+            )
+            cmd.extend(_config_to_cli_args(config))
+            return cmd
 
         # Base command - use dynamo.vllm module
         cmd.extend(
