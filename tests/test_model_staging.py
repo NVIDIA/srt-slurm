@@ -116,3 +116,22 @@ class TestWorkerCommandUsesStagedPath:
         )
         # dynamo path passes it as --model-path
         assert "/raid/scratch/models/DeepSeek-V4-Pro" in cmd
+
+    def test_dynamo_worker_publishes_events_by_default(self, tmp_path):
+        backend = TRTLLMProtocol(trtllm_config=TRTLLMServerConfig(decode={"tensor_parallel_size": 4}))
+        cmd = backend.build_worker_command(
+            self._proc(), [self._proc()], self._runtime_mock(tmp_path, "/raid/scratch/models/DeepSeek-V4-Pro"),
+            frontend_type="dynamo",
+        )
+        assert "--publish-events-and-metrics" in cmd
+
+    def test_dynamo_worker_publish_events_disabled(self, tmp_path):
+        backend = TRTLLMProtocol(
+            trtllm_config=TRTLLMServerConfig(decode={"tensor_parallel_size": 4}),
+            publish_events_and_metrics=False,
+        )
+        cmd = backend.build_worker_command(
+            self._proc(), [self._proc()], self._runtime_mock(tmp_path, "/raid/scratch/models/DeepSeek-V4-Pro"),
+            frontend_type="dynamo",
+        )
+        assert "--publish-events-and-metrics" not in cmd

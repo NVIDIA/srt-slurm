@@ -65,6 +65,13 @@ class TRTLLMProtocol:
 
     trtllm_config: TRTLLMServerConfig | None = None
 
+    # Whether dynamo.trtllm workers pass `--publish-events-and-metrics`.
+    # Enables the worker to publish KV-cache events (add/evict) + metrics, which
+    # the dynamo frontend consumes for KV-cache-aware routing (router-mode: kv).
+    # This may impact performance so should be disabled if exact KV aware routing
+    # is not needed.
+    publish_events_and_metrics: bool = True
+
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
     # =========================================================================
@@ -243,6 +250,7 @@ class TRTLLMProtocol:
             ]
         )
 
-        cmd.append("--publish-events-and-metrics")
+        if self.publish_events_and_metrics:
+            cmd.append("--publish-events-and-metrics")
 
         return cmd
