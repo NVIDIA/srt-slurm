@@ -14,6 +14,7 @@ This script is called from within the sbatch job and coordinates:
 
 import argparse
 import functools
+import json
 import logging
 import os
 import subprocess
@@ -24,6 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from srtctl.backends.sglang import SGLangProtocol
+from srtctl.backends.vllm import MOONCAKE_STORE_CONFIG_FILENAME, VLLMProtocol
 from srtctl.cli.mixins import (
     BenchmarkStageMixin,
     FrontendStageMixin,
@@ -51,6 +53,7 @@ from srtctl.ports import (
     FRONTEND_PUBLIC_PORT,
     MOONCAKE_HTTP_METADATA_PORT,
     MOONCAKE_MASTER_PORT,
+    MOONCAKE_METRICS_PORT,
     NATS_PORT,
 )
 
@@ -194,8 +197,10 @@ class SweepOrchestrator(
         Runs on the same node as etcd/nats. Uses mooncake_kv_store.container if set,
         otherwise falls back to the job container.
 
-        We always start the master with its embedded HTTP metadata server enabled
-        (`--enable_http_metadata_server=true`) so:
+        Both SGLang and vLLM share the same launch command and port pair
+        (see ``srtctl.ports`` for the values). We always start the master with
+        its embedded HTTP metadata server enabled
+        (``--enable_http_metadata_server=true``) so:
 
         1. Workers can use ``MOONCAKE_TE_META_DATA_SERVER=http://infra:<metadata-port>/metadata``
            without a separate metadata service.
@@ -204,9 +209,10 @@ class SweepOrchestrator(
            ``/batch_query_keys`` endpoint for L3 reach when
            ``--shared-cache-type hicache`` is set on the frontend.
         """
-        if not isinstance(self.config.backend, SGLangProtocol):
+        backend = self.config.backend
+        if not isinstance(backend, (SGLangProtocol, VLLMProtocol)):
             return None
-        mooncake_cfg = self.config.backend.mooncake_kv_store
+        mooncake_cfg = backend.mooncake_kv_store
         if mooncake_cfg is None:
             return None
 
@@ -214,11 +220,21 @@ class SweepOrchestrator(
         container = mooncake_cfg.container or str(self.runtime.container_image)
         mooncake_log = self.runtime.log_dir / "mooncake_master.out"
 
+        # vLLM's MooncakeStoreConnector reads its config from a JSON file
+        # (MOONCAKE_CONFIG_PATH), not env vars. Write that JSON into log_dir
+        # before workers start; log_dir is mounted at /logs in every worker.
+        if isinstance(backend, VLLMProtocol):
+            store_cfg = backend.build_mooncake_store_config(self.runtime.infra_node_ip)
+            store_cfg_path = self.runtime.log_dir / MOONCAKE_STORE_CONFIG_FILENAME
+            store_cfg_path.write_text(json.dumps(store_cfg, indent=2))
+            logger.info("Wrote mooncake_store_config to %s: %s", store_cfg_path, store_cfg)
+
         logger.info(
-            "Starting mooncake_master on %s (rpc=%d, http_metadata=%d)",
+            "Starting mooncake_master on %s (rpc=%d, http_metadata=%d, metrics=%d)",
             infra_node,
             MOONCAKE_MASTER_PORT,
             MOONCAKE_HTTP_METADATA_PORT,
+            MOONCAKE_METRICS_PORT,
         )
 
         proc = start_srun_process(
@@ -229,6 +245,8 @@ class SweepOrchestrator(
                 f"--http_metadata_server_port={MOONCAKE_HTTP_METADATA_PORT}",
                 "--eviction_high_watermark_ratio=0.9",
                 "--default_kv_lease_ttl=10000",
+                "--enable_metric_reporting=true",
+                f"--metrics_port={MOONCAKE_METRICS_PORT}",
             ],
             nodelist=[infra_node],
             output=str(mooncake_log),
@@ -255,6 +273,13 @@ class SweepOrchestrator(
         )
         if not wait_for_port(infra_node, MOONCAKE_HTTP_METADATA_PORT, timeout=120):
             raise RuntimeError("mooncake_master HTTP metadata server failed to start")
+        logger.info(
+            "Waiting for mooncake_master metrics (port %d) on %s...",
+            MOONCAKE_METRICS_PORT,
+            infra_node,
+        )
+        if not wait_for_port(infra_node, MOONCAKE_METRICS_PORT, timeout=120):
+            raise RuntimeError("mooncake_master metrics server failed to start")
         logger.info("mooncake_master is ready")
 
         return managed
@@ -347,6 +372,36 @@ class SweepOrchestrator(
 
         if removed > 0:
             logger.info("Cleaned %d stale .lock files from HF cache: %s", removed, hf_home)
+
+    def _stage_model(self) -> None:
+        """Copy the model from shared storage to node-local storage on every
+        worker node before workers start (model.stage_dir). One srun per node,
+        idempotent (manifest match => skip). Fails the job if any node fails."""
+        staged = self.runtime.staged_model_path
+        if staged is None:
+            return
+        worker_nodes = list(dict.fromkeys(self.runtime.nodes.worker))
+        src, dest = "/model", str(staged)
+        logger.info("Staging model /model -> %s on %d node(s)", dest, len(worker_nodes))
+        procs = []
+        for node in worker_nodes:
+            log = self.runtime.log_dir / f"stage_model_{node}.out"
+            proc = start_srun_process(
+                command=["bash", "/srtctl-runtime/stage_model.sh", src, dest],
+                nodelist=[node],
+                output=str(log),
+                container_image=str(self.runtime.container_image),
+                container_mounts=self.runtime.container_mounts,
+                het_group=self.runtime.nodes.het_group_for(node),
+            )
+            procs.append((node, proc, log))
+        failures = []
+        for node, proc, log in procs:
+            if proc.wait() != 0:
+                failures.append((node, log))
+        if failures:
+            raise RuntimeError("Model staging failed on: " + ", ".join(f"{n} (see {log})" for n, log in failures))
+        logger.info("Model staging complete on %d node(s)", len(worker_nodes))
 
     def _ensure_model_cached(self) -> None:
         """Pre-download HuggingFace model on a single node before starting workers.
@@ -612,7 +667,7 @@ class SweepOrchestrator(
                 head_proc = self.start_head_infrastructure(registry)
                 registry.add_process(head_proc)
 
-            # Stage 1b: Mooncake master (optional, co-located with infra node)
+            # Stage 1b: Mooncake master (optional, co-located with infra node).
             mooncake_proc = self.start_mooncake_master(registry)
             if mooncake_proc is not None:
                 registry.add_process(mooncake_proc)
@@ -624,6 +679,10 @@ class SweepOrchestrator(
             if self.runtime.is_hf_model:
                 self._clean_stale_hf_locks()
                 self._ensure_model_cached()
+
+            # Pre-worker: stage the model to node-local storage (if configured).
+            if self.runtime.staged_model_path is not None:
+                self._stage_model()
 
             # Stage 2: Workers
             reporter.report(JobStatus.WORKERS, JobStage.WORKERS, "Starting workers")

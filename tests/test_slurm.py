@@ -161,7 +161,7 @@ def test_worker_stage_wraps_nonfatal_fingerprint_hook(tmp_path: Path) -> None:
     mixin.config = SimpleNamespace(
         setup_script="setup.sh",
         frontend=SimpleNamespace(type="sglang"),
-        dynamo=SimpleNamespace(install=False),
+        dynamo=SimpleNamespace(install=False, request_plane="nats"),
         observability=ObservabilityConfig(),
         profiling=SimpleNamespace(enabled=False, is_nsys=False),
         backend=backend,
@@ -212,7 +212,7 @@ def _remap_worker_mixin(tmp_path: Path, *, frontend_type: str, dynamo_install: b
     mixin.config = SimpleNamespace(
         setup_script=None,
         frontend=SimpleNamespace(type=frontend_type),
-        dynamo=SimpleNamespace(install=dynamo_install, get_install_commands=lambda: "echo install-dynamo"),
+        dynamo=SimpleNamespace(install=dynamo_install, get_install_commands=lambda: "echo install-dynamo", request_plane="nats"),
         observability=ObservabilityConfig(),
         profiling=SimpleNamespace(enabled=False, is_nsys=False),
         backend=backend,

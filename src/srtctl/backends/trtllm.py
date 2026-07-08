@@ -182,9 +182,12 @@ class TRTLLMProtocol:
         # Determine model path: HF model ID or container mount path
         # For HF models (hf:prefix), model_path contains the HF model ID (e.g., "facebook/opt-125m")
         # For local models, model is mounted to /model in the container
-        model_arg = str(runtime.model_path) if runtime.is_hf_model else "/model"
+        model_arg = runtime.worker_model_arg
 
-        base_prefix = list(nsys_prefix) + ["trtllm-llmapi-launch"] if nsys_prefix else ["trtllm-llmapi-launch"]
+        numactl_prefix = (
+            ["numactl", "-m", "0,1"] if runtime.gpu_type in ("gb200", "gb300") and mode in ("prefill", "decode") else []
+        )
+        base_prefix = list(nsys_prefix or []) + numactl_prefix + ["trtllm-llmapi-launch"]
 
         # trtllm-serve path: launch an OpenAI-compatible trtllm-serve worker. The
         # trtllm_serve frontend fronts these via a static ser.yaml (context/generation
@@ -236,7 +239,7 @@ class TRTLLMProtocol:
                 "--extra-engine-args",
                 str(container_config_path),
                 "--request-plane",
-                "nats",
+                runtime.request_plane,
             ]
         )
 

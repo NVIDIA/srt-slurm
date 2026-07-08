@@ -769,6 +769,308 @@ backend:
         assert config.backend.mooncake_kv_store.env["MOONCAKE_PROTOCOL"] == "rdma"
 
 
+class TestVLLMMooncakeKVStore:
+    """Tests for vLLM-side mooncake_kv_store integration."""
+
+    def test_vllm_mooncake_worker_env_not_set(self):
+        """No mooncake_kv_store → get_mooncake_worker_env returns empty dict."""
+        from srtctl.backends.vllm import VLLMProtocol
+
+        backend = VLLMProtocol()
+        assert backend.get_mooncake_worker_env("10.0.0.1", "10.0.0.2") == {}
+
+    def test_vllm_mooncake_worker_env_uses_shared_ports(self):
+        """vLLM reuses the shared mooncake_master port pair from srtctl.ports."""
+        from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMProtocol
+        from srtctl.ports import MOONCAKE_HTTP_METADATA_PORT, MOONCAKE_MASTER_PORT
+
+        backend = VLLMProtocol(mooncake_kv_store=VLLMMooncakeKVStoreConfig())
+        env = backend.get_mooncake_worker_env("10.0.0.1", "10.0.0.42")
+        assert env == {
+            "MOONCAKE_MASTER": f"10.0.0.1:{MOONCAKE_MASTER_PORT}",
+            "MOONCAKE_TE_META_DATA_SERVER": f"http://10.0.0.1:{MOONCAKE_HTTP_METADATA_PORT}/metadata",
+            "MOONCAKE_LOCAL_HOSTNAME": "10.0.0.42",
+            "MOONCAKE_CONFIG_PATH": "/logs/mooncake_store_config.json",
+        }
+
+    def test_vllm_mooncake_master_overrides_user_env(self):
+        """User-supplied MOONCAKE_MASTER is always overridden by srtslurm."""
+        from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMProtocol
+        from srtctl.ports import MOONCAKE_MASTER_PORT
+
+        backend = VLLMProtocol(
+            mooncake_kv_store=VLLMMooncakeKVStoreConfig(
+                env={"MOONCAKE_MASTER": "should-be-ignored:9999"}
+            )
+        )
+        env = backend.get_mooncake_worker_env("10.0.0.1", "10.0.0.42")
+        assert env["MOONCAKE_MASTER"] == f"10.0.0.1:{MOONCAKE_MASTER_PORT}"
+
+    def test_vllm_mooncake_local_hostname_user_can_override(self):
+        """User MOONCAKE_LOCAL_HOSTNAME overrides the auto-resolved value."""
+        from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMProtocol
+
+        backend = VLLMProtocol(
+            mooncake_kv_store=VLLMMooncakeKVStoreConfig(
+                env={"MOONCAKE_LOCAL_HOSTNAME": "rdma-nic-ip"}
+            )
+        )
+        env = backend.get_mooncake_worker_env("10.0.0.1", "10.0.0.42")
+        assert env["MOONCAKE_LOCAL_HOSTNAME"] == "rdma-nic-ip"
+
+    def test_vllm_mooncake_loads_from_yaml(self):
+        """vLLM mooncake_kv_store round-trips through YAML deserialization."""
+        import yaml
+
+        from srtctl.core.schema import SrtConfig
+
+        raw = yaml.safe_load("""
+name: test
+model:
+  path: /model
+  container: nvcr.io/test:latest
+  precision: bf16
+resources:
+  prefill_nodes: 1
+  decode_nodes: 1
+  prefill_workers: 1
+  decode_workers: 1
+  gpu_type: gb200
+backend:
+  type: vllm
+  mooncake_kv_store:
+    container: inferactinc/public:mk-int-20260507
+    env:
+      MOONCAKE_PROTOCOL: rdma
+  vllm_config:
+    prefill:
+      kv-transfer-config: '{"kv_connector":"MooncakeConnector","kv_role":"kv_both"}'
+    decode:
+      kv-transfer-config: '{"kv_connector":"MooncakeConnector","kv_role":"kv_both"}'
+""")
+        config = SrtConfig.Schema().load(raw)
+        assert config.backend.mooncake_kv_store is not None
+        assert config.backend.mooncake_kv_store.container == "inferactinc/public:mk-int-20260507"
+        assert config.backend.mooncake_kv_store.env["MOONCAKE_PROTOCOL"] == "rdma"
+
+    def test_vllm_mooncake_disagg_without_kv_transfer_config_raises(self):
+        """vLLM disagg + mooncake_kv_store without MooncakeConnector kv-transfer-config is rejected."""
+        import pytest
+        import yaml
+        from marshmallow import ValidationError
+
+        from srtctl.core.schema import SrtConfig
+
+        raw = yaml.safe_load("""
+name: test
+model:
+  path: /model
+  container: nvcr.io/test:latest
+  precision: bf16
+resources:
+  prefill_nodes: 1
+  decode_nodes: 1
+  prefill_workers: 1
+  decode_workers: 1
+  gpu_type: gb200
+backend:
+  type: vllm
+  mooncake_kv_store:
+    env:
+      MOONCAKE_PROTOCOL: rdma
+""")
+        with pytest.raises(ValidationError, match="Mooncake connector"):
+            SrtConfig.Schema().load(raw)
+
+    def test_vllm_mooncake_disagg_accepts_multiconnector_wrapping_mooncake(self):
+        """Real-world form: MultiConnector wrapping NixlConnector + MooncakeStoreConnector."""
+        import json
+
+        import yaml
+
+        from srtctl.core.schema import SrtConfig
+
+        kv_transfer_cfg = json.dumps(
+            {
+                "kv_connector": "MultiConnector",
+                "kv_role": "kv_both",
+                "kv_connector_extra_config": {
+                    "connectors": [
+                        {"kv_connector": "NixlConnector", "kv_role": "kv_both"},
+                        {
+                            "kv_connector": "MooncakeStoreConnector",
+                            "kv_role": "kv_both",
+                            "kv_connector_extra_config": {"load_async": True},
+                        },
+                    ]
+                },
+            }
+        )
+        raw = yaml.safe_load(f"""
+name: test
+model:
+  path: /model
+  container: nvcr.io/test:latest
+  precision: bf16
+resources:
+  prefill_nodes: 1
+  decode_nodes: 1
+  prefill_workers: 1
+  decode_workers: 1
+  gpu_type: gb200
+backend:
+  type: vllm
+  mooncake_kv_store:
+    env:
+      MOONCAKE_PROTOCOL: rdma
+  vllm_config:
+    prefill:
+      kv-transfer-config: '{kv_transfer_cfg}'
+    decode:
+      kv-transfer-config: '{kv_transfer_cfg}'
+""")
+        config = SrtConfig.Schema().load(raw)
+        assert "MooncakeStoreConnector" in config.backend.vllm_config.prefill["kv-transfer-config"]
+
+    def test_vllm_mooncake_disagg_with_kv_transfer_config_passes(self):
+        """vLLM disagg + mooncake_kv_store with MooncakeConnector kv-transfer-config validates clean."""
+        import yaml
+
+        from srtctl.core.schema import SrtConfig
+
+        raw = yaml.safe_load("""
+name: test
+model:
+  path: /model
+  container: nvcr.io/test:latest
+  precision: bf16
+resources:
+  prefill_nodes: 1
+  decode_nodes: 1
+  prefill_workers: 1
+  decode_workers: 1
+  gpu_type: gb200
+backend:
+  type: vllm
+  mooncake_kv_store:
+    env:
+      MOONCAKE_PROTOCOL: rdma
+  vllm_config:
+    prefill:
+      kv-transfer-config: '{"kv_connector":"MooncakeConnector","kv_role":"kv_both"}'
+    decode:
+      kv-transfer-config: '{"kv_connector":"MooncakeConnector","kv_role":"kv_both"}'
+""")
+        config = SrtConfig.Schema().load(raw)
+        assert config.backend.vllm_config.prefill["kv-transfer-config"]
+
+    def test_vllm_mooncake_store_config_unset_yields_only_master_address(self):
+        """No store_config from user → JSON only contains the auto-injected master_server_address."""
+        from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMProtocol
+        from srtctl.ports import MOONCAKE_MASTER_PORT
+
+        backend = VLLMProtocol(mooncake_kv_store=VLLMMooncakeKVStoreConfig())
+        cfg = backend.build_mooncake_store_config("10.0.0.1")
+        # srtslurm intentionally does not default hardware-specific fields
+        # (protocol, device_name, global_segment_size, …) — users must set
+        # them in YAML. vLLM will fail loudly if they're missing.
+        assert cfg == {"master_server_address": f"10.0.0.1:{MOONCAKE_MASTER_PORT}"}
+
+    def test_vllm_mooncake_store_config_user_overrides(self):
+        """User store_config values pass through; master_server_address is always auto."""
+        from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMProtocol
+        from srtctl.ports import MOONCAKE_MASTER_PORT
+
+        backend = VLLMProtocol(
+            mooncake_kv_store=VLLMMooncakeKVStoreConfig(
+                store_config={
+                    "metadata_server": "http://my-metadata:9000",
+                    "master_server_address": "this-should-be-overridden:1",
+                    "global_segment_size": "100GB",
+                    "local_buffer_size": "8GB",
+                    "protocol": "tcp",
+                    "device_name": "mlx5_0",
+                }
+            )
+        )
+        cfg = backend.build_mooncake_store_config("10.0.0.1")
+        assert cfg["metadata_server"] == "http://my-metadata:9000"
+        # master_server_address is always auto-filled, never user-controlled
+        assert cfg["master_server_address"] == f"10.0.0.1:{MOONCAKE_MASTER_PORT}"
+        assert cfg["global_segment_size"] == "100GB"
+        assert cfg["local_buffer_size"] == "8GB"
+        assert cfg["protocol"] == "tcp"
+        assert cfg["device_name"] == "mlx5_0"
+
+    def test_vllm_mooncake_store_config_passes_unknown_keys_through(self):
+        """Unknown keys in store_config pass through so new vLLM fields work without code changes."""
+        from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMProtocol
+
+        backend = VLLMProtocol(
+            mooncake_kv_store=VLLMMooncakeKVStoreConfig(
+                store_config={"new_upstream_field": "some_value", "another_new_field": 42}
+            )
+        )
+        cfg = backend.build_mooncake_store_config("10.0.0.1")
+        assert cfg["new_upstream_field"] == "some_value"
+        assert cfg["another_new_field"] == 42
+
+    def test_vllm_mooncake_config_path_injected_into_worker_env(self):
+        """MOONCAKE_CONFIG_PATH is auto-injected so vLLM workers find the JSON config."""
+        from srtctl.backends.vllm import (
+            MOONCAKE_STORE_CONFIG_CONTAINER_PATH,
+            VLLMMooncakeKVStoreConfig,
+            VLLMProtocol,
+        )
+
+        backend = VLLMProtocol(mooncake_kv_store=VLLMMooncakeKVStoreConfig())
+        env = backend.get_mooncake_worker_env("10.0.0.1", "10.0.0.42")
+        assert env["MOONCAKE_CONFIG_PATH"] == MOONCAKE_STORE_CONFIG_CONTAINER_PATH
+        assert MOONCAKE_STORE_CONFIG_CONTAINER_PATH == "/logs/mooncake_store_config.json"
+
+    def test_vllm_mooncake_store_config_loads_from_yaml(self):
+        """store_config block round-trips through YAML deserialization."""
+        import yaml
+
+        from srtctl.core.schema import SrtConfig
+
+        raw = yaml.safe_load("""
+name: test
+model:
+  path: /model
+  container: nvcr.io/test:latest
+  precision: bf16
+resources:
+  prefill_nodes: 1
+  decode_nodes: 1
+  prefill_workers: 1
+  decode_workers: 1
+  gpu_type: gb200
+backend:
+  type: vllm
+  mooncake_kv_store:
+    env:
+      MOONCAKE_PROTOCOL: rdma
+    store_config:
+      metadata_server: "P2PHANDSHAKE"
+      global_segment_size: "100GB"
+      local_buffer_size: "4GB"
+      protocol: "rdma"
+      device_name: ""
+  vllm_config:
+    prefill:
+      kv-transfer-config: '{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both"}'
+    decode:
+      kv-transfer-config: '{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both"}'
+""")
+        config = SrtConfig.Schema().load(raw)
+        store_cfg = config.backend.mooncake_kv_store.store_config
+        assert store_cfg is not None
+        assert store_cfg["metadata_server"] == "P2PHANDSHAKE"
+        assert store_cfg["global_segment_size"] == "100GB"
+        assert store_cfg["device_name"] == ""
+
+
 class TestGB200HetAsymmetric:
     """End-to-end test of het-job nodelist parsing + endpoint allocation."""
 
