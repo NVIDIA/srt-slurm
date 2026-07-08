@@ -51,6 +51,7 @@ backend:
     PYTHONNOUSERSITE: '1'
   trtllm_config:
     prefill:
+      trust_remote_code: true
       max_batch_size: 128
       max_num_tokens: 32768
       max_seq_len: 1227
@@ -82,6 +83,7 @@ backend:
         capacity_scheduler_policy: MAX_UTILIZATION
         context_chunking_policy: FIRST_COME_FIRST_SERVED
     decode:
+      trust_remote_code: true
       tensor_parallel_size: 8
       moe_expert_parallel_size: 8
       enable_attention_dp: false
