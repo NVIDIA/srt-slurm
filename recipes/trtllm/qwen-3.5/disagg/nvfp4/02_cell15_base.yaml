@@ -25,7 +25,7 @@ health_check:
 resources:
   gpu_type: gb300
   gpus_per_node: 4
-  prefill_nodes: 5
+  prefill_nodes: 3
   prefill_workers: 5
   gpus_per_prefill: 2
   decode_nodes: 12
