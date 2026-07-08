@@ -697,6 +697,13 @@ class BenchmarkConfig:
     trace_file: str | None = None  # Path to trace JSONL file (container path, e.g., /traces/dataset.jsonl)
     custom_tokenizer: str | None = None  # Custom tokenizer class (e.g., "module.path.ClassName")
     use_chat_template: bool = True  # Pass --use-chat-template to benchmark (default: true)
+    # Agentic / AgentX benchmark fields
+    duration: int | None = None
+    model_prefix: str | None = None
+    result_filename: str | None = None
+    kv_offloading: str | None = None  # "none" or "dram"
+    kv_offload_backend: str | None = None  # e.g. "native", "mooncake", "hicache"
+    total_cpu_dram_gb: int | None = None
     # Custom benchmark hook.
     # ``command`` is passed to ``bash -lc`` verbatim; srtctl does NOT
     # substitute placeholders like ``{nginx_url}`` or ``{slurm_job_id}``.
