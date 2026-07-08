@@ -209,7 +209,7 @@ benchmark:
     mkdir -p /logs/agentic/concurrency_112
     aiperf profile --scenario inferencex-agentx-mvp \
       --url http://$SRT_FRONTEND_HOST:$SRT_FRONTEND_PORT --endpoint /v1/chat/completions --endpoint-type chat --streaming \
-      --model DeepSeek-V4-Pro --tokenizer-trust-remote-code \
+      --model deepseek-ai_DeepSeek-V4-Pro --tokenizer /model --tokenizer-trust-remote-code \
       --public-dataset semianalysis_cc_traces_weka_062126 \
       --num-dataset-entries 393 --slice-duration 1.0 \
       --trajectory-start-min-ratio 0.25 --trajectory-start-max-ratio 0.75 \
