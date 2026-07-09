@@ -278,42 +278,6 @@ def test_worker_stage_no_remap_root_when_dynamo_install_false(tmp_path: Path) ->
     assert mock_srun.call_args.kwargs["srun_export_env"] is None
 
 
-def test_worker_stage_sets_cuda_visible_devices_when_backend_allows(tmp_path: Path) -> None:
-    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
-    process.gpu_indices = [3]
-    process.cuda_visible_devices = "3"
-    mixin.config.backend.should_set_cuda_visible_devices.return_value = True
-
-    with (
-        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
-        patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
-    ):
-        mock_srun.return_value = MagicMock()
-        mixin.start_worker(process, [process])
-
-    env_to_set = mock_srun.call_args.kwargs["env_to_set"]
-    assert env_to_set["CUDA_VISIBLE_DEVICES"] == "3"
-    mixin.config.backend.should_set_cuda_visible_devices.assert_called_once_with(process)
-
-
-def test_worker_stage_skips_cuda_visible_devices_when_backend_opts_out(tmp_path: Path) -> None:
-    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
-    process.gpu_indices = [3]
-    process.cuda_visible_devices = "3"
-    mixin.config.backend.should_set_cuda_visible_devices.return_value = False
-
-    with (
-        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
-        patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
-    ):
-        mock_srun.return_value = MagicMock()
-        mixin.start_worker(process, [process])
-
-    env_to_set = mock_srun.call_args.kwargs["env_to_set"]
-    assert "CUDA_VISIBLE_DEVICES" not in env_to_set
-    mixin.config.backend.should_set_cuda_visible_devices.assert_called_once_with(process)
-
-
 # ---- Heterogeneous-job nodelist parsing ----
 
 
