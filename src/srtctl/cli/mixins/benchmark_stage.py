@@ -55,6 +55,28 @@ class BenchmarkStageMixin:
         """Backend worker processes."""
         raise NotImplementedError
 
+    def _orchestrator_node(self) -> str:
+        """Node the frontend/orchestrator runs on (honors frontend.orchestrator_placement)."""
+        placement = getattr(self.config.frontend, "orchestrator_placement", "head")
+        if placement == "head":
+            return self.runtime.nodes.head
+        from srtctl.core.topology import placed_node
+
+        return placed_node(
+            self.backend_processes, placement, self.runtime.nodes.head, kind="frontend.orchestrator_placement"
+        )
+
+    def _benchmark_node(self) -> str:
+        """Node the benchmark client runs on (honors benchmark.client_placement)."""
+        placement = getattr(self.config.benchmark, "client_placement", "head")
+        if placement == "head":
+            return self.runtime.nodes.head
+        from srtctl.core.topology import placed_node
+
+        return placed_node(
+            self.backend_processes, placement, self.runtime.nodes.head, kind="benchmark.client_placement"
+        )
+
     def run_benchmark(
         self, registry: "ProcessRegistry", stop_event: threading.Event, reporter: StatusReporter | None = None
     ) -> int:
@@ -80,7 +102,7 @@ class BenchmarkStageMixin:
 
         hc = self.config.health_check
         if not wait_for_model(
-            host=self.runtime.nodes.head,
+            host=self._orchestrator_node(),
             port=FRONTEND_PUBLIC_PORT,
             n_prefill=n_prefill,
             n_decode=n_decode,
@@ -131,7 +153,7 @@ class BenchmarkStageMixin:
 
         if benchmark_type == "manual":
             logger.info("Benchmark type is 'manual' - server is ready for testing")
-            logger.info("Frontend URL: http://%s:%d", self.runtime.nodes.head, FRONTEND_PUBLIC_PORT)
+            logger.info("Frontend URL: http://%s:%d", self._orchestrator_node(), FRONTEND_PUBLIC_PORT)
             logger.info("Press Ctrl+C to stop the job")
 
             while not stop_event.is_set():
@@ -193,15 +215,16 @@ class BenchmarkStageMixin:
         # opted in via reporting.live_metrics in the cluster config.
         snapshotter = try_start_snapshotter(self.runtime.log_dir, stop_event)
 
+        bench_node = self._benchmark_node()
         proc = start_srun_process(
             command=cmd,
-            nodelist=[self.runtime.nodes.head],
+            nodelist=[bench_node],
             output=str(log_file),
             container_image=str(container_image),
             container_mounts=container_mounts,
             env_to_set=env_to_set,
             srun_options=self.runtime.srun_options,
-            het_group=self.runtime.nodes.het_group_for(self.runtime.nodes.head),
+            het_group=self.runtime.nodes.het_group_for(bench_node),
         )
 
         try:
@@ -370,6 +393,13 @@ class BenchmarkStageMixin:
 
         env = self._get_benchmark_profiling_env(runner)
         env["SRTCTL_FRONTEND_TYPE"] = self.config.frontend.type
+
+        # Orchestrator endpoint for the benchmark command. When the client runs on
+        # a different node than the orchestrator (e.g. client_placement=last_decode
+        # with orchestrator_placement=first_decode), "localhost" is wrong — the
+        # command should target http://$SRT_FRONTEND_HOST:$SRT_FRONTEND_PORT.
+        env["SRT_FRONTEND_HOST"] = get_hostname_ip(self._orchestrator_node(), self.runtime.network_interface)
+        env["SRT_FRONTEND_PORT"] = str(self.runtime.frontend_port)
 
         # Propagate top-level recipe environment to the bench step. Workers
         # already get this via worker_stage; benches need it too for things
