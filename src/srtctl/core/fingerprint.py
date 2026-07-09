@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import platform
+import shlex
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -34,79 +35,20 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from srtctl.runtime_scripts import FINGERPRINT_SCRIPT_CONTAINER_PATH
+from srtctl.runtime_scripts.fingerprint import (
+    FRAMEWORK_PACKAGES,
+    UNAVAILABLE,
+    cpu_model_from_cpuinfo,
+)
+from srtctl.runtime_scripts.fingerprint import (
+    format_cpu_ids as _format_cpu_ids,
+)
+
 logger = logging.getLogger(__name__)
 
 # Timeout for external commands (seconds)
 _CMD_TIMEOUT = 5
-
-# Sentinel for probes that failed
-UNAVAILABLE = "unavailable"
-
-# Framework name -> pip package name mapping.
-# Used in both native Python probes and the bash capture script.
-FRAMEWORK_PACKAGES: dict[str, str] = {
-    "vllm": "vllm",
-    "sglang": "sglang",
-    "tensorrt_llm": "tensorrt-llm",
-    "dynamo": "ai-dynamo",
-}
-
-_CPU_MODEL_KEYS = {"model name", "cpu model", "hardware"}
-_ARM_CPUINFO_KEYS = {
-    "cpu implementer",
-    "cpu architecture",
-    "cpu variant",
-    "cpu part",
-    "cpu revision",
-}
-
-
-def cpu_model_from_cpuinfo(cpuinfo: str) -> str | None:
-    """Extract a useful CPU model string from Linux ``/proc/cpuinfo`` text."""
-    arm_fields: dict[str, str] = {}
-    processor_label: str | None = None
-
-    for line in cpuinfo.splitlines():
-        key, separator, value = line.partition(":")
-        if not separator:
-            continue
-        normalized_key = key.strip().lower()
-        normalized_value = value.strip()
-        if not normalized_value:
-            continue
-
-        if normalized_key in _CPU_MODEL_KEYS:
-            return normalized_value
-
-        if normalized_key == "processor" and not normalized_value.isdecimal():
-            processor_label = processor_label or normalized_value
-        elif normalized_key in _ARM_CPUINFO_KEYS:
-            arm_fields.setdefault(normalized_key, normalized_value)
-
-    if processor_label:
-        return processor_label
-
-    implementer = arm_fields.get("cpu implementer")
-    part = arm_fields.get("cpu part")
-    if not implementer and not part:
-        return None
-
-    pieces = ["ARM CPU"]
-    if implementer:
-        pieces.append(f"implementer {implementer}")
-    if part:
-        pieces.append(f"part {part}")
-
-    details = [
-        ("architecture", arm_fields.get("cpu architecture")),
-        ("variant", arm_fields.get("cpu variant")),
-        ("revision", arm_fields.get("cpu revision")),
-    ]
-    detail_text = ", ".join(f"{label} {value}" for label, value in details if value)
-    if detail_text:
-        return f"{' '.join(pieces)} ({detail_text})"
-    return " ".join(pieces)
-
 
 # ============================================================================
 # Data Types
@@ -305,23 +247,6 @@ def probe_cpu() -> ProbeResult:
         )
     except Exception as e:
         return ProbeResult.failure(str(e))
-
-
-def _format_cpu_ids(cpu_ids: list[int]) -> str:
-    """Format sorted CPU IDs as a compact Linux cpuset string."""
-    if not cpu_ids:
-        return ""
-
-    ranges: list[str] = []
-    start = previous = cpu_ids[0]
-    for cpu_id in cpu_ids[1:]:
-        if cpu_id == previous + 1:
-            previous = cpu_id
-            continue
-        ranges.append(str(start) if start == previous else f"{start}-{previous}")
-        start = previous = cpu_id
-    ranges.append(str(start) if start == previous else f"{start}-{previous}")
-    return ",".join(ranges)
 
 
 def probe_gpu() -> ProbeResult:
@@ -855,232 +780,19 @@ def format_identity_verification(results: list[IdentityCheckResult], identity: A
 
 
 # ============================================================================
-# Bash preamble generation — for injection into worker startup
+# Worker capture command generation
 # ============================================================================
 
 
-def generate_capture_script(output_path: str) -> str:
-    """Generate a bash one-liner that captures a fingerprint inside a container.
-
-    The generated command:
-    - Runs the fingerprint capture as a Python script
-    - Is wrapped in || true so it never blocks the worker
-    - Takes ~2 seconds
-
-    Args:
-        output_path: Path inside the container where fingerprint JSON is written,
-                     e.g. "/logs/fingerprint_prefill_w0.json"
-
-    Returns:
-        Bash command string safe for inclusion in a preamble chain.
-    """
-    # We write a temp Python script and execute it, rather than using
-    # python3 -c with inline code. This avoids escaping nightmares when
-    # the command passes through bash → srun → bash → python.
-    script = f"""\
-import json, os, subprocess, platform, socket, sys
-from pathlib import Path
-from datetime import datetime, timezone
-
-def run(cmd, timeout=3):
-    try:
-        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
-        return r.stdout.strip() if r.returncode == 0 else None
-    except Exception:
-        return None
-
-def find_python():
-    for p in ['/opt/dynamo/venv/bin/python3', '/opt/venv/bin/python3']:
-        if Path(p).exists():
-            return p
-    return 'python3'
-
-PY = find_python()
-
-def pip_pkgs():
-    result = {{}}
-    for label, cmd in [
-        (PY, f'{{PY}} -m pip freeze 2>/dev/null'.format(PY=PY)),
-        ('python3', 'python3 -m pip freeze 2>/dev/null'),
-        ('pip', 'pip freeze 2>/dev/null'),
-        ('uv', 'uv pip freeze 2>/dev/null'),
-    ]:
-        out = run(cmd)
-        if out:
-            pkgs = sorted([l.strip() for l in out.splitlines() if l.strip() and not l.startswith('#')], key=lambda s: s.lower())
-            if pkgs:
-                result[label] = pkgs
-    return result
-
-def gpu_info():
-    out = run('nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader')
-    if not out: return {{'available': False}}
-    gpus = []
-    for line in out.splitlines():
-        parts = [p.strip() for p in line.split(',')]
-        if len(parts) >= 3:
-            gpus.append({{'name': parts[0], 'driver': parts[1], 'memory': parts[2]}})
-    return {{'available': True, 'driver': gpus[0]['driver'] if gpus else 'unknown', 'gpus': gpus}}
-
-def cpu_model_from_cpuinfo(cpuinfo_text):
-    arm_fields = {{}}
-    processor_label = None
-    for line in cpuinfo_text.splitlines():
-        key, separator, value = line.partition(':')
-        if not separator:
-            continue
-        key = key.strip().lower()
-        value = value.strip()
-        if not value:
-            continue
-        if key in ('model name', 'cpu model', 'hardware'):
-            return value
-        if key == 'processor' and not value.isdecimal():
-            processor_label = processor_label or value
-        elif key in ('cpu implementer', 'cpu architecture', 'cpu variant', 'cpu part', 'cpu revision'):
-            arm_fields.setdefault(key, value)
-    if processor_label:
-        return processor_label
-    implementer = arm_fields.get('cpu implementer')
-    part = arm_fields.get('cpu part')
-    if not implementer and not part:
-        return None
-    pieces = ['ARM CPU']
-    if implementer:
-        pieces.append(f'implementer {{implementer}}')
-    if part:
-        pieces.append(f'part {{part}}')
-    details = [
-        ('architecture', arm_fields.get('cpu architecture')),
-        ('variant', arm_fields.get('cpu variant')),
-        ('revision', arm_fields.get('cpu revision')),
+def generate_capture_command(output_path: str) -> str:
+    """Generate the non-fatal worker command for mounted fingerprint capture."""
+    command = [
+        "python3",
+        str(FINGERPRINT_SCRIPT_CONTAINER_PATH),
+        "--output",
+        output_path,
     ]
-    detail_text = ', '.join(f'{{label}} {{value}}' for label, value in details if value)
-    if detail_text:
-        return f"{{' '.join(pieces)}} ({{detail_text}})"
-    return ' '.join(pieces)
-
-def cpu_info():
-    model = 'unavailable'
-    cpuinfo = Path('/proc/cpuinfo')
-    if cpuinfo.exists():
-        model = cpu_model_from_cpuinfo(cpuinfo.read_text(errors='replace')) or 'unavailable'
-    try:
-        affinity_ids = sorted(os.sched_getaffinity(0))
-    except (AttributeError, OSError):
-        affinity_ids = []
-    affinity_ranges = []
-    if affinity_ids:
-        start = previous = affinity_ids[0]
-        for cpu_id in affinity_ids[1:]:
-            if cpu_id == previous + 1:
-                previous = cpu_id
-                continue
-            affinity_ranges.append(str(start) if start == previous else f'{{start}}-{{previous}}')
-            start = previous = cpu_id
-        affinity_ranges.append(str(start) if start == previous else f'{{start}}-{{previous}}')
-    slurm_keys = ('SLURM_CPUS_ON_NODE', 'SLURM_CPUS_PER_GPU', 'SLURM_CPUS_PER_TASK', 'SLURM_JOB_CPUS_PER_NODE')
-    return {{
-        'model': model,
-        'logical_cpus': os.cpu_count(),
-        'affinity_cpus': len(affinity_ids) if affinity_ids else None,
-        'affinity_list': ','.join(affinity_ranges) if affinity_ranges else None,
-        'slurm': {{key: os.environ[key] for key in slurm_keys if key in os.environ}},
-    }}
-
-def framework_versions():
-    # Use importlib.metadata for all packages — avoids loading native CUDA
-    # extensions (tensorrt_llm, torch) which fail without GPU context.
-    versions = {{}}
-    for name, pkg in [{", ".join(f"('{n}', '{p}')" for n, p in FRAMEWORK_PACKAGES.items())}]:
-        v = run(f"{{PY}} -c \\"import importlib.metadata; print(importlib.metadata.version('{{pkg}}'))\\"".format(PY=PY, pkg=pkg))
-        if v:
-            versions[name] = v
-    return versions
-
-def model_identity(model_path):
-    info = {{}}
-    mp = Path(model_path) if model_path else None
-    if not mp or not mp.exists():
-        return None
-    # HuggingFace snapshot_download: refs/main has commit SHA
-    for refs_path in [mp / '.huggingface' / 'refs' / 'main', mp / 'refs' / 'main']:
-        if refs_path.exists():
-            info['hf_revision'] = refs_path.read_text().strip()
-            break
-    # HuggingFace hf download --local-dir: .cache/huggingface/download/*.metadata
-    # Line 1 of each .metadata file is the commit hash
-    if 'hf_revision' not in info:
-        cache_dl = mp / '.cache' / 'huggingface' / 'download'
-        if cache_dl.is_dir():
-            for meta_file in sorted(cache_dl.glob('*.metadata')):
-                try:
-                    first_line = meta_file.read_text().splitlines()[0].strip()
-                    if len(first_line) == 40 and all(c in '0123456789abcdef' for c in first_line):
-                        info['hf_revision'] = first_line
-                        break
-                except Exception:
-                    pass
-    # HuggingFace: check .huggingface/download_metadata.json (older format)
-    meta = mp / '.huggingface' / 'download_metadata.json'
-    if meta.exists():
-        try:
-            m = json.loads(meta.read_text())
-            if 'commit_hash' in m:
-                info['hf_revision'] = m['commit_hash']
-            if 'repo_id' in m:
-                info['hf_repo'] = m['repo_id']
-        except Exception:
-            pass
-    # config.json often has _name_or_path
-    config_json = mp / 'config.json'
-    if config_json.exists():
-        try:
-            cfg = json.loads(config_json.read_text())
-            if '_name_or_path' in cfg:
-                info['model_id'] = cfg['_name_or_path']
-        except Exception:
-            pass
-    return info or None
-
-def env_vars():
-    import os
-    prefixes = ('CUDA_', 'TORCH_', 'PYTORCH_', 'NCCL_', 'VLLM_', 'SGLANG_', 'SGL_',
-                'TRTLLM_', 'TRT_LLM_', 'TENSORRT_', 'HF_', 'TRANSFORMERS_', 'DYN_',
-                'NVIDIA_', 'OMPI_', 'UCX_', 'NVSHMEM_')
-    secrets = ('TOKEN', 'KEY', 'SECRET', 'PASSWORD', 'CREDENTIAL', 'AUTH')
-    result = {{}}
-    for k, v in sorted(os.environ.items()):
-        if any(k.startswith(p) for p in prefixes):
-            if any(s in k.upper() for s in secrets):
-                result[k] = '***REDACTED***'
-            else:
-                result[k] = v
-    return result
-
-fp = {{
-    'hostname': socket.gethostname(),
-    'timestamp': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-    'arch': platform.machine(),
-    'os': next((l.split('=',1)[1].strip('"') for l in Path('/etc/os-release').read_text().splitlines() if l.startswith('PRETTY_NAME=')), platform.platform()) if Path('/etc/os-release').exists() else platform.platform(),
-    'cpu': cpu_info(),
-    'gpu': gpu_info(),
-    'python_version': platform.python_version(),
-    'cuda_version': run('nvcc --version 2>/dev/null | grep release') or 'unavailable',
-    'nccl_version': run(f'{{PY}} -c "import torch; print(torch.cuda.nccl.version())"'.format(PY=PY)) or 'unavailable',
-    'frameworks': framework_versions(),
-    'model': model_identity('/model'),
-    'env': env_vars(),
-    'pip_packages': pip_pkgs(),
-}}
-Path('{output_path}').parent.mkdir(parents=True, exist_ok=True)
-Path('{output_path}').write_text(json.dumps(fp, indent=2) + '\\n')
-"""
-    # Use a heredoc via process substitution to pass the script to python3.
-    # This is immune to quoting/escaping issues in the bash → srun chain.
-    # NOTE: <(...) requires bash (not POSIX sh/dash). srun containers use bash.
-    # The || true suffix means non-bash shells silently skip fingerprinting.
-    return f"python3 <(cat <<'__FINGERPRINT_EOF__'\n{script}__FINGERPRINT_EOF__\n) || true"
+    return f"{shlex.join(command)} || true"
 
 
 # ============================================================================

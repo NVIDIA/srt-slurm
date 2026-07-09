@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from srtctl.ports import FRONTEND_PUBLIC_PORT
+from srtctl.runtime_scripts import RUNTIME_SCRIPTS_CONTAINER_DIR, RUNTIME_SCRIPTS_HOST_DIR
 
 from .config import get_srtslurm_setting
 from .slurm import get_hostname_ip, get_slurm_het_nodelists, get_slurm_nodelist
@@ -310,9 +311,8 @@ class RuntimeContext:
             if wheelhouse_dir.exists():
                 container_mounts[wheelhouse_dir.resolve()] = Path("/srtctl-wheels")
 
-        runtime_scripts_dir = Path(__file__).resolve().parent.parent / "runtime_scripts"
-        if runtime_scripts_dir.exists():
-            container_mounts[runtime_scripts_dir.resolve()] = Path("/srtctl-runtime")
+        if RUNTIME_SCRIPTS_HOST_DIR.exists():
+            container_mounts[RUNTIME_SCRIPTS_HOST_DIR] = RUNTIME_SCRIPTS_CONTAINER_DIR
 
         # Mount srtctl benchmark scripts
         from srtctl.benchmarks.base import SCRIPTS_DIR
