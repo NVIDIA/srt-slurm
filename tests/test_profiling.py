@@ -429,7 +429,7 @@ class TestVllmNsysProfilerConfig:
             endpoint_mode="decode",
             endpoint_index=0,
         )
-        runtime = SimpleNamespace(model_path=Path("/model"), is_hf_model=False)
+        runtime = SimpleNamespace(model_path=Path("/model"), is_hf_model=False, request_plane="nats")
         return backend.build_worker_command(
             process=process,
             endpoint_processes=[process],
