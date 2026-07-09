@@ -25,12 +25,14 @@ health_check:
 resources:
   gpu_type: gb300
   gpus_per_node: 4
-  prefill_nodes: 3
+  prefill_nodes: 5
   prefill_workers: 5
   gpus_per_prefill: 2
   decode_nodes: 7
   decode_workers: 7
   gpus_per_decode: 4
+  spread_workers: true
+  het_jobs: false
 backend:
   type: trtllm
   prefill_environment:
@@ -44,8 +46,8 @@ backend:
     TRTLLM_ENABLE_PDL: '1'
     TLLM_LOG_LEVEL: INFO
     PYTHONNOUSERSITE: '1'
-    DYN_TCP_WORKER_POOL_SIZE: "18000"
-    DYN_TCP_WORK_QUEUE_SIZE: "72000"
+    DYN_TCP_WORKER_POOL_SIZE: "19000"
+    DYN_TCP_WORK_QUEUE_SIZE: "76000"
   decode_environment:
     TLLM_USE_FLASHINFER_GDN_PREFILL: '0'
     TRTLLM_REQUEST_KV_CACHE_CONCURRENT: '1'
@@ -57,8 +59,8 @@ backend:
     TRTLLM_ENABLE_PDL: '1'
     TLLM_LOG_LEVEL: INFO
     PYTHONNOUSERSITE: '1'
-    DYN_TCP_WORKER_POOL_SIZE: "18000"
-    DYN_TCP_WORK_QUEUE_SIZE: "72000"
+    DYN_TCP_WORKER_POOL_SIZE: "19000"
+    DYN_TCP_WORK_QUEUE_SIZE: "76000"
 
   trtllm_config:
     prefill:
@@ -145,7 +147,7 @@ backend:
         context_chunking_policy: FIRST_COME_FIRST_SERVED
 frontend:
   type: dynamo
-  enable_multiple_frontends: false
+  enable_multiple_frontends: true
   env:
     ETCD_LEASE_TTL: '120'
 benchmark:
