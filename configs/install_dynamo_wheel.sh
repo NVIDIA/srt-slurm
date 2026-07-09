@@ -25,7 +25,8 @@ SENTINEL="${LOCK_DIR}/.srtctl_dynamo_wheel_install.complete"
     if [ -f "${SENTINEL}" ]; then
         echo "dynamo wheel install already completed in this environment, skipping"
     else
-        pip install --ignore-installed --no-cache-dir /dynamo_wheels/*.whl
+        python3 -m pip install --ignore-installed PyYAML==6.0.3
+        pip install --no-cache-dir /dynamo_wheels/*.whl
         touch "${SENTINEL}"
     fi
 ) 200>"${LOCK}"
