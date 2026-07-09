@@ -327,6 +327,159 @@ class TestProfilingValidation:
         assert config.profiling.is_nsys_time
         assert config.backend.type != "trtllm"
 
+    def test_vllm_profiler_config_in_vllm_config_rejected(self):
+        """profiler-config.* in vllm_config conflicts with the auto-injected one."""
+        from marshmallow import ValidationError
+
+        from srtctl.backends.vllm import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.schema import (
+            ModelConfig,
+            ProfilingConfig,
+            ProfilingPhaseConfig,
+            ResourceConfig,
+            SrtConfig,
+        )
+
+        with pytest.raises(ValidationError, match="profiler-config"):
+            SrtConfig(
+                name="test",
+                model=ModelConfig(path="/model", container="/container", precision="fp8"),
+                resources=ResourceConfig(
+                    gpu_type="gb200",
+                    prefill_nodes=1,
+                    decode_nodes=1,
+                    prefill_workers=1,
+                    decode_workers=1,
+                ),
+                backend=VLLMProtocol(vllm_config=VLLMServerConfig(decode={"profiler-config.profiler": "cuda"})),
+                profiling=ProfilingConfig(
+                    type="nsys",
+                    prefill=ProfilingPhaseConfig(start_step=0, stop_step=10),
+                    decode=ProfilingPhaseConfig(start_step=5, stop_step=15),
+                ),
+            )
+
+    def test_vllm_nsys_without_profiler_config_ok(self):
+        """Steps live only in the profiling: block -> no conflict, validation passes."""
+        from srtctl.backends.vllm import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.schema import (
+            ModelConfig,
+            ProfilingConfig,
+            ProfilingPhaseConfig,
+            ResourceConfig,
+            SrtConfig,
+        )
+
+        # Should not raise.
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/container", precision="fp8"),
+            resources=ResourceConfig(
+                gpu_type="gb200",
+                prefill_nodes=1,
+                decode_nodes=1,
+                prefill_workers=1,
+                decode_workers=1,
+            ),
+            backend=VLLMProtocol(vllm_config=VLLMServerConfig(decode={"tensor-parallel-size": 1})),
+            profiling=ProfilingConfig(
+                type="nsys",
+                prefill=ProfilingPhaseConfig(start_step=0, stop_step=10),
+                decode=ProfilingPhaseConfig(start_step=5, stop_step=15),
+            ),
+        )
+        assert config.backend.type == "vllm"
+
+
+class TestVllmNsysProfilerConfig:
+    """Tests for vLLM --profiler-config injection driven by the profiling: block."""
+
+    def test_phase_iteration_properties(self):
+        """start_step/stop_step map to vLLM delay_iterations/max_iterations."""
+        from srtctl.core.schema import ProfilingPhaseConfig
+
+        phase = ProfilingPhaseConfig(start_step=10, stop_step=30)
+        assert phase.vllm_nsys_delay_iterations == 10
+        assert phase.vllm_nsys_max_iterations == 20
+
+        # Missing bounds -> no capture window (0/0).
+        empty = ProfilingPhaseConfig()
+        assert empty.vllm_nsys_delay_iterations == 0
+        assert empty.vllm_nsys_max_iterations == 0
+
+        # stop before start clamps to 0 instead of going negative.
+        assert ProfilingPhaseConfig(start_step=30, stop_step=10).vllm_nsys_max_iterations == 0
+
+    def _build_decode_cmd(self, profiling, monkeypatch, decode_cfg=None):
+        from pathlib import Path
+        from types import SimpleNamespace
+
+        import srtctl.core.slurm as slurm_mod
+        from srtctl.backends.vllm import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Process
+
+        monkeypatch.setattr(slurm_mod, "get_hostname_ip", lambda node: "10.0.0.1")
+
+        backend = VLLMProtocol(vllm_config=VLLMServerConfig(decode=decode_cfg or {"tensor-parallel-size": 1}))
+        process = Process(
+            node="node0",
+            gpu_indices=frozenset({0}),
+            sys_port=20000,
+            http_port=0,
+            endpoint_mode="decode",
+            endpoint_index=0,
+        )
+        runtime = SimpleNamespace(model_path=Path("/model"), is_hf_model=False, request_plane="nats")
+        return backend.build_worker_command(
+            process=process,
+            endpoint_processes=[process],
+            runtime=runtime,
+            profiling=profiling,
+        )
+
+    @staticmethod
+    def _profiler_config(cmd):
+        import json
+
+        if "--profiler-config" not in cmd:
+            return None
+        return json.loads(cmd[cmd.index("--profiler-config") + 1])
+
+    def test_iteration_nsys_injects_profiler_config(self, monkeypatch):
+        """type: nsys with phase steps -> vLLM engine drives cudaProfilerStart at those steps."""
+        from srtctl.core.schema import ProfilingConfig, ProfilingPhaseConfig
+
+        profiling = ProfilingConfig(type="nsys", decode=ProfilingPhaseConfig(start_step=10, stop_step=30))
+        cmd = self._build_decode_cmd(profiling, monkeypatch)
+
+        assert self._profiler_config(cmd) == {
+            "profiler": "cuda",
+            "delay_iterations": 10,
+            "max_iterations": 20,
+        }
+
+    def test_nsys_time_does_not_inject_profiler_config(self, monkeypatch):
+        """nsys-time drives capture by wall-clock --delay/--duration, not engine steps."""
+        from srtctl.core.schema import ProfilingConfig
+
+        profiling = ProfilingConfig(type="nsys-time", delay_secs=120, duration_secs=30)
+        cmd = self._build_decode_cmd(profiling, monkeypatch)
+
+        assert self._profiler_config(cmd) is None
+
+    def test_no_profiling_does_not_inject_profiler_config(self, monkeypatch):
+        """Without a profiling config, nothing is injected."""
+        cmd = self._build_decode_cmd(None, monkeypatch)
+        assert self._profiler_config(cmd) is None
+
+    def test_nsys_without_phase_steps_does_not_inject(self, monkeypatch):
+        """type: nsys but no phase config for this mode -> no engine-driven capture."""
+        from srtctl.core.schema import ProfilingConfig
+
+        profiling = ProfilingConfig(type="nsys")  # no decode phase
+        cmd = self._build_decode_cmd(profiling, monkeypatch)
+        assert self._profiler_config(cmd) is None
+
 
 class TestProfilingIntegration:
     """Integration tests for profiling + benchmarks."""
