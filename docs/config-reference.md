@@ -110,7 +110,6 @@ The `srtslurm.yaml` file can contain the following fields:
 | `default_partition`             | string | Default SLURM partition                               |
 | `default_time_limit`            | string | Default job time limit                                |
 | `gpus_per_node`                 | int    | Default GPUs per node                                 |
-| `minimum_cpus_per_gpu`          | float  | Advisory CPU-allocation warning threshold (default: 1) |
 | `network_interface`             | string | Network interface for NCCL                            |
 | `srtctl_root`                   | string | Root directory for srtctl                             |
 | `output_dir`                    | string | Custom output directory (overrides srtctl_root/outputs) |
@@ -123,8 +122,6 @@ The `srtslurm.yaml` file can contain the following fields:
 **output_dir**: When set, job logs are written to `output_dir/{job_id}/logs` instead of `srtctl_root/outputs/{job_id}/logs`. Useful for CI/CD and ephemeral environments.
 
 **default_bash_preamble**: A shell snippet (e.g. `"ulimit -n 1048576 -s unlimited -u 1048576"`) prepended to every container srun launched by srtctl — workers, frontends, telemetry, benchmark, postprocess. Runs before per-call `bash_preamble` and the main command, so cluster-wide ulimits apply to everything downstream. Silently dropped for distroless containers (e.g. `prom/node-exporter`) that bypass the bash wrapper; a WARNING log is emitted in that case.
-
-**minimum_cpus_per_gpu**: At job start, srtctl compares the actual SLURM CPU allocation with the number of backend GPUs. The default baseline is 1 CPU per backend GPU. Set a larger cluster-specific value for CPU-heavy frontends, tokenization, load generation, or transport paths; set `0` to disable the warning. This is an advisory check and does not modify the generated `sbatch` request. Use `default_sbatch_directives` or recipe `sbatch_directives` to request CPUs or exclusive nodes.
 
 **nginx_raise_ulimit**: When set to `true` or `false`, this value is applied to jobs that omit `frontend.nginx_raise_ulimit` in the recipe. Use `true` on clusters where raising the nginx container’s open-file limit is allowed; leave unset if each job should rely on the frontend default (`false`). A recipe that sets `frontend.nginx_raise_ulimit` always wins.
 
@@ -234,7 +231,7 @@ srtctl records both the requested GPU topology and the effective CPU allocation.
 - adds CPU allocation and warning state to the job metadata used by `srtctl monitor`; and
 - records CPU model, logical CPU count, affinity, and SLURM CPU variables in each worker fingerprint beside GPU details.
 
-For example, a four-GPU backend that receives only two CPUs produces a prominent `CPU ALLOCATION WARNING` before services start. Increase the request with the appropriate cluster policy, such as `cpus-per-task`, `cpus-per-gpu`, or an exclusive-node directive.
+The warning uses a fixed, conservative baseline of one effective CPU per backend GPU. For example, a four-GPU backend that receives only two CPUs produces a prominent `CPU ALLOCATION WARNING` before services start. Increase the request with the appropriate cluster policy, such as `cpus-per-task`, `cpus-per-gpu`, or an exclusive-node directive.
 
 ### Computed Properties
 

@@ -33,7 +33,7 @@ def test_gather_all_never_calls_subprocess(tmp_path: Path):
     mock_run.assert_not_called()
 
 
-def test_gather_job_info_shows_cpu_allocation_warning(tmp_path: Path):
+def test_gather_job_info_shows_effective_cpu_allocation_warning(tmp_path: Path):
     _make_job(tmp_path, "31315")
     (tmp_path / "31315" / "31315.json").write_text(
         json.dumps(
@@ -42,7 +42,7 @@ def test_gather_job_info_shows_cpu_allocation_warning(tmp_path: Path):
                     "gpu_type": "b300",
                     "gpus_per_node": 8,
                     "agg_nodes": 1,
-                    "cpu_allocation": {"allocated_total": 2},
+                    "cpu_allocation": {"allocated_total": 256, "effective_for_check": 2},
                     "cpu_check": {"status": "warning", "minimum_cpu_count": 4},
                 }
             }
@@ -51,4 +51,4 @@ def test_gather_job_info_shows_cpu_allocation_warning(tmp_path: Path):
 
     info = _gather_job_info("31315", tmp_path, sq=None)
 
-    assert info["cpu_info"] == "CPU 2  ⚠ min 4"
+    assert info["cpu_info"] == "CPU 2 eff/256 alloc  ⚠ min 4"

@@ -106,9 +106,6 @@ default_time_limit: "4:00:00"
 
 # Resource defaults
 gpus_per_node: 4
-# Advisory only: warn when actual allocation is below this CPU/backend-GPU ratio.
-# Raise this for CPU-heavy serving stacks; set 0 to disable.
-minimum_cpus_per_gpu: 1
 
 # SLURM directive compatibility
 use_gpus_per_node_directive: true # Set false if cluster doesn't support --gpus-per-node

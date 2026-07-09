@@ -8,7 +8,6 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
-import math
 import os
 import platform
 import re
@@ -123,7 +122,6 @@ def collect_resource_snapshot(
     *,
     environ: Mapping[str, str] | None = None,
     affinity: tuple[int | None, str | None] | None = None,
-    minimum_cpus_per_gpu: float | None = None,
 ) -> dict[str, Any]:
     """Build a JSON-serializable snapshot of the job's effective resources."""
     env = os.environ if environ is None else environ
@@ -141,33 +139,40 @@ def collect_resource_snapshot(
 
     affinity_cpu_count, affinity_list = affinity if affinity is not None else _process_affinity()
 
-    if allocated_cpu_count is None and node_count == 1:
-        allocated_cpu_count = current_node_cpu_count or affinity_cpu_count
+    effective_cpu_count: int | None = allocated_cpu_count
+    effective_cpu_source = "slurm_allocation" if allocated_cpu_count is not None else "unknown"
+    if node_count == 1:
+        local_cpu_counts = [
+            (source, count)
+            for source, count in (
+                ("slurm_allocation", allocated_cpu_count),
+                ("slurm_current_node", current_node_cpu_count),
+                ("process_affinity", affinity_cpu_count),
+            )
+            if count is not None
+        ]
+        if local_cpu_counts:
+            effective_cpu_count = min(count for _, count in local_cpu_counts)
+            effective_cpu_source = (
+                local_cpu_counts[0][0] if len(local_cpu_counts) == 1 else "minimum_of_available_local_signals"
+            )
 
-    if minimum_cpus_per_gpu is None:
-        from srtctl.core.config import get_srtslurm_setting
+    minimum_cpu_count = gpu_count_basis
 
-        configured_minimum = get_srtslurm_setting("minimum_cpus_per_gpu", 1.0)
-        minimum_cpus_per_gpu = float(configured_minimum if configured_minimum is not None else 1.0)
-    minimum_cpu_count = math.ceil(gpu_count_basis * minimum_cpus_per_gpu)
-
-    if minimum_cpus_per_gpu <= 0:
-        check_status = "disabled"
-        check_message = "CPU allocation warning is disabled (minimum_cpus_per_gpu <= 0)."
-    elif allocated_cpu_count is None:
+    if effective_cpu_count is None:
         check_status = "unknown"
-        check_message = "Could not determine the job's allocated CPU count from the SLURM environment."
-    elif allocated_cpu_count < minimum_cpu_count:
+        check_message = "Could not determine effective CPU capacity from SLURM or process affinity."
+    elif effective_cpu_count < minimum_cpu_count:
         check_status = "warning"
         check_message = (
-            f"CPU allocation may be too small: {allocated_cpu_count} CPUs for {gpu_count_basis} backend GPUs; "
-            f"the configured baseline of {minimum_cpus_per_gpu:g} CPU/GPU requires at least {minimum_cpu_count}. "
+            f"Effective CPU capacity may be too small: {effective_cpu_count} CPUs for {gpu_count_basis} backend GPUs; "
+            f"the baseline of 1 CPU/GPU requires at least {minimum_cpu_count}. "
             "Increase the SLURM CPU request (for example, cpus-per-task/cpus-per-gpu) or use an exclusive node."
         )
     else:
         check_status = "ok"
         check_message = (
-            f"CPU allocation meets the configured baseline: {allocated_cpu_count} CPUs for "
+            f"Effective CPU capacity meets the baseline: {effective_cpu_count} CPUs for "
             f"{gpu_count_basis} backend GPUs (minimum {minimum_cpu_count})."
         )
 
@@ -201,14 +206,15 @@ def collect_resource_snapshot(
             "current_node_allocated": current_node_cpu_count,
             "process_affinity_count": affinity_cpu_count,
             "process_affinity_list": affinity_list,
+            "effective_for_check": effective_cpu_count,
         },
         "slurm_environment": slurm_environment,
         "cpu_check": {
             "status": check_status,
-            "minimum_cpus_per_gpu": minimum_cpus_per_gpu,
             "gpu_count_basis": gpu_count_basis,
             "minimum_cpu_count": minimum_cpu_count,
-            "available_cpu_count": allocated_cpu_count,
+            "available_cpu_count": effective_cpu_count,
+            "available_cpu_source": effective_cpu_source,
             "message": check_message,
         },
     }
@@ -232,9 +238,10 @@ def format_resource_summary(snapshot: Mapping[str, Any], snapshot_path: Path) ->
     cpu_check = snapshot["cpu_check"]
 
     allocated_cpus = cpus["allocated_total"]
+    effective_cpus = cpu_check["available_cpu_count"]
     gpu_count_basis = cpu_check["gpu_count_basis"]
-    if allocated_cpus is not None and gpu_count_basis:
-        cpu_gpu_ratio = f"{allocated_cpus / gpu_count_basis:.2f} allocated"
+    if effective_cpus is not None and gpu_count_basis:
+        cpu_gpu_ratio = f"{effective_cpus / gpu_count_basis:.2f} effective"
     else:
         cpu_gpu_ratio = "unknown"
 
@@ -259,10 +266,7 @@ def format_resource_summary(snapshot: Mapping[str, Any], snapshot_path: Path) ->
             ),
             f"  CPUs: {allocated_cpus if allocated_cpus is not None else 'unknown'} total; per node: {per_node}",
             f"  CPU affinity: {affinity}{affinity_list}",
-            (
-                f"  CPU/GPU: {cpu_gpu_ratio} vs {cpu_check['minimum_cpus_per_gpu']:g} minimum "
-                f"— {str(cpu_check['status']).upper()}"
-            ),
+            f"  CPU/GPU: {cpu_gpu_ratio} vs 1 minimum — {str(cpu_check['status']).upper()}",
             f"  Snapshot: {snapshot_path}",
             "=" * 60,
         )

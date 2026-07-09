@@ -417,11 +417,16 @@ def _gather_job_info(job_id: str, outputs_dir: Path, sq: dict | None) -> dict:
         cpu_allocation = res.get("cpu_allocation") or {}
         cpu_check = res.get("cpu_check") or {}
         allocated_cpus = cpu_allocation.get("allocated_total")
-        if allocated_cpus is not None:
+        effective_cpus = cpu_allocation.get("effective_for_check")
+        displayed_cpus = effective_cpus if effective_cpus is not None else allocated_cpus
+        if displayed_cpus is not None:
+            allocation_suffix = ""
+            if allocated_cpus is not None and effective_cpus is not None and allocated_cpus != effective_cpus:
+                allocation_suffix = f" eff/{allocated_cpus} alloc"
             cpu_suffix = ""
             if cpu_check.get("status") == "warning":
                 cpu_suffix = f"  ⚠ min {cpu_check.get('minimum_cpu_count', '?')}"
-            info["cpu_info"] = f"CPU {allocated_cpus}{cpu_suffix}"
+            info["cpu_info"] = f"CPU {displayed_cpus}{allocation_suffix}{cpu_suffix}"
         bench = meta.get("benchmark", {})
         isl, osl, btype = bench.get("isl"), bench.get("osl"), bench.get("type", "")
         info["bench_config"] = f"{btype}  {isl}→{osl}" if (isl and osl) else btype

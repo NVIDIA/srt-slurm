@@ -186,9 +186,6 @@ class ClusterConfig:
     default_partition: str | None = None
     default_time_limit: str | None = None
     gpus_per_node: int | None = None
-    # Advisory runtime check only; does not change the generated CPU request.
-    # Set to 0 to disable the warning on a cluster.
-    minimum_cpus_per_gpu: float = 1.0
     network_interface: str | None = None
     use_gpus_per_node_directive: bool = True
     use_segment_sbatch_directive: bool = True

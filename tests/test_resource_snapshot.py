@@ -60,12 +60,12 @@ def test_two_cpu_kimi_shape_emits_warning() -> None:
         _runtime(),
         environ={"SLURM_JOB_CPUS_PER_NODE": "2", "SLURM_CPUS_ON_NODE": "2"},
         affinity=(2, "0-1"),
-        minimum_cpus_per_gpu=1.0,
     )
 
     assert snapshot["gpus"]["backend_total"] == 4
     assert snapshot["cpus"]["allocated_total"] == 2
     assert snapshot["cpus"]["allocated_per_node"] == [2]
+    assert snapshot["cpus"]["effective_for_check"] == 2
     assert snapshot["cpu_check"]["status"] == "warning"
     assert snapshot["cpu_check"]["minimum_cpu_count"] == 4
     assert "2 CPUs for 4 backend GPUs" in snapshot["cpu_check"]["message"]
@@ -77,11 +77,10 @@ def test_exclusive_cpu_allocation_meets_baseline() -> None:
         _runtime(),
         environ={"SLURM_JOB_CPUS_PER_NODE": "256", "SLURM_CPUS_ON_NODE": "256"},
         affinity=(256, "0-255"),
-        minimum_cpus_per_gpu=8.0,
     )
 
     assert snapshot["cpus"]["allocated_total"] == 256
-    assert snapshot["cpu_check"]["minimum_cpu_count"] == 32
+    assert snapshot["cpu_check"]["minimum_cpu_count"] == 4
     assert snapshot["cpu_check"]["status"] == "ok"
 
 
@@ -91,7 +90,6 @@ def test_runtime_summary_is_high_signal_for_agents(tmp_path) -> None:
         _runtime(),
         environ={"SLURM_JOB_CPUS_PER_NODE": "2", "SLURM_CPUS_ON_NODE": "2"},
         affinity=(2, "0-1"),
-        minimum_cpus_per_gpu=1.0,
     )
 
     summary = format_resource_summary(snapshot, tmp_path / RESOURCE_SNAPSHOT_FILENAME)
@@ -101,8 +99,23 @@ def test_runtime_summary_is_high_signal_for_agents(tmp_path) -> None:
     assert "GPUs: 4 backend / 8 configured" in summary
     assert "CPUs: 2 total; per node: 2" in summary
     assert "CPU affinity: 2 [0-1]" in summary
-    assert "CPU/GPU: 0.50 allocated vs 1 minimum — WARNING" in summary
+    assert "CPU/GPU: 0.50 effective vs 1 minimum — WARNING" in summary
     assert "resource_snapshot.json" in summary
+
+
+def test_single_node_warning_uses_stricter_process_affinity() -> None:
+    snapshot = collect_resource_snapshot(
+        _config(),
+        _runtime(),
+        environ={"SLURM_JOB_CPUS_PER_NODE": "256", "SLURM_CPUS_ON_NODE": "256"},
+        affinity=(2, "0-1"),
+    )
+
+    assert snapshot["cpus"]["allocated_total"] == 256
+    assert snapshot["cpus"]["process_affinity_count"] == 2
+    assert snapshot["cpus"]["effective_for_check"] == 2
+    assert snapshot["cpu_check"]["available_cpu_source"] == "minimum_of_available_local_signals"
+    assert snapshot["cpu_check"]["status"] == "warning"
 
 
 def test_het_component_cpu_counts_are_combined() -> None:
@@ -128,7 +141,6 @@ def test_het_component_cpu_counts_are_combined() -> None:
             "SLURM_JOB_CPUS_PER_NODE_HET_GROUP_1": "36",
         },
         affinity=(72, "0-71"),
-        minimum_cpus_per_gpu=1.0,
     )
 
     assert snapshot["cpus"]["allocated_per_node"] == [72, 72, 36]
@@ -141,7 +153,6 @@ def test_record_resource_snapshot_writes_artifact_and_updates_metadata(tmp_path,
     metadata_path.write_text(json.dumps({"job_id": "31315", "resources": {"gpu_type": "b300"}}))
     monkeypatch.setenv("SLURM_JOB_CPUS_PER_NODE", "2")
     monkeypatch.setenv("SLURM_CPUS_ON_NODE", "2")
-    monkeypatch.setattr("srtctl.core.config.get_srtslurm_setting", lambda _key, default=None: default)
 
     snapshot = record_resource_snapshot(_config(), runtime)
 

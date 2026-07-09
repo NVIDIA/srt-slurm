@@ -643,13 +643,6 @@ class TestFrontendConfig:
             "qos": "normal",
         }
 
-    def test_cluster_config_accepts_cpu_warning_threshold(self):
-        from srtctl.core.schema import ClusterConfig
-
-        config = ClusterConfig.Schema().load({"minimum_cpus_per_gpu": 8})
-
-        assert config.minimum_cpus_per_gpu == 8
-
     def test_default_sbatch_directives_do_not_override_job_values(self):
         """Job-level sbatch directives take precedence over srtslurm.yaml defaults."""
         from srtctl.core.config import resolve_config_with_defaults

@@ -120,9 +120,9 @@ def test_apply_mock_emits_submission_json_and_spawns_worker(monkeypatch, tmp_pat
     assert "Runtime Resource Summary" in (output_dir / "mock_worker.log").read_text()
 
     final_metadata = json.loads(metadata_path.read_text())
-    assert final_metadata["resources"]["cpu_allocation"]["allocated_total"] is not None
+    assert final_metadata["resources"]["cpu_allocation"]["effective_for_check"] is not None
     lockfile = yaml.safe_load((output_dir / "recipe.lock.yaml").read_text())
-    assert lockfile["lock"]["resource_snapshot"]["cpus"]["allocated_total"] is not None
+    assert lockfile["lock"]["resource_snapshot"]["cpus"]["effective_for_check"] is not None
 
 
 def test_apply_mock_does_not_call_real_sbatch(monkeypatch, tmp_path: Path) -> None:
