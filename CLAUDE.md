@@ -149,12 +149,15 @@ infra:
   etcd_nats_dedicated_node: true  # Reserve first node for infra services
 ```
 
-### Mooncake KV Store (SGLang only)
+### Mooncake KV Store
 
-When `mooncake_kv_store` is set under an SGLang backend, srtslurm:
+When `mooncake_kv_store` is set under an SGLang or vLLM backend, srtslurm:
 1. Launches `mooncake_master` on the infra node (same node as etcd/nats)
-2. Injects `MOONCAKE_MASTER=<infra_ip>:50051` on all workers automatically
+2. Injects `MOONCAKE_MASTER=<infra_ip>:8700` on all workers automatically
 3. Passes through any env vars in `mooncake_kv_store.env` to all workers
+4. For vLLM, also renders `mooncake_kv_store.store_config` into the JSON file
+   pointed to by `MOONCAKE_CONFIG_PATH` (vLLM's `MooncakeStoreConnector` reads
+   its config from JSON, not env vars). See `docs/mooncake-kv-store.md`.
 
 ```yaml
 backend:
