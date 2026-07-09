@@ -25,12 +25,14 @@ health_check:
 resources:
   gpu_type: gb300
   gpus_per_node: 4
-  prefill_nodes: 3
+  prefill_nodes: 5
   prefill_workers: 5
   gpus_per_prefill: 2
   decode_nodes: 7
   decode_workers: 7
   gpus_per_decode: 4
+  spread_workers: true
+  het_jobs: false
 backend:
   type: trtllm
   prefill_environment:
@@ -145,7 +147,7 @@ backend:
         context_chunking_policy: FIRST_COME_FIRST_SERVED
 frontend:
   type: dynamo
-  enable_multiple_frontends: false
+  enable_multiple_frontends: true
   env:
     ETCD_LEASE_TTL: '120'
 benchmark:
