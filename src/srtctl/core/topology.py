@@ -225,6 +225,43 @@ class Process:
         return ",".join(str(i) for i in sorted(self.gpu_indices))
 
 
+def ordered_decode_leader_nodes(processes: list[Process]) -> list[str]:
+    """Distinct decode (GEN) worker-leader node hostnames, ordered by worker index.
+
+    Reads endpoint_mode from the physical process topology, so it works for both
+    heterogeneous and monolithic jobs (unlike Nodes.decode_group, which is only
+    populated for het jobs).
+    """
+    leaders = sorted(
+        (p for p in processes if p.endpoint_mode == "decode" and p.is_leader),
+        key=lambda p: p.endpoint_index,
+    )
+    nodes: list[str] = []
+    for p in leaders:
+        if p.node not in nodes:
+            nodes.append(p.node)
+    return nodes
+
+
+def placed_node(processes: list[Process], placement: str, head: str, *, kind: str) -> str:
+    """Resolve a node-placement spec to a concrete node hostname.
+
+    placement:
+        "head"         -> the head node (default; unchanged behavior)
+        "first_decode" -> first decode/GEN worker-leader node
+        "last_decode"  -> last decode/GEN worker-leader node
+    ``kind`` is the config-field name, used only for error messages.
+    """
+    if placement == "head":
+        return head
+    if placement in ("first_decode", "last_decode"):
+        decode = ordered_decode_leader_nodes(processes)
+        if not decode:
+            raise ValueError(f"{kind}={placement!r} but no decode workers were found")
+        return decode[0] if placement == "first_decode" else decode[-1]
+    raise ValueError(f"{kind}={placement!r} is invalid (expected head|first_decode|last_decode)")
+
+
 def allocate_endpoints(
     num_prefill: int,
     num_decode: int,
