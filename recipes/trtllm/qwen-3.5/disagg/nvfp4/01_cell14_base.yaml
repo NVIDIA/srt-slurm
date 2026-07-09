@@ -15,6 +15,11 @@ identity:
     image: /lustre/fsw/coreai_comparch_infbench/minma/sa_qwen_disagg/framework/trtllm_images/trtllm_0609_tot.sqsh
   frameworks:
     tensorrt_llm: 1.3.0rc18
+
+
+extra_mount:
+  - "/lustre/fsw/coreai_comparch_trtllm/rihuo/dynamo_wheels:/dynamo_wheels"
+
 dynamo:
   install: true
   version: 1.3.0.dev20260708
