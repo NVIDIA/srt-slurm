@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from srtctl.core.fingerprint import cpu_model_from_cpuinfo
+
 if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import SrtConfig
@@ -104,16 +106,73 @@ def _process_affinity() -> tuple[int | None, str | None]:
 
 def _cpu_model() -> str | None:
     with contextlib.suppress(OSError):
-        for line in Path("/proc/cpuinfo").read_text(errors="replace").splitlines():
-            key, separator, value = line.partition(":")
-            if separator and key.strip().lower() in {"model name", "cpu model", "hardware"}:
-                return value.strip() or None
+        return cpu_model_from_cpuinfo(Path("/proc/cpuinfo").read_text(errors="replace"))
     return None
 
 
 def _worker_gpu_count(config: SrtConfig) -> int:
     resources = config.resources
     return resources.prefill_gpus + resources.decode_gpus + resources.num_agg * resources.gpus_per_agg
+
+
+def _backend_gpus_by_node(config: SrtConfig, runtime: RuntimeContext) -> dict[str, int]:
+    """Return backend GPU demand by node, using the same endpoint placement as workers."""
+    resources = config.resources
+    try:
+        if runtime.nodes.het:
+            from srtctl.core.topology import allocate_endpoints_het
+
+            endpoints = allocate_endpoints_het(
+                num_prefill=resources.num_prefill,
+                gpus_per_prefill=resources.gpus_per_prefill,
+                prefill_nodes=runtime.nodes.prefill_group,
+                num_decode=resources.num_decode,
+                gpus_per_decode=resources.gpus_per_decode,
+                decode_nodes=runtime.nodes.decode_group,
+                gpus_per_node=resources.gpus_per_node,
+            )
+        else:
+            endpoints = config.backend.allocate_endpoints(
+                num_prefill=resources.num_prefill,
+                num_decode=resources.num_decode,
+                num_agg=resources.num_agg,
+                gpus_per_prefill=resources.gpus_per_prefill,
+                gpus_per_decode=resources.gpus_per_decode,
+                gpus_per_agg=resources.gpus_per_agg,
+                gpus_per_node=resources.gpus_per_node,
+                available_nodes=runtime.nodes.worker,
+                spread_workers=resources.spread_workers,
+            )
+    except Exception:
+        logger.debug("Failed to derive backend node GPU allocation", exc_info=True)
+        return {}
+
+    gpu_counts: dict[str, int] = {}
+    for endpoint in endpoints:
+        for node in endpoint.nodes:
+            gpu_counts[node] = gpu_counts.get(node, 0) + len(endpoint.gpu_indices)
+    return gpu_counts
+
+
+def _backend_node_allocations(
+    node_names: Sequence[str],
+    cpus_per_node: Sequence[int],
+    backend_gpu_counts: Mapping[str, int],
+) -> list[dict[str, int | str]]:
+    """Pair SLURM per-node CPU counts with backend GPU demand when ordering is known."""
+    if len(cpus_per_node) != len(node_names):
+        return []
+
+    cpus_by_node = dict(zip(node_names, cpus_per_node, strict=True))
+    return [
+        {
+            "node": node,
+            "allocated_cpus": cpus_by_node[node],
+            "backend_gpus": backend_gpu_counts[node],
+        }
+        for node in node_names
+        if backend_gpu_counts.get(node, 0) > 0
+    ]
 
 
 def collect_resource_snapshot(
@@ -130,8 +189,13 @@ def collect_resource_snapshot(
     configured_gpu_count = node_count * config.resources.gpus_per_node
     worker_gpu_count = _worker_gpu_count(config)
     gpu_count_basis = worker_gpu_count or configured_gpu_count
-
     cpus_per_node = _allocated_cpus_per_node(env)
+    backend_node_allocations = _backend_node_allocations(
+        node_names,
+        cpus_per_node,
+        _backend_gpus_by_node(config, runtime),
+    )
+
     allocated_cpu_count = sum(cpus_per_node) if cpus_per_node else None
     current_node_cpu_count: int | None = None
     with contextlib.suppress(KeyError, TypeError, ValueError):
@@ -141,6 +205,7 @@ def collect_resource_snapshot(
 
     effective_cpu_count: int | None = allocated_cpu_count
     effective_cpu_source = "slurm_allocation" if allocated_cpu_count is not None else "unknown"
+    effective_node: str | None = None
     if node_count == 1:
         local_cpu_counts = [
             (source, count)
@@ -156,6 +221,15 @@ def collect_resource_snapshot(
             effective_cpu_source = (
                 local_cpu_counts[0][0] if len(local_cpu_counts) == 1 else "minimum_of_available_local_signals"
             )
+    elif backend_node_allocations:
+        most_constrained = min(
+            backend_node_allocations,
+            key=lambda item: (int(item["allocated_cpus"]) / int(item["backend_gpus"]), int(item["allocated_cpus"])),
+        )
+        effective_cpu_count = int(most_constrained["allocated_cpus"])
+        gpu_count_basis = int(most_constrained["backend_gpus"])
+        effective_cpu_source = "minimum_backend_node_allocation"
+        effective_node = str(most_constrained["node"])
 
     minimum_cpu_count = gpu_count_basis
 
@@ -164,17 +238,27 @@ def collect_resource_snapshot(
         check_message = "Could not determine effective CPU capacity from SLURM or process affinity."
     elif effective_cpu_count < minimum_cpu_count:
         check_status = "warning"
+        node_context = f" on backend node {effective_node}" if effective_node else ""
+        node_suffix = " on that node" if effective_node else ""
         check_message = (
-            f"Effective CPU capacity may be too small: {effective_cpu_count} CPUs for {gpu_count_basis} backend GPUs; "
+            f"Effective CPU capacity may be too small{node_context}: "
+            f"{effective_cpu_count} CPUs for {gpu_count_basis} backend GPUs{node_suffix}; "
             f"the baseline of 1 CPU/GPU requires at least {minimum_cpu_count}. "
             "Increase the SLURM CPU request (for example, cpus-per-task/cpus-per-gpu) or use an exclusive node."
         )
     else:
         check_status = "ok"
-        check_message = (
-            f"Effective CPU capacity meets the baseline: {effective_cpu_count} CPUs for "
-            f"{gpu_count_basis} backend GPUs (minimum {minimum_cpu_count})."
-        )
+        if effective_node:
+            check_message = (
+                f"Effective CPU capacity meets the baseline on backend node {effective_node}: "
+                f"{effective_cpu_count} CPUs for {gpu_count_basis} backend GPUs "
+                f"(minimum {minimum_cpu_count})."
+            )
+        else:
+            check_message = (
+                f"Effective CPU capacity meets the baseline: {effective_cpu_count} CPUs for "
+                f"{gpu_count_basis} backend GPUs (minimum {minimum_cpu_count})."
+            )
 
     slurm_environment = {key: env[key] for key in _SLURM_RESOURCE_ENV_KEYS if key in env}
     slurm_environment.update(
@@ -207,6 +291,7 @@ def collect_resource_snapshot(
             "process_affinity_count": affinity_cpu_count,
             "process_affinity_list": affinity_list,
             "effective_for_check": effective_cpu_count,
+            "backend_node_allocations": backend_node_allocations,
         },
         "slurm_environment": slurm_environment,
         "cpu_check": {
@@ -215,6 +300,7 @@ def collect_resource_snapshot(
             "minimum_cpu_count": minimum_cpu_count,
             "available_cpu_count": effective_cpu_count,
             "available_cpu_source": effective_cpu_source,
+            "node": effective_node,
             "message": check_message,
         },
     }

@@ -51,6 +51,62 @@ FRAMEWORK_PACKAGES: dict[str, str] = {
     "dynamo": "ai-dynamo",
 }
 
+_CPU_MODEL_KEYS = {"model name", "cpu model", "hardware"}
+_ARM_CPUINFO_KEYS = {
+    "cpu implementer",
+    "cpu architecture",
+    "cpu variant",
+    "cpu part",
+    "cpu revision",
+}
+
+
+def cpu_model_from_cpuinfo(cpuinfo: str) -> str | None:
+    """Extract a useful CPU model string from Linux ``/proc/cpuinfo`` text."""
+    arm_fields: dict[str, str] = {}
+    processor_label: str | None = None
+
+    for line in cpuinfo.splitlines():
+        key, separator, value = line.partition(":")
+        if not separator:
+            continue
+        normalized_key = key.strip().lower()
+        normalized_value = value.strip()
+        if not normalized_value:
+            continue
+
+        if normalized_key in _CPU_MODEL_KEYS:
+            return normalized_value
+
+        if normalized_key == "processor" and not normalized_value.isdecimal():
+            processor_label = processor_label or normalized_value
+        elif normalized_key in _ARM_CPUINFO_KEYS:
+            arm_fields.setdefault(normalized_key, normalized_value)
+
+    if processor_label:
+        return processor_label
+
+    implementer = arm_fields.get("cpu implementer")
+    part = arm_fields.get("cpu part")
+    if not implementer and not part:
+        return None
+
+    pieces = ["ARM CPU"]
+    if implementer:
+        pieces.append(f"implementer {implementer}")
+    if part:
+        pieces.append(f"part {part}")
+
+    details = [
+        ("architecture", arm_fields.get("cpu architecture")),
+        ("variant", arm_fields.get("cpu variant")),
+        ("revision", arm_fields.get("cpu revision")),
+    ]
+    detail_text = ", ".join(f"{label} {value}" for label, value in details if value)
+    if detail_text:
+        return f"{' '.join(pieces)} ({detail_text})"
+    return " ".join(pieces)
+
 
 # ============================================================================
 # Data Types
@@ -222,12 +278,7 @@ def probe_cpu() -> ProbeResult:
         model = UNAVAILABLE
         cpuinfo = Path("/proc/cpuinfo")
         if cpuinfo.exists():
-            for line in cpuinfo.read_text(errors="replace").splitlines():
-                key, separator, value = line.partition(":")
-                if separator and key.strip().lower() in {"model name", "cpu model", "hardware"}:
-                    model = value.strip()
-                    if model:
-                        break
+            model = cpu_model_from_cpuinfo(cpuinfo.read_text(errors="replace")) or UNAVAILABLE
 
         affinity_ids: list[int] = []
         with contextlib.suppress(AttributeError, OSError):
@@ -871,15 +922,49 @@ def gpu_info():
             gpus.append({{'name': parts[0], 'driver': parts[1], 'memory': parts[2]}})
     return {{'available': True, 'driver': gpus[0]['driver'] if gpus else 'unknown', 'gpus': gpus}}
 
+def cpu_model_from_cpuinfo(cpuinfo_text):
+    arm_fields = {{}}
+    processor_label = None
+    for line in cpuinfo_text.splitlines():
+        key, separator, value = line.partition(':')
+        if not separator:
+            continue
+        key = key.strip().lower()
+        value = value.strip()
+        if not value:
+            continue
+        if key in ('model name', 'cpu model', 'hardware'):
+            return value
+        if key == 'processor' and not value.isdecimal():
+            processor_label = processor_label or value
+        elif key in ('cpu implementer', 'cpu architecture', 'cpu variant', 'cpu part', 'cpu revision'):
+            arm_fields.setdefault(key, value)
+    if processor_label:
+        return processor_label
+    implementer = arm_fields.get('cpu implementer')
+    part = arm_fields.get('cpu part')
+    if not implementer and not part:
+        return None
+    pieces = ['ARM CPU']
+    if implementer:
+        pieces.append(f'implementer {{implementer}}')
+    if part:
+        pieces.append(f'part {{part}}')
+    details = [
+        ('architecture', arm_fields.get('cpu architecture')),
+        ('variant', arm_fields.get('cpu variant')),
+        ('revision', arm_fields.get('cpu revision')),
+    ]
+    detail_text = ', '.join(f'{{label}} {{value}}' for label, value in details if value)
+    if detail_text:
+        return f"{{' '.join(pieces)}} ({{detail_text}})"
+    return ' '.join(pieces)
+
 def cpu_info():
     model = 'unavailable'
     cpuinfo = Path('/proc/cpuinfo')
     if cpuinfo.exists():
-        for line in cpuinfo.read_text(errors='replace').splitlines():
-            key, separator, value = line.partition(':')
-            if separator and key.strip().lower() in ('model name', 'cpu model', 'hardware'):
-                model = value.strip() or 'unavailable'
-                break
+        model = cpu_model_from_cpuinfo(cpuinfo.read_text(errors='replace')) or 'unavailable'
     try:
         affinity_ids = sorted(os.sched_getaffinity(0))
     except (AttributeError, OSError):
