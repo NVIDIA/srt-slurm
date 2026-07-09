@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -30,3 +31,24 @@ def test_gather_all_never_calls_subprocess(tmp_path: Path):
     with patch("srtctl.cli.monitor._squeue_jobs", return_value={}), patch("subprocess.run") as mock_run:
         _gather_all(tmp_path, include_all=True, seen_job_ids={"99"})
     mock_run.assert_not_called()
+
+
+def test_gather_job_info_shows_cpu_allocation_warning(tmp_path: Path):
+    _make_job(tmp_path, "31315")
+    (tmp_path / "31315" / "31315.json").write_text(
+        json.dumps(
+            {
+                "resources": {
+                    "gpu_type": "b300",
+                    "gpus_per_node": 8,
+                    "agg_nodes": 1,
+                    "cpu_allocation": {"allocated_total": 2},
+                    "cpu_check": {"status": "warning", "minimum_cpu_count": 4},
+                }
+            }
+        )
+    )
+
+    info = _gather_job_info("31315", tmp_path, sq=None)
+
+    assert info["cpu_info"] == "CPU 2  ⚠ min 4"

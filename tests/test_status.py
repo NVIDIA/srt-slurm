@@ -3,6 +3,7 @@
 
 """Tests for status reporting functionality."""
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from srtctl.contract import JobCreatePayload, JobStage, JobStatus, JobUpdatePayload
@@ -136,6 +137,35 @@ class TestStatusReporterReport:
         result = reporter.report(JobStatus.STARTING)
 
         assert result is False
+
+    @patch("srtctl.core.status.requests.put")
+    def test_report_started_includes_cpu_allocation(self, mock_put):
+        mock_put.return_value = MagicMock(status_code=200)
+        reporter = StatusReporter(job_id="31315", api_endpoints=("https://status.example.com",))
+        config = SimpleNamespace(
+            model=SimpleNamespace(path="/model", precision="fp8"),
+            resources=SimpleNamespace(
+                gpu_type="b300",
+                gpus_per_node=8,
+                num_prefill=0,
+                num_decode=0,
+                num_agg=1,
+            ),
+            benchmark=SimpleNamespace(type="sa-bench"),
+            backend_type="vllm",
+            frontend=SimpleNamespace(type="dynamo"),
+        )
+        runtime = SimpleNamespace(nodes=SimpleNamespace(head="b300-010"))
+        snapshot = {
+            "cpus": {"allocated_total": 2, "allocated_per_node": [2]},
+            "cpu_check": {"status": "warning", "minimum_cpu_count": 4},
+        }
+
+        assert reporter.report_started(config, runtime, resource_snapshot=snapshot) is True
+
+        payload = mock_put.call_args.kwargs["json"]
+        assert payload["metadata"]["resources"]["cpu_allocation"]["allocated_total"] == 2
+        assert payload["metadata"]["resources"]["cpu_check"]["status"] == "warning"
 
     @patch("srtctl.core.status.requests.put")
     def test_sends_put_request_to_correct_url(self, mock_put):

@@ -22,8 +22,10 @@ Design principles:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
+import os
 import platform
 import subprocess
 from dataclasses import dataclass, field
@@ -122,6 +124,7 @@ _FIELD_ORDER = [
     # Hardware + OS
     "arch",
     "os",
+    "cpu",
     "gpu",
     # Core versions
     "python_version",
@@ -213,6 +216,63 @@ def probe_os() -> ProbeResult:
         return ProbeResult.failure(str(e))
 
 
+def probe_cpu() -> ProbeResult:
+    """Get CPU identity plus the CPUs visible to this process/cgroup."""
+    try:
+        model = UNAVAILABLE
+        cpuinfo = Path("/proc/cpuinfo")
+        if cpuinfo.exists():
+            for line in cpuinfo.read_text(errors="replace").splitlines():
+                key, separator, value = line.partition(":")
+                if separator and key.strip().lower() in {"model name", "cpu model", "hardware"}:
+                    model = value.strip()
+                    if model:
+                        break
+
+        affinity_ids: list[int] = []
+        with contextlib.suppress(AttributeError, OSError):
+            affinity_ids = sorted(os.sched_getaffinity(0))
+
+        slurm = {
+            key: os.environ[key]
+            for key in (
+                "SLURM_CPUS_ON_NODE",
+                "SLURM_CPUS_PER_GPU",
+                "SLURM_CPUS_PER_TASK",
+                "SLURM_JOB_CPUS_PER_NODE",
+            )
+            if key in os.environ
+        }
+        return ProbeResult.success(
+            {
+                "model": model or UNAVAILABLE,
+                "logical_cpus": os.cpu_count(),
+                "affinity_cpus": len(affinity_ids) if affinity_ids else None,
+                "affinity_list": _format_cpu_ids(affinity_ids) if affinity_ids else None,
+                "slurm": slurm,
+            }
+        )
+    except Exception as e:
+        return ProbeResult.failure(str(e))
+
+
+def _format_cpu_ids(cpu_ids: list[int]) -> str:
+    """Format sorted CPU IDs as a compact Linux cpuset string."""
+    if not cpu_ids:
+        return ""
+
+    ranges: list[str] = []
+    start = previous = cpu_ids[0]
+    for cpu_id in cpu_ids[1:]:
+        if cpu_id == previous + 1:
+            previous = cpu_id
+            continue
+        ranges.append(str(start) if start == previous else f"{start}-{previous}")
+        start = previous = cpu_id
+    ranges.append(str(start) if start == previous else f"{start}-{previous}")
+    return ",".join(ranges)
+
+
 def probe_gpu() -> ProbeResult:
     """Get GPU info from nvidia-smi (with timeout)."""
     out = _run_cmd("nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader")
@@ -298,6 +358,7 @@ _PROBES: dict[str, Any] = {
     "timestamp": probe_timestamp,
     "arch": probe_arch,
     "os": probe_os,
+    "cpu": probe_cpu,
     "gpu": probe_gpu,
     "python_version": probe_python_version,
     "cuda_version": probe_cuda_version,
@@ -766,7 +827,7 @@ def generate_capture_script(output_path: str) -> str:
     # python3 -c with inline code. This avoids escaping nightmares when
     # the command passes through bash → srun → bash → python.
     script = f"""\
-import json, subprocess, platform, socket, sys
+import json, os, subprocess, platform, socket, sys
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -809,6 +870,38 @@ def gpu_info():
         if len(parts) >= 3:
             gpus.append({{'name': parts[0], 'driver': parts[1], 'memory': parts[2]}})
     return {{'available': True, 'driver': gpus[0]['driver'] if gpus else 'unknown', 'gpus': gpus}}
+
+def cpu_info():
+    model = 'unavailable'
+    cpuinfo = Path('/proc/cpuinfo')
+    if cpuinfo.exists():
+        for line in cpuinfo.read_text(errors='replace').splitlines():
+            key, separator, value = line.partition(':')
+            if separator and key.strip().lower() in ('model name', 'cpu model', 'hardware'):
+                model = value.strip() or 'unavailable'
+                break
+    try:
+        affinity_ids = sorted(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        affinity_ids = []
+    affinity_ranges = []
+    if affinity_ids:
+        start = previous = affinity_ids[0]
+        for cpu_id in affinity_ids[1:]:
+            if cpu_id == previous + 1:
+                previous = cpu_id
+                continue
+            affinity_ranges.append(str(start) if start == previous else f'{{start}}-{{previous}}')
+            start = previous = cpu_id
+        affinity_ranges.append(str(start) if start == previous else f'{{start}}-{{previous}}')
+    slurm_keys = ('SLURM_CPUS_ON_NODE', 'SLURM_CPUS_PER_GPU', 'SLURM_CPUS_PER_TASK', 'SLURM_JOB_CPUS_PER_NODE')
+    return {{
+        'model': model,
+        'logical_cpus': os.cpu_count(),
+        'affinity_cpus': len(affinity_ids) if affinity_ids else None,
+        'affinity_list': ','.join(affinity_ranges) if affinity_ranges else None,
+        'slurm': {{key: os.environ[key] for key in slurm_keys if key in os.environ}},
+    }}
 
 def framework_versions():
     # Use importlib.metadata for all packages — avoids loading native CUDA
@@ -885,6 +978,7 @@ fp = {{
     'timestamp': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
     'arch': platform.machine(),
     'os': next((l.split('=',1)[1].strip('"') for l in Path('/etc/os-release').read_text().splitlines() if l.startswith('PRETTY_NAME=')), platform.platform()) if Path('/etc/os-release').exists() else platform.platform(),
+    'cpu': cpu_info(),
     'gpu': gpu_info(),
     'python_version': platform.python_version(),
     'cuda_version': run('nvcc --version 2>/dev/null | grep release') or 'unavailable',

@@ -671,6 +671,9 @@ def submit_with_orchestrator(
             write_git_state_snapshot(job_output_dir / GIT_STATE_FILENAME, git_sources)
 
         job_name = get_job_name(config)
+        minimum_cpus_per_gpu = get_srtslurm_setting("minimum_cpus_per_gpu", 1.0)
+        if minimum_cpus_per_gpu is None:
+            minimum_cpus_per_gpu = 1.0
 
         # Build comprehensive job metadata
         metadata: dict[str, Any] = {
@@ -698,6 +701,7 @@ def submit_with_orchestrator(
                 "gpus_per_prefill": config.resources.gpus_per_prefill,
                 "gpus_per_decode": config.resources.gpus_per_decode,
                 "gpus_per_agg": config.resources.gpus_per_agg,
+                "minimum_cpus_per_gpu": float(minimum_cpus_per_gpu),
             },
             # Backend and frontend
             "backend_type": config.backend_type,
