@@ -65,6 +65,25 @@ class TRTLLMServeFrontend:
                 result.extend([f"--{key}", str(value)])
         return result
 
+    @staticmethod
+    def _build_ser(config: Any, prefill_urls: list[str], decode_urls: list[str], port: int) -> dict:
+        """Build the trtllm-serve disaggregated ser.yaml, merging the optional
+        orchestrator-side router / server_config_extra from frontend config."""
+        ser: dict = {
+            "context_servers": {"num_instances": len(prefill_urls), "urls": prefill_urls},
+            "generation_servers": {"num_instances": len(decode_urls), "urls": decode_urls},
+            "hostname": "0.0.0.0",
+            "port": port,
+        }
+        fe = config.frontend
+        if getattr(fe, "ctx_router", None):
+            ser["context_servers"]["router"] = dict(fe.ctx_router)
+        if getattr(fe, "gen_router", None):
+            ser["generation_servers"]["router"] = dict(fe.gen_router)
+        if getattr(fe, "server_config_extra", None):
+            ser.update(dict(fe.server_config_extra))
+        return ser
+
     def start_frontends(
         self,
         topology: Any,  # FrontendTopology
@@ -126,12 +145,7 @@ class TRTLLMServeFrontend:
                 raise RuntimeError(f"trtllm-serve worker {url} did not become healthy")
 
         # Build ser.yaml (host path in log_dir, mounted to /logs in the container).
-        ser = {
-            "context_servers": {"num_instances": len(prefill_urls), "urls": prefill_urls},
-            "generation_servers": {"num_instances": len(decode_urls), "urls": decode_urls},
-            "hostname": "0.0.0.0",
-            "port": topology.frontend_port,
-        }
+        ser = self._build_ser(config, prefill_urls, decode_urls, topology.frontend_port)
         host_ser_path = runtime.log_dir / "ser.yaml"
         host_ser_path.write_text(yaml.safe_dump(ser, sort_keys=False))
         logger.info("Wrote trtllm-serve disagg config:\n%s", host_ser_path.read_text())
