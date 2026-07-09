@@ -157,6 +157,9 @@ class VLLMProtocol:
     # vLLM server CLI config per mode
     vllm_config: VLLMServerConfig | None = None
 
+    # Legacy device binding for vLLM builds without --device-ids.
+    set_cuda_visible_devices: bool = False
+
     # Default KV connector: "nixl", "lmcache", or a raw JSON string for --kv-transfer-config.
     # Can be overridden per mode by setting "connector" in vllm_config.prefill/decode/aggregated.
     # dynamo 1.0.0+: translated to --kv-transfer-config (--connector was removed).
@@ -394,12 +397,10 @@ class VLLMProtocol:
     def should_set_cuda_visible_devices(self, process: Process) -> bool:
         """Whether worker_stage should narrow CUDA_VISIBLE_DEVICES.
 
-        vLLM DP+EP launches one process per DP rank, but DeepGEMM Mega-MoE
-        symmetric memory needs every rank to keep a consistent node-wide CUDA
-        device namespace. In that mode we select the rank's GPU with
-        ``--device-ids`` instead of CUDA_VISIBLE_DEVICES.
+        By default vLLM keeps the node-wide CUDA namespace and selects worker
+        GPUs with ``--device-ids``.
         """
-        return not self._is_dp_mode(process.endpoint_mode)
+        return self.set_cuda_visible_devices
 
     def endpoints_to_processes(
         self,
@@ -567,16 +568,17 @@ class VLLMProtocol:
             kv_transfer_cfg = _connector_to_kv_transfer_config(connector)
             cmd.extend(["--kv-transfer-config", kv_transfer_cfg])
 
+        if not self.set_cuda_visible_devices:
+            device_ids = ",".join(str(i) for i in sorted(process.gpu_indices))
+            if device_ids:
+                cmd.extend(["--device-ids", device_ids])
+
         # Check if this is DP+EP mode (data-parallel-size set)
         is_dp_mode = self._is_dp_mode(mode)
-
         if is_dp_mode:
             # DP+EP mode: each GPU runs its own process
             # process.node_rank is the dp_rank (set in endpoints_to_processes)
             dp_rank = process.node_rank
-            device_ids = ",".join(str(i) for i in sorted(process.gpu_indices))
-            if device_ids:
-                cmd.extend(["--device-ids", device_ids])
             # Use the per-endpoint dp_rpc_port allocated by NodePortAllocator
             # (avoids port collisions when multiple endpoints share a node)
             dp_rpc_port = (
