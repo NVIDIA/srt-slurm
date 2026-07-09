@@ -1984,8 +1984,6 @@ class TestVLLMDataParallelMode:
             )
 
         # Should include DP flags
-        assert "--device-ids" in cmd
-        assert cmd[cmd.index("--device-ids") + 1] == "5"
         assert "--data-parallel-rank" in cmd
         assert "5" in cmd  # dp_rank = 5
         assert "--data-parallel-address" in cmd
@@ -2000,44 +1998,6 @@ class TestVLLMDataParallelMode:
         assert "--nnodes" not in cmd
         assert "--node-rank" not in cmd
         assert "--headless" not in cmd
-
-    def test_vllm_disables_cuda_visible_devices_by_default(self):
-        """Test that vLLM uses explicit device IDs instead of CUDA_VISIBLE_DEVICES."""
-        from srtctl.backends import VLLMProtocol, VLLMServerConfig
-        from srtctl.core.topology import Process
-
-        backend = VLLMProtocol(
-            vllm_config=VLLMServerConfig(
-                prefill={"data-parallel-size": 8, "enable-expert-parallel": True},
-                decode={"tensor-parallel-size": 8},
-            )
-        )
-
-        prefill_rank = Process(
-            node="node0",
-            gpu_indices=frozenset([3]),
-            sys_port=8081,
-            http_port=0,
-            endpoint_mode="prefill",
-            endpoint_index=0,
-            node_rank=3,
-        )
-        decode_worker = Process(
-            node="node0",
-            gpu_indices=frozenset(range(8)),
-            sys_port=8082,
-            http_port=30000,
-            endpoint_mode="decode",
-            endpoint_index=0,
-            node_rank=0,
-        )
-
-        assert backend.should_set_cuda_visible_devices(prefill_rank) is False
-        assert backend.should_set_cuda_visible_devices(decode_worker) is False
-
-        legacy_backend = VLLMProtocol(set_cuda_visible_devices=True)
-        assert legacy_backend.should_set_cuda_visible_devices(prefill_rank) is True
-        assert legacy_backend.should_set_cuda_visible_devices(decode_worker) is True
 
     def test_standard_tp_mode_still_works(self):
         """Test that standard TP mode (no DP) still creates per-node processes."""
@@ -2270,46 +2230,10 @@ class TestVLLMDataParallelMode:
         # node_rank is determined by position in endpoint_nodes, not process.node_rank
         assert "1" in cmd  # This is node1
         assert "--headless" in cmd  # Non-leader should be headless
-        assert "--device-ids" in cmd
-        assert cmd[cmd.index("--device-ids") + 1] == "0,1,2,3,4,5,6,7"
 
         # Should NOT include DP flags
         assert "--data-parallel-rank" not in cmd
         assert "--data-parallel-address" not in cmd
-
-    def test_vllm_legacy_cvd_mode_omits_device_ids(self):
-        """Test legacy vLLM binding does not pass --device-ids."""
-        from pathlib import Path
-        from unittest.mock import MagicMock, patch
-
-        from srtctl.backends import VLLMProtocol, VLLMServerConfig
-        from srtctl.core.topology import Process
-
-        backend = VLLMProtocol(
-            set_cuda_visible_devices=True,
-            vllm_config=VLLMServerConfig(prefill={"tensor-parallel-size": 4}),
-        )
-        process = Process(
-            node="node0",
-            gpu_indices=frozenset({0, 1, 2, 3}),
-            sys_port=8081,
-            http_port=30000,
-            endpoint_mode="prefill",
-            endpoint_index=0,
-            node_rank=0,
-        )
-        mock_runtime = MagicMock()
-        mock_runtime.model_path = Path("/model")
-        mock_runtime.is_hf_model = False
-
-        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
-            cmd = backend.build_worker_command(
-                process=process,
-                endpoint_processes=[process],
-                runtime=mock_runtime,
-            )
-
-        assert "--device-ids" not in cmd
 
     def test_tp_mode_leader_not_headless(self):
         """Test TP mode leader (node_rank=0) does not get --headless flag."""

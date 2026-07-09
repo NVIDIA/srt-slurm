@@ -395,10 +395,11 @@ class VLLMProtocol:
         return config.get("data-parallel-size") or config.get("data_parallel_size")
 
     def should_set_cuda_visible_devices(self, process: Process) -> bool:
-        """Whether worker_stage should narrow CUDA_VISIBLE_DEVICES.
+        """Whether worker_stage should set CUDA_VISIBLE_DEVICES.
 
-        By default vLLM keeps the node-wide CUDA namespace and selects worker
-        GPUs with ``--device-ids``.
+        Newer vLLM builds should use ``--device-ids`` instead. Older builds
+        before https://github.com/vllm-project/vllm/pull/45026 should set
+        CUDA_VISIBLE_DEVICES.
         """
         return self.set_cuda_visible_devices
 

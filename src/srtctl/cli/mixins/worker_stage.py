@@ -138,9 +138,6 @@ class WorkerStageMixin:
         if profiling.enabled:
             (self.runtime.log_dir / "profiles" / mode).mkdir(parents=True, exist_ok=True)
         if profiling.is_nsys:
-            # Include assigned GPU indices in the output name so per-DP-rank
-            # nsys files don't collide. Do not rely on CUDA_VISIBLE_DEVICES:
-            # some backends intentionally keep a full node-wide CUDA namespace.
             gpu_label = process.cuda_visible_devices.replace(",", "-")
             nsys_output = f"/logs/profiles/{mode}/{process.node}_{mode}_w{index}_profile_gpu{gpu_label}"
             nsys_prefix = profiling.get_nsys_prefix(
@@ -196,9 +193,6 @@ class WorkerStageMixin:
             profile_dir = str(self.runtime.log_dir / "profiles")
             env_to_set.update(profiling.get_env_vars(mode, profile_dir))
 
-        # Set CUDA_VISIBLE_DEVICES if not using all GPUs. Some backends use
-        # explicit device mapping instead, because narrowing CUDA visibility
-        # breaks libraries that need a node-wide device namespace.
         should_set_cvd = getattr(
             self.backend, "should_set_cuda_visible_devices", lambda _process: True
         )
@@ -332,8 +326,6 @@ class WorkerStageMixin:
             profile_dir = str(self.runtime.log_dir / "profiles")
             env_to_set.update(profiling.get_env_vars(mode, profile_dir))
 
-        # Set CUDA_VISIBLE_DEVICES if not using all GPUs on the node. Some
-        # backends use explicit device mapping instead.
         should_set_cvd = getattr(
             self.backend, "should_set_cuda_visible_devices", lambda _process: True
         )
