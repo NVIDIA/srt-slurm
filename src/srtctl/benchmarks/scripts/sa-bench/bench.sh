@@ -190,7 +190,7 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
             --num-prompts "$num_warmup_prompts" \
             "${RANDOM_LEN_ARGS[@]}" \
             --ignore-eos \
-            --request-rate 250 \
+            --request-rate "${REQ_RATE}" \
             --percentile-metrics ttft,tpot,itl,e2el \
             --max-concurrency "$concurrency" \
             --trust-remote-code \
