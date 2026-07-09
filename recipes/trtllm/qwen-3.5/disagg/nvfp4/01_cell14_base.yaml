@@ -22,8 +22,8 @@ extra_mount:
 setup_script: install_dynamo_wheel.sh
 
 dynamo:
-  install: true
-  version: 1.3.0.dev20260708
+  install: false
+  # version: 1.3.0.dev20260708
   request_plane: tcp
 health_check:
   max_attempts: 540
@@ -51,8 +51,8 @@ backend:
     TRTLLM_ENABLE_PDL: '1'
     TLLM_LOG_LEVEL: INFO
     PYTHONNOUSERSITE: '1'
-    DYN_TCP_WORKER_POOL_SIZE: "18500"
-    DYN_TCP_WORK_QUEUE_SIZE: "60000"
+    DYN_TCP_WORKER_POOL_SIZE: "19000"
+    DYN_TCP_WORK_QUEUE_SIZE: "76000"
   decode_environment:
     TLLM_USE_FLASHINFER_GDN_PREFILL: '0'
     TRTLLM_REQUEST_KV_CACHE_CONCURRENT: '1'
@@ -64,8 +64,8 @@ backend:
     TRTLLM_ENABLE_PDL: '1'
     TLLM_LOG_LEVEL: INFO
     PYTHONNOUSERSITE: '1'
-    DYN_TCP_WORKER_POOL_SIZE: "18500"
-    DYN_TCP_WORK_QUEUE_SIZE: "60000"
+    DYN_TCP_WORKER_POOL_SIZE: "19000"
+    DYN_TCP_WORK_QUEUE_SIZE: "76000"
 
   trtllm_config:
     prefill:

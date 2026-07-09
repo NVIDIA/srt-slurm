@@ -187,7 +187,7 @@ class TRTLLMProtocol:
         numactl_prefix = (
             ["numactl", "-m", "0,1"] if runtime.gpu_type in ("gb200", "gb300") and mode in ("prefill", "decode") else []
         )
-        base_prefix = list(nsys_prefix or []) + numactl_prefix + ["trtllm-llmapi-launch"]
+        base_prefix = list(nsys_prefix or []) + ["trtllm-llmapi-launch"] + numactl_prefix
 
         # trtllm-serve path: launch an OpenAI-compatible trtllm-serve worker. The
         # trtllm_serve frontend fronts these via a static ser.yaml (context/generation
