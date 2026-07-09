@@ -155,6 +155,7 @@ frontend:
   enable_multiple_frontends: true
   env:
     ETCD_LEASE_TTL: '120'
+    DYN_TOKENIZER: "fastokens"
 benchmark:
   type: "sa-bench"
   isl: 1024
