@@ -1473,6 +1473,12 @@ build_replay_cmd() {
     # need trust_remote_code=True to load. Benign for models without
     # custom tokenizer code, so we set it unconditionally.
     REPLAY_CMD+=" --tokenizer-trust-remote-code"
+    # AgentX uses chat-shaped OpenAI payloads. Some speculative-decoding runs
+    # also need AIPerf's tokenizer accounting to apply the model chat template
+    # explicitly so acceptance/ISL accounting matches the wire prompt.
+    if [[ "${AIPERF_APPLY_CHAT_TEMPLATE:-0}" == "1" || "${AIPERF_APPLY_CHAT_TEMPLATE:-false}" == "true" ]]; then
+        REPLAY_CMD+=" --apply-chat-template"
+    fi
     # Keep replay inputs inside the same context window used to launch the
     # server. The WEKA corpus contains a few very long parent/subagent traces;
     # if we mmap and replay them against a smaller-context server they become
