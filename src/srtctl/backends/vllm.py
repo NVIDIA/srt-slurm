@@ -24,7 +24,6 @@ from typing import (
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
-
 from srtctl.ports import (
     DYN_SYSTEM_PORT_BASE,
     MOONCAKE_HTTP_METADATA_PORT,
@@ -33,6 +32,7 @@ from srtctl.ports import (
     VLLM_PORT_BASE,
     VLLM_PORT_STRIDE,
 )
+
 if TYPE_CHECKING:
     from srtctl.backends.base import SrunConfig
     from srtctl.core.runtime import RuntimeContext
