@@ -24,16 +24,19 @@ from typing import (
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
+
 from srtctl.ports import (
     DYN_SYSTEM_PORT_BASE,
     MOONCAKE_HTTP_METADATA_PORT,
     MOONCAKE_MASTER_PORT,
     VLLM_DATA_PARALLEL_RPC_PORT,
+    VLLM_PORT_BASE,
+    VLLM_PORT_STRIDE,
 )
-
 if TYPE_CHECKING:
     from srtctl.backends.base import SrunConfig
     from srtctl.core.runtime import RuntimeContext
+    from srtctl.core.schema import ProfilingConfig
     from srtctl.core.topology import Endpoint, NodePortAllocator, Process
 
 # Type alias for worker modes
@@ -257,6 +260,9 @@ class VLLMProtocol:
         - VLLM_NIXL_SIDE_CHANNEL_HOST: Routable IP for NIXL side channel
           (vLLM defaults to ``0.0.0.0`` / ``localhost`` which breaks the
           multi-node NIXL handshake)
+        - VLLM_PORT: private base for vLLM's get_open_port() scans, unique per
+          process so co-located workers don't race for the same rendezvous port
+          (see the notes on VLLM_PORT_BASE in srtctl.ports)
         """
         from srtctl.core.slurm import get_hostname_ip
 
@@ -266,6 +272,13 @@ class VLLMProtocol:
         if process.nixl_port is not None:
             env["VLLM_NIXL_SIDE_CHANNEL_PORT"] = str(process.nixl_port)
             env["VLLM_NIXL_SIDE_CHANNEL_HOST"] = get_hostname_ip(process.node)
+        # Unique per-process VLLM_PORT base to avoid EADDRINUSE rendezvous races
+        # when endpoints are co-located on a node. E.g. PD 4xDEP2+1xDEP8 on
+        # 4xGB200 nodes: each prefill endpoint is DEP2 (uses 2 of the 4 GPUs), so
+        # two endpoints share one physical node and would otherwise scan
+        # overlapping get_open_port() ranges.
+        proc_index = max(process.sys_port - DYN_SYSTEM_PORT_BASE, 0)
+        env["VLLM_PORT"] = str(VLLM_PORT_BASE + proc_index * VLLM_PORT_STRIDE)
         return env
 
     def get_mooncake_worker_env(self, infra_node_ip: str, local_hostname: str) -> dict[str, str]:
@@ -496,6 +509,7 @@ class VLLMProtocol:
         frontend_type: str = "dynamo",
         nsys_prefix: list[str] | None = None,
         dump_config_path: Path | None = None,
+        profiling: ProfilingConfig | None = None,
     ) -> list[str]:
         """Build the command to start a vLLM worker process.
 
@@ -506,6 +520,7 @@ class VLLMProtocol:
             frontend_type: Frontend type (currently only "dynamo" supported for vLLM)
             nsys_prefix: Optional nsys profiling command prefix
             dump_config_path: Path to dump config JSON
+            profiling: Profiling config; drives --profiler-config for iteration-based nsys
         """
         from srtctl.core.slurm import get_hostname_ip
 
@@ -615,6 +630,17 @@ class VLLMProtocol:
         if kv_cfg and process.kv_events_port is not None:
             kv_cfg["endpoint"] = f"tcp://*:{process.kv_events_port}"
             cmd.extend(["--kv-events-config", json.dumps(kv_cfg)])
+
+        if profiling is not None and profiling.is_nsys and not profiling.is_nsys_time:
+            phase = profiling._get_phase_config(mode)
+            if phase is not None and phase.start_step is not None and phase.stop_step is not None:
+                config["profiler-config"] = json.dumps(
+                    {
+                        "profiler": "cuda",
+                        "delay_iterations": phase.vllm_nsys_delay_iterations,
+                        "max_iterations": phase.vllm_nsys_max_iterations,
+                    }
+                )
 
         # Add all config flags from vllm_config
         cmd.extend(_config_to_cli_args(config))
