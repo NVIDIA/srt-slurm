@@ -10,6 +10,8 @@ sbatch_directives:
 
 dynamo:
   hash: 9d3c913d300eb368cda28b3f98a23a5762621e0d
+  # Use NATS for a recipe prior to Dynamo commit 39d2a68.
+  request_plane: "nats"
 
 frontend:
   type: dynamo

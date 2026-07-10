@@ -1,6 +1,8 @@
 name: b200-fp8-stp-low-latency-tp8-1p-3d
 
 dynamo:
+  # Use NATS for a recipe prior to Dynamo commit 39d2a68.
+  request_plane: "nats"
   version: 0.9.1
 
 model:
@@ -30,7 +32,6 @@ backend:
     MC_FORCE_MNNVL: '1'
     NCCL_MNNVL_ENABLE: '1'
     NCCL_CUMEM_ENABLE: '1'
-    DYN_REQUEST_PLANE: nats
     CUDA_SCALE_LAUNCH_QUEUES: 4x
     SGLANG_PER_TOKEN_GROUP_QUANT_8BIT_V2: '1'
 
@@ -48,7 +49,6 @@ backend:
     MC_FORCE_MNNVL: '1'
     NCCL_MNNVL_ENABLE: '1'
     NCCL_CUMEM_ENABLE: '1'
-    DYN_REQUEST_PLANE: nats
     CUDA_SCALE_LAUNCH_QUEUES: 4x
     SGLANG_PER_TOKEN_GROUP_QUANT_8BIT_V2: '1'
 

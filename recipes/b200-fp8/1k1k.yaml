@@ -30,6 +30,12 @@ base:
     decode_workers: 1
     gpus_per_node: 8
 
+  dynamo:
+    # Dynamo 0.8.0 was the default when this recipe was written; pin it explicitly.
+    # Use NATS for a recipe prior to Dynamo commit 39d2a68.
+    version: "0.8.0"
+    request_plane: "nats"
+
   backend:
     prefill_environment:
       TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: "1800"
@@ -45,7 +51,6 @@ base:
       MC_FORCE_MNNVL: "1"
       NCCL_MNNVL_ENABLE: "1"
       NCCL_CUMEM_ENABLE: "1"
-      DYN_REQUEST_PLANE: nats
     decode_environment:
       TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: "1800"
       PYTHONUNBUFFERED: "1"
@@ -61,7 +66,6 @@ base:
       MC_FORCE_MNNVL: "1"
       NCCL_MNNVL_ENABLE: "1"
       NCCL_CUMEM_ENABLE: "1"
-      DYN_REQUEST_PLANE: nats
     sglang_config:
       prefill:
         # Model configuration
