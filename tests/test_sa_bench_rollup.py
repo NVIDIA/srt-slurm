@@ -85,8 +85,8 @@ def test_sa_bench_rollup_generates_json_and_csv_without_metadata(tmp_path):
     json_data = json.loads(json_rollup.read_text())
     assert json_data["benchmark_type"] == "sa-bench"
 
-    # ISL/OSL are parsed from the result-dir name, not from the results JSON.
-    assert json_data["config"] == {"model": "GLM-5-FP8", "isl": 8192, "osl": 1024}
+    # Without job metadata there is no benchmark contract, so ISL/OSL are unknown.
+    assert json_data["config"] == {"model": "GLM-5-FP8", "isl": None, "osl": None}
 
     assert [run["concurrency"] for run in json_data["runs"]] == [16, 32]
 
@@ -121,6 +121,130 @@ def test_sa_bench_rollup_generates_json_and_csv_without_metadata(tmp_path):
     assert first["P90 Decode Running Requests"] == ""
     assert first["Output Token Throughput per User"] == "125"
     assert first["Total Token Throughput per GPU"] == ""
+
+
+def test_sa_bench_rollup_reads_isl_osl_from_metadata_for_fixed_workload(tmp_path):
+    """Fixed sa-bench workloads carry integer ISL/OSL in metadata.benchmark."""
+    rollup = _load_rollup_module()
+
+    logs_dir = tmp_path / "logs"
+    result_dir = logs_dir / "sa-bench_isl_8192_osl_1024"
+    result_dir.mkdir(parents=True)
+
+    (tmp_path / "2279646.json").write_text(
+        json.dumps(
+            {
+                "job_name": "fixed-isl-osl-run",
+                "backend_type": "vllm",
+                "resources": {"gpus_per_node": 4, "prefill_nodes": 4, "decode_nodes": 2},
+                "benchmark": {"type": "sa-bench", "isl": 8192, "osl": 1024},
+            }
+        )
+    )
+
+    result = {
+        "model_id": "Qwen3.5-397B-A17B-NVFP4",
+        "max_concurrency": 1024,
+        "output_throughput": 35991.2,
+        "total_token_throughput": 323890.2,
+        "mean_ttft_ms": 1489.2,
+        "p99_ttft_ms": 12650.1,
+        "mean_tpot_ms": 25.6,
+        "p99_tpot_ms": 26.3,
+        "mean_itl_ms": 2431.4,
+        "p99_itl_ms": 2708.6,
+        "mean_e2el_ms": 25101.9,
+        "completed": 8192,
+        "total_input_tokens": 60421904,
+        "total_output_tokens": 7553549,
+    }
+    (result_dir / "results_concurrency_1024_gpus_24_ctx_16_gen_8.json").write_text(json.dumps(result))
+
+    rollup.main(logs_dir)
+
+    json_data = json.loads((logs_dir / "benchmark-rollup.json").read_text())
+    assert json_data["config"] == {"model": "Qwen3.5-397B-A17B-NVFP4", "isl": 8192, "osl": 1024}
+    assert isinstance(json_data["config"]["isl"], int)
+    assert isinstance(json_data["config"]["osl"], int)
+
+
+def test_sa_bench_rollup_isl_osl_none_for_agentic_workload(tmp_path):
+    """Agentic (custom-dataset) workloads have no fixed ISL/OSL -> both are None."""
+    rollup = _load_rollup_module()
+
+    logs_dir = tmp_path / "logs"
+    result_dir = logs_dir / "sa-bench_custom_agentic-trace"
+    result_dir.mkdir(parents=True)
+
+    (tmp_path / "2279999.json").write_text(
+        json.dumps(
+            {
+                "job_name": "agentic-run",
+                "backend_type": "vllm",
+                "resources": {"gpus_per_node": 4, "prefill_nodes": 4, "decode_nodes": 2},
+                "benchmark": {"type": "sa-bench", "isl": None, "osl": None},
+            }
+        )
+    )
+
+    result = {
+        "model_id": "Qwen3.5-397B-A17B-NVFP4",
+        "max_concurrency": 256,
+        "output_throughput": 13277.3,
+        "total_token_throughput": 26554.6,
+        "mean_ttft_ms": 665.2,
+        "p99_ttft_ms": 3601.2,
+        "mean_tpot_ms": 17.5,
+        "p99_tpot_ms": 17.8,
+        "mean_itl_ms": 1666.3,
+        "p99_itl_ms": 1803.4,
+        "mean_e2el_ms": 16835.1,
+        "completed": 2048,
+        "total_input_tokens": 15114041,
+        "total_output_tokens": 1885534,
+    }
+    (result_dir / "results_concurrency_256.json").write_text(json.dumps(result))
+
+    rollup.main(logs_dir)
+
+    json_data = json.loads((logs_dir / "benchmark-rollup.json").read_text())
+    assert json_data["config"] == {"model": "Qwen3.5-397B-A17B-NVFP4", "isl": None, "osl": None}
+
+
+def test_sa_bench_rollup_reads_legacy_metric_aliases(tmp_path):
+    """A newer rollup must read older sa-bench output via safe_get aliases."""
+    rollup = _load_rollup_module()
+
+    result_dir = tmp_path / "sa-bench_isl_8192_osl_1024"
+    result_dir.mkdir()
+
+    legacy = {
+        "model_id": "GLM-5-FP8",
+        "max_concurrency": 16,
+        "output_throughput": 1234.5,
+        "total_token_throughput": 9876.0,
+        "mean_ttft_ms": 100.0,
+        "mean_tpot_ms": 10.0,
+        "mean_itl_ms": 20.0,
+        "mean_e2el_ms": 200.0,
+        "completed": 160,
+        "total_input": 1310720,
+        "total_output": 163840,
+        "percentiles_ttft_ms": [[95.0, 140.0], [99.0, 150.0]],
+        "percentiles_tpot_ms": [[99.0, 15.0]],
+        "percentiles_itl_ms": [[99.0, 30.0]],
+    }
+    (result_dir / "results_concurrency_16.json").write_text(json.dumps(legacy))
+
+    rollup.main(tmp_path)
+
+    json_data = json.loads((tmp_path / "benchmark-rollup.json").read_text())
+    run = json_data["runs"][0]
+    assert run["ttft_p99_ms"] == 150.0
+    assert run["tpot_p99_ms"] == 15.0
+    assert run["itl_p99_ms"] == 30.0
+    assert run["total_input_tokens"] == 1310720
+    assert run["total_output_tokens"] == 163840
 
 
 def test_sa_bench_rollup_uses_metadata_for_name_gpu_counts_and_p90(tmp_path):

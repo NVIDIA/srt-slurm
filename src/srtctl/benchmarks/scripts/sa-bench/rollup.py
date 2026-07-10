@@ -35,15 +35,44 @@ OUTPUT_FIELDS = [
 RUNNING_REQ_PATTERN = re.compile(r"#running-req:\s*(\d+)")
 
 
-_ISL_OSL_RE = re.compile(r"sa-bench_isl_(\d+)_osl_(\d+)")
+def _safe_get(data: dict[str, Any], keys: list[str], default: Any = None) -> Any:
+    """Return the first present, non-None value among ``keys`` (alias fallback).
+
+    A newer srtctl may consume results produced by an older sa-bench whose keys
+    differ (e.g. ``total_input`` vs ``total_input_tokens``). Trying aliases in
+    order keeps the rollup forward/backward compatible.
+    """
+    for key in keys:
+        value = data.get(key)
+        if value is not None:
+            return value
+    return default
 
 
-def _parse_isl_osl(dir_name: str) -> tuple[int | None, int | None]:
-    """Parse ISL/OSL from the result dir name; (None, None) if absent."""
-    m = _ISL_OSL_RE.search(dir_name)
-    if not m:
-        return None, None
-    return int(m.group(1)), int(m.group(2))
+def _percentile_from_list(percentiles: Any, target: float = 99.0) -> float | None:
+    """Extract a percentile value from a legacy ``[(p, v), ...]`` list."""
+    if not percentiles:
+        return None
+    for entry in percentiles:
+        try:
+            p, v = entry
+        except (TypeError, ValueError):
+            continue
+        if p == target:
+            return v
+    return None
+
+
+def _p99(data: dict[str, Any], metric: str) -> float | None:
+    """P99 for ``metric``, preferring the flat ``p99_<metric>_ms`` key.
+
+    Falls back to the legacy ``percentiles_<metric>_ms`` list so a newer srtctl
+    still reads results emitted by an older sa-bench.
+    """
+    value = data.get(f"p99_{metric}_ms")
+    if value is not None:
+        return value
+    return _percentile_from_list(data.get(f"percentiles_{metric}_ms"))
 
 
 def _read_job_metadata(log_dir: Path) -> dict[str, Any] | None:
@@ -58,6 +87,14 @@ def _read_job_metadata(log_dir: Path) -> dict[str, Any] | None:
         if data:
             return data
     return None
+
+
+def _benchmark_isl_osl(metadata: dict[str, Any] | None) -> tuple[Any, Any]:
+    """Return ISL/OSL from the benchmark contract in metadata (None for agentic)."""
+    benchmark = metadata.get("benchmark") if metadata else None
+    if not benchmark:
+        return None, None
+    return benchmark.get("isl"), benchmark.get("osl")
 
 
 def _as_int(value: Any) -> int:
@@ -212,6 +249,7 @@ def main(log_dir: Path) -> None:
     resources = metadata.get("resources") if metadata else None
     total_gpu_count, decode_gpu_count = _compute_gpu_counts(resources) if resources else (None, None)
     p90_decode_running_requests = _extract_p90_decode_running_requests(log_dir, metadata)
+    isl, osl = _benchmark_isl_osl(metadata)
 
     for result_file in result_files:
         try:
@@ -221,7 +259,6 @@ def main(log_dir: Path) -> None:
             continue
 
         if not config:
-            isl, osl = _parse_isl_osl(result_file.parent.name)
             config = {
                 "model": data.get("model_id"),
                 "isl": isl,
@@ -233,15 +270,15 @@ def main(log_dir: Path) -> None:
             "throughput_toks": data.get("output_throughput"),
             "request_throughput": data.get("request_throughput"),
             "ttft_mean_ms": data.get("mean_ttft_ms"),
-            "ttft_p99_ms": data.get("p99_ttft_ms"),
+            "ttft_p99_ms": _p99(data, "ttft"),
             "tpot_mean_ms": data.get("mean_tpot_ms"),
-            "tpot_p99_ms": data.get("p99_tpot_ms"),
+            "tpot_p99_ms": _p99(data, "tpot"),
             "itl_mean_ms": data.get("mean_itl_ms"),
-            "itl_p99_ms": data.get("p99_itl_ms"),
+            "itl_p99_ms": _p99(data, "itl"),
             "e2el_mean_ms": data.get("mean_e2el_ms"),
             "completed_requests": data.get("completed"),
-            "total_input_tokens": data.get("total_input_tokens"),
-            "total_output_tokens": data.get("total_output_tokens"),
+            "total_input_tokens": _safe_get(data, ["total_input_tokens", "total_input"]),
+            "total_output_tokens": _safe_get(data, ["total_output_tokens", "total_output"]),
         })
 
         csv_rows.append(
