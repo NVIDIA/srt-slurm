@@ -51,8 +51,8 @@ backend:
     TRTLLM_ENABLE_PDL: '1'
     TLLM_LOG_LEVEL: INFO
     PYTHONNOUSERSITE: '1'
-    DYN_TCP_WORKER_POOL_SIZE: "39000"
-    DYN_TCP_WORK_QUEUE_SIZE: "156000"
+    DYN_TCP_WORKER_POOL_SIZE: "40000"
+    DYN_TCP_WORK_QUEUE_SIZE: "160000"
     UCX_TLS: cuda_ipc,cuda_copy,sm,self,tcp
   decode_environment:
     TLLM_USE_FLASHINFER_GDN_PREFILL: '0'
@@ -65,8 +65,8 @@ backend:
     TRTLLM_ENABLE_PDL: '1'
     TLLM_LOG_LEVEL: INFO
     PYTHONNOUSERSITE: '1'
-    DYN_TCP_WORKER_POOL_SIZE: "39000"
-    DYN_TCP_WORK_QUEUE_SIZE: "156000"
+    DYN_TCP_WORKER_POOL_SIZE: "40000"
+    DYN_TCP_WORK_QUEUE_SIZE: "160000"
     UCX_TLS: cuda_ipc,cuda_copy,sm,self,tcp
 
   trtllm_config:
