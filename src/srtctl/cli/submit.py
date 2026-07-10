@@ -642,6 +642,9 @@ def submit_with_orchestrator(
                 srtctl_source = Path(srtctl_root) if srtctl_root else Path(__file__).parent.parent.parent.parent
                 job_output_dir = srtctl_source / "outputs" / job_id
         job_output_dir.mkdir(parents=True, exist_ok=True)
+        # Slurm opens #SBATCH --output before the job script runs, so the
+        # log directory must exist before the allocation starts executing.
+        (job_output_dir / "logs").mkdir(parents=True, exist_ok=True)
 
         shutil.copy(source_config_path or config_path, job_output_dir / "config.yaml")
         if source_config_path:

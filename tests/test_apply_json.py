@@ -79,6 +79,7 @@ def test_apply_json_emits_single_line_on_stdout(monkeypatch, tmp_path: Path, cap
     assert record["config_path"] == str(cfg)
     assert record["output_dir"].endswith("42042")
     assert record["metadata_path"].endswith("42042.json")
+    assert (tmp_path / "42042" / "logs").is_dir()
 
 
 def test_apply_json_emits_error_line_on_failure(monkeypatch, tmp_path: Path, capsys: Any) -> None:
