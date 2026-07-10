@@ -201,7 +201,7 @@ class RuntimeContext:
     stage_dir: str | None = None
     staged_model_path: Path | None = None
     # Request plane for dynamo workers
-    request_plane: str = "nats"
+    request_plane: str = "tcp"
 
     @classmethod
     def from_config(

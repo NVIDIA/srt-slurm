@@ -24,6 +24,8 @@ base:
     type: "dynamo"
   dynamo:
     version: "1.1.0"
+    # Use NATS for a recipe prior to Dynamo commit 39d2a68.
+    request_plane: "nats"
 
   backend:
     prefill_environment:
@@ -36,7 +38,6 @@ base:
       SGLANG_MOONCAKE_CUSTOM_MEM_POOL: "True"
       SGLANG_USE_MESSAGE_QUEUE_BROADCASTER: "0"
       NCCL_CUMEM_ENABLE: "1"
-      DYN_REQUEST_PLANE: "nats"
 
     decode_environment:
       TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: "1800"
@@ -48,7 +49,6 @@ base:
       SGLANG_MOONCAKE_CUSTOM_MEM_POOL: "True"
       SGLANG_USE_MESSAGE_QUEUE_BROADCASTER: "0"
       NCCL_CUMEM_ENABLE: "1"
-      DYN_REQUEST_PLANE: "nats"
 
     sglang_config:
       prefill:

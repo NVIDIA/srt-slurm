@@ -617,6 +617,115 @@ class TestLMEvalRunner:
         ]
 
 
+class TestGSM8KRunner:
+    """Test the unified GSM8K runner (backend auto-detect)."""
+
+    def _sglang_config(self, **benchmark_kwargs):
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        # Default backend is SGLangProtocol.
+        return SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="gb200"),
+            benchmark=BenchmarkConfig(type="gsm8k", **benchmark_kwargs),
+        )
+
+    def _vllm_config(self, served_model_name="Qwen3.5-397B-A17B-NVFP4", **benchmark_kwargs):
+        from srtctl.backends.vllm import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        return SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="gb200"),
+            backend=VLLMProtocol(vllm_config=VLLMServerConfig(decode={"served-model-name": served_model_name})),
+            benchmark=BenchmarkConfig(type="gsm8k", **benchmark_kwargs),
+        )
+
+    def test_registered(self):
+        """gsm8k resolves to the unified runner."""
+        runner = get_runner("gsm8k")
+        assert runner.name == "GSM8K"
+
+    def test_sglang_backend_uses_sglang_harness(self):
+        """Non-vLLM backends run the sglang harness."""
+        from unittest.mock import MagicMock
+
+        runner = get_runner("gsm8k")
+        runtime = MagicMock()
+        runtime.frontend_port = 8000
+
+        cmd = runner.build_command(self._sglang_config(), runtime)
+        assert cmd == [
+            "bash",
+            "/srtctl-benchmarks/gsm8k/sglang-bench.sh",
+            "http://localhost:8000",
+            "1319",
+            "16384",
+            "512",
+            "5",
+            "",
+            "",
+            "",
+        ]
+
+    def test_vllm_backend_uses_vllm_eval(self):
+        """vLLM backend runs the vendored vLLM eval and sends the served model name."""
+        from unittest.mock import MagicMock
+
+        runner = get_runner("gsm8k")
+        runtime = MagicMock()
+        runtime.frontend_port = 8000
+
+        cmd = runner.build_command(self._vllm_config(), runtime)
+        assert cmd == [
+            "bash",
+            "/srtctl-benchmarks/gsm8k/vllm-bench.sh",
+            "http://localhost",
+            "8000",
+            "Qwen3.5-397B-A17B-NVFP4",
+            "1319",
+            "256",
+            "5",
+            "0.0",
+            "1",
+        ]
+
+    def test_vllm_backend_overrides_and_repeat(self):
+        """Config fields override defaults and repeat is passed through on the vLLM path."""
+        from unittest.mock import MagicMock
+
+        runner = get_runner("gsm8k")
+        runtime = MagicMock()
+        runtime.frontend_port = 9001
+
+        cmd = runner.build_command(
+            self._vllm_config(num_examples=100, max_tokens=2048, num_shots=8, temperature=0.6, repeat=5),
+            runtime,
+        )
+        assert cmd == [
+            "bash",
+            "/srtctl-benchmarks/gsm8k/vllm-bench.sh",
+            "http://localhost",
+            "9001",
+            "Qwen3.5-397B-A17B-NVFP4",
+            "100",
+            "2048",
+            "8",
+            "0.6",
+            "5",
+        ]
+
+    def test_validate_config_rejects_nonpositive(self):
+        """Non-positive numeric knobs are rejected."""
+        runner = get_runner("gsm8k")
+        errors = runner.validate_config(self._vllm_config(num_examples=0, repeat=-1, num_shots=-1))
+        assert any("benchmark.num_examples must be > 0" in e for e in errors)
+        assert any("benchmark.repeat must be > 0" in e for e in errors)
+        assert any("benchmark.num_shots must be >= 0" in e for e in errors)
+
+
 class TestScriptsExist:
     """Test that benchmark scripts exist."""
 
@@ -634,10 +743,11 @@ class TestScriptsExist:
         script = SCRIPTS_DIR / "mmlu" / "bench.sh"
         assert script.exists()
 
-    def test_gsm8k_script_exists(self):
-        """GSM8K script exists."""
-        script = SCRIPTS_DIR / "gsm8k" / "bench.sh"
-        assert script.exists()
+    def test_gsm8k_scripts_exist(self):
+        """Both gsm8k harness wrappers and the bundled vLLM eval script exist."""
+        assert (SCRIPTS_DIR / "gsm8k" / "sglang-bench.sh").exists()
+        assert (SCRIPTS_DIR / "gsm8k" / "vllm-bench.sh").exists()
+        assert (SCRIPTS_DIR / "gsm8k" / "gsm8k_eval.py").exists()
 
 
 class TestCustomDatasetLoader:

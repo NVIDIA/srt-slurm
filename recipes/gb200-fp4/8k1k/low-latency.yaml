@@ -2,6 +2,8 @@ name: "gb200-fp4-8k1k-low-latency"
 
 dynamo:
   version: 0.8.1
+  # Use NATS for a recipe prior to Dynamo commit 39d2a68.
+  request_plane: "nats"
 
 frontend:
   type: dynamo

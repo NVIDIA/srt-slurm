@@ -327,11 +327,18 @@ class TestDynamoConfig:
             "DYNAMO_WHEEL_NAME": "ai_dynamo-1.2.0.dev20260426-py3-none-any.whl",
         }
 
-    def test_request_plane_default_nats(self):
-        """Default request_plane is 'nats'."""
+    def test_request_plane_default_tcp(self):
+        """Default request_plane is 'tcp'."""
         from srtctl.core.schema import DynamoConfig
 
         config = DynamoConfig()
+        assert config.request_plane == "tcp"
+
+    def test_request_plane_override_default_to_nats(self):
+        """request_plane='nats' overrides the TCP default."""
+        from srtctl.core.schema import DynamoConfig
+
+        config = DynamoConfig(request_plane="nats")
         assert config.request_plane == "nats"
 
     def test_request_plane_tcp(self):
