@@ -165,6 +165,7 @@ class WorkerStageMixin:
             "NATS_SERVER": f"nats://{self.runtime.nodes.infra}:{NATS_PORT}",
             "DYN_SYSTEM_PORT": str(process.sys_port),
             "DYN_REQUEST_PLANE": self.config.dynamo.request_plane,
+            "DYN_EVENT_PLANE": self.config.dynamo.event_plane,
             "DYN_SKIP_SGLANG_LOG_FORMATTING": "1",
         }
 
