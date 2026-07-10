@@ -2191,6 +2191,7 @@ class TestVLLMDataParallelMode:
             )
 
         # Should include TP multi-node flags
+        assert cmd[:3] == ["env", "-u", "VLLM_PORT"]
         assert "--master-addr" in cmd
         assert "10.0.0.1" in cmd
         assert "--nnodes" in cmd
@@ -2203,6 +2204,73 @@ class TestVLLMDataParallelMode:
         # Should NOT include DP flags
         assert "--data-parallel-rank" not in cmd
         assert "--data-parallel-address" not in cmd
+
+    def test_dp_mode_does_not_unset_vllm_port(self):
+        """DP+EP mode keeps vLLM_PORT available for existing DP launch behavior."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Process
+
+        backend = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                prefill={
+                    "data-parallel-size": 16,
+                    "enable-expert-parallel": True,
+                },
+            )
+        )
+
+        process = Process(
+            node="node0",
+            gpu_indices=frozenset([5]),
+            sys_port=8086,
+            http_port=0,
+            endpoint_mode="prefill",
+            endpoint_index=0,
+            node_rank=5,
+            dp_rpc_port=13345,
+        )
+        endpoint_processes = [
+            Process(
+                node="node0",
+                gpu_indices=frozenset([i]),
+                sys_port=8081 + i,
+                http_port=0,
+                endpoint_mode="prefill",
+                endpoint_index=0,
+                node_rank=i,
+                dp_rpc_port=13345,
+            )
+            for i in range(8)
+        ] + [
+            Process(
+                node="node1",
+                gpu_indices=frozenset([i]),
+                sys_port=8089 + i,
+                http_port=0,
+                endpoint_mode="prefill",
+                endpoint_index=0,
+                node_rank=8 + i,
+                dp_rpc_port=13345,
+            )
+            for i in range(8)
+        ]
+
+        mock_runtime = MagicMock()
+        mock_runtime.model_path = Path("/model")
+        mock_runtime.is_hf_model = False
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            cmd = backend.build_worker_command(
+                process=process,
+                endpoint_processes=endpoint_processes,
+                runtime=mock_runtime,
+            )
+
+        assert cmd[:3] != ["env", "-u", "VLLM_PORT"]
+        assert "--data-parallel-rank" in cmd
 
     def test_tp_mode_leader_not_headless(self):
         """Test TP mode leader (node_rank=0) does not get --headless flag."""
