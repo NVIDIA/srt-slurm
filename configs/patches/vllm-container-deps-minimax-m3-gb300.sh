@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "=== MiniMax-M3 GB300 vLLM setup: base deps + runtime patches ==="
+echo "=== MiniMax-M3 GB200/GB300 vLLM setup: base deps + runtime patches ==="
 
 if [[ -f /configs/patches/vllm-container-deps.sh ]]; then
     bash /configs/patches/vllm-container-deps.sh
@@ -54,4 +54,4 @@ for path, edits in patches.items():
         print(f"already patched {path}")
 PYEOF
 
-echo "=== MiniMax-M3 GB300 vLLM setup complete ==="
+echo "=== MiniMax-M3 GB200/GB300 vLLM setup complete ==="
