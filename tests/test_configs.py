@@ -2807,3 +2807,46 @@ class TestExtraMountExpansion:
 
             assert extra_root.resolve() in runtime.container_mounts
             assert runtime.container_mounts[extra_root.resolve()] == Path("/extra")
+
+
+class TestSlurmJobName:
+    """Tests for site-facing Slurm job names."""
+
+    def test_coreai_slurm_job_name_uses_account_policy_prefix(self):
+        from srtctl.cli.submit import get_slurm_job_name
+        from srtctl.core.schema import ModelConfig, ResourceConfig, SlurmConfig, SrtConfig
+
+        config = SrtConfig(
+            name="minimax-m3-nvfp4-b300-agg-tp8-agentx-eagle3-mtp-sweep3600-c64-070826-agentxv1-nodynamo",
+            model=ModelConfig(path="/model", container="/container.sqsh", precision="fp8"),
+            resources=ResourceConfig(gpu_type="b300", gpus_per_node=8, agg_nodes=1),
+            slurm=SlurmConfig(account="coreai_comparch_inferencex"),
+        )
+
+        job_name = get_slurm_job_name(config, config.slurm.account)
+
+        assert job_name.startswith("coreai_comparch_inferencex-aib.")
+        assert len(job_name) <= 128
+        assert "eagle3-mtp" in job_name
+
+    def test_sbatch_template_uses_policy_safe_slurm_name(self):
+        from pathlib import Path
+
+        from srtctl.cli.submit import generate_minimal_sbatch_script
+        from srtctl.core.schema import ModelConfig, ResourceConfig, SlurmConfig, SrtConfig
+
+        raw_name = "minimax-m3-nvfp4-b200-agg-tp8-agentx-eagle3-mtp-synthal-sweep3600-c64-070826-agentxv1-nodynamo"
+        config = SrtConfig(
+            name=raw_name,
+            model=ModelConfig(path="/model", container="/container.sqsh", precision="fp8"),
+            resources=ResourceConfig(gpu_type="b200", gpus_per_node=8, agg_nodes=1),
+            slurm=SlurmConfig(account="coreai_comparch_infbench"),
+        )
+
+        script = generate_minimal_sbatch_script(config=config, config_path=Path("/tmp/test.yaml"))
+        job_name_line = next(line for line in script.splitlines() if line.startswith("#SBATCH --job-name="))
+        slurm_name = job_name_line.split("=", 1)[1]
+
+        assert job_name_line.startswith("#SBATCH --job-name=coreai_comparch_infbench-aib.")
+        assert slurm_name != raw_name
+        assert len(slurm_name) <= 128
