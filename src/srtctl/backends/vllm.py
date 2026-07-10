@@ -710,6 +710,14 @@ class VLLMProtocol:
         # Add all config flags from vllm_config
         cmd.extend(_config_to_cli_args(config))
 
+        if is_multi_node and not is_dp_mode:
+            # Avoid letting an inherited/container VLLM_PORT seed vLLM's
+            # internal cross-node message-queue port allocator. All local TP
+            # worker subprocesses inherit that same fixed base and can race
+            # when binding their ZMQ sockets; leaving it unset lets the kernel
+            # choose free ports for those internal queues.
+            cmd = ["env", "-u", "VLLM_PORT"] + cmd
+
         return cmd
 
 
