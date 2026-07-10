@@ -165,9 +165,10 @@ class WorkerStageMixin:
             "NATS_SERVER": f"nats://{self.runtime.nodes.infra}:{NATS_PORT}",
             "DYN_SYSTEM_PORT": str(process.sys_port),
             "DYN_REQUEST_PLANE": self.config.dynamo.request_plane,
-            "DYN_EVENT_PLANE": self.config.dynamo.event_plane,
             "DYN_SKIP_SGLANG_LOG_FORMATTING": "1",
         }
+        if self.config.dynamo.event_plane:
+            env_to_set["DYN_EVENT_PLANE"] = self.config.dynamo.event_plane
 
         # Add OTEL env vars (before mode-specific env so OTEL_SERVICE_NAME can be overridden)
         env_to_set.update(build_otel_env(self.config.observability, mode))

@@ -355,11 +355,18 @@ class TestDynamoConfig:
         with pytest.raises(ValueError, match="Invalid request_plane"):
             DynamoConfig(request_plane="grpc")
 
-    def test_event_plane_default_zmq(self):
-        """Default event_plane is 'zmq'."""
+    def test_event_plane_default_none(self):
+        """Default event_plane is None (follow the image default)."""
         from srtctl.core.schema import DynamoConfig
 
         config = DynamoConfig()
+        assert config.event_plane is None
+
+    def test_event_plane_zmq(self):
+        """event_plane='zmq' is accepted."""
+        from srtctl.core.schema import DynamoConfig
+
+        config = DynamoConfig(event_plane="zmq")
         assert config.event_plane == "zmq"
 
     def test_event_plane_nats(self):

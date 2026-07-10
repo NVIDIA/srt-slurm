@@ -1263,7 +1263,8 @@ class DynamoConfig:
         wheel: ai-dynamo package version to install via staged wheels. The
                matching ai-dynamo-runtime wheel is installed automatically.
         request_plane: Request plane to use (default: "nats"). Valid values: "nats", "tcp", "http"
-        event_plane: Event plane to use (default: "zmq"). Valid values: "nats", "zmq"
+        event_plane: Event plane override, sets DYN_EVENT_PLANE (default: None — follow
+                     the Dynamo image's own default). Valid values: "nats", "zmq"
 
     If top_of_tree, hash, or wheel is set, version is automatically cleared.
     """
@@ -1277,7 +1278,7 @@ class DynamoConfig:
     top_of_tree: bool = False
     wheel: str | None = None
     request_plane: str = "nats"
-    event_plane: str = "zmq"
+    event_plane: str | None = None
 
     def __post_init__(self) -> None:
         install_sources = [
@@ -1306,7 +1307,7 @@ class DynamoConfig:
                 f"Invalid request_plane '{self.request_plane}', must be one of: {', '.join(self._VALID_REQUEST_PLANES)}"
             )
 
-        if self.event_plane not in self._VALID_EVENT_PLANES:
+        if self.event_plane is not None and self.event_plane not in self._VALID_EVENT_PLANES:
             raise ValueError(
                 f"Invalid event_plane '{self.event_plane}', must be one of: {', '.join(self._VALID_EVENT_PLANES)}"
             )
