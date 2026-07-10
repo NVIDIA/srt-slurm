@@ -8,6 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from srtctl.cli.mixins.worker_stage import WorkerStageMixin
 from srtctl.core.schema import ObservabilityConfig
 from srtctl.core.slurm import get_slurm_het_nodelists, start_srun_process
@@ -281,6 +283,55 @@ def test_worker_stage_no_remap_root_when_dynamo_install_false(tmp_path: Path) ->
         mixin.start_worker(process, [process])
 
     assert mock_srun.call_args.kwargs["srun_export_env"] is None
+
+
+# ---- Event-plane propagation (DYN_EVENT_PLANE) ----
+
+
+def _start_worker_env(tmp_path: Path, *, event_plane: str | None) -> dict[str, str]:
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="sglang", dynamo_install=False)
+    mixin.config.dynamo.event_plane = event_plane
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
+    ):
+        mock_srun.return_value = MagicMock()
+        mixin.start_worker(process, [process])
+    return mock_srun.call_args.kwargs["env_to_set"]
+
+
+def _start_endpoint_worker_env(tmp_path: Path, *, event_plane: str | None) -> dict[str, str]:
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="sglang", dynamo_install=False)
+    mixin.config.dynamo.event_plane = event_plane
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
+    ):
+        mock_srun.return_value = MagicMock()
+        mixin.start_endpoint_worker([process])
+    return mock_srun.call_args.kwargs["env_to_set"]
+
+
+def test_start_worker_event_plane_default_not_injected(tmp_path: Path) -> None:
+    env = _start_worker_env(tmp_path, event_plane=None)
+    assert "DYN_EVENT_PLANE" not in env
+
+
+@pytest.mark.parametrize("event_plane", ["zmq", "nats"])
+def test_start_worker_event_plane_injected(tmp_path: Path, event_plane: str) -> None:
+    env = _start_worker_env(tmp_path, event_plane=event_plane)
+    assert env["DYN_EVENT_PLANE"] == event_plane
+
+
+def test_start_endpoint_worker_event_plane_default_not_injected(tmp_path: Path) -> None:
+    env = _start_endpoint_worker_env(tmp_path, event_plane=None)
+    assert "DYN_EVENT_PLANE" not in env
+
+
+@pytest.mark.parametrize("event_plane", ["zmq", "nats"])
+def test_start_endpoint_worker_event_plane_injected(tmp_path: Path, event_plane: str) -> None:
+    env = _start_endpoint_worker_env(tmp_path, event_plane=event_plane)
+    assert env["DYN_EVENT_PLANE"] == event_plane
 
 
 # ---- Heterogeneous-job nodelist parsing ----
