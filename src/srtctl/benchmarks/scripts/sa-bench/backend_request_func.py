@@ -17,6 +17,16 @@ from transformers import AutoTokenizer, PreTrainedTokenizer, PreTrainedTokenizer
 AIOHTTP_TIMEOUT = aiohttp.ClientTimeout(total=6 * 60 * 60)
 
 
+def create_dynamo_session() -> aiohttp.ClientSession:
+    """Create the benchmark-scoped Dynamo session in the current event loop."""
+    return aiohttp.ClientSession(
+        trust_env=True,
+        timeout=AIOHTTP_TIMEOUT,
+        # aiohttp defaults to 100; zero preserves SA-Bench's explicit concurrency.
+        connector=aiohttp.TCPConnector(limit=0),
+    )
+
+
 @dataclass
 class RequestFuncInput:
     prompt: str
@@ -325,96 +335,97 @@ async def async_request_openai_completions(
 async def async_request_dynamo_completions(
     request_func_input: RequestFuncInput,
     pbar: tqdm | None = None,
+    *,
+    session: aiohttp.ClientSession,
 ) -> RequestFuncOutput:
     api_url = request_func_input.api_url
     assert api_url.endswith(
         ("completions", "profile")
     ), "OpenAI Completions API URL must end with 'completions' or 'profile'."
 
-    async with aiohttp.ClientSession(trust_env=True, timeout=AIOHTTP_TIMEOUT) as session:
-        payload = {
-            "model": request_func_input.model_name if request_func_input.model_name else request_func_input.model,
-            "prompt": request_func_input.prompt,
-            "temperature": 0.0,
-            "best_of": request_func_input.best_of,
-            "max_tokens": request_func_input.output_len,
-            "logprobs": request_func_input.logprobs,
-            "stream": True,
-            "stream_options": {
-                "include_usage": True,
-            },
-        }
-        if request_func_input.ignore_eos:
-            payload["ignore_eos"] = request_func_input.ignore_eos
-        if request_func_input.extra_body:
-            payload.update(request_func_input.extra_body)
-        headers = {"Authorization": f"Bearer {os.environ.get('OPENAI_API_KEY')}"}
+    payload = {
+        "model": request_func_input.model_name if request_func_input.model_name else request_func_input.model,
+        "prompt": request_func_input.prompt,
+        "temperature": 0.0,
+        "best_of": request_func_input.best_of,
+        "max_tokens": request_func_input.output_len,
+        "logprobs": request_func_input.logprobs,
+        "stream": True,
+        "stream_options": {
+            "include_usage": True,
+        },
+    }
+    if request_func_input.ignore_eos:
+        payload["ignore_eos"] = request_func_input.ignore_eos
+    if request_func_input.extra_body:
+        payload.update(request_func_input.extra_body)
+    headers = {"Authorization": f"Bearer {os.environ.get('OPENAI_API_KEY')}"}
 
-        output = RequestFuncOutput()
-        output.prompt_len = request_func_input.prompt_len
+    output = RequestFuncOutput()
+    output.prompt_len = request_func_input.prompt_len
 
-        generated_text = ""
-        st = time.perf_counter()
-        output.start_time = st
-        most_recent_timestamp = st
-        try:
-            async with session.post(url=api_url, json=payload, headers=headers) as response:
-                if response.status == 200:
-                    first_chunk_received = False
-                    async for chunk_bytes in response.content:
-                        chunk_bytes = chunk_bytes.strip()
-                        if not chunk_bytes:
-                            continue
+    generated_text = ""
+    st = time.perf_counter()
+    output.start_time = st
+    most_recent_timestamp = st
+    try:
+        async with session.post(url=api_url, json=payload, headers=headers) as response:
+            if response.status == 200:
+                first_chunk_received = False
+                async for chunk_bytes in response.content:
+                    chunk_bytes = chunk_bytes.strip()
+                    if not chunk_bytes:
+                        continue
 
-                        chunk = chunk_bytes.decode("utf-8")
+                    chunk = chunk_bytes.decode("utf-8")
 
-                        # Skip SSE event/comment lines (not data)
-                        if chunk.startswith("event:") or chunk.startswith(":"):
-                            continue
+                    # Skip SSE event/comment lines (not data)
+                    if chunk.startswith("event:") or chunk.startswith(":"):
+                        continue
 
-                        chunk = chunk.removeprefix("data: ")
-                        if chunk != "[DONE]":
-                            data = json.loads(chunk)
+                    chunk = chunk.removeprefix("data: ")
+                    if chunk != "[DONE]":
+                        data = json.loads(chunk)
 
-                            # NOTE: Some completion API might have a last
-                            # usage summary response without a token so we
-                            # want to check a token was generated
-                            if choices := data.get("choices"):
-                                # Note that text could be empty here
-                                # e.g. for special tokens
-                                text = choices[0].get("text")
-                                timestamp = time.perf_counter()
-                                # First token
-                                if not first_chunk_received:
-                                    first_chunk_received = True
-                                    ttft = time.perf_counter() - st
-                                    output.ttft = ttft
+                        # NOTE: Some completion API might have a last
+                        # usage summary response without a token so we
+                        # want to check a token was generated
+                        if choices := data.get("choices"):
+                            # Note that text could be empty here
+                            # e.g. for special tokens
+                            text = choices[0].get("text")
+                            timestamp = time.perf_counter()
+                            # First token
+                            if not first_chunk_received:
+                                first_chunk_received = True
+                                ttft = time.perf_counter() - st
+                                output.ttft = ttft
 
-                                # Decoding phase
-                                else:
-                                    output.itl.append(timestamp - most_recent_timestamp)
+                            # Decoding phase
+                            else:
+                                output.itl.append(timestamp - most_recent_timestamp)
 
-                                most_recent_timestamp = timestamp
-                                generated_text += text or ""
-                                output.text_chunks.append(text or "")
-                            if usage := data.get("usage"):
-                                output.output_tokens = usage.get("completion_tokens")
-                    if first_chunk_received:
-                        output.success = True
-                    else:
-                        output.success = False
-                        output.error = (
-                            "Never received a valid chunk to calculate TTFT." "This response will be marked as failed!"
-                        )
-                    output.generated_text = generated_text
-                    output.latency = most_recent_timestamp - st
+                            most_recent_timestamp = timestamp
+                            generated_text += text or ""
+                            output.text_chunks.append(text or "")
+                        if usage := data.get("usage"):
+                            output.output_tokens = usage.get("completion_tokens")
+                if first_chunk_received:
+                    output.success = True
                 else:
-                    output.error = response.reason or ""
                     output.success = False
-        except Exception:
-            output.success = False
-            exc_info = sys.exc_info()
-            output.error = "".join(traceback.format_exception(*exc_info))
+                    output.error = (
+                        "Never received a valid chunk to calculate TTFT." "This response will be marked as failed!"
+                    )
+                output.generated_text = generated_text
+                output.latency = most_recent_timestamp - st
+            else:
+                output.error = response.reason or ""
+                output.success = False
+    except Exception:
+        output.success = False
+        exc_info = sys.exc_info()
+        output.error = "".join(traceback.format_exception(*exc_info))
 
     if pbar:
         pbar.update(1)

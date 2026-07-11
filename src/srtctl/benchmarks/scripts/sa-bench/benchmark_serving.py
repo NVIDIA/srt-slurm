@@ -40,6 +40,7 @@ import warnings
 from collections.abc import AsyncGenerator, Collection
 from dataclasses import dataclass
 from datetime import datetime
+from functools import partial
 from multiprocessing import Pool, cpu_count
 from typing import Any
 
@@ -50,6 +51,7 @@ from backend_request_func import (
     ASYNC_REQUEST_FUNCS,
     RequestFuncInput,
     RequestFuncOutput,
+    create_dynamo_session,
     get_tokenizer as get_sa_bench_tokenizer,
 )
 from datasets import load_dataset
@@ -723,11 +725,16 @@ async def benchmark(
     slow_down_servers: list[str] | None = None,
     slow_down_sleep_time: float = 1.0,
     slow_down_wait_time: float = 60.0,
+    request_session: aiohttp.ClientSession | None = None,
 ):
     if backend in ASYNC_REQUEST_FUNCS:
         request_func = ASYNC_REQUEST_FUNCS[backend]
     else:
         raise ValueError(f"Unknown backend: {backend}")
+    if backend == "dynamo":
+        if request_session is None:
+            raise ValueError("The Dynamo backend requires a benchmark-scoped HTTP session.")
+        request_func = partial(request_func, session=request_session)
 
     print("Starting initial single prompt test run...")
     test_prompt, test_prompt_len, test_output_len, test_mm_content = input_requests[0]
@@ -830,28 +837,35 @@ async def benchmark(
 
     benchmark_start_time = time.perf_counter()
     tasks: list[asyncio.Task] = []
-    async for request in get_request(input_requests, request_rate, burstiness):
-        prompt, prompt_len, output_len, mm_content = request
-        req_model_id, req_model_name = model_id, model_name
-        if lora_modules:
-            req_lora_module = next(lora_modules)
-            req_model_id, req_model_name = req_lora_module, req_lora_module
+    try:
+        async for request in get_request(input_requests, request_rate, burstiness):
+            prompt, prompt_len, output_len, mm_content = request
+            req_model_id, req_model_name = model_id, model_name
+            if lora_modules:
+                req_lora_module = next(lora_modules)
+                req_model_id, req_model_name = req_lora_module, req_lora_module
 
-        request_func_input = RequestFuncInput(
-            model=req_model_id,
-            model_name=req_model_name,
-            prompt=prompt,
-            api_url=api_url,
-            prompt_len=prompt_len,
-            output_len=output_len,
-            logprobs=logprobs,
-            best_of=best_of,
-            multi_modal_content=mm_content,
-            ignore_eos=ignore_eos,
-        )
-        tasks.append(asyncio.create_task(limited_request_func(request_func_input=request_func_input, pbar=pbar)))
-    outputs: list[RequestFuncOutput] = await asyncio.gather(*tasks)
-    
+            request_func_input = RequestFuncInput(
+                model=req_model_id,
+                model_name=req_model_name,
+                prompt=prompt,
+                api_url=api_url,
+                prompt_len=prompt_len,
+                output_len=output_len,
+                logprobs=logprobs,
+                best_of=best_of,
+                multi_modal_content=mm_content,
+                ignore_eos=ignore_eos,
+            )
+            tasks.append(asyncio.create_task(limited_request_func(request_func_input=request_func_input, pbar=pbar)))
+        outputs: list[RequestFuncOutput] = await asyncio.gather(*tasks)
+    except BaseException:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+
     if slow_down_task is not None and not slow_down_task.done():
         slow_down_task.cancel()
         try:
@@ -879,6 +893,10 @@ async def benchmark(
         pbar.close()
 
     benchmark_duration = time.perf_counter() - benchmark_start_time
+    if request_session is not None and not request_session.closed:
+        await request_session.close()
+        # Allow asyncio to finish closing pooled transports before CPU-heavy metrics.
+        await asyncio.sleep(0)
 
     metrics, actual_output_lens = calculate_metrics(
         input_requests=input_requests,
@@ -961,6 +979,14 @@ async def benchmark(
     print("=" * 50)
 
     return result
+
+
+async def run_benchmark_with_cleanup(**benchmark_kwargs: Any) -> dict[str, Any]:
+    """Run a benchmark with a loop-local Dynamo connection pool."""
+    if benchmark_kwargs.get("backend") != "dynamo":
+        return await benchmark(**benchmark_kwargs)
+    async with create_dynamo_session() as session:
+        return await benchmark(**benchmark_kwargs, request_session=session)
 
 
 def check_goodput_args(args):
@@ -1199,7 +1225,7 @@ def main(args: argparse.Namespace):
     gc.freeze()
 
     benchmark_result = asyncio.run(
-        benchmark(
+        run_benchmark_with_cleanup(
             backend=backend,
             api_url=api_url,
             base_url=base_url,
