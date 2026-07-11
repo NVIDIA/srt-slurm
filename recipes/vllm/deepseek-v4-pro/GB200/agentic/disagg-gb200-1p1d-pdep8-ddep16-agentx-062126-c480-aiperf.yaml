@@ -88,6 +88,7 @@ backend:
     VLLM_SERVER_DEV_MODE: "1"
     VLLM_USE_V2_MODEL_RUNNER: "1"
     VLLM_MOONCAKE_LOAD_RECV_THREADS: "20"
+    DG_JIT_CACHE_DIR: "/tmp/dg-cache-dsv4-agentx"
     VLLM_ALLREDUCE_USE_SYMM_MEM: "0"
     VLLM_USE_BREAKABLE_CUDAGRAPH: "0"
     # Requires connector-prefetch support in the selected vLLM build/setup.
@@ -115,6 +116,7 @@ backend:
     VLLM_SERVER_DEV_MODE: "1"
     VLLM_USE_V2_MODEL_RUNNER: "1"
     VLLM_MOONCAKE_LOAD_RECV_THREADS: "20"
+    DG_JIT_CACHE_DIR: "/tmp/dg-cache-dsv4-agentx"
     VLLM_ALLREDUCE_USE_SYMM_MEM: "0"
     TILELANG_CLEANUP_TEMP_FILES: "1"
     NCCL_CUMEM_ENABLE: "1"
