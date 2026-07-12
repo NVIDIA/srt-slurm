@@ -117,6 +117,9 @@ frontend:
 
 dynamo:
   install: false
+  # The unversioned container alias does not identify a Dynamo version or hash.
+  # Use NATS for a recipe with an unverified Dynamo revision.
+  request_plane: "nats"
 
 infra:
   etcd_nats_dedicated_node: true

@@ -42,6 +42,7 @@ from srtctl.core.processes import (
     setup_signal_handlers,
     start_process_monitor,
 )
+from srtctl.core.resource_snapshot import record_resource_snapshot
 from srtctl.core.runtime import RuntimeContext
 from srtctl.core.schema import SrtConfig
 from srtctl.core.slurm import get_slurm_job_id, start_srun_process
@@ -633,10 +634,6 @@ class SweepOrchestrator(
 
     def run(self) -> int:
         """Run the complete sweep."""
-        # Create status reporter (fire-and-forget, no-op if not configured)
-        reporter = StatusReporter.from_config(self.config.reporting, self.runtime.job_id)
-        reporter.report_started(self.config, self.runtime)
-
         logger.info("Sweep Orchestrator")
         logger.info("Job ID: %s", self.runtime.job_id)
         logger.info("Run name: %s", self.runtime.run_name)
@@ -647,8 +644,14 @@ class SweepOrchestrator(
         if self.config.profiling.enabled:
             logger.info("Profiling: %s", self.config.profiling.type)
 
-        # Write initial lockfile with config + SLURM context (fingerprint added after run)
-        write_lockfile(self.runtime.log_dir.parent, self.config)
+        resource_snapshot = record_resource_snapshot(self.config, self.runtime)
+
+        # Create status reporter (fire-and-forget, no-op if not configured)
+        reporter = StatusReporter.from_config(self.config.reporting, self.runtime.job_id)
+        reporter.report_started(self.config, self.runtime, resource_snapshot=resource_snapshot)
+
+        # Write initial lockfile with config + SLURM/resource context (worker fingerprints added after run)
+        write_lockfile(self.runtime.log_dir.parent, self.config, self.runtime.log_dir)
 
         registry = ProcessRegistry(job_id=self.runtime.job_id)
         stop_event = threading.Event()

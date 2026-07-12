@@ -18,6 +18,8 @@ base:
     type: dynamo
   dynamo:
     version: 1.2.1
+    # Use NATS for a recipe prior to Dynamo commit 39d2a68.
+    request_plane: "nats"
   backend:
     prefill_environment:
       TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: '1800'

@@ -7,6 +7,8 @@ setup_script: rebuild-deepep.sh
 
 dynamo:
   hash: 4e4006138bb9dde377a2bb2cacbcc65aaa616ac1
+  # Use NATS for a recipe prior to Dynamo commit 39d2a68.
+  request_plane: "nats"
 
 model:
   path: "qwen3.5-fp8"

@@ -8,6 +8,8 @@ model:
 dynamo:
   install: true
   wheel: "1.2.0.dev20260426"
+  # Use NATS for a recipe prior to Dynamo commit 39d2a68.
+  request_plane: "nats"
 
 health_check:
   max_attempts: 360

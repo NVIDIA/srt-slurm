@@ -31,6 +31,54 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _vllm_data_parallel_size(config: "SrtConfig", mode: str) -> int:
+    """Return vLLM data parallel size for a mode, defaulting to one."""
+    backend = config.backend
+    if getattr(backend, "type", None) != "vllm":
+        return 1
+
+    vllm_config = getattr(backend, "vllm_config", None)
+    mode_config = getattr(vllm_config, mode, None) if vllm_config else None
+    if not mode_config:
+        # Special case: no vllm_config at all defaulting to 1 then
+        return 1
+
+    return int(mode_config.get("data-parallel-size") or mode_config.get("data_parallel_size") or 1)
+
+
+def _get_health_expectations(config: "SrtConfig") -> tuple[int, int, str, int]:
+    """Compute expected health counts in the units reported by the frontend.
+
+    Dynamo's /health endpoint reports registered generate instances. For vLLM
+    DP workers, that means one entry per DP rank, not one entry per logical
+    srt-slurm worker. Other frontends keep using logical worker counts.
+    """
+    r = config.resources
+
+    if r.num_agg > 0:
+        logical_prefill = 0
+        logical_decode = r.num_agg
+        worker_desc = f"{r.num_agg} agg"
+    else:
+        logical_prefill = r.num_prefill
+        logical_decode = r.num_decode
+        worker_desc = f"{r.num_prefill}P + {r.num_decode}D"
+
+    if config.frontend.type == "dynamo" and getattr(config.backend, "type", None) == "vllm":
+        if r.num_agg > 0:
+            n_prefill = 0
+            n_decode = logical_decode * _vllm_data_parallel_size(config, "aggregated")
+        else:
+            n_prefill = logical_prefill * _vllm_data_parallel_size(config, "prefill")
+            n_decode = logical_decode * _vllm_data_parallel_size(config, "decode")
+
+        count_desc = f"{n_prefill}P + {n_decode}D Dynamo generate instances; logical workers: {worker_desc}"
+        return n_prefill, n_decode, count_desc, n_prefill + n_decode
+
+    count_desc = worker_desc
+    return logical_prefill, logical_decode, count_desc, logical_prefill + logical_decode
+
+
 class BenchmarkStageMixin:
     """Mixin for benchmark execution stage.
 
@@ -83,22 +131,8 @@ class BenchmarkStageMixin:
         """Run the benchmark."""
         logger.info("Waiting for workers to be ready...")
 
-        r = self.config.resources
-        num_workers = r.num_prefill + r.num_decode + r.num_agg
-
-        # Build descriptive worker count string
-        worker_desc = f"{r.num_agg} agg" if r.num_agg > 0 else f"{r.num_prefill}P + {r.num_decode}D"
-
-        logger.info("Waiting for server health (expecting %d workers: %s)...", num_workers, worker_desc)
-
-        # For aggregated mode: expect 0 prefill, N decode (backend workers count as decode)
-        # For disaggregated mode: expect N prefill, M decode
-        if r.num_agg > 0:
-            n_prefill = 0
-            n_decode = r.num_agg
-        else:
-            n_prefill = r.num_prefill
-            n_decode = r.num_decode
+        n_prefill, n_decode, count_desc, num_workers = _get_health_expectations(self.config)
+        logger.info("Waiting for server health (expecting %d health entries: %s)...", num_workers, count_desc)
 
         hc = self.config.health_check
         if not wait_for_model(

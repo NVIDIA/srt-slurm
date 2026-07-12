@@ -221,6 +221,18 @@ resources:
 - GPUs per worker are computed automatically: `(nodes * gpus_per_node) / workers`
 - Use `gpus_per_prefill`, `gpus_per_decode`, `gpus_per_agg` to explicitly override the computed values
 
+### CPU allocation visibility
+
+srtctl records both the requested GPU topology and the effective CPU allocation. At runtime it:
+
+- logs `SLURM_JOB_CPUS_PER_NODE`, `SLURM_CPUS_ON_NODE`, and process CPU affinity;
+- writes `logs/resource_snapshot.json` with per-node/total CPUs, backend/configured GPUs, the warning threshold, and verdict;
+- adds the snapshot to `lock.resource_snapshot` in `recipe.lock.yaml`;
+- adds CPU allocation and warning state to the job metadata used by `srtctl monitor`; and
+- records CPU model, logical CPU count, affinity, and SLURM CPU variables in each worker fingerprint beside GPU details.
+
+The warning uses a fixed, conservative baseline of one effective CPU per backend GPU. For example, a four-GPU backend that receives only two CPUs produces a prominent `CPU ALLOCATION WARNING` before services start. Increase the request with the appropriate cluster policy, such as `cpus-per-task`, `cpus-per-gpu`, or an exclusive-node directive.
+
 ### Computed Properties
 
 The ResourceConfig provides several computed properties:
