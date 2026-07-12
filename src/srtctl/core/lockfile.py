@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from srtctl.core.fingerprint import load_fingerprint
+from srtctl.core.resource_snapshot import load_resource_snapshot
 
 if TYPE_CHECKING:
     from srtctl.core.schema import SrtConfig
@@ -69,6 +70,11 @@ _SLURM_ENV_KEYS = [
     ("nodelist", "SLURM_JOB_NODELIST"),
     ("num_nodes", "SLURM_JOB_NUM_NODES"),
     ("gpus_per_node", "SLURM_GPUS_PER_NODE"),
+    ("cpus_per_node", "SLURM_JOB_CPUS_PER_NODE"),
+    ("cpus_on_node", "SLURM_CPUS_ON_NODE"),
+    ("cpus_per_task", "SLURM_CPUS_PER_TASK"),
+    ("cpus_per_gpu", "SLURM_CPUS_PER_GPU"),
+    ("num_tasks", "SLURM_NTASKS"),
     ("time_limit", "SLURM_TIMELIMIT"),
 ]
 
@@ -193,6 +199,8 @@ def build_lock_section(
         lock["verification"] = verification_dict
     if worker_fingerprints:
         lock["fingerprints"] = worker_fingerprints
+    if resolved_log_dir and (resource_snapshot := load_resource_snapshot(resolved_log_dir)):
+        lock["resource_snapshot"] = resource_snapshot
     if results:
         lock["results"] = results
 

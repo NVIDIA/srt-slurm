@@ -21,6 +21,12 @@ resources:
   agg_workers: 1
   gpus_per_agg: 1
 
+dynamo:
+  # Dynamo 0.8.0 was the default when this recipe was written; pin it explicitly.
+  # Use NATS for a recipe prior to Dynamo commit 39d2a68.
+  version: "0.8.0"
+  request_plane: "nats"
+
 frontend:
   type: dynamo
   enable_multiple_frontends: false

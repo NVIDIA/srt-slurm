@@ -46,6 +46,9 @@ health_check:
 
 dynamo:
   install: false
+  # Runtime identity identifies Dynamo 1.0.0, a pre-39d2a68 release; the image is not digest-pinned.
+  # Use NATS for a recipe prior to Dynamo commit 39d2a68.
+  request_plane: "nats"
 
 # Virtual identity — verified against runtime fingerprint (warnings, not failures)
 identity:

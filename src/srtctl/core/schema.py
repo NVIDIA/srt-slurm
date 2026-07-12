@@ -743,6 +743,18 @@ class ProfilingPhaseConfig:
     start_step: int | None = None  # Step to start profiling
     stop_step: int | None = None  # Step to stop profiling
 
+    @property
+    def vllm_nsys_delay_iterations(self) -> int:
+        """vLLM --profiler-config delay_iterations: engine steps before capture starts."""
+        return self.start_step or 0
+
+    @property
+    def vllm_nsys_max_iterations(self) -> int:
+        """vLLM --profiler-config max_iterations: number of steps to capture (stop - start)."""
+        if self.start_step is None or self.stop_step is None:
+            return 0
+        return max(self.stop_step - self.start_step, 0)
+
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
 
@@ -1250,7 +1262,7 @@ class DynamoConfig:
         top_of_tree: Clone repo at HEAD (latest)
         wheel: ai-dynamo package version to install via staged wheels. The
                matching ai-dynamo-runtime wheel is installed automatically.
-        request_plane: Request plane to use (default: "nats"). Valid values: "nats", "tcp", "http"
+        request_plane: Request plane to use (default: "tcp"). Valid values: "nats", "tcp", "http"
 
     If top_of_tree, hash, or wheel is set, version is automatically cleared.
     """
@@ -1262,7 +1274,7 @@ class DynamoConfig:
     hash: str | None = None
     top_of_tree: bool = False
     wheel: str | None = None
-    request_plane: str = "nats"
+    request_plane: str = "tcp"
 
     def __post_init__(self) -> None:
         install_sources = [
@@ -1690,6 +1702,37 @@ class SrtConfig:
                 )
             if (r.agg_workers or 0) <= 0:
                 raise ValidationError("Aggregated mode requires agg_workers to be > 0.")
+
+        # Iteration-based nsys (type: nsys) drives the vLLM engine profiler via
+        # --profiler-config, derived from the profiling: block. Forbid duplicating
+        # it in vllm_config so the two can't diverge silently.
+        if prof.type == "nsys" and backend_type == "vllm":
+            self._validate_vllm_nsys_profiler_config_not_set()
+
+    def _validate_vllm_nsys_profiler_config_not_set(self):
+        """Reject profiler-config.* in vllm_config when nsys profiling is enabled.
+
+        srtctl injects --profiler-config from the profiling: block (single source
+        of truth), so a user-supplied profiler-config in vllm_config would either
+        be overwritten or conflict with a different step window. Fail fast at
+        recipe-read time instead.
+        """
+        vllm_cfg = getattr(self.backend, "vllm_config", None)
+        if not vllm_cfg:
+            return
+        for mode_name, cfg in (
+            ("prefill", vllm_cfg.prefill),
+            ("decode", vllm_cfg.decode),
+            ("aggregated", vllm_cfg.aggregated),
+        ):
+            if not cfg:
+                continue
+            bad = [k for k in cfg if str(k).replace("_", "-").startswith("profiler-config")]
+            if bad:
+                raise ValidationError(
+                    f"vllm_config.{mode_name} sets {bad}, but profiler-config.* is derived automatically "
+                    f"from the profiling: block when nsys profiling is enabled. Remove these keys."
+                )
 
     def _validate_telemetry(self):
         """Validate telemetry configuration."""
