@@ -12,7 +12,7 @@ import shlex
 from collections import defaultdict
 from typing import TYPE_CHECKING, Any
 
-from srtctl.core.fingerprint import generate_capture_script
+from srtctl.core.fingerprint import generate_capture_command
 from srtctl.core.processes import ManagedProcess, NamedProcesses
 from srtctl.core.schema import build_otel_env, installs_dynamo
 from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, get_hostname_ip, start_srun_process
@@ -225,7 +225,7 @@ class WorkerStageMixin:
 
         # Build bash preamble (setup script + dynamo install + fingerprint)
         bash_preamble = self._build_worker_preamble()
-        fp_cmd = generate_capture_script(f"/logs/fingerprint_{mode}_w{index}.json")
+        fp_cmd = generate_capture_command(f"/logs/fingerprint_{mode}_w{index}.json")
         # Keep fingerprint failures non-fatal, but do not let its `|| true`
         # mask failures from setup/dynamo install commands before it.
         fp_cmd = f"( {fp_cmd} )"
@@ -357,7 +357,7 @@ class WorkerStageMixin:
 
         # Build bash preamble (setup script + dynamo install + fingerprint)
         bash_preamble = self._build_worker_preamble()
-        fp_cmd = generate_capture_script(f"/logs/fingerprint_{mode}_w{index}.json")
+        fp_cmd = generate_capture_command(f"/logs/fingerprint_{mode}_w{index}.json")
         # Keep fingerprint failures non-fatal, but do not let its `|| true`
         # mask failures from setup/dynamo install commands before it.
         fp_cmd = f"( {fp_cmd} )"

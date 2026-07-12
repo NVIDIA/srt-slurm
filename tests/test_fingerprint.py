@@ -13,11 +13,12 @@ Every test runs without network, GPU, or special packages — probes are mocked.
 
 from __future__ import annotations
 
-import json
+import shlex
 from pathlib import Path
 from unittest.mock import patch
 
 from srtctl.core.fingerprint import (
+    FRAMEWORK_PACKAGES,
     UNAVAILABLE,
     CheckResult,
     CheckStatus,
@@ -30,11 +31,13 @@ from srtctl.core.fingerprint import (
     diff_fingerprints,
     format_check_results,
     format_diff,
-    generate_capture_script,
+    generate_capture_command,
     load_fingerprint,
     probe_cpu,
     write_fingerprint,
 )
+from srtctl.runtime_scripts import FINGERPRINT_SCRIPT_CONTAINER_PATH, FINGERPRINT_SCRIPT_HOST_PATH
+from srtctl.runtime_scripts.fingerprint import FRAMEWORK_PACKAGES as RUNTIME_FRAMEWORK_PACKAGES
 
 ARM_CPUINFO = """\
 processor       : 0
@@ -581,127 +584,41 @@ class TestFileIO:
 
 
 # ============================================================================
-# Bash script generation
+# Worker capture command generation
 # ============================================================================
 
 
-class TestBashGeneration:
-    """generate_capture_script produces valid, safe bash."""
+class TestCaptureCommand:
+    """generate_capture_command invokes the mounted runtime script safely."""
 
-    def test_script_ends_with_or_true(self):
-        """Script is wrapped in || true so it never blocks the worker."""
-        script = generate_capture_script("/logs/fingerprint.json")
-        assert script.rstrip().endswith("|| true")
+    def test_command_is_non_fatal(self):
+        command = generate_capture_command("/logs/fingerprint.json")
+        assert command.endswith(" || true")
 
-    def test_script_contains_output_path(self):
-        """Output path appears in the generated script."""
-        script = generate_capture_script("/logs/fingerprint_prefill_w0.json")
-        assert "/logs/fingerprint_prefill_w0.json" in script
+    def test_command_invokes_mounted_script(self):
+        command = generate_capture_command("/logs/fingerprint_prefill_w0.json")
+        argv = shlex.split(command.removesuffix(" || true"))
 
-    def test_script_starts_with_python(self):
-        """Script invokes python3."""
-        script = generate_capture_script("/logs/fp.json")
-        assert script.startswith("python3")
+        assert argv == [
+            "python3",
+            str(FINGERPRINT_SCRIPT_CONTAINER_PATH),
+            "--output",
+            "/logs/fingerprint_prefill_w0.json",
+        ]
 
-    def test_script_includes_pip_freeze(self):
-        """Script captures pip packages via pip freeze."""
-        script = generate_capture_script("/logs/fp.json")
-        assert "pip freeze" in script
+    def test_mounted_script_exists_in_package(self):
+        assert FINGERPRINT_SCRIPT_HOST_PATH.is_file()
 
-    def test_script_includes_sorted(self):
-        """Script sorts pip output for deterministic diffs."""
-        script = generate_capture_script("/logs/fp.json")
-        assert "sorted" in script
+    def test_framework_registry_is_shared(self):
+        assert FRAMEWORK_PACKAGES is RUNTIME_FRAMEWORK_PACKAGES
 
-    def test_script_captures_cpu_visibility(self):
-        script = generate_capture_script("/logs/fp.json")
-        assert "def cpu_info():" in script
-        assert "'cpu': cpu_info()" in script
-        assert "SLURM_JOB_CPUS_PER_NODE" in script
+    def test_output_path_is_shell_quoted(self):
+        output_path = "/logs/fingerprint worker; false.json"
+        command = generate_capture_command(output_path)
+        argv = shlex.split(command.removesuffix(" || true"))
 
-    def test_embedded_python_is_syntactically_valid(self):
-        """The Python code inside the script must parse without SyntaxError.
-
-        This is the test that would have caught the \\n escaping bug where
-        literal backslash-n characters were passed to python3 -c instead of
-        real newlines, causing a SyntaxError at runtime.
-        """
-        import ast
-        import re
-
-        script = generate_capture_script("/logs/fingerprint.json")
-        # Extract the Python source from between the heredoc markers
-        match = re.search(
-            r"<<'__FINGERPRINT_EOF__'\n(.+?)__FINGERPRINT_EOF__",
-            script,
-            re.DOTALL,
-        )
-        assert match, f"Could not find heredoc Python source in script:\n{script[:200]}"
-        python_source = match.group(1)
-        # ast.parse raises SyntaxError if the code is invalid
-        ast.parse(python_source)
-
-    def test_embedded_python_produces_json(self):
-        """The embedded script runs and produces valid JSON output."""
-        import re
-        import subprocess
-        import tempfile
-
-        script = generate_capture_script("/tmp/test_fingerprint_output.json")
-        match = re.search(
-            r"<<'__FINGERPRINT_EOF__'\n(.+?)__FINGERPRINT_EOF__",
-            script,
-            re.DOTALL,
-        )
-        assert match
-        python_source = match.group(1)
-
-        # Run the script in a subprocess — probes will return "unavailable"
-        # on a dev machine (no GPU, etc.) but the script must not crash
-        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
-            # Rewrite output path to a temp location
-            f.write(python_source.replace("/tmp/test_fingerprint_output.json", f.name + ".out"))
-            f.flush()
-            result = subprocess.run(
-                ["python3", f.name],
-                capture_output=True,
-                text=True,
-                timeout=15,
-            )
-        assert result.returncode == 0, f"Fingerprint script failed:\n{result.stderr}"
-
-    def test_embedded_python_uses_arm_cpuinfo_fallback(self, tmp_path):
-        """The worker-container script handles ARM cpuinfo without model name."""
-        import re
-        import subprocess
-
-        output_path = tmp_path / "fingerprint.json"
-        cpuinfo_path = tmp_path / "cpuinfo"
-        cpuinfo_path.write_text(ARM_CPUINFO)
-
-        script = generate_capture_script("/tmp/test_fingerprint_output.json")
-        match = re.search(
-            r"<<'__FINGERPRINT_EOF__'\n(.+?)__FINGERPRINT_EOF__",
-            script,
-            re.DOTALL,
-        )
-        assert match
-        python_source = match.group(1)
-        python_source = python_source.replace("/tmp/test_fingerprint_output.json", str(output_path))
-        python_source = python_source.replace("/proc/cpuinfo", str(cpuinfo_path))
-        script_path = tmp_path / "fingerprint.py"
-        script_path.write_text(python_source)
-
-        result = subprocess.run(
-            ["python3", str(script_path)],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        assert result.returncode == 0, f"Fingerprint script failed:\n{result.stderr}"
-
-        data = json.loads(output_path.read_text())
-        assert data["cpu"]["model"] == ARM_CPU_MODEL
+        assert argv[-1] == output_path
+        assert "\n" not in command
 
 
 # ============================================================================

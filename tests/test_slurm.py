@@ -37,6 +37,22 @@ def test_start_srun_exports_env_before_preamble() -> None:
     assert bash_cmd.index("echo preamble") < bash_cmd.index("python3 -m server")
 
 
+def test_start_srun_does_not_log_exported_secrets_at_info(caplog) -> None:
+    with (
+        patch("srtctl.core.slurm.get_slurm_job_id", return_value="12345"),
+        patch("srtctl.core.slurm._get_cluster_bash_preamble", return_value=None),
+        patch("subprocess.Popen") as mock_popen,
+        caplog.at_level("INFO", logger="srtctl.core.slurm"),
+    ):
+        mock_popen.return_value = MagicMock()
+        start_srun_process(
+            ["python3", "-m", "server"],
+            env_to_set={"AWS_SECRET_ACCESS_KEY": "do-not-log-this"},
+        )
+
+    assert "do-not-log-this" not in caplog.text
+
+
 def test_cluster_bash_preamble_runs_before_exports_and_local_preamble() -> None:
     with (
         patch("srtctl.core.slurm.get_slurm_job_id", return_value="12345"),
@@ -189,7 +205,7 @@ def test_worker_stage_wraps_nonfatal_fingerprint_hook(tmp_path: Path) -> None:
     )
 
     with (
-        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_command", return_value="fingerprint || true"),
         patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
     ):
         mock_srun.return_value = MagicMock()
@@ -212,7 +228,9 @@ def _remap_worker_mixin(tmp_path: Path, *, frontend_type: str, dynamo_install: b
     mixin.config = SimpleNamespace(
         setup_script=None,
         frontend=SimpleNamespace(type=frontend_type),
-        dynamo=SimpleNamespace(install=dynamo_install, get_install_commands=lambda: "echo install-dynamo", request_plane="nats"),
+        dynamo=SimpleNamespace(
+            install=dynamo_install, get_install_commands=lambda: "echo install-dynamo", request_plane="nats"
+        ),
         observability=ObservabilityConfig(),
         profiling=SimpleNamespace(enabled=False, is_nsys=False),
         backend=backend,
@@ -244,7 +262,7 @@ def _remap_worker_mixin(tmp_path: Path, *, frontend_type: str, dynamo_install: b
 def test_worker_stage_injects_remap_root_for_dynamo_install(tmp_path: Path) -> None:
     mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=True)
     with (
-        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_command", return_value="fingerprint || true"),
         patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
     ):
         mock_srun.return_value = MagicMock()
@@ -256,7 +274,7 @@ def test_worker_stage_injects_remap_root_for_dynamo_install(tmp_path: Path) -> N
 def test_worker_stage_no_remap_root_for_sglang_frontend(tmp_path: Path) -> None:
     mixin, process = _remap_worker_mixin(tmp_path, frontend_type="sglang", dynamo_install=False)
     with (
-        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_command", return_value="fingerprint || true"),
         patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
     ):
         mock_srun.return_value = MagicMock()
@@ -269,7 +287,7 @@ def test_worker_stage_no_remap_root_when_dynamo_install_false(tmp_path: Path) ->
     # Dynamo frontend but container already has dynamo (install=False) → no install, no remap.
     mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
     with (
-        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_command", return_value="fingerprint || true"),
         patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
     ):
         mock_srun.return_value = MagicMock()
