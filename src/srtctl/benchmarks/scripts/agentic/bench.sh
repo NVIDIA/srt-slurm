@@ -95,6 +95,53 @@ export INFMAX_CONTAINER_WORKSPACE="$WORKSPACE_ROOT"
 # is the desired AgentX behavior here.
 sed -i '/REPLAY_CMD+=" --num-dataset-entries /d' "$WORKSPACE_ROOT/benchmarks/benchmark_lib.sh"
 
+if [[ -n "${AIPERF_SYNTHESIS_MAX_OSL:-}" ]]; then
+  AIPERF_ROOT="${AIPERF_DIR:-$WORKSPACE_ROOT/utils/aiperf}"
+  WEKA_TRACE="$AIPERF_ROOT/src/aiperf/dataset/loader/weka_trace.py"
+  if [[ ! -f "$WEKA_TRACE" ]]; then
+    echo "ERROR: AIPERF_SYNTHESIS_MAX_OSL is set but Weka trace loader was not found at $WEKA_TRACE" >&2
+    exit 1
+  fi
+
+  python3 - "$WEKA_TRACE" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+original = text
+
+if "max_tokens=creq.output_length," in text:
+    marker = 'source_kind="weka_subagent",'
+    marker_idx = text.find(marker)
+    token_idx = text.find("max_tokens=creq.output_length,", marker_idx)
+    if marker_idx == -1 or token_idx == -1:
+        raise SystemExit(
+            f"found uncapped subagent max_tokens in {path}, but not in the expected Weka subagent block"
+        )
+    text = text[:token_idx] + text[token_idx:].replace(
+        "max_tokens=creq.output_length,",
+        "max_tokens=self._cap_output(creq),",
+        1,
+    )
+
+if '"source_kind": "weka_subagent",\n                    "theoretical_hit_blocks": hit_blocks,' in text:
+    text = text.replace(
+        '"source_kind": "weka_subagent",\n                    "theoretical_hit_blocks": hit_blocks,',
+        '"source_kind": "weka_subagent",\n'
+        '                    "capped_output_length": self._cap_output(creq),\n'
+        '                    "theoretical_hit_blocks": hit_blocks,',
+        1,
+    )
+
+if text == original:
+    print(f"Weka trace loader already honors synthesis OSL cap for subagent turns: {path}")
+else:
+    path.write_text(text)
+    print(f"Patched Weka trace loader to honor synthesis OSL cap for subagent turns: {path}")
+PY
+fi
+
 export MODEL="$MODEL_NAME"
 export MODEL_PREFIX="$MODEL_PREFIX_ARG"
 export FRAMEWORK="$FRAMEWORK_ARG"

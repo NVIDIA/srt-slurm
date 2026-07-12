@@ -1488,6 +1488,12 @@ build_replay_cmd() {
     fi
     # Do not set --num-dataset-entries. The Weka loaders use the full trace
     # corpus when the flag is omitted.
+    # Optional prefill-isolation knob for disaggregated studies. This keeps
+    # the AgentX trace shape and prefix-reuse behavior, but caps generated
+    # output tokens so the run primarily measures prefill.
+    if [ -n "${AIPERF_SYNTHESIS_MAX_OSL:-}" ]; then
+        REPLAY_CMD+=" --synthesis-max-osl $AIPERF_SYNTHESIS_MAX_OSL"
+    fi
     # 1-second timeslices on the server-metrics scrape so the post-run
     # plotter has per-window time series (KV usage, cache hit rate,
     # throughput, etc.). Matches kv-cache-tester's poll_interval=1.0

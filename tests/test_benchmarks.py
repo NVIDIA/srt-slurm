@@ -689,6 +689,23 @@ class TestAgenticRunner:
         errors = runner.validate_config(config)
         assert any("num-dataset-entries" in error for error in errors)
 
+    def test_agentic_benchmark_lib_exposes_synthesis_max_osl(self):
+        """AgentX configs can cap OSL through benchmark.env for prefill-only runs."""
+        script = SCRIPTS_DIR / "agentic" / "inferencex" / "benchmarks" / "benchmark_lib.sh"
+        text = script.read_text()
+
+        assert "AIPERF_SYNTHESIS_MAX_OSL" in text
+        assert "REPLAY_CMD+=\" --synthesis-max-osl $AIPERF_SYNTHESIS_MAX_OSL\"" in text
+
+    def test_agentic_bench_patches_weka_subagent_osl_cap(self):
+        """bench.sh keeps Weka subagent child turns under the synthesis OSL cap."""
+        script = SCRIPTS_DIR / "agentic" / "bench.sh"
+        text = script.read_text()
+
+        assert "AIPERF_SYNTHESIS_MAX_OSL" in text
+        assert "max_tokens=self._cap_output(creq)," in text
+        assert '"capped_output_length": self._cap_output(creq)' in text
+
 
 class TestScriptsExist:
     """Test that benchmark scripts exist."""
