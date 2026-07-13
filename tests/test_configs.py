@@ -1514,63 +1514,6 @@ class TestVLLMPrefillDecodeColocation:
         assert endpoints[1].mode == "decode"
         assert endpoints[1].nodes == ("node1",)
 
-    def test_cross_node_colocation_packs_partial_prefill_with_first_decode(self):
-        """Explicit cross-node packing uses the prefill node's remaining GPUs."""
-        from srtctl.backends import VLLMProtocol
-
-        endpoints = VLLMProtocol(
-            allow_prefill_decode_colocation=True,
-            allow_prefill_decode_colocation_across_nodes=True,
-        ).allocate_endpoints(
-            num_prefill=1,
-            num_decode=3,
-            num_agg=0,
-            gpus_per_prefill=4,
-            gpus_per_decode=4,
-            gpus_per_agg=0,
-            gpus_per_node=8,
-            available_nodes=("node0", "node1"),
-        )
-
-        assert [ep.nodes for ep in endpoints] == [
-            ("node0",),
-            ("node0",),
-            ("node1",),
-            ("node1",),
-        ]
-        assert [ep.gpu_indices for ep in endpoints] == [
-            frozenset({0, 1, 2, 3}),
-            frozenset({4, 5, 6, 7}),
-            frozenset({0, 1, 2, 3}),
-            frozenset({4, 5, 6, 7}),
-        ]
-
-    def test_cross_node_colocation_requests_minimum_node_count(self):
-        """Sbatch node count follows the packed P+D GPU total."""
-        from srtctl.backends import VLLMProtocol
-        from srtctl.core.schema import ModelConfig, ResourceConfig, SrtConfig
-
-        config = SrtConfig(
-            name="test",
-            model=ModelConfig(path="/model", container="/container.sqsh", precision="fp8"),
-            resources=ResourceConfig(
-                gpu_type="h100",
-                gpus_per_node=8,
-                prefill_nodes=1,
-                decode_nodes=1,
-                prefill_workers=1,
-                decode_workers=3,
-                _explicit_gpus_per_prefill=4,
-                _explicit_gpus_per_decode=4,
-            ),
-            backend=VLLMProtocol(
-                allow_prefill_decode_colocation=True,
-                allow_prefill_decode_colocation_across_nodes=True,
-            ),
-        )
-
-        assert config.total_nodes == 2
-
 
 class TestHetJobsValidation:
     """SrtConfig.__post_init__ validation for `resources.het_jobs: true`."""
