@@ -355,17 +355,14 @@ class VLLMProtocol:
         gpus_per_agg: int,
         gpus_per_node: int,
     ) -> bool:
-        """Whether all vLLM workers should be packed onto one node."""
+        """Whether prefill and decode workers should be packed contiguously."""
         if not self.allow_prefill_decode_colocation:
             return False
         if num_prefill <= 0 or num_decode <= 0 or gpus_per_node <= 0:
             return False
 
         total_worker_gpus = num_prefill * gpus_per_prefill + num_decode * gpus_per_decode + num_agg * gpus_per_agg
-        return (
-            total_worker_gpus <= gpus_per_node
-            or self.allow_prefill_decode_colocation_across_nodes
-        )
+        return total_worker_gpus <= gpus_per_node or self.allow_prefill_decode_colocation_across_nodes
 
     def allocate_endpoints(
         self,
