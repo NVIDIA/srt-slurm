@@ -13,9 +13,29 @@ if ! python3 -c 'import msgpack' >/dev/null 2>&1; then
     python3 -m pip install --no-deps msgpack
 fi
 
-# Some Mooncake wheels are linked against the CUDA 12 runtime soname even when
-# vLLM and Triton use CUDA 13.
-if ! python3 -c 'import ctypes; ctypes.CDLL("libcudart.so.12")' >/dev/null 2>&1; then
+# Some legacy Mooncake wheels are linked against the CUDA 12 runtime soname
+# even when vLLM and Triton use CUDA 13. Only install that compatibility
+# runtime when a bundled Mooncake extension actually declares the dependency.
+mooncake_requires_cuda12=false
+while IFS= read -r extension; do
+    if ldd "${extension}" 2>&1 | grep -q 'libcudart\.so\.12'; then
+        mooncake_requires_cuda12=true
+        break
+    fi
+done < <(python3 - <<'PY'
+from pathlib import Path
+import site
+
+for base in site.getsitepackages() + [site.getusersitepackages()]:
+    mooncake_dir = Path(base) / "mooncake"
+    if mooncake_dir.is_dir():
+        for extension in mooncake_dir.glob("*.so"):
+            print(extension)
+PY
+)
+
+if [[ "${mooncake_requires_cuda12}" == true ]] && \
+    ! python3 -c 'import ctypes; ctypes.CDLL("libcudart.so.12")' >/dev/null 2>&1; then
     python3 -m pip install --no-deps "nvidia-cuda-runtime-cu12>=12.8"
     cuda12_runtime_lib="$(python3 - <<'PY'
 from pathlib import Path
