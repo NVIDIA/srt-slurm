@@ -194,13 +194,8 @@ class WorkerStageMixin:
             profile_dir = str(self.runtime.log_dir / "profiles")
             env_to_set.update(profiling.get_env_vars(mode, profile_dir))
 
-        should_set_cvd = getattr(
-            self.backend, "should_set_cuda_visible_devices", lambda _process: True
-        )
-        if (
-            should_set_cvd(process)
-            and len(process.gpu_indices) < self.runtime.gpus_per_node
-        ):
+        should_set_cvd = getattr(self.backend, "should_set_cuda_visible_devices", lambda _process: True)
+        if should_set_cvd(process) and len(process.gpu_indices) < self.runtime.gpus_per_node:
             env_to_set["CUDA_VISIBLE_DEVICES"] = process.cuda_visible_devices
 
         # Add backend-specific process environment variables (e.g., unique ports)
@@ -328,13 +323,8 @@ class WorkerStageMixin:
             profile_dir = str(self.runtime.log_dir / "profiles")
             env_to_set.update(profiling.get_env_vars(mode, profile_dir))
 
-        should_set_cvd = getattr(
-            self.backend, "should_set_cuda_visible_devices", lambda _process: True
-        )
-        if (
-            should_set_cvd(leader)
-            and len(leader.gpu_indices) < self.runtime.gpus_per_node
-        ):
+        should_set_cvd = getattr(self.backend, "should_set_cuda_visible_devices", lambda _process: True)
+        if should_set_cvd(leader) and len(leader.gpu_indices) < self.runtime.gpus_per_node:
             env_to_set["CUDA_VISIBLE_DEVICES"] = leader.cuda_visible_devices
 
         # Add mooncake worker env vars if configured (SGLang only). For MPI-style
