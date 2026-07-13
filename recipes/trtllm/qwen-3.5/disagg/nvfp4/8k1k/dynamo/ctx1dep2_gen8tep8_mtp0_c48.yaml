@@ -133,7 +133,7 @@ backend:
       allreduce_strategy: MNNVL
 frontend:
   type: dynamo
-  enable_multiple_frontends: true
+  enable_multiple_frontends: false
   env:
     ETCD_LEASE_TTL: '120'
     DYN_TOKENIZER: "fastokens"
