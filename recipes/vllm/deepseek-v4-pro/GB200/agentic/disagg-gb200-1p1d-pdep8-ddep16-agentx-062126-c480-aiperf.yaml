@@ -14,11 +14,11 @@ identity:
   container:
     image: "vllm/vllm-openai:nightly-dev-arm64-cu13.0.1-c04f5eb"
   frameworks:
-    dynamo: "1.2.1"
+    dynamo: "a3be8997e7616b88b50ef62e7d8992b0fb580e36"
     vllm: "0.17.2rc1.dev3667+gc04f5eb88"
 
 dynamo:
-  wheel: "1.2.1"
+  hash: "a3be8997e7616b88b50ef62e7d8992b0fb580e36"
   install: true
 
 setup_script: "vllm-container-deps.sh"
@@ -47,6 +47,8 @@ infra:
 frontend:
   type: dynamo
   enable_multiple_frontends: false
+  env:
+    DYN_ROUTER_ACTIVE_REQUEST_EXPIRY_SECS: "3600"
   args:
     router-mode: "kv"
     router-reset-states: true

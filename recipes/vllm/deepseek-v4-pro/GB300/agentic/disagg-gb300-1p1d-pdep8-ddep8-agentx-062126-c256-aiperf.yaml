@@ -1,8 +1,8 @@
 # DeepSeek V4 Pro AgentX 062126 long-context reference derived from GB300 job
 # 200, updated to the c04f5eb image and current memory settings.
 #
-# dsv4-gb300-job200-setup.sh installs container dependencies and the Dynamo
-# wheel before applying the Dynamo MultiConnector compatibility patch.
+# Connector prefetch and Dynamo MultiConnector support are provided by the
+# pinned vLLM image and Dynamo commit; no runtime source patch is required.
 name: "dsv4-vllm-disagg-gb300-1p1d-pdep8-ddep8-agentx062126-c256"
 
 model:
@@ -16,18 +16,14 @@ identity:
   container:
     image: "vllm/vllm-openai:nightly-dev-arm64-cu13.0.1-c04f5eb"
   frameworks:
-    dynamo: "1.2.1"
+    dynamo: "a3be8997e7616b88b50ef62e7d8992b0fb580e36"
     vllm: "0.17.2rc1.dev3667+gc04f5eb88"
 
 dynamo:
-  wheel: "1.2.1"
-  # The setup wrapper installs and patches this wheel in the required order.
-  install: false
+  hash: "a3be8997e7616b88b50ef62e7d8992b0fb580e36"
+  install: true
 
-environment:
-  DYNAMO_WHEEL_DIRS: "/srtctl-wheels"
-
-setup_script: "dsv4-gb300-job200-setup.sh"
+setup_script: "vllm-container-deps.sh"
 
 slurm:
   time_limit: "02:00:00"
@@ -62,6 +58,8 @@ infra:
 frontend:
   type: dynamo
   enable_multiple_frontends: false
+  env:
+    DYN_ROUTER_ACTIVE_REQUEST_EXPIRY_SECS: "3600"
   args:
     router-mode: "kv"
     router-reset-states: true
