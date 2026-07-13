@@ -1975,6 +1975,55 @@ class TestVLLMDataParallelMode:
         with pytest.raises(ValueError, match="data-parallel-size=7"):
             backend.endpoints_to_processes([endpoint])
 
+    def test_dp_launch_mode_supports_per_role_overrides(self):
+        """Prefill and decode can use different DP process layouts."""
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Endpoint
+
+        backend = VLLMProtocol(
+            dp_launch_mode="per_node",
+            decode_dp_launch_mode="per_gpu",
+            vllm_config=VLLMServerConfig(
+                prefill={
+                    "data-parallel-size": 8,
+                    "data-parallel-hybrid-lb": True,
+                    "enable-expert-parallel": True,
+                },
+                decode={"data-parallel-size": 16, "enable-expert-parallel": True},
+            ),
+        )
+        endpoints = [
+            Endpoint(
+                mode="prefill",
+                index=0,
+                nodes=("pnode0", "pnode1"),
+                gpu_indices=frozenset(range(4)),
+                gpus_per_node=4,
+            ),
+            Endpoint(
+                mode="decode",
+                index=0,
+                nodes=("dnode0", "dnode1", "dnode2", "dnode3"),
+                gpu_indices=frozenset(range(4)),
+                gpus_per_node=4,
+            ),
+        ]
+
+        processes = backend.endpoints_to_processes(endpoints)
+        prefill_processes = [process for process in processes if process.endpoint_mode == "prefill"]
+        decode_processes = [process for process in processes if process.endpoint_mode == "decode"]
+
+        assert backend.get_dp_launch_mode_for_mode("prefill") == "per_node"
+        assert backend.get_dp_launch_mode_for_mode("decode") == "per_gpu"
+        assert len(prefill_processes) == 2
+        assert all(process.gpu_indices == frozenset(range(4)) for process in prefill_processes)
+        assert [process.node_rank for process in prefill_processes] == [0, 4]
+        assert len(decode_processes) == 16
+        assert all(len(process.gpu_indices) == 1 for process in decode_processes)
+        assert [process.node_rank for process in decode_processes] == list(range(16))
+        assert len({process.sys_port for process in processes}) == len(processes)
+        assert backend.get_expected_dynamo_worker_counts(processes) == (2, 16)
+
     def test_dp_mode_allocates_unique_ports_for_multiple_endpoints_per_node(self):
         """Test DP endpoints sharing a node get non-colliding coordination ports."""
         from srtctl.backends import VLLMProtocol, VLLMServerConfig

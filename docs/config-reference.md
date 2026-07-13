@@ -432,6 +432,7 @@ manage the local DP ranks in a shared CUDA namespace:
 backend:
   type: vllm
   dp_launch_mode: per_node
+  decode_dp_launch_mode: per_gpu  # Optional role override
   vllm_config:
     prefill:
       data-parallel-size: 8
@@ -445,6 +446,13 @@ backend:
 | ---------- | --------------------------------------------------- |
 | `per_gpu`  | One process per DP rank/GPU (default)               |
 | `per_node` | One process manages all DP ranks allocated per node |
+
+`prefill_dp_launch_mode`, `decode_dp_launch_mode`, and
+`aggregated_dp_launch_mode` can override the global mode for one role. For
+example, keeping prefill on `per_node` while setting decode to `per_gpu`
+preserves a shared CUDA namespace for prefill collectives while exposing each
+decode rank as an independent Dynamo worker. Roles without an override inherit
+`dp_launch_mode`.
 
 In `per_node` mode, srtslurm derives `--data-parallel-size-local` and
 `--data-parallel-start-rank` from the allocated topology. Do not set those

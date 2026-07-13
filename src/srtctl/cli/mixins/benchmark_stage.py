@@ -46,7 +46,9 @@ def _vllm_data_parallel_size(config: "SrtConfig", mode: str) -> int:
     return int(mode_config.get("data-parallel-size") or mode_config.get("data_parallel_size") or 1)
 
 
-def _get_health_expectations(config: "SrtConfig") -> tuple[int, int, str, int]:
+def _get_health_expectations(
+    config: "SrtConfig", processes: list["Process"] | None = None
+) -> tuple[int, int, str, int]:
     """Compute expected health counts in the units reported by the frontend.
 
     Dynamo's /health endpoint reports registered generate instances. For vLLM
@@ -65,7 +67,10 @@ def _get_health_expectations(config: "SrtConfig") -> tuple[int, int, str, int]:
         worker_desc = f"{r.num_prefill}P + {r.num_decode}D"
 
     if config.frontend.type == "dynamo" and getattr(config.backend, "type", None) == "vllm":
-        if r.num_agg > 0:
+        registration_counter = getattr(config.backend, "get_expected_dynamo_worker_counts", None)
+        if processes is not None and callable(registration_counter):
+            n_prefill, n_decode = registration_counter(processes)
+        elif r.num_agg > 0:
             n_prefill = 0
             n_decode = logical_decode * _vllm_data_parallel_size(config, "aggregated")
         else:
@@ -131,7 +136,7 @@ class BenchmarkStageMixin:
         """Run the benchmark."""
         logger.info("Waiting for workers to be ready...")
 
-        n_prefill, n_decode, count_desc, num_workers = _get_health_expectations(self.config)
+        n_prefill, n_decode, count_desc, num_workers = _get_health_expectations(self.config, self.backend_processes)
         logger.info("Waiting for server health (expecting %d health entries: %s)...", num_workers, count_desc)
 
         hc = self.config.health_check

@@ -140,6 +140,7 @@ class VLLMProtocol:
           allow_prefill_decode_colocation: true  # pack P/D on one node when all workers fit
           allow_prefill_decode_colocation_across_nodes: true  # continue packing on later nodes
           dp_launch_mode: per_node  # one process manages all local DP ranks
+          decode_dp_launch_mode: per_gpu  # optional per-role override
           prefill_environment:
             PYTHONUNBUFFERED: "1"
           vllm_config:
@@ -196,6 +197,11 @@ class VLLMProtocol:
     # DP process layout. Keep the existing per-GPU behavior by default;
     # per-node lets vLLM manage local DP ranks in one CUDA namespace.
     dp_launch_mode: DPLaunchMode = "per_gpu"
+
+    # Optional per-role overrides. Unset roles inherit dp_launch_mode.
+    prefill_dp_launch_mode: DPLaunchMode | None = None
+    decode_dp_launch_mode: DPLaunchMode | None = None
+    aggregated_dp_launch_mode: DPLaunchMode | None = None
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
@@ -420,6 +426,50 @@ class VLLMProtocol:
         config = self.get_config_for_mode(mode)
         return config.get("data-parallel-size") or config.get("data_parallel_size")
 
+    def get_dp_launch_mode_for_mode(self, mode: WorkerMode) -> DPLaunchMode:
+        """Return the role-specific launch mode or the global default."""
+        overrides = {
+            "prefill": self.prefill_dp_launch_mode,
+            "decode": self.decode_dp_launch_mode,
+            "agg": self.aggregated_dp_launch_mode,
+        }
+        return overrides[mode] or self.dp_launch_mode
+
+    def get_expected_dynamo_worker_counts(self, processes: Sequence[Process]) -> tuple[int, int]:
+        """Return the generate-instance counts expected from a process layout.
+
+        Per-GPU processes each register one instance. Hybrid per-node processes
+        register their local rank range, while non-hybrid headless followers do
+        not register separately.
+        """
+        grouped: dict[tuple[WorkerMode, int], list[Process]] = {}
+        for process in processes:
+            key = (process.endpoint_mode, process.endpoint_index)
+            grouped.setdefault(key, []).append(process)
+
+        prefill_count = 0
+        decode_count = 0
+        for (mode, _endpoint_index), endpoint_processes in grouped.items():
+            registrations = 1
+            if self._is_dp_mode(mode):
+                launch_mode = self.get_dp_launch_mode_for_mode(mode)
+                if launch_mode == "per_gpu":
+                    registrations = len(endpoint_processes)
+                else:
+                    config = self.get_config_for_mode(mode)
+                    hybrid_lb = config.get("data-parallel-hybrid-lb", config.get("data_parallel_hybrid_lb", False))
+                    hybrid_lb_enabled = hybrid_lb is True or (
+                        isinstance(hybrid_lb, str) and hybrid_lb.strip().lower() in {"1", "true", "yes", "on"}
+                    )
+                    registrations = len(endpoint_processes) if hybrid_lb_enabled else 1
+
+            if mode == "prefill":
+                prefill_count += registrations
+            else:
+                decode_count += registrations
+
+        return prefill_count, decode_count
+
     def should_set_cuda_visible_devices(self, process: Process) -> bool:
         """Whether worker_stage should set CUDA_VISIBLE_DEVICES.
 
@@ -440,21 +490,61 @@ class VLLMProtocol:
         DP+EP mode uses the configured per-GPU or per-node process layout.
         For standard TP mode, creates one process per node.
         """
-        from srtctl.core.topology import NodePortAllocator, Process, endpoints_to_processes
+        from srtctl.core.topology import NodePortAllocator, endpoints_to_processes
 
-        # Check if any endpoint uses DP mode
-        has_dp_mode = any(self._is_dp_mode(ep.mode) for ep in endpoints)
-
-        if not has_dp_mode:
+        dp_endpoints = [endpoint for endpoint in endpoints if self._is_dp_mode(endpoint.mode)]
+        if not dp_endpoints:
             # Standard TP mode: one process per node
             return endpoints_to_processes(endpoints, base_sys_port=base_sys_port, port_allocator=port_allocator)
 
-        if self.dp_launch_mode == "per_node":
+        launch_modes = {self.get_dp_launch_mode_for_mode(endpoint.mode) for endpoint in dp_endpoints}
+        if launch_modes == {"per_node"}:
             return self._dp_per_node_endpoints_to_processes(
                 endpoints,
                 base_sys_port=base_sys_port,
                 port_allocator=port_allocator,
             )
+
+        if launch_modes == {"per_gpu"}:
+            return self._dp_per_gpu_endpoints_to_processes(
+                endpoints,
+                base_sys_port=base_sys_port,
+                port_allocator=port_allocator,
+            )
+
+        # Mixed role modes share one allocator so every coordination port stays
+        # unique across the per-node and per-GPU process groups.
+        processes: list[Process] = []
+        current_sys_port = base_sys_port
+        if port_allocator is None:
+            port_allocator = NodePortAllocator()
+
+        for endpoint in endpoints:
+            if self._is_dp_mode(endpoint.mode) and self.get_dp_launch_mode_for_mode(endpoint.mode) == "per_node":
+                endpoint_processes = self._dp_per_node_endpoints_to_processes(
+                    [endpoint],
+                    base_sys_port=current_sys_port,
+                    port_allocator=port_allocator,
+                )
+            else:
+                endpoint_processes = self._dp_per_gpu_endpoints_to_processes(
+                    [endpoint],
+                    base_sys_port=current_sys_port,
+                    port_allocator=port_allocator,
+                )
+            processes.extend(endpoint_processes)
+            current_sys_port += len(endpoint_processes)
+
+        return processes
+
+    def _dp_per_gpu_endpoints_to_processes(
+        self,
+        endpoints: list[Endpoint],
+        base_sys_port: int = DYN_SYSTEM_PORT_BASE,
+        port_allocator: NodePortAllocator | None = None,
+    ) -> list[Process]:
+        """Convert DP endpoints to one process per GPU."""
+        from srtctl.core.topology import NodePortAllocator, Process
 
         # DP+EP mode: one process per GPU
         processes: list[Process] = []
@@ -672,7 +762,7 @@ class VLLMProtocol:
 
         # Check if this is DP+EP mode (data-parallel-size set)
         is_dp_mode = self._is_dp_mode(mode)
-        if is_dp_mode and self.dp_launch_mode == "per_node":
+        if is_dp_mode and self.get_dp_launch_mode_for_mode(mode) == "per_node":
             rpc_port_kebab = config.pop("data-parallel-rpc-port", None)
             rpc_port_snake = config.pop("data_parallel_rpc_port", None)
             config_dp_rpc_port = rpc_port_kebab or rpc_port_snake
