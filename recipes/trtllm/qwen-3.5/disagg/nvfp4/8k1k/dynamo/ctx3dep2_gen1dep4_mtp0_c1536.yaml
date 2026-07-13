@@ -145,8 +145,7 @@ benchmark:
   req_rate: "inf"
   num_prompts_mult: 16
 dynamo:
-  install: true
-  version: 1.3.0.dev20260708
+  install: false
   request_plane: tcp
 infra:
   etcd_nats_dedicated_node: false
@@ -156,3 +155,7 @@ health_check:
   max_attempts: 720
   interval_seconds: 10
 enable_config_dump: true
+extra_mount:
+  - "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/dynamo_wheels:/dynamo_wheels"
+
+setup_script: install_dynamo_wheel.sh
