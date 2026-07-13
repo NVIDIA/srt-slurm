@@ -142,7 +142,9 @@ benchmark:
   req_rate: "inf"
   num_prompts_mult: 16
 dynamo:
-  install: false
+  install: true
+  version: 1.3.0.dev20260708
+  request_plane: tcp
 infra:
   etcd_nats_dedicated_node: false
 profiling:
