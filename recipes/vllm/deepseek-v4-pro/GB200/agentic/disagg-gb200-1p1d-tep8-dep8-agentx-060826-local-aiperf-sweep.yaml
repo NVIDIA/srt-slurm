@@ -5,16 +5,17 @@ sweep:
 
 model:
   path: "deepseekv4-fp4"
-  container: "inferactinc/public:sprint-agentx-20260616"
+  container: "vllm/vllm-openai:nightly-dev-arm64-cu13.0.1-c04f5eb"
   precision: "fp4"
 
 identity:
   model:
     repo: "deepseek-ai/DeepSeek-V4-Pro"
   container:
-    image: "inferactinc/public:sprint-agentx-20260616"
+    image: "vllm/vllm-openai:nightly-dev-arm64-cu13.0.1-c04f5eb"
   frameworks:
     dynamo: "1.2.1"
+    vllm: "0.17.2rc1.dev3667+gc04f5eb88"
 
 dynamo:
   wheel: "1.2.1"
@@ -60,19 +61,23 @@ backend:
   mooncake_kv_store:
     store_config:
       metadata_server: "P2PHANDSHAKE"
-      global_segment_size: "100GB"
+      global_segment_size: "150GB"
       local_buffer_size: "4GB"
       protocol: "rdma"
       device_name: "rocep139s0"  # RDMA NIC — set to your fabric's device
+      mode: "embedded"
+      enable_offload: false
   prefill_environment:
     VLLM_ENGINE_READY_TIMEOUT_S: "3600"
     VLLM_RPC_TIMEOUT: "600000"
     VLLM_LOG_STATS_INTERVAL: "1"
     VLLM_V2_WARMUP_MAX_NUM_SEQS: "20"
     VLLM_SERVER_DEV_MODE: "1"
-    VLLM_USE_RUST_FRONTEND: "1"
-    VLLM_USE_FLASHINFER_MOE_FP8: "0"
+    VLLM_USE_V2_MODEL_RUNNER: "1"
+    VLLM_MOONCAKE_LOAD_RECV_THREADS: "20"
+    DG_JIT_CACHE_DIR: "/tmp/dg-cache-dsv4-agentx"
     VLLM_ALLREDUCE_USE_SYMM_MEM: "0"
+    VLLM_DSV4_MEGA_FP8_COMBINE: "1"
     TILELANG_CLEANUP_TEMP_FILES: "1"
     NCCL_CUMEM_ENABLE: "1"
     NCCL_MNNVL_ENABLE: "1"
@@ -93,8 +98,9 @@ backend:
     VLLM_LOG_STATS_INTERVAL: "1"
     VLLM_V2_WARMUP_MAX_NUM_SEQS: "20"
     VLLM_SERVER_DEV_MODE: "1"
-    VLLM_USE_RUST_FRONTEND: "1"
-    VLLM_USE_FLASHINFER_MOE_FP8: "0"
+    VLLM_USE_V2_MODEL_RUNNER: "1"
+    VLLM_MOONCAKE_LOAD_RECV_THREADS: "20"
+    DG_JIT_CACHE_DIR: "/tmp/dg-cache-dsv4-agentx"
     TILELANG_CLEANUP_TEMP_FILES: "1"
     NCCL_CUMEM_ENABLE: "1"
     NCCL_MNNVL_ENABLE: "1"
@@ -120,18 +126,18 @@ backend:
       enable-expert-parallel: true
       enable-ep-weight-filter: true
       enforce-eager: true
-      max-model-len: 1000000
+      enable-cumem-allocator: true
+      max-model-len: 1048576
       max-num-seqs: 16
       max-num-batched-tokens: 16384
       trust-remote-code: true
       no-enable-flashinfer-autotune: true
       block-size: 256
-      gpu-memory-utilization: 0.88
+      gpu-memory-utilization: 0.90
       no-disable-hybrid-kv-cache-manager: true
-      enable-sleep-mode: true
       tokenizer-mode: deepseek_v4
-      attention_config: '{"use_fp4_indexer_cache":true}'
-      moe-backend: "deep_gemm_mega_moe"
+      attention-config: '{"backend":"FLASHINFER_MLA_SPARSE_DSV4","use_prefill_query_quantization":true}'
+      moe-backend: "deep_gemm_amxf4_mega_moe"
     decode:
       kv-transfer-config: '{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_load_failure_policy":"fail","kv_buffer_device":"cuda","kv_connector_extra_config":{"enforce_handshake_compat":false,"enable_cross_layers_blocks":"true"}},{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both","kv_connector_extra_config":{"load_async":true,"enable_cross_layers_blocks":"true"}}]}}'
       served-model-name: "deepseek-ai/DeepSeek-V4-Pro"
@@ -142,25 +148,27 @@ backend:
       data-parallel-rpc-port: 13345
       enable-expert-parallel: true
       enable-ep-weight-filter: true
-      max-model-len: 1000000
+      enable-cumem-allocator: true
+      max-model-len: 1048576
       max-num-seqs: 64
-      max-num-batched-tokens: 16384
+      max-num-batched-tokens: 256
       trust-remote-code: true
       no-enable-flashinfer-autotune: true
       block-size: 256
-      gpu-memory-utilization: 0.88
+      compilation-config: '{"cudagraph_mode":"FULL_DECODE_ONLY","mode":0}'
+      max-cudagraph-capture-size: 64
+      gpu-memory-utilization: 0.95
       no-disable-hybrid-kv-cache-manager: true
-      enable-sleep-mode: true
       tokenizer-mode: deepseek_v4
-      attention_config: '{"use_fp4_indexer_cache":true}'
-      moe-backend: "deep_gemm_mega_moe"
+      attention-config: '{"backend":"FLASHINFER_MLA_SPARSE_DSV4","use_prefill_query_quantization":true}'
+      moe-backend: "deep_gemm_amxf4_mega_moe"
 
 sbatch_directives:
   cpus-per-task: "72"
 
 benchmark:
   type: custom
-  command: bash /configs/agentx_060826_local_aiperf.sh
+  command: bash /configs/agentx_aiperf.sh
   env:
     INFMAX_CONTAINER_WORKSPACE: /infmax-workspace
     AGENTIC_DIR: /infmax-workspace/utils/agentic-benchmark
@@ -187,12 +195,9 @@ benchmark:
     PREFILL_NUM_WORKERS: "1"
     PREFILL_TP: "8"
     PREFILL_EP: "8"
-    PREFILL_DP_ATTN: "false"
     DECODE_NUM_WORKERS: "1"
-    DECODE_TP: "8"
+    DECODE_TP: "1"
     DECODE_EP: "8"
-    DECODE_DP_ATTN: "false"
-    MAX_CONTEXT_LENGTH: "1000000"
     NUM_DATASET_ENTRIES: "472"
     PUBLIC_DATASET: "semianalysis_cc_traces_weka_with_subagents_060826"
     SLICE_DURATION: "1.0"

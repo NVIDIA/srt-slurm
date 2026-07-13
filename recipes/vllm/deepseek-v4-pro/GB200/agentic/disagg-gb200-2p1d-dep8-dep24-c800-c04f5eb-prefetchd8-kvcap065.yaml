@@ -1,17 +1,18 @@
-name: "dsv4-agentx062126-dynamo-4p6d-2xpdep8-1xddep24-c800-oldimg90e0957-prefetchd8-kvcap065-pmns120-dmns48-dmcg48"
+name: "dsv4-agentx062126-dynamo-4p6d-2xpdep8-1xddep24-c800-nightlyc04f5eb-prefetchd8-kvcap065-pmns120-dmns48-dmcg48"
 
 model:
   path: "deepseek-v4-pro"
-  container: "inferactinc/public:sprint-agentx-arm64-cu13.0.1-90e0957"
+  container: "vllm/vllm-openai:nightly-dev-arm64-cu13.0.1-c04f5eb"
   precision: "fp4"
 
 identity:
   model:
     repo: "deepseek-ai/DeepSeek-V4-Pro"
   container:
-    image: "inferactinc/public:sprint-agentx-arm64-cu13.0.1-90e0957"
+    image: "vllm/vllm-openai:nightly-dev-arm64-cu13.0.1-c04f5eb"
   frameworks:
     dynamo: "1.2.1+active-expiry3600+abi-compat"
+    vllm: "0.17.2rc1.dev3667+gc04f5eb88"
 
 dynamo:
   wheel: "1.2.1"
@@ -21,7 +22,7 @@ environment:
   DYNAMO_WHEEL_DIRS: "/srtctl-wheels/expiry3600"
   DYNAMO_RUNTIME_WHEEL_PATTERN: "ai_dynamo_runtime-1.2.1-1expiry3600-*aarch64.whl"
 
-setup_script: vllm-connector-prefetch-patch.sh
+setup_script: vllm-container-deps.sh
 post_install_script: dynamo-multiconnector-nopr123-expiry3600-compat-patch.sh
 
 slurm:
@@ -80,13 +81,14 @@ backend:
   mooncake_kv_store:
     store_config:
       metadata_server: "P2PHANDSHAKE"
-      global_segment_size: "100GB"
+      global_segment_size: "150GB"
       local_buffer_size: "4GB"
       protocol: "rdma"
       device_name: "mlx5_1,mlx5_3,mlx5_4"
       mode: "embedded"
       enable_offload: false
   prefill_environment:
+    DG_JIT_CACHE_DIR: "/tmp/dg-cache-dsv4-agentx"
     VLLM_ENGINE_READY_TIMEOUT_S: "3600"
     VLLM_RPC_TIMEOUT: "600000"
     VLLM_LOG_STATS_INTERVAL: "1"
@@ -96,6 +98,7 @@ backend:
     VLLM_MOONCAKE_LOAD_RECV_THREADS: "20"
     VLLM_CONNECTOR_PREFETCH_DEPTH: "8"
     VLLM_CONNECTOR_PREFETCH_KV_CAP: "0.65"
+    VLLM_DSV4_MEGA_FP8_COMBINE: "1"
     VLLM_ALLREDUCE_USE_SYMM_MEM: "0"
     TILELANG_CLEANUP_TEMP_FILES: "1"
     UCX_MEMTYPE_CACHE: "n"
@@ -113,6 +116,7 @@ backend:
     MC_STORE_CLIENT_METRIC_INTERVAL: "5"
     MC_TE_METRIC: "0"
   decode_environment:
+    DG_JIT_CACHE_DIR: "/tmp/dg-cache-dsv4-agentx"
     VLLM_ENGINE_READY_TIMEOUT_S: "3600"
     VLLM_RPC_TIMEOUT: "600000"
     VLLM_LOG_STATS_INTERVAL: "1"
@@ -149,17 +153,17 @@ backend:
       enable-cumem-allocator: true
       enable-expert-parallel: true
       enable-ep-weight-filter: true
-      max-model-len: 1000000
+      max-model-len: 1048576
       max-num-seqs: 120
       max-num-batched-tokens: 8192
       trust-remote-code: true
       no-enable-flashinfer-autotune: true
       block-size: 256
-      gpu-memory-utilization: 0.88
+      gpu-memory-utilization: 0.90
       no-disable-hybrid-kv-cache-manager: true
       tokenizer-mode: "deepseek_v4"
       attention-config: '{"backend":"FLASHINFER_MLA_SPARSE_DSV4","use_prefill_query_quantization":true}'
-      moe-backend: "deep_gemm_mega_moe"
+      moe-backend: "deep_gemm_amxf4_mega_moe"
     decode:
       kv-transfer-config: '{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_load_failure_policy":"fail","kv_buffer_device":"cuda","kv_connector_extra_config":{"enforce_handshake_compat":false,"enable_cross_layers_blocks":false}},{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both","kv_connector_extra_config":{"load_async":true,"lookup_async":true,"enable_cross_layers_blocks":false,"enable_offload":false}}]}}'
       served-model-name: "deepseek-ai/DeepSeek-V4-Pro"
@@ -172,15 +176,15 @@ backend:
       enable-cumem-allocator: true
       enable-expert-parallel: true
       enable-ep-weight-filter: true
-      max-model-len: 1000000
+      max-model-len: 1048576
       max-num-seqs: 48
-      max-num-batched-tokens: 16384
+      max-num-batched-tokens: 256
       trust-remote-code: true
       no-enable-flashinfer-autotune: true
       block-size: 256
       compilation-config: '{"cudagraph_mode":"FULL_DECODE_ONLY","mode":0}'
       max-cudagraph-capture-size: 48
-      gpu-memory-utilization: 0.88
+      gpu-memory-utilization: 0.95
       no-disable-hybrid-kv-cache-manager: true
       tokenizer-mode: "deepseek_v4"
       attention-config: '{"backend":"FLASHINFER_MLA_SPARSE_DSV4","use_prefill_query_quantization":true}'
@@ -195,7 +199,7 @@ srun_options:
 
 benchmark:
   type: custom
-  command: bash /home/inf-yasong/srt-slurm/configs/agentx_060826_local_aiperf.sh
+  command: bash /configs/agentx_aiperf.sh
   env:
     INFMAX_CONTAINER_WORKSPACE: /infmax-workspace
     AGENTIC_DIR: /infmax-workspace/utils/agentic-benchmark
@@ -212,9 +216,9 @@ benchmark:
     PRECISION: "fp4"
     CONC: "800"
     DURATION: "1800"
-    RESULT_FILENAME: "dsv4_dynamo_2xpdep8_1xddep24_c800_oldimg90e0957_prefetchd8_kvcap065_pmns120_dmns48_dmcg48"
+    RESULT_FILENAME: "dsv4_dynamo_2xpdep8_1xddep24_c800_nightlyc04f5eb_prefetchd8_kvcap065_pmns120_dmns48_dmcg48"
     RUNNER_TYPE: "gb200"
-    IMAGE: "inferactinc/public:sprint-agentx-arm64-cu13.0.1-90e0957"
+    IMAGE: "vllm/vllm-openai:nightly-dev-arm64-cu13.0.1-c04f5eb"
     SPEC_DECODING: "none"
     DISAGG: "true"
     OFFLOADING: "none"
@@ -224,20 +228,16 @@ benchmark:
     PREFILL_NUM_WORKERS: "2"
     PREFILL_TP: "1"
     PREFILL_EP: "8"
-    PREFILL_DP_ATTN: "false"
     DECODE_NUM_WORKERS: "1"
     DECODE_TP: "1"
     DECODE_EP: "24"
-    DECODE_DP_ATTN: "false"
-    MAX_CONTEXT_LENGTH: "1000000"
-    MAX_MODEL_LEN: "1000000"
     NUM_DATASET_ENTRIES: "393"
     HF_WEKA_DATASET: "semianalysisai/cc-traces-weka-062126"
     PUBLIC_DATASET: "semianalysis_cc_traces_weka_062126"
-    AIPERF_MAX_OSL: "8192"
     AIPERF_AGENTIC_CACHE_WARMUP_DURATION: "600"
     AIPERF_AGENTIC_SNAPSHOT_WARMUP_MIN_INTERVAL_S: "0.05"
     AIPERF_HTTP_TCP_USER_TIMEOUT: "180000"
+    AIPERF_WARMUP_GRACE_PERIOD: "1800"
     SLICE_DURATION: "1.0"
     VLLM_START_PROFILE_AFTER_SECONDS: "900"
     AIPERF_DATASET_MMAP_CACHE_DIR: "/aiperf_mmap_cache"

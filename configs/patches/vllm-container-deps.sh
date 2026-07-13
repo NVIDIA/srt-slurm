@@ -13,8 +13,8 @@ if ! python3 -c 'import msgpack' >/dev/null 2>&1; then
     python3 -m pip install --no-deps msgpack
 fi
 
-# The Mooncake wheel in the 90e0957 image is linked against the CUDA 12
-# runtime soname even though vLLM and Triton use CUDA 13.
+# Some Mooncake wheels are linked against the CUDA 12 runtime soname even when
+# vLLM and Triton use CUDA 13.
 if ! python3 -c 'import ctypes; ctypes.CDLL("libcudart.so.12")' >/dev/null 2>&1; then
     python3 -m pip install --no-deps "nvidia-cuda-runtime-cu12>=12.8"
     cuda12_runtime_lib="$(python3 - <<'PY'

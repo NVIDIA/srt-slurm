@@ -1,22 +1,21 @@
-# DeepSeek V4 Pro AgentX 062126 long-context reference, validated as job 9022.
+# DeepSeek V4 Pro AgentX 062126 long-context reference derived from job 9022.
 # Requires NVIDIA/srt-slurm#90 for backend.dp_launch_mode=per_node.
-# Job 9022 used a vLLM build/setup with connector-prefetch support for
-# VLLM_CONNECTOR_PREFETCH_DEPTH=8.
+# Connector-prefetch support is built into the selected vLLM image.
 name: "dsv4-vllm-disagg-gb200-1p1d-pdep8-ddep16-agentx062126-c480"
 
 model:
   path: "deepseekv4-fp4"
-  container: "inferactinc/public:sprint-agentx-fast-arm64-cu13.0.1-6a1e7bf"
+  container: "vllm/vllm-openai:nightly-dev-arm64-cu13.0.1-c04f5eb"
   precision: "fp4"
 
 identity:
   model:
     repo: "deepseek-ai/DeepSeek-V4-Pro"
   container:
-    image: "inferactinc/public:sprint-agentx-fast-arm64-cu13.0.1-6a1e7bf"
+    image: "vllm/vllm-openai:nightly-dev-arm64-cu13.0.1-c04f5eb"
   frameworks:
     dynamo: "1.2.1"
-    vllm: "0.17.2rc1.dev3666+g6a1e7bff2"
+    vllm: "0.17.2rc1.dev3667+gc04f5eb88"
 
 dynamo:
   wheel: "1.2.1"
@@ -74,7 +73,7 @@ backend:
   mooncake_kv_store:
     store_config:
       metadata_server: "P2PHANDSHAKE"
-      global_segment_size: "100GB"
+      global_segment_size: "150GB"
       local_buffer_size: "4GB"
       protocol: "rdma"
       device_name: "mlx5_1,mlx5_3,mlx5_4"  # Set to the local RDMA devices.
@@ -91,7 +90,6 @@ backend:
     DG_JIT_CACHE_DIR: "/tmp/dg-cache-dsv4-agentx"
     VLLM_ALLREDUCE_USE_SYMM_MEM: "0"
     VLLM_USE_BREAKABLE_CUDAGRAPH: "0"
-    # Requires connector-prefetch support in the selected vLLM build/setup.
     VLLM_CONNECTOR_PREFETCH_DEPTH: "8"
     VLLM_DSV4_MEGA_FP8_COMBINE: "1"
     TILELANG_CLEANUP_TEMP_FILES: "1"
@@ -146,13 +144,13 @@ backend:
       enable-cumem-allocator: true
       enable-expert-parallel: true
       enable-ep-weight-filter: true
-      max-model-len: 1000000
+      max-model-len: 1048576
       max-num-seqs: 120
       max-num-batched-tokens: 8192
       trust-remote-code: true
       no-enable-flashinfer-autotune: true
       block-size: 256
-      gpu-memory-utilization: 0.88
+      gpu-memory-utilization: 0.90
       no-disable-hybrid-kv-cache-manager: true
       tokenizer-mode: "deepseek_v4"
       attention-config: '{"backend":"FLASHINFER_MLA_SPARSE_DSV4","use_prefill_query_quantization":true}'
@@ -169,15 +167,15 @@ backend:
       enable-cumem-allocator: true
       enable-expert-parallel: true
       enable-ep-weight-filter: true
-      max-model-len: 1000000
+      max-model-len: 1048576
       max-num-seqs: 60
-      max-num-batched-tokens: 16384
+      max-num-batched-tokens: 256
       trust-remote-code: true
       no-enable-flashinfer-autotune: true
       block-size: 256
       compilation-config: '{"cudagraph_mode":"FULL_DECODE_ONLY","mode":0}'
       max-cudagraph-capture-size: 64
-      gpu-memory-utilization: 0.88
+      gpu-memory-utilization: 0.95
       no-disable-hybrid-kv-cache-manager: true
       tokenizer-mode: "deepseek_v4"
       attention-config: '{"backend":"FLASHINFER_MLA_SPARSE_DSV4","use_prefill_query_quantization":true}'
@@ -188,7 +186,7 @@ sbatch_directives:
 
 benchmark:
   type: custom
-  command: bash /configs/agentx_060826_local_aiperf.sh
+  command: bash /configs/agentx_aiperf.sh
   env:
     INFMAX_CONTAINER_WORKSPACE: /infmax-workspace
     AGENTIC_DIR: /infmax-workspace/utils/agentic-benchmark
@@ -216,17 +214,12 @@ benchmark:
     PREFILL_NUM_WORKERS: "1"
     PREFILL_TP: "1"
     PREFILL_EP: "8"
-    PREFILL_DP_ATTN: "false"
     DECODE_NUM_WORKERS: "1"
     DECODE_TP: "1"
     DECODE_EP: "16"
-    DECODE_DP_ATTN: "false"
-    MAX_CONTEXT_LENGTH: "1000000"
-    MAX_MODEL_LEN: "1000000"
     NUM_DATASET_ENTRIES: "393"
     HF_WEKA_DATASET: "semianalysisai/cc-traces-weka-062126"
     PUBLIC_DATASET: "semianalysis_cc_traces_weka_062126"
-    AIPERF_MAX_OSL: "8192"
     AIPERF_AGENTIC_CACHE_WARMUP_DURATION: "600"
     SLICE_DURATION: "1.0"
     VLLM_START_PROFILE_AFTER_SECONDS: "900"
