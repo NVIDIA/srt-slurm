@@ -66,6 +66,7 @@ class VLLMProtocol:
           type: vllm
           connector: nixl  # translated to --kv-transfer-config JSON
           allow_prefill_decode_colocation: true  # pack P/D on one node when all workers fit
+          allow_prefill_decode_colocation_across_nodes: true  # continue packing on later nodes
           prefill_environment:
             PYTHONUNBUFFERED: "1"
           vllm_config:
@@ -98,6 +99,12 @@ class VLLMProtocol:
     # request fits within gpus_per_node. Defaults off to preserve existing P/D
     # node separation.
     allow_prefill_decode_colocation: bool = False
+
+    # Extend P/D colocation to multi-node topologies. When enabled together
+    # with allow_prefill_decode_colocation, workers are packed contiguously
+    # across the minimum number of nodes instead of reserving separate P/D
+    # node pools. Defaults off to preserve the original one-node-only policy.
+    allow_prefill_decode_colocation_across_nodes: bool = False
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
@@ -182,7 +189,10 @@ class VLLMProtocol:
             return False
 
         total_worker_gpus = num_prefill * gpus_per_prefill + num_decode * gpus_per_decode + num_agg * gpus_per_agg
-        return total_worker_gpus <= gpus_per_node
+        return (
+            total_worker_gpus <= gpus_per_node
+            or self.allow_prefill_decode_colocation_across_nodes
+        )
 
     def allocate_endpoints(
         self,
