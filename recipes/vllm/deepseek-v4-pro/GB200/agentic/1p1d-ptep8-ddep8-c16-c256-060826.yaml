@@ -1,4 +1,4 @@
-name: "dsv4-vllm-disagg-gb200-1p1d-tep8-dep8-agentx060826"
+name: "1p1d-ptep8-ddep8-c16-c256-060826"
 
 sweep:
   conc: [16, 32, 64, 128, 256]
