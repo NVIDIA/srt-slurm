@@ -71,7 +71,7 @@ class TRTLLMProtocol:
     # the dynamo frontend consumes for KV-cache-aware routing (router-mode: kv).
     # This may impact performance so should be disabled if exact KV aware routing
     # is not needed.
-    publish_events_and_metrics: bool = True
+    publish_events_and_metrics: bool = False
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
