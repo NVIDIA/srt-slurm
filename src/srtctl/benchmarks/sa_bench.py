@@ -70,6 +70,11 @@ class SABenchRunner(BenchmarkRunner):
     ) -> list[str]:
         b = config.benchmark
         r = config.resources
+        # Fallback endpoint only. At runtime bench.sh overrides host/port from the
+        # SRT_FRONTEND_HOST / SRT_FRONTEND_PORT env that benchmark_stage injects
+        # (the orchestrator may run on a different node than the bench client,
+        # e.g. trtllm_serve orchestrator_placement=first_decode), so "localhost"
+        # here is just the standalone/manual-run default.
         endpoint = f"http://localhost:{runtime.frontend_port}"
 
         # Format concurrencies as x-separated string if it's a list

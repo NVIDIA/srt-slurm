@@ -135,6 +135,20 @@ fi
 HOST=$(echo "$ENDPOINT" | sed 's|http://||' | cut -d: -f1)
 PORT=$(echo "$ENDPOINT" | sed 's|http://||' | cut -d: -f2 | cut -d/ -f1)
 
+# srtctl injects the resolved frontend/orchestrator host+port. The bench client
+# can run on a different node than the frontend (e.g. trtllm_serve with
+# orchestrator_placement=first_decode), so the "localhost" in the endpoint arg
+# is wrong there — nothing listens on localhost:PORT on the client node. Prefer
+# SRT_FRONTEND_HOST/SRT_FRONTEND_PORT when set (they always are under srtctl);
+# fall back to the parsed endpoint for standalone/manual runs.
+if [ -n "${SRT_FRONTEND_HOST:-}" ]; then
+    HOST="${SRT_FRONTEND_HOST}"
+fi
+if [ -n "${SRT_FRONTEND_PORT:-}" ]; then
+    PORT="${SRT_FRONTEND_PORT}"
+fi
+ENDPOINT="http://${HOST}:${PORT}"
+
 WORK_DIR="$(dirname "$0")"
 
 echo "SA-Bench Config: endpoint=${ENDPOINT}; isl=${ISL}; osl=${OSL}; concurrencies=${CONCURRENCIES}; req_rate=${REQ_RATE}; model=${MODEL_NAME}; dataset=${DATASET_NAME}; dataset_path=${DATASET_PATH}"

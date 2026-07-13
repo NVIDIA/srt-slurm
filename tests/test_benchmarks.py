@@ -164,6 +164,54 @@ class TestSABenchRunner:
         assert cmd[-1] == ""  # empty dataset path
 
 
+class TestSABenchEndpointResolution:
+    """bench.sh must target the injected SRT_FRONTEND_HOST/PORT, not localhost.
+
+    The bench client can run on a different node than the frontend/orchestrator
+    (e.g. trtllm_serve with orchestrator_placement=first_decode), so resolving
+    the endpoint to "localhost" on the client node fails with ConnectionRefused.
+    These tests execute the actual host/port resolution lines shipped in
+    bench.sh (extracted from source, not hand-copied) to guard the behavior.
+    """
+
+    def _extract_resolution_snippet(self) -> str:
+        """Pull the host/port resolution block out of the real bench.sh."""
+        bench_sh = SCRIPTS_DIR / "sa-bench" / "bench.sh"
+        lines = bench_sh.read_text().splitlines()
+        start = next(i for i, ln in enumerate(lines) if ln.startswith("# Parse endpoint into host:port"))
+        end = next(i for i in range(start, len(lines)) if lines[i].startswith('ENDPOINT="http://'))
+        snippet = "\n".join(lines[start : end + 1])
+        # ENDPOINT is $1 in the real script; echo the resolved values for assertions.
+        return f'ENDPOINT="$1"\n{snippet}\necho "HOST=$HOST PORT=$PORT ENDPOINT=$ENDPOINT"'
+
+    def _run(self, env: dict[str, str]) -> str:
+        import subprocess
+
+        script = self._extract_resolution_snippet()
+        proc = subprocess.run(
+            ["bash", "-c", script, "bash", "http://localhost:8000"],
+            capture_output=True,
+            text=True,
+            env={"PATH": "/usr/bin:/bin", **env},
+        )
+        assert proc.returncode == 0, proc.stderr
+        return proc.stdout.strip()
+
+    def test_prefers_injected_frontend_host_and_port(self):
+        """SRT_FRONTEND_HOST/PORT override the localhost endpoint arg."""
+        out = self._run({"SRT_FRONTEND_HOST": "10.1.2.3", "SRT_FRONTEND_PORT": "8000"})
+        assert "HOST=10.1.2.3" in out
+        assert "PORT=8000" in out
+        assert "ENDPOINT=http://10.1.2.3:8000" in out
+
+    def test_falls_back_to_endpoint_arg_when_unset(self):
+        """Without the injected env, the parsed endpoint arg is used as-is."""
+        out = self._run({})
+        assert "HOST=localhost" in out
+        assert "PORT=8000" in out
+        assert "ENDPOINT=http://localhost:8000" in out
+
+
 class TestCustomBenchmarkRunner:
     """Test custom benchmark runner."""
 
