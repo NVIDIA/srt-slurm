@@ -13,14 +13,7 @@ from typing import Any
 
 import pytest
 
-SA_BENCH_DIR = (
-    Path(__file__).resolve().parents[1]
-    / "src"
-    / "srtctl"
-    / "benchmarks"
-    / "scripts"
-    / "sa-bench"
-)
+SA_BENCH_DIR = Path(__file__).resolve().parents[1] / "src" / "srtctl" / "benchmarks" / "scripts" / "sa-bench"
 
 
 def _import_sa_bench_module(module_name: str):
@@ -145,6 +138,135 @@ def test_dynamo_requests_reuse_injected_session_without_closing_it():
     assert [output.output_tokens for output in outputs] == [2, 2]
 
 
+def test_dynamo_requests_use_owned_per_request_sessions_by_default(monkeypatch):
+    module = _import_sa_bench_module("backend_request_func")
+    sessions: list[FakeSession] = []
+
+    def make_session(**kwargs: Any):
+        session = FakeSession(**kwargs)
+        sessions.append(session)
+        return session
+
+    monkeypatch.setattr(module.aiohttp, "ClientSession", make_session)
+    request = module.RequestFuncInput(
+        prompt="prompt",
+        api_url="http://localhost:8000/v1/completions",
+        prompt_len=1,
+        output_len=2,
+        model="model",
+    )
+
+    async def exercise():
+        return await asyncio.gather(
+            module.async_request_dynamo_completions(request),
+            module.async_request_dynamo_completions(request),
+        )
+
+    outputs = asyncio.run(exercise())
+
+    assert len(sessions) == 2
+    assert sessions[0] is not sessions[1]
+    assert [session.close_calls for session in sessions] == [1, 1]
+    assert all(session.kwargs["trust_env"] is True for session in sessions)
+    assert all(session.kwargs["timeout"] is module.AIOHTTP_TIMEOUT for session in sessions)
+    assert all("connector" not in session.kwargs for session in sessions)
+    assert all(output.success for output in outputs)
+    assert [output.generated_text for output in outputs] == ["hello world", "hello world"]
+    assert [output.output_tokens for output in outputs] == [2, 2]
+
+
+@pytest.mark.parametrize("borrowed", [False, True])
+def test_request_cancellation_respects_session_ownership(monkeypatch, borrowed):
+    module = _import_sa_bench_module("backend_request_func")
+    started = asyncio.Event()
+
+    class BlockingRequestContext:
+        async def __aenter__(self):
+            started.set()
+            await asyncio.Future()
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+    class BlockingSession(FakeSession):
+        def post(self, **kwargs: Any):
+            self.posts.append(kwargs)
+            return BlockingRequestContext()
+
+    sessions: list[BlockingSession] = []
+
+    def make_session(**kwargs: Any):
+        session = BlockingSession(**kwargs)
+        sessions.append(session)
+        return session
+
+    monkeypatch.setattr(module.aiohttp, "ClientSession", make_session)
+    request = module.RequestFuncInput(
+        prompt="prompt",
+        api_url="http://localhost:8000/v1/completions",
+        prompt_len=1,
+        output_len=2,
+        model="model",
+    )
+    borrowed_session = BlockingSession() if borrowed else None
+
+    async def exercise():
+        task = asyncio.create_task(module.async_request_dynamo_completions(request, session=borrowed_session))
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(exercise())
+
+    if borrowed:
+        assert sessions == []
+        assert borrowed_session is not None
+        assert borrowed_session.close_calls == 0
+    else:
+        assert len(sessions) == 1
+        assert sessions[0].close_calls == 1
+
+
+def test_benchmark_defaults_to_legacy_session_lifecycle(monkeypatch):
+    _import_sa_bench_module("backend_request_func")
+    module = _import_sa_bench_module("benchmark_serving")
+    calls: list[dict[str, Any]] = []
+
+    def unexpected_shared_session():
+        raise AssertionError("shared session factory must not run by default")
+
+    async def record_benchmark(**kwargs):
+        calls.append(kwargs)
+        return {}
+
+    monkeypatch.setattr(module, "create_dynamo_session", unexpected_shared_session)
+    monkeypatch.setattr(module, "benchmark", record_benchmark)
+
+    asyncio.run(module.run_benchmark_with_cleanup(backend="dynamo"))
+    asyncio.run(module.run_benchmark_with_cleanup(backend="dynamo", reuse_http_connections=False))
+
+    assert calls == [{"backend": "dynamo"}, {"backend": "dynamo"}]
+
+
+def test_http_connection_reuse_rejects_unsupported_backend(monkeypatch):
+    _import_sa_bench_module("backend_request_func")
+    module = _import_sa_bench_module("benchmark_serving")
+    calls: list[dict[str, Any]] = []
+
+    async def record_benchmark(**kwargs):
+        calls.append(kwargs)
+        return {}
+
+    monkeypatch.setattr(module, "benchmark", record_benchmark)
+
+    asyncio.run(module.run_benchmark_with_cleanup(backend="vllm"))
+    with pytest.raises(ValueError, match="supported only by the Dynamo backend"):
+        asyncio.run(module.run_benchmark_with_cleanup(backend="vllm", reuse_http_connections=True))
+
+    assert calls == [{"backend": "vllm"}]
+
+
 def test_session_is_closed_before_metrics(monkeypatch):
     _import_sa_bench_module("backend_request_func")
     module = _import_sa_bench_module("benchmark_serving")
@@ -179,6 +301,7 @@ def test_session_is_closed_before_metrics(monkeypatch):
 
     result = asyncio.run(
         module.run_benchmark_with_cleanup(
+            reuse_http_connections=True,
             backend="dynamo",
             api_url="http://localhost:8000/v1/completions",
             base_url="http://localhost:8000",
@@ -226,7 +349,7 @@ def test_benchmark_wrapper_closes_session_on_failure(monkeypatch, failure):
     monkeypatch.setattr(module, "benchmark", fail_benchmark)
 
     with pytest.raises(type(failure)):
-        asyncio.run(module.run_benchmark_with_cleanup(backend="dynamo"))
+        asyncio.run(module.run_benchmark_with_cleanup(backend="dynamo", reuse_http_connections=True))
 
     assert len(sessions) == 1
     assert sessions[0].close_calls == 1
@@ -250,8 +373,8 @@ def test_separate_event_loops_get_separate_sessions(monkeypatch):
     monkeypatch.setattr(module, "create_dynamo_session", make_session)
     monkeypatch.setattr(module, "benchmark", record_session)
 
-    asyncio.run(module.run_benchmark_with_cleanup(backend="dynamo"))
-    asyncio.run(module.run_benchmark_with_cleanup(backend="dynamo"))
+    asyncio.run(module.run_benchmark_with_cleanup(backend="dynamo", reuse_http_connections=True))
+    asyncio.run(module.run_benchmark_with_cleanup(backend="dynamo", reuse_http_connections=True))
 
     assert len(sessions) == 2
     assert observed == sessions
@@ -295,6 +418,7 @@ def test_request_failure_cancels_pending_tasks_before_session_close(monkeypatch)
     with pytest.raises(RuntimeError, match="request failed"):
         asyncio.run(
             module.run_benchmark_with_cleanup(
+                reuse_http_connections=True,
                 backend="dynamo",
                 api_url="http://localhost:8000/v1/completions",
                 base_url="http://localhost:8000",
@@ -322,3 +446,72 @@ def test_request_failure_cancels_pending_tasks_before_session_close(monkeypatch)
         )
 
     assert events == ["blocked_cancelled", "session_closed"]
+
+
+@pytest.mark.parametrize("reuse_http_connections", [False, True])
+def test_result_json_records_effective_http_connection_mode(monkeypatch, tmp_path, reuse_http_connections):
+    _import_sa_bench_module("backend_request_func")
+    dataset_module = _import_sa_bench_module("benchmark_dataset")
+    module = _import_sa_bench_module("benchmark_serving")
+    observed: list[bool] = []
+
+    monkeypatch.setattr(module, "load_tokenizer", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        dataset_module,
+        "sample_custom_requests",
+        lambda **kwargs: [("prompt", 1, 1, None)],
+    )
+    monkeypatch.setattr(module.gc, "collect", lambda: None)
+    monkeypatch.setattr(module.gc, "freeze", lambda: None)
+    monkeypatch.setattr(module, "save_to_pytorch_benchmark_format", lambda *args, **kwargs: None)
+
+    async def fake_run_benchmark_with_cleanup(**kwargs):
+        observed.append(kwargs.pop("reuse_http_connections"))
+        return {"completed": 1, "reuse_http_connections": not reuse_http_connections}
+
+    monkeypatch.setattr(module, "run_benchmark_with_cleanup", fake_run_benchmark_with_cleanup)
+
+    args = module.argparse.Namespace(
+        slow_down_servers=None,
+        seed=0,
+        backend="dynamo",
+        model="model",
+        served_model_name="model",
+        tokenizer="model",
+        tokenizer_mode="auto",
+        base_url="http://localhost:8000",
+        endpoint="/v1/completions",
+        host="localhost",
+        port=8000,
+        trust_remote_code=False,
+        custom_tokenizer=None,
+        use_chat_template=False,
+        dataset_name="custom",
+        dataset_path="/data/requests.jsonl",
+        num_prompts=1,
+        goodput=None,
+        logprobs=None,
+        best_of=1,
+        request_rate=float("inf"),
+        burstiness=1.0,
+        disable_tqdm=True,
+        profile=False,
+        percentile_metrics="ttft,tpot,itl,e2el",
+        metric_percentiles="50,90,99",
+        ignore_eos=True,
+        max_concurrency=1,
+        lora_modules=None,
+        slow_down_sleep_time=1.0,
+        slow_down_wait_time=60.0,
+        reuse_http_connections=reuse_http_connections,
+        save_result=True,
+        metadata=None,
+        result_filename="result.json",
+        result_dir=str(tmp_path),
+    )
+
+    module.main(args)
+
+    result = module.json.loads((tmp_path / "result.json").read_text())
+    assert observed == [reuse_http_connections]
+    assert result["reuse_http_connections"] is reuse_http_connections

@@ -731,9 +731,7 @@ async def benchmark(
         request_func = ASYNC_REQUEST_FUNCS[backend]
     else:
         raise ValueError(f"Unknown backend: {backend}")
-    if backend == "dynamo":
-        if request_session is None:
-            raise ValueError("The Dynamo backend requires a benchmark-scoped HTTP session.")
+    if backend == "dynamo" and request_session is not None:
         request_func = partial(request_func, session=request_session)
 
     print("Starting initial single prompt test run...")
@@ -860,10 +858,13 @@ async def benchmark(
             tasks.append(asyncio.create_task(limited_request_func(request_func_input=request_func_input, pbar=pbar)))
         outputs: list[RequestFuncOutput] = await asyncio.gather(*tasks)
     except BaseException:
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        if backend == "dynamo" and request_session is not None:
+            # A shared pool must outlive every request using it. Preserve the
+            # historical task behavior when connection reuse is disabled.
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
         raise
 
     if slow_down_task is not None and not slow_down_task.done():
@@ -893,7 +894,7 @@ async def benchmark(
         pbar.close()
 
     benchmark_duration = time.perf_counter() - benchmark_start_time
-    if request_session is not None and not request_session.closed:
+    if backend == "dynamo" and request_session is not None and not request_session.closed:
         await request_session.close()
         # Allow asyncio to finish closing pooled transports before CPU-heavy metrics.
         await asyncio.sleep(0)
@@ -981,12 +982,26 @@ async def benchmark(
     return result
 
 
-async def run_benchmark_with_cleanup(**benchmark_kwargs: Any) -> dict[str, Any]:
-    """Run a benchmark with a loop-local Dynamo connection pool."""
-    if benchmark_kwargs.get("backend") != "dynamo":
+async def run_benchmark_with_cleanup(
+    *,
+    reuse_http_connections: bool = False,
+    **benchmark_kwargs: Any,
+) -> dict[str, Any]:
+    """Run a benchmark, optionally with a loop-local Dynamo connection pool."""
+    if not reuse_http_connections:
         return await benchmark(**benchmark_kwargs)
-    async with create_dynamo_session() as session:
+
+    if benchmark_kwargs.get("backend") != "dynamo":
+        raise ValueError("--reuse-http-connections is currently supported only by the Dynamo backend.")
+
+    session = create_dynamo_session()
+    try:
         return await benchmark(**benchmark_kwargs, request_session=session)
+    finally:
+        # benchmark() closes the pool before CPU-heavy metrics on success;
+        # this is the failure/cancellation fallback.
+        if not session.closed:
+            await session.close()
 
 
 def check_goodput_args(args):
@@ -1226,6 +1241,7 @@ def main(args: argparse.Namespace):
 
     benchmark_result = asyncio.run(
         run_benchmark_with_cleanup(
+            reuse_http_connections=args.reuse_http_connections,
             backend=backend,
             api_url=api_url,
             base_url=base_url,
@@ -1280,6 +1296,9 @@ def main(args: argparse.Namespace):
 
         # Merge with benchmark result
         result_json = {**result_json, **benchmark_result}
+        # Record the effective transport mode after both free-form metadata and
+        # benchmark output so it cannot disagree with this run.
+        result_json["reuse_http_connections"] = args.reuse_http_connections
 
         # Save to file
         base_model_id = model_id.split("/")[-1]
@@ -1348,6 +1367,14 @@ if __name__ == "__main__":
         "to execute at a time. This means that when used in combination, the "
         "actual request rate may be lower than specified with --request-rate, "
         "if the server is not processing requests fast enough to keep up.",
+    )
+    parser.add_argument(
+        "--reuse-http-connections",
+        action="store_true",
+        help=(
+            "Reuse one benchmark-scoped HTTP connection pool. "
+            "Currently supported only by the Dynamo backend."
+        ),
     )
     parser.add_argument(
         "--slow-down-server",

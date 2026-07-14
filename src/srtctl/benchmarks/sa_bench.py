@@ -28,6 +28,8 @@ class SABenchRunner(BenchmarkRunner):
         - benchmark.req_rate: Request rate (default: "inf")
         - benchmark.dataset_name: "random" (default) or "custom"
         - benchmark.dataset_path: Container path to dataset file (required when dataset_name="custom")
+        - benchmark.reuse_http_connections: Reuse a benchmark-scoped HTTP connection pool
+          for the Dynamo adapter (default: false)
         - benchmark.slow_down_sleep_time / benchmark.slow_down_wait_time: When both are set and
           frontend is sglang, SA-Bench POSTs /slow_down on each decode worker leader (framework-derived
           URLs). Omit either field to disable slow_down.
@@ -114,5 +116,6 @@ class SABenchRunner(BenchmarkRunner):
             str(b.use_chat_template).lower(),
             dataset_name,
             b.dataset_path or "",
+            str(b.reuse_http_connections).lower(),
         ]
         return cmd

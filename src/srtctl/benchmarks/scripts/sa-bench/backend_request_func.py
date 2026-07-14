@@ -7,6 +7,7 @@ import os
 import sys
 import time
 import traceback
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 
 import aiohttp
@@ -336,96 +337,106 @@ async def async_request_dynamo_completions(
     request_func_input: RequestFuncInput,
     pbar: tqdm | None = None,
     *,
-    session: aiohttp.ClientSession,
+    session: aiohttp.ClientSession | None = None,
 ) -> RequestFuncOutput:
     api_url = request_func_input.api_url
     assert api_url.endswith(
         ("completions", "profile")
     ), "OpenAI Completions API URL must end with 'completions' or 'profile'."
 
-    payload = {
-        "model": request_func_input.model_name if request_func_input.model_name else request_func_input.model,
-        "prompt": request_func_input.prompt,
-        "temperature": 0.0,
-        "best_of": request_func_input.best_of,
-        "max_tokens": request_func_input.output_len,
-        "logprobs": request_func_input.logprobs,
-        "stream": True,
-        "stream_options": {
-            "include_usage": True,
-        },
-    }
-    if request_func_input.ignore_eos:
-        payload["ignore_eos"] = request_func_input.ignore_eos
-    if request_func_input.extra_body:
-        payload.update(request_func_input.extra_body)
-    headers = {"Authorization": f"Bearer {os.environ.get('OPENAI_API_KEY')}"}
+    # Preserve the historical per-request session lifecycle unless a shared
+    # benchmark-scoped session is explicitly injected. nullcontext borrows an
+    # injected session without entering or closing it.
+    session_context = (
+        aiohttp.ClientSession(trust_env=True, timeout=AIOHTTP_TIMEOUT)
+        if session is None
+        else nullcontext(session)
+    )
 
-    output = RequestFuncOutput()
-    output.prompt_len = request_func_input.prompt_len
+    async with session_context as request_session:
+        payload = {
+            "model": request_func_input.model_name if request_func_input.model_name else request_func_input.model,
+            "prompt": request_func_input.prompt,
+            "temperature": 0.0,
+            "best_of": request_func_input.best_of,
+            "max_tokens": request_func_input.output_len,
+            "logprobs": request_func_input.logprobs,
+            "stream": True,
+            "stream_options": {
+                "include_usage": True,
+            },
+        }
+        if request_func_input.ignore_eos:
+            payload["ignore_eos"] = request_func_input.ignore_eos
+        if request_func_input.extra_body:
+            payload.update(request_func_input.extra_body)
+        headers = {"Authorization": f"Bearer {os.environ.get('OPENAI_API_KEY')}"}
 
-    generated_text = ""
-    st = time.perf_counter()
-    output.start_time = st
-    most_recent_timestamp = st
-    try:
-        async with session.post(url=api_url, json=payload, headers=headers) as response:
-            if response.status == 200:
-                first_chunk_received = False
-                async for chunk_bytes in response.content:
-                    chunk_bytes = chunk_bytes.strip()
-                    if not chunk_bytes:
-                        continue
+        output = RequestFuncOutput()
+        output.prompt_len = request_func_input.prompt_len
 
-                    chunk = chunk_bytes.decode("utf-8")
+        generated_text = ""
+        st = time.perf_counter()
+        output.start_time = st
+        most_recent_timestamp = st
+        try:
+            async with request_session.post(url=api_url, json=payload, headers=headers) as response:
+                if response.status == 200:
+                    first_chunk_received = False
+                    async for chunk_bytes in response.content:
+                        chunk_bytes = chunk_bytes.strip()
+                        if not chunk_bytes:
+                            continue
 
-                    # Skip SSE event/comment lines (not data)
-                    if chunk.startswith("event:") or chunk.startswith(":"):
-                        continue
+                        chunk = chunk_bytes.decode("utf-8")
 
-                    chunk = chunk.removeprefix("data: ")
-                    if chunk != "[DONE]":
-                        data = json.loads(chunk)
+                        # Skip SSE event/comment lines (not data)
+                        if chunk.startswith("event:") or chunk.startswith(":"):
+                            continue
 
-                        # NOTE: Some completion API might have a last
-                        # usage summary response without a token so we
-                        # want to check a token was generated
-                        if choices := data.get("choices"):
-                            # Note that text could be empty here
-                            # e.g. for special tokens
-                            text = choices[0].get("text")
-                            timestamp = time.perf_counter()
-                            # First token
-                            if not first_chunk_received:
-                                first_chunk_received = True
-                                ttft = time.perf_counter() - st
-                                output.ttft = ttft
+                        chunk = chunk.removeprefix("data: ")
+                        if chunk != "[DONE]":
+                            data = json.loads(chunk)
 
-                            # Decoding phase
-                            else:
-                                output.itl.append(timestamp - most_recent_timestamp)
+                            # NOTE: Some completion API might have a last
+                            # usage summary response without a token so we
+                            # want to check a token was generated
+                            if choices := data.get("choices"):
+                                # Note that text could be empty here
+                                # e.g. for special tokens
+                                text = choices[0].get("text")
+                                timestamp = time.perf_counter()
+                                # First token
+                                if not first_chunk_received:
+                                    first_chunk_received = True
+                                    ttft = time.perf_counter() - st
+                                    output.ttft = ttft
 
-                            most_recent_timestamp = timestamp
-                            generated_text += text or ""
-                            output.text_chunks.append(text or "")
-                        if usage := data.get("usage"):
-                            output.output_tokens = usage.get("completion_tokens")
-                if first_chunk_received:
-                    output.success = True
+                                # Decoding phase
+                                else:
+                                    output.itl.append(timestamp - most_recent_timestamp)
+
+                                most_recent_timestamp = timestamp
+                                generated_text += text or ""
+                                output.text_chunks.append(text or "")
+                            if usage := data.get("usage"):
+                                output.output_tokens = usage.get("completion_tokens")
+                    if first_chunk_received:
+                        output.success = True
+                    else:
+                        output.success = False
+                        output.error = (
+                            "Never received a valid chunk to calculate TTFT." "This response will be marked as failed!"
+                        )
+                    output.generated_text = generated_text
+                    output.latency = most_recent_timestamp - st
                 else:
+                    output.error = response.reason or ""
                     output.success = False
-                    output.error = (
-                        "Never received a valid chunk to calculate TTFT." "This response will be marked as failed!"
-                    )
-                output.generated_text = generated_text
-                output.latency = most_recent_timestamp - st
-            else:
-                output.error = response.reason or ""
-                output.success = False
-    except Exception:
-        output.success = False
-        exc_info = sys.exc_info()
-        output.error = "".join(traceback.format_exception(*exc_info))
+        except Exception:
+            output.success = False
+            exc_info = sys.exc_info()
+            output.error = "".join(traceback.format_exception(*exc_info))
 
     if pbar:
         pbar.update(1)
