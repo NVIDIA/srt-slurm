@@ -5,17 +5,17 @@ sweep:
 
 model:
   path: "deepseekv4-fp4"
-  container: "vllm/vllm-openai:nightly-dev-arm64-cu13.0.1-c04f5eb"
+  container: "vllm/vllm-openai:nightly-dev-arm64-cu13.0.1-515d6e9"
   precision: "fp4"
 
 identity:
   model:
     repo: "deepseek-ai/DeepSeek-V4-Pro"
   container:
-    image: "vllm/vllm-openai:nightly-dev-arm64-cu13.0.1-c04f5eb"
+    image: "vllm/vllm-openai:nightly-dev-arm64-cu13.0.1-515d6e9"
   frameworks:
     dynamo: "e487326ec2cf66cd7ab52cf6c3675b84df23e42e"
-    vllm: "0.17.2rc1.dev3667+gc04f5eb88"
+    vllm: "0.17.2rc1.dev3669+g515d6e98c"
 
 dynamo:
   hash: "e487326ec2cf66cd7ab52cf6c3675b84df23e42e"

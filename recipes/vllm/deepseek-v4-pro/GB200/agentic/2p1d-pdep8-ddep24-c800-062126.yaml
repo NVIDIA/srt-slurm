@@ -2,17 +2,17 @@ name: "2p1d-pdep8-ddep24-c800-062126"
 
 model:
   path: "deepseek-v4-pro"
-  container: "vllm/vllm-openai:nightly-dev-arm64-cu13.0.1-c04f5eb"
+  container: "vllm/vllm-openai:nightly-dev-arm64-cu13.0.1-515d6e9"
   precision: "fp4"
 
 identity:
   model:
     repo: "deepseek-ai/DeepSeek-V4-Pro"
   container:
-    image: "vllm/vllm-openai:nightly-dev-arm64-cu13.0.1-c04f5eb"
+    image: "vllm/vllm-openai:nightly-dev-arm64-cu13.0.1-515d6e9"
   frameworks:
     dynamo: "e487326ec2cf66cd7ab52cf6c3675b84df23e42e"
-    vllm: "0.17.2rc1.dev3667+gc04f5eb88"
+    vllm: "0.17.2rc1.dev3669+g515d6e98c"
 
 dynamo:
   hash: "e487326ec2cf66cd7ab52cf6c3675b84df23e42e"
@@ -211,9 +211,9 @@ benchmark:
     PRECISION: "fp4"
     CONC: "800"
     DURATION: "1800"
-    RESULT_FILENAME: "dsv4_dynamo_2xpdep8_1xddep24_c800_nightlyc04f5eb_prefetchd8_kvcap065_pmns120_dmns48_dmcg48"
+    RESULT_FILENAME: "dsv4_dynamo_2xpdep8_1xddep24_c800_nightly515d6e9_prefetchd8_kvcap065_pmns120_dmns48_dmcg48"
     RUNNER_TYPE: "gb200"
-    IMAGE: "vllm/vllm-openai:nightly-dev-arm64-cu13.0.1-c04f5eb"
+    IMAGE: "vllm/vllm-openai:nightly-dev-arm64-cu13.0.1-515d6e9"
     SPEC_DECODING: "none"
     DISAGG: "true"
     OFFLOADING: "none"

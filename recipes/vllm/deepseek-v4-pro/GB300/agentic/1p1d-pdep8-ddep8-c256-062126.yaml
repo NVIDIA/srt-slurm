@@ -1,5 +1,5 @@
 # DeepSeek V4 Pro AgentX 062126 long-context reference derived from GB300 job
-# 200, updated to the c04f5eb image and current memory settings.
+# 200, updated to the 515d6e9 image and current memory settings.
 #
 # Connector prefetch and Dynamo MultiConnector support are provided by the
 # pinned vLLM image and Dynamo commit; no runtime source patch is required.
@@ -7,17 +7,17 @@ name: "1p1d-pdep8-ddep8-c256-062126"
 
 model:
   path: "deepseekv4-fp4"
-  container: "vllm/vllm-openai:nightly-dev-arm64-cu13.0.1-c04f5eb"
+  container: "vllm/vllm-openai:nightly-dev-arm64-cu13.0.1-515d6e9"
   precision: "fp4"
 
 identity:
   model:
     repo: "deepseek-ai/DeepSeek-V4-Pro"
   container:
-    image: "vllm/vllm-openai:nightly-dev-arm64-cu13.0.1-c04f5eb"
+    image: "vllm/vllm-openai:nightly-dev-arm64-cu13.0.1-515d6e9"
   frameworks:
     dynamo: "e487326ec2cf66cd7ab52cf6c3675b84df23e42e"
-    vllm: "0.17.2rc1.dev3667+gc04f5eb88"
+    vllm: "0.17.2rc1.dev3669+g515d6e98c"
 
 dynamo:
   hash: "e487326ec2cf66cd7ab52cf6c3675b84df23e42e"
@@ -242,7 +242,7 @@ benchmark:
     DURATION: "1800"
     RESULT_FILENAME: "dsv4_fp4_dynamo-vllm_gb300_pdep8_ddep8_agentx062126_c256"
     RUNNER_TYPE: "gb300"
-    IMAGE: "vllm/vllm-openai:nightly-dev-arm64-cu13.0.1-c04f5eb"
+    IMAGE: "vllm/vllm-openai:nightly-dev-arm64-cu13.0.1-515d6e9"
     SPEC_DECODING: "none"
     DISAGG: "true"
     OFFLOADING: "none"
