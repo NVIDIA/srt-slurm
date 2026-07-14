@@ -1784,7 +1784,12 @@ class SrtConfig:
             gpus_per_agg=self.resources.gpus_per_agg,
             gpus_per_node=self.resources.gpus_per_node,
         ):
-            return 1
+            total_worker_gpus = (
+                self.resources.prefill_gpus
+                + self.resources.decode_gpus
+                + self.resources.num_agg * self.resources.gpus_per_agg
+            )
+            return (total_worker_gpus + self.resources.gpus_per_node - 1) // self.resources.gpus_per_node
         return self.resources.total_nodes
 
     @property
