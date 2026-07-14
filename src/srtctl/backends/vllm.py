@@ -137,6 +137,7 @@ class VLLMProtocol:
           type: vllm
           connector: nixl  # translated to --kv-transfer-config JSON
           allow_prefill_decode_colocation: true  # pack P/D on one node when all workers fit
+          allow_prefill_decode_colocation_across_nodes: true  # continue packing on later nodes
           prefill_environment:
             PYTHONUNBUFFERED: "1"
           vllm_config:
@@ -160,6 +161,9 @@ class VLLMProtocol:
     # vLLM server CLI config per mode
     vllm_config: VLLMServerConfig | None = None
 
+    # Legacy device binding for vLLM builds without --device-ids.
+    set_cuda_visible_devices: bool = False
+
     # Default KV connector: "nixl", "lmcache", or a raw JSON string for --kv-transfer-config.
     # Can be overridden per mode by setting "connector" in vllm_config.prefill/decode/aggregated.
     # dynamo 1.0.0+: translated to --kv-transfer-config (--connector was removed).
@@ -180,6 +184,12 @@ class VLLMProtocol:
     # request fits within gpus_per_node. Defaults off to preserve existing P/D
     # node separation.
     allow_prefill_decode_colocation: bool = False
+
+    # Extend P/D colocation to multi-node topologies. When enabled together
+    # with allow_prefill_decode_colocation, workers are packed contiguously
+    # across the minimum number of nodes instead of reserving separate P/D
+    # node pools. Defaults off to preserve the original one-node-only policy.
+    allow_prefill_decode_colocation_across_nodes: bool = False
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
@@ -345,14 +355,14 @@ class VLLMProtocol:
         gpus_per_agg: int,
         gpus_per_node: int,
     ) -> bool:
-        """Whether all vLLM workers should be packed onto one node."""
+        """Whether prefill and decode workers should be packed contiguously."""
         if not self.allow_prefill_decode_colocation:
             return False
         if num_prefill <= 0 or num_decode <= 0 or gpus_per_node <= 0:
             return False
 
         total_worker_gpus = num_prefill * gpus_per_prefill + num_decode * gpus_per_decode + num_agg * gpus_per_agg
-        return total_worker_gpus <= gpus_per_node
+        return total_worker_gpus <= gpus_per_node or self.allow_prefill_decode_colocation_across_nodes
 
     def allocate_endpoints(
         self,
@@ -403,6 +413,15 @@ class VLLMProtocol:
         """Get the data-parallel-size for a mode, or None if not in DP mode."""
         config = self.get_config_for_mode(mode)
         return config.get("data-parallel-size") or config.get("data_parallel_size")
+
+    def should_set_cuda_visible_devices(self, process: Process) -> bool:
+        """Whether worker_stage should set CUDA_VISIBLE_DEVICES.
+
+        Newer vLLM builds should use ``--device-ids`` instead. Older builds
+        before https://github.com/vllm-project/vllm/pull/45026 should set
+        CUDA_VISIBLE_DEVICES.
+        """
+        return self.set_cuda_visible_devices
 
     def endpoints_to_processes(
         self,
@@ -572,9 +591,13 @@ class VLLMProtocol:
             kv_transfer_cfg = _connector_to_kv_transfer_config(connector)
             cmd.extend(["--kv-transfer-config", kv_transfer_cfg])
 
+        if not self.set_cuda_visible_devices:
+            device_ids = ",".join(str(i) for i in sorted(process.gpu_indices))
+            if device_ids:
+                cmd.extend(["--device-ids", device_ids])
+
         # Check if this is DP+EP mode (data-parallel-size set)
         is_dp_mode = self._is_dp_mode(mode)
-
         if is_dp_mode:
             # DP+EP mode: each GPU runs its own process
             # process.node_rank is the dp_rank (set in endpoints_to_processes)
