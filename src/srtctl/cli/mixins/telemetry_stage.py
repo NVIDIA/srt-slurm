@@ -115,6 +115,7 @@ class TelemetryStageMixin:
                 frontend_topology=topology,
                 runtime=self.runtime,
                 telemetry=telemetry,
+                frontend_type=self.config.frontend.type,
             )
         )
 
