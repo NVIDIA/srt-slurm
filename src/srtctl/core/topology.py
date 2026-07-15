@@ -322,9 +322,7 @@ def allocate_endpoints(
             raise ValueError("prefill_workers_per_node requires prefill workers and nodes")
         required_nodes = (num_prefill + prefill_workers_per_node - 1) // prefill_workers_per_node
         if required_nodes != prefill_nodes:
-            raise ValueError(
-                f"prefill placement needs {required_nodes} nodes, but prefill_nodes={prefill_nodes}"
-            )
+            raise ValueError(f"prefill placement needs {required_nodes} nodes, but prefill_nodes={prefill_nodes}")
         if prefill_workers_per_node * gpus_per_prefill > gpus_per_node:
             raise ValueError("prefill placement exceeds node GPU capacity")
 
