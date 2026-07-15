@@ -35,28 +35,86 @@ OUTPUT_FIELDS = [
 RUNNING_REQ_PATTERN = re.compile(r"#running-req:\s*(\d+)")
 
 
-def _get_percentile(percentiles: list, target: float) -> float | None:
-    """Extract a specific percentile value from the percentiles list."""
+def _safe_get(data: dict[str, Any], keys: list[str], default: Any = None) -> Any:
+    """Return the first present, non-None value among ``keys`` (alias fallback).
+
+    A newer srtctl may consume results produced by an older sa-bench whose keys
+    differ (e.g. ``total_input`` vs ``total_input_tokens``). Trying aliases in
+    order keeps the rollup forward/backward compatible.
+    """
+    for key in keys:
+        value = data.get(key)
+        if value is not None:
+            return value
+    return default
+
+
+def _percentile_from_list(percentiles: Any, target: float = 99.0) -> float | None:
+    """Extract a percentile value from a legacy ``[(p, v), ...]`` list."""
     if not percentiles:
         return None
-    for p, v in percentiles:
+    for entry in percentiles:
+        try:
+            p, v = entry
+        except (TypeError, ValueError):
+            continue
         if p == target:
             return v
     return None
 
 
+def _p99(data: dict[str, Any], metric: str) -> float | None:
+    """P99 for ``metric``, preferring the flat ``p99_<metric>_ms`` key.
+
+    Falls back to the legacy ``percentiles_<metric>_ms`` list so a newer srtctl
+    still reads results emitted by an older sa-bench.
+    """
+    value = data.get(f"p99_{metric}_ms")
+    if value is not None:
+        return value
+    return _percentile_from_list(data.get(f"percentiles_{metric}_ms"))
+
+
+def _looks_like_job_metadata(data: Any) -> bool:
+    """Heuristic: submit metadata carries a job_id / resources / benchmark block.
+
+    Guards against sibling JSON files (benchmark-rollup.json, fingerprint_*.json,
+    postprocess-status.json) that live next to the metadata in a flat layout.
+    """
+    if not isinstance(data, dict):
+        return False
+    return "job_id" in data or "resources" in data or "benchmark" in data
+
+
 def _read_job_metadata(log_dir: Path) -> dict[str, Any] | None:
-    """Read submit metadata JSON from the output directory when available."""
-    output_dir = log_dir.parent
-    for metadata_path in sorted(output_dir.glob("*.json")):
-        try:
-            data = json.loads(metadata_path.read_text())
-        except Exception as exc:
-            print(f"Failed to parse {metadata_path}: {exc}", file=sys.stderr)
-            continue
-        if data:
-            return data
+    """Read submit metadata JSON, checking the log dir itself and its parent.
+
+    Production layout keeps it in the parent (``outputs/<job>/<job>.json`` with
+    logs under ``outputs/<job>/logs``). A flat layout keeps the metadata next to
+    the ``sa-bench_*`` result dirs in a single directory, so search both.
+    """
+    search_dirs: list[Path] = [log_dir]
+    if log_dir.parent != log_dir:
+        search_dirs.append(log_dir.parent)
+
+    for search_dir in search_dirs:
+        for metadata_path in sorted(search_dir.glob("*.json")):
+            try:
+                data = json.loads(metadata_path.read_text())
+            except Exception as exc:
+                print(f"Failed to parse {metadata_path}: {exc}", file=sys.stderr)
+                continue
+            if _looks_like_job_metadata(data):
+                return data
     return None
+
+
+def _benchmark_isl_osl(metadata: dict[str, Any] | None) -> tuple[Any, Any]:
+    """Return ISL/OSL from the benchmark contract in metadata (None for agentic)."""
+    benchmark = metadata.get("benchmark") if metadata else None
+    if not benchmark:
+        return None, None
+    return benchmark.get("isl"), benchmark.get("osl")
 
 
 def _as_int(value: Any) -> int:
@@ -211,6 +269,7 @@ def main(log_dir: Path) -> None:
     resources = metadata.get("resources") if metadata else None
     total_gpu_count, decode_gpu_count = _compute_gpu_counts(resources) if resources else (None, None)
     p90_decode_running_requests = _extract_p90_decode_running_requests(log_dir, metadata)
+    isl, osl = _benchmark_isl_osl(metadata)
 
     for result_file in result_files:
         try:
@@ -222,8 +281,8 @@ def main(log_dir: Path) -> None:
         if not config:
             config = {
                 "model": data.get("model_id"),
-                "isl": data.get("random_input_len"),
-                "osl": data.get("random_output_len"),
+                "isl": isl,
+                "osl": osl,
             }
 
         runs.append({
@@ -231,15 +290,15 @@ def main(log_dir: Path) -> None:
             "throughput_toks": data.get("output_throughput"),
             "request_throughput": data.get("request_throughput"),
             "ttft_mean_ms": data.get("mean_ttft_ms"),
-            "ttft_p99_ms": _get_percentile(data.get("percentiles_ttft_ms", []), 99.0),
+            "ttft_p99_ms": _p99(data, "ttft"),
             "tpot_mean_ms": data.get("mean_tpot_ms"),
-            "tpot_p99_ms": _get_percentile(data.get("percentiles_tpot_ms", []), 99.0),
+            "tpot_p99_ms": _p99(data, "tpot"),
             "itl_mean_ms": data.get("mean_itl_ms"),
-            "itl_p99_ms": _get_percentile(data.get("percentiles_itl_ms", []), 99.0),
+            "itl_p99_ms": _p99(data, "itl"),
             "e2el_mean_ms": data.get("mean_e2el_ms"),
             "completed_requests": data.get("completed"),
-            "total_input_tokens": data.get("total_input"),
-            "total_output_tokens": data.get("total_output"),
+            "total_input_tokens": _safe_get(data, ["total_input_tokens", "total_input"]),
+            "total_output_tokens": _safe_get(data, ["total_output_tokens", "total_output"]),
         })
 
         csv_rows.append(
