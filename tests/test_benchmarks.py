@@ -863,6 +863,16 @@ class TestAgenticRunner:
         assert "AIPERF_SYNTHESIS_MAX_OSL" in text
         assert "REPLAY_CMD+=\" --synthesis-max-osl $AIPERF_SYNTHESIS_MAX_OSL\"" in text
 
+    def test_agentic_dynamo_conversation_routing_is_opt_in(self):
+        """KV routing must not silently enable Dynamo conversation affinity."""
+        script = SCRIPTS_DIR / "agentic" / "inferencex" / "benchmarks" / "benchmark_lib.sh"
+        text = script.read_text()
+
+        assert "AGENTX_DYNAMO_CONV_AWARE" in text
+        assert 'REPLAY_CMD+=" --use-dynamo-conv-aware-routing"' in text
+        assert '"${AGENTX_DYNAMO_CONV_AWARE:-0}" == "1"' in text
+        assert '"${AGENTX_DYNAMO_CONV_AWARE:-false}" == "true"' in text
+
     def test_agentic_bench_patches_weka_subagent_osl_cap(self):
         """bench.sh keeps Weka subagent child turns under the synthesis OSL cap."""
         script = SCRIPTS_DIR / "agentic" / "bench.sh"

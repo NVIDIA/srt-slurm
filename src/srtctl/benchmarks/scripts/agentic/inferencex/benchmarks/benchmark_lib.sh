@@ -1445,12 +1445,11 @@ build_replay_cmd() {
     # CPU on minimax-m2.5 at high concurrency. Lossless for vLLM (server
     # usage is authoritative).
     REPLAY_CMD+=" --use-server-token-count"
-    # Dynamo's KV router needs an explicit conversation session binding to
-    # keep later turns on the prefill worker that owns their prefix blocks.
-    # X-Correlation-ID is useful tracing metadata but does not establish that
-    # binding by itself. AIPerf emits nvext.session_control bind/close actions
-    # keyed by the stable conversation correlation ID when this flag is set.
-    if [[ "${FRAMEWORK:-}" == dynamo-* ]]; then
+    # Conversation-aware Dynamo routing is an explicit experiment, independent
+    # of KV-cache-aware routing. Keep it opt-in so router-mode=kv runs do not
+    # silently combine both routing policies.
+    if [[ "${FRAMEWORK:-}" == dynamo-* ]] && \
+       [[ "${AGENTX_DYNAMO_CONV_AWARE:-0}" == "1" || "${AGENTX_DYNAMO_CONV_AWARE:-false}" == "true" ]]; then
         REPLAY_CMD+=" --use-dynamo-conv-aware-routing"
         # The upstream 300s affinity TTL is shorter than an overloaded
         # high-concurrency agentic request. Keep bindings alive across long
