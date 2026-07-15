@@ -7,11 +7,40 @@ from srtctl.core.health import (
     WorkerHealthResult,
     check_dynamo_health,
     check_sglang_router_health,
+    check_vllm_health,
 )
 
 # ============================================================================
 # Dynamo Health Check Tests
 # ============================================================================
+
+
+class TestVLLMHealth:
+    """Direct vLLM readiness includes OpenAI model exposure."""
+
+    def test_ready_when_models_endpoint_is_nonempty(self, monkeypatch):
+        response = type(
+            "Response",
+            (),
+            {"status_code": 200, "json": lambda self: {"data": [{"id": "model"}]}},
+        )()
+        monkeypatch.setattr("srtctl.core.health.requests.get", lambda *_args, **_kwargs: response)
+
+        result = check_vllm_health("node-a", 8000, "http://node-a:8000/health")
+
+        assert result.ready is True
+        assert result.decode_ready == 1
+
+    def test_not_ready_when_models_endpoint_is_empty(self, monkeypatch):
+        response = type(
+            "Response", (), {"status_code": 200, "json": lambda self: {"data": []}}
+        )()
+        monkeypatch.setattr("srtctl.core.health.requests.get", lambda *_args, **_kwargs: response)
+
+        result = check_vllm_health("node-a", 8000, "http://node-a:8000/health")
+
+        assert result.ready is False
+        assert "no models" in result.message
 
 
 class TestDynamoHealthDisaggregated:

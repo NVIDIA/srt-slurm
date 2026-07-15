@@ -239,7 +239,7 @@ def check_vllm_health(
             ready=False,
             message="vLLM /health is up but /v1/models has no models",
         )
-    except Exception as e:
+    except (requests.exceptions.RequestException, ValueError) as e:
         return WorkerHealthResult(
             ready=False,
             message=f"vLLM /health is up but /v1/models check failed: {e}",

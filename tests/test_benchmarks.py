@@ -872,6 +872,22 @@ class TestAgenticRunner:
         assert "max_tokens=self._cap_output(creq)," in text
         assert '"capped_output_length": self._cap_output(creq)' in text
 
+    def test_agentic_bench_honors_remote_frontend_endpoint(self):
+        """AgentX can run on a benchmark node separate from the server."""
+        script = SCRIPTS_DIR / "agentic" / "bench.sh"
+        text = script.read_text()
+
+        assert 'PORT_FROM_ENDPOINT="${SRT_FRONTEND_PORT:-$PORT_FROM_ENDPOINT}"' in text
+        assert 'ENDPOINT="http://${SRT_FRONTEND_HOST}:${PORT_FROM_ENDPOINT}"' in text
+
+    def test_profiling_script_supports_direct_vllm(self):
+        """Direct vLLM uses its native profile control endpoints."""
+        script = SCRIPTS_DIR / "lib" / "profiling.sh"
+        text = script.read_text()
+
+        assert 'sglang|vllm) start_path="/start_profile"' in text
+        assert 'sglang|vllm) stop_path="/stop_profile"' in text
+
 
 class TestScriptsExist:
     """Test that benchmark scripts exist."""

@@ -1908,6 +1908,53 @@ class TestVLLMDataParallelMode:
         assert len(processes) == 1
         assert processes[0].node == "node0"
         assert processes[0].gpu_indices == frozenset(range(8))
+        assert processes[0].http_port == 8000
+
+    def test_direct_vllm_rejects_multiple_aggregate_servers(self):
+        """Multiple aggregate processes would collide on the public port."""
+        from marshmallow import ValidationError
+
+        from srtctl.backends import VLLMProtocol
+        from srtctl.core.schema import FrontendConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        with pytest.raises(ValidationError, match="agg_workers: 1"):
+            SrtConfig(
+                name="direct-vllm",
+                model=ModelConfig(path="/model", container="/image", precision="fp4"),
+                resources=ResourceConfig(
+                    gpu_type="b300", gpus_per_node=8, agg_nodes=1, agg_workers=2
+                ),
+                backend=VLLMProtocol(),
+                frontend=FrontendConfig(type="vllm", enable_multiple_frontends=False),
+            )
+
+    @pytest.mark.parametrize(
+        ("frontend_kwargs", "message"),
+        [
+            ({"orchestrator_placement": "first_decode"}, "orchestrator_placement"),
+            ({"args": {"port": 9000}}, "frontend.args"),
+            ({"env": {"FOO": "bar"}}, "frontend.env"),
+        ],
+    )
+    def test_direct_vllm_rejects_unused_frontend_options(self, frontend_kwargs, message):
+        """Direct server options must not be silently ignored."""
+        from marshmallow import ValidationError
+
+        from srtctl.backends import VLLMProtocol
+        from srtctl.core.schema import FrontendConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        with pytest.raises(ValidationError, match=message):
+            SrtConfig(
+                name="direct-vllm",
+                model=ModelConfig(path="/model", container="/image", precision="fp4"),
+                resources=ResourceConfig(
+                    gpu_type="b300", gpus_per_node=8, agg_nodes=1, agg_workers=1
+                ),
+                backend=VLLMProtocol(),
+                frontend=FrontendConfig(
+                    type="vllm", enable_multiple_frontends=False, **frontend_kwargs
+                ),
+            )
 
     def test_direct_vllm_command_preserves_current_main_device_binding(self):
         """Direct vllm serve uses the public port and main's --device-ids binding."""

@@ -406,7 +406,7 @@ class BenchmarkStageMixin:
             for process in self.backend_processes:
                 if process.endpoint_mode == "agg" and process.is_leader:
                     host = get_hostname_ip(process.node, self.runtime.network_interface)
-                    urls.append(f"http://{host}:{FRONTEND_PUBLIC_PORT}/metrics")
+                    urls.append(f"http://{host}:{process.http_port}/metrics")
             if urls:
                 return {"AIPERF_SERVER_METRICS_URLS": ",".join(sorted(set(urls)))}
 

@@ -69,12 +69,12 @@ class VLLMFrontend:
     def start_frontends(
         self,
         topology: Any,
-        runtime: "RuntimeContext",
+        runtime: RuntimeContext,
         config: Any,
         backend: Any,
-        backend_processes: list["Process"],
-        stop_event: "threading.Event | None" = None,
-    ) -> list["ManagedProcess"]:
+        backend_processes: list[Process],
+        stop_event: threading.Event | None = None,
+    ) -> list[ManagedProcess]:
         if config.backend.type != "vllm":
             raise ValueError(f"frontend.type: vllm requires backend.type: vllm (got {config.backend.type!r})")
         if topology.uses_nginx or len(topology.frontend_nodes) != 1:
@@ -82,8 +82,18 @@ class VLLMFrontend:
                 "frontend.type: vllm binds vllm serve directly to the public port; "
                 "set frontend.enable_multiple_frontends: false"
             )
-        if config.resources.is_disaggregated or config.resources.num_agg < 1:
+        if config.resources.is_disaggregated or config.resources.num_agg != 1:
             raise ValueError("frontend.type: vllm supports aggregate vLLM jobs only")
+
+        leaders = [p for p in backend_processes if p.endpoint_mode == "agg" and p.is_leader]
+        if len(leaders) != 1:
+            raise ValueError("frontend.type: vllm requires exactly one aggregate server process")
+        leader = leaders[0]
+        if leader.node != topology.frontend_nodes[0] or leader.http_port != topology.public_port:
+            raise ValueError(
+                "direct vLLM topology does not match its aggregate server "
+                f"({leader.node}:{leader.http_port} != {topology.frontend_nodes[0]}:{topology.public_port})"
+            )
 
         logger.info("frontend.type=vllm: no separate frontend process; vllm serve owns port %d", topology.public_port)
         return []

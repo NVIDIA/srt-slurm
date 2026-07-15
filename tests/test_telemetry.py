@@ -107,6 +107,44 @@ class TestTelemetryConfigGeneration:
         assert '"cluster" = "pdx"' in config_text
         assert 'name = "frontend0"' in config_text
 
+    @patch("srtctl.core.telemetry.get_hostname_ip", return_value="10.0.0.1")
+    def test_direct_vllm_is_scraped_once_at_public_port(self, _mock_get_hostname_ip):
+        """The embedded vLLM frontend must not produce a duplicate scrape."""
+        telemetry = TelemetryConfig(
+            enabled=True,
+            container_image="telemetry:latest",
+            dcgm_exporter=TelemetryExporterConfig(container_image="dcgm:latest", port=9401),
+            node_exporter=TelemetryExporterConfig(container_image="node:latest", port=9101),
+        )
+        runtime = MagicMock(job_id="12345", run_name="direct", network_interface="eth0")
+        process = Process(
+            node="node-a",
+            gpu_indices=frozenset({0, 1, 2, 3}),
+            sys_port=8081,
+            http_port=8000,
+            endpoint_mode="agg",
+            endpoint_index=0,
+            node_rank=0,
+        )
+        topology = FrontendTopology(
+            nginx_node=None,
+            frontend_nodes=["node-a"],
+            frontend_port=8000,
+            public_port=8000,
+        )
+
+        config_text = generate_telemetry_config(
+            processes=[process],
+            frontend_topology=topology,
+            runtime=runtime,
+            telemetry=telemetry,
+            frontend_type="vllm",
+        )
+
+        assert config_text.count('url = "http://10.0.0.1:8000/metrics"') == 1
+        assert 'name = "backend_agg0_rank0"' in config_text
+        assert 'name = "frontend0"' not in config_text
+
 
 class TestTelemetryStageMixin:
     """Telemetry stage startup."""

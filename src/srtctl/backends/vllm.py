@@ -13,7 +13,7 @@ from __future__ import annotations
 import builtins
 import json
 from collections.abc import Sequence
-from dataclasses import field
+from dataclasses import field, replace
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -27,6 +27,7 @@ from marshmallow_dataclass import dataclass
 
 from srtctl.ports import (
     DYN_SYSTEM_PORT_BASE,
+    FRONTEND_PUBLIC_PORT,
     MOONCAKE_HTTP_METADATA_PORT,
     MOONCAKE_MASTER_PORT,
     VLLM_DATA_PARALLEL_RPC_PORT,
@@ -441,7 +442,12 @@ class VLLMProtocol:
         from srtctl.core.topology import NodePortAllocator, Process, endpoints_to_processes
 
         if frontend_type == "vllm":
-            return endpoints_to_processes(endpoints, base_sys_port=base_sys_port, port_allocator=port_allocator)
+            processes = endpoints_to_processes(
+                endpoints, base_sys_port=base_sys_port, port_allocator=port_allocator
+            )
+            if len(processes) != 1 or processes[0].endpoint_mode != "agg":
+                raise ValueError("frontend.type: vllm requires exactly one aggregate server process")
+            return [replace(processes[0], http_port=FRONTEND_PUBLIC_PORT)]
 
         # Check if any endpoint uses DP mode
         has_dp_mode = any(self._is_dp_mode(ep.mode) for ep in endpoints)

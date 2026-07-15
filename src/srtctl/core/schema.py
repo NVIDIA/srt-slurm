@@ -1580,10 +1580,16 @@ class SrtConfig:
             )
         if self.resources.is_disaggregated:
             raise ValidationError("frontend.type: vllm supports aggregate jobs only, not disaggregated layouts")
-        if self.resources.num_agg < 1:
-            raise ValidationError("frontend.type: vllm requires resources.agg_workers >= 1")
+        if self.resources.num_agg != 1:
+            raise ValidationError("frontend.type: vllm requires resources.agg_workers: 1")
         if (self.resources.agg_nodes or 1) != 1:
             raise ValidationError("frontend.type: vllm currently supports single-node aggregate jobs only")
+        if self.frontend.orchestrator_placement != "head":
+            raise ValidationError("frontend.type: vllm requires frontend.orchestrator_placement: head")
+        if self.frontend.args:
+            raise ValidationError("frontend.args are not used with frontend.type: vllm; put server options in vllm_config")
+        if self.frontend.env:
+            raise ValidationError("frontend.env is not used with frontend.type: vllm; put environment in backend env")
 
     def _validate_het_jobs(self):
         """When ``resources.het_jobs`` is set to True, enforce supported shape.
