@@ -314,6 +314,43 @@ class TestDryRunExecutionExtensions:
         assert "<job container>" in output
         assert "MOONCAKE_PROTOCOL" in output
 
+    def test_mooncake_standalone_store_details_shown(self, capsys):
+        """Standalone Store command, placement env, and readiness appear in dry-run."""
+        config = _make_config(
+            {
+                "backend": {
+                    "type": "sglang",
+                    "prefill_environment": {"MOONCAKE_GLOBAL_SEGMENT_SIZE": "0"},
+                    "decode_environment": {"MOONCAKE_GLOBAL_SEGMENT_SIZE": "0"},
+                    "mooncake_kv_store": {
+                        "standalone": {
+                            "container": "mooncake-store.sqsh",
+                            "args": ["--port", "8800"],
+                            "env": {"MOONCAKE_PROTOCOL": "rdma"},
+                            "placements": {
+                                "prefill": {"env": {"MOONCAKE_GLOBAL_SEGMENT_SIZE": "100gb"}},
+                                "decode": {"env": {"MOONCAKE_GLOBAL_SEGMENT_SIZE": "400gb"}},
+                            },
+                            "health_check": {"port": 8800, "timeout_seconds": 90},
+                        },
+                    },
+                    "sglang_config": {
+                        "prefill": {"disaggregation-transfer-backend": "mooncake"},
+                        "decode": {"disaggregation-transfer-backend": "mooncake"},
+                    },
+                }
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "mooncake_store_service" in output
+        assert "mooncake-store.sqsh" in output
+        assert "store:prefill" in output
+        assert "100gb" in output
+        assert "store:decode" in output
+        assert "400gb" in output
+        assert "tcp/8800" in output
+
     def test_vllm_mooncake_kv_store_dry_run(self, capsys):
         """vLLM mooncake_kv_store renders the shared master port (8700)."""
         from srtctl.ports import MOONCAKE_MASTER_PORT

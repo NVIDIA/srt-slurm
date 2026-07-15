@@ -17,6 +17,7 @@ import functools
 import json
 import logging
 import os
+import shlex
 import subprocess
 import sys
 import threading
@@ -24,6 +25,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from srtctl.backends.mooncake import DEFAULT_MOONCAKE_MASTER_ARGS, MooncakeStandalonePlacementConfig
 from srtctl.backends.sglang import SGLangProtocol
 from srtctl.backends.vllm import MOONCAKE_STORE_CONFIG_FILENAME, VLLMProtocol
 from srtctl.cli.mixins import (
@@ -45,7 +47,7 @@ from srtctl.core.processes import (
 from srtctl.core.resource_snapshot import record_resource_snapshot
 from srtctl.core.runtime import RuntimeContext
 from srtctl.core.schema import SrtConfig
-from srtctl.core.slurm import get_slurm_job_id, start_srun_process
+from srtctl.core.slurm import get_hostname_ip, get_slurm_job_id, start_srun_process
 from srtctl.core.status import JobStage, JobStatus, StatusReporter
 from srtctl.core.topology import Endpoint, NodePortAllocator, Process, allocate_endpoints_het
 from srtctl.logging_utils import setup_logging
@@ -59,6 +61,13 @@ from srtctl.ports import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _render_named_placeholders(value: str, replacements: dict[str, str]) -> str:
+    """Replace known placeholders without interpreting unrelated braces."""
+    for key, replacement in replacements.items():
+        value = value.replace(f"{{{key}}}", replacement)
+    return value
 
 
 @dataclass
@@ -244,10 +253,7 @@ class SweepOrchestrator(
                 f"--port={MOONCAKE_MASTER_PORT}",
                 "--enable_http_metadata_server=true",
                 f"--http_metadata_server_port={MOONCAKE_HTTP_METADATA_PORT}",
-                "--eviction_high_watermark_ratio=0.9",
-                "--nof_eviction_high_watermark_ratio=0.9",
-                "--default_kv_lease_ttl=10000",
-                "--rpc_thread_num=16",
+                *DEFAULT_MOONCAKE_MASTER_ARGS,
                 "--enable_metric_reporting=true",
                 f"--metrics_port={MOONCAKE_METRICS_PORT}",
             ],
@@ -284,6 +290,134 @@ class SweepOrchestrator(
         if not wait_for_port(infra_node, MOONCAKE_METRICS_PORT, timeout=120):
             raise RuntimeError("mooncake_master metrics server failed to start")
         logger.info("mooncake_master is ready")
+
+        return managed
+
+    def start_mooncake_store_services(self, registry: ProcessRegistry | None = None) -> dict[str, ManagedProcess]:
+        """Launch managed standalone Mooncake Store services on selected worker nodes.
+
+        ``standalone.placements`` selects worker roles, while endpoint topology
+        determines the physical nodes. Multiple workers on one node share one
+        service. If prefill and decode are co-located, their placement overrides
+        must be identical because only one Store service may own that node's
+        memory segment and HTTP port.
+        """
+        backend = self.config.backend
+        if not isinstance(backend, (SGLangProtocol, VLLMProtocol)):
+            return {}
+        mooncake_cfg = backend.mooncake_kv_store
+        if mooncake_cfg is None or mooncake_cfg.standalone is None:
+            return {}
+        standalone = mooncake_cfg.standalone
+        if not standalone.enabled:
+            return {}
+
+        role_order = {"prefill": 0, "decode": 1, "aggregated": 2}
+        placements_by_node: dict[str, dict[str, MooncakeStandalonePlacementConfig]] = {}
+        for endpoint in self.endpoints:
+            role = "aggregated" if endpoint.mode == "agg" else endpoint.mode
+            placement = standalone.placements.get(role)
+            if placement is None or not placement.enabled:
+                continue
+            for node in endpoint.nodes:
+                placements_by_node.setdefault(node, {})[role] = placement
+
+        if not placements_by_node:
+            logger.warning("Mooncake standalone service is enabled but no configured placement has worker nodes")
+            return {}
+
+        for node, role_placements in placements_by_node.items():
+            placements = list(role_placements.values())
+            if any(candidate != placements[0] for candidate in placements[1:]):
+                roles = ", ".join(sorted(role_placements, key=lambda item: role_order[item]))
+                raise ValueError(
+                    f"Mooncake standalone placements for co-located roles on node {node} conflict: {roles}. "
+                    "Use identical placement env/args or disable one placement."
+                )
+
+        container = standalone.container or mooncake_cfg.container or str(self.runtime.container_image)
+        node_order = {node: index for index, node in enumerate(self.runtime.nodes.worker)}
+        managed: dict[str, ManagedProcess] = {}
+
+        try:
+            for service_index, node in enumerate(
+                sorted(placements_by_node, key=lambda item: node_order.get(item, 10**9))
+            ):
+                role_placements = placements_by_node[node]
+                placement = next(iter(role_placements.values()))
+                roles = sorted(role_placements, key=lambda item: role_order[item])
+                role = "+".join(roles)
+                node_ip = get_hostname_ip(node, self.runtime.network_interface)
+                template_vars = {
+                    "node": node,
+                    "node_ip": node_ip,
+                    "node_id": str(node_order.get(node, service_index)),
+                    "role": role,
+                    "index": str(service_index),
+                    "infra_node": self.runtime.nodes.infra,
+                    "infra_ip": self.runtime.infra_node_ip,
+                    "master_port": str(MOONCAKE_MASTER_PORT),
+                    "metadata_port": str(MOONCAKE_HTTP_METADATA_PORT),
+                }
+
+                command = [
+                    _render_named_placeholders(part, template_vars)
+                    for part in (*standalone.command, *standalone.args, *placement.args)
+                ]
+                env_to_set = {
+                    "MOONCAKE_LOCAL_HOSTNAME": node_ip,
+                    **{key: _render_named_placeholders(value, template_vars) for key, value in standalone.env.items()},
+                    **{key: _render_named_placeholders(value, template_vars) for key, value in placement.env.items()},
+                    "MOONCAKE_MASTER": f"{self.runtime.infra_node_ip}:{MOONCAKE_MASTER_PORT}",
+                    "MOONCAKE_TE_META_DATA_SERVER": (
+                        f"http://{self.runtime.infra_node_ip}:{MOONCAKE_HTTP_METADATA_PORT}/metadata"
+                    ),
+                }
+                preamble = (
+                    _render_named_placeholders(standalone.preamble, template_vars) if standalone.preamble else None
+                )
+                role_label = role.replace("+", "_")
+                service_log = self.runtime.log_dir / f"mooncake_store_{role_label}_{node}.out"
+
+                logger.info("Starting Mooncake standalone Store service for %s on %s", role, node)
+                logger.info("Mooncake standalone command: %s", shlex.join(command))
+                proc = start_srun_process(
+                    command=command,
+                    nodelist=[node],
+                    output=str(service_log),
+                    container_image=container,
+                    container_mounts=self.runtime.container_mounts,
+                    env_to_set=env_to_set,
+                    bash_preamble=preamble,
+                    cpus_per_task=standalone.cpus_per_task,
+                    cpu_bind=standalone.cpu_bind,
+                    srun_options=standalone.srun_options,
+                    het_group=self.runtime.nodes.het_group_for(node),
+                )
+                name = f"mooncake_store_{role_label}_{node}"
+                service = ManagedProcess(
+                    name=name,
+                    popen=proc,
+                    log_file=service_log,
+                    node=node,
+                    critical=standalone.critical,
+                )
+                managed[name] = service
+                if registry is not None:
+                    registry.add_process(service)
+
+                health_check = standalone.health_check
+                if health_check is not None and not wait_for_port(
+                    node, health_check.port, timeout=health_check.timeout_seconds
+                ):
+                    raise RuntimeError(
+                        f"Mooncake standalone Store service failed to start on {node} (port {health_check.port})"
+                    )
+                logger.info("Mooncake standalone Store service is ready on %s", node)
+        except Exception:
+            for service in managed.values():
+                service.terminate()
+            raise
 
         return managed
 
@@ -676,6 +810,10 @@ class SweepOrchestrator(
             mooncake_proc = self.start_mooncake_master(registry)
             if mooncake_proc is not None:
                 registry.add_process(mooncake_proc)
+
+            # Stage 1c: Standalone Mooncake Store services (optional, one per
+            # selected physical worker node).
+            self.start_mooncake_store_services(registry)
 
             # Pre-worker: Ensure HF model is cached before starting workers.
             # 1. Clean stale lock files from previous crashed downloads

@@ -24,6 +24,7 @@ from typing import (
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
+from srtctl.backends.mooncake import MooncakeStandaloneStoreConfig
 from srtctl.ports import (
     DYN_SYSTEM_PORT_BASE,
     MOONCAKE_HTTP_METADATA_PORT,
@@ -96,6 +97,7 @@ class VLLMMooncakeKVStoreConfig:
 
     container: str | None = None
     env: dict[str, str] = field(default_factory=dict)
+    standalone: MooncakeStandaloneStoreConfig | None = None
     # ``store_config`` values are JSON-serialized into MOONCAKE_CONFIG_PATH and
     # parsed by vLLM's ``MooncakeStoreConfig`` dataclass — fields are a mix of
     # str (e.g. ``protocol``), int (e.g. ``port``), and human-readable sizes
