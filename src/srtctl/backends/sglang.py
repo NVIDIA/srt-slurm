@@ -32,6 +32,7 @@ from srtctl.ports import (
 if TYPE_CHECKING:
     from srtctl.backends.base import SrunConfig
     from srtctl.core.runtime import RuntimeContext
+    from srtctl.core.schema import ProfilingConfig
     from srtctl.core.topology import Endpoint, NodePortAllocator, Process
 
 # Type alias for worker modes
@@ -285,6 +286,7 @@ class SGLangProtocol:
         frontend_type: str = "dynamo",
         nsys_prefix: list[str] | None = None,
         dump_config_path: Path | None = None,
+        profiling: "ProfilingConfig | None" = None,
     ) -> list[str]:
         """Build the command to start an SGLang worker process.
 
@@ -382,6 +384,10 @@ class SGLangProtocol:
             # Add the endpoint with the allocated port
             kv_cfg["endpoint"] = f"tcp://*:{process.kv_events_port}"
             cmd.extend(["--kv-events-config", json.dumps(kv_cfg)])
+
+        # Add request plane (dynamo frontend only)
+        if not use_sglang:
+            cmd.extend(["--request-plane", runtime.request_plane])
 
         # Add all config flags
         cmd.extend(_config_to_cli_args(config))

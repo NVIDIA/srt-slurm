@@ -31,6 +31,54 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _vllm_data_parallel_size(config: "SrtConfig", mode: str) -> int:
+    """Return vLLM data parallel size for a mode, defaulting to one."""
+    backend = config.backend
+    if getattr(backend, "type", None) != "vllm":
+        return 1
+
+    vllm_config = getattr(backend, "vllm_config", None)
+    mode_config = getattr(vllm_config, mode, None) if vllm_config else None
+    if not mode_config:
+        # Special case: no vllm_config at all defaulting to 1 then
+        return 1
+
+    return int(mode_config.get("data-parallel-size") or mode_config.get("data_parallel_size") or 1)
+
+
+def _get_health_expectations(config: "SrtConfig") -> tuple[int, int, str, int]:
+    """Compute expected health counts in the units reported by the frontend.
+
+    Dynamo's /health endpoint reports registered generate instances. For vLLM
+    DP workers, that means one entry per DP rank, not one entry per logical
+    srt-slurm worker. Other frontends keep using logical worker counts.
+    """
+    r = config.resources
+
+    if r.num_agg > 0:
+        logical_prefill = 0
+        logical_decode = r.num_agg
+        worker_desc = f"{r.num_agg} agg"
+    else:
+        logical_prefill = r.num_prefill
+        logical_decode = r.num_decode
+        worker_desc = f"{r.num_prefill}P + {r.num_decode}D"
+
+    if config.frontend.type == "dynamo" and getattr(config.backend, "type", None) == "vllm":
+        if r.num_agg > 0:
+            n_prefill = 0
+            n_decode = logical_decode * _vllm_data_parallel_size(config, "aggregated")
+        else:
+            n_prefill = logical_prefill * _vllm_data_parallel_size(config, "prefill")
+            n_decode = logical_decode * _vllm_data_parallel_size(config, "decode")
+
+        count_desc = f"{n_prefill}P + {n_decode}D Dynamo generate instances; logical workers: {worker_desc}"
+        return n_prefill, n_decode, count_desc, n_prefill + n_decode
+
+    count_desc = worker_desc
+    return logical_prefill, logical_decode, count_desc, logical_prefill + logical_decode
+
+
 class BenchmarkStageMixin:
     """Mixin for benchmark execution stage.
 
@@ -55,32 +103,40 @@ class BenchmarkStageMixin:
         """Backend worker processes."""
         raise NotImplementedError
 
+    def _orchestrator_node(self) -> str:
+        """Node the frontend/orchestrator runs on (honors frontend.orchestrator_placement)."""
+        placement = getattr(self.config.frontend, "orchestrator_placement", "head")
+        if placement == "head":
+            return self.runtime.nodes.head
+        from srtctl.core.topology import placed_node
+
+        return placed_node(
+            self.backend_processes, placement, self.runtime.nodes.head, kind="frontend.orchestrator_placement"
+        )
+
+    def _benchmark_node(self) -> str:
+        """Node the benchmark client runs on (honors benchmark.client_placement)."""
+        placement = getattr(self.config.benchmark, "client_placement", "head")
+        if placement == "head":
+            return self.runtime.nodes.head
+        from srtctl.core.topology import placed_node
+
+        return placed_node(
+            self.backend_processes, placement, self.runtime.nodes.head, kind="benchmark.client_placement"
+        )
+
     def run_benchmark(
         self, registry: "ProcessRegistry", stop_event: threading.Event, reporter: StatusReporter | None = None
     ) -> int:
         """Run the benchmark."""
         logger.info("Waiting for workers to be ready...")
 
-        r = self.config.resources
-        num_workers = r.num_prefill + r.num_decode + r.num_agg
-
-        # Build descriptive worker count string
-        worker_desc = f"{r.num_agg} agg" if r.num_agg > 0 else f"{r.num_prefill}P + {r.num_decode}D"
-
-        logger.info("Waiting for server health (expecting %d workers: %s)...", num_workers, worker_desc)
-
-        # For aggregated mode: expect 0 prefill, N decode (backend workers count as decode)
-        # For disaggregated mode: expect N prefill, M decode
-        if r.num_agg > 0:
-            n_prefill = 0
-            n_decode = r.num_agg
-        else:
-            n_prefill = r.num_prefill
-            n_decode = r.num_decode
+        n_prefill, n_decode, count_desc, num_workers = _get_health_expectations(self.config)
+        logger.info("Waiting for server health (expecting %d health entries: %s)...", num_workers, count_desc)
 
         hc = self.config.health_check
         if not wait_for_model(
-            host=self.runtime.nodes.head,
+            host=self._orchestrator_node(),
             port=FRONTEND_PUBLIC_PORT,
             n_prefill=n_prefill,
             n_decode=n_decode,
@@ -131,7 +187,7 @@ class BenchmarkStageMixin:
 
         if benchmark_type == "manual":
             logger.info("Benchmark type is 'manual' - server is ready for testing")
-            logger.info("Frontend URL: http://%s:%d", self.runtime.nodes.head, FRONTEND_PUBLIC_PORT)
+            logger.info("Frontend URL: http://%s:%d", self._orchestrator_node(), FRONTEND_PUBLIC_PORT)
             logger.info("Press Ctrl+C to stop the job")
 
             while not stop_event.is_set():
@@ -193,15 +249,16 @@ class BenchmarkStageMixin:
         # opted in via reporting.live_metrics in the cluster config.
         snapshotter = try_start_snapshotter(self.runtime.log_dir, stop_event)
 
+        bench_node = self._benchmark_node()
         proc = start_srun_process(
             command=cmd,
-            nodelist=[self.runtime.nodes.head],
+            nodelist=[bench_node],
             output=str(log_file),
             container_image=str(container_image),
             container_mounts=container_mounts,
             env_to_set=env_to_set,
             srun_options=self.runtime.srun_options,
-            het_group=self.runtime.nodes.het_group_for(self.runtime.nodes.head),
+            het_group=self.runtime.nodes.het_group_for(bench_node),
         )
 
         try:
@@ -370,6 +427,13 @@ class BenchmarkStageMixin:
 
         env = self._get_benchmark_profiling_env(runner)
         env["SRTCTL_FRONTEND_TYPE"] = self.config.frontend.type
+
+        # Orchestrator endpoint for the benchmark command. When the client runs on
+        # a different node than the orchestrator (e.g. client_placement=last_decode
+        # with orchestrator_placement=first_decode), "localhost" is wrong — the
+        # command should target http://$SRT_FRONTEND_HOST:$SRT_FRONTEND_PORT.
+        env["SRT_FRONTEND_HOST"] = get_hostname_ip(self._orchestrator_node(), self.runtime.network_interface)
+        env["SRT_FRONTEND_PORT"] = str(self.runtime.frontend_port)
 
         # Propagate top-level recipe environment to the bench step. Workers
         # already get this via worker_stage; benches need it too for things

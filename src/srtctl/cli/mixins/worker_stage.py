@@ -138,11 +138,8 @@ class WorkerStageMixin:
         if profiling.enabled:
             (self.runtime.log_dir / "profiles" / mode).mkdir(parents=True, exist_ok=True)
         if profiling.is_nsys:
-            # Include CUDA_VISIBLE_DEVICES in the output name so per-DP-rank nsys
-            # files don't collide: with data parallelism (e.g. vLLM DP=4) several
-            # ranks share one logical endpoint and the same worker index on a node,
-            # so without the %q{} GPU qualifier they'd all write the same file.
-            nsys_output = f"/logs/profiles/{mode}/{process.node}_{mode}_w{index}_profile_gpu%q{{CUDA_VISIBLE_DEVICES}}"
+            gpu_label = process.cuda_visible_devices.replace(",", "-")
+            nsys_output = f"/logs/profiles/{mode}/{process.node}_{mode}_w{index}_profile_gpu{gpu_label}"
             nsys_prefix = profiling.get_nsys_prefix(
                 nsys_output, frontend_type=self.config.frontend.type, backend_type=self.config.backend_type
             )
@@ -155,6 +152,7 @@ class WorkerStageMixin:
             frontend_type=self.config.frontend.type,
             nsys_prefix=nsys_prefix,
             dump_config_path=config_dump,
+            profiling=profiling,
         )
 
         # Environment variables
@@ -163,7 +161,7 @@ class WorkerStageMixin:
             "ETCD_ENDPOINTS": f"http://{self.runtime.nodes.infra}:{ETCD_CLIENT_PORT}",
             "NATS_SERVER": f"nats://{self.runtime.nodes.infra}:{NATS_PORT}",
             "DYN_SYSTEM_PORT": str(process.sys_port),
-            "DYN_REQUEST_PLANE": "nats",
+            "DYN_REQUEST_PLANE": self.config.dynamo.request_plane,
             "DYN_SKIP_SGLANG_LOG_FORMATTING": "1",
         }
 
@@ -196,8 +194,8 @@ class WorkerStageMixin:
             profile_dir = str(self.runtime.log_dir / "profiles")
             env_to_set.update(profiling.get_env_vars(mode, profile_dir))
 
-        # Set CUDA_VISIBLE_DEVICES if not using all GPUs
-        if len(process.gpu_indices) < self.runtime.gpus_per_node:
+        should_set_cvd = getattr(self.backend, "should_set_cuda_visible_devices", lambda _process: True)
+        if should_set_cvd(process) and len(process.gpu_indices) < self.runtime.gpus_per_node:
             env_to_set["CUDA_VISIBLE_DEVICES"] = process.cuda_visible_devices
 
         # Add backend-specific process environment variables (e.g., unique ports)
@@ -297,6 +295,7 @@ class WorkerStageMixin:
             frontend_type=self.config.frontend.type,
             nsys_prefix=nsys_prefix,
             dump_config_path=config_dump,
+            profiling=profiling,
         )
 
         # Environment variables
@@ -324,8 +323,8 @@ class WorkerStageMixin:
             profile_dir = str(self.runtime.log_dir / "profiles")
             env_to_set.update(profiling.get_env_vars(mode, profile_dir))
 
-        # Set CUDA_VISIBLE_DEVICES if not using all GPUs on the node
-        if len(leader.gpu_indices) < self.runtime.gpus_per_node:
+        should_set_cvd = getattr(self.backend, "should_set_cuda_visible_devices", lambda _process: True)
+        if should_set_cvd(leader) and len(leader.gpu_indices) < self.runtime.gpus_per_node:
             env_to_set["CUDA_VISIBLE_DEVICES"] = leader.cuda_visible_devices
 
         # Add mooncake worker env vars if configured (SGLang only). For MPI-style

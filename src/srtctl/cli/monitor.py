@@ -400,6 +400,7 @@ def _gather_job_info(job_id: str, outputs_dir: Path, sq: dict | None) -> dict:
         "runs": None,
         "live_metrics": None,
         "gpu_info": "",
+        "cpu_info": "",
         "bench_config": "",
         "log_age": "",
     }
@@ -413,6 +414,19 @@ def _gather_job_info(job_id: str, outputs_dir: Path, sq: dict | None) -> dict:
         p, d, gpn = res.get("prefill_nodes", 0), res.get("decode_nodes", 0), res.get("gpus_per_node", 0)
         prec = meta.get("model", {}).get("precision", "")
         info["gpu_info"] = f"{gpu}  {p}P/{d}D×{gpn}  {prec}".strip()
+        cpu_allocation = res.get("cpu_allocation") or {}
+        cpu_check = res.get("cpu_check") or {}
+        allocated_cpus = cpu_allocation.get("allocated_total")
+        effective_cpus = cpu_allocation.get("effective_for_check")
+        displayed_cpus = effective_cpus if effective_cpus is not None else allocated_cpus
+        if displayed_cpus is not None:
+            allocation_suffix = ""
+            if allocated_cpus is not None and effective_cpus is not None and allocated_cpus != effective_cpus:
+                allocation_suffix = f" eff/{allocated_cpus} alloc"
+            cpu_suffix = ""
+            if cpu_check.get("status") == "warning":
+                cpu_suffix = f"  ⚠ min {cpu_check.get('minimum_cpu_count', '?')}"
+            info["cpu_info"] = f"CPU {displayed_cpus}{allocation_suffix}{cpu_suffix}"
         bench = meta.get("benchmark", {})
         isl, osl, btype = bench.get("isl"), bench.get("osl"), bench.get("type", "")
         info["bench_config"] = f"{btype}  {isl}→{osl}" if (isl and osl) else btype
@@ -719,7 +733,7 @@ def _build_table(jobs: list[dict], show_all: bool, selected_rel: int = -1, last_
         if j["stage_id"] in ("completed", "failed", "finalizing") and j["log_age"]:
             stage_txt.append(f"  ({j['log_age']})", style="dim")
 
-        cfg_parts = [p for p in (j["gpu_info"], j["bench_config"]) if p]
+        cfg_parts = [p for p in (j["gpu_info"], j["cpu_info"], j["bench_config"]) if p]
 
         job_id_cell = Text()
         if i == selected_rel:
@@ -753,7 +767,7 @@ _DETAIL_REFRESH_SEC = 1.0
 
 
 def _job_row_height(j: dict, show_all: bool) -> int:
-    cfg_lines = len([p for p in (j.get("gpu_info", ""), j.get("bench_config", "")) if p]) or 1
+    cfg_lines = len([p for p in (j.get("gpu_info", ""), j.get("cpu_info", ""), j.get("bench_config", "")) if p]) or 1
     runs = j.get("runs")
     benchmarking = j.get("stage_id") == "benchmarking"
     actual_count = len(runs) if runs else 0
