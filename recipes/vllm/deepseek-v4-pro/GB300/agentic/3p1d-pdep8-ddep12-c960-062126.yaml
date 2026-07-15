@@ -33,13 +33,6 @@ health_check:
   max_attempts: 2160
   interval_seconds: 10
 
-vmon:
-  enabled: true
-  mooncake: true
-  output: "vmon/vmon_bash.json"
-  interval: "2s"
-  duration: "24h"
-
 resources:
   gpu_type: "gb300"
   gpus_per_node: 4
