@@ -75,17 +75,37 @@ def _p99(data: dict[str, Any], metric: str) -> float | None:
     return _percentile_from_list(data.get(f"percentiles_{metric}_ms"))
 
 
+def _looks_like_job_metadata(data: Any) -> bool:
+    """Heuristic: submit metadata carries a job_id / resources / benchmark block.
+
+    Guards against sibling JSON files (benchmark-rollup.json, fingerprint_*.json,
+    postprocess-status.json) that live next to the metadata in a flat layout.
+    """
+    if not isinstance(data, dict):
+        return False
+    return "job_id" in data or "resources" in data or "benchmark" in data
+
+
 def _read_job_metadata(log_dir: Path) -> dict[str, Any] | None:
-    """Read submit metadata JSON from the output directory when available."""
-    output_dir = log_dir.parent
-    for metadata_path in sorted(output_dir.glob("*.json")):
-        try:
-            data = json.loads(metadata_path.read_text())
-        except Exception as exc:
-            print(f"Failed to parse {metadata_path}: {exc}", file=sys.stderr)
-            continue
-        if data:
-            return data
+    """Read submit metadata JSON, checking the log dir itself and its parent.
+
+    Production layout keeps it in the parent (``outputs/<job>/<job>.json`` with
+    logs under ``outputs/<job>/logs``). A flat layout keeps the metadata next to
+    the ``sa-bench_*`` result dirs in a single directory, so search both.
+    """
+    search_dirs: list[Path] = [log_dir]
+    if log_dir.parent != log_dir:
+        search_dirs.append(log_dir.parent)
+
+    for search_dir in search_dirs:
+        for metadata_path in sorted(search_dir.glob("*.json")):
+            try:
+                data = json.loads(metadata_path.read_text())
+            except Exception as exc:
+                print(f"Failed to parse {metadata_path}: {exc}", file=sys.stderr)
+                continue
+            if _looks_like_job_metadata(data):
+                return data
     return None
 
 

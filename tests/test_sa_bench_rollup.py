@@ -168,6 +168,56 @@ def test_sa_bench_rollup_reads_isl_osl_from_metadata_for_fixed_workload(tmp_path
     assert isinstance(json_data["config"]["osl"], int)
 
 
+def test_sa_bench_rollup_reads_isl_osl_from_flat_layout(tmp_path):
+    """Flat layout keeps metadata next to the sa-bench_* dir (no logs/ parent)."""
+    rollup = _load_rollup_module()
+
+    # Everything (metadata + result dir + sibling jsons) sits in one directory.
+    result_dir = tmp_path / "sa-bench_isl_1024_osl_1024"
+    result_dir.mkdir()
+
+    (tmp_path / "2349318.json").write_text(
+        json.dumps(
+            {
+                "job_id": "2349318",
+                "job_name": "flat-layout-run",
+                "backend_type": "sglang",
+                "resources": {"gpus_per_node": 4, "prefill_nodes": 1, "decode_nodes": 1},
+                "benchmark": {"type": "sa-bench", "isl": 1024, "osl": 1024},
+            }
+        )
+    )
+    # Sibling JSON files that must NOT be mistaken for job metadata.
+    (tmp_path / "postprocess-status.json").write_text(json.dumps({"status": "ok"}))
+    (tmp_path / "fingerprint_decode_w0.json").write_text(json.dumps({"foo": "bar"}))
+
+    result = {
+        "model_id": "nvidia/Qwen3.5-397B-A17B-NVFP4",
+        "max_concurrency": 128,
+        "output_throughput": 11094.3,
+        "total_token_throughput": 22188.6,
+        "mean_ttft_ms": 907.4,
+        "p99_ttft_ms": 2611.8,
+        "mean_tpot_ms": 10.1,
+        "p99_tpot_ms": 14.2,
+        "mean_itl_ms": 859.6,
+        "p99_itl_ms": 900.0,
+        "mean_e2el_ms": 10228.7,
+        "completed": 1280,
+        "total_input_tokens": 1181744,
+        "total_output_tokens": 147718,
+    }
+    (result_dir / "results_concurrency_128_gpus_8_ctx_4_gen_4.json").write_text(json.dumps(result))
+
+    rollup.main(tmp_path)
+
+    json_data = json.loads((tmp_path / "benchmark-rollup.json").read_text())
+    assert json_data["config"] == {"model": "nvidia/Qwen3.5-397B-A17B-NVFP4", "isl": 1024, "osl": 1024}
+    run = json_data["runs"][0]
+    assert run["ttft_p99_ms"] == 2611.8
+    assert run["total_input_tokens"] == 1181744
+
+
 def test_sa_bench_rollup_isl_osl_none_for_agentic_workload(tmp_path):
     """Agentic (custom-dataset) workloads have no fixed ISL/OSL -> both are None."""
     rollup = _load_rollup_module()
