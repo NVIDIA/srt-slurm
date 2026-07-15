@@ -208,6 +208,44 @@ def check_trtllm_serve_health(
     )
 
 
+def check_vllm_health(
+    host: str,
+    port: int,
+    health_url: str,
+) -> WorkerHealthResult:
+    """Check direct vLLM OpenAI server readiness.
+
+    vLLM's /health returns HTTP 200 when the server is up; /v1/models verifies
+    that the OpenAI serving stack has exposed at least one model.
+    """
+    models_url = f"http://{host}:{port}/v1/models"
+    try:
+        models_response = requests.get(models_url, timeout=5.0)
+        if models_response.status_code != 200:
+            return WorkerHealthResult(
+                ready=False,
+                message=f"vLLM /health is up but /v1/models returned {models_response.status_code}",
+            )
+        data = models_response.json()
+        models = data.get("data", [])
+        if models:
+            return WorkerHealthResult(
+                ready=True,
+                message=f"vLLM OpenAI server ready at {health_url}; {len(models)} model(s) available",
+                decode_ready=1,
+                decode_expected=1,
+            )
+        return WorkerHealthResult(
+            ready=False,
+            message="vLLM /health is up but /v1/models has no models",
+        )
+    except Exception as e:
+        return WorkerHealthResult(
+            ready=False,
+            message=f"vLLM /health is up but /v1/models check failed: {e}",
+        )
+
+
 def wait_for_port(
     host: str,
     port: int,
@@ -433,6 +471,16 @@ def wait_for_model(
                 if frontend_type == "trtllm_serve":
                     logger.info("trtllm-serve frontend healthy at %s", health_url)
                     return True
+                if frontend_type == "vllm":
+                    result = check_vllm_health(host, port, health_url)
+                    if result.ready:
+                        logger.info(result.message)
+                        return True
+                    if time.time() - last_report_time >= report_every:
+                        logger.info(result.message)
+                        last_report_time = time.time()
+                    time.sleep(poll_interval)
+                    continue
 
                 response_json = response.json()
 

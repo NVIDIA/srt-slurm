@@ -1394,7 +1394,7 @@ class FrontendConfig:
     """Frontend/router configuration.
 
     Attributes:
-        type: Frontend type - "dynamo" (default) or "sglang"
+        type: Frontend type - "dynamo" (default), "sglang", "trtllm_serve", or "vllm"
         enable_multiple_frontends: Scale with nginx + multiple routers.
             When ``True`` (default), srtctl stands up nginx and fans out
             to ``num_additional_frontends + 1`` router replicas. When
@@ -1537,6 +1537,7 @@ class SrtConfig:
         self._validate_mooncake_kv_store()
         self._validate_het_jobs()
         self._validate_trtllm_serve()
+        self._validate_vllm_frontend()
 
     def _validate_trtllm_serve(self):
         """Catch trtllm_serve misconfigurations at load time (dry-run) instead of
@@ -1561,6 +1562,28 @@ class SrtConfig:
                 "frontend.type: trtllm_serve requires a disaggregated layout "
                 "(set resources.prefill_nodes/prefill_workers and decode_nodes/decode_workers)"
             )
+
+    def _validate_vllm_frontend(self):
+        """Catch direct-vLLM frontend misconfigurations at load time.
+
+        Direct vLLM means the aggregate `vllm serve` worker owns the OpenAI port
+        itself. It is not a disaggregated router and does not support the nginx
+        multi-frontend path.
+        """
+        if self.frontend.type != "vllm":
+            return
+        if self.backend_type != "vllm":
+            raise ValidationError(f"frontend.type: vllm requires backend.type: vllm; got {self.backend_type!r}")
+        if self.frontend.enable_multiple_frontends:
+            raise ValidationError(
+                "frontend.type: vllm binds vllm serve directly; set frontend.enable_multiple_frontends: false"
+            )
+        if self.resources.is_disaggregated:
+            raise ValidationError("frontend.type: vllm supports aggregate jobs only, not disaggregated layouts")
+        if self.resources.num_agg < 1:
+            raise ValidationError("frontend.type: vllm requires resources.agg_workers >= 1")
+        if (self.resources.agg_nodes or 1) != 1:
+            raise ValidationError("frontend.type: vllm currently supports single-node aggregate jobs only")
 
     def _validate_het_jobs(self):
         """When ``resources.het_jobs`` is set to True, enforce supported shape.

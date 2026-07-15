@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from srtctl.core.slurm import get_hostname_ip
+from srtctl.ports import FRONTEND_PUBLIC_PORT
 
 if TYPE_CHECKING:
     from srtctl.cli.mixins.frontend_stage import FrontendTopology
@@ -36,6 +37,7 @@ def generate_telemetry_config(
     frontend_topology: FrontendTopology,
     runtime: RuntimeContext,
     telemetry: TelemetryConfig,
+    frontend_type: str = "dynamo",
 ) -> str:
     """Generate telemetry TOML from backend and frontend topology."""
     dcgm_exporter = telemetry.dcgm_exporter
@@ -84,6 +86,7 @@ def generate_telemetry_config(
 
     for process in sorted(processes, key=lambda p: (p.endpoint_mode, p.endpoint_index, p.node_rank, p.node)):
         node_ip = get_hostname_ip(process.node, runtime.network_interface)
+        port = FRONTEND_PUBLIC_PORT if frontend_type == "vllm" and process.endpoint_mode == "agg" else process.sys_port
         node_metadata = {
             "hostname": process.node,
             "worker_index": str(process.endpoint_index),
@@ -94,7 +97,7 @@ def generate_telemetry_config(
         endpoints.append(
             TelemetryEndpoint(
                 name=f"backend_{process.endpoint_mode}{process.endpoint_index}_rank{process.node_rank}",
-                url=f"http://{node_ip}:{process.sys_port}/metrics",
+                url=f"http://{node_ip}:{port}/metrics",
                 frequency=telemetry.default_frequency,
                 filter="backend",
                 node_metadata=node_metadata,
