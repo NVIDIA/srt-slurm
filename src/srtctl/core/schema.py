@@ -710,6 +710,10 @@ class BenchmarkConfig:
     # SA-Bench Dynamo adapter: reuse a benchmark-scoped HTTP connection pool.
     # Opt-in to preserve the historical per-request ClientSession behavior.
     reuse_http_connections: bool = False
+    # Agentic / AgentX benchmark fields
+    duration: int | None = None
+    model_prefix: str | None = None
+    result_filename: str | None = None
     # Custom benchmark hook.
     # ``command`` is passed to ``bash -lc`` verbatim; srtctl does NOT
     # substitute placeholders like ``{nginx_url}`` or ``{slurm_job_id}``.

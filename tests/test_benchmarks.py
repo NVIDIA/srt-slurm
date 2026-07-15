@@ -16,6 +16,8 @@ class TestBenchmarkRegistry:
         """All expected benchmarks are registered."""
         benchmarks = list_benchmarks()
         assert "custom" in benchmarks
+        assert "agentic" in benchmarks
+        assert "agentx" in benchmarks
         assert "sa-bench" in benchmarks
         assert "sglang-bench" in benchmarks
         assert "mmlu" in benchmarks
@@ -784,6 +786,91 @@ class TestGSM8KRunner:
         assert any("benchmark.num_examples must be > 0" in e for e in errors)
         assert any("benchmark.repeat must be > 0" in e for e in errors)
         assert any("benchmark.num_shots must be >= 0" in e for e in errors)
+class TestAgenticRunner:
+    """Test AgentX runner."""
+
+    def test_registry_includes_agentic_aliases(self):
+        """agentic and agentx are in the benchmark registry."""
+        benchmarks = list_benchmarks()
+        assert "agentic" in benchmarks
+        assert "agentx" in benchmarks
+
+    def test_build_command(self):
+        """build_command returns the AgentX bench invocation."""
+        from unittest.mock import MagicMock
+
+        from srtctl.backends.vllm import VLLMProtocol, VLLMServerConfig
+        from srtctl.benchmarks.agentic import AgenticRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = AgenticRunner()
+        runtime = MagicMock()
+        runtime.frontend_port = 8000
+
+        config = SrtConfig(
+            name="minimax-agentx",
+            model=ModelConfig(path="hf:nvidia/MiniMax-M3-NVFP4", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="b300"),
+            backend=VLLMProtocol(
+                vllm_config=VLLMServerConfig(aggregated={"served-model-name": "nvidia/MiniMax-M3-NVFP4"})
+            ),
+            benchmark=BenchmarkConfig(
+                type="agentic",
+                concurrencies=[1, 2, 4],
+                duration=3600,
+                model_prefix="minimaxm3",
+            ),
+        )
+
+        cmd = runner.build_command(config, runtime)
+        assert cmd == [
+            "bash",
+            "/srtctl-benchmarks/agentic/bench.sh",
+            "http://localhost:8000",
+            "nvidia/MiniMax-M3-NVFP4",
+            "minimaxm3",
+            "dynamo-vllm",
+            "fp4",
+            "1 2 4",
+            "3600",
+            "minimax-agentx",
+            "none",
+            "",
+            "0",
+        ]
+
+    def test_validate_rejects_num_dataset_entries(self):
+        """AgentX should let Weka loaders use the full corpus."""
+        from srtctl.benchmarks.agentic import AgenticRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = AgenticRunner()
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="b300"),
+            benchmark=BenchmarkConfig(type="agentic", concurrency=1, aiperf_args={"num-dataset-entries": 393}),
+        )
+
+        errors = runner.validate_config(config)
+        assert any("num-dataset-entries" in error for error in errors)
+
+    def test_agentic_benchmark_lib_exposes_synthesis_max_osl(self):
+        """AgentX configs can cap OSL through benchmark.env for prefill-only runs."""
+        script = SCRIPTS_DIR / "agentic" / "inferencex" / "benchmarks" / "benchmark_lib.sh"
+        text = script.read_text()
+
+        assert "AIPERF_SYNTHESIS_MAX_OSL" in text
+        assert "REPLAY_CMD+=\" --synthesis-max-osl $AIPERF_SYNTHESIS_MAX_OSL\"" in text
+
+    def test_agentic_bench_patches_weka_subagent_osl_cap(self):
+        """bench.sh keeps Weka subagent child turns under the synthesis OSL cap."""
+        script = SCRIPTS_DIR / "agentic" / "bench.sh"
+        text = script.read_text()
+
+        assert "AIPERF_SYNTHESIS_MAX_OSL" in text
+        assert "max_tokens=self._cap_output(creq)," in text
+        assert '"capped_output_length": self._cap_output(creq)' in text
 
 
 class TestScriptsExist:
