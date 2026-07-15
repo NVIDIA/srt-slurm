@@ -491,6 +491,8 @@ class ResourceConfig:
     decode_nodes: int | None = None
     prefill_workers: int | None = None
     decode_workers: int | None = None
+    prefill_workers_per_node: int | None = None
+    spread_decode_workers: bool = False
 
     # Aggregated mode
     agg_nodes: int | None = None
