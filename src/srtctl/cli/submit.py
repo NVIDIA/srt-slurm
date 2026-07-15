@@ -15,6 +15,7 @@ Usage:
 
 import argparse
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -61,6 +62,7 @@ from srtctl.core.validation import preflight_config_variants
 from srtctl.ports import MOONCAKE_MASTER_PORT
 
 console = Console()
+_SLURM_JOB_NAME_MAX_LEN = 128
 logger = logging.getLogger(__name__)
 
 # Populated by submit_with_orchestrator on successful submission. Consumed by
@@ -179,6 +181,31 @@ def get_job_name(config: SrtConfig) -> str:
     if runner_name:
         return runner_name
     return config.name
+
+
+def _sanitize_slurm_name_component(value: str, *, keep_underscores: bool = False) -> str:
+    """Convert arbitrary recipe text into a conservative Slurm job-name component."""
+    pattern = r"[^A-Za-z0-9_.-]+" if keep_underscores else r"[^A-Za-z0-9.-]+"
+    sanitized = re.sub(pattern, "-", value.strip())
+    sanitized = re.sub(r"[-.]{2,}", "-", sanitized).strip("-.")
+    return sanitized.lower() or "job"
+
+
+def _limit_slurm_job_name(value: str) -> str:
+    if len(value) <= _SLURM_JOB_NAME_MAX_LEN:
+        return value
+    digest = hashlib.sha1(value.encode("utf-8")).hexdigest()[:8]
+    prefix_len = _SLURM_JOB_NAME_MAX_LEN - len(digest) - 1
+    return f"{value[:prefix_len].rstrip('-.')}-{digest}"
+
+
+def get_slurm_job_name(config: SrtConfig, account: str | None = None) -> str:
+    """Return the site-facing Slurm job name while preserving logical metadata names."""
+    logical_name = _sanitize_slurm_name_component(get_job_name(config))
+    account_name = _sanitize_slurm_name_component(account or "", keep_underscores=True)
+    if account_name.startswith("coreai_"):
+        return _limit_slurm_job_name(f"{account_name}-aib.{logical_name}")
+    return _limit_slurm_job_name(logical_name)
 
 
 def setup_logging(level: int = logging.INFO) -> None:
@@ -457,7 +484,9 @@ def generate_minimal_sbatch_script(
     # Resolve container image path (expand aliases from srtslurm.yaml)
     container_image = os.path.expandvars(config.model.container)
 
-    job_name = get_job_name(config)
+    account = config.slurm.account or os.environ.get("SLURM_ACCOUNT", "default")
+    partition = config.slurm.partition or os.environ.get("SLURM_PARTITION", "default")
+    job_name = get_slurm_job_name(config, account)
     config_environment = config.dynamo.get_wheel_environment()
     config_environment.update(config.environment)
 
@@ -467,8 +496,8 @@ def generate_minimal_sbatch_script(
         het_components=het_components,
         gpus_per_node=config.resources.gpus_per_node,
         backend_type=config.backend_type,
-        account=config.slurm.account or os.environ.get("SLURM_ACCOUNT", "default"),
-        partition=config.slurm.partition or os.environ.get("SLURM_PARTITION", "default"),
+        account=account,
+        partition=partition,
         time_limit=config.slurm.time_limit or "01:00:00",
         config_path=str(config_path.resolve()),
         runtime_config_filename=runtime_config_filename,
