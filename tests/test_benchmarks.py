@@ -863,15 +863,15 @@ class TestAgenticRunner:
         assert "AIPERF_SYNTHESIS_MAX_OSL" in text
         assert "REPLAY_CMD+=\" --synthesis-max-osl $AIPERF_SYNTHESIS_MAX_OSL\"" in text
 
-    def test_agentic_dynamo_conversation_routing_is_enabled_by_default(self):
-        """Dynamo AgentX runs use conversation affinity unless explicitly disabled."""
+    def test_agentic_dynamo_conversation_routing_is_opt_in(self):
+        """KV routing must not silently enable Dynamo conversation affinity."""
         script = SCRIPTS_DIR / "agentic" / "inferencex" / "benchmarks" / "benchmark_lib.sh"
         text = script.read_text()
 
         assert "AGENTX_DYNAMO_CONV_AWARE" in text
         assert 'REPLAY_CMD+=" --use-dynamo-conv-aware-routing"' in text
-        assert '"${AGENTX_DYNAMO_CONV_AWARE:-1}" == "1"' in text
-        assert '"${AGENTX_DYNAMO_CONV_AWARE:-true}" == "true"' in text
+        assert '"${AGENTX_DYNAMO_CONV_AWARE:-0}" == "1"' in text
+        assert '"${AGENTX_DYNAMO_CONV_AWARE:-false}" == "true"' in text
 
     def test_agentic_dynamo_header_affinity_is_opt_in_and_canonical(self):
         """Header affinity uses AIPerf's stable conversation correlation ID."""

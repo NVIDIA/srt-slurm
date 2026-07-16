@@ -1445,11 +1445,11 @@ build_replay_cmd() {
     # CPU on minimax-m2.5 at high concurrency. Lossless for vLLM (server
     # usage is authoritative).
     REPLAY_CMD+=" --use-server-token-count"
-    # AgentX conversations benefit from sticky Dynamo worker selection across
-    # turns. Enable session control by default for Dynamo frontends; set
-    # AGENTX_DYNAMO_CONV_AWARE=0 (or false) for an explicit no-affinity study.
+    # Keep the older nvext.session_control experiment opt-in. Current Dynamo
+    # conversation affinity is enabled on the router and keyed by the canonical
+    # X-Dynamo-Session-ID header emitted by the AgentX transport wrapper.
     if [[ "${FRAMEWORK:-}" == dynamo-* ]] && \
-       [[ "${AGENTX_DYNAMO_CONV_AWARE:-1}" == "1" || "${AGENTX_DYNAMO_CONV_AWARE:-true}" == "true" ]]; then
+       [[ "${AGENTX_DYNAMO_CONV_AWARE:-0}" == "1" || "${AGENTX_DYNAMO_CONV_AWARE:-false}" == "true" ]]; then
         REPLAY_CMD+=" --use-dynamo-conv-aware-routing"
         # The upstream 300s affinity TTL is shorter than an overloaded
         # high-concurrency agentic request. Keep bindings alive across long
