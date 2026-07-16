@@ -975,7 +975,7 @@ class TestWorkerEnvironmentTemplating:
                 ),
             )
 
-            runtime = RuntimeContext.from_config(config, job_id="12345")
+            runtime = RuntimeContext.from_config(config, job_id="12345", log_dir_base=tmp_path)
 
             # Create a mock worker stage
             class MockWorkerStage(WorkerStageMixin):
@@ -1115,7 +1115,7 @@ class TestWorkerEnvironmentTemplating:
                 ),
             )
 
-            runtime = RuntimeContext.from_config(config, job_id="12345")
+            runtime = RuntimeContext.from_config(config, job_id="12345", log_dir_base=tmp_path)
 
             class MockWorkerStage(WorkerStageMixin):
                 def __init__(self, config, runtime):
@@ -2660,7 +2660,7 @@ class TestInfmaxWorkspaceMount:
                     decode_nodes=1,
                 ),
             )
-            runtime = RuntimeContext.from_config(config, job_id="12345")
+            runtime = RuntimeContext.from_config(config, job_id="12345", log_dir_base=tmp_path)
 
             assert Path("/infmax-workspace") in runtime.container_mounts.values()
 
@@ -2715,7 +2715,7 @@ class TestInfmaxWorkspaceMount:
                         decode_nodes=1,
                     ),
                 )
-                runtime = RuntimeContext.from_config(config, job_id="12345")
+                runtime = RuntimeContext.from_config(config, job_id="12345", log_dir_base=tmp_path)
 
                 assert Path("/infmax-workspace") not in runtime.container_mounts.values()
 
@@ -2776,7 +2776,7 @@ class TestExtraMountExpansion:
                 ),
                 extra_mount=("$SRT_EXTRA_ROOT:/extra",),
             )
-            runtime = RuntimeContext.from_config(config, job_id="12345")
+            runtime = RuntimeContext.from_config(config, job_id="12345", log_dir_base=tmp_path)
 
             assert extra_root.resolve() in runtime.container_mounts
             assert runtime.container_mounts[extra_root.resolve()] == Path("/extra")
