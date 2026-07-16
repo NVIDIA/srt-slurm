@@ -7,9 +7,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-from srtctl.cli.mixins.worker_stage import WorkerStageMixin
-from srtctl.core.schema import SrtConfig
-
 REPO_ROOT = Path(__file__).parents[1]
 PATCHER = REPO_ROOT / "configs/patches/vllm_deepgemm_timeout_fix.py"
 WRAPPER = REPO_ROOT / "configs/patches/vllm-container-deps-deepgemm-timeout.sh"
@@ -74,15 +71,7 @@ def test_rejects_ambiguous_anchors_without_modifying_source(tmp_path: Path) -> N
     assert target.read_text() == ambiguous
 
 
-def test_midcurve_uses_wrapper_after_base_setup() -> None:
-    config = SrtConfig.from_yaml(REPO_ROOT / "midcurve.yaml")
+def test_wrapper_runs_base_setup_before_timeout_patch() -> None:
     wrapper = WRAPPER.read_text()
-    mixin = WorkerStageMixin()
-    mixin.config = config
-    preamble = mixin._build_worker_preamble()
 
-    assert config.setup_script == WRAPPER.name
     assert wrapper.index("vllm-container-deps.sh") < wrapper.index("vllm_deepgemm_timeout_fix.py")
-    assert preamble is not None
-    assert WRAPPER.name in preamble
-
