@@ -57,7 +57,6 @@ frontend:
 
 # Host paths below are placeholders; point them at local checkouts and caches.
 container_mounts:
-  /path/to/InferenceX: /infmax-workspace
   /path/to/srt-slurm-sa: /workspace/srt-slurm-sa
   /path/to/aiperf-mmap-cache: /aiperf_mmap_cache
   /path/to/hf-models/hub: /hf_hub_cache
@@ -82,7 +81,7 @@ backend:
       mode: "embedded"
       enable_offload: false
   prefill_environment:
-    DG_JIT_CACHE_DIR: "/tmp/dg-cache-dsv4-agentx-c1280"
+    DG_JIT_CACHE_DIR: "/tmp/dg-cache-inf-yasong-{job_id}"
     VLLM_ENGINE_READY_TIMEOUT_S: "3600"
     VLLM_RPC_TIMEOUT: "600000"
     VLLM_LOG_STATS_INTERVAL: "1"
@@ -110,7 +109,7 @@ backend:
     MC_STORE_CLIENT_METRIC_INTERVAL: "5"
     MC_TE_METRIC: "0"
   decode_environment:
-    DG_JIT_CACHE_DIR: "/tmp/dg-cache-dsv4-agentx-c1280"
+    DG_JIT_CACHE_DIR: "/tmp/dg-cache-inf-yasong-{job_id}"
     VLLM_ENGINE_READY_TIMEOUT_S: "3600"
     VLLM_RPC_TIMEOUT: "600000"
     VLLM_LOG_STATS_INTERVAL: "1"
@@ -191,8 +190,6 @@ benchmark:
   type: custom
   command: bash /configs/agentx_aiperf.sh
   env:
-    INFMAX_CONTAINER_WORKSPACE: /infmax-workspace
-    AGENTIC_DIR: /infmax-workspace/utils/agentic-benchmark
     AIPERF_DIR: /workspace/srt-slurm-sa/aiperf
     AIPERF_VENV: /workspace/srt-slurm-sa/aiperf/.venv
     AIPERF_METRICS_LIST_BACKEND: "tdigest"

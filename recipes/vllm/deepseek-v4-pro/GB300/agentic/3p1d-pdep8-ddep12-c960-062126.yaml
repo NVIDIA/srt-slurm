@@ -63,7 +63,6 @@ frontend:
 
 # Host paths are placeholders; point them at local checkouts and caches.
 container_mounts:
-  /path/to/InferenceX: /infmax-workspace
   /path/to/srt-slurm-sa: /workspace/srt-slurm-sa
   /path/to/aiperf: /workspace/aiperf
   /path/to/aiperf-mmap-cache: /aiperf_mmap_cache
@@ -158,7 +157,7 @@ backend:
     TMP: "/tmp/srt-vllm-{node_id}"
     TEMP: "/tmp/srt-vllm-{node_id}"
     TRITON_CACHE_DIR: "/tmp/srt-vllm-{node_id}/triton-cache"
-    DG_JIT_CACHE_DIR: "/tmp/dg-cache-dsv4-gb300-c960"
+    DG_JIT_CACHE_DIR: "/tmp/dg-cache-inf-yasong-{job_id}"
     UCX_MEMTYPE_CACHE: "n"
     UCX_NET_DEVICES: "mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_3:1"  # Set to the local RDMA devices.
     UCX_TLS: "rc,cuda_copy"
@@ -196,7 +195,7 @@ backend:
     TMP: "/tmp/srt-vllm-{node_id}"
     TEMP: "/tmp/srt-vllm-{node_id}"
     TRITON_CACHE_DIR: "/tmp/srt-vllm-{node_id}/triton-cache"
-    DG_JIT_CACHE_DIR: "/tmp/dg-cache-dsv4-gb300-c960"
+    DG_JIT_CACHE_DIR: "/tmp/dg-cache-inf-yasong-{job_id}"
     UCX_MEMTYPE_CACHE: "n"
     UCX_NET_DEVICES: "mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_3:1"  # Set to the local RDMA devices.
     UCX_TLS: "rc,cuda_copy"
@@ -221,8 +220,6 @@ benchmark:
   type: custom
   command: "bash /configs/agentx_aiperf.sh"
   env:
-    INFMAX_CONTAINER_WORKSPACE: "/infmax-workspace"
-    AGENTIC_DIR: "/infmax-workspace/utils/agentic-benchmark"
     AIPERF_DIR: "/workspace/aiperf"
     AIPERF_VENV: "/workspace/aiperf/.venv"
     AIPERF_METRICS_LIST_BACKEND: "tdigest"

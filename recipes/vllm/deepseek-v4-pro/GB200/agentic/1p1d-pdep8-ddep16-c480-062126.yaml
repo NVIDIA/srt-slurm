@@ -58,7 +58,6 @@ frontend:
 
 # Host paths below are placeholders; point them at local checkouts and caches.
 container_mounts:
-  /path/to/InferenceX: /infmax-workspace
   /path/to/srt-slurm-sa: /workspace/srt-slurm-sa
   /path/to/aiperf-mmap-cache: /aiperf_mmap_cache
   /path/to/hf-models/hub: /hf_hub_cache
@@ -87,7 +86,7 @@ backend:
     VLLM_SERVER_DEV_MODE: "1"
     VLLM_USE_V2_MODEL_RUNNER: "1"
     VLLM_MOONCAKE_LOAD_RECV_THREADS: "20"
-    DG_JIT_CACHE_DIR: "/tmp/dg-cache-dsv4-agentx"
+    DG_JIT_CACHE_DIR: "/tmp/dg-cache-inf-yasong-{job_id}"
     VLLM_ALLREDUCE_USE_SYMM_MEM: "0"
     VLLM_USE_BREAKABLE_CUDAGRAPH: "0"
     VLLM_CONNECTOR_PREFETCH_DEPTH: "8"
@@ -114,7 +113,7 @@ backend:
     VLLM_SERVER_DEV_MODE: "1"
     VLLM_USE_V2_MODEL_RUNNER: "1"
     VLLM_MOONCAKE_LOAD_RECV_THREADS: "20"
-    DG_JIT_CACHE_DIR: "/tmp/dg-cache-dsv4-agentx"
+    DG_JIT_CACHE_DIR: "/tmp/dg-cache-inf-yasong-{job_id}"
     VLLM_ALLREDUCE_USE_SYMM_MEM: "0"
     TILELANG_CLEANUP_TEMP_FILES: "1"
     NCCL_CUMEM_ENABLE: "1"
@@ -188,8 +187,6 @@ benchmark:
   type: custom
   command: bash /configs/agentx_aiperf.sh
   env:
-    INFMAX_CONTAINER_WORKSPACE: /infmax-workspace
-    AGENTIC_DIR: /infmax-workspace/utils/agentic-benchmark
     AIPERF_DIR: /workspace/srt-slurm-sa/aiperf
     AIPERF_VENV: /workspace/srt-slurm-sa/aiperf/.venv
     AIPERF_METRICS_LIST_BACKEND: "tdigest"
