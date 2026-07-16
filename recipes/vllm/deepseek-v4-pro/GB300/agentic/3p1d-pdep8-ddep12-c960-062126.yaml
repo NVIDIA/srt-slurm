@@ -222,7 +222,6 @@ benchmark:
   env:
     AIPERF_DIR: "/workspace/aiperf"
     AIPERF_VENV: "/workspace/aiperf/.venv"
-    AIPERF_METRICS_LIST_BACKEND: "tdigest"
     RESULT_DIR: "/logs/agentic"
     AGENTIC_OUTPUT_DIR: "/logs/agentic"
     PORT: "8000"

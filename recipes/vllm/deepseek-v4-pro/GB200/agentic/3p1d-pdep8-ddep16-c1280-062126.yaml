@@ -192,7 +192,6 @@ benchmark:
   env:
     AIPERF_DIR: /workspace/srt-slurm-sa/aiperf
     AIPERF_VENV: /workspace/srt-slurm-sa/aiperf/.venv
-    AIPERF_METRICS_LIST_BACKEND: "tdigest"
     RESULT_DIR: /logs/agentic
     AGENTIC_OUTPUT_DIR: /logs/agentic
     PORT: "8000"
