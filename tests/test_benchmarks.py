@@ -873,6 +873,16 @@ class TestAgenticRunner:
         assert '"${AGENTX_DYNAMO_CONV_AWARE:-0}" == "1"' in text
         assert '"${AGENTX_DYNAMO_CONV_AWARE:-false}" == "true"' in text
 
+    def test_agentic_dynamo_header_affinity_is_opt_in_and_canonical(self):
+        """Header affinity uses AIPerf's stable conversation correlation ID."""
+        script = SCRIPTS_DIR / "agentic" / "bench.sh"
+        text = script.read_text()
+
+        assert "AGENTX_DYNAMO_HEADER_AFFINITY" in text
+        assert "AIPERF_HTTP_X_SESSION_ID_FROM_CORRELATION_ID=1" in text
+        assert 'headers["X-Dynamo-Session-ID"] = request_info.x_correlation_id' in text
+        assert "cannot safely enable Dynamo header affinity" in text
+
     def test_agentic_bench_patches_weka_subagent_osl_cap(self):
         """bench.sh keeps Weka subagent child turns under the synthesis OSL cap."""
         script = SCRIPTS_DIR / "agentic" / "bench.sh"
