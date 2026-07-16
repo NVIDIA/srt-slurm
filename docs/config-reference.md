@@ -221,6 +221,18 @@ resources:
 - GPUs per worker are computed automatically: `(nodes * gpus_per_node) / workers`
 - Use `gpus_per_prefill`, `gpus_per_decode`, `gpus_per_agg` to explicitly override the computed values
 
+### CPU allocation visibility
+
+srtctl records both the requested GPU topology and the effective CPU allocation. At runtime it:
+
+- logs `SLURM_JOB_CPUS_PER_NODE`, `SLURM_CPUS_ON_NODE`, and process CPU affinity;
+- writes `logs/resource_snapshot.json` with per-node/total CPUs, backend/configured GPUs, the warning threshold, and verdict;
+- adds the snapshot to `lock.resource_snapshot` in `recipe.lock.yaml`;
+- adds CPU allocation and warning state to the job metadata used by `srtctl monitor`; and
+- records CPU model, logical CPU count, affinity, and SLURM CPU variables in each worker fingerprint beside GPU details.
+
+The warning uses a fixed, conservative baseline of one effective CPU per backend GPU. For example, a four-GPU backend that receives only two CPUs produces a prominent `CPU ALLOCATION WARNING` before services start. Increase the request with the appropriate cluster policy, such as `cpus-per-task`, `cpus-per-gpu`, or an exclusive-node directive.
+
 ### Computed Properties
 
 The ResourceConfig provides several computed properties:
@@ -258,7 +270,7 @@ Frontend/router configuration.
 
 ```yaml
 frontend:
-  # Frontend type: "dynamo" (default) or "sglang"
+  # Frontend type: "dynamo" (default), "sglang", or "trtllm_serve"
   type: dynamo
 
   # Scaling
@@ -282,7 +294,7 @@ frontend:
 
 | Field                       | Type | Default       | Description                         |
 | --------------------------- | ---- | ------------- | ----------------------------------- |
-| `type`                      | str  | dynamo        | Frontend type: "dynamo" or "sglang" |
+| `type`                      | str  | dynamo        | Frontend type: "dynamo", "sglang", or "trtllm_serve" |
 | `enable_multiple_frontends` | bool | true          | Scale with nginx + multiple routers |
 | `num_additional_frontends`  | int  | 9             | Additional routers beyond master    |
 | `nginx_container`           | str  | nginx:1.27.4  | Custom nginx container image        |
@@ -291,6 +303,21 @@ frontend:
 | `env`                       | dict | null          | Env vars for frontend processes     |
 
 See [SGLang Router](sglang-router.md) for detailed architecture.
+
+### trtllm_serve frontend
+
+`type: trtllm_serve` runs the `trtllm-serve disaggregated` orchestrator as the
+router (for `backend.type: trtllm`). Instead of the dynamo request plane, srtctl
+collects the prefill/decode worker addresses and writes a static `ser.yaml`
+(`context_servers` = prefill, `generation_servers` = decode), then launches the
+orchestrator on the head node. The trtllm workers are started as `trtllm-serve`
+OpenAI servers rather than `dynamo.trtllm`.
+
+Because the orchestrator is a single process, set
+`enable_multiple_frontends: false` (the nginx + multi-router path is not
+supported). A recipe can be switched between the two TRT-LLM serving stacks by
+changing only `frontend.type` between `dynamo` and `trtllm_serve`. See the sample
+recipe `recipes/trtllm/b200-fp8/1k1k/stp/ctx1_gen3_tp8_batch1024_eplb0_mtp0_4_trtllm_serve.yaml`.
 
 ---
 
@@ -491,16 +518,23 @@ benchmark:
   osl: 1024                          # Required: Output sequence length
   concurrencies: [256, 512]          # Required: Concurrency levels to test
   req_rate: "inf"                    # Optional: Request rate (default: "inf")
+  reuse_http_connections: false      # Optional: Reuse HTTP connections (default: false)
 ```
 
-| Field           | Type        | Required | Default | Description                                |
-| --------------- | ----------- | -------- | ------- | ------------------------------------------ |
-| `isl`           | int         | Yes      | -       | Input sequence length                      |
-| `osl`           | int         | Yes      | -       | Output sequence length                     |
-| `concurrencies` | list/string | Yes      | -       | Concurrency levels (list or "NxM" format)  |
-| `req_rate`      | string/int  | No       | "inf"   | Request rate                               |
+| Field                    | Type        | Required | Default | Description                                                   |
+| ------------------------ | ----------- | -------- | ------- | ------------------------------------------------------------- |
+| `isl`                    | int         | Yes      | -       | Input sequence length                                         |
+| `osl`                    | int         | Yes      | -       | Output sequence length                                        |
+| `concurrencies`          | list/string | Yes      | -       | Concurrency levels (list or "NxM" format)                     |
+| `req_rate`               | string/int  | No       | "inf"   | Request rate                                                  |
+| `reuse_http_connections` | bool        | No       | `false` | Reuse a process-scoped HTTP pool for the SA-Bench Dynamo adapter |
 
 **Concurrencies format**: Can be a list `[128, 256, 512]` or x-separated string `"128x256x512"`.
+
+When `reuse_http_connections` is enabled, each `benchmark_serving.py` process
+uses one keep-alive connection pool. Warmup and formal runs remain isolated in
+separate processes and therefore never share a pool. The option currently
+applies only to SA-Bench's Dynamo HTTP adapter.
 
 ### sglang-bench
 

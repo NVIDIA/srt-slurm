@@ -16,6 +16,7 @@ from srtctl.frontends.base import (
 )
 from srtctl.frontends.dynamo import DynamoFrontend
 from srtctl.frontends.sglang import SGLangFrontend
+from srtctl.frontends.trtllm_serve import TRTLLMServeFrontend
 
 __all__ = [
     "FrontendProtocol",
@@ -23,4 +24,5 @@ __all__ = [
     "get_frontend",
     "DynamoFrontend",
     "SGLangFrontend",
+    "TRTLLMServeFrontend",
 ]

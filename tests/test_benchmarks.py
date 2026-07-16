@@ -141,7 +141,7 @@ class TestSABenchRunner:
         assert "/glm5_datasets/bench.jsonl" in cmd
 
     def test_build_command_default_dataset_random(self):
-        """Default dataset_name is 'random' when not specified."""
+        """Default dataset and HTTP lifecycle preserve legacy behavior."""
         from unittest.mock import MagicMock
 
         from srtctl.benchmarks.sa_bench import SABenchRunner
@@ -161,7 +161,67 @@ class TestSABenchRunner:
         )
         cmd = runner.build_command(config, runtime)
         assert "random" in cmd
-        assert cmd[-1] == ""  # empty dataset path
+        assert cmd[-2] == ""  # empty dataset path
+        assert cmd[-1] == "false"  # per-request HTTP sessions by default
+
+    def test_build_command_enables_http_connection_reuse(self):
+        """Explicit opt-in is appended without shifting existing arguments."""
+        from unittest.mock import MagicMock
+
+        from srtctl.benchmarks.sa_bench import SABenchRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = SABenchRunner()
+        runtime = MagicMock(frontend_port=8000, model_path="/model", is_hf_model=False)
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="h100"),
+            benchmark=BenchmarkConfig(
+                type="sa-bench",
+                isl=1024,
+                osl=128,
+                concurrencies="4x8",
+                dataset_path="/data/bench.jsonl",
+                reuse_http_connections=True,
+            ),
+        )
+
+        cmd = runner.build_command(config, runtime)
+
+        assert cmd[-2] == "/data/bench.jsonl"
+        assert cmd[-1] == "true"
+
+    def test_http_connection_reuse_schema_default_and_roundtrip(self):
+        """The YAML field is typed and remains opt-in when omitted."""
+        from srtctl.core.schema import BenchmarkConfig, SrtConfig
+
+        assert BenchmarkConfig().reuse_http_connections is False
+
+        raw = {
+            "name": "test",
+            "model": {"path": "/model", "container": "/image", "precision": "fp4"},
+            "resources": {"gpu_type": "h100"},
+            "benchmark": {
+                "type": "sa-bench",
+                "isl": 1024,
+                "osl": 128,
+                "concurrencies": [4, 8],
+            },
+        }
+
+        default_config = SrtConfig.Schema().load(raw)
+        default_dump = SrtConfig.Schema().dump(default_config)
+
+        assert default_config.benchmark.reuse_http_connections is False
+        assert default_dump["benchmark"]["reuse_http_connections"] is False
+
+        raw["benchmark"]["reuse_http_connections"] = True
+        config = SrtConfig.Schema().load(raw)
+        dumped = SrtConfig.Schema().dump(config)
+
+        assert config.benchmark.reuse_http_connections is True
+        assert dumped["benchmark"]["reuse_http_connections"] is True
 
 
 class TestCustomBenchmarkRunner:
@@ -921,6 +981,115 @@ class TestAIPerfBenchRunner:
         assert "--gpu-telemetry" not in cmd
 
 
+class TestGSM8KRunner:
+    """Test the unified GSM8K runner (backend auto-detect)."""
+
+    def _sglang_config(self, **benchmark_kwargs):
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        # Default backend is SGLangProtocol.
+        return SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="gb200"),
+            benchmark=BenchmarkConfig(type="gsm8k", **benchmark_kwargs),
+        )
+
+    def _vllm_config(self, served_model_name="Qwen3.5-397B-A17B-NVFP4", **benchmark_kwargs):
+        from srtctl.backends.vllm import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        return SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="gb200"),
+            backend=VLLMProtocol(vllm_config=VLLMServerConfig(decode={"served-model-name": served_model_name})),
+            benchmark=BenchmarkConfig(type="gsm8k", **benchmark_kwargs),
+        )
+
+    def test_registered(self):
+        """gsm8k resolves to the unified runner."""
+        runner = get_runner("gsm8k")
+        assert runner.name == "GSM8K"
+
+    def test_sglang_backend_uses_sglang_harness(self):
+        """Non-vLLM backends run the sglang harness."""
+        from unittest.mock import MagicMock
+
+        runner = get_runner("gsm8k")
+        runtime = MagicMock()
+        runtime.frontend_port = 8000
+
+        cmd = runner.build_command(self._sglang_config(), runtime)
+        assert cmd == [
+            "bash",
+            "/srtctl-benchmarks/gsm8k/sglang-bench.sh",
+            "http://localhost:8000",
+            "1319",
+            "16384",
+            "512",
+            "5",
+            "",
+            "",
+            "",
+        ]
+
+    def test_vllm_backend_uses_vllm_eval(self):
+        """vLLM backend runs the vendored vLLM eval and sends the served model name."""
+        from unittest.mock import MagicMock
+
+        runner = get_runner("gsm8k")
+        runtime = MagicMock()
+        runtime.frontend_port = 8000
+
+        cmd = runner.build_command(self._vllm_config(), runtime)
+        assert cmd == [
+            "bash",
+            "/srtctl-benchmarks/gsm8k/vllm-bench.sh",
+            "http://localhost",
+            "8000",
+            "Qwen3.5-397B-A17B-NVFP4",
+            "1319",
+            "256",
+            "5",
+            "0.0",
+            "1",
+        ]
+
+    def test_vllm_backend_overrides_and_repeat(self):
+        """Config fields override defaults and repeat is passed through on the vLLM path."""
+        from unittest.mock import MagicMock
+
+        runner = get_runner("gsm8k")
+        runtime = MagicMock()
+        runtime.frontend_port = 9001
+
+        cmd = runner.build_command(
+            self._vllm_config(num_examples=100, max_tokens=2048, num_shots=8, temperature=0.6, repeat=5),
+            runtime,
+        )
+        assert cmd == [
+            "bash",
+            "/srtctl-benchmarks/gsm8k/vllm-bench.sh",
+            "http://localhost",
+            "9001",
+            "Qwen3.5-397B-A17B-NVFP4",
+            "100",
+            "2048",
+            "8",
+            "0.6",
+            "5",
+        ]
+
+    def test_validate_config_rejects_nonpositive(self):
+        """Non-positive numeric knobs are rejected."""
+        runner = get_runner("gsm8k")
+        errors = runner.validate_config(self._vllm_config(num_examples=0, repeat=-1, num_shots=-1))
+        assert any("benchmark.num_examples must be > 0" in e for e in errors)
+        assert any("benchmark.repeat must be > 0" in e for e in errors)
+        assert any("benchmark.num_shots must be >= 0" in e for e in errors)
+
+
 class TestScriptsExist:
     """Test that benchmark scripts exist."""
 
@@ -933,15 +1102,88 @@ class TestScriptsExist:
         script = SCRIPTS_DIR / "sa-bench" / "bench.sh"
         assert script.exists()
 
+    @pytest.mark.parametrize(
+        ("mode", "expected"),
+        [(None, ["false", "false"]), ("false", ["false", "false"]), ("true", ["true", "true"])],
+    )
+    def test_sa_bench_http_reuse_flag_reaches_warmup_and_formal(self, mode, expected):
+        """The optional shell argument controls both benchmark processes."""
+        import subprocess
+
+        script = SCRIPTS_DIR / "sa-bench" / "bench.sh"
+        args = [
+            "http://localhost:8000",
+            "1",
+            "1",
+            "2",
+            "inf",
+            "/model",
+            "model",
+            "false",
+            "1",
+            "0",
+            "0",
+            "0.8",
+            "1",
+            "1",
+            "",
+            "false",
+            "random",
+            "",
+        ]
+        if mode is not None:
+            args.append(mode)
+
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                r"""
+script=$1
+shift
+python3() {
+    if [ "${1:-}" != "-u" ]; then
+        return 0
+    fi
+    local reuse=false arg
+    for arg in "$@"; do
+        if [ "$arg" = "--reuse-http-connections" ]; then
+            reuse=true
+        fi
+    done
+    printf 'BENCHMARK_CALL reuse=%s\n' "$reuse"
+}
+curl() { return 0; }
+mkdir() { return 0; }
+source "$script" "$@"
+""",
+                "_",
+                str(script),
+                *args,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr
+        calls = [
+            line.removeprefix("BENCHMARK_CALL reuse=")
+            for line in result.stdout.splitlines()
+            if line.startswith("BENCHMARK_CALL reuse=")
+        ]
+        assert calls == expected
+
     def test_mmlu_script_exists(self):
         """MMLU script exists."""
         script = SCRIPTS_DIR / "mmlu" / "bench.sh"
         assert script.exists()
 
-    def test_gsm8k_script_exists(self):
-        """GSM8K script exists."""
-        script = SCRIPTS_DIR / "gsm8k" / "bench.sh"
-        assert script.exists()
+    def test_gsm8k_scripts_exist(self):
+        """Both gsm8k harness wrappers and the bundled vLLM eval script exist."""
+        assert (SCRIPTS_DIR / "gsm8k" / "sglang-bench.sh").exists()
+        assert (SCRIPTS_DIR / "gsm8k" / "vllm-bench.sh").exists()
+        assert (SCRIPTS_DIR / "gsm8k" / "gsm8k_eval.py").exists()
 
 
 class TestCustomDatasetLoader:

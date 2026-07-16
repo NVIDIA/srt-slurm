@@ -8,8 +8,27 @@ worker_rlimit_nofile 1048576;
 {% endif %}
 
 http {
+    # Raise the request-body cap (nginx default is 1 MiB) so the load balancer
+    # does not reject large client requests with 413 before they reach the
+    # frontend. Agentic replay traces (e.g. multi-turn cc-traces warmup bodies)
+    # exceed 1 MiB; this mirrors the dynamo frontend's own body limit so nginx
+    # is never the bottleneck and is never more permissive than the backend.
+    client_max_body_size 45m;
     access_log off;
+{% if nginx_session_affinity %}
+    # Keep a Dynamo session on one frontend. Anonymous requests use NGINX's
+    # generated request ID so an empty session header cannot pin all traffic.
+{% set _sess_key = "$http_" ~ (nginx_session_affinity_header | lower | replace("-", "_")) %}
+    map {{ _sess_key }} $frontend_hash_key {
+        default {{ _sess_key }};
+        "" $request_id;
+    }
+{% endif %}
+
     upstream backend_servers {
+{% if nginx_session_affinity %}
+        hash $frontend_hash_key consistent;
+{% endif %}
         {% for frontend_host in frontend_hosts %}
         server {{ frontend_host }}:{{ backend_port }};
         {% endfor %}

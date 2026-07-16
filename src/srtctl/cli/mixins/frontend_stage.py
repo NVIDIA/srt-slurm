@@ -8,6 +8,7 @@ Handles frontend/router and nginx startup.
 """
 
 import logging
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -84,11 +85,22 @@ class FrontendStageMixin:
         head = self.runtime.nodes.head
         fe_config = self.config.frontend
 
-        # Single node or multiple frontends disabled: single frontend, no nginx
+        # Single node or multiple frontends disabled: single frontend, no nginx.
+        # The orchestrator node honors frontend.orchestrator_placement (default
+        # "head" -> unchanged; "first_decode" -> first GEN worker-leader node).
         if len(nodes) == 1 or not fe_config.enable_multiple_frontends:
+            placement = getattr(fe_config, "orchestrator_placement", "head")
+            if placement == "head":
+                orchestrator_node = head
+            else:
+                from srtctl.core.topology import placed_node
+
+                orchestrator_node = placed_node(
+                    self.backend_processes, placement, head, kind="frontend.orchestrator_placement"
+                )
             return FrontendTopology(
                 nginx_node=None,
-                frontend_nodes=[head],
+                frontend_nodes=[orchestrator_node],
                 frontend_port=FRONTEND_PUBLIC_PORT,
                 public_port=FRONTEND_PUBLIC_PORT,
             )
@@ -181,10 +193,19 @@ class FrontendStageMixin:
             backend_port=topology.frontend_port,
             listen_port=topology.public_port,
             nginx_raise_ulimit=self.config.frontend.nginx_raise_ulimit,
+            nginx_session_affinity=self.config.frontend.nginx_session_affinity,
+            nginx_session_affinity_header=self.config.frontend.nginx_session_affinity_header,
         )
 
-    def start_frontend(self, registry: "ProcessRegistry") -> list[ManagedProcess]:
+    def start_frontend(
+        self, registry: "ProcessRegistry", stop_event: "threading.Event | None" = None
+    ) -> list[ManagedProcess]:
         """Start the frontend layer (nginx + frontends if applicable).
+
+        Args:
+            registry: Process registry.
+            stop_event: Optional event to abort readiness waits a frontend performs
+                while starting (e.g. trtllm_serve waiting for workers).
 
         Returns:
             List of ManagedProcess instances for all frontend processes.
@@ -206,6 +227,7 @@ class FrontendStageMixin:
             config=self.config,
             backend=self.backend,
             backend_processes=self.backend_processes,
+            stop_event=stop_event,
         )
 
         processes.extend(frontend_procs)

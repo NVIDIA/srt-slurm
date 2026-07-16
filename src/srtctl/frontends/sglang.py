@@ -9,6 +9,7 @@ Uses sglang_router for direct communication with backend workers.
 
 import logging
 import shlex
+import threading
 from typing import TYPE_CHECKING, Any
 
 from srtctl.core.health import WorkerHealthResult, check_sglang_router_health
@@ -65,6 +66,7 @@ class SGLangFrontend:
         config: Any,  # SrtConfig
         backend: Any,  # BackendProtocol
         backend_processes: list["Process"],
+        stop_event: "threading.Event | None" = None,  # unused: returns immediately
     ) -> list["ManagedProcess"]:
         """Start sglang routers on designated nodes.
 

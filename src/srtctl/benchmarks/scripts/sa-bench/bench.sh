@@ -66,6 +66,7 @@ CUSTOM_TOKENIZER=${15:-}
 USE_CHAT_TEMPLATE=${16:-true}
 DATASET_NAME=${17:-random}
 DATASET_PATH=${18:-}
+REUSE_HTTP_CONNECTIONS=${19:-false}
 
 # Build optional custom tokenizer args
 CUSTOM_TOKENIZER_ARGS=()
@@ -89,6 +90,16 @@ if [ "$USE_CHAT_TEMPLATE" = "true" ]; then
         echo "[sa-bench]       sa_bench_tokenizers.sglang_deepseek_v4.SGLangDeepseekV4Tokenizer"
         echo "[sa-bench]   Or set benchmark.use_chat_template: false to skip it."
     fi
+fi
+
+# Reuse one HTTP connection pool within each benchmark_serving.py process.
+# Warmup and formal runs are separate processes and therefore use separate pools.
+HTTP_CONNECTION_ARGS=()
+if [ "$REUSE_HTTP_CONNECTIONS" = "true" ]; then
+    HTTP_CONNECTION_ARGS=(--reuse-http-connections)
+    HTTP_CONNECTION_MODE="pooled"
+else
+    HTTP_CONNECTION_MODE="per_request"
 fi
 
 # Build dataset args
@@ -137,7 +148,7 @@ PORT=$(echo "$ENDPOINT" | sed 's|http://||' | cut -d: -f2 | cut -d/ -f1)
 
 WORK_DIR="$(dirname "$0")"
 
-echo "SA-Bench Config: endpoint=${ENDPOINT}; isl=${ISL}; osl=${OSL}; concurrencies=${CONCURRENCIES}; req_rate=${REQ_RATE}; model=${MODEL_NAME}; dataset=${DATASET_NAME}; dataset_path=${DATASET_PATH}"
+echo "SA-Bench Config: endpoint=${ENDPOINT}; isl=${ISL}; osl=${OSL}; concurrencies=${CONCURRENCIES}; req_rate=${REQ_RATE}; model=${MODEL_NAME}; dataset=${DATASET_NAME}; dataset_path=${DATASET_PATH}; http_connection_mode=${HTTP_CONNECTION_MODE}"
 
 # Profiling shared helpers
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -194,6 +205,7 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
             --percentile-metrics ttft,tpot,itl,e2el \
             --max-concurrency "$concurrency" \
             --trust-remote-code \
+            "${HTTP_CONNECTION_ARGS[@]}" \
             "${CHAT_TEMPLATE_ARGS[@]}" \
             "${CUSTOM_TOKENIZER_ARGS[@]}"
     fi
@@ -224,6 +236,7 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
         --percentile-metrics ttft,tpot,itl,e2el \
         --max-concurrency "$concurrency" \
         --trust-remote-code \
+        "${HTTP_CONNECTION_ARGS[@]}" \
         "${CHAT_TEMPLATE_ARGS[@]}" \
         "${CUSTOM_TOKENIZER_ARGS[@]}" \
         "${SLOW_DOWN_ARGS[@]}" \

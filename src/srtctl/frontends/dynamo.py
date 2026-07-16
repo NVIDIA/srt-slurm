@@ -9,11 +9,12 @@ Uses NATS/etcd for communication between frontend and backend workers.
 
 import logging
 import shlex
+import threading
 from typing import TYPE_CHECKING, Any
 
 from srtctl.core.health import WorkerHealthResult, check_dynamo_health
 from srtctl.core.schema import build_otel_env
-from srtctl.core.slurm import start_srun_process
+from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, start_srun_process
 from srtctl.ports import ETCD_CLIENT_PORT, NATS_PORT
 
 if TYPE_CHECKING:
@@ -67,6 +68,7 @@ class DynamoFrontend:
         config: Any,  # SrtConfig
         backend: Any,  # BackendProtocol
         backend_processes: list["Process"],
+        stop_event: "threading.Event | None" = None,  # unused: returns immediately
     ) -> list["ManagedProcess"]:
         """Start dynamo frontends on designated nodes."""
         from srtctl.core.processes import ManagedProcess
@@ -83,7 +85,7 @@ class DynamoFrontend:
             env_to_set = {
                 "ETCD_ENDPOINTS": f"http://{runtime.nodes.infra}:{ETCD_CLIENT_PORT}",
                 "NATS_SERVER": f"nats://{runtime.nodes.infra}:{NATS_PORT}",
-                "DYN_REQUEST_PLANE": "nats",
+                "DYN_REQUEST_PLANE": config.dynamo.request_plane,
                 "DYN_SKIP_SGLANG_LOG_FORMATTING": "1",
             }
 
@@ -109,6 +111,9 @@ class DynamoFrontend:
                 container_mounts=runtime.container_mounts,
                 env_to_set=env_to_set,
                 bash_preamble=bash_preamble,
+                # Frontend container runs the dynamo install (see _build_preamble), whose
+                # cold build needs root inside the container. Remap via enroot env var.
+                srun_export_env=CONTAINER_REMAP_ROOT_EXPORT if config.dynamo.install else None,
                 # TODO(jthomson): I don't have the faintest clue of
                 # why this is needed in later versions of Dynamo, but it is.
                 mpi="pmix",

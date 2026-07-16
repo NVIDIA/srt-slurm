@@ -55,7 +55,7 @@ from srtctl.core.git_state import (
     write_git_state_snapshot,
 )
 from srtctl.core.lockfile import load_lockfile_fingerprints
-from srtctl.core.schema import SrtConfig
+from srtctl.core.schema import SrtConfig, installs_dynamo
 from srtctl.core.status import create_job_record
 from srtctl.core.validation import preflight_config_variants
 from srtctl.ports import MOONCAKE_MASTER_PORT
@@ -312,6 +312,13 @@ def show_config_details(config: SrtConfig) -> None:
         opts = " ".join(f"--{k}={v}" if v else f"--{k}" for k, v in config.srun_options.items())
         console.print(f"[dim]srun options:[/] {opts}")
 
+    # Dynamo install runs apt-get/pip as root inside the container, so srtctl injects
+    # ENROOT_REMAP_ROOT=yes (via srun --export) on the worker + dynamo-frontend launches.
+    if installs_dynamo(config):
+        console.print(
+            "[dim]srun --export (dynamo install):[/] ALL,ENROOT_REMAP_ROOT=yes [dim](workers + dynamo frontend)[/]"
+        )
+
     show_extensions = (
         config.benchmark.type == "custom"
         or config.benchmark.container_image
@@ -345,6 +352,23 @@ def show_config_details(config: SrtConfig) -> None:
         if mooncake_cfg is not None:
             details.add_row("mooncake", "container", mooncake_cfg.container or "<job container>")
             details.add_row("mooncake", "master_port", f"{MOONCAKE_MASTER_PORT} (auto)")
+            if hasattr(backend, "build_mooncake_store_config"):
+                # vLLM workers need MOONCAKE_CONFIG_PATH pointing at a JSON file
+                # — srtslurm writes this at job start. Show the resolved JSON
+                # so operators can sanity-check protocol/device_name/sizes
+                # before submitting. infra IP is unknown until allocation, so
+                # use a placeholder for master_server_address.
+                store_cfg = backend.build_mooncake_store_config("<infra_ip>")
+                details.add_row(
+                    "mooncake",
+                    "store_config",
+                    json.dumps(store_cfg, indent=2),
+                )
+                details.add_row(
+                    "mooncake",
+                    "MOONCAKE_CONFIG_PATH",
+                    "/logs/mooncake_store_config.json (auto)",
+                )
 
         console.print(Panel(details, border_style="blue"))
 
@@ -723,9 +747,17 @@ def submit_with_orchestrator(
             metadata=metadata,
         )
 
+        log_dir = f"{job_output_dir}/logs"
+        os.makedirs(log_dir, exist_ok=True)
+        log = f"{log_dir}/sweep_{job_id}.log"
+        result = subprocess.run(
+            ["touch", log],
+            check=False,
+        )
+
         console.print(f"[bold green]✅ Job {job_id} submitted![/]")
-        console.print(f"[dim]📁 Logs:[/] {job_output_dir}/logs")
-        console.print(f"[dim]📋 Monitor:[/] tail -f {job_output_dir}/logs/sweep_{job_id}.log")
+        console.print(f"[dim]📁 Logs:[/] {log_dir}")
+        console.print(f"[dim]📋 Monitor:[/] tail -f {log}")
         console.print(f"[dim]📊 Queue:[/] squeue --job {job_id}")
 
         _print_running_summary(config, console)

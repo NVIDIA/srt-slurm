@@ -16,6 +16,7 @@ from srtctl.ports import DYN_SYSTEM_PORT_BASE
 if TYPE_CHECKING:
     from srtctl.backends.base import SrunConfig
     from srtctl.core.runtime import RuntimeContext
+    from srtctl.core.schema import ProfilingConfig
     from srtctl.core.topology import Endpoint, NodePortAllocator, Process
 
 # Type alias for worker modes
@@ -64,6 +65,13 @@ class TRTLLMProtocol:
     aggregated_environment: dict[str, str] = field(default_factory=dict)
 
     trtllm_config: TRTLLMServerConfig | None = None
+
+    # Whether dynamo.trtllm workers pass `--publish-events-and-metrics`.
+    # Enables the worker to publish KV-cache events (add/evict) + metrics, which
+    # the dynamo frontend consumes for KV-cache-aware routing (router-mode: kv).
+    # This may impact performance so should be disabled if exact KV aware routing
+    # is not needed.
+    publish_events_and_metrics: bool = False
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
@@ -165,6 +173,7 @@ class TRTLLMProtocol:
         frontend_type: str = "dynamo",
         nsys_prefix: list[str] | None = None,
         dump_config_path: Path | None = None,
+        profiling: "ProfilingConfig | None" = None,
     ) -> list[str]:
         """Build the command to start a TRTLLM worker process."""
 
@@ -182,10 +191,45 @@ class TRTLLMProtocol:
         # Determine model path: HF model ID or container mount path
         # For HF models (hf:prefix), model_path contains the HF model ID (e.g., "facebook/opt-125m")
         # For local models, model is mounted to /model in the container
-        model_arg = str(runtime.model_path) if runtime.is_hf_model else "/model"
+        model_arg = runtime.worker_model_arg
 
-        cmd = list(nsys_prefix) + ["trtllm-llmapi-launch"] if nsys_prefix else ["trtllm-llmapi-launch"]
-        cmd += [
+        numactl_prefix = (
+            ["numactl", "-m", "0,1"] if runtime.gpu_type in ("gb200", "gb300") and mode in ("prefill", "decode") else []
+        )
+        base_prefix = list(nsys_prefix or []) + numactl_prefix + ["trtllm-llmapi-launch"]
+
+        # trtllm-serve path: launch an OpenAI-compatible trtllm-serve worker. The
+        # trtllm_serve frontend fronts these via a static ser.yaml (context/generation
+        # server URLs), so there is no dynamo request plane and no --disaggregation-mode:
+        # a worker is prefill or decode purely by which list it appears in in ser.yaml.
+        if frontend_type == "trtllm_serve":
+            cmd = base_prefix + [
+                "trtllm-serve",
+                model_arg,
+                "--host",
+                "0.0.0.0",
+                "--port",
+                str(process.http_port),
+            ]
+            # Parallelism also lives in the engine yaml, but pass it explicitly to match
+            # the trtllm-serve CLI contract (srun --ntasks == TP*PP is set by the worker stage).
+            for flag, key in (
+                ("--tensor_parallel_size", "tensor_parallel_size"),
+                ("--moe_expert_parallel_size", "moe_expert_parallel_size"),
+                ("--pipeline_parallel_size", "pipeline_parallel_size"),
+            ):
+                value = config.get(key)
+                if value is not None:
+                    cmd.extend([flag, str(value)])
+            # Engine config file. Verified against tensorrt-llm 1.3.0rc15/rc17 and the
+            # ai-dynamo tensorrtllm-runtime 1.3.0-dev.1 container, which accept --config;
+            # some trtllm-serve builds spell this --extra_llm_api_options.
+            cmd.extend(["--config", str(container_config_path)])
+            return cmd
+
+        # dynamo.trtllm path (default): workers register into etcd/NATS and the dynamo
+        # frontend discovers them.
+        cmd = base_prefix + [
             "python3",
             "-m",
             "dynamo.trtllm",
@@ -204,10 +248,11 @@ class TRTLLMProtocol:
                 "--extra-engine-args",
                 str(container_config_path),
                 "--request-plane",
-                "nats",
+                runtime.request_plane,
             ]
         )
 
-        cmd.append("--publish-events-and-metrics")
+        if self.publish_events_and_metrics:
+            cmd.append("--publish-events-and-metrics")
 
         return cmd

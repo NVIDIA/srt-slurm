@@ -18,6 +18,8 @@ base:
   name: "b200-fp4-stp-8k1k"
 
   dynamo:
+    # Use NATS for a recipe prior to Dynamo commit 39d2a68.
+    request_plane: "nats"
     version: 0.8.1
 
   model:
@@ -55,7 +57,6 @@ base:
       NCCL_MNNVL_ENABLE: "1"
       NCCL_CUMEM_ENABLE: "1"
       SGLANG_PER_TOKEN_GROUP_QUANT_8BIT_V2: "1"
-      DYN_REQUEST_PLANE: nats
     decode_environment:
       TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: "1800"
       PYTHONUNBUFFERED: "1"
@@ -72,7 +73,6 @@ base:
       NCCL_MNNVL_ENABLE: "1"
       NCCL_CUMEM_ENABLE: "1"
       SGLANG_PER_TOKEN_GROUP_QUANT_8BIT_V2: "1"
-      DYN_REQUEST_PLANE: nats
     sglang_config:
       prefill:
         # Model configuration
@@ -316,7 +316,11 @@ override_mtp_maxtpt_7p2d:
 # removes the sglang_config key), mem-fraction=0.75 for decode
 override_mtp_maxtpt_4p1d:
   name: "b200-fp4-mtp-max-tpt-dep4-4p-dep8-1d"
-  dynamo: null
+  dynamo:
+    # Dynamo 0.8.0 was the default when this recipe was written; pin it explicitly.
+    # Use NATS for a recipe prior to Dynamo commit 39d2a68.
+    version: "0.8.0"
+    request_plane: "nats"
   frontend: null
   resources:
     prefill_nodes: 4
