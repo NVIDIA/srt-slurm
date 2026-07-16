@@ -112,6 +112,8 @@ backend:
 frontend:
   type: dynamo
   enable_multiple_frontends: false
+  env:
+    ETCD_LEASE_TTL: '120'
 benchmark:
   type: sa-bench
   isl: 8192
