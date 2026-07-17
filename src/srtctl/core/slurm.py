@@ -193,6 +193,7 @@ def start_srun_process(
     container_mounts: dict[Path, Path] | None = None,
     env_to_pass_through: list[str] | None = None,
     env_to_set: dict[str, str] | None = None,
+    env_to_unset: list[str] | None = None,
     bash_preamble: str | None = None,
     srun_options: dict[str, str] | None = None,
     srun_export_env: dict[str, str] | None = None,
@@ -219,6 +220,7 @@ def start_srun_process(
         container_mounts: Dict of host_path -> container_path mounts
         env_to_pass_through: Environment variable names to pass through
         env_to_set: Environment variables to set (name -> value)
+        env_to_unset: Environment variable names to unset before the preamble and command
         bash_preamble: Bash commands to run before the main command
         srun_options: Additional srun options as dict
         srun_export_env: Env vars to set in the srun *task* environment (rendered as
@@ -319,8 +321,14 @@ def start_srun_process(
         if cluster_preamble:
             bash_parts.insert(0, cluster_preamble)
 
-        # Add per-call preamble if provided. It runs after exports so setup
-        # / fingerprint hooks observe the same environment as the main command.
+        # Explicitly clear inherited variables after setting worker-specific
+        # values so the preamble and main command see the intended environment.
+        if env_to_unset:
+            for name in env_to_unset:
+                bash_parts.append(f"unset -- {shlex.quote(name)}")
+
+        # Add per-call preamble if provided. It runs after exports/unsets so
+        # setup / fingerprint hooks observe the same environment as the main command.
         if bash_preamble:
             bash_parts.append(bash_preamble)
 
