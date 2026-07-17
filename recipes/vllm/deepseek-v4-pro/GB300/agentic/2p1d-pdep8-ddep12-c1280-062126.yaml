@@ -1,0 +1,272 @@
+# DeepSeek V4 Pro AgentX 062126 throughput-per-GPU reference derived from
+# GB300 job 487. Three affinity-aware Dynamo frontends remove the single-
+# frontend bottleneck while preserving conversation locality.
+#
+# Prefill uses per-node launch for MegaMoE collectives while decode exposes
+# one Dynamo worker per DP rank. Connector prefetch and Dynamo MultiConnector
+# support are provided by the pinned vLLM image and Dynamo commit.
+name: "2p1d-pdep8-ddep12-c1280-062126"
+
+model:
+  path: "deepseekv4-fp4"
+  container: "vllm/vllm-openai:nightly-dev-arm64-cu13.0.1-515d6e9"
+  precision: "fp4"
+
+identity:
+  model:
+    repo: "deepseek-ai/DeepSeek-V4-Pro"
+  container:
+    image: "vllm/vllm-openai:nightly-dev-arm64-cu13.0.1-515d6e9"
+  frameworks:
+    dynamo: "e487326ec2cf66cd7ab52cf6c3675b84df23e42e"
+    vllm: "0.17.2rc1.dev3669+g515d6e98c"
+
+dynamo:
+  hash: "e487326ec2cf66cd7ab52cf6c3675b84df23e42e"
+  install: true
+
+setup_script: "vllm-container-deps.sh"
+
+slurm:
+  time_limit: "08:00:00"
+
+health_check:
+  max_attempts: 2160
+  interval_seconds: 10
+
+resources:
+  gpu_type: "gb300"
+  gpus_per_node: 4
+  het_jobs: false
+  spread_workers: false
+  prefill_nodes: 4
+  decode_nodes: 3
+  prefill_workers: 2
+  decode_workers: 1
+  gpus_per_prefill: 8
+  gpus_per_decode: 12
+
+infra:
+  etcd_nats_dedicated_node: false
+  nats_max_payload_mb: 32
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: true
+  num_additional_frontends: 2
+  nginx_session_affinity: true
+  nginx_session_affinity_header: "X-Correlation-ID"
+  args:
+    router-mode: "kv"
+    router-reset-states: true
+    router-temperature: 0.0
+    router-queue-threshold: 65536
+    active-decode-blocks-threshold: "None"
+    active-prefill-tokens-threshold: "None"
+    active-prefill-tokens-threshold-frac: "None"
+
+# Host paths are placeholders; point them at local checkouts and caches.
+container_mounts:
+  /path/to/srt-slurm-sa: /workspace/srt-slurm-sa
+  /path/to/aiperf: /workspace/aiperf
+  /path/to/aiperf-mmap-cache: /aiperf_mmap_cache
+  /path/to/hf-models: /hf_models
+
+backend:
+  type: vllm
+  connector: null
+  dp_launch_mode: per_node
+  prefill_dp_launch_mode: per_node
+  decode_dp_launch_mode: per_gpu
+  kv_events_config:
+    prefill: true
+  mooncake_kv_store:
+    store_config:
+      metadata_server: "P2PHANDSHAKE"
+      global_segment_size: "150GB"
+      local_buffer_size: "4GB"
+      protocol: "rdma"
+      device_name: "mlx5_0,mlx5_1,mlx5_2,mlx5_3"  # Set to the local RDMA devices.
+      mode: "embedded"
+      enable_offload: false
+
+  vllm_config:
+    prefill:
+      kv-transfer-config: '{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_load_failure_policy":"fail","kv_buffer_device":"cuda","kv_connector_extra_config":{"enforce_handshake_compat":false,"enable_cross_layers_blocks":false}},{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both","kv_connector_extra_config":{"load_async":true,"lookup_async":true,"enable_cross_layers_blocks":false,"enable_offload":false}}]}}'
+      served-model-name: "deepseek-ai/DeepSeek-V4-Pro"
+      kv-cache-dtype: "fp8"
+      tensor-parallel-size: 1
+      pipeline-parallel-size: 1
+      data-parallel-size: 8
+      data-parallel-rpc-port: 13345
+      data-parallel-hybrid-lb: true
+      enable-cumem-allocator: true
+      enable-expert-parallel: true
+      enable-ep-weight-filter: true
+      max-model-len: 1048576
+      max-num-seqs: 32
+      max-num-batched-tokens: 8192
+      trust-remote-code: true
+      no-enable-flashinfer-autotune: true
+      block-size: 256
+      gpu-memory-utilization: 0.90
+      no-disable-hybrid-kv-cache-manager: true
+      tokenizer-mode: "deepseek_v4"
+      attention-config: '{"backend":"FLASHINFER_MLA_SPARSE_DSV4","use_prefill_query_quantization":true}'
+      moe-backend: "deep_gemm_amxf4_mega_moe"
+    decode:
+      kv-transfer-config: '{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_load_failure_policy":"fail","kv_buffer_device":"cuda","kv_connector_extra_config":{"enforce_handshake_compat":false,"enable_cross_layers_blocks":false}},{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both","kv_connector_extra_config":{"load_async":true,"lookup_async":true,"enable_cross_layers_blocks":false,"enable_offload":false}}]}}'
+      served-model-name: "deepseek-ai/DeepSeek-V4-Pro"
+      kv-cache-dtype: "fp8"
+      tensor-parallel-size: 1
+      pipeline-parallel-size: 1
+      data-parallel-size: 12
+      data-parallel-rpc-port: 13345
+      data-parallel-hybrid-lb: true
+      enable-cumem-allocator: true
+      enable-expert-parallel: true
+      enable-ep-weight-filter: true
+      max-model-len: 1048576
+      max-num-seqs: 128
+      max-num-batched-tokens: 256
+      trust-remote-code: true
+      no-enable-flashinfer-autotune: true
+      block-size: 256
+      compilation-config: '{"cudagraph_mode":"FULL_DECODE_ONLY","mode":0}'
+      max-cudagraph-capture-size: 128
+      gpu-memory-utilization: 0.90
+      no-disable-hybrid-kv-cache-manager: true
+      tokenizer-mode: "deepseek_v4"
+      attention-config: '{"backend":"FLASHINFER_MLA_SPARSE_DSV4","use_prefill_query_quantization":true}'
+      all2all-backend: "flashinfer_nvlink_one_sided"
+
+  prefill_environment:
+    HF_HOME: "/hf_models"
+    HF_TOKEN_PATH: "/tmp/srt-vllm-{node_id}/hf-token"
+    HF_HUB_CACHE: "/hf_models/hub"
+    HUGGINGFACE_HUB_CACHE: "/hf_models/hub"
+    TRANSFORMERS_CACHE: "/hf_models/hub"
+    HF_HUB_DISABLE_XET: "1"
+    HF_HUB_OFFLINE: "1"
+    TRANSFORMERS_OFFLINE: "1"
+    VLLM_ENGINE_READY_TIMEOUT_S: "3600"
+    VLLM_RPC_TIMEOUT: "600000"
+    VLLM_LOG_STATS_INTERVAL: "1"
+    VLLM_V2_WARMUP_MAX_NUM_SEQS: "20"
+    VLLM_SERVER_DEV_MODE: "1"
+    VLLM_USE_V2_MODEL_RUNNER: "1"
+    VLLM_MOONCAKE_LOAD_RECV_THREADS: "20"
+    VLLM_ALLREDUCE_USE_SYMM_MEM: "0"
+    TMPDIR: "/tmp/srt-vllm-{node_id}"
+    TMP: "/tmp/srt-vllm-{node_id}"
+    TEMP: "/tmp/srt-vllm-{node_id}"
+    TRITON_CACHE_DIR: "/tmp/srt-vllm-{node_id}/triton-cache"
+    DG_JIT_CACHE_DIR: "/tmp/dg-cache-inf-yasong-{job_id}"
+    UCX_MEMTYPE_CACHE: "n"
+    UCX_NET_DEVICES: "mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_3:1"  # Set to the local RDMA devices.
+    UCX_TLS: "rc,cuda_copy"
+    NCCL_CUMEM_ENABLE: "1"
+    NCCL_MNNVL_ENABLE: "1"
+    NCCL_NVLS_ENABLE: "1"
+    VLLM_RANDOMIZE_DP_DUMMY_INPUTS: "1"
+    NCCL_IB_HCA: "mlx5_0,mlx5_1,mlx5_2,mlx5_3"  # Set to the local RDMA devices.
+    VLLM_PREFIX_CACHE_RETENTION_INTERVAL: "32768"
+    VLLM_USE_BREAKABLE_CUDAGRAPH: "0"
+    VLLM_CONNECTOR_PREFETCH_DEPTH: "8"
+    VLLM_DSV4_MEGA_FP8_COMBINE: "1"
+    MC_ENABLE_DEST_DEVICE_AFFINITY: "1"
+    MC_STORE_CLIENT_METRIC: "1"
+    MC_STORE_CLIENT_METRIC_INTERVAL: "5"
+    MC_TE_METRIC: "0"
+  decode_environment:
+    HF_HOME: "/hf_models"
+    HF_TOKEN_PATH: "/tmp/srt-vllm-{node_id}/hf-token"
+    HF_HUB_CACHE: "/hf_models/hub"
+    HUGGINGFACE_HUB_CACHE: "/hf_models/hub"
+    TRANSFORMERS_CACHE: "/hf_models/hub"
+    HF_HUB_DISABLE_XET: "1"
+    HF_HUB_OFFLINE: "1"
+    TRANSFORMERS_OFFLINE: "1"
+    VLLM_ENGINE_READY_TIMEOUT_S: "3600"
+    VLLM_RPC_TIMEOUT: "600000"
+    VLLM_LOG_STATS_INTERVAL: "1"
+    VLLM_V2_WARMUP_MAX_NUM_SEQS: "20"
+    VLLM_SERVER_DEV_MODE: "1"
+    VLLM_USE_V2_MODEL_RUNNER: "1"
+    VLLM_MOONCAKE_LOAD_RECV_THREADS: "20"
+    VLLM_ALLREDUCE_USE_SYMM_MEM: "0"
+    TMPDIR: "/tmp/srt-vllm-{node_id}"
+    TMP: "/tmp/srt-vllm-{node_id}"
+    TEMP: "/tmp/srt-vllm-{node_id}"
+    TRITON_CACHE_DIR: "/tmp/srt-vllm-{node_id}/triton-cache"
+    DG_JIT_CACHE_DIR: "/tmp/dg-cache-inf-yasong-{job_id}"
+    UCX_MEMTYPE_CACHE: "n"
+    UCX_NET_DEVICES: "mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_3:1"  # Set to the local RDMA devices.
+    UCX_TLS: "rc,cuda_copy"
+    NCCL_CUMEM_ENABLE: "1"
+    NCCL_MNNVL_ENABLE: "1"
+    NCCL_NVLS_ENABLE: "1"
+    VLLM_RANDOMIZE_DP_DUMMY_INPUTS: "1"
+    NCCL_IB_HCA: "mlx5_0,mlx5_1,mlx5_2,mlx5_3"  # Set to the local RDMA devices.
+    VLLM_PREFIX_CACHE_RETENTION_INTERVAL: "32768"
+    VLLM_DSV4_MEGA_FP8_COMBINE: "1"
+    MC_ENABLE_DEST_DEVICE_AFFINITY: "1"
+    MC_STORE_CLIENT_METRIC: "1"
+    MC_STORE_CLIENT_METRIC_INTERVAL: "5"
+    MC_TE_METRIC: "0"
+
+sbatch_directives:
+  cpus-per-task: "72"
+
+srun_options:
+  container-remap-root: ""
+
+benchmark:
+  type: custom
+  command: "bash /configs/agentx_aiperf.sh"
+  env:
+    AIPERF_DIR: "/workspace/aiperf"
+    AIPERF_VENV: "/workspace/aiperf/.venv"
+    RESULT_DIR: "/logs/agentic"
+    AGENTIC_OUTPUT_DIR: "/logs/agentic"
+    PORT: "8000"
+    IS_MULTINODE: "true"
+    MODEL: "deepseek-ai/DeepSeek-V4-Pro"
+    MODEL_PREFIX: "dsv4"
+    FRAMEWORK: "dynamo-vllm"
+    PRECISION: "fp4"
+    CONC: "1280"
+    DURATION: "1800"
+    RESULT_FILENAME: "dsv4_fp4_dynamo-vllm_gb300_2xpdep8_1xddep12_3fe_pnode-dpergpu_agentx062126_c1280"
+    RUNNER_TYPE: "gb300"
+    IMAGE: "vllm/vllm-openai:nightly-dev-arm64-cu13.0.1-515d6e9"
+    SPEC_DECODING: "none"
+    DISAGG: "true"
+    OFFLOADING: "none"
+    TP: "1"
+    EP_SIZE: "12"
+    DP_ATTENTION: "false"
+    NUM_DATASET_ENTRIES: "393"
+    HF_WEKA_DATASET: "semianalysisai/cc-traces-weka-062126"
+    PUBLIC_DATASET: "semianalysis_cc_traces_weka_062126"
+    AIPERF_AGENTIC_CACHE_WARMUP_DURATION: "600"
+    SLICE_DURATION: "1.0"
+    VLLM_START_PROFILE_AFTER_SECONDS: "900"
+    AIPERF_DATASET_MMAP_CACHE_DIR: "/aiperf_mmap_cache"
+    HF_HOME: "/hf_models"
+    HF_TOKEN_PATH: "/tmp/srt-aiperf-hf-token"
+    HF_HUB_CACHE: "/hf_models/hub"
+    HUGGINGFACE_HUB_CACHE: "/hf_models/hub"
+    HF_HUB_DISABLE_XET: "1"
+    HF_HUB_OFFLINE: "1"
+    TRANSFORMERS_OFFLINE: "1"
+    PREFILL_NUM_WORKERS: "2"
+    PREFILL_TP: "1"
+    PREFILL_EP: "8"
+    DECODE_NUM_WORKERS: "1"
+    DECODE_TP: "1"
+    DECODE_EP: "12"
+    AIPERF_AGENTIC_SNAPSHOT_WARMUP_MIN_INTERVAL_S: "0.05"
+    AIPERF_HTTP_TCP_USER_TIMEOUT: "180000"
+    AIPERF_HTTP_KEEPALIVE_TIMEOUT: "30"
+    AIPERF_AGENTIC_SNAPSHOT_WARMUP_FAILURE_TOLERANCE: "30"
