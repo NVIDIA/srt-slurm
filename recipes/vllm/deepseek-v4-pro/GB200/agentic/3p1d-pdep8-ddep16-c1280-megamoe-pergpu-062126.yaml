@@ -1,8 +1,7 @@
-# DeepSeek V4 Pro AgentX 062126 P/D MegaMoE reference derived from job 9637.
-# The requested FP4 indexer-cache attention update is not validated by that run.
-# Requires NVIDIA/srt-slurm#90 for per-role DP launch modes.
-# Connector-prefetch support is built into the selected vLLM image.
-name: "2p1d-pdep8-ddep12-c640-062126"
+# DeepSeek V4 Pro AgentX 062126 all-per-GPU P/D MegaMoE reference.
+# This keeps job 9374's topology and scheduler limits, but changes both roles
+# to the default per-GPU launcher with NVSHMEM. This exact variant is unvalidated.
+name: "3p1d-pdep8-ddep16-c1280-megamoe-pergpu-062126"
 
 model:
   path: "deepseek-v4-pro"
@@ -34,12 +33,12 @@ health_check:
 resources:
   gpu_type: "gb200"
   gpus_per_node: 4
-  prefill_nodes: 4
-  decode_nodes: 3
-  prefill_workers: 2
+  prefill_nodes: 6
+  decode_nodes: 4
+  prefill_workers: 3
   decode_workers: 1
   gpus_per_prefill: 8
-  gpus_per_decode: 12
+  gpus_per_decode: 16
 
 infra:
   etcd_nats_dedicated_node: false
@@ -66,11 +65,7 @@ container_mounts:
 backend:
   type: vllm
   connector: null
-  # Keep MegaMoE prefill collectives in per-node processes while exposing each
-  # decode DP rank as an independent Dynamo worker.
-  dp_launch_mode: per_node
-  prefill_dp_launch_mode: per_node
-  decode_dp_launch_mode: per_gpu
+  # Omit launch-mode overrides to use srt-slurm's default per-GPU layout.
   kv_events_config:
     prefill: true
   mooncake_kv_store:
@@ -84,6 +79,8 @@ backend:
       enable_offload: false
   prefill_environment:
     DG_JIT_CACHE_DIR: "/tmp/dg-cache-inf-yasong-{job_id}"
+    TORCH_SYMMEM: "NVSHMEM"
+    VLLM_USE_NCCL_SYMM_MEM: "1"
     VLLM_ENGINE_READY_TIMEOUT_S: "3600"
     VLLM_RPC_TIMEOUT: "600000"
     VLLM_LOG_STATS_INTERVAL: "1"
@@ -95,24 +92,24 @@ backend:
     VLLM_CONNECTOR_PREFETCH_KV_CAP: "0.65"
     VLLM_DSV4_MEGA_FP8_COMBINE: "1"
     VLLM_ALLREDUCE_USE_SYMM_MEM: "0"
-    VLLM_USE_BREAKABLE_CUDAGRAPH: "0"
     TILELANG_CLEANUP_TEMP_FILES: "1"
+    UCX_MEMTYPE_CACHE: "n"
+    UCX_NET_DEVICES: "mlx5_1:1,mlx5_3:1,mlx5_4:1"
+    UCX_TLS: "rc,cuda_copy"
     NCCL_CUMEM_ENABLE: "1"
     NCCL_MNNVL_ENABLE: "1"
     NCCL_NVLS_ENABLE: "1"
     VLLM_RANDOMIZE_DP_DUMMY_INPUTS: "1"
-    UCX_MEMTYPE_CACHE: "n"
-    UCX_NET_DEVICES: "mlx5_1:1,mlx5_3:1,mlx5_4:1"
     NCCL_IB_HCA: "mlx5_1,mlx5_3,mlx5_4"
-    UCX_TLS: "rc,cuda_copy"
     VLLM_PREFIX_CACHE_RETENTION_INTERVAL: "32768"
+    VLLM_USE_BREAKABLE_CUDAGRAPH: "0"
     MC_ENABLE_DEST_DEVICE_AFFINITY: "1"
     MC_STORE_CLIENT_METRIC: "1"
     MC_STORE_CLIENT_METRIC_INTERVAL: "5"
     MC_TE_METRIC: "0"
   decode_environment:
     DG_JIT_CACHE_DIR: "/tmp/dg-cache-inf-yasong-{job_id}"
-    TORCH_SYMMMEM: "NVSHMEM"
+    TORCH_SYMMEM: "NVSHMEM"
     VLLM_USE_NCCL_SYMM_MEM: "1"
     VLLM_ENGINE_READY_TIMEOUT_S: "3600"
     VLLM_RPC_TIMEOUT: "600000"
@@ -121,17 +118,16 @@ backend:
     VLLM_SERVER_DEV_MODE: "1"
     VLLM_USE_V2_MODEL_RUNNER: "1"
     VLLM_MOONCAKE_LOAD_RECV_THREADS: "20"
-    VLLM_DSV4_MEGA_FP8_COMBINE: "1"
     VLLM_ALLREDUCE_USE_SYMM_MEM: "0"
     TILELANG_CLEANUP_TEMP_FILES: "1"
+    UCX_MEMTYPE_CACHE: "n"
+    UCX_NET_DEVICES: "mlx5_1:1,mlx5_3:1,mlx5_4:1"
+    UCX_TLS: "rc,cuda_copy"
     NCCL_CUMEM_ENABLE: "1"
     NCCL_MNNVL_ENABLE: "1"
     NCCL_NVLS_ENABLE: "1"
     VLLM_RANDOMIZE_DP_DUMMY_INPUTS: "1"
-    UCX_MEMTYPE_CACHE: "n"
-    UCX_NET_DEVICES: "mlx5_1:1,mlx5_3:1,mlx5_4:1"
     NCCL_IB_HCA: "mlx5_1,mlx5_3,mlx5_4"
-    UCX_TLS: "rc,cuda_copy"
     VLLM_PREFIX_CACHE_RETENTION_INTERVAL: "32768"
     MC_ENABLE_DEST_DEVICE_AFFINITY: "1"
     MC_STORE_CLIENT_METRIC: "1"
@@ -168,7 +164,7 @@ backend:
       kv-cache-dtype: "fp8"
       tensor-parallel-size: 1
       pipeline-parallel-size: 1
-      data-parallel-size: 12
+      data-parallel-size: 16
       data-parallel-rpc-port: 13345
       data-parallel-hybrid-lb: true
       enable-cumem-allocator: true
@@ -182,7 +178,7 @@ backend:
       block-size: 256
       compilation-config: '{"cudagraph_mode":"FULL_DECODE_ONLY","mode":0}'
       max-cudagraph-capture-size: 128
-      gpu-memory-utilization: 0.90
+      gpu-memory-utilization: 0.95
       no-disable-hybrid-kv-cache-manager: true
       tokenizer-mode: "deepseek_v4"
       attention-config: '{"backend":"FLASHINFER_MLA_SPARSE_DSV4","use_prefill_query_quantization":true,"use_fp4_indexer_cache":true}'
@@ -205,24 +201,23 @@ benchmark:
     MODEL_PREFIX: "dsv4"
     FRAMEWORK: "dynamo-vllm"
     PRECISION: "fp4"
-    CONC: "640"
+    CONC: "1280"
     DURATION: "1800"
-    RESULT_FILENAME: "dsv4_fp4_dynamo-vllm_2xpdep8_1xddep12_megamoe_agentx062126_c640"
-    AIPERF_MAX_OSL: "none"
+    RESULT_FILENAME: "dsv4_fp4_dynamo-vllm_3xpdep8_1xddep16_allpergpu_megamoe_nvshmem_agentx062126_c1280"
     RUNNER_TYPE: "gb200"
     IMAGE: "vllm/vllm-openai:nightly-dev-arm64-cu13.0.1-515d6e9"
     SPEC_DECODING: "none"
     DISAGG: "true"
     OFFLOADING: "none"
     TP: "8"
-    EP_SIZE: "12"
+    EP_SIZE: "16"
     DP_ATTENTION: "false"
-    PREFILL_NUM_WORKERS: "2"
+    PREFILL_NUM_WORKERS: "3"
     PREFILL_TP: "1"
     PREFILL_EP: "8"
     DECODE_NUM_WORKERS: "1"
     DECODE_TP: "1"
-    DECODE_EP: "12"
+    DECODE_EP: "16"
     NUM_DATASET_ENTRIES: "393"
     HF_WEKA_DATASET: "semianalysisai/cc-traces-weka-062126"
     PUBLIC_DATASET: "semianalysis_cc_traces_weka_062126"

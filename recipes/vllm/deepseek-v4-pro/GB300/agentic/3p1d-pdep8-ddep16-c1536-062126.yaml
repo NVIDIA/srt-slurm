@@ -1,7 +1,7 @@
-# DeepSeek V4 Pro AgentX 062126 GB300 scaling reference derived from job 524.
-# It preserves job 524's single fastokens frontend, all-per-GPU launch,
-# P/D MegaMoE, NUMA binding, and NVSHMEM environment. This exact topology and
-# concurrency have not yet been performance-validated.
+# DeepSeek V4 Pro AgentX 062126 GB300 scaling reference derived from job 522.
+# It preserves job 522's single fastokens frontend, per-node P/D launch,
+# P/D MegaMoE, and NUMA binding. This exact topology and concurrency have not
+# yet been performance-validated.
 name: "3p1d-pdep8-ddep16-c1536-062126"
 
 model:
@@ -19,7 +19,7 @@ identity:
     vllm: "0.17.2rc1.dev3669+g515d6e98c"
 
 dynamo:
-  # Commit pointed to by the public v1.2.1 tag used by job 524's wheel.
+  # Commit pointed to by the public v1.2.1 tag used by job 522's wheel.
   hash: "919682da679aa699d5bca9c872f4c1d9a530bbc0"
   install: true
 
@@ -71,6 +71,11 @@ container_mounts:
 backend:
   type: vllm
   connector: null
+  # Match job 522's one process per physical node for both DP roles.
+  # Requires NVIDIA/srt-slurm#90.
+  dp_launch_mode: per_node
+  prefill_dp_launch_mode: per_node
+  decode_dp_launch_mode: per_node
   kv_events_config:
     prefill: true
   mooncake_kv_store:
@@ -105,7 +110,7 @@ backend:
       gpu-memory-utilization: 0.90
       no-disable-hybrid-kv-cache-manager: true
       tokenizer-mode: "deepseek_v4"
-      attention-config: '{"backend":"FLASHINFER_MLA_SPARSE_DSV4","use_prefill_query_quantization":true}'
+      attention-config: '{"backend":"FLASHINFER_MLA_SPARSE_DSV4","use_prefill_query_quantization":true,"use_fp4_indexer_cache":true}'
       moe-backend: "deep_gemm_amxf4_mega_moe"
       numa-bind: true
       numa-bind-nodes: [0, 0, 1, 1]
@@ -132,7 +137,7 @@ backend:
       gpu-memory-utilization: 0.90
       no-disable-hybrid-kv-cache-manager: true
       tokenizer-mode: "deepseek_v4"
-      attention-config: '{"backend":"FLASHINFER_MLA_SPARSE_DSV4","use_prefill_query_quantization":true}'
+      attention-config: '{"backend":"FLASHINFER_MLA_SPARSE_DSV4","use_prefill_query_quantization":true,"use_fp4_indexer_cache":true}'
       moe-backend: "deep_gemm_amxf4_mega_moe"
       numa-bind: true
       numa-bind-nodes: [0, 0, 1, 1]
@@ -240,7 +245,7 @@ benchmark:
     PRECISION: "fp4"
     CONC: "1536"
     DURATION: "1800"
-    RESULT_FILENAME: "dsv4_fp4_dynamo-vllm_gb300_3xpdep8_1xddep16_1fe_fastok_allpergpu_megamoe_numa_nvshmem_agentx062126_c1536"
+    RESULT_FILENAME: "dsv4_fp4_dynamo-vllm_gb300_3xpdep8_1xddep16_1fe_fastok_pernode_megamoe_numa_agentx062126_c1536"
     RUNNER_TYPE: "gb300"
     IMAGE: "vllm/vllm-openai:nightly-dev-arm64-cu13.0.1-515d6e9"
     SPEC_DECODING: "none"
