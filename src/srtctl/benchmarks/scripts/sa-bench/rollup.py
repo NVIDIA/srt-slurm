@@ -206,13 +206,17 @@ def _build_csv_row(
     """Build one CSV row from a parsed sa-bench result."""
     total_token_throughput = data.get("total_token_throughput")
     median_tpot = data.get("median_tpot_ms")
+    # Fall back to node-based GPU counts when worker-level counts are unavailable (e.g. agg mode).
+    effective_total_working = total_working_gpu_count if total_working_gpu_count is not None else gpu_num
+    effective_decode_working = decode_working_gpu_count if decode_working_gpu_count is not None else decode_gpu_count
+    effective_prefill_working = prefill_working_gpu_count if prefill_working_gpu_count is not None else (0 if gpu_num is not None else None)
     row = {
         "Config": config_name,
         "Total GPU Count": gpu_num,
         "Decode GPU Count": decode_gpu_count,
-        "Total Working GPU Count": total_working_gpu_count,
-        "Decode Working GPU Count": decode_working_gpu_count,
-        "Prefill Working GPU Count": prefill_working_gpu_count,
+        "Total Working GPU Count": effective_total_working,
+        "Decode Working GPU Count": effective_decode_working,
+        "Prefill Working GPU Count": effective_prefill_working,
         "Concurrency": data.get("max_concurrency"),
         "Total Token Throughput": total_token_throughput,
         "Output Token Throughput": data.get("output_throughput"),
@@ -221,7 +225,7 @@ def _build_csv_row(
         "Median ITL": data.get("median_itl_ms"),
         "P90 Decode Running Requests": p90_decode_running_requests,
         "Output Token Throughput per User": _safe_ratio(1000.0, median_tpot),
-        "Total Token Throughput per GPU": _safe_ratio(total_token_throughput, total_working_gpu_count),
+        "Total Token Throughput per GPU": _safe_ratio(total_token_throughput, effective_total_working),
     }
     return {key: _format_csv_value(value) for key, value in row.items()}
 

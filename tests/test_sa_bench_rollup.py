@@ -99,6 +99,9 @@ def test_sa_bench_rollup_generates_json_and_csv_without_metadata(tmp_path):
     assert first["Config"] == "GLM-5-FP8"
     assert first["Total GPU Count"] == ""
     assert first["Decode GPU Count"] == ""
+    assert first["Total Working GPU Count"] == ""
+    assert first["Decode Working GPU Count"] == ""
+    assert first["Prefill Working GPU Count"] == ""
     assert first["Total Token Throughput"] == "9876"
     assert first["Output Token Throughput"] == "1234.5"
     assert first["Median TTFT"] == "95"
@@ -125,8 +128,11 @@ def test_sa_bench_rollup_uses_metadata_for_name_gpu_counts_and_p90(tmp_path):
                 "resources": {
                     "gpus_per_node": 8,
                     "prefill_nodes": 1,
+                    "prefill_workers": 1,
+                    "gpus_per_prefill": 8,
                     "decode_nodes": 2,
                     "decode_workers": 2,
+                    "gpus_per_decode": 8,
                     "agg_workers": 0,
                 },
             }
@@ -164,6 +170,9 @@ def test_sa_bench_rollup_uses_metadata_for_name_gpu_counts_and_p90(tmp_path):
     assert row["Config"] == "job-metadata-name"
     assert row["Total GPU Count"] == "24"
     assert row["Decode GPU Count"] == "16"
+    assert row["Total Working GPU Count"] == "24"
+    assert row["Decode Working GPU Count"] == "16"
+    assert row["Prefill Working GPU Count"] == "8"
     assert row["P90 Decode Running Requests"] == "32"
     assert row["Output Token Throughput per User"] == "40"
     assert row["Total Token Throughput per GPU"] == "33.333"
@@ -215,6 +224,9 @@ def test_sa_bench_rollup_aggregated_deployment_reports_all_gpus(tmp_path):
     assert row["Config"] == "glm47flash-agg-tp4-baseline"
     assert row["Total GPU Count"] == "4"
     assert row["Decode GPU Count"] == "4"
+    assert row["Total Working GPU Count"] == "4"
+    assert row["Decode Working GPU Count"] == "4"
+    assert row["Prefill Working GPU Count"] == "0"
     assert row["Total Token Throughput per GPU"] == "6307.5"
 
 
@@ -264,6 +276,62 @@ def test_sa_bench_rollup_tolerates_null_resource_fields(tmp_path):
     row = rows[0]
     assert row["Config"] == "legacy-agg-run"
     assert row["Total GPU Count"] == "4"
+
+
+def test_sa_bench_rollup_sub_node_prefill_working_gpu_counts(tmp_path):
+    """When gpus_per_prefill < gpus_per_node, working GPU counts differ from node-based counts."""
+    rollup = _load_rollup_module()
+
+    logs_dir = tmp_path / "logs"
+    result_dir = logs_dir / "sa-bench_isl_4096_osl_512"
+    result_dir.mkdir(parents=True)
+
+    # 1 prefill node (8 GPUs) but only 4 GPUs used per prefill worker → 1 worker × 4 = 4 prefill working GPUs
+    # 2 decode nodes, 2 workers × 8 GPUs = 16 decode working GPUs
+    # Total GPU Count  = (1 + 2) × 8 = 24  (node-based)
+    # Total Working GPU Count = 4 + 16 = 20 (worker-based, diverges from node count)
+    (tmp_path / "5001.json").write_text(
+        json.dumps(
+            {
+                "job_name": "sub-node-prefill-job",
+                "backend_type": "sglang",
+                "resources": {
+                    "gpus_per_node": 8,
+                    "prefill_nodes": 1,
+                    "prefill_workers": 1,
+                    "gpus_per_prefill": 4,
+                    "decode_nodes": 2,
+                    "decode_workers": 2,
+                    "gpus_per_decode": 8,
+                    "agg_workers": 0,
+                },
+            }
+        )
+    )
+
+    result = {
+        "model_id": "test-model",
+        "max_concurrency": 64,
+        "output_throughput": 500.0,
+        "total_token_throughput": 1000.0,
+        "median_ttft_ms": 50.0,
+        "median_tpot_ms": 20.0,
+        "median_itl_ms": 10.0,
+    }
+    (result_dir / "results_concurrency_64_gpus_24_ctx_4_gen_16.json").write_text(json.dumps(result))
+
+    rollup.main(logs_dir)
+
+    rows = _read_csv_rows(logs_dir / "benchmark-rollup.csv")
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["Total GPU Count"] == "24"
+    assert row["Decode GPU Count"] == "16"
+    assert row["Prefill Working GPU Count"] == "4"
+    assert row["Decode Working GPU Count"] == "16"
+    assert row["Total Working GPU Count"] == "20"
+    # 1000 / 20 = 50 (uses working count, not node count)
+    assert row["Total Token Throughput per GPU"] == "50"
 
 
 def test_compute_gpu_counts_handles_none_values():
