@@ -29,7 +29,9 @@ fi
 export PORT="${PORT:-$PORT_FROM_ENDPOINT}"
 
 INFERENCEX_AGENTX_COMMIT="${INFERENCEX_AGENTX_COMMIT:-303669b0e16aa6a0c600b8a68b4f91b973a34127}"
-AIPERF_AGENTX_REF="${AIPERF_AGENTX_REF:-cquil11/aiperf-agentx-v1.0}"
+# SemiAnalysisAI/aiperf#17, based on the AgentX v1 branch, adds native
+# X-Dynamo-Session-ID and X-Dynamo-Parent-Session-ID support.
+AIPERF_AGENTX_REF="${AIPERF_AGENTX_REF:-d14531b4a83e987c2477e82227ae2fd5184be755}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUNDLED_INFMAX_WORKSPACE="${AGENTX_BUNDLED_INFMAX_WORKSPACE:-$SCRIPT_DIR/inferencex}"
 BUNDLED_AIPERF_TARBALL="${AGENTX_BUNDLED_AIPERF_TARBALL:-$SCRIPT_DIR/third_party/aiperf-agentx-v1-src.tgz}"
@@ -82,42 +84,6 @@ if [[ "${AGENTX_USE_EXISTING_INFMAX_WORKSPACE:-0}" != "1" ]]; then
       "https://codeload.github.com/SemiAnalysisAI/aiperf/tar.gz/${AIPERF_AGENTX_REF}" \
       | tar -xz --strip-components=1 -C "$WORKSPACE_ROOT/utils/aiperf"
   fi
-fi
-
-# Dynamo's router-local session affinity requires two independent pieces:
-# a frontend TTL and a stable X-Dynamo-Session-ID on every conversation turn.
-# The pinned AgentX AIPerf ref can derive a stable X-Session-ID from its
-# X-Correlation-ID, but does not expose the canonical Dynamo header directly.
-# Keep this source adjustment opt-in so baseline runs remain byte-for-byte
-# unchanged on the wire apart from their normal correlation headers.
-if [[ "${AGENTX_DYNAMO_HEADER_AFFINITY:-0}" == "1" || "${AGENTX_DYNAMO_HEADER_AFFINITY:-false}" == "true" ]]; then
-  AIPERF_ROOT="${AIPERF_DIR:-$WORKSPACE_ROOT/utils/aiperf}"
-  AIPERF_TRANSPORT="$AIPERF_ROOT/src/aiperf/transports/base_transports.py"
-  if [[ ! -f "$AIPERF_TRANSPORT" ]]; then
-    echo "ERROR: AGENTX_DYNAMO_HEADER_AFFINITY is set but AIPerf transport was not found at $AIPERF_TRANSPORT" >&2
-    exit 1
-  fi
-
-  python3 - "$AIPERF_TRANSPORT" <<'PY'
-from pathlib import Path
-import sys
-
-path = Path(sys.argv[1])
-text = path.read_text()
-legacy = 'headers["X-Session-ID"] = request_info.x_correlation_id'
-canonical = 'headers["X-Dynamo-Session-ID"] = request_info.x_correlation_id'
-
-if canonical in text:
-    print(f"AIPerf already emits canonical Dynamo session IDs: {path}")
-elif text.count(legacy) == 1:
-    path.write_text(text.replace(legacy, canonical, 1))
-    print(f"Patched AIPerf to emit X-Dynamo-Session-ID from X-Correlation-ID: {path}")
-else:
-    raise SystemExit(
-        f"cannot safely enable Dynamo header affinity: expected one {legacy!r} in {path}"
-    )
-PY
-  export AIPERF_HTTP_X_SESSION_ID_FROM_CORRELATION_ID=1
 fi
 
 if [[ -f "${AIPERF_DIR:-$WORKSPACE_ROOT/utils/aiperf}/pyproject.toml" && "${AIPERF_ALLOW_GITHUB_TRANSFORMERS:-0}" != "1" ]]; then

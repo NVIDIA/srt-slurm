@@ -3,6 +3,8 @@
 
 """Tests for benchmark runners."""
 
+import tarfile
+
 import pytest
 
 from srtctl.benchmarks import get_runner, list_benchmarks
@@ -873,15 +875,26 @@ class TestAgenticRunner:
         assert '"${AGENTX_DYNAMO_CONV_AWARE:-0}" == "1"' in text
         assert '"${AGENTX_DYNAMO_CONV_AWARE:-false}" == "true"' in text
 
-    def test_agentic_dynamo_header_affinity_is_opt_in_and_canonical(self):
-        """Header affinity uses AIPerf's stable conversation correlation ID."""
+    def test_agentic_bundles_native_dynamo_session_headers(self):
+        """The pinned AIPerf PR emits Dynamo session and parent headers natively."""
         script = SCRIPTS_DIR / "agentic" / "bench.sh"
         text = script.read_text()
 
-        assert "AGENTX_DYNAMO_HEADER_AFFINITY" in text
-        assert "AIPERF_HTTP_X_SESSION_ID_FROM_CORRELATION_ID=1" in text
-        assert 'headers["X-Dynamo-Session-ID"] = request_info.x_correlation_id' in text
-        assert "cannot safely enable Dynamo header affinity" in text
+        assert "d14531b4a83e987c2477e82227ae2fd5184be755" in text
+        assert "AGENTX_DYNAMO_HEADER_AFFINITY" not in text
+
+        bundle = SCRIPTS_DIR / "agentic" / "third_party" / "aiperf-agentx-v1-src.tgz"
+        with tarfile.open(bundle, "r:gz") as archive:
+            environment = archive.extractfile("src/aiperf/common/environment.py")
+            transport = archive.extractfile("src/aiperf/transports/base_transports.py")
+            assert environment is not None
+            assert transport is not None
+            environment_text = environment.read().decode()
+            transport_text = transport.read().decode()
+
+        assert "X_DYNAMO_SESSION_ID_FROM_CORRELATION_ID" in environment_text
+        assert 'headers["X-Dynamo-Session-ID"] = request_info.x_correlation_id' in transport_text
+        assert 'headers["X-Dynamo-Parent-Session-ID"]' in transport_text
 
     def test_agentic_bench_patches_weka_subagent_osl_cap(self):
         """bench.sh keeps Weka subagent child turns under the synthesis OSL cap."""
