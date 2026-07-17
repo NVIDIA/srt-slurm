@@ -21,6 +21,9 @@ OUTPUT_FIELDS = [
     "Config",
     "Total GPU Count",
     "Decode GPU Count",
+    "Total Working GPU Count",
+    "Decode Working GPU Count",
+    "Prefill Working GPU Count",
     "Concurrency",
     "Total Token Throughput",
     "Output Token Throughput",
@@ -72,7 +75,6 @@ def _as_int(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
-
 
 def _compute_gpu_counts(resources: dict[str, Any]) -> tuple[int | None, int | None]:
     """Compute total and decode-serving GPU counts from resource settings."""
@@ -151,6 +153,28 @@ def _extract_p90_decode_running_requests(log_dir: Path, metadata: dict[str, Any]
     return None
 
 
+def _compute_working_gpu_counts(resources: dict[str, Any]) -> tuple[int | None, int | None, int | None]:
+    """Compute prefill, decode, and total working GPU counts from worker-level resource settings."""
+    prefill_workers = _as_int(resources.get("prefill_workers"))
+    gpus_per_prefill = _as_int(resources.get("gpus_per_prefill"))
+    decode_workers = _as_int(resources.get("decode_workers"))
+    gpus_per_decode = _as_int(resources.get("gpus_per_decode"))
+
+    prefill_working = prefill_workers * gpus_per_prefill if prefill_workers > 0 and gpus_per_prefill > 0 else None
+    decode_working = decode_workers * gpus_per_decode if decode_workers > 0 and gpus_per_decode > 0 else None
+
+    if prefill_working is not None and decode_working is not None:
+        total_working = prefill_working + decode_working
+    elif prefill_working is not None:
+        total_working = prefill_working
+    elif decode_working is not None:
+        total_working = decode_working
+    else:
+        total_working = None
+
+    return prefill_working, decode_working, total_working
+
+
 def _safe_ratio(numerator: float | int | None, denominator: float | int | None) -> float | None:
     """Return numerator / denominator when both values are valid and denominator != 0."""
     if numerator is None or denominator in (None, 0):
@@ -175,6 +199,9 @@ def _build_csv_row(
     gpu_num: int | None,
     decode_gpu_count: int | None,
     p90_decode_running_requests: int | None,
+    prefill_working_gpu_count: int | None,
+    decode_working_gpu_count: int | None,
+    total_working_gpu_count: int | None,
 ) -> dict[str, object]:
     """Build one CSV row from a parsed sa-bench result."""
     total_token_throughput = data.get("total_token_throughput")
@@ -183,6 +210,9 @@ def _build_csv_row(
         "Config": config_name,
         "Total GPU Count": gpu_num,
         "Decode GPU Count": decode_gpu_count,
+        "Total Working GPU Count": total_working_gpu_count,
+        "Decode Working GPU Count": decode_working_gpu_count,
+        "Prefill Working GPU Count": prefill_working_gpu_count,
         "Concurrency": data.get("max_concurrency"),
         "Total Token Throughput": total_token_throughput,
         "Output Token Throughput": data.get("output_throughput"),
@@ -191,7 +221,7 @@ def _build_csv_row(
         "Median ITL": data.get("median_itl_ms"),
         "P90 Decode Running Requests": p90_decode_running_requests,
         "Output Token Throughput per User": _safe_ratio(1000.0, median_tpot),
-        "Total Token Throughput per GPU": _safe_ratio(total_token_throughput, gpu_num),
+        "Total Token Throughput per GPU": _safe_ratio(total_token_throughput, total_working_gpu_count),
     }
     return {key: _format_csv_value(value) for key, value in row.items()}
 
@@ -210,6 +240,9 @@ def main(log_dir: Path) -> None:
     config_name = metadata.get("job_name") if metadata else None
     resources = metadata.get("resources") if metadata else None
     total_gpu_count, decode_gpu_count = _compute_gpu_counts(resources) if resources else (None, None)
+    prefill_working_gpu_count, decode_working_gpu_count, total_working_gpu_count = (
+        _compute_working_gpu_counts(resources) if resources else (None, None, None)
+    )
     p90_decode_running_requests = _extract_p90_decode_running_requests(log_dir, metadata)
 
     for result_file in result_files:
@@ -249,6 +282,9 @@ def main(log_dir: Path) -> None:
                 gpu_num=total_gpu_count,
                 decode_gpu_count=decode_gpu_count,
                 p90_decode_running_requests=p90_decode_running_requests,
+                prefill_working_gpu_count=prefill_working_gpu_count,
+                decode_working_gpu_count=decode_working_gpu_count,
+                total_working_gpu_count=total_working_gpu_count,
             )
         )
 
