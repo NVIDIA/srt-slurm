@@ -23,7 +23,7 @@ dynamo:
   hash: "919682da679aa699d5bca9c872f4c1d9a530bbc0"
   install: true
 
-setup_script: "mcwd-only-patch.sh"
+setup_script: "vllm-container-deps.sh"
 
 slurm:
   time_limit: "08:00:00"
@@ -143,7 +143,6 @@ backend:
       numa-bind-nodes: [0, 0, 1, 1]
 
   prefill_environment:
-    PYTHONPATH: "/configs/patches/vllm_fastapi_instrumentator_compat"
     HF_HOME: "/hf_models"
     HF_TOKEN_PATH: "/tmp/srt-vllm-{node_id}/hf-token"
     HF_HUB_CACHE: "/hf_models/hub"
@@ -159,7 +158,6 @@ backend:
     VLLM_SERVER_DEV_MODE: "1"
     VLLM_USE_V2_MODEL_RUNNER: "1"
     VLLM_MOONCAKE_LOAD_RECV_THREADS: "20"
-    VLLM_MOONCAKE_LOAD_DEADLINE_S: "120"
     VLLM_ALLREDUCE_USE_SYMM_MEM: "0"
     TMPDIR: "/tmp/srt-vllm-{node_id}"
     TMP: "/tmp/srt-vllm-{node_id}"
@@ -184,7 +182,6 @@ backend:
     MC_STORE_CLIENT_METRIC_INTERVAL: "5"
     MC_TE_METRIC: "0"
   decode_environment:
-    PYTHONPATH: "/configs/patches/vllm_fastapi_instrumentator_compat"
     HF_HOME: "/hf_models"
     HF_TOKEN_PATH: "/tmp/srt-vllm-{node_id}/hf-token"
     HF_HUB_CACHE: "/hf_models/hub"
@@ -200,7 +197,6 @@ backend:
     VLLM_SERVER_DEV_MODE: "1"
     VLLM_USE_V2_MODEL_RUNNER: "1"
     VLLM_MOONCAKE_LOAD_RECV_THREADS: "20"
-    VLLM_MOONCAKE_LOAD_DEADLINE_S: "120"
     VLLM_ALLREDUCE_USE_SYMM_MEM: "0"
     TMPDIR: "/tmp/srt-vllm-{node_id}"
     TMP: "/tmp/srt-vllm-{node_id}"
