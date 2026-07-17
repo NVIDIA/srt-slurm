@@ -1,6 +1,6 @@
-# DeepSeek V4 Pro AgentX 062126 mixed-DP reference derived from job 9374.
-# The requested FP4 indexer-cache attention update is not validated by that run.
-# Requires NVIDIA/srt-slurm#90 for per-role DP launch modes.
+# DeepSeek V4 Pro AgentX 062126 throughput configuration derived from job 9700.
+# The forward configuration retains FP4 indexer cache on both roles.
+# Requires NVIDIA/srt-slurm#90 for explicit per-role DP launch modes.
 name: "3p1d-pdep8-ddep16-c1280-062126"
 
 model:
@@ -55,6 +55,7 @@ frontend:
     active-decode-blocks-threshold: "None"
     active-prefill-tokens-threshold: "None"
     active-prefill-tokens-threshold-frac: "None"
+    tokenizer: "fastokens"
 
 # Host paths below are placeholders; point them at local checkouts and caches.
 container_mounts:
@@ -65,11 +66,10 @@ container_mounts:
 backend:
   type: vllm
   connector: null
-  # PR #90 keeps prefill collectives in a shared per-node CUDA namespace,
-  # while decode registers one independent Dynamo worker per DP rank.
+  # Keep both roles in shared per-node CUDA namespaces for MegaMoE.
   dp_launch_mode: per_node
   prefill_dp_launch_mode: per_node
-  decode_dp_launch_mode: per_gpu
+  decode_dp_launch_mode: per_node
   kv_events_config:
     prefill: true
   mooncake_kv_store:
@@ -145,6 +145,7 @@ backend:
       data-parallel-rpc-port: 13345
       data-parallel-hybrid-lb: true
       enable-cumem-allocator: true
+      numa-bind: true
       enable-expert-parallel: true
       enable-ep-weight-filter: true
       max-model-len: 1048576
@@ -168,6 +169,7 @@ backend:
       data-parallel-rpc-port: 13345
       data-parallel-hybrid-lb: true
       enable-cumem-allocator: true
+      numa-bind: true
       enable-expert-parallel: true
       enable-ep-weight-filter: true
       max-model-len: 1048576
@@ -182,7 +184,7 @@ backend:
       no-disable-hybrid-kv-cache-manager: true
       tokenizer-mode: "deepseek_v4"
       attention-config: '{"backend":"FLASHINFER_MLA_SPARSE_DSV4","use_prefill_query_quantization":true,"use_fp4_indexer_cache":true}'
-      all2all-backend: "flashinfer_nvlink_one_sided"
+      moe-backend: "deep_gemm_amxf4_mega_moe"
 
 sbatch_directives:
   cpus-per-task: "72"
@@ -202,8 +204,8 @@ benchmark:
     FRAMEWORK: "dynamo-vllm"
     PRECISION: "fp4"
     CONC: "1280"
-    DURATION: "1800"
-    RESULT_FILENAME: "dsv4_fp4_dynamo-vllm_3xpdep8_1xddep16_pnode-dpergpu_agentx062126_c1280"
+    DURATION: "3600"
+    RESULT_FILENAME: "dsv4_fp4_dynamo-vllm_3xpdep8_1xddep16_pnode-dpnode_fastokens_numabind_megamoe_nofp8c_fp4idx_agentx062126_c1280"
     RUNNER_TYPE: "gb200"
     IMAGE: "vllm/vllm-openai:nightly-dev-arm64-cu13.0.1-515d6e9"
     SPEC_DECODING: "none"
@@ -222,10 +224,7 @@ benchmark:
     HF_WEKA_DATASET: "semianalysisai/cc-traces-weka-062126"
     PUBLIC_DATASET: "semianalysis_cc_traces_weka_062126"
     AIPERF_AGENTIC_CACHE_WARMUP_DURATION: "600"
-    AIPERF_AGENTIC_SNAPSHOT_WARMUP_MIN_INTERVAL_S: "0.05"
-    AIPERF_HTTP_TCP_USER_TIMEOUT: "180000"
-    AIPERF_WARMUP_GRACE_PERIOD: "1800"
+    AIPERF_MAX_OSL: "none"
     SLICE_DURATION: "1.0"
-    VLLM_START_PROFILE_AFTER_SECONDS: "900"
     AIPERF_DATASET_MMAP_CACHE_DIR: "/aiperf_mmap_cache"
     HF_HUB_CACHE: "/hf_hub_cache"

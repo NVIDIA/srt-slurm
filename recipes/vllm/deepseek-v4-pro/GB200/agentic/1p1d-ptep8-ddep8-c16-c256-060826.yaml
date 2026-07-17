@@ -47,6 +47,8 @@ infra:
 frontend:
   type: dynamo
   enable_multiple_frontends: false
+  args:
+    tokenizer: "fastokens"
 # Host paths below are placeholders — point them at your own checkouts/caches.
 container_mounts:
   /path/to/srt-slurm-sa: /workspace/srt-slurm-sa
@@ -196,7 +198,7 @@ benchmark:
     DECODE_EP: "8"
     NUM_DATASET_ENTRIES: "472"
     PUBLIC_DATASET: "semianalysis_cc_traces_weka_with_subagents_060826"
+    AIPERF_MAX_OSL: "none"
     SLICE_DURATION: "1.0"
-    VLLM_START_PROFILE_AFTER_SECONDS: "900"
     AIPERF_DATASET_MMAP_CACHE_DIR: "/aiperf_mmap_cache"
     HF_HUB_CACHE: "/hf_hub_cache"

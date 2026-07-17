@@ -1,6 +1,6 @@
-# DeepSeek V4 Pro AgentX 062126 all-per-GPU P/D MegaMoE reference.
-# This keeps job 9374's topology and scheduler limits, but changes both roles
-# to the default per-GPU launcher with NVSHMEM. This exact variant is unvalidated.
+# DeepSeek V4 Pro AgentX 062126 all-per-GPU P/D MegaMoE control.
+# This keeps the job 9700 service and frontend configuration, but uses the
+# default per-GPU launcher with NVSHMEM. FP4 indexer cache remains enabled.
 name: "3p1d-pdep8-ddep16-c1280-megamoe-pergpu-062126"
 
 model:
@@ -55,6 +55,7 @@ frontend:
     active-decode-blocks-threshold: "None"
     active-prefill-tokens-threshold: "None"
     active-prefill-tokens-threshold-frac: "None"
+    tokenizer: "fastokens"
 
 # Host paths below are placeholders; point them at local checkouts and caches.
 container_mounts:
@@ -145,6 +146,7 @@ backend:
       data-parallel-rpc-port: 13345
       data-parallel-hybrid-lb: true
       enable-cumem-allocator: true
+      numa-bind: true
       enable-expert-parallel: true
       enable-ep-weight-filter: true
       max-model-len: 1048576
@@ -168,6 +170,7 @@ backend:
       data-parallel-rpc-port: 13345
       data-parallel-hybrid-lb: true
       enable-cumem-allocator: true
+      numa-bind: true
       enable-expert-parallel: true
       enable-ep-weight-filter: true
       max-model-len: 1048576
@@ -202,8 +205,8 @@ benchmark:
     FRAMEWORK: "dynamo-vllm"
     PRECISION: "fp4"
     CONC: "1280"
-    DURATION: "1800"
-    RESULT_FILENAME: "dsv4_fp4_dynamo-vllm_3xpdep8_1xddep16_allpergpu_megamoe_nvshmem_agentx062126_c1280"
+    DURATION: "3600"
+    RESULT_FILENAME: "dsv4_fp4_dynamo-vllm_3xpdep8_1xddep16_allpergpu_fastokens_numabind_megamoe_nofp8c_nvshmem_fp4idx_agentx062126_c1280"
     RUNNER_TYPE: "gb200"
     IMAGE: "vllm/vllm-openai:nightly-dev-arm64-cu13.0.1-515d6e9"
     SPEC_DECODING: "none"
@@ -222,10 +225,7 @@ benchmark:
     HF_WEKA_DATASET: "semianalysisai/cc-traces-weka-062126"
     PUBLIC_DATASET: "semianalysis_cc_traces_weka_062126"
     AIPERF_AGENTIC_CACHE_WARMUP_DURATION: "600"
-    AIPERF_AGENTIC_SNAPSHOT_WARMUP_MIN_INTERVAL_S: "0.05"
-    AIPERF_HTTP_TCP_USER_TIMEOUT: "180000"
-    AIPERF_WARMUP_GRACE_PERIOD: "1800"
+    AIPERF_MAX_OSL: "none"
     SLICE_DURATION: "1.0"
-    VLLM_START_PROFILE_AFTER_SECONDS: "900"
     AIPERF_DATASET_MMAP_CACHE_DIR: "/aiperf_mmap_cache"
     HF_HUB_CACHE: "/hf_hub_cache"
