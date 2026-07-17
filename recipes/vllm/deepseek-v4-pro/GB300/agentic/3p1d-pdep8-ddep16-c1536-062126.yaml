@@ -1,25 +1,25 @@
-# DeepSeek V4 Pro AgentX 062126 GB300 scaling reference derived from job 522.
-# It preserves job 522's single fastokens frontend, per-node P/D launch,
-# P/D MegaMoE, and NUMA binding. This exact topology and concurrency have not
-# yet been performance-validated.
+# DeepSeek V4 Pro AgentX 062126 GB300 scaling reference derived from completed
+# job 527. It preserves the single fastokens frontend, per-node P/D launch,
+# P/D MegaMoE, NUMA binding, and the patch-free c188b96 runtime used for
+# 3xPDEP8 + 1xDDEP16 at c1536.
 name: "3p1d-pdep8-ddep16-c1536-062126"
 
 model:
   path: "deepseekv4-fp4"
-  container: "vllm/vllm-openai:nightly-dev-arm64-cu13.0.1-515d6e9"
+  container: "vllm/vllm-openai:nightly-dev-arm64-cu13.0.1-c188b96"
   precision: "fp4"
 
 identity:
   model:
     repo: "deepseek-ai/DeepSeek-V4-Pro"
   container:
-    image: "vllm/vllm-openai:nightly-dev-arm64-cu13.0.1-515d6e9"
+    image: "vllm/vllm-openai:nightly-dev-arm64-cu13.0.1-c188b96"
   frameworks:
     dynamo: "1.2.1"
-    vllm: "0.17.2rc1.dev3669+g515d6e98c"
+    vllm: "0.17.2rc1.dev3675+gc188b96eb"
 
 dynamo:
-  # Commit pointed to by the public v1.2.1 tag used by job 522's wheel.
+  # Commit pointed to by the public v1.2.1 tag used by job 527's wheel.
   hash: "919682da679aa699d5bca9c872f4c1d9a530bbc0"
   install: true
 
@@ -71,7 +71,7 @@ container_mounts:
 backend:
   type: vllm
   connector: null
-  # Match job 522's one process per physical node for both DP roles.
+  # Match job 527's one process per physical node for both DP roles.
   # Requires NVIDIA/srt-slurm#90.
   dp_launch_mode: per_node
   prefill_dp_launch_mode: per_node
@@ -171,7 +171,6 @@ backend:
     NCCL_MNNVL_ENABLE: "1"
     NCCL_NVLS_ENABLE: "1"
     NCCL_IB_HCA: "mlx5_0,mlx5_1,mlx5_2,mlx5_3"  # Set locally.
-    TORCH_SYMMMEM: "NVSHMEM"
     VLLM_RANDOMIZE_DP_DUMMY_INPUTS: "1"
     VLLM_PREFIX_CACHE_RETENTION_INTERVAL: "32768"
     VLLM_USE_BREAKABLE_CUDAGRAPH: "0"
@@ -210,7 +209,6 @@ backend:
     NCCL_MNNVL_ENABLE: "1"
     NCCL_NVLS_ENABLE: "1"
     NCCL_IB_HCA: "mlx5_0,mlx5_1,mlx5_2,mlx5_3"  # Set locally.
-    TORCH_SYMMMEM: "NVSHMEM"
     VLLM_RANDOMIZE_DP_DUMMY_INPUTS: "1"
     VLLM_PREFIX_CACHE_RETENTION_INTERVAL: "32768"
     VLLM_DSV4_MEGA_FP8_COMBINE: "1"
@@ -243,7 +241,7 @@ benchmark:
     DURATION: "1800"
     RESULT_FILENAME: "dsv4_fp4_dynamo-vllm_gb300_3xpdep8_1xddep16_1fe_fastok_pernode_megamoe_numa_agentx062126_c1536"
     RUNNER_TYPE: "gb300"
-    IMAGE: "vllm/vllm-openai:nightly-dev-arm64-cu13.0.1-515d6e9"
+    IMAGE: "vllm/vllm-openai:nightly-dev-arm64-cu13.0.1-c188b96"
     SPEC_DECODING: "none"
     DISAGG: "true"
     OFFLOADING: "none"
