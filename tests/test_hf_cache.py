@@ -6,11 +6,17 @@
 Tests _get_hf_home(), _clean_stale_hf_locks(), and _ensure_model_cached().
 """
 
+import json
 import os
+import shlex
 import subprocess
+import sys
 import time
+import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from srtctl.cli.do_sweep import SweepOrchestrator
 from srtctl.core.config import load_config
@@ -61,6 +67,60 @@ def _make_orchestrator(config_path: str, hf_model: bool = True) -> SweepOrchestr
         config = load_config(Path(config_path))
         runtime = RuntimeContext.from_config(config, "99999")
         return SweepOrchestrator(config=config, runtime=runtime)
+
+
+def _make_hf_orchestrator(
+    tmp_path: Path,
+    *,
+    prefill_revision: str | None = None,
+    decode_revision: str | None = None,
+) -> SweepOrchestrator:
+    """Create an HF orchestrator with optional per-mode revisions."""
+    prefill_revision_yaml = f"\n      revision: {json.dumps(prefill_revision)}" if prefill_revision is not None else ""
+    decode_revision_yaml = f"\n      revision: {json.dumps(decode_revision)}" if decode_revision is not None else ""
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        f"""
+name: test
+model:
+  path: "hf:nvidia/Kimi-K2.5-NVFP4"
+  container: "test-image:latest"
+  precision: fp4
+backend:
+  type: vllm
+  prefill_environment:
+    HF_HOME: "{tmp_path / "cache"}"
+  vllm_config:
+    prefill:
+      tensor-parallel-size: 1{prefill_revision_yaml}
+    decode:
+      tensor-parallel-size: 1{decode_revision_yaml}
+resources:
+  gpu_type: gb200
+  prefill_nodes: 1
+  prefill_workers: 1
+  decode_nodes: 4
+  decode_workers: 4
+  gpus_per_node: 4
+"""
+    )
+    return _make_orchestrator(str(config_file))
+
+
+def _get_generated_download_script(orch: SweepOrchestrator) -> str:
+    """Force a host cache miss and return the generated container shell script."""
+    fake_hf_hub = types.ModuleType("huggingface_hub")
+    fake_hf_hub.snapshot_download = MagicMock(side_effect=RuntimeError("not cached"))
+    mock_proc = MagicMock()
+    mock_proc.wait.return_value = 0
+
+    with (
+        patch("srtctl.cli.do_sweep.start_srun_process", return_value=mock_proc) as mock_srun,
+        patch.dict(sys.modules, {"huggingface_hub": fake_hf_hub}),
+    ):
+        orch._ensure_model_cached()
+
+    return mock_srun.call_args.kwargs["command"][2]
 
 
 # Tests for _get_hf_home
@@ -378,7 +438,69 @@ resources:
         ):
             orch._ensure_model_cached()
             mock_srun.assert_not_called()
-            fake_hf_hub.snapshot_download.assert_called_once()
+            fake_hf_hub.snapshot_download.assert_called_once_with(
+                "nvidia/Kimi-K2.5-NVFP4",
+                cache_dir=str(tmp_path / "cache" / "hub"),
+                local_files_only=True,
+            )
+
+    def test_passes_prefill_revision_to_host_cache_check(self, tmp_path: Path):
+        """The host snapshot check should use the revision configured for prefill."""
+        revision = "refs/pr/123"
+        orch = _make_hf_orchestrator(tmp_path, prefill_revision=revision)
+        fake_hf_hub = types.ModuleType("huggingface_hub")
+        fake_hf_hub.snapshot_download = MagicMock(return_value="/fake/path")
+
+        with (
+            patch("srtctl.cli.do_sweep.start_srun_process") as mock_srun,
+            patch.dict(sys.modules, {"huggingface_hub": fake_hf_hub}),
+        ):
+            orch._ensure_model_cached()
+
+        mock_srun.assert_not_called()
+        fake_hf_hub.snapshot_download.assert_called_once_with(
+            "nvidia/Kimi-K2.5-NVFP4",
+            cache_dir=str(tmp_path / "cache" / "hub"),
+            local_files_only=True,
+            revision=revision,
+        )
+
+    def test_quotes_decode_revision_in_offline_cli_check(self, tmp_path: Path):
+        """The offline CLI cache check should safely quote a decode revision."""
+        revision = "refs/pr/123; echo unsafe"
+        orch = _make_hf_orchestrator(tmp_path, decode_revision=revision)
+
+        script = _get_generated_download_script(orch)
+
+        assert (
+            f"if HF_HUB_OFFLINE=1 $DL_CMD nvidia/Kimi-K2.5-NVFP4 "
+            f"--revision {shlex.quote(revision)} --quiet 2>/dev/null; then"
+        ) in script
+
+    def test_quotes_decode_revision_in_online_cli_download(self, tmp_path: Path):
+        """The online CLI download should safely quote a decode revision."""
+        revision = "refs/pr/123; echo unsafe"
+        orch = _make_hf_orchestrator(tmp_path, decode_revision=revision)
+
+        script = _get_generated_download_script(orch)
+
+        assert f"$DL_CMD nvidia/Kimi-K2.5-NVFP4 --revision {shlex.quote(revision)} --quiet; fi" in script
+
+    def test_rejects_conflicting_prefill_and_decode_revisions(self, tmp_path: Path):
+        """Different non-empty revisions cannot share one pre-download cache operation."""
+        orch = _make_hf_orchestrator(
+            tmp_path,
+            prefill_revision="prefill-commit",
+            decode_revision="decode-commit",
+        )
+
+        with (
+            patch("srtctl.cli.do_sweep.start_srun_process") as mock_srun,
+            pytest.raises(ValueError, match="Conflicting HuggingFace revisions.*prefill-commit.*decode-commit"),
+        ):
+            orch._ensure_model_cached()
+
+        mock_srun.assert_not_called()
 
     def test_runs_srun_on_single_node(self, tmp_path: Path):
         """Pre-download should run huggingface-cli on exactly one node."""

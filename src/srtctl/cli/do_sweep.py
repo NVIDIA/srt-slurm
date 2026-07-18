@@ -422,6 +422,15 @@ class SweepOrchestrator(
         if not self.runtime.is_hf_model:
             return
 
+        prefill_revision = self.config.backend.get_config_for_mode("prefill").get("revision") or None
+        decode_revision = self.config.backend.get_config_for_mode("decode").get("revision") or None
+        if prefill_revision and decode_revision and prefill_revision != decode_revision:
+            raise ValueError(
+                "Conflicting HuggingFace revisions configured for prefill and decode: "
+                f"prefill={prefill_revision!r}, decode={decode_revision!r}"
+            )
+        revision = prefill_revision or decode_revision
+
         hf_home = self._get_hf_home()
         if not hf_home:
             logger.warning(
@@ -443,7 +452,13 @@ class SweepOrchestrator(
         try:
             from huggingface_hub import snapshot_download  # type: ignore[import-untyped]
 
-            snapshot_download(model_id, cache_dir=str(Path(hf_home) / "hub"), local_files_only=True)
+            snapshot_kwargs = {
+                "cache_dir": str(Path(hf_home) / "hub"),
+                "local_files_only": True,
+            }
+            if revision:
+                snapshot_kwargs["revision"] = revision
+            snapshot_download(model_id, **snapshot_kwargs)
             logger.info("Model '%s' already cached at %s, skipping pre-download", model_id, hf_home)
             return
         except ImportError:
@@ -464,6 +479,7 @@ class SweepOrchestrator(
 
         q_hf_home = shlex.quote(hf_home)
         q_model_id = shlex.quote(model_id)
+        revision_arg = f" --revision {shlex.quote(str(revision))}" if revision else ""
         download_cmd = [
             "bash",
             "-c",
@@ -471,11 +487,11 @@ class SweepOrchestrator(
             f"find {q_hf_home} -name '*.lock' -mmin +30 -delete 2>/dev/null; "
             f"DL_CMD='hf download'; "
             f"command -v hf >/dev/null 2>&1 || DL_CMD='huggingface-cli download'; "
-            f"if HF_HUB_OFFLINE=1 $DL_CMD {q_model_id} --quiet 2>/dev/null; then "
+            f"if HF_HUB_OFFLINE=1 $DL_CMD {q_model_id}{revision_arg} --quiet 2>/dev/null; then "
             f"echo 'Model already cached'; "
             f"else "
             f"echo 'Downloading model...'; "
-            f"$DL_CMD {q_model_id} --quiet; "
+            f"$DL_CMD {q_model_id}{revision_arg} --quiet; "
             f"fi",
         ]
 
