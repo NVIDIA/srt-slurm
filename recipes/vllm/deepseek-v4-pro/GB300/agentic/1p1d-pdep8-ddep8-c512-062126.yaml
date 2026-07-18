@@ -1,7 +1,7 @@
-# DeepSeek V4 Pro AgentX 062126 GB300 scaling reference derived from job 522.
-# It preserves job 522's single fastokens frontend, per-node P/D launch,
-# P/D MegaMoE, and NUMA binding. This exact topology and concurrency have not
-# yet been performance-validated.
+# DeepSeek V4 Pro AgentX 062126 GB300 scaling reference derived from completed
+# job 526. It preserves the single fastokens frontend, per-node P/D launch,
+# P/D MegaMoE, NUMA binding, and scheduler limits used for
+# 1xPDEP8 + 1xDDEP8 at c512.
 name: "1p1d-pdep8-ddep8-c512-062126"
 
 model:
@@ -71,7 +71,7 @@ container_mounts:
 backend:
   type: vllm
   connector: null
-  # Match job 522's one process per physical node for both DP roles.
+  # Match job 526's one process per physical node for both DP roles.
   # Requires NVIDIA/srt-slurm#90.
   dp_launch_mode: per_node
   prefill_dp_launch_mode: per_node
@@ -171,7 +171,6 @@ backend:
     NCCL_MNNVL_ENABLE: "1"
     NCCL_NVLS_ENABLE: "1"
     NCCL_IB_HCA: "mlx5_0,mlx5_1,mlx5_2,mlx5_3"  # Set locally.
-    TORCH_SYMMMEM: "NVSHMEM"
     VLLM_RANDOMIZE_DP_DUMMY_INPUTS: "1"
     VLLM_PREFIX_CACHE_RETENTION_INTERVAL: "32768"
     VLLM_USE_BREAKABLE_CUDAGRAPH: "0"
@@ -210,7 +209,6 @@ backend:
     NCCL_MNNVL_ENABLE: "1"
     NCCL_NVLS_ENABLE: "1"
     NCCL_IB_HCA: "mlx5_0,mlx5_1,mlx5_2,mlx5_3"  # Set locally.
-    TORCH_SYMMMEM: "NVSHMEM"
     VLLM_RANDOMIZE_DP_DUMMY_INPUTS: "1"
     VLLM_PREFIX_CACHE_RETENTION_INTERVAL: "32768"
     VLLM_DSV4_MEGA_FP8_COMBINE: "1"
