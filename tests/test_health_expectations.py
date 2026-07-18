@@ -54,6 +54,22 @@ def test_dynamo_vllm_without_dp_config_defaults_to_logical_counts():
     assert (n_prefill, n_decode, num_workers) == (6, 1, 7)
 
 
+def test_dynamo_vllm_uses_process_aware_counts_for_mixed_dp_layout():
+    """Mixed launch modes use actual registrations rather than global DP sizes."""
+    vllm_config = SimpleNamespace(
+        prefill={"data-parallel-size": 8},
+        decode={"data-parallel-size": 16},
+        aggregated=None,
+    )
+    config = _config("dynamo", "vllm", num_prefill=1, num_decode=1, vllm_config=vllm_config)
+    config.backend.get_expected_dynamo_worker_counts = lambda _processes: (2, 16)
+
+    n_prefill, n_decode, count_desc, num_workers = _get_health_expectations(config, [object()])
+
+    assert (n_prefill, n_decode, num_workers) == (2, 16, 18)
+    assert count_desc == "2P + 16D Dynamo generate instances; logical workers: 1P + 1D"
+
+
 def test_non_dynamo_frontend_uses_logical_worker_counts():
     """Only Dynamo reports per-DP-rank generate instances; others stay logical."""
     vllm_config = SimpleNamespace(prefill={"data-parallel-size": 2}, decode={"data-parallel-size": 8}, aggregated=None)
