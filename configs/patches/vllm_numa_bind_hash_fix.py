@@ -21,10 +21,33 @@ Reference: vllm/config/parallel.py, ParallelConfig.compute_hash(),
 ignored_factors set.
 """
 
+import os
 import sys
 from pathlib import Path
 
-TARGET = Path("/usr/local/lib/python3.12/dist-packages/vllm/config/parallel.py")
+
+def _find_target() -> Path | None:
+    override = os.environ.get("VLLM_PARALLEL_CONFIG_PATH")
+    if override:
+        path = Path(override)
+        return path if path.is_file() else None
+
+    candidates = (
+        Path("/usr/local/lib/python3.12/dist-packages/vllm/config/parallel.py"),
+        Path("/usr/local/lib/python3.12/site-packages/vllm/config/parallel.py"),
+    )
+    for path in candidates:
+        if path.is_file():
+            return path
+
+    for root in (Path("/usr/local/lib"), Path("/usr/lib")):
+        for path in root.glob("python*/site-packages/vllm/config/parallel.py"):
+            if path.is_file():
+                return path
+        for path in root.glob("python*/dist-packages/vllm/config/parallel.py"):
+            if path.is_file():
+                return path
+    return None
 
 # Idempotency: if any of our additions is already present, skip.
 MARKER = '"numa_bind",'
@@ -46,11 +69,16 @@ NEW = (
 
 
 def main():
-    if not TARGET.exists():
-        print(f"[vllm-numa-bind-hash-fix] Target not found: {TARGET}", file=sys.stderr)
-        sys.exit(1)
+    target = _find_target()
+    if target is None:
+        print(
+            "[vllm-numa-bind-hash-fix] ParallelConfig source not found; "
+            "skipping version-specific hotfix.",
+            file=sys.stderr,
+        )
+        return
 
-    content = TARGET.read_text()
+    content = target.read_text()
 
     if MARKER in content:
         print("[vllm-numa-bind-hash-fix] Already patched, skipping.", file=sys.stderr)
@@ -73,7 +101,7 @@ def main():
         sys.exit(1)
 
     content = content.replace(OLD, NEW)
-    TARGET.write_text(content)
+    target.write_text(content)
     print(
         "[vllm-numa-bind-hash-fix] Added numa_bind/numa_bind_nodes/numa_bind_cpus "
         "to ParallelConfig.compute_hash ignored_factors.",
