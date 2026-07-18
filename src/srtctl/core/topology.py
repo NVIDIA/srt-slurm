@@ -101,8 +101,9 @@ class NodePortAllocator:
     def next_kv_events_port_block(self, size: int) -> int:
         """Reserve consecutive KV-event ports and return the base port.
 
-        A vLLM hybrid-DP process opens one publisher per local DP rank, so
-        adjacent worker processes must receive non-overlapping port ranges.
+        vLLM computes each publisher port as ``base + global_dp_rank``. All
+        node processes in one endpoint therefore share this base while the
+        allocator reserves the endpoint's full global DP range.
         """
         if size < 1:
             raise ValueError("KV-event port block size must be at least 1")

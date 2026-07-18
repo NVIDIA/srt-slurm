@@ -11,6 +11,7 @@ import logging
 import shlex
 import threading
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -46,12 +47,14 @@ def _vllm_data_parallel_size(config: "SrtConfig", mode: str) -> int:
     return int(mode_config.get("data-parallel-size") or mode_config.get("data_parallel_size") or 1)
 
 
-def _get_health_expectations(config: "SrtConfig") -> tuple[int, int, str, int]:
+def _get_health_expectations(
+    config: "SrtConfig", processes: Sequence["Process"] | None = None
+) -> tuple[int, int, str, int]:
     """Compute expected health counts in the units reported by the frontend.
 
-    Dynamo's /health endpoint reports registered generate instances. For vLLM
-    DP workers, that means one entry per DP rank, not one entry per logical
-    srt-slurm worker. Other frontends keep using logical worker counts.
+    Dynamo's /health endpoint reports registered generate instances. External
+    vLLM DP registers one per rank, while hybrid DP registers one per node.
+    Other frontends keep using logical worker counts.
     """
     r = config.resources
 
@@ -65,12 +68,16 @@ def _get_health_expectations(config: "SrtConfig") -> tuple[int, int, str, int]:
         worker_desc = f"{r.num_prefill}P + {r.num_decode}D"
 
     if config.frontend.type == "dynamo" and getattr(config.backend, "type", None) == "vllm":
-        if r.num_agg > 0:
-            n_prefill = 0
-            n_decode = logical_decode * _vllm_data_parallel_size(config, "aggregated")
+        topology_counter = getattr(config.backend, "get_expected_dynamo_worker_counts", None)
+        if processes is not None and callable(topology_counter):
+            n_prefill, n_decode = topology_counter(processes)
         else:
-            n_prefill = logical_prefill * _vllm_data_parallel_size(config, "prefill")
-            n_decode = logical_decode * _vllm_data_parallel_size(config, "decode")
+            if r.num_agg > 0:
+                n_prefill = 0
+                n_decode = logical_decode * _vllm_data_parallel_size(config, "aggregated")
+            else:
+                n_prefill = logical_prefill * _vllm_data_parallel_size(config, "prefill")
+                n_decode = logical_decode * _vllm_data_parallel_size(config, "decode")
 
         count_desc = f"{n_prefill}P + {n_decode}D Dynamo generate instances; logical workers: {worker_desc}"
         return n_prefill, n_decode, count_desc, n_prefill + n_decode
@@ -131,7 +138,7 @@ class BenchmarkStageMixin:
         """Run the benchmark."""
         logger.info("Waiting for workers to be ready...")
 
-        n_prefill, n_decode, count_desc, num_workers = _get_health_expectations(self.config)
+        n_prefill, n_decode, count_desc, num_workers = _get_health_expectations(self.config, self.backend_processes)
         logger.info("Waiting for server health (expecting %d health entries: %s)...", num_workers, count_desc)
 
         hc = self.config.health_check

@@ -422,35 +422,40 @@ Each worker leader gets a globally unique port starting at 5550:
 | decode_0  | 5552 |
 | decode_1  | 5553 |
 
-### vLLM DP launch mode
+### vLLM DP process layout
 
-vLLM data-parallel endpoints use one process per GPU by default. Set
-`dp_launch_mode: per_node` to launch one process per node and let vLLM
-manage the local DP ranks in a shared CUDA namespace:
+vLLM data-parallel endpoints use hybrid load balancing with one top-level
+process per node by default. Each process manages the DP ranks on its local
+GPUs and registers that rank range with Dynamo:
 
 ```yaml
 backend:
   type: vllm
-  dp_launch_mode: per_node
   vllm_config:
     prefill:
       data-parallel-size: 8
-      data-parallel-hybrid-lb: true
     decode:
       data-parallel-size: 16
-      data-parallel-hybrid-lb: true
 ```
 
-| Value      | Process layout                                      |
-| ---------- | --------------------------------------------------- |
-| `per_gpu`  | One process per DP rank/GPU (default)               |
-| `per_node` | One process manages all DP ranks allocated per node |
+srtslurm derives `--data-parallel-size-local` and
+`--data-parallel-start-rank` from the allocated topology and enables
+`--data-parallel-hybrid-lb`. Do not set those flags manually.
 
-In `per_node` mode, srtslurm derives `--data-parallel-size-local` and
-`--data-parallel-start-rank` from the allocated topology. Do not set those
-two flags manually. Set `data-parallel-hybrid-lb: true` when the frontend
-must route to an exact DP rank; without hybrid LB, non-leader node processes
-are launched with `--headless` for vLLM's internal DP load balancer.
+Set `legacy_dp_per_gpu: true` to restore the previous external-load-balancing
+layout, which launches one top-level process and Dynamo engine per DP rank:
+
+```yaml
+backend:
+  type: vllm
+  legacy_dp_per_gpu: true
+  vllm_config:
+    decode:
+      data-parallel-size: 16
+```
+
+The compatibility flag applies to every vLLM DP role in the deployment.
+Standard non-DP tensor/pipeline-parallel endpoints are unaffected.
 
 ### TRTLLM Backend
 

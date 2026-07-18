@@ -41,7 +41,6 @@ if TYPE_CHECKING:
 
 # Type alias for worker modes
 WorkerMode = Literal["prefill", "decode", "agg"]
-DPLaunchMode = Literal["per_gpu", "per_node"]
 
 # Filename for the mooncake-store JSON config srtslurm writes to log_dir at job
 # start. log_dir is mounted into every worker at /logs, so workers read the JSON
@@ -139,7 +138,6 @@ class VLLMProtocol:
           connector: nixl  # translated to --kv-transfer-config JSON
           allow_prefill_decode_colocation: true  # pack P/D on one node when all workers fit
           allow_prefill_decode_colocation_across_nodes: true  # continue packing on later nodes
-          dp_launch_mode: per_node  # one process manages all local DP ranks
           prefill_environment:
             PYTHONUNBUFFERED: "1"
           vllm_config:
@@ -193,9 +191,9 @@ class VLLMProtocol:
     # node pools. Defaults off to preserve the original one-node-only policy.
     allow_prefill_decode_colocation_across_nodes: bool = False
 
-    # DP process layout. Keep the existing per-GPU behavior by default;
-    # per-node lets vLLM manage local DP ranks in one CUDA namespace.
-    dp_launch_mode: DPLaunchMode = "per_gpu"
+    # Compatibility escape hatch for the previous DP layout. By default,
+    # one hybrid-LB process manages all local DP ranks on each node.
+    legacy_dp_per_gpu: bool = False
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
@@ -410,7 +408,7 @@ class VLLMProtocol:
         """Check if this mode uses Data Parallel + Expert Parallel pattern.
 
         DP+EP mode is detected when data-parallel-size is set in the mode's config.
-        ``dp_launch_mode`` controls whether a process owns one rank or all local ranks.
+        The default layout owns all local ranks in one process per node.
         """
         config = self.get_config_for_mode(mode)
         return config.get("data-parallel-size") is not None or config.get("data_parallel_size") is not None
@@ -419,6 +417,29 @@ class VLLMProtocol:
         """Get the data-parallel-size for a mode, or None if not in DP mode."""
         config = self.get_config_for_mode(mode)
         return config.get("data-parallel-size") or config.get("data_parallel_size")
+
+    def get_expected_dynamo_worker_counts(self, processes: Sequence[Process]) -> tuple[int, int]:
+        """Return generate-instance counts for the generated process topology.
+
+        External DP registers one instance per GPU process. Hybrid DP registers
+        one instance per node process. Standard multi-node TP registers only the
+        endpoint leader, so non-DP processes are grouped by logical endpoint.
+        """
+        grouped: dict[tuple[WorkerMode, int], list[Process]] = {}
+        for process in processes:
+            key = (process.endpoint_mode, process.endpoint_index)
+            grouped.setdefault(key, []).append(process)
+
+        prefill_count = 0
+        decode_count = 0
+        for (mode, _endpoint_index), endpoint_processes in grouped.items():
+            registrations = len(endpoint_processes) if self._is_dp_mode(mode) else 1
+            if mode == "prefill":
+                prefill_count += registrations
+            else:
+                decode_count += registrations
+
+        return prefill_count, decode_count
 
     def should_set_cuda_visible_devices(self, process: Process) -> bool:
         """Whether worker_stage should set CUDA_VISIBLE_DEVICES.
@@ -437,7 +458,8 @@ class VLLMProtocol:
     ) -> list[Process]:
         """Convert endpoints to processes.
 
-        DP+EP mode uses the configured per-GPU or per-node process layout.
+        DP+EP mode uses one hybrid-LB process per node by default. The legacy
+        compatibility flag restores one external-LB process per GPU.
         For standard TP mode, creates one process per node.
         """
         from srtctl.core.topology import NodePortAllocator, Process, endpoints_to_processes
@@ -449,7 +471,7 @@ class VLLMProtocol:
             # Standard TP mode: one process per node
             return endpoints_to_processes(endpoints, base_sys_port=base_sys_port, port_allocator=port_allocator)
 
-        if self.dp_launch_mode == "per_node":
+        if not self.legacy_dp_per_gpu:
             return self._dp_per_node_endpoints_to_processes(
                 endpoints,
                 base_sys_port=base_sys_port,
@@ -567,6 +589,7 @@ class VLLMProtocol:
 
             local_dp_size = len(endpoint.gpu_indices)
             dp_rpc_port = port_allocator.next_dp_rpc_port(endpoint.leader_node)
+            kv_events_base_port = port_allocator.next_kv_events_port_block(dp_size)
             nixl_base_port = port_allocator.next_nixl_port_block(dp_size)
             dp_start_rank = 0
 
@@ -583,7 +606,8 @@ class VLLMProtocol:
                         bootstrap_port=(
                             port_allocator.next_bootstrap_port(node) if endpoint.mode == "prefill" else None
                         ),
-                        kv_events_port=port_allocator.next_kv_events_port_block(local_dp_size),
+                        # vLLM adds the global DP rank to this endpoint-wide base.
+                        kv_events_port=kv_events_base_port,
                         nixl_port=nixl_base_port,
                         dp_rpc_port=dp_rpc_port,
                         het_group=endpoint.het_group,
@@ -672,7 +696,7 @@ class VLLMProtocol:
 
         # Check if this is DP+EP mode (data-parallel-size set)
         is_dp_mode = self._is_dp_mode(mode)
-        if is_dp_mode and self.dp_launch_mode == "per_node":
+        if is_dp_mode and not self.legacy_dp_per_gpu:
             rpc_port_kebab = config.pop("data-parallel-rpc-port", None)
             rpc_port_snake = config.pop("data_parallel_rpc_port", None)
             config_dp_rpc_port = rpc_port_kebab or rpc_port_snake
@@ -683,6 +707,8 @@ class VLLMProtocol:
             config.pop("data_parallel_size_local", None)
             config.pop("data-parallel-start-rank", None)
             config.pop("data_parallel_start_rank", None)
+            config.pop("data-parallel-hybrid-lb", None)
+            config.pop("data_parallel_hybrid_lb", None)
 
             cmd.extend(
                 [
@@ -694,15 +720,9 @@ class VLLMProtocol:
                     leader_ip,
                     "--data-parallel-rpc-port",
                     str(dp_rpc_port),
+                    "--data-parallel-hybrid-lb",
                 ]
             )
-
-            hybrid_lb = config.get("data-parallel-hybrid-lb", config.get("data_parallel_hybrid_lb", False))
-            hybrid_lb_enabled = hybrid_lb is True or (
-                isinstance(hybrid_lb, str) and hybrid_lb.strip().lower() in {"1", "true", "yes", "on"}
-            )
-            if process.node_rank > 0 and not hybrid_lb_enabled:
-                cmd.append("--headless")
         elif is_dp_mode:
             # DP+EP mode: each GPU runs its own process
             # process.node_rank is the dp_rank (set in endpoints_to_processes)
@@ -717,6 +737,8 @@ class VLLMProtocol:
             # Pop from config so it doesn't get added again by _config_to_cli_args
             config.pop("data-parallel-rpc-port", None)
             config.pop("data_parallel_rpc_port", None)
+            config.pop("data-parallel-hybrid-lb", None)
+            config.pop("data_parallel_hybrid_lb", None)
 
             cmd.extend(
                 [
