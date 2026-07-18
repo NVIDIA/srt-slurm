@@ -5,7 +5,9 @@
 
 from types import SimpleNamespace
 
+from srtctl.backends import VLLMProtocol, VLLMServerConfig
 from srtctl.cli.mixins.benchmark_stage import _get_health_expectations, _vllm_data_parallel_size
+from srtctl.core.topology import Endpoint
 
 
 def _config(frontend_type, backend_type, *, num_prefill=0, num_decode=0, num_agg=0, vllm_config=None):
@@ -87,3 +89,76 @@ def test_vllm_data_parallel_size_reads_both_key_styles_and_defaults():
 
     non_vllm = _config("dynamo", "sglang")
     assert _vllm_data_parallel_size(non_vllm, "prefill") == 1
+
+
+def test_dynamo_vllm_default_uses_per_node_hybrid_registration_count():
+    backend = VLLMProtocol(
+        vllm_config=VLLMServerConfig(
+            prefill={"data-parallel-size": 8},
+            decode={"data-parallel-size": 4},
+        )
+    )
+    config = SimpleNamespace(
+        frontend=SimpleNamespace(type="dynamo"),
+        backend=backend,
+        resources=SimpleNamespace(num_prefill=1, num_decode=1, num_agg=0),
+    )
+    processes = backend.endpoints_to_processes(
+        [
+            Endpoint(
+                mode="prefill",
+                index=0,
+                nodes=("node0", "node1"),
+                gpu_indices=frozenset(range(4)),
+                gpus_per_node=4,
+            ),
+            Endpoint(
+                mode="decode",
+                index=0,
+                nodes=("node2",),
+                gpu_indices=frozenset(range(4)),
+                gpus_per_node=4,
+            ),
+        ]
+    )
+
+    n_prefill, n_decode, _count_desc, num_workers = _get_health_expectations(config, processes)
+
+    assert (n_prefill, n_decode, num_workers) == (2, 1, 3)
+
+
+def test_dynamo_vllm_legacy_uses_per_gpu_registration_count():
+    backend = VLLMProtocol(
+        legacy_dp_per_gpu=True,
+        vllm_config=VLLMServerConfig(
+            prefill={"data-parallel-size": 8},
+            decode={"data-parallel-size": 4},
+        ),
+    )
+    config = SimpleNamespace(
+        frontend=SimpleNamespace(type="dynamo"),
+        backend=backend,
+        resources=SimpleNamespace(num_prefill=1, num_decode=1, num_agg=0),
+    )
+    processes = backend.endpoints_to_processes(
+        [
+            Endpoint(
+                mode="prefill",
+                index=0,
+                nodes=("node0", "node1"),
+                gpu_indices=frozenset(range(4)),
+                gpus_per_node=4,
+            ),
+            Endpoint(
+                mode="decode",
+                index=0,
+                nodes=("node2",),
+                gpu_indices=frozenset(range(4)),
+                gpus_per_node=4,
+            ),
+        ]
+    )
+
+    n_prefill, n_decode, _count_desc, num_workers = _get_health_expectations(config, processes)
+
+    assert (n_prefill, n_decode, num_workers) == (8, 4, 12)

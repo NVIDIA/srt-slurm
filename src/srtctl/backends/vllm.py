@@ -191,6 +191,10 @@ class VLLMProtocol:
     # node pools. Defaults off to preserve the original one-node-only policy.
     allow_prefill_decode_colocation_across_nodes: bool = False
 
+    # Compatibility escape hatch for the previous DP layout. By default,
+    # one hybrid-LB process manages all local DP ranks on each node.
+    legacy_dp_per_gpu: bool = False
+
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
     # =========================================================================
@@ -198,7 +202,7 @@ class VLLMProtocol:
     # =========================================================================
 
     def get_srun_config(self) -> SrunConfig:
-        """vLLM uses per-process launching (one srun per node)."""
+        """vLLM launches one srun step for each generated process."""
         from srtctl.backends.base import SrunConfig
 
         return SrunConfig(mpi=None, oversubscribe=False, launch_per_endpoint=False)
@@ -404,7 +408,7 @@ class VLLMProtocol:
         """Check if this mode uses Data Parallel + Expert Parallel pattern.
 
         DP+EP mode is detected when data-parallel-size is set in the mode's config.
-        In this mode, each GPU runs its own process (rather than TP across GPUs).
+        The default layout owns all local ranks in one process per node.
         """
         config = self.get_config_for_mode(mode)
         return config.get("data-parallel-size") is not None or config.get("data_parallel_size") is not None
@@ -413,6 +417,29 @@ class VLLMProtocol:
         """Get the data-parallel-size for a mode, or None if not in DP mode."""
         config = self.get_config_for_mode(mode)
         return config.get("data-parallel-size") or config.get("data_parallel_size")
+
+    def get_expected_dynamo_worker_counts(self, processes: Sequence[Process]) -> tuple[int, int]:
+        """Return generate-instance counts for the generated process topology.
+
+        External DP registers one instance per GPU process. Hybrid DP registers
+        one instance per node process. Standard multi-node TP registers only the
+        endpoint leader, so non-DP processes are grouped by logical endpoint.
+        """
+        grouped: dict[tuple[WorkerMode, int], list[Process]] = {}
+        for process in processes:
+            key = (process.endpoint_mode, process.endpoint_index)
+            grouped.setdefault(key, []).append(process)
+
+        prefill_count = 0
+        decode_count = 0
+        for (mode, _endpoint_index), endpoint_processes in grouped.items():
+            registrations = len(endpoint_processes) if self._is_dp_mode(mode) else 1
+            if mode == "prefill":
+                prefill_count += registrations
+            else:
+                decode_count += registrations
+
+        return prefill_count, decode_count
 
     def should_set_cuda_visible_devices(self, process: Process) -> bool:
         """Whether worker_stage should set CUDA_VISIBLE_DEVICES.
@@ -431,7 +458,8 @@ class VLLMProtocol:
     ) -> list[Process]:
         """Convert endpoints to processes.
 
-        For DP+EP mode (data-parallel-size set), creates one process per GPU.
+        DP+EP mode uses one hybrid-LB process per node by default. The legacy
+        compatibility flag restores one external-LB process per GPU.
         For standard TP mode, creates one process per node.
         """
         from srtctl.core.topology import NodePortAllocator, Process, endpoints_to_processes
@@ -442,6 +470,13 @@ class VLLMProtocol:
         if not has_dp_mode:
             # Standard TP mode: one process per node
             return endpoints_to_processes(endpoints, base_sys_port=base_sys_port, port_allocator=port_allocator)
+
+        if not self.legacy_dp_per_gpu:
+            return self._dp_per_node_endpoints_to_processes(
+                endpoints,
+                base_sys_port=base_sys_port,
+                port_allocator=port_allocator,
+            )
 
         # DP+EP mode: one process per GPU
         processes: list[Process] = []
@@ -517,6 +552,69 @@ class VLLMProtocol:
                         )
                         current_sys_port += 1
                         dp_rank += 1
+
+        return processes
+
+    def _dp_per_node_endpoints_to_processes(
+        self,
+        endpoints: list[Endpoint],
+        base_sys_port: int = DYN_SYSTEM_PORT_BASE,
+        port_allocator: NodePortAllocator | None = None,
+    ) -> list[Process]:
+        """Convert DP endpoints to one process per node."""
+        from srtctl.core.topology import NodePortAllocator, Process, endpoints_to_processes
+
+        processes: list[Process] = []
+        current_sys_port = base_sys_port
+        if port_allocator is None:
+            port_allocator = NodePortAllocator()
+
+        for endpoint in endpoints:
+            if not self._is_dp_mode(endpoint.mode):
+                non_dp = endpoints_to_processes(
+                    [endpoint],
+                    base_sys_port=current_sys_port,
+                    port_allocator=port_allocator,
+                )
+                processes.extend(non_dp)
+                current_sys_port += len(non_dp)
+                continue
+
+            dp_size = self._get_dp_size(endpoint.mode) or endpoint.total_gpus
+            if dp_size != endpoint.total_gpus:
+                raise ValueError(
+                    f"{endpoint.mode} data-parallel-size={dp_size} does not match "
+                    f"the endpoint's {endpoint.total_gpus} allocated GPUs"
+                )
+
+            local_dp_size = len(endpoint.gpu_indices)
+            dp_rpc_port = port_allocator.next_dp_rpc_port(endpoint.leader_node)
+            kv_events_base_port = port_allocator.next_kv_events_port_block(dp_size)
+            nixl_base_port = port_allocator.next_nixl_port_block(dp_size)
+            dp_start_rank = 0
+
+            for node in endpoint.nodes:
+                processes.append(
+                    Process(
+                        node=node,
+                        gpu_indices=endpoint.gpu_indices,
+                        sys_port=current_sys_port,
+                        http_port=port_allocator.next_http_port(node),
+                        endpoint_mode=endpoint.mode,
+                        endpoint_index=endpoint.index,
+                        node_rank=dp_start_rank,
+                        bootstrap_port=(
+                            port_allocator.next_bootstrap_port(node) if endpoint.mode == "prefill" else None
+                        ),
+                        # vLLM adds the global DP rank to this endpoint-wide base.
+                        kv_events_port=kv_events_base_port,
+                        nixl_port=nixl_base_port,
+                        dp_rpc_port=dp_rpc_port,
+                        het_group=endpoint.het_group,
+                    )
+                )
+                current_sys_port += 1
+                dp_start_rank += local_dp_size
 
         return processes
 
@@ -598,7 +696,34 @@ class VLLMProtocol:
 
         # Check if this is DP+EP mode (data-parallel-size set)
         is_dp_mode = self._is_dp_mode(mode)
-        if is_dp_mode:
+        if is_dp_mode and not self.legacy_dp_per_gpu:
+            rpc_port_kebab = config.pop("data-parallel-rpc-port", None)
+            rpc_port_snake = config.pop("data_parallel_rpc_port", None)
+            config_dp_rpc_port = rpc_port_kebab or rpc_port_snake
+            dp_rpc_port = process.dp_rpc_port or config_dp_rpc_port or VLLM_DATA_PARALLEL_RPC_PORT
+
+            # These values are derived from the allocated process topology.
+            config.pop("data-parallel-size-local", None)
+            config.pop("data_parallel_size_local", None)
+            config.pop("data-parallel-start-rank", None)
+            config.pop("data_parallel_start_rank", None)
+            config.pop("data-parallel-hybrid-lb", None)
+            config.pop("data_parallel_hybrid_lb", None)
+
+            cmd.extend(
+                [
+                    "--data-parallel-size-local",
+                    str(len(process.gpu_indices)),
+                    "--data-parallel-start-rank",
+                    str(process.node_rank),
+                    "--data-parallel-address",
+                    leader_ip,
+                    "--data-parallel-rpc-port",
+                    str(dp_rpc_port),
+                    "--data-parallel-hybrid-lb",
+                ]
+            )
+        elif is_dp_mode:
             # DP+EP mode: each GPU runs its own process
             # process.node_rank is the dp_rank (set in endpoints_to_processes)
             dp_rank = process.node_rank
@@ -612,6 +737,8 @@ class VLLMProtocol:
             # Pop from config so it doesn't get added again by _config_to_cli_args
             config.pop("data-parallel-rpc-port", None)
             config.pop("data_parallel_rpc_port", None)
+            config.pop("data-parallel-hybrid-lb", None)
+            config.pop("data_parallel_hybrid_lb", None)
 
             cmd.extend(
                 [

@@ -422,6 +422,41 @@ Each worker leader gets a globally unique port starting at 5550:
 | decode_0  | 5552 |
 | decode_1  | 5553 |
 
+### vLLM DP process layout
+
+vLLM data-parallel endpoints use hybrid load balancing with one top-level
+process per node by default. Each process manages the DP ranks on its local
+GPUs and registers that rank range with Dynamo:
+
+```yaml
+backend:
+  type: vllm
+  vllm_config:
+    prefill:
+      data-parallel-size: 8
+    decode:
+      data-parallel-size: 16
+```
+
+srtslurm derives `--data-parallel-size-local` and
+`--data-parallel-start-rank` from the allocated topology and enables
+`--data-parallel-hybrid-lb`. Do not set those flags manually.
+
+Set `legacy_dp_per_gpu: true` to restore the previous external-load-balancing
+layout, which launches one top-level process and Dynamo engine per DP rank:
+
+```yaml
+backend:
+  type: vllm
+  legacy_dp_per_gpu: true
+  vllm_config:
+    decode:
+      data-parallel-size: 16
+```
+
+The compatibility flag applies to every vLLM DP role in the deployment.
+Standard non-DP tensor/pipeline-parallel endpoints are unaffected.
+
 ### TRTLLM Backend
 
 When using `type: trtllm`, the backend uses TRTLLM with MPI-style launching:
