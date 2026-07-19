@@ -105,6 +105,7 @@ class SweepOrchestrator(
                 gpus_per_decode=r.gpus_per_decode,
                 decode_nodes=self.runtime.nodes.decode_group,
                 gpus_per_node=r.gpus_per_node,
+                spread_workers=r.spread_workers,
             )
         return self.backend.allocate_endpoints(
             num_prefill=r.num_prefill,

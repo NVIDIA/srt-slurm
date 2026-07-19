@@ -101,6 +101,24 @@ class TestSrtConfigStructure:
         total_available = config.total_nodes * config.gpus_per_node
         assert total_needed <= total_available
 
+    def test_spread_workers_reserves_one_node_per_partial_worker(self):
+        """spread_workers increases the Slurm reservation for partial workers."""
+        from srtctl.core.schema import ResourceConfig
+
+        config = ResourceConfig(
+            gpu_type="b200",
+            gpus_per_node=8,
+            prefill_nodes=1,
+            decode_nodes=2,
+            prefill_workers=3,
+            decode_workers=2,
+            _explicit_gpus_per_prefill=2,
+            _explicit_gpus_per_decode=4,
+            spread_workers=True,
+        )
+
+        assert config.total_nodes == 5
+
 
 class TestIdentityConfig:
     """Tests for the identity block (virtual identity for runtime verification)."""

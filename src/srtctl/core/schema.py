@@ -497,8 +497,7 @@ class ResourceConfig:
     agg_workers: int | None = None
 
     # If True, place each partial-node worker on its own node instead of
-    # packing multiple onto the same node. Caller must reserve enough nodes
-    # (e.g. set decode_nodes=decode_workers when gpus_per_decode<gpus_per_node).
+    # packing multiple onto the same node.
     spread_workers: bool = False
 
     # SLURM heterogeneous-job opt-in. Tri-state: None defers to the cluster
@@ -547,9 +546,26 @@ class ResourceConfig:
 
     @property
     def total_nodes(self) -> int:
+        def nodes_for_workers(workers: int, gpus_per_worker: int) -> int:
+            if not self.spread_workers or workers <= 0:
+                return 0
+            nodes_per_worker = (gpus_per_worker + self.gpus_per_node - 1) // self.gpus_per_node
+            return workers * nodes_per_worker
+
         if self.is_disaggregated:
-            return (self.prefill_nodes or 0) + (self.decode_nodes or 0)
-        return self.agg_nodes or 1
+            prefill_nodes = max(
+                self.prefill_nodes or 0,
+                nodes_for_workers(self.num_prefill, self.gpus_per_prefill),
+            )
+            decode_nodes = max(
+                self.decode_nodes or 0,
+                nodes_for_workers(self.num_decode, self.gpus_per_decode),
+            )
+            return prefill_nodes + decode_nodes
+        return max(
+            self.agg_nodes or 1,
+            nodes_for_workers(self.num_agg, self.gpus_per_agg),
+        )
 
     @property
     def num_prefill(self) -> int:
@@ -628,8 +644,18 @@ class ResourceConfig:
         enabled = self.het_jobs if self.het_jobs is not None else cluster_default
         if not enabled or not self.is_disaggregated:
             return None
-        prefill_nodes = (self.prefill_nodes or 0) + (1 if infra_dedicated else 0)
-        decode_nodes = self.decode_nodes or 0
+        prefill_nodes = max(
+            self.prefill_nodes or 0,
+            self.num_prefill * ((self.gpus_per_prefill + self.gpus_per_node - 1) // self.gpus_per_node)
+            if self.spread_workers
+            else 0,
+        ) + (1 if infra_dedicated else 0)
+        decode_nodes = max(
+            self.decode_nodes or 0,
+            self.num_decode * ((self.gpus_per_decode + self.gpus_per_node - 1) // self.gpus_per_node)
+            if self.spread_workers
+            else 0,
+        )
         return (
             HetComponent(
                 name="prefill",
@@ -1775,14 +1801,18 @@ class SrtConfig:
     @property
     def total_nodes(self) -> int:
         """Worker node count, adjusted for backend-specific packing."""
-        if isinstance(self.backend, VLLMProtocol) and self.backend.should_colocate_prefill_decode(
-            num_prefill=self.resources.num_prefill,
-            num_decode=self.resources.num_decode,
-            num_agg=self.resources.num_agg,
-            gpus_per_prefill=self.resources.gpus_per_prefill,
-            gpus_per_decode=self.resources.gpus_per_decode,
-            gpus_per_agg=self.resources.gpus_per_agg,
-            gpus_per_node=self.resources.gpus_per_node,
+        if (
+            not self.resources.spread_workers
+            and isinstance(self.backend, VLLMProtocol)
+            and self.backend.should_colocate_prefill_decode(
+                num_prefill=self.resources.num_prefill,
+                num_decode=self.resources.num_decode,
+                num_agg=self.resources.num_agg,
+                gpus_per_prefill=self.resources.gpus_per_prefill,
+                gpus_per_decode=self.resources.gpus_per_decode,
+                gpus_per_agg=self.resources.gpus_per_agg,
+                gpus_per_node=self.resources.gpus_per_node,
+            )
         ):
             total_worker_gpus = (
                 self.resources.prefill_gpus

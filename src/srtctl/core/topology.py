@@ -406,8 +406,20 @@ def allocate_endpoints(
         nodes_per_worker = (gpus_per_worker + gpus_per_node - 1) // gpus_per_node
 
         for i in range(count):
+            def require_nodes(required: int) -> None:
+                available = len(available_nodes) - node_idx
+                if available < required:
+                    raise ValueError(
+                        f"Insufficient worker nodes for {mode} worker {i}: "
+                        f"need {required} node(s) at allocation index {node_idx}, "
+                        f"but only {available} remain out of {len(available_nodes)} reserved. "
+                        "Increase the worker-node reservation or enable the automatic "
+                        "spread_workers node calculation."
+                    )
+
             if nodes_per_worker >= 1 and gpus_per_worker >= gpus_per_node:
                 # Multi-node or full-node worker
+                require_nodes(nodes_per_worker)
                 worker_nodes = tuple(available_nodes[node_idx + j] for j in range(nodes_per_worker))
                 node_idx += nodes_per_worker
 
@@ -426,6 +438,7 @@ def allocate_endpoints(
                     node_idx += 1
                     gpu_offset = 0
 
+                require_nodes(1)
                 worker_node = available_nodes[node_idx]
                 gpu_indices = frozenset(range(gpu_offset, gpu_offset + gpus_per_worker))
                 gpu_offset += gpus_per_worker
@@ -476,6 +489,7 @@ def allocate_endpoints_het(
     gpus_per_decode: int,
     decode_nodes: Sequence[str],
     gpus_per_node: int,
+    spread_workers: bool = False,
 ) -> list[Endpoint]:
     """Allocate endpoints for a SLURM heterogeneous job.
 
@@ -498,6 +512,7 @@ def allocate_endpoints_het(
         gpus_per_agg=0,
         gpus_per_node=gpus_per_node,
         available_nodes=prefill_nodes,
+        spread_workers=spread_workers,
     )
     decode_eps = allocate_endpoints(
         num_prefill=0,
@@ -508,6 +523,7 @@ def allocate_endpoints_het(
         gpus_per_agg=0,
         gpus_per_node=gpus_per_node,
         available_nodes=decode_nodes,
+        spread_workers=spread_workers,
     )
     # Endpoint is frozen; re-emit with het_group set.
     tagged: list[Endpoint] = []

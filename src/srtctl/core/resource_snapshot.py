@@ -130,6 +130,7 @@ def _backend_gpus_by_node(config: SrtConfig, runtime: RuntimeContext) -> dict[st
                 gpus_per_decode=resources.gpus_per_decode,
                 decode_nodes=runtime.nodes.decode_group,
                 gpus_per_node=resources.gpus_per_node,
+                spread_workers=resources.spread_workers,
             )
         else:
             endpoints = config.backend.allocate_endpoints(

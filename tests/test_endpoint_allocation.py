@@ -189,6 +189,21 @@ class TestAllocateEndpoints:
         assert decode_eps[0].nodes == ("node0",)
         assert decode_eps[1].nodes == ("node0",)
 
+    def test_spread_workers_reports_undersized_allocation(self):
+        """An undersized spread allocation fails clearly rather than indexing past nodes."""
+        with pytest.raises(ValueError, match="Insufficient worker nodes for decode worker 0"):
+            allocate_endpoints(
+                num_prefill=3,
+                num_decode=2,
+                num_agg=0,
+                gpus_per_prefill=2,
+                gpus_per_decode=4,
+                gpus_per_agg=0,
+                gpus_per_node=8,
+                available_nodes=("node0", "node1", "node2"),
+                spread_workers=True,
+            )
+
     def test_prefill_decode_never_share_node_partial_allocation(self):
         """Test that prefill and decode workers are never colocated on the same node.
 
