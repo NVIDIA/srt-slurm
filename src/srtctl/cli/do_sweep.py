@@ -615,6 +615,14 @@ class SweepOrchestrator(
                 env_to_set["EVAL_CONC"] = str(max(conc_list))
                 logger.info("Eval concurrency (max of %s): %s", conc_list, env_to_set["EVAL_CONC"])
 
+        bash_preamble = None
+        if self.config.setup_script:
+            script_path = f"/configs/{self.config.setup_script}"
+            bash_preamble = (
+                f"echo 'Running setup script: {script_path}' && "
+                f"if [ -f '{script_path}' ]; then bash '{script_path}'; else echo 'WARNING: {script_path} not found'; fi"
+            )
+
         proc = start_srun_process(
             command=cmd,
             nodelist=[self.runtime.nodes.head],
@@ -622,6 +630,7 @@ class SweepOrchestrator(
             container_image=str(self.runtime.container_image),
             container_mounts=self.runtime.container_mounts,
             env_to_set=env_to_set,
+            bash_preamble=bash_preamble,
             het_group=self.runtime.nodes.het_group_for(self.runtime.nodes.head),
         )
 
