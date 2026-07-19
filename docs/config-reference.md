@@ -422,6 +422,36 @@ Each worker leader gets a globally unique port starting at 5550:
 | decode_0  | 5552 |
 | decode_1  | 5553 |
 
+### vLLM DP launch mode
+
+vLLM data-parallel endpoints use one process per GPU by default. Set
+`dp_launch_mode: per_node` to launch one process per node and let vLLM
+manage the local DP ranks in a shared CUDA namespace:
+
+```yaml
+backend:
+  type: vllm
+  dp_launch_mode: per_node
+  vllm_config:
+    prefill:
+      data-parallel-size: 8
+      data-parallel-hybrid-lb: true
+    decode:
+      data-parallel-size: 16
+      data-parallel-hybrid-lb: true
+```
+
+| Value      | Process layout                                      |
+| ---------- | --------------------------------------------------- |
+| `per_gpu`  | One process per DP rank/GPU (default)               |
+| `per_node` | One process manages all DP ranks allocated per node |
+
+In `per_node` mode, srtslurm derives `--data-parallel-size-local` and
+`--data-parallel-start-rank` from the allocated topology. Do not set those
+two flags manually. Set `data-parallel-hybrid-lb: true` when the frontend
+must route to an exact DP rank; without hybrid LB, non-leader node processes
+are launched with `--headless` for vLLM's internal DP load balancer.
+
 ### TRTLLM Backend
 
 When using `type: trtllm`, the backend uses TRTLLM with MPI-style launching:
