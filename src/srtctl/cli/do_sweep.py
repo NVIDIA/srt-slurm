@@ -29,6 +29,7 @@ from srtctl.backends.vllm import MOONCAKE_STORE_CONFIG_FILENAME, VLLMProtocol
 from srtctl.cli.mixins import (
     BenchmarkStageMixin,
     FrontendStageMixin,
+    HostMemoryStageMixin,
     PostProcessStageMixin,
     TelemetryStageMixin,
     WorkerStageMixin,
@@ -80,6 +81,7 @@ def _build_mooncake_master_command() -> list[str]:
 class SweepOrchestrator(
     WorkerStageMixin,
     FrontendStageMixin,
+    HostMemoryStageMixin,
     TelemetryStageMixin,
     BenchmarkStageMixin,
     PostProcessStageMixin,
@@ -696,6 +698,12 @@ class SweepOrchestrator(
             # Pre-worker: stage the model to node-local storage (if configured).
             if self.runtime.staged_model_path is not None:
                 self._stage_model()
+
+            # Opt-in cleanup and host-memory sampling must start before vLLM
+            # creates or registers its CPU offload mmap.
+            host_memory_procs = self.prepare_host_memory_diagnostics()
+            for proc in host_memory_procs:
+                registry.add_process(proc)
 
             # Stage 2: Workers
             reporter.report(JobStatus.WORKERS, JobStage.WORKERS, "Starting workers")
