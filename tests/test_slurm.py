@@ -436,7 +436,7 @@ def test_worker_stage_unsets_vllm_port_for_multinode_endpoint(tmp_path: Path) ->
     mixin.config = SimpleNamespace(
         setup_script=None,
         frontend=SimpleNamespace(type="sglang"),
-        dynamo=SimpleNamespace(install=False, request_plane="nats"),
+        dynamo=SimpleNamespace(install=False, request_plane="nats", event_plane=None),
         observability=ObservabilityConfig(),
         profiling=SimpleNamespace(enabled=False, is_nsys=False),
         backend=backend,
