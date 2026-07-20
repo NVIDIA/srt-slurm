@@ -138,11 +138,8 @@ class WorkerStageMixin:
         if profiling.enabled:
             (self.runtime.log_dir / "profiles" / mode).mkdir(parents=True, exist_ok=True)
         if profiling.is_nsys:
-            # Include CUDA_VISIBLE_DEVICES in the output name so per-DP-rank nsys
-            # files don't collide: with data parallelism (e.g. vLLM DP=4) several
-            # ranks share one logical endpoint and the same worker index on a node,
-            # so without the %q{} GPU qualifier they'd all write the same file.
-            nsys_output = f"/logs/profiles/{mode}/{process.node}_{mode}_w{index}_profile_gpu%q{{CUDA_VISIBLE_DEVICES}}"
+            gpu_label = process.cuda_visible_devices.replace(",", "-")
+            nsys_output = f"/logs/profiles/{mode}/{process.node}_{mode}_w{index}_profile_gpu{gpu_label}"
             nsys_prefix = profiling.get_nsys_prefix(
                 nsys_output, frontend_type=self.config.frontend.type, backend_type=self.config.backend_type
             )
@@ -199,8 +196,8 @@ class WorkerStageMixin:
             profile_dir = str(self.runtime.log_dir / "profiles")
             env_to_set.update(profiling.get_env_vars(mode, profile_dir))
 
-        # Set CUDA_VISIBLE_DEVICES if not using all GPUs
-        if len(process.gpu_indices) < self.runtime.gpus_per_node:
+        should_set_cvd = getattr(self.backend, "should_set_cuda_visible_devices", lambda _process: True)
+        if should_set_cvd(process) and len(process.gpu_indices) < self.runtime.gpus_per_node:
             env_to_set["CUDA_VISIBLE_DEVICES"] = process.cuda_visible_devices
 
         # Add backend-specific process environment variables (e.g., unique ports)
@@ -231,6 +228,13 @@ class WorkerStageMixin:
         fp_cmd = f"( {fp_cmd} )"
         bash_preamble = f"{bash_preamble} && {fp_cmd}" if bash_preamble else fp_cmd
 
+        # vLLM uses VLLM_PORT as the initial port for its internal message
+        # queues. In a multi-node endpoint, concurrent TP ranks inherit the
+        # same value and can race while probing and binding remote TCP queues.
+        # Let vLLM choose an ephemeral base port instead.
+        endpoint_nodes = {endpoint_process.node for endpoint_process in endpoint_processes}
+        env_to_unset = ["VLLM_PORT"] if self.backend.type == "vllm" and len(endpoint_nodes) > 1 else None
+
         proc = start_srun_process(
             command=cmd,
             nodelist=[process.node],
@@ -238,6 +242,7 @@ class WorkerStageMixin:
             container_image=str(self.runtime.container_image),
             container_mounts=self.runtime.container_mounts,
             env_to_set=env_to_set,
+            env_to_unset=env_to_unset,
             bash_preamble=bash_preamble,
             srun_options=self.runtime.srun_options,
             srun_export_env=CONTAINER_REMAP_ROOT_EXPORT if installs_dynamo(self.config) else None,
@@ -330,8 +335,8 @@ class WorkerStageMixin:
             profile_dir = str(self.runtime.log_dir / "profiles")
             env_to_set.update(profiling.get_env_vars(mode, profile_dir))
 
-        # Set CUDA_VISIBLE_DEVICES if not using all GPUs on the node
-        if len(leader.gpu_indices) < self.runtime.gpus_per_node:
+        should_set_cvd = getattr(self.backend, "should_set_cuda_visible_devices", lambda _process: True)
+        if should_set_cvd(leader) and len(leader.gpu_indices) < self.runtime.gpus_per_node:
             env_to_set["CUDA_VISIBLE_DEVICES"] = leader.cuda_visible_devices
 
         # Add mooncake worker env vars if configured (SGLang only). For MPI-style

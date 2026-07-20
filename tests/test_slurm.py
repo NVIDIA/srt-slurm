@@ -144,6 +144,26 @@ def test_srun_export_env_omitted_adds_no_export_flag() -> None:
     assert not any(str(arg).startswith("--export") for arg in srun_cmd)
 
 
+def test_start_srun_unsets_env_after_exports_before_preamble() -> None:
+    with (
+        patch("srtctl.core.slurm.get_slurm_job_id", return_value="12345"),
+        patch("srtctl.core.slurm._get_cluster_bash_preamble", return_value=None),
+        patch("subprocess.Popen") as mock_popen,
+    ):
+        mock_popen.return_value = MagicMock()
+        start_srun_process(
+            ["python3", "-m", "server"],
+            env_to_set={"VLLM_PORT": "20000"},
+            env_to_unset=["VLLM_PORT"],
+            bash_preamble="echo preamble",
+        )
+
+    bash_cmd = _built_bash_command(mock_popen)
+    assert bash_cmd.index("export VLLM_PORT=20000") < bash_cmd.index("unset -- VLLM_PORT")
+    assert bash_cmd.index("unset -- VLLM_PORT") < bash_cmd.index("echo preamble")
+    assert bash_cmd.index("echo preamble") < bash_cmd.index("python3 -m server")
+
+
 def test_wrapped_nonfatal_hook_does_not_mask_prior_preamble_failure() -> None:
     bash_cmd = "false && ( false || true ) && echo main"
 
@@ -158,6 +178,7 @@ def test_worker_stage_wraps_nonfatal_fingerprint_hook(tmp_path: Path) -> None:
     backend.build_worker_command.return_value = ["python3", "-m", "worker"]
     backend.get_environment_for_mode.return_value = {}
     backend.get_process_environment.return_value = {}
+    backend.type = "vllm"
 
     mixin = WorkerStageMixin()
     mixin.config = SimpleNamespace(
@@ -201,6 +222,7 @@ def test_worker_stage_wraps_nonfatal_fingerprint_hook(tmp_path: Path) -> None:
     assert "setup.sh" in bash_preamble
     assert "/configs/patches/${setup_script}" in bash_preamble
     assert bash_preamble.endswith("&& ( fingerprint || true )")
+    assert mock_srun.call_args.kwargs["env_to_unset"] is None
 
 
 def _remap_worker_mixin(tmp_path: Path, *, frontend_type: str, dynamo_install: bool):
@@ -401,3 +423,52 @@ def test_start_srun_omits_het_group_when_none() -> None:
     srun_cmd = mock_popen.call_args.args[0]
     for arg in srun_cmd:
         assert not str(arg).startswith("--het-group")
+
+
+def test_worker_stage_unsets_vllm_port_for_multinode_endpoint(tmp_path: Path) -> None:
+    backend = MagicMock()
+    backend.type = "vllm"
+    backend.build_worker_command.return_value = ["python3", "-m", "worker"]
+    backend.get_environment_for_mode.return_value = {}
+    backend.get_process_environment.return_value = {}
+
+    mixin = WorkerStageMixin()
+    mixin.config = SimpleNamespace(
+        setup_script=None,
+        frontend=SimpleNamespace(type="sglang"),
+        dynamo=SimpleNamespace(install=False, request_plane="nats"),
+        observability=ObservabilityConfig(),
+        profiling=SimpleNamespace(enabled=False, is_nsys=False),
+        backend=backend,
+    )
+    mixin.runtime = SimpleNamespace(
+        log_dir=tmp_path,
+        head_node_ip="10.0.0.1",
+        infra_node_ip="10.0.0.1",
+        network_interface=None,
+        nodes=SimpleNamespace(infra="infra-node", worker=["node-a", "node-b"]),
+        gpus_per_node=8,
+        environment={},
+        container_image=Path("/container.sqsh"),
+        container_mounts={},
+        srun_options=[],
+    )
+    process = SimpleNamespace(
+        endpoint_mode="decode",
+        endpoint_index=0,
+        node="node-a",
+        sys_port=5000,
+        gpu_indices=list(range(8)),
+        cuda_visible_devices="0,1,2,3,4,5,6,7",
+        het_group=None,
+    )
+    peer_process = SimpleNamespace(node="node-b")
+
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
+    ):
+        mock_srun.return_value = MagicMock()
+        mixin.start_worker(process, [process, peer_process])
+
+    assert mock_srun.call_args.kwargs["env_to_unset"] == ["VLLM_PORT"]

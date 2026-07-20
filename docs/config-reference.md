@@ -422,6 +422,36 @@ Each worker leader gets a globally unique port starting at 5550:
 | decode_0  | 5552 |
 | decode_1  | 5553 |
 
+### vLLM DP launch mode
+
+vLLM data-parallel endpoints use one process per GPU by default. Set
+`dp_launch_mode: per_node` to launch one process per node and let vLLM
+manage the local DP ranks in a shared CUDA namespace:
+
+```yaml
+backend:
+  type: vllm
+  dp_launch_mode: per_node
+  vllm_config:
+    prefill:
+      data-parallel-size: 8
+      data-parallel-hybrid-lb: true
+    decode:
+      data-parallel-size: 16
+      data-parallel-hybrid-lb: true
+```
+
+| Value      | Process layout                                      |
+| ---------- | --------------------------------------------------- |
+| `per_gpu`  | One process per DP rank/GPU (default)               |
+| `per_node` | One process manages all DP ranks allocated per node |
+
+In `per_node` mode, srtslurm derives `--data-parallel-size-local` and
+`--data-parallel-start-rank` from the allocated topology. Do not set those
+two flags manually. Set `data-parallel-hybrid-lb: true` when the frontend
+must route to an exact DP rank; without hybrid LB, non-leader node processes
+are launched with `--headless` for vLLM's internal DP load balancer.
+
 ### TRTLLM Backend
 
 When using `type: trtllm`, the backend uses TRTLLM with MPI-style launching:
@@ -518,16 +548,23 @@ benchmark:
   osl: 1024                          # Required: Output sequence length
   concurrencies: [256, 512]          # Required: Concurrency levels to test
   req_rate: "inf"                    # Optional: Request rate (default: "inf")
+  reuse_http_connections: false      # Optional: Reuse HTTP connections (default: false)
 ```
 
-| Field           | Type        | Required | Default | Description                                |
-| --------------- | ----------- | -------- | ------- | ------------------------------------------ |
-| `isl`           | int         | Yes      | -       | Input sequence length                      |
-| `osl`           | int         | Yes      | -       | Output sequence length                     |
-| `concurrencies` | list/string | Yes      | -       | Concurrency levels (list or "NxM" format)  |
-| `req_rate`      | string/int  | No       | "inf"   | Request rate                               |
+| Field                    | Type        | Required | Default | Description                                                   |
+| ------------------------ | ----------- | -------- | ------- | ------------------------------------------------------------- |
+| `isl`                    | int         | Yes      | -       | Input sequence length                                         |
+| `osl`                    | int         | Yes      | -       | Output sequence length                                        |
+| `concurrencies`          | list/string | Yes      | -       | Concurrency levels (list or "NxM" format)                     |
+| `req_rate`               | string/int  | No       | "inf"   | Request rate                                                  |
+| `reuse_http_connections` | bool        | No       | `false` | Reuse a process-scoped HTTP pool for the SA-Bench Dynamo adapter |
 
 **Concurrencies format**: Can be a list `[128, 256, 512]` or x-separated string `"128x256x512"`.
+
+When `reuse_http_connections` is enabled, each `benchmark_serving.py` process
+uses one keep-alive connection pool. Warmup and formal runs remain isolated in
+separate processes and therefore never share a pool. The option currently
+applies only to SA-Bench's Dynamo HTTP adapter.
 
 ### sglang-bench
 
