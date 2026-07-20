@@ -250,6 +250,9 @@ class SGLangProtocol:
         gpus_per_agg: int,
         gpus_per_node: int,
         available_nodes: Sequence[str],
+        prefill_nodes: int | None = None,
+        prefill_workers_per_node: int | None = None,
+        spread_decode_workers: bool = False,
         spread_workers: bool = False,
     ) -> list["Endpoint"]:
         """Allocate endpoints to nodes."""
@@ -264,6 +267,9 @@ class SGLangProtocol:
             gpus_per_agg=gpus_per_agg,
             gpus_per_node=gpus_per_node,
             available_nodes=available_nodes,
+            prefill_nodes=prefill_nodes,
+            prefill_workers_per_node=prefill_workers_per_node,
+            spread_decode_workers=spread_decode_workers,
             spread_workers=spread_workers,
         )
 
