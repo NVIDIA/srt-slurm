@@ -96,6 +96,13 @@ fi
 
 export INFMAX_CONTAINER_WORKSPACE="$WORKSPACE_ROOT"
 
+# Keep model weights in the cluster-wide HF_HOME, but isolate Hugging Face
+# dataset locks and Arrow caches per Slurm job. Shared dataset lock files can
+# be owned by another runner and make AIPerf fail before the benchmark starts.
+export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-${WORKSPACE_ROOT}/hf-datasets}"
+mkdir -p "$HF_DATASETS_CACHE"
+echo "Hugging Face dataset cache: ${HF_DATASETS_CACHE}"
+
 # InferenceX commit 303669b hardcodes --num-dataset-entries 393 in the helper.
 # AIPerf's Weka loaders load the full corpus when this flag is omitted, which
 # is the desired AgentX behavior here.

@@ -905,6 +905,14 @@ class TestAgenticRunner:
         assert "max_tokens=self._cap_output(creq)," in text
         assert '"capped_output_length": self._cap_output(creq)' in text
 
+    def test_agentic_bench_isolates_hf_dataset_cache(self):
+        """AIPerf dataset locks must not use the shared model-weight cache."""
+        script = SCRIPTS_DIR / "agentic" / "bench.sh"
+        text = script.read_text()
+
+        assert 'HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-${WORKSPACE_ROOT}/hf-datasets}"' in text
+        assert 'mkdir -p "$HF_DATASETS_CACHE"' in text
+
     def test_agentic_bench_honors_remote_frontend_endpoint(self):
         """AgentX can run on a benchmark node separate from the server."""
         script = SCRIPTS_DIR / "agentic" / "bench.sh"
