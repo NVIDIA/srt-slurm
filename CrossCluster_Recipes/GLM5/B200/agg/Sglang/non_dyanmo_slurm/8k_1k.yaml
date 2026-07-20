@@ -1,0 +1,89 @@
+# B200-FP8 GLM-5 aggregate serving recipe for 8K input / 1K output.
+# One TP8 worker on one 8xB200 node. The sweep ends at concurrency 256:
+# throughput is saturated there, while higher concurrencies only add TTFT.
+
+base:
+  name: "b200-fp8-glm5-agg-8k1k"
+
+  model:
+    path: "glm5-fp8"
+    container: "lmsysorg/sglang:v0.5.15.post1-cu130"
+    precision: "fp8"
+
+  identity:
+    model:
+      repo: "zai-org/GLM-5-FP8"
+      revision: "4f96cc5eec29dcee5d6ded54f7ffe889438f9516"
+    container:
+      image: "lmsysorg/sglang:v0.5.15.post1-cu130"
+
+  resources:
+    gpu_type: "b200"
+    gpus_per_node: 8
+    agg_nodes: 1
+    agg_workers: 1
+
+  frontend:
+    type: "sglang"
+    args:
+      worker-startup-timeout-secs: 7200
+      worker-startup-check-interval: 10
+
+  backend:
+    type: "sglang"
+
+    aggregated_environment:
+      PYTHONNOUSERSITE: "1"
+      PYTHONUNBUFFERED: "1"
+      SGLANG_ENABLE_JIT_DEEPGEMM: "1"
+      NCCL_CUMEM_ENABLE: "1"
+
+    sglang_config:
+      aggregated:
+        served-model-name: "GLM-5-FP8"
+        trust-remote-code: true
+
+        tensor-parallel-size: 8
+        data-parallel-size: 1
+        expert-parallel-size: 1
+
+        tool-call-parser: "glm47"
+        reasoning-parser: "glm45"
+        quantization: "fp8"
+        kv-cache-dtype: "fp8_e4m3"
+
+        attention-backend: "nsa"
+        nsa-decode-backend: "trtllm"
+        nsa-prefill-backend: "trtllm"
+        moe-runner-backend: "flashinfer_trtllm"
+
+        mem-fraction-static: 0.85
+        context-length: 9600
+        chunked-prefill-size: 32768
+        max-prefill-tokens: 32768
+
+        enable-flashinfer-allreduce-fusion: true
+        disable-radix-cache: true
+        stream-interval: 30
+        model-loader-extra-config: '{"enable_multithread_load": true}'
+
+  health_check:
+    max_attempts: 900
+    interval_seconds: 10
+
+  benchmark:
+    type: "sa-bench"
+    isl: 8192
+    osl: 1024
+    random_range_ratio: 0.8
+    req_rate: "inf"
+
+zip_override_agg_8k1k:
+  backend:
+    sglang_config:
+      aggregated:
+        max-running-requests: [4, 8, 16, 32, 64, 128, 256]
+        cuda-graph-max-bs:    [4, 8, 16, 32, 64, 128, 256]
+
+  benchmark:
+    concurrencies: ["4", "8", "16", "32", "64", "128", "256"]
