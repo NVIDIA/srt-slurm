@@ -314,6 +314,7 @@ def show_config_details(config: SrtConfig) -> None:
 
     show_extensions = (
         config.benchmark.type == "custom"
+        or config.benchmark.type == "aiperf"
         or config.benchmark.container_image
         or config.telemetry.enabled
         or mooncake_cfg is not None
@@ -328,6 +329,24 @@ def show_config_details(config: SrtConfig) -> None:
             details.add_row("benchmark", "type", config.benchmark.type)
             if config.benchmark.command:
                 details.add_row("benchmark", "command", config.benchmark.command)
+
+        # AIPerf fixed ISL/OSL sweep: surface the sweep shape and the aiperf-affecting config
+        # (aiperf_package -> AIPERF_PACKAGE env; aiperf_args -> extra CLI flags) so operators can
+        # verify them before submitting.
+        if config.benchmark.type == "aiperf":
+            b = config.benchmark
+            concurrencies = b.concurrencies
+            if isinstance(concurrencies, list):
+                concurrencies = "x".join(str(c) for c in concurrencies)
+            details.add_row("benchmark", "type", b.type)
+            details.add_row("benchmark", "isl / osl", f"{b.isl} / {b.osl}")
+            details.add_row("benchmark", "concurrencies", str(concurrencies))
+            details.add_row("benchmark", "endpoint_type", b.aiperf_endpoint_type or "chat")
+            if b.aiperf_package:
+                details.add_row("benchmark", "aiperf_package", b.aiperf_package)
+            for key, value in (b.aiperf_args or {}).items():
+                rendered = f"--{key}" if isinstance(value, bool) else f"--{key} {value}"
+                details.add_row("benchmark", "aiperf_args", rendered)
 
         # Surface a non-default benchmark container regardless of type — accuracy
         # benchmarks like AIME (run via type: custom + the NeMo Skills container)

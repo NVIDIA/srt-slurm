@@ -247,6 +247,29 @@ class TestDryRunExecutionExtensions:
         assert "container_image" in output
         assert "nvcr.io/nvidia/python:3.11" in output
 
+    def test_aiperf_benchmark_details_shown(self, capsys):
+        """AIPerf fixed ISL/OSL config (sweep shape + aiperf_package/aiperf_args) appears in dry-run."""
+        config = _make_config(
+            {
+                "benchmark": {
+                    "type": "aiperf",
+                    "isl": 1024,
+                    "osl": 1024,
+                    "concurrencies": "1x8x64",
+                    "aiperf_endpoint_type": "completions",
+                    "aiperf_package": "aiperf",
+                    "aiperf_args": {"benchmark-duration": 600},
+                }
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "Execution Extensions" in output
+        assert "aiperf" in output
+        assert "concurrencies" in output
+        assert "endpoint_type" in output
+        assert "aiperf_args" in output
+
     def test_telemetry_details_shown(self, capsys):
         config = _make_config(
             {

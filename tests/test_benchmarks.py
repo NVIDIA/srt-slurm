@@ -17,6 +17,7 @@ class TestBenchmarkRegistry:
         benchmarks = list_benchmarks()
         assert "custom" in benchmarks
         assert "sa-bench" in benchmarks
+        assert "aiperf" in benchmarks
         assert "sglang-bench" in benchmarks
         assert "mmlu" in benchmarks
         assert "gpqa" in benchmarks
@@ -381,6 +382,152 @@ class TestMooncakeRouterRunner:
 
         # Command: bash, script, endpoint, model_name, workload, ttft, itl, tokenizer_path
         assert cmd[7] == "/model"  # tokenizer path
+
+
+class TestAIPerfSweepRunner:
+    """Test AIPerf fixed ISL/OSL concurrency-sweep runner."""
+
+    def test_in_registry(self):
+        """aiperf is registered in benchmark list."""
+        assert "aiperf" in list_benchmarks()
+
+    def test_get_runner(self):
+        """Can get runner for aiperf."""
+        runner = get_runner("aiperf")
+        assert runner.name == "AIPerf"
+        assert "aiperf" in runner.script_path
+
+    def test_validate_missing_fields(self):
+        """isl, osl, and concurrencies are all required."""
+        from srtctl.benchmarks.aiperf_bench import AIPerfSweepRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = AIPerfSweepRunner()
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="gb200"),
+            benchmark=BenchmarkConfig(type="aiperf"),
+        )
+        errors = runner.validate_config(config)
+        assert any("isl" in e for e in errors)
+        assert any("osl" in e for e in errors)
+        assert any("concurrencies" in e for e in errors)
+
+    def test_validate_valid(self):
+        """Valid config passes validation."""
+        from srtctl.benchmarks.aiperf_bench import AIPerfSweepRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = AIPerfSweepRunner()
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="gb200"),
+            benchmark=BenchmarkConfig(type="aiperf", isl=1024, osl=1024, concurrencies=[1, 8]),
+        )
+        assert runner.validate_config(config) == []
+
+    def test_build_command_defaults(self):
+        """Build command emits the expected positional argv with defaults and backend type."""
+        from unittest.mock import MagicMock
+
+        from srtctl.benchmarks.aiperf_bench import AIPerfSweepRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = AIPerfSweepRunner()
+        runtime = MagicMock()
+        runtime.frontend_port = 8000
+        runtime.is_hf_model = False
+
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model/test-model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="gb200"),
+            benchmark=BenchmarkConfig(type="aiperf", isl=1024, osl=1024, concurrencies=[1, 8]),
+        )
+
+        cmd = runner.build_command(config, runtime)
+        assert cmd[0] == "bash"
+        assert "aiperf/bench.sh" in cmd[1]
+        assert cmd[2] == "http://localhost:8000"  # endpoint
+        assert cmd[4] == "/model"  # tokenizer path (local model)
+        assert cmd[5] == "1024"  # isl
+        assert cmd[6] == "1024"  # osl
+        assert cmd[7] == "1x8"  # concurrencies joined
+        assert cmd[8] == "3"  # default num_prompts_mult
+        assert cmd[9] == "1"  # default num_warmup_mult
+        assert cmd[10] == "chat"  # default endpoint type
+        assert cmd[11] == "sglang"  # default backend type (drives OSL forcing in bench.sh)
+
+    def test_build_command_vllm_backend_and_overrides(self):
+        """vLLM backend and non-default endpoint/mults flow into the argv."""
+        from unittest.mock import MagicMock
+
+        from srtctl.backends.vllm import VLLMProtocol
+        from srtctl.benchmarks.aiperf_bench import AIPerfSweepRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = AIPerfSweepRunner()
+        runtime = MagicMock()
+        runtime.frontend_port = 8000
+        runtime.is_hf_model = False
+
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model/test-model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="gb200"),
+            backend=VLLMProtocol(),
+            benchmark=BenchmarkConfig(
+                type="aiperf",
+                isl=8192,
+                osl=1024,
+                concurrencies="256x512",
+                num_prompts_mult=5,
+                num_warmup_mult=2,
+                aiperf_endpoint_type="completions",
+            ),
+        )
+
+        cmd = runner.build_command(config, runtime)
+        assert cmd[7] == "256x512"
+        assert cmd[8] == "5"
+        assert cmd[9] == "2"
+        assert cmd[10] == "completions"
+        assert cmd[11] == "vllm"
+
+    def test_build_command_aiperf_args_passthrough(self):
+        """aiperf_args are appended after the positional args as CLI flags."""
+        from unittest.mock import MagicMock
+
+        from srtctl.benchmarks.aiperf_bench import AIPerfSweepRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = AIPerfSweepRunner()
+        runtime = MagicMock()
+        runtime.frontend_port = 8000
+        runtime.is_hf_model = False
+
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model/test-model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="gb200"),
+            benchmark=BenchmarkConfig(
+                type="aiperf",
+                isl=1024,
+                osl=1024,
+                concurrencies=[1],
+                aiperf_args={"benchmark-duration": 600, "export-http-trace": True, "disabled": False},
+            ),
+        )
+
+        cmd = runner.build_command(config, runtime)
+        # Backend type is the last positional arg (index 11); passthrough flags follow.
+        extra = cmd[12:]
+        assert "--benchmark-duration" in extra
+        assert extra[extra.index("--benchmark-duration") + 1] == "600"
+        assert "--export-http-trace" in extra
+        assert "--disabled" not in extra
 
 
 class TestTraceReplayRunner:
@@ -880,6 +1027,11 @@ source "$script" "$@"
         assert (SCRIPTS_DIR / "gsm8k" / "sglang-bench.sh").exists()
         assert (SCRIPTS_DIR / "gsm8k" / "vllm-bench.sh").exists()
         assert (SCRIPTS_DIR / "gsm8k" / "gsm8k_eval.py").exists()
+
+    def test_aiperf_scripts_exist(self):
+        """AIPerf bench script and its rollup exist."""
+        assert (SCRIPTS_DIR / "aiperf" / "bench.sh").exists()
+        assert (SCRIPTS_DIR / "aiperf" / "rollup.py").exists()
 
 
 class TestCustomDatasetLoader:

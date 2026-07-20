@@ -521,6 +521,7 @@ benchmark:
 | ----------------- | ---------------------------------------------- |
 | `manual`          | No benchmark (default), manual testing mode    |
 | `sa-bench`        | Throughput/latency serving benchmark           |
+| `aiperf`          | Fixed ISL/OSL sweep driven by NVIDIA aiperf    |
 | `sglang-bench`    | SGLang bench_serving benchmark                 |
 | `mmlu`            | MMLU accuracy evaluation                       |
 | `gpqa`            | GPQA (Graduate-level science QA) evaluation    |
@@ -565,6 +566,48 @@ When `reuse_http_connections` is enabled, each `benchmark_serving.py` process
 uses one keep-alive connection pool. Warmup and formal runs remain isolated in
 separate processes and therefore never share a pool. The option currently
 applies only to SA-Bench's Dynamo HTTP adapter.
+
+### aiperf (fixed ISL/OSL sweep)
+
+Same synthetic concurrency sweep as `sa-bench`, but driven by the multi-process NVIDIA
+[aiperf](https://github.com/ai-dynamo/aiperf) client instead of the single-process
+`benchmark_serving.py`. `sa-bench` under-reports high-concurrency throughput for fast models
+because one asyncio process cannot drain hundreds of concurrent SSE streams; `aiperf` uses parallel
+workers. Use this path for **fixed ISL/OSL** measurement — input and output lengths are pinned
+(std=0) and output is forced to exactly `osl` (not merely capped), so a server that stops early at
+EOS cannot truncate it. Emits the same `benchmark-rollup.json`/`.csv` schema as `sa-bench`.
+
+```yaml
+benchmark:
+  type: "aiperf"
+  isl: 1024                          # Required: Input sequence length (std=0)
+  osl: 1024                          # Required: Output sequence length (std=0, forced exactly)
+  concurrencies: "1x32x256x1024"     # Required: Concurrency levels (list or "NxM" format)
+  num_prompts_mult: 3                # Optional: request-count = concurrency * this (default 3)
+  num_warmup_mult: 1                 # Optional: warmup-request-count = concurrency * this (default 1)
+  aiperf_endpoint_type: "chat"       # Optional: aiperf --endpoint-type (default "chat"; "completions" for exact ISL)
+  aiperf_package: "aiperf"           # Optional: pip spec installed into a per-run venv (default "aiperf")
+  aiperf_args:                       # Optional: extra passthrough aiperf flags
+    benchmark-duration: 600
+```
+
+| Field                  | Type        | Required | Default    | Description                                                        |
+| ---------------------- | ----------- | -------- | ---------- | ----------------------------------------------------------------- |
+| `isl`                  | int         | Yes      | -          | Input sequence length (std=0)                                     |
+| `osl`                  | int         | Yes      | -          | Output sequence length (std=0, forced to exactly this many tokens) |
+| `concurrencies`        | list/string | Yes      | -          | Concurrency levels (list or "NxM" format)                         |
+| `num_prompts_mult`     | int         | No       | `3`        | request-count = concurrency × this                                |
+| `num_warmup_mult`      | int         | No       | `1`        | warmup-request-count = concurrency × this                         |
+| `aiperf_endpoint_type` | string      | No       | `"chat"`   | aiperf `--endpoint-type`; use `completions` for exact-ISL (no chat template) |
+| `aiperf_package`       | string      | No       | `"aiperf"` | pip spec for aiperf, installed into a throwaway venv at run time  |
+| `aiperf_args`          | dict        | No       | `{}`       | Extra aiperf CLI flags (`key: value` → `--key value`; `key: true` → `--key`) |
+
+**Fixed-length forcing** is applied automatically and is backend-aware: `--osl` sets the ceiling and
+`ignore_eos` suppresses early EOS on all backends (the same mechanism `sa-bench` uses across
+sglang/trtllm/dynamo); vLLM additionally gets an explicit `min_tokens` floor plus the legacy
+`max_tokens` field it honors. If the server still fails to honor the requested length, the rollup
+prints a warning derived from aiperf's `osl_mismatch_count`. You do not need to set these via
+`aiperf_args`.
 
 ### sglang-bench
 

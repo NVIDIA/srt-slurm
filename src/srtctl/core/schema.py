@@ -242,6 +242,7 @@ class BenchmarkType(str, Enum):
     MANUAL = "manual"
     CUSTOM = "custom"
     SA_BENCH = "sa-bench"
+    AIPERF = "aiperf"
     ROUTER = "router"
     MOONCAKE_ROUTER = "mooncake-router"
     TRACE_REPLAY = "trace-replay"
@@ -723,6 +724,8 @@ class BenchmarkConfig:
     aiperf_package: str | None = None
     # Extra aiperf CLI flags passed through to bench.sh (e.g., benchmark-duration: 600, workers-max: 200)
     aiperf_args: dict[str, Any] = field(default_factory=dict)
+    # aiperf --endpoint-type for the "aiperf" concurrency-sweep benchmark (default "chat")
+    aiperf_endpoint_type: str | None = None
     # Post-process: export analysis/srtlog per-node batch CSVs + gen_throughput.csv (see postprocess_stage)
     export_node_metrics: bool = False
     # SA-Bench: optional SGLang /slow_down on decode workers (sglang frontend only; see benchmark_stage)
