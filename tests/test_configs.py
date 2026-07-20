@@ -215,8 +215,8 @@ class TestDynamoConfig:
             # FD 200 node-local; the hash source install nests flock -x 201 on
             # the /configs cache lock; distinct FDs keep the locks independent.
             assert "flock -x 200" in cmd
-            assert '$DYN_LOCK_DIR/.srtctl_dynamo_install.lock' in cmd
-            assert '$DYN_LOCK_DIR/.srtctl_dynamo_install.complete' in cmd
+            assert "$DYN_LOCK_DIR/.srtctl_dynamo_install.lock" in cmd
+            assert "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete" in cmd
             # Sentinel short-circuits repeat installs; touched on success.
             assert 'touch "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete"' in cmd
             assert '200>"$DYN_LOCK_DIR/.srtctl_dynamo_install.lock"' in cmd
@@ -362,6 +362,34 @@ class TestDynamoConfig:
 
         with pytest.raises(ValueError, match="Invalid request_plane"):
             DynamoConfig(request_plane="grpc")
+
+    def test_event_plane_default_none(self):
+        """Default event_plane is None (follow the image default)."""
+        from srtctl.core.schema import DynamoConfig
+
+        config = DynamoConfig()
+        assert config.event_plane is None
+
+    def test_event_plane_zmq(self):
+        """event_plane='zmq' is accepted."""
+        from srtctl.core.schema import DynamoConfig
+
+        config = DynamoConfig(event_plane="zmq")
+        assert config.event_plane == "zmq"
+
+    def test_event_plane_nats(self):
+        """event_plane='nats' is accepted."""
+        from srtctl.core.schema import DynamoConfig
+
+        config = DynamoConfig(event_plane="nats")
+        assert config.event_plane == "nats"
+
+    def test_event_plane_invalid(self):
+        """Invalid event_plane raises ValueError."""
+        from srtctl.core.schema import DynamoConfig
+
+        with pytest.raises(ValueError, match="Invalid event_plane"):
+            DynamoConfig(event_plane="kafka")
 
 
 class TestSGLangProtocol:
