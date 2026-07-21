@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import builtins
 import json
+import logging
 from collections.abc import Sequence
 from dataclasses import field
 from pathlib import Path
@@ -21,7 +22,7 @@ from typing import (
     Literal,
 )
 
-from marshmallow import Schema
+from marshmallow import Schema, ValidationError
 from marshmallow_dataclass import dataclass
 
 from srtctl.ports import (
@@ -42,6 +43,8 @@ if TYPE_CHECKING:
 # Type alias for worker modes
 WorkerMode = Literal["prefill", "decode", "agg"]
 DPLaunchMode = Literal["per_gpu", "per_node"]
+
+logger = logging.getLogger(__name__)
 
 # Filename for the mooncake-store JSON config srtslurm writes to log_dir at job
 # start. log_dir is mounted into every worker at /logs, so workers read the JSON
@@ -195,9 +198,63 @@ class VLLMProtocol:
 
     # DP process layout. Keep the existing per-GPU behavior by default;
     # per-node lets vLLM manage local DP ranks in one CUDA namespace.
+    # TODO: Change the default to per_node after the per_gpu migration window.
     dp_launch_mode: DPLaunchMode = "per_gpu"
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
+
+    def __post_init__(self) -> None:
+        """Validate flags whose behavior is fixed by the per-node launch topology."""
+        if self.vllm_config is None:
+            return
+
+        dp_mode_configs: list[tuple[str, dict[str, Any]]] = []
+        for mode_name, mode_config in (
+            ("prefill", self.vllm_config.prefill),
+            ("decode", self.vllm_config.decode),
+            ("aggregated", self.vllm_config.aggregated),
+        ):
+            if mode_config and any(
+                str(key).replace("_", "-") == "data-parallel-size" and value is not None
+                for key, value in mode_config.items()
+            ):
+                dp_mode_configs.append((mode_name, mode_config))
+
+        if not dp_mode_configs:
+            return
+
+        if self.dp_launch_mode == "per_gpu":
+            modes = ", ".join(mode_name for mode_name, _ in dp_mode_configs)
+            logger.warning(
+                "vLLM DP mode(s) %s use dp_launch_mode=per_gpu. per_node is the recommended topology "
+                "and will become the default in a future release; set backend.dp_launch_mode: per_node now",
+                modes,
+            )
+            return
+
+        hybrid_lb_modes: list[str] = []
+        headless_modes: list[str] = []
+        for mode_name, mode_config in dp_mode_configs:
+            normalized_keys = {str(key).replace("_", "-") for key in mode_config}
+            if "headless" in normalized_keys:
+                headless_modes.append(mode_name)
+            if "data-parallel-hybrid-lb" in normalized_keys:
+                hybrid_lb_modes.append(mode_name)
+
+        if headless_modes:
+            fields = ", ".join(f"vllm_config.{mode}.headless" for mode in headless_modes)
+            raise ValidationError(
+                f"{fields} cannot be set when dp_launch_mode=per_node. "
+                "Every node-local process must register with the Dynamo frontend; remove headless."
+            )
+
+        if hybrid_lb_modes:
+            fields = ", ".join(f"vllm_config.{mode}.data-parallel-hybrid-lb" for mode in hybrid_lb_modes)
+            logger.warning(
+                "%s is unnecessary when dp_launch_mode=per_node; "
+                "srtslurm always enables --data-parallel-hybrid-lb and ignores the configured value",
+                fields,
+            )
 
     # =========================================================================
     # BackendProtocol Implementation
@@ -678,11 +735,15 @@ class VLLMProtocol:
             config_dp_rpc_port = rpc_port_kebab or rpc_port_snake
             dp_rpc_port = process.dp_rpc_port or config_dp_rpc_port or VLLM_DATA_PARALLEL_RPC_PORT
 
-            # These values are derived from the allocated process topology.
+            # These values are derived from the allocated process topology. Hybrid LB
+            # is required so every node-local Dynamo runtime registers with the frontend.
             config.pop("data-parallel-size-local", None)
             config.pop("data_parallel_size_local", None)
             config.pop("data-parallel-start-rank", None)
             config.pop("data_parallel_start_rank", None)
+            config.pop("data-parallel-hybrid-lb", None)
+            config.pop("data_parallel_hybrid_lb", None)
+            config.pop("headless", None)
 
             cmd.extend(
                 [
@@ -694,15 +755,9 @@ class VLLMProtocol:
                     leader_ip,
                     "--data-parallel-rpc-port",
                     str(dp_rpc_port),
+                    "--data-parallel-hybrid-lb",
                 ]
             )
-
-            hybrid_lb = config.get("data-parallel-hybrid-lb", config.get("data_parallel_hybrid_lb", False))
-            hybrid_lb_enabled = hybrid_lb is True or (
-                isinstance(hybrid_lb, str) and hybrid_lb.strip().lower() in {"1", "true", "yes", "on"}
-            )
-            if process.node_rank > 0 and not hybrid_lb_enabled:
-                cmd.append("--headless")
         elif is_dp_mode:
             # DP+EP mode: each GPU runs its own process
             # process.node_rank is the dp_rank (set in endpoints_to_processes)
