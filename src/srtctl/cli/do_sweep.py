@@ -61,6 +61,23 @@ from srtctl.ports import (
 logger = logging.getLogger(__name__)
 
 
+def _build_mooncake_master_command(mooncake_cfg: object) -> list[str]:
+    """Build the master command, including recipe-provided version-specific flags."""
+    command = [
+        "mooncake_master",
+        f"--port={MOONCAKE_MASTER_PORT}",
+        "--enable_http_metadata_server=true",
+        f"--http_metadata_server_port={MOONCAKE_HTTP_METADATA_PORT}",
+        "--eviction_high_watermark_ratio=0.9",
+        "--default_kv_lease_ttl=10000",
+        "--rpc_thread_num=16",
+        "--enable_metric_reporting=true",
+        f"--metrics_port={MOONCAKE_METRICS_PORT}",
+    ]
+    command.extend(getattr(mooncake_cfg, "master_extra_args", []) or [])
+    return command
+
+
 @dataclass
 class SweepOrchestrator(
     WorkerStageMixin,
@@ -239,18 +256,7 @@ class SweepOrchestrator(
         )
 
         proc = start_srun_process(
-            command=[
-                "mooncake_master",
-                f"--port={MOONCAKE_MASTER_PORT}",
-                "--enable_http_metadata_server=true",
-                f"--http_metadata_server_port={MOONCAKE_HTTP_METADATA_PORT}",
-                "--eviction_high_watermark_ratio=0.9",
-                "--nof_eviction_high_watermark_ratio=0.9",
-                "--default_kv_lease_ttl=10000",
-                "--rpc_thread_num=16",
-                "--enable_metric_reporting=true",
-                f"--metrics_port={MOONCAKE_METRICS_PORT}",
-            ],
+            command=_build_mooncake_master_command(mooncake_cfg),
             nodelist=[infra_node],
             output=str(mooncake_log),
             container_image=container,

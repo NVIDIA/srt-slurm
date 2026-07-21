@@ -100,6 +100,7 @@ class VLLMMooncakeKVStoreConfig:
 
     container: str | None = None
     env: dict[str, str] = field(default_factory=dict)
+    master_extra_args: list[str] = field(default_factory=list)
     # ``store_config`` values are JSON-serialized into MOONCAKE_CONFIG_PATH and
     # parsed by vLLM's ``MooncakeStoreConfig`` dataclass — fields are a mix of
     # str (e.g. ``protocol``), int (e.g. ``port``), and human-readable sizes
