@@ -2003,6 +2003,18 @@ class TestVLLMDataParallelMode:
         with pytest.raises(ValueError, match="data-parallel-size=7"):
             backend.endpoints_to_processes([endpoint])
 
+    def test_dp_per_node_mode_rejects_headless(self):
+        """Headless node processes cannot satisfy per-node Dynamo health expectations."""
+        from marshmallow import ValidationError
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+
+        with pytest.raises(ValidationError, match="remove headless"):
+            VLLMProtocol(
+                dp_launch_mode="per_node",
+                vllm_config=VLLMServerConfig(decode={"data-parallel-size": 8, "headless": True}),
+            )
+
     def test_dp_mode_allocates_unique_ports_for_multiple_endpoints_per_node(self):
         """Test DP endpoints sharing a node get non-colliding coordination ports."""
         from srtctl.backends import VLLMProtocol, VLLMServerConfig
@@ -2182,8 +2194,8 @@ class TestVLLMDataParallelMode:
         assert "--data-parallel-rank" not in cmd
         assert "--headless" not in cmd
 
-    def test_dp_per_node_internal_lb_follower_is_headless(self):
-        """Non-hybrid per-node DP uses a headless follower process."""
+    def test_dp_per_node_forces_hybrid_lb_for_follower(self):
+        """Per-node DP keeps every node process registered with Dynamo."""
         from unittest.mock import MagicMock, patch
 
         from srtctl.backends import VLLMProtocol, VLLMServerConfig
@@ -2191,7 +2203,7 @@ class TestVLLMDataParallelMode:
 
         backend = VLLMProtocol(
             dp_launch_mode="per_node",
-            vllm_config=VLLMServerConfig(decode={"data-parallel-size": 8}),
+            vllm_config=VLLMServerConfig(decode={"data-parallel-size": 8, "data_parallel_hybrid_lb": False}),
         )
         leader = Process(
             node="node0",
@@ -2221,8 +2233,8 @@ class TestVLLMDataParallelMode:
 
         assert "--data-parallel-size-local" in cmd
         assert "--data-parallel-start-rank" in cmd
-        assert "--data-parallel-hybrid-lb" not in cmd
-        assert "--headless" in cmd
+        assert cmd.count("--data-parallel-hybrid-lb") == 1
+        assert "--headless" not in cmd
 
     def test_standard_tp_mode_still_works(self):
         """Test that standard TP mode (no DP) still creates per-node processes."""
