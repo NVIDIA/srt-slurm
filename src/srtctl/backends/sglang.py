@@ -22,6 +22,7 @@ from typing import (
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
+from srtctl.backends.mooncake import MooncakeStandaloneStoreConfig
 from srtctl.ports import (
     DYN_SYSTEM_PORT_BASE,
     MOONCAKE_HTTP_METADATA_PORT,
@@ -69,6 +70,7 @@ class MooncakeKVStoreConfig:
 
     container: str | None = None
     env: dict[str, str] = field(default_factory=dict)
+    standalone: MooncakeStandaloneStoreConfig | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 

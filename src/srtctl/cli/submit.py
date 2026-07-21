@@ -279,6 +279,15 @@ def show_config_details(config: SrtConfig) -> None:
     if mooncake_cfg is not None and mooncake_cfg.env:
         has_env = True
         mode_envs.append(("mooncake", dict(mooncake_cfg.env)))
+    standalone_cfg = mooncake_cfg.standalone if mooncake_cfg is not None else None
+    if standalone_cfg is not None:
+        if standalone_cfg.env:
+            has_env = True
+            mode_envs.append(("store", dict(standalone_cfg.env)))
+        for role, placement in standalone_cfg.placements.items():
+            if placement.env:
+                has_env = True
+                mode_envs.append((f"store:{role}", dict(placement.env)))
 
     if has_env:
         env_table = Table(title="Environment Variables", show_lines=False, pad_edge=False)
@@ -345,6 +354,29 @@ def show_config_details(config: SrtConfig) -> None:
         if mooncake_cfg is not None:
             details.add_row("mooncake", "container", mooncake_cfg.container or "<job container>")
             details.add_row("mooncake", "master_port", f"{MOONCAKE_MASTER_PORT} (auto)")
+            if standalone_cfg is not None:
+                command = shlex.join([*standalone_cfg.command, *standalone_cfg.args])
+                details.add_row("mooncake", "standalone", "enabled" if standalone_cfg.enabled else "disabled")
+                details.add_row(
+                    "mooncake",
+                    "standalone_container",
+                    standalone_cfg.container or mooncake_cfg.container or "<job container>",
+                )
+                details.add_row("mooncake", "standalone_command", command)
+                for role, placement in standalone_cfg.placements.items():
+                    placement_args = shlex.join(placement.args) if placement.args else "<none>"
+                    details.add_row(
+                        "mooncake",
+                        f"standalone_{role}",
+                        f"per-node, enabled={placement.enabled}, extra_args={placement_args}",
+                    )
+                if standalone_cfg.health_check is not None:
+                    details.add_row(
+                        "mooncake",
+                        "standalone_health",
+                        f"tcp/{standalone_cfg.health_check.port}, "
+                        f"timeout={standalone_cfg.health_check.timeout_seconds}s",
+                    )
             if hasattr(backend, "build_mooncake_store_config"):
                 # vLLM workers need MOONCAKE_CONFIG_PATH pointing at a JSON file
                 # — srtslurm writes this at job start. Show the resolved JSON

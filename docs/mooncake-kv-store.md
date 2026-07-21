@@ -9,6 +9,7 @@ First-class support for [Mooncake](https://github.com/kvcache-ai/Mooncake) as th
 - [Quick Start (vLLM)](#quick-start-vllm)
 - [What srtslurm Owns vs What You Set](#what-srtslurm-owns-vs-what-you-set)
 - [Configuration Reference](#configuration-reference)
+- [Standalone Store Services](#standalone-store-services)
 - [Master Metrics Endpoint](#master-metrics-endpoint)
 - [Validation](#validation)
 - [Common Configurations](#common-configurations)
@@ -109,6 +110,8 @@ The `env:` map is injected on every vLLM worker (not on the standalone `mooncake
 | `disaggregation-transfer-backend: mooncake`     | User      | (SGLang only) Set on `sglang_config.prefill` and `sglang_config.decode`. srtslurm validates this is present. |
 | `disaggregation-ib-device`                      | User      | (SGLang only) Set on `sglang_config.prefill` and `sglang_config.decode`. Format: `"mlx5_0,mlx5_1"` or JSON map. |
 | `kv-transfer-config`                            | User      | (vLLM only) Set on `vllm_config.prefill` and `vllm_config.decode` to wire vLLM's `MooncakeStoreConnector`. |
+| Standalone Store service command/env            | User      | Optional managed service, launched once per selected physical P/D/aggregated node before workers.       |
+| Master/metadata/local-hostname env on standalone services | srtslurm | Computed per service node; user values for master and metadata endpoints are overridden.              |
 
 ## Configuration Reference
 
@@ -151,12 +154,93 @@ backend:
 
 ### Fields
 
-- **`container`** (`str`, optional): Container image used for the `mooncake_master` srun. Defaults to the job container if unset. Useful when mooncake needs a different runtime than your worker container.
+- **`container`** (`str`, optional): Container image used for the `mooncake_master` srun and as the fallback for standalone Store services. Defaults to the job container if unset. Useful when Mooncake needs a different runtime than the inference workers.
 - **`env`** (`dict[str, str]`, optional): Pass-through env vars injected on every prefill and decode worker.
   - For **SGLang**, keys map directly to mooncake's environment variable names — see the [SGLang server_args.py](https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/environ.py) and [mooncake_store.py](https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/mem_cache/storage/mooncake_store/mooncake_store.py) for the full list.
   - For **vLLM**, this is for in-process Mooncake C++ knobs (`MC_*`) read by the transfer engine / store client. vLLM's connector itself reads configuration from `MOONCAKE_CONFIG_PATH` (the JSON rendered from `store_config:`), not from these env vars.
   - Setting `MOONCAKE_MASTER`, `MOONCAKE_TE_META_DATA_SERVER`, or `MOONCAKE_CONFIG_PATH` here is a no-op (srtslurm always wins).
 - **`store_config`** (vLLM only, `dict[str, Any]`): Pass-through dict rendered as JSON into the file pointed to by `MOONCAKE_CONFIG_PATH`. Keys map 1:1 to vLLM's `MooncakeStoreConfig` dataclass — a mix of `str` (e.g. `protocol`), `int` (e.g. `port`), and human-readable size strings (e.g. `"4GB"`). srtslurm does not default these fields — values like `global_segment_size`, `protocol`, and `device_name` are hardware-specific and silently using a srtslurm-picked default is worse than failing loudly, so set them explicitly. `master_server_address` is auto-filled and any user value is ignored.
+- **`standalone`** (SGLang or vLLM, optional): Launch managed standalone Mooncake Store services on selected worker nodes. See [Standalone Store Services](#standalone-store-services).
+
+## Standalone Store Services
+
+Mooncake can run a real Store client as a standalone process. This lets inference workers use embedded clients with `MOONCAKE_GLOBAL_SEGMENT_SIZE=0`, while dedicated per-node services own the DRAM segments. Decode nodes can therefore contribute host memory without enabling an in-process SGLang HiCache pool.
+
+The worker environment remains in the backend's existing per-mode sections. The standalone process has its own command, arguments, and environment:
+
+```yaml
+backend:
+  type: sglang
+
+  # Embedded clients connect to the shared Store but do not contribute a
+  # second memory segment.
+  prefill_environment:
+    MOONCAKE_PROTOCOL: rdma
+    MOONCAKE_DEVICE: "mlx5_0,mlx5_1"
+    MC_GID_INDEX: "3"
+    MOONCAKE_GLOBAL_SEGMENT_SIZE: "0"
+  decode_environment:
+    MOONCAKE_PROTOCOL: rdma
+    MOONCAKE_DEVICE: "mlx5_0,mlx5_1"
+    MC_GID_INDEX: "3"
+    MOONCAKE_GLOBAL_SEGMENT_SIZE: "0"
+
+  mooncake_kv_store:
+    container: mooncake.sqsh
+    standalone:
+      # Passed through without interpreting Mooncake-specific flags.
+      command: [python, -m, mooncake.mooncake_store_service]
+      args: [--port, "8800", --max-wait-time, "120"]
+      env:
+        MOONCAKE_PROTOCOL: rdma
+        MOONCAKE_DEVICE: "mlx5_0,mlx5_1"
+        MC_GID_INDEX: "3"
+        MOONCAKE_LOCAL_BUFFER_SIZE: "0"
+        MC_TE_METRIC: "true"
+      placements:
+        prefill:
+          env:
+            MOONCAKE_GLOBAL_SEGMENT_SIZE: "100gb"
+        decode:
+          env:
+            MOONCAKE_GLOBAL_SEGMENT_SIZE: "400gb"
+      preamble: |
+        ulimit -n 1048576
+        ulimit -l unlimited
+      cpus_per_task: 8
+      health_check:
+        port: 8800
+        timeout_seconds: 120
+```
+
+srtslurm launches the standalone services after `mooncake_master` is healthy and before inference workers start. It starts at most one service per selected physical node, even when multiple endpoints of the same role share that node. Prefill/decode co-location is supported only when their placement `env` and `args` are identical; conflicting definitions fail before any service is launched.
+
+The following environment variables are added automatically to every standalone service:
+
+- `MOONCAKE_MASTER=<infra_ip>:8700`
+- `MOONCAKE_TE_META_DATA_SERVER=http://<infra_ip>:8701/metadata`
+- `MOONCAKE_LOCAL_HOSTNAME=<service_node_ip>`
+
+`MOONCAKE_MASTER` and `MOONCAKE_TE_META_DATA_SERVER` always use the managed master. A user-supplied `MOONCAKE_LOCAL_HOSTNAME` may override the resolved node IP when a specific network identity is required.
+
+### Standalone fields
+
+| Field | Default | Description |
+| ----- | ------- | ----------- |
+| `enabled` | `true` | Disable the service block without deleting it. |
+| `container` | master container, then job container | Optional service image override. |
+| `command` | `[python, -m, mooncake.mooncake_store_service]` | Executable and fixed command prefix. |
+| `args` | `[]` | Common arguments appended to `command`. |
+| `env` | `{}` | Common service environment. |
+| `placements` | required | Role map: `prefill`, `decode`, and/or `aggregated`; each accepts `enabled`, `env`, and appended `args`. |
+| `preamble` | null | Shell commands run after environment export and before the service command. |
+| `cpus_per_task` | null | Optional `srun --cpus-per-task`. |
+| `cpu_bind` | null | Optional `srun --cpu-bind`. |
+| `srun_options` | `{}` | Additional options for service sruns only. |
+| `health_check` | TCP port `8080`, 120s | Set to null to disable readiness checking. |
+| `critical` | `true` | Treat a non-zero service exit as a job failure. |
+
+Values in `command`, `args`, `env`, and `preamble` support `{node}`, `{node_ip}`, `{node_id}`, `{role}`, `{index}`, `{infra_node}`, `{infra_ip}`, `{master_port}`, and `{metadata_port}` templates. Keep numeric Mooncake Store settings in environment variables or a generated JSON configuration when the installed `mooncake_store_service` CLI does not parse typed `-D` overrides.
 
 ## Master Metrics Endpoint
 
@@ -244,7 +328,7 @@ backend:
       MOONCAKE_PROTOCOL: rdma
 ```
 
-The workers continue to use the job's main container — only the master process uses the override.
+Inference workers continue to use the job's main container. The override applies to the master and to standalone Store services that do not set their own `standalone.container`.
 
 ## Troubleshooting
 

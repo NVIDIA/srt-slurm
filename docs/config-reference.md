@@ -367,6 +367,7 @@ backend:
 | `aggregated_environment`  | dict        | {}      | Environment variables for aggregated    |
 | `sglang_config`           | object      | null    | SGLang CLI configuration per mode       |
 | `kv_events_config`        | bool/dict   | null    | KV events configuration                 |
+| `mooncake_kv_store`       | object      | null    | Managed Mooncake master and optional standalone Store services; see [Mooncake KV Store](mooncake-kv-store.md) |
 
 ### sglang_config
 
