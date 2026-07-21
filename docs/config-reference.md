@@ -528,6 +528,7 @@ benchmark:
 | Type              | Description                                    |
 | ----------------- | ---------------------------------------------- |
 | `manual`          | No benchmark (default), manual testing mode    |
+| `custom`          | Arbitrary command with runtime endpoint metadata |
 | `sa-bench`        | Throughput/latency serving benchmark           |
 | `sglang-bench`    | SGLang bench_serving benchmark                 |
 | `mmlu`            | MMLU accuracy evaluation                       |
@@ -544,6 +545,45 @@ No benchmark is run. Use for manual testing and debugging.
 benchmark:
   type: "manual"
 ```
+
+### custom
+
+Run an arbitrary command with `bash -lc`. The command is passed verbatim; srt-slurm does not
+expand `{placeholder}` expressions. Use environment variables for runtime-discovered values:
+
+```yaml
+benchmark:
+  type: custom
+  command: >-
+    ./run-benchmark.sh "$SRT_FRONTEND_HOST:$SRT_FRONTEND_PORT"
+  env:
+    MY_BENCHMARK_OPTION: "value"
+```
+
+Every custom benchmark command receives frontend metadata plus mode-specific metadata for each
+logical worker leader:
+
+| Variable                        | Format                         | Description |
+| ------------------------------- | ------------------------------ | ----------- |
+| `SRT_FRONTEND_HOST`             | IP                             | Frontend/orchestrator IP |
+| `SRT_FRONTEND_PORT`             | port                           | Frontend public port |
+| `SRT_PREFILL_IPS`               | comma-separated IPs            | Prefill worker leader IPs |
+| `SRT_PREFILL_ENDPOINTS`         | comma-separated `IP:port`      | Prefill worker endpoints |
+| `SRT_DECODE_IPS`                | comma-separated IPs            | Decode worker leader IPs |
+| `SRT_DECODE_ENDPOINTS`          | comma-separated `IP:port`      | Decode worker endpoints |
+| `SRT_AGG_IPS`                   | comma-separated IPs            | Aggregated worker leader IPs |
+| `SRT_AGG_ENDPOINTS`             | comma-separated `IP:port`      | Aggregated worker endpoints |
+| `AIPERF_SERVER_METRICS_URLS`    | comma-separated HTTP URLs      | AIPerf-compatible `/metrics` URLs for all logical workers |
+
+Only variables for modes present in the recipe are emitted. Entries follow logical topology order
+(prefill index, decode index, or aggregated index). Multi-node follower ranks are excluded because
+they do not own separate engines; co-located logical workers retain repeated IPs and distinct ports
+so list positions remain aligned. With a Dynamo frontend, endpoint and metrics URLs use each
+leader's `DYN_SYSTEM_PORT`; other frontends use the worker HTTP port. If KVBM metrics are configured,
+their URLs are appended to `AIPERF_SERVER_METRICS_URLS` after the logical worker URLs.
+
+Values in `benchmark.env` are applied last and can explicitly override any automatically injected
+variable.
 
 ### sa-bench (Serving Accuracy)
 
