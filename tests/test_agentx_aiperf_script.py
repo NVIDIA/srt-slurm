@@ -64,7 +64,7 @@ printf '%s\n' "$@" > "$AIPERF_TEST_CAPTURE"
     assert "--agentic-cache-warmup-duration" in args
     assert args[args.index("--agentic-cache-warmup-duration") + 1] == "600"
     assert "--warmup-grace-period" in args
-    assert args[args.index("--warmup-grace-period") + 1] == "600"
+    assert args[args.index("--warmup-grace-period") + 1] == "1800"
     assert "--trace-max-osl" in args
     assert args[args.index("--trace-max-osl") + 1] == "8192"
     assert "--max-context-length" in args

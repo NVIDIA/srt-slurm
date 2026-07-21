@@ -245,6 +245,7 @@ benchmark:
     NUM_DATASET_ENTRIES: "393"
     HF_WEKA_DATASET: "semianalysisai/cc-traces-weka-062126"
     PUBLIC_DATASET: "semianalysis_cc_traces_weka_062126"
+    AIPERF_MAX_OSL: "none"
     AIPERF_AGENTIC_CACHE_WARMUP_DURATION: "600"
     SLICE_DURATION: "1.0"
     VLLM_START_PROFILE_AFTER_SECONDS: "900"

@@ -251,7 +251,7 @@ benchmark:
     HF_WEKA_DATASET: "semianalysisai/cc-traces-weka-062126"
     PUBLIC_DATASET: "semianalysis_cc_traces_weka_062126"
     AIPERF_AGENTIC_CACHE_WARMUP_DURATION: "600"
-    AIPERF_WARMUP_GRACE_PERIOD: "600"
+    AIPERF_MAX_OSL: "none"
     SLICE_DURATION: "1.0"
     VLLM_START_PROFILE_AFTER_SECONDS: "900"
     AIPERF_DATASET_MMAP_CACHE_DIR: "/aiperf_mmap_cache"
