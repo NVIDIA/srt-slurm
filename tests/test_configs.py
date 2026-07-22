@@ -264,6 +264,40 @@ class TestDynamoConfig:
         assert "tar -xzf /configs/dynamo-wheels/abc123/dynamo-src.tar.gz" in cmd
         assert "pip install --break-system-packages -e /tmp/dynamo-src/dynamo" in cmd
 
+    def test_hash_with_cargo_patches(self):
+        """cargo_patches replace a crate's dependency declaration tree-wide + namespace cache.
+
+        Used to build a crate (e.g. dynamo-tokenizers) from an unmerged branch: the
+        crate's `<crate> = ...` line is replaced across every Cargo.toml with the given
+        git-source spec after checkout, before maturin build. Source-replacement (not
+        [patch.crates-io]) so it works despite exact version pins + a committed Cargo.lock.
+        The cache key is suffixed with a digest so an overridden build never reuses/poisons
+        the plain build of the same hash.
+        """
+        from srtctl.core.schema import DynamoConfig
+
+        patch = 'dynamo-tokenizers = { git = "https://github.com/ai-dynamo/frontend-crates", branch = "feat" }'
+        config = DynamoConfig(hash="abc123", cargo_patches=[patch])
+        assert config.needs_source_install
+        cmd = config.get_install_commands()
+
+        # Cache is namespaced so overridden != plain build of the same hash.
+        assert "/configs/dynamo-wheels/abc123-patch-" in cmd
+        assert "/configs/dynamo-wheels/abc123/.complete" not in cmd
+
+        # The crate declaration is replaced tree-wide via sed after checkout, before build.
+        assert "find . -name Cargo.toml -exec sed -i -E" in cmd
+        assert "s|^dynamo-tokenizers[[:space:]]*=.*|" in cmd
+        assert patch in cmd
+        assert cmd.index("git checkout abc123") < cmd.index("s|^dynamo-tokenizers") < cmd.index("maturin build")
+
+    def test_cargo_patches_require_hash(self):
+        """cargo_patches without a source build (hash) is rejected."""
+        from srtctl.core.schema import DynamoConfig
+
+        with pytest.raises(ValueError, match="cargo_patches requires a source build"):
+            DynamoConfig(wheel="1.2.0.dev20260426", cargo_patches=["x = 1"])
+
     def test_top_of_tree_install_command(self):
         """Top-of-tree config generates source install without checkout."""
         from srtctl.core.schema import DynamoConfig
