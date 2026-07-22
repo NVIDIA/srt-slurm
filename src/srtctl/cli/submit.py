@@ -279,10 +279,14 @@ def show_config_details(config: SrtConfig) -> None:
     if mooncake_cfg is not None and mooncake_cfg.env:
         has_env = True
         mode_envs.append(("mooncake", dict(mooncake_cfg.env)))
+    cluster_env = get_srtslurm_setting("default_environment") or {}
+    if cluster_env:
+        has_env = True
 
     if has_env:
         env_table = Table(title="Environment Variables", show_lines=False, pad_edge=False)
-        env_table.add_column("Scope", style="dim", width=14)
+        env_table.add_column("Source", style="dim", width=13)
+        env_table.add_column("Scope", style="dim", width=11)
         env_table.add_column("Variable", style="yellow")
         env_table.add_column("Value", style="white")
 
@@ -290,11 +294,14 @@ def show_config_details(config: SrtConfig) -> None:
             env_table.add_row("dynamo", var, val)
 
         for var, val in sorted(config.environment.items()):
-            env_table.add_row("global", var, val)
+            source = "srtslurm.yaml" if var in cluster_env else "recipe"
+            if var in cluster_env and val != cluster_env[var]:
+                source = "recipe"
+            env_table.add_row(source, "global", var, val)
 
         for mode_name, env in mode_envs:
             for var, val in sorted(env.items()):
-                env_table.add_row(mode_name, var, val)
+                env_table.add_row("recipe", mode_name, var, val)
 
         console.print(Panel(env_table, border_style="yellow"))
     else:

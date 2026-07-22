@@ -212,6 +212,9 @@ class ClusterConfig:
     # ``"ulimit -n 1048576 -s unlimited -u 1048576"``. Silently dropped for
     # sruns that bypass the bash wrapper (distroless containers).
     default_bash_preamble: str | None = None
+    # Cluster-level environment variables applied to all jobs
+    # Recipe-level environment takes precedence on conflicts
+    default_environment: dict[str, str] | None = None
     reporting: ReportingConfig | None = None
     telemetry: dict | None = None  # opaque dict, parsed by try_start_snapshotter
     # When set, applied to job configs that omit ``frontend.nginx_raise_ulimit``.
@@ -246,6 +249,7 @@ class BenchmarkType(str, Enum):
     ROUTER = "router"
     MOONCAKE_ROUTER = "mooncake-router"
     TRACE_REPLAY = "trace-replay"
+    AIPERF_BENCH = "aiperf-bench"
     MMLU = "mmlu"
     GPQA = "gpqa"
     GSM8K = "gsm8k"
@@ -1797,12 +1801,10 @@ class SrtConfig:
         if telemetry.provider != TelemetryProvider.SCRAPER:
             raise ValidationError(f"Unsupported telemetry provider: {telemetry.provider}")
 
-        if not telemetry.container_image:
-            raise ValidationError("telemetry.container_image is required when telemetry is enabled")
         if telemetry.dcgm_exporter is None:
             raise ValidationError("telemetry.dcgm_exporter is required when telemetry is enabled")
-        if telemetry.node_exporter is None:
-            raise ValidationError("telemetry.node_exporter is required when telemetry is enabled")
+        if telemetry.node_exporter is not None and not telemetry.container_image:
+            raise ValidationError("telemetry.container_image (scraper) is required when telemetry.node_exporter is set")
         if telemetry.default_frequency <= 0:
             raise ValidationError("telemetry.default_frequency must be positive")
         if telemetry.sync_interval_secs < 0:
