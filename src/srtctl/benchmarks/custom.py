@@ -36,6 +36,11 @@ class CustomBenchmarkRunner(BenchmarkRunner):
     * If you need to parameterize the command, render it yourself when
       you generate the recipe and paste the final string into
       ``benchmark.command``.
+    * Runtime-discovered frontend and logical worker endpoints are injected
+      through ``SRT_*`` environment variables. Custom AIPerf commands also
+      receive ``AIPERF_SERVER_METRICS_URLS``. Multi-node follower ranks are
+      intentionally excluded; see ``docs/config-reference.md`` for the full
+      contract.
     """
 
     @property
