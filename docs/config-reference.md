@@ -422,6 +422,44 @@ Each worker leader gets a globally unique port starting at 5550:
 | decode_0  | 5552 |
 | decode_1  | 5553 |
 
+### vLLM DP launch mode
+
+vLLM data-parallel endpoints use one process per GPU by default. Set
+`dp_launch_mode: per_node` to launch one process per node and let vLLM
+manage the local DP ranks in a shared CUDA namespace:
+
+```yaml
+backend:
+  type: vllm
+  dp_launch_mode: per_node
+  vllm_config:
+    prefill:
+      data-parallel-size: 8
+    decode:
+      data-parallel-size: 16
+```
+
+| Value      | Process layout                                      |
+| ---------- | --------------------------------------------------- |
+| `per_gpu`  | One process per DP rank/GPU (default)               |
+| `per_node` | One process manages all DP ranks allocated per node |
+
+`per_gpu` remains the compatibility default for now, but srtslurm will switch
+the default to `per_node` in a future release. Existing vLLM DP configurations
+should set `backend.dp_launch_mode: per_node` now; srtslurm emits a
+configuration-time migration warning while they still use `per_gpu`.
+
+In `per_node` mode, srtslurm derives `--data-parallel-size-local` and
+`--data-parallel-start-rank` from the allocated topology. Do not set those
+two flags manually. srtslurm also always enables `--data-parallel-hybrid-lb`
+so every node-local process registers with the Dynamo frontend. This is the
+recommended vLLM topology for Dynamo and ensures the frontend can route to
+each node-local DP engine. Do not set `data-parallel-hybrid-lb` manually;
+srtslurm enables it automatically, warns when it is configured, and ignores
+the configured value. `headless` is incompatible with `per_node` DP because a
+headless process does not register with Dynamo, so srtslurm rejects that
+combination during configuration loading.
+
 ### TRTLLM Backend
 
 When using `type: trtllm`, the backend uses TRTLLM with MPI-style launching:
