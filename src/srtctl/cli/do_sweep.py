@@ -143,7 +143,11 @@ class SweepOrchestrator(
         deterministically within a job.
         """
         allocator = NodePortAllocator()
-        return self.backend.endpoints_to_processes(self.endpoints, port_allocator=allocator)
+        return self.backend.endpoints_to_processes(
+            self.endpoints,
+            port_allocator=allocator,
+            frontend_type=self.config.frontend.type,
+        )
 
     def start_head_infrastructure(self, registry: ProcessRegistry) -> ManagedProcess:
         """Start NATS and etcd on the infra node.
@@ -670,9 +674,9 @@ class SweepOrchestrator(
 
         try:
             # Stage 1: Head infrastructure (NATS, etcd). Only the dynamo request
-            # plane uses it; trtllm_serve routes via a static ser.yaml, so skip it.
-            if self.config.frontend.type == "trtllm_serve":
-                logger.info("Skipping NATS/etcd infrastructure (frontend.type=trtllm_serve)")
+            # plane uses it; static/direct frontends skip it.
+            if self.config.frontend.type in {"trtllm_serve", "vllm"}:
+                logger.info("Skipping NATS/etcd infrastructure (frontend.type=%s)", self.config.frontend.type)
             else:
                 reporter.report(JobStatus.STARTING, JobStage.HEAD_INFRASTRUCTURE, "Starting head infrastructure")
                 head_proc = self.start_head_infrastructure(registry)

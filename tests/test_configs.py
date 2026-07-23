@@ -2049,6 +2049,118 @@ class TestVLLMDataParallelMode:
                 vllm_config=VLLMServerConfig(decode={"data-parallel-size": 8, "headless": True}),
             )
 
+    def test_direct_vllm_dp_mode_keeps_single_process(self):
+        """Direct vllm serve supervises local DP ranks from one process."""
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Endpoint
+
+        backend = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                aggregated={"data-parallel-size": 8, "enable-expert-parallel": True},
+            )
+        )
+
+        endpoint = Endpoint(
+            mode="agg",
+            index=0,
+            nodes=("node0",),
+            gpu_indices=frozenset(range(8)),
+            gpus_per_node=8,
+        )
+
+        processes = backend.endpoints_to_processes([endpoint], frontend_type="vllm")
+
+        assert len(processes) == 1
+        assert processes[0].node == "node0"
+        assert processes[0].gpu_indices == frozenset(range(8))
+
+    def test_direct_vllm_command_preserves_current_main_device_binding(self):
+        """Direct vllm serve uses the public port and main's --device-ids binding."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Process
+
+        backend = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                aggregated={
+                    "data-parallel-size": 4,
+                    "enable-expert-parallel": True,
+                }
+            )
+        )
+        process = Process(
+            node="node0",
+            gpu_indices=frozenset(range(4)),
+            sys_port=8081,
+            http_port=0,
+            endpoint_mode="agg",
+            endpoint_index=0,
+            node_rank=0,
+        )
+        runtime = MagicMock()
+        runtime.model_path = Path("/model")
+        runtime.is_hf_model = False
+        runtime.frontend_port = 9000
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            cmd = backend.build_worker_command(
+                process=process,
+                endpoint_processes=[process],
+                runtime=runtime,
+                frontend_type="vllm",
+            )
+
+        assert cmd[:3] == ["vllm", "serve", "/model"]
+        assert cmd[cmd.index("--port") + 1] == "9000"
+        assert cmd[cmd.index("--device-ids") + 1] == "0,1,2,3"
+        assert "--request-plane" not in cmd
+        assert "dynamo.vllm" not in cmd
+
+    def test_direct_vllm_command_keeps_iteration_profiler_config(self):
+        """Direct vllm serve retains main's profiling-derived server option."""
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Process
+
+        backend = VLLMProtocol(vllm_config=VLLMServerConfig(aggregated={"tensor-parallel-size": 4}))
+        process = Process(
+            node="node0",
+            gpu_indices=frozenset(range(4)),
+            sys_port=8081,
+            http_port=0,
+            endpoint_mode="agg",
+            endpoint_index=0,
+            node_rank=0,
+        )
+        runtime = MagicMock()
+        runtime.model_path = Path("/model")
+        runtime.is_hf_model = False
+        runtime.frontend_port = 8000
+        profiling = MagicMock(is_nsys=True, is_nsys_time=False)
+        profiling._get_phase_config.return_value = SimpleNamespace(
+            start_step=10,
+            stop_step=25,
+            vllm_nsys_delay_iterations=10,
+            vllm_nsys_max_iterations=15,
+        )
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            cmd = backend.build_worker_command(
+                process=process,
+                endpoint_processes=[process],
+                runtime=runtime,
+                frontend_type="vllm",
+                profiling=profiling,
+            )
+
+        profiler_config = json.loads(cmd[cmd.index("--profiler-config") + 1])
+        assert profiler_config == {"profiler": "cuda", "delay_iterations": 10, "max_iterations": 15}
+
     def test_dp_mode_allocates_unique_ports_for_multiple_endpoints_per_node(self):
         """Test DP endpoints sharing a node get non-colliding coordination ports."""
         from srtctl.backends import VLLMProtocol, VLLMServerConfig

@@ -97,6 +97,7 @@ class BackendProtocol(Protocol):
         endpoints: list["Endpoint"],
         base_sys_port: int = DYN_SYSTEM_PORT_BASE,
         port_allocator: Optional["NodePortAllocator"] = None,
+        frontend_type: str = "dynamo",
     ) -> list["Process"]:
         """Convert logical endpoints to physical processes."""
         ...

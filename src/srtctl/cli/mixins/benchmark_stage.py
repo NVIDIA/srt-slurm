@@ -422,6 +422,14 @@ class BenchmarkStageMixin:
         metrics endpoints if DYN_KVBM_METRICS_PORT is configured.
         """
         urls: list[str] = []
+        if self.config.frontend.type == "vllm":
+            for process in self.backend_processes:
+                if process.endpoint_mode == "agg" and process.is_leader:
+                    host = get_hostname_ip(process.node, self.runtime.network_interface)
+                    urls.append(f"http://{host}:{FRONTEND_PUBLIC_PORT}/metrics")
+            if urls:
+                return {"AIPERF_SERVER_METRICS_URLS": ",".join(sorted(set(urls)))}
+
         for process in self.backend_processes:
             if process.sys_port > 0:
                 host = get_hostname_ip(process.node, self.runtime.network_interface)
