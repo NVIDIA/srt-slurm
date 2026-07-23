@@ -865,6 +865,22 @@ class TestAgenticRunner:
         assert "AIPERF_SYNTHESIS_MAX_OSL" in text
         assert "REPLAY_CMD+=\" --synthesis-max-osl $AIPERF_SYNTHESIS_MAX_OSL\"" in text
 
+    def test_agentic_benchmark_lib_exposes_cache_warmup_and_drain_grace(self):
+        """Canonical configs can align AIPerf cache pressure and drain phases."""
+        script = SCRIPTS_DIR / "agentic" / "inferencex" / "benchmarks" / "benchmark_lib.sh"
+        text = script.read_text()
+
+        assert "AIPERF_AGENTIC_CACHE_WARMUP_DURATION" in text
+        assert (
+            'REPLAY_CMD+=" --agentic-cache-warmup-duration '
+            '$AIPERF_AGENTIC_CACHE_WARMUP_DURATION"' in text
+        )
+        assert "AGENTIC_WARMUP_GRACE_PERIOD" in text
+        assert (
+            'REPLAY_CMD+=" --warmup-grace-period '
+            '$AGENTIC_WARMUP_GRACE_PERIOD"' in text
+        )
+
     def test_agentic_dynamo_conversation_routing_is_opt_in(self):
         """KV routing must not silently enable Dynamo conversation affinity."""
         script = SCRIPTS_DIR / "agentic" / "inferencex" / "benchmarks" / "benchmark_lib.sh"
@@ -880,10 +896,23 @@ class TestAgenticRunner:
         script = SCRIPTS_DIR / "agentic" / "bench.sh"
         text = script.read_text()
 
-        assert "d14531b4a83e987c2477e82227ae2fd5184be755" in text
+        assert "655792405980c5211722bc45a5f8401f3bad304a" in text
         assert "AGENTX_DYNAMO_HEADER_AFFINITY" not in text
 
         bundle = SCRIPTS_DIR / "agentic" / "third_party" / "aiperf-agentx-v1-src.tgz"
+        manifest = (
+            SCRIPTS_DIR
+            / "agentic"
+            / "third_party"
+            / "aiperf-agentx-v1-src.manifest"
+        )
+        manifest_text = manifest.read_text()
+        assert "commit=655792405980c5211722bc45a5f8401f3bad304a" in manifest_text
+        assert (
+            "archive_sha256="
+            "b7a1326bf14fd20f4f021d363209046b2a881848fc40f8f963e0fc45512df13c"
+            in manifest_text
+        )
         with tarfile.open(bundle, "r:gz") as archive:
             environment = archive.extractfile("src/aiperf/common/environment.py")
             transport = archive.extractfile("src/aiperf/transports/base_transports.py")

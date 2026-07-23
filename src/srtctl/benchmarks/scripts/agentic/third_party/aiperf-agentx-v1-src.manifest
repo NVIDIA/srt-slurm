@@ -1,0 +1,4 @@
+repository=https://github.com/SemiAnalysisAI/aiperf.git
+commit=655792405980c5211722bc45a5f8401f3bad304a
+archive_sha256=b7a1326bf14fd20f4f021d363209046b2a881848fc40f8f963e0fc45512df13c
+notes=Canonical AgentX branch tip with native Dynamo session headers; source-identical to d14531b4a83e987c2477e82227ae2fd5184be755.

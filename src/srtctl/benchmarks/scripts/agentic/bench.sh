@@ -29,9 +29,10 @@ fi
 export PORT="${PORT:-$PORT_FROM_ENDPOINT}"
 
 INFERENCEX_AGENTX_COMMIT="${INFERENCEX_AGENTX_COMMIT:-303669b0e16aa6a0c600b8a68b4f91b973a34127}"
-# SemiAnalysisAI/aiperf#17, based on the AgentX v1 branch, adds native
-# X-Dynamo-Session-ID and X-Dynamo-Parent-Session-ID support.
-AIPERF_AGENTX_REF="${AIPERF_AGENTX_REF:-d14531b4a83e987c2477e82227ae2fd5184be755}"
+# SemiAnalysisAI/aiperf#17 adds native X-Dynamo-Session-ID and
+# X-Dynamo-Parent-Session-ID support. This canonical AgentX branch tip is
+# source-identical to the original PR commit and to the bundled archive.
+AIPERF_AGENTX_REF="${AIPERF_AGENTX_REF:-655792405980c5211722bc45a5f8401f3bad304a}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUNDLED_INFMAX_WORKSPACE="${AGENTX_BUNDLED_INFMAX_WORKSPACE:-$SCRIPT_DIR/inferencex}"
 BUNDLED_AIPERF_TARBALL="${AGENTX_BUNDLED_AIPERF_TARBALL:-$SCRIPT_DIR/third_party/aiperf-agentx-v1-src.tgz}"

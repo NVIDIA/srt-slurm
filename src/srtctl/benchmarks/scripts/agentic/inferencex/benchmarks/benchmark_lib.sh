@@ -1438,6 +1438,11 @@ build_replay_cmd() {
     if [ -n "${AIPERF_AGENTIC_CACHE_WARMUP_DURATION:-}" ]; then
         REPLAY_CMD+=" --agentic-cache-warmup-duration $AIPERF_AGENTIC_CACHE_WARMUP_DURATION"
     fi
+    # Allow cache-pressure warmup requests to drain before AIPerf declares the
+    # warmup phase failed. Canonical submission configs set this to 1800s.
+    if [ -n "${AGENTIC_WARMUP_GRACE_PERIOD:-}" ]; then
+        REPLAY_CMD+=" --warmup-grace-period $AGENTIC_WARMUP_GRACE_PERIOD"
+    fi
     # Use server-reported usage fields (prompt_tokens / completion_tokens) for
     # ISL/OSL instead of client-side tokenizer.encode(). Auto-enables
     # stream_options.include_usage on the OpenAI chat endpoint. Skips the
