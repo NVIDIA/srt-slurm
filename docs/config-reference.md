@@ -875,11 +875,13 @@ Infrastructure configuration for etcd/nats placement.
 ```yaml
 infra:
   etcd_nats_dedicated_node: true
+  etcd_cpu_affinity: "140-143"
 ```
 
-| Field                    | Type | Default | Description                                        |
-| ------------------------ | ---- | ------- | -------------------------------------------------- |
-| `etcd_nats_dedicated_node` | bool | false   | Reserve first node for infrastructure services     |
+| Field                      | Type       | Default | Description                                             |
+| -------------------------- | ---------- | ------- | ------------------------------------------------------- |
+| `etcd_nats_dedicated_node` | bool       | false   | Reserve first node for infrastructure services          |
+| `etcd_cpu_affinity`        | string     | null    | Optional etcd CPU affinity passed to `taskset -c`       |
 
 **Notes**:
 
