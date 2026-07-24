@@ -2,26 +2,23 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# GPQA accuracy evaluation via sgl-eval (https://github.com/sgl-project/sgl-eval).
-# sgl-eval talks to an OpenAI-compatible endpoint (no model-name detection) and
-# vendors NeMo-Skills scoring. Replaces the old `python3 -m sglang.test.run_eval`.
+# AIME25 accuracy evaluation via sgl-eval (https://github.com/sgl-project/sgl-eval).
+# Mirrors gpqa/bench.sh; only the sgl-eval task name differs.
 #
-# Args (from srtctl GPQARunner.build_command):
-#   endpoint [num_examples] [max_tokens] [repeat] [num_threads]
+# Args (from srtctl AIME25Runner.build_command):
+#   endpoint [num_examples] [max_tokens] [repeat] [num_threads] [temperature] [top_p]
 
 set -e
 
 ENDPOINT=$1                       # http://localhost:8000 (nginx) -- used as fallback
-NUM_EXAMPLES=${2:-198}
+NUM_EXAMPLES=${2:-30}
 MAX_TOKENS=${3:-32768}
 REPEAT=${4:-8}
 NUM_THREADS=${5:-128}
 TEMPERATURE=${6:-}                # optional: forwarded to sgl-eval --temperature
 TOP_P=${7:-}                      # optional: forwarded to sgl-eval --top-p
 
-# The gated GPQA dataset (Idavidrein/gpqa) is Xet-backed and the HF Xet client
-# hangs on this cluster; force the plain download path. HF_TOKEN comes from the
-# recipe `environment:` block (gated dataset).
+# Xet client hangs on this cluster; force plain HF download path.
 export HF_HUB_DISABLE_XET=1
 
 result_dir="/logs/accuracy"
@@ -57,8 +54,8 @@ if [ -f "$NGINX_CONF" ]; then
 fi
 echo "Using base-url: ${BASE_URL}"
 
-echo "GPQA Config (sgl-eval): base_url=${BASE_URL} num_examples=${NUM_EXAMPLES} max_tokens=${MAX_TOKENS} n_repeats=${REPEAT} num_threads=${NUM_THREADS}"
-echo "Running GPQA evaluation via sgl-eval..."
+echo "AIME25 Config (sgl-eval): base_url=${BASE_URL} num_examples=${NUM_EXAMPLES} max_tokens=${MAX_TOKENS} n_repeats=${REPEAT} num_threads=${NUM_THREADS}"
+echo "Running AIME25 evaluation via sgl-eval..."
 
 SAMPLING_ARGS=()
 if [ -n "$TEMPERATURE" ]; then
@@ -68,7 +65,7 @@ if [ -n "$TOP_P" ]; then
     SAMPLING_ARGS+=(--top-p "$TOP_P")
 fi
 
-sgl-eval run gpqa \
+sgl-eval run aime25 \
     --base-url "${BASE_URL}" \
     --num-examples "${NUM_EXAMPLES}" \
     --n-repeats "${REPEAT}" \
@@ -78,4 +75,4 @@ sgl-eval run gpqa \
     --out-dir "$result_dir"
 
 echo "Results saved under: $result_dir"
-echo "GPQA evaluation complete"
+echo "AIME25 evaluation complete"
