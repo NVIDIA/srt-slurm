@@ -17,6 +17,7 @@ import functools
 import json
 import logging
 import os
+import shlex
 import subprocess
 import sys
 import threading
@@ -62,9 +63,9 @@ from srtctl.ports import (
 logger = logging.getLogger(__name__)
 
 
-def _build_mooncake_master_command() -> list[str]:
+def _build_mooncake_master_command(install_spec: str | None = None) -> list[str]:
     """Build a Mooncake master command compatible with the pinned service image."""
-    return [
+    command = [
         "mooncake_master",
         f"--port={MOONCAKE_MASTER_PORT}",
         "--enable_http_metadata_server=true",
@@ -75,6 +76,23 @@ def _build_mooncake_master_command() -> list[str]:
         "--enable_metric_reporting=true",
         f"--metrics_port={MOONCAKE_METRICS_PORT}",
     ]
+    if install_spec is None:
+        return command
+
+    install = [
+        "python3",
+        "-m",
+        "pip",
+        "install",
+        "--no-cache-dir",
+        "--no-deps",
+        "--force-reinstall",
+        install_spec,
+    ]
+    shell_command = " ".join(shlex.quote(part) for part in install)
+    shell_command += " && exec "
+    shell_command += " ".join(shlex.quote(part) for part in command)
+    return ["/bin/bash", "-lc", shell_command]
 
 
 @dataclass
@@ -260,7 +278,7 @@ class SweepOrchestrator(
         )
 
         proc = start_srun_process(
-            command=_build_mooncake_master_command(),
+            command=_build_mooncake_master_command(getattr(mooncake_cfg, "master_install_spec", None)),
             nodelist=[infra_node],
             output=str(mooncake_log),
             container_image=container,

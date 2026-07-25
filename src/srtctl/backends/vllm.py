@@ -78,6 +78,11 @@ class VLLMMooncakeKVStoreConfig:
     ``MC_TE_METRIC``), and any ``MOONCAKE_*`` overrides the connector
     consults.
 
+    ``master_install_spec`` optionally pins the Python distribution installed
+    in the standalone master container before launch. This is useful when the
+    model image does not bundle Mooncake, or bundles a version with a known
+    transfer-engine bug.
+
     Example YAML::
 
         backend:
@@ -97,6 +102,7 @@ class VLLMMooncakeKVStoreConfig:
     """
 
     container: str | None = None
+    master_install_spec: str | None = None
     env: dict[str, str] = field(default_factory=dict)
     # ``store_config`` values are JSON-serialized into MOONCAKE_CONFIG_PATH and
     # parsed by vLLM's ``MooncakeStoreConfig`` dataclass — fields are a mix of

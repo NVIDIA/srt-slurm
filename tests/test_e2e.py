@@ -840,6 +840,7 @@ backend:
   type: vllm
   mooncake_kv_store:
     container: inferactinc/public:mk-int-20260507
+    master_install_spec: mooncake-transfer-engine-cuda13==0.3.12.post1
     env:
       MOONCAKE_PROTOCOL: rdma
   vllm_config:
@@ -851,6 +852,9 @@ backend:
         config = SrtConfig.Schema().load(raw)
         assert config.backend.mooncake_kv_store is not None
         assert config.backend.mooncake_kv_store.container == "inferactinc/public:mk-int-20260507"
+        assert config.backend.mooncake_kv_store.master_install_spec == (
+            "mooncake-transfer-engine-cuda13==0.3.12.post1"
+        )
         assert config.backend.mooncake_kv_store.env["MOONCAKE_PROTOCOL"] == "rdma"
 
     def test_vllm_mooncake_disagg_without_kv_transfer_config_raises(self):

@@ -22,3 +22,14 @@ def test_mooncake_master_command_is_compatible_with_pinned_image() -> None:
         f"--metrics_port={MOONCAKE_METRICS_PORT}",
     ]
     assert not any("nof_eviction_high_watermark_ratio" in arg for arg in command)
+
+
+def test_mooncake_master_command_installs_pinned_distribution() -> None:
+    spec = "mooncake-transfer-engine-cuda13==0.3.12.post1"
+    command = _build_mooncake_master_command(spec)
+
+    assert command[:2] == ["/bin/bash", "-lc"]
+    assert "pip install --no-cache-dir --no-deps --force-reinstall" in command[2]
+    assert spec in command[2]
+    assert "&& exec mooncake_master" in command[2]
+    assert "nof_eviction_high_watermark_ratio" not in command[2]
