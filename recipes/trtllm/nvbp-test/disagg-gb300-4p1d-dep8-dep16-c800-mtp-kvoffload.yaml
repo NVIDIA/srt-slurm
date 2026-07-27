@@ -147,6 +147,7 @@ frontend:
     # DYN_ROUTER_TEMPERATURE: "10000000"
     # Keep session affinity alive across long-running agentic requests.
     DYN_ROUTER_SESSION_AFFINITY_TTL_SECS: "14400"
+    DYN_LOG: "debug"
   args:
     # Session-based routing is handled by Dynamo.
     # no-kv-events for approximate routing (WAR some indexer issues, currently
