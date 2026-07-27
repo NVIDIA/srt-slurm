@@ -171,7 +171,7 @@ benchmark:
     AIPERF_NEW_DYNAMO_SESSION_CONTROL: "true"
     CONC: "800"
     KV_OFFLOADING: "none"
-    MODEL: "deepseek-ai/DeepSeek-V4-Pro"
+    MODEL: "deepseek-ai_DeepSeek-V4-Pro"
     MODEL_PREFIX: "dsv4"
     FRAMEWORK: "dynamo-trt"
     PRECISION: "fp4"
