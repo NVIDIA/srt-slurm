@@ -159,7 +159,6 @@ benchmark:
   type: custom
   command: bash /infmax-workspace/benchmarks/multi_node/agentic_srt.sh
   env:
-    CONC: "800"
     INFMAX_CONTAINER_WORKSPACE: /infmax-workspace
     RESULT_DIR: /logs/agentic
     PORT: "8000"
@@ -170,6 +169,7 @@ benchmark:
     WEKA_LOADER_OVERRIDE: "semianalysis_cc_traces_weka_062126"
     SERVED_MODEL_NAME: "DeepSeek-V4-Pro"
     AIPERF_NEW_DYNAMO_SESSION_CONTROL: "true"
+    CONC: "800"
     KV_OFFLOADING: "none"
     MODEL: "deepseek-ai/DeepSeek-V4-Pro"
     MODEL_PREFIX: "dsv4"
