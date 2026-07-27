@@ -170,3 +170,4 @@ benchmark:
     WEKA_LOADER_OVERRIDE: "semianalysis_cc_traces_weka_062126"
     SERVED_MODEL_NAME: "DeepSeek-V4-Pro"
     AIPERF_NEW_DYNAMO_SESSION_CONTROL: "true"
+    KV_OFFLOADING: "none"
