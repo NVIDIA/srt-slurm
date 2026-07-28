@@ -182,8 +182,8 @@ benchmark:
 # NVIDIA/src/configs/.../ and the dataset at dataset/ds-r1/).
 # Update to your cluster's actual path before submitting.
 container_mounts:
-  - "/lustre/fsw/core_dlfw_ci/rihuo/mlperf": "/work"
-  - "/lustre/fsw/core_dlfw_ci/rihuo/endpoints-launch": "/endpoints-launch-mount"
+  "/lustre/fsw/core_dlfw_ci/rihuo/mlperf": "/work"
+  "/lustre/fsw/core_dlfw_ci/rihuo/endpoints-launch": "/endpoints-launch-mount"
 
 # Pin memory clocks on every allocated node before workers start.
 # Retried 6× with 5-second gaps to handle transient sudo/nvidia-smi races at allocation time.
