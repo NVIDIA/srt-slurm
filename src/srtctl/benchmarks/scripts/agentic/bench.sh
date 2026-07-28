@@ -29,10 +29,10 @@ fi
 export PORT="${PORT:-$PORT_FROM_ENDPOINT}"
 
 INFERENCEX_AGENTX_COMMIT="${INFERENCEX_AGENTX_COMMIT:-303669b0e16aa6a0c600b8a68b4f91b973a34127}"
-# SemiAnalysisAI/aiperf#17 adds native X-Dynamo-Session-ID and
-# X-Dynamo-Parent-Session-ID support. This canonical AgentX branch tip is
-# source-identical to the original PR commit and to the bundled archive.
-AIPERF_AGENTX_REF="${AIPERF_AGENTX_REF:-655792405980c5211722bc45a5f8401f3bad304a}"
+# This AIPerf revision includes native Dynamo session headers, the AgentX
+# 10-second global system-idle cap, and burst warmup/profiling phase starts.
+AIPERF_AGENTX_REF="${AIPERF_AGENTX_REF:-208125aca87a438e43e56517e8a3e5096f8c9281}"
+BUNDLED_AIPERF_REF="208125aca87a438e43e56517e8a3e5096f8c9281"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUNDLED_INFMAX_WORKSPACE="${AGENTX_BUNDLED_INFMAX_WORKSPACE:-$SCRIPT_DIR/inferencex}"
 BUNDLED_AIPERF_TARBALL="${AGENTX_BUNDLED_AIPERF_TARBALL:-$SCRIPT_DIR/third_party/aiperf-agentx-v1-src.tgz}"
@@ -70,7 +70,7 @@ if [[ "${AGENTX_USE_EXISTING_INFMAX_WORKSPACE:-0}" != "1" ]]; then
 
   if [[ -n "${AIPERF_DIR:-}" ]]; then
     echo "Using caller-provided AIPERF_DIR: $AIPERF_DIR"
-  elif [[ -f "$BUNDLED_AIPERF_TARBALL" ]]; then
+  elif [[ -f "$BUNDLED_AIPERF_TARBALL" && "$AIPERF_AGENTX_REF" == "$BUNDLED_AIPERF_REF" ]]; then
     echo "Using bundled AIPerf AgentX source: $BUNDLED_AIPERF_TARBALL"
     mkdir -p "$WORKSPACE_ROOT/utils/aiperf"
     tar -xzf "$BUNDLED_AIPERF_TARBALL" -C "$WORKSPACE_ROOT/utils/aiperf"
@@ -86,6 +86,42 @@ if [[ "${AGENTX_USE_EXISTING_INFMAX_WORKSPACE:-0}" != "1" ]]; then
       | tar -xz --strip-components=1 -C "$WORKSPACE_ROOT/utils/aiperf"
   fi
 fi
+
+AIPERF_ROOT="${AIPERF_DIR:-$WORKSPACE_ROOT/utils/aiperf}"
+python3 - \
+  "$AIPERF_ROOT/src/aiperf/common/scenario/inferencex_agentx_mvp.py" \
+  "$AIPERF_ROOT/src/aiperf/common/config/loadgen_config.py" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+scenario_path = Path(sys.argv[1])
+loadgen_path = Path(sys.argv[2])
+if not scenario_path.is_file() or not loadgen_path.is_file():
+    raise SystemExit(
+        "ERROR: AIPerf AgentX timing-policy sources are missing: "
+        f"{scenario_path}, {loadgen_path}"
+    )
+
+scenario = scenario_path.read_text()
+loadgen = loadgen_path.read_text()
+required_scenario = (
+    "system_idle_gap_cap_seconds=10.0",
+    "forbid_trace_idle_gap_cap=True",
+    "forbid_inter_turn_delay_cap=True",
+)
+missing = [item for item in required_scenario if item not in scenario]
+if missing:
+    raise SystemExit(
+        "ERROR: stale AIPerf AgentX client: missing system-idle policy "
+        + ", ".join(missing)
+    )
+if re.search(r"burst_phase_starts:.*?\]\s*=\s*True", loadgen, re.DOTALL) is None:
+    raise SystemExit(
+        "ERROR: stale AIPerf AgentX client: burst phase starts are not enabled by default"
+    )
+print("Verified AIPerf AgentX timing policy: system-idle cap 10s, burst phase starts")
+PY
 
 if [[ -f "${AIPERF_DIR:-$WORKSPACE_ROOT/utils/aiperf}/pyproject.toml" && "${AIPERF_ALLOW_GITHUB_TRANSFORMERS:-0}" != "1" ]]; then
   AIPERF_TRANSFORMERS_SPEC="${AIPERF_TRANSFORMERS_SPEC:-transformers>=4.53.0,<5}"

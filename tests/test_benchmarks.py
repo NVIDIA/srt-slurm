@@ -3,6 +3,7 @@
 
 """Tests for benchmark runners."""
 
+import re
 import tarfile
 
 import pytest
@@ -891,13 +892,14 @@ class TestAgenticRunner:
         assert '"${AGENTX_DYNAMO_CONV_AWARE:-0}" == "1"' in text
         assert '"${AGENTX_DYNAMO_CONV_AWARE:-false}" == "true"' in text
 
-    def test_agentic_bundles_native_dynamo_session_headers(self):
-        """The pinned AIPerf PR emits Dynamo session and parent headers natively."""
+    def test_agentic_bundles_current_timing_and_native_dynamo_headers(self):
+        """The pinned AIPerf has canonical timing and native Dynamo headers."""
         script = SCRIPTS_DIR / "agentic" / "bench.sh"
         text = script.read_text()
 
-        assert "655792405980c5211722bc45a5f8401f3bad304a" in text
+        assert "208125aca87a438e43e56517e8a3e5096f8c9281" in text
         assert "AGENTX_DYNAMO_HEADER_AFFINITY" not in text
+        assert "Verified AIPerf AgentX timing policy" in text
 
         bundle = SCRIPTS_DIR / "agentic" / "third_party" / "aiperf-agentx-v1-src.tgz"
         manifest = (
@@ -907,23 +909,39 @@ class TestAgenticRunner:
             / "aiperf-agentx-v1-src.manifest"
         )
         manifest_text = manifest.read_text()
-        assert "commit=655792405980c5211722bc45a5f8401f3bad304a" in manifest_text
+        assert "commit=208125aca87a438e43e56517e8a3e5096f8c9281" in manifest_text
         assert (
             "archive_sha256="
-            "b7a1326bf14fd20f4f021d363209046b2a881848fc40f8f963e0fc45512df13c"
+            "3a97a0dc87193345e8eabb4a793c3297427c1bc081bf5c4cc4bc6d75b9326b5e"
             in manifest_text
         )
         with tarfile.open(bundle, "r:gz") as archive:
             environment = archive.extractfile("src/aiperf/common/environment.py")
             transport = archive.extractfile("src/aiperf/transports/base_transports.py")
+            scenario = archive.extractfile(
+                "src/aiperf/common/scenario/inferencex_agentx_mvp.py"
+            )
+            loadgen = archive.extractfile("src/aiperf/common/config/loadgen_config.py")
             assert environment is not None
             assert transport is not None
+            assert scenario is not None
+            assert loadgen is not None
             environment_text = environment.read().decode()
             transport_text = transport.read().decode()
+            scenario_text = scenario.read().decode()
+            loadgen_text = loadgen.read().decode()
 
         assert "X_DYNAMO_SESSION_ID_FROM_CORRELATION_ID" in environment_text
         assert 'headers["X-Dynamo-Session-ID"] = request_info.x_correlation_id' in transport_text
         assert 'headers["X-Dynamo-Parent-Session-ID"]' in transport_text
+        assert "system_idle_gap_cap_seconds=10.0" in scenario_text
+        assert "forbid_trace_idle_gap_cap=True" in scenario_text
+        assert "forbid_inter_turn_delay_cap=True" in scenario_text
+        assert re.search(
+            r"burst_phase_starts:.*?\]\s*=\s*True",
+            loadgen_text,
+            re.DOTALL,
+        )
 
     def test_agentic_bench_patches_weka_subagent_osl_cap(self):
         """bench.sh keeps Weka subagent child turns under the synthesis OSL cap."""

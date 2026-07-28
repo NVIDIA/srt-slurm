@@ -1391,12 +1391,11 @@ build_replay_cmd() {
     # the worker threads the server's live assistant response back into the
     # session.
     #
-    # The scenario plugin locks: --cache-bust first_turn_prefix and
-    # --trace-idle-gap-cap-seconds 10 (per-trace idle-gap compression
-    # against parent + subagent request-start timestamps; supersedes the
-    # legacy --use-think-time-only / --inter-turn-delay-cap-seconds path),
-    # and auto-injects them — so we do not pass them. See
-    # utils/aiperf/docs/tutorials/agentx-mvp.md.
+    # The scenario plugin locks --cache-bust first_turn_prefix and a 10-second
+    # global system-idle cap. Recorded per-trace and per-turn timing is
+    # preserved while work is active; pending timers shift only when the whole
+    # replay is idle. Burst warmup/profiling phase starts are enabled by the
+    # pinned AIPerf client, so we do not pass timing overrides here.
     local result_dir="$1"
     local duration="$DURATION"
 
