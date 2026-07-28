@@ -206,7 +206,6 @@ health_check:
   interval_seconds: 10
 
 dynamo:
-  request_plane: "nats"
   install: false
 
 infra:
