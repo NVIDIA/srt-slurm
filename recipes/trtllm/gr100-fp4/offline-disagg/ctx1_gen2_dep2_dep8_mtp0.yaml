@@ -1,0 +1,214 @@
+# GR100-NVL72 DeepSeek-R1 NVFP4 — disaggregated OFFLINE 1c2g via dynamo.trtllm
+# Topology: 1 ctx (TP=EP=2, 2 GPU / 1 node) + 2 gen (TP=EP=8, 8 GPU / 2 nodes each)
+# Total worker GPUs: 1×2 + 2×8 = 18 GPUs across 5 nodes (+ 1 infra node)
+# Source configs:
+#   prefill engine: server-ctx-ucx.yaml   (UCX KV transport, ADP dep2, MTP-0, bigbuf)
+#   decode  engine: server-gen-ucx.yaml   (UCX KV transport, ADP dep8, MTP-0, bs1024)
+#   worker  env:    server-ctx-env.yaml / server-gen-env.yaml (identical)
+# Benchmark: inference-endpoint client (MLPerf offline, max_throughput, streaming off)
+#   Run manually after server is ready via `srtctl submit --no-bench` or
+#   use benchmark.type: manual and submit endpoint benchmark separately.
+# NOTE: gpu_type "gr100" is not yet in the numactl allowlist in trtllm.py:199.
+#   Add "gr100" to the tuple if numactl NUMA binding is needed for GR100 nodes.
+
+name: "dsr1-gr100-dynamo-offline-1c2g"
+
+model:
+  # Alias defined in srtslurm.yaml → /home/mlperf_inference_storage/models--centml--DeepSeek-R1-NVFP4-v2-mlpinf-flatten
+  path: "/lustre/fsw/core_dlfw_ci/kmcgill/mlperfv6.1/models/models--centml--DeepSeek-R1-NVFP4-v2-mlpinf-flatten"
+  # dynamo-trtllm container with nats-server, etcd, dynamo.frontend, dynamo.trtllm, trtllm-llmapi-launch
+  container: "/lustre/fsw/core_dlfw_ci/kmcgill/mlperfv6.1/images/178b12f5e2-130rc15-mlperf-acc-fix.sqsh"
+  precision: "fp4"
+
+resources:
+  gpu_type: "gr100"
+  gpus_per_node: 4
+
+  # CTX (prefill): TP=EP=2 → 2 GPUs per worker, 1 node per worker
+  prefill_workers: 1
+  prefill_nodes: 1
+  gpus_per_prefill: 2
+
+  # GEN (decode): TP=EP=8 → 8 GPUs per worker, 2 nodes per worker
+  decode_workers: 2
+  decode_nodes: 4
+  gpus_per_decode: 8
+
+backend:
+  type: trtllm
+
+  # Environment shared across ctx and gen workers (server-ctx-env.yaml == server-gen-env.yaml).
+  # CRITICAL: UCX_CUDA_IPC_ENABLE_MNNVL=y enables intra-rack cross-node KV over NVLink.
+  #   Without this, ctx prefill stalls (73ms→307ms), TTFT ramps to 46s → INVALID results.
+  # UCX_TLS ^posix + UCX_RNDV_SCHEME put_zcopy fix sm_107 disagg startup/KV-transfer hangs.
+  prefill_environment:
+    UCX_CUDA_IPC_ENABLE_MNNVL: "y"
+    UCX_RNDV_SCHEME: "put_zcopy"
+    UCX_TLS: "^posix"
+    TRTLLM_MOE_A2A_DISABLE_CFT_COUNTED_WRITES: "1"
+    TRTLLM_MOE_ENABLE_ALLTOALL_WITHOUT_ALLGATHER: "1"
+    TRTLLM_GEMM_ALLREDUCE_FUSION_ENABLED: "1"
+    TLLM_NUMA_AWARE_WORKER_AFFINITY: "1"
+    TRTLLM_ENABLE_PDL: "1"
+    TRTLLM_SERVER_DISABLE_GC: "1"
+    TRTLLM_WORKER_DISABLE_GC: "1"
+    NCCL_GRAPH_MIXING_SUPPORT: "0"
+    # Required for print_iter_log to produce output — logger default is "error" which
+    # silently discards per-iteration stats emitted via logger.info().
+    TLLM_LOG_LEVEL: "info"
+
+  decode_environment:
+    UCX_CUDA_IPC_ENABLE_MNNVL: "y"
+    UCX_RNDV_SCHEME: "put_zcopy"
+    UCX_TLS: "^posix"
+    TRTLLM_MOE_A2A_DISABLE_CFT_COUNTED_WRITES: "1"
+    TRTLLM_MOE_ENABLE_ALLTOALL_WITHOUT_ALLGATHER: "1"
+    TRTLLM_GEMM_ALLREDUCE_FUSION_ENABLED: "1"
+    TLLM_NUMA_AWARE_WORKER_AFFINITY: "1"
+    TRTLLM_ENABLE_PDL: "1"
+    TRTLLM_SERVER_DISABLE_GC: "1"
+    TRTLLM_WORKER_DISABLE_GC: "1"
+    NCCL_GRAPH_MIXING_SUPPORT: "0"
+    TLLM_LOG_LEVEL: "info"
+
+  trtllm_config:
+    # CTX engine: server-ctx-ucx.yaml — dep2 (TP=EP=2), ADP, MTP-0, bigbuf, UCX KV transport.
+    # NOTE: cutedsl NOT in nvfp4_gemm_config.allowed_backends (prefill shapes → 8× regression).
+    #       moe_config CUTEDSL and use_cute_dsl_bf16_* are safe on ctx.
+    prefill:
+      backend: pytorch
+      tensor_parallel_size: 2
+      moe_expert_parallel_size: 2
+      pipeline_parallel_size: 1
+      enable_attention_dp: true
+      attention_dp_config:
+        enable_balance: false
+        batching_wait_iters: 10
+        timeout_iters: 500
+      max_batch_size: 128
+      max_num_tokens: 16384
+      max_seq_len: 3200
+      cuda_graph_config: null
+      disable_overlap_scheduler: true
+      kv_cache_config:
+        enable_block_reuse: false
+        free_gpu_memory_fraction: 0.85
+        dtype: fp8
+      moe_config:
+        backend: CUTEDSL
+      nvfp4_gemm_config:
+        allowed_backends: [cutlass, cublaslt, cuda_core]
+      cache_transceiver_config:
+        backend: UCX
+        max_tokens_in_buffer: 36864
+      scheduler_config:
+        capacity_scheduler_policy: MAX_UTILIZATION
+        context_chunking_policy: FIRST_COME_FIRST_SERVED
+      speculative_config: null
+      use_cute_dsl_bf16_bmm: true
+      use_cute_dsl_bf16_gemm: true
+      print_iter_log: true
+      enable_iter_perf_stats: true
+
+    # GEN engine: server-gen-ucx.yaml — dep8 (TP=EP=8), ADP, MTP-0, bs1024, UCX KV transport.
+    decode:
+      backend: pytorch
+      tensor_parallel_size: 8
+      moe_expert_parallel_size: 8
+      pipeline_parallel_size: 1
+      enable_attention_dp: true
+      enable_lm_head_tp_in_adp: true
+      attention_dp_config:
+        enable_balance: false
+        batching_wait_iters: 10
+        timeout_iters: 500
+      max_batch_size: 1024
+      max_num_tokens: 8192
+      max_seq_len: 23200
+      kv_cache_config:
+        enable_block_reuse: false
+        free_gpu_memory_fraction: 0.9
+        dtype: fp8
+      moe_config:
+        backend: CUTEDSL
+        use_low_precision_moe_combine: true
+      nvfp4_gemm_config:
+        allowed_backends: [cutlass, cublaslt, cutedsl, cuda_core]
+      cache_transceiver_config:
+        backend: UCX
+        max_tokens_in_buffer: 36864
+      num_postprocess_workers: 4
+      cuda_graph_config:
+        enable_padding: true
+        batch_sizes: [1,2,4,8,12,16,20,24,28,32,36,40,44,48,52,56,60,64,72,80,88,96,104,112,120,128,160,192,224,256,288,320,352,384,416,448,480,512,544,576,608,640,672,704,736,768,800,832,864,896,928,960,992,1024]
+      scheduler_config:
+        capacity_scheduler_policy: MAX_UTILIZATION
+        context_chunking_policy: FIRST_COME_FIRST_SERVED
+      speculative_config: null
+      print_iter_log: true
+      enable_iter_perf_stats: true
+
+benchmark:
+  type: "custom"
+  # Endpoint client container (inference-endpoint + MLPerf dependencies).
+  # Add alias to srtslurm.yaml: endpoint-client: "/path/to/endpoint_client.sqsh"
+  container_image: "/lustre/fsw/core_dlfw_ci/kmcgill/mlperfv6.1/images/endpoint_client_bbc86973_pr372.sqsh"
+  env:
+    PYTHONNOUSERSITE: "1"
+    # srt-slurm mounts the model at /model; client_submission.yaml sets tokenizer_name
+    # via ${MODEL_DIR}, which the Python resolver below expands to this value.
+    MODEL_DIR: "/model"
+  # Resolves client_submission.yaml by injecting the dynamo frontend URL
+  # (http://localhost:8000 — srt-slurm's dynamo frontend always binds port 8000 on the
+  # head node, which is where this benchmark command runs), then launches the
+  # MLPerf-offline inference-endpoint perf run. Results land in /logs/.
+  command: |
+    set -euo pipefail
+    CONFIG=/work/NVIDIA/src/configs/GR100-NVL72_GR100-288GB_aarch64x72_TRT/deepseek-r1/point_offline_disagg_dynamo/client_submission.yaml
+    RESOLVED=/logs/endpoint_resolved.yaml
+    mkdir -p /logs/report
+    python3 - "$CONFIG" "$RESOLVED" << 'PYEOF'
+    import yaml, sys, os
+    cfg = yaml.safe_load(open(sys.argv[1]))
+    cfg["endpoint_config"]["endpoints"] = [{"url": "http://localhost:8000", "api_key": None}]
+    cfg["model_params"]["tokenizer_name"] = os.environ.get("MODEL_DIR", "/model")
+    cfg["report_dir"] = "/logs/report"
+    yaml.dump(cfg, open(sys.argv[2], "w"), default_flow_style=False)
+    PYEOF
+    echo "[endpoint-resolve] Wrote resolved config to $RESOLVED"
+    inference-endpoint benchmark from-config -c "$RESOLVED" --mode perf
+
+# Mount the MLPerf work tree into /work (provides both configs at
+# NVIDIA/src/configs/.../ and the dataset at dataset/ds-r1/).
+# Update to your cluster's actual path before submitting.
+container_mounts:
+  - "/lustre/fsw/core_dlfw_ci/rihuo/mlperf": "/work"
+  - "/lustre/fsw/core_dlfw_ci/rihuo/endpoints-launch": "/endpoints-launch-mount"
+
+# Pin memory clocks on every allocated node before workers start.
+# Retried 6× with 5-second gaps to handle transient sudo/nvidia-smi races at allocation time.
+sbatch_pre_sweep: |
+  srun --overlap --jobid=$SLURM_JOB_ID --nodes=$SLURM_NNODES --ntasks-per-node=1 --cpu-bind=none \
+    bash -c 'for i in 1 2 3 4 5 6; do sudo -n nvidia-smi -lmc 4752,4752 2>&1|head -1; sleep 5; done' || true
+
+# Restore default memory clocks on EXIT (fires on success, failure, and cancellation).
+sbatch_post_sweep: |
+  srun --overlap --jobid=$SLURM_JOB_ID --nodes=$SLURM_NNODES --ntasks-per-node=1 --cpu-bind=none \
+    bash -c 'for i in 1 2 3; do sudo -n nvidia-smi -lmc 3186,4752 2>&1|head -1; sleep 3; done' || true
+
+frontend:
+  type: "dynamo"
+  enable_multiple_frontends: false
+
+health_check:
+  # trtllm workers (esp. gen dep8 with CUDA graph warmup) can take up to 90 min to start.
+  max_attempts: 540
+  interval_seconds: 10
+
+dynamo:
+  request_plane: "nats"
+  install: false
+
+infra:
+  # Reserve node 0 for etcd + NATS (mirrors sflow "node1 dynamo control plane").
+  etcd_nats_dedicated_node: true

@@ -484,6 +484,8 @@ def generate_minimal_sbatch_script(
         output_base=output_base,
         setup_script=setup_script,
         config_environment={key: shlex.quote(str(value)) for key, value in config_environment.items()},
+        sbatch_pre_sweep=config.sbatch_pre_sweep,
+        sbatch_post_sweep=config.sbatch_post_sweep,
     )
 
     return rendered

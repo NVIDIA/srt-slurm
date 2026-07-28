@@ -1565,6 +1565,21 @@ class SrtConfig:
     sbatch_directives: dict[str, str] = field(default_factory=dict)
     enable_config_dump: bool = True
 
+    # Shell snippet injected into the sbatch script immediately before the main
+    # sweep call (i.e., after SLURM allocates nodes but before workers start).
+    # Runs on the HOST (not in a container), so srun is available. Typical use:
+    # cluster-wide clock pinning, hugepage setup, firmware checks.
+    # Example:
+    #   sbatch_pre_sweep: |
+    #     srun --overlap --ntasks-per-node=1 --cpu-bind=none \
+    #       bash -c 'sudo -n nvidia-smi -lmc 4752,4752' || true
+    sbatch_pre_sweep: str | None = None
+
+    # Shell snippet registered via `trap ... EXIT` so it runs after the sweep
+    # finishes (success, failure, or cancellation). Same HOST environment as
+    # sbatch_pre_sweep. Typical use: restoring clocks after the job ends.
+    sbatch_post_sweep: str | None = None
+
     # Custom setup script (runs before dynamo install and worker startup)
     # e.g. "custom-setup.sh" -> runs /configs/custom-setup.sh
     setup_script: str | None = None

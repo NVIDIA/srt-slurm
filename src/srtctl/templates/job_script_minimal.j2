@@ -160,6 +160,19 @@ echo ""
 # Run orchestrator on the HOST (not in container) so it has access to srun
 # The orchestrator will spawn containerized workers
 # Output goes to SLURM's --output (sweep_%j.log)
+{% if sbatch_post_sweep %}
+# Register post-sweep teardown (runs on EXIT so it fires even on failure/cancel).
+_srtctl_post_sweep() {
+{{ sbatch_post_sweep | indent(2, first=True) }}
+}
+trap _srtctl_post_sweep EXIT
+{% endif %}
+{% if sbatch_pre_sweep %}
+echo "Running pre-sweep commands..."
+{{ sbatch_pre_sweep }}
+echo "Pre-sweep commands done."
+echo ""
+{% endif %}
 set +e  # Temporarily disable exit-on-error to capture exit code
 cd "${SRTCTL_SOURCE}"
 # Lock-protected venv sync to avoid concurrent .venv-compute teardown/recreate
