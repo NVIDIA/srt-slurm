@@ -159,10 +159,8 @@ benchmark:
     PATH: "/opt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     TIKTOKEN_RS_CACHE_DIR: "/work/.tiktoken_rs_cache"
     HF_HOME: "/work/.hf_cache"
-  # Resolves client_submission.yaml by injecting the dynamo frontend URL
-  # (http://localhost:8000 — srt-slurm's dynamo frontend always binds port 8000 on the
-  # head node, which is where this benchmark command runs), then launches the
-  # MLPerf-offline inference-endpoint perf run. Results land in /logs/.
+  # Resolves client_submission.yaml by injecting the trtllm-serve frontend URL
+  # (http://localhost:8000).
   command: |
     set -euo pipefail
     CONFIG=/work/client_submission.yaml
@@ -175,8 +173,6 @@ benchmark:
     cfg["model_params"]["tokenizer_name"] = os.environ.get("MODEL_DIR", "/model")
     cfg["model_params"]["name"] = "centml_DeepSeek-R1-NVFP4-v2-mlpinf"
     cfg["report_dir"] = "/logs/report"
-    # halve num_workers for 1 frontend (bundle had 2)
-    cfg.setdefault("settings", {}).setdefault("client", {})["num_workers"] = 8
     # Drop accuracy datasets: the scorer requires deepseek_eval_runner.py which is
     # not set up in the endpoint client container. Perf-only run doesn't need them.
     cfg["datasets"] = [d for d in cfg.get("datasets", []) if d.get("type") != "accuracy"]
