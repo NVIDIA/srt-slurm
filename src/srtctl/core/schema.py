@@ -1466,6 +1466,13 @@ class FrontendConfig:
     type: str = "dynamo"
     enable_multiple_frontends: bool = True
     num_additional_frontends: int = 9
+    # When True (default) and enable_multiple_frontends is also True, nginx is placed
+    # on the head node to load-balance across the router replicas. Set to False to run
+    # N frontends directly on N nodes without nginx — each frontend binds its own IP,
+    # and srtctl writes /logs/frontend_urls.txt with one URL per line for the benchmark
+    # to discover. trtllm_serve always operates as if use_nginx=False (nginx is
+    # incompatible with its disaggregated protocol).
+    use_nginx: bool = True
     nginx_container: str = "nginx:1.27.4"
     nginx_raise_ulimit: bool = False
     nginx_session_affinity: bool = False
@@ -1613,10 +1620,6 @@ class SrtConfig:
         if self.backend_type != "trtllm":
             raise ValidationError(
                 f"frontend.type: trtllm_serve requires backend.type: trtllm; got {self.backend_type!r}"
-            )
-        if self.frontend.enable_multiple_frontends:
-            raise ValidationError(
-                "frontend.type: trtllm_serve runs a single orchestrator; set frontend.enable_multiple_frontends: false"
             )
         if not self.resources.is_disaggregated:
             raise ValidationError(

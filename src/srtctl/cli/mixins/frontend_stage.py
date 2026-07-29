@@ -85,6 +85,27 @@ class FrontendStageMixin:
         head = self.runtime.nodes.head
         fe_config = self.config.frontend
 
+        # Multiple frontends WITHOUT nginx: applies when use_nginx=False (explicit opt-out)
+        # or when frontend type is trtllm_serve (nginx is incompatible with its protocol).
+        # N orchestrators run directly on N worker nodes; srtctl writes
+        # /logs/frontend_urls.txt so the benchmark can discover all endpoints.
+        no_nginx = not fe_config.use_nginx or fe_config.type == "trtllm_serve"
+        if no_nginx and fe_config.enable_multiple_frontends and len(nodes) > 1:
+            other_nodes = [n for n in nodes if n != head]
+            n_frontends = min(fe_config.num_additional_frontends + 1, 1 + len(other_nodes))
+            frontend_nodes = [head] + other_nodes[: n_frontends - 1]
+            logger.info(
+                "Frontend topology (no nginx): %d frontends on %s",
+                len(frontend_nodes),
+                frontend_nodes,
+            )
+            return FrontendTopology(
+                nginx_node=None,
+                frontend_nodes=frontend_nodes,
+                frontend_port=FRONTEND_PUBLIC_PORT,
+                public_port=FRONTEND_PUBLIC_PORT,
+            )
+
         # Single node or multiple frontends disabled: single frontend, no nginx.
         # The orchestrator node honors frontend.orchestrator_placement (default
         # "head" -> unchanged; "first_decode" -> first GEN worker-leader node).
@@ -229,6 +250,16 @@ class FrontendStageMixin:
             backend_processes=self.backend_processes,
             stop_event=stop_event,
         )
-
         processes.extend(frontend_procs)
+
+        # Write /logs/frontend_urls.txt only for no-nginx multi-frontend deployments
+        # so the benchmark can discover all endpoint IPs. Single-frontend and nginx
+        # topologies use the old approach (benchmark targets localhost:8000 or nginx IP
+        # directly — no file needed).
+        if not topology.uses_nginx and len(topology.frontend_nodes) > 1:
+            urls = [f"http://{get_hostname_ip(n)}:{topology.public_port}" for n in topology.frontend_nodes]
+            url_file = self.runtime.log_dir / "frontend_urls.txt"
+            url_file.write_text("\n".join(urls) + "\n")
+            logger.info("Frontend URLs written to %s: %s", url_file, urls)
+
         return processes

@@ -93,23 +93,26 @@ class TRTLLMServeFrontend:
         backend_processes: list["Process"],
         stop_event: "threading.Event | None" = None,
     ) -> list["ManagedProcess"]:
-        """Write ser.yaml from worker leaders and launch the disaggregated orchestrator."""
+        """Write ser.yaml from worker leaders and launch disaggregated orchestrator(s).
+
+        Supports 1..N orchestrators (one per topology.frontend_nodes entry). All
+        orchestrators share the same ser.yaml and worker pool; they differ only in
+        which node they run on. Frontend URLs are written to ``frontend_urls.txt``
+        in the log dir so the benchmark command can discover them.
+        """
         from srtctl.core.processes import ManagedProcess
 
         # trtllm-serve disaggregated fronts trtllm workers; it can't route to other backends.
         if config.backend.type != "trtllm":
             raise ValueError(f"frontend.type: trtllm_serve requires backend.type: trtllm (got {config.backend.type!r})")
 
-        # trtllm-serve disaggregated is a single orchestrator process; the nginx +
-        # multi-frontend path is not supported. uses_nginx also catches the 2-node case
-        # where the topology is nginx + a single frontend node (frontend_nodes len == 1).
-        if topology.uses_nginx or len(topology.frontend_nodes) != 1:
+        # Nginx is not compatible with trtllm-serve disaggregated.
+        if topology.uses_nginx:
             raise ValueError(
-                "trtllm_serve frontend runs a single disaggregated orchestrator and does "
-                "not support the nginx/multi-frontend path; set "
-                "frontend.enable_multiple_frontends: false"
+                "trtllm_serve frontend does not support nginx; use "
+                "frontend.enable_multiple_frontends: false (single frontend) or "
+                "frontend.enable_multiple_frontends: true (multi-frontend without nginx)"
             )
-        frontend_node = topology.frontend_nodes[0]
 
         # Collect prefill/decode worker URLs from endpoint leaders.
         prefill_urls: list[str] = []
@@ -144,7 +147,7 @@ class TRTLLMServeFrontend:
                     raise RuntimeError("trtllm-serve worker wait aborted")
                 raise RuntimeError(f"trtllm-serve worker {url} did not become healthy")
 
-        # Build ser.yaml (host path in log_dir, mounted to /logs in the container).
+        # Build a single ser.yaml shared by all orchestrators (same worker pool).
         ser = self._build_ser(config, prefill_urls, decode_urls, topology.frontend_port)
         host_ser_path = runtime.log_dir / "ser.yaml"
         host_ser_path.write_text(yaml.safe_dump(ser, sort_keys=False))
@@ -159,26 +162,33 @@ class TRTLLMServeFrontend:
         if config.frontend.env:
             env_to_set.update(config.frontend.env)
 
-        orch_log = runtime.log_dir / f"{frontend_node}_trtllm_serve_orchestrator.out"
-        proc = start_srun_process(
-            command=cmd,
-            nodelist=[frontend_node],
-            output=str(orch_log),
-            container_image=str(runtime.container_image),
-            container_mounts=runtime.container_mounts,
-            env_to_set=env_to_set if env_to_set else None,
-            # trtllm-serve imports tensorrt_llm, which requires an MPI launcher even
-            # for the single-rank orchestrator (same reason the dynamo frontend uses it).
-            mpi="pmix",
-            het_group=runtime.nodes.het_group_for(frontend_node),
-        )
+        # Launch one orchestrator per frontend node.
+        # frontend_urls.txt is written by FrontendStageMixin.start_frontend centrally.
+        processes: list["ManagedProcess"] = []
+        multi = len(topology.frontend_nodes) > 1
 
-        return [
-            ManagedProcess(
-                name="trtllm_serve_orchestrator",
-                popen=proc,
-                log_file=orch_log,
-                node=frontend_node,
-                critical=True,
+        for i, frontend_node in enumerate(topology.frontend_nodes):
+            orch_log = runtime.log_dir / f"{frontend_node}_trtllm_serve_orchestrator.out"
+            proc = start_srun_process(
+                command=cmd,
+                nodelist=[frontend_node],
+                output=str(orch_log),
+                container_image=str(runtime.container_image),
+                container_mounts=runtime.container_mounts,
+                env_to_set=env_to_set if env_to_set else None,
+                # trtllm-serve imports tensorrt_llm, which requires an MPI launcher even
+                # for the single-rank orchestrator (same reason the dynamo frontend uses it).
+                mpi="pmix",
+                het_group=runtime.nodes.het_group_for(frontend_node),
             )
-        ]
+            processes.append(
+                ManagedProcess(
+                    name=f"trtllm_serve_orchestrator_{i}" if multi else "trtllm_serve_orchestrator",
+                    popen=proc,
+                    log_file=orch_log,
+                    node=frontend_node,
+                    critical=True,
+                )
+            )
+
+        return processes

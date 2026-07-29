@@ -169,7 +169,9 @@ benchmark:
     /opt/venv/bin/python3 - "$CONFIG" "$RESOLVED" << 'PYEOF'
     import yaml, sys, os
     cfg = yaml.safe_load(open(sys.argv[1]))
-    cfg["endpoint_config"]["endpoints"] = ["http://localhost:8000"]
+    with open("/logs/frontend_urls.txt") as _f:
+        _urls = [l.strip() for l in _f if l.strip()]
+    cfg["endpoint_config"]["endpoints"] = _urls
     cfg["model_params"]["tokenizer_name"] = os.environ.get("MODEL_DIR", "/model")
     cfg["model_params"]["name"] = "centml_DeepSeek-R1-NVFP4-v2-mlpinf"
     cfg["report_dir"] = "/logs/report"
@@ -190,7 +192,9 @@ container_mounts:
 
 frontend:
   type: "dynamo"
-  enable_multiple_frontends: false
+  enable_multiple_frontends: true
+  use_nginx: false
+  num_additional_frontends: 1  # 2 total
 
 health_check:
   # trtllm workers (esp. gen dep8 with CUDA graph warmup) can take up to 90 min to start.

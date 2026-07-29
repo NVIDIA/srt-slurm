@@ -160,7 +160,11 @@ benchmark:
     /opt/venv/bin/python3 - "$CONFIG" "$RESOLVED" << 'PYEOF'
     import yaml, sys, os
     cfg = yaml.safe_load(open(sys.argv[1]))
-    cfg["endpoint_config"]["endpoints"] = ["http://localhost:8000"]
+    # Read frontend URLs written by srt-slurm (one per line: http://ip:port).
+    # Works for both single-frontend and multi-frontend trtllm_serve deployments.
+    with open("/logs/frontend_urls.txt") as _f:
+        _urls = [l.strip() for l in _f if l.strip()]
+    cfg["endpoint_config"]["endpoints"] = _urls
     cfg["model_params"]["tokenizer_name"] = os.environ.get("MODEL_DIR", "/model")
     cfg["model_params"]["name"] = "centml_DeepSeek-R1-NVFP4-v2-mlpinf"
     cfg["report_dir"] = "/logs/report"
@@ -177,10 +181,15 @@ container_mounts:
   "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/endpoints-launch": "/endpoints-launch-mount"
 
 frontend:
-  # trtllm-serve disaggregated: builds ser.yaml from worker URLs and runs the
-  # trtllm-serve orchestrator. No etcd/NATS required → saves 1 node vs dynamo.
+  # trtllm-serve disaggregated: builds a shared ser.yaml from worker URLs and
+  # launches one orchestrator per frontend node. No etcd/NATS, no nginx.
+  # With enable_multiple_frontends: true and num_additional_frontends: 1, srt-slurm
+  # launches 2 orchestrators (head + next worker node), writing both URLs to
+  # /logs/frontend_urls.txt for the benchmark command to discover.
   type: "trtllm_serve"
-  enable_multiple_frontends: false
+  enable_multiple_frontends: true
+  use_nginx: false
+  num_additional_frontends: 1  # total frontends = num_additional_frontends + 1 = 2
 
 health_check:
   # gen dep8 with CUDA graph warmup (bs1024 list) can take up to 90 min.
