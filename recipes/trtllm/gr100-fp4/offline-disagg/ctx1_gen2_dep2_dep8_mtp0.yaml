@@ -17,7 +17,7 @@ model:
   # Alias defined in srtslurm.yaml → /home/mlperf_inference_storage/models--centml--DeepSeek-R1-NVFP4-v2-mlpinf-flatten
   path: "/lustre/fsw/core_dlfw_ci/kmcgill/mlperfv6.1/models/models--centml--DeepSeek-R1-NVFP4-v2-mlpinf-flatten"
   # dynamo-trtllm container with nats-server, etcd, dynamo.frontend, dynamo.trtllm, trtllm-llmapi-launch
-  container: "/lustre/fsw/core_dlfw_ci/kmcgill/mlperfv6.1/images/178b12f5e2-130rc15-mlperf-acc-fix.sqsh"
+  container: "/lustre/fsw/core_dlfw_ci/rihuo/mlperf-inference-ttong-aarch64-mlperfrubin43654737adpfix-mlperfa4fc83a4-mlpinf.sqsh"
   precision: "fp4"
 
 resources:
@@ -213,6 +213,11 @@ frontend:
   enable_multiple_frontends: true
   use_nginx: false
   num_additional_frontends: 1  # 2 total
+
+setup_script: "install_dynamo_wheel.sh"
+
+extra_mount:
+  - /lustre/fsw/core_dlfw_ci/rihuo/dynamo_wheels:/dynamo_wheels
 
 health_check:
   # trtllm workers (esp. gen dep8 with CUDA graph warmup) can take up to 90 min to start.

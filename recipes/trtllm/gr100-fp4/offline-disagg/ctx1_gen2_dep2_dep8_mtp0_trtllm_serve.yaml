@@ -18,7 +18,7 @@ name: "dsr1-gr100-trtllm-serve-offline-1c2g"
 
 model:
   path: "/lustre/fsw/core_dlfw_ci/kmcgill/mlperfv6.1/models/models--centml--DeepSeek-R1-NVFP4-v2-mlpinf-flatten"
-  container: "/lustre/fsw/core_dlfw_ci/kmcgill/mlperfv6.1/images/178b12f5e2-130rc15-mlperf-acc-fix.sqsh"
+  container: "/lustre/fsw/core_dlfw_ci/rihuo/mlperf-inference-ttong-aarch64-mlperfrubin43654737adpfix-mlperfa4fc83a4-mlpinf.sqsh"
   precision: "fp4"
 
 resources:
