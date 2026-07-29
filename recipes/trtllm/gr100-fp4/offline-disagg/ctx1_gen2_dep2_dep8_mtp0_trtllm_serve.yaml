@@ -157,7 +157,7 @@ benchmark:
   # worker-per-frontend ratio. Adjust max_connections proportionally if needed.
   command: |
     set -euo pipefail
-    CONFIG=/work/NVIDIA/src/configs/GR100-NVL72_GR100-288GB_aarch64x72_TRT/deepseek-r1/point_offline_disagg_1c2g/client_bs1024_360k.yaml
+    CONFIG=/work/client_submission.yaml
     RESOLVED=/logs/endpoint_resolved.yaml
     mkdir -p /logs/report
     python3 - "$CONFIG" "$RESOLVED" << 'PYEOF'
