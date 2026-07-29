@@ -6,7 +6,6 @@ model:
 dynamo:
   wheel: 1.3.0.dev20260721
   install: true
-setup_script: vllm-container-deps.sh
 resources:
   gpu_type: b200
   gpus_per_node: 8
