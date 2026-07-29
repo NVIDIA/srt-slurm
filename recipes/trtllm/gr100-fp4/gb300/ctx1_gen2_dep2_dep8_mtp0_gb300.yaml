@@ -177,7 +177,7 @@ benchmark:
     yaml.dump(cfg, open(sys.argv[2], "w"), default_flow_style=False)
     PYEOF
     echo "[endpoint-resolve] Wrote resolved config to $RESOLVED"
-    inference-endpoint benchmark from-config -c "$RESOLVED" --mode perf
+    /opt/venv/bin/inference-endpoint benchmark from-config -c "$RESOLVED" --mode perf
 
 # Mount the MLPerf work tree into /work (provides both configs at
 # NVIDIA/src/configs/.../ and the dataset at dataset/ds-r1/).
