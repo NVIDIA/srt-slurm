@@ -124,7 +124,7 @@ base:
     osl: 1024
     concurrencies: '256'
     req_rate: inf
-    use_chat_template: true
+    use_chat_template: false
     custom_tokenizer: sa_bench_tokenizers.sglang_deepseek_v4.SGLangDeepseekV4Tokenizer
   identity:
     model:
