@@ -60,7 +60,7 @@ backend:
     UCX_RNDV_SCHEME: put_zcopy
   vllm_config:
     prefill:
-      kv-transfer-config: '{"kv_connector": "NixlConnector", "kv_role": "kv_both", "engine_id": "kimi-k26-prefill-dep8"}'
+      kv-transfer-config: '{"kv_connector": "NixlConnector", "kv_role": "kv_both"}'
       served-model-name: nvidia/Kimi-K2.6-NVFP4
       kv-cache-dtype: fp8
       tensor-parallel-size: 1
