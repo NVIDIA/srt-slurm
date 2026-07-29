@@ -149,8 +149,11 @@ benchmark:
   env:
     PYTHONNOUSERSITE: "1"
     MODEL_DIR: "/model"
-    # From point_offline_disagg_1c2g/endpoint_env.yaml
+    # From point_offline_disagg_1c2g/endpoint_env.yaml — puts inference-endpoint
+    # and PyYAML (needed by the resolver below) on PATH/PYTHONPATH.
+    PATH: "/opt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     TIKTOKEN_RS_CACHE_DIR: "/work/.tiktoken_rs_cache"
+    HF_HOME: "/work/.hf_cache"
   # Resolves client_bs1024_360k.yaml by injecting the trtllm-serve frontend URL
   # (http://localhost:8000). The bundle used 2 frontends and num_workers=16;
   # srt-slurm uses 1 frontend, so num_workers is halved to 8 to maintain the same
@@ -160,7 +163,7 @@ benchmark:
     CONFIG=/work/client_submission.yaml
     RESOLVED=/logs/endpoint_resolved.yaml
     mkdir -p /logs/report
-    python3 - "$CONFIG" "$RESOLVED" << 'PYEOF'
+    /opt/venv/bin/python3 - "$CONFIG" "$RESOLVED" << 'PYEOF'
     import yaml, sys, os
     cfg = yaml.safe_load(open(sys.argv[1]))
     cfg["endpoint_config"]["endpoints"] = [{"url": "http://localhost:8000", "api_key": None}]
