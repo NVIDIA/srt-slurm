@@ -1,0 +1,35 @@
+name: dsr1-gr100-dynamo-offline-1c2g-submission
+version: '1.0'
+type: submission
+benchmark_mode: offline
+
+model_params:
+  name: models--centml--DeepSeek-R1-NVFP4-v2-mlpinf-flatten
+  tokenizer_name: "${MODEL_DIR}"
+  temperature: 0.0
+  top_k: 1
+  top_p: 1.0
+  max_new_tokens: 20000
+  streaming: 'off'
+
+datasets:
+  - name: perf-test
+    type: performance
+    path: /endpoints-launch-mount/dataset/ds-r1/deepseek_r1_eval.parquet
+
+settings:
+  runtime:
+    min_duration_ms: 5400000
+    max_duration_ms: 9540000
+    n_samples_to_issue: 12000
+    scheduler_random_seed: 16159082839903944936
+    dataloader_random_seed: 2747215439041700203
+  load_pattern: {type: max_throughput}
+  client:
+    num_workers: 16
+    max_connections: 16000
+    warmup_connections: -1
+    worker_initialization_timeout: 300.0
+
+endpoint_config: {endpoints: [], api_type: openai_completions, api_key: null}
+report_dir: ${SFLOW_TASK_OUTPUT_DIR}
