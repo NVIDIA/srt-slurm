@@ -56,8 +56,8 @@ backend:
     # Required for print_iter_log to produce output — logger default is "error" which
     # silently discards per-iteration stats emitted via logger.info().
     TLLM_LOG_LEVEL: "info"
-    DYN_TCP_WORKER_POOL_SIZE: "18000"
-    DYN_TCP_WORK_QUEUE_SIZE: "54000"
+    DYN_TCP_WORKER_POOL_SIZE: "40000"
+    DYN_TCP_WORK_QUEUE_SIZE: "160000"
 
   decode_environment:
     UCX_CUDA_IPC_ENABLE_MNNVL: "y"
@@ -72,8 +72,8 @@ backend:
     TRTLLM_WORKER_DISABLE_GC: "1"
     NCCL_GRAPH_MIXING_SUPPORT: "0"
     TLLM_LOG_LEVEL: "info"
-    DYN_TCP_WORKER_POOL_SIZE: "18000"
-    DYN_TCP_WORK_QUEUE_SIZE: "54000"
+    DYN_TCP_WORKER_POOL_SIZE: "40000"
+    DYN_TCP_WORK_QUEUE_SIZE: "160000"
 
   trtllm_config:
     # CTX engine: server-ctx-ucx.yaml — dep2 (TP=EP=2), ADP, MTP-0, bigbuf, UCX KV transport.
@@ -185,6 +185,9 @@ benchmark:
     # Drop accuracy datasets: the scorer requires deepseek_eval_runner.py which is
     # not set up in the endpoint client container. Perf-only run doesn't need them.
     cfg["datasets"] = [d for d in cfg.get("datasets", []) if d.get("type") != "accuracy"]
+    # Never cut off the drain early — LLM requests with max_new_tokens=20000 each take
+    # minutes; the default 240s drain timeout kills the run with ~359k in-flight.
+    cfg.setdefault("settings", {}).setdefault("drain", {})["performance_timeout_s"] = None
     yaml.dump(cfg, open(sys.argv[2], "w"), default_flow_style=False)
     PYEOF
     echo "[endpoint-resolve] Wrote resolved config to $RESOLVED"
@@ -212,7 +215,7 @@ frontend:
   type: "dynamo"
   enable_multiple_frontends: true
   use_nginx: false
-  num_additional_frontends: 1  # 2 total
+  num_additional_frontends: 4  # 2 total
 
 setup_script: "install_dynamo_wheel.sh"
 
