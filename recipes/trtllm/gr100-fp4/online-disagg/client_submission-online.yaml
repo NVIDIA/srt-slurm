@@ -1,0 +1,61 @@
+# EXPERIMENT OVERLAY - SERVER (online/poisson) data point at target_qps 80 for the
+# trtllm-serve test arms (exp_serve_dynamoimg.sh / exp_serve_ttongimg.sh).
+#
+# PAIRED WITH: point_offline_disagg_dynamo/client_server_q80_bofengl.yaml
+# Every field below is deliberately identical to that file so the serve-vs-dynamo
+# comparison isolates the STACK. Same model, same tokenizer, same target_qps, same
+# poisson pattern, same streaming mode, same durations, same seeds, same
+# n_samples_to_issue, same max_connections, same num_workers. Do not tune one without
+# the other - the whole point of the pair is that only the serving stack differs.
+#
+# num_workers 8 is a multiple of both frontend counts in use (serve arms run
+# NUM_FRONTEND_SERVERS=2, dynamo arms run 1), so the same value is valid on both sides.
+#
+# This point's other four clients are all benchmark_mode: offline / max_throughput -
+# there was no server-scenario client on the serve side before this one.
+#
+# NOTE ON streaming: 'on'. The server scenario is open-loop and reports TTFT/TPOT, which
+# require per-token responses. On the dynamo side this re-enables the per-iteration
+# response path that the offline runs showed costs 40-58% of every iteration in executor
+# GIL wait; trtllm-serve pays a much smaller penalty for the same flag (measured slope
+# 16.9 us/req streaming-off vs 21.9 streaming-on, i.e. 1.29x). That asymmetry is exactly
+# what this pair is meant to quantify at a realistic qps.
+name: dsr1-gr100-serve-1c2g-q80-server-EXPERIMENT
+version: '1.0'
+type: submission
+benchmark_mode: online
+
+model_params:
+  name: DeepSeek-R1-NVFP4-v2-mlpinf
+  tokenizer_name: /lustre/fsw/coreai_mlperf_inference/bofengl/models/DeepSeek-R1-NVFP4-v2-mlpinf
+  temperature: 0.0
+  top_k: 1
+  top_p: 1.0
+  max_new_tokens: 20000
+  streaming: 'on'
+
+datasets:
+  - name: perf-test
+    type: performance
+    path: /endpoints-launch-mount/dataset/ds-r1/deepseek_r1_eval.parquet
+
+settings:
+  runtime:
+    # 10 min of steady load - enough to reach the nsys capture window and characterise the
+    # decode loop. The submission server points use 35 min for a valid result.
+    min_duration_ms: 600000
+    max_duration_ms: 1800000
+    n_samples_to_issue: 3000
+    scheduler_random_seed: 42
+    dataloader_random_seed: 42
+  load_pattern: {type: poisson, target_qps: 80}
+  client:
+    num_workers: 8                                 # multiple of NUM_FRONTEND_SERVERS (2 here, 1 on dynamo)
+    max_connections: 16000                         # server poisson: in-flight ~ qps x latency, well under cap
+    warmup_connections: -1
+    min_required_connections: 0
+    worker_initialization_timeout: 300.0
+  drain: {performance_timeout_s: null, metrics_tokenizer_workers: 4, metrics_drain_timeout_s: 600.0}
+
+endpoint_config: {endpoints: [], api_type: openai_completions, api_key: null}
+report_dir: ${SFLOW_TASK_OUTPUT_DIR}
