@@ -191,7 +191,7 @@ frontend:
   type: "dynamo"
   enable_multiple_frontends: true
   use_nginx: false
-  num_additional_frontends: 7  # 8 total; round-robin across worker nodes with per-node port offsets (8000, 8001, …)
+  num_additional_frontends: 3  # 8 total; round-robin across worker nodes with per-node port offsets (8000, 8001, …)
   args:
     admission-control: "none"
   env:
