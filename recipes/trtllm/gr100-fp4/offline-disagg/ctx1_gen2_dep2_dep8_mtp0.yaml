@@ -216,6 +216,9 @@ frontend:
   enable_multiple_frontends: true
   use_nginx: false
   num_additional_frontends: 4  # 2 total
+  env:
+    ETCD_LEASE_TTL: '120'
+    DYN_TOKENIZER: "fastokens"
 
 setup_script: "install_dynamo_wheel.sh"
 

@@ -199,6 +199,9 @@ frontend:
   enable_multiple_frontends: true
   use_nginx: false
   num_additional_frontends: 1  # 2 total
+  env:
+    ETCD_LEASE_TTL: '120'
+    DYN_TOKENIZER: "fastokens"
 
 health_check:
   # trtllm workers (esp. gen dep8 with CUDA graph warmup) can take up to 90 min to start.
