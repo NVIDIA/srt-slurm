@@ -62,6 +62,8 @@ from srtctl.ports import (
 
 logger = logging.getLogger(__name__)
 
+MOONCAKE_MASTER_STARTUP_TIMEOUT_SECONDS = 600
+
 
 def _build_mooncake_master_command(install_spec: str | None = None) -> list[str]:
     """Build a Mooncake master command compatible with the pinned service image."""
@@ -295,21 +297,33 @@ class SweepOrchestrator(
         )
 
         logger.info("Waiting for mooncake_master RPC (port %d) on %s...", MOONCAKE_MASTER_PORT, infra_node)
-        if not wait_for_port(infra_node, MOONCAKE_MASTER_PORT, timeout=120):
+        if not wait_for_port(
+            infra_node,
+            MOONCAKE_MASTER_PORT,
+            timeout=MOONCAKE_MASTER_STARTUP_TIMEOUT_SECONDS,
+        ):
             raise RuntimeError("mooncake_master RPC failed to start")
         logger.info(
             "Waiting for mooncake_master HTTP metadata (port %d) on %s...",
             MOONCAKE_HTTP_METADATA_PORT,
             infra_node,
         )
-        if not wait_for_port(infra_node, MOONCAKE_HTTP_METADATA_PORT, timeout=120):
+        if not wait_for_port(
+            infra_node,
+            MOONCAKE_HTTP_METADATA_PORT,
+            timeout=MOONCAKE_MASTER_STARTUP_TIMEOUT_SECONDS,
+        ):
             raise RuntimeError("mooncake_master HTTP metadata server failed to start")
         logger.info(
             "Waiting for mooncake_master metrics (port %d) on %s...",
             MOONCAKE_METRICS_PORT,
             infra_node,
         )
-        if not wait_for_port(infra_node, MOONCAKE_METRICS_PORT, timeout=120):
+        if not wait_for_port(
+            infra_node,
+            MOONCAKE_METRICS_PORT,
+            timeout=MOONCAKE_MASTER_STARTUP_TIMEOUT_SECONDS,
+        ):
             raise RuntimeError("mooncake_master metrics server failed to start")
         logger.info("mooncake_master is ready")
 

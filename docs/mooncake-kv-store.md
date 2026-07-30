@@ -248,9 +248,11 @@ The workers continue to use the job's main container — only the master process
 
 ## Troubleshooting
 
-### Master fails to start within 120s
+### Master fails to start within 600s
 
-srtslurm waits up to 120 seconds for `mooncake_master` to bind on port 8700. If it times out, check:
+srtslurm waits up to 600 seconds for `mooncake_master` to bind on port 8700.
+The longer allowance covers a first-use Pyxis image import and an optional
+Mooncake package install. If it times out, check:
 
 - `mooncake_master.out` in the run's log directory — usually shows a binary-not-found or RDMA setup error
 - Whether `mooncake_master` is on `$PATH` inside the master container. If you're using a custom container, verify it has the mooncake binaries installed.

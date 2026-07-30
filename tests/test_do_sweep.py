@@ -3,8 +3,15 @@
 
 """Focused tests for sweep orchestration helpers."""
 
-from srtctl.cli.do_sweep import _build_mooncake_master_command
+from srtctl.cli.do_sweep import (
+    MOONCAKE_MASTER_STARTUP_TIMEOUT_SECONDS,
+    _build_mooncake_master_command,
+)
 from srtctl.ports import MOONCAKE_HTTP_METADATA_PORT, MOONCAKE_MASTER_PORT, MOONCAKE_METRICS_PORT
+
+
+def test_mooncake_master_startup_allows_slow_container_imports() -> None:
+    assert MOONCAKE_MASTER_STARTUP_TIMEOUT_SECONDS == 600
 
 
 def test_mooncake_master_command_is_compatible_with_pinned_image() -> None:
