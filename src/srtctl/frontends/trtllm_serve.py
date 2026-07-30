@@ -147,28 +147,30 @@ class TRTLLMServeFrontend:
                     raise RuntimeError("trtllm-serve worker wait aborted")
                 raise RuntimeError(f"trtllm-serve worker {url} did not become healthy")
 
-        # Build a single ser.yaml shared by all orchestrators (same worker pool).
-        ser = self._build_ser(config, prefill_urls, decode_urls, topology.frontend_port)
-        host_ser_path = runtime.log_dir / "ser.yaml"
-        host_ser_path.write_text(yaml.safe_dump(ser, sort_keys=False))
-        logger.info("Wrote trtllm-serve disagg config:\n%s", host_ser_path.read_text())
-        container_ser_path = "/logs/ser.yaml"
-
-        cmd = ["trtllm-serve", "disaggregated", "--config", container_ser_path]
-        cmd.extend(self.get_frontend_args_list(config.frontend.args))
-        logger.info("Orchestrator command: %s", shlex.join(cmd))
+        base_cmd = ["trtllm-serve", "disaggregated"]
+        base_cmd.extend(self.get_frontend_args_list(config.frontend.args))
 
         env_to_set: dict[str, str] = {}
         if config.frontend.env:
             env_to_set.update(config.frontend.env)
 
-        # Launch one orchestrator per frontend node.
+        # Launch one orchestrator per frontend node with its own ser.yaml (port differs
+        # when multiple frontends share a node to avoid bind conflicts).
         # frontend_urls.txt is written by FrontendStageMixin.start_frontend centrally.
         processes: list["ManagedProcess"] = []
         multi = len(topology.frontend_nodes) > 1
 
-        for i, frontend_node in enumerate(topology.frontend_nodes):
-            orch_log = runtime.log_dir / f"{frontend_node}_trtllm_serve_orchestrator.out"
+        for i, (frontend_node, frontend_port) in enumerate(zip(topology.frontend_nodes, topology.frontend_ports)):
+            # Each frontend gets its own ser.yaml so the `port` field matches its
+            # actual bind port (important when multiple frontends share one node).
+            ser = self._build_ser(config, prefill_urls, decode_urls, frontend_port)
+            host_ser_path = runtime.log_dir / f"ser_{i}.yaml"
+            host_ser_path.write_text(yaml.safe_dump(ser, sort_keys=False))
+            container_ser_path = f"/logs/ser_{i}.yaml"
+            cmd = base_cmd + ["--config", container_ser_path]
+            logger.info("Frontend %d command: %s", i, shlex.join(cmd))
+
+            orch_log = runtime.log_dir / f"{frontend_node}_trtllm_serve_orchestrator_{i}.out"
             proc = start_srun_process(
                 command=cmd,
                 nodelist=[frontend_node],

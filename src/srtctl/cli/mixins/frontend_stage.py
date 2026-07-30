@@ -34,11 +34,15 @@ class FrontendTopology:
     Topology rules:
     - Single node OR multiple_frontends disabled: 1 frontend on head, no nginx
     - 2+ nodes AND multiple_frontends enabled: nginx on head, frontends on other nodes
+    - no-nginx multiple frontends: N frontends on nodes round-robin, per-node port offsets
+      allow N > len(nodes) without conflicts (first frontend on a node gets 8000,
+      second gets 8001, etc.)
     """
 
     nginx_node: str | None  # Node running nginx, or None if no nginx
-    frontend_nodes: list[str]  # Nodes running frontends
-    frontend_port: int  # Port frontends listen on
+    frontend_nodes: list[str]  # Nodes running frontends (parallel to frontend_ports)
+    frontend_ports: list[int]  # Per-frontend listen port (parallel to frontend_nodes)
+    frontend_port: int  # Canonical port: FRONTEND_INTERNAL_PORT for nginx, PUBLIC otherwise
     public_port: int  # Public-facing port (nginx or direct frontend)
 
     @property
@@ -91,17 +95,29 @@ class FrontendStageMixin:
         # /logs/frontend_urls.txt so the benchmark can discover all endpoints.
         no_nginx = not fe_config.use_nginx or fe_config.type == "trtllm_serve"
         if no_nginx and fe_config.enable_multiple_frontends and len(nodes) > 1:
-            other_nodes = [n for n in nodes if n != head]
-            n_frontends = min(fe_config.num_additional_frontends + 1, 1 + len(other_nodes))
-            frontend_nodes = [head] + other_nodes[: n_frontends - 1]
+            n_frontends = fe_config.num_additional_frontends + 1
+            all_nodes = [head] + [n for n in nodes if n != head]
+            # Assign frontends round-robin across available nodes. When n_frontends >
+            # len(all_nodes), multiple frontends land on the same node; each gets an
+            # incremented port (8000, 8001, …) so there are no conflicts.
+            port_offset: dict[str, int] = {}
+            assigned_nodes: list[str] = []
+            assigned_ports: list[int] = []
+            for i in range(n_frontends):
+                node = all_nodes[i % len(all_nodes)]
+                offset = port_offset.get(node, 0)
+                assigned_nodes.append(node)
+                assigned_ports.append(FRONTEND_PUBLIC_PORT + offset)
+                port_offset[node] = offset + 1
             logger.info(
-                "Frontend topology (no nginx): %d frontends on %s",
-                len(frontend_nodes),
-                frontend_nodes,
+                "Frontend topology (no nginx): %d frontends → %s",
+                n_frontends,
+                list(zip(assigned_nodes, assigned_ports)),
             )
             return FrontendTopology(
                 nginx_node=None,
-                frontend_nodes=frontend_nodes,
+                frontend_nodes=assigned_nodes,
+                frontend_ports=assigned_ports,
                 frontend_port=FRONTEND_PUBLIC_PORT,
                 public_port=FRONTEND_PUBLIC_PORT,
             )
@@ -122,6 +138,7 @@ class FrontendStageMixin:
             return FrontendTopology(
                 nginx_node=None,
                 frontend_nodes=[orchestrator_node],
+                frontend_ports=[FRONTEND_PUBLIC_PORT],
                 frontend_port=FRONTEND_PUBLIC_PORT,
                 public_port=FRONTEND_PUBLIC_PORT,
             )
@@ -147,6 +164,7 @@ class FrontendStageMixin:
         return FrontendTopology(
             nginx_node=head,
             frontend_nodes=frontend_nodes,
+            frontend_ports=[FRONTEND_INTERNAL_PORT] * len(frontend_nodes),
             frontend_port=FRONTEND_INTERNAL_PORT,
             public_port=FRONTEND_PUBLIC_PORT,
         )
@@ -257,7 +275,10 @@ class FrontendStageMixin:
         # topologies use the old approach (benchmark targets localhost:8000 or nginx IP
         # directly — no file needed).
         if not topology.uses_nginx and len(topology.frontend_nodes) > 1:
-            urls = [f"http://{get_hostname_ip(n)}:{topology.public_port}" for n in topology.frontend_nodes]
+            urls = [
+                f"http://{get_hostname_ip(n)}:{p}"
+                for n, p in zip(topology.frontend_nodes, topology.frontend_ports)
+            ]
             url_file = self.runtime.log_dir / "frontend_urls.txt"
             url_file.write_text("\n".join(urls) + "\n")
             logger.info("Frontend URLs written to %s: %s", url_file, urls)
