@@ -129,6 +129,7 @@ backend:
         backend: UCX
         max_tokens_in_buffer: 36864
       num_postprocess_workers: 4
+      stream_interval: 100
       cuda_graph_config:
         enable_padding: true
         batch_sizes: [1,2,4,8,12,16,20,24,28,32,36,40,44,48,52,56,60,64,72,80,88,96,104,112,120,128,160,192,224,256,288,320,352,384,416,448,480,512,544,576,608,640,672,704,736,768,800,832,864,896,928,960,992,1024]
