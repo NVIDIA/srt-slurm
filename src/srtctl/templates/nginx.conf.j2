@@ -25,6 +25,13 @@ http {
     }
 {% endif %}
 
+    # Agentic replay reproduces recorded think-time, so a session's connection can
+    # sit idle for minutes between turns. nginx's default keepalive_timeout of 75s
+    # closes it underneath a pooled client connection, and the client's next write
+    # on that socket surfaces as "broken pipe" / "server disconnected" with nothing
+    # logged server-side.
+    keepalive_timeout {{ nginx_keepalive_timeout }};
+
     upstream backend_servers {
 {% if nginx_session_affinity %}
         hash $frontend_hash_key consistent;
@@ -32,6 +39,9 @@ http {
         {% for frontend_host in frontend_hosts %}
         server {{ frontend_host }}:{{ backend_port }};
         {% endfor %}
+        # Reuse upstream connections instead of a fresh TCP handshake per request.
+        keepalive 512;
+        keepalive_timeout {{ nginx_keepalive_timeout }};
     }
 
     # The main server block that listens for incoming traffic.
@@ -45,6 +55,11 @@ http {
             proxy_buffering off;
             proxy_read_timeout 24h;
             proxy_send_timeout 24h;
+
+            # Required for the upstream keepalive pool above: without these nginx
+            # talks HTTP/1.0 to the backend and opens a new connection per request.
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
         }
     }
 }
