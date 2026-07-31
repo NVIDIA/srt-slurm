@@ -1392,10 +1392,10 @@ build_replay_cmd() {
     # session.
     #
     # The scenario plugin locks --cache-bust first_turn_prefix and a 10-second
-    # global system-idle cap. Recorded per-trace and per-turn timing is
-    # preserved while work is active; pending timers shift only when the whole
-    # replay is idle. Burst warmup/profiling phase starts are enabled by the
-    # pinned AIPerf client, so we do not pass timing overrides here.
+    # global system-idle cap. The PR #31 client preserves source timestamps,
+    # spawn/join gates, and globally anchored spread phase starts. An optional
+    # per-trajectory-tree runtime idle watchdog is exposed below; it remains
+    # unset unless a study explicitly standardizes a cap.
     local result_dir="$1"
     local duration="$DURATION"
 
@@ -1429,6 +1429,9 @@ build_replay_cmd() {
     # least one profile turn after warmup.
     REPLAY_CMD+=" --trajectory-start-min-ratio 0.25"
     REPLAY_CMD+=" --trajectory-start-max-ratio 0.75"
+    if [ -n "${AIPERF_TRACE_IDLE_GAP_CAP_SECONDS:-}" ]; then
+        REPLAY_CMD+=" --trace-idle-gap-cap-seconds $AIPERF_TRACE_IDLE_GAP_CAP_SECONDS"
+    fi
     # Optional cache-pressure warmup for long agentic traces. AIPerf first
     # completes its normal t* snapshot warmup, then continues those exact
     # trajectories with one-token outputs and no idle delays for this many

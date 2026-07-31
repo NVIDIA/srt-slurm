@@ -882,6 +882,17 @@ class TestAgenticRunner:
             '$AGENTIC_WARMUP_GRACE_PERIOD"' in text
         )
 
+    def test_agentic_benchmark_lib_exposes_pr31_runtime_tree_idle_cap(self):
+        """PR #31 trace-idle watchdog is opt-in and never silently selected."""
+        script = SCRIPTS_DIR / "agentic" / "inferencex" / "benchmarks" / "benchmark_lib.sh"
+        text = script.read_text()
+
+        assert "AIPERF_TRACE_IDLE_GAP_CAP_SECONDS" in text
+        assert (
+            'REPLAY_CMD+=" --trace-idle-gap-cap-seconds '
+            '$AIPERF_TRACE_IDLE_GAP_CAP_SECONDS"' in text
+        )
+
     def test_agentic_dynamo_conversation_routing_is_opt_in(self):
         """KV routing must not silently enable Dynamo conversation affinity."""
         script = SCRIPTS_DIR / "agentic" / "inferencex" / "benchmarks" / "benchmark_lib.sh"
@@ -892,14 +903,15 @@ class TestAgenticRunner:
         assert '"${AGENTX_DYNAMO_CONV_AWARE:-0}" == "1"' in text
         assert '"${AGENTX_DYNAMO_CONV_AWARE:-false}" == "true"' in text
 
-    def test_agentic_bundles_current_timing_and_native_dynamo_headers(self):
-        """The pinned AIPerf has canonical timing and native Dynamo headers."""
+    def test_agentic_defaults_to_pr31_and_retains_historical_offline_bundle(self):
+        """Future runs use PR #31 while the old bundle remains reproducible."""
         script = SCRIPTS_DIR / "agentic" / "bench.sh"
         text = script.read_text()
 
+        assert "ed057829b78d25d79ce6f3b87763d48fe50363f5" in text
         assert "208125aca87a438e43e56517e8a3e5096f8c9281" in text
         assert "AGENTX_DYNAMO_HEADER_AFFINITY" not in text
-        assert "Verified AIPerf AgentX timing policy" in text
+        assert "Verified AIPerf AgentX PR #31 policy" in text
 
         bundle = SCRIPTS_DIR / "agentic" / "third_party" / "aiperf-agentx-v1-src.tgz"
         manifest = (

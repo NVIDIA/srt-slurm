@@ -29,9 +29,11 @@ fi
 export PORT="${PORT:-$PORT_FROM_ENDPOINT}"
 
 INFERENCEX_AGENTX_COMMIT="${INFERENCEX_AGENTX_COMMIT:-303669b0e16aa6a0c600b8a68b4f91b973a34127}"
-# This AIPerf revision includes native Dynamo session headers, the AgentX
-# 10-second global system-idle cap, and burst warmup/profiling phase starts.
-AIPERF_AGENTX_REF="${AIPERF_AGENTX_REF:-208125aca87a438e43e56517e8a3e5096f8c9281}"
+# SemiAnalysisAI/aiperf#31 preserves source timing and applies any explicit
+# trace idle cap at runtime to the complete root-plus-subagent trajectory tree.
+AIPERF_AGENTX_REF="${AIPERF_AGENTX_REF:-ed057829b78d25d79ce6f3b87763d48fe50363f5}"
+# Keep the older source bundle as an offline fallback only for configs that
+# explicitly request its exact historical revision.
 BUNDLED_AIPERF_REF="208125aca87a438e43e56517e8a3e5096f8c9281"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUNDLED_INFMAX_WORKSPACE="${AGENTX_BUNDLED_INFMAX_WORKSPACE:-$SCRIPT_DIR/inferencex}"
@@ -90,24 +92,25 @@ fi
 AIPERF_ROOT="${AIPERF_DIR:-$WORKSPACE_ROOT/utils/aiperf}"
 python3 - \
   "$AIPERF_ROOT/src/aiperf/common/scenario/inferencex_agentx_mvp.py" \
-  "$AIPERF_ROOT/src/aiperf/common/config/loadgen_config.py" <<'PY'
+  "$AIPERF_ROOT/src/aiperf/timing/replay_dependencies.py" \
+  "$AIPERF_ROOT/src/aiperf/timing/strategies/agentic_replay.py" <<'PY'
 from pathlib import Path
-import re
 import sys
 
 scenario_path = Path(sys.argv[1])
-loadgen_path = Path(sys.argv[2])
-if not scenario_path.is_file() or not loadgen_path.is_file():
+dependencies_path = Path(sys.argv[2])
+replay_path = Path(sys.argv[3])
+if not all(path.is_file() for path in (scenario_path, dependencies_path, replay_path)):
     raise SystemExit(
         "ERROR: AIPerf AgentX timing-policy sources are missing: "
-        f"{scenario_path}, {loadgen_path}"
+        f"{scenario_path}, {dependencies_path}, {replay_path}"
     )
 
 scenario = scenario_path.read_text()
-loadgen = loadgen_path.read_text()
+dependencies = dependencies_path.read_text()
+replay = replay_path.read_text()
 required_scenario = (
     "system_idle_gap_cap_seconds=10.0",
-    "forbid_trace_idle_gap_cap=True",
     "forbid_inter_turn_delay_cap=True",
 )
 missing = [item for item in required_scenario if item not in scenario]
@@ -116,11 +119,22 @@ if missing:
         "ERROR: stale AIPerf AgentX client: missing system-idle policy "
         + ", ".join(missing)
     )
-if re.search(r"burst_phase_starts:.*?\]\s*=\s*True", loadgen, re.DOTALL) is None:
+if "forbid_trace_idle_gap_cap=True" in scenario:
     raise SystemExit(
-        "ERROR: stale AIPerf AgentX client: burst phase starts are not enabled by default"
+        "ERROR: stale AIPerf AgentX client: trace idle cap is still a loader-time forbidden option"
     )
-print("Verified AIPerf AgentX timing policy: system-idle cap 10s, burst phase starts")
+if "root_idle_gap_cap_seconds" not in dependencies:
+    raise SystemExit(
+        "ERROR: stale AIPerf AgentX client: runtime trajectory-tree idle watchdog is missing"
+    )
+if "spread = not self._burst_phase_starts" not in replay:
+    raise SystemExit(
+        "ERROR: stale AIPerf AgentX client: globally anchored spread-phase startup is missing"
+    )
+print(
+    "Verified AIPerf AgentX PR #31 policy: system-idle cap 10s, "
+    "runtime trajectory-tree idle watchdog support, spread phase starts"
+)
 PY
 
 if [[ -f "${AIPERF_DIR:-$WORKSPACE_ROOT/utils/aiperf}/pyproject.toml" && "${AIPERF_ALLOW_GITHUB_TRANSFORMERS:-0}" != "1" ]]; then
