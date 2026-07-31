@@ -47,8 +47,8 @@ backend:
     # Required for print_iter_log to produce output — logger default is "error" which
     # silently discards per-iteration stats emitted via logger.info().
     TLLM_LOG_LEVEL: "info"
-    DYN_TCP_WORKER_POOL_SIZE: "40000"
-    DYN_TCP_WORK_QUEUE_SIZE: "160000"
+    DYN_TCP_WORKER_POOL_SIZE: "6000"
+    DYN_TCP_WORK_QUEUE_SIZE: "24000"
 
   decode_environment:
     UCX_CUDA_IPC_ENABLE_MNNVL: "y"
@@ -63,8 +63,8 @@ backend:
     TRTLLM_WORKER_DISABLE_GC: "1"
     NCCL_GRAPH_MIXING_SUPPORT: "0"
     TLLM_LOG_LEVEL: "info"
-    DYN_TCP_WORKER_POOL_SIZE: "40000"
-    DYN_TCP_WORK_QUEUE_SIZE: "160000"
+    DYN_TCP_WORKER_POOL_SIZE: "6000"
+    DYN_TCP_WORK_QUEUE_SIZE: "24000"
 
   trtllm_config:
     # CTX (prefill) engine: dep2 (TP=EP=2), ADP, MTP-0, bigbuf, UCX KV transport.
