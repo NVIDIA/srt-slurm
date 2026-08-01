@@ -98,6 +98,20 @@ class NodePortAllocator:
         self._next_kv_events_port += 1
         return port
 
+    def next_kv_events_port_block(self, size: int) -> int:
+        """Reserve consecutive KV-event ports and return the base port.
+
+        A vLLM hybrid-DP process opens one publisher per local DP rank, so
+        adjacent worker processes must receive non-overlapping port ranges.
+        """
+        if size < 1:
+            raise ValueError("KV-event port block size must be at least 1")
+        if self._next_kv_events_port == 0:
+            self._next_kv_events_port = self.base_kv_events_port
+        port = self._next_kv_events_port
+        self._next_kv_events_port += size
+        return port
+
     def next_nixl_port(self) -> int:
         """Get next available NIXL side channel port (globally unique across all nodes)."""
         if self._next_nixl_port == 0:

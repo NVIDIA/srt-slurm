@@ -8,14 +8,32 @@ from types import SimpleNamespace
 from srtctl.cli.mixins.benchmark_stage import _get_health_expectations, _vllm_data_parallel_size
 
 
-def _config(frontend_type, backend_type, *, num_prefill=0, num_decode=0, num_agg=0, vllm_config=None):
+def _config(
+    frontend_type,
+    backend_type,
+    *,
+    num_prefill=0,
+    num_decode=0,
+    num_agg=0,
+    vllm_config=None,
+    dp_launch_mode="per_gpu",
+):
     """Build a duck-typed stand-in for SrtConfig with only the fields the helpers read."""
-    backend = SimpleNamespace(type=backend_type, vllm_config=vllm_config)
+    backend = SimpleNamespace(type=backend_type, vllm_config=vllm_config, dp_launch_mode=dp_launch_mode)
     return SimpleNamespace(
         frontend=SimpleNamespace(type=frontend_type),
         backend=backend,
         resources=SimpleNamespace(num_prefill=num_prefill, num_decode=num_decode, num_agg=num_agg),
     )
+
+
+def _processes(*, prefill=0, decode=0, agg=0):
+    """Build backend-process stand-ins grouped by endpoint mode."""
+    return [
+        *(SimpleNamespace(endpoint_mode="prefill") for _ in range(prefill)),
+        *(SimpleNamespace(endpoint_mode="decode") for _ in range(decode)),
+        *(SimpleNamespace(endpoint_mode="agg") for _ in range(agg)),
+    ]
 
 
 def test_dynamo_vllm_disagg_multiplies_by_data_parallel_size():
@@ -42,6 +60,45 @@ def test_dynamo_vllm_aggregated_multiplies_by_data_parallel_size():
 
     assert (n_prefill, n_decode, num_workers) == (0, 8, 8)
     assert count_desc == "0P + 8D Dynamo generate instances; logical workers: 1 agg"
+
+
+def test_dynamo_vllm_per_node_disagg_counts_node_processes():
+    """Per-node DEP8/DEP16 registers once per node-local process, not per DP rank."""
+    vllm_config = SimpleNamespace(
+        prefill={"data-parallel-size": 8},
+        decode={"data-parallel-size": 16},
+        aggregated=None,
+    )
+    config = _config(
+        "dynamo",
+        "vllm",
+        num_prefill=3,
+        num_decode=1,
+        vllm_config=vllm_config,
+        dp_launch_mode="per_node",
+    )
+
+    n_prefill, n_decode, count_desc, num_workers = _get_health_expectations(config, _processes(prefill=6, decode=4))
+
+    assert (n_prefill, n_decode, num_workers) == (6, 4, 10)
+    assert count_desc == "6P + 4D Dynamo generate instances; logical workers: 3P + 1D"
+
+
+def test_dynamo_vllm_per_node_aggregated_counts_node_processes():
+    """Per-node aggregated DP workers register as one decode per process."""
+    vllm_config = SimpleNamespace(prefill=None, decode=None, aggregated={"data-parallel-size": 8})
+    config = _config(
+        "dynamo",
+        "vllm",
+        num_agg=1,
+        vllm_config=vllm_config,
+        dp_launch_mode="per_node",
+    )
+
+    n_prefill, n_decode, count_desc, num_workers = _get_health_expectations(config, _processes(agg=2))
+
+    assert (n_prefill, n_decode, num_workers) == (0, 2, 2)
+    assert count_desc == "0P + 2D Dynamo generate instances; logical workers: 1 agg"
 
 
 def test_dynamo_vllm_without_dp_config_defaults_to_logical_counts():

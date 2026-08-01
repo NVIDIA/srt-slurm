@@ -61,6 +61,23 @@ from srtctl.ports import (
 logger = logging.getLogger(__name__)
 
 
+def _build_mooncake_master_command(mooncake_cfg: object) -> list[str]:
+    """Build the master command, including recipe-provided version-specific flags."""
+    command = [
+        "mooncake_master",
+        f"--port={MOONCAKE_MASTER_PORT}",
+        "--enable_http_metadata_server=true",
+        f"--http_metadata_server_port={MOONCAKE_HTTP_METADATA_PORT}",
+        "--eviction_high_watermark_ratio=0.9",
+        "--default_kv_lease_ttl=10000",
+        "--rpc_thread_num=16",
+        "--enable_metric_reporting=true",
+        f"--metrics_port={MOONCAKE_METRICS_PORT}",
+    ]
+    command.extend(getattr(mooncake_cfg, "master_extra_args", []) or [])
+    return command
+
+
 @dataclass
 class SweepOrchestrator(
     WorkerStageMixin,
@@ -126,7 +143,11 @@ class SweepOrchestrator(
         deterministically within a job.
         """
         allocator = NodePortAllocator()
-        return self.backend.endpoints_to_processes(self.endpoints, port_allocator=allocator)
+        return self.backend.endpoints_to_processes(
+            self.endpoints,
+            port_allocator=allocator,
+            frontend_type=self.config.frontend.type,
+        )
 
     def start_head_infrastructure(self, registry: ProcessRegistry) -> ManagedProcess:
         """Start NATS and etcd on the infra node.
@@ -239,18 +260,7 @@ class SweepOrchestrator(
         )
 
         proc = start_srun_process(
-            command=[
-                "mooncake_master",
-                f"--port={MOONCAKE_MASTER_PORT}",
-                "--enable_http_metadata_server=true",
-                f"--http_metadata_server_port={MOONCAKE_HTTP_METADATA_PORT}",
-                "--eviction_high_watermark_ratio=0.9",
-                "--nof_eviction_high_watermark_ratio=0.9",
-                "--default_kv_lease_ttl=10000",
-                "--rpc_thread_num=16",
-                "--enable_metric_reporting=true",
-                f"--metrics_port={MOONCAKE_METRICS_PORT}",
-            ],
+            command=_build_mooncake_master_command(mooncake_cfg),
             nodelist=[infra_node],
             output=str(mooncake_log),
             container_image=container,
@@ -664,9 +674,9 @@ class SweepOrchestrator(
 
         try:
             # Stage 1: Head infrastructure (NATS, etcd). Only the dynamo request
-            # plane uses it; trtllm_serve routes via a static ser.yaml, so skip it.
-            if self.config.frontend.type == "trtllm_serve":
-                logger.info("Skipping NATS/etcd infrastructure (frontend.type=trtllm_serve)")
+            # plane uses it; static/direct frontends skip it.
+            if self.config.frontend.type in {"trtllm_serve", "vllm"}:
+                logger.info("Skipping NATS/etcd infrastructure (frontend.type=%s)", self.config.frontend.type)
             else:
                 reporter.report(JobStatus.STARTING, JobStage.HEAD_INFRASTRUCTURE, "Starting head infrastructure")
                 head_proc = self.start_head_infrastructure(registry)

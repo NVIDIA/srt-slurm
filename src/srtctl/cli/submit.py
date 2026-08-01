@@ -345,6 +345,8 @@ def show_config_details(config: SrtConfig) -> None:
         if mooncake_cfg is not None:
             details.add_row("mooncake", "container", mooncake_cfg.container or "<job container>")
             details.add_row("mooncake", "master_port", f"{MOONCAKE_MASTER_PORT} (auto)")
+            if mooncake_cfg.master_extra_args:
+                details.add_row("mooncake", "master_extra_args", shlex.join(mooncake_cfg.master_extra_args))
             if hasattr(backend, "build_mooncake_store_config"):
                 # vLLM workers need MOONCAKE_CONFIG_PATH pointing at a JSON file
                 # — srtslurm writes this at job start. Show the resolved JSON

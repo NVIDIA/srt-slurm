@@ -12,6 +12,7 @@ Backend configs are defined in srtctl.backends.configs/ for modularity.
 """
 
 import builtins
+import hashlib
 import itertools
 import logging
 import os
@@ -1098,20 +1099,51 @@ def build_otel_env(observability: ObservabilityConfig, component: str) -> dict[s
 _DYNAMO_CACHE_ROOT = "/configs/dynamo-wheels"
 
 
-def _hash_cached_source_install(dynamo_hash: str) -> str:
+def _hash_cached_source_install(dynamo_hash: str, cargo_patches: list[str] | None = None) -> str:
     """Bash for hash-pinned source install with a /configs/dynamo-wheels cache.
 
-    Cache layout: ``{root}/<hash>/`` contains the maturin wheel
+    Cache layout: ``{root}/<key>/`` contains the maturin wheel
     (``ai_dynamo_runtime-*.whl``), a tarball of the dynamo source tree
     (``dynamo-src.tar.gz``), and a ``.complete`` sentinel that's only touched
-    on a successful build. flock on the per-hash lock file serializes the
+    on a successful build. flock on the per-key lock file serializes the
     cold-cache build across multiple frontends starting in parallel.
+
+    ``cargo_patches`` (optional) are dependency-declaration overrides — each a full
+    ``<crate> = <spec>`` line that replaces that crate's declaration across every
+    ``Cargo.toml`` in the tree before ``maturin build`` (typically retargeting a crate
+    like ``dynamo-tokenizers`` at a git branch). When set, the cache key is suffixed with
+    a digest of the overrides so patched and unpatched builds of the same hash never collide.
 
     Uses FD 201 (not 200) so it nests cleanly inside the node-local
     ``flock -x 200`` from ``_serialize_node_install``.
     """
-    cache = f"{_DYNAMO_CACHE_ROOT}/{dynamo_hash}"
-    lock = f"{_DYNAMO_CACHE_ROOT}/.{dynamo_hash}.lock"
+    cache_key = dynamo_hash
+    override_cmd = ""
+    if cargo_patches:
+        # The marker prefix versions the override build-recipe so a recipe fix busts the
+        # cache even when the override strings are unchanged.
+        digest = hashlib.sha1(("dep-override-v3\n" + "\n".join(cargo_patches)).encode()).hexdigest()[:8]
+        cache_key = f"{dynamo_hash}-patch-{digest}"
+        # Replace each crate's dependency DECLARATION (a full `<crate> = <spec>` line) across
+        # every Cargo.toml in the tree — retargeting the workspace dependency (and any direct
+        # decls, incl. `{ workspace = true }` members) at, typically, a git branch.
+        # Why source-replacement and not [patch.crates-io]: a patch is silently dropped when
+        # the branch version doesn't satisfy dynamo's exact pin (e.g. dynamo pins "=1.5.0" but
+        # the branch is 1.5.3 -> "patch ... was not used in the crate graph"), and relaxing the
+        # pin alone loses to the committed Cargo.lock. Changing the dependency SOURCE needs no
+        # version match and forces Cargo to re-resolve, so the branch is actually built.
+        seds = []
+        for entry in cargo_patches:
+            crate = entry.split("=", 1)[0].strip()
+            if not crate:
+                continue
+            repl = entry.replace("&", r"\&")  # '&' is the sed replacement metachar
+            script = f"s|^{crate}[[:space:]]*=.*|{repl}|"
+            seds.append(f"find . -name Cargo.toml -exec sed -i -E {shlex.quote(script)} {{}} +")
+        if seds:
+            override_cmd = " && ".join(seds) + " && "
+    cache = f"{_DYNAMO_CACHE_ROOT}/{cache_key}"
+    lock = f"{_DYNAMO_CACHE_ROOT}/.{cache_key}.lock"
     return (
         f"echo 'Installing dynamo from source ({dynamo_hash}, /configs cache)...' && "
         f"mkdir -p {_DYNAMO_CACHE_ROOT} && "
@@ -1133,6 +1165,7 @@ def _hash_cached_source_install(dynamo_hash: str) -> str:
         f"DYN_BUILD_DIR=$(mktemp -d) && cd $DYN_BUILD_DIR && "
         f"git clone https://github.com/ai-dynamo/dynamo.git && "
         f"cd dynamo && git checkout {dynamo_hash} && "
+        f"{override_cmd}"
         f"cd lib/bindings/python/ && "
         f'export RUSTFLAGS="${{RUSTFLAGS:-}} -C target-cpu=native --cfg tokio_unstable" && '
         f"rm -f /tmp/ai_dynamo_runtime*.whl && "
@@ -1266,11 +1299,14 @@ class DynamoConfig:
         wheel: ai-dynamo package version to install via staged wheels. The
                matching ai-dynamo-runtime wheel is installed automatically.
         request_plane: Request plane to use (default: "tcp"). Valid values: "nats", "tcp", "http"
+        event_plane: Event plane override, sets DYN_EVENT_PLANE (default: None — follow
+                     the Dynamo image's own default). Valid values: "nats", "zmq"
 
     If top_of_tree, hash, or wheel is set, version is automatically cleared.
     """
 
     _VALID_REQUEST_PLANES: ClassVar[tuple[str, ...]] = ("nats", "tcp", "http")
+    _VALID_EVENT_PLANES: ClassVar[tuple[str, ...]] = ("nats", "zmq")
 
     install: bool = True
     version: str | None = "0.8.0"
@@ -1278,6 +1314,13 @@ class DynamoConfig:
     top_of_tree: bool = False
     wheel: str | None = None
     request_plane: str = "tcp"
+    event_plane: str | None = None
+    # Optional dependency-declaration overrides applied to the dynamo Cargo.toml tree before a
+    # source build (requires `hash`). Each entry is a full `<crate> = <spec>` TOML line, e.g.
+    #   'dynamo-tokenizers = { git = "https://github.com/ai-dynamo/frontend-crates", branch = "..." }'
+    # The crate's existing declaration is replaced tree-wide, letting a source build pull a crate
+    # from an unmerged branch without waiting for a crates.io release.
+    cargo_patches: list[str] | None = None
 
     def __post_init__(self) -> None:
         install_sources = [
@@ -1301,9 +1344,17 @@ class DynamoConfig:
             if Path(self.wheel).name.endswith(".whl") or "/" in self.wheel:
                 raise ValueError("dynamo.wheel must be a package version like '1.2.0.dev20260426', not a filename")
 
+        if self.cargo_patches and self.hash is None:
+            raise ValueError("dynamo.cargo_patches requires a source build — set dynamo.hash to a commit")
+
         if self.request_plane not in self._VALID_REQUEST_PLANES:
             raise ValueError(
                 f"Invalid request_plane '{self.request_plane}', must be one of: {', '.join(self._VALID_REQUEST_PLANES)}"
+            )
+
+        if self.event_plane is not None and self.event_plane not in self._VALID_EVENT_PLANES:
+            raise ValueError(
+                f"Invalid event_plane '{self.event_plane}', must be one of: {', '.join(self._VALID_EVENT_PLANES)}"
             )
 
     @property
@@ -1378,7 +1429,7 @@ class DynamoConfig:
         # to ~10 sec lustre access for repeat hashes. top_of_tree skips the
         # cache (no stable key) and always live-builds.
         if self.hash is not None:
-            return _hash_cached_source_install(self.hash)
+            return _hash_cached_source_install(self.hash, self.cargo_patches)
 
         return _live_source_install_for_top_of_tree()
 
@@ -1390,7 +1441,7 @@ class FrontendConfig:
     """Frontend/router configuration.
 
     Attributes:
-        type: Frontend type - "dynamo" (default) or "sglang"
+        type: Frontend type - "dynamo" (default), "sglang", "trtllm_serve", or "vllm"
         enable_multiple_frontends: Scale with nginx + multiple routers.
             When ``True`` (default), srtctl stands up nginx and fans out
             to ``num_additional_frontends + 1`` router replicas. When
@@ -1533,6 +1584,7 @@ class SrtConfig:
         self._validate_mooncake_kv_store()
         self._validate_het_jobs()
         self._validate_trtllm_serve()
+        self._validate_vllm_frontend()
 
     def _validate_trtllm_serve(self):
         """Catch trtllm_serve misconfigurations at load time (dry-run) instead of
@@ -1557,6 +1609,28 @@ class SrtConfig:
                 "frontend.type: trtllm_serve requires a disaggregated layout "
                 "(set resources.prefill_nodes/prefill_workers and decode_nodes/decode_workers)"
             )
+
+    def _validate_vllm_frontend(self):
+        """Catch direct-vLLM frontend misconfigurations at load time.
+
+        Direct vLLM means the aggregate `vllm serve` worker owns the OpenAI port
+        itself. It is not a disaggregated router and does not support the nginx
+        multi-frontend path.
+        """
+        if self.frontend.type != "vllm":
+            return
+        if self.backend_type != "vllm":
+            raise ValidationError(f"frontend.type: vllm requires backend.type: vllm; got {self.backend_type!r}")
+        if self.frontend.enable_multiple_frontends:
+            raise ValidationError(
+                "frontend.type: vllm binds vllm serve directly; set frontend.enable_multiple_frontends: false"
+            )
+        if self.resources.is_disaggregated:
+            raise ValidationError("frontend.type: vllm supports aggregate jobs only, not disaggregated layouts")
+        if self.resources.num_agg < 1:
+            raise ValidationError("frontend.type: vllm requires resources.agg_workers >= 1")
+        if (self.resources.agg_nodes or 1) != 1:
+            raise ValidationError("frontend.type: vllm currently supports single-node aggregate jobs only")
 
     def _validate_het_jobs(self):
         """When ``resources.het_jobs`` is set to True, enforce supported shape.

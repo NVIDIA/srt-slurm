@@ -12,6 +12,7 @@ import pytest
 from srtctl.backends import SGLangProtocol, SGLangServerConfig
 from srtctl.core.schema import SrtConfig
 from srtctl.ports import (
+    KV_EVENTS_PORT_BASE,
     SGLANG_BOOTSTRAP_PORT_BASE,
     SGLANG_HTTP_PORT_BASE,
     SGLANG_HTTP_PORT_STRIDE,
@@ -214,8 +215,8 @@ class TestDynamoConfig:
             # FD 200 node-local; the hash source install nests flock -x 201 on
             # the /configs cache lock; distinct FDs keep the locks independent.
             assert "flock -x 200" in cmd
-            assert '$DYN_LOCK_DIR/.srtctl_dynamo_install.lock' in cmd
-            assert '$DYN_LOCK_DIR/.srtctl_dynamo_install.complete' in cmd
+            assert "$DYN_LOCK_DIR/.srtctl_dynamo_install.lock" in cmd
+            assert "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete" in cmd
             # Sentinel short-circuits repeat installs; touched on success.
             assert 'touch "$DYN_LOCK_DIR/.srtctl_dynamo_install.complete"' in cmd
             assert '200>"$DYN_LOCK_DIR/.srtctl_dynamo_install.lock"' in cmd
@@ -262,6 +263,40 @@ class TestDynamoConfig:
         )
         assert "tar -xzf /configs/dynamo-wheels/abc123/dynamo-src.tar.gz" in cmd
         assert "pip install --break-system-packages -e /tmp/dynamo-src/dynamo" in cmd
+
+    def test_hash_with_cargo_patches(self):
+        """cargo_patches replace a crate's dependency declaration tree-wide + namespace cache.
+
+        Used to build a crate (e.g. dynamo-tokenizers) from an unmerged branch: the
+        crate's `<crate> = ...` line is replaced across every Cargo.toml with the given
+        git-source spec after checkout, before maturin build. Source-replacement (not
+        [patch.crates-io]) so it works despite exact version pins + a committed Cargo.lock.
+        The cache key is suffixed with a digest so an overridden build never reuses/poisons
+        the plain build of the same hash.
+        """
+        from srtctl.core.schema import DynamoConfig
+
+        patch = 'dynamo-tokenizers = { git = "https://github.com/ai-dynamo/frontend-crates", branch = "feat" }'
+        config = DynamoConfig(hash="abc123", cargo_patches=[patch])
+        assert config.needs_source_install
+        cmd = config.get_install_commands()
+
+        # Cache is namespaced so overridden != plain build of the same hash.
+        assert "/configs/dynamo-wheels/abc123-patch-" in cmd
+        assert "/configs/dynamo-wheels/abc123/.complete" not in cmd
+
+        # The crate declaration is replaced tree-wide via sed after checkout, before build.
+        assert "find . -name Cargo.toml -exec sed -i -E" in cmd
+        assert "s|^dynamo-tokenizers[[:space:]]*=.*|" in cmd
+        assert patch in cmd
+        assert cmd.index("git checkout abc123") < cmd.index("s|^dynamo-tokenizers") < cmd.index("maturin build")
+
+    def test_cargo_patches_require_hash(self):
+        """cargo_patches without a source build (hash) is rejected."""
+        from srtctl.core.schema import DynamoConfig
+
+        with pytest.raises(ValueError, match="cargo_patches requires a source build"):
+            DynamoConfig(wheel="1.2.0.dev20260426", cargo_patches=["x = 1"])
 
     def test_top_of_tree_install_command(self):
         """Top-of-tree config generates source install without checkout."""
@@ -361,6 +396,34 @@ class TestDynamoConfig:
 
         with pytest.raises(ValueError, match="Invalid request_plane"):
             DynamoConfig(request_plane="grpc")
+
+    def test_event_plane_default_none(self):
+        """Default event_plane is None (follow the image default)."""
+        from srtctl.core.schema import DynamoConfig
+
+        config = DynamoConfig()
+        assert config.event_plane is None
+
+    def test_event_plane_zmq(self):
+        """event_plane='zmq' is accepted."""
+        from srtctl.core.schema import DynamoConfig
+
+        config = DynamoConfig(event_plane="zmq")
+        assert config.event_plane == "zmq"
+
+    def test_event_plane_nats(self):
+        """event_plane='nats' is accepted."""
+        from srtctl.core.schema import DynamoConfig
+
+        config = DynamoConfig(event_plane="nats")
+        assert config.event_plane == "nats"
+
+    def test_event_plane_invalid(self):
+        """Invalid event_plane raises ValueError."""
+        from srtctl.core.schema import DynamoConfig
+
+        with pytest.raises(ValueError, match="Invalid event_plane"):
+            DynamoConfig(event_plane="kafka")
 
 
 class TestSGLangProtocol:
@@ -975,7 +1038,7 @@ class TestWorkerEnvironmentTemplating:
                 ),
             )
 
-            runtime = RuntimeContext.from_config(config, job_id="12345")
+            runtime = RuntimeContext.from_config(config, job_id="12345", log_dir_base=tmp_path)
 
             # Create a mock worker stage
             class MockWorkerStage(WorkerStageMixin):
@@ -1115,7 +1178,7 @@ class TestWorkerEnvironmentTemplating:
                 ),
             )
 
-            runtime = RuntimeContext.from_config(config, job_id="12345")
+            runtime = RuntimeContext.from_config(config, job_id="12345", log_dir_base=tmp_path)
 
             class MockWorkerStage(WorkerStageMixin):
                 def __init__(self, config, runtime):
@@ -1884,6 +1947,220 @@ class TestVLLMDataParallelMode:
         dp_ranks = [p.node_rank for p in processes]
         assert dp_ranks == list(range(16))
 
+    def test_dp_per_node_mode_creates_per_node_processes(self):
+        """Per-node DP owns all local GPUs and reserves rank-sized port blocks."""
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Endpoint
+
+        backend = VLLMProtocol(
+            dp_launch_mode="per_node",
+            vllm_config=VLLMServerConfig(
+                prefill={"data-parallel-size": 8, "enable-expert-parallel": True},
+            ),
+        )
+        endpoint = Endpoint(
+            mode="prefill",
+            index=0,
+            nodes=("node0", "node1"),
+            gpu_indices=frozenset(range(4)),
+            gpus_per_node=4,
+            het_group=1,
+        )
+
+        processes = backend.endpoints_to_processes([endpoint])
+
+        assert len(processes) == 2
+        assert [p.node for p in processes] == ["node0", "node1"]
+        assert all(p.gpu_indices == frozenset(range(4)) for p in processes)
+        assert [p.node_rank for p in processes] == [0, 4]
+        assert [p.kv_events_port for p in processes] == [KV_EVENTS_PORT_BASE, KV_EVENTS_PORT_BASE + 4]
+        assert {p.nixl_port for p in processes} == {VLLM_NIXL_PORT_BASE}
+        assert {p.dp_rpc_port for p in processes} == {VLLM_DATA_PARALLEL_RPC_PORT}
+        assert {p.het_group for p in processes} == {1}
+        assert all(p.http_port > 0 for p in processes)
+        assert all(p.bootstrap_port is not None for p in processes)
+
+    def test_dp_per_node_mode_allocates_non_overlapping_endpoint_ports(self):
+        """Co-located per-node DP endpoints get disjoint coordination ranges."""
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Endpoint
+
+        backend = VLLMProtocol(
+            dp_launch_mode="per_node",
+            vllm_config=VLLMServerConfig(
+                decode={"data-parallel-size": 4, "enable-expert-parallel": True},
+            ),
+        )
+        endpoints = [
+            Endpoint(
+                mode="decode",
+                index=0,
+                nodes=("node0",),
+                gpu_indices=frozenset(range(4)),
+                gpus_per_node=8,
+            ),
+            Endpoint(
+                mode="decode",
+                index=1,
+                nodes=("node0",),
+                gpu_indices=frozenset(range(4, 8)),
+                gpus_per_node=8,
+            ),
+        ]
+
+        processes = backend.endpoints_to_processes(endpoints)
+
+        assert [p.kv_events_port for p in processes] == [KV_EVENTS_PORT_BASE, KV_EVENTS_PORT_BASE + 4]
+        assert [p.nixl_port for p in processes] == [VLLM_NIXL_PORT_BASE, VLLM_NIXL_PORT_BASE + 4]
+        assert [p.dp_rpc_port for p in processes] == [
+            VLLM_DATA_PARALLEL_RPC_PORT,
+            VLLM_DATA_PARALLEL_RPC_PORT + 1,
+        ]
+
+    def test_dp_per_node_mode_rejects_dp_size_mismatch(self):
+        """The configured global DP size must match the allocated GPUs."""
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Endpoint
+
+        backend = VLLMProtocol(
+            dp_launch_mode="per_node",
+            vllm_config=VLLMServerConfig(prefill={"data-parallel-size": 7}),
+        )
+        endpoint = Endpoint(
+            mode="prefill",
+            index=0,
+            nodes=("node0", "node1"),
+            gpu_indices=frozenset(range(4)),
+            gpus_per_node=4,
+        )
+
+        with pytest.raises(ValueError, match="data-parallel-size=7"):
+            backend.endpoints_to_processes([endpoint])
+
+    def test_dp_per_node_mode_rejects_headless(self):
+        """Headless node processes cannot satisfy per-node Dynamo health expectations."""
+        from marshmallow import ValidationError
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+
+        with pytest.raises(ValidationError, match="remove headless"):
+            VLLMProtocol(
+                dp_launch_mode="per_node",
+                vllm_config=VLLMServerConfig(decode={"data-parallel-size": 8, "headless": True}),
+            )
+
+    def test_direct_vllm_dp_mode_keeps_single_process(self):
+        """Direct vllm serve supervises local DP ranks from one process."""
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Endpoint
+
+        backend = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                aggregated={"data-parallel-size": 8, "enable-expert-parallel": True},
+            )
+        )
+
+        endpoint = Endpoint(
+            mode="agg",
+            index=0,
+            nodes=("node0",),
+            gpu_indices=frozenset(range(8)),
+            gpus_per_node=8,
+        )
+
+        processes = backend.endpoints_to_processes([endpoint], frontend_type="vllm")
+
+        assert len(processes) == 1
+        assert processes[0].node == "node0"
+        assert processes[0].gpu_indices == frozenset(range(8))
+
+    def test_direct_vllm_command_preserves_current_main_device_binding(self):
+        """Direct vllm serve uses the public port and main's --device-ids binding."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Process
+
+        backend = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                aggregated={
+                    "data-parallel-size": 4,
+                    "enable-expert-parallel": True,
+                }
+            )
+        )
+        process = Process(
+            node="node0",
+            gpu_indices=frozenset(range(4)),
+            sys_port=8081,
+            http_port=0,
+            endpoint_mode="agg",
+            endpoint_index=0,
+            node_rank=0,
+        )
+        runtime = MagicMock()
+        runtime.model_path = Path("/model")
+        runtime.is_hf_model = False
+        runtime.frontend_port = 9000
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            cmd = backend.build_worker_command(
+                process=process,
+                endpoint_processes=[process],
+                runtime=runtime,
+                frontend_type="vllm",
+            )
+
+        assert cmd[:3] == ["vllm", "serve", "/model"]
+        assert cmd[cmd.index("--port") + 1] == "9000"
+        assert cmd[cmd.index("--device-ids") + 1] == "0,1,2,3"
+        assert "--request-plane" not in cmd
+        assert "dynamo.vllm" not in cmd
+
+    def test_direct_vllm_command_keeps_iteration_profiler_config(self):
+        """Direct vllm serve retains main's profiling-derived server option."""
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Process
+
+        backend = VLLMProtocol(vllm_config=VLLMServerConfig(aggregated={"tensor-parallel-size": 4}))
+        process = Process(
+            node="node0",
+            gpu_indices=frozenset(range(4)),
+            sys_port=8081,
+            http_port=0,
+            endpoint_mode="agg",
+            endpoint_index=0,
+            node_rank=0,
+        )
+        runtime = MagicMock()
+        runtime.model_path = Path("/model")
+        runtime.is_hf_model = False
+        runtime.frontend_port = 8000
+        profiling = MagicMock(is_nsys=True, is_nsys_time=False)
+        profiling._get_phase_config.return_value = SimpleNamespace(
+            start_step=10,
+            stop_step=25,
+            vllm_nsys_delay_iterations=10,
+            vllm_nsys_max_iterations=15,
+        )
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            cmd = backend.build_worker_command(
+                process=process,
+                endpoint_processes=[process],
+                runtime=runtime,
+                frontend_type="vllm",
+                profiling=profiling,
+            )
+
+        profiler_config = json.loads(cmd[cmd.index("--profiler-config") + 1])
+        assert profiler_config == {"profiler": "cuda", "delay_iterations": 10, "max_iterations": 15}
+
     def test_dp_mode_allocates_unique_ports_for_multiple_endpoints_per_node(self):
         """Test DP endpoints sharing a node get non-colliding coordination ports."""
         from srtctl.backends import VLLMProtocol, VLLMServerConfig
@@ -2004,6 +2281,105 @@ class TestVLLMDataParallelMode:
         assert "--master-addr" not in cmd
         assert "--nnodes" not in cmd
         assert "--node-rank" not in cmd
+        assert "--headless" not in cmd
+
+    def test_dp_per_node_hybrid_command_targets_local_rank_range(self):
+        """Hybrid per-node DP exposes the local rank range without headless."""
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Process
+
+        backend = VLLMProtocol(
+            dp_launch_mode="per_node",
+            vllm_config=VLLMServerConfig(
+                decode={
+                    "data-parallel-size": 8,
+                    "data-parallel-size-local": 99,
+                    "data-parallel-start-rank": 99,
+                    "data-parallel-rpc-port": 13345,
+                    "data-parallel-hybrid-lb": True,
+                    "enable-expert-parallel": True,
+                },
+            ),
+        )
+        leader = Process(
+            node="node0",
+            gpu_indices=frozenset(range(4)),
+            sys_port=8081,
+            http_port=6100,
+            endpoint_mode="decode",
+            endpoint_index=0,
+            node_rank=0,
+            dp_rpc_port=VLLM_DATA_PARALLEL_RPC_PORT,
+        )
+        process = Process(
+            node="node1",
+            gpu_indices=frozenset(range(4)),
+            sys_port=8082,
+            http_port=6100,
+            endpoint_mode="decode",
+            endpoint_index=0,
+            node_rank=4,
+            dp_rpc_port=VLLM_DATA_PARALLEL_RPC_PORT,
+        )
+        runtime = MagicMock()
+        runtime.model_path = Path("/model")
+        runtime.is_hf_model = False
+        runtime.request_plane = "tcp"
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            cmd = backend.build_worker_command(process, [leader, process], runtime)
+
+        assert cmd.count("--data-parallel-hybrid-lb") == 1
+        assert cmd.count("--data-parallel-size-local") == 1
+        assert cmd.count("--data-parallel-start-rank") == 1
+        assert cmd[cmd.index("--data-parallel-size-local") + 1] == "4"
+        assert cmd[cmd.index("--data-parallel-start-rank") + 1] == "4"
+        assert cmd[cmd.index("--data-parallel-rpc-port") + 1] == str(VLLM_DATA_PARALLEL_RPC_PORT)
+        assert "--data-parallel-rank" not in cmd
+        assert "--headless" not in cmd
+
+    def test_dp_per_node_forces_hybrid_lb_for_follower(self):
+        """Per-node DP keeps every node process registered with Dynamo."""
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Process
+
+        backend = VLLMProtocol(
+            dp_launch_mode="per_node",
+            vllm_config=VLLMServerConfig(decode={"data-parallel-size": 8, "data_parallel_hybrid_lb": False}),
+        )
+        leader = Process(
+            node="node0",
+            gpu_indices=frozenset(range(4)),
+            sys_port=8081,
+            http_port=6100,
+            endpoint_mode="decode",
+            endpoint_index=0,
+            node_rank=0,
+        )
+        process = Process(
+            node="node1",
+            gpu_indices=frozenset(range(4)),
+            sys_port=8082,
+            http_port=6100,
+            endpoint_mode="decode",
+            endpoint_index=0,
+            node_rank=4,
+        )
+        runtime = MagicMock()
+        runtime.model_path = Path("/model")
+        runtime.is_hf_model = False
+        runtime.request_plane = "tcp"
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            cmd = backend.build_worker_command(process, [leader, process], runtime)
+
+        assert "--data-parallel-size-local" in cmd
+        assert "--data-parallel-start-rank" in cmd
+        assert cmd.count("--data-parallel-hybrid-lb") == 1
         assert "--headless" not in cmd
 
     def test_standard_tp_mode_still_works(self):
@@ -2660,7 +3036,7 @@ class TestInfmaxWorkspaceMount:
                     decode_nodes=1,
                 ),
             )
-            runtime = RuntimeContext.from_config(config, job_id="12345")
+            runtime = RuntimeContext.from_config(config, job_id="12345", log_dir_base=tmp_path)
 
             assert Path("/infmax-workspace") in runtime.container_mounts.values()
 
@@ -2715,7 +3091,7 @@ class TestInfmaxWorkspaceMount:
                         decode_nodes=1,
                     ),
                 )
-                runtime = RuntimeContext.from_config(config, job_id="12345")
+                runtime = RuntimeContext.from_config(config, job_id="12345", log_dir_base=tmp_path)
 
                 assert Path("/infmax-workspace") not in runtime.container_mounts.values()
 
@@ -2776,7 +3152,7 @@ class TestExtraMountExpansion:
                 ),
                 extra_mount=("$SRT_EXTRA_ROOT:/extra",),
             )
-            runtime = RuntimeContext.from_config(config, job_id="12345")
+            runtime = RuntimeContext.from_config(config, job_id="12345", log_dir_base=tmp_path)
 
             assert extra_root.resolve() in runtime.container_mounts
             assert runtime.container_mounts[extra_root.resolve()] == Path("/extra")

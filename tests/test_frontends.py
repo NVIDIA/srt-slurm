@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for frontend implementations (SGLang and Dynamo)."""
+"""Tests for frontend implementations."""
 
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from srtctl.core.schema import ObservabilityConfig
-from srtctl.frontends import DynamoFrontend, SGLangFrontend, get_frontend
+from srtctl.frontends import DynamoFrontend, SGLangFrontend, VLLMFrontend, get_frontend
 
 # ============================================================================
 # get_frontend() Tests
@@ -33,13 +33,19 @@ class TestGetFrontend:
         assert isinstance(frontend, SGLangFrontend)
         assert frontend.type == "sglang"
 
+    def test_get_vllm_frontend(self):
+        """get_frontend('vllm') returns VLLMFrontend."""
+        frontend = get_frontend("vllm")
+        assert isinstance(frontend, VLLMFrontend)
+        assert frontend.type == "vllm"
+
     def test_get_unknown_frontend_raises(self):
         """get_frontend() with unknown type raises ValueError."""
         with pytest.raises(ValueError, match="Unknown frontend type"):
             get_frontend("unknown")
 
         with pytest.raises(ValueError, match="Unknown frontend type"):
-            get_frontend("vllm")
+            get_frontend("invalid")
 
 
 # ============================================================================
@@ -60,6 +66,11 @@ class TestFrontendProperties:
         frontend = SGLangFrontend()
         assert frontend.type == "sglang"
 
+    def test_vllm_type(self):
+        """VLLMFrontend.type is 'vllm'."""
+        frontend = VLLMFrontend()
+        assert frontend.type == "vllm"
+
     def test_dynamo_health_endpoint(self):
         """DynamoFrontend uses /health endpoint."""
         frontend = DynamoFrontend()
@@ -69,6 +80,11 @@ class TestFrontendProperties:
         """SGLangFrontend uses /workers endpoint."""
         frontend = SGLangFrontend()
         assert frontend.health_endpoint == "/workers"
+
+    def test_vllm_health_endpoint(self):
+        """VLLMFrontend uses /health endpoint."""
+        frontend = VLLMFrontend()
+        assert frontend.health_endpoint == "/health"
 
 
 # ============================================================================
@@ -510,7 +526,7 @@ class TestFrontendEnvHandling:
 # ============================================================================
 
 
-def _dynamo_frontend_call(*, dynamo_install: bool):
+def _dynamo_frontend_call(*, dynamo_install: bool, event_plane: str | None = "zmq"):
     """Invoke DynamoFrontend.start_frontends with a minimal config; return the mock srun call."""
     frontend = DynamoFrontend()
     topology = SimpleNamespace(frontend_nodes=["node0"], frontend_port=8180)
@@ -524,7 +540,12 @@ def _dynamo_frontend_call(*, dynamo_install: bool):
     config = SimpleNamespace(
         frontend=SimpleNamespace(args=None, env=None),
         observability=ObservabilityConfig(),
-        dynamo=SimpleNamespace(install=dynamo_install, get_install_commands=lambda: "echo install-dynamo", request_plane="nats"),
+        dynamo=SimpleNamespace(
+            install=dynamo_install,
+            get_install_commands=lambda: "echo install-dynamo",
+            request_plane="nats",
+            event_plane=event_plane,
+        ),
         setup_script=None,
     )
     with patch("srtctl.frontends.dynamo.start_srun_process") as mock_srun:
@@ -543,3 +564,16 @@ class TestDynamoFrontendRemapRoot:
     def test_no_remap_root_when_install_false(self):
         mock_srun = _dynamo_frontend_call(dynamo_install=False)
         assert mock_srun.call_args.kwargs["srun_export_env"] is None
+
+
+class TestDynamoFrontendEventPlane:
+    """DYN_EVENT_PLANE is injected only when dynamo.event_plane is set."""
+
+    def test_default_not_injected(self):
+        mock_srun = _dynamo_frontend_call(dynamo_install=False, event_plane=None)
+        assert "DYN_EVENT_PLANE" not in mock_srun.call_args.kwargs["env_to_set"]
+
+    @pytest.mark.parametrize("event_plane", ["zmq", "nats"])
+    def test_explicit_injected(self, event_plane):
+        mock_srun = _dynamo_frontend_call(dynamo_install=False, event_plane=event_plane)
+        assert mock_srun.call_args.kwargs["env_to_set"]["DYN_EVENT_PLANE"] == event_plane

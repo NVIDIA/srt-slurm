@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from srtctl.core.topology import Process
 
 # Supported frontend types - extensible by adding new literals
-FrontendType = Literal["dynamo", "sglang", "trtllm_serve"]
+FrontendType = Literal["dynamo", "sglang", "trtllm_serve", "vllm"]
 
 
 class FrontendProtocol(Protocol):
@@ -97,6 +97,7 @@ def get_frontend(frontend_type: str) -> FrontendProtocol:
     from srtctl.frontends.dynamo import DynamoFrontend
     from srtctl.frontends.sglang import SGLangFrontend
     from srtctl.frontends.trtllm_serve import TRTLLMServeFrontend
+    from srtctl.frontends.vllm import VLLMFrontend
 
     if frontend_type == "dynamo":
         return DynamoFrontend()
@@ -104,5 +105,7 @@ def get_frontend(frontend_type: str) -> FrontendProtocol:
         return SGLangFrontend()
     elif frontend_type == "trtllm_serve":
         return TRTLLMServeFrontend()
+    elif frontend_type == "vllm":
+        return VLLMFrontend()
     else:
-        raise ValueError(f"Unknown frontend type: {frontend_type!r}. Supported: dynamo, sglang, trtllm_serve")
+        raise ValueError(f"Unknown frontend type: {frontend_type!r}. Supported: dynamo, sglang, trtllm_serve, vllm")

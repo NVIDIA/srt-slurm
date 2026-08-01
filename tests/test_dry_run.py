@@ -326,6 +326,7 @@ class TestDryRunExecutionExtensions:
                     "mooncake_kv_store": {
                         "container": "inferactinc/public:mk-int-20260507",
                         "env": {"MOONCAKE_PROTOCOL": "rdma"},
+                        "master_extra_args": ["--nof_eviction_high_watermark_ratio=0.9"],
                     },
                     "vllm_config": {
                         "prefill": {"kv-transfer-config": kv_cfg},
@@ -342,6 +343,8 @@ class TestDryRunExecutionExtensions:
         assert "inferactinc/public:mk-int-202605" in output
         # Shared with the SGLang launch — same port pair.
         assert str(MOONCAKE_MASTER_PORT) in output
+        assert "master_extra_args" in output
+        assert "nof_eviction" in output
 
     def test_vllm_mooncake_store_config_in_dry_run(self, capsys):
         """vLLM store_config + MOONCAKE_CONFIG_PATH appear in the dry-run extensions panel."""

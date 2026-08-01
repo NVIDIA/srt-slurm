@@ -636,6 +636,8 @@ backend:
   type: sglang
   mooncake_kv_store:
     container: nvcr.io/nvidia/mooncake:latest
+    master_extra_args:
+      - --nof_eviction_high_watermark_ratio=0.9
     env:
       MOONCAKE_PROTOCOL: rdma
       MOONCAKE_GLOBAL_SEGMENT_SIZE: "4gb"
@@ -643,6 +645,9 @@ backend:
         config = SrtConfig.Schema().load(raw)
         assert config.backend.mooncake_kv_store is not None
         assert config.backend.mooncake_kv_store.container == "nvcr.io/nvidia/mooncake:latest"
+        assert config.backend.mooncake_kv_store.master_extra_args == [
+            "--nof_eviction_high_watermark_ratio=0.9"
+        ]
         assert config.backend.mooncake_kv_store.env["MOONCAKE_PROTOCOL"] == "rdma"
         assert config.backend.mooncake_kv_store.env["MOONCAKE_GLOBAL_SEGMENT_SIZE"] == "4gb"
 
@@ -840,6 +845,8 @@ backend:
   type: vllm
   mooncake_kv_store:
     container: inferactinc/public:mk-int-20260507
+    master_extra_args:
+      - --nof_eviction_high_watermark_ratio=0.9
     env:
       MOONCAKE_PROTOCOL: rdma
   vllm_config:
@@ -851,6 +858,9 @@ backend:
         config = SrtConfig.Schema().load(raw)
         assert config.backend.mooncake_kv_store is not None
         assert config.backend.mooncake_kv_store.container == "inferactinc/public:mk-int-20260507"
+        assert config.backend.mooncake_kv_store.master_extra_args == [
+            "--nof_eviction_high_watermark_ratio=0.9"
+        ]
         assert config.backend.mooncake_kv_store.env["MOONCAKE_PROTOCOL"] == "rdma"
 
     def test_vllm_mooncake_disagg_without_kv_transfer_config_raises(self):
@@ -1064,11 +1074,23 @@ backend:
       kv-transfer-config: '{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both"}'
 """)
         config = SrtConfig.Schema().load(raw)
-        store_cfg = config.backend.mooncake_kv_store.store_config
+        mooncake_cfg = config.backend.mooncake_kv_store
+        store_cfg = mooncake_cfg.store_config
         assert store_cfg is not None
         assert store_cfg["metadata_server"] == "P2PHANDSHAKE"
         assert store_cfg["global_segment_size"] == "100GB"
         assert store_cfg["device_name"] == ""
+
+    def test_mooncake_master_extra_args_are_appended(self):
+        """Version-specific master flags are opt-in and appended after defaults."""
+        from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig
+        from srtctl.cli.do_sweep import _build_mooncake_master_command
+
+        nof_arg = "--nof_eviction_high_watermark_ratio=0.9"
+        command = _build_mooncake_master_command(VLLMMooncakeKVStoreConfig(master_extra_args=[nof_arg]))
+
+        assert "--eviction_high_watermark_ratio=0.9" in command
+        assert command[-1] == nof_arg
 
 
 class TestGB200HetAsymmetric:
