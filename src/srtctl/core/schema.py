@@ -1397,7 +1397,9 @@ class FrontendConfig:
         type: Frontend type - "dynamo" (default), "sglang", "trtllm_serve", or "vllm"
         enable_multiple_frontends: Scale with nginx + multiple routers.
             When ``True`` (default), srtctl stands up nginx and fans out
-            to ``num_additional_frontends + 1`` router replicas. When
+            to up to ``num_additional_frontends + 1`` router replicas. Router
+            placement prefers non-head worker nodes, then uses the nginx head
+            as the final slot when a router is requested on every worker node. When
             ``False``, there is NO nginx proxy — the benchmark must
             target the single master router (or a worker) directly at
             ``http://localhost:<port>``. ``benchmark.command`` has no

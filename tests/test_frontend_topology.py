@@ -112,7 +112,7 @@ class TestComputeFrontendTopology:
         assert topology.uses_nginx is False
 
     def test_two_nodes_with_nginx(self):
-        """2 nodes + enable_multiple_frontends: nginx on head, 1 frontend on node1."""
+        """2 nodes + enough replicas: nginx on head, frontends on both nodes."""
         config = make_config(enable_multiple_frontends=True)
         runtime = make_runtime(["node0", "node1"])
 
@@ -120,13 +120,13 @@ class TestComputeFrontendTopology:
         topology = orchestrator._compute_frontend_topology()
 
         assert topology.nginx_node == "node0"
-        assert topology.frontend_nodes == ["node1"]
+        assert topology.frontend_nodes == ["node1", "node0"]
         assert topology.frontend_port == 8180  # Behind nginx
         assert topology.public_port == 8000
         assert topology.uses_nginx is True
 
     def test_three_nodes_with_nginx(self):
-        """3 nodes + enable_multiple_frontends: nginx on head, frontends on node1 and node2."""
+        """3 nodes + enough replicas: frontends include the nginx head last."""
         config = make_config(enable_multiple_frontends=True)
         runtime = make_runtime(["node0", "node1", "node2"])
 
@@ -134,13 +134,13 @@ class TestComputeFrontendTopology:
         topology = orchestrator._compute_frontend_topology()
 
         assert topology.nginx_node == "node0"
-        assert topology.frontend_nodes == ["node1", "node2"]
+        assert topology.frontend_nodes == ["node1", "node2", "node0"]
         assert topology.frontend_port == 8180
         assert topology.public_port == 8000
         assert topology.uses_nginx is True
 
     def test_many_nodes_with_nginx(self):
-        """Many nodes: nginx on head, frontends on remaining nodes."""
+        """Many nodes: nginx on head, with a frontend on every worker node."""
         config = make_config(enable_multiple_frontends=True, num_additional_frontends=9)
         runtime = make_runtime(["node0", "node1", "node2", "node3", "node4", "node5"])
 
@@ -148,8 +148,8 @@ class TestComputeFrontendTopology:
         topology = orchestrator._compute_frontend_topology()
 
         assert topology.nginx_node == "node0"
-        assert topology.frontend_nodes == ["node1", "node2", "node3", "node4", "node5"]
-        assert len(topology.frontend_nodes) == 5
+        assert topology.frontend_nodes == ["node1", "node2", "node3", "node4", "node5", "node0"]
+        assert len(topology.frontend_nodes) == 6
 
     def test_frontend_count_limited_by_config(self):
         """Frontend count limited by num_additional_frontends config."""
@@ -172,9 +172,9 @@ class TestComputeFrontendTopology:
         orchestrator = SweepOrchestrator(config=config, runtime=runtime)
         topology = orchestrator._compute_frontend_topology()
 
-        # Only 2 nodes available for frontends (node1, node2)
-        assert topology.frontend_nodes == ["node1", "node2"]
-        assert len(topology.frontend_nodes) == 2
+        # All 3 worker nodes are available; the nginx head is selected last.
+        assert topology.frontend_nodes == ["node1", "node2", "node0"]
+        assert len(topology.frontend_nodes) == 3
 
 
 class TestNginxConfigGeneration:
@@ -306,7 +306,7 @@ class TestStartFrontendIntegration:
     @patch("srtctl.frontends.dynamo.start_srun_process")
     @patch("srtctl.cli.mixins.frontend_stage.start_srun_process")
     def test_multi_node_starts_nginx_and_frontends(self, mock_mixin_srun, mock_dynamo_srun, tmp_path):
-        """Multi-node starts nginx on head + frontends on other nodes."""
+        """Multi-node starts nginx on head plus one frontend per node."""
         mock_mixin_srun.return_value = MagicMock()
         mock_dynamo_srun.return_value = MagicMock()
 
@@ -332,20 +332,21 @@ class TestStartFrontendIntegration:
         registry = MagicMock()
         processes = orchestrator.start_frontend(registry)
 
-        # Should have: 1 nginx + 2 frontends = 3 processes
-        assert len(processes) == 3
+        # Should have: 1 nginx + 3 frontends = 4 processes
+        assert len(processes) == 4
         names = [p.name for p in processes]
         assert "nginx" in names
         assert "frontend_0" in names
         assert "frontend_1" in names
+        assert "frontend_2" in names
 
         # Verify nginx is on head node
         nginx_proc = next(p for p in processes if p.name == "nginx")
         assert nginx_proc.node == "node0"
 
-        # Verify frontends are on other nodes
+        # Verify frontends cover every node, including the nginx head.
         frontend_procs = [p for p in processes if p.name.startswith("frontend_")]
-        assert {p.node for p in frontend_procs} == {"node1", "node2"}
+        assert {p.node for p in frontend_procs} == {"node0", "node1", "node2"}
 
         # Verify nginx config was written
         assert (tmp_path / "nginx.conf").exists()
@@ -418,12 +419,13 @@ class TestStartFrontendIntegration:
         registry = MagicMock()
         processes = orchestrator.start_frontend(registry)
 
-        # Should have: 1 nginx + 2 routers = 3 processes
-        assert len(processes) == 3
+        # Should have: 1 nginx + 3 routers = 4 processes
+        assert len(processes) == 4
         names = [p.name for p in processes]
         assert "nginx" in names
         assert "sglang_router_0" in names
         assert "sglang_router_1" in names
+        assert "sglang_router_2" in names
 
     @patch("srtctl.frontends.dynamo.start_srun_process")
     @patch("srtctl.cli.mixins.frontend_stage.start_srun_process")

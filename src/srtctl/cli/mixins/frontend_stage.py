@@ -33,7 +33,10 @@ class FrontendTopology:
 
     Topology rules:
     - Single node OR multiple_frontends disabled: 1 frontend on head, no nginx
-    - 2+ nodes AND multiple_frontends enabled: nginx on head, frontends on other nodes
+    - 2+ nodes AND multiple_frontends enabled: nginx on head, frontends on up to
+      all worker nodes. The head is used last so smaller frontend counts preserve
+      the historical non-head placement while a full-node deployment can also
+      run a frontend alongside nginx on the head.
     """
 
     nginx_node: str | None  # Node running nginx, or None if no nginx
@@ -76,7 +79,8 @@ class FrontendStageMixin:
 
         Topology rules:
         - Single node OR multiple_frontends disabled: 1 frontend on head, no nginx
-        - 2+ nodes AND multiple_frontends enabled: nginx on head, frontends on other nodes
+        - 2+ nodes AND multiple_frontends enabled: nginx on head, frontends on up
+          to all worker nodes
 
         Returns:
             FrontendTopology describing where to run nginx and frontends.
@@ -105,16 +109,19 @@ class FrontendStageMixin:
                 public_port=FRONTEND_PUBLIC_PORT,
             )
 
-        # Multiple nodes with multiple frontends enabled:
-        # nginx on head, frontends on other nodes
+        # Multiple nodes with multiple frontends enabled. Prefer non-head nodes
+        # first to preserve the existing placement for smaller frontend counts,
+        # then use the head as the final available slot. Nginx listens on the
+        # public port while the colocated frontend listens on the internal port.
         other_nodes = [n for n in nodes if n != head]
+        candidate_nodes = [*other_nodes, head]
 
         # Limit number of frontends based on config (num_additional_frontends is extra beyond first)
         max_frontends = min(
             fe_config.num_additional_frontends + 1,
-            len(other_nodes),
+            len(candidate_nodes),
         )
-        frontend_nodes = other_nodes[:max_frontends]
+        frontend_nodes = candidate_nodes[:max_frontends]
 
         logger.info(
             "Frontend topology: nginx on %s, %d frontends on %s",
