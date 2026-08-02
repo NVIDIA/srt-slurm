@@ -88,6 +88,8 @@ class DynamoFrontend:
                 "DYN_REQUEST_PLANE": config.dynamo.request_plane,
                 "DYN_SKIP_SGLANG_LOG_FORMATTING": "1",
             }
+            if config.dynamo.event_plane:
+                env_to_set["DYN_EVENT_PLANE"] = config.dynamo.event_plane
 
             # Add OTEL env vars (before frontend env so OTEL_SERVICE_NAME can be overridden)
             env_to_set.update(build_otel_env(config.observability, "frontend"))

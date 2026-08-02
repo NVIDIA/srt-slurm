@@ -46,12 +46,32 @@ def _vllm_data_parallel_size(config: "SrtConfig", mode: str) -> int:
     return int(mode_config.get("data-parallel-size") or mode_config.get("data_parallel_size") or 1)
 
 
-def _get_health_expectations(config: "SrtConfig") -> tuple[int, int, str, int]:
+def _vllm_health_entries(
+    config: "SrtConfig",
+    mode: str,
+    logical_workers: int,
+    backend_processes: list["Process"] | None,
+) -> int:
+    """Return expected Dynamo generate registrations for a vLLM worker mode."""
+    dp_size = _vllm_data_parallel_size(config, mode)
+    if dp_size > 1 and getattr(config.backend, "dp_launch_mode", "per_gpu") == "per_node":
+        if backend_processes is None:
+            raise ValueError("backend_processes are required for per-node DP health expectations")
+        endpoint_mode = "agg" if mode == "aggregated" else mode
+        return sum(process.endpoint_mode == endpoint_mode for process in backend_processes)
+
+    return logical_workers * dp_size
+
+
+def _get_health_expectations(
+    config: "SrtConfig", backend_processes: list["Process"] | None = None
+) -> tuple[int, int, str, int]:
     """Compute expected health counts in the units reported by the frontend.
 
     Dynamo's /health endpoint reports registered generate instances. For vLLM
-    DP workers, that means one entry per DP rank, not one entry per logical
-    srt-slurm worker. Other frontends keep using logical worker counts.
+    DP workers, per-GPU launch registers one entry per DP rank, while per-node
+    launch registers one entry per node-local process. Other frontends keep
+    using logical worker counts.
     """
     r = config.resources
 
@@ -67,10 +87,10 @@ def _get_health_expectations(config: "SrtConfig") -> tuple[int, int, str, int]:
     if config.frontend.type == "dynamo" and getattr(config.backend, "type", None) == "vllm":
         if r.num_agg > 0:
             n_prefill = 0
-            n_decode = logical_decode * _vllm_data_parallel_size(config, "aggregated")
+            n_decode = _vllm_health_entries(config, "aggregated", logical_decode, backend_processes)
         else:
-            n_prefill = logical_prefill * _vllm_data_parallel_size(config, "prefill")
-            n_decode = logical_decode * _vllm_data_parallel_size(config, "decode")
+            n_prefill = _vllm_health_entries(config, "prefill", logical_prefill, backend_processes)
+            n_decode = _vllm_health_entries(config, "decode", logical_decode, backend_processes)
 
         count_desc = f"{n_prefill}P + {n_decode}D Dynamo generate instances; logical workers: {worker_desc}"
         return n_prefill, n_decode, count_desc, n_prefill + n_decode
@@ -125,13 +145,51 @@ class BenchmarkStageMixin:
             self.backend_processes, placement, self.runtime.nodes.head, kind="benchmark.client_placement"
         )
 
+    def _logical_worker_endpoints(self) -> list[tuple[str, str, int]]:
+        """Return ``(mode, IP, port)`` for every logical worker leader.
+
+        ``backend_processes`` contains one process per physical node for
+        multi-node workers. Only rank zero owns the logical worker endpoint,
+        so follower ranks must not be advertised to benchmark clients.
+
+        Dynamo exposes worker metrics on each leader's system port. Other
+        frontends expose them on the worker HTTP port, matching the endpoint
+        selection already used by the profiling integration.
+        """
+        use_sys_port = self.config.frontend.type == "dynamo"
+        endpoints: list[tuple[str, str, int]] = []
+        for process in self.backend_processes:
+            if not process.is_leader:
+                continue
+            port = process.sys_port if use_sys_port else process.http_port
+            if port <= 0:
+                continue
+            host = get_hostname_ip(process.node, self.runtime.network_interface)
+            endpoints.append((process.endpoint_mode, host, port))
+        return endpoints
+
+    @staticmethod
+    def _get_worker_endpoint_env(endpoints: list[tuple[str, str, int]]) -> dict[str, str]:
+        """Build mode-specific benchmark environment from logical endpoints."""
+        env: dict[str, str] = {}
+        prefixes = {"prefill": "PREFILL", "decode": "DECODE", "agg": "AGG"}
+        for mode, prefix in prefixes.items():
+            mode_endpoints = [(host, port) for endpoint_mode, host, port in endpoints if endpoint_mode == mode]
+            if not mode_endpoints:
+                continue
+            # Keep one IP per logical endpoint, including repeated IPs for
+            # co-located workers, so IP and endpoint positions stay aligned.
+            env[f"SRT_{prefix}_IPS"] = ",".join(host for host, _ in mode_endpoints)
+            env[f"SRT_{prefix}_ENDPOINTS"] = ",".join(f"{host}:{port}" for host, port in mode_endpoints)
+        return env
+
     def run_benchmark(
         self, registry: "ProcessRegistry", stop_event: threading.Event, reporter: StatusReporter | None = None
     ) -> int:
         """Run the benchmark."""
         logger.info("Waiting for workers to be ready...")
 
-        n_prefill, n_decode, count_desc, num_workers = _get_health_expectations(self.config)
+        n_prefill, n_decode, count_desc, num_workers = _get_health_expectations(self.config, self.backend_processes)
         logger.info("Waiting for server health (expecting %d health entries: %s)...", num_workers, count_desc)
 
         hc = self.config.health_check
@@ -273,7 +331,11 @@ class BenchmarkStageMixin:
             if snapshotter is not None:
                 snapshotter.stop()
 
-    def _get_benchmark_profiling_env(self, runner: "BenchmarkRunner") -> dict[str, str]:
+    def _get_benchmark_profiling_env(
+        self,
+        runner: "BenchmarkRunner",
+        logical_endpoints: list[tuple[str, str, int]] | None = None,
+    ) -> dict[str, str]:
         """Get environment variables for the benchmark script."""
         env: dict[str, str] = {}
 
@@ -317,20 +379,17 @@ class BenchmarkStageMixin:
         decode_endpoints = []
         agg_endpoints = []
 
-        use_sys_port = self.config.frontend.type == "dynamo"
-        for process in self.backend_processes:
-            if not process.is_leader:
-                continue
-            leader_ip = get_hostname_ip(process.node, self.runtime.network_interface)
-            port = process.sys_port if use_sys_port else process.http_port
+        if logical_endpoints is None:
+            logical_endpoints = self._logical_worker_endpoints()
+        for mode, leader_ip, port in logical_endpoints:
             leader_endpoint = f"{leader_ip}:{port}"
-            if process.endpoint_mode == "prefill":
+            if mode == "prefill":
                 prefill_ips.append(leader_ip)
                 prefill_endpoints.append(leader_endpoint)
-            elif process.endpoint_mode == "decode":
+            elif mode == "decode":
                 decode_ips.append(leader_ip)
                 decode_endpoints.append(leader_endpoint)
-            elif process.endpoint_mode == "agg":
+            elif mode == "agg":
                 agg_ips.append(leader_ip)
                 agg_endpoints.append(leader_endpoint)
 
@@ -394,26 +453,37 @@ class BenchmarkStageMixin:
             "SA_BENCH_SLOW_DOWN_WAIT_TIME": str(b.slow_down_wait_time),
         }
 
-    def _get_aiperf_server_metrics_env(self) -> dict[str, str]:
+    def _get_aiperf_server_metrics_env(
+        self,
+        logical_endpoints: list[tuple[str, str, int]] | None = None,
+        *,
+        logical_workers_only: bool = False,
+    ) -> dict[str, str]:
         """Build server metrics URLs for AIPerf benchmarks.
 
-        Collects metrics endpoints from all backend processes that expose
-        a sys_port (vLLM workers with AIPerf metrics enabled), plus KVBM
-        metrics endpoints if DYN_KVBM_METRICS_PORT is configured.
+        Built-in AIPerf runners retain their existing physical-process metrics
+        behavior, which is required by vLLM data-parallel layouts. Custom
+        benchmarks use logical worker leaders so distributed SGLang follower
+        ranks are not advertised as separate engines.
         """
         urls: list[str] = []
-        if self.config.frontend.type == "vllm":
-            for process in self.backend_processes:
-                if process.endpoint_mode == "agg" and process.is_leader:
-                    host = get_hostname_ip(process.node, self.runtime.network_interface)
-                    urls.append(f"http://{host}:{process.http_port}/metrics")
-            if urls:
-                return {"AIPERF_SERVER_METRICS_URLS": ",".join(sorted(set(urls)))}
+        if logical_workers_only:
+            if logical_endpoints is None:
+                logical_endpoints = self._logical_worker_endpoints()
+            urls = [f"http://{host}:{port}/metrics" for _, host, port in logical_endpoints]
+        else:
+            if self.config.frontend.type == "vllm":
+                for process in self.backend_processes:
+                    if process.endpoint_mode == "agg" and process.is_leader:
+                        host = get_hostname_ip(process.node, self.runtime.network_interface)
+                        urls.append(f"http://{host}:{FRONTEND_PUBLIC_PORT}/metrics")
+                if urls:
+                    return {"AIPERF_SERVER_METRICS_URLS": ",".join(sorted(set(urls)))}
 
-        for process in self.backend_processes:
-            if process.sys_port > 0:
-                host = get_hostname_ip(process.node, self.runtime.network_interface)
-                urls.append(f"http://{host}:{process.sys_port}/metrics")
+            for process in self.backend_processes:
+                if process.sys_port > 0:
+                    host = get_hostname_ip(process.node, self.runtime.network_interface)
+                    urls.append(f"http://{host}:{process.sys_port}/metrics")
 
         # Add KVBM metrics endpoints for prefill processes with DYN_KVBM_METRICS_PORT
         prefill_env = getattr(self.config.backend, "prefill_environment", {})
@@ -427,13 +497,21 @@ class BenchmarkStageMixin:
 
         if not urls:
             return {}
-        return {"AIPERF_SERVER_METRICS_URLS": ",".join(sorted(set(urls)))}
+        # Custom commands preserve logical topology order; built-in AIPerf
+        # runners retain their historical sorted physical-process list.
+        urls = list(dict.fromkeys(urls)) if logical_workers_only else sorted(set(urls))
+        return {"AIPERF_SERVER_METRICS_URLS": ",".join(urls)}
 
     def _get_benchmark_env(self, runner: "BenchmarkRunner") -> dict[str, str]:
         """Get environment variables for the benchmark script."""
         from srtctl.benchmarks.base import AIPerfBenchmarkRunner
 
-        env = self._get_benchmark_profiling_env(runner)
+        is_custom = self.config.benchmark.type == "custom"
+        logical_endpoints = self._logical_worker_endpoints() if self.config.profiling.enabled or is_custom else None
+        env = self._get_benchmark_profiling_env(runner, logical_endpoints)
+        if is_custom:
+            assert logical_endpoints is not None
+            env.update(self._get_worker_endpoint_env(logical_endpoints))
         env["SRTCTL_FRONTEND_TYPE"] = self.config.frontend.type
 
         # Orchestrator endpoint for the benchmark command. When the client runs on
@@ -453,10 +531,15 @@ class BenchmarkStageMixin:
         if runner.name == "SA-Bench":
             env.update(self._get_sa_bench_slow_down_env())
 
-        # Add AIPerf-specific env vars for AIPerf-driven benchmarks only
+        # Built-in AIPerf runners retain physical-process metrics for vLLM DP.
+        # Custom commands commonly wrap AIPerf but do not inherit from its base
+        # class, so give them the logical-worker view needed by SGLang TP.
         if isinstance(runner, AIPerfBenchmarkRunner):
             env.update(self._get_aiperf_server_metrics_env())
-            if self.config.benchmark.aiperf_package:
-                env["AIPERF_PACKAGE"] = self.config.benchmark.aiperf_package
+        elif is_custom:
+            assert logical_endpoints is not None
+            env.update(self._get_aiperf_server_metrics_env(logical_endpoints, logical_workers_only=True))
+        if isinstance(runner, AIPerfBenchmarkRunner) and self.config.benchmark.aiperf_package:
+            env["AIPERF_PACKAGE"] = self.config.benchmark.aiperf_package
 
         return env

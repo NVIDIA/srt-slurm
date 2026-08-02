@@ -59,7 +59,7 @@ def _make_orchestrator(config_path: str, hf_model: bool = True) -> SweepOrchestr
         patch("subprocess.run", TestCluster.mock_scontrol()),
     ):
         config = load_config(Path(config_path))
-        runtime = RuntimeContext.from_config(config, "99999")
+        runtime = RuntimeContext.from_config(config, "99999", log_dir_base=Path(config_path).parent / "outputs")
         return SweepOrchestrator(config=config, runtime=runtime)
 
 
@@ -627,6 +627,7 @@ resources:
 """
         )
         orch = _make_orchestrator(str(config_file))
+        assert orch.runtime.log_dir == tmp_path / "outputs" / "99999" / "logs"
 
         with (
             patch.object(orch, "_clean_stale_hf_locks") as mock_clean,

@@ -69,6 +69,7 @@ class MooncakeKVStoreConfig:
 
     container: str | None = None
     env: dict[str, str] = field(default_factory=dict)
+    master_extra_args: list[str] = field(default_factory=list)
 
     Schema: ClassVar[type[Schema]] = Schema
 

@@ -66,10 +66,31 @@ MOONCAKE_MASTER_STARTUP_TIMEOUT_SECONDS = 600
 
 
 def _build_mooncake_master_command(
+    mooncake_cfg: object | str | None = None,
+    *,
     install_spec: str | None = None,
-    default_kv_lease_ttl_ms: int = 10_000,
+    default_kv_lease_ttl_ms: int | None = None,
 ) -> list[str]:
-    """Build a Mooncake master command compatible with the pinned service image."""
+    """Build the master command with pinned-install and recipe flag support.
+
+    Passing an install spec as the first positional argument remains supported
+    for compatibility with the original AgentX runtime helper.
+    """
+    if isinstance(mooncake_cfg, str):
+        if install_spec is not None:
+            raise ValueError("Mooncake install spec was provided twice")
+        install_spec = mooncake_cfg
+        mooncake_cfg = None
+
+    master_extra_args: list[str] = []
+    if mooncake_cfg is not None:
+        if install_spec is None:
+            install_spec = getattr(mooncake_cfg, "master_install_spec", None)
+        if default_kv_lease_ttl_ms is None:
+            default_kv_lease_ttl_ms = getattr(mooncake_cfg, "default_kv_lease_ttl_ms", 10_000)
+        master_extra_args = list(getattr(mooncake_cfg, "master_extra_args", []) or [])
+    if default_kv_lease_ttl_ms is None:
+        default_kv_lease_ttl_ms = 10_000
     if default_kv_lease_ttl_ms <= 0:
         raise ValueError("Mooncake default KV lease TTL must be positive")
 
@@ -84,6 +105,7 @@ def _build_mooncake_master_command(
         "--enable_metric_reporting=true",
         f"--metrics_port={MOONCAKE_METRICS_PORT}",
     ]
+    command.extend(master_extra_args)
     if install_spec is None:
         return command
 
@@ -286,10 +308,7 @@ class SweepOrchestrator(
         )
 
         proc = start_srun_process(
-            command=_build_mooncake_master_command(
-                getattr(mooncake_cfg, "master_install_spec", None),
-                default_kv_lease_ttl_ms=getattr(mooncake_cfg, "default_kv_lease_ttl_ms", 10_000),
-            ),
+            command=_build_mooncake_master_command(mooncake_cfg),
             nodelist=[infra_node],
             output=str(mooncake_log),
             container_image=container,

@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from srtctl.core.slurm import get_hostname_ip
+from srtctl.ports import FRONTEND_PUBLIC_PORT
 
 if TYPE_CHECKING:
     from srtctl.cli.mixins.frontend_stage import FrontendTopology
@@ -85,7 +86,7 @@ def generate_telemetry_config(
 
     for process in sorted(processes, key=lambda p: (p.endpoint_mode, p.endpoint_index, p.node_rank, p.node)):
         node_ip = get_hostname_ip(process.node, runtime.network_interface)
-        port = process.http_port if frontend_type == "vllm" else process.sys_port
+        port = FRONTEND_PUBLIC_PORT if frontend_type == "vllm" and process.endpoint_mode == "agg" else process.sys_port
         node_metadata = {
             "hostname": process.node,
             "worker_index": str(process.endpoint_index),

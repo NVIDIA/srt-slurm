@@ -108,6 +108,4 @@ def get_frontend(frontend_type: str) -> FrontendProtocol:
     elif frontend_type == "vllm":
         return VLLMFrontend()
     else:
-        raise ValueError(
-            f"Unknown frontend type: {frontend_type!r}. Supported: dynamo, sglang, trtllm_serve, vllm"
-        )
+        raise ValueError(f"Unknown frontend type: {frontend_type!r}. Supported: dynamo, sglang, trtllm_serve, vllm")
