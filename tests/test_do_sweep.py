@@ -40,3 +40,10 @@ def test_mooncake_master_command_installs_pinned_distribution() -> None:
     assert spec in command[2]
     assert "&& exec mooncake_master" in command[2]
     assert "nof_eviction_high_watermark_ratio" not in command[2]
+
+
+def test_mooncake_master_command_accepts_custom_lease_ttl() -> None:
+    command = _build_mooncake_master_command(default_kv_lease_ttl_ms=20_000)
+
+    assert "--default_kv_lease_ttl=20000" in command
+    assert "--default_kv_lease_ttl=10000" not in command

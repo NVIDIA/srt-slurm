@@ -29,8 +29,9 @@ fi
 export PORT="${PORT:-$PORT_FROM_ENDPOINT}"
 
 INFERENCEX_AGENTX_COMMIT="${INFERENCEX_AGENTX_COMMIT:-303669b0e16aa6a0c600b8a68b4f91b973a34127}"
-# SemiAnalysisAI/aiperf#31 preserves source timing and applies any explicit
-# trace idle cap at runtime to the complete root-plus-subagent trajectory tree.
+# SemiAnalysisAI/aiperf#31 preserves recorded AgentX timing and spawn/join
+# state across warmup handoff while applying any explicit trace-idle cap at
+# runtime to the complete root-plus-subagent trajectory tree.
 AIPERF_AGENTX_REF="${AIPERF_AGENTX_REF:-ed057829b78d25d79ce6f3b87763d48fe50363f5}"
 # Keep the older source bundle as an offline fallback only for configs that
 # explicitly request its exact historical revision.
@@ -90,25 +91,104 @@ if [[ "${AGENTX_USE_EXISTING_INFMAX_WORKSPACE:-0}" != "1" ]]; then
 fi
 
 AIPERF_ROOT="${AIPERF_DIR:-$WORKSPACE_ROOT/utils/aiperf}"
+
+# The datasets library still resolves Hub metadata before consulting a cached
+# Hub snapshot. Allow AgentX runs to consume a staged Weka JSONL directly so
+# benchmarks are independent of Hugging Face availability and rate limits.
+if [[ -n "${AIPERF_LOCAL_WEKA_DATASET:-}" ]]; then
+  if [[ ! -r "$AIPERF_LOCAL_WEKA_DATASET" ]]; then
+    echo "ERROR: AIPERF_LOCAL_WEKA_DATASET is not readable: $AIPERF_LOCAL_WEKA_DATASET" >&2
+    exit 1
+  fi
+
+  LOCAL_WEKA_LOADER="$AIPERF_ROOT/src/aiperf/dataset/loader/semianalysis_cc_traces_weka.py"
+  if [[ ! -f "$LOCAL_WEKA_LOADER" ]]; then
+    echo "ERROR: staged Weka dataset requested but loader was not found: $LOCAL_WEKA_LOADER" >&2
+    exit 1
+  fi
+
+  python3 - "$LOCAL_WEKA_LOADER" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+sentinel = "Loading staged local Weka dataset"
+
+if sentinel in text:
+    print(f"Local Weka dataset support already present: {path}")
+    raise SystemExit(0)
+
+marker = "    async def load_dataset(self) -> dict[str, list[WekaTrace]]:\n"
+if text.count(marker) != 1:
+    raise SystemExit(
+        f"ERROR: expected one Weka load_dataset marker in {path}, "
+        f"found {text.count(marker)}"
+    )
+
+method = '''    def _load_hf_dataset(self) -> Any:
+        """Load a staged Weka JSONL without resolving Hugging Face Hub metadata."""
+        import os
+        from pathlib import Path
+
+        from datasets import (
+            Dataset,
+            concatenate_datasets,
+            load_dataset as hf_load_dataset,
+            load_from_disk,
+        )
+
+        local_path = os.environ.get("AIPERF_LOCAL_WEKA_DATASET")
+        if not local_path:
+            return super()._load_hf_dataset()
+        self.info(f"Loading staged local Weka dataset from '{local_path}'")
+        if Path(local_path).is_dir():
+            self.info("Using preprocessed Arrow dataset")
+            arrow_files = sorted(Path(local_path).glob("*.arrow"))
+            if arrow_files:
+                datasets = [Dataset.from_file(str(item)) for item in arrow_files]
+                return concatenate_datasets(datasets)
+            return load_from_disk(local_path)
+        return hf_load_dataset(
+            "json",
+            data_files={"train": local_path},
+            split=self.hf_split,
+            streaming=False,
+            cache_dir=os.environ.get("HF_DATASETS_CACHE"),
+        )
+
+'''
+
+path.write_text(text.replace(marker, method + marker, 1))
+print(f"Patched Weka loader for staged local dataset: {path}")
+PY
+
+  echo "Staged Weka dataset: ${AIPERF_LOCAL_WEKA_DATASET}"
+fi
+
 python3 - \
   "$AIPERF_ROOT/src/aiperf/common/scenario/inferencex_agentx_mvp.py" \
   "$AIPERF_ROOT/src/aiperf/timing/replay_dependencies.py" \
-  "$AIPERF_ROOT/src/aiperf/timing/strategies/agentic_replay.py" <<'PY'
+  "$AIPERF_ROOT/src/aiperf/timing/strategies/agentic_replay.py" \
+  "$AIPERF_ROOT/src/aiperf/common/config/loadgen_config.py" \
+  "$AIPERF_ROOT/src/aiperf/config/phases.py" \
+  "$AIPERF_ROOT/src/aiperf/timing/phase/runner.py" <<'PY'
 from pathlib import Path
+import re
 import sys
 
 scenario_path = Path(sys.argv[1])
 dependencies_path = Path(sys.argv[2])
 replay_path = Path(sys.argv[3])
-if not all(path.is_file() for path in (scenario_path, dependencies_path, replay_path)):
+legacy_loadgen_path = Path(sys.argv[4])
+phases_path = Path(sys.argv[5])
+phase_runner_path = Path(sys.argv[6])
+if not scenario_path.is_file():
     raise SystemExit(
-        "ERROR: AIPerf AgentX timing-policy sources are missing: "
-        f"{scenario_path}, {dependencies_path}, {replay_path}"
+        f"ERROR: AIPerf AgentX scenario source is missing: {scenario_path}"
     )
 
 scenario = scenario_path.read_text()
-dependencies = dependencies_path.read_text()
-replay = replay_path.read_text()
 required_scenario = (
     "system_idle_gap_cap_seconds=10.0",
     "forbid_inter_turn_delay_cap=True",
@@ -119,23 +199,120 @@ if missing:
         "ERROR: stale AIPerf AgentX client: missing system-idle policy "
         + ", ".join(missing)
     )
-if "forbid_trace_idle_gap_cap=True" in scenario:
-    raise SystemExit(
-        "ERROR: stale AIPerf AgentX client: trace idle cap is still a loader-time forbidden option"
+
+if phases_path.is_file():
+    # PR #31 moved phase configuration into config/phases.py. Its default
+    # preserves recorded cross-lane phase-start spacing, while the new runtime
+    # trace-idle watchdog remains an explicit opt-in.
+    current_paths = (dependencies_path, replay_path, phase_runner_path)
+    if not all(path.is_file() for path in current_paths):
+        raise SystemExit(
+            "ERROR: AIPerf AgentX PR #31 timing-policy sources are missing: "
+            + ", ".join(str(path) for path in current_paths if not path.is_file())
+        )
+    dependencies = dependencies_path.read_text()
+    replay = replay_path.read_text()
+    phases = phases_path.read_text()
+    runner = phase_runner_path.read_text()
+    if "forbid_trace_idle_gap_cap=True" in scenario:
+        raise SystemExit(
+            "ERROR: stale AIPerf AgentX client: trace idle cap is still a loader-time forbidden option"
+        )
+    if "root_idle_gap_cap_seconds" not in dependencies:
+        raise SystemExit(
+            "ERROR: stale AIPerf AgentX client: runtime trajectory-tree idle watchdog is missing"
+        )
+    if "spread = not self._burst_phase_starts" not in replay:
+        raise SystemExit(
+            "ERROR: stale AIPerf AgentX client: globally anchored spread-phase startup is missing"
+        )
+    burst_field = re.search(
+        r"burst_phase_starts:.*?Field\(\s*default=False,",
+        phases,
+        re.DOTALL,
     )
-if "root_idle_gap_cap_seconds" not in dependencies:
-    raise SystemExit(
-        "ERROR: stale AIPerf AgentX client: runtime trajectory-tree idle watchdog is missing"
+    if burst_field is None:
+        raise SystemExit(
+            "ERROR: stale AIPerf PR #31 client: phase starts do not preserve "
+            "recorded spacing by default"
+        )
+    if "trace_idle_gap_cap_seconds" not in runner or "whole-tree idle" not in runner:
+        raise SystemExit(
+            "ERROR: stale AIPerf PR #31 client: runtime tree-idle watchdog is missing"
+        )
+    print(
+        "Verified AIPerf AgentX PR #31 policy and timing policy: preserved phase spacing, "
+        "system-idle cap 10s, optional runtime tree-idle watchdog"
     )
-if "spread = not self._burst_phase_starts" not in replay:
+elif legacy_loadgen_path.is_file():
+    # The bundled pre-PR client uses its former burst-phase default and forbids
+    # per-trace idle caps. Retain this path for offline fallback diagnostics.
+    loadgen = legacy_loadgen_path.read_text()
+    if "forbid_trace_idle_gap_cap=True" not in scenario:
+        raise SystemExit(
+            "ERROR: stale bundled AIPerf client: per-trace idle caps are not forbidden"
+        )
+    if re.search(r"burst_phase_starts:.*?\]\s*=\s*True", loadgen, re.DOTALL) is None:
+        raise SystemExit(
+            "ERROR: stale bundled AIPerf client: burst phase starts are not enabled "
+            "by default"
+        )
+    print("Verified bundled AIPerf AgentX timing policy: system-idle cap 10s, burst phase starts")
+else:
     raise SystemExit(
-        "ERROR: stale AIPerf AgentX client: globally anchored spread-phase startup is missing"
+        "ERROR: AIPerf phase-policy source is missing; expected either "
+        f"{phases_path} or {legacy_loadgen_path}"
     )
-print(
-    "Verified AIPerf AgentX PR #31 policy: system-idle cap 10s, "
-    "runtime trajectory-tree idle watchdog support, spread phase starts"
-)
 PY
+
+# AIPerf's cache-pressure warmup intentionally decodes only one token per
+# request.  Some models can emit a special token that decodes to an empty
+# string, even though the server reports a successful completion token.  That
+# makes an otherwise healthy warmup record look like an empty inference result.
+# Keep upstream's one-token default, but allow model-specific studies to ask
+# for a few tokens so at least one visible token is overwhelmingly likely.
+if [[ -n "${AIPERF_AGENTIC_WARMUP_MAX_TOKENS:-}" ]]; then
+  if [[ ! "$AIPERF_AGENTIC_WARMUP_MAX_TOKENS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "ERROR: AIPERF_AGENTIC_WARMUP_MAX_TOKENS must be a positive integer" >&2
+    exit 1
+  fi
+
+  AIPERF_AGENTIC_STRATEGY="$AIPERF_ROOT/src/aiperf/timing/strategies/agentic_replay.py"
+  if [[ ! -f "$AIPERF_AGENTIC_STRATEGY" ]]; then
+    echo "ERROR: AgentX warmup strategy was not found: $AIPERF_AGENTIC_STRATEGY" >&2
+    exit 1
+  fi
+
+  python3 - "$AIPERF_AGENTIC_STRATEGY" "$AIPERF_AGENTIC_WARMUP_MAX_TOKENS" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+path = Path(sys.argv[1])
+requested = int(sys.argv[2])
+text = path.read_text()
+pattern = r"^_WARMUP_MAX_TOKENS = ([1-9][0-9]*)$"
+matches = re.findall(pattern, text, flags=re.MULTILINE)
+if len(matches) != 1:
+    raise SystemExit(
+        f"ERROR: expected exactly one _WARMUP_MAX_TOKENS assignment in {path}, "
+        f"found {len(matches)}"
+    )
+current = int(matches[0])
+if current != requested:
+    text, count = re.subn(
+        pattern,
+        f"_WARMUP_MAX_TOKENS = {requested}",
+        text,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    if count != 1:
+        raise SystemExit(f"ERROR: failed to update warmup token count in {path}")
+    path.write_text(text)
+print(f"AgentX warmup max tokens: {requested} (source default was {current})")
+PY
+fi
 
 if [[ -f "${AIPERF_DIR:-$WORKSPACE_ROOT/utils/aiperf}/pyproject.toml" && "${AIPERF_ALLOW_GITHUB_TRANSFORMERS:-0}" != "1" ]]; then
   AIPERF_TRANSFORMERS_SPEC="${AIPERF_TRANSFORMERS_SPEC:-transformers>=4.53.0,<5}"

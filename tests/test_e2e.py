@@ -841,6 +841,7 @@ backend:
   mooncake_kv_store:
     container: inferactinc/public:mk-int-20260507
     master_install_spec: mooncake-transfer-engine-cuda13==0.3.12.post1
+    default_kv_lease_ttl_ms: 20000
     env:
       MOONCAKE_PROTOCOL: rdma
   vllm_config:
@@ -855,6 +856,7 @@ backend:
         assert config.backend.mooncake_kv_store.master_install_spec == (
             "mooncake-transfer-engine-cuda13==0.3.12.post1"
         )
+        assert config.backend.mooncake_kv_store.default_kv_lease_ttl_ms == 20_000
         assert config.backend.mooncake_kv_store.env["MOONCAKE_PROTOCOL"] == "rdma"
 
     def test_vllm_mooncake_disagg_without_kv_transfer_config_raises(self):

@@ -1,0 +1,215 @@
+name: minimax-m3-1pdep8-1ddep8-agentx-mk-e3gqa-k3-c56-dyn14-vllme2fa-idle300-mf4
+
+dynamo:
+  wheel: 1.4.0.dev20260730
+  install: true
+
+infra:
+  etcd_nats_dedicated_node: false
+  nats_max_payload_mb: 32
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: true
+  # One frontend per allocated model node: 1 primary + 3 additional.
+  num_additional_frontends: 3
+  nginx_raise_ulimit: false
+  nginx_session_affinity: true
+  nginx_session_affinity_header: X-Dynamo-Session-ID
+  args:
+    router-mode: least-loaded
+    router-session-affinity-ttl-secs: 1800
+  env:
+    DYN_TOKENIZER_CACHE_BYTES: "8589934592"
+    DYN_LOG: info,dynamo_llm::session_affinity=debug
+    DYN_TOKENIZER: fastokens
+    DYN_TCP_CONNECT_TIMEOUT: "60"
+
+model:
+  path: "/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/kylliang/models/MiniMax-M3-NVFP4"
+  container: "/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/kylliang/srtslurm_studies/downloaded_dockerhub/vllm_vllm-openai_nightly-e2fa28594f7baad142a426b0b6a2cfe2c79201c7_arm64.sqsh"
+  precision: fp4
+
+resources:
+  gpu_type: gb300
+  gpus_per_node: 4
+  prefill_nodes: 2
+  decode_nodes: 2
+  prefill_workers: 1
+  decode_workers: 1
+  gpus_per_prefill: 8
+  gpus_per_decode: 8
+
+backend:
+  type: vllm
+  connector: null
+  prefill_environment:
+    VLLM_ENGINE_READY_TIMEOUT_S: "3600"
+    DYN_TCP_CONNECT_TIMEOUT: "60"
+    PYTHONUNBUFFERED: "1"
+    PYTHONNOUSERSITE: "1"
+    HF_HOME: "/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/kylliang/models/.cache"
+    VLLM_FLOAT32_MATMUL_PRECISION: high
+    VLLM_FLASHINFER_ALLREDUCE_BACKEND: trtllm
+    VLLM_USE_NCCL_SYMM_MEM: "0"
+    NCCL_CUMEM_ENABLE: "1"
+    NCCL_MNNVL_ENABLE: "1"
+    NCCL_NVLS_ENABLE: "1"
+    MINIMAX_M3_EAGLE3_DRAFT_MODEL: "/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/kylliang/models/MiniMax-M3-EAGLE3-GQA"
+    MINIMAX_M3_EAGLE3_DRAFT_LOCAL_DIR: "/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/kylliang/models/MiniMax-M3-EAGLE3-GQA"
+    VLLM_MOONCAKE_LOAD_RECV_THREADS: "20"
+    UCX_MEMTYPE_CACHE: n
+    UCX_TLS: tcp,cuda_copy
+    NCCL_IB_HCA: "rdma_vf_rail0,rdma_vf_rail1,rdma_vf_rail2,rdma_vf_rail3"
+    VLLM_ALLREDUCE_USE_SYMM_MEM: "0"
+    UCX_RCACHE_MAX_UNRELEASED: "1024"
+  decode_environment:
+    VLLM_ENGINE_READY_TIMEOUT_S: "3600"
+    DYN_TCP_CONNECT_TIMEOUT: "60"
+    PYTHONUNBUFFERED: "1"
+    PYTHONNOUSERSITE: "1"
+    HF_HOME: "/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/kylliang/models/.cache"
+    VLLM_FLOAT32_MATMUL_PRECISION: high
+    VLLM_FLASHINFER_ALLREDUCE_BACKEND: trtllm
+    VLLM_USE_NCCL_SYMM_MEM: "0"
+    NCCL_CUMEM_ENABLE: "1"
+    NCCL_MNNVL_ENABLE: "1"
+    NCCL_NVLS_ENABLE: "1"
+    MINIMAX_M3_EAGLE3_DRAFT_MODEL: "/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/kylliang/models/MiniMax-M3-EAGLE3-GQA"
+    MINIMAX_M3_EAGLE3_DRAFT_LOCAL_DIR: "/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/kylliang/models/MiniMax-M3-EAGLE3-GQA"
+    VLLM_MOONCAKE_LOAD_RECV_THREADS: "20"
+    UCX_MEMTYPE_CACHE: n
+    UCX_TLS: tcp,cuda_copy
+    NCCL_IB_HCA: "rdma_vf_rail0,rdma_vf_rail1,rdma_vf_rail2,rdma_vf_rail3"
+    VLLM_ALLREDUCE_USE_SYMM_MEM: "0"
+    UCX_RCACHE_MAX_UNRELEASED: "1024"
+  vllm_config:
+    prefill:
+      served-model-name: nvidia/MiniMax-M3-NVFP4
+      block-size: 128
+      trust-remote-code: true
+      enable-prefix-caching: true
+      language-model-only: true
+      no-enable-flashinfer-autotune: true
+      reasoning-parser: minimax_m3
+      max-cudagraph-capture-size: 512
+      max-num-batched-tokens: 16384
+      stream-interval: 20
+      gpu-memory-utilization: 0.9
+      tensor-parallel-size: 1
+      data-parallel-size: 8
+      data-parallel-rpc-port: 13345
+      enable-expert-parallel: true
+      attention-config: '{"backend":"FLASHINFER","use_trtllm_attention":true,"indexer_kv_dtype":"fp8"}'
+      all2all-backend: flashinfer_nvlink_one_sided
+      speculative-config: '{"method":"eagle3","model":"/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/kylliang/models/MiniMax-M3-EAGLE3-GQA","num_speculative_tokens":3,"attention_backend":"FLASH_ATTN","rejection_sample_method":"synthetic","synthetic_acceptance_length":2.83}'
+      kv-transfer-config: '{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_load_failure_policy":"recompute","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_load_failure_policy":"recompute","kv_buffer_device":"cuda","kv_connector_extra_config":{"enforce_handshake_compat":false,"enable_cross_layers_blocks":false,"backends":["UCX"]}},{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both","kv_connector_extra_config":{"load_async":true,"lookup_async":true,"enable_cross_layers_blocks":false,"enable_offload":true}}]}}'
+    decode:
+      served-model-name: nvidia/MiniMax-M3-NVFP4
+      block-size: 128
+      trust-remote-code: true
+      enable-prefix-caching: true
+      language-model-only: true
+      no-enable-flashinfer-autotune: true
+      reasoning-parser: minimax_m3
+      max-cudagraph-capture-size: 512
+      max-num-batched-tokens: 16384
+      stream-interval: 20
+      gpu-memory-utilization: 0.9
+      tensor-parallel-size: 1
+      data-parallel-size: 8
+      data-parallel-rpc-port: 13345
+      enable-expert-parallel: true
+      attention-config: '{"backend":"FLASHINFER","use_trtllm_attention":true,"indexer_kv_dtype":"fp8"}'
+      all2all-backend: flashinfer_nvlink_one_sided
+      speculative-config: '{"method":"eagle3","model":"/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/kylliang/models/MiniMax-M3-EAGLE3-GQA","num_speculative_tokens":3,"attention_backend":"FLASH_ATTN","rejection_sample_method":"synthetic","synthetic_acceptance_length":2.83}'
+      kv-transfer-config: '{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_load_failure_policy":"recompute","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_load_failure_policy":"recompute","kv_buffer_device":"cuda","kv_connector_extra_config":{"enforce_handshake_compat":false,"enable_cross_layers_blocks":false,"backends":["UCX"]}},{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_consumer","kv_connector_extra_config":{"load_async":true,"lookup_async":false,"enable_lookup":false,"enable_cross_layers_blocks":false,"enable_offload":true}}]}}'
+  mooncake_kv_store:
+    default_kv_lease_ttl_ms: 20000
+    env:
+      MC_ENABLE_DEST_DEVICE_AFFINITY: "1"
+      MC_STORE_CLIENT_METRIC: "1"
+      MC_STORE_CLIENT_METRIC_INTERVAL: "5"
+      MC_TE_METRIC: "0"
+    store_config:
+      metadata_server: P2PHANDSHAKE
+      global_segment_size: 150GB
+      local_buffer_size: 4GB
+      protocol: tcp
+      device_name: ""
+      mode: embedded
+      enable_offload: true
+
+benchmark:
+  type: agentic
+  duration: 3600
+  concurrencies: [56]
+  model_prefix: minimaxm3
+  result_filename: minimax-m3-1pdep8-1ddep8-agentx-mk-e3gqa-k3-c56-dyn14-vllme2fa-idle300-mf4
+  env:
+    KV_OFFLOADING: "dram"
+    KV_OFFLOAD_BACKEND: "mooncake"
+    TOTAL_CPU_DRAM_GB: "2400"
+    RUNNER_TYPE: "gb300"
+    IMAGE: "vllm/vllm-openai:nightly-e2fa28594f7baad142a426b0b6a2cfe2c79201c7"
+    SPEC_DECODING: "eagle3-gqa-k3"
+    DISAGG: "true"
+    IS_MULTINODE: "true"
+    PREFILL_NUM_WORKERS: "1"
+    PREFILL_TP: "1"
+    PREFILL_EP: "8"
+    PREFILL_DP_ATTN: "true"
+    DECODE_NUM_WORKERS: "1"
+    DECODE_TP: "1"
+    DECODE_EP: "8"
+    DECODE_DP_ATTN: "true"
+    HF_HOME: "/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/kylliang/models/.cache"
+    HF_HUB_OFFLINE: "1"
+    HF_DATASETS_OFFLINE: "1"
+    AIPERF_LOCAL_WEKA_DATASET: "/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/kylliang/srtslurm_studies/20260730_agentx_vllm_minimaxm3_eagle3_gqa_latest/datasets/cc-traces-weka-062126-arrow"
+    AIPERF_TOKENIZER: "/model"
+    INFERENCEX_AGENTX_COMMIT: 303669b0e16aa6a0c600b8a68b4f91b973a34127
+    AIPERF_AGENTX_REF: ed057829b78d25d79ce6f3b87763d48fe50363f5
+    AIPERF_TRACE_IDLE_GAP_CAP_SECONDS: "300"
+    WEKA_LOADER_OVERRIDE: semianalysis_cc_traces_weka_062126
+    AIPERF_HTTP_X_DYNAMO_SESSION_ID_FROM_CORRELATION_ID: "true"
+    AIPERF_SERVICE_PROFILE_CONFIGURE_TIMEOUT: "2400"
+    AIPERF_DATASET_CONFIGURATION_TIMEOUT: "2400"
+    AIPERF_AGENTIC_CACHE_WARMUP_DURATION: "60"
+    AIPERF_AGENTIC_WARMUP_MAX_TOKENS: "4"
+    AGENTIC_WARMUP_GRACE_PERIOD: "7200"
+    AIPERF_APPLY_CHAT_TEMPLATE: "1"
+
+health_check:
+  max_attempts: 1440
+  interval_seconds: 10
+
+sbatch_directives:
+  # Both DEP8 deployments use FlashInfer's MNNVL one-sided all-to-all across
+  # two nodes. Keep all four allocated nodes within one GB300 NVLink domain.
+  switches: "1"
+  nodelist: "nvl72d118-T10,nvl72d118-T11,nvl72d118-T12,nvl72d118-T13"
+
+slurm:
+  account: "coreai_comparch_inferencex"
+  partition: "batch"
+  time_limit: "04:00:00"
+
+identity:
+  model:
+    repo: nvidia/MiniMax-M3-NVFP4
+    revision: 901464083161bf8612a29ff7ad29914cd4ab4a85
+  container:
+    image: vllm/vllm-openai:nightly-e2fa28594f7baad142a426b0b6a2cfe2c79201c7
+  frameworks:
+    dynamo: 1.4.0.dev20260730
+
+environment:
+  PYTHONHASHSEED: "0"
+
+extra_mount:
+  - "/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/kylliang/srtslurm_studies/20260730_agentx_vllm_minimaxm3_eagle3_gqa_latest/datasets/cc-traces-weka-062126-arrow:/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/kylliang/srtslurm_studies/20260730_agentx_vllm_minimaxm3_eagle3_gqa_latest/datasets/cc-traces-weka-062126-arrow"
+  - "/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/kylliang/models/MiniMax-M3-EAGLE3-GQA:/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/kylliang/models/MiniMax-M3-EAGLE3-GQA"
+  - "/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/kylliang/models/.cache:/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/kylliang/models/.cache"
+
+setup_script: minimax-m3-eagle3-draft-indexer-grid-8b00f41.sh

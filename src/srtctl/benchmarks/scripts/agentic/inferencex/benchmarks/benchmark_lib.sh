@@ -1378,6 +1378,10 @@ resolve_trace_source() {
     # for model weights) so subsequent runs read from cache instead of
     # re-downloading every job.
     ensure_hf_cli
+    if [[ -n "${AIPERF_LOCAL_WEKA_DATASET:-}" ]]; then
+        echo "Using staged local Weka dataset; skipping Hugging Face dataset pre-download"
+        return 0
+    fi
     "$AIPERF_HF_CLI" download --repo-type dataset "$dataset"
 }
 
@@ -1398,6 +1402,7 @@ build_replay_cmd() {
     # unset unless a study explicitly standardizes a cap.
     local result_dir="$1"
     local duration="$DURATION"
+    local tokenizer_override="${AIPERF_TOKENIZER:-}"
 
     export AIPERF_DATASET_WEKA_LIVE_ASSISTANT_RESPONSES="${AIPERF_DATASET_WEKA_LIVE_ASSISTANT_RESPONSES:-0}"
     # Dataset configuration (load + reconstruct + inputs.json + mmap)
@@ -1415,6 +1420,13 @@ build_replay_cmd() {
     REPLAY_CMD+=" --endpoint /v1/chat/completions"
     REPLAY_CMD+=" --endpoint-type chat"
     REPLAY_CMD+=" --streaming"
+    # AIPerf PR #31 can advance pending replay timers after an entire AgentX
+    # trajectory tree has been idle for this long. Leave it opt-in because it
+    # changes replay timing, and it intentionally does not interrupt requests
+    # that are still on the wire.
+    if [ -n "${AIPERF_TRACE_IDLE_GAP_CAP_SECONDS:-}" ]; then
+        REPLAY_CMD+=" --trace-idle-gap-cap-seconds $AIPERF_TRACE_IDLE_GAP_CAP_SECONDS"
+    fi
     REPLAY_CMD+=" --model $MODEL"
     REPLAY_CMD+=" --concurrency $CONC"
     REPLAY_CMD+=" --benchmark-duration $duration"
@@ -1479,6 +1491,27 @@ build_replay_cmd() {
     # need trust_remote_code=True to load. Benign for models without
     # custom tokenizer code, so we set it unconditionally.
     REPLAY_CMD+=" --tokenizer-trust-remote-code"
+    # Air-gapped jobs can point AIPerf at the model mount instead of asking
+    # transformers to resolve the served model ID through Hugging Face.
+    if [ -n "$tokenizer_override" ]; then
+        REPLAY_CMD+=" --tokenizer $tokenizer_override"
+    fi
+    # Current AIPerf releases use the AIPERF_ prefix for pydantic-settings.
+    # Leaving AIPERF_TOKENIZER in the child environment makes pydantic try to
+    # JSON-decode the path as a structured TokenizerConfig, even though the
+    # equivalent --tokenizer CLI option is valid. The value is already baked
+    # into REPLAY_CMD, so remove the settings-name collision before launch.
+    unset AIPERF_TOKENIZER
+    # PR #31's offline tokenizer path resolves every value through
+    # huggingface_hub.snapshot_download(), which incorrectly treats an
+    # absolute bind-mounted directory such as /model as a Hub repository ID.
+    # The benchmark has a staged local dataset and a local tokenizer, so let
+    # Transformers recognize the directory directly in the AIPerf child. This
+    # shell is separate from the already-running offline model services.
+    if [[ "$tokenizer_override" == /* ]]; then
+        unset HF_HUB_OFFLINE
+        unset TRANSFORMERS_OFFLINE
+    fi
     # AgentX uses chat-shaped OpenAI payloads. Some speculative-decoding runs
     # also need AIPerf's tokenizer accounting to apply the model chat template
     # explicitly so acceptance/ISL accounting matches the wire prompt.

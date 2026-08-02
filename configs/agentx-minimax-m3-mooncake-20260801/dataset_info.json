@@ -1,0 +1,18 @@
+{
+  "source": "semianalysisai/cc-traces-weka-062126",
+  "revision": "23f152f6f0f9399a85901b89a6458def0ef16729",
+  "rows": 393,
+  "columns": [
+    "id",
+    "models",
+    "block_size",
+    "hash_id_scope",
+    "requests"
+  ],
+  "arrow_files": [
+    "json-train-00000-of-00004.arrow",
+    "json-train-00001-of-00004.arrow",
+    "json-train-00002-of-00004.arrow",
+    "json-train-00003-of-00004.arrow"
+  ]
+}

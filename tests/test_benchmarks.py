@@ -912,6 +912,10 @@ class TestAgenticRunner:
         assert "208125aca87a438e43e56517e8a3e5096f8c9281" in text
         assert "AGENTX_DYNAMO_HEADER_AFFINITY" not in text
         assert "Verified AIPerf AgentX PR #31 policy" in text
+        assert "src/aiperf/config/phases.py" in text
+        assert "src/aiperf/timing/phase/runner.py" in text
+        assert 'r"burst_phase_starts:.*?Field\\(\\s*default=False,"' in text
+        assert '"trace_idle_gap_cap_seconds" not in runner' in text
 
         bundle = SCRIPTS_DIR / "agentic" / "third_party" / "aiperf-agentx-v1-src.tgz"
         manifest = (
@@ -972,6 +976,38 @@ class TestAgenticRunner:
         assert 'HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-${WORKSPACE_ROOT}/hf-datasets}"' in text
         assert 'mkdir -p "$HF_DATASETS_CACHE"' in text
 
+    def test_agentic_bench_supports_staged_local_weka_dataset(self):
+        """AgentX can load a staged Weka JSONL without Hugging Face Hub access."""
+        script = SCRIPTS_DIR / "agentic" / "bench.sh"
+        text = script.read_text()
+
+        assert "AIPERF_LOCAL_WEKA_DATASET" in text
+        assert "Loading staged local Weka dataset" in text
+        assert 'data_files={"train": local_path}' in text
+        assert "load_from_disk(local_path)" in text
+        assert "Dataset.from_file" in text
+        assert 'cache_dir=os.environ.get("HF_DATASETS_CACHE")' in text
+
+    def test_agentic_staged_weka_skips_hugging_face_predownload(self):
+        """A staged Weka run must not resolve Hugging Face metadata offline."""
+        script = SCRIPTS_DIR / "agentic" / "inferencex" / "benchmarks" / "benchmark_lib.sh"
+        text = script.read_text()
+
+        assert 'if [[ -n "${AIPERF_LOCAL_WEKA_DATASET:-}" ]]' in text
+        assert "Using staged local Weka dataset; skipping Hugging Face dataset pre-download" in text
+
+    def test_agentic_benchmark_lib_accepts_local_tokenizer(self):
+        """Air-gapped AgentX runs can load tokenizer assets from a local mount."""
+        script = SCRIPTS_DIR / "agentic" / "inferencex" / "benchmarks" / "benchmark_lib.sh"
+        text = script.read_text()
+
+        assert 'local tokenizer_override="${AIPERF_TOKENIZER:-}"' in text
+        assert 'REPLAY_CMD+=" --tokenizer $tokenizer_override"' in text
+        assert "unset AIPERF_TOKENIZER" in text
+        assert 'if [[ "$tokenizer_override" == /* ]]' in text
+        assert "unset HF_HUB_OFFLINE" in text
+        assert "unset TRANSFORMERS_OFFLINE" in text
+
     def test_agentic_bench_honors_remote_frontend_endpoint(self):
         """AgentX can run on a benchmark node separate from the server."""
         script = SCRIPTS_DIR / "agentic" / "bench.sh"
@@ -979,6 +1015,15 @@ class TestAgenticRunner:
 
         assert 'PORT_FROM_ENDPOINT="${SRT_FRONTEND_PORT:-$PORT_FROM_ENDPOINT}"' in text
         assert 'ENDPOINT="http://${SRT_FRONTEND_HOST}:${PORT_FROM_ENDPOINT}"' in text
+
+    def test_agentic_bench_can_raise_warmup_output_token_count(self):
+        """One-token warmups can avoid false empty-response errors per model."""
+        script = SCRIPTS_DIR / "agentic" / "bench.sh"
+        text = script.read_text()
+
+        assert "AIPERF_AGENTIC_WARMUP_MAX_TOKENS" in text
+        assert "_WARMUP_MAX_TOKENS = {requested}" in text
+        assert "must be a positive integer" in text
 
     def test_profiling_script_supports_direct_vllm(self):
         """Direct vLLM uses its native profile control endpoints."""

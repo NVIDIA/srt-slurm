@@ -65,15 +65,21 @@ logger = logging.getLogger(__name__)
 MOONCAKE_MASTER_STARTUP_TIMEOUT_SECONDS = 600
 
 
-def _build_mooncake_master_command(install_spec: str | None = None) -> list[str]:
+def _build_mooncake_master_command(
+    install_spec: str | None = None,
+    default_kv_lease_ttl_ms: int = 10_000,
+) -> list[str]:
     """Build a Mooncake master command compatible with the pinned service image."""
+    if default_kv_lease_ttl_ms <= 0:
+        raise ValueError("Mooncake default KV lease TTL must be positive")
+
     command = [
         "mooncake_master",
         f"--port={MOONCAKE_MASTER_PORT}",
         "--enable_http_metadata_server=true",
         f"--http_metadata_server_port={MOONCAKE_HTTP_METADATA_PORT}",
         "--eviction_high_watermark_ratio=0.9",
-        "--default_kv_lease_ttl=10000",
+        f"--default_kv_lease_ttl={default_kv_lease_ttl_ms}",
         "--rpc_thread_num=16",
         "--enable_metric_reporting=true",
         f"--metrics_port={MOONCAKE_METRICS_PORT}",
@@ -280,7 +286,10 @@ class SweepOrchestrator(
         )
 
         proc = start_srun_process(
-            command=_build_mooncake_master_command(getattr(mooncake_cfg, "master_install_spec", None)),
+            command=_build_mooncake_master_command(
+                getattr(mooncake_cfg, "master_install_spec", None),
+                default_kv_lease_ttl_ms=getattr(mooncake_cfg, "default_kv_lease_ttl_ms", 10_000),
+            ),
             nodelist=[infra_node],
             output=str(mooncake_log),
             container_image=container,

@@ -137,6 +137,7 @@ backend:
   type: vllm
   mooncake_kv_store:
     container: ...                       # optional, default: job container
+    default_kv_lease_ttl_ms: 20000       # optional, master object-read lease; default 10000
     env:                                 # optional, injected on every vLLM worker (in-process Mooncake C++ knobs)
       MC_ENABLE_DEST_DEVICE_AFFINITY: "1"
       MC_STORE_CLIENT_METRIC: "1"        # default 1 (enabled)
@@ -152,6 +153,7 @@ backend:
 ### Fields
 
 - **`container`** (`str`, optional): Container image used for the `mooncake_master` srun. Defaults to the job container if unset. Useful when mooncake needs a different runtime than your worker container.
+- **`default_kv_lease_ttl_ms`** (`int`, optional): Mooncake master's object-read lease in milliseconds. Defaults to `10000`. Increase this when large cache reads can take longer than 10 seconds; a read that outlives its lease returns `LEASE_EXPIRED`.
 - **`env`** (`dict[str, str]`, optional): Pass-through env vars injected on every prefill and decode worker.
   - For **SGLang**, keys map directly to mooncake's environment variable names — see the [SGLang server_args.py](https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/environ.py) and [mooncake_store.py](https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/mem_cache/storage/mooncake_store/mooncake_store.py) for the full list.
   - For **vLLM**, this is for in-process Mooncake C++ knobs (`MC_*`) read by the transfer engine / store client. vLLM's connector itself reads configuration from `MOONCAKE_CONFIG_PATH` (the JSON rendered from `store_config:`), not from these env vars.

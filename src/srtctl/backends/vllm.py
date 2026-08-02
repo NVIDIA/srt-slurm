@@ -83,12 +83,17 @@ class VLLMMooncakeKVStoreConfig:
     model image does not bundle Mooncake, or bundles a version with a known
     transfer-engine bug.
 
+    ``default_kv_lease_ttl_ms`` controls how long the master protects objects
+    while a client is reading them. Increase it when large KV transfers can
+    exceed Mooncake's 10-second default.
+
     Example YAML::
 
         backend:
           type: vllm
           mooncake_kv_store:
             container: inferactinc/public:mk-int-20260507  # optional
+            default_kv_lease_ttl_ms: 20000
             env:                              # injected on every worker
               MC_ENABLE_DEST_DEVICE_AFFINITY: "1"   # in-process Mooncake C++ knobs
               MC_STORE_CLIENT_METRIC: "1"
@@ -103,6 +108,7 @@ class VLLMMooncakeKVStoreConfig:
 
     container: str | None = None
     master_install_spec: str | None = None
+    default_kv_lease_ttl_ms: int = 10_000
     env: dict[str, str] = field(default_factory=dict)
     # ``store_config`` values are JSON-serialized into MOONCAKE_CONFIG_PATH and
     # parsed by vLLM's ``MooncakeStoreConfig`` dataclass — fields are a mix of
