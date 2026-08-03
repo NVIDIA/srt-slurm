@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from typing import TYPE_CHECKING
 
@@ -16,7 +17,18 @@ if TYPE_CHECKING:
     from srtctl.core.schema import SrtConfig
 
 
-def _env_or_attr(config: "SrtConfig", attr: str, env_name: str, default: object | None = None) -> object | None:
+INFERENCEX_AGENTX_COMMIT = "f6c1f5b5d122bc4a62b93c9bd2919dfef68ccbcd"
+AIPERF_AGENTX_REF = "818c3a5a2922c535af6271ff296ed374e292b8e4"
+AGENTX_METHODOLOGY_DEFAULTS = {
+    "INFERENCEX_AGENTX_COMMIT": INFERENCEX_AGENTX_COMMIT,
+    "AIPERF_AGENTX_REF": AIPERF_AGENTX_REF,
+    "AIPERF_TRACE_IDLE_GAP_CAP_SECONDS": "300",
+    "AIPERF_WARMUP_REQUESTS_PER_LANE": "10",
+    "AGENTIC_WARMUP_GRACE_PERIOD": "1800",
+}
+
+
+def _env_or_attr(config: SrtConfig, attr: str, env_name: str, default: object | None = None) -> object | None:
     value = getattr(config.benchmark, attr, None)
     if value is not None:
         return value
@@ -33,7 +45,7 @@ def _derive_model_prefix(model_name: str) -> str:
     return prefix or "model"
 
 
-def _format_concurrencies(config: "SrtConfig") -> str:
+def _format_concurrencies(config: SrtConfig) -> str:
     b = config.benchmark
     if b.concurrency is not None:
         return str(b.concurrency)
@@ -70,13 +82,14 @@ class AgenticRunner(AIPerfBenchmarkRunner):
 
         duration = _env_or_attr(config, "duration", "DURATION", 3600)
         try:
-            if int(duration) <= 0:
+            if int(str(duration)) <= 0:
                 errors.append(f"benchmark.duration must be positive, got: {duration}")
         except (TypeError, ValueError):
             errors.append(f"benchmark.duration must be an integer, got: {duration}")
 
         kv_offloading = str(_env_or_attr(config, "kv_offloading", "KV_OFFLOADING", "none") or "none")
         kv_backend = str(_env_or_attr(config, "kv_offload_backend", "KV_OFFLOAD_BACKEND", "") or "")
+        kv_backend_metadata_raw = b.env.get("KV_OFFLOAD_BACKEND_METADATA")
         total_cpu_dram = _env_or_attr(config, "total_cpu_dram_gb", "TOTAL_CPU_DRAM_GB", None)
 
         if kv_offloading not in {"none", "dram"}:
@@ -87,13 +100,57 @@ class AgenticRunner(AIPerfBenchmarkRunner):
             if kv_backend in {"", "none"}:
                 errors.append("benchmark.kv_offload_backend is required when kv_offloading=dram")
             try:
-                if int(total_cpu_dram or 0) <= 0:
+                if int(str(total_cpu_dram or 0)) <= 0:
                     errors.append("benchmark.total_cpu_dram_gb must be positive when kv_offloading=dram")
             except (TypeError, ValueError):
                 errors.append(f"benchmark.total_cpu_dram_gb must be an integer, got: {total_cpu_dram}")
 
+        kv_backend_metadata = None
+        if kv_backend_metadata_raw not in (None, "", "null"):
+            try:
+                kv_backend_metadata = json.loads(str(kv_backend_metadata_raw))
+            except json.JSONDecodeError:
+                errors.append("benchmark.env.KV_OFFLOAD_BACKEND_METADATA must contain valid JSON")
+            else:
+                valid_keys = isinstance(kv_backend_metadata, dict) and set(kv_backend_metadata) in (
+                    {"name"},
+                    {"name", "version"},
+                )
+                valid_values = valid_keys and all(
+                    isinstance(value, str) and value for value in kv_backend_metadata.values()
+                )
+                if not valid_values:
+                    errors.append(
+                        "benchmark.env.KV_OFFLOAD_BACKEND_METADATA must contain a non-empty name and optional version"
+                    )
+                    kv_backend_metadata = None
+
+        if kv_offloading == "none" and kv_backend_metadata is not None:
+            errors.append("benchmark.env.KV_OFFLOAD_BACKEND_METADATA must be empty when kv_offloading=none")
+        elif kv_offloading == "dram":
+            if kv_backend_metadata is None:
+                errors.append("benchmark.env.KV_OFFLOAD_BACKEND_METADATA is required when kv_offloading=dram")
+            elif kv_backend_metadata["name"] != kv_backend:
+                errors.append("benchmark.env.KV_OFFLOAD_BACKEND_METADATA.name must match kv_offload_backend")
+
         if any(key.replace("_", "-") == "num-dataset-entries" for key in b.aiperf_args):
-            errors.append("Do not set benchmark.aiperf_args.num-dataset-entries for AgentX; Weka loaders use all traces")
+            errors.append(
+                "Do not set benchmark.aiperf_args.num-dataset-entries for AgentX; "
+                "the InferenceX ToT runner fixes the full-corpus ceiling at 393"
+            )
+
+        retired_overrides = {
+            "AIPERF_AGENTIC_CACHE_WARMUP_DURATION": "duration-based cache warmup",
+            "AIPERF_AGENTIC_WARMUP_MAX_TOKENS": "warmup token-count patch",
+        }
+        for env_name, description in retired_overrides.items():
+            if env_name in b.env:
+                errors.append(f"Remove benchmark.env.{env_name}; InferenceX ToT no longer uses the {description}")
+
+        for env_name, expected in AGENTX_METHODOLOGY_DEFAULTS.items():
+            configured = b.env.get(env_name)
+            if configured is not None and str(configured) != expected:
+                errors.append(f"benchmark.env.{env_name} must be {expected} to match InferenceX ToT")
 
         return errors
 
@@ -104,7 +161,9 @@ class AgenticRunner(AIPerfBenchmarkRunner):
     ) -> list[str]:
         endpoint = f"http://localhost:{runtime.frontend_port}"
         model_name = config.served_model_name or config.model.path
-        model_prefix = str(_env_or_attr(config, "model_prefix", "MODEL_PREFIX", None) or _derive_model_prefix(model_name))
+        model_prefix = str(
+            _env_or_attr(config, "model_prefix", "MODEL_PREFIX", None) or _derive_model_prefix(model_name)
+        )
         framework = config.benchmark.env.get("FRAMEWORK")
         if not framework:
             framework = f"dynamo-{config.backend_type}" if config.frontend.type == "dynamo" else config.backend_type
@@ -134,4 +193,7 @@ class AgenticRunner(AIPerfBenchmarkRunner):
 
     def get_environment(self, config: SrtConfig, runtime: RuntimeContext) -> dict[str, str]:
         del runtime
-        return dict(config.benchmark.env)
+        environment = dict(config.benchmark.env)
+        for name, value in AGENTX_METHODOLOGY_DEFAULTS.items():
+            environment.setdefault(name, value)
+        return environment

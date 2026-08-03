@@ -1,4 +1,4 @@
 repository=https://github.com/SemiAnalysisAI/aiperf.git
-commit=208125aca87a438e43e56517e8a3e5096f8c9281
-archive_sha256=3a97a0dc87193345e8eabb4a793c3297427c1bc081bf5c4cc4bc6d75b9326b5e
-notes=AgentX client with native Dynamo session headers, 10-second global system-idle cap, and burst warmup/profiling phase starts.
+commit=818c3a5a2922c535af6271ff296ed374e292b8e4
+archive_sha256=976d72f420977561b333b731950363eb7abbaa5776def826857cd94453fcac74
+notes=InferenceX ToT AgentX client with flattened warmup handoff timing and persistent system/trajectory idle watchdogs.

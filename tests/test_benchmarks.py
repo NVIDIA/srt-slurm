@@ -978,7 +978,7 @@ class TestAgenticRunner:
         ]
 
     def test_validate_rejects_num_dataset_entries(self):
-        """AgentX should let Weka loaders use the full corpus."""
+        """AgentX owns the full-corpus ceiling used by InferenceX ToT."""
         from srtctl.benchmarks.agentic import AgenticRunner
         from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
 
@@ -1001,24 +1001,19 @@ class TestAgenticRunner:
         assert "AIPERF_SYNTHESIS_MAX_OSL" in text
         assert "REPLAY_CMD+=\" --synthesis-max-osl $AIPERF_SYNTHESIS_MAX_OSL\"" in text
 
-    def test_agentic_benchmark_lib_exposes_cache_warmup_and_drain_grace(self):
-        """Canonical configs can align AIPerf cache pressure and drain phases."""
+    def test_agentic_benchmark_lib_matches_tot_warmup_and_drain_grace(self):
+        """Canonical configs use ToT's request warmup and 30-minute drain grace."""
         script = SCRIPTS_DIR / "agentic" / "inferencex" / "benchmarks" / "benchmark_lib.sh"
         text = script.read_text()
 
-        assert "AIPERF_AGENTIC_CACHE_WARMUP_DURATION" in text
-        assert (
-            'REPLAY_CMD+=" --agentic-cache-warmup-duration '
-            '$AIPERF_AGENTIC_CACHE_WARMUP_DURATION"' in text
-        )
+        assert "AIPERF_AGENTIC_CACHE_WARMUP_DURATION" not in text
+        assert 'local warmup_requests_per_lane="${AIPERF_WARMUP_REQUESTS_PER_LANE:-10}"' in text
+        assert 'REPLAY_CMD+=" --warmup-requests-per-lane $warmup_requests_per_lane"' in text
         assert "AGENTIC_WARMUP_GRACE_PERIOD" in text
-        assert (
-            'REPLAY_CMD+=" --warmup-grace-period '
-            '$AGENTIC_WARMUP_GRACE_PERIOD"' in text
-        )
+        assert 'REPLAY_CMD+=" --warmup-grace-period ${AGENTIC_WARMUP_GRACE_PERIOD:-1800}"' in text
 
-    def test_agentic_benchmark_lib_exposes_pr31_runtime_tree_idle_cap(self):
-        """PR #31 trace-idle watchdog is opt-in and never silently selected."""
+    def test_agentic_benchmark_lib_uses_tot_runtime_tree_idle_cap(self):
+        """ToT applies the 300-second runtime cap to each trajectory tree."""
         script = SCRIPTS_DIR / "agentic" / "inferencex" / "benchmarks" / "benchmark_lib.sh"
         text = script.read_text()
 
@@ -1028,23 +1023,24 @@ class TestAgenticRunner:
             '$AIPERF_TRACE_IDLE_GAP_CAP_SECONDS"' in text
         )
 
-    def test_agentic_dynamo_conversation_routing_is_opt_in(self):
-        """KV routing must not silently enable Dynamo conversation affinity."""
+    def test_agentic_dynamo_conversation_routing_matches_tot(self):
+        """The session header suppresses the retired Dynamo CLI routing mode."""
         script = SCRIPTS_DIR / "agentic" / "inferencex" / "benchmarks" / "benchmark_lib.sh"
         text = script.read_text()
 
-        assert "AGENTX_DYNAMO_CONV_AWARE" in text
+        assert "AIPERF_USE_DYNAMO_CONV_AWARE_ROUTING" in text
+        assert "AIPERF_HTTP_X_DYNAMO_SESSION_ID_FROM_CORRELATION_ID" in text
         assert 'REPLAY_CMD+=" --use-dynamo-conv-aware-routing"' in text
-        assert '"${AGENTX_DYNAMO_CONV_AWARE:-0}" == "1"' in text
-        assert '"${AGENTX_DYNAMO_CONV_AWARE:-false}" == "true"' in text
+        assert '"${AIPERF_USE_DYNAMO_CONV_AWARE_ROUTING:-1}" != "0"' in text
+        assert '"${AIPERF_HTTP_X_DYNAMO_SESSION_ID_FROM_CORRELATION_ID:-false}" != "true"' in text
 
-    def test_agentic_defaults_to_pr31_and_retains_historical_offline_bundle(self):
-        """Future runs use PR #31 while the old bundle remains reproducible."""
+    def test_agentic_defaults_to_inferencex_tot_and_bundles_its_aiperf_pin(self):
+        """Future runs and offline runs use the same audited AIPerf revision."""
         script = SCRIPTS_DIR / "agentic" / "bench.sh"
         text = script.read_text()
 
-        assert "ed057829b78d25d79ce6f3b87763d48fe50363f5" in text
-        assert "208125aca87a438e43e56517e8a3e5096f8c9281" in text
+        assert "f6c1f5b5d122bc4a62b93c9bd2919dfef68ccbcd" in text
+        assert "818c3a5a2922c535af6271ff296ed374e292b8e4" in text
         assert "AGENTX_DYNAMO_HEADER_AFFINITY" not in text
         assert "Verified AIPerf AgentX PR #31 policy" in text
         assert "src/aiperf/config/phases.py" in text
@@ -1060,39 +1056,43 @@ class TestAgenticRunner:
             / "aiperf-agentx-v1-src.manifest"
         )
         manifest_text = manifest.read_text()
-        assert "commit=208125aca87a438e43e56517e8a3e5096f8c9281" in manifest_text
+        assert "commit=818c3a5a2922c535af6271ff296ed374e292b8e4" in manifest_text
         assert (
             "archive_sha256="
-            "3a97a0dc87193345e8eabb4a793c3297427c1bc081bf5c4cc4bc6d75b9326b5e"
+            "976d72f420977561b333b731950363eb7abbaa5776def826857cd94453fcac74"
             in manifest_text
         )
         with tarfile.open(bundle, "r:gz") as archive:
-            environment = archive.extractfile("src/aiperf/common/environment.py")
-            transport = archive.extractfile("src/aiperf/transports/base_transports.py")
+            environment = archive.extractfile("./src/aiperf/common/environment.py")
+            transport = archive.extractfile("./src/aiperf/transports/base_transports.py")
             scenario = archive.extractfile(
-                "src/aiperf/common/scenario/inferencex_agentx_mvp.py"
+                "./src/aiperf/common/scenario/inferencex_agentx_mvp.py"
             )
-            loadgen = archive.extractfile("src/aiperf/common/config/loadgen_config.py")
+            phases = archive.extractfile("./src/aiperf/config/phases.py")
+            dependencies = archive.extractfile("./src/aiperf/timing/replay_dependencies.py")
+            replay = archive.extractfile("./src/aiperf/timing/strategies/agentic_replay.py")
             assert environment is not None
             assert transport is not None
             assert scenario is not None
-            assert loadgen is not None
+            assert phases is not None
+            assert dependencies is not None
+            assert replay is not None
             environment_text = environment.read().decode()
             transport_text = transport.read().decode()
             scenario_text = scenario.read().decode()
-            loadgen_text = loadgen.read().decode()
+            phases_text = phases.read().decode()
+            dependencies_text = dependencies.read().decode()
+            replay_text = replay.read().decode()
 
         assert "X_DYNAMO_SESSION_ID_FROM_CORRELATION_ID" in environment_text
         assert 'headers["X-Dynamo-Session-ID"] = request_info.x_correlation_id' in transport_text
         assert 'headers["X-Dynamo-Parent-Session-ID"]' in transport_text
         assert "system_idle_gap_cap_seconds=10.0" in scenario_text
-        assert "forbid_trace_idle_gap_cap=True" in scenario_text
         assert "forbid_inter_turn_delay_cap=True" in scenario_text
-        assert re.search(
-            r"burst_phase_starts:.*?\]\s*=\s*True",
-            loadgen_text,
-            re.DOTALL,
-        )
+        assert re.search(r"burst_phase_starts:.*?Field\(\s*default=False,", phases_text, re.DOTALL)
+        assert "idle_cap_expired" in dependencies_text
+        assert "_handoff_replay_offset_ms" in replay_text
+        assert "self.scheduler.set_drain_observer(self.enforce_system_idle_cap)" in replay_text
 
     def test_agentic_bench_patches_weka_subagent_osl_cap(self):
         """bench.sh keeps Weka subagent child turns under the synthesis OSL cap."""
@@ -1128,8 +1128,8 @@ class TestAgenticRunner:
         script = SCRIPTS_DIR / "agentic" / "inferencex" / "benchmarks" / "benchmark_lib.sh"
         text = script.read_text()
 
-        assert 'if [[ -n "${AIPERF_LOCAL_WEKA_DATASET:-}" ]]' in text
-        assert "Using staged local Weka dataset; skipping Hugging Face dataset pre-download" in text
+        assert 'if [ -n "${AIPERF_LOCAL_WEKA_DATASET:-}" ]' in text
+        assert "Using staged Weka dataset" in text
 
     def test_agentic_benchmark_lib_accepts_local_tokenizer(self):
         """Air-gapped AgentX runs can load tokenizer assets from a local mount."""
@@ -1151,14 +1151,29 @@ class TestAgenticRunner:
         assert 'PORT_FROM_ENDPOINT="${SRT_FRONTEND_PORT:-$PORT_FROM_ENDPOINT}"' in text
         assert 'ENDPOINT="http://${SRT_FRONTEND_HOST}:${PORT_FROM_ENDPOINT}"' in text
 
-    def test_agentic_bench_can_raise_warmup_output_token_count(self):
-        """One-token warmups can avoid false empty-response errors per model."""
-        script = SCRIPTS_DIR / "agentic" / "bench.sh"
-        text = script.read_text()
+    def test_agentic_rejects_retired_warmup_overrides(self):
+        """Legacy duration and token-count patches cannot change ToT methodology."""
+        from srtctl.benchmarks.agentic import AgenticRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
 
-        assert "AIPERF_AGENTIC_WARMUP_MAX_TOKENS" in text
-        assert "_WARMUP_MAX_TOKENS = {requested}" in text
-        assert "must be a positive integer" in text
+        runner = AgenticRunner()
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="b300"),
+            benchmark=BenchmarkConfig(
+                type="agentic",
+                concurrency=1,
+                env={
+                    "AIPERF_AGENTIC_CACHE_WARMUP_DURATION": "600",
+                    "AIPERF_AGENTIC_WARMUP_MAX_TOKENS": "4",
+                },
+            ),
+        )
+
+        errors = runner.validate_config(config)
+        assert any("AIPERF_AGENTIC_CACHE_WARMUP_DURATION" in error for error in errors)
+        assert any("AIPERF_AGENTIC_WARMUP_MAX_TOKENS" in error for error in errors)
 
     def test_profiling_script_supports_direct_vllm(self):
         """Direct vLLM uses its native profile control endpoints."""

@@ -28,14 +28,11 @@ if [[ -n "${SRT_FRONTEND_HOST:-}" ]]; then
 fi
 export PORT="${PORT:-$PORT_FROM_ENDPOINT}"
 
-INFERENCEX_AGENTX_COMMIT="${INFERENCEX_AGENTX_COMMIT:-303669b0e16aa6a0c600b8a68b4f91b973a34127}"
-# SemiAnalysisAI/aiperf#31 preserves recorded AgentX timing and spawn/join
-# state across warmup handoff while applying any explicit trace-idle cap at
-# runtime to the complete root-plus-subagent trajectory tree.
-AIPERF_AGENTX_REF="${AIPERF_AGENTX_REF:-ed057829b78d25d79ce6f3b87763d48fe50363f5}"
-# Keep the older source bundle as an offline fallback only for configs that
-# explicitly request its exact historical revision.
-BUNDLED_AIPERF_REF="208125aca87a438e43e56517e8a3e5096f8c9281"
+INFERENCEX_AGENTX_COMMIT="${INFERENCEX_AGENTX_COMMIT:-f6c1f5b5d122bc4a62b93c9bd2919dfef68ccbcd}"
+# InferenceX ToT's AIPerf pin includes the flattened warmup handoff clock and
+# keeps the system/trajectory idle watchdogs active across phase barriers.
+AIPERF_AGENTX_REF="${AIPERF_AGENTX_REF:-818c3a5a2922c535af6271ff296ed374e292b8e4}"
+BUNDLED_AIPERF_REF="818c3a5a2922c535af6271ff296ed374e292b8e4"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUNDLED_INFMAX_WORKSPACE="${AGENTX_BUNDLED_INFMAX_WORKSPACE:-$SCRIPT_DIR/inferencex}"
 BUNDLED_AIPERF_TARBALL="${AGENTX_BUNDLED_AIPERF_TARBALL:-$SCRIPT_DIR/third_party/aiperf-agentx-v1-src.tgz}"
@@ -218,13 +215,20 @@ if phases_path.is_file():
         raise SystemExit(
             "ERROR: stale AIPerf AgentX client: trace idle cap is still a loader-time forbidden option"
         )
-    if "root_idle_gap_cap_seconds" not in dependencies:
+    if "root_idle_gap_cap_seconds" not in dependencies or "idle_cap_expired" not in dependencies:
         raise SystemExit(
-            "ERROR: stale AIPerf AgentX client: runtime trajectory-tree idle watchdog is missing"
+            "ERROR: stale AIPerf AgentX client: persistent trajectory-tree idle watchdog is missing"
         )
-    if "spread = not self._burst_phase_starts" not in replay:
+    required_replay = (
+        "spread = not self._burst_phase_starts",
+        "self.scheduler.set_drain_observer(self.enforce_system_idle_cap)",
+        "_handoff_replay_offset_ms",
+    )
+    missing_replay = [item for item in required_replay if item not in replay]
+    if missing_replay:
         raise SystemExit(
-            "ERROR: stale AIPerf AgentX client: globally anchored spread-phase startup is missing"
+            "ERROR: stale AIPerf AgentX client: missing ToT replay behavior "
+            + ", ".join(missing_replay)
         )
     burst_field = re.search(
         r"burst_phase_starts:.*?Field\(\s*default=False,",
@@ -265,55 +269,6 @@ else:
     )
 PY
 
-# AIPerf's cache-pressure warmup intentionally decodes only one token per
-# request.  Some models can emit a special token that decodes to an empty
-# string, even though the server reports a successful completion token.  That
-# makes an otherwise healthy warmup record look like an empty inference result.
-# Keep upstream's one-token default, but allow model-specific studies to ask
-# for a few tokens so at least one visible token is overwhelmingly likely.
-if [[ -n "${AIPERF_AGENTIC_WARMUP_MAX_TOKENS:-}" ]]; then
-  if [[ ! "$AIPERF_AGENTIC_WARMUP_MAX_TOKENS" =~ ^[1-9][0-9]*$ ]]; then
-    echo "ERROR: AIPERF_AGENTIC_WARMUP_MAX_TOKENS must be a positive integer" >&2
-    exit 1
-  fi
-
-  AIPERF_AGENTIC_STRATEGY="$AIPERF_ROOT/src/aiperf/timing/strategies/agentic_replay.py"
-  if [[ ! -f "$AIPERF_AGENTIC_STRATEGY" ]]; then
-    echo "ERROR: AgentX warmup strategy was not found: $AIPERF_AGENTIC_STRATEGY" >&2
-    exit 1
-  fi
-
-  python3 - "$AIPERF_AGENTIC_STRATEGY" "$AIPERF_AGENTIC_WARMUP_MAX_TOKENS" <<'PY'
-from pathlib import Path
-import re
-import sys
-
-path = Path(sys.argv[1])
-requested = int(sys.argv[2])
-text = path.read_text()
-pattern = r"^_WARMUP_MAX_TOKENS = ([1-9][0-9]*)$"
-matches = re.findall(pattern, text, flags=re.MULTILINE)
-if len(matches) != 1:
-    raise SystemExit(
-        f"ERROR: expected exactly one _WARMUP_MAX_TOKENS assignment in {path}, "
-        f"found {len(matches)}"
-    )
-current = int(matches[0])
-if current != requested:
-    text, count = re.subn(
-        pattern,
-        f"_WARMUP_MAX_TOKENS = {requested}",
-        text,
-        count=1,
-        flags=re.MULTILINE,
-    )
-    if count != 1:
-        raise SystemExit(f"ERROR: failed to update warmup token count in {path}")
-    path.write_text(text)
-print(f"AgentX warmup max tokens: {requested} (source default was {current})")
-PY
-fi
-
 if [[ -f "${AIPERF_DIR:-$WORKSPACE_ROOT/utils/aiperf}/pyproject.toml" && "${AIPERF_ALLOW_GITHUB_TRANSFORMERS:-0}" != "1" ]]; then
   AIPERF_TRANSFORMERS_SPEC="${AIPERF_TRANSFORMERS_SPEC:-transformers>=4.53.0,<5}"
   echo "Using AIPerf transformers dependency override: ${AIPERF_TRANSFORMERS_SPEC}"
@@ -330,11 +285,6 @@ export INFMAX_CONTAINER_WORKSPACE="$WORKSPACE_ROOT"
 export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-${WORKSPACE_ROOT}/hf-datasets}"
 mkdir -p "$HF_DATASETS_CACHE"
 echo "Hugging Face dataset cache: ${HF_DATASETS_CACHE}"
-
-# InferenceX commit 303669b hardcodes --num-dataset-entries 393 in the helper.
-# AIPerf's Weka loaders load the full corpus when this flag is omitted, which
-# is the desired AgentX behavior here.
-sed -i '/REPLAY_CMD+=" --num-dataset-entries /d' "$WORKSPACE_ROOT/benchmarks/benchmark_lib.sh"
 
 if [[ -n "${AIPERF_SYNTHESIS_MAX_OSL:-}" ]]; then
   AIPERF_ROOT="${AIPERF_DIR:-$WORKSPACE_ROOT/utils/aiperf}"

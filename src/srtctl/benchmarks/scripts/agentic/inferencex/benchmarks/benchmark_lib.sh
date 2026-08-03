@@ -371,6 +371,7 @@ run_benchmark_serving() {
     local trust_remote_code=false
     local server_pid=""
     local tokenizer=""
+    local tokenizer_mode=""
 
     while [[ $# -gt 0 ]]; do
         case $1 in
@@ -441,6 +442,10 @@ run_benchmark_serving() {
                 ;;
             --tokenizer)
                 tokenizer="$2"
+                shift 2
+                ;;
+            --tokenizer-mode)
+                tokenizer_mode="$2"
                 shift 2
                 ;;
             *)
@@ -552,6 +557,10 @@ run_benchmark_serving() {
 
     if [[ -n "$tokenizer" ]]; then
         benchmark_cmd+=(--tokenizer "$tokenizer")
+    fi
+
+    if [[ -n "$tokenizer_mode" ]]; then
+        benchmark_cmd+=(--tokenizer-mode "$tokenizer_mode")
     fi
 
     # Run benchmark with optional server monitoring
@@ -713,78 +722,15 @@ _install_lm_eval_deps() {
     fi
 }
 
-# Patch lm-eval filters to be robust to empty strings via sitecustomize
+_eval_patches_dir() {
+    cd "$(dirname "${BASH_SOURCE[0]}")/../utils/evals/patches" && pwd
+}
+
 _patch_lm_eval() {
     local patch_dir
     patch_dir="$(mktemp -d)"
-    cat > "$patch_dir/sitecustomize.py" <<'PY'
-# --- Patch LocalChatCompletion.parse_generations to handle empty content with reasoning_content ---
-import re, sys, unicodedata, json
-from lm_eval.filters import extraction as ex
-from lm_eval.models.openai_completions import LocalChatCompletion as _LCC
-
-def _le_parse_generations(outputs, **kwargs):
-      res = []
-      if not isinstance(outputs, list):
-          outputs = [outputs]
-      for out in (outputs or []):
-          try:
-              choices = out.get("choices", [])
-              tmp = ["" for _ in choices]
-              for choice in choices:
-                  idx = choice.get("index", 0)
-                  msg = (choice.get("message") or {})
-                  content = msg.get("content")
-                  if content in (None, "", []):
-                      content = msg.get("reasoning_content") or ""
-                  tmp[idx] = content
-          except Exception:
-              tmp = [""]
-          res.extend(tmp)
-      return res
-
-# Keep staticmethod semantics
-_LCC.parse_generations = staticmethod(_le_parse_generations)
-
-# --- Patch TemplateAPI.apply_chat_template to avoid injecting "type": "text" for TRT ---
-try:
-    from lm_eval.models import api_models as _api_models
-    _TemplateAPI = _api_models.TemplateAPI
-    _JsonChatStr = _api_models.JsonChatStr
-except Exception:
-    _TemplateAPI = None
-    _JsonChatStr = None
-
-if _TemplateAPI is not None and _JsonChatStr is not None:
-    _orig_apply_chat_template = _TemplateAPI.apply_chat_template
-
-    def _patched_apply_chat_template(
-        self,
-        chat_history,
-        add_generation_prompt: bool = True,
-    ):
-        """Applies a chat template to a list of chat history between user and model."""
-        if self.tokenizer_backend == "huggingface" and self.tokenized_requests:
-            return self.tokenizer.apply_chat_template(
-                chat_history,
-                tokenize=False,
-                add_generation_prompt=add_generation_prompt,
-                continue_final_message=not add_generation_prompt,
-            )
-        elif self.tokenizer_backend == "remote" and self.tokenized_requests:
-            return chat_history
-        else:
-            # NOTE: we no longer inject `"type": "text"` when tokenizer is None / non-HF
-            return _JsonChatStr(
-                json.dumps(
-                    [{**item} for item in chat_history],
-                    ensure_ascii=False,
-                )
-            )
-
-    _TemplateAPI.apply_chat_template = _patched_apply_chat_template
-PY
-    export PYTHONPATH="${patch_dir}:${PYTHONPATH:-}"
+    cp "$(_eval_patches_dir)/lm_eval_sitecustomize.py" "$patch_dir/sitecustomize.py"
+    export PYTHONPATH="${patch_dir}${PYTHONPATH:+:${PYTHONPATH}}"
 }
 
 get_native_max_context_length() {
@@ -855,18 +801,44 @@ run_lm_eval() {
     local temperature=0
     local top_p=1
     local concurrent_requests="${EVAL_CONCURRENT_REQUESTS:-${CONC:-64}}"
+    # SWE-bench adds a repo-local task YAML, so pass its task directory via
+    # --include_path. Full-dataset runs remain the default; --limit is passed
+    # only when EVAL_LIMIT explicitly requests a smaller smoke-test slice.
+    local eval_limit="${EVAL_LIMIT:-}"
+    local include_path="${EVAL_INCLUDE_PATH:-}"
 
     while [[ $# -gt 0 ]]; do
-        case $1 in
-            --port)           port="$2"; shift 2 ;;
-            --task)           tasks_dir="$2"; shift 2 ;;
-            --results-dir)    results_dir="$2"; shift 2 ;;
-            --gen-max-tokens) eval_context_len="$2"; shift 2 ;;
-            --temperature)    temperature="$2"; shift 2 ;;
-            --top-p)          top_p="$2"; shift 2 ;;
-            *)                echo "Unknown parameter: $1"; return 1 ;;
+        case "$1" in
+            --port|--task|--results-dir|--gen-max-tokens|--temperature|--top-p)
+                if [[ $# -lt 2 || -z "${2:-}" || "${2:-}" == --* ]]; then
+                    echo "ERROR: $1 requires a value" >&2
+                    return 2
+                fi
+                case "$1" in
+                    --port)           port="$2" ;;
+                    --task)           tasks_dir="$2" ;;
+                    --results-dir)    results_dir="$2" ;;
+                    --gen-max-tokens) eval_context_len="$2" ;;
+                    --temperature)    temperature="$2" ;;
+                    --top-p)          top_p="$2" ;;
+                esac
+                shift 2
+                ;;
+            *)
+                echo "Unknown parameter: $1" >&2
+                return 2
+                ;;
         esac
     done
+
+    # Serving images may use a different WORKDIR.
+    local _repo_root
+    _repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    if [[ "$tasks_dir" == *.yaml && "$tasks_dir" != /* \
+          && ! -f "$tasks_dir" && -f "$_repo_root/$tasks_dir" ]]; then
+        echo "run_lm_eval: anchoring relative task '$tasks_dir' to repo root -> $_repo_root/$tasks_dir"
+        tasks_dir="$_repo_root/$tasks_dir"
+    fi
 
     if [ "${INFERENCEX_LM_EVAL_RUNTIME_READY:-false}" != "true" ]; then
         _install_lm_eval_deps
@@ -891,11 +863,13 @@ run_lm_eval() {
     export EVAL_RESULT_DIR="$results_dir"
     set -x
     python3 -m lm_eval --model local-chat-completions --apply_chat_template \
+      ${include_path:+--include_path "$include_path"} \
       --tasks "${tasks_dir}" \
       --output_path "${results_dir}" \
       --log_samples \
       --model_args "model=${MODEL_NAME},base_url=${openai_chat_base},api_key=${OPENAI_API_KEY},eos_string=</s>,max_retries=5,num_concurrent=${concurrent_requests},timeout=1800,tokenized_requests=False,max_length=${eval_context_len}" \
-      --gen_kwargs "max_tokens=${max_output_tokens},temperature=${temperature},top_p=${top_p}"
+      --gen_kwargs "max_tokens=${max_output_tokens},temperature=${temperature},top_p=${top_p}" \
+      ${eval_limit:+--limit "$eval_limit"}
     local eval_exit=$?
     set +x
     return $eval_exit
@@ -1025,9 +999,15 @@ append_lm_eval_summary() {
     fi
 
     local prefill_tp="${PREFILL_TP:-${TP:-1}}"
+    local prefill_pp="${PREFILL_PP_SIZE:-${PP_SIZE:-1}}"
+    local prefill_dcp_size="${PREFILL_DCP_SIZE:-${DCP_SIZE:-1}}"
+    local prefill_pcp_size="${PREFILL_PCP_SIZE:-${PCP_SIZE:-1}}"
     local prefill_ep="${PREFILL_EP:-${EP_SIZE:-1}}"
     local prefill_num_workers="${PREFILL_NUM_WORKERS:-1}"
     local decode_tp="${DECODE_TP:-${TP:-1}}"
+    local decode_pp="${DECODE_PP_SIZE:-${PP_SIZE:-1}}"
+    local decode_dcp_size="${DECODE_DCP_SIZE:-${DCP_SIZE:-1}}"
+    local decode_pcp_size="${DECODE_PCP_SIZE:-${PCP_SIZE:-1}}"
     local decode_ep="${DECODE_EP:-${EP_SIZE:-1}}"
     local decode_num_workers="${DECODE_NUM_WORKERS:-1}"
 
@@ -1052,7 +1032,7 @@ append_lm_eval_summary() {
     local fw="${FRAMEWORK:-}"
     local prec="${PRECISION:-}"
     if [[ -z "$fw" || -z "$prec" ]]; then
-        if [[ -n "${RESULT_FILENAME}" ]]; then
+        if [[ -n "${RESULT_FILENAME:-}" ]]; then
             # Extract the two fields immediately before "_tp"
             # Handles arbitrary underscores in exp_name by matching from the end
             local parsed
@@ -1072,16 +1052,25 @@ append_lm_eval_summary() {
   "is_multinode": ${is_multinode_json},
   "framework": "${fw:-unknown}",
   "precision": "${prec:-unknown}",
-  "spec_decoding": "${SPEC_DECODING}",
+  "spec_decoding": "${SPEC_DECODING:-}",
   "tp": ${TP:-1},
+  "pp": ${PP_SIZE:-1},
+  "dcp_size": ${DCP_SIZE:-1},
+  "pcp_size": ${PCP_SIZE:-1},
   "conc": ${metadata_conc},
 ${batch_metadata}  "ep": ${EP_SIZE:-1},
   "dp_attention": ${dp_json},
   "prefill_tp": ${prefill_tp},
+  "prefill_pp": ${prefill_pp},
+  "prefill_dcp_size": ${prefill_dcp_size},
+  "prefill_pcp_size": ${prefill_pcp_size},
   "prefill_ep": ${prefill_ep},
   "prefill_dp_attention": ${prefill_dp_json},
   "prefill_num_workers": ${prefill_num_workers},
   "decode_tp": ${decode_tp},
+  "decode_pp": ${decode_pp},
+  "decode_dcp_size": ${decode_dcp_size},
+  "decode_pcp_size": ${decode_pcp_size},
   "decode_ep": ${decode_ep},
   "decode_dp_attention": ${decode_dp_json},
   "decode_num_workers": ${decode_num_workers},
@@ -1119,20 +1108,367 @@ META
     echo "Moved eval artifacts to: $(pwd)"
 }
 
+
+_install_swebench_agent_deps() {
+    python3 -m pip install -q --no-cache-dir --break-system-packages \
+        'mini-swe-agent==2.4.5' 'swe-rex[modal]==1.4.0' || true
+    _patch_swebench_agent || \
+        echo "WARN: mini-swe-agent/swe-rex patches failed; sandbox cleanup, submission fallback, or non-interactive stdin handling may be degraded" >&2
+}
+
+_patch_swebench_agent() {
+    python3 "$(_eval_patches_dir)/patch_swebench_agent.py"
+}
+
+_install_swebench_deps() {
+    # Patch anchors depend on SWE-bench 4.1.0.
+    python3 -m pip install -q --no-cache-dir --break-system-packages 'swebench==4.1.0' || true
+    if [ "${SWEBENCH_USE_MODAL:-false}" = "true" ]; then
+        python3 -m pip install -q --no-cache-dir --break-system-packages modal || true
+        _patch_swebench_scoring || \
+            echo "WARN: scoring patches failed; eval sandboxes will reserve 4 CPUs and idle-bill to their timeout" >&2
+    fi
+}
+
+_patch_swebench_scoring() {
+    python3 "$(_eval_patches_dir)/patch_swebench_scoring.py"
+}
+
+# SWE-bench requires ~/.modal.toml despite env credentials.
+_ensure_modal_credentials() {
+    if [ "${SWEBENCH_USE_MODAL:-false}" != "true" ]; then return 0; fi
+    # CI secrets may include whitespace or quotes.
+    if [ -n "${MODAL_TOKEN_ID:-}" ]; then
+        MODAL_TOKEN_ID=$(printf %s "$MODAL_TOKEN_ID" | tr -d "[:space:]\"'")
+        export MODAL_TOKEN_ID
+    fi
+    if [ -n "${MODAL_TOKEN_SECRET:-}" ]; then
+        MODAL_TOKEN_SECRET=$(printf %s "$MODAL_TOKEN_SECRET" | tr -d "[:space:]\"'")
+        export MODAL_TOKEN_SECRET
+    fi
+    if [ -f "${HOME:-}/.modal.toml" ]; then return 0; fi
+    if [ -n "${MODAL_TOKEN_ID:-}" ] && [ -n "${MODAL_TOKEN_SECRET:-}" ]; then
+        # Slurm may provide an unwritable HOME.
+        if [ -z "${HOME:-}" ] || ! mkdir -p "$HOME" 2>/dev/null || [ ! -w "$HOME" ]; then
+            export HOME=/tmp/inferencex-modal-home
+            mkdir -p "$HOME"
+            echo "[swebench] HOME remapped to $HOME for Modal credentials (original path missing or not writable)"
+        fi
+        printf '[default]\ntoken_id = "%s"\ntoken_secret = "%s"\nactive = true\n' \
+            "$MODAL_TOKEN_ID" "$MODAL_TOKEN_SECRET" > "$HOME/.modal.toml"
+        chmod 600 "$HOME/.modal.toml"
+        echo "[swebench] wrote ~/.modal.toml from MODAL_TOKEN_ID/MODAL_TOKEN_SECRET env"
+    else
+        echo "WARN: SWEBENCH_USE_MODAL=true but no ~/.modal.toml and no MODAL_TOKEN_ID/MODAL_TOKEN_SECRET env; Modal scoring will fail credential validation" >&2
+    fi
+}
+
+
+_run_swebench_agentic_generation() {
+    local gen_dir="$1"; shift
+    local port="${PORT:-8888}"
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --port) port="$2"; shift 2 ;;
+            *)      shift ;;
+        esac
+    done
+
+    _install_swebench_agent_deps
+    _ensure_modal_credentials
+
+    # minisweagent logs before its config path.
+    local default_cfg
+    default_cfg=$(python3 -c 'import minisweagent, os; print(os.path.join(os.path.dirname(minisweagent.__file__), "config/benchmarks/swebench.yaml"))' 2>/dev/null | tail -n 1)
+    if [ ! -f "$default_cfg" ]; then
+        echo "ERROR: could not locate mini-swe-agent default swebench config (got: '${default_cfg}')" >&2
+        return 1
+    fi
+
+    local cfg="$gen_dir/mini_swebench_overrides.yaml"
+    SWEBENCH_AGENT_PORT="$port" python3 - "$default_cfg" "$cfg" <<'PYGEN'
+import os, sys, yaml
+default_path, out_path = sys.argv[1], sys.argv[2]
+d = yaml.safe_load(open(default_path)) or {}
+d.setdefault("agent", {})
+step_limit = int(os.environ.get("SWEBENCH_AGENT_STEP_LIMIT", "250"))
+guidance = f"""
+
+<additional_critical_guidance>
+- You have a hard budget of {step_limit} commands total. Plan: reproduce -> fix -> verify -> submit, finishing the submission well before the budget runs out. A correct fix that is never submitted scores ZERO.
+- BEFORE submitting you MUST run the test(s) that cover the issue and confirm your fix makes them pass. Identify the failing test from the issue/PR, run it (e.g. `python -m pytest <path>::<test>` or `python tests/runtests.py <label>`), and check the result. Do not submit a patch you have not verified unless running tests is impossible.
+- The scoring harness re-runs tests in its own clean environment. If the package fails to BUILD or IMPORT after 2-3 attempts, do NOT keep fixing the environment -- apply your source-code fix and submit it. A local build is not required for your patch to score.
+- `git diff` alone is NOT a submission. Submitting requires the exact final command sequence described above.
+- When unsure how code behaves, write and RUN a short script instead of reasoning about it at length in prose.
+</additional_critical_guidance>"""
+it = d["agent"].get("instance_template", "")
+d["agent"]["instance_template"] = it.rstrip() + guidance + "\n"
+d["agent"]["step_limit"] = step_limit
+d["agent"]["cost_limit"] = 0.0
+env = d.get("environment") or {}
+env.update({
+    "environment_class": "swerex_modal",
+    # Modal cold starts exceed the default timeout.
+    "startup_timeout": float(os.environ.get("SWEBENCH_AGENT_STARTUP_TIMEOUT", "900")),
+    "timeout": int(os.environ.get("SWEBENCH_AGENT_CMD_TIMEOUT", "300")),
+    # Limit billing if cleanup misses a sandbox.
+    "runtime_timeout": float(os.environ.get("SWEBENCH_AGENT_RUNTIME_TIMEOUT", "3600")),
+})
+agent_cpu = os.environ.get("SWEBENCH_AGENT_SANDBOX_CPU", "")
+if agent_cpu:
+    env["modal_sandbox_kwargs"] = {"cpu": float(agent_cpu)}
+d["environment"] = env
+model_name = os.environ.get("MODEL_NAME") or os.environ.get("MODEL", "")
+d["model"] = {
+    "model_name": f"openai/{model_name}",
+    "cost_tracking": "ignore_errors",
+    "model_kwargs": {
+        "api_base": f"http://0.0.0.0:{os.environ['SWEBENCH_AGENT_PORT']}/v1",
+        "api_key": "dummy",
+        "custom_llm_provider": "openai",
+        "temperature": 0.0,
+    },
+}
+yaml.safe_dump(d, open(out_path, "w"), default_flow_style=False, sort_keys=False)
+PYGEN
+
+    case "${EVAL_LIMIT:-}" in
+        full|FULL|0) EVAL_LIMIT="" ;;
+    esac
+    if [ -n "${EVAL_LIMIT:-}" ] && [[ ! "$EVAL_LIMIT" =~ ^[1-9][0-9]*$ ]]; then
+        echo "ERROR: EVAL_LIMIT='${EVAL_LIMIT}' must be a positive integer, 'full', or 0" >&2
+        return 1
+    fi
+    local slice_args=()
+    if [ -n "${EVAL_LIMIT:-}" ]; then
+        slice_args=(--slice "0:${EVAL_LIMIT}")
+    fi
+
+    export MSWEA_COST_TRACKING=ignore_errors
+    local expected="${EVAL_LIMIT:-${SWEBENCH_EXPECTED_INSTANCES:-300}}"
+    echo "[swebench-agentic] mini-swe-agent: workers=${SWEBENCH_AGENT_WORKERS:-${CONC:-64}} step_limit=${SWEBENCH_AGENT_STEP_LIMIT:-250} slice=${EVAL_LIMIT:-full} expected=$expected"
+    local agen_rc=0
+    mini-extra swebench \
+        -c "$cfg" \
+        --subset lite --split test \
+        --environment-class swerex_modal \
+        "${slice_args[@]}" \
+        -w "${SWEBENCH_AGENT_WORKERS:-${CONC:-64}}" \
+        -o "$gen_dir/agent_out" &
+    local mini_pid=$!
+    # preds.json detects completion despite teardown hangs.
+    local preds_file="$gen_dir/agent_out/preds.json"
+    local deadline=$(( $(date +%s) + ${SWEBENCH_AGENT_TIMEOUT:-21600} ))
+    local grace_until=0
+    local killed_after_complete=0
+    while kill -0 "$mini_pid" 2>/dev/null; do
+        if [ "$(date +%s)" -ge "$deadline" ]; then
+            echo "ERROR: generation exceeded SWEBENCH_AGENT_TIMEOUT (${SWEBENCH_AGENT_TIMEOUT:-21600}s); killing mini-extra" >&2
+            kill "$mini_pid" 2>/dev/null; sleep 5; kill -9 "$mini_pid" 2>/dev/null
+            agen_rc=124
+            break
+        fi
+        local done_count
+        done_count=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$preds_file" 2>/dev/null || echo 0)
+        if [ "${done_count:-0}" -ge "$expected" ]; then
+            if [ "$grace_until" -eq 0 ]; then
+                grace_until=$(( $(date +%s) + ${SWEBENCH_AGENT_EXIT_GRACE:-300} ))
+                echo "[swebench-agentic] all $expected predictions written; waiting ${SWEBENCH_AGENT_EXIT_GRACE:-300}s for mini-extra to exit"
+            elif [ "$(date +%s)" -ge "$grace_until" ]; then
+                echo "WARN: mini-extra hung after completing all instances; killing (known hang-on-exit)" >&2
+                kill "$mini_pid" 2>/dev/null; sleep 5; kill -9 "$mini_pid" 2>/dev/null
+                killed_after_complete=1
+                break
+            fi
+        fi
+        sleep "${SWEBENCH_WATCHDOG_POLL:-30}"
+    done
+    wait "$mini_pid" 2>/dev/null
+    local wait_rc=$?
+    if [ "$killed_after_complete" -eq 1 ]; then
+        agen_rc=0
+    elif [ "$agen_rc" -eq 0 ] && [ "$wait_rc" -ne 0 ]; then
+        agen_rc=$wait_rc
+    fi
+    # Isolate sweeps to avoid killing unrelated sandboxes.
+    [ "${SWEBENCH_SANDBOX_SWEEP:-1}" = "1" ] && python3 - <<'PYSWEEP' || true
+try:
+    import os
+    import modal
+    name = os.environ.get("SWEBENCH_MODAL_APP_NAME", "infx-evals-swe")
+    app = modal.App.lookup(name)
+    n = 0
+    for sb in modal.Sandbox.list(app_id=app.app_id):
+        try:
+            sb.terminate()
+            n += 1
+        except Exception as e:
+            print(f"[swebench-agentic] sweep: could not terminate {sb.object_id}: {e}")
+    print(f"[swebench-agentic] sandbox sweep ({name}): terminated {n} lingering sandbox(es)")
+except Exception as e:
+    print(f"[swebench-agentic] sandbox sweep skipped: {e}")
+PYSWEEP
+    if [ "$agen_rc" -ne 0 ]; then
+        # Partial runs may still be scoreable.
+        local salvage_count
+        salvage_count=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$gen_dir/agent_out/preds.json" 2>/dev/null || echo 0)
+        if [ "${salvage_count:-0}" -gt 0 ]; then
+            echo "WARN: generation exited rc=$agen_rc but $salvage_count/$expected predictions exist; scoring the partial set" >&2
+        else
+            echo "ERROR: agentic generation (mini-swe-agent) failed with $agen_rc" >&2
+            return "$agen_rc"
+        fi
+    fi
+    if [ ! -s "$gen_dir/agent_out/preds.json" ]; then
+        echo "ERROR: agentic generation produced no preds.json" >&2
+        return 1
+    fi
+}
+
+run_swebench_eval() {
+    local out_dir="${EVAL_RESULT_DIR:-$(mktemp -d /tmp/eval_out-XXXXXX)}"
+    local task_name="${SWEBENCH_TASK_NAME:-swebench_lite}"
+    local gen_dir
+    gen_dir=$(mktemp -d /tmp/swebench_gen-XXXXXX)
+
+    # Generation and scoring must share a dataset.
+    local yaml_path="${EVAL_TASKS_DIR:-utils/evals/${task_name}.yaml}"
+    local dataset
+    dataset=$(awk '/^dataset_path:[[:space:]]/{print $2; exit}' "$yaml_path" 2>/dev/null)
+    if [ -z "$dataset" ]; then
+        echo "ERROR: could not read dataset_path from ${yaml_path}" >&2
+        rm -rf "$gen_dir" 2>/dev/null || true
+        return 1
+    fi
+    if [ -n "${SWEBENCH_DATASET:-}" ] && [ "${SWEBENCH_DATASET}" != "$dataset" ]; then
+        echo "ERROR: SWEBENCH_DATASET='${SWEBENCH_DATASET}' disagrees with ${yaml_path} dataset_path='${dataset}'." >&2
+        echo "       Generation and scoring must use the same dataset; edit the YAML or unset SWEBENCH_DATASET." >&2
+        rm -rf "$gen_dir" 2>/dev/null || true
+        return 1
+    fi
+
+    local gen_mode="${SWEBENCH_GEN_MODE:-agentic}"
+    local score_input=()
+    if [ "$gen_mode" = "agentic" ]; then
+        # mini-extra supports only SWE-bench Lite.
+        case "$dataset" in
+            *SWE-bench_Lite|*SWE-bench_Lite/*) ;;
+            *)
+                echo "ERROR: agentic generation only produces SWE-bench_Lite instances, but ${yaml_path} dataset_path='${dataset}' is not Lite." >&2
+                echo "       Use gen_mode=single-shot for other datasets, or point the YAML at SWE-bench_Lite." >&2
+                rm -rf "$gen_dir" 2>/dev/null || true
+                return 1
+                ;;
+        esac
+        _run_swebench_agentic_generation "$gen_dir" "$@" || {
+            local agen_rc=$?
+            rm -rf "$gen_dir" 2>/dev/null || true
+            return "$agen_rc"
+        }
+        score_input=(--predictions-file "$gen_dir/agent_out/preds.json")
+        mkdir -p "$out_dir"
+        cp -f "$gen_dir/agent_out/preds.json" "$out_dir/agent_preds.json" 2>/dev/null || true
+        find "$gen_dir/agent_out" -name "*.traj*" -exec cp -f {} "$out_dir/" \; 2>/dev/null || true
+    else
+        local prev_tasks_dir="${EVAL_TASKS_DIR:-}"
+        local prev_include_path="${EVAL_INCLUDE_PATH:-}"
+        export EVAL_TASKS_DIR="$task_name"
+        export EVAL_INCLUDE_PATH="$(dirname "$yaml_path")"
+        local gen_rc=0
+        run_lm_eval "$@" --results-dir "$gen_dir" || gen_rc=$?
+        export EVAL_TASKS_DIR="$prev_tasks_dir"
+        export EVAL_INCLUDE_PATH="$prev_include_path"
+        if [ "$gen_rc" -ne 0 ]; then
+            echo "ERROR: swebench generation (lm-eval) failed with $gen_rc" >&2
+            rm -rf "$gen_dir" 2>/dev/null || true
+            return "$gen_rc"
+        fi
+
+        mkdir -p "$out_dir"
+        find "$gen_dir" -name 'samples_*.jsonl' -exec cp -f {} "$out_dir"/ \; 2>/dev/null || true
+        score_input=(--samples-dir "$gen_dir")
+    fi
+    export EVAL_RESULT_DIR="$out_dir"
+
+    local lm_eval_version
+    lm_eval_version=$(python3 -c 'import lm_eval; print(lm_eval.__version__)' 2>/dev/null || echo unknown)
+
+    if [ "${SWEBENCH_SKIP_SCORE:-false}" = "true" ]; then
+        local skip_rc=0
+        python3 utils/evals/swebench_score.py \
+            "${score_input[@]}" --out-dir "$out_dir" \
+            --model-name "${MODEL_NAME:-$MODEL}" --task-name "$task_name" \
+            --predictions-only || skip_rc=$?
+        echo "SWEBENCH_SKIP_SCORE=true: staged predictions only (no resolved-rate)." >&2
+        rm -rf "$gen_dir" 2>/dev/null || true
+        return "$skip_rc"
+    fi
+
+    if [ "${INFERENCEX_SWEBENCH_RUNTIME_READY:-false}" != "true" ]; then
+        _install_swebench_deps
+        export INFERENCEX_SWEBENCH_RUNTIME_READY=true
+    fi
+    _ensure_modal_credentials
+    local score_rc=0
+    local ns_args=()
+    if [ "${SWEBENCH_NAMESPACE+set}" = "set" ]; then ns_args=(--namespace "$SWEBENCH_NAMESPACE"); fi
+    local modal_args=()
+    if [ "${SWEBENCH_USE_MODAL:-false}" = "true" ]; then modal_args=(--modal); fi
+    local itimeout_args=(--instance-timeout "${SWEBENCH_EVAL_TIMEOUT:-900}")
+    # Avoid holding the GPU on scoring stalls.
+    timeout "${SWEBENCH_SCORE_TIMEOUT:-7200}" \
+    python3 utils/evals/swebench_score.py \
+        "${score_input[@]}" \
+        --out-dir "$out_dir" \
+        --model-name "${MODEL_NAME:-$MODEL}" \
+        --task-name "$task_name" \
+        --dataset-name "$dataset" \
+        --max-workers "${SWEBENCH_MAX_WORKERS:-4}" \
+        --lm-eval-version "$lm_eval_version" \
+        "${modal_args[@]}" \
+        "${itimeout_args[@]}" \
+        "${ns_args[@]}" \
+        || score_rc=$?
+    rm -rf "$gen_dir" 2>/dev/null || true
+    if [ "$score_rc" -ne 0 ]; then
+        echo "ERROR: swebench scoring failed with $score_rc" >&2
+        return "$score_rc"
+    fi
+}
+
 # ------------------------------
 # Unified eval entrypoint
 # ------------------------------
 
 run_eval() {
-    local framework="${EVAL_FRAMEWORK:-lm-eval}"
+    local cli_framework=""
     local forwarded=()
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --framework) framework="$2"; shift 2 ;;
-            *)           forwarded+=("$1"); shift ;;
+            --framework)
+                if [[ $# -lt 2 || -z "${2:-}" || "${2:-}" == --* ]]; then
+                    echo "ERROR: --framework requires a value" >&2
+                    return 2
+                fi
+                cli_framework="$2"
+                shift 2
+                ;;
+            *)
+                forwarded+=("$1")
+                shift
+                ;;
         esac
     done
+
+    local scenario_default="lm-eval"
+    local scenario_is_agentic=0
+    if [ "${IS_AGENTIC:-0}" = "1" ] || [ "${SCENARIO_TYPE:-}" = "agentic-coding" ]; then
+        scenario_default="swebench"
+        scenario_is_agentic=1
+    fi
+
+    local framework="${EVAL_FRAMEWORK:-${cli_framework:-$scenario_default}}"
 
     # Compute EVAL_MAX_MODEL_LEN if not already set by the calling script
     if [ -z "${EVAL_MAX_MODEL_LEN:-}" ]; then
@@ -1205,8 +1541,14 @@ run_eval() {
     local eval_rc=0
     case "$framework" in
         lm-eval|lm_eval) run_lm_eval "${forwarded[@]}" || eval_rc=$? ;;
+        swebench)        run_swebench_eval "${forwarded[@]}" || eval_rc=$? ;;
         *)               echo "Unknown framework '${framework}'"; eval_rc=1 ;;
     esac
+
+    # Agentic eval-only recipes have no separate staging step.
+    if [ "${EVAL_ONLY:-false}" = "true" ] && [ "$scenario_is_agentic" = "1" ]; then
+        append_lm_eval_summary || true
+    fi
 
     if [ "$eval_rc" -ne 0 ]; then
         echo "ERROR: run_eval failed with exit code $eval_rc" >&2
@@ -1235,6 +1577,7 @@ AIPERF_CLI="${AIPERF_VENV}/bin/aiperf"
 AIPERF_HF_CLI="${AIPERF_VENV}/bin/hf"
 AIPERF_DEPS_READY=0
 AIPERF_FAILED_REQUEST_THRESHOLD="${AIPERF_FAILED_REQUEST_THRESHOLD:-0.10}"
+AIPERF_TRACE_IDLE_GAP_CAP_SECONDS="${AIPERF_TRACE_IDLE_GAP_CAP_SECONDS:-300}"
 
 agentic_pip_install() {
     local pip_install=(python3 -m pip install)
@@ -1282,7 +1625,7 @@ install_agentic_deps() {
     mkdir -p "$AIPERF_UV_CACHE_DIR"
 
     UV_CACHE_DIR="$AIPERF_UV_CACHE_DIR" \
-        "$AIPERF_UV_BIN" venv --python "$(command -v python3)" "$AIPERF_VENV"
+        "$AIPERF_UV_BIN" venv --python "${AIPERF_PYTHON_VERSION:-3.11}" "$AIPERF_VENV"
     UV_CACHE_DIR="$AIPERF_UV_CACHE_DIR" \
         "$AIPERF_UV_BIN" pip install --python "$AIPERF_PYTHON" \
         -r "$AGENTIC_DIR/requirements.txt" \
@@ -1311,17 +1654,20 @@ resolve_trace_source() {
     # unfiltered corpus and switches to the 256k-capped variant), or
     # by recipes that want to pin an older corpus generation.
     #
-    # Default (no override): the 062126 v7 corpus, selected by model family.
-    # DSv4 (full context) rides the unfiltered base corpus; every non-DSv4
-    # recipe defaults to the 256k-capped variant because those servers run at
-    # max_model_len ~256k and would reject >256k requests. Any recipe can still
-    # pin a specific corpus via WEKA_LOADER_OVERRIDE.
+    # Default (no override): the 062126 v7 corpus, selected by the model
+    # family's native context length. Models with a 1M-token default context
+    # use the unfiltered corpus; shorter-context families use the 256k-capped
+    # variant. Any recipe can still pin a specific corpus via
+    # WEKA_LOADER_OVERRIDE.
     local default_loader
-    if [[ "${MODEL_PREFIX:-}" == dsv4* ]]; then
-        default_loader="semianalysis_cc_traces_weka_062126"
-    else
-        default_loader="semianalysis_cc_traces_weka_062126_256k"
-    fi
+    case "${MODEL_PREFIX:-}" in
+        dsv4*|glm5.2*|minimaxm3*|kimik3*)
+            default_loader="semianalysis_cc_traces_weka_062126"
+            ;;
+        *)
+            default_loader="semianalysis_cc_traces_weka_062126_256k"
+            ;;
+    esac
     local loader="${WEKA_LOADER_OVERRIDE:-$default_loader}"
     local dataset
     case "$loader" in
@@ -1377,12 +1723,12 @@ resolve_trace_source() {
     # Pre-download the dataset into the shared HF_HUB_CACHE (same mount used
     # for model weights) so subsequent runs read from cache instead of
     # re-downloading every job.
-    ensure_hf_cli
-    if [[ -n "${AIPERF_LOCAL_WEKA_DATASET:-}" ]]; then
-        echo "Using staged local Weka dataset; skipping Hugging Face dataset pre-download"
-        return 0
+    if [ -n "${AIPERF_LOCAL_WEKA_DATASET:-}" ]; then
+        echo "Using staged Weka dataset: $AIPERF_LOCAL_WEKA_DATASET"
+    else
+        ensure_hf_cli
+        "$AIPERF_HF_CLI" download --repo-type dataset "$dataset"
     fi
-    "$AIPERF_HF_CLI" download --repo-type dataset "$dataset"
 }
 
 build_replay_cmd() {
@@ -1396,13 +1742,21 @@ build_replay_cmd() {
     # session.
     #
     # The scenario plugin locks --cache-bust first_turn_prefix and a 10-second
-    # global system-idle cap. The PR #31 client preserves source timestamps,
-    # spawn/join gates, and globally anchored spread phase starts. An optional
-    # per-trajectory-tree runtime idle watchdog is exposed below; it remains
-    # unset unless a study explicitly standardizes a cap.
+    # whole-system idle cap. InferenceX also applies a 300-second per-trajectory
+    # runtime idle cap below. Source end-to-start delays remain intact; either
+    # cap advances pending timers only while its scope is idle. See
+    # utils/aiperf/docs/tutorials/agentx-mvp.md.
     local result_dir="$1"
     local duration="$DURATION"
+    local warmup_requests_per_lane="${AIPERF_WARMUP_REQUESTS_PER_LANE:-10}"
     local tokenizer_override="${AIPERF_TOKENIZER:-}"
+
+    # Fast mode minimizes setup by advancing each trajectory lane only once
+    # and shortens profiling to 20 minutes.
+    if [[ "${AIPERF_EXPERIMENTAL_FAST:-0}" == "1" ]]; then
+        duration=1200
+        warmup_requests_per_lane=1
+    fi
 
     export AIPERF_DATASET_WEKA_LIVE_ASSISTANT_RESPONSES="${AIPERF_DATASET_WEKA_LIVE_ASSISTANT_RESPONSES:-0}"
     # Dataset configuration (load + reconstruct + inputs.json + mmap)
@@ -1415,21 +1769,18 @@ build_replay_cmd() {
     # aiperf validates that SERVICE_PROFILE_CONFIGURE_TIMEOUT >=
     # DATASET_CONFIGURATION_TIMEOUT at startup. Bump it in lockstep.
     export AIPERF_SERVICE_PROFILE_CONFIGURE_TIMEOUT=1800
+    # Headless realtime metrics are opt-in on current AIPerf main. Enable the
+    # rolling TTFT/ITL/throughput block and emit it every 30 seconds.
+    export AIPERF_UI_REALTIME_METRICS_ENABLED=true
     REPLAY_CMD="$AIPERF_CLI profile --scenario inferencex-agentx-mvp"
     REPLAY_CMD+=" --url http://localhost:$PORT"
     REPLAY_CMD+=" --endpoint /v1/chat/completions"
     REPLAY_CMD+=" --endpoint-type chat"
     REPLAY_CMD+=" --streaming"
-    # AIPerf PR #31 can advance pending replay timers after an entire AgentX
-    # trajectory tree has been idle for this long. Leave it opt-in because it
-    # changes replay timing, and it intentionally does not interrupt requests
-    # that are still on the wire.
-    if [ -n "${AIPERF_TRACE_IDLE_GAP_CAP_SECONDS:-}" ]; then
-        REPLAY_CMD+=" --trace-idle-gap-cap-seconds $AIPERF_TRACE_IDLE_GAP_CAP_SECONDS"
-    fi
     REPLAY_CMD+=" --model $MODEL"
     REPLAY_CMD+=" --concurrency $CONC"
     REPLAY_CMD+=" --benchmark-duration $duration"
+    REPLAY_CMD+=" --stats-interval 30"
     REPLAY_CMD+=" --random-seed 42"
     # Fail runs once more than 10% of requests error. This keeps known
     # transient low-rate failures from killing long sweeps while still
@@ -1441,22 +1792,23 @@ build_replay_cmd() {
     # least one profile turn after warmup.
     REPLAY_CMD+=" --trajectory-start-min-ratio 0.25"
     REPLAY_CMD+=" --trajectory-start-max-ratio 0.75"
-    if [ -n "${AIPERF_TRACE_IDLE_GAP_CAP_SECONDS:-}" ]; then
-        REPLAY_CMD+=" --trace-idle-gap-cap-seconds $AIPERF_TRACE_IDLE_GAP_CAP_SECONDS"
-    fi
-    # Optional cache-pressure warmup for long agentic traces. AIPerf first
-    # completes its normal t* snapshot warmup, then continues those exact
-    # trajectories with one-token outputs and no idle delays for this many
-    # seconds. Profiling begins only after those requests drain and resumes
-    # from the resulting live trajectory state.
-    if [ -n "${AIPERF_AGENTIC_CACHE_WARMUP_DURATION:-}" ]; then
-        REPLAY_CMD+=" --agentic-cache-warmup-duration $AIPERF_AGENTIC_CACHE_WARMUP_DURATION"
-    fi
-    # Allow cache-pressure warmup requests to drain before AIPerf declares the
-    # warmup phase failed. Canonical submission configs set this to 1800s.
-    if [ -n "${AGENTIC_WARMUP_GRACE_PERIOD:-}" ]; then
-        REPLAY_CMD+=" --warmup-grace-period $AGENTIC_WARMUP_GRACE_PERIOD"
-    fi
+    # After the normal t* snapshot primers, advance every trajectory lane by
+    # this many additional one-token requests with no idle delay. Profiling
+    # begins after those requests drain and resumes from the resulting live
+    # state. Do not pass --burst-phase-starts: AIPerf main's spread default
+    # preserves each lane's recorded phase-start offset.
+    REPLAY_CMD+=" --warmup-requests-per-lane $warmup_requests_per_lane"
+    # Limit observed end-to-start idle time across each complete trajectory
+    # tree, including root and subagent streams. AIPerf advances that tree's
+    # pending timers uniformly without bypassing spawn/join dependencies or
+    # changing request order.
+    REPLAY_CMD+=" --trace-idle-gap-cap-seconds $AIPERF_TRACE_IDLE_GAP_CAP_SECONDS"
+    # Give long-context warmup requests up to 30 minutes to drain before
+    # declaring warmup failed. Recipes whose saturation arms carry a larger
+    # in-flight working set may override via AGENTIC_WARMUP_GRACE_PERIOD
+    # (grace is a maximum wait, not a fixed sleep — drain exits when done).
+    # cancelling any remaining requests and starting profiling.
+    REPLAY_CMD+=" --warmup-grace-period ${AGENTIC_WARMUP_GRACE_PERIOD:-1800}"
     # Use server-reported usage fields (prompt_tokens / completion_tokens) for
     # ISL/OSL instead of client-side tokenizer.encode(). Auto-enables
     # stream_options.include_usage on the OpenAI chat endpoint. Skips the
@@ -1464,11 +1816,20 @@ build_replay_cmd() {
     # CPU on minimax-m2.5 at high concurrency. Lossless for vLLM (server
     # usage is authoritative).
     REPLAY_CMD+=" --use-server-token-count"
-    # Keep the older nvext.session_control experiment opt-in. Current Dynamo
-    # conversation affinity is enabled on the router and keyed by the canonical
-    # X-Dynamo-Session-ID header emitted by the AgentX transport wrapper.
-    if [[ "${FRAMEWORK:-}" == dynamo-* ]] && \
-       [[ "${AGENTX_DYNAMO_CONV_AWARE:-0}" == "1" || "${AGENTX_DYNAMO_CONV_AWARE:-false}" == "true" ]]; then
+    # Dynamo's KV router needs an explicit conversation session binding to
+    # keep later turns on the prefill worker that owns their prefix blocks.
+    # X-Correlation-ID is useful tracing metadata but does not establish that
+    # binding by itself. AIPerf emits nvext.session_control bind/close actions
+    # keyed by the stable conversation correlation ID when this flag is set.
+    # Opt-out: recipes set AIPERF_USE_DYNAMO_CONV_AWARE_ROUTING=0 to skip this.
+    # aiperf's conv-aware routing emits nvext.session_control, a removed POC field
+    # (dynamo #9920 / v1.3.0-dev) that current dynamo builds reject with a 400
+    # (they moved to router/routing_constraints/agent_context). Default stays on.
+    # New recipes instead set AIPERF_HTTP_X_DYNAMO_SESSION_ID_FROM_CORRELATION_ID=true
+    # to route by X-Dynamo-Session-ID header, which needs no routing CLI flag.
+    if [[ "${FRAMEWORK:-}" == dynamo-* \
+          && "${AIPERF_USE_DYNAMO_CONV_AWARE_ROUTING:-1}" != "0" \
+          && "${AIPERF_HTTP_X_DYNAMO_SESSION_ID_FROM_CORRELATION_ID:-false}" != "true" ]]; then
         REPLAY_CMD+=" --use-dynamo-conv-aware-routing"
         # The upstream 300s affinity TTL is shorter than an overloaded
         # high-concurrency agentic request. Keep bindings alive across long
@@ -1491,30 +1852,20 @@ build_replay_cmd() {
     # need trust_remote_code=True to load. Benign for models without
     # custom tokenizer code, so we set it unconditionally.
     REPLAY_CMD+=" --tokenizer-trust-remote-code"
-    # Air-gapped jobs can point AIPerf at the model mount instead of asking
-    # transformers to resolve the served model ID through Hugging Face.
+    # srt-slurm can stage the tokenizer with the model mount so benchmark jobs
+    # do not need Hugging Face access. This extension leaves the official
+    # InferenceX command unchanged when AIPERF_TOKENIZER is unset.
     if [ -n "$tokenizer_override" ]; then
         REPLAY_CMD+=" --tokenizer $tokenizer_override"
     fi
-    # Current AIPerf releases use the AIPERF_ prefix for pydantic-settings.
-    # Leaving AIPERF_TOKENIZER in the child environment makes pydantic try to
-    # JSON-decode the path as a structured TokenizerConfig, even though the
-    # equivalent --tokenizer CLI option is valid. The value is already baked
-    # into REPLAY_CMD, so remove the settings-name collision before launch.
+    # AIPERF_TOKENIZER is also a pydantic-settings field. Once its value is in
+    # the CLI, remove the environment variable so a path is not JSON-decoded as
+    # a structured TokenizerConfig.
     unset AIPERF_TOKENIZER
-    # PR #31's offline tokenizer path resolves every value through
-    # huggingface_hub.snapshot_download(), which incorrectly treats an
-    # absolute bind-mounted directory such as /model as a Hub repository ID.
-    # The benchmark has a staged local dataset and a local tokenizer, so let
-    # Transformers recognize the directory directly in the AIPerf child. This
-    # shell is separate from the already-running offline model services.
     if [[ "$tokenizer_override" == /* ]]; then
         unset HF_HUB_OFFLINE
         unset TRANSFORMERS_OFFLINE
     fi
-    # AgentX uses chat-shaped OpenAI payloads. Some speculative-decoding runs
-    # also need AIPerf's tokenizer accounting to apply the model chat template
-    # explicitly so acceptance/ISL accounting matches the wire prompt.
     if [[ "${AIPERF_APPLY_CHAT_TEMPLATE:-0}" == "1" || "${AIPERF_APPLY_CHAT_TEMPLATE:-false}" == "true" ]]; then
         REPLAY_CMD+=" --apply-chat-template"
     fi
@@ -1525,11 +1876,13 @@ build_replay_cmd() {
     if [ -n "${MAX_MODEL_LEN:-}" ] && [ "$MAX_MODEL_LEN" != "0" ]; then
         REPLAY_CMD+=" --max-context-length $MAX_MODEL_LEN"
     fi
-    # Do not set --num-dataset-entries. The Weka loaders use the full trace
-    # corpus when the flag is omitted.
-    # Optional prefill-isolation knob for disaggregated studies. This keeps
-    # the AgentX trace shape and prefix-reuse behavior, but caps generated
-    # output tokens so the run primarily measures prefill.
+    # Default --num-dataset-entries is 100; the with-subagents Weka corpus
+    # has 393. Cap at 393 so all unique traces are loaded (the loader treats
+    # this as a ``min(cap, available)`` ceiling, not a target — see
+    # semianalysis_cc_traces_weka.py).
+    REPLAY_CMD+=" --num-dataset-entries 393"
+    # Optional prefill-isolation mode used by disaggregated silicon studies.
+    # Submission-quality end-to-end AgentX runs leave this unset.
     if [ -n "${AIPERF_SYNTHESIS_MAX_OSL:-}" ]; then
         REPLAY_CMD+=" --synthesis-max-osl $AIPERF_SYNTHESIS_MAX_OSL"
     fi
