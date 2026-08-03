@@ -328,7 +328,7 @@ def run_interactive() -> int:
             # Save to temp file for submission
             import tempfile
 
-            fd, temp_path = tempfile.mkstemp(suffix=".yaml", prefix="srtctl_modified_")
+            _fd, temp_path = tempfile.mkstemp(suffix=".yaml", prefix="srtctl_modified_")
             with open(temp_path, "w") as f:
                 yaml.dump(config, f)
             config_path = Path(temp_path)
@@ -358,7 +358,7 @@ def run_interactive() -> int:
                     submit_single(config_path=config_path, dry_run=False)
                 console.print("\n[bold green]✅ Submission complete![/]")
                 return 0
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 console.print(f"\n[bold red]❌ Submission failed: {e}[/]")
                 return 1
 

@@ -116,7 +116,7 @@ def validate_config(
         try:
             loaded = schema.load(resolved)
             normalized.append({"variant": suffix, "config": schema.dump(loaded)})
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             errors.append(f"{suffix}: {exc}")
             continue
         for issue in validate_topology(variant.get("resources")):
@@ -193,7 +193,7 @@ def _load_raw_config(*, config: dict[str, Any] | None = None, config_yaml: str |
         raise ValueError("Provide either config or config_yaml")
     loaded = yaml.safe_load(config_yaml)
     if not isinstance(loaded, dict):
-        raise ValueError("Config must be a YAML mapping")
+        raise TypeError("Config must be a YAML mapping")
     return loaded
 
 

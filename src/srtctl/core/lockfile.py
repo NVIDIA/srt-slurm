@@ -97,7 +97,7 @@ def collect_slurm_context() -> dict[str, Any]:
     if srtctl_root:
         ctx["srtctl_root"] = srtctl_root
 
-    try:
+    with contextlib.suppress(Exception):
         import subprocess
 
         result = subprocess.run(
@@ -106,11 +106,10 @@ def collect_slurm_context() -> dict[str, Any]:
             text=True,
             timeout=2,
             cwd=srtctl_root or None,
+            check=False,
         )
         if result.returncode == 0:
             ctx["srtctl_commit"] = result.stdout.strip()
-    except Exception:
-        pass
 
     return ctx
 
@@ -119,7 +118,7 @@ def collect_worker_fingerprints(log_dir: Path) -> dict[str, Any] | None:
     """Load per-worker fingerprint files into a dict keyed by worker name."""
     try:
         fp_files = sorted(log_dir.glob("fingerprint_*.json"))
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.debug("Failed to glob fingerprint files in %s: %s", log_dir, e)
         return None
 
@@ -259,7 +258,7 @@ def write_lockfile(
         lockfile_path.write_text(lockfile_text)
         logger.info("Wrote lockfile: %s", lockfile_path)
         return True
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.warning("Failed to write lockfile: %s", e)
         return False
 
@@ -525,7 +524,7 @@ def load_lockfile_fingerprints(path: Path) -> dict[str, Any] | None:
             return None
 
         return None
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.debug("Failed to load fingerprints from %s: %s", path, e)
         return None
 
@@ -550,6 +549,6 @@ def _load_fingerprints_from_lockfile(path: Path) -> dict[str, Any] | None:
         if isinstance(fp, dict):
             return {"worker": fp}
         return None
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.debug("Failed to parse lockfile %s: %s", path, e)
         return None

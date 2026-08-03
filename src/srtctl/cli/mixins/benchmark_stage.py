@@ -229,7 +229,7 @@ class BenchmarkStageMixin:
                 banner = format_identity_verification(self._identity_verification, self.config.identity)
                 for line in banner.splitlines():
                     logger.info(line)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.debug("Identity verification skipped: %s", e)
 
         if reporter:

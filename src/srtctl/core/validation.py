@@ -501,7 +501,7 @@ def validate_local_path(name: str, path: str) -> ValidationResult:
             return ValidationResult(name, True, f"{file_count} files, {total_bytes / 1e9:.1f}GB")
         size_gb = p.stat().st_size / 1e9
         return ValidationResult(name, True, f"{size_gb:.1f}GB")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return ValidationResult(name, False, f"check failed: {e}")
 
 
@@ -530,7 +530,7 @@ def validate_hf_model(name: str | None, revision: str | None) -> ValidationResul
         return ValidationResult("hf_model", False, f"unexpected status {resp.status_code}")
     except requests.Timeout:
         return ValidationResult("hf_model", False, "HuggingFace check timed out")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return ValidationResult("hf_model", False, f"HuggingFace check failed: {e}")
 
 
@@ -576,7 +576,7 @@ def validate_docker_image(image: str | None, digest: str | None) -> ValidationRe
         return ValidationResult("docker_image", False, f"unexpected status {resp.status_code}")
     except requests.Timeout:
         return ValidationResult("docker_image", False, "Docker registry check timed out")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return ValidationResult("docker_image", False, f"Docker check failed: {e}")
 
 
@@ -587,13 +587,13 @@ def run_all_validations(config: SrtConfig) -> list[ValidationResult]:
     # Local model path
     try:
         results.append(validate_local_path("model_path", config.model.path))
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         results.append(ValidationResult("model_path", False, f"check failed: {e}"))
 
     # Local container path
     try:
         results.append(validate_local_path("container_path", config.model.container))
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         results.append(ValidationResult("container_path", False, f"check failed: {e}"))
 
     # HuggingFace model (from identity block)
@@ -604,7 +604,7 @@ def run_all_validations(config: SrtConfig) -> list[ValidationResult]:
             hf_repo = config.identity.model.repo
             hf_rev = config.identity.model.revision
         results.append(validate_hf_model(hf_repo, hf_rev))
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         results.append(ValidationResult("hf_model", False, f"check failed: {e}"))
 
     return results
@@ -627,7 +627,7 @@ def run_validations_background(config: SrtConfig) -> threading.Thread:
             results = run_all_validations(config)
             output = _format_validation_results(results)
             logger.info("\n%s", output)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.debug("Background validation failed: %s", e)
 
     thread = threading.Thread(target=_run, daemon=True, name="srtctl-validation")

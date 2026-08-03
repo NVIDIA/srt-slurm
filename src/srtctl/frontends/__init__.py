@@ -21,11 +21,11 @@ from srtctl.frontends.trtllm_serve import TRTLLMServeFrontend
 from srtctl.frontends.vllm import VLLMFrontend
 
 __all__ = [
+    "DynamoFrontend",
     "FrontendProtocol",
     "FrontendType",
-    "get_frontend",
-    "DynamoFrontend",
     "SGLangFrontend",
     "TRTLLMServeFrontend",
     "VLLMFrontend",
+    "get_frontend",
 ]

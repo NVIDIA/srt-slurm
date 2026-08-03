@@ -125,7 +125,7 @@ class LiveMetricsSnapshotter:
                 len(self._state.prefill_files),
                 len(self._state.decode_files),
             )
-        except Exception as e:  # never let snapshot failures affect the benchmark
+        except Exception as e:  # never let snapshot failures affect the benchmark  # noqa: BLE001
             logger.warning("Live metrics snapshot failed: %s", e, exc_info=False)
 
     def _loop(self) -> None:
@@ -174,7 +174,7 @@ def try_start_snapshotter(
 
     try:
         cluster_config = load_cluster_config()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.debug("Live metrics: failed to load cluster config: %s", e)
         return None
 
@@ -197,6 +197,6 @@ def try_start_snapshotter(
         )
         snap.start(stop_event)
         return snap
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.warning("Failed to start live metrics snapshotter: %s", e)
         return None

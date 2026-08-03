@@ -73,7 +73,7 @@ def load_cluster_config() -> dict[str, Any] | None:
 
         # Dump back to dict for compatibility
         return schema.dump(validated)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.warning(f"Failed to load or validate srtslurm.yaml: {e}")
         return None
 
@@ -533,7 +533,7 @@ def validate_config_file(path: Path | str) -> list[str]:
         # Override format — expand and validate each variant
         try:
             variants = generate_override_configs(raw)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             return [f"{path}: failed to expand overrides: {e}"]
 
         cluster_config = load_cluster_config()
@@ -542,13 +542,13 @@ def validate_config_file(path: Path | str) -> list[str]:
             resolved = resolve_config_with_defaults(config_dict, cluster_config)
             try:
                 schema.load(resolved)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 errors.append(f"{path} [{suffix}]: {e}")
     else:
         # Plain config
         try:
             load_config(path)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             errors.append(f"{path}: {e}")
 
     return errors
@@ -597,7 +597,7 @@ def load_config(path: Path | str) -> SrtConfig:
     if user_config is None:
         raise ValueError(f"Invalid config in {path}: YAML file is empty")
     if not isinstance(user_config, dict):
-        raise ValueError(f"Invalid config in {path}: top-level YAML must be a mapping")
+        raise TypeError(f"Invalid config in {path}: top-level YAML must be a mapping")
 
     # Strip lock: section if present (lockfiles are valid recipes)
     # Preserved for comparison after the new run completes

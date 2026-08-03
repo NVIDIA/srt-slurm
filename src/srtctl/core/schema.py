@@ -22,7 +22,6 @@ from dataclasses import field
 from enum import Enum
 from pathlib import Path
 from typing import (
-    TYPE_CHECKING,
     Annotated,
     Any,
     ClassVar,
@@ -44,9 +43,6 @@ from srtctl.core.formatting import (
     FormattablePath,
     FormattablePathField,
 )
-
-if TYPE_CHECKING:
-    pass
 
 logger = logging.getLogger(__name__)
 
@@ -1462,6 +1458,12 @@ class FrontendConfig:
             Override per job or set ``nginx_raise_ulimit`` in srtslurm.yaml for the cluster.
         nginx_session_affinity: Consistently hash ``nginx_session_affinity_header`` to a
             frontend. Requests without that header use a generated request ID and stay distributed.
+        nginx_keepalive_timeout: Idle timeout for client and upstream keepalive
+            connections in the generated nginx.conf (default "600s"). nginx's own
+            default is 75s, which closes a session's connection during the long
+            recorded think-time of an agentic replay; the client's next write on
+            that pooled socket then fails with "broken pipe" / "server
+            disconnected" and nothing is logged server-side.
         nginx_session_affinity_header: Header hashed when affinity is on (default
             ``X-Dynamo-Session-ID``). Set ``X-Correlation-ID`` for clients (e.g. aiperf) that
             carry the session id in that header instead.
@@ -1476,6 +1478,7 @@ class FrontendConfig:
     nginx_raise_ulimit: bool = False
     nginx_session_affinity: bool = False
     nginx_session_affinity_header: str = "X-Dynamo-Session-ID"
+    nginx_keepalive_timeout: str = "600s"
     args: dict[str, Any] | None = None
     env: dict[str, str] | None = None
     # trtllm_serve orchestrator (ser.yaml) options; ignored by other frontends.

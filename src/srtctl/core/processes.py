@@ -155,7 +155,7 @@ class ProcessRegistry:
                     logger.debug("Terminating process: %s", name)
                     try:
                         proc.terminate()
-                    except Exception as e:
+                    except Exception as e:  # noqa: BLE001
                         logger.warning("Failed to terminate %s: %s", name, e)
 
     def print_failure_details(self, tail_lines: int = 50) -> None:
@@ -190,7 +190,7 @@ class ProcessRegistry:
                             logger.error("\nLast %d lines of log:", tail_lines)
                             for line in lines[-tail_lines:]:
                                 logger.error("  %s", line)
-                    except Exception as e:
+                    except Exception as e:  # noqa: BLE001
                         logger.error("Could not read log file: %s", e)
 
         logger.error("=" * 60)

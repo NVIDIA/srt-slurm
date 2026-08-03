@@ -33,7 +33,7 @@ def load_yaml_with_comments(path: Path) -> CommentedMap:
     with open(path) as f:
         result = y.load(f)
     if not isinstance(result, CommentedMap):
-        raise ValueError(f"Expected a YAML mapping at top level, got {type(result).__name__}")
+        raise TypeError(f"Expected a YAML mapping at top level, got {type(result).__name__}")
     return result
 
 
