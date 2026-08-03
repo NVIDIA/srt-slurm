@@ -142,6 +142,14 @@ class AgenticRunner(AIPerfBenchmarkRunner):
         retired_overrides = {
             "AIPERF_AGENTIC_CACHE_WARMUP_DURATION": "duration-based cache warmup",
             "AIPERF_AGENTIC_WARMUP_MAX_TOKENS": "warmup token-count patch",
+            "AIPERF_LOCAL_WEKA_DATASET": "patched local-dataset loader",
+            "AIPERF_TOKENIZER": "non-ToT tokenizer CLI override",
+            "AIPERF_APPLY_CHAT_TEMPLATE": "non-ToT chat-template CLI override",
+            "AIPERF_SYNTHESIS_MAX_OSL": "non-ToT synthesis output cap",
+            "AIPERF_TRANSFORMERS_SPEC": "AIPerf dependency rewrite",
+            "AIPERF_ALLOW_GITHUB_TRANSFORMERS": "AIPerf dependency rewrite bypass",
+            "AIPERF_DIR": "caller-provided AIPerf source tree",
+            "AGENTX_USE_EXISTING_INFMAX_WORKSPACE": "caller-provided InferenceX workspace",
         }
         for env_name, description in retired_overrides.items():
             if env_name in b.env:

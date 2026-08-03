@@ -1723,12 +1723,8 @@ resolve_trace_source() {
     # Pre-download the dataset into the shared HF_HUB_CACHE (same mount used
     # for model weights) so subsequent runs read from cache instead of
     # re-downloading every job.
-    if [ -n "${AIPERF_LOCAL_WEKA_DATASET:-}" ]; then
-        echo "Using staged Weka dataset: $AIPERF_LOCAL_WEKA_DATASET"
-    else
-        ensure_hf_cli
-        "$AIPERF_HF_CLI" download --repo-type dataset "$dataset"
-    fi
+    ensure_hf_cli
+    "$AIPERF_HF_CLI" download --repo-type dataset "$dataset"
 }
 
 build_replay_cmd() {
@@ -1749,7 +1745,6 @@ build_replay_cmd() {
     local result_dir="$1"
     local duration="$DURATION"
     local warmup_requests_per_lane="${AIPERF_WARMUP_REQUESTS_PER_LANE:-10}"
-    local tokenizer_override="${AIPERF_TOKENIZER:-}"
 
     # Fast mode minimizes setup by advancing each trajectory lane only once
     # and shortens profiling to 20 minutes.
@@ -1852,23 +1847,6 @@ build_replay_cmd() {
     # need trust_remote_code=True to load. Benign for models without
     # custom tokenizer code, so we set it unconditionally.
     REPLAY_CMD+=" --tokenizer-trust-remote-code"
-    # srt-slurm can stage the tokenizer with the model mount so benchmark jobs
-    # do not need Hugging Face access. This extension leaves the official
-    # InferenceX command unchanged when AIPERF_TOKENIZER is unset.
-    if [ -n "$tokenizer_override" ]; then
-        REPLAY_CMD+=" --tokenizer $tokenizer_override"
-    fi
-    # AIPERF_TOKENIZER is also a pydantic-settings field. Once its value is in
-    # the CLI, remove the environment variable so a path is not JSON-decoded as
-    # a structured TokenizerConfig.
-    unset AIPERF_TOKENIZER
-    if [[ "$tokenizer_override" == /* ]]; then
-        unset HF_HUB_OFFLINE
-        unset TRANSFORMERS_OFFLINE
-    fi
-    if [[ "${AIPERF_APPLY_CHAT_TEMPLATE:-0}" == "1" || "${AIPERF_APPLY_CHAT_TEMPLATE:-false}" == "true" ]]; then
-        REPLAY_CMD+=" --apply-chat-template"
-    fi
     # Keep replay inputs inside the same context window used to launch the
     # server. The WEKA corpus contains a few very long parent/subagent traces;
     # if we mmap and replay them against a smaller-context server they become
@@ -1881,11 +1859,6 @@ build_replay_cmd() {
     # this as a ``min(cap, available)`` ceiling, not a target — see
     # semianalysis_cc_traces_weka.py).
     REPLAY_CMD+=" --num-dataset-entries 393"
-    # Optional prefill-isolation mode used by disaggregated silicon studies.
-    # Submission-quality end-to-end AgentX runs leave this unset.
-    if [ -n "${AIPERF_SYNTHESIS_MAX_OSL:-}" ]; then
-        REPLAY_CMD+=" --synthesis-max-osl $AIPERF_SYNTHESIS_MAX_OSL"
-    fi
     # 1-second timeslices on the server-metrics scrape so the post-run
     # plotter has per-window time series (KV usage, cache hit rate,
     # throughput, etc.). Matches kv-cache-tester's poll_interval=1.0

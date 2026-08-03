@@ -3,6 +3,7 @@
 
 """Tests for benchmark runners."""
 
+import hashlib
 import re
 import tarfile
 
@@ -993,13 +994,13 @@ class TestAgenticRunner:
         errors = runner.validate_config(config)
         assert any("num-dataset-entries" in error for error in errors)
 
-    def test_agentic_benchmark_lib_exposes_synthesis_max_osl(self):
-        """AgentX configs can cap OSL through benchmark.env for prefill-only runs."""
+    def test_agentic_benchmark_lib_does_not_extend_tot_with_synthesis_max_osl(self):
+        """The exact ToT command has no srt-slurm-only synthesis cap."""
         script = SCRIPTS_DIR / "agentic" / "inferencex" / "benchmarks" / "benchmark_lib.sh"
         text = script.read_text()
 
-        assert "AIPERF_SYNTHESIS_MAX_OSL" in text
-        assert "REPLAY_CMD+=\" --synthesis-max-osl $AIPERF_SYNTHESIS_MAX_OSL\"" in text
+        assert "AIPERF_SYNTHESIS_MAX_OSL" not in text
+        assert "--synthesis-max-osl" not in text
 
     def test_agentic_benchmark_lib_matches_tot_warmup_and_drain_grace(self):
         """Canonical configs use ToT's request warmup and 30-minute drain grace."""
@@ -1035,7 +1036,7 @@ class TestAgenticRunner:
         assert '"${AIPERF_HTTP_X_DYNAMO_SESSION_ID_FROM_CORRELATION_ID:-false}" != "true"' in text
 
     def test_agentic_defaults_to_inferencex_tot_and_bundles_its_aiperf_pin(self):
-        """Future runs and offline runs use the same audited AIPerf revision."""
+        """Future runs fail closed on the exact audited InferenceX sources."""
         script = SCRIPTS_DIR / "agentic" / "bench.sh"
         text = script.read_text()
 
@@ -1043,6 +1044,12 @@ class TestAgenticRunner:
         assert "818c3a5a2922c535af6271ff296ed374e292b8e4" in text
         assert "AGENTX_DYNAMO_HEADER_AFFINITY" not in text
         assert "Verified AIPerf AgentX PR #31 policy" in text
+        assert "PINNED_AIPERF_ARCHIVE_SHA256" in text
+        assert "PINNED_BENCHMARK_LIB_SHA256" in text
+        assert "PINNED_AGENTIC_SRT_SHA256" in text
+        assert "check_sha256" in text
+        assert "Verified exact InferenceX ToT harness" in text
+        assert "Verified exact AIPerf source" in text
         assert "src/aiperf/config/phases.py" in text
         assert "src/aiperf/timing/phase/runner.py" in text
         assert 'r"burst_phase_starts:.*?Field\\(\\s*default=False,"' in text
@@ -1061,6 +1068,31 @@ class TestAgenticRunner:
             "archive_sha256="
             "976d72f420977561b333b731950363eb7abbaa5776def826857cd94453fcac74"
             in manifest_text
+        )
+        assert hashlib.sha256(bundle.read_bytes()).hexdigest() == (
+            "976d72f420977561b333b731950363eb7abbaa5776def826857cd94453fcac74"
+        )
+
+        inferencex_manifest = (
+            SCRIPTS_DIR / "agentic" / "third_party" / "inferencex-tot.manifest"
+        ).read_text()
+        benchmark_lib = (
+            SCRIPTS_DIR / "agentic" / "inferencex" / "benchmarks" / "benchmark_lib.sh"
+        )
+        agentic_srt = (
+            SCRIPTS_DIR
+            / "agentic"
+            / "inferencex"
+            / "benchmarks"
+            / "multi_node"
+            / "agentic_srt.sh"
+        )
+        assert "commit=f6c1f5b5d122bc4a62b93c9bd2919dfef68ccbcd" in inferencex_manifest
+        assert hashlib.sha256(benchmark_lib.read_bytes()).hexdigest() == (
+            "bb65f69ec8bec16c95e0f59779e94e02efff1ecc57b663d16e52e4121e3aae36"
+        )
+        assert hashlib.sha256(agentic_srt.read_bytes()).hexdigest() == (
+            "9f68b35323b11f2261c20b2f6fdc5df0902f81f2c2ec1d94840e1df7cde2b898"
         )
         with tarfile.open(bundle, "r:gz") as archive:
             environment = archive.extractfile("./src/aiperf/common/environment.py")
@@ -1094,14 +1126,17 @@ class TestAgenticRunner:
         assert "_handoff_replay_offset_ms" in replay_text
         assert "self.scheduler.set_drain_observer(self.enforce_system_idle_cap)" in replay_text
 
-    def test_agentic_bench_patches_weka_subagent_osl_cap(self):
-        """bench.sh keeps Weka subagent child turns under the synthesis OSL cap."""
+    def test_agentic_bench_forbids_source_and_command_adapters(self):
+        """Exact ToT mode must never patch AIPerf or extend its replay command."""
         script = SCRIPTS_DIR / "agentic" / "bench.sh"
         text = script.read_text()
 
         assert "AIPERF_SYNTHESIS_MAX_OSL" in text
-        assert "max_tokens=self._cap_output(creq)," in text
-        assert '"capped_output_length": self._cap_output(creq)' in text
+        assert "AIPERF_LOCAL_WEKA_DATASET" in text
+        assert "AIPERF_TOKENIZER" in text
+        assert "is not allowed in exact InferenceX ToT mode" in text
+        assert "max_tokens=self._cap_output(creq)," not in text
+        assert "Loading staged local Weka dataset" not in text
 
     def test_agentic_bench_isolates_hf_dataset_cache(self):
         """AIPerf dataset locks must not use the shared model-weight cache."""
@@ -1111,37 +1146,15 @@ class TestAgenticRunner:
         assert 'HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-${WORKSPACE_ROOT}/hf-datasets}"' in text
         assert 'mkdir -p "$HF_DATASETS_CACHE"' in text
 
-    def test_agentic_bench_supports_staged_local_weka_dataset(self):
-        """AgentX can load a staged Weka JSONL without Hugging Face Hub access."""
-        script = SCRIPTS_DIR / "agentic" / "bench.sh"
-        text = script.read_text()
-
-        assert "AIPERF_LOCAL_WEKA_DATASET" in text
-        assert "Loading staged local Weka dataset" in text
-        assert 'data_files={"train": local_path}' in text
-        assert "load_from_disk(local_path)" in text
-        assert "Dataset.from_file" in text
-        assert 'cache_dir=os.environ.get("HF_DATASETS_CACHE")' in text
-
-    def test_agentic_staged_weka_skips_hugging_face_predownload(self):
-        """A staged Weka run must not resolve Hugging Face metadata offline."""
+    def test_agentic_benchmark_lib_has_no_srt_command_extensions(self):
+        """The vendored replay command is byte-for-byte InferenceX ToT."""
         script = SCRIPTS_DIR / "agentic" / "inferencex" / "benchmarks" / "benchmark_lib.sh"
         text = script.read_text()
 
-        assert 'if [ -n "${AIPERF_LOCAL_WEKA_DATASET:-}" ]' in text
-        assert "Using staged Weka dataset" in text
-
-    def test_agentic_benchmark_lib_accepts_local_tokenizer(self):
-        """Air-gapped AgentX runs can load tokenizer assets from a local mount."""
-        script = SCRIPTS_DIR / "agentic" / "inferencex" / "benchmarks" / "benchmark_lib.sh"
-        text = script.read_text()
-
-        assert 'local tokenizer_override="${AIPERF_TOKENIZER:-}"' in text
-        assert 'REPLAY_CMD+=" --tokenizer $tokenizer_override"' in text
-        assert "unset AIPERF_TOKENIZER" in text
-        assert 'if [[ "$tokenizer_override" == /* ]]' in text
-        assert "unset HF_HUB_OFFLINE" in text
-        assert "unset TRANSFORMERS_OFFLINE" in text
+        assert "AIPERF_LOCAL_WEKA_DATASET" not in text
+        assert "AIPERF_TOKENIZER" not in text
+        assert "AIPERF_APPLY_CHAT_TEMPLATE" not in text
+        assert "AIPERF_SYNTHESIS_MAX_OSL" not in text
 
     def test_agentic_bench_honors_remote_frontend_endpoint(self):
         """AgentX can run on a benchmark node separate from the server."""
@@ -1151,8 +1164,8 @@ class TestAgenticRunner:
         assert 'PORT_FROM_ENDPOINT="${SRT_FRONTEND_PORT:-$PORT_FROM_ENDPOINT}"' in text
         assert 'ENDPOINT="http://${SRT_FRONTEND_HOST}:${PORT_FROM_ENDPOINT}"' in text
 
-    def test_agentic_rejects_retired_warmup_overrides(self):
-        """Legacy duration and token-count patches cannot change ToT methodology."""
+    def test_agentic_rejects_non_tot_overrides(self):
+        """Source, command, duration, and token-count adapters are rejected."""
         from srtctl.benchmarks.agentic import AgenticRunner
         from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
 
@@ -1167,6 +1180,9 @@ class TestAgenticRunner:
                 env={
                     "AIPERF_AGENTIC_CACHE_WARMUP_DURATION": "600",
                     "AIPERF_AGENTIC_WARMUP_MAX_TOKENS": "4",
+                    "AIPERF_LOCAL_WEKA_DATASET": "/dataset",
+                    "AIPERF_TOKENIZER": "/model",
+                    "AIPERF_SYNTHESIS_MAX_OSL": "1024",
                 },
             ),
         )
@@ -1174,6 +1190,9 @@ class TestAgenticRunner:
         errors = runner.validate_config(config)
         assert any("AIPERF_AGENTIC_CACHE_WARMUP_DURATION" in error for error in errors)
         assert any("AIPERF_AGENTIC_WARMUP_MAX_TOKENS" in error for error in errors)
+        assert any("AIPERF_LOCAL_WEKA_DATASET" in error for error in errors)
+        assert any("AIPERF_TOKENIZER" in error for error in errors)
+        assert any("AIPERF_SYNTHESIS_MAX_OSL" in error for error in errors)
 
     def test_profiling_script_supports_direct_vllm(self):
         """Direct vLLM uses its native profile control endpoints."""

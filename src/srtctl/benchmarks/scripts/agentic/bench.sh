@@ -28,140 +28,90 @@ if [[ -n "${SRT_FRONTEND_HOST:-}" ]]; then
 fi
 export PORT="${PORT:-$PORT_FROM_ENDPOINT}"
 
-INFERENCEX_AGENTX_COMMIT="${INFERENCEX_AGENTX_COMMIT:-f6c1f5b5d122bc4a62b93c9bd2919dfef68ccbcd}"
+PINNED_INFERENCEX_AGENTX_COMMIT="f6c1f5b5d122bc4a62b93c9bd2919dfef68ccbcd"
+PINNED_AIPERF_AGENTX_REF="818c3a5a2922c535af6271ff296ed374e292b8e4"
+PINNED_AIPERF_ARCHIVE_SHA256="976d72f420977561b333b731950363eb7abbaa5776def826857cd94453fcac74"
+PINNED_BENCHMARK_LIB_SHA256="bb65f69ec8bec16c95e0f59779e94e02efff1ecc57b663d16e52e4121e3aae36"
+PINNED_AGENTIC_SRT_SHA256="9f68b35323b11f2261c20b2f6fdc5df0902f81f2c2ec1d94840e1df7cde2b898"
+
+INFERENCEX_AGENTX_COMMIT="${INFERENCEX_AGENTX_COMMIT:-$PINNED_INFERENCEX_AGENTX_COMMIT}"
 # InferenceX ToT's AIPerf pin includes the flattened warmup handoff clock and
 # keeps the system/trajectory idle watchdogs active across phase barriers.
-AIPERF_AGENTX_REF="${AIPERF_AGENTX_REF:-818c3a5a2922c535af6271ff296ed374e292b8e4}"
-BUNDLED_AIPERF_REF="818c3a5a2922c535af6271ff296ed374e292b8e4"
+AIPERF_AGENTX_REF="${AIPERF_AGENTX_REF:-$PINNED_AIPERF_AGENTX_REF}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUNDLED_INFMAX_WORKSPACE="${AGENTX_BUNDLED_INFMAX_WORKSPACE:-$SCRIPT_DIR/inferencex}"
 BUNDLED_AIPERF_TARBALL="${AGENTX_BUNDLED_AIPERF_TARBALL:-$SCRIPT_DIR/third_party/aiperf-agentx-v1-src.tgz}"
 
-if [[ "${AGENTX_USE_EXISTING_INFMAX_WORKSPACE:-0}" == "1" ]]; then
-  WORKSPACE_ROOT="${INFMAX_CONTAINER_WORKSPACE:?AGENTX_USE_EXISTING_INFMAX_WORKSPACE=1 requires INFMAX_CONTAINER_WORKSPACE}"
-  if [[ ! -f "$WORKSPACE_ROOT/benchmarks/multi_node/agentic_srt.sh" ]]; then
-    echo "ERROR: existing INFMAX_CONTAINER_WORKSPACE lacks benchmarks/multi_node/agentic_srt.sh: $WORKSPACE_ROOT" >&2
-    exit 1
-  fi
+if [[ "$INFERENCEX_AGENTX_COMMIT" != "$PINNED_INFERENCEX_AGENTX_COMMIT" ]]; then
+  echo "ERROR: InferenceX must be pinned to ToT commit $PINNED_INFERENCEX_AGENTX_COMMIT, got $INFERENCEX_AGENTX_COMMIT" >&2
+  exit 1
+fi
+if [[ "$AIPERF_AGENTX_REF" != "$PINNED_AIPERF_AGENTX_REF" ]]; then
+  echo "ERROR: AIPerf must be pinned to ToT commit $PINNED_AIPERF_AGENTX_REF, got $AIPERF_AGENTX_REF" >&2
+  exit 1
 fi
 
+for forbidden_env in \
+  AIPERF_DIR \
+  AIPERF_LOCAL_WEKA_DATASET \
+  AIPERF_TOKENIZER \
+  AIPERF_APPLY_CHAT_TEMPLATE \
+  AIPERF_SYNTHESIS_MAX_OSL \
+  AIPERF_TRANSFORMERS_SPEC \
+  AIPERF_ALLOW_GITHUB_TRANSFORMERS \
+  AGENTX_USE_EXISTING_INFMAX_WORKSPACE; do
+  if [[ -n "${!forbidden_env:-}" ]]; then
+    echo "ERROR: $forbidden_env is not allowed in exact InferenceX ToT mode" >&2
+    exit 1
+  fi
+done
+
 WORKSPACE_ROOT="${WORKSPACE_ROOT:-${AGENTX_WORKSPACE:-/tmp/inferencex-agentx-${SLURM_JOB_ID:-$$}}}"
+case "$WORKSPACE_ROOT" in
+  /tmp/inferencex-agentx-*|/tmp/inferencex-agentic-*) ;;
+  *)
+    echo "ERROR: exact ToT workspace must be an isolated /tmp/inferencex-agentx-* path, got $WORKSPACE_ROOT" >&2
+    exit 1
+    ;;
+esac
 
 if ! command -v tar >/dev/null 2>&1; then
   apt-get update -qq && apt-get install -y -qq --no-install-recommends tar
 fi
 
-if [[ "${AGENTX_USE_EXISTING_INFMAX_WORKSPACE:-0}" != "1" ]]; then
-  rm -rf "$WORKSPACE_ROOT"
-  mkdir -p "$WORKSPACE_ROOT"
-
-  if [[ "${AGENTX_USE_BUNDLED_INFMAX_WORKSPACE:-1}" == "1" && -f "$BUNDLED_INFMAX_WORKSPACE/benchmarks/multi_node/agentic_srt.sh" ]]; then
-    echo "Using bundled InferenceX AgentX harness: $BUNDLED_INFMAX_WORKSPACE"
-    cp -a "$BUNDLED_INFMAX_WORKSPACE/." "$WORKSPACE_ROOT/"
-  else
-    if ! command -v curl >/dev/null 2>&1; then
-      apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates
-    fi
-    echo "Downloading InferenceX AgentX harness: ${INFERENCEX_AGENTX_COMMIT}"
-    curl -L --fail --retry 5 --retry-delay 2 \
-      "https://codeload.github.com/SemiAnalysisAI/InferenceX/tar.gz/${INFERENCEX_AGENTX_COMMIT}" \
-      | tar -xz --strip-components=1 -C "$WORKSPACE_ROOT"
-  fi
-
-  if [[ -n "${AIPERF_DIR:-}" ]]; then
-    echo "Using caller-provided AIPERF_DIR: $AIPERF_DIR"
-  elif [[ -f "$BUNDLED_AIPERF_TARBALL" && "$AIPERF_AGENTX_REF" == "$BUNDLED_AIPERF_REF" ]]; then
-    echo "Using bundled AIPerf AgentX source: $BUNDLED_AIPERF_TARBALL"
-    mkdir -p "$WORKSPACE_ROOT/utils/aiperf"
-    tar -xzf "$BUNDLED_AIPERF_TARBALL" -C "$WORKSPACE_ROOT/utils/aiperf"
-  else
-    if ! command -v curl >/dev/null 2>&1; then
-      apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates
-    fi
-    echo "Downloading AIPerf AgentX submodule: ${AIPERF_AGENTX_REF}"
-    rm -rf "$WORKSPACE_ROOT/utils/aiperf"
-    mkdir -p "$WORKSPACE_ROOT/utils/aiperf"
-    curl -L --fail --retry 5 --retry-delay 2 \
-      "https://codeload.github.com/SemiAnalysisAI/aiperf/tar.gz/${AIPERF_AGENTX_REF}" \
-      | tar -xz --strip-components=1 -C "$WORKSPACE_ROOT/utils/aiperf"
-  fi
+if [[ ! -f "$BUNDLED_INFMAX_WORKSPACE/benchmarks/benchmark_lib.sh" || \
+      ! -f "$BUNDLED_INFMAX_WORKSPACE/benchmarks/multi_node/agentic_srt.sh" ]]; then
+  echo "ERROR: exact bundled InferenceX ToT harness is incomplete: $BUNDLED_INFMAX_WORKSPACE" >&2
+  exit 1
+fi
+if [[ ! -f "$BUNDLED_AIPERF_TARBALL" ]]; then
+  echo "ERROR: exact bundled AIPerf archive is missing: $BUNDLED_AIPERF_TARBALL" >&2
+  exit 1
 fi
 
-AIPERF_ROOT="${AIPERF_DIR:-$WORKSPACE_ROOT/utils/aiperf}"
-
-# The datasets library still resolves Hub metadata before consulting a cached
-# Hub snapshot. Allow AgentX runs to consume a staged Weka JSONL directly so
-# benchmarks are independent of Hugging Face availability and rate limits.
-if [[ -n "${AIPERF_LOCAL_WEKA_DATASET:-}" ]]; then
-  if [[ ! -r "$AIPERF_LOCAL_WEKA_DATASET" ]]; then
-    echo "ERROR: AIPERF_LOCAL_WEKA_DATASET is not readable: $AIPERF_LOCAL_WEKA_DATASET" >&2
+check_sha256() {
+  local path="$1"
+  local expected="$2"
+  local actual
+  actual="$(sha256sum "$path" | awk '{print $1}')"
+  if [[ "$actual" != "$expected" ]]; then
+    echo "ERROR: exact ToT source checksum mismatch for $path: expected $expected, got $actual" >&2
     exit 1
   fi
+}
 
-  LOCAL_WEKA_LOADER="$AIPERF_ROOT/src/aiperf/dataset/loader/semianalysis_cc_traces_weka.py"
-  if [[ ! -f "$LOCAL_WEKA_LOADER" ]]; then
-    echo "ERROR: staged Weka dataset requested but loader was not found: $LOCAL_WEKA_LOADER" >&2
-    exit 1
-  fi
+check_sha256 "$BUNDLED_INFMAX_WORKSPACE/benchmarks/benchmark_lib.sh" "$PINNED_BENCHMARK_LIB_SHA256"
+check_sha256 "$BUNDLED_INFMAX_WORKSPACE/benchmarks/multi_node/agentic_srt.sh" "$PINNED_AGENTIC_SRT_SHA256"
+check_sha256 "$BUNDLED_AIPERF_TARBALL" "$PINNED_AIPERF_ARCHIVE_SHA256"
 
-  python3 - "$LOCAL_WEKA_LOADER" <<'PY'
-from pathlib import Path
-import sys
+rm -rf "$WORKSPACE_ROOT"
+mkdir -p "$WORKSPACE_ROOT/utils/aiperf"
+cp -a "$BUNDLED_INFMAX_WORKSPACE/." "$WORKSPACE_ROOT/"
+tar -xzf "$BUNDLED_AIPERF_TARBALL" -C "$WORKSPACE_ROOT/utils/aiperf"
+echo "Verified exact InferenceX ToT harness $PINNED_INFERENCEX_AGENTX_COMMIT"
+echo "Verified exact AIPerf source $PINNED_AIPERF_AGENTX_REF"
 
-path = Path(sys.argv[1])
-text = path.read_text()
-sentinel = "Loading staged local Weka dataset"
-
-if sentinel in text:
-    print(f"Local Weka dataset support already present: {path}")
-    raise SystemExit(0)
-
-marker = "    async def load_dataset(self) -> dict[str, list[WekaTrace]]:\n"
-if text.count(marker) != 1:
-    raise SystemExit(
-        f"ERROR: expected one Weka load_dataset marker in {path}, "
-        f"found {text.count(marker)}"
-    )
-
-method = '''    def _load_hf_dataset(self) -> Any:
-        """Load a staged Weka JSONL without resolving Hugging Face Hub metadata."""
-        import os
-        from pathlib import Path
-
-        from datasets import (
-            Dataset,
-            concatenate_datasets,
-            load_dataset as hf_load_dataset,
-            load_from_disk,
-        )
-
-        local_path = os.environ.get("AIPERF_LOCAL_WEKA_DATASET")
-        if not local_path:
-            return super()._load_hf_dataset()
-        self.info(f"Loading staged local Weka dataset from '{local_path}'")
-        if Path(local_path).is_dir():
-            self.info("Using preprocessed Arrow dataset")
-            arrow_files = sorted(Path(local_path).glob("*.arrow"))
-            if arrow_files:
-                datasets = [Dataset.from_file(str(item)) for item in arrow_files]
-                return concatenate_datasets(datasets)
-            return load_from_disk(local_path)
-        return hf_load_dataset(
-            "json",
-            data_files={"train": local_path},
-            split=self.hf_split,
-            streaming=False,
-            cache_dir=os.environ.get("HF_DATASETS_CACHE"),
-        )
-
-'''
-
-path.write_text(text.replace(marker, method + marker, 1))
-print(f"Patched Weka loader for staged local dataset: {path}")
-PY
-
-  echo "Staged Weka dataset: ${AIPERF_LOCAL_WEKA_DATASET}"
-fi
+AIPERF_ROOT="$WORKSPACE_ROOT/utils/aiperf"
 
 python3 - \
   "$AIPERF_ROOT/src/aiperf/common/scenario/inferencex_agentx_mvp.py" \
@@ -269,14 +219,6 @@ else:
     )
 PY
 
-if [[ -f "${AIPERF_DIR:-$WORKSPACE_ROOT/utils/aiperf}/pyproject.toml" && "${AIPERF_ALLOW_GITHUB_TRANSFORMERS:-0}" != "1" ]]; then
-  AIPERF_TRANSFORMERS_SPEC="${AIPERF_TRANSFORMERS_SPEC:-transformers>=4.53.0,<5}"
-  echo "Using AIPerf transformers dependency override: ${AIPERF_TRANSFORMERS_SPEC}"
-  sed -i -E \
-    "s|\"transformers @ git\\+https://github.com/huggingface/transformers.git\"[^,]*,|\"${AIPERF_TRANSFORMERS_SPEC}\",|" \
-    "${AIPERF_DIR:-$WORKSPACE_ROOT/utils/aiperf}/pyproject.toml"
-fi
-
 export INFMAX_CONTAINER_WORKSPACE="$WORKSPACE_ROOT"
 
 # Keep model weights in the cluster-wide HF_HOME, but isolate Hugging Face
@@ -285,53 +227,6 @@ export INFMAX_CONTAINER_WORKSPACE="$WORKSPACE_ROOT"
 export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-${WORKSPACE_ROOT}/hf-datasets}"
 mkdir -p "$HF_DATASETS_CACHE"
 echo "Hugging Face dataset cache: ${HF_DATASETS_CACHE}"
-
-if [[ -n "${AIPERF_SYNTHESIS_MAX_OSL:-}" ]]; then
-  AIPERF_ROOT="${AIPERF_DIR:-$WORKSPACE_ROOT/utils/aiperf}"
-  WEKA_TRACE="$AIPERF_ROOT/src/aiperf/dataset/loader/weka_trace.py"
-  if [[ ! -f "$WEKA_TRACE" ]]; then
-    echo "ERROR: AIPERF_SYNTHESIS_MAX_OSL is set but Weka trace loader was not found at $WEKA_TRACE" >&2
-    exit 1
-  fi
-
-  python3 - "$WEKA_TRACE" <<'PY'
-from pathlib import Path
-import sys
-
-path = Path(sys.argv[1])
-text = path.read_text()
-original = text
-
-if "max_tokens=creq.output_length," in text:
-    marker = 'source_kind="weka_subagent",'
-    marker_idx = text.find(marker)
-    token_idx = text.find("max_tokens=creq.output_length,", marker_idx)
-    if marker_idx == -1 or token_idx == -1:
-        raise SystemExit(
-            f"found uncapped subagent max_tokens in {path}, but not in the expected Weka subagent block"
-        )
-    text = text[:token_idx] + text[token_idx:].replace(
-        "max_tokens=creq.output_length,",
-        "max_tokens=self._cap_output(creq),",
-        1,
-    )
-
-if '"source_kind": "weka_subagent",\n                    "theoretical_hit_blocks": hit_blocks,' in text:
-    text = text.replace(
-        '"source_kind": "weka_subagent",\n                    "theoretical_hit_blocks": hit_blocks,',
-        '"source_kind": "weka_subagent",\n'
-        '                    "capped_output_length": self._cap_output(creq),\n'
-        '                    "theoretical_hit_blocks": hit_blocks,',
-        1,
-    )
-
-if text == original:
-    print(f"Weka trace loader already honors synthesis OSL cap for subagent turns: {path}")
-else:
-    path.write_text(text)
-    print(f"Patched Weka trace loader to honor synthesis OSL cap for subagent turns: {path}")
-PY
-fi
 
 export MODEL="$MODEL_NAME"
 export MODEL_PREFIX="$MODEL_PREFIX_ARG"
