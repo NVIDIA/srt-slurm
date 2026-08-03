@@ -51,6 +51,7 @@ def _run_bash_function(
             capture_output=True,
             text=True,
             timeout=timeout,
+            check=False,
         )
 
         if result.returncode == 0:
@@ -67,7 +68,7 @@ def _run_bash_function(
     except subprocess.TimeoutExpired:
         logger.error("Timeout running bash function %s", function)
         return False, "Timeout"
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.error("Error running bash function %s: %s", function, e)
         return False, str(e)
 

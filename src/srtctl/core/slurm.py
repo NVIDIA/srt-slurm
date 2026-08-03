@@ -393,7 +393,7 @@ def run_command(
         )
         return proc
     else:
-        result = subprocess.run(command, shell=True)
+        result = subprocess.run(command, shell=True, check=False)
         return result.returncode
 
 

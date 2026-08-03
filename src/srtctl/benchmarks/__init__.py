@@ -26,19 +26,19 @@ from srtctl.benchmarks.base import (
 
 __all__ = [
     "BenchmarkRunner",
-    "get_runner",
-    "list_benchmarks",
-    "register_benchmark",
     # Runners
     "custom",
-    "lm_eval",
-    "sa_bench",
-    "sglang_bench",
-    "mmlu",
+    "get_runner",
     "gpqa",
     "gsm8k",
+    "list_benchmarks",
+    "lm_eval",
     "longbenchv2",
-    "router",
+    "mmlu",
     "mooncake_router",
+    "register_benchmark",
+    "router",
+    "sa_bench",
+    "sglang_bench",
     "trace_replay",
 ]

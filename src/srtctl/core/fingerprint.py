@@ -222,12 +222,13 @@ def _run_cmd(cmd: str, timeout: int = _CMD_TIMEOUT) -> str | None:
             capture_output=True,
             text=True,
             timeout=timeout,
+            check=False,
         )
         return result.stdout.strip() if result.returncode == 0 else None
     except subprocess.TimeoutExpired:
         logger.debug("Command timed out (%ds): %s", timeout, cmd)
         return None
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.debug("Command failed: %s — %s", cmd, e)
         return None
 
@@ -238,7 +239,7 @@ def probe_hostname() -> ProbeResult:
         import socket
 
         return ProbeResult.success(socket.gethostname())
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return ProbeResult.failure(str(e))
 
 
@@ -247,7 +248,7 @@ def probe_timestamp() -> ProbeResult:
     try:
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         return ProbeResult.success(ts)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return ProbeResult.failure(str(e))
 
 
@@ -255,7 +256,7 @@ def probe_arch() -> ProbeResult:
     """Get CPU architecture."""
     try:
         return ProbeResult.success(platform.machine())
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return ProbeResult.failure(str(e))
 
 
@@ -268,7 +269,7 @@ def probe_os() -> ProbeResult:
                 if line.startswith("PRETTY_NAME="):
                     return ProbeResult.success(line.split("=", 1)[1].strip('"'))
         return ProbeResult.success(platform.platform())
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return ProbeResult.failure(str(e))
 
 
@@ -303,7 +304,7 @@ def probe_cpu() -> ProbeResult:
                 "slurm": slurm,
             }
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return ProbeResult.failure(str(e))
 
 
@@ -345,7 +346,7 @@ def probe_python_version() -> ProbeResult:
     """Get Python version."""
     try:
         return ProbeResult.success(platform.python_version())
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return ProbeResult.failure(str(e))
 
 
@@ -443,7 +444,7 @@ def capture_fingerprint(extra_probes: dict[str, Any] | None = None) -> dict[str,
             data[name] = result.value
             if not result.ok:
                 logger.debug("Probe %s failed: %s", name, result.error)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             # Belt-and-suspenders: even if ProbeResult contract is violated
             data[name] = UNAVAILABLE
             logger.debug("Probe %s raised unexpectedly: %s", name, e)
@@ -461,7 +462,7 @@ def write_fingerprint(path: Path, extra_probes: dict[str, Any] | None = None) ->
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data, indent=2) + "\n")
         return True
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.debug("Failed to write fingerprint to %s: %s", path, e)
         return False
 
@@ -470,7 +471,7 @@ def load_fingerprint(path: Path) -> dict[str, Any] | None:
     """Load a fingerprint from a JSON file. Returns None on failure."""
     try:
         return json.loads(path.read_text())
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.debug("Failed to load fingerprint from %s: %s", path, e)
         return None
 

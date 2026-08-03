@@ -410,12 +410,12 @@ class WorkerStageMixin:
 
         if launch_per_endpoint:
             # MPI-style: one srun per endpoint (TRTLLM)
-            for _endpoint_key, endpoint_processes in grouped.items():
+            for endpoint_processes in grouped.values():
                 managed = self.start_endpoint_worker(endpoint_processes)
                 result[managed.name] = managed
         else:
             # Per-process: one srun per node (SGLang)
-            for _endpoint_key, endpoint_processes in grouped.items():
+            for endpoint_processes in grouped.values():
                 for process in endpoint_processes:
                     managed = self.start_worker(process, endpoint_processes)
                     result[managed.name] = managed

@@ -269,7 +269,7 @@ class RuntimeContext:
 
         # If it looks like a file path (starts with / or ./), validate it exists
         # Image names are typically registry paths without leading / or ./
-        if container_image_str.startswith("/") or container_image_str.startswith("./"):
+        if container_image_str.startswith(("/", "./")):
             container_image = Path(container_image_str).resolve()
             if not container_image.exists():
                 raise FileNotFoundError(f"Container image path does not exist: {container_image}")

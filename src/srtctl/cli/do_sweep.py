@@ -458,7 +458,7 @@ class SweepOrchestrator(
             return
         except ImportError:
             logger.debug("huggingface_hub not installed on host, will use container to check/download")
-        except Exception:
+        except Exception:  # noqa: BLE001
             logger.debug("Model '%s' not fully cached, will pre-download", model_id)
 
         download_node = self.runtime.nodes.worker[0]
@@ -477,16 +477,18 @@ class SweepOrchestrator(
         download_cmd = [
             "bash",
             "-c",
-            f"export HF_HOME={q_hf_home}; "
-            f"find {q_hf_home} -name '*.lock' -mmin +30 -delete 2>/dev/null; "
-            f"DL_CMD='hf download'; "
-            f"command -v hf >/dev/null 2>&1 || DL_CMD='huggingface-cli download'; "
-            f"if HF_HUB_OFFLINE=1 $DL_CMD {q_model_id} --quiet 2>/dev/null; then "
-            f"echo 'Model already cached'; "
-            f"else "
-            f"echo 'Downloading model...'; "
-            f"$DL_CMD {q_model_id} --quiet; "
-            f"fi",
+            (
+                f"export HF_HOME={q_hf_home}; "
+                f"find {q_hf_home} -name '*.lock' -mmin +30 -delete 2>/dev/null; "
+                f"DL_CMD='hf download'; "
+                f"command -v hf >/dev/null 2>&1 || DL_CMD='huggingface-cli download'; "
+                f"if HF_HUB_OFFLINE=1 $DL_CMD {q_model_id} --quiet 2>/dev/null; then "
+                f"echo 'Model already cached'; "
+                f"else "
+                f"echo 'Downloading model...'; "
+                f"$DL_CMD {q_model_id} --quiet; "
+                f"fi"
+            ),
         ]
 
         download_log = self.runtime.log_dir / "model_download.out"
@@ -739,7 +741,7 @@ class SweepOrchestrator(
                         logger.info("Post-benchmark eval completed successfully")
 
         except Exception as e:
-            logger.exception("Error during sweep: %s", e)
+            logger.exception("Error during sweep")
             reporter.report(JobStatus.FAILED, JobStage.CLEANUP, str(e))
             exit_code = 1
 
@@ -798,8 +800,8 @@ def main():
 
         sys.exit(exit_code)
 
-    except Exception as e:
-        logger.exception("Fatal error: %s", e)
+    except Exception:
+        logger.exception("Fatal error")
         sys.exit(1)
 
 

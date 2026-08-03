@@ -239,7 +239,7 @@ def check_vllm_health(
             ready=False,
             message="vLLM /health is up but /v1/models has no models",
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return WorkerHealthResult(
             ready=False,
             message=f"vLLM /health is up but /v1/models check failed: {e}",
@@ -334,7 +334,7 @@ def wait_for_health(
                                 len(models),
                             )
                             return True
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001
                     logger.debug("Models check failed: %s", e)
                     time.sleep(interval)
                     continue
@@ -504,7 +504,7 @@ def wait_for_model(
             if time.time() - last_report_time >= report_every:
                 logger.debug("Health check failed: %s", e)
                 last_report_time = time.time()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.debug("Unexpected error during health check: %s", e)
 
         time.sleep(poll_interval)

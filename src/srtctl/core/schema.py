@@ -22,7 +22,6 @@ from dataclasses import field
 from enum import Enum
 from pathlib import Path
 from typing import (
-    TYPE_CHECKING,
     Annotated,
     Any,
     ClassVar,
@@ -44,9 +43,6 @@ from srtctl.core.formatting import (
     FormattablePath,
     FormattablePathField,
 )
-
-if TYPE_CHECKING:
-    pass
 
 logger = logging.getLogger(__name__)
 
