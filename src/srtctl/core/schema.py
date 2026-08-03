@@ -1593,8 +1593,8 @@ class SrtConfig:
         """Catch trtllm_serve misconfigurations at load time (dry-run) instead of
         failing mid-job at the frontend stage.
 
-        The trtllm_serve frontend runs a single ``trtllm-serve disaggregated``
-        orchestrator, so it needs the trtllm backend, a disaggregated layout, and the
+        The trtllm_serve frontend supports either one direct aggregate worker or a
+        single ``trtllm-serve disaggregated`` orchestrator. Both use the
         single-frontend path (no nginx/multi-frontend).
         """
         if self.frontend.type != "trtllm_serve":
@@ -1605,12 +1605,12 @@ class SrtConfig:
             )
         if self.frontend.enable_multiple_frontends:
             raise ValidationError(
-                "frontend.type: trtllm_serve runs a single orchestrator; set frontend.enable_multiple_frontends: false"
+                "frontend.type: trtllm_serve uses one public endpoint; set frontend.enable_multiple_frontends: false"
             )
-        if not self.resources.is_disaggregated:
+        if not self.resources.is_disaggregated and self.resources.num_agg != 1:
             raise ValidationError(
-                "frontend.type: trtllm_serve requires a disaggregated layout "
-                "(set resources.prefill_nodes/prefill_workers and decode_nodes/decode_workers)"
+                "frontend.type: trtllm_serve aggregate mode requires exactly one "
+                "aggregate worker (set resources.agg_workers: 1)"
             )
 
     def _validate_vllm_frontend(self):
