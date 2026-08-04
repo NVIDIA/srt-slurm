@@ -149,7 +149,7 @@ class DynamoFrontend:
                 'echo "Running setup script: ${script_path} (fallback ${patch_script_path})" && '
                 'if [ -f "${script_path}" ]; then bash "${script_path}"; '
                 'elif [ -f "${patch_script_path}" ]; then bash "${patch_script_path}"; '
-                'else echo "WARNING: ${script_path} or ${patch_script_path} not found"; fi'
+                'else echo "ERROR: ${script_path} or ${patch_script_path} not found" >&2; exit 1; fi'
             )
 
         # Dynamo installation (required for dynamo frontend)
