@@ -65,6 +65,16 @@ def _find_git_root(path: Path) -> Path | None:
     return Path(root).resolve() if root else None
 
 
+def head_commit(path: Path) -> tuple[Path, str] | None:
+    """Git root containing ``path`` and its HEAD commit, when available."""
+    root = _find_git_root(path)
+    if root is None:
+        return None
+    result = _run_git(root, ["rev-parse", "HEAD"], check=True)
+    commit = result.stdout.strip() if result else ""
+    return (root, commit) if commit else None
+
+
 def _split_mount(mount_spec: str) -> tuple[str, str] | None:
     if ":" not in mount_spec:
         return None
