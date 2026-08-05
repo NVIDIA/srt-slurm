@@ -697,6 +697,21 @@ class TestS3UploadFaultTolerance:
         assert upload_line in script
         assert script.index(parse_line) < script.index(upload_line)
 
+    def test_postprocess_script_tolerates_malformed_worker_log_utf8(self, tmp_path):
+        """srtlog should replace corrupt bytes instead of rejecting valid run data."""
+        mixin = self._create_mixin_with_runtime(tmp_path)
+        script = mixin._build_postprocess_script("s3://test-bucket/run/", "")
+
+        patch_line = (
+            "sed -i 's/with open(filepath) as f:/"
+            'with open(filepath, errors="replace") as f:/\''
+        )
+        verify_line = 'grep -Fq \'with open(filepath, errors="replace") as f:\''
+
+        assert patch_line in script
+        assert verify_line in script
+        assert script.index(patch_line) < script.index("uv pip install --system ./srtlog")
+
     def test_run_postprocess_completes_with_s3_failure(self, tmp_path):
         """Test run_postprocess completes even when S3 upload fails entirely."""
         mixin = self._create_mixin_with_runtime(tmp_path)

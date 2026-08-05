@@ -488,7 +488,11 @@ if ! pip install uv awscli; then
 fi
 
 echo "Installing srtlog..."
-if cd /tmp && git clone --depth 1 https://github.com/ishandhanani/srtlog.git && uv pip install --system ./srtlog; then
+if cd /tmp \
+  && git clone --depth 1 https://github.com/ishandhanani/srtlog.git \
+  && sed -i 's/with open(filepath) as f:/with open(filepath, errors="replace") as f:/' /tmp/srtlog/src/srtlog/log_parser.py \
+  && grep -Fq 'with open(filepath, errors="replace") as f:' /tmp/srtlog/src/srtlog/log_parser.py \
+  && uv pip install --system ./srtlog; then
   echo "Running srtlog parse..."
   cd /logs
   srtlog parse . || PARSE_STATUS=$?
