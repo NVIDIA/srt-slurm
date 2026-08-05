@@ -1,4 +1,4 @@
 repository=https://github.com/SemiAnalysisAI/aiperf.git
-commit=818c3a5a2922c535af6271ff296ed374e292b8e4
-archive_sha256=976d72f420977561b333b731950363eb7abbaa5776def826857cd94453fcac74
-notes=InferenceX ToT AgentX client with flattened warmup handoff timing and persistent system/trajectory idle watchdogs.
+commit=b7b16cf851885567988a643282266bce74e34437
+archive_sha256=1d96dacab5c0021cff1c668f8514355c78d83fb48a61b842a983817d337bfc1e
+notes=InferenceX AgentX client with canonical timing and 98-percent profiling metric coverage validation.

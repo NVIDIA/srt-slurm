@@ -169,7 +169,7 @@ benchmark:
     HF_DATASETS_OFFLINE: "1"
     HF_DATASETS_CACHE: "/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/kylliang/srtslurm_studies/20260730_minimax_agentx/datasets/hf-datasets-cache-aiperf818-datasets5.0.1"
     INFERENCEX_AGENTX_COMMIT: f6c1f5b5d122bc4a62b93c9bd2919dfef68ccbcd
-    AIPERF_AGENTX_REF: 818c3a5a2922c535af6271ff296ed374e292b8e4
+    AIPERF_AGENTX_REF: b7b16cf851885567988a643282266bce74e34437
     AIPERF_TRACE_IDLE_GAP_CAP_SECONDS: "300"
     AIPERF_WARMUP_REQUESTS_PER_LANE: "10"
     WEKA_LOADER_OVERRIDE: semianalysis_cc_traces_weka_062126

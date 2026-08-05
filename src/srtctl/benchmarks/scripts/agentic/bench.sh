@@ -28,15 +28,26 @@ if [[ -n "${SRT_FRONTEND_HOST:-}" ]]; then
 fi
 export PORT="${PORT:-$PORT_FROM_ENDPOINT}"
 
+# The final-submission AgentX command always scrapes the serving endpoint.
+# Preserve any worker endpoints supplied by disaggregated launchers while
+# ensuring aggregate runs do not silently omit server metrics.
+FRONTEND_METRICS_URL="http://localhost:${PORT}/metrics"
+case ",${AIPERF_SERVER_METRICS_URLS:-}," in
+  *",${FRONTEND_METRICS_URL},"*) ;;
+  ",,") export AIPERF_SERVER_METRICS_URLS="$FRONTEND_METRICS_URL" ;;
+  *) export AIPERF_SERVER_METRICS_URLS="$FRONTEND_METRICS_URL,$AIPERF_SERVER_METRICS_URLS" ;;
+esac
+
 PINNED_INFERENCEX_AGENTX_COMMIT="f6c1f5b5d122bc4a62b93c9bd2919dfef68ccbcd"
-PINNED_AIPERF_AGENTX_REF="818c3a5a2922c535af6271ff296ed374e292b8e4"
-PINNED_AIPERF_ARCHIVE_SHA256="976d72f420977561b333b731950363eb7abbaa5776def826857cd94453fcac74"
+PINNED_AIPERF_AGENTX_REF="b7b16cf851885567988a643282266bce74e34437"
+PINNED_AIPERF_ARCHIVE_SHA256="1d96dacab5c0021cff1c668f8514355c78d83fb48a61b842a983817d337bfc1e"
 PINNED_BENCHMARK_LIB_SHA256="bb65f69ec8bec16c95e0f59779e94e02efff1ecc57b663d16e52e4121e3aae36"
 PINNED_AGENTIC_SRT_SHA256="9f68b35323b11f2261c20b2f6fdc5df0902f81f2c2ec1d94840e1df7cde2b898"
 
 INFERENCEX_AGENTX_COMMIT="${INFERENCEX_AGENTX_COMMIT:-$PINNED_INFERENCEX_AGENTX_COMMIT}"
-# InferenceX ToT's AIPerf pin includes the flattened warmup handoff clock and
-# keeps the system/trajectory idle watchdogs active across phase barriers.
+# InferenceX's final-submission AIPerf pin includes the canonical timing policy
+# and rejects runs whose TTFT or ITL observations cover less than 98% of the
+# profiling phase.
 AIPERF_AGENTX_REF="${AIPERF_AGENTX_REF:-$PINNED_AIPERF_AGENTX_REF}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUNDLED_INFMAX_WORKSPACE="${AGENTX_BUNDLED_INFMAX_WORKSPACE:-$SCRIPT_DIR/inferencex}"
@@ -139,6 +150,7 @@ scenario = scenario_path.read_text()
 required_scenario = (
     "system_idle_gap_cap_seconds=10.0",
     "forbid_inter_turn_delay_cap=True",
+    "minimum_profile_metric_coverage_ratio=0.98",
 )
 missing = [item for item in required_scenario if item not in scenario]
 if missing:

@@ -1041,7 +1041,7 @@ class TestAgenticRunner:
         text = script.read_text()
 
         assert "f6c1f5b5d122bc4a62b93c9bd2919dfef68ccbcd" in text
-        assert "818c3a5a2922c535af6271ff296ed374e292b8e4" in text
+        assert "b7b16cf851885567988a643282266bce74e34437" in text
         assert "AGENTX_DYNAMO_HEADER_AFFINITY" not in text
         assert "Verified AIPerf AgentX PR #31 policy" in text
         assert "PINNED_AIPERF_ARCHIVE_SHA256" in text
@@ -1063,14 +1063,14 @@ class TestAgenticRunner:
             / "aiperf-agentx-v1-src.manifest"
         )
         manifest_text = manifest.read_text()
-        assert "commit=818c3a5a2922c535af6271ff296ed374e292b8e4" in manifest_text
+        assert "commit=b7b16cf851885567988a643282266bce74e34437" in manifest_text
         assert (
             "archive_sha256="
-            "976d72f420977561b333b731950363eb7abbaa5776def826857cd94453fcac74"
+            "1d96dacab5c0021cff1c668f8514355c78d83fb48a61b842a983817d337bfc1e"
             in manifest_text
         )
         assert hashlib.sha256(bundle.read_bytes()).hexdigest() == (
-            "976d72f420977561b333b731950363eb7abbaa5776def826857cd94453fcac74"
+            "1d96dacab5c0021cff1c668f8514355c78d83fb48a61b842a983817d337bfc1e"
         )
 
         inferencex_manifest = (
@@ -1121,10 +1121,46 @@ class TestAgenticRunner:
         assert 'headers["X-Dynamo-Parent-Session-ID"]' in transport_text
         assert "system_idle_gap_cap_seconds=10.0" in scenario_text
         assert "forbid_inter_turn_delay_cap=True" in scenario_text
+        assert "minimum_profile_metric_coverage_ratio=0.98" in scenario_text
         assert re.search(r"burst_phase_starts:.*?Field\(\s*default=False,", phases_text, re.DOTALL)
         assert "idle_cap_expired" in dependencies_text
         assert "_handoff_replay_offset_ms" in replay_text
         assert "self.scheduler.set_drain_observer(self.enforce_system_idle_cap)" in replay_text
+
+    def test_agentic_bench_supplies_frontend_server_metrics(self):
+        """Final-submission runs always scrape the serving endpoint."""
+        script = SCRIPTS_DIR / "agentic" / "bench.sh"
+        text = script.read_text()
+
+        assert 'FRONTEND_METRICS_URL="http://localhost:${PORT}/metrics"' in text
+        assert 'export AIPERF_SERVER_METRICS_URLS="$FRONTEND_METRICS_URL"' in text
+
+    def test_agentic_replay_command_matches_final_submission_contract(self):
+        """Keep the fixed Slack-published AgentX client flags together."""
+        script = SCRIPTS_DIR / "agentic" / "inferencex" / "benchmarks" / "benchmark_lib.sh"
+        text = script.read_text()
+        expected = (
+            '--scenario inferencex-agentx-mvp',
+            '--endpoint /v1/chat/completions',
+            '--endpoint-type chat',
+            '--streaming',
+            '--stats-interval 30',
+            '--random-seed 42',
+            '--failed-request-threshold $AIPERF_FAILED_REQUEST_THRESHOLD',
+            '--trajectory-start-min-ratio 0.25',
+            '--trajectory-start-max-ratio 0.75',
+            '--warmup-requests-per-lane $warmup_requests_per_lane',
+            '--warmup-grace-period ${AGENTIC_WARMUP_GRACE_PERIOD:-1800}',
+            '--use-server-token-count',
+            '--no-gpu-telemetry',
+            '--tokenizer-trust-remote-code',
+            '--num-dataset-entries 393',
+            '--slice-duration 1.0',
+            '--trace-idle-gap-cap-seconds $AIPERF_TRACE_IDLE_GAP_CAP_SECONDS',
+            '--server-metrics',
+        )
+        for option in expected:
+            assert option in text
 
     def test_agentic_bench_forbids_source_and_command_adapters(self):
         """Exact ToT mode must never patch AIPerf or extend its replay command."""
