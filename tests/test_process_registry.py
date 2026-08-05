@@ -4,10 +4,10 @@
 """Tests for ProcessRegistry."""
 
 from pathlib import Path
-from subprocess import Popen
+from subprocess import Popen, TimeoutExpired
 from unittest.mock import MagicMock
 
-from srtctl.core.processes import ManagedProcess, ProcessRegistry
+from srtctl.core.processes import ManagedProcess, ProcessRegistry, terminate_and_reap
 
 
 class TestManagedProcess:
@@ -44,6 +44,51 @@ class TestManagedProcess:
 
         # exit_code comes from popen.returncode
         assert mock_popen.returncode == 1
+
+    def test_terminate_does_not_raise_when_kill_wait_times_out(self):
+        """A child that survives SIGKILL must not raise out of terminate()."""
+        mock_popen = MagicMock(spec=Popen)
+        mock_popen.poll.return_value = None
+        mock_popen.wait.side_effect = TimeoutExpired(cmd="worker", timeout=1)
+
+        mp = ManagedProcess(name="stuck", popen=mock_popen)
+
+        mp.terminate(timeout=0.01)
+
+        mock_popen.terminate.assert_called_once()
+        mock_popen.kill.assert_called_once()
+
+
+class TestTerminateAndReap:
+    """Tests for the terminate_and_reap helper."""
+
+    def test_already_exited_child_is_reported_reaped(self):
+        mock_popen = MagicMock(spec=Popen)
+        mock_popen.poll.return_value = 0
+
+        assert terminate_and_reap(mock_popen) is True
+        mock_popen.terminate.assert_not_called()
+
+    def test_graceful_terminate_is_reported_reaped(self):
+        mock_popen = MagicMock(spec=Popen)
+        mock_popen.poll.return_value = None
+        mock_popen.wait.return_value = 0
+
+        assert terminate_and_reap(mock_popen, terminate_timeout=0.01) is True
+        mock_popen.terminate.assert_called_once()
+        mock_popen.kill.assert_not_called()
+
+    def test_unreapable_child_is_reported_not_reaped(self):
+        mock_popen = MagicMock(spec=Popen)
+        mock_popen.poll.return_value = None
+        mock_popen.wait.side_effect = TimeoutExpired(cmd="worker", timeout=1)
+
+        assert (
+            terminate_and_reap(mock_popen, terminate_timeout=0.01, kill_timeout=0.01)
+            is False
+        )
+        mock_popen.terminate.assert_called_once()
+        mock_popen.kill.assert_called_once()
 
 
 class TestProcessRegistry:
