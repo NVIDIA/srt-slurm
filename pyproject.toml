@@ -29,6 +29,7 @@ srtctl-i = "srtctl.cli.interactive:main"
 srtctl-sweep = "srtctl.cli.do_sweep:main"
 srtctl-setup-head = "srtctl.cli.setup_head:main"
 srtctl-mcp = "srtctl.mcp.server:main"
+srtctl-validate-power = "srtctl.cli.validate_power_artifacts:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/srtctl"]
