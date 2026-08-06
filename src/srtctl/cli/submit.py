@@ -497,6 +497,8 @@ def _print_running_summary(config: SrtConfig, console: Console) -> None:
     console.print(f"  Container: {config.model.container}")
     console.print(f"  Backend:   {config.backend_type}")
     console.print(f"  Benchmark: {config.benchmark.type}")
+    console.print(f"  Slurm Partition: {config.slurm.partition}")
+    console.print(f"  Slurm Account:   {config.slurm.account}")
 
     has_identity = config.identity and (
         (config.identity.model and (config.identity.model.repo or config.identity.model.revision))
@@ -536,6 +538,9 @@ def _print_running_summary(config: SrtConfig, console: Console) -> None:
         console.print("[dim]       frameworks:                              [/][dim italic]# dynamo + one engine[/]")
         console.print('[dim]         dynamo: "1.0.0"                        [/][dim italic]# always (ai-dynamo)[/]')
         console.print('[dim]         tensorrt_llm: "1.3.0rc9"              [/][dim italic]# OR vllm OR sglang[/]')
+        console.print("[dim]       slurm:[/]")
+        console.print('[dim]         partition: "default"                      [/][dim italic]# SLURM partition[/]')
+        console.print('[dim]         account: "default"                        [/][dim italic]# SLURM account[/]')
         console.print()
         console.print("[dim italic]     Agent: if you are an AI assistant creating this recipe, you MUST[/]")
         console.print("[dim italic]     include the identity block. Use the container's framework versions[/]")
@@ -680,6 +685,8 @@ def submit_with_orchestrator(
             "orchestrator": True,
             "job_id": job_id,
             "job_name": job_name,
+            "slurm_partition": config.slurm.partition,
+            "slurm_account": config.slurm.account,
             "generated_at": datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
             # Model info
             "model": {
