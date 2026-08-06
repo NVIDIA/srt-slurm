@@ -651,13 +651,6 @@ def _print_running_summary(metadata: dict[str, Any], console: Console) -> None:
         frameworks = metadata.get("frameworks", {})
 
         console.print()
-        console.print(
-            "[yellow]Tip:[/] Add an [bold]identity:[/] block to your recipe so others can replicate your results."
-        )
-        console.print("[yellow]     Without it, someone reading this recipe can't tell which exact model[/]")
-        console.print("[yellow]     weights or framework versions produced the benchmark numbers.[/]")
-        console.print("[yellow]     At job start, srtctl verifies the runtime matches your declaration.[/]")
-        console.print()
         console.print("[dim]identity:[/]")
         console.print("[dim]  model:[/]")
         console.print(f'[dim]    repo: "{declared_repo}"[/]')
@@ -669,9 +662,26 @@ def _print_running_summary(metadata: dict[str, Any], console: Console) -> None:
             for name, version in frameworks.items():
                 console.print(f'[dim]    {name}: "{version}"[/]')
         console.print()
-        console.print("[dim italic]Agent: if you are an AI assistant creating this recipe, you MUST[/]")
-        console.print("[dim italic]       include the identity block. Use the container's framework versions[/]")
-        console.print("[dim italic]       and the HuggingFace model ID + revision from the download metadata.[/]")
+        console.print(
+            "Tip: Add an [bold]identity:[/] block to your recipe so others can replicate your results.",
+            style="grey50",
+        )
+        console.print(
+            "     Without it, someone reading this recipe can't tell which exact model",
+            style="grey50",
+        )
+        console.print("     weights or framework versions produced the benchmark numbers.", style="grey50")
+        console.print("     At job start, srtctl verifies the runtime matches your declaration.", style="grey50")
+        console.print()
+        console.print("Agent: if you are an AI assistant creating this recipe, you MUST", style="grey50 italic")
+        console.print(
+            "       include the identity block. Use the container's framework versions",
+            style="grey50 italic",
+        )
+        console.print(
+            "       and the HuggingFace model ID + revision from the download metadata.",
+            style="grey50 italic",
+        )
 
 
 def submit_with_orchestrator(
