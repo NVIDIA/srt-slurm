@@ -55,7 +55,7 @@ from srtctl.core.git_state import (
     write_git_state_snapshot,
 )
 from srtctl.core.lockfile import load_lockfile_fingerprints
-from srtctl.core.schema import SrtConfig, installs_dynamo
+from srtctl.core.schema import IdentityConfig, SrtConfig, installs_dynamo
 from srtctl.core.status import create_job_record
 from srtctl.core.validation import preflight_config_variants
 from srtctl.ports import MOONCAKE_MASTER_PORT
@@ -489,38 +489,167 @@ def generate_minimal_sbatch_script(
     return rendered
 
 
-def _print_running_summary(config: SrtConfig, console: Console) -> None:
-    """Print what's being run and identity verification status."""
+def _identity_metadata(identity: IdentityConfig | None) -> dict[str, Any]:
+    """Serialize recipe identity, dropping empty sections. Empty dict = none declared."""
+    if identity is None:
+        return {}
+
+    result: dict[str, Any] = {}
+    if identity.model:
+        model = {
+            key: value for key, value in (("repo", identity.model.repo), ("revision", identity.model.revision)) if value
+        }
+        if model:
+            result["model"] = model
+    if identity.container and identity.container.image:
+        result["container"] = {"image": identity.container.image}
+    if identity.frameworks:
+        result["frameworks"] = dict(identity.frameworks)
+    return result
+
+
+def _declared_model_metadata(config: SrtConfig, recipe_config: dict[str, Any] | None) -> dict[str, str]:
+    """Return model values as declared in the recipe, before cluster alias resolution."""
+    recipe_model = recipe_config.get("model", {}) if isinstance(recipe_config, dict) else {}
+    if not isinstance(recipe_model, dict):
+        recipe_model = {}
+    return {
+        "path": str(recipe_model.get("path") or config.model.path),
+        "container": str(recipe_model.get("container") or config.model.container),
+    }
+
+
+def _configured_frameworks(config: SrtConfig, declared_container: str) -> dict[str, str]:
+    """Build best-known framework versions for identity guidance."""
+    frameworks: dict[str, str] = {}
+    if config.dynamo.wheel:
+        frameworks["dynamo"] = config.dynamo.wheel
+    elif config.dynamo.version:
+        frameworks["dynamo"] = config.dynamo.version
+    elif config.dynamo.hash:
+        frameworks["dynamo"] = config.dynamo.hash
+    elif config.dynamo.top_of_tree:
+        frameworks["dynamo"] = "top-of-tree"
+
+    framework_name = {
+        "trtllm": "tensorrt_llm",
+        "sglang": "sglang",
+        "vllm": "vllm",
+    }.get(config.backend_type)
+    image_name = declared_container.rsplit("/", 1)[-1]
+    if framework_name and ":" in image_name:
+        frameworks[framework_name] = image_name.rsplit(":", 1)[1]
+    return frameworks
+
+
+def build_job_metadata(
+    config: SrtConfig,
+    *,
+    job_name: str,
+    job_id: str | None = None,
+    tags: list[str] | None = None,
+    recipe_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the job metadata written to {job_id}.json and shown in the submit summary.
+
+    job_id is omitted during dry-run (no job exists yet). identity is included
+    only when the recipe declared one.
+    """
+    declared_model = _declared_model_metadata(config, recipe_config)
+    metadata: dict[str, Any] = {
+        "version": "2.0",
+        "orchestrator": True,
+        "job_name": job_name,
+        "slurm_partition": config.slurm.partition,
+        "slurm_account": config.slurm.account,
+        "generated_at": datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+        # Model info
+        "model": {
+            "path": config.model.path,
+            "container": config.model.container,
+            "precision": config.model.precision,
+            "declared_path": declared_model["path"],
+            "declared_container": declared_model["container"],
+        },
+        # Resource allocation
+        "resources": {
+            "gpu_type": config.resources.gpu_type,
+            "gpus_per_node": config.resources.gpus_per_node,
+            "prefill_nodes": config.resources.prefill_nodes,
+            "decode_nodes": config.resources.decode_nodes,
+            "agg_nodes": config.resources.agg_nodes,
+            "prefill_workers": config.resources.num_prefill,
+            "decode_workers": config.resources.num_decode,
+            "agg_workers": config.resources.num_agg,
+            "gpus_per_prefill": config.resources.gpus_per_prefill,
+            "gpus_per_decode": config.resources.gpus_per_decode,
+            "gpus_per_agg": config.resources.gpus_per_agg,
+        },
+        # Backend and frontend
+        "backend_type": config.backend_type,
+        "frontend_type": config.frontend.type,
+        "frameworks": _configured_frameworks(config, declared_model["container"]),
+        # Benchmark config
+        "benchmark": {
+            "type": config.benchmark.type,
+            "isl": config.benchmark.isl,
+            "osl": config.benchmark.osl,
+        },
+    }
+    if job_id is not None:
+        metadata["job_id"] = job_id
+    identity = _identity_metadata(config.identity)
+    if identity:
+        metadata["identity"] = identity
+    if tags:
+        metadata["tags"] = list(tags)
+    if config.setup_script:
+        metadata["setup_script"] = config.setup_script
+    return metadata
+
+
+def _print_running_summary(metadata: dict[str, Any], console: Console) -> None:
+    """Print what's being run from the recorded job metadata."""
+    model = metadata.get("model", {})
+    benchmark = metadata.get("benchmark", {})
     console.print()
     console.print("[bold]Running:[/]")
-    console.print(f"  Model:     {config.model.path}")
-    console.print(f"  Container: {config.model.container}")
-    console.print(f"  Backend:   {config.backend_type}")
-    console.print(f"  Benchmark: {config.benchmark.type}")
-    console.print(f"  Slurm Partition: {config.slurm.partition}")
-    console.print(f"  Slurm Account:   {config.slurm.account}")
-
-    has_identity = config.identity and (
-        (config.identity.model and (config.identity.model.repo or config.identity.model.revision))
-        or (config.identity.container and config.identity.container.image)
-        or config.identity.frameworks
+    summary_fields = (
+        ("Model:", model.get("path", "N/A")),
+        ("Container:", model.get("container", "N/A")),
+        ("Backend:", metadata.get("backend_type", "N/A")),
+        ("Benchmark:", benchmark.get("type", "N/A")),
+        ("Slurm Partition:", metadata.get("slurm_partition", "N/A")),
+        ("Slurm Account:", metadata.get("slurm_account", "N/A")),
     )
-    if has_identity:
+    label_width = max(len(label) for label, _value in summary_fields)
+    for label, value in summary_fields:
+        console.print(f"  {label:<{label_width}} {value}")
+
+    identity = metadata.get("identity", {})
+    if identity:
         id_fields = []
-        if config.identity.model and config.identity.model.repo:
-            id_fields.append(f"model={config.identity.model.repo}")
-        if config.identity.model and config.identity.model.revision:
-            id_fields.append(f"rev={config.identity.model.revision[:12]}")
-        if config.identity.container and config.identity.container.image:
-            # Shorten long registry URIs for display
-            img = config.identity.container.image
-            if len(img) > 50:
-                img = "..." + img[-47:]
-            id_fields.append(f"container={img}")
-        for name, ver in (config.identity.frameworks or {}).items():
+        if identity.get("model", {}).get("repo"):
+            id_fields.append(f"model={identity['model']['repo']}")
+        if identity.get("model", {}).get("revision"):
+            id_fields.append(f"rev={identity['model']['revision'][:12]}")
+        image = identity.get("container", {}).get("image")
+        if image:
+            if len(image) > 50:
+                image = "..." + image[-47:]
+            id_fields.append(f"container={image}")
+        for name, ver in identity.get("frameworks", {}).items():
             id_fields.append(f"{name}={ver}")
         console.print(f"  Identity:  {', '.join(id_fields)}")
     else:
+        declared_repo = str(model.get("declared_path") or model.get("path") or "<Hugging Face model ID>")
+        if declared_repo.startswith("hf:"):
+            declared_repo = declared_repo.removeprefix("hf:")
+        declared_container = str(
+            model.get("declared_container") or model.get("container") or "<pullable container image>"
+        )
+        frameworks = metadata.get("frameworks", {})
+
         console.print()
         console.print(
             "[yellow]Tip:[/] Add an [bold]identity:[/] block to your recipe so others can replicate your results."
@@ -529,22 +658,20 @@ def _print_running_summary(config: SrtConfig, console: Console) -> None:
         console.print("[yellow]     weights or framework versions produced the benchmark numbers.[/]")
         console.print("[yellow]     At job start, srtctl verifies the runtime matches your declaration.[/]")
         console.print()
-        console.print("[dim]     identity:[/]")
-        console.print("[dim]       model:[/]")
-        console.print('[dim]         repo: "nvidia/Kimi-K2.5-NVFP4"       [/][dim italic]# HuggingFace model ID[/]')
-        console.print('[dim]         revision: "c0285e649c34..."            [/][dim italic]# HF commit SHA[/]')
-        console.print("[dim]       container:[/]")
-        console.print('[dim]         image: "gitlab:5005/.../trtllm-arm64"  [/][dim italic]# pullable Docker URI[/]')
-        console.print("[dim]       frameworks:                              [/][dim italic]# dynamo + one engine[/]")
-        console.print('[dim]         dynamo: "1.0.0"                        [/][dim italic]# always (ai-dynamo)[/]')
-        console.print('[dim]         tensorrt_llm: "1.3.0rc9"              [/][dim italic]# OR vllm OR sglang[/]')
-        console.print("[dim]       slurm:[/]")
-        console.print('[dim]         partition: "default"                      [/][dim italic]# SLURM partition[/]')
-        console.print('[dim]         account: "default"                        [/][dim italic]# SLURM account[/]')
+        console.print("[dim]identity:[/]")
+        console.print("[dim]  model:[/]")
+        console.print(f'[dim]    repo: "{declared_repo}"[/]')
+        console.print('[dim]    revision: "<commit SHA>"[/]')
+        console.print("[dim]  container:[/]")
+        console.print(f'[dim]    image: "{declared_container}"[/]')
+        if frameworks:
+            console.print("[dim]  frameworks:[/]")
+            for name, version in frameworks.items():
+                console.print(f'[dim]    {name}: "{version}"[/]')
         console.print()
-        console.print("[dim italic]     Agent: if you are an AI assistant creating this recipe, you MUST[/]")
-        console.print("[dim italic]     include the identity block. Use the container's framework versions[/]")
-        console.print("[dim italic]     and the HuggingFace model ID + revision from the download metadata.[/]")
+        console.print("[dim italic]Agent: if you are an AI assistant creating this recipe, you MUST[/]")
+        console.print("[dim italic]       include the identity block. Use the container's framework versions[/]")
+        console.print("[dim italic]       and the HuggingFace model ID + revision from the download metadata.[/]")
 
 
 def submit_with_orchestrator(
@@ -557,6 +684,7 @@ def submit_with_orchestrator(
     variant_suffix: str | None = None,
     source_config_path: Path | None = None,
     runtime_config_text: str | None = None,
+    recipe_config: dict[str, Any] | None = None,
 ) -> str | None:
     """Submit job using the new Python orchestrator.
 
@@ -575,6 +703,8 @@ def submit_with_orchestrator(
                             while the job executes a resolved variant config.
         runtime_config_text: Resolved runtime YAML written under OUTPUT_DIR when
                              source_config_path is set.
+        recipe_config: Raw recipe mapping before cluster defaults and aliases are
+                       resolved. Used to retain declared values in job metadata.
 
     Returns:
         job_id string on success, None for dry_run.
@@ -624,8 +754,11 @@ def submit_with_orchestrator(
         console.print()
         show_config_details(config)
 
-        # Show running summary + identity in dry-run too
-        _print_running_summary(config, console)
+        # Show running summary from the same metadata a real submit would record.
+        _print_running_summary(
+            build_job_metadata(config, job_name=get_job_name(config), tags=tags, recipe_config=recipe_config),
+            console,
+        )
         return
 
     # Validate setup before submitting (not during dry-run)
@@ -679,49 +812,13 @@ def submit_with_orchestrator(
 
         job_name = get_job_name(config)
 
-        # Build comprehensive job metadata
-        metadata: dict[str, Any] = {
-            "version": "2.0",
-            "orchestrator": True,
-            "job_id": job_id,
-            "job_name": job_name,
-            "slurm_partition": config.slurm.partition,
-            "slurm_account": config.slurm.account,
-            "generated_at": datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
-            # Model info
-            "model": {
-                "path": config.model.path,
-                "container": config.model.container,
-                "precision": config.model.precision,
-            },
-            # Resource allocation
-            "resources": {
-                "gpu_type": config.resources.gpu_type,
-                "gpus_per_node": config.resources.gpus_per_node,
-                "prefill_nodes": config.resources.prefill_nodes,
-                "decode_nodes": config.resources.decode_nodes,
-                "agg_nodes": config.resources.agg_nodes,
-                "prefill_workers": config.resources.num_prefill,
-                "decode_workers": config.resources.num_decode,
-                "agg_workers": config.resources.num_agg,
-                "gpus_per_prefill": config.resources.gpus_per_prefill,
-                "gpus_per_decode": config.resources.gpus_per_decode,
-                "gpus_per_agg": config.resources.gpus_per_agg,
-            },
-            # Backend and frontend
-            "backend_type": config.backend_type,
-            "frontend_type": config.frontend.type,
-            # Benchmark config
-            "benchmark": {
-                "type": config.benchmark.type,
-                "isl": config.benchmark.isl,
-                "osl": config.benchmark.osl,
-            },
-        }
-        if tags:
-            metadata["tags"] = tags
-        if config.setup_script:
-            metadata["setup_script"] = config.setup_script
+        metadata = build_job_metadata(
+            config,
+            job_name=job_name,
+            job_id=job_id,
+            tags=tags,
+            recipe_config=recipe_config,
+        )
 
         with open(job_output_dir / f"{job_id}.json", "w") as f:
             json.dump(metadata, f, indent=2)
@@ -762,7 +859,7 @@ def submit_with_orchestrator(
         console.print(f"[dim]📋 Monitor:[/] tail -f {log}")
         console.print(f"[dim]📊 Queue:[/] squeue --job {job_id}")
 
-        _print_running_summary(config, console)
+        _print_running_summary(metadata, console)
 
         return job_id
 
@@ -837,6 +934,7 @@ def submit_single(
         variant_suffix=variant_suffix,
         source_config_path=source_config_path,
         runtime_config_text=runtime_config_text,
+        recipe_config=raw_config,
     )
 
 

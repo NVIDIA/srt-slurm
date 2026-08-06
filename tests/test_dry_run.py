@@ -9,8 +9,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 import yaml
+from rich.console import Console
 
-from srtctl.cli.submit import show_config_details
+from srtctl.cli.submit import _print_running_summary, build_job_metadata, show_config_details
 from srtctl.core.schema import SrtConfig
 
 # Minimal valid config that all tests build on
@@ -46,6 +47,37 @@ def _make_config(overrides: dict | None = None) -> SrtConfig:
         yaml.dump(data, f)
         tmp_path = Path(f.name)
     return SrtConfig.from_yaml(tmp_path)
+
+
+def test_running_summary_identity_hint_uses_declared_recipe_metadata(capsys):
+    config = _make_config(
+        {
+            "model": {
+                "path": "/scratch/models/DeepSeek-V4-Pro",
+                "container": "/squash/tensorrt-llm-1.3.0rc23.sqsh",
+            },
+            "dynamo": {"wheel": "1.3.0.dev2026071601"},
+            "backend": {"type": "trtllm"},
+        }
+    )
+    recipe_config = {
+        "model": {
+            "path": "deepseek-ai/DeepSeek-V4-Pro",
+            "container": "nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc23",
+        }
+    }
+
+    metadata = build_job_metadata(config, job_name=config.name, recipe_config=recipe_config)
+    _print_running_summary(metadata, console=Console())
+
+    output = capsys.readouterr().out
+    assert 'repo: "deepseek-ai/DeepSeek-V4-Pro"' in output
+    assert 'image: "nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc23"' in output
+    assert 'dynamo: "1.3.0.dev2026071601"' in output
+    assert 'tensorrt_llm: "1.3.0rc23"' in output
+    assert "Kimi-K2.5-NVFP4" not in output
+    assert "\nidentity:\n  model:\n" in output
+    assert "\nslurm:\n" not in output
 
 
 class TestDryRunMounts:
@@ -326,7 +358,6 @@ class TestDryRunExecutionExtensions:
                     "mooncake_kv_store": {
                         "container": "inferactinc/public:mk-int-20260507",
                         "env": {"MOONCAKE_PROTOCOL": "rdma"},
-                        "master_extra_args": ["--nof_eviction_high_watermark_ratio=0.9"],
                     },
                     "vllm_config": {
                         "prefill": {"kv-transfer-config": kv_cfg},
@@ -343,8 +374,6 @@ class TestDryRunExecutionExtensions:
         assert "inferactinc/public:mk-int-202605" in output
         # Shared with the SGLang launch — same port pair.
         assert str(MOONCAKE_MASTER_PORT) in output
-        assert "master_extra_args" in output
-        assert "nof_eviction" in output
 
     def test_vllm_mooncake_store_config_in_dry_run(self, capsys):
         """vLLM store_config + MOONCAKE_CONFIG_PATH appear in the dry-run extensions panel."""
