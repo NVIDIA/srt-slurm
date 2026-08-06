@@ -72,12 +72,26 @@ def test_running_summary_identity_hint_uses_declared_recipe_metadata(capsys):
 
     output = capsys.readouterr().out
     assert 'repo: "deepseek-ai/DeepSeek-V4-Pro"' in output
+    assert 'revision: "unknown-sha"' in output
     assert 'image: "nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc23"' in output
     assert 'dynamo: "1.3.0.dev2026071601"' in output
     assert 'tensorrt_llm: "1.3.0rc23"' in output
     assert "Kimi-K2.5-NVFP4" not in output
     assert "\nidentity:\n  model:\n" in output
     assert "\nslurm:\n" not in output
+
+
+def test_running_summary_leaves_unset_slurm_values_blank(capsys):
+    config = _make_config()
+    metadata = build_job_metadata(config, job_name=config.name)
+    metadata["slurm_partition"] = "batch_3"
+    metadata["slurm_account"] = None
+
+    _print_running_summary(metadata, console=Console())
+
+    lines = capsys.readouterr().out.splitlines()
+    assert next(line for line in lines if "Slurm Partition:" in line).rstrip() == "  Slurm Partition: batch_3"
+    assert next(line for line in lines if "Slurm Account:" in line).rstrip() == "  Slurm Account:"
 
 
 class TestDryRunMounts:

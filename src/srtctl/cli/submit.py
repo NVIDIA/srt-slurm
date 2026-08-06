@@ -619,8 +619,8 @@ def _print_running_summary(metadata: dict[str, Any], console: Console) -> None:
         ("Container:", model.get("container", "N/A")),
         ("Backend:", metadata.get("backend_type", "N/A")),
         ("Benchmark:", benchmark.get("type", "N/A")),
-        ("Slurm Partition:", metadata.get("slurm_partition", "N/A")),
-        ("Slurm Account:", metadata.get("slurm_account", "N/A")),
+        ("Slurm Partition:", metadata.get("slurm_partition") or ""),
+        ("Slurm Account:", metadata.get("slurm_account") or ""),
     )
     label_width = max(len(label) for label, _value in summary_fields)
     for label, value in summary_fields:
@@ -661,7 +661,7 @@ def _print_running_summary(metadata: dict[str, Any], console: Console) -> None:
         console.print("[dim]identity:[/]")
         console.print("[dim]  model:[/]")
         console.print(f'[dim]    repo: "{declared_repo}"[/]')
-        console.print('[dim]    revision: "<commit SHA>"[/]')
+        console.print('[dim]    revision: "unknown-sha"[/]')
         console.print("[dim]  container:[/]")
         console.print(f'[dim]    image: "{declared_container}"[/]')
         if frameworks:
