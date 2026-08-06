@@ -80,7 +80,7 @@ class PostProcessStageMixin:
         try:
             schema = AIAnalysisConfig.Schema()
             return schema.load(ai_config_dict)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning("Failed to parse reporting.ai_analysis config: %s", e)
             return None
 
@@ -105,7 +105,7 @@ class PostProcessStageMixin:
         try:
             schema = S3Config.Schema()
             return schema.load(s3_dict)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning("Failed to parse reporting.s3 config: %s", e)
             return None
 
@@ -146,7 +146,7 @@ class PostProcessStageMixin:
             try:
                 shutil.copy2(src, dst)
                 logger.info("Copied %s to log directory", name)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.warning("Failed to copy %s to log directory: %s", name, e)
 
     def run_postprocess(self, exit_code: int, reporter: "StatusReporter | None" = None) -> None:
@@ -240,6 +240,7 @@ class PostProcessStageMixin:
                 capture_output=True,
                 text=True,
                 timeout=30,
+                check=False,
             )
             if result.returncode != 0:
                 logger.warning("Rollup failed: %s", result.stderr)
@@ -247,7 +248,7 @@ class PostProcessStageMixin:
                 logger.info(result.stdout.strip())
         except subprocess.TimeoutExpired:
             logger.warning("Rollup script timed out")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning("Rollup error: %s", e)
 
     def _extract_benchmark_results(self) -> dict[str, Any] | None:
@@ -283,7 +284,7 @@ class PostProcessStageMixin:
                 return
 
             # TODO: pass benchmark results once rollup format is standardized
-            summary_lines, report_lines, issues = generate_reproduction_report(
+            summary_lines, report_lines, _issues = generate_reproduction_report(
                 lock_data,
                 new_fps,
             )
@@ -304,7 +305,7 @@ class PostProcessStageMixin:
                 report_path.write_text("\n".join(report_lines) + "\n")
                 logger.info(f"Reproduction report: {report_path}")
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.debug("Lockfile comparison skipped: %s", e)
 
     def _build_node_metrics_export_script(self, run_path: str, srtctl_root: Path) -> str:
@@ -370,6 +371,7 @@ export PYTHONPATH={q_root}
                 capture_output=True,
                 text=True,
                 timeout=NODE_METRICS_EXPORT_TIMEOUT_SEC,
+                check=False,
             )
             if result.stdout:
                 for line in result.stdout.rstrip().splitlines():
@@ -391,7 +393,7 @@ export PYTHONPATH={q_root}
                 NODE_METRICS_EXPORT_TIMEOUT_SEC,
                 run_path,
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning("Node metrics CSV export error: %s", e)
 
     def _run_postprocess_container(self) -> tuple[Path | None, str | None]:
@@ -462,7 +464,7 @@ export PYTHONPATH={q_root}
             logger.warning("Post-processing container timed out")
             proc.kill()
             return None, None
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning("Post-processing container failed: %s", e)
             return None, None
 
@@ -627,5 +629,5 @@ echo "AI analysis complete."
             else:
                 logger.warning("AI analysis did not produce ai_analysis.md")
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.error("Failed to run AI analysis: %s", e)

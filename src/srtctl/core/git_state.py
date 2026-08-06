@@ -48,7 +48,7 @@ def _run_git(repo: Path, args: list[str], *, check: bool = False) -> subprocess.
             timeout=_GIT_TIMEOUT_S,
             check=False,
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.debug("git command failed in %s: %s", repo, e)
         return None
     if check and result.returncode != 0:
@@ -121,7 +121,7 @@ def _format_untracked_file(repo: Path, rel_path: str) -> list[str]:
     path = repo / rel_path
     try:
         data = path.read_bytes()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return [f"# unable to read untracked file {rel_path}: {e}\n"]
 
     header = [
@@ -215,6 +215,6 @@ def write_git_state_snapshot(output_path: Path, sources: Iterable[GitSnapshotSou
         output_path.write_text("".join(lines))
         logger.info("Wrote git state snapshot: %s", output_path)
         return True
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.warning("Failed to write git state snapshot %s: %s", output_path, e)
         return False

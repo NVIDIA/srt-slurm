@@ -116,7 +116,7 @@ class FakePopen:
         if self._returncode is None:
             self._returncode = -9
 
-    def communicate(self, input: Any = None, timeout: float | None = None):  # noqa: A002
+    def communicate(self, input: Any = None, timeout: float | None = None):
         self.wait(timeout=timeout)
         return (b"", b"")
 
@@ -166,7 +166,7 @@ class _StatusSink:
             if self.status_file.exists():
                 try:
                     current = json.loads(self.status_file.read_text())
-                except Exception:
+                except Exception:  # noqa: BLE001
                     current = {}
             merged = {**current, **payload}
             # Keep a tally of updates for debugging.
@@ -241,14 +241,14 @@ def mock_infrastructure(*, options: MockOptions, output_dir: Path):
     def _fake_nodelist() -> list[str]:
         return list(options.nodelist)
 
-    def _fake_put(url, json=None, timeout=None, **_kwargs):  # noqa: A002
+    def _fake_put(url, json=None, timeout=None, **_kwargs):
         payload = dict(json or {})
         payload["_sink"] = "put"
         payload["_url"] = url
         status_sink.write(payload)
         return _FakeResponse(200)
 
-    def _fake_post(url, json=None, timeout=None, **_kwargs):  # noqa: A002
+    def _fake_post(url, json=None, timeout=None, **_kwargs):
         payload = dict(json or {})
         payload["_sink"] = "post"
         payload["_url"] = url

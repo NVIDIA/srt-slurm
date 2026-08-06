@@ -18,9 +18,9 @@ from srtctl.cli.mixins.telemetry_stage import TelemetryStageMixin
 from srtctl.cli.mixins.worker_stage import WorkerStageMixin
 
 __all__ = [
-    "WorkerStageMixin",
-    "FrontendStageMixin",
-    "TelemetryStageMixin",
     "BenchmarkStageMixin",
+    "FrontendStageMixin",
     "PostProcessStageMixin",
+    "TelemetryStageMixin",
+    "WorkerStageMixin",
 ]

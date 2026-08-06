@@ -32,7 +32,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -88,7 +88,7 @@ def _parse_timestamp(line: str) -> datetime | None:
     m = _TS_ANSI.search(line)
     if m:
         try:
-            return datetime.strptime(f"{m.group(1)} {m.group(2)}", "%Y-%m-%d %H:%M:%S.%f")
+            return datetime.strptime(f"{m.group(1)} {m.group(2)}", "%Y-%m-%d %H:%M:%S.%f").replace(tzinfo=timezone.utc)
         except ValueError:
             return None
     m = _TS_BRACKET.search(line)
@@ -96,7 +96,7 @@ def _parse_timestamp(line: str) -> datetime | None:
         raw = m.group(1)
         fmt = "%Y-%m-%d %H:%M:%S.%f" if "." in raw else "%Y-%m-%d %H:%M:%S"
         try:
-            return datetime.strptime(raw, fmt)
+            return datetime.strptime(raw, fmt).replace(tzinfo=timezone.utc)
         except ValueError:
             return None
     return None
@@ -233,7 +233,7 @@ def _classify_log_files(log_dir: Path) -> tuple[list[Path], list[Path]]:
     decode: list[Path] = []
     agg: list[Path] = []
     for entry in sorted(os.listdir(log_dir)):
-        if not (entry.endswith(".out") or entry.endswith(".err")):
+        if not (entry.endswith((".out", ".err"))):
             continue
         path = log_dir / entry
         if "prefill" in entry:

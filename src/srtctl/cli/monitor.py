@@ -32,7 +32,7 @@ import threading
 import time
 import uuid
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timezone
 from itertools import accumulate
 from pathlib import Path
 
@@ -58,7 +58,7 @@ _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 def _get_term_size() -> tuple[int, int]:
     """(cols, rows) — /dev/tty works over SSH where stdin/stdout may not be a real PTY."""
-    try:
+    with contextlib.suppress(Exception):
         import fcntl
         import struct
 
@@ -66,8 +66,6 @@ def _get_term_size() -> tuple[int, int]:
             rows, cols = struct.unpack("hh", fcntl.ioctl(tty, termios.TIOCGWINSZ, b"\x00\x00\x00\x00"))
         if 10 <= rows <= 500 and 20 <= cols <= 1000:
             return cols, rows
-    except Exception:
-        pass
     try:
         sz = os.get_terminal_size()
         return sz.columns, sz.lines
@@ -153,6 +151,7 @@ def _squeue_jobs() -> dict[str, dict]:
             capture_output=True,
             text=True,
             timeout=15,
+            check=False,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return {}
@@ -234,7 +233,7 @@ def _rollup_runs(log_dir: Path) -> list[dict] | None:
         data = json.loads(rollup.read_text())
         runs = [r for r in (data.get("runs") or []) if r]
         return runs or None
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
 
 
@@ -347,10 +346,8 @@ def _partial_runs(log_dir: Path) -> list[dict] | None:
     result_files.sort(key=_concurrency_from_path)
     runs = []
     for f in result_files:
-        try:
+        with contextlib.suppress(Exception):
             runs.append(_read_result_fast(f))
-        except Exception:
-            continue
     return runs or None
 
 
@@ -405,7 +402,7 @@ def _gather_job_info(job_id: str, outputs_dir: Path, sq: dict | None) -> dict:
         "log_age": "",
     }
 
-    try:
+    with contextlib.suppress(Exception):
         meta = json.loads((job_dir / f"{job_id}.json").read_text())
         if meta.get("job_name"):
             info["name"] = meta["job_name"]
@@ -430,8 +427,6 @@ def _gather_job_info(job_id: str, outputs_dir: Path, sq: dict | None) -> dict:
         bench = meta.get("benchmark", {})
         isl, osl, btype = bench.get("isl"), bench.get("osl"), bench.get("type", "")
         info["bench_config"] = f"{btype}  {isl}→{osl}" if (isl and osl) else btype
-    except Exception:
-        pass
 
     if not job_dir.exists():
         info["stage_label"] = "No Output Dir"
@@ -856,7 +851,7 @@ def _render(
         )
         return layout, state.scroll_offset, state.selected_idx
 
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     n_below = 0
     start_idx = 0
     scroll_offset = state.scroll_offset
@@ -991,7 +986,7 @@ def _session_path() -> Path:
 
 
 def _save_session(session_file: Path, key: str, outputs_dir: Path, job_ids: set[str]) -> None:
-    try:
+    with contextlib.suppress(Exception):
         all_sessions: dict = {}
         if session_file.exists():
             with contextlib.suppress(Exception):
@@ -1001,18 +996,14 @@ def _save_session(session_file: Path, key: str, outputs_dir: Path, job_ids: set[
             "job_ids": sorted(job_ids),
         }
         session_file.write_text(json.dumps(all_sessions))
-    except Exception:
-        pass
 
 
 def _load_session(session_file: Path, key: str) -> tuple[set[str], Path | None]:
-    try:
+    with contextlib.suppress(Exception):
         if session_file.exists():
             entry = json.loads(session_file.read_text()).get(key, {})
             if entry:
                 return set(entry.get("job_ids", [])), Path(entry["outputs_dir"])
-    except Exception:
-        pass
     return set(), None
 
 
@@ -1068,7 +1059,7 @@ def _execute(args: argparse.Namespace) -> None:
                 with _cache_lock:
                     _cached_jobs = jobs
                     _is_loading = False
-            except Exception:
+            except Exception:  # noqa: BLE001
                 with _cache_lock:
                     _is_loading = False  # preserve stale _cached_jobs on error
             _fetch_trigger.clear()
@@ -1094,7 +1085,7 @@ def _execute(args: argparse.Namespace) -> None:
                 live.stop()
                 if use_tty and old_term is not None:
                     termios.tcsetattr(fd, termios.TCSADRAIN, old_term)
-                subprocess.run(["vim", str(path)])
+                subprocess.run(["vim", str(path)], check=False)
                 if use_tty:
                     tty.setcbreak(fd)
                 live.start()
@@ -1165,7 +1156,7 @@ def _execute(args: argparse.Namespace) -> None:
                             if raw[:1] in (b"y", b"Y"):
                                 jid = state.cancel_confirm_job_id
                                 with contextlib.suppress(Exception):
-                                    subprocess.run(["scancel", jid], timeout=10, capture_output=True)
+                                    subprocess.run(["scancel", jid], timeout=10, capture_output=True, check=False)
                                 state.cancel_confirm_job_id = None
                                 _fetch_trigger.set()
                             elif raw[:1] in (b"n", b"N") or raw[:1] == b"\x1b":
@@ -1270,7 +1261,7 @@ def _execute(args: argparse.Namespace) -> None:
                         state.scroll_offset = clamped_scroll
                         state.selected_idx = clamped_sel
                         live.update(renderable)
-                    except Exception as exc:
+                    except Exception as exc:  # noqa: BLE001
                         live.update(Text(f"Error: {exc}", style="red"))
                     spin_idx += 1
                     last_render = now
