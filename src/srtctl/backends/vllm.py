@@ -47,6 +47,62 @@ DPLaunchMode = Literal["per_gpu", "per_node"]
 
 logger = logging.getLogger(__name__)
 
+# vLLM CLI flags srtslurm derives from topology/runtime. Recipes may still set
+# these for backward compatibility; dry-run warns and runtime command building
+# strips them so user values cannot override allocation.
+_VLLM_ORCHESTRATION_FLAGS = frozenset(
+    {
+        "headless",
+        "host",
+        "port",
+        "master-addr",
+        "master-port",
+        "nnodes",
+        "node-rank",
+    }
+)
+
+
+def normalize_vllm_config_key(key: str) -> str:
+    """Normalize a vllm_config dict key to kebab-case CLI flag form."""
+    return str(key).replace("_", "-")
+
+
+def pop_vllm_orchestration_flags(config: dict[str, Any]) -> list[str]:
+    """Remove topology-managed vLLM flags from a mode config dict.
+
+    Returns normalized flag names that were present.
+    """
+    found: list[str] = []
+    for key in list(config.keys()):
+        normalized = normalize_vllm_config_key(key)
+        if normalized in _VLLM_ORCHESTRATION_FLAGS:
+            config.pop(key)
+            if normalized not in found:
+                found.append(normalized)
+    return found
+
+
+def find_vllm_orchestration_recipe_flags(backend: VLLMProtocol) -> list[tuple[str, str]]:
+    """Return ``(mode, flag)`` pairs set in recipe ``vllm_config``."""
+    if backend.vllm_config is None:
+        return []
+
+    findings: list[tuple[str, str]] = []
+    for mode_name, mode_config in (
+        ("prefill", backend.vllm_config.prefill),
+        ("decode", backend.vllm_config.decode),
+        ("aggregated", backend.vllm_config.aggregated),
+    ):
+        if not mode_config:
+            continue
+        for key in mode_config:
+            normalized = normalize_vllm_config_key(key)
+            if normalized in _VLLM_ORCHESTRATION_FLAGS:
+                findings.append((mode_name, normalized))
+    return findings
+
+
 # Filename for the mooncake-store JSON config srtslurm writes to log_dir at job
 # start. log_dir is mounted into every worker at /logs, so workers read the JSON
 # from MOONCAKE_STORE_CONFIG_CONTAINER_PATH.
@@ -684,6 +740,7 @@ class VLLMProtocol:
 
         mode = process.endpoint_mode
         config = self.get_config_for_mode(mode)
+        pop_vllm_orchestration_flags(config)
 
         # Determine if multi-node
         endpoint_nodes = list(dict.fromkeys(p.node for p in endpoint_processes))
@@ -717,25 +774,29 @@ class VLLMProtocol:
         if frontend_type == "vllm":
             if mode != "agg":
                 raise ValueError("frontend.type: vllm supports aggregate vLLM jobs only")
-            if is_multi_node:
-                raise ValueError("frontend.type: vllm currently supports single-node aggregate jobs only")
 
-            config.pop("host", None)
-            config.pop("port", None)
             config.pop("connector", None)
             config.setdefault("served-model-name", served_model_name)
 
-            cmd.extend(
-                [
-                    "vllm",
-                    "serve",
-                    model_arg,
-                    "--host",
-                    "0.0.0.0",
-                    "--port",
-                    str(runtime.frontend_port),
-                ]
-            )
+            node_rank = endpoint_nodes.index(process.node)
+            cmd.extend(["vllm", "serve", model_arg])
+            if node_rank == 0:
+                cmd.extend(["--host", "0.0.0.0", "--port", str(runtime.frontend_port)])
+            if is_multi_node:
+                # vLLM-native multi-node serve (torchrun-style): the leader owns
+                # the OpenAI server; other node ranks run headless engine workers.
+                cmd.extend(
+                    [
+                        "--master-addr",
+                        leader_ip,
+                        "--nnodes",
+                        str(len(endpoint_nodes)),
+                        "--node-rank",
+                        str(node_rank),
+                    ]
+                )
+                if node_rank > 0:
+                    cmd.append("--headless")
             if not self.set_cuda_visible_devices:
                 device_ids = ",".join(str(i) for i in sorted(process.gpu_indices))
                 if device_ids:

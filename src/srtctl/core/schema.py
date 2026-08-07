@@ -1630,10 +1630,14 @@ class SrtConfig:
             )
         if self.resources.is_disaggregated:
             raise ValidationError("frontend.type: vllm supports aggregate jobs only, not disaggregated layouts")
-        if self.resources.num_agg < 1:
-            raise ValidationError("frontend.type: vllm requires resources.agg_workers >= 1")
-        if (self.resources.agg_nodes or 1) != 1:
-            raise ValidationError("frontend.type: vllm currently supports single-node aggregate jobs only")
+        if self.resources.num_agg != 1:
+            raise ValidationError(
+                f"frontend.type: vllm supports exactly one aggregate worker, got {self.resources.num_agg}. "
+                "vllm serve owns the public port directly and there is no router to load-balance "
+                "replicas, so extra workers would either idle or collide on the port. "
+                "Use frontend.type: dynamo to run multiple aggregate workers, or scale a single "
+                "worker across nodes with resources.agg_nodes."
+            )
 
     def _validate_het_jobs(self):
         """When ``resources.het_jobs`` is set to True, enforce supported shape.
