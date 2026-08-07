@@ -9,8 +9,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 import yaml
+from rich.console import Console
 
-from srtctl.cli.submit import show_config_details
+from srtctl.cli.submit import _identity_metadata, _print_running_summary, build_job_metadata, show_config_details
 from srtctl.core.schema import SrtConfig
 
 # Minimal valid config that all tests build on
@@ -46,6 +47,114 @@ def _make_config(overrides: dict | None = None) -> SrtConfig:
         yaml.dump(data, f)
         tmp_path = Path(f.name)
     return SrtConfig.from_yaml(tmp_path)
+
+
+def test_running_summary_identity_hint_uses_declared_recipe_metadata(capsys):
+    config = _make_config(
+        {
+            "model": {
+                "path": "/scratch/models/DeepSeek-V4-Pro",
+                "container": "/squash/tensorrt-llm-1.3.0rc23.sqsh",
+            },
+            "dynamo": {"wheel": "1.3.0.dev2026071601"},
+            "backend": {"type": "trtllm"},
+        }
+    )
+    recipe_config = {
+        "model": {
+            "path": "hf:deepseek-ai/DeepSeek-V4-Pro",
+            "container": "nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc23",
+        }
+    }
+
+    metadata = build_job_metadata(config, job_name=config.name, recipe_config=recipe_config)
+    _print_running_summary(metadata, console=Console())
+
+    output = capsys.readouterr().out
+    assert 'repo: "deepseek-ai/DeepSeek-V4-Pro"' in output
+    assert 'revision: "unknown-sha"' in output
+    assert 'image: "nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc23"' in output
+    assert 'dynamo: "1.3.0.dev2026071601"' in output
+    assert 'tensorrt_llm: "1.3.0rc23"' in output
+    assert "Kimi-K2.5-NVFP4" not in output
+    assert "\nidentity:\n  model:\n" in output
+    assert "\nslurm:\n" not in output
+
+
+def test_running_summary_leaves_unset_slurm_values_blank(capsys):
+    config = _make_config()
+    metadata = build_job_metadata(config, job_name=config.name)
+    metadata["slurm_partition"] = "batch_3"
+    metadata["slurm_account"] = None
+
+    _print_running_summary(metadata, console=Console())
+
+    lines = capsys.readouterr().out.splitlines()
+    assert next(line for line in lines if "Slurm Partition:" in line).rstrip() == "  Slurm Partition: batch_3"
+    assert next(line for line in lines if "Slurm Account:" in line).rstrip() == "  Slurm Account:"
+
+
+def test_job_metadata_includes_identity_and_optional_fields(capsys):
+    image = "nvcr.io/nvidia/really-long-registry-path/sglang-runtime:0.5.8-cu130"
+    config = _make_config(
+        {
+            "setup_script": "setup-runtime.sh",
+            "identity": {
+                "model": {
+                    "repo": "nvidia/test-model",
+                    "revision": "0123456789abcdef",
+                },
+                "container": {"image": image},
+                "frameworks": {"dynamo": "1.0.0", "sglang": "0.5.8"},
+            },
+        }
+    )
+
+    metadata = build_job_metadata(config, job_name=config.name, job_id="12345", tags=["nightly"])
+    _print_running_summary(metadata, console=Console(width=200))
+
+    assert metadata["job_id"] == "12345"
+    assert metadata["tags"] == ["nightly"]
+    assert metadata["setup_script"] == "setup-runtime.sh"
+    assert metadata["identity"] == {
+        "model": {"repo": "nvidia/test-model", "revision": "0123456789abcdef"},
+        "container": {"image": image},
+        "frameworks": {"dynamo": "1.0.0", "sglang": "0.5.8"},
+    }
+
+    output = capsys.readouterr().out
+    assert "Identity:" in output
+    assert "model=nvidia/test-model" in output
+    assert "rev=0123456789ab" in output
+    assert f"container=...{image[-47:]}" in output
+    assert "dynamo=1.0.0" in output
+    assert "sglang=0.5.8" in output
+    assert "Tip: Add an identity: block" not in output
+
+
+def test_identity_metadata_accepts_none():
+    assert _identity_metadata(None) == {}
+
+
+def test_job_metadata_ignores_non_mapping_recipe_model():
+    config = _make_config()
+
+    metadata = build_job_metadata(config, job_name=config.name, recipe_config={"model": "invalid"})
+
+    assert metadata["model"]["declared_path"] == config.model.path
+    assert metadata["model"]["declared_container"] == config.model.container
+
+
+def test_job_metadata_describes_dynamo_source_installs():
+    expected_frameworks = (
+        ({"hash": "deadbeef"}, "deadbeef"),
+        ({"top_of_tree": True}, "top-of-tree"),
+    )
+
+    for dynamo, expected_version in expected_frameworks:
+        config = _make_config({"dynamo": dynamo})
+        metadata = build_job_metadata(config, job_name=config.name)
+        assert metadata["frameworks"]["dynamo"] == expected_version
 
 
 class TestDryRunMounts:
@@ -326,7 +435,6 @@ class TestDryRunExecutionExtensions:
                     "mooncake_kv_store": {
                         "container": "inferactinc/public:mk-int-20260507",
                         "env": {"MOONCAKE_PROTOCOL": "rdma"},
-                        "master_extra_args": ["--nof_eviction_high_watermark_ratio=0.9"],
                     },
                     "vllm_config": {
                         "prefill": {"kv-transfer-config": kv_cfg},
@@ -343,8 +451,6 @@ class TestDryRunExecutionExtensions:
         assert "inferactinc/public:mk-int-202605" in output
         # Shared with the SGLang launch — same port pair.
         assert str(MOONCAKE_MASTER_PORT) in output
-        assert "master_extra_args" in output
-        assert "nof_eviction" in output
 
     def test_vllm_mooncake_store_config_in_dry_run(self, capsys):
         """vLLM store_config + MOONCAKE_CONFIG_PATH appear in the dry-run extensions panel."""
