@@ -215,8 +215,9 @@ class SweepOrchestrator(WorkerStageMixin, FrontendStageMixin, BenchmarkStageMixi
     def run(self) -> int:
         """Run the complete benchmark sweep."""
         # Stage 1: Start head infrastructure (NATS, etcd)
+        #   (skipped for frontend.type: vllm or trtllm_serve)
         # Stage 2: Start backend workers
-        # Stage 3: Start frontends
+        # Stage 3: Start frontends (no-op for frontend.type: vllm — worker owns the port)
         # Stage 4: Run benchmark
         # Cleanup
 ```
@@ -356,6 +357,8 @@ src/srtctl/frontends/
 |-- base.py         # FrontendProtocol definition
 |-- dynamo.py       # DynamoFrontend (NATS/etcd)
 |-- sglang.py       # SGLangFrontend (direct router)
+|-- trtllm_serve.py # TRTLLMServeFrontend (disagg TRT-LLM orchestrator)
+|-- vllm.py         # VLLMFrontend (direct aggregate vllm serve)
 ```
 
 #### FrontendProtocol
@@ -444,14 +447,14 @@ src/srtctl/core/
 +------------------------------------------------------------------+
                                 |
                                 v
-+------------------------------------------------------------------+
-|                       FRONTEND LAYER                              |
-+------------------------------------------------------------------+
-| FrontendProtocol                   | DynamoFrontend | SGLangFrontend|
-| - start_frontends()                | - /health      | - /workers    |
-| - parse_health()                   | - NATS/etcd    | - Direct conn |
-| - health_endpoint                  |                |               |
-+------------------------------------------------------------------+
++----------------------------------------------------------------------------------------------+
+|                                       FRONTEND LAYER                                         |
++----------------------------------------------------------------------------------------------+
+| FrontendProtocol          | DynamoFrontend | SGLangFrontend | TRTLLMServe  | VLLMFrontend    |
+| - start_frontends()       | srun process   | srun process   | srun process | (no process)    |
+| - parse_health()          | NATS/etcd      | direct workers | /health      | /health         |
+| - health_endpoint         | /health        | /workers       | /health      | agg leader node |
++----------------------------------------------------------------------------------------------+
                                 |
                                 v
 +------------------------------------------------------------------+
@@ -1070,6 +1073,8 @@ src/srtctl/
 |   |-- base.py              # FrontendProtocol definition
 |   |-- dynamo.py            # DynamoFrontend (NATS/etcd)
 |   |-- sglang.py            # SGLangFrontend (direct router)
+|   |-- trtllm_serve.py      # TRTLLMServeFrontend (disagg orchestrator)
+|   |-- vllm.py              # VLLMFrontend (direct aggregate vllm serve)
 |
 |-- cli/                     # CLI entry points
 |   |-- __init__.py
