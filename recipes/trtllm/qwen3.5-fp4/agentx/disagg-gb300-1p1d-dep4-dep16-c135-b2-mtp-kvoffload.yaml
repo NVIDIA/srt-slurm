@@ -14,7 +14,7 @@ identity:
 setup_script: "install_dynamo_wheel.sh"
 
 extra_mount:
-  - /lustre/fsw/coreai_comparch_inferencex/rihuo/dynamo_wheels:/dynamo_wheels
+  - /lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/dynamo_wheels:/dynamo_wheels
 
 dynamo:
   install: false
