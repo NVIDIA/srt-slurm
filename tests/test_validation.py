@@ -506,6 +506,41 @@ class TestPreflightConfigVariants:
         assert results[0].ok is True
         assert results[0].errors == []
 
+    def test_telemetry_accepts_alias_resolving_to_remote_image(self, tmp_path):
+        model_dir = tmp_path / "model"
+        model_dir.mkdir()
+        container_file = tmp_path / "container.sqsh"
+        container_file.write_text("sqsh")
+        scraper_file = tmp_path / "scraper.sqsh"
+        scraper_file.write_text("sqsh")
+        node_file = tmp_path / "node.sqsh"
+        node_file.write_text("sqsh")
+
+        results = preflight_config_variants(
+            {
+                "name": "telemetry-remote-image",
+                "model": {"path": str(model_dir), "container": str(container_file), "precision": "bf16"},
+                "resources": {
+                    "gpu_type": "gb200",
+                    "gpus_per_node": 4,
+                    "prefill_nodes": 1,
+                    "decode_nodes": 1,
+                    "prefill_workers": 1,
+                    "decode_workers": 1,
+                },
+                "telemetry": {
+                    "enabled": True,
+                    "container_image": str(scraper_file),
+                    "dcgm_exporter": {"container_image": "dcgm-exporter", "port": 9401},
+                    "node_exporter": {"container_image": str(node_file), "port": 9101},
+                },
+            },
+            cluster_config={"containers": {"dcgm-exporter": "nvcr.io/nvidia/k8s/dcgm-exporter:latest"}},
+        )
+
+        assert results[0].ok is True
+        assert results[0].errors == []
+
     def test_telemetry_missing_sqsh_fails_preflight(self, tmp_path):
         model_dir = tmp_path / "model"
         model_dir.mkdir()

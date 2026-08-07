@@ -92,6 +92,10 @@ def _check_path(path_str: str, *, expect: str) -> tuple[bool, str]:
     return True, f"exists: {path}"
 
 
+def _is_container_uri(value: Any) -> bool:
+    return isinstance(value, str) and not value.startswith(("/", "./")) and ":" in value
+
+
 def _preflight_model(
     raw_config: dict[str, Any],
     resolved_config: dict[str, Any],
@@ -299,6 +303,9 @@ def _preflight_telemetry(
             raw_value = (raw_value or {}).get(key) if isinstance(raw_value, dict) else None
         if not resolved_value:
             continue  # schema-level validator handles required-when-enabled
+
+        if _is_container_uri(resolved_value):
+            continue
 
         ok, _ = _check_path(_expand_path(resolved_value), expect="file")
         if ok:
