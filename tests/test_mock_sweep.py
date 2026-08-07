@@ -34,6 +34,47 @@ MINIMAL_CONFIG = {
     "benchmark": {"type": "custom", "command": "echo fake-benchmark"},
 }
 
+TRTLLM_AGGREGATE_CONFIG = {
+    "name": "mock-trtllm-aggregate-sa-bench",
+    "model": {
+        "path": "hf:fake/mock-model",
+        "container": "nvcr.io/fake:latest",
+        "precision": "fp8",
+    },
+    "resources": {
+        "gpu_type": "gb300",
+        "gpus_per_node": 4,
+        "agg_nodes": 2,
+        "agg_workers": 1,
+        "gpus_per_agg": 8,
+    },
+    "frontend": {
+        "type": "trtllm_serve",
+        "enable_multiple_frontends": False,
+    },
+    "backend": {
+        "type": "trtllm",
+        "trtllm_config": {
+            "aggregated": {
+                "tensor_parallel_size": 8,
+                "moe_expert_parallel_size": 8,
+                "pipeline_parallel_size": 1,
+            }
+        },
+    },
+    "benchmark": {
+        "type": "sa-bench",
+        "dataset_name": "random",
+        "isl": 128,
+        "osl": 32,
+        "concurrencies": [1],
+        "req_rate": "inf",
+        "random_range_ratio": 0.8,
+        "num_prompts_mult": 5,
+        "num_warmup_mult": 1,
+    },
+}
+
 
 def _write_config(tmp_path: Path) -> Path:
     cfg = tmp_path / "cfg.yaml"
@@ -115,3 +156,29 @@ def test_run_mock_sweep_result_json_is_parseable_with_fake_metrics(tmp_path: Pat
     assert isinstance(result["score"], float)
     assert 0.0 < result["score"] < 1.0
     assert isinstance(result["param_count"], int)
+
+
+def test_trtllm_aggregate_runs_complete_sa_bench_lifecycle_without_router(tmp_path: Path) -> None:
+    config_path = tmp_path / "trtllm-aggregate.yaml"
+    config_path.write_text(yaml.safe_dump(TRTLLM_AGGREGATE_CONFIG))
+    output_dir = tmp_path / "outputs" / "42045"
+
+    exit_code = run_mock_sweep(
+        config_path=config_path,
+        output_dir=output_dir,
+        job_id="42045",
+        options=MockOptions(
+            child_duration_s=0.05,
+            phase_pause_s=0.01,
+            nodelist=("mock-node-01", "mock-node-02"),
+        ),
+    )
+
+    assert exit_code == 0
+    result = json.loads((output_dir / "result.json").read_text())
+    assert result["status"] == "completed"
+    assert any((output_dir / "logs").glob("*_agg_w0.out"))
+    assert (output_dir / "logs" / "benchmark.out").is_file()
+    assert not (output_dir / "logs" / "infra.out").exists()
+    assert not (output_dir / "logs" / "ser.yaml").exists()
+    assert not any((output_dir / "logs").glob("*_frontend_*.out"))
