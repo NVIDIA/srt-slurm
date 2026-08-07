@@ -179,7 +179,10 @@ backend:
       trust_remote_code: true
 frontend:
   type: dynamo
-  enable_multiple_frontends: false
+  nginx_session_affinity: true
+  enable_multiple_frontends: true
+  num_additional_frontends: 3
+  nginx_session_affinity_header: X-Dynamo-Session-ID
   env:
     ETCD_LEASE_TTL: "120"
     DYN_TOKENIZER_CACHE: "1"
@@ -187,7 +190,6 @@ frontend:
     DYN_TOKENIZER: "fastokens"
   args:
     router-mode: kv
-    no-kv-events: true
     router-session-affinity-ttl-secs: '14400'
     active-decode-blocks-threshold: None
     active-prefill-tokens-threshold: None
