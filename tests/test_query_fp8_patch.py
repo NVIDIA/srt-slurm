@@ -62,3 +62,14 @@ def test_query_fp8_setup_script_rejects_unknown_source(tmp_path: Path):
 
     assert result.returncode != 0
     assert "Refusing to patch" in result.stderr
+
+
+def test_numa_interleave_query_fp8_wrapper_runs_both_setup_scripts():
+    wrapper = (
+        Path(__file__).parents[1]
+        / "configs/patches/vllm-numa-interleave-query-fp8.sh"
+    ).read_text()
+
+    query_patch = "patch-minimax-m3-query-fp8-graph-stability.sh"
+    numa_patch = "vllm-numa-interleave.sh"
+    assert wrapper.index(query_patch) < wrapper.index(numa_patch)
