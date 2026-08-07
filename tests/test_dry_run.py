@@ -11,7 +11,7 @@ from unittest.mock import patch
 import yaml
 from rich.console import Console
 
-from srtctl.cli.submit import _print_running_summary, build_job_metadata, show_config_details
+from srtctl.cli.submit import _identity_metadata, _print_running_summary, build_job_metadata, show_config_details
 from srtctl.core.schema import SrtConfig
 
 # Minimal valid config that all tests build on
@@ -62,7 +62,7 @@ def test_running_summary_identity_hint_uses_declared_recipe_metadata(capsys):
     )
     recipe_config = {
         "model": {
-            "path": "deepseek-ai/DeepSeek-V4-Pro",
+            "path": "hf:deepseek-ai/DeepSeek-V4-Pro",
             "container": "nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc23",
         }
     }
@@ -92,6 +92,69 @@ def test_running_summary_leaves_unset_slurm_values_blank(capsys):
     lines = capsys.readouterr().out.splitlines()
     assert next(line for line in lines if "Slurm Partition:" in line).rstrip() == "  Slurm Partition: batch_3"
     assert next(line for line in lines if "Slurm Account:" in line).rstrip() == "  Slurm Account:"
+
+
+def test_job_metadata_includes_identity_and_optional_fields(capsys):
+    image = "nvcr.io/nvidia/really-long-registry-path/sglang-runtime:0.5.8-cu130"
+    config = _make_config(
+        {
+            "setup_script": "setup-runtime.sh",
+            "identity": {
+                "model": {
+                    "repo": "nvidia/test-model",
+                    "revision": "0123456789abcdef",
+                },
+                "container": {"image": image},
+                "frameworks": {"dynamo": "1.0.0", "sglang": "0.5.8"},
+            },
+        }
+    )
+
+    metadata = build_job_metadata(config, job_name=config.name, job_id="12345", tags=["nightly"])
+    _print_running_summary(metadata, console=Console(width=200))
+
+    assert metadata["job_id"] == "12345"
+    assert metadata["tags"] == ["nightly"]
+    assert metadata["setup_script"] == "setup-runtime.sh"
+    assert metadata["identity"] == {
+        "model": {"repo": "nvidia/test-model", "revision": "0123456789abcdef"},
+        "container": {"image": image},
+        "frameworks": {"dynamo": "1.0.0", "sglang": "0.5.8"},
+    }
+
+    output = capsys.readouterr().out
+    assert "Identity:" in output
+    assert "model=nvidia/test-model" in output
+    assert "rev=0123456789ab" in output
+    assert f"container=...{image[-47:]}" in output
+    assert "dynamo=1.0.0" in output
+    assert "sglang=0.5.8" in output
+    assert "Tip: Add an identity: block" not in output
+
+
+def test_identity_metadata_accepts_none():
+    assert _identity_metadata(None) == {}
+
+
+def test_job_metadata_ignores_non_mapping_recipe_model():
+    config = _make_config()
+
+    metadata = build_job_metadata(config, job_name=config.name, recipe_config={"model": "invalid"})
+
+    assert metadata["model"]["declared_path"] == config.model.path
+    assert metadata["model"]["declared_container"] == config.model.container
+
+
+def test_job_metadata_describes_dynamo_source_installs():
+    expected_frameworks = (
+        ({"hash": "deadbeef"}, "deadbeef"),
+        ({"top_of_tree": True}, "top-of-tree"),
+    )
+
+    for dynamo, expected_version in expected_frameworks:
+        config = _make_config({"dynamo": dynamo})
+        metadata = build_job_metadata(config, job_name=config.name)
+        assert metadata["frameworks"]["dynamo"] == expected_version
 
 
 class TestDryRunMounts:
