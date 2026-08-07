@@ -15,12 +15,13 @@ import builtins
 import hashlib
 import itertools
 import logging
+import math
 import os
 import shlex
 from collections.abc import Iterator, Mapping
 from dataclasses import field
 from enum import Enum
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import (
     Annotated,
     Any,
@@ -43,8 +44,23 @@ from srtctl.core.formatting import (
     FormattablePath,
     FormattablePathField,
 )
-
 logger = logging.getLogger(__name__)
+
+# Local copies of srtctl.core.power.contract values so that loading a config
+# never imports the power package; equality is pinned by tests.
+_BENCHMARK_TYPE_SA_BENCH = "sa-bench"
+_DCGM_POWER_MAX_SAMPLE_GAP_SECONDS = 3.0
+
+
+def _is_safe_relative_subpath(value: str) -> bool:
+    if not value or value.startswith(("/", "~")):
+        return False
+    parts = PurePosixPath(value).parts
+    return bool(parts) and not any(part in ("..", "") for part in parts)
+
+
+def _is_finite_positive(value: float) -> bool:
+    return math.isfinite(value) and value > 0
 
 
 # ============================================================================
@@ -256,6 +272,7 @@ class ProfilingType(str, Enum):
 
 class TelemetryProvider(str, Enum):
     SCRAPER = "scraper"
+    DCGM_POWER = "dcgm-power"
 
 
 # ============================================================================
@@ -1054,10 +1071,17 @@ class TelemetryConfig:
     ``live_metrics`` is a lightweight complementary signal: it tails worker
     logs in-process (no external stack required) and writes a per-run
     ``batch_metrics.png`` during the benchmark.
+
+    The ``dcgm-power`` provider needs only ``dcgm_exporter``: it runs a
+    head-node collector inside srtctl instead of the scraper container, so
+    ``container_image``, ``binary_path``, and ``node_exporter`` stay unused.
+    For that provider ``default_frequency`` is the collector cycle period in
+    seconds, and ``required`` decides whether telemetry invalidity fails the job.
     """
 
     enabled: bool = False
-    provider: TelemetryProvider = TelemetryProvider.SCRAPER
+    # NOTE: without by_value the schema accepts only enum member names, not "dcgm-power".
+    provider: Annotated[TelemetryProvider, fields.Enum(TelemetryProvider, by_value=True)] = TelemetryProvider.SCRAPER
     container_image: str | None = None
     binary_path: str = "/usr/local/bin/telemetry-scraper"
     default_frequency: float = 5.0
@@ -1068,6 +1092,10 @@ class TelemetryConfig:
     dcgm_exporter: TelemetryExporterConfig | None = None
     node_exporter: TelemetryExporterConfig | None = None
     live_metrics: LiveMetricsConfig | None = None
+    required: bool = False
+    startup_timeout_seconds: float = 30.0
+    request_timeout_seconds: float = 2.0
+    collector_join_timeout_seconds: float = 10.0
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -1814,10 +1842,72 @@ class SrtConfig:
                     f"from the profiling: block when nsys profiling is enabled. Remove these keys."
                 )
 
+    def _validate_dcgm_power(self):
+        """Validate the DCGM-only power provider.
+
+        It runs its collector in the orchestrator process, so it needs neither
+        the scraper image nor node_exporter. Sample and window timestamps must
+        share one host clock, which is why the benchmark client stays on the
+        head node.
+        """
+        telemetry = self.telemetry
+        exporter = telemetry.dcgm_exporter
+        if exporter is None:
+            raise ValidationError("telemetry.dcgm_exporter is required for provider dcgm-power")
+        if not exporter.container_image:
+            raise ValidationError("telemetry.dcgm_exporter.container_image must be non-empty")
+        if not 1 <= exporter.port <= 65535:
+            raise ValidationError("telemetry.dcgm_exporter.port must be in 1..65535")
+
+        for name in ("default_frequency", "startup_timeout_seconds", "request_timeout_seconds"):
+            if not _is_finite_positive(getattr(telemetry, name)):
+                raise ValidationError(f"telemetry.{name} must be finite and positive")
+        if telemetry.default_frequency > _DCGM_POWER_MAX_SAMPLE_GAP_SECONDS:
+            raise ValidationError(
+                f"telemetry.default_frequency={telemetry.default_frequency} exceeds the "
+                f"{_DCGM_POWER_MAX_SAMPLE_GAP_SECONDS}s max sample gap the power validator accepts; "
+                "every window would fail sample_gap_exceeded. Set it to the intended collector "
+                "period (e.g. 1.0)."
+            )
+        if (
+            not _is_finite_positive(telemetry.collector_join_timeout_seconds)
+            or telemetry.collector_join_timeout_seconds <= telemetry.request_timeout_seconds
+        ):
+            raise ValidationError(
+                "telemetry.collector_join_timeout_seconds must be finite, positive, "
+                "and greater than telemetry.request_timeout_seconds"
+            )
+
+        if not _is_safe_relative_subpath(telemetry.storage_subdir):
+            raise ValidationError("telemetry.storage_subdir must be a safe relative path below the run log directory")
+
+        if self.benchmark.type != _BENCHMARK_TYPE_SA_BENCH:
+            raise ValidationError(f"telemetry provider dcgm-power requires benchmark.type: {_BENCHMARK_TYPE_SA_BENCH}")
+        if self.benchmark.client_placement != "head":
+            raise ValidationError("telemetry provider dcgm-power requires benchmark.client_placement: head")
+
+        # NOTE: a dedicated infra node moves nodes.head off the batch host the collector runs on.
+        if self.infra.etcd_nats_dedicated_node:
+            raise ValidationError(
+                "telemetry provider dcgm-power requires infra.etcd_nats_dedicated_node: false, because a "
+                "dedicated infra node moves nodes.head off the batch host and power samples would no longer "
+                "share the benchmark's clock"
+            )
+
+        concurrencies = self.benchmark.get_concurrency_list()
+        if not concurrencies or len(set(concurrencies)) != len(concurrencies) or any(c <= 0 for c in concurrencies):
+            raise ValidationError(
+                "telemetry provider dcgm-power requires a non-empty list of unique positive benchmark.concurrencies"
+            )
+
     def _validate_telemetry(self):
         """Validate telemetry configuration."""
         telemetry = self.telemetry
         if telemetry is None or not telemetry.enabled:
+            return
+
+        if telemetry.provider == TelemetryProvider.DCGM_POWER:
+            self._validate_dcgm_power()
             return
 
         if telemetry.provider != TelemetryProvider.SCRAPER:

@@ -26,6 +26,7 @@
 ## Operations
 
 - [Monitoring](monitoring.md)
+- [GPU Power Telemetry](power-telemetry.md)
 - [Analyzing Results](analyzing.md)
 - [SLURM FAQ](slurm-faq.md)
 
