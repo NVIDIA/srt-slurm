@@ -201,10 +201,10 @@ benchmark:
   type: custom
   client_placement: last_decode
   env:
-    AIPERF_REF: file:///scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/lingjiew/agentX/aiperf
-    HF_HUB_CACHE: /lustre/fsw/portfolios/coreai/users/lingjiew/agentX/hf_cache
-    HF_HOME: /lustre/fsw/portfolios/coreai/users/lingjiew/agentX/hf_cache
-    AIPERF_DATASET_MMAP_CACHE_DIR: /lustre/fsw/portfolios/coreai/users/lingjiew/agentX/hf_cache/aiperf_mmap
+    AIPERF_REF: file:///lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/aiperf
+    HF_HUB_CACHE: /lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/hf_cache
+    HF_HOME: /lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/hf_cache
+    AIPERF_DATASET_MMAP_CACHE_DIR: /lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/hf_cache/aiperf_mmap
     AIPERF_DATASET_CONFIGURATION_TIMEOUT: '1800'
     AIPERF_SERVICE_PROFILE_CONFIGURE_TIMEOUT: '1800'
     AIPERF_HTTP_X_DYNAMO_SESSION_ID_FROM_CORRELATION_ID: 'true'
