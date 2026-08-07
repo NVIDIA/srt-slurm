@@ -62,6 +62,39 @@ def test_dry_run_empty_stdin_fails_cleanly(monkeypatch, capsys) -> None:
     assert "NoneType" not in error
 
 
+def test_apply_bash_outputs_standalone_script(monkeypatch, tmp_path: Path, capsys) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(MINIMAL_DRY_RUN_CONFIG))
+
+    def fail_subprocess_run(*_args, **_kwargs):
+        raise AssertionError("--bash must not submit through sbatch")
+
+    monkeypatch.setattr(submit_cli.subprocess, "run", fail_subprocess_run)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["srtctl", "apply", "-f", str(config_path), "--bash"],
+    )
+
+    submit_cli.main()
+
+    captured = capsys.readouterr()
+    output = captured.out
+    assert captured.err == ""
+    assert output.startswith("#!/bin/bash\n")
+    assert "DRY-RUN" not in output
+    assert "srt_lifecycle_exit_trap" in output
+    assert "srt_start_tachometer" in output
+    assert "srt_wait_workers_ready" in output
+    assert 'cat > "${OUTPUT_DIR}/config_server.yaml" <<\'SRTCTL_RUNTIME_CONFIG_' in output
+    assert 'cat > "${OUTPUT_DIR}/config.yaml" <<\'SRTCTL_BENCHMARK_CONFIG_' in output
+    assert "type: manual" in output
+    assert "type: custom" in output
+    assert "name: stdin-dry-run" in output
+    assert 'srtctl.cli.do_sweep "${OUTPUT_DIR}/config_server.yaml"' in output
+    assert 'srtctl.cli.run_benchmark "${OUTPUT_DIR}/config.yaml"' in output
+
+
 def test_load_config_rejects_empty_yaml(tmp_path: Path) -> None:
     path = tmp_path / "empty.yaml"
     path.write_text("")

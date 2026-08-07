@@ -1,0 +1,190 @@
+# ---- srtctl standalone lifecycle runtime ----
+
+srt_log() {
+    printf '[srtctl:%s] %s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" "$*"
+}
+
+srt_stop_tachometer() {
+    if [[ -n "${SRT_TACHOMETER_PID:-}" ]]; then
+        if kill -0 "${SRT_TACHOMETER_PID}" 2>/dev/null; then
+            srt_log "Stopping tachometer pid=${SRT_TACHOMETER_PID}"
+            kill -TERM "${SRT_TACHOMETER_PID}" 2>/dev/null || true
+            wait "${SRT_TACHOMETER_PID}" 2>/dev/null || true
+        fi
+        SRT_TACHOMETER_PID=""
+    fi
+}
+
+srt_reap_and_exit() {
+    local rc="${1:-0}"
+    trap '' TERM INT EXIT
+    srt_log "Cleaning up process group (rc=${rc})"
+    srt_stop_tachometer
+    kill -TERM 0 2>/dev/null || true
+    wait 2>/dev/null || true
+    exit "${rc}"
+}
+
+srt_lifecycle_exit_trap() {
+    local rc=$?
+    srt_reap_and_exit "${rc}"
+}
+
+srt_lifecycle_init() {
+    trap srt_lifecycle_exit_trap EXIT
+    trap 'srt_reap_and_exit 0' TERM INT
+}
+
+srt_start_tachometer() {
+    local output_dir="$1"
+    mkdir -p "${output_dir}"
+
+    if [[ "${SRTCTL_ENABLE_TACHOMETER:-1}" != "1" ]]; then
+        srt_log "Tachometer disabled by SRTCTL_ENABLE_TACHOMETER=${SRTCTL_ENABLE_TACHOMETER}"
+        return 0
+    fi
+
+    if ! command -v tachometer >/dev/null 2>&1; then
+        if [[ "${SRTCTL_REQUIRE_TACHOMETER:-0}" == "1" ]]; then
+            srt_log "ERROR: tachometer not found and SRTCTL_REQUIRE_TACHOMETER=1"
+            return 1
+        fi
+        srt_log "tachometer not found; skipping telemetry"
+        return 0
+    fi
+
+    local tachometer_log="${output_dir}/tachometer.out"
+    export SRTCTL_TACHOMETER_OUTPUT_DIR="${output_dir}"
+    export SRTCTL_TACHOMETER_LOG="${tachometer_log}"
+
+    srt_log "Starting tachometer telemetry: ${tachometer_log}"
+    if [[ -n "${SRTCTL_TACHOMETER_ARGS:-}" ]]; then
+        # shellcheck disable=SC2086
+        tachometer ${SRTCTL_TACHOMETER_ARGS} >"${tachometer_log}" 2>&1 &
+    else
+        tachometer >"${tachometer_log}" 2>&1 &
+    fi
+    SRT_TACHOMETER_PID=$!
+}
+
+srt_wait_http_ready() {
+    local url="$1"
+    local label="${2:-endpoint}"
+    local timeout_seconds="${3:-300}"
+    local interval_seconds="${4:-2}"
+    local start_seconds="${SECONDS}"
+
+    srt_log "Waiting for ${label}: ${url} (timeout=${timeout_seconds}s)"
+    while (( SECONDS - start_seconds < timeout_seconds )); do
+        if curl -fsS --max-time 5 "${url}" >/dev/null 2>&1; then
+            srt_log "${label} ready after $((SECONDS - start_seconds))s"
+            return 0
+        fi
+        sleep "${interval_seconds}"
+    done
+
+    srt_log "ERROR: ${label} not ready after ${timeout_seconds}s"
+    return 1
+}
+
+srt_wait_workers_ready() {
+    local frontend_type="$1"
+    local host="$2"
+    local port="$3"
+    local expected_prefill="$4"
+    local expected_decode="$5"
+    local timeout_seconds="${6:-600}"
+    local interval_seconds="${7:-2}"
+
+    python3 - "$frontend_type" "$host" "$port" "$expected_prefill" "$expected_decode" "$timeout_seconds" "$interval_seconds" <<'PY'
+import json
+import sys
+import time
+import urllib.error
+import urllib.request
+
+frontend_type, host, port, expected_prefill, expected_decode, timeout_seconds, interval_seconds = sys.argv[1:]
+expected_prefill = int(expected_prefill)
+expected_decode = int(expected_decode)
+timeout_seconds = int(timeout_seconds)
+interval_seconds = int(interval_seconds)
+
+path = "/workers" if frontend_type == "sglang" else "/health"
+url = f"http://{host}:{port}{path}"
+start = time.monotonic()
+last_report = 0.0
+
+def check_dynamo(payload):
+    prefill = 0
+    decode = 0
+    for instance in payload.get("instances", []):
+        if instance.get("endpoint") != "generate":
+            continue
+        component = instance.get("component")
+        if component == "prefill":
+            prefill += 1
+        elif component in ("decode", "tensorrt_llm", "backend"):
+            decode += 1
+    return prefill, decode
+
+def check_sglang(payload):
+    stats = payload.get("stats", {})
+    prefill = int(stats.get("prefill_count", 0) or 0)
+    decode = int(stats.get("decode_count", 0) or 0) + int(stats.get("regular_count", 0) or 0)
+    return prefill, decode
+
+while True:
+    elapsed = time.monotonic() - start
+    if elapsed >= timeout_seconds:
+        print(f"ERROR: workers not ready after {timeout_seconds}s: {url}", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        with urllib.request.urlopen(url, timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        prefill, decode = check_sglang(payload) if frontend_type == "sglang" else check_dynamo(payload)
+        if prefill >= expected_prefill and decode >= expected_decode:
+            print(f"Workers ready after {int(elapsed)}s: prefill={prefill}/{expected_prefill} decode={decode}/{expected_decode}")
+            sys.exit(0)
+        if elapsed - last_report >= 60:
+            print(f"Waiting for workers: prefill={prefill}/{expected_prefill} decode={decode}/{expected_decode}")
+            last_report = elapsed
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        if elapsed - last_report >= 60:
+            print(f"Waiting for workers: {exc}")
+            last_report = elapsed
+
+    time.sleep(interval_seconds)
+PY
+}
+
+srt_run_benchmark_command() {
+    srt_log "Starting benchmark command: $*"
+    "$@"
+}
+
+srt_stop_pid() {
+    local label="$1"
+    local pid="$2"
+    local timeout_seconds="${3:-120}"
+
+    if [[ -z "${pid}" ]] || ! kill -0 "${pid}" 2>/dev/null; then
+        return 0
+    fi
+
+    srt_log "Stopping ${label} pid=${pid}"
+    kill -TERM "${pid}" 2>/dev/null || true
+
+    local start_seconds="${SECONDS}"
+    while jobs -pr | grep -qx "${pid}"; do
+        if (( SECONDS - start_seconds >= timeout_seconds )); then
+            srt_log "${label} did not exit after ${timeout_seconds}s; sending SIGKILL"
+            kill -KILL "${pid}" 2>/dev/null || true
+            break
+        fi
+        sleep 1
+    done
+    wait "${pid}" 2>/dev/null || true
+}
+
+# ---- end srtctl standalone lifecycle runtime ----

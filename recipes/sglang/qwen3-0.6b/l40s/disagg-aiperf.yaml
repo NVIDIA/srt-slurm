@@ -1,0 +1,110 @@
+# Qwen3-0.6B disaggregated SGLang smoke benchmark for a local 2x L40S host.
+# Mirrors Dynamo's examples/backends/sglang/launch/disagg.sh: one prefill
+# worker on GPU 0, one decode worker on GPU 1, NIXL transfer backend.
+
+name: "qwen3-0.6b-l40s-disagg-aiperf"
+
+slurm:
+  time_limit: "00:30:00"
+
+model:
+  path: "hf:Qwen/Qwen3-0.6B"
+  container: "0.5.6.post2"
+  precision: "bf16"
+
+identity:
+  model:
+    repo: "Qwen/Qwen3-0.6B"
+    revision: "c1899de289a04d12100db370d81485cdf75e47ca"
+  frameworks:
+    dynamo: "1.2.0"
+    sglang: "0.5.12"
+
+resources:
+  gpu_type: "l40s"
+  gpus_per_node: 2
+  prefill_nodes: 1
+  decode_nodes: 0
+  prefill_workers: 1
+  decode_workers: 1
+  gpus_per_prefill: 1
+  gpus_per_decode: 1
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+  args:
+    router-reset-states: true
+
+backend:
+  type: sglang
+
+  prefill_environment:
+    DYN_HEALTH_CHECK_ENABLED: "false"
+    PYTHONUNBUFFERED: "1"
+    SGLANG_DISAGGREGATION_HEARTBEAT_MAX_FAILURE: "100000"
+    SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT: "100000"
+    SGLANG_DISAGGREGATION_WAITING_TIMEOUT: "100000"
+    TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: "1800"
+
+  decode_environment:
+    DYN_HEALTH_CHECK_ENABLED: "false"
+    PYTHONUNBUFFERED: "1"
+    SGLANG_DISAGGREGATION_HEARTBEAT_MAX_FAILURE: "100000"
+    SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT: "100000"
+    SGLANG_DISAGGREGATION_WAITING_TIMEOUT: "100000"
+    TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: "1800"
+
+  sglang_config:
+    prefill:
+      model-path: "Qwen/Qwen3-0.6B"
+      served-model-name: "Qwen/Qwen3-0.6B"
+      page-size: 16
+      tensor-parallel-size: 1
+      trust-remote-code: true
+      disaggregation-mode: "prefill"
+      disaggregation-bootstrap-port: 12345
+      disaggregation-transfer-backend: "nixl"
+      enable-metrics: true
+      disable-piecewise-cuda-graph: true
+      mem-fraction-static: 0.90
+      max-total-tokens: 4096
+
+    decode:
+      model-path: "Qwen/Qwen3-0.6B"
+      served-model-name: "Qwen/Qwen3-0.6B"
+      page-size: 16
+      tensor-parallel-size: 1
+      trust-remote-code: true
+      disaggregation-mode: "decode"
+      disaggregation-bootstrap-port: 12345
+      disaggregation-transfer-backend: "nixl"
+      enable-metrics: true
+      disable-piecewise-cuda-graph: true
+      mem-fraction-static: 0.90
+      max-total-tokens: 4096
+
+benchmark:
+  type: "custom"
+  command: |
+    set -euo pipefail
+    ARTIFACT_DIR="${AIPERF_ARTIFACT_DIR:-/logs/aiperf/disagg}"
+    mkdir -p "$ARTIFACT_DIR"
+    aiperf profile Qwen/Qwen3-0.6B \
+      --url http://localhost:8000 \
+      --endpoint-type chat \
+      --streaming \
+      --concurrency "${AIPERF_CONCURRENCY:-2}" \
+      --request-count "${AIPERF_REQUEST_COUNT:-8}" \
+      --warmup-request-count "${AIPERF_WARMUP_REQUEST_COUNT:-1}" \
+      --isl "${AIPERF_ISL:-128}" \
+      --osl "${AIPERF_OSL:-32}" \
+      --image-batch-size 0 \
+      --audio-batch-size 0 \
+      --video-batch-size 0 \
+      --request-timeout-seconds 300 \
+      --tokenizer-trust-remote-code \
+      --output-artifact-dir "$ARTIFACT_DIR" \
+      --profile-export-prefix disagg-aiperf \
+      --ui none \
+      --no-server-metrics
