@@ -23,9 +23,13 @@ resources:
   decode_workers: 1
   gpus_per_decode: 8
 
+setup_script: "install_dynamo_wheel.sh"
+
+extra_mount:
+  - /lustre/fsw/core_dlfw_ci/rihuo/dynamo_wheels:/dynamo_wheels
+
 dynamo:
-  version: "1.4.0.dev20260807"
-  install: true
+  install: false
 
 backend:
   type: trtllm
