@@ -270,7 +270,7 @@ Frontend/router configuration.
 
 ```yaml
 frontend:
-  # Frontend type: "dynamo" (default), "sglang", or "trtllm_serve"
+  # Frontend type: "dynamo" (default), "sglang", "trtllm_serve", or "vllm"
   type: dynamo
 
   # Scaling
@@ -294,7 +294,7 @@ frontend:
 
 | Field                       | Type | Default       | Description                         |
 | --------------------------- | ---- | ------------- | ----------------------------------- |
-| `type`                      | str  | dynamo        | Frontend type: "dynamo", "sglang", or "trtllm_serve" |
+| `type`                      | str  | dynamo        | Frontend type: "dynamo", "sglang", "trtllm_serve", or "vllm" |
 | `enable_multiple_frontends` | bool | true          | Scale with nginx + multiple routers |
 | `num_additional_frontends`  | int  | 9             | Additional routers beyond master    |
 | `nginx_container`           | str  | nginx:1.27.4  | Custom nginx container image        |
@@ -318,6 +318,98 @@ Because the orchestrator is a single process, set
 supported). A recipe can be switched between the two TRT-LLM serving stacks by
 changing only `frontend.type` between `dynamo` and `trtllm_serve`. See the sample
 recipe `recipes/trtllm/b200-fp8/1k1k/stp/ctx1_gen3_tp8_batch1024_eplb0_mtp0_4_trtllm_serve.yaml`.
+
+### vllm frontend
+
+`type: vllm` runs aggregate vLLM jobs **without Dynamo**. The OpenAI-compatible
+HTTP server is the aggregate `vllm serve` worker itself — there is no separate
+router/frontend process, and srtctl skips NATS/etcd startup.
+
+Use this for aggregate throughput benchmarks where Dynamo orchestration is not
+needed. Disaggregated prefill/decode layouts still require a real router such as
+Dynamo (`frontend.type: dynamo`).
+
+**Requirements**
+
+| Constraint | Value |
+| ---------- | ----- |
+| `backend.type` | `vllm` |
+| Job layout | Aggregate only; no prefill/decode workers |
+| `agg_workers` | Exactly `1` — scale across nodes with `agg_nodes`, not with replicas |
+| `enable_multiple_frontends` | `false` (nginx + multi-router path is unsupported) |
+
+Nothing load-balances between aggregate endpoints here, so `agg_workers: 2` is
+rejected at load time: the extra replica would either idle behind the single
+public address or collide on the port. Use `frontend.type: dynamo` when you want
+several aggregate replicas behind one endpoint.
+
+**Single-node example**
+
+```yaml
+frontend:
+  type: vllm
+  enable_multiple_frontends: false
+
+resources:
+  agg_nodes: 1
+  agg_workers: 1
+  gpus_per_node: 8
+
+backend:
+  type: vllm
+  vllm_config:
+    aggregated:
+      tensor-parallel-size: 8
+```
+
+**Multi-node example (TP/PP across nodes)**
+
+```yaml
+frontend:
+  type: vllm
+  enable_multiple_frontends: false
+
+resources:
+  agg_nodes: 2
+  agg_workers: 1
+  gpus_per_node: 8
+
+backend:
+  type: vllm
+  vllm_config:
+    aggregated:
+      tensor-parallel-size: 8
+      pipeline-parallel-size: 2
+```
+
+srtctl launches one `vllm serve` process per node. The endpoint leader
+(`node_rank=0`) binds the public OpenAI port; follower ranks run headless engine
+workers. Multi-node coordination flags (`--master-addr`, `--nnodes`,
+`--node-rank`, `--headless`) are derived from the allocated topology — **do not
+set them in the recipe**.
+
+**Topology-managed `vllm_config` keys**
+
+The following keys are owned by srtctl and are stripped at runtime if present in
+`vllm_config.{aggregated,prefill,decode}`:
+
+- `headless`
+- `host`, `port`
+- `master-addr` / `master_addr`
+- `master-port` / `master_port`
+- `nnodes`
+- `node-rank` / `node_rank`
+
+Existing recipes that still contain these keys continue to work (values are
+ignored). `srtctl dry-run` emits a **WARNING** for each one so operators can
+clean up recipes over time.
+
+Health checks, benchmark clients, and `SRT_FRONTEND_HOST` target the **aggregate
+endpoint leader** (the node running the public `vllm serve`), not necessarily the
+Slurm head node.
+
+Compare with `frontend.type: dynamo` + `backend.type: vllm`, which keeps Dynamo as
+the request router and uses `python3 -m dynamo.vllm` workers with NATS/etcd.
 
 ---
 
