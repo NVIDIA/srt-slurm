@@ -178,7 +178,7 @@ def try_start_snapshotter(
         logger.debug("Live metrics: failed to load cluster config: %s", e)
         return None
 
-    telemetry = cluster_config.get("telemetry") if isinstance(cluster_config, dict) else None
+    telemetry = (cluster_config or {}).get("telemetry") or {}
     if not isinstance(telemetry, dict):
         return None
 

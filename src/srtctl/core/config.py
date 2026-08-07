@@ -152,6 +152,14 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
         model["container"] = resolved_container
         logger.debug(f"Resolved container alias '{container}' -> '{resolved_container}'")
 
+    # Apply default environment variables (cluster defaults, recipe overrides)
+    cluster_env = cluster_config.get("default_environment")
+    if cluster_env:
+        user_env = config.get("environment", {})
+        merged_env = {**cluster_env, **user_env}
+        config["environment"] = merged_env
+        logger.debug(f"Applied default environment ({len(cluster_env)} vars, {len(user_env)} recipe overrides)")
+
     # Apply reporting defaults (if not specified in user config)
     if "reporting" not in config and cluster_config.get("reporting"):
         config["reporting"] = cluster_config["reporting"]
