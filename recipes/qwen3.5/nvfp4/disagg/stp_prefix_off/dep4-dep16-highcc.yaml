@@ -1,0 +1,172 @@
+# Qwen3.5-397B-A17B-NVFP4 2P1D disaggregated benchmark on GB200 (high cc).
+# Topology: 2 prefill workers (1 node each, DEP4) + 1 decode worker (4 nodes, DEP16) = 6 nodes / 24 GPUs.
+# Prefill: trtllm_mha + flashinfer_trtllm MoE runner. Each worker stays DEP4.
+# Decode:  trtllm_mha + flashinfer_cutedsl MoE runner + DeepEP low_latency. DEP16 across 4 nodes.
+# Post-process: export_node_metrics emits gen_throughput.csv + per-node CSVs.
+# cc sweep 2048..4096. One DEP4 prefill worker sustains ~89K tok/s input; cc>=2048 needs
+# 2 workers (top out ~100K tok/s at cc=4096). For cc<=1024 use dep4-dep16-lowcc.yaml.
+
+name: "nvfp4-disagg-dep4-dep16-highcc"
+
+
+dynamo:
+  hash: 4e4006138bb9dde377a2bb2cacbcc65aaa616ac1
+
+model:
+  path: "qwen3.5-nvfp4"
+  container: "dev"
+  precision: "nvfp4"
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+
+resources:
+  gpu_type: "gb200"
+  gpus_per_node: 4
+  prefill_nodes: 2
+  decode_nodes: 4
+  prefill_workers: 2
+  decode_workers: 1
+
+backend:
+  type: sglang
+
+  prefill_environment:
+    NO_COLOR: "1"
+    PYTHONUNBUFFERED: "1"
+    TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: "1800"
+    NCCL_MNNVL_ENABLE: "1"
+    NCCL_CUMEM_ENABLE: "1"
+    NCCL_NVLS_ENABLE: "1"
+    MC_FORCE_MNNVL: "1"
+    SGLANG_ENABLE_FLASHINFER_GEMM: "true"
+    SGLANG_DG_CACHE_DIR: "/configs/deepgemm-cache"
+    FLASHINFER_WORKSPACE_BASE: "/configs/flashinfer-cache"
+    FLASHINFER_DISABLE_VERSION_CHECK: "1"
+    SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK: "1"
+    SGLANG_DISAGGREGATION_HEARTBEAT_MAX_FAILURE: "100000"
+    SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT: "100000"
+    SGLANG_DISAGGREGATION_WAITING_TIMEOUT: "100000"
+    SGLANG_MOONCAKE_CUSTOM_MEM_POOL: "True"
+    SGLANG_USE_MESSAGE_QUEUE_BROADCASTER: "0"
+    SGLANG_HEALTH_STARTING_OK: "1"
+    SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION: "0"
+
+  decode_environment:
+    NO_COLOR: "1"
+    PYTHONUNBUFFERED: "1"
+    TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: "1800"
+    NCCL_MNNVL_ENABLE: "1"
+    NCCL_CUMEM_ENABLE: "1"
+    NCCL_NVLS_ENABLE: "1"
+    MC_FORCE_MNNVL: "1"
+    MC_TE_METRIC: "true"
+    SGLANG_ENABLE_FLASHINFER_GEMM: "true"
+    SGLANG_DG_CACHE_DIR: "/configs/deepgemm-cache"
+    FLASHINFER_WORKSPACE_BASE: "/configs/flashinfer-cache"
+    FLASHINFER_DISABLE_VERSION_CHECK: "1"
+    SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK: "1"
+    SGLANG_DISAGGREGATION_HEARTBEAT_MAX_FAILURE: "100000"
+    SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT: "100000"
+    SGLANG_DISAGGREGATION_WAITING_TIMEOUT: "100000"
+    SGLANG_DECODE_BOOTSTRAP_TIMEOUT: "1000"
+    SGLANG_HACK_SEQ_BOOTSTRAP_ROOM: "1"
+    SGLANG_MOONCAKE_CUSTOM_MEM_POOL: "True"
+    SGLANG_USE_MESSAGE_QUEUE_BROADCASTER: "0"
+    SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK: "1024"
+    SGLANG_HEALTH_CHECK_TIMEOUT: "1800"
+    SGLANG_HEALTH_STARTING_OK: "1"
+    SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION: "0"
+
+  sglang_config:
+    prefill:
+      served-model-name: "nvidia/Qwen3.5-397B-A17B-NVFP4"
+      model-path: "/model/"
+      trust-remote-code: true
+      port: 5000  # avoid ephemeral port range (9000-65000) self-connect on rpc_port=port+236
+      disable-flashinfer-autotune: true
+
+      attention-backend: "trtllm_mha"
+      quantization: "modelopt_fp4"
+      kv-cache-dtype: "fp8_e4m3"
+      moe-runner-backend: "flashinfer_trtllm"
+      page-size: 64
+
+      # DEP4 per prefill worker (1 node, 4 GPUs)
+      tensor-parallel-size: 4
+      data-parallel-size: 4
+      expert-parallel-size: 4
+      enable-dp-attention: true
+      enable-dp-lm-head: true
+      moe-dense-tp-size: 1
+
+      mamba-scheduler-strategy: "no_buffer"
+      mamba-track-interval: 2048
+      mamba-ssm-dtype: "bfloat16"
+
+      disaggregation-mode: "prefill"
+      disaggregation-bootstrap-port: 31000
+      disable-radix-cache: true
+
+      mem-fraction-static: 0.80
+      chunked-prefill-size: 65536
+      context-length: 2020
+
+      load-balance-method: "round_robin"
+      watchdog-timeout: 1000000
+      disable-cuda-graph: true
+      log-level: "info"
+
+    decode:
+      served-model-name: "nvidia/Qwen3.5-397B-A17B-NVFP4"
+      model-path: "/model/"
+      trust-remote-code: true
+
+      attention-backend: "trtllm_mha"
+      quantization: "modelopt_fp4"
+      kv-cache-dtype: "fp8_e4m3"
+      moe-runner-backend: "flashinfer_cutedsl"
+      page-size: 64
+
+      # DEP16 decode: TP16 + DP16 + EP16 + dp-attention across 4 nodes
+      tensor-parallel-size: 16
+      data-parallel-size: 16
+      expert-parallel-size: 16
+      enable-dp-attention: true
+      enable-dp-lm-head: true
+      moe-dense-tp-size: 1
+
+      mamba-scheduler-strategy: "no_buffer"
+      mamba-track-interval: 128
+      mamba-ssm-dtype: "bfloat16"
+
+      moe-a2a-backend: "deepep"
+      deepep-mode: "low_latency"
+      ep-dispatch-algorithm: "static"
+      eplb-algorithm: "deepseek"
+      prefill-round-robin-balance: true
+
+      disaggregation-mode: "decode"
+      disaggregation-bootstrap-port: 31000
+      disable-radix-cache: true
+
+      mem-fraction-static: 0.75
+      chunked-prefill-size: 4096
+      context-length: 8192
+      cuda-graph-max-bs: 512
+      max-running-requests: 4096   # sized to top of cc sweep
+      max-mamba-cache-size: 4096
+      watchdog-timeout: 1000000
+
+      decode-log-interval: 1
+      stream-interval: 50
+
+benchmark:
+  type: "sa-bench"
+  isl: 1000
+  osl: 1000
+  concurrencies: "2048x4096"
+  req_rate: "inf"
+  random_range_ratio: 1.0
+  export_node_metrics: true
