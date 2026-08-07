@@ -187,7 +187,6 @@ frontend:
   args:
     router-mode: kv
     no-kv-events: true
-    router-reset-states: true
     router-session-affinity-ttl-secs: '14400'
     active-decode-blocks-threshold: None
     active-prefill-tokens-threshold: None
