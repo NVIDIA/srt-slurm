@@ -27,14 +27,19 @@ class TestExpandTemplate:
         assert result == "x-y"
 
     def test_numeric_value(self):
-        """Test that numeric values are converted to strings."""
+        """Test that numeric whole-placeholder values preserve their type."""
         result = expand_template("{num}", {"num": 42})
-        assert result == "42"
+        assert result == 42
 
     def test_float_value(self):
-        """Test float value conversion."""
+        """Test that float whole-placeholder values preserve their type."""
         result = expand_template("{val}", {"val": 0.85})
-        assert result == "0.85"
+        assert result == 0.85
+
+    def test_bool_value_as_whole_placeholder(self):
+        """Test that boolean whole-placeholder values preserve their type."""
+        assert expand_template("{enabled}", {"enabled": True}) is True
+        assert expand_template("{enabled}", {"enabled": False}) is False
 
     def test_nested_dict(self):
         """Test placeholder replacement in nested dicts."""
@@ -73,7 +78,7 @@ class TestExpandTemplate:
         assert result["level1"]["level2"]["value"] == "c"
 
     def test_list_value_as_whole_placeholder(self):
-        """Test that list values replace entire placeholder."""
+        """Test that list whole-placeholder values preserve their type."""
         result = expand_template("{items}", {"items": [1, 2, 3]})
         assert result == [1, 2, 3]
 
@@ -278,12 +283,12 @@ class TestGenerateSweepConfigs:
         }
         results = generate_sweep_configs(config)
 
-        # Check that values are substituted (note: they become strings)
+        # Check that whole-placeholder values are substituted with their original types.
         config1 = results[0][0]
         config2 = results[1][0]
 
         prefill1 = config1["backend"]["sglang_config"]["prefill"]
         prefill2 = config2["backend"]["sglang_config"]["prefill"]
 
-        assert prefill1["mem-fraction-static"] == "0.85"
-        assert prefill2["mem-fraction-static"] == "0.9"
+        assert prefill1["mem-fraction-static"] == 0.85
+        assert prefill2["mem-fraction-static"] == 0.9
