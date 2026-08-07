@@ -1,0 +1,85 @@
+name: "qwen35-397b-nvfp4-gb200-disagg-8xdep2-1xdep8"
+
+model:
+  path: "hf:nvidia/Qwen3.5-397B-A17B-NVFP4"
+  container: "vllm/vllm-openai:nightly-d223c900d85224c02f2162ee2c757a769e99f519"
+  precision: "NVFP4"
+
+dynamo:
+  version: "1.2.0.dev20260526"
+  install: true
+
+resources:
+  gpu_type: "gb200"
+  gpus_per_node: 4
+
+  prefill_nodes: 4
+  prefill_workers: 8
+  gpus_per_prefill: 2
+
+  decode_nodes: 2
+  decode_workers: 1
+  gpus_per_decode: 8
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+
+backend:
+  type: vllm
+  connector: null
+
+  prefill_environment:
+    DYN_LOG: "error"
+    DYN_SDK_DISABLE_ANSI_LOGGING: "1"
+    VLLM_LOGGING_COLOR: "0"
+    VLLM_SSM_CONV_STATE_LAYOUT: "DS"
+
+  decode_environment:
+    DYN_LOG: "error"
+    DYN_SDK_DISABLE_ANSI_LOGGING: "1"
+    VLLM_LOGGING_COLOR: "0"
+    VLLM_SSM_CONV_STATE_LAYOUT: "DS"
+
+  vllm_config:
+    prefill:
+      kv-transfer-config: '{"kv_connector": "NixlConnector", "kv_role": "kv_both", "kv_load_failure_policy": "fail"}'
+      served-model-name: "Qwen3.5-397B-A17B-NVFP4"
+      tensor-parallel-size: 1
+      pipeline-parallel-size: 1
+      data-parallel-size: 2
+      enable-expert-parallel: true
+      no-disable-hybrid-kv-cache-manager: true
+      generation-config: "vllm"
+      no-enable-prefix-caching: true
+      async-scheduling: true
+      stream-interval: 100
+      mamba-ssm-cache-dtype: "bfloat16"
+      language-model-only: true
+      max-num-batched-tokens: 16384
+
+    decode:
+      kv-transfer-config: '{"kv_connector": "NixlConnector", "kv_role": "kv_both", "kv_load_failure_policy": "fail"}'
+      served-model-name: "Qwen3.5-397B-A17B-NVFP4"
+      tensor-parallel-size: 1
+      pipeline-parallel-size: 1
+      data-parallel-size: 8
+      enable-expert-parallel: true
+      no-disable-hybrid-kv-cache-manager: true
+      generation-config: "vllm"
+      no-enable-prefix-caching: true
+      async-scheduling: true
+      stream-interval: 100
+      mamba-ssm-cache-dtype: "bfloat16"
+      language-model-only: true
+
+benchmark:
+  type: "sa-bench"
+  isl: 8192
+  osl: 1024
+  concurrencies: "64x128x256x512x1024x2048x3072"
+  req_rate: "inf"
+  random_range_ratio: 0.8
+  num_prompts_mult: 8
+  num_warmup_mult: 1
+
