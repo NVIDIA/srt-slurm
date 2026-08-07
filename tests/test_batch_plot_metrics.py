@@ -40,12 +40,13 @@ def test_plot_batch_metrics_cli_uses_shared_live_renderer(monkeypatch, tmp_path)
 
     calls = {}
 
-    def fake_render_batch_plot_matrix(state, output_path, title, downsample, smooth_input_window):
+    def fake_render_batch_plot_matrix(state, output_path, title, downsample, smooth_input_window, **kwargs):
         calls["state"] = state
         calls["output_path"] = Path(output_path)
         calls["title"] = title
         calls["downsample"] = downsample
         calls["smooth_input_window"] = smooth_input_window
+        calls.update(kwargs)
         calls["output_path"].write_text("fake png")
         return True
 
@@ -150,3 +151,82 @@ def test_renderer_splits_agg_logs_by_dp_and_derives_input_throughput(tmp_path):
     derived = {s.label: _values_for_metric(s, "input throughput (token/s)", smooth_input_window=1) for s in plot_series}
     assert derived["bia0003_agg_w0_DP0"] == [None, 200.0]
     assert derived["bia0003_agg_w0_DP1"] == [None, 200.0]
+
+
+def test_quantile_interpolates_like_numpy():
+    """_quantile must match linear interpolation so p99 lines up with expectations."""
+    from srtctl.analysis.batch_plot_matrix import _quantile
+
+    ordered = [float(v) for v in range(101)]  # 0..100
+    assert _quantile(ordered, 0.5) == 50.0
+    assert _quantile(ordered, 0.99) == 99.0
+    assert _quantile(ordered, 0.0) == 0.0
+    assert _quantile(ordered, 1.0) == 100.0
+    assert _quantile([7.0], 0.5) == 7.0
+
+
+class _FakeAxis:
+    """Minimal stand-in recording the calls _annotate_axis makes."""
+
+    def __init__(self):
+        self.ylim = None
+        self.hlines = []
+        self.annotations = []
+
+    def set_ylim(self, low, high):
+        self.ylim = (low, high)
+
+    def axhline(self, y, **_kwargs):
+        self.hlines.append(y)
+
+    def annotate(self, text, **_kwargs):
+        self.annotations.append(text)
+
+
+def test_annotate_axis_draws_median_line():
+    from srtctl.analysis.batch_plot_matrix import _annotate_axis
+
+    ax = _FakeAxis()
+    _annotate_axis(ax, [1.0, 2.0, 3.0], show_median=True, clip_percentile=None)
+
+    assert ax.hlines == [2.0]
+    assert any("median 2" in a for a in ax.annotations)
+    assert ax.ylim is None  # clipping disabled
+
+
+def test_annotate_axis_clips_outliers_and_reports_true_max():
+    """A few huge spikes must not squash the steady-state signal."""
+    from srtctl.analysis.batch_plot_matrix import _annotate_axis
+
+    ax = _FakeAxis()
+    values = [100.0] * 200 + [1_000_000.0]
+    _annotate_axis(ax, values, show_median=True, clip_percentile=99.0)
+
+    assert ax.ylim is not None
+    assert ax.ylim[1] < 1_000.0  # axis capped well below the spike
+    clipped = [a for a in ax.annotations if "axis clipped" in a]
+    assert clipped, ax.annotations
+    assert "1 pt(s)" in clipped[0]
+    assert f"{1_000_000.0:,.4g}" in clipped[0]  # true max is reported, not the clipped bound
+
+
+def test_annotate_axis_skips_clipping_for_small_integer_counters():
+    """Counters like #prealloc-req (0..3) gain nothing from clipping."""
+    from srtctl.analysis.batch_plot_matrix import _annotate_axis
+
+    ax = _FakeAxis()
+    _annotate_axis(ax, [0.0] * 200 + [1.0, 3.0], show_median=True, clip_percentile=99.0)
+
+    assert ax.ylim is None
+    assert not any("axis clipped" in a for a in ax.annotations)
+
+
+def test_annotate_axis_handles_empty_and_nonfinite():
+    from srtctl.analysis.batch_plot_matrix import _annotate_axis
+
+    ax = _FakeAxis()
+    _annotate_axis(ax, [], show_median=True, clip_percentile=99.0)
+    _annotate_axis(ax, [float("nan"), float("inf")], show_median=True, clip_percentile=99.0)
+
+    assert ax.hlines == []
+    assert ax.annotations == []

@@ -11,6 +11,7 @@ post-mortem ``plot_batch_metrics.py`` CLI.
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from dataclasses import dataclass
@@ -171,14 +172,110 @@ def _global_origin(prefill: Iterable[_PlotSeries], decode: Iterable[_PlotSeries]
     return first_seen
 
 
+def _resolve_cmap(plt, name: str, lut: int):
+    """Return a discrete colormap across matplotlib versions.
+
+    ``plt.cm.get_cmap`` was removed in matplotlib 3.9; ``matplotlib.colormaps``
+    is the replacement but does not exist before 3.5.
+    """
+    getter = getattr(plt.cm, "get_cmap", None)
+    if getter is not None:
+        return getter(name, lut)
+    import matplotlib
+
+    return matplotlib.colormaps[name].resampled(lut)
+
+
+# Counters with a tiny integer range (e.g. #prealloc-req over 0..3) gain nothing
+# from percentile clipping, and the annotation would just be noise.
+_CLIP_MIN_MAX = 10.0
+# Only clip when the tail actually squashes the plot.
+_CLIP_TRIGGER_RATIO = 1.5
+
+
+def _annotate_axis(
+    ax,
+    pooled: list[float],
+    *,
+    show_median: bool,
+    clip_percentile: float | None,
+) -> None:
+    """Add a median reference line and optionally cap the y-axis at a percentile."""
+    values = [v for v in pooled if v is not None and math.isfinite(v)]
+    if not values:
+        return
+
+    ordered = sorted(values)
+    median = _quantile(ordered, 0.5)
+
+    if clip_percentile is not None:
+        high = _quantile(ordered, clip_percentile / 100.0)
+        low, top = ordered[0], ordered[-1]
+        span = high - low
+        n_over = sum(1 for v in ordered if v > high)
+        if n_over and top > high * _CLIP_TRIGGER_RATIO and top > _CLIP_MIN_MAX:
+            # A flat baseline punctuated by spikes has span == 0, which is exactly
+            # the case worth clipping; fall back to a magnitude-relative pad.
+            pad = span * 0.08 if span > 0 else max(abs(high) * 0.08, 1.0)
+            ax.set_ylim(low - pad, high + pad)
+            ax.annotate(
+                f"▲ {n_over} pt(s) > p{clip_percentile:g} (max {top:,.4g}, axis clipped)",
+                xy=(0.5, 0.03),
+                xycoords="axes fraction",
+                ha="center",
+                va="bottom",
+                fontsize=7,
+                color="darkred",
+                bbox={"boxstyle": "round,pad=0.25", "fc": "mistyrose", "ec": "darkred", "lw": 0.6, "alpha": 0.9},
+            )
+
+    if show_median:
+        ax.axhline(median, color="red", linestyle="--", linewidth=1.1, alpha=0.85, zorder=5)
+        ax.annotate(
+            f"median {median:,.4g}",
+            xy=(1.0, median),
+            xycoords=("axes fraction", "data"),
+            xytext=(-4, 3),
+            textcoords="offset points",
+            ha="right",
+            va="bottom",
+            fontsize=7.5,
+            color="darkred",
+            fontweight="bold",
+            bbox={"boxstyle": "round,pad=0.2", "fc": "white", "ec": "red", "lw": 0.6, "alpha": 0.85},
+            zorder=6,
+        )
+
+
+def _quantile(ordered: list[float], q: float) -> float:
+    """Linear-interpolated quantile over a pre-sorted list (avoids a numpy dep)."""
+    if len(ordered) == 1:
+        return ordered[0]
+    pos = q * (len(ordered) - 1)
+    lo = int(pos)
+    hi = min(lo + 1, len(ordered) - 1)
+    frac = pos - lo
+    return ordered[lo] * (1.0 - frac) + ordered[hi] * frac
+
+
 def render_batch_plot_matrix(
     state: LogState,
     output_path: str | Path,
     title: str | None = None,
     downsample: int = 1,
     smooth_input_window: int = 8,
+    show_median: bool = True,
+    clip_percentile: float | None = 99.0,
 ) -> bool:
     """Render per-worker time-series to a PNG.
+
+    Args:
+        show_median: draw a dashed reference line at the pooled median of each
+            subplot and label its value.
+        clip_percentile: cap the y-axis at this percentile so a handful of
+            spikes cannot squash the steady-state signal into a flat line.
+            Out-of-range points are annotated with their count and the true
+            maximum. Pass ``None`` to disable.
 
     Returns ``True`` when a PNG was written and ``False`` when the state
     has no parsed batch rows yet.
@@ -196,7 +293,7 @@ def render_batch_plot_matrix(
         return False
 
     n_rows = len(PLOT_ROWS)
-    cmap = plt.cm.get_cmap("tab20", max(len(pf_files), len(dc_files), 1))
+    cmap = _resolve_cmap(plt, "tab20", max(len(pf_files), len(dc_files), 1))
     colors = [cmap(i) for i in range(cmap.N)]
 
     fig, axes = plt.subplots(n_rows, 2, figsize=(20, 3.0 * n_rows), squeeze=False)
@@ -214,6 +311,7 @@ def render_batch_plot_matrix(
             return
 
         drawn = False
+        pooled: list[float] = []
         for idx, s in enumerate(files):
             vs = _values_for_metric(s, metric, smooth_input_window)
             if not vs:
@@ -225,6 +323,7 @@ def render_batch_plot_matrix(
                 continue
             elapsed = _elapsed_seconds([p[0] for p in pairs], origin)
             values = [p[1] for p in pairs]
+            pooled.extend(values)
             ax.plot(elapsed, values, color=colors[idx % len(colors)], linewidth=0.9, alpha=0.8, label=s.label)
             drawn = True
 
@@ -235,10 +334,14 @@ def render_batch_plot_matrix(
         ax.grid(True, alpha=0.3)
         if not drawn:
             ax.text(0.5, 0.5, "no data", ha="center", va="center", transform=ax.transAxes, color="grey", fontsize=9)
-        elif files:
+            return
+
+        _annotate_axis(ax, pooled, show_median=show_median, clip_percentile=clip_percentile)
+
+        if files:
             ax.legend(
                 fontsize=7,
-                loc="upper right",
+                loc="upper left",
                 ncol=max(1, len(files) // 8 + 1),
                 framealpha=0.35,
                 facecolor="white",

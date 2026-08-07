@@ -42,6 +42,8 @@ def process_single_run(
     downsample_factor: int = 1,
     output_path: str | None = None,
     smooth_input_window: int = 8,
+    show_median: bool = True,
+    clip_percentile: float | None = 99.0,
 ) -> bool:
     """Process a single logs directory. Returns ``True`` when a plot was generated."""
     log_path = Path(log_dir)
@@ -57,6 +59,8 @@ def process_single_run(
         title=default_batch_plot_title(log_path),
         downsample=downsample_factor,
         smooth_input_window=smooth_input_window,
+        show_median=show_median,
+        clip_percentile=clip_percentile,
     )
 
 
