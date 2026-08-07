@@ -1,0 +1,69 @@
+Context:
+
+InferenceX: 
+A SemiAnalysis Benchmark submission platform, benchmark with 8k1k 1k1k random dataset to create a pareto curve, Nvidia to find and submit a list of recipes with configs and benchmark concurrency that could produce the pareto curve. 
+SA has dedicated cluster to produce the number and publish to the SA website. 
+Dynamo will be used for all Disaggregated serving submission.
+InferenceX is on it's way to deprecation.
+
+TRTLLM: TRTLLM hand over us a list of recipes based on different hardware, dynamo team reproduce the number with dynamo and submit to SemiAnalysis
+vLLM and SGLang: Two teams working on finding the best pareto curve based on different hardware, dynamo team occationally take the duty to finding the best pareto curve based on different hardware
+
+AgentX:
+A new SemiAnalysis Benchmark platform, benchmark with agentic dataset, allowing the KV cache reuse and offloading, router plays a major role in distributed inferencing. 
+create a pareto curve, Nvidia to find and submit a list of recipes with configs and benchmark concurrency that could produce the pareto curve. 
+Dynamo will be used for all Disaggregated serving submission.
+SA has SA has dedicated cluster to produce the number and publish to the SA website. 
+
+TRTLLM: TRTLLM hand over us a list of recipes based on different hardware, dynamo team reproduce the number with dynamo and submit to SemiAnalysis
+vLLM and SGLang: Two teams working on finding the best pareto curve based on different hardware, dynamo team occationally take the duty to finding the best pareto curve based on different hardware
+
+AgentPerf:
+Artifical Analysis submission platform, benchmark with agentic dataset, allowing the KV cache reuse and offloading, router plays a major role in distributed inferencing. 
+Initially, Focusing on Service Level Objective (SLO) at target concurrency, for example, at a target concurrency, TTFT p95 must be ≤10 seconds and SSE/TPOT p25 must be ≥20 tokens/sec, we should produce as lower TTFT and as higher SSE token/sec P25. 
+Now migrated to the perato curve. 
+Dynamo will be used for all Disaggregated serving submission.
+AA has dedicated cluster to produce the number and AA doesn't have a dedicated repo and runner to produce the number, they reply on us to provide them all the runner information and target perf number and reproduce the number by themselves.
+
+TRTLLM: TRTLLM hand over us a recipe or a list of recipes based on different hardware, dynamo team reproduce the number.
+vLLM and SGLang: No Disaggregated submissions yet. 
+
+Biggest problems:
+1. The benchmark handoff is not reproducible. (mismatch image, recipes, client, env, command line)
+   Client mismatch issue: GLM-5 TRTLLM GB300 submission: Transformers-v5 GLM-5 could not load under TRT-LLM’s v4 stack → custom_tokenizer: glm_moe_dsa
+   Client mismatch issue: Qwen3.5 TRTLLM GB300 submission: sa-bench made a new aiohttp.ClientSession per request. At c17920 this created connection/ephemeral-port churn, bursty admission, under-filled batches, and poor throughput.
+   Benchmark orchstration mismatch: DSv4 TRTLLM GB300 Submission: TRTLLM team insert a numactl configuration command to launch the engine to reduce the KV transfer overhead.
+   Benchmark dataset concurrency round number is unknown: GLM5 GB300 submission: TRTLLM team uses 16, but we use 10
+   Perf number is only reproducible using very long warmup period: DSv4 TRTLLM GB300 Submission: TRTLLM team insert a numactl configuration command to launch the engine to reduce the KV transfer overhead.
+   
+   All submission's issue:
+   All these submissions, trtllm team and dynamo are not using the same image to do benchmarking, trtllm team using a image built from a commit. dynamo use a release image to submit.
+   No standard slurm cluster orchstration tool for AgentPerf, makes the percise reproduction very hard. 
+
+2. Many failures are discovered during full sweeps or on the real submission runner rather than during handoff or initial validation. (Submission pipeline issue, accuracy tests failure, model availability)
+   In vLLM MiniMax M3 submission, the B300 submission cluster has node failure causing the network failure. 
+   In TRTLLM GLM5 GB300 submission, the MNNVL all reduce stretegy shows the accuracy issue which cannot pass the eval.
+   In DSv4 InferenceX GB300 submission: The submission cluster's nodes cannot load the big model due to driver issue.
+   In DSv4 AgentX GB300 submission: The submission cluster's nodes cannot load the big model due to driver issue again.
+
+   All submission's issue:
+   UCX knobs to be configured correctly in all submissions. 
+   Models need to present in the Submission cluster. 
+   Container need to be manually copied to the submission cluster in AgentPerf. 
+   
+
+3. Resolve the perf gap between dynamo and framework native serving. (finding the right config to match trtllm-serve performance, and figure out how dynamo should interact with the evolving engine behavior). 
+   In vLLM Minimax M2.5 GB300 submission. Dynamo's high GIL overhead cause the perf degradation, need to setup high stream_interval to work around.
+   In GLM5 GB300 submission, dynamo need to make the garbage collection effective in trtllm worker. 
+   In DSv4 GB300 submission, dynamo need to specifically use TCP request plane and bump the the concurrent worker limits, also need to binary search the best worker limits.
+   In Qwen3.5 submission, dynamo need to specifically use TCP request plane and bump the the concurrent worker limits, also need to binary search the best worker limits.
+   In all AgentPerf 4 DSv4 submission, dynamo need to adopt the conv aware routing solution and make sure we implement the trtllm server's routing behavior.
+   In all AgentPerf 4 DSv4 submission, dynamo need find tokenization knobs to reduce the tokenization overhead
+   In all AgentPerf 4 DSv4 submission, dynamo need find router knobs to remove the router queuing and config the router temperature.
+
+   In all InferenceX 4 submission, dynamo need to enable multiple frontends to reduce the tokenization overhead.
+
+4. Dynamo's bug causing the perf degradation. (not the major part we will cover)
+   In SGLang DSR1 submission, Dynamo has a bug to only route the request to rank 0.
+   In Kimi K2.5 GB200 submission, Dynamo has a tokenization bug that will encode the sequence into more tokens
+   In MiniMax M2.5 TRTLLM submission, AgentPerf gptoss submission, AgentX DSv4 submission, Dynamo should explicitly turn off the --publish-events-and-metrics since that produce the overhead. 
