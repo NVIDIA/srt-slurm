@@ -78,6 +78,90 @@ def load_cluster_config() -> dict[str, Any] | None:
         return None
 
 
+# An environment value of exactly ``${VAR}`` marks that variable for propagation
+# from the submitting shell. Braces are required, and a bare ``$VAR`` is left
+# alone, so values that merely contain a dollar sign are never touched.
+_HOST_ENV_REF = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
+_HOST_ENV_REF_ANYWHERE = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}")
+
+# Config sections holding environment variables, as (path, key) into the raw
+# config dict, so ``${VAR}`` means the same thing everywhere a user can write
+# an environment variable.
+_ENV_SECTIONS: tuple[tuple[tuple[str, ...], str], ...] = (
+    ((), "environment"),
+    (("backend",), "env"),
+    (("backend",), "prefill_environment"),
+    (("backend",), "decode_environment"),
+    (("backend",), "aggregated_environment"),
+    (("frontend",), "env"),
+    (("benchmark",), "env"),
+)
+
+
+def extract_host_env_passthrough(config: dict[str, Any]) -> list[str]:
+    """Turn ``HF_TOKEN: ${HF_TOKEN}`` entries into a list of names to propagate.
+
+    Lets a recipe (or srtslurm.yaml) use a secret without storing it anywhere:
+
+        environment:
+          HF_TOKEN: ${HF_TOKEN}
+
+    The value is deliberately never read here. srtctl asks SLURM to forward the
+    variable by name, so the secret stays out of the generated sbatch script,
+    the job's config copy and the sweep logs — all of which persist in the job
+    directory. Matching entries are dropped from the config so that nothing
+    later re-exports the literal ``${HF_TOKEN}`` over the forwarded value.
+
+    Returns the sorted variable names. Raises ValueError if a reference cannot
+    be honored by name alone.
+    """
+    names: set[str] = set()
+    errors: list[str] = []
+
+    for path, key in _ENV_SECTIONS:
+        parent: Any = config
+        for part in path:
+            parent = parent.get(part) if isinstance(parent, dict) else None
+            if parent is None:
+                break
+        if not isinstance(parent, dict):
+            continue
+        env = parent.get(key)
+        if not isinstance(env, dict):
+            continue
+
+        section = ".".join([*path, key])
+        kept: dict[str, Any] = {}
+        for name, value in env.items():
+            match = _HOST_ENV_REF.fullmatch(value) if isinstance(value, str) else None
+            if match is None:
+                if isinstance(value, str) and _HOST_ENV_REF_ANYWHERE.search(value):
+                    errors.append(
+                        f"{section}.{name}: '${{VAR}}' forwards a host variable by name, so it must be "
+                        f"the entire value — it cannot be embedded in a larger string."
+                    )
+                kept[name] = value
+                continue
+            var = match.group(1)
+            if var != name:
+                errors.append(
+                    f"{section}.{name}: cannot forward ${{{var}}} under a different name; "
+                    f"write '{var}: ${{{var}}}' instead."
+                )
+                continue
+            if var not in os.environ:
+                errors.append(f"{section}.{name}: ${{{var}}} is not set in the submitting shell.")
+                continue
+            names.add(var)
+
+        parent[key] = kept
+
+    if errors:
+        raise ValueError("Invalid host environment reference(s):\n  " + "\n  ".join(errors))
+
+    return sorted(names)
+
+
 def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: dict[str, Any] | None) -> dict[str, Any]:
     """
     Resolve user config by applying cluster defaults and aliases.
@@ -98,6 +182,7 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
     config = copy.deepcopy(user_config)
 
     if cluster_config is None:
+        config["host_env_passthrough"] = extract_host_env_passthrough(config)
         return config
 
     # Apply SLURM defaults
@@ -161,6 +246,13 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
         config["health_check"] = cluster_config["default_health_check"]
         logger.debug("Applied default_health_check: %s", config["health_check"])
 
+    # Merge cluster-level environment underneath the recipe's own, so a recipe
+    # can override any single cluster variable without restating the rest.
+    cluster_environment = cluster_config.get("environment")
+    if isinstance(cluster_environment, dict) and cluster_environment:
+        config["environment"] = {**cluster_environment, **(config.get("environment") or {})}
+        logger.debug("Applied cluster environment keys: %s", sorted(cluster_environment))
+
     # Resolve frontend nginx_container alias
     frontend = config.get("frontend", {})
     nginx_container = frontend.get("nginx_container", "")
@@ -212,6 +304,9 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
                     f"Resolved telemetry.{exporter_key}.container_image alias "
                     f"'{exporter_image}' -> '{resolved_exporter}'"
                 )
+
+    # Runs last so it also covers variables introduced by the cluster defaults above.
+    config["host_env_passthrough"] = extract_host_env_passthrough(config)
 
     return config
 

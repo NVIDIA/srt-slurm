@@ -90,6 +90,18 @@ def _assert_preflight_passed(raw_config: dict[str, Any], *, label: str) -> None:
         raise ValueError(_format_preflight_error(label, failed))
 
 
+def sbatch_export_spec(config: SrtConfig) -> str:
+    """Build the ``sbatch --export`` value for a job.
+
+    Jobs start from a clean environment: whatever happens to be exported in the
+    submitting shell (host CUDA paths, LD_LIBRARY_PATH, leftover module vars)
+    must not silently reach the containers. Variables the recipe asked for with
+    ``${VAR}`` are named here so SLURM forwards them, which keeps their values
+    off the command line and out of every file srtctl writes.
+    """
+    return ",".join(config.host_env_passthrough) if config.host_env_passthrough else "NONE"
+
+
 def _install_mock_submit_patches() -> list:
     """Stub the subset of `submit_with_orchestrator` that reaches real infra.
 
@@ -299,6 +311,12 @@ def show_config_details(config: SrtConfig) -> None:
         console.print(Panel(env_table, border_style="yellow"))
     else:
         console.print("[dim]No custom environment variables configured.[/]")
+
+    # Names only — the whole point of ${VAR} is that srtctl never handles the value.
+    if config.host_env_passthrough:
+        forwarded = " ".join(config.host_env_passthrough)
+        console.print(f"[dim]Forwarded from the submitting shell:[/] {forwarded}")
+    console.print("[dim]All other host environment variables are dropped (sbatch --export).[/]")
 
     # --- srun options ---
     if config.srun_options:
@@ -640,7 +658,7 @@ def submit_with_orchestrator(
     keep_script = False
     try:
         result = subprocess.run(
-            ["sbatch", script_path],
+            ["sbatch", f"--export={sbatch_export_spec(config)}", script_path],
             capture_output=True,
             text=True,
             check=True,
