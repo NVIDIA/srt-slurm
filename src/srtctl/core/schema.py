@@ -250,8 +250,28 @@ class BenchmarkType(str, Enum):
 
 class ProfilingType(str, Enum):
     NSYS = "nsys"
+    NSYS_MANUAL = "nsys-manual"
+    NSYS_TIME = "nsys-time"
     TORCH = "torch"
     NONE = "none"
+
+
+# Default nsys profile flags for ``type: nsys-manual``. Recipes set ``phases`` (disagg)
+# or omit it (aggregated); flags are not configurable in v1.
+NSYS_MANUAL_DEFAULT_ARGS: tuple[str, ...] = (
+    "--trace-fork-before-exec=true",
+    "--cuda-graph-trace=node",
+    "--capture-range=cudaProfilerApi",
+    "--trace=cuda,nvtx",
+    "--capture-range-end=stop",
+    "--kill",
+    "none",
+    "--wait",
+    "all",
+)
+
+# Capture window used by ``nsys-manual.sh`` when a recipe omits ``duration_secs``.
+NSYS_MANUAL_DEFAULT_DURATION_SECS = 5
 
 
 class TelemetryProvider(str, Enum):
@@ -355,6 +375,44 @@ class SweepConfigField(fields.Field):
             result: dict[str, Any] = {"mode": value.mode}
             result.update(value.parameters)
             return result
+        return value
+
+
+class ProfilingPhaseField(fields.Field):
+    """Polymorphic deserializer for a profiling phase (prefill/decode/aggregated).
+
+    A phase value may be written as:
+
+    - **a mapping with start_step/stop_step** (``decode: {start_step: 100, ...}``):
+      iteration-based ``type: nsys``.
+    - **an empty mapping** (``decode: {}``): phase filter for ``nsys-time``.
+    - **a list of nsys flags**: legacy syntax, rejected by validation with a pointer
+      to the current ``nsys-manual`` recipe shape.
+    - **absent**: use srt-slurm's default nsys flags for that phase.
+    """
+
+    def _deserialize(self, value: Any, attr: str | None, data: Mapping[str, Any] | None, **kwargs) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, ProfilingPhaseConfig):
+            return value
+        if isinstance(value, list | tuple):
+            return ProfilingPhaseConfig(nsys_args=tuple(str(v) for v in value))
+        if isinstance(value, dict):
+            if not value:
+                return ProfilingPhaseConfig()
+            return ProfilingPhaseConfig.Schema().load(value)
+        raise ValidationError(
+            f"Expected a list of nsys flags or a mapping for profiling phase, got {type(value).__name__}"
+        )
+
+    def _serialize(self, value: Any | None, attr: str | None, obj: Any, **kwargs) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, ProfilingPhaseConfig):
+            if value.nsys_args is not None:
+                return list(value.nsys_args)
+            return ProfilingPhaseConfig.Schema().dump(value)
         return value
 
 
@@ -738,10 +796,24 @@ class BenchmarkConfig:
 
 @dataclass(frozen=True)
 class ProfilingPhaseConfig:
-    """Profiling config for a single phase (prefill/decode/aggregated)."""
+    """Profiling config for a single phase (prefill/decode/aggregated).
+
+    Two orthogonal ways to drive nsys:
+
+    - ``start_step``/``stop_step``: iteration-based capture. vLLM/TRTLLM trigger
+      cudaProfilerStart/Stop at those step boundaries.
+    - ``nsys_args``: legacy per-phase nsys flag list, kept only so recipes written
+      against the old ``nsys-manual`` syntax fail with an actionable error.
+    """
 
     start_step: int | None = None  # Step to start profiling
     stop_step: int | None = None  # Step to stop profiling
+    nsys_args: tuple[str, ...] | None = field(
+        default=None,
+        metadata={"marshmallow_field": fields.List(fields.String(), allow_none=True)},
+    )
+
+    Schema: ClassVar[builtins.type[Schema]] = Schema
 
     @property
     def vllm_nsys_delay_iterations(self) -> int:
@@ -755,44 +827,68 @@ class ProfilingPhaseConfig:
             return 0
         return max(self.stop_step - self.start_step, 0)
 
-    Schema: ClassVar[builtins.type[Schema]] = Schema
-
 
 @dataclass(frozen=True)
 class ProfilingConfig:
     """Profiling configuration.
 
-    Supports two profiling modes:
-    - nsys: NVIDIA Nsight Systems profiling (wraps command with nsys profile)
-    - torch: PyTorch profiler (uses SGLANG_TORCH_PROFILER_DIR)
-
-    Per-phase start_step/stop_step are specified in the prefill/decode/aggregated sections.
+    Profiling modes (``type``):
+    - ``nsys``: iteration-based nsys (``start_step``/``stop_step`` per phase)
+    - ``nsys-manual``: on-demand nsys (``nsys-manual.sh``; ``phases`` + ``duration_secs``)
+    - ``nsys-time``: wall-clock nsys (``delay_secs``/``duration_secs``)
+    - ``torch``: PyTorch profiler (SGLang; ``SGLANG_TORCH_PROFILER_DIR``)
     """
 
-    type: str = "none"  # "none", "nsys", "nsys-time", or "torch"
+    type: str = "none"  # "none", "nsys", "nsys-manual", "nsys-time", or "torch"
 
-    # Extra arguments passed to nsys profile (appended before `-o`; see get_nsys_prefix)
+    # Extra arguments passed to nsys profile (not used in ``nsys-manual``).
     extra_nsys_args: list[str] | None = None
 
-    # Phase-specific profiling step configs (not used for nsys-time)
-    prefill: ProfilingPhaseConfig | None = None
-    decode: ProfilingPhaseConfig | None = None
-    aggregated: ProfilingPhaseConfig | None = None
+    # Phase-specific profiling configs (``nsys``, ``nsys-time``, ``torch``).
+    prefill: Annotated[ProfilingPhaseConfig, ProfilingPhaseField()] | None = None
+    decode: Annotated[ProfilingPhaseConfig, ProfilingPhaseField()] | None = None
+    aggregated: Annotated[ProfilingPhaseConfig, ProfilingPhaseField()] | None = None
 
-    # nsys-time fields: time-based capture window, same on all workers
+    # nsys-manual: which disagg phase to profile (required for disagg, forbidden for agg).
+    phases: str | None = None  # "prefill" or "decode"
+
+    # nsys-time fields: time-based capture window, same on all workers.
+    # ``duration_secs`` is shared with nsys-manual, where it is the length of the
+    # window fired by ``nsys-manual.sh`` (defaults to NSYS_MANUAL_DEFAULT_DURATION_SECS).
     delay_secs: int | None = None  # nsys --delay: seconds from worker launch before capture starts
     duration_secs: int | None = None  # nsys --duration: seconds to capture after delay
     benchmark_duration_secs: int = 300  # total traffic generation duration (must cover delay + duration)
+
+    # Default nsys binary name/path. ``SRTCTL_NSYS_BIN`` env overrides this at runtime.
+    nsys_path: str = "nsys"
+
+    # Restrict nsys wrapping to specific DP ranks (``nsys``/``nsys-time`` only).
+    profile_ranks: tuple[int, ...] | None = field(
+        default=None,
+        metadata={"marshmallow_field": fields.List(fields.Integer(), allow_none=True)},
+    )
 
     @property
     def enabled(self) -> bool:
         """Check if profiling is enabled."""
         return self.type != "none"
 
+    def wraps_rank(self, node_rank: int) -> bool:
+        """Whether the given DP rank's process should be wrapped with nsys."""
+        if self.profile_ranks is None:
+            return True
+        return node_rank in self.profile_ranks
+
+    def should_wrap_process_with_nsys(self, *, endpoint_index: int, node_rank: int) -> bool:
+        """Whether this worker process should run under nsys."""
+        if self.is_nsys_manual:
+            return endpoint_index == 0 and node_rank == 0
+        return self.wraps_rank(node_rank)
+
     @property
     def is_nsys(self) -> bool:
-        """Check if using NVIDIA Nsight Systems profiling (includes nsys-time)."""
-        return self.type in ("nsys", "nsys-time")
+        """Check if using NVIDIA Nsight Systems profiling (any nsys variant)."""
+        return self.type in ("nsys", "nsys-manual", "nsys-time")
 
     @property
     def is_nsys_time(self) -> bool:
@@ -804,6 +900,16 @@ class ProfilingConfig:
         """Check if using PyTorch profiler."""
         return self.type == "torch"
 
+    @property
+    def is_nsys_manual(self) -> bool:
+        """On-demand nsys (``type: nsys-manual``): user fires /start_profile by hand."""
+        return self.type == "nsys-manual"
+
+    @property
+    def manual_duration_secs(self) -> int:
+        """Capture window baked into ``nsys-manual.sh``."""
+        return self.duration_secs if self.duration_secs is not None else NSYS_MANUAL_DEFAULT_DURATION_SECS
+
     def _get_phase_config(self, mode: str) -> ProfilingPhaseConfig | None:
         """Get the phase config for the given mode."""
         if mode == "prefill":
@@ -813,6 +919,25 @@ class ProfilingConfig:
         elif mode in ("agg", "aggregated"):
             return self.aggregated
         return None
+
+    def profiles_mode(self, mode: str) -> bool:
+        """Whether workers of ``mode`` should be wrapped with nsys."""
+        if self.is_nsys_manual:
+            if self.phases is not None:
+                norm = "aggregated" if mode in ("agg", "aggregated") else mode
+                return norm == self.phases
+            return mode in ("agg", "aggregated")
+        if not self.is_nsys_time:
+            return True
+        present = [
+            name
+            for name, cfg in (("prefill", self.prefill), ("decode", self.decode), ("aggregated", self.aggregated))
+            if cfg is not None
+        ]
+        if not present:
+            return True
+        norm = "aggregated" if mode in ("agg", "aggregated") else mode
+        return norm in present
 
     def get_env_vars(self, mode: str, profile_dir: str) -> dict[str, str]:
         """Get profiling-specific environment variables.
@@ -857,12 +982,10 @@ class ProfilingConfig:
     def nsys_binary(self) -> str:
         """nsys executable to invoke.
 
-        Defaults to ``nsys`` (resolved on PATH). Override via the
-        ``SRTCTL_NSYS_BIN`` environment variable when running inside a
-        container that doesn't ship nsys on PATH — e.g. mount the host's
-        Nsight Systems install and point this at the absolute path.
+        Defaults to ``nsys_path``. Override at runtime via ``SRTCTL_NSYS_BIN`` when
+        the container doesn't ship nsys on PATH.
         """
-        return os.environ.get("SRTCTL_NSYS_BIN", "nsys")
+        return os.environ.get("SRTCTL_NSYS_BIN", self.nsys_path)
 
     def _get_nsys_prefix_trtllm(self, output_file: str) -> list[str]:
         """Get nsys command prefix for TRTLLM workers.
@@ -914,12 +1037,19 @@ class ProfilingConfig:
         return cmd
 
     def get_nsys_prefix(
-        self, output_file: str, *, frontend_type: str | None = None, backend_type: str | None = None
+        self,
+        output_file: str,
+        *,
+        mode: str | None = None,
+        frontend_type: str | None = None,
+        backend_type: str | None = None,
     ) -> list[str]:
         """Get nsys profiling command prefix.
 
         Args:
             output_file: Path for nsys output file (without extension)
+            mode: Worker mode (prefill/decode/agg). Required for ``nsys-manual`` so the
+                configured phase can be matched.
             frontend_type: Frontend type (e.g., "dynamo", "sglang"). When set to "dynamo"
                 with a non-trtllm backend, adds --trace-fork-before-exec=true.
             backend_type: Backend type (e.g., "trtllm", "sglang"). When set to "trtllm",
@@ -930,6 +1060,19 @@ class ProfilingConfig:
         """
         if not self.is_nsys:
             return []
+
+        if self.is_nsys_manual:
+            if mode is None or not self.profiles_mode(mode):
+                return []
+            return [
+                self.nsys_binary,
+                "profile",
+                *NSYS_MANUAL_DEFAULT_ARGS,
+                "--force-overwrite",
+                "true",
+                "-o",
+                output_file,
+            ]
 
         if backend_type == "trtllm":
             return self._get_nsys_prefix_trtllm(output_file)
@@ -1070,6 +1213,16 @@ class TelemetryConfig:
     live_metrics: LiveMetricsConfig | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
+
+
+# Dynamo defaults every component (workers and frontends) starts with. Dynamo's own
+# default log level is ``info``, which buries backend output under runtime chatter, and
+# its ANSI escapes make the .out files unreadable in an editor. Recipes override these
+# via the global ``environment:`` block, ``frontend.env``, or ``*_environment``.
+DYNAMO_DEFAULT_ENV: dict[str, str] = {
+    "DYN_LOG": "error",
+    "DYN_SDK_DISABLE_ANSI_LOGGING": "1",
+}
 
 
 def build_otel_env(observability: ObservabilityConfig, component: str) -> dict[str, str]:
@@ -1729,6 +1882,9 @@ class SrtConfig:
     def _validate_profiling(self):
         """Validate profiling configuration matches serving mode."""
         prof = self.profiling
+        known_types = tuple(t.value for t in ProfilingType)
+        if prof.type not in known_types:
+            raise ValidationError(f"Unknown profiling.type {prof.type!r}. Supported types: {', '.join(known_types)}")
         if not prof.enabled:
             return
 
@@ -1750,6 +1906,12 @@ class SrtConfig:
                 raise ValidationError(
                     "profiling.delay_secs and profiling.duration_secs are required for nsys-time mode"
                 )
+            return
+
+        if prof.is_nsys_manual:
+            self._validate_nsys_manual()
+            if backend_type == "vllm":
+                self._validate_vllm_nsys_profiler_config_not_set()
             return
 
         r = self.resources
@@ -1784,10 +1946,55 @@ class SrtConfig:
                 raise ValidationError("Aggregated mode requires agg_workers to be > 0.")
 
         # Iteration-based nsys (type: nsys) drives the vLLM engine profiler via
-        # --profiler-config, derived from the profiling: block. Forbid duplicating
-        # it in vllm_config so the two can't diverge silently.
-        if prof.type == "nsys" and backend_type == "vllm":
-            self._validate_vllm_nsys_profiler_config_not_set()
+        # --profiler-config from the profiling: block. Forbid duplicating it in vllm_config.
+        if prof.type == "nsys":
+            self._validate_nsys_profiling_steps()
+            if backend_type == "vllm":
+                self._validate_vllm_nsys_profiler_config_not_set()
+
+    def _validate_nsys_manual(self) -> None:
+        """Validate ``nsys-manual`` recipe shape (``phases``, ``duration_secs``)."""
+        prof = self.profiling
+        if prof.prefill is not None or prof.decode is not None or prof.aggregated is not None:
+            raise ValidationError(
+                "nsys-manual uses profiling.phases and profiling.duration_secs; "
+                "do not set prefill/decode/aggregated blocks."
+            )
+        if prof.profile_ranks is not None:
+            raise ValidationError("nsys-manual always profiles endpoint 0 rank 0; do not set profile_ranks.")
+        if prof.delay_secs is not None:
+            raise ValidationError("nsys-manual capture starts when you run nsys-manual.sh; do not set delay_secs.")
+        if prof.duration_secs is not None and prof.duration_secs <= 0:
+            raise ValidationError("profiling.duration_secs must be > 0 for nsys-manual.")
+
+        is_disaggregated = self.resources.is_disaggregated
+        if is_disaggregated:
+            if prof.phases not in ("prefill", "decode"):
+                raise ValidationError(
+                    "Disaggregated nsys-manual requires profiling.phases to be 'prefill' or 'decode'."
+                )
+        elif prof.phases is not None:
+            raise ValidationError("Aggregated nsys-manual must not set profiling.phases.")
+
+    def _validate_nsys_profiling_steps(self) -> None:
+        """Iteration-based ``nsys`` requires start_step/stop_step per configured phase."""
+        prof = self.profiling
+        for name, phase in (("prefill", prof.prefill), ("decode", prof.decode), ("aggregated", prof.aggregated)):
+            if phase is None:
+                continue
+            if phase.nsys_args is not None:
+                raise ValidationError(
+                    f"profiling.{name} uses explicit nsys flags, which are no longer configurable. "
+                    "For on-demand capture use profiling.type nsys-manual with phases/duration."
+                )
+            if phase.start_step is None or phase.stop_step is None:
+                raise ValidationError(f"profiling.{name} requires both start_step and stop_step.")
+            if phase.start_step < 0 or phase.stop_step < 0:
+                raise ValidationError(f"profiling.{name}: start_step and stop_step must be >= 0.")
+            if phase.stop_step < phase.start_step:
+                raise ValidationError(
+                    f"profiling.{name}: stop_step ({phase.stop_step}) must be >= start_step ({phase.start_step})."
+                )
 
     def _validate_vllm_nsys_profiler_config_not_set(self):
         """Reject profiler-config.* in vllm_config when nsys profiling is enabled.

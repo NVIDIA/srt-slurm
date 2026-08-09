@@ -55,7 +55,7 @@ from srtctl.core.git_state import (
     write_git_state_snapshot,
 )
 from srtctl.core.lockfile import load_lockfile_fingerprints
-from srtctl.core.schema import SrtConfig, installs_dynamo
+from srtctl.core.schema import DYNAMO_DEFAULT_ENV, SrtConfig, installs_dynamo
 from srtctl.core.status import create_job_record
 from srtctl.core.validation import preflight_config_variants
 from srtctl.ports import MOONCAKE_MASTER_PORT
@@ -299,6 +299,14 @@ def show_config_details(config: SrtConfig) -> None:
         console.print(Panel(env_table, border_style="yellow"))
     else:
         console.print("[dim]No custom environment variables configured.[/]")
+
+    # srtctl exports these to every dynamo worker and frontend; any scope above wins.
+    overridden = set(config.environment) | set(config.frontend.env or {})
+    overridden.update(var for _, env in mode_envs for var in env)
+    console.print("[dim]dynamo defaults (workers + frontend):[/]")
+    for var, val in sorted(DYNAMO_DEFAULT_ENV.items()):
+        suffix = " (overridden)" if var in overridden else ""
+        console.print(f"[dim]  {var}={val}{suffix}[/]")
 
     # --- srun options ---
     if config.srun_options:

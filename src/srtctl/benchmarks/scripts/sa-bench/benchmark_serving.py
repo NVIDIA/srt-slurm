@@ -39,7 +39,7 @@ import time
 import warnings
 from collections.abc import AsyncGenerator, Collection
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import partial
 from multiprocessing import Pool, cpu_count
 from typing import Any
@@ -734,7 +734,7 @@ async def benchmark(
     if backend == "dynamo" and request_session is not None:
         request_func = partial(request_func, session=request_session)
 
-    print("Starting initial single prompt test run...")
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] Starting initial single prompt test run...")
     test_prompt, test_prompt_len, test_output_len, test_mm_content = input_requests[0]
     if backend != "openai-chat" and test_mm_content is not None:
         # multi-modal benchmark is only available on OpenAI Chat backend.
@@ -759,7 +759,7 @@ async def benchmark(
             f"are correctly specified. Error: {test_output.error}"
         )
     else:
-        print("Initial test run completed. Starting main benchmark run...")
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Initial test run completed. Starting main benchmark run...")
 
     if lora_modules:
         # For each input request, choose a LoRA module at random.
@@ -833,7 +833,14 @@ async def benchmark(
         async with semaphore:
             return await request_func(request_func_input=request_func_input, pbar=pbar)
 
+    # Wall-clock bounds of the measured window, so a worker log or nsys capture can
+    # be lined up against the run without guessing from the log's own timestamps.
+    benchmark_start_wall_time = datetime.now(timezone.utc)
     benchmark_start_time = time.perf_counter()
+    print(
+        f"Benchmark measurement start (UTC):     {benchmark_start_wall_time.isoformat(timespec='microseconds')}",
+        flush=True,
+    )
     tasks: list[asyncio.Task] = []
     try:
         async for request in get_request(input_requests, request_rate, burstiness):
@@ -894,6 +901,7 @@ async def benchmark(
         pbar.close()
 
     benchmark_duration = time.perf_counter() - benchmark_start_time
+    benchmark_end_wall_time = datetime.now(timezone.utc)
     if backend == "dynamo" and request_session is not None and not request_session.closed:
         await request_session.close()
         # Allow asyncio to finish closing pooled transports before CPU-heavy metrics.
@@ -911,6 +919,18 @@ async def benchmark(
 
     print("{s:{c}^{n}}".format(s=" Serving Benchmark Result ", n=50, c="="))
     print("{:<40} {:<10}".format("Successful requests:", metrics.completed))
+    print(
+        "{:<40} {:<10}".format(
+            "Benchmark measurement start (UTC):",
+            benchmark_start_wall_time.isoformat(timespec="microseconds"),
+        )
+    )
+    print(
+        "{:<40} {:<10}".format(
+            "Benchmark measurement end (UTC):",
+            benchmark_end_wall_time.isoformat(timespec="microseconds"),
+        )
+    )
     print("{:<40} {:<10.2f}".format("Benchmark duration (s):", benchmark_duration))
     print("{:<40} {:<10}".format("Total input tokens:", metrics.total_input))
     print("{:<40} {:<10}".format("Total generated tokens:", metrics.total_output))
@@ -923,6 +943,10 @@ async def benchmark(
 
     result = {
         "duration": benchmark_duration,
+        "benchmark_start_time_utc": benchmark_start_wall_time.isoformat(timespec="microseconds"),
+        "benchmark_end_time_utc": benchmark_end_wall_time.isoformat(timespec="microseconds"),
+        "benchmark_start_time_unix_s": benchmark_start_wall_time.timestamp(),
+        "benchmark_end_time_unix_s": benchmark_end_wall_time.timestamp(),
         "completed": metrics.completed,
         "total_input_tokens": metrics.total_input,
         "total_output_tokens": metrics.total_output,

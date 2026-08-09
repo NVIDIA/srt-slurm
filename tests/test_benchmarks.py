@@ -3,6 +3,8 @@
 
 """Tests for benchmark runners."""
 
+import os
+
 import pytest
 
 from srtctl.benchmarks import get_runner, list_benchmarks
@@ -1004,6 +1006,70 @@ source "$script" "$@"
             if line.startswith("BENCHMARK_CALL reuse=")
         ]
         assert calls == expected
+
+    def test_sa_bench_writes_stage_banners_into_worker_logs(self, tmp_path):
+        """Warmup/benchmark boundaries are marked in the live worker logs.
+
+        Worker logs have no notion of which sa-bench phase is running, so without
+        these separators it is impossible to tell warmup traffic from the measured
+        run when reading a worker log (or when timing a manual nsys capture).
+        """
+        import subprocess
+
+        script = SCRIPTS_DIR / "sa-bench" / "bench.sh"
+        prefill_log = tmp_path / "node0_prefill_w0.out"
+        decode_log = tmp_path / "node1_decode_w0.out"
+        prefill_log.touch()
+        decode_log.touch()
+
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                r"""
+script=$1
+shift
+python3() { return 0; }
+curl() { return 0; }
+mkdir() { return 0; }
+source "$script" "$@"
+""",
+                "_",
+                str(script),
+                "http://localhost:8000",
+                "1",
+                "1",
+                "2",
+                "inf",
+                "/model",
+                "model",
+                "false",
+                "1",
+                "0",
+                "0",
+                "0.8",
+                "1",
+                "1",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={"PATH": os.environ["PATH"], "PROFILE_OUTPUT_DIR": str(tmp_path / "profiles")},
+        )
+
+        assert result.returncode == 0, result.stderr
+        for log in (prefill_log, decode_log):
+            stages = [
+                line.split("] ", 1)[1].removesuffix(" ========")
+                for line in log.read_text().splitlines()
+                if line.startswith("========")
+            ]
+            assert stages == [
+                "cc=2 warmup begin",
+                "cc=2 warmup end",
+                "cc=2 benchmark begin",
+                "cc=2 benchmark end",
+            ]
 
     def test_mmlu_script_exists(self):
         """MMLU script exists."""

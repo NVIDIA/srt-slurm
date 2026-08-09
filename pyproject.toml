@@ -45,6 +45,13 @@ dev = [
     "httpx>=0.27.0",  # Required by FastAPI TestClient
     "uvicorn>=0.27.0",  # Required for integration test mock server
     "aiperf",  # Benchmark tool for trace replay integration tests
+    # Runtime deps of src/srtctl/benchmarks/scripts/sa-bench, needed to import
+    # benchmark_serving.py in tests. Jobs get these from the container instead
+    # (bench.sh backfills whatever is missing), so they are dev-only here.
+    "aiohttp",
+    "datasets",
+    "huggingface_hub",
+    "transformers",
 ]
 
 # =============================================================================

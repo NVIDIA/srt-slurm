@@ -1223,6 +1223,105 @@ class TestWorkerEnvironmentTemplating:
                     # Mixed case: supported replaced, unsupported kept
                     assert env_vars["MIXED"] == "gpu-01-{unsupported_var}-cache"
 
+    def _start_worker_env(self, tmp_path, backend, environment=None):
+        """Start one prefill worker and return the env srtctl would export to srun."""
+        import os
+        import subprocess
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.cli.mixins.worker_stage import WorkerStageMixin
+        from srtctl.core.runtime import RuntimeContext
+        from srtctl.core.schema import ModelConfig, ResourceConfig, SrtConfig
+        from srtctl.core.topology import Process
+
+        model_path = tmp_path / "model"
+        model_path.mkdir(exist_ok=True)
+        container_path = tmp_path / "container.sqsh"
+        container_path.touch()
+
+        slurm_env = {
+            "SLURM_JOB_ID": "12345",
+            "SLURM_JOBID": "12345",
+            "SLURM_NODELIST": "gpu-[01-03]",
+            "SLURM_JOB_NUM_NODES": "3",
+            "SRTCTL_SOURCE_DIR": str(Path(__file__).parent.parent),
+        }
+
+        def mock_scontrol(cmd, **kwargs):
+            if cmd[0] == "scontrol" and "hostnames" in cmd:
+                result = MagicMock()
+                result.stdout = "gpu-01\ngpu-02\ngpu-03"
+                result.returncode = 0
+                return result
+            raise subprocess.CalledProcessError(1, cmd)
+
+        with (
+            patch.dict(os.environ, slurm_env),
+            patch("subprocess.run", mock_scontrol),
+            patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
+        ):
+            config = SrtConfig(
+                name="test",
+                model=ModelConfig(path=str(model_path), container=str(container_path), precision="fp8"),
+                resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, prefill_nodes=1, decode_nodes=1),
+                backend=backend,
+                environment=environment or {},
+            )
+            runtime = RuntimeContext.from_config(config, job_id="12345", log_dir_base=tmp_path)
+
+            class MockWorkerStage(WorkerStageMixin):
+                def __init__(self, config, runtime):
+                    self.config = config
+                    self.runtime = runtime
+
+            worker_stage = MockWorkerStage(config, runtime)
+            process = Process(
+                node="gpu-01",
+                gpu_indices=frozenset(range(8)),
+                sys_port=8081,
+                http_port=30000,
+                endpoint_mode="prefill",
+                endpoint_index=0,
+                node_rank=0,
+            )
+
+            mock_backend = MagicMock()
+            mock_backend.get_environment_for_mode.side_effect = config.backend.get_environment_for_mode
+            mock_backend.build_worker_command.return_value = ["echo", "test"]
+
+            with (
+                patch.object(worker_stage, "config") as mock_config,
+                patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
+            ):
+                mock_config.backend = mock_backend
+                mock_config.profiling = config.profiling
+                mock_srun.return_value = MagicMock()
+                worker_stage.start_worker(process, [process])
+                return mock_srun.call_args.kwargs.get("env_to_set", {})
+
+    def test_worker_gets_quiet_dynamo_defaults(self, tmp_path):
+        """Dynamo's own defaults (info + ANSI colors) make worker logs unreadable."""
+        from srtctl.backends import SGLangProtocol
+
+        env_vars = self._start_worker_env(tmp_path, SGLangProtocol())
+
+        assert env_vars["DYN_LOG"] == "error"
+        assert env_vars["DYN_SDK_DISABLE_ANSI_LOGGING"] == "1"
+
+    def test_recipe_overrides_dynamo_defaults(self, tmp_path):
+        """Both the global environment block and per-mode env win over the defaults."""
+        from srtctl.backends import SGLangProtocol
+
+        env_vars = self._start_worker_env(
+            tmp_path,
+            SGLangProtocol(prefill_environment={"DYN_SDK_DISABLE_ANSI_LOGGING": "0"}),
+            environment={"DYN_LOG": "debug"},
+        )
+
+        assert env_vars["DYN_LOG"] == "debug"
+        assert env_vars["DYN_SDK_DISABLE_ANSI_LOGGING"] == "0"
+
 
 class TestInfraConfig:
     """Tests for InfraConfig dataclass."""
@@ -2141,7 +2240,8 @@ class TestVLLMDataParallelMode:
         runtime.model_path = Path("/model")
         runtime.is_hf_model = False
         runtime.frontend_port = 8000
-        profiling = MagicMock(is_nsys=True, is_nsys_time=False)
+        profiling = MagicMock(is_nsys=True, is_nsys_time=False, is_nsys_manual=False)
+        profiling.profiles_mode.return_value = True
         profiling._get_phase_config.return_value = SimpleNamespace(
             start_step=10,
             stop_step=25,

@@ -703,9 +703,20 @@ class VLLMProtocol:
         # Start with nsys prefix if provided
         cmd: list[str] = list(nsys_prefix) if nsys_prefix else []
 
-        if profiling is not None and profiling.is_nsys and not profiling.is_nsys_time:
+        # Only wrapped processes get the engine profiler; the rest stay a clean baseline.
+        if (
+            profiling is not None
+            and profiling.is_nsys
+            and profiling.profiles_mode(mode)
+            and profiling.should_wrap_process_with_nsys(
+                endpoint_index=process.endpoint_index,
+                node_rank=process.node_rank,
+            )
+        ):
             phase = profiling._get_phase_config(mode)
-            if phase is not None and phase.start_step is not None and phase.stop_step is not None:
+            if profiling.is_nsys_manual:
+                config["profiler-config"] = json.dumps({"profiler": "cuda"})
+            elif phase is not None and phase.start_step is not None and phase.stop_step is not None:
                 config["profiler-config"] = json.dumps(
                     {
                         "profiler": "cuda",

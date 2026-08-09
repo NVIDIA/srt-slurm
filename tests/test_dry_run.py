@@ -173,6 +173,29 @@ class TestDryRunEnvironment:
         output = capsys.readouterr().out
         assert "No custom environment variables configured" in output
 
+    def test_dynamo_defaults_always_shown(self, capsys):
+        """srtctl-injected dynamo defaults are visible even with no custom env."""
+        config = _make_config()
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "dynamo defaults" in output
+        assert "DYN_LOG=error" in output
+        assert "DYN_SDK_DISABLE_ANSI_LOGGING=1" in output
+        assert "overridden" not in output
+
+    def test_dynamo_defaults_marked_overridden(self, capsys):
+        """A recipe value for a default key is flagged so the effective value is obvious."""
+        config = _make_config(
+            {
+                "environment": {"DYN_LOG": "info"},
+                "backend": {"type": "sglang", "decode_environment": {"DYN_SDK_DISABLE_ANSI_LOGGING": "0"}},
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "DYN_LOG=error (overridden)" in output
+        assert "DYN_SDK_DISABLE_ANSI_LOGGING=1 (overridden)" in output
+
     def test_trtllm_backend_environment(self, capsys):
         config = _make_config(
             {

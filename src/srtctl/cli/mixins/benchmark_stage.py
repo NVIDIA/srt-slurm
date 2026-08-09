@@ -343,6 +343,12 @@ class BenchmarkStageMixin:
         if not p.enabled:
             return env
 
+        # Manual on-demand mode: workers are already nsys-wrapped at launch and the
+        # user fires the capture by hand (nsys-manual.sh). Export nothing here so the
+        # benchmark script's start_all_profiling/stop_all_profiling stay no-ops.
+        if p.is_nsys_manual:
+            return env
+
         # Inside the container, the host log directory is mounted to /logs. Use the container path so profiling
         # artifacts persist back to the host log directory across nodes.
         profiles_dir_in_container = "/logs/profiles"

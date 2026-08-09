@@ -1,0 +1,104 @@
+# On-demand nsys capture: Qwen3.5 NVFP4 disaggregated on GB200 (vLLM + dynamo).
+#
+# Workers launch already wrapped in nsys, waiting on a cudaProfilerApi capture
+# range, so nothing is recorded until you fire the trigger by hand:
+#
+#   bash outputs/<job_id>/nsys-manual.sh
+#
+# Time it against the stage banners sa-bench writes into the worker logs — fire
+# it after "benchmark begin" so the window lands on steady-state traffic rather
+# than on warmup or on an already-idle engine:
+#
+#   tail -f outputs/<job_id>/logs/*_prefill_w0.out
+#   ======== [17:59:39] cc=1024 benchmark begin ========
+#
+# See docs/profiling.md for the full workflow.
+
+name: "nsys-manual-qwen35-disagg"
+
+model:
+  path: "hf:nvidia/Qwen3.5-397B-A17B-NVFP4"
+  container: "vllm/vllm-openai:nightly-d223c900d85224c02f2162ee2c757a769e99f519"
+  precision: "NVFP4"
+
+dynamo:
+  version: "1.2.0.dev20260526"
+  install: true
+
+resources:
+  gpu_type: "gb200"
+  gpus_per_node: 4
+
+  # 4xDEP2 on prefill:
+  # 4 endpoints, each DEP2 topology
+  prefill_nodes: 2
+  prefill_workers: 4
+  gpus_per_prefill: 2
+
+  # 8xDEP2 on decode:
+  # 1 endpoint, DEP8 topology
+  decode_nodes: 2
+  decode_workers: 1
+  gpus_per_decode: 8
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+
+profiling:
+  type: "nsys-manual"
+  # Which side to capture: "prefill" or "decode". Only the first worker of that
+  # phase is profiled; the rest of the deployment runs unwrapped.
+  phases: prefill
+  # Length of the window fired by nsys-manual.sh. Defaults to 5.
+  duration_secs: 5
+
+backend:
+  type: vllm
+  connector: null
+
+  prefill_environment:
+    VLLM_SSM_CONV_STATE_LAYOUT: "DS"
+
+  decode_environment:
+    VLLM_SSM_CONV_STATE_LAYOUT: "DS"
+
+  vllm_config:
+    prefill:
+      kv-transfer-config: '{"kv_connector": "NixlConnector", "kv_role": "kv_both", "kv_load_failure_policy": "fail"}'
+      served-model-name: "Qwen3.5-397B-A17B-NVFP4"
+      tensor-parallel-size: 1
+      pipeline-parallel-size: 1
+      data-parallel-size: 2
+      enable-expert-parallel: true
+      no-disable-hybrid-kv-cache-manager: true
+      generation-config: "vllm"
+      no-enable-prefix-caching: true
+      async-scheduling: true
+      stream-interval: 100
+      mamba-ssm-cache-dtype: "bfloat16"
+
+    decode:
+      kv-transfer-config: '{"kv_connector": "NixlConnector", "kv_role": "kv_both", "kv_load_failure_policy": "fail"}'
+      served-model-name: "Qwen3.5-397B-A17B-NVFP4"
+      tensor-parallel-size: 1
+      pipeline-parallel-size: 1
+      data-parallel-size: 8
+      enable-expert-parallel: true
+      no-disable-hybrid-kv-cache-manager: true
+      generation-config: "vllm"
+      no-enable-prefix-caching: true
+      async-scheduling: true
+      stream-interval: 100
+      mamba-ssm-cache-dtype: "bfloat16"
+
+benchmark:
+  type: "sa-bench"
+  isl: 128
+  osl: 64
+  concurrencies: "1024"
+  req_rate: "inf"
+  random_range_ratio: 1.0
+  # Keep the measured run long enough to comfortably fit a manual capture.
+  num_prompts_mult: 8
+  num_warmup_mult: 1
