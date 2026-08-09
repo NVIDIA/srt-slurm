@@ -3,6 +3,8 @@
 
 """Tests for profiling configuration, validation, and benchmark runner."""
 
+import subprocess
+
 import pytest
 
 from srtctl.benchmarks import get_runner
@@ -483,6 +485,30 @@ class TestVllmNsysProfilerConfig:
 
 class TestProfilingIntegration:
     """Integration tests for profiling + benchmarks."""
+
+    def test_dynamo_profiling_uses_registered_control_routes(self, tmp_path):
+        profiling_script = SCRIPTS_DIR / "lib" / "profiling.sh"
+        curl_calls = tmp_path / "curl-calls.txt"
+        profile_output = tmp_path / "profiles"
+        shell_script = f"""
+curl() {{ printf '%s\\n' "$*" >> "{curl_calls}"; }}
+export PROFILE_TYPE=nsys
+export PROFILE_OUTPUT_DIR="{profile_output}"
+export PROFILE_AGG_ENDPOINTS=worker.example:7500
+export PROFILE_AGG_START_STEP=10
+export PROFILE_AGG_STOP_STEP=20
+export SRTCTL_FRONTEND_TYPE=dynamo
+source "{profiling_script}"
+profiling_init_from_env
+start_all_profiling
+stop_all_profiling
+"""
+
+        subprocess.run(["bash", "-c", shell_script], check=True, capture_output=True, text=True)
+
+        calls = curl_calls.read_text()
+        assert "http://worker.example:7500/engine/control/start_profile" in calls
+        assert "http://worker.example:7500/engine/control/stop_profile" in calls
 
     def test_no_profiling_benchmark_runner(self):
         """There is no dedicated 'profiling' benchmark runner anymore."""
