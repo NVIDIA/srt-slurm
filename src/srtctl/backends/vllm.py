@@ -479,6 +479,11 @@ class VLLMProtocol:
         config = self.get_config_for_mode(mode)
         return config.get("data-parallel-size") or config.get("data_parallel_size")
 
+    def _get_tp_size(self, mode: WorkerMode) -> int:
+        """Get the tensor-parallel-size for a mode."""
+        config = self.get_config_for_mode(mode)
+        return config.get("tensor-parallel-size") or config.get("tensor_parallel_size") or 1
+
     def should_set_cuda_visible_devices(self, process: Process) -> bool:
         """Whether worker_stage should set CUDA_VISIBLE_DEVICES.
 
@@ -624,13 +629,20 @@ class VLLMProtocol:
                 continue
 
             dp_size = self._get_dp_size(endpoint.mode) or endpoint.total_gpus
-            if dp_size != endpoint.total_gpus:
+            tp_size = self._get_tp_size(endpoint.mode)
+            if dp_size * tp_size != endpoint.total_gpus:
                 raise ValueError(
-                    f"{endpoint.mode} data-parallel-size={dp_size} does not match "
-                    f"the endpoint's {endpoint.total_gpus} allocated GPUs"
+                    f"{endpoint.mode} data-parallel-size={dp_size} and tensor-parallel-size={tp_size} "
+                    f"do not match the endpoint's {endpoint.total_gpus} allocated GPUs"
                 )
 
-            local_dp_size = len(endpoint.gpu_indices)
+            if len(endpoint.gpu_indices) % tp_size != 0:
+                raise ValueError(
+                    f"{endpoint.mode} tensor-parallel-size={tp_size} does not fit "
+                    f"the endpoint's {len(endpoint.gpu_indices)} GPUs per node"
+                )
+
+            local_dp_size = len(endpoint.gpu_indices) // tp_size
             dp_rpc_port = port_allocator.next_dp_rpc_port(endpoint.leader_node)
             nixl_base_port = port_allocator.next_nixl_port_block(dp_size)
             dp_start_rank = 0
@@ -782,6 +794,7 @@ class VLLMProtocol:
             rpc_port_snake = config.pop("data_parallel_rpc_port", None)
             config_dp_rpc_port = rpc_port_kebab or rpc_port_snake
             dp_rpc_port = process.dp_rpc_port or config_dp_rpc_port or VLLM_DATA_PARALLEL_RPC_PORT
+            local_dp_size = len(process.gpu_indices) // self._get_tp_size(mode)
 
             # These values are derived from the allocated process topology. Hybrid LB
             # is required so every node-local Dynamo runtime registers with the frontend.
@@ -796,7 +809,7 @@ class VLLMProtocol:
             cmd.extend(
                 [
                     "--data-parallel-size-local",
-                    str(len(process.gpu_indices)),
+                    str(local_dp_size),
                     "--data-parallel-start-rank",
                     str(process.node_rank),
                     "--data-parallel-address",

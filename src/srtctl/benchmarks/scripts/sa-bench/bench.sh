@@ -10,7 +10,7 @@ set -e
 # Ensure benchmark dependencies are available.
 # Creates an isolated venv with --system-site-packages so container packages are
 # reused and only missing deps get installed — without touching system Python.
-SA_BENCH_VENV="/tmp/sa-bench-venv"
+SA_BENCH_VENV="${SA_BENCH_VENV:-/tmp/sa-bench-venv}"
 SA_BENCH_DEPS=(aiohttp numpy pandas datasets Pillow tqdm transformers huggingface_hub)
 
 ensure_sa_bench_deps() {
