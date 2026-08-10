@@ -71,8 +71,14 @@ class StaticRouterFrontend:
                 result.extend([flag, str(value)])
         return result
 
-    def get_managed_frontend_args(self, config: Any) -> list[str]:
+    def get_managed_frontend_args(
+        self,
+        config: Any,
+        backend: Any | None = None,
+        backend_processes: list[Process] | None = None,
+    ) -> list[str]:
         """Return adapter-managed CLI arguments derived from srtctl config."""
+        del backend, backend_processes
         return []
 
     def worker_scheme(self, backend: Any, mode: str) -> str:
@@ -94,7 +100,10 @@ class StaticRouterFrontend:
     def collect_workers(self, backend: Any, backend_processes: list[Process]) -> list[RouterWorker]:
         workers: list[RouterWorker] = []
         for process in backend_processes:
-            if not process.is_leader:
+            # An allocated HTTP port is the source of truth for whether a backend
+            # process is independently routable. Multi-node vLLM DP exposes one
+            # node-local pool per URL, while TP follower processes retain port 0.
+            if process.http_port <= 0:
                 continue
             scheme = self.worker_scheme(backend, process.endpoint_mode)
             workers.append(
@@ -156,7 +165,7 @@ class StaticRouterFrontend:
         for idx, node in enumerate(topology.frontend_nodes):
             router_log = runtime.log_dir / f"{node}_{self.type}_{idx}.out"
             cmd = self.build_router_command(workers, "0.0.0.0", topology.frontend_port)
-            cmd.extend(self.get_managed_frontend_args(config))
+            cmd.extend(self.get_managed_frontend_args(config, backend, backend_processes))
             cmd.extend(self.get_frontend_args_list(config.frontend.args))
             logger.info("Starting %s %d on %s: %s", self.type, idx, node, shlex.join(cmd))
 

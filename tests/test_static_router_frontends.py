@@ -102,6 +102,62 @@ def test_vllm_router_advertises_nixl_side_channel_port() -> None:
     assert workers == [RouterWorker("prefill", "http://10.0.0.1:30000", 13000)]
 
 
+def test_vllm_router_derives_dep4_expansion_for_1p2d() -> None:
+    """One P URL and two D URLs are each expanded to four ranks by Router."""
+    frontend = VLLMRouterFrontend()
+    backend = MagicMock()
+    backend._is_dp_mode.return_value = True
+    backend._get_dp_size.return_value = 4
+    processes = [
+        SimpleNamespace(
+            endpoint_mode="prefill",
+            endpoint_index=0,
+            node="prefill",
+            gpu_indices=frozenset(range(4)),
+            http_port=6100,
+            nixl_port=5400,
+            node_rank=0,
+        ),
+        SimpleNamespace(
+            endpoint_mode="decode",
+            endpoint_index=0,
+            node="decode0",
+            gpu_indices=frozenset(range(4)),
+            http_port=6100,
+            nixl_port=5500,
+            node_rank=0,
+        ),
+        SimpleNamespace(
+            endpoint_mode="decode",
+            endpoint_index=1,
+            node="decode1",
+            gpu_indices=frozenset(range(4)),
+            http_port=6100,
+            nixl_port=5504,
+            node_rank=0,
+        ),
+    ]
+    config = SimpleNamespace(
+        frontend=SimpleNamespace(args={}),
+        health_check=SimpleNamespace(max_attempts=360, interval_seconds=10),
+    )
+
+    with patch.object(frontend, "get_hostname_ip", side_effect=lambda node: f"ip-{node}"):
+        workers = frontend.collect_workers(backend, processes)
+        command = frontend.build_router_command(workers, "0.0.0.0", 8000)
+
+    assert len([worker for worker in workers if worker.mode == "prefill"]) == 1
+    assert len([worker for worker in workers if worker.mode == "decode"]) == 2
+    assert command.count("--prefill") == 1
+    assert command.count("--decode") == 2
+    assert frontend.get_managed_frontend_args(config, backend, processes) == [
+        "--intra-node-data-parallel-size",
+        "4",
+        "--worker-startup-timeout-secs",
+        "3600",
+    ]
+
+
 def test_vllm_router_launch_uses_router_container_env_and_only_leaders() -> None:
     frontend = VLLMRouterFrontend()
     runtime = SimpleNamespace(
@@ -126,7 +182,9 @@ def test_vllm_router_launch_uses_router_container_env_and_only_leaders() -> None
         SimpleNamespace(
             is_leader=True,
             endpoint_mode="agg",
+            endpoint_index=0,
             node="node1",
+            gpu_indices=frozenset(range(8)),
             http_port=30000,
             bootstrap_port=None,
             nixl_port=None,
@@ -134,18 +192,24 @@ def test_vllm_router_launch_uses_router_container_env_and_only_leaders() -> None
         SimpleNamespace(
             is_leader=False,
             endpoint_mode="agg",
+            endpoint_index=0,
             node="node2",
+            gpu_indices=frozenset(range(8)),
             http_port=0,
             bootstrap_port=None,
             nixl_port=None,
         ),
     ]
 
+    backend = MagicMock()
+    backend._is_dp_mode.return_value = False
+    backend._get_dp_size.return_value = None
+
     with (
         patch.object(frontend, "get_hostname_ip", return_value="10.0.0.1"),
         patch.object(frontend, "start_process", return_value=MagicMock()) as start,
     ):
-        processes = frontend.start_frontends(topology, runtime, config, MagicMock(), workers)
+        processes = frontend.start_frontends(topology, runtime, config, backend, workers)
 
     kwargs = start.call_args.kwargs
     assert kwargs["output"] == "/logs/node0_vllm-router_0.out"
@@ -224,13 +288,13 @@ def test_vllm_router_accepts_many_single_node_endpoints() -> None:
     assert config.resources.gpus_per_agg == 8
 
 
-def test_vllm_router_rejects_endpoint_spanning_nodes() -> None:
+def test_vllm_router_rejects_multinode_tp_only_endpoint() -> None:
     from marshmallow import ValidationError
 
     from srtctl.backends import VLLMProtocol
     from srtctl.core.schema import FrontendConfig, ResourceConfig, SrtConfig
 
-    with pytest.raises(ValidationError, match="each logical vLLM endpoint"):
+    with pytest.raises(ValidationError, match="multi-node TP-only"):
         SrtConfig(
             name="multi-node-endpoint",
             model={"path": "model", "container": "image", "precision": "fp8"},
@@ -243,8 +307,33 @@ def test_vllm_router_rejects_endpoint_spanning_nodes() -> None:
                 decode_workers=1,
             ),
             frontend=FrontendConfig(type="vllm-router", enable_multiple_frontends=False),
-            backend=VLLMProtocol(),
+            backend=VLLMProtocol(dp_launch_mode="per_node"),
         )
+
+
+def test_vllm_router_accepts_multinode_dep8_endpoint() -> None:
+    from srtctl.backends import VLLMProtocol, VLLMServerConfig
+    from srtctl.core.schema import FrontendConfig, ResourceConfig, SrtConfig
+
+    config = SrtConfig(
+        name="multi-node-dep8",
+        model={"path": "model", "container": "image", "precision": "fp8"},
+        resources=ResourceConfig(
+            gpu_type="gb200",
+            gpus_per_node=4,
+            agg_nodes=2,
+            agg_workers=1,
+        ),
+        frontend=FrontendConfig(type="vllm-router", enable_multiple_frontends=False),
+        backend=VLLMProtocol(
+            dp_launch_mode="per_node",
+            vllm_config=VLLMServerConfig(
+                aggregated={"data-parallel-size": 8, "enable-expert-parallel": True},
+            ),
+        ),
+    )
+
+    assert config.resources.gpus_per_agg == 8
 
 
 def test_sgl_router_rejects_non_divisible_tp_dp_layout() -> None:

@@ -19,7 +19,26 @@ def _config(
     dp_launch_mode="per_gpu",
 ):
     """Build a duck-typed stand-in for SrtConfig with only the fields the helpers read."""
-    backend = SimpleNamespace(type=backend_type, vllm_config=vllm_config, dp_launch_mode=dp_launch_mode)
+
+    def is_dp_mode(mode):
+        mode_name = "aggregated" if mode == "agg" else mode
+        mode_config = getattr(vllm_config, mode_name, None) if vllm_config else None
+        return bool(mode_config and (mode_config.get("data-parallel-size") or mode_config.get("data_parallel_size")))
+
+    def get_dp_size(mode):
+        mode_name = "aggregated" if mode == "agg" else mode
+        mode_config = getattr(vllm_config, mode_name, None) if vllm_config else None
+        if not mode_config:
+            return None
+        return mode_config.get("data-parallel-size") or mode_config.get("data_parallel_size")
+
+    backend = SimpleNamespace(
+        type=backend_type,
+        vllm_config=vllm_config,
+        dp_launch_mode=dp_launch_mode,
+        _is_dp_mode=is_dp_mode,
+        _get_dp_size=get_dp_size,
+    )
     return SimpleNamespace(
         frontend=SimpleNamespace(type=frontend_type),
         backend=backend,
@@ -27,12 +46,36 @@ def _config(
     )
 
 
-def _processes(*, prefill=0, decode=0, agg=0):
+def _processes(*, prefill=0, decode=0, agg=0, gpus_per_process=1):
     """Build backend-process stand-ins grouped by endpoint mode."""
     return [
-        *(SimpleNamespace(endpoint_mode="prefill") for _ in range(prefill)),
-        *(SimpleNamespace(endpoint_mode="decode") for _ in range(decode)),
-        *(SimpleNamespace(endpoint_mode="agg") for _ in range(agg)),
+        *(
+            SimpleNamespace(
+                endpoint_mode="prefill",
+                endpoint_index=index,
+                http_port=6100,
+                gpu_indices=frozenset(range(gpus_per_process)),
+            )
+            for index in range(prefill)
+        ),
+        *(
+            SimpleNamespace(
+                endpoint_mode="decode",
+                endpoint_index=index,
+                http_port=6100,
+                gpu_indices=frozenset(range(gpus_per_process)),
+            )
+            for index in range(decode)
+        ),
+        *(
+            SimpleNamespace(
+                endpoint_mode="agg",
+                endpoint_index=index,
+                http_port=6100,
+                gpu_indices=frozenset(range(gpus_per_process)),
+            )
+            for index in range(agg)
+        ),
     ]
 
 
@@ -120,6 +163,24 @@ def test_non_dynamo_frontend_uses_logical_worker_counts():
 
     assert (n_prefill, n_decode, num_workers) == (6, 1, 7)
     assert count_desc == "6P + 1D"
+
+
+def test_vllm_router_counts_dp_workers_expanded_from_backend_urls():
+    """Router health waits for four ranks behind each of one P and two D URLs."""
+    vllm_config = SimpleNamespace(
+        prefill={"data-parallel-size": 4},
+        decode={"data-parallel-size": 4},
+        aggregated=None,
+    )
+    config = _config("vllm-router", "vllm", num_prefill=1, num_decode=2, vllm_config=vllm_config)
+
+    n_prefill, n_decode, count_desc, num_workers = _get_health_expectations(
+        config,
+        _processes(prefill=1, decode=2, gpus_per_process=4),
+    )
+
+    assert (n_prefill, n_decode, num_workers) == (4, 8, 12)
+    assert count_desc == "4P + 8D Router DP workers; logical workers: 1P + 2D"
 
 
 def test_dynamo_non_vllm_backend_uses_logical_worker_counts():

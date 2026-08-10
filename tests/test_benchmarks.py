@@ -358,6 +358,28 @@ class TestCustomBenchmarkRunner:
         assert "SRT_DECODE_ENDPOINTS" not in env
         assert env["AIPERF_SERVER_METRICS_URLS"] == "http://ip-node-a:6100/metrics"
 
+    def test_vllm_router_exports_each_node_local_dp_backend(self):
+        """Multi-node DEP8 metrics use two node-local server URLs, not eight rank URLs."""
+        from unittest.mock import patch
+
+        from srtctl.benchmarks.custom import CustomBenchmarkRunner
+        from srtctl.core.topology import Process
+
+        processes = [
+            Process("node-a", frozenset(range(4)), 7500, 6100, "agg", 0, node_rank=0),
+            Process("node-b", frozenset(range(4)), 7501, 6100, "agg", 0, node_rank=4),
+        ]
+        stage = self._benchmark_stage("vllm-router", processes)
+
+        with patch(
+            "srtctl.cli.mixins.benchmark_stage.get_hostname_ip",
+            side_effect=lambda node, interface: f"ip-{node}",
+        ):
+            env = stage._get_benchmark_env(CustomBenchmarkRunner())
+
+        assert env["SRT_AGG_ENDPOINTS"] == "ip-node-a:6100,ip-node-b:6100"
+        assert env["AIPERF_SERVER_METRICS_URLS"] == ("http://ip-node-a:6100/metrics,http://ip-node-b:6100/metrics")
+
     def test_worker_endpoint_order_keeps_colocated_logical_workers_aligned(self):
         from unittest.mock import patch
 

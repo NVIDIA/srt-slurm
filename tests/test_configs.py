@@ -2203,6 +2203,82 @@ class TestVLLMDataParallelMode:
         assert all(process.is_leader for process in processes)
         assert len({process.http_port for process in processes}) == 1  # ports may repeat on distinct nodes
 
+    def test_vllm_router_uses_one_backend_url_for_single_node_dep4(self):
+        """Router expands one direct backend URL into four node-local DP ranks."""
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Endpoint
+
+        backend = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                aggregated={"data-parallel-size": 4, "enable-expert-parallel": True},
+            ),
+        )
+        endpoint = Endpoint(
+            mode="agg",
+            index=0,
+            nodes=("node0",),
+            gpu_indices=frozenset(range(4)),
+            gpus_per_node=4,
+        )
+
+        processes = backend.endpoints_to_processes([endpoint], frontend_type="vllm-router")
+
+        assert len(processes) == 1
+        assert processes[0].gpu_indices == frozenset(range(4))
+        assert processes[0].http_port > 0
+
+    def test_vllm_router_multinode_dep8_uses_hybrid_node_local_pools(self):
+        """Two DEP8 nodes expose two DP4 HTTP pools sharing one global coordinator."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Endpoint
+
+        backend = VLLMProtocol(
+            dp_launch_mode="per_node",
+            vllm_config=VLLMServerConfig(
+                aggregated={
+                    "data-parallel-size": 8,
+                    "enable-expert-parallel": True,
+                },
+            ),
+        )
+        endpoint = Endpoint(
+            mode="agg",
+            index=0,
+            nodes=("node0", "node1"),
+            gpu_indices=frozenset(range(4)),
+            gpus_per_node=4,
+        )
+        processes = backend.endpoints_to_processes([endpoint], frontend_type="vllm-router")
+        runtime = MagicMock()
+        runtime.model_path = Path("/model")
+        runtime.is_hf_model = False
+        runtime.frontend_port = 8000
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            commands = [
+                backend.build_worker_command(
+                    process=process,
+                    endpoint_processes=processes,
+                    runtime=runtime,
+                    frontend_type="vllm-router",
+                )
+                for process in processes
+            ]
+
+        assert len(processes) == 2
+        assert [process.node_rank for process in processes] == [0, 4]
+        assert all(process.http_port > 0 for process in processes)
+        assert len({process.dp_rpc_port for process in processes}) == 1
+        for start_rank, command in zip((0, 4), commands, strict=True):
+            assert command[command.index("--data-parallel-size") + 1] == "8"
+            assert command[command.index("--data-parallel-size-local") + 1] == "4"
+            assert command[command.index("--data-parallel-start-rank") + 1] == str(start_rank)
+            assert command[command.index("--data-parallel-address") + 1] == "10.0.0.1"
+            assert "--data-parallel-hybrid-lb" in command
+
     def test_vllm_router_worker_uses_private_port_and_pd_connector(self):
         """Disaggregated vLLM Router workers are direct servers with KV transfer."""
         from pathlib import Path

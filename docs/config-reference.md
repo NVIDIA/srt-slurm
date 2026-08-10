@@ -318,10 +318,15 @@ See [SGLang Router](sglang-router.md) for detailed architecture.
 `type: vllm-router` pairs with `backend.type: vllm` and launches the official
 `vllm-router` process against direct private `vllm serve` endpoints. Aggregate
 layouts use `--worker-urls`; disaggregated layouts use
-`--vllm-pd-disaggregation` with the allocated prefill and decode leader URLs.
-Each logical vLLM endpoint must currently fit on one node, but a job may scale
-across many single-node aggregate, prefill, or decode endpoints. No NATS or etcd
-infrastructure is started for this frontend.
+`--vllm-pd-disaggregation` with the allocated prefill and decode URLs. For
+data-parallel endpoints, srtctl derives Router's
+`--intra-node-data-parallel-size`. Router expands each node-local backend URL
+into DP-aware targets and injects `X-Data-Parallel-Rank`; vLLM continues to own
+the engine processes behind that HTTP server. Multi-node DP endpoints use one
+hybrid-LB `vllm serve` process per node and require
+`backend.dp_launch_mode: per_node`. Direct `frontend.type: vllm` retains its
+existing single-server behavior. No NATS or etcd infrastructure is started for
+this frontend.
 
 ### trtllm_serve frontend
 
@@ -463,6 +468,14 @@ backend:
 | `per_gpu`  | One process per DP rank/GPU (default)               |
 | `per_node` | One process manages all DP ranks allocated per node |
 
+For `frontend.type: vllm-router`, Router-native DP expansion keeps one backend
+URL per node and sends `X-Data-Parallel-Rank` to select a node-local engine. A
+single-node endpoint needs no special launch mode. A multi-node DP endpoint must
+use `per_node`; srtctl then derives the global/local DP topology and advertises
+each node-local HTTP server to Router. All routed backends must have the same
+node-local DP size because Router exposes one global
+`--intra-node-data-parallel-size` setting.
+
 `per_gpu` remains the compatibility default for now, but srtslurm will switch
 the default to `per_node` in a future release. Existing vLLM DP configurations
 should set `backend.dp_launch_mode: per_node` now; srtslurm emits a
@@ -471,9 +484,9 @@ configuration-time migration warning while they still use `per_gpu`.
 In `per_node` mode, srtslurm derives `--data-parallel-size-local` and
 `--data-parallel-start-rank` from the allocated topology. Do not set those
 two flags manually. srtslurm also always enables `--data-parallel-hybrid-lb`
-so every node-local process registers with the Dynamo frontend. This is the
-recommended vLLM topology for Dynamo and ensures the frontend can route to
-each node-local DP engine. Do not set `data-parallel-hybrid-lb` manually;
+so every node-local process registers with the Dynamo frontend or exposes its
+local ranks to vLLM Router. This is the recommended multi-node vLLM topology.
+Do not set `data-parallel-hybrid-lb` manually;
 srtslurm enables it automatically, warns when it is configured, and ignores
 the configured value. `headless` is incompatible with `per_node` DP because a
 headless process does not register with Dynamo, so srtslurm rejects that

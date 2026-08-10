@@ -70,8 +70,9 @@ def _get_health_expectations(
 
     Dynamo's /health endpoint reports registered generate instances. For vLLM
     DP workers, per-GPU launch registers one entry per DP rank, while per-node
-    launch registers one entry per node-local process. Other frontends keep
-    using logical worker counts.
+    launch registers one entry per node-local process. vLLM Router expands each
+    routed backend URL into its node-local DP ranks. Other frontends keep using
+    logical worker counts.
     """
     r = config.resources
 
@@ -93,6 +94,24 @@ def _get_health_expectations(
             n_decode = _vllm_health_entries(config, "decode", logical_decode, backend_processes)
 
         count_desc = f"{n_prefill}P + {n_decode}D Dynamo generate instances; logical workers: {worker_desc}"
+        return n_prefill, n_decode, count_desc, n_prefill + n_decode
+
+    if config.frontend.type == "vllm-router" and backend_processes is not None:
+        from srtctl.frontends.vllm_router import node_local_data_parallel_size
+
+        local_dp_size = node_local_data_parallel_size(config.backend, backend_processes)
+
+        n_prefill = sum(
+            local_dp_size
+            for process in backend_processes
+            if process.endpoint_mode == "prefill" and process.http_port > 0
+        )
+        n_decode = sum(
+            local_dp_size
+            for process in backend_processes
+            if process.endpoint_mode in {"decode", "agg"} and process.http_port > 0
+        )
+        count_desc = f"{n_prefill}P + {n_decode}D Router DP workers; logical workers: {worker_desc}"
         return n_prefill, n_decode, count_desc, n_prefill + n_decode
 
     count_desc = worker_desc
@@ -146,11 +165,10 @@ class BenchmarkStageMixin:
         )
 
     def _logical_worker_endpoints(self) -> list[tuple[str, str, int]]:
-        """Return ``(mode, IP, port)`` for every logical worker leader.
+        """Return ``(mode, IP, port)`` for every routable worker endpoint.
 
-        ``backend_processes`` contains one process per physical node for
-        multi-node workers. Only rank zero owns the logical worker endpoint,
-        so follower ranks must not be advertised to benchmark clients.
+        ``backend_processes`` may contain non-routable TP followers (HTTP port
+        zero) or multiple node-local vLLM DP pools (one positive port per pool).
 
         Dynamo exposes worker metrics on each leader's system port. Other
         frontends expose them on the worker HTTP port, matching the endpoint
@@ -159,7 +177,7 @@ class BenchmarkStageMixin:
         use_sys_port = self.config.frontend.type == "dynamo"
         endpoints: list[tuple[str, str, int]] = []
         for process in self.backend_processes:
-            if not process.is_leader:
+            if use_sys_port and not process.is_leader:
                 continue
             port = process.sys_port if use_sys_port else process.http_port
             if port <= 0:
@@ -474,10 +492,12 @@ class BenchmarkStageMixin:
         else:
             if self.config.frontend.type in {"vllm", "vllm-router"}:
                 for process in self.backend_processes:
-                    if process.is_leader:
+                    if self.config.frontend.type == "vllm" and process.is_leader:
                         host = get_hostname_ip(process.node, self.runtime.network_interface)
-                        port = FRONTEND_PUBLIC_PORT if self.config.frontend.type == "vllm" else process.http_port
-                        urls.append(f"http://{host}:{port}/metrics")
+                        urls.append(f"http://{host}:{FRONTEND_PUBLIC_PORT}/metrics")
+                    elif self.config.frontend.type == "vllm-router" and process.http_port > 0:
+                        host = get_hostname_ip(process.node, self.runtime.network_interface)
+                        urls.append(f"http://{host}:{process.http_port}/metrics")
                 if urls:
                     return {"AIPERF_SERVER_METRICS_URLS": ",".join(sorted(set(urls)))}
 

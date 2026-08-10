@@ -498,13 +498,14 @@ class VLLMProtocol:
         """Convert endpoints to processes.
 
         Dynamo DP+EP mode uses the configured per-GPU or per-node process layout.
-        For direct vLLM and vLLM Router jobs, `vllm serve` manages local DP ranks
-        from one process, so keep the standard one-process-per-node topology.
+        For direct vLLM and single-node vLLM Router jobs, `vllm serve` manages
+        local DP ranks from one process. Multi-node vLLM Router DP jobs use one
+        hybrid-LB process per node so Router can address each node-local DP pool.
         For standard TP mode, creates one process per node.
         """
         from srtctl.core.topology import NodePortAllocator, Process, endpoints_to_processes
 
-        if frontend_type in {"vllm", "vllm-router"}:
+        if frontend_type == "vllm":
             return endpoints_to_processes(endpoints, base_sys_port=base_sys_port, port_allocator=port_allocator)
 
         # Check if any endpoint uses DP mode
@@ -513,6 +514,13 @@ class VLLMProtocol:
         if not has_dp_mode:
             # Standard TP mode: one process per node
             return endpoints_to_processes(endpoints, base_sys_port=base_sys_port, port_allocator=port_allocator)
+
+        if frontend_type == "vllm-router" and all(not endpoint.is_multi_node for endpoint in endpoints):
+            # Router expands each single-node backend URL into node-local DP ranks.
+            return endpoints_to_processes(endpoints, base_sys_port=base_sys_port, port_allocator=port_allocator)
+
+        if frontend_type == "vllm-router" and self.dp_launch_mode != "per_node":
+            raise ValueError("multi-node vLLM Router DP endpoints require backend.dp_launch_mode: per_node")
 
         if self.dp_launch_mode == "per_node":
             return self._dp_per_node_endpoints_to_processes(
@@ -717,7 +725,10 @@ class VLLMProtocol:
         if frontend_type in {"vllm", "vllm-router"}:
             if frontend_type == "vllm" and mode != "agg":
                 raise ValueError("frontend.type: vllm supports aggregate vLLM jobs only")
-            if is_multi_node:
+            is_router_hybrid_dp = (
+                frontend_type == "vllm-router" and self._is_dp_mode(mode) and self.dp_launch_mode == "per_node"
+            )
+            if is_multi_node and not is_router_hybrid_dp:
                 raise ValueError(f"frontend.type: {frontend_type} requires each vLLM endpoint to fit on one node")
 
             config.pop("host", None)
@@ -733,6 +744,24 @@ class VLLMProtocol:
                 connector = mode_connector if mode_connector is not None else self.connector
                 if connector and connector not in ("null", "none", None):
                     config.setdefault("kv-transfer-config", _connector_to_kv_transfer_config(connector))
+
+                if is_router_hybrid_dp:
+                    rpc_port_kebab = config.pop("data-parallel-rpc-port", None)
+                    rpc_port_snake = config.pop("data_parallel_rpc_port", None)
+                    dp_rpc_port = process.dp_rpc_port or rpc_port_kebab or rpc_port_snake or VLLM_DATA_PARALLEL_RPC_PORT
+
+                    config.pop("data-parallel-size-local", None)
+                    config.pop("data_parallel_size_local", None)
+                    config.pop("data-parallel-start-rank", None)
+                    config.pop("data_parallel_start_rank", None)
+                    config.pop("data-parallel-hybrid-lb", None)
+                    config.pop("data_parallel_hybrid_lb", None)
+                    config.pop("headless", None)
+                    config["data-parallel-size-local"] = len(process.gpu_indices)
+                    config["data-parallel-start-rank"] = process.node_rank
+                    config["data-parallel-address"] = leader_ip
+                    config["data-parallel-rpc-port"] = dp_rpc_port
+                    config["data-parallel-hybrid-lb"] = True
 
             cmd.extend(
                 [

@@ -1656,16 +1656,23 @@ class SrtConfig:
             )
 
         if self.frontend.type == "vllm-router":
-            endpoint_gpu_counts = (
-                self.resources.gpus_per_prefill if self.resources.num_prefill else 0,
-                self.resources.gpus_per_decode if self.resources.num_decode else 0,
-                self.resources.gpus_per_agg if self.resources.num_agg else 0,
-            )
-            if any(count > self.resources.gpus_per_node for count in endpoint_gpu_counts):
-                raise ValidationError(
-                    "frontend.type: vllm-router currently requires each logical vLLM endpoint "
-                    "to fit on one node; scale with multiple aggregate/prefill/decode workers"
-                )
+            endpoint_gpu_counts = {
+                "prefill": self.resources.gpus_per_prefill if self.resources.num_prefill else 0,
+                "decode": self.resources.gpus_per_decode if self.resources.num_decode else 0,
+                "agg": self.resources.gpus_per_agg if self.resources.num_agg else 0,
+            }
+            multi_node_modes = [
+                mode for mode, count in endpoint_gpu_counts.items() if count > self.resources.gpus_per_node
+            ]
+            if multi_node_modes and self.backend.dp_launch_mode != "per_node":
+                raise ValidationError("multi-node vLLM Router DP endpoints require backend.dp_launch_mode: per_node")
+            for mode in multi_node_modes:
+                gpu_count = endpoint_gpu_counts[mode]
+                if not self.backend._is_dp_mode(mode) or self.backend._get_dp_size(mode) != gpu_count:
+                    raise ValidationError(
+                        f"multi-node vLLM Router {mode} endpoints require data-parallel-size={gpu_count}; "
+                        "multi-node TP-only direct serving is not supported"
+                    )
 
     def _validate_sglang_data_parallelism(self):
         """Reject SGLang TP/DP combinations that the server cannot initialize.

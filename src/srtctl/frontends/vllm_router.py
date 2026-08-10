@@ -14,6 +14,28 @@ if TYPE_CHECKING:
     from srtctl.core.topology import Process
 
 
+def node_local_data_parallel_size(backend: Any, backend_processes: list[Process]) -> int:
+    """Return Router's single node-local DP expansion factor."""
+    grouped_processes: dict[tuple[str, int], list[Process]] = {}
+    for process in backend_processes:
+        if process.http_port > 0:
+            grouped_processes.setdefault((process.endpoint_mode, process.endpoint_index), []).append(process)
+
+    local_dp_sizes: set[int] = set()
+    for (mode, _endpoint_index), processes in grouped_processes.items():
+        global_dp_size = backend._get_dp_size(mode) or 1
+        if global_dp_size % len(processes) != 0:
+            raise ValueError(
+                f"vLLM Router {mode} data-parallel-size={global_dp_size} cannot be evenly split "
+                f"across {len(processes)} routed node-local servers"
+            )
+        local_dp_sizes.add(global_dp_size // len(processes))
+
+    if len(local_dp_sizes) > 1:
+        raise ValueError("vLLM Router requires the same node-local data-parallel size for every routed backend")
+    return next(iter(local_dp_sizes), 1)
+
+
 @register_frontend("vllm-router")
 class VLLMRouterFrontend(StaticRouterFrontend):
     """Route requests to direct vLLM OpenAI-compatible worker endpoints."""
@@ -24,15 +46,35 @@ class VLLMRouterFrontend(StaticRouterFrontend):
     pd_flag: ClassVar[str] = "--vllm-pd-disaggregation"
     process_name: ClassVar[str] = "vllm_router"
 
-    def get_managed_frontend_args(self, config: Any) -> list[str]:
-        """Keep Router's worker wait alive for srtctl's model-readiness window."""
+    def get_managed_frontend_args(
+        self,
+        config: Any,
+        backend: Any | None = None,
+        backend_processes: list[Process] | None = None,
+    ) -> list[str]:
+        """Derive Router DP expansion and worker-readiness arguments."""
         frontend_args = config.frontend.args or {}
-        if "worker-startup-timeout-secs" in frontend_args:
-            return []
+        managed_args: list[str] = []
 
-        health_check = config.health_check
-        timeout_seconds = health_check.max_attempts * health_check.interval_seconds
-        return ["--worker-startup-timeout-secs", str(timeout_seconds)]
+        if backend is not None and backend_processes is not None:
+            local_dp_size = node_local_data_parallel_size(backend, backend_processes)
+            configured_dp_size = frontend_args.get(
+                "intra-node-data-parallel-size",
+                frontend_args.get("intra_node_data_parallel_size"),
+            )
+            if configured_dp_size is not None and int(configured_dp_size) != local_dp_size:
+                raise ValueError(
+                    "frontend.args.intra-node-data-parallel-size conflicts with the allocated vLLM topology: "
+                    f"configured {configured_dp_size}, derived {local_dp_size}"
+                )
+            if local_dp_size > 1 and configured_dp_size is None:
+                managed_args.extend(["--intra-node-data-parallel-size", str(local_dp_size)])
+
+        if "worker-startup-timeout-secs" not in frontend_args:
+            health_check = config.health_check
+            timeout_seconds = health_check.max_attempts * health_check.interval_seconds
+            managed_args.extend(["--worker-startup-timeout-secs", str(timeout_seconds)])
+        return managed_args
 
     def worker_bootstrap_port(self, backend: Any, process: Process) -> int | None:
         """Advertise vLLM's NIXL side-channel port to the P/D router."""
