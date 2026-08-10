@@ -1,0 +1,146 @@
+name: ctx2_gen1_tep8_batch128_eplb0_mtp0_179
+model:
+  path: /lustre/fsw/coreai_comparch_inferencex/rihuo/Qwen3.5-397B-A17B-NVFP4-V2
+  container: /lustre/fsw/coreai_comparch_inferencex/rihuo/tensorrt-llm-release-arm64-1-3-0rc24.sqsh
+  precision: fp4
+setup_script: "install_dynamo_wheel.sh"
+
+extra_mount:
+  - /lustre/fsw/coreai_comparch_inferencex/rihuo/dynamo_wheels:/dynamo_wheels
+
+dynamo:
+  install: false
+
+identity:
+  model:
+    repo: nvidia/Qwen3.5-397B-A17B-NVFP4-V2
+  container:
+    image: /scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/huanhuanc/tensorrt_llm-f10a22e978-gb300.sqsh
+slurm:
+  time_limit: 04:00:00
+health_check:
+  max_attempts: 720
+  interval_seconds: 10
+resources:
+  gpu_type: gb300
+  gpus_per_node: 4
+  prefill_nodes: 1
+  prefill_workers: 2
+  gpus_per_prefill: 2
+  decode_nodes: 2
+  decode_workers: 1
+  gpus_per_decode: 8
+backend:
+  type: trtllm
+  sequential_node_start: true
+  prefill_environment:
+    TLLM_LOG_LEVEL: INFO
+    TRTLLM_SERVER_DISABLE_GC: '1'
+    TRTLLM_WORKER_DISABLE_GC: '1'
+    TRTLLM_ENABLE_PDL: '1'
+    NCCL_GRAPH_MIXING_SUPPORT: '0'
+    MIMALLOC_PURGE_DELAY: '0'
+    UCX_TLS: cuda_ipc,cuda_copy,sm,self,tcp
+  decode_environment:
+    TLLM_LOG_LEVEL: INFO
+    TRTLLM_SERVER_DISABLE_GC: '1'
+    TRTLLM_WORKER_DISABLE_GC: '1'
+    TRTLLM_ENABLE_PDL: '1'
+    NCCL_GRAPH_MIXING_SUPPORT: '0'
+    MIMALLOC_PURGE_DELAY: '0'
+    UCX_TLS: cuda_ipc,cuda_copy,sm,self,tcp
+  trtllm_config:
+    prefill:
+      cache_transceiver_config:
+        backend: UCX
+        kv_transfer_timeout_ms: 600000
+        max_tokens_in_buffer: 16384
+      cuda_graph_config: null
+      disable_overlap_scheduler: true
+      enable_attention_dp: true
+      kv_cache_config:
+        dtype: fp8
+        enable_block_reuse: false
+        free_gpu_memory_fraction: 0.85
+      max_batch_size: 32
+      max_num_tokens: 16896
+      max_seq_len: 8448
+      moe_config:
+        backend: CUTEDSL
+      moe_expert_parallel_size: 2
+      nvfp4_gemm_config:
+        allowed_backends:
+        - cutlass
+        - cublaslt
+        - cutedsl
+        - cuda_core
+      pipeline_parallel_size: 1
+      print_iter_log: true
+      tensor_parallel_size: 2
+      trust_remote_code: true
+    decode:
+      cache_transceiver_config:
+        backend: UCX
+        kv_transfer_timeout_ms: 600000
+        max_tokens_in_buffer: 16384
+      cuda_graph_config:
+        batch_sizes:
+        - 1
+        - 2
+        - 4
+        - 8
+        - 16
+        - 24
+        - 32
+        - 40
+        - 48
+        - 56
+        - 64
+        - 72
+        - 80
+        - 88
+        - 96
+        - 104
+        - 112
+        - 120
+        - 128
+        enable_padding: true
+      enable_attention_dp: false
+      enable_lm_head_tp_in_adp: false
+      kv_cache_config:
+        dtype: fp8
+        enable_block_reuse: false
+        free_gpu_memory_fraction: 0.9
+      max_batch_size: 128
+      max_num_tokens: 128
+      max_seq_len: 9472
+      moe_config:
+        backend: TRTLLM
+        use_low_precision_moe_combine: true
+      moe_expert_parallel_size: 8
+      num_postprocess_workers: 4
+      nvfp4_gemm_config:
+        allowed_backends:
+        - cutlass
+        - cublaslt
+        - cutedsl
+        - cuda_core
+      pipeline_parallel_size: 1
+      print_iter_log: true
+      stream_interval: 100
+      tensor_parallel_size: 8
+      trust_remote_code: true
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+  env:
+    ETCD_LEASE_TTL: '120'
+    DYN_TOKENIZER: "fastokens"
+benchmark:
+  type: sa-bench
+  isl: 8192
+  osl: 1024
+  concurrencies:
+  - 179
+  req_rate: inf
+  num_prompts_mult: 16

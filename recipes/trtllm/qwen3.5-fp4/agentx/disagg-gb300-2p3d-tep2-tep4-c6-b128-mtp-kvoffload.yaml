@@ -35,6 +35,7 @@ resources:
   gpus_per_decode: 4
 backend:
   type: trtllm
+  sequential_node_start: true
   prefill_environment:
     CUDA_SCALE_LAUNCH_QUEUES: 4x
     MIMALLOC_ARENA_RESERVE: '0'
