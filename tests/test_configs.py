@@ -541,6 +541,48 @@ class TestSGLangProtocol:
         assert config.is_grpc_mode("decode") is True
         assert config.is_grpc_mode("agg") is False
 
+    @pytest.mark.parametrize(
+        ("frontend_type", "mode", "expected"),
+        [
+            ("sgl-router", "prefill", True),
+            ("sgl-router", "decode", True),
+            ("sgl-router", "agg", False),
+            ("dynamo", "decode", False),
+        ],
+    )
+    def test_static_router_pd_workers_skip_local_fake_bootstrap_warmup(
+        self, frontend_type: str, mode: str, expected: bool
+    ) -> None:
+        """Only native P/D routing relies on the router-level warmup."""
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.core.topology import Process
+
+        process = Process(
+            node="node0",
+            gpu_indices=frozenset(range(8)),
+            sys_port=8081,
+            http_port=6100,
+            endpoint_mode=mode,
+            endpoint_index=0,
+            node_rank=0,
+            bootstrap_port=7200,
+        )
+        runtime = MagicMock()
+        runtime.model_path = Path("/model")
+        runtime.is_hf_model = False
+        runtime.request_plane = "tcp"
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            command = SGLangProtocol().build_worker_command(
+                process=process,
+                endpoint_processes=[process],
+                runtime=runtime,
+                frontend_type=frontend_type,
+            )
+
+        assert ("--skip-server-warmup" in command) is expected
+
 
 class TestServedModelName:
     """Tests for served_model_name property extraction from backend configs."""
