@@ -10,6 +10,7 @@ Handles starting backend worker processes (prefill/decode/agg).
 import logging
 import shlex
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Any
 
 from srtctl.core.fingerprint import generate_capture_script
@@ -444,26 +445,35 @@ class WorkerStageMixin:
             if sequential:
                 # Group endpoints by leader node; start sequentially within each node
                 # so that model loading on a shared node doesn't cause resource contention.
+                # Different nodes start in parallel.
                 by_node: dict[str, list[list[Process]]] = defaultdict(list)
                 for ep_procs in grouped.values():
                     by_node[ep_procs[0].node].append(ep_procs)
 
-                for node, node_groups in by_node.items():
+                def start_node_workers(node: str, node_groups: list) -> list:
                     if len(node_groups) == 1:
-                        # Only one worker on this node — start immediately, no sequencing needed
-                        managed = self.start_endpoint_worker(node_groups[0])
-                        result[managed.name] = managed
-                    else:
-                        logger.info(
-                            "Sequential node start: %d workers share node %s, starting one by one",
-                            len(node_groups),
-                            node,
-                        )
-                        for i, ep_procs in enumerate(node_groups):
-                            managed = self.start_endpoint_worker(ep_procs)
+                        return [self.start_endpoint_worker(node_groups[0])]
+                    logger.info(
+                        "Sequential node start: %d workers share node %s, starting one by one",
+                        len(node_groups),
+                        node,
+                    )
+                    managed_list = []
+                    for i, ep_procs in enumerate(node_groups):
+                        managed = self.start_endpoint_worker(ep_procs)
+                        managed_list.append(managed)
+                        if i < len(node_groups) - 1:
+                            self._wait_for_worker_ready(ep_procs[0])
+                    return managed_list
+
+                with ThreadPoolExecutor(max_workers=len(by_node)) as executor:
+                    futures = {
+                        executor.submit(start_node_workers, node, node_groups): node
+                        for node, node_groups in by_node.items()
+                    }
+                    for future in as_completed(futures):
+                        for managed in future.result():
                             result[managed.name] = managed
-                            if i < len(node_groups) - 1:
-                                self._wait_for_worker_ready(ep_procs[0])
             else:
                 for endpoint_processes in grouped.values():
                     managed = self.start_endpoint_worker(endpoint_processes)
