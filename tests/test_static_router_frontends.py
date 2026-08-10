@@ -226,3 +226,42 @@ def test_vllm_router_rejects_endpoint_spanning_nodes() -> None:
             frontend=FrontendConfig(type="vllm-router", enable_multiple_frontends=False),
             backend=VLLMProtocol(),
         )
+
+
+def test_sgl_router_rejects_non_divisible_tp_dp_layout() -> None:
+    from marshmallow import ValidationError
+
+    from srtctl.backends import SGLangProtocol, SGLangServerConfig
+    from srtctl.core.schema import FrontendConfig, ResourceConfig, SrtConfig
+
+    with pytest.raises(ValidationError, match="tp-size=1 must be divisible by dp-size=8"):
+        SrtConfig(
+            name="invalid-sglang-dpa",
+            model={"path": "model", "container": "image", "precision": "fp8"},
+            resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1, agg_workers=1),
+            frontend=FrontendConfig(type="sgl-router", enable_multiple_frontends=False),
+            backend=SGLangProtocol(
+                sglang_config=SGLangServerConfig(
+                    aggregated={"tp-size": 1, "dp-size": 8, "enable-dp-attention": True}
+                )
+            ),
+        )
+
+
+def test_sgl_router_accepts_divisible_tp_dp_layout() -> None:
+    from srtctl.backends import SGLangProtocol, SGLangServerConfig
+    from srtctl.core.schema import FrontendConfig, ResourceConfig, SrtConfig
+
+    config = SrtConfig(
+        name="valid-sglang-dpa",
+        model={"path": "model", "container": "image", "precision": "fp8"},
+        resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1, agg_workers=1),
+        frontend=FrontendConfig(type="sgl-router", enable_multiple_frontends=False),
+        backend=SGLangProtocol(
+            sglang_config=SGLangServerConfig(
+                aggregated={"tp-size": 8, "dp-size": 8, "enable-dp-attention": True}
+            )
+        ),
+    )
+
+    assert config.backend.sglang_config.aggregated["tp-size"] == 8

@@ -1593,6 +1593,7 @@ class SrtConfig:
         self._validate_trtllm_serve()
         self._validate_vllm_frontend()
         self._validate_static_router_frontend()
+        self._validate_sglang_data_parallelism()
 
     def _validate_trtllm_serve(self):
         """Catch trtllm_serve misconfigurations at load time (dry-run) instead of
@@ -1665,6 +1666,36 @@ class SrtConfig:
                 raise ValidationError(
                     "frontend.type: vllm-router currently requires each logical vLLM endpoint "
                     "to fit on one node; scale with multiple aggregate/prefill/decode workers"
+                )
+
+    def _validate_sglang_data_parallelism(self):
+        """Reject SGLang TP/DP combinations that the server cannot initialize.
+
+        SGLang partitions each tensor-parallel group across its data-parallel
+        attention ranks, so ``tp_size`` must be divisible by ``dp_size``.  Its
+        CLI otherwise accepts the flags and fails later in ``ServerArgs`` after
+        the Slurm allocation and container have already started.
+        """
+        if self.backend_type != "sglang":
+            return
+
+        sglang_cfg = getattr(self.backend, "sglang_config", None)
+        if sglang_cfg is None:
+            return
+
+        for mode, mode_cfg in (
+            ("prefill", sglang_cfg.prefill),
+            ("decode", sglang_cfg.decode),
+            ("aggregated", sglang_cfg.aggregated),
+        ):
+            if not mode_cfg:
+                continue
+            tp_size = int(mode_cfg.get("tp-size", mode_cfg.get("tp_size", 1)))
+            dp_size = int(mode_cfg.get("dp-size", mode_cfg.get("dp_size", 1)))
+            if tp_size % dp_size != 0:
+                raise ValidationError(
+                    f"sglang_config.{mode}: tp-size={tp_size} must be divisible by "
+                    f"dp-size={dp_size}; SGLang rejects this data-parallel layout"
                 )
 
     def _validate_het_jobs(self):
