@@ -1588,6 +1588,29 @@ class SrtConfig:
         self._validate_het_jobs()
         self._validate_trtllm_serve()
         self._validate_vllm_frontend()
+        self._warn_dp_launch_mode()
+
+    def _warn_dp_launch_mode(self):
+        """Nudge vLLM DP recipes toward the per-node launch topology.
+
+        Skipped for frontend.type: vllm, where the setting has no effect —
+        `vllm serve` owns the local DP ranks, so the layout is one process per
+        node whatever dp_launch_mode says.
+        """
+        if self.backend_type != "vllm" or self.frontend.type == "vllm":
+            return
+        if getattr(self.backend, "dp_launch_mode", "per_gpu") != "per_gpu":
+            return
+
+        dp_modes = self.backend.find_dp_modes()
+        if not dp_modes:
+            return
+
+        logger.warning(
+            "vLLM DP mode(s) %s use dp_launch_mode=per_gpu. per_node is the recommended topology "
+            "and will become the default in a future release; set backend.dp_launch_mode: per_node now",
+            ", ".join(mode_name for mode_name, _ in dp_modes),
+        )
 
     def _validate_trtllm_serve(self):
         """Catch trtllm_serve misconfigurations at load time (dry-run) instead of

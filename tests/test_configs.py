@@ -3338,6 +3338,42 @@ class TestDirectVllmMultiNode:
         assert "--master-port" not in leader_cmd
         assert "--master-port" not in worker_cmd
 
+    def test_no_dp_launch_mode_warning_for_direct_vllm(self, caplog):
+        """dp_launch_mode does not apply here: vllm serve owns the local DP ranks."""
+        import logging
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.schema import FrontendConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        with caplog.at_level(logging.WARNING, logger="srtctl.core.schema"):
+            SrtConfig(
+                name="t",
+                model=ModelConfig(path="/m", container="/c.sqsh", precision="fp4"),
+                resources=ResourceConfig(gpu_type="b200", gpus_per_node=8, agg_nodes=2, agg_workers=1),
+                frontend=FrontendConfig(type="vllm", enable_multiple_frontends=False),
+                backend=VLLMProtocol(vllm_config=VLLMServerConfig(aggregated={"data-parallel-size": 16})),
+            )
+
+        assert "dp_launch_mode" not in caplog.text
+
+    def test_dp_launch_mode_warning_still_fires_for_dynamo(self, caplog):
+        """The advisory is still useful where the setting picks the process layout."""
+        import logging
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.schema import FrontendConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        with caplog.at_level(logging.WARNING, logger="srtctl.core.schema"):
+            SrtConfig(
+                name="t",
+                model=ModelConfig(path="/m", container="/c.sqsh", precision="fp4"),
+                resources=ResourceConfig(gpu_type="b200", gpus_per_node=8, agg_nodes=2, agg_workers=1),
+                frontend=FrontendConfig(type="dynamo"),
+                backend=VLLMProtocol(vllm_config=VLLMServerConfig(aggregated={"data-parallel-size": 16})),
+            )
+
+        assert "dp_launch_mode=per_gpu" in caplog.text
+
     def test_direct_vllm_keeps_api_server_count_on_leader_only(self):
         """vLLM rejects --api-server-count alongside --headless, so only rank 0 keeps it.
 

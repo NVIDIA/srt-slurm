@@ -279,10 +279,10 @@ class VLLMProtocol:
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
-    def __post_init__(self) -> None:
-        """Validate flags whose behavior is fixed by the per-node launch topology."""
+    def find_dp_modes(self) -> list[tuple[str, dict[str, Any]]]:
+        """Return ``(mode, config)`` pairs whose recipe config sets data-parallel-size."""
         if self.vllm_config is None:
-            return
+            return []
 
         dp_mode_configs: list[tuple[str, dict[str, Any]]] = []
         for mode_name, mode_config in (
@@ -295,17 +295,15 @@ class VLLMProtocol:
                 for key, value in mode_config.items()
             ):
                 dp_mode_configs.append((mode_name, mode_config))
+        return dp_mode_configs
 
-        if not dp_mode_configs:
-            return
+    def __post_init__(self) -> None:
+        """Validate flags whose behavior is fixed by the per-node launch topology."""
+        dp_mode_configs = self.find_dp_modes()
 
-        if self.dp_launch_mode == "per_gpu":
-            modes = ", ".join(mode_name for mode_name, _ in dp_mode_configs)
-            logger.warning(
-                "vLLM DP mode(s) %s use dp_launch_mode=per_gpu. per_node is the recommended topology "
-                "and will become the default in a future release; set backend.dp_launch_mode: per_node now",
-                modes,
-            )
+        # The per_gpu advisory lives in SrtConfig, which can tell whether the
+        # setting applies at all: a direct vLLM frontend ignores it.
+        if not dp_mode_configs or self.dp_launch_mode == "per_gpu":
             return
 
         hybrid_lb_modes: list[str] = []
