@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from srtctl.benchmarks.base import SCRIPTS_DIR, BenchmarkRunner, register_benchmark
@@ -12,6 +13,11 @@ from srtctl.benchmarks.base import SCRIPTS_DIR, BenchmarkRunner, register_benchm
 if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import SrtConfig
+
+# Container path where the host dataset cache dir is mounted (see
+# benchmark.dataset_cache_dir). Kept stable so cache files written by one job
+# are found by the next.
+DATASET_CACHE_MOUNT = "/sa-bench-dataset-cache"
 
 
 @register_benchmark("sa-bench")
@@ -28,6 +34,7 @@ class SABenchRunner(BenchmarkRunner):
         - benchmark.req_rate: Request rate (default: "inf")
         - benchmark.dataset_name: "random" (default) or "custom"
         - benchmark.dataset_path: Container path to dataset file (required when dataset_name="custom")
+        - benchmark.dataset_cache_dir: Host dir for caching generated "random" datasets
         - benchmark.reuse_http_connections: Reuse a benchmark-scoped HTTP connection pool
           for the Dynamo adapter (default: false)
         - benchmark.slow_down_sleep_time / benchmark.slow_down_wait_time: When both are set and
@@ -95,6 +102,10 @@ class SABenchRunner(BenchmarkRunner):
 
         dataset_name = b.dataset_name or "random"
 
+        # A configured host cache dir is mounted at DATASET_CACHE_MOUNT (see
+        # get_container_mounts); bench.sh only ever sees the container path.
+        dataset_cache_dir = DATASET_CACHE_MOUNT if b.dataset_cache_dir else ""
+
         cmd = [
             "bash",
             self.script_path,
@@ -117,5 +128,19 @@ class SABenchRunner(BenchmarkRunner):
             dataset_name,
             b.dataset_path or "",
             str(b.reuse_http_connections).lower(),
+            dataset_cache_dir,
         ]
         return cmd
+
+    def get_container_mounts(self, config: SrtConfig, runtime: RuntimeContext) -> dict[Path, Path]:
+        """Mount the host dataset cache dir into the benchmark container.
+
+        Created on the host when missing so the first run can populate it.
+        """
+        mounts = dict(runtime.container_mounts)
+        cache_dir = config.benchmark.dataset_cache_dir
+        if cache_dir:
+            host_path = Path(cache_dir).expanduser()
+            host_path.mkdir(parents=True, exist_ok=True)
+            mounts[host_path.resolve()] = Path(DATASET_CACHE_MOUNT)
+        return mounts

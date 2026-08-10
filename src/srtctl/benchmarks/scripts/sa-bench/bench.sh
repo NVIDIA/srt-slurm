@@ -67,6 +67,7 @@ USE_CHAT_TEMPLATE=${16:-true}
 DATASET_NAME=${17:-random}
 DATASET_PATH=${18:-}
 REUSE_HTTP_CONNECTIONS=${19:-false}
+DATASET_CACHE_DIR=${20:-}
 
 # Build optional custom tokenizer args
 CUSTOM_TOKENIZER_ARGS=()
@@ -120,6 +121,14 @@ if [ "$DATASET_NAME" = "random" ]; then
     )
 fi
 
+# Dataset cache: reuse pre-generated random prompts across runs (random only).
+# Falls back to the SA_BENCH_DATASET_CACHE_DIR env var when no arg is given.
+DATASET_CACHE_DIR="${DATASET_CACHE_DIR:-${SA_BENCH_DATASET_CACHE_DIR:-}}"
+CACHE_ARGS=()
+if [ "$DATASET_NAME" = "random" ] && [ -n "$DATASET_CACHE_DIR" ]; then
+    CACHE_ARGS=(--dataset-cache-dir "$DATASET_CACHE_DIR")
+fi
+
 # Optional SGLang /slow_down (set by srtctl for SA-Bench when YAML provides slow_down_* and frontend is sglang):
 #   SA_BENCH_SLOW_DOWN_URLS: comma-separated http://host:port base URLs (decode workers)
 #   SA_BENCH_SLOW_DOWN_SLEEP_TIME / SA_BENCH_SLOW_DOWN_WAIT_TIME
@@ -148,7 +157,7 @@ PORT=$(echo "$ENDPOINT" | sed 's|http://||' | cut -d: -f2 | cut -d/ -f1)
 
 WORK_DIR="$(dirname "$0")"
 
-echo "SA-Bench Config: endpoint=${ENDPOINT}; isl=${ISL}; osl=${OSL}; concurrencies=${CONCURRENCIES}; req_rate=${REQ_RATE}; model=${MODEL_NAME}; dataset=${DATASET_NAME}; dataset_path=${DATASET_PATH}; http_connection_mode=${HTTP_CONNECTION_MODE}"
+echo "SA-Bench Config: endpoint=${ENDPOINT}; isl=${ISL}; osl=${OSL}; concurrencies=${CONCURRENCIES}; req_rate=${REQ_RATE}; model=${MODEL_NAME}; dataset=${DATASET_NAME}; dataset_path=${DATASET_PATH}; dataset_cache_dir=${DATASET_CACHE_DIR:-<off>}; http_connection_mode=${HTTP_CONNECTION_MODE}"
 
 # Profiling shared helpers
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -200,6 +209,7 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
             "${DATASET_ARGS[@]}" \
             --num-prompts "$num_warmup_prompts" \
             "${RANDOM_LEN_ARGS[@]}" \
+            "${CACHE_ARGS[@]}" \
             --ignore-eos \
             --request-rate 250 \
             --percentile-metrics ttft,tpot,itl,e2el \
@@ -231,6 +241,7 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
         "${DATASET_ARGS[@]}" \
         --num-prompts "$num_prompts" \
         "${RANDOM_LEN_ARGS[@]}" \
+        "${CACHE_ARGS[@]}" \
         --ignore-eos \
         --request-rate "${REQ_RATE}" \
         --percentile-metrics ttft,tpot,itl,e2el \
