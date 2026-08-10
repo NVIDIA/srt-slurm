@@ -63,9 +63,26 @@ _VLLM_ORCHESTRATION_FLAGS = frozenset(
 )
 
 
+# vLLM CLI flags that only apply where the OpenAI API server runs. Headless node
+# ranks host engine workers only, and vLLM rejects a positive --api-server-count
+# there instead of ignoring it.
+_VLLM_API_SERVER_ONLY_FLAGS = frozenset({"api-server-count"})
+
+
 def normalize_vllm_config_key(key: str) -> str:
     """Normalize a vllm_config dict key to kebab-case CLI flag form."""
     return str(key).replace("_", "-")
+
+
+def _pop_flags(config: dict[str, Any], flags: frozenset[str]) -> list[str]:
+    found: list[str] = []
+    for key in list(config.keys()):
+        normalized = normalize_vllm_config_key(key)
+        if normalized in flags:
+            config.pop(key)
+            if normalized not in found:
+                found.append(normalized)
+    return found
 
 
 def pop_vllm_orchestration_flags(config: dict[str, Any]) -> list[str]:
@@ -73,14 +90,15 @@ def pop_vllm_orchestration_flags(config: dict[str, Any]) -> list[str]:
 
     Returns normalized flag names that were present.
     """
-    found: list[str] = []
-    for key in list(config.keys()):
-        normalized = normalize_vllm_config_key(key)
-        if normalized in _VLLM_ORCHESTRATION_FLAGS:
-            config.pop(key)
-            if normalized not in found:
-                found.append(normalized)
-    return found
+    return _pop_flags(config, _VLLM_ORCHESTRATION_FLAGS)
+
+
+def pop_vllm_api_server_flags(config: dict[str, Any]) -> list[str]:
+    """Remove API-server-only vLLM flags from a mode config dict.
+
+    Returns normalized flag names that were present.
+    """
+    return _pop_flags(config, _VLLM_API_SERVER_ONLY_FLAGS)
 
 
 def find_vllm_orchestration_recipe_flags(backend: VLLMProtocol) -> list[tuple[str, str]]:
@@ -797,6 +815,14 @@ class VLLMProtocol:
                 )
                 if node_rank > 0:
                     cmd.append("--headless")
+                    dropped = pop_vllm_api_server_flags(config)
+                    if dropped:
+                        logger.info(
+                            "Dropping %s on headless node rank %d (%s); API-server flags apply to rank 0 only",
+                            ", ".join(f"--{flag}" for flag in dropped),
+                            node_rank,
+                            process.node,
+                        )
             if not self.set_cuda_visible_devices:
                 device_ids = ",".join(str(i) for i in sorted(process.gpu_indices))
                 if device_ids:

@@ -3337,3 +3337,71 @@ class TestDirectVllmMultiNode:
         assert "10.9.9.9" not in leader_cmd
         assert "--master-port" not in leader_cmd
         assert "--master-port" not in worker_cmd
+
+    def test_direct_vllm_keeps_api_server_count_on_leader_only(self):
+        """vLLM rejects --api-server-count alongside --headless, so only rank 0 keeps it.
+
+        The flag matters under DP: without it vLLM defaults to one API server per
+        DP rank and then disables throughput/KV-cache stat logging.
+        """
+        leader, worker = self._make_processes(["node0", "node1"])
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+
+        backend = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                aggregated={
+                    "data-parallel-size": 16,
+                    "tensor-parallel-size": 1,
+                    "api-server-count": 1,
+                }
+            )
+        )
+        runtime = MagicMock()
+        runtime.model_path = Path("/model")
+        runtime.is_hf_model = False
+        runtime.frontend_port = 9000
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            leader_cmd = backend.build_worker_command(
+                process=leader,
+                endpoint_processes=[leader, worker],
+                runtime=runtime,
+                frontend_type="vllm",
+            )
+            worker_cmd = backend.build_worker_command(
+                process=worker,
+                endpoint_processes=[leader, worker],
+                runtime=runtime,
+                frontend_type="vllm",
+            )
+
+        assert leader_cmd[leader_cmd.index("--api-server-count") + 1] == "1"
+        assert "--api-server-count" not in worker_cmd
+        assert worker_cmd[worker_cmd.index("--data-parallel-size") + 1] == "16"
+
+    def test_direct_vllm_single_node_keeps_api_server_count(self):
+        """Single-node jobs have no headless rank, so the recipe value is untouched."""
+        (leader,) = self._make_processes(["node0"])
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+
+        backend = VLLMProtocol(vllm_config=VLLMServerConfig(aggregated={"api-server-count": 1}))
+        runtime = MagicMock()
+        runtime.model_path = Path("/model")
+        runtime.is_hf_model = False
+        runtime.frontend_port = 9000
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            cmd = backend.build_worker_command(
+                process=leader,
+                endpoint_processes=[leader],
+                runtime=runtime,
+                frontend_type="vllm",
+            )
+
+        assert cmd[cmd.index("--api-server-count") + 1] == "1"
