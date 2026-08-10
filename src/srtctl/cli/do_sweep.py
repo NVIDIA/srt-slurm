@@ -677,7 +677,7 @@ class SweepOrchestrator(
         try:
             # Stage 1: Head infrastructure (NATS, etcd). Only the dynamo request
             # plane uses it; static/direct frontends skip it.
-            if self.config.frontend.type in {"sglang", "sgl-router", "trtllm_serve", "vllm", "vllm-router"}:
+            if self.config.frontend.type in {"sglang", "trtllm_serve", "vllm", "vllm-direct"}:
                 logger.info("Skipping NATS/etcd infrastructure (frontend.type=%s)", self.config.frontend.type)
             else:
                 reporter.report(JobStatus.STARTING, JobStage.HEAD_INFRASTRUCTURE, "Starting head infrastructure")

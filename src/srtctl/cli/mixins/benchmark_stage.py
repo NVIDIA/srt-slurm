@@ -430,8 +430,8 @@ class BenchmarkStageMixin:
                 "benchmark slow_down: slow_down_sleep_time and slow_down_wait_time must be positive; skipping"
             )
             return {}
-        if self.config.frontend.type not in {"sglang", "sgl-router"}:
-            logger.warning("benchmark.slow_down_* ignored: frontend.type is not sgl-router")
+        if self.config.frontend.type != "sglang":
+            logger.warning("benchmark.slow_down_* ignored: frontend.type is not sglang")
             return {}
 
         decode_urls: list[str] = []
@@ -472,11 +472,15 @@ class BenchmarkStageMixin:
                 logical_endpoints = self._logical_worker_endpoints()
             urls = [f"http://{host}:{port}/metrics" for _, host, port in logical_endpoints]
         else:
-            if self.config.frontend.type in {"vllm", "vllm-router"}:
+            if self.config.frontend.type in {"vllm", "vllm-direct"}:
                 for process in self.backend_processes:
                     if process.is_leader:
                         host = get_hostname_ip(process.node, self.runtime.network_interface)
-                        port = FRONTEND_PUBLIC_PORT if self.config.frontend.type == "vllm" else process.http_port
+                        port = (
+                            FRONTEND_PUBLIC_PORT
+                            if self.config.frontend.type == "vllm-direct"
+                            else process.http_port
+                        )
                         urls.append(f"http://{host}:{port}/metrics")
                 if urls:
                     return {"AIPERF_SERVER_METRICS_URLS": ",".join(sorted(set(urls)))}

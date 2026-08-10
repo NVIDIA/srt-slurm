@@ -86,9 +86,9 @@ def generate_telemetry_config(
 
     for process in sorted(processes, key=lambda p: (p.endpoint_mode, p.endpoint_index, p.node_rank, p.node)):
         node_ip = get_hostname_ip(process.node, runtime.network_interface)
-        if frontend_type == "vllm" and process.endpoint_mode == "agg":
+        if frontend_type == "vllm-direct" and process.endpoint_mode == "agg":
             port = FRONTEND_PUBLIC_PORT
-        elif frontend_type == "vllm-router":
+        elif frontend_type == "vllm":
             port = process.http_port
         else:
             port = process.sys_port

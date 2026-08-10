@@ -270,8 +270,8 @@ Frontend/router configuration.
 
 ```yaml
 frontend:
-  # Frontend type: "dynamo" (default), "sgl-router", "vllm-router",
-  # "trtllm_serve", or direct "vllm". "sglang" is a compatibility alias.
+  # Frontend type: "dynamo" (default), SGLang Router "sglang",
+  # vLLM Router "vllm", direct "vllm-direct", or "trtllm_serve".
   type: dynamo
 
   # Scaling
@@ -298,7 +298,7 @@ frontend:
 
 | Field                       | Type | Default       | Description                         |
 | --------------------------- | ---- | ------------- | ----------------------------------- |
-| `type`                      | str  | dynamo        | Frontend type: `dynamo`, `sgl-router`, `vllm-router`, `trtllm_serve`, or direct `vllm`; `sglang` is a compatibility alias |
+| `type`                      | str  | dynamo        | Frontend type: `dynamo`, SGLang Router `sglang`, vLLM Router `vllm`, direct `vllm-direct`, or `trtllm_serve` |
 | `enable_multiple_frontends` | bool | true          | Scale with nginx + multiple routers |
 | `num_additional_frontends`  | int  | 9             | Additional routers beyond master    |
 | `nginx_container`           | str  | nginx:1.27.4  | Custom nginx container image        |
@@ -307,21 +307,28 @@ frontend:
 | `env`                       | dict | null          | Env vars for frontend processes     |
 | `container_image`           | str  | null          | Router process image; defaults to `model.container` |
 
-For `vllm-router`, srtctl sets Router's `--worker-startup-timeout-secs` to the
+For `vllm`, srtctl sets Router's `--worker-startup-timeout-secs` to the
 total `health_check` window so large-model compilation cannot outlive the router.
 Set `frontend.args.worker-startup-timeout-secs` to override it explicitly.
 
 See [SGLang Router](sglang-router.md) for detailed architecture.
 
-### vllm-router frontend
+### vLLM Router frontend
 
-`type: vllm-router` pairs with `backend.type: vllm` and launches the official
+`frontend.type: vllm` pairs with `backend.type: vllm` and launches the official
 `vllm-router` process against direct private `vllm serve` endpoints. Aggregate
 layouts use `--worker-urls`; disaggregated layouts use
 `--vllm-pd-disaggregation` with the allocated prefill and decode leader URLs.
 Each logical vLLM endpoint must currently fit on one node, but a job may scale
 across many single-node aggregate, prefill, or decode endpoints. No NATS or etcd
 infrastructure is started for this frontend.
+
+### Direct vLLM frontend
+
+`frontend.type: vllm-direct` preserves the narrow router-free serving path:
+one single-node aggregate `vllm serve` endpoint binds the public port directly.
+Set `frontend.enable_multiple_frontends: false`. This mode does not support P/D
+or multiple logical endpoints; use `frontend.type: vllm` for those topologies.
 
 ### trtllm_serve frontend
 
@@ -481,7 +488,7 @@ combination during configuration loading.
 
 ### vLLM device binding compatibility
 
-Direct `vllm` and `vllm-router` frontends use vLLM's `--device-ids` option by
+The `vllm` Router and `vllm-direct` frontends use vLLM's `--device-ids` option by
 default. For stable vLLM releases from before
 [vllm-project/vllm#45026](https://github.com/vllm-project/vllm/pull/45026),
 select the existing CUDA namespace binding instead:

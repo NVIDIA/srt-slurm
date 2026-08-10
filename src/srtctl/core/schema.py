@@ -1437,8 +1437,8 @@ class FrontendConfig:
     """Frontend/router configuration.
 
     Attributes:
-        type: Frontend type - "dynamo" (default), "sgl-router", "vllm-router",
-            "trtllm_serve", or direct "vllm". "sglang" remains a compatibility alias.
+        type: Frontend type - "dynamo" (default), SGLang Router "sglang",
+            vLLM Router "vllm", direct "vllm-direct", or "trtllm_serve".
         enable_multiple_frontends: Scale with nginx + multiple routers.
             When ``True`` (default), srtctl stands up nginx and fans out
             to ``num_additional_frontends + 1`` router replicas. When
@@ -1591,7 +1591,7 @@ class SrtConfig:
         self._validate_mooncake_kv_store()
         self._validate_het_jobs()
         self._validate_trtllm_serve()
-        self._validate_vllm_frontend()
+        self._validate_vllm_direct_frontend()
         self._validate_static_router_frontend()
         self._validate_sglang_data_parallelism()
 
@@ -1619,34 +1619,38 @@ class SrtConfig:
                 "(set resources.prefill_nodes/prefill_workers and decode_nodes/decode_workers)"
             )
 
-    def _validate_vllm_frontend(self):
+    def _validate_vllm_direct_frontend(self):
         """Catch direct-vLLM frontend misconfigurations at load time.
 
         Direct vLLM means the aggregate `vllm serve` worker owns the OpenAI port
         itself. It is not a disaggregated router and does not support the nginx
         multi-frontend path.
         """
-        if self.frontend.type != "vllm":
+        if self.frontend.type != "vllm-direct":
             return
         if self.backend_type != "vllm":
-            raise ValidationError(f"frontend.type: vllm requires backend.type: vllm; got {self.backend_type!r}")
+            raise ValidationError(
+                f"frontend.type: vllm-direct requires backend.type: vllm; got {self.backend_type!r}"
+            )
         if self.frontend.enable_multiple_frontends:
             raise ValidationError(
-                "frontend.type: vllm binds vllm serve directly; set frontend.enable_multiple_frontends: false"
+                "frontend.type: vllm-direct binds vllm serve directly; "
+                "set frontend.enable_multiple_frontends: false"
             )
         if self.resources.is_disaggregated:
-            raise ValidationError("frontend.type: vllm supports aggregate jobs only, not disaggregated layouts")
+            raise ValidationError(
+                "frontend.type: vllm-direct supports aggregate jobs only, not disaggregated layouts"
+            )
         if self.resources.num_agg < 1:
-            raise ValidationError("frontend.type: vllm requires resources.agg_workers >= 1")
+            raise ValidationError("frontend.type: vllm-direct requires resources.agg_workers >= 1")
         if (self.resources.agg_nodes or 1) != 1:
-            raise ValidationError("frontend.type: vllm currently supports single-node aggregate jobs only")
+            raise ValidationError("frontend.type: vllm-direct currently supports single-node aggregate jobs only")
 
     def _validate_static_router_frontend(self):
         """Validate native static-router/backend pairings and endpoint shape."""
         required_backend = {
             "sglang": "sglang",
-            "sgl-router": "sglang",
-            "vllm-router": "vllm",
+            "vllm": "vllm",
         }.get(self.frontend.type)
         if required_backend is None:
             return
@@ -1656,7 +1660,7 @@ class SrtConfig:
                 f"got {self.backend_type!r}"
             )
 
-        if self.frontend.type == "vllm-router":
+        if self.frontend.type == "vllm":
             endpoint_gpu_counts = (
                 self.resources.gpus_per_prefill if self.resources.num_prefill else 0,
                 self.resources.gpus_per_decode if self.resources.num_decode else 0,
@@ -1664,7 +1668,7 @@ class SrtConfig:
             )
             if any(count > self.resources.gpus_per_node for count in endpoint_gpu_counts):
                 raise ValidationError(
-                    "frontend.type: vllm-router currently requires each logical vLLM endpoint "
+                    "frontend.type: vllm currently requires each logical vLLM endpoint "
                     "to fit on one node; scale with multiple aggregate/prefill/decode workers"
                 )
 

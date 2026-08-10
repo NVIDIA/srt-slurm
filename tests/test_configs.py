@@ -544,9 +544,9 @@ class TestSGLangProtocol:
     @pytest.mark.parametrize(
         ("frontend_type", "mode", "expected"),
         [
-            ("sgl-router", "prefill", True),
-            ("sgl-router", "decode", True),
-            ("sgl-router", "agg", False),
+            ("sglang", "prefill", True),
+            ("sglang", "decode", True),
+            ("sglang", "agg", False),
             ("dynamo", "decode", False),
         ],
     )
@@ -864,7 +864,7 @@ class TestFrontendConfig:
             "name": "test",
             "model": {"path": "/model", "container": "worker", "precision": "fp8"},
             "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
-            "frontend": {"type": "vllm-router", "container_image": "router"},
+            "frontend": {"type": "vllm", "container_image": "router"},
         }
         cluster_config = {
             "containers": {
@@ -2130,7 +2130,7 @@ class TestVLLMDataParallelMode:
             gpus_per_node=8,
         )
 
-        processes = backend.endpoints_to_processes([endpoint], frontend_type="vllm")
+        processes = backend.endpoints_to_processes([endpoint], frontend_type="vllm-direct")
 
         assert len(processes) == 1
         assert processes[0].node == "node0"
@@ -2171,7 +2171,7 @@ class TestVLLMDataParallelMode:
                 process=process,
                 endpoint_processes=[process],
                 runtime=runtime,
-                frontend_type="vllm",
+                frontend_type="vllm-direct",
             )
 
         assert cmd[:3] == ["vllm", "serve", "/model"]
@@ -2197,7 +2197,7 @@ class TestVLLMDataParallelMode:
             for index, node in enumerate(("node0", "node1"))
         ]
 
-        processes = backend.endpoints_to_processes(endpoints, frontend_type="vllm-router")
+        processes = backend.endpoints_to_processes(endpoints, frontend_type="vllm")
 
         assert len(processes) == 2
         assert all(process.is_leader for process in processes)
@@ -2235,7 +2235,7 @@ class TestVLLMDataParallelMode:
                 process=process,
                 endpoint_processes=[process],
                 runtime=runtime,
-                frontend_type="vllm-router",
+                frontend_type="vllm",
             )
 
         assert cmd[:3] == ["vllm", "serve", "/model"]
@@ -2275,7 +2275,7 @@ class TestVLLMDataParallelMode:
                 process=process,
                 endpoint_processes=[process],
                 runtime=runtime,
-                frontend_type="vllm-router",
+                frontend_type="vllm",
             )
 
         assert cmd[:3] == ["vllm", "serve", "/model"]
@@ -2318,7 +2318,7 @@ class TestVLLMDataParallelMode:
                 process=process,
                 endpoint_processes=[process],
                 runtime=runtime,
-                frontend_type="vllm",
+                frontend_type="vllm-direct",
                 profiling=profiling,
             )
 

@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from srtctl.core.topology import Process
 
 # Supported frontend types - extensible by adding new literals
-FrontendType = Literal["dynamo", "sglang", "sgl-router", "trtllm_serve", "vllm", "vllm-router"]
+FrontendType = Literal["dynamo", "sglang", "trtllm_serve", "vllm", "vllm-direct"]
 
 FrontendFactory = Callable[[], "FrontendProtocol"]
 _FRONTEND_REGISTRY: dict[str, FrontendFactory] = {}
@@ -44,7 +44,7 @@ def register_frontend(*names: str) -> Callable[[_FrontendClass], _FrontendClass]
 
 def _load_builtin_frontends() -> None:
     """Import built-ins once so their registration decorators run."""
-    from srtctl.frontends import dynamo, sglang, trtllm_serve, vllm, vllm_router  # noqa: F401
+    from srtctl.frontends import dynamo, sglang, trtllm_serve, vllm, vllm_direct  # noqa: F401
 
 
 def build_setup_script_preamble(setup_script: str | None) -> str | None:
