@@ -3156,3 +3156,345 @@ class TestExtraMountExpansion:
 
             assert extra_root.resolve() in runtime.container_mounts
             assert runtime.container_mounts[extra_root.resolve()] == Path("/extra")
+
+
+class TestSequentialNodeStart:
+    """Tests for TRTLLMProtocol.sequential_node_start feature."""
+
+    def test_sequential_node_start_defaults_to_false(self):
+        from srtctl.backends.trtllm import TRTLLMProtocol
+
+        backend = TRTLLMProtocol()
+        assert backend.sequential_node_start is False
+
+    def test_sequential_node_start_can_be_enabled(self):
+        from srtctl.backends.trtllm import TRTLLMProtocol
+
+        backend = TRTLLMProtocol(sequential_node_start=True)
+        assert backend.sequential_node_start is True
+
+    def test_start_all_workers_sequential_same_node(self, tmp_path):
+        """Workers on the same node are started one-by-one when sequential_node_start=True."""
+        import os
+        import subprocess
+        from pathlib import Path
+        from unittest.mock import MagicMock, call, patch
+
+        from srtctl.backends.trtllm import TRTLLMProtocol
+        from srtctl.cli.mixins.worker_stage import WorkerStageMixin
+        from srtctl.core.processes import ManagedProcess
+        from srtctl.core.runtime import RuntimeContext
+        from srtctl.core.schema import ModelConfig, ResourceConfig, SrtConfig
+        from srtctl.core.topology import Process
+
+        model_path = tmp_path / "model"
+        model_path.mkdir()
+        container_path = tmp_path / "container.sqsh"
+        container_path.touch()
+
+        slurm_env = {
+            "SLURM_JOB_ID": "12345",
+            "SLURM_JOBID": "12345",
+            "SLURM_NODELIST": "gpu-01",
+            "SLURM_JOB_NUM_NODES": "1",
+            "SRTCTL_SOURCE_DIR": str(Path(__file__).parent.parent),
+        }
+
+        def mock_scontrol(cmd, **kwargs):
+            if cmd[0] == "scontrol" and "hostnames" in cmd:
+                result = MagicMock()
+                result.stdout = "gpu-01"
+                result.returncode = 0
+                return result
+            raise subprocess.CalledProcessError(1, cmd)
+
+        with (
+            patch.dict(os.environ, slurm_env),
+            patch("subprocess.run", mock_scontrol),
+            patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
+        ):
+            config = SrtConfig(
+                name="test",
+                model=ModelConfig(
+                    path=str(model_path),
+                    container=str(container_path),
+                    precision="fp8",
+                ),
+                resources=ResourceConfig(
+                    gpu_type="h100",
+                    gpus_per_node=8,
+                    decode_nodes=1,
+                    decode_workers=2,
+                ),
+                backend=TRTLLMProtocol(sequential_node_start=True),
+            )
+            runtime = RuntimeContext.from_config(config, job_id="12345", log_dir_base=tmp_path)
+
+            # Two decode workers on the same node (gpu-01), each using 4 GPUs
+            proc_a = Process(
+                node="gpu-01",
+                gpu_indices=frozenset([0, 1, 2, 3]),
+                sys_port=8081,
+                http_port=30000,
+                endpoint_mode="decode",
+                endpoint_index=0,
+                node_rank=0,
+            )
+            proc_b = Process(
+                node="gpu-01",
+                gpu_indices=frozenset([4, 5, 6, 7]),
+                sys_port=8082,
+                http_port=30001,
+                endpoint_mode="decode",
+                endpoint_index=1,
+                node_rank=0,
+            )
+
+            class MockWorkerStage(WorkerStageMixin):
+                def __init__(self, cfg, rt):
+                    self.config = cfg
+                    self.runtime = rt
+
+                @property
+                def backend_processes(self):
+                    return [proc_a, proc_b]
+
+            worker_stage = MockWorkerStage(config, runtime)
+
+            call_order = []
+
+            def fake_start_endpoint(ep_procs):
+                leader = ep_procs[0]
+                call_order.append(("start", leader.endpoint_index))
+                mp = MagicMock(spec=ManagedProcess)
+                mp.name = f"decode_{leader.endpoint_index}_gpu-01"
+                return mp
+
+            def fake_wait_ready(leader):
+                call_order.append(("wait", leader.endpoint_index))
+
+            with (
+                patch.object(worker_stage, "start_endpoint_worker", side_effect=fake_start_endpoint),
+                patch.object(worker_stage, "_wait_for_worker_ready", side_effect=fake_wait_ready),
+            ):
+                worker_stage.start_all_workers()
+
+            # start(0) → wait(0) → start(1)  (no wait after last)
+            assert ("start", 0) in call_order
+            assert ("start", 1) in call_order
+            assert ("wait", 0) in call_order
+            # wait must happen between the two starts
+            assert call_order.index(("wait", 0)) > call_order.index(("start", 0))
+            assert call_order.index(("start", 1)) > call_order.index(("wait", 0))
+            # no wait after the last worker
+            assert ("wait", 1) not in call_order
+
+    def test_start_all_workers_no_wait_when_disabled(self, tmp_path):
+        """Workers are all started without intermediate waits when sequential_node_start=False."""
+        import os
+        import subprocess
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends.trtllm import TRTLLMProtocol
+        from srtctl.cli.mixins.worker_stage import WorkerStageMixin
+        from srtctl.core.processes import ManagedProcess
+        from srtctl.core.runtime import RuntimeContext
+        from srtctl.core.schema import ModelConfig, ResourceConfig, SrtConfig
+        from srtctl.core.topology import Process
+
+        model_path = tmp_path / "model"
+        model_path.mkdir()
+        container_path = tmp_path / "container.sqsh"
+        container_path.touch()
+
+        slurm_env = {
+            "SLURM_JOB_ID": "12345",
+            "SLURM_JOBID": "12345",
+            "SLURM_NODELIST": "gpu-01",
+            "SLURM_JOB_NUM_NODES": "1",
+            "SRTCTL_SOURCE_DIR": str(Path(__file__).parent.parent),
+        }
+
+        def mock_scontrol(cmd, **kwargs):
+            if cmd[0] == "scontrol" and "hostnames" in cmd:
+                result = MagicMock()
+                result.stdout = "gpu-01"
+                result.returncode = 0
+                return result
+            raise subprocess.CalledProcessError(1, cmd)
+
+        with (
+            patch.dict(os.environ, slurm_env),
+            patch("subprocess.run", mock_scontrol),
+            patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
+        ):
+            config = SrtConfig(
+                name="test",
+                model=ModelConfig(
+                    path=str(model_path),
+                    container=str(container_path),
+                    precision="fp8",
+                ),
+                resources=ResourceConfig(
+                    gpu_type="h100",
+                    gpus_per_node=8,
+                    decode_nodes=1,
+                    decode_workers=2,
+                ),
+                backend=TRTLLMProtocol(sequential_node_start=False),
+            )
+            runtime = RuntimeContext.from_config(config, job_id="12345", log_dir_base=tmp_path)
+
+            proc_a = Process(
+                node="gpu-01",
+                gpu_indices=frozenset([0, 1, 2, 3]),
+                sys_port=8081,
+                http_port=30000,
+                endpoint_mode="decode",
+                endpoint_index=0,
+                node_rank=0,
+            )
+            proc_b = Process(
+                node="gpu-01",
+                gpu_indices=frozenset([4, 5, 6, 7]),
+                sys_port=8082,
+                http_port=30001,
+                endpoint_mode="decode",
+                endpoint_index=1,
+                node_rank=0,
+            )
+
+            class MockWorkerStage(WorkerStageMixin):
+                def __init__(self, cfg, rt):
+                    self.config = cfg
+                    self.runtime = rt
+
+                @property
+                def backend_processes(self):
+                    return [proc_a, proc_b]
+
+            worker_stage = MockWorkerStage(config, runtime)
+
+            wait_called = []
+
+            def fake_start_endpoint(ep_procs):
+                mp = MagicMock(spec=ManagedProcess)
+                mp.name = f"decode_{ep_procs[0].endpoint_index}_gpu-01"
+                return mp
+
+            def fake_wait_ready(leader):
+                wait_called.append(leader.endpoint_index)
+
+            with (
+                patch.object(worker_stage, "start_endpoint_worker", side_effect=fake_start_endpoint),
+                patch.object(worker_stage, "_wait_for_worker_ready", side_effect=fake_wait_ready),
+            ):
+                worker_stage.start_all_workers()
+
+            # No readiness waits should have been called
+            assert wait_called == []
+
+    def test_sequential_node_start_no_wait_when_only_one_worker_per_node(self, tmp_path):
+        """When sequential_node_start=True but each node has only one worker, no wait occurs."""
+        import os
+        import subprocess
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends.trtllm import TRTLLMProtocol
+        from srtctl.cli.mixins.worker_stage import WorkerStageMixin
+        from srtctl.core.processes import ManagedProcess
+        from srtctl.core.runtime import RuntimeContext
+        from srtctl.core.schema import ModelConfig, ResourceConfig, SrtConfig
+        from srtctl.core.topology import Process
+
+        model_path = tmp_path / "model"
+        model_path.mkdir()
+        container_path = tmp_path / "container.sqsh"
+        container_path.touch()
+
+        slurm_env = {
+            "SLURM_JOB_ID": "12345",
+            "SLURM_JOBID": "12345",
+            "SLURM_NODELIST": "gpu-[01-02]",
+            "SLURM_JOB_NUM_NODES": "2",
+            "SRTCTL_SOURCE_DIR": str(Path(__file__).parent.parent),
+        }
+
+        def mock_scontrol(cmd, **kwargs):
+            if cmd[0] == "scontrol" and "hostnames" in cmd:
+                result = MagicMock()
+                result.stdout = "gpu-01\ngpu-02"
+                result.returncode = 0
+                return result
+            raise subprocess.CalledProcessError(1, cmd)
+
+        with (
+            patch.dict(os.environ, slurm_env),
+            patch("subprocess.run", mock_scontrol),
+            patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
+        ):
+            config = SrtConfig(
+                name="test",
+                model=ModelConfig(
+                    path=str(model_path),
+                    container=str(container_path),
+                    precision="fp8",
+                ),
+                resources=ResourceConfig(
+                    gpu_type="h100",
+                    gpus_per_node=8,
+                    decode_nodes=2,
+                    decode_workers=2,
+                ),
+                backend=TRTLLMProtocol(sequential_node_start=True),
+            )
+            runtime = RuntimeContext.from_config(config, job_id="12345", log_dir_base=tmp_path)
+
+            # One decode worker per node — different leader nodes
+            proc_a = Process(
+                node="gpu-01",
+                gpu_indices=frozenset(range(8)),
+                sys_port=8081,
+                http_port=30000,
+                endpoint_mode="decode",
+                endpoint_index=0,
+                node_rank=0,
+            )
+            proc_b = Process(
+                node="gpu-02",
+                gpu_indices=frozenset(range(8)),
+                sys_port=8082,
+                http_port=30001,
+                endpoint_mode="decode",
+                endpoint_index=1,
+                node_rank=0,
+            )
+
+            class MockWorkerStage(WorkerStageMixin):
+                def __init__(self, cfg, rt):
+                    self.config = cfg
+                    self.runtime = rt
+
+                @property
+                def backend_processes(self):
+                    return [proc_a, proc_b]
+
+            worker_stage = MockWorkerStage(config, runtime)
+
+            wait_called = []
+
+            def fake_start_endpoint(ep_procs):
+                mp = MagicMock(spec=ManagedProcess)
+                mp.name = f"decode_{ep_procs[0].endpoint_index}_{ep_procs[0].node}"
+                return mp
+
+            with (
+                patch.object(worker_stage, "start_endpoint_worker", side_effect=fake_start_endpoint),
+                patch.object(worker_stage, "_wait_for_worker_ready", side_effect=lambda p: wait_called.append(p)),
+            ):
+                worker_stage.start_all_workers()
+
+            # Each node has only 1 worker — no wait should be triggered
+            assert wait_called == []

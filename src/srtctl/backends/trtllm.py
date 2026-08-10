@@ -73,6 +73,13 @@ class TRTLLMProtocol:
     # is not needed.
     publish_events_and_metrics: bool = False
 
+    # When True, workers that share the same node are started one at a time.
+    # Each worker must become ready before the next on the same node is launched.
+    # For trtllm_serve: readiness is an HTTP 200 on the worker's http_port.
+    # For dynamo.trtllm: readiness is a TCP connection on the worker's sys_port.
+    # Useful when model loading on a single node causes resource contention.
+    sequential_node_start: bool = False
+
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
     # =========================================================================
