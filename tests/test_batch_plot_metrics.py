@@ -7,7 +7,7 @@ import importlib.util
 from pathlib import Path
 
 from srtctl.analysis.batch_log_parser import LogState
-from srtctl.analysis.batch_plot_matrix import _plot_series_for_files, _values_for_metric
+from srtctl.analysis.batch_plot_matrix import PLOT_ROWS, _plot_series_for_files, _values_for_metric
 
 
 def _load_plot_batch_metrics_module():
@@ -88,6 +88,7 @@ def test_batch_log_parser_keeps_millisecond_timestamps_and_dp_ranks(tmp_path):
 
     series = next(iter(state.prefill_files.values()))
     assert series.dp_ranks == [1, 0]
+    assert series.pp_ranks == [None, None]
     assert series.timestamps[0].microsecond == 896000
     assert series.timestamps[1].microsecond == 901000
 
@@ -151,6 +152,76 @@ def test_renderer_splits_agg_logs_by_dp_and_derives_input_throughput(tmp_path):
     derived = {s.label: _values_for_metric(s, "input throughput (token/s)", smooth_input_window=1) for s in plot_series}
     assert derived["bia0003_agg_w0_DP0"] == [None, 200.0]
     assert derived["bia0003_agg_w0_DP1"] == [None, 200.0]
+
+
+def test_renderer_deduplicates_pipeline_prefill_and_derives_total_input_metrics(tmp_path):
+    """PP0/PP1 report the same batch; logical totals must count it only once."""
+    logs_dir = tmp_path / "461675" / "logs"
+    logs_dir.mkdir(parents=True)
+    (logs_dir / "nvl72d068-T01_prefill_w0.out").write_text(
+        "\n".join(
+            [
+                f"[2026-05-19 00:32:50 PP{pp}] Prefill batch, #new-seq: 1, #new-token: 100, "
+                "#cached-token: 900, full token usage: 0.10, #running-req: 0, #queue-req: 0, "
+                "input throughput (token/s): 100.0"
+                for pp in (0, 1)
+            ]
+            + [
+                f"[2026-05-19 00:32:51 PP{pp}] Prefill batch, #new-seq: 1, #new-token: 200, "
+                "#cached-token: 800, full token usage: 0.10, #running-req: 0, #queue-req: 0, "
+                "input throughput (token/s): 200.0"
+                for pp in (0, 1)
+            ]
+        )
+    )
+
+    state = LogState(log_dir=logs_dir)
+    assert state.refresh() == (4, 0)
+    parsed = next(iter(state.prefill_files.values()))
+    assert parsed.pp_ranks == [0, 1, 0, 1]
+
+    plot_series = _plot_series_for_files(state.prefill_files.values(), prefill_stage_zero_only=True)
+    assert len(plot_series) == 1
+    assert len(plot_series[0].timestamps) == 2
+    assert _values_for_metric(plot_series[0], "input throughput (token/s)", smooth_input_window=1) == [100.0, 200.0]
+    assert _values_for_metric(plot_series[0], "total input throughput (token/s)", smooth_input_window=1) == [
+        1000.0,
+        1000.0,
+    ]
+    assert _values_for_metric(plot_series[0], "cache hit (%)", smooth_input_window=1) == [90.0, 80.0]
+
+
+def test_cache_hit_smoothing_is_token_weighted(tmp_path):
+    """Rolling cache hit must divide token sums, not average row percentages."""
+    logs_dir = tmp_path / "461676" / "logs"
+    logs_dir.mkdir(parents=True)
+    rows = [(100, 900), (200, 800), (400, 0)]
+    (logs_dir / "nvl72d068-T01_prefill_w0.out").write_text(
+        "\n".join(
+            f"[2026-05-19 00:32:5{i} PP0] Prefill batch, #new-seq: 1, #new-token: {new}, "
+            f"#cached-token: {cached}, full token usage: 0.10, #running-req: 0, #queue-req: 0"
+            for i, (new, cached) in enumerate(rows)
+        )
+    )
+
+    state = LogState(log_dir=logs_dir)
+    assert state.refresh() == (3, 0)
+    series = _plot_series_for_files(state.prefill_files.values(), prefill_stage_zero_only=True)[0]
+    cache_hit = _values_for_metric(series, "cache hit (%)", smooth_input_window=3)
+    assert cache_hit == [85.0, 100.0 * 1700.0 / 2400.0, 100.0 * 800.0 / 1400.0]
+
+
+def test_plot_layout_keeps_compact_prefill_metrics_without_dropping_decode_prealloc():
+    """Cache hit supersedes cached-token, and prefill never reports prealloc."""
+    prefill_metrics = [prefill for prefill, _decode in PLOT_ROWS]
+    decode_metrics = [decode for _prefill, decode in PLOT_ROWS]
+
+    assert len(PLOT_ROWS) == 7
+    assert "total input throughput (token/s)" in prefill_metrics
+    assert "cache hit (%)" in prefill_metrics
+    assert "#cached-token" not in prefill_metrics
+    assert "#prealloc-req" not in prefill_metrics
+    assert "#prealloc-req" in decode_metrics
 
 
 def test_quantile_interpolates_like_numpy():
