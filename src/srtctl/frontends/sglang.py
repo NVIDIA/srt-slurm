@@ -10,11 +10,11 @@ from srtctl.frontends.base import register_frontend
 from srtctl.frontends.static_router import StaticRouterFrontend
 
 
-@register_frontend("sglang")
-class SGLangFrontend(StaticRouterFrontend):
-    """SGLang Model Gateway static router."""
+@register_frontend("sgl-router")
+class SGLRouterFrontend(StaticRouterFrontend):
+    """First-class SGLang Model Gateway static router."""
 
-    type: ClassVar[str] = "sglang"
+    type: ClassVar[str] = "sgl-router"
     backend_type: ClassVar[str] = "sglang"
     executable: ClassVar[tuple[str, ...]] = ("python", "-m", "sglang_router.launch_router")
     pd_flag: ClassVar[str] = "--pd-disaggregation"
@@ -28,3 +28,10 @@ class SGLangFrontend(StaticRouterFrontend):
 
     def start_process(self, **kwargs: Any) -> Any:
         return start_srun_process(**kwargs)
+
+
+@register_frontend("sglang")
+class SGLangFrontend(SGLRouterFrontend):
+    """Backward-compatible alias for the historical ``sglang`` frontend type."""
+
+    type: ClassVar[str] = "sglang"

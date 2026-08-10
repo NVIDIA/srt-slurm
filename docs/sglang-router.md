@@ -40,12 +40,13 @@ Enable sglang router in your recipe's `frontend` section:
 
 ```yaml
 frontend:
-  type: sglang
+  type: sgl-router
 ```
 
-Workers launch with `sglang.launch_server` instead of `dynamo.sglang`, and the
-native SGLang router receives only logical worker-leader URLs from srtctl's
-allocated topology.
+The legacy `type: sglang` spelling remains an exact compatibility alias. New
+recipes should use `sgl-router`. Workers launch with `sglang.launch_server`
+instead of `dynamo.sglang`, and the router receives only logical worker-leader
+URLs from srtctl's allocated topology.
 
 ### Router Arguments
 
@@ -53,7 +54,7 @@ Pass extra CLI args to the router:
 
 ```yaml
 frontend:
-  type: sglang
+  type: sgl-router
   args:
     kv-overlap-score-weight: 1
     router-temperature: 0
@@ -77,7 +78,7 @@ Pass environment variables to frontend processes:
 
 ```yaml
 frontend:
-  type: sglang
+  type: sgl-router
   env:
     MY_CUSTOM_VAR: "value"
 ```
@@ -90,7 +91,7 @@ The simplest mode - one router on node 0, no nginx:
 
 ```yaml
 frontend:
-  type: sglang
+  type: sgl-router
   enable_multiple_frontends: false
 ```
 
@@ -114,7 +115,7 @@ Nginx load balances across multiple router instances:
 
 ```yaml
 frontend:
-  type: sglang
+  type: sgl-router
   enable_multiple_frontends: true # default
   num_additional_frontends: 9 # default, total = 1 + 9 = 10 routers
 ```
@@ -203,7 +204,7 @@ resources:
   decode_workers: 2
 
 frontend:
-  type: sglang
+  type: sgl-router
   enable_multiple_frontends: true
   num_additional_frontends: 3 # 4 total routers
 

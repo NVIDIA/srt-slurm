@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from srtctl.core.schema import ObservabilityConfig
-from srtctl.frontends import DynamoFrontend, SGLangFrontend, VLLMDirectFrontend, VLLMFrontend, get_frontend
+from srtctl.frontends import DynamoFrontend, SGLangFrontend, VLLMFrontend, get_frontend
 
 # ============================================================================
 # get_frontend() Tests
@@ -34,16 +34,10 @@ class TestGetFrontend:
         assert frontend.type == "sglang"
 
     def test_get_vllm_frontend(self):
-        """get_frontend('vllm') returns the vLLM Router frontend."""
+        """get_frontend('vllm') returns VLLMFrontend."""
         frontend = get_frontend("vllm")
         assert isinstance(frontend, VLLMFrontend)
         assert frontend.type == "vllm"
-
-    def test_get_vllm_direct_frontend(self):
-        """get_frontend('vllm-direct') returns the router-free adapter."""
-        frontend = get_frontend("vllm-direct")
-        assert isinstance(frontend, VLLMDirectFrontend)
-        assert frontend.type == "vllm-direct"
 
     def test_get_unknown_frontend_raises(self):
         """get_frontend() with unknown type raises ValueError."""
@@ -73,14 +67,9 @@ class TestFrontendProperties:
         assert frontend.type == "sglang"
 
     def test_vllm_type(self):
-        """The vLLM Router frontend type is 'vllm'."""
+        """VLLMFrontend.type is 'vllm'."""
         frontend = VLLMFrontend()
         assert frontend.type == "vllm"
-
-    def test_vllm_direct_type(self):
-        """The direct adapter is explicitly named 'vllm-direct'."""
-        frontend = VLLMDirectFrontend()
-        assert frontend.type == "vllm-direct"
 
     def test_dynamo_health_endpoint(self):
         """DynamoFrontend uses /health endpoint."""
@@ -93,13 +82,8 @@ class TestFrontendProperties:
         assert frontend.health_endpoint == "/workers"
 
     def test_vllm_health_endpoint(self):
-        """vLLM Router uses its worker-registration endpoint."""
+        """VLLMFrontend uses /health endpoint."""
         frontend = VLLMFrontend()
-        assert frontend.health_endpoint == "/workers"
-
-    def test_vllm_direct_health_endpoint(self):
-        """Direct vLLM uses the server health endpoint."""
-        frontend = VLLMDirectFrontend()
         assert frontend.health_endpoint == "/health"
 
 

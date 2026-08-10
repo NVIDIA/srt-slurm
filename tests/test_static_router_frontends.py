@@ -9,17 +9,17 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from srtctl.frontends import SGLangFrontend, VLLMDirectFrontend, VLLMFrontend, get_frontend
+from srtctl.frontends import SGLRouterFrontend, VLLMRouterFrontend, get_frontend
 from srtctl.frontends.static_router import RouterWorker
 
 
-def test_registry_uses_engine_names_for_routers_and_explicit_direct_name() -> None:
-    assert isinstance(get_frontend("sglang"), SGLangFrontend)
-    assert isinstance(get_frontend("vllm"), VLLMFrontend)
-    assert isinstance(get_frontend("vllm-direct"), VLLMDirectFrontend)
+def test_registry_exposes_explicit_router_names_and_legacy_alias() -> None:
+    assert isinstance(get_frontend("sgl-router"), SGLRouterFrontend)
+    assert get_frontend("sglang").type == "sglang"
+    assert isinstance(get_frontend("vllm-router"), VLLMRouterFrontend)
 
 
-@pytest.mark.parametrize("frontend", [SGLangFrontend(), VLLMFrontend()])
+@pytest.mark.parametrize("frontend", [SGLRouterFrontend(), VLLMRouterFrontend()])
 def test_aggregate_command_advertises_all_logical_workers(frontend) -> None:
     command = frontend.build_router_command(
         [
@@ -38,8 +38,8 @@ def test_aggregate_command_advertises_all_logical_workers(frontend) -> None:
 @pytest.mark.parametrize(
     ("frontend", "pd_flag"),
     [
-        (SGLangFrontend(), "--pd-disaggregation"),
-        (VLLMFrontend(), "--vllm-pd-disaggregation"),
+        (SGLRouterFrontend(), "--pd-disaggregation"),
+        (VLLMRouterFrontend(), "--vllm-pd-disaggregation"),
     ],
 )
 def test_disaggregated_command_preserves_modes_and_bootstrap(frontend, pd_flag: str) -> None:
@@ -61,7 +61,7 @@ def test_disaggregated_command_preserves_modes_and_bootstrap(frontend, pd_flag: 
 
 
 def test_router_command_rejects_incomplete_or_mixed_topology() -> None:
-    frontend = VLLMFrontend()
+    frontend = VLLMRouterFrontend()
     with pytest.raises(ValueError, match="requires prefill and decode"):
         frontend.build_router_command([RouterWorker("prefill", "http://p:1")], "0.0.0.0", 8000)
     with pytest.raises(ValueError, match="cannot mix"):
@@ -77,7 +77,7 @@ def test_router_command_rejects_incomplete_or_mixed_topology() -> None:
 
 
 def test_frontend_args_repeat_list_values() -> None:
-    frontend = VLLMFrontend()
+    frontend = VLLMRouterFrontend()
     assert frontend.get_frontend_args_list({"routing-logic": ["round_robin", "session"]}) == [
         "--routing-logic",
         "round_robin",
@@ -87,7 +87,7 @@ def test_frontend_args_repeat_list_values() -> None:
 
 
 def test_vllm_router_advertises_nixl_side_channel_port() -> None:
-    frontend = VLLMFrontend()
+    frontend = VLLMRouterFrontend()
     process = SimpleNamespace(
         is_leader=True,
         endpoint_mode="prefill",
@@ -104,7 +104,7 @@ def test_vllm_router_advertises_nixl_side_channel_port() -> None:
 
 
 def test_vllm_router_launch_uses_router_container_env_and_only_leaders() -> None:
-    frontend = VLLMFrontend()
+    frontend = VLLMRouterFrontend()
     runtime = SimpleNamespace(
         log_dir=Path("/logs"),
         container_image=Path("/worker.sqsh"),
@@ -160,7 +160,7 @@ def test_vllm_router_launch_uses_router_container_env_and_only_leaders() -> None
 
 
 def test_vllm_router_explicit_worker_startup_timeout_overrides_managed_value() -> None:
-    frontend = VLLMFrontend()
+    frontend = VLLMRouterFrontend()
     config = SimpleNamespace(
         health_check=SimpleNamespace(max_attempts=360, interval_seconds=10),
         frontend=SimpleNamespace(args={"worker-startup-timeout-secs": 7200}),
@@ -175,7 +175,7 @@ def test_vllm_router_explicit_worker_startup_timeout_overrides_managed_value() -
 
 
 def test_router_rejects_backend_mismatch_before_launch() -> None:
-    frontend = VLLMFrontend()
+    frontend = VLLMRouterFrontend()
     config = SimpleNamespace(
         backend=SimpleNamespace(type="sglang"),
         frontend=SimpleNamespace(args=None, env=None, container_image=None),
@@ -193,12 +193,12 @@ def test_schema_rejects_router_backend_mismatch() -> None:
     from srtctl.backends import SGLangProtocol
     from srtctl.core.schema import FrontendConfig, ResourceConfig, SrtConfig
 
-    with pytest.raises(ValidationError, match="vllm requires backend.type: vllm"):
+    with pytest.raises(ValidationError, match="vllm-router requires backend.type: vllm"):
         SrtConfig(
             name="bad-router-pair",
             model={"path": "model", "container": "image", "precision": "fp8"},
             resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1, agg_workers=1),
-            frontend=FrontendConfig(type="vllm", enable_multiple_frontends=False),
+            frontend=FrontendConfig(type="vllm-router", enable_multiple_frontends=False),
             backend=SGLangProtocol(),
         )
 
@@ -216,7 +216,7 @@ def test_vllm_router_accepts_many_single_node_endpoints() -> None:
             agg_nodes=4,
             agg_workers=4,
         ),
-        frontend=FrontendConfig(type="vllm", enable_multiple_frontends=False),
+        frontend=FrontendConfig(type="vllm-router", enable_multiple_frontends=False),
         backend=VLLMProtocol(),
     )
 
@@ -241,7 +241,7 @@ def test_vllm_router_rejects_endpoint_spanning_nodes() -> None:
                 decode_nodes=1,
                 decode_workers=1,
             ),
-            frontend=FrontendConfig(type="vllm", enable_multiple_frontends=False),
+            frontend=FrontendConfig(type="vllm-router", enable_multiple_frontends=False),
             backend=VLLMProtocol(),
         )
 
@@ -257,7 +257,7 @@ def test_sgl_router_rejects_non_divisible_tp_dp_layout() -> None:
             name="invalid-sglang-dpa",
             model={"path": "model", "container": "image", "precision": "fp8"},
             resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1, agg_workers=1),
-            frontend=FrontendConfig(type="sglang", enable_multiple_frontends=False),
+            frontend=FrontendConfig(type="sgl-router", enable_multiple_frontends=False),
             backend=SGLangProtocol(
                 sglang_config=SGLangServerConfig(aggregated={"tp-size": 1, "dp-size": 8, "enable-dp-attention": True})
             ),
@@ -272,7 +272,7 @@ def test_sgl_router_accepts_divisible_tp_dp_layout() -> None:
         name="valid-sglang-dpa",
         model={"path": "model", "container": "image", "precision": "fp8"},
         resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1, agg_workers=1),
-        frontend=FrontendConfig(type="sglang", enable_multiple_frontends=False),
+        frontend=FrontendConfig(type="sgl-router", enable_multiple_frontends=False),
         backend=SGLangProtocol(
             sglang_config=SGLangServerConfig(aggregated={"tp-size": 8, "dp-size": 8, "enable-dp-attention": True})
         ),
