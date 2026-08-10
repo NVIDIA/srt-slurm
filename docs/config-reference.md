@@ -270,7 +270,8 @@ Frontend/router configuration.
 
 ```yaml
 frontend:
-  # Frontend type: "dynamo" (default), "sglang", or "trtllm_serve"
+  # Frontend type: "dynamo" (default), "sgl-router", "vllm-router",
+  # "trtllm_serve", or direct "vllm". "sglang" is a compatibility alias.
   type: dynamo
 
   # Scaling
@@ -290,19 +291,33 @@ frontend:
   # Environment variables for frontend processes
   env:
     MY_VAR: "value"
+
+  # Optional router-specific image; defaults to model.container
+  container_image: "router-image"
 ```
 
 | Field                       | Type | Default       | Description                         |
 | --------------------------- | ---- | ------------- | ----------------------------------- |
-| `type`                      | str  | dynamo        | Frontend type: "dynamo", "sglang", or "trtllm_serve" |
+| `type`                      | str  | dynamo        | Frontend type: `dynamo`, `sgl-router`, `vllm-router`, `trtllm_serve`, or direct `vllm`; `sglang` is a compatibility alias |
 | `enable_multiple_frontends` | bool | true          | Scale with nginx + multiple routers |
 | `num_additional_frontends`  | int  | 9             | Additional routers beyond master    |
 | `nginx_container`           | str  | nginx:1.27.4  | Custom nginx container image        |
 | `nginx_raise_ulimit`      | bool | false         | When true with nginx in use, run `ulimit -n 1048576` before nginx and emit `worker_rlimit_nofile 1048576` in generated `nginx.conf`. Off by default so restrictive clusters do not fail. Cluster `srtslurm.yaml` may set `nginx_raise_ulimit` for jobs that omit this field. |
 | `args`                      | dict | null          | CLI args for the frontend           |
 | `env`                       | dict | null          | Env vars for frontend processes     |
+| `container_image`           | str  | null          | Router process image; defaults to `model.container` |
 
 See [SGLang Router](sglang-router.md) for detailed architecture.
+
+### vllm-router frontend
+
+`type: vllm-router` pairs with `backend.type: vllm` and launches the official
+`vllm-router` process against direct private `vllm serve` endpoints. Aggregate
+layouts use `--worker-urls`; disaggregated layouts use
+`--vllm-pd-disaggregation` with the allocated prefill and decode leader URLs.
+Each logical vLLM endpoint must currently fit on one node, but a job may scale
+across many single-node aggregate, prefill, or decode endpoints. No NATS or etcd
+infrastructure is started for this frontend.
 
 ### trtllm_serve frontend
 

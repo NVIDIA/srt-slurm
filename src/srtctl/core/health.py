@@ -422,14 +422,18 @@ def wait_for_model(
         poll_interval: Seconds between health checks
         timeout: Maximum wait time in seconds
         report_every: Log progress every N seconds
-        frontend_type: Frontend type - "sglang" uses /workers, "dynamo" uses /health
+        frontend_type: Registered frontend type; its adapter selects and parses
+            the appropriate health endpoint.
         stop_event: Optional threading.Event to abort waiting
 
     Returns:
         True if model is ready with expected workers, False if timeout/aborted
     """
-    if frontend_type == "sglang":
-        health_url = f"http://{host}:{port}/workers"
+    from srtctl.frontends import get_frontend
+
+    frontend = get_frontend(frontend_type)
+    health_url = f"http://{host}:{port}{frontend.health_endpoint}"
+    if frontend.health_endpoint == "/workers":
         logger.info(
             "Polling %s every %.1fs for %d prefills and %d decodes (sglang frontend)",
             health_url,
@@ -484,11 +488,7 @@ def wait_for_model(
 
                 response_json = response.json()
 
-                # Check worker counts based on frontend type
-                if frontend_type == "sglang":
-                    result = check_sglang_router_health(response_json, n_prefill, n_decode)
-                else:
-                    result = check_dynamo_health(response_json, n_prefill, n_decode)
+                result = frontend.parse_health(response_json, n_prefill, n_decode)
 
                 if result.ready:
                     logger.info(result.message)

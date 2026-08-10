@@ -296,7 +296,8 @@ class SGLangProtocol:
             process: The process to start
             endpoint_processes: All processes for this endpoint (for multi-node)
             runtime: Runtime context with paths and settings
-            frontend_type: Frontend type - "sglang" uses sglang.launch_server, "dynamo" uses dynamo.sglang
+            frontend_type: Frontend type - "sglang"/"sgl-router" use
+                sglang.launch_server, while "dynamo" uses dynamo.sglang
             nsys_prefix: Optional nsys profiling command prefix
             dump_config_path: Path to dump config JSON
         """
@@ -320,7 +321,7 @@ class SGLangProtocol:
         dist_init_port = SGLANG_DIST_INIT_PORT_BASE
 
         # Choose Python module based on frontend type
-        use_sglang = frontend_type == "sglang"
+        use_sglang = frontend_type in {"sglang", "sgl-router"}
         python_module = "sglang.launch_server" if use_sglang else "dynamo.sglang"
 
         # Get served model name from config
@@ -377,7 +378,7 @@ class SGLangProtocol:
             )
 
         # Add config dump path (not when using sglang frontend)
-        if dump_config_path and frontend_type != "sglang":
+        if dump_config_path and frontend_type not in {"sglang", "sgl-router"}:
             cmd.extend(["--dump-config-to", str(dump_config_path)])
 
         # Add kv-events-config if enabled for this mode and we have an allocated port

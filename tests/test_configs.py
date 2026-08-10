@@ -815,6 +815,26 @@ class TestFrontendConfig:
         assert resolved["telemetry"]["dcgm_exporter"]["container_image"] == "/path/to/dcgm.sqsh"
         assert resolved["telemetry"]["node_exporter"]["container_image"] == "/path/to/node.sqsh"
 
+    def test_router_container_alias_resolves(self):
+        from srtctl.core.config import resolve_config_with_defaults
+
+        user_config = {
+            "name": "test",
+            "model": {"path": "/model", "container": "worker", "precision": "fp8"},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+            "frontend": {"type": "vllm-router", "container_image": "router"},
+        }
+        cluster_config = {
+            "containers": {
+                "worker": "/path/to/worker.sqsh",
+                "router": "/path/to/router.sqsh",
+            }
+        }
+
+        resolved = resolve_config_with_defaults(user_config, cluster_config)
+
+        assert resolved["frontend"]["container_image"] == "/path/to/router.sqsh"
+
     def test_telemetry_literal_paths_pass_through(self):
         from srtctl.core.config import resolve_config_with_defaults
 
@@ -2117,6 +2137,70 @@ class TestVLLMDataParallelMode:
         assert cmd[cmd.index("--device-ids") + 1] == "0,1,2,3"
         assert "--request-plane" not in cmd
         assert "dynamo.vllm" not in cmd
+
+    def test_vllm_router_keeps_one_direct_server_per_logical_endpoint(self):
+        """vLLM Router uses direct private servers rather than Dynamo runtimes."""
+        from srtctl.backends import VLLMProtocol
+        from srtctl.core.topology import Endpoint
+
+        backend = VLLMProtocol()
+        endpoints = [
+            Endpoint(
+                mode="agg",
+                index=index,
+                nodes=(node,),
+                gpu_indices=frozenset(range(8)),
+                gpus_per_node=8,
+            )
+            for index, node in enumerate(("node0", "node1"))
+        ]
+
+        processes = backend.endpoints_to_processes(endpoints, frontend_type="vllm-router")
+
+        assert len(processes) == 2
+        assert all(process.is_leader for process in processes)
+        assert len({process.http_port for process in processes}) == 1  # ports may repeat on distinct nodes
+
+    def test_vllm_router_worker_uses_private_port_and_pd_connector(self):
+        """Disaggregated vLLM Router workers are direct servers with KV transfer."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Process
+
+        backend = VLLMProtocol(
+            connector="nixl",
+            vllm_config=VLLMServerConfig(prefill={"tensor-parallel-size": 8}),
+        )
+        process = Process(
+            node="node0",
+            gpu_indices=frozenset(range(8)),
+            sys_port=8081,
+            http_port=30123,
+            endpoint_mode="prefill",
+            endpoint_index=0,
+            node_rank=0,
+            bootstrap_port=30001,
+        )
+        runtime = MagicMock()
+        runtime.model_path = Path("/model")
+        runtime.is_hf_model = False
+        runtime.frontend_port = 8000
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            cmd = backend.build_worker_command(
+                process=process,
+                endpoint_processes=[process],
+                runtime=runtime,
+                frontend_type="vllm-router",
+            )
+
+        assert cmd[:3] == ["vllm", "serve", "/model"]
+        assert cmd[cmd.index("--port") + 1] == "30123"
+        assert "dynamo.vllm" not in cmd
+        kv_config = json.loads(cmd[cmd.index("--kv-transfer-config") + 1])
+        assert kv_config == {"kv_connector": "NixlConnector", "kv_role": "kv_both"}
 
     def test_direct_vllm_command_keeps_iteration_profiler_config(self):
         """Direct vllm serve retains main's profiling-derived server option."""

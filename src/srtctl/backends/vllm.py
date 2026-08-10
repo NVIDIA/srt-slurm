@@ -498,13 +498,13 @@ class VLLMProtocol:
         """Convert endpoints to processes.
 
         Dynamo DP+EP mode uses the configured per-GPU or per-node process layout.
-        For direct vLLM aggregate jobs, `vllm serve` manages local DP ranks from
-        one process, so keep the standard one-process-per-node topology.
+        For direct vLLM and vLLM Router jobs, `vllm serve` manages local DP ranks
+        from one process, so keep the standard one-process-per-node topology.
         For standard TP mode, creates one process per node.
         """
         from srtctl.core.topology import NodePortAllocator, Process, endpoints_to_processes
 
-        if frontend_type == "vllm":
+        if frontend_type in {"vllm", "vllm-router"}:
             return endpoints_to_processes(endpoints, base_sys_port=base_sys_port, port_allocator=port_allocator)
 
         # Check if any endpoint uses DP mode
@@ -675,7 +675,7 @@ class VLLMProtocol:
             process: The process to start
             endpoint_processes: All processes for this endpoint (for multi-node)
             runtime: Runtime context with paths and settings
-            frontend_type: Frontend type ("dynamo" or direct "vllm")
+            frontend_type: Frontend type ("dynamo", direct "vllm", or "vllm-router")
             nsys_prefix: Optional nsys profiling command prefix
             dump_config_path: Path to dump config JSON
             profiling: Profiling config; drives --profiler-config for iteration-based nsys
@@ -714,16 +714,25 @@ class VLLMProtocol:
                     }
                 )
 
-        if frontend_type == "vllm":
-            if mode != "agg":
+        if frontend_type in {"vllm", "vllm-router"}:
+            if frontend_type == "vllm" and mode != "agg":
                 raise ValueError("frontend.type: vllm supports aggregate vLLM jobs only")
             if is_multi_node:
-                raise ValueError("frontend.type: vllm currently supports single-node aggregate jobs only")
+                raise ValueError(f"frontend.type: {frontend_type} requires each vLLM endpoint to fit on one node")
 
             config.pop("host", None)
             config.pop("port", None)
-            config.pop("connector", None)
             config.setdefault("served-model-name", served_model_name)
+
+            if frontend_type == "vllm":
+                config.pop("connector", None)
+                worker_port = runtime.frontend_port
+            else:
+                worker_port = process.http_port
+                mode_connector = config.pop("connector", None)
+                connector = mode_connector if mode_connector is not None else self.connector
+                if connector and connector not in ("null", "none", None):
+                    config.setdefault("kv-transfer-config", _connector_to_kv_transfer_config(connector))
 
             cmd.extend(
                 [
@@ -733,7 +742,7 @@ class VLLMProtocol:
                     "--host",
                     "0.0.0.0",
                     "--port",
-                    str(runtime.frontend_port),
+                    str(worker_port),
                 ]
             )
             if not self.set_cuda_visible_devices:

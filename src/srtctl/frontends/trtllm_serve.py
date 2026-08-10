@@ -19,6 +19,7 @@ import yaml
 
 from srtctl.core.health import WorkerHealthResult, check_trtllm_serve_health, wait_for_health
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
+from srtctl.frontends.base import register_frontend
 
 if TYPE_CHECKING:
     from srtctl.core.processes import ManagedProcess
@@ -28,6 +29,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+@register_frontend("trtllm_serve")
 class TRTLLMServeFrontend:
     """trtllm-serve disaggregated frontend.
 

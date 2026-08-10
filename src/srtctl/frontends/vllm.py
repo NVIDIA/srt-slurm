@@ -15,6 +15,7 @@ import threading
 from typing import TYPE_CHECKING, Any
 
 from srtctl.core.health import WorkerHealthResult
+from srtctl.frontends.base import register_frontend
 
 if TYPE_CHECKING:
     from srtctl.core.processes import ManagedProcess
@@ -24,6 +25,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+@register_frontend("vllm")
 class VLLMFrontend:
     """Direct vLLM OpenAI server frontend.
 

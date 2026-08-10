@@ -1437,7 +1437,8 @@ class FrontendConfig:
     """Frontend/router configuration.
 
     Attributes:
-        type: Frontend type - "dynamo" (default), "sglang", "trtllm_serve", or "vllm"
+        type: Frontend type - "dynamo" (default), "sgl-router", "vllm-router",
+            "trtllm_serve", or direct "vllm". "sglang" remains a compatibility alias.
         enable_multiple_frontends: Scale with nginx + multiple routers.
             When ``True`` (default), srtctl stands up nginx and fans out
             to ``num_additional_frontends + 1`` router replicas. When
@@ -1463,6 +1464,8 @@ class FrontendConfig:
             carry the session id in that header instead.
         args: CLI arguments passed to the frontend/router process
         env: Environment variables for frontend processes
+        container_image: Optional router-specific container image. Defaults to
+            the model/backend container when omitted.
     """
 
     type: str = "dynamo"
@@ -1475,6 +1478,7 @@ class FrontendConfig:
     nginx_keepalive_timeout: str = "600s"
     args: dict[str, Any] | None = None
     env: dict[str, str] | None = None
+    container_image: str | None = None
     # trtllm_serve orchestrator (ser.yaml) options; ignored by other frontends.
     ctx_router: dict[str, Any] | None = None  # context_servers.router, e.g. {type: conversation}
     gen_router: dict[str, Any] | None = None  # generation_servers.router
@@ -1588,6 +1592,7 @@ class SrtConfig:
         self._validate_het_jobs()
         self._validate_trtllm_serve()
         self._validate_vllm_frontend()
+        self._validate_static_router_frontend()
 
     def _validate_trtllm_serve(self):
         """Catch trtllm_serve misconfigurations at load time (dry-run) instead of
@@ -1634,6 +1639,33 @@ class SrtConfig:
             raise ValidationError("frontend.type: vllm requires resources.agg_workers >= 1")
         if (self.resources.agg_nodes or 1) != 1:
             raise ValidationError("frontend.type: vllm currently supports single-node aggregate jobs only")
+
+    def _validate_static_router_frontend(self):
+        """Validate native static-router/backend pairings and endpoint shape."""
+        required_backend = {
+            "sglang": "sglang",
+            "sgl-router": "sglang",
+            "vllm-router": "vllm",
+        }.get(self.frontend.type)
+        if required_backend is None:
+            return
+        if self.backend_type != required_backend:
+            raise ValidationError(
+                f"frontend.type: {self.frontend.type} requires backend.type: {required_backend}; "
+                f"got {self.backend_type!r}"
+            )
+
+        if self.frontend.type == "vllm-router":
+            endpoint_gpu_counts = (
+                self.resources.gpus_per_prefill if self.resources.num_prefill else 0,
+                self.resources.gpus_per_decode if self.resources.num_decode else 0,
+                self.resources.gpus_per_agg if self.resources.num_agg else 0,
+            )
+            if any(count > self.resources.gpus_per_node for count in endpoint_gpu_counts):
+                raise ValidationError(
+                    "frontend.type: vllm-router currently requires each logical vLLM endpoint "
+                    "to fit on one node; scale with multiple aggregate/prefill/decode workers"
+                )
 
     def _validate_het_jobs(self):
         """When ``resources.het_jobs`` is set to True, enforce supported shape.

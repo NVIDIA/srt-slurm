@@ -4,6 +4,7 @@
 """Tests for frontend topology logic (nginx + multiple frontends)."""
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from srtctl.cli.do_sweep import SweepOrchestrator
@@ -285,8 +286,9 @@ class TestStartFrontendIntegration:
         assert processes[0].node == "node0"
 
     @patch("srtctl.frontends.sglang.start_srun_process")
+    @patch("srtctl.frontends.sglang.get_hostname_ip", return_value="10.0.0.1")
     @patch("srtctl.cli.mixins.frontend_stage.start_srun_process")
-    def test_single_node_starts_one_sglang_router(self, mock_mixin_srun, mock_sglang_srun):
+    def test_single_node_starts_one_sglang_router(self, mock_mixin_srun, _mock_ip, mock_sglang_srun):
         """Single node starts one sglang router, no nginx."""
         mock_mixin_srun.return_value = MagicMock()
         mock_sglang_srun.return_value = MagicMock()
@@ -294,7 +296,16 @@ class TestStartFrontendIntegration:
         config = make_config(enable_multiple_frontends=True, frontend_type="sglang")
         runtime = make_runtime(["node0"])
         orchestrator = SweepOrchestrator(config=config, runtime=runtime)
-        orchestrator._backend_processes = []  # No workers for this test
+        orchestrator.__dict__["backend_processes"] = [
+            SimpleNamespace(
+                is_leader=True,
+                endpoint_mode=mode,
+                node="node0",
+                http_port=30000 + index,
+                bootstrap_port=30010 if mode == "prefill" else None,
+            )
+            for index, mode in enumerate(("prefill", "decode"))
+        ]
 
         registry = MagicMock()
         processes = orchestrator.start_frontend(registry)
@@ -389,8 +400,9 @@ class TestStartFrontendIntegration:
         assert "ulimit -n 1048576" in nginx_cmd[2]
 
     @patch("srtctl.frontends.sglang.start_srun_process")
+    @patch("srtctl.frontends.sglang.get_hostname_ip", return_value="10.0.0.1")
     @patch("srtctl.cli.mixins.frontend_stage.start_srun_process")
-    def test_multi_node_sglang_with_nginx(self, mock_mixin_srun, mock_sglang_srun, tmp_path):
+    def test_multi_node_sglang_with_nginx(self, mock_mixin_srun, _mock_ip, mock_sglang_srun, tmp_path):
         """Multi-node with sglang router starts nginx + routers."""
         mock_mixin_srun.return_value = MagicMock()
         mock_sglang_srun.return_value = MagicMock()
@@ -413,7 +425,16 @@ class TestStartFrontendIntegration:
             environment=runtime.environment,
         )
         orchestrator = SweepOrchestrator(config=config, runtime=runtime)
-        orchestrator._backend_processes = []
+        orchestrator.__dict__["backend_processes"] = [
+            SimpleNamespace(
+                is_leader=True,
+                endpoint_mode=mode,
+                node="node0",
+                http_port=30000 + index,
+                bootstrap_port=30010 if mode == "prefill" else None,
+            )
+            for index, mode in enumerate(("prefill", "decode"))
+        ]
 
         registry = MagicMock()
         processes = orchestrator.start_frontend(registry)

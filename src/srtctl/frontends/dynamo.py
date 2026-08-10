@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 from srtctl.core.health import WorkerHealthResult, check_dynamo_health
 from srtctl.core.schema import build_otel_env
 from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, start_srun_process
+from srtctl.frontends.base import register_frontend
 from srtctl.ports import ETCD_CLIENT_PORT, NATS_PORT
 
 if TYPE_CHECKING:
@@ -25,6 +26,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+@register_frontend("dynamo")
 class DynamoFrontend:
     """Dynamo frontend implementation.
 

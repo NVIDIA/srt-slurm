@@ -106,7 +106,7 @@ wait_for_model(
     port=8000,
     n_prefill=2,
     n_decode=4,
-    frontend_type="sglang",  # or "dynamo"
+    frontend_type="sgl-router",  # or "dynamo"; "sglang" remains an alias
     timeout=300,
 )
 ```
