@@ -79,6 +79,10 @@ class StaticRouterFrontend:
         """Resolve a worker node to the address advertised to the router."""
         return get_hostname_ip(node)
 
+    def worker_bootstrap_port(self, backend: Any, process: Process) -> int | None:
+        """Return the optional P/D bootstrap port advertised for a worker."""
+        return process.bootstrap_port
+
     def start_process(self, **kwargs: Any) -> Any:
         """Launch one router process. Split out for adapter-specific testing."""
         return start_srun_process(**kwargs)
@@ -93,7 +97,7 @@ class StaticRouterFrontend:
                 RouterWorker(
                     mode=process.endpoint_mode,
                     url=f"{scheme}://{self.get_hostname_ip(process.node)}:{process.http_port}",
-                    bootstrap_port=process.bootstrap_port,
+                    bootstrap_port=self.worker_bootstrap_port(backend, process),
                 )
             )
         return workers

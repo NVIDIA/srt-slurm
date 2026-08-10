@@ -86,6 +86,23 @@ def test_frontend_args_repeat_list_values() -> None:
     ]
 
 
+def test_vllm_router_advertises_nixl_side_channel_port() -> None:
+    frontend = VLLMRouterFrontend()
+    process = SimpleNamespace(
+        is_leader=True,
+        endpoint_mode="prefill",
+        node="node1",
+        http_port=30000,
+        bootstrap_port=12000,
+        nixl_port=13000,
+    )
+
+    with patch.object(frontend, "get_hostname_ip", return_value="10.0.0.1"):
+        workers = frontend.collect_workers(MagicMock(), [process])
+
+    assert workers == [RouterWorker("prefill", "http://10.0.0.1:30000", 13000)]
+
+
 def test_vllm_router_launch_uses_router_container_env_and_only_leaders() -> None:
     frontend = VLLMRouterFrontend()
     runtime = SimpleNamespace(
@@ -112,6 +129,7 @@ def test_vllm_router_launch_uses_router_container_env_and_only_leaders() -> None
             node="node1",
             http_port=30000,
             bootstrap_port=None,
+            nixl_port=None,
         ),
         SimpleNamespace(
             is_leader=False,
@@ -119,6 +137,7 @@ def test_vllm_router_launch_uses_router_container_env_and_only_leaders() -> None
             node="node2",
             http_port=0,
             bootstrap_port=None,
+            nixl_port=None,
         ),
     ]
 

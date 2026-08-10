@@ -3,10 +3,15 @@
 
 """vLLM Router frontend."""
 
-from typing import ClassVar
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from srtctl.frontends.base import register_frontend
 from srtctl.frontends.static_router import StaticRouterFrontend
+
+if TYPE_CHECKING:
+    from srtctl.core.topology import Process
 
 
 @register_frontend("vllm-router")
@@ -18,3 +23,7 @@ class VLLMRouterFrontend(StaticRouterFrontend):
     executable: ClassVar[tuple[str, ...]] = ("vllm-router",)
     pd_flag: ClassVar[str] = "--vllm-pd-disaggregation"
     process_name: ClassVar[str] = "vllm_router"
+
+    def worker_bootstrap_port(self, backend: Any, process: Process) -> int | None:
+        """Advertise vLLM's NIXL side-channel port to the P/D router."""
+        return process.nixl_port
