@@ -24,6 +24,16 @@ class VLLMRouterFrontend(StaticRouterFrontend):
     pd_flag: ClassVar[str] = "--vllm-pd-disaggregation"
     process_name: ClassVar[str] = "vllm_router"
 
+    def get_managed_frontend_args(self, config: Any) -> list[str]:
+        """Keep Router's worker wait alive for srtctl's model-readiness window."""
+        frontend_args = config.frontend.args or {}
+        if "worker-startup-timeout-secs" in frontend_args:
+            return []
+
+        health_check = config.health_check
+        timeout_seconds = health_check.max_attempts * health_check.interval_seconds
+        return ["--worker-startup-timeout-secs", str(timeout_seconds)]
+
     def worker_bootstrap_port(self, backend: Any, process: Process) -> int | None:
         """Advertise vLLM's NIXL side-channel port to the P/D router."""
         return process.nixl_port

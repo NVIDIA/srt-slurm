@@ -71,6 +71,10 @@ class StaticRouterFrontend:
                 result.extend([flag, str(value)])
         return result
 
+    def get_managed_frontend_args(self, config: Any) -> list[str]:
+        """Return adapter-managed CLI arguments derived from srtctl config."""
+        return []
+
     def worker_scheme(self, backend: Any, mode: str) -> str:
         """Return the protocol used to reach a worker endpoint."""
         return "http"
@@ -152,6 +156,7 @@ class StaticRouterFrontend:
         for idx, node in enumerate(topology.frontend_nodes):
             router_log = runtime.log_dir / f"{node}_{self.type}_{idx}.out"
             cmd = self.build_router_command(workers, "0.0.0.0", topology.frontend_port)
+            cmd.extend(self.get_managed_frontend_args(config))
             cmd.extend(self.get_frontend_args_list(config.frontend.args))
             logger.info("Starting %s %d on %s: %s", self.type, idx, node, shlex.join(cmd))
 

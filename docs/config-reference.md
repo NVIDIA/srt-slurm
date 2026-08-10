@@ -307,6 +307,10 @@ frontend:
 | `env`                       | dict | null          | Env vars for frontend processes     |
 | `container_image`           | str  | null          | Router process image; defaults to `model.container` |
 
+For `vllm-router`, srtctl sets Router's `--worker-startup-timeout-secs` to the
+total `health_check` window so large-model compilation cannot outlive the router.
+Set `frontend.args.worker-startup-timeout-secs` to override it explicitly.
+
 See [SGLang Router](sglang-router.md) for detailed architecture.
 
 ### vllm-router frontend

@@ -114,6 +114,7 @@ def test_vllm_router_launch_uses_router_container_env_and_only_leaders() -> None
     )
     config = SimpleNamespace(
         backend=SimpleNamespace(type="vllm"),
+        health_check=SimpleNamespace(max_attempts=360, interval_seconds=10),
         frontend=SimpleNamespace(
             args={"routing-logic": "session"},
             env={"ROUTER_LOG": "debug"},
@@ -154,6 +155,23 @@ def test_vllm_router_launch_uses_router_container_env_and_only_leaders() -> None
     assert "/configs/${setup_script}" in kwargs["bash_preamble"]
     assert kwargs["command"].count("http://10.0.0.1:30000") == 1
     assert "--routing-logic" in kwargs["command"]
+    timeout_index = kwargs["command"].index("--worker-startup-timeout-secs")
+    assert kwargs["command"][timeout_index + 1] == "3600"
+
+
+def test_vllm_router_explicit_worker_startup_timeout_overrides_managed_value() -> None:
+    frontend = VLLMRouterFrontend()
+    config = SimpleNamespace(
+        health_check=SimpleNamespace(max_attempts=360, interval_seconds=10),
+        frontend=SimpleNamespace(args={"worker-startup-timeout-secs": 7200}),
+    )
+
+    command = [
+        *frontend.get_managed_frontend_args(config),
+        *frontend.get_frontend_args_list(config.frontend.args),
+    ]
+
+    assert command == ["--worker-startup-timeout-secs", "7200"]
 
 
 def test_router_rejects_backend_mismatch_before_launch() -> None:
@@ -241,9 +259,7 @@ def test_sgl_router_rejects_non_divisible_tp_dp_layout() -> None:
             resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1, agg_workers=1),
             frontend=FrontendConfig(type="sgl-router", enable_multiple_frontends=False),
             backend=SGLangProtocol(
-                sglang_config=SGLangServerConfig(
-                    aggregated={"tp-size": 1, "dp-size": 8, "enable-dp-attention": True}
-                )
+                sglang_config=SGLangServerConfig(aggregated={"tp-size": 1, "dp-size": 8, "enable-dp-attention": True})
             ),
         )
 
@@ -258,9 +274,7 @@ def test_sgl_router_accepts_divisible_tp_dp_layout() -> None:
         resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1, agg_workers=1),
         frontend=FrontendConfig(type="sgl-router", enable_multiple_frontends=False),
         backend=SGLangProtocol(
-            sglang_config=SGLangServerConfig(
-                aggregated={"tp-size": 8, "dp-size": 8, "enable-dp-attention": True}
-            )
+            sglang_config=SGLangServerConfig(aggregated={"tp-size": 8, "dp-size": 8, "enable-dp-attention": True})
         ),
     )
 
