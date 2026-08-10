@@ -102,6 +102,7 @@ def test_vllm_router_launch_uses_router_container_env_and_only_leaders() -> None
             env={"ROUTER_LOG": "debug"},
             container_image="docker://router:test",
         ),
+        setup_script="router-deps.sh",
     )
     topology = SimpleNamespace(frontend_nodes=["node0"], frontend_port=8180)
     workers = [
@@ -131,6 +132,7 @@ def test_vllm_router_launch_uses_router_container_env_and_only_leaders() -> None
     assert kwargs["container_image"] == "docker://router:test"
     assert kwargs["env_to_set"] == {"GLOBAL": "value", "ROUTER_LOG": "debug"}
     assert kwargs["het_group"] == 1
+    assert "/configs/${setup_script}" in kwargs["bash_preamble"]
     assert kwargs["command"].count("http://10.0.0.1:30000") == 1
     assert "--routing-logic" in kwargs["command"]
 

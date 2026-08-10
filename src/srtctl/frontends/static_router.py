@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from srtctl.core.health import WorkerHealthResult, check_sglang_router_health
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
+from srtctl.frontends.base import build_setup_script_preamble
 
 if TYPE_CHECKING:
     from srtctl.core.processes import ManagedProcess
@@ -161,6 +162,7 @@ class StaticRouterFrontend:
                 container_image=container_image,
                 container_mounts=runtime.container_mounts,
                 env_to_set=router_env or None,
+                bash_preamble=build_setup_script_preamble(getattr(config, "setup_script", None)),
                 het_group=het_group_for(node),
             )
             processes.append(

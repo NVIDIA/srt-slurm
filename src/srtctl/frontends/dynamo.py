@@ -8,14 +8,13 @@ Uses NATS/etcd for communication between frontend and backend workers.
 """
 
 import logging
-import shlex
 import threading
 from typing import TYPE_CHECKING, Any
 
 from srtctl.core.health import WorkerHealthResult, check_dynamo_health
 from srtctl.core.schema import build_otel_env
 from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, start_srun_process
-from srtctl.frontends.base import register_frontend
+from srtctl.frontends.base import build_setup_script_preamble, register_frontend
 from srtctl.ports import ETCD_CLIENT_PORT, NATS_PORT
 
 if TYPE_CHECKING:
@@ -141,18 +140,9 @@ class DynamoFrontend:
         parts = []
 
         # Custom setup script
-        setup_script = getattr(config, "setup_script", None)
-        if isinstance(setup_script, str) and setup_script:
-            script_name = shlex.quote(setup_script)
-            parts.append(
-                f"setup_script={script_name} && "
-                'script_path="/configs/${setup_script}" && '
-                'patch_script_path="/configs/patches/${setup_script}" && '
-                'echo "Running setup script: ${script_path} (fallback ${patch_script_path})" && '
-                'if [ -f "${script_path}" ]; then bash "${script_path}"; '
-                'elif [ -f "${patch_script_path}" ]; then bash "${patch_script_path}"; '
-                'else echo "WARNING: ${script_path} or ${patch_script_path} not found"; fi'
-            )
+        setup_preamble = build_setup_script_preamble(getattr(config, "setup_script", None))
+        if setup_preamble:
+            parts.append(setup_preamble)
 
         # Dynamo installation (required for dynamo frontend)
         # Skip if dynamo.install is False (container already has dynamo installed)

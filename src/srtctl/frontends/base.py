@@ -10,6 +10,7 @@ Frontend types handle:
 - Building CLI arguments from config
 """
 
+import shlex
 import threading
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar
@@ -44,6 +45,22 @@ def register_frontend(*names: str) -> Callable[[_FrontendClass], _FrontendClass]
 def _load_builtin_frontends() -> None:
     """Import built-ins once so their registration decorators run."""
     from srtctl.frontends import dynamo, sglang, trtllm_serve, vllm, vllm_router  # noqa: F401
+
+
+def build_setup_script_preamble(setup_script: str | None) -> str | None:
+    """Build the standard in-container recipe setup-script invocation."""
+    if not setup_script:
+        return None
+    script_name = shlex.quote(setup_script)
+    return (
+        f"setup_script={script_name} && "
+        'script_path="/configs/${setup_script}" && '
+        'patch_script_path="/configs/patches/${setup_script}" && '
+        'echo "Running setup script: ${script_path} (fallback ${patch_script_path})" && '
+        'if [ -f "${script_path}" ]; then bash "${script_path}"; '
+        'elif [ -f "${patch_script_path}" ]; then bash "${patch_script_path}"; '
+        'else echo "WARNING: ${script_path} or ${patch_script_path} not found"; fi'
+    )
 
 
 class FrontendProtocol(Protocol):
