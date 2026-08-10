@@ -2244,6 +2244,44 @@ class TestVLLMDataParallelMode:
         kv_config = json.loads(cmd[cmd.index("--kv-transfer-config") + 1])
         assert kv_config == {"kv_connector": "NixlConnector", "kv_role": "kv_both"}
 
+    def test_vllm_router_stable_release_uses_legacy_cuda_binding(self):
+        """Stable vLLM builds can avoid the newer --device-ids CLI."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Process
+
+        backend = VLLMProtocol(
+            set_cuda_visible_devices=True,
+            vllm_config=VLLMServerConfig(decode={"tensor-parallel-size": 4}),
+        )
+        process = Process(
+            node="node0",
+            gpu_indices=frozenset(range(4)),
+            sys_port=8081,
+            http_port=30123,
+            endpoint_mode="decode",
+            endpoint_index=0,
+            node_rank=0,
+        )
+        runtime = MagicMock()
+        runtime.model_path = Path("/model")
+        runtime.is_hf_model = False
+        runtime.frontend_port = 8000
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            cmd = backend.build_worker_command(
+                process=process,
+                endpoint_processes=[process],
+                runtime=runtime,
+                frontend_type="vllm-router",
+            )
+
+        assert cmd[:3] == ["vllm", "serve", "/model"]
+        assert "--device-ids" not in cmd
+        assert backend.should_set_cuda_visible_devices(process)
+
     def test_direct_vllm_command_keeps_iteration_profiler_config(self):
         """Direct vllm serve retains main's profiling-derived server option."""
         from pathlib import Path

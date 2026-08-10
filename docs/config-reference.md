@@ -479,6 +479,24 @@ the configured value. `headless` is incompatible with `per_node` DP because a
 headless process does not register with Dynamo, so srtslurm rejects that
 combination during configuration loading.
 
+### vLLM device binding compatibility
+
+Direct `vllm` and `vllm-router` frontends use vLLM's `--device-ids` option by
+default. For stable vLLM releases from before
+[vllm-project/vllm#45026](https://github.com/vllm-project/vllm/pull/45026),
+select the existing CUDA namespace binding instead:
+
+```yaml
+backend:
+  type: vllm
+  set_cuda_visible_devices: true
+```
+
+srtslurm then omits `--device-ids` and scopes sub-node workers with
+`CUDA_VISIBLE_DEVICES`. A worker that owns every GPU on its node needs no
+explicit CUDA mask. This setting changes only device binding; worker topology,
+private router ports, and P/D KV-transfer arguments remain unchanged.
+
 ### TRTLLM Backend
 
 When using `type: trtllm`, the backend uses TRTLLM with MPI-style launching:
