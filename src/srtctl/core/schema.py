@@ -793,6 +793,18 @@ class ProfilingConfig:
     # Extra arguments passed to nsys profile (appended before `-o`; see get_nsys_prefix)
     extra_nsys_args: list[str] | None = None
 
+    # Nsight activity domains. Blackwell defaults to hardware-event tracing
+    # for "cuda"; recipes can explicitly request software tracing with
+    # "cuda-sw,nvtx".
+    nsys_trace: str = "cuda,nvtx"
+
+    # None preserves the existing behavior of enabling child-process injection
+    # for Dynamo. Set false when the profiled worker uses a safe spawn path.
+    trace_fork_before_exec: bool | None = None
+
+    # Behavior when cudaProfilerStop closes an iteration capture range.
+    capture_range_end: str = "stop"
+
     # Phase-specific profiling step configs (not used for nsys-time)
     prefill: ProfilingPhaseConfig | None = None
     decode: ProfilingPhaseConfig | None = None
@@ -953,6 +965,10 @@ class ProfilingConfig:
         if backend_type == "trtllm":
             return self._get_nsys_prefix_trtllm(output_file)
 
+        trace_fork_before_exec = self.trace_fork_before_exec
+        if trace_fork_before_exec is None:
+            trace_fork_before_exec = frontend_type == "dynamo"
+
         # Time-based capture for non-TRTLLM backends (vllm, sglang). Required
         # for vllm+dynamo because dynamo's HTTP frontend doesn't proxy
         # /start_profile to the vllm worker (returns 404), so cudaProfilerApi
@@ -963,7 +979,7 @@ class ProfilingConfig:
                 self.nsys_binary,
                 "profile",
                 "-t",
-                "cuda,nvtx",
+                self.nsys_trace,
                 "--cuda-graph-trace=node",
                 "--force-overwrite",
                 "true",
@@ -975,7 +991,7 @@ class ProfilingConfig:
             if self.extra_nsys_args:
                 cmd.extend(self.extra_nsys_args)
             cmd.extend(["-o", output_file])
-            if frontend_type == "dynamo":
+            if trace_fork_before_exec:
                 cmd.insert(-2, "--trace-fork-before-exec=true")
             return cmd
 
@@ -984,12 +1000,12 @@ class ProfilingConfig:
             self.nsys_binary,
             "profile",
             "-t",
-            "cuda,nvtx",
+            self.nsys_trace,
             "--cuda-graph-trace=node",
             "-c",
             "cudaProfilerApi",
             "--capture-range-end",
-            "stop",
+            self.capture_range_end,
             "--force-overwrite",
             "true",
         ]
@@ -999,7 +1015,7 @@ class ProfilingConfig:
 
         cmd.extend(["-o", output_file])
 
-        if frontend_type == "dynamo":
+        if trace_fork_before_exec:
             cmd.insert(-2, "--trace-fork-before-exec=true")
 
         return cmd
