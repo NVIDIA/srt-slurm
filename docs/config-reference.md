@@ -270,8 +270,8 @@ Frontend/router configuration.
 
 ```yaml
 frontend:
-  # Frontend type: "dynamo" (default), "sgl-router", "vllm-router",
-  # "trtllm_serve", or direct "vllm". "sglang" is a compatibility alias.
+  # Frontend type: "dynamo" (default), "sglang", "vllm-router",
+  # "trtllm_serve", or direct "vllm".
   type: dynamo
 
   # Scaling
@@ -298,7 +298,7 @@ frontend:
 
 | Field                       | Type | Default       | Description                         |
 | --------------------------- | ---- | ------------- | ----------------------------------- |
-| `type`                      | str  | dynamo        | Frontend type: `dynamo`, `sgl-router`, `vllm-router`, `trtllm_serve`, or direct `vllm`; `sglang` is a compatibility alias |
+| `type`                      | str  | dynamo        | Frontend type: `dynamo`, `sglang`, `vllm-router`, `trtllm_serve`, or direct `vllm` |
 | `enable_multiple_frontends` | bool | true          | Scale with nginx + multiple routers |
 | `num_additional_frontends`  | int  | 9             | Additional routers beyond master    |
 | `nginx_container`           | str  | nginx:1.27.4  | Custom nginx container image        |

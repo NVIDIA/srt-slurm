@@ -1437,8 +1437,8 @@ class FrontendConfig:
     """Frontend/router configuration.
 
     Attributes:
-        type: Frontend type - "dynamo" (default), "sgl-router", "vllm-router",
-            "trtllm_serve", or direct "vllm". "sglang" remains a compatibility alias.
+        type: Frontend type - "dynamo" (default), "sglang", "vllm-router",
+            "trtllm_serve", or direct "vllm".
         enable_multiple_frontends: Scale with nginx + multiple routers.
             When ``True`` (default), srtctl stands up nginx and fans out
             to ``num_additional_frontends + 1`` router replicas. When
@@ -1645,7 +1645,6 @@ class SrtConfig:
         """Validate native static-router/backend pairings and endpoint shape."""
         required_backend = {
             "sglang": "sglang",
-            "sgl-router": "sglang",
             "vllm-router": "vllm",
         }.get(self.frontend.type)
         if required_backend is None:

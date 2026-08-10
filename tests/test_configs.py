@@ -544,9 +544,9 @@ class TestSGLangProtocol:
     @pytest.mark.parametrize(
         ("frontend_type", "mode", "expected"),
         [
-            ("sgl-router", "prefill", True),
-            ("sgl-router", "decode", True),
-            ("sgl-router", "agg", False),
+            ("sglang", "prefill", True),
+            ("sglang", "decode", True),
+            ("sglang", "agg", False),
             ("dynamo", "decode", False),
         ],
     )

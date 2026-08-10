@@ -9,17 +9,16 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from srtctl.frontends import SGLRouterFrontend, VLLMRouterFrontend, get_frontend
+from srtctl.frontends import SGLangFrontend, VLLMRouterFrontend, get_frontend
 from srtctl.frontends.static_router import RouterWorker
 
 
-def test_registry_exposes_explicit_router_names_and_legacy_alias() -> None:
-    assert isinstance(get_frontend("sgl-router"), SGLRouterFrontend)
-    assert get_frontend("sglang").type == "sglang"
+def test_registry_exposes_native_router_names() -> None:
+    assert isinstance(get_frontend("sglang"), SGLangFrontend)
     assert isinstance(get_frontend("vllm-router"), VLLMRouterFrontend)
 
 
-@pytest.mark.parametrize("frontend", [SGLRouterFrontend(), VLLMRouterFrontend()])
+@pytest.mark.parametrize("frontend", [SGLangFrontend(), VLLMRouterFrontend()])
 def test_aggregate_command_advertises_all_logical_workers(frontend) -> None:
     command = frontend.build_router_command(
         [
@@ -38,7 +37,7 @@ def test_aggregate_command_advertises_all_logical_workers(frontend) -> None:
 @pytest.mark.parametrize(
     ("frontend", "pd_flag"),
     [
-        (SGLRouterFrontend(), "--pd-disaggregation"),
+        (SGLangFrontend(), "--pd-disaggregation"),
         (VLLMRouterFrontend(), "--vllm-pd-disaggregation"),
     ],
 )
@@ -257,7 +256,7 @@ def test_sgl_router_rejects_non_divisible_tp_dp_layout() -> None:
             name="invalid-sglang-dpa",
             model={"path": "model", "container": "image", "precision": "fp8"},
             resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1, agg_workers=1),
-            frontend=FrontendConfig(type="sgl-router", enable_multiple_frontends=False),
+            frontend=FrontendConfig(type="sglang", enable_multiple_frontends=False),
             backend=SGLangProtocol(
                 sglang_config=SGLangServerConfig(aggregated={"tp-size": 1, "dp-size": 8, "enable-dp-attention": True})
             ),
@@ -272,7 +271,7 @@ def test_sgl_router_accepts_divisible_tp_dp_layout() -> None:
         name="valid-sglang-dpa",
         model={"path": "model", "container": "image", "precision": "fp8"},
         resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1, agg_workers=1),
-        frontend=FrontendConfig(type="sgl-router", enable_multiple_frontends=False),
+        frontend=FrontendConfig(type="sglang", enable_multiple_frontends=False),
         backend=SGLangProtocol(
             sglang_config=SGLangServerConfig(aggregated={"tp-size": 8, "dp-size": 8, "enable-dp-attention": True})
         ),

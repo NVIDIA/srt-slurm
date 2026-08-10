@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from srtctl.core.topology import Process
 
 # Supported frontend types - extensible by adding new literals
-FrontendType = Literal["dynamo", "sglang", "sgl-router", "trtllm_serve", "vllm", "vllm-router"]
+FrontendType = Literal["dynamo", "sglang", "trtllm_serve", "vllm", "vllm-router"]
 
 FrontendFactory = Callable[[], "FrontendProtocol"]
 _FRONTEND_REGISTRY: dict[str, FrontendFactory] = {}

@@ -430,8 +430,8 @@ class BenchmarkStageMixin:
                 "benchmark slow_down: slow_down_sleep_time and slow_down_wait_time must be positive; skipping"
             )
             return {}
-        if self.config.frontend.type not in {"sglang", "sgl-router"}:
-            logger.warning("benchmark.slow_down_* ignored: frontend.type is not sgl-router")
+        if self.config.frontend.type != "sglang":
+            logger.warning("benchmark.slow_down_* ignored: frontend.type is not sglang")
             return {}
 
         decode_urls: list[str] = []
