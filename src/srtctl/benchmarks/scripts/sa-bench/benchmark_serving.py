@@ -1423,7 +1423,6 @@ def main(args: argparse.Namespace):
                 tokenizer=tokenizer,
                 use_chat_template=args.use_chat_template,
                 num_workers=args.random_num_workers,
-                tokenizer_id=tokenizer_id,
                 tokenizer_mode=args.tokenizer_mode,
                 trust_remote_code=args.trust_remote_code,
                 custom_tokenizer=args.custom_tokenizer,

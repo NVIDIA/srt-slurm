@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import ast
 import importlib
+import inspect
 import re
 import sys
 from pathlib import Path
@@ -63,6 +65,29 @@ def _load(sa_bench, cache_dir, **overrides):
         params.pop("seed"),
         **params,
     )
+
+
+def test_main_call_site_matches_signature(sa_bench):
+    """The call inside main() must bind, including no argument passed twice.
+
+    Every other test calls the loader directly, so only a static check of the
+    real call site catches a mismatch between it and the signature.
+    """
+    source = (SA_BENCH_DIR / "benchmark_serving.py").read_text()
+    calls = [
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "load_or_build_random_requests"
+    ]
+
+    assert len(calls) == 1, "expected exactly one call site in main()"
+    call = calls[0]
+    positional = [inspect.Parameter.empty] * len(call.args)
+    keywords = {kw.arg: inspect.Parameter.empty for kw in call.keywords if kw.arg is not None}
+
+    inspect.signature(sa_bench.load_or_build_random_requests).bind(*positional, **keywords)
 
 
 def test_no_cache_dir_always_rebuilds(sa_bench, counting_builder):
