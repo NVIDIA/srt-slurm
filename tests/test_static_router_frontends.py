@@ -145,9 +145,10 @@ def test_vllm_router_launch_uses_router_container_env_and_only_leaders() -> None
         patch.object(frontend, "get_hostname_ip", return_value="10.0.0.1"),
         patch.object(frontend, "start_process", return_value=MagicMock()) as start,
     ):
-        frontend.start_frontends(topology, runtime, config, MagicMock(), workers)
+        processes = frontend.start_frontends(topology, runtime, config, MagicMock(), workers)
 
     kwargs = start.call_args.kwargs
+    assert kwargs["output"] == "/logs/node0_vllm-router_0.out"
     assert kwargs["container_image"] == "docker://router:test"
     assert kwargs["env_to_set"] == {"GLOBAL": "value", "ROUTER_LOG": "debug"}
     assert kwargs["het_group"] == 1
@@ -156,6 +157,7 @@ def test_vllm_router_launch_uses_router_container_env_and_only_leaders() -> None
     assert "--routing-logic" in kwargs["command"]
     timeout_index = kwargs["command"].index("--worker-startup-timeout-secs")
     assert kwargs["command"][timeout_index + 1] == "3600"
+    assert processes[0].log_file == Path("/logs/node0_vllm-router_0.out")
 
 
 def test_vllm_router_explicit_worker_startup_timeout_overrides_managed_value() -> None:
