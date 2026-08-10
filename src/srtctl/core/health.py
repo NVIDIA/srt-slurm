@@ -435,11 +435,12 @@ def wait_for_model(
     health_url = f"http://{host}:{port}{frontend.health_endpoint}"
     if frontend.health_endpoint == "/workers":
         logger.info(
-            "Polling %s every %.1fs for %d prefills and %d decodes (sglang frontend)",
+            "Polling %s every %.1fs for %d prefills and %d decodes (%s frontend)",
             health_url,
             poll_interval,
             n_prefill,
             n_decode,
+            frontend_type,
         )
     else:
         health_url = f"http://{host}:{port}/health"
