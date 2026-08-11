@@ -580,7 +580,7 @@ def _run_daemon_workers(
             completed_at, succeeded, value = outcomes.get_nowait()
         except queue.Empty:
             break
-        if completed_at > deadline:
+        if completed_at >= deadline:
             continue
         if succeeded:
             values.append(value)

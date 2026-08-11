@@ -196,13 +196,16 @@ class TestDaemonWorkers:
         assert len(failures) == 1
         assert isinstance(failures[0], RuntimeError)
 
-    def test_late_worker_cannot_mutate_the_returned_snapshot(self):
+    @pytest.mark.parametrize("raises", [False, True])
+    def test_late_worker_cannot_mutate_the_returned_snapshot(self, raises):
         release = threading.Event()
         finished = threading.Event()
 
         def finish_late(_argument):
             release.wait(5)
             finished.set()
+            if raises:
+                raise RuntimeError("late failure")
             return "late"
 
         results, failures = _run_daemon_workers(
@@ -860,6 +863,25 @@ class TestBenchmarkChildReaping:
         ):
             harness._run_benchmark_script(runner, tmp_path / "benchmark.out", threading.Event())
 
+        proc.terminate.assert_called_once()
+        proc.kill.assert_not_called()
+        assert harness.benchmark_child_reaped is True
+
+    def test_stop_request_reaps_the_child_before_returning(self, tmp_path):
+        proc = MagicMock(spec=subprocess.Popen)
+        proc.poll.return_value = None
+        proc.wait.return_value = -15
+        harness, runner = self._benchmark_harness(tmp_path)
+        stop_event = threading.Event()
+        stop_event.set()
+
+        with (
+            patch("srtctl.cli.mixins.benchmark_stage.start_srun_process", return_value=proc),
+            patch("srtctl.analysis.live_metrics.try_start_snapshotter", return_value=None),
+        ):
+            exit_code = harness._run_benchmark_script(runner, tmp_path / "benchmark.out", stop_event)
+
+        assert exit_code == 1
         proc.terminate.assert_called_once()
         proc.kill.assert_not_called()
         assert harness.benchmark_child_reaped is True
