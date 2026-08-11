@@ -401,6 +401,7 @@ class TestWireContract:
         ("key", "value"),
         [
             ("schema_version", 999),
+            ("schema_version", True),
             ("producer", "someone-elses-producer"),
             ("source_metric", "DCGM_FI_DEV_GPU_TEMP"),
             ("unit", "mW"),
@@ -577,9 +578,27 @@ class TestEvidenceReconciliation:
         assert report.ok is False
         assert any("observed_devices does not match" in failure for failure in report.failures)
 
+    def test_boolean_observed_device_index_is_rejected(self, package):
+        def forge(m):
+            m["observed_devices"][0]["gpu_index"] = False
+
+        report = self._damaged(package, forge)
+
+        assert report.ok is False
+        assert any("observed_devices does not match" in failure for failure in report.failures)
+
     def test_forged_window_validation_content_is_rejected(self, package):
         def forge(m):
             m["window_validations"][0]["per_device_max_sample_gap_seconds"] = {"node-a/GPU-fake": 0.1}
+
+        report = self._damaged(package, forge)
+
+        assert report.ok is False
+        assert any("window_validations does not match" in failure for failure in report.failures)
+
+    def test_integer_window_validity_is_rejected(self, package):
+        def forge(m):
+            m["window_validations"][0]["power_coverage_valid"] = 1
 
         report = self._damaged(package, forge)
 

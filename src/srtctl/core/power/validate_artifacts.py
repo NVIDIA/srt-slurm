@@ -228,8 +228,11 @@ def _check_wire_contract(manifest: dict[str, Any]) -> list[str]:
     """
     failures: list[str] = []
 
+    schema_version = manifest.get("schema_version")
+    if not isinstance(schema_version, int) or isinstance(schema_version, bool) or schema_version != SCHEMA_VERSION:
+        failures.append(f"schema_version is {schema_version!r}, expected {SCHEMA_VERSION!r}")
+
     for key, expected in (
-        ("schema_version", SCHEMA_VERSION),
         ("producer", PRODUCER),
         ("source_metric", POWER_METRIC),
         ("unit", POWER_UNIT),
@@ -358,11 +361,13 @@ def _check_stored_evidence(
 
     if not observed:
         failures.append("observed_devices is empty")
-    if manifest.get("observed_devices") != [device.to_dict() for device in observed]:
+    if not _same_json_evidence(manifest.get("observed_devices"), [device.to_dict() for device in observed]):
         failures.append("observed_devices does not match the devices derived from samples.csv")
-    if manifest.get("window_validations") != [validation.to_dict() for validation in validations]:
+    if not _same_json_evidence(
+        manifest.get("window_validations"), [validation.to_dict() for validation in validations]
+    ):
         failures.append("window_validations does not match the recomputed window audit")
-    if manifest.get("artifact_errors") != [error.to_dict() for error in artifact_errors]:
+    if not _same_json_evidence(manifest.get("artifact_errors"), [error.to_dict() for error in artifact_errors]):
         failures.append("artifact_errors does not match the recomputed artifact scan")
 
     recomputed_disk_reasons = {
@@ -421,6 +426,26 @@ def _check_stored_evidence(
             failures.append(f"{label} contains duplicate keys")
 
     return failures
+
+
+def _same_json_evidence(stored: Any, recomputed: Any) -> bool:
+    """Compare JSON evidence without letting booleans impersonate numbers."""
+    stored_is_number = isinstance(stored, (int, float)) and not isinstance(stored, bool)
+    recomputed_is_number = isinstance(recomputed, (int, float)) and not isinstance(recomputed, bool)
+    if stored_is_number or recomputed_is_number:
+        return is_finite_number(stored) and is_finite_number(recomputed) and stored == recomputed
+    if type(stored) is not type(recomputed):
+        return False
+    if isinstance(stored, list):
+        return len(stored) == len(recomputed) and all(
+            _same_json_evidence(stored_value, recomputed_value)
+            for stored_value, recomputed_value in zip(stored, recomputed, strict=True)
+        )
+    if isinstance(stored, dict):
+        return stored.keys() == recomputed.keys() and all(
+            _same_json_evidence(stored[key], recomputed[key]) for key in stored
+        )
+    return stored == recomputed
 
 
 def _text(value: Any, label: str) -> str:
