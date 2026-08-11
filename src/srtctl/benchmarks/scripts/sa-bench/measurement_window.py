@@ -15,6 +15,7 @@ must not import srtctl.
 import json
 import os
 import tempfile
+from contextlib import suppress
 
 SCHEMA_VERSION = 1
 BENCHMARK_TYPE = "sa-bench"
@@ -30,9 +31,18 @@ STATUS_INTERRUPTED = "interrupted"
 
 def _atomic_write_json(path, payload):
     directory = os.path.dirname(path)
-    fd, temp_path = tempfile.mkstemp(dir=directory, prefix=".{}.".format(os.path.basename(path)), text=True)
+    fd, temp_path = tempfile.mkstemp(dir=directory, prefix=f".{os.path.basename(path)}.", text=True)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle = os.fdopen(fd, "w", encoding="utf-8")
+    except BaseException:
+        with suppress(OSError):
+            os.close(fd)
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+        raise
+
+    try:
+        with handle:
             json.dump(payload, handle, indent=2)
             handle.write("\n")
             handle.flush()
