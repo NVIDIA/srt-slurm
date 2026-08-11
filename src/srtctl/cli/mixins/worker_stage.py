@@ -441,9 +441,9 @@ class WorkerStageMixin:
 
         if launch_per_endpoint:
             # MPI-style: one srun per endpoint (TRTLLM)
-            sequential = getattr(self.backend, "sequential_node_start", False)
-            if sequential:
-                # Group endpoints by leader node; start sequentially within each node
+            concurrency = int(getattr(self.backend, "sequential_node_start", 0))
+            if concurrency:
+                # Group endpoints by leader node; start in batches within each node
                 # so that model loading on a shared node doesn't cause resource contention.
                 # Different nodes start in parallel.
                 by_node: dict[str, list[list[Process]]] = defaultdict(list)
@@ -454,16 +454,19 @@ class WorkerStageMixin:
                     if len(node_groups) == 1:
                         return [self.start_endpoint_worker(node_groups[0])]
                     logger.info(
-                        "Sequential node start: %d workers share node %s, starting one by one",
+                        "Sequential node start: %d workers share node %s, starting %d at a time",
                         len(node_groups),
                         node,
+                        concurrency,
                     )
                     managed_list = []
-                    for i, ep_procs in enumerate(node_groups):
-                        managed = self.start_endpoint_worker(ep_procs)
-                        managed_list.append(managed)
-                        if i < len(node_groups) - 1:
-                            self._wait_for_worker_ready(ep_procs[0])
+                    for batch_start in range(0, len(node_groups), concurrency):
+                        batch = node_groups[batch_start : batch_start + concurrency]
+                        batch_managed = [self.start_endpoint_worker(ep_procs) for ep_procs in batch]
+                        managed_list.extend(batch_managed)
+                        if batch_start + concurrency < len(node_groups):
+                            for ep_procs in batch:
+                                self._wait_for_worker_ready(ep_procs[0])
                     return managed_list
 
                 with ThreadPoolExecutor(max_workers=len(by_node)) as executor:
