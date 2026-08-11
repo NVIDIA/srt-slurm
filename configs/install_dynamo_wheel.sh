@@ -28,41 +28,9 @@ SENTINEL="${LOCK_DIR}/.srtctl_dynamo_wheel_install.complete"
         python3 -m pip install --ignore-installed PyYAML==6.0.3
         pip install --no-cache-dir /dynamo_wheels/*.whl
 
-        # Patch handler_base.py: add conversation_id= arg after disagg_request_id block
-        python3 - <<'PYEOF'
-import importlib.util, pathlib, re, sys
-
-spec = importlib.util.find_spec("dynamo.trtllm.request_handlers.handler_base")
-if spec is None:
-    print("WARNING: could not find handler_base module, skipping patch", file=sys.stderr)
-    sys.exit(0)
-
-path = pathlib.Path(spec.origin)
-text = path.read_text()
-
-injection = "conversation_id=session_id_from_request(request),"
-if injection in text:
-    print("handler_base.py already patched, skipping")
-    sys.exit(0)
-
-# Match disagg_request_id=get_global_disagg_request_id(\n...\n<indent>),
-# capturing the indentation so we can mirror it on the injected line.
-pattern = re.compile(
-    r'( +)disagg_request_id=get_global_disagg_request_id\('
-    r'[^)]*'           # args spanning one or more lines
-    r'\n\1\),'         # closing paren at same indentation
-)
-m = pattern.search(text)
-if m is None:
-    print("WARNING: patch target not found in handler_base.py, skipping", file=sys.stderr)
-    sys.exit(0)
-
-indent = m.group(1)
-insert_at = m.end()  # position right after the closing "),"
-text = text[:insert_at] + f"\n{indent}{injection}" + text[insert_at:]
-path.write_text(text)
-print(f"Patched {path}")
-PYEOF
+        # Copy patched handler_base.py into the installed package
+        cp /dynamo_wheels/handler_base.py /usr/local/lib/python3.12/dist-packages/dynamo/trtllm/request_handlers/handler_base.py
+        echo "Copied handler_base.py to dynamo package"
 
         touch "${SENTINEL}"
     fi
