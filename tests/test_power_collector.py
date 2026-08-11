@@ -345,6 +345,21 @@ class TestCollection:
 
 
 class TestReadiness:
+    def test_readiness_uses_the_persisted_cycle_signal_without_rescanning_csv(self, tmp_path, exporters):
+        a = exporters(_body("a"))
+        b = exporters(_body("b"))
+        session = _session(tmp_path, _endpoints(("node-a", a.url), ("node-b", b.url)))
+        session.initialize()
+
+        with patch(
+            "srtctl.core.power.session.read_samples",
+            side_effect=AssertionError("readiness must not rescan samples.csv"),
+        ):
+            ready = session.start_and_wait_for_readiness()
+
+        assert ready is True
+        session.stop_and_finalize()
+
     def test_required_mode_reaches_readiness_when_every_device_reports(self, tmp_path, exporters):
         a = exporters(_body("a"))
         b = exporters(_body("b"))
@@ -823,6 +838,16 @@ class TestBenchmarkChildReaping:
         self._Harness(session, None).finalize_power_telemetry(0)
 
         assert Reason.BENCHMARK_CHILD_REAP_TIMEOUT not in _manifest(session)["reason_codes"]
+
+    def test_unexpected_finalizer_error_fails_even_in_best_effort_mode(self):
+        """An operational finalizer crash is not ordinary measurement invalidity."""
+        session = MagicMock()
+        session.stop_and_finalize.side_effect = OSError("artifact write failed")
+        harness = self._Harness(session, None)
+        harness.config = MagicMock()
+        harness.config.telemetry.required = False
+
+        assert harness.finalize_power_telemetry(0) == 1
 
     @staticmethod
     def _benchmark_harness(tmp_path):
