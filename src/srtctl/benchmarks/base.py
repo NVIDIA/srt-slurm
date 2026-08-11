@@ -78,6 +78,11 @@ class AIPerfBenchmarkRunner(BenchmarkRunner):
     Provides shared aiperf_args handling for subclasses.
     """
 
+    @property
+    def supplies_frontend_server_metrics(self) -> bool:
+        """Whether the runner adds the serving frontend to --server-metrics."""
+        return False
+
     def append_aiperf_args(self, cmd: list[str], config: SrtConfig) -> list[str]:
         """Append aiperf_args from config as CLI flags."""
         for key, value in config.benchmark.aiperf_args.items():

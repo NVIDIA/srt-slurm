@@ -408,6 +408,48 @@ class TestCustomBenchmarkRunner:
             "http://ip-node-a:7500/metrics,http://ip-node-b:7501/metrics,http://ip-node-c:7502/metrics"
         )
 
+    def test_agentx_does_not_duplicate_direct_vllm_frontend_metrics(self):
+        """AgentX owns the direct-vLLM frontend endpoint, using localhost."""
+        from unittest.mock import patch
+
+        from srtctl.benchmarks.agentic import AgenticRunner
+        from srtctl.core.topology import Process
+
+        processes = [
+            Process("node-a", frozenset(range(4)), 7500, 6100, "agg", 0, node_rank=0),
+        ]
+        stage = self._benchmark_stage("vllm", processes, benchmark_type="agentic")
+
+        with patch(
+            "srtctl.cli.mixins.benchmark_stage.get_hostname_ip",
+            return_value="10.66.33.51",
+        ):
+            env = stage._get_benchmark_env(AgenticRunner())
+
+        # bench.sh supplies http://localhost:8000/metrics. Do not also emit
+        # http://10.66.33.51:8000/metrics for the same serving endpoint.
+        assert "AIPERF_SERVER_METRICS_URLS" not in env
+
+    def test_other_aiperf_runners_keep_direct_vllm_frontend_metrics(self):
+        """Only runners that add the frontend themselves suppress its alias."""
+        from unittest.mock import patch
+
+        from srtctl.benchmarks.trace_replay import TraceReplayRunner
+        from srtctl.core.topology import Process
+
+        processes = [
+            Process("node-a", frozenset(range(4)), 7500, 6100, "agg", 0, node_rank=0),
+        ]
+        stage = self._benchmark_stage("vllm", processes, benchmark_type="trace-replay")
+
+        with patch(
+            "srtctl.cli.mixins.benchmark_stage.get_hostname_ip",
+            return_value="10.66.33.51",
+        ):
+            env = stage._get_benchmark_env(TraceReplayRunner())
+
+        assert env["AIPERF_SERVER_METRICS_URLS"] == "http://10.66.33.51:8000/metrics"
+
 
 class TestSGLangBenchRunner:
     """Test SGLang-Bench runner."""

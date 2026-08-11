@@ -62,6 +62,11 @@ class AgenticRunner(AIPerfBenchmarkRunner):
     """Run the InferenceX AgentX replay against an srt-slurm-launched server."""
 
     @property
+    def supplies_frontend_server_metrics(self) -> bool:
+        """The AgentX wrapper always monitors its local serving frontend."""
+        return True
+
+    @property
     def name(self) -> str:
         return "AgentX"
 

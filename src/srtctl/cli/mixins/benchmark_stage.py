@@ -458,6 +458,7 @@ class BenchmarkStageMixin:
         logical_endpoints: list[tuple[str, str, int]] | None = None,
         *,
         logical_workers_only: bool = False,
+        supplies_frontend_server_metrics: bool = False,
     ) -> dict[str, str]:
         """Build server metrics URLs for AIPerf benchmarks.
 
@@ -473,6 +474,12 @@ class BenchmarkStageMixin:
             urls = [f"http://{host}:{port}/metrics" for _, host, port in logical_endpoints]
         else:
             if self.config.frontend.type == "vllm":
+                # Direct vLLM exposes its aggregate backend at the same public
+                # /metrics endpoint as the serving frontend. AgentX adds that
+                # frontend itself as localhost, so advertising the node-IP
+                # alias here would make AIPerf scrape the same endpoint twice.
+                if supplies_frontend_server_metrics:
+                    return {}
                 for process in self.backend_processes:
                     if process.endpoint_mode == "agg" and process.is_leader:
                         host = get_hostname_ip(process.node, self.runtime.network_interface)
@@ -535,7 +542,11 @@ class BenchmarkStageMixin:
         # Custom commands commonly wrap AIPerf but do not inherit from its base
         # class, so give them the logical-worker view needed by SGLang TP.
         if isinstance(runner, AIPerfBenchmarkRunner):
-            env.update(self._get_aiperf_server_metrics_env())
+            env.update(
+                self._get_aiperf_server_metrics_env(
+                    supplies_frontend_server_metrics=runner.supplies_frontend_server_metrics
+                )
+            )
         elif is_custom:
             assert logical_endpoints is not None
             env.update(self._get_aiperf_server_metrics_env(logical_endpoints, logical_workers_only=True))
