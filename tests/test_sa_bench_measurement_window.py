@@ -6,6 +6,7 @@
 import importlib
 import importlib.util
 import json
+from contextlib import suppress
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -217,6 +218,27 @@ class TestWindowStates:
         assert payload["status"] == "failed"
         assert payload["duration"] == 10.0
         assert payload["reason"] == "RuntimeError: upstream reset"
+
+    def test_atomic_writer_closes_raw_fd_when_fdopen_fails(self, logs, monkeypatch):
+        captured = {}
+
+        def fail(fd, *_args, **_kwargs):
+            captured["fd"] = fd
+            raise OSError("too many open files")
+
+        monkeypatch.setattr(measurement_window.os, "fdopen", fail)
+        target = logs / "power" / WINDOWS_DIRNAME / "failed.json"
+        try:
+            with pytest.raises(OSError, match="too many open files"):
+                measurement_window._atomic_write_json(str(target), {"status": "running"})
+
+            with pytest.raises(OSError):
+                measurement_window.os.fstat(captured["fd"])
+            assert not target.exists()
+            assert list(target.parent.glob(".failed.json.*")) == []
+        finally:
+            with suppress(OSError):
+                measurement_window.os.close(captured["fd"])
 
     def test_atomic_replacement_leaves_no_partial_file(self, logs):
         window = _create(logs)
