@@ -27,6 +27,43 @@ SENTINEL="${LOCK_DIR}/.srtctl_dynamo_wheel_install.complete"
     else
         python3 -m pip install --ignore-installed PyYAML==6.0.3
         pip install --no-cache-dir /dynamo_wheels/*.whl
+
+        # Patch handler_base.py: add conversation_id= arg after disagg_request_id block
+        python3 - <<'PYEOF'
+import importlib.util, pathlib, sys
+
+spec = importlib.util.find_spec("dynamo.trtllm.request_handlers.handler_base")
+if spec is None:
+    print("WARNING: could not find handler_base module, skipping patch", file=sys.stderr)
+    sys.exit(0)
+
+path = pathlib.Path(spec.origin)
+old = "                    ),\n"
+new = "                    ),\n                    conversation_id=session_id_from_request(request),\n"
+marker = "                    disagg_request_id=get_global_disagg_request_id("
+injection = "                    conversation_id=session_id_from_request(request),"
+
+text = path.read_text()
+if injection in text:
+    print(f"handler_base.py already patched, skipping")
+    sys.exit(0)
+
+# Find the closing paren of disagg_request_id(...) and insert after it
+idx = text.find(marker)
+if idx == -1:
+    print("WARNING: patch target not found in handler_base.py, skipping", file=sys.stderr)
+    sys.exit(0)
+
+close = text.find(old, idx)
+if close == -1:
+    print("WARNING: could not find closing paren after disagg_request_id, skipping", file=sys.stderr)
+    sys.exit(0)
+
+text = text[:close + len(old)] + injection + "\n" + text[close + len(old):]
+path.write_text(text)
+print(f"Patched {path}")
+PYEOF
+
         touch "${SENTINEL}"
     fi
 ) 200>"${LOCK}"
