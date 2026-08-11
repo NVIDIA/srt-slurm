@@ -74,8 +74,8 @@ class TRTLLMProtocol:
     publish_events_and_metrics: bool = False
 
     # Controls batched startup of workers that share the same node.
-    # 0 (or false) = start all workers in parallel (no constraint).
-    # 1 (or true)  = fully sequential: one worker at a time, each must be ready before the next.
+    # 0 = start all workers in parallel (no constraint).
+    # 1 = fully sequential: one worker at a time, each must be ready before the next.
     # N > 1        = start N workers simultaneously per batch, wait for all to be ready, then next batch.
     # For trtllm_serve: readiness is an HTTP 200 on the worker's http_port.
     # For dynamo.trtllm: readiness is a TCP connection on the worker's sys_port.
