@@ -42,7 +42,7 @@ def parse_power_scrape(text: str) -> ParsedScrape:
     reasons: list[str] = []
     try:
         families = list(text_string_to_metric_families(text))
-    except Exception:  # noqa: BLE001 - isolate malformed output and third-party parser failures to one scrape
+    except (KeyError, ValueError):
         return ParsedScrape(reason_codes=(Reason.ENDPOINT_PARSE_ERROR,))
 
     by_index: dict[int, PowerReading] = {}

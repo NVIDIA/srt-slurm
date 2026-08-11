@@ -154,7 +154,7 @@ class TestDcgmParser:
         assert scrape.readings == ()
         assert Reason.POWER_METRIC_MISSING in scrape.reason_codes
 
-    @pytest.mark.parametrize("error", [ValueError("malformed exposition"), IndexError("parser state")])
+    @pytest.mark.parametrize("error", [ValueError("malformed exposition"), KeyError("histogram field")])
     def test_exporter_parse_failures_are_classified_without_escaping(self, monkeypatch, error):
         def fail(_text):
             raise error
@@ -165,6 +165,15 @@ class TestDcgmParser:
 
         assert scrape.readings == ()
         assert scrape.reason_codes == ("endpoint_parse_error",)
+
+    def test_unexpected_third_party_parser_bug_is_not_hidden(self, monkeypatch):
+        def fail(_text):
+            raise IndexError("unexpected parser state")
+
+        monkeypatch.setattr(power_parser, "text_string_to_metric_families", fail)
+
+        with pytest.raises(IndexError, match="unexpected parser state"):
+            parse_power_scrape("malformed")
 
 
 class TestExpectedTopology:
