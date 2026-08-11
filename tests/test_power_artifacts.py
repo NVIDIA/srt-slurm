@@ -154,7 +154,14 @@ class TestDcgmParser:
         assert scrape.readings == ()
         assert Reason.POWER_METRIC_MISSING in scrape.reason_codes
 
-    @pytest.mark.parametrize("error", [ValueError("malformed exposition"), KeyError("histogram field")])
+    @pytest.mark.parametrize(
+        "error",
+        [
+            ValueError("malformed exposition"),
+            KeyError("histogram field"),
+            IndexError("short directive in prometheus-client 0.20"),
+        ],
+    )
     def test_exporter_parse_failures_are_classified_without_escaping(self, monkeypatch, error):
         def fail(_text):
             raise error
@@ -166,13 +173,13 @@ class TestDcgmParser:
         assert scrape.readings == ()
         assert scrape.reason_codes == ("endpoint_parse_error",)
 
-    def test_unexpected_third_party_parser_bug_is_not_hidden(self, monkeypatch):
+    def test_parser_control_flow_exceptions_are_not_hidden(self, monkeypatch):
         def fail(_text):
-            raise IndexError("unexpected parser state")
+            raise KeyboardInterrupt
 
         monkeypatch.setattr(power_parser, "text_string_to_metric_families", fail)
 
-        with pytest.raises(IndexError, match="unexpected parser state"):
+        with pytest.raises(KeyboardInterrupt):
             parse_power_scrape("malformed")
 
 
