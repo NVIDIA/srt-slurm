@@ -156,7 +156,7 @@ def _scan(
 
     for path in paths:
         relative = f"{WINDOWS_DIRNAME}/{path.name}"
-        if path.is_symlink() or not path.is_file():
+        if path.is_symlink() or not path.is_file() or path.suffix != ".json":
             artifact_errors.append(
                 ArtifactError(path=relative, reason_codes=(Reason.MEASUREMENT_WINDOW_ARTIFACT_PATH_INVALID,))
             )

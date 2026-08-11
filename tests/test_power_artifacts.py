@@ -654,6 +654,18 @@ class TestMeasurementWindowArtifacts:
             (WINDOWS_DIRNAME, (Reason.MEASUREMENT_WINDOW_ARTIFACT_PATH_INVALID,))
         ]
 
+    def test_non_json_window_file_is_rejected(self, tmp_path):
+        self._write_completed_window(tmp_path, start=1000.0, end=1001.0, duration=1.0)
+        window_path = tmp_path / WINDOWS_DIRNAME / "result.json"
+        window_path.rename(window_path.with_suffix(".txt"))
+
+        row, errors = self._validate(tmp_path)
+
+        assert row.reason_codes == (Reason.MEASUREMENT_WINDOW_MISSING,)
+        assert [(error.path, error.reason_codes) for error in errors] == [
+            (f"{WINDOWS_DIRNAME}/result.txt", (Reason.MEASUREMENT_WINDOW_ARTIFACT_PATH_INVALID,))
+        ]
+
     @pytest.mark.parametrize(
         ("start", "end"),
         [
