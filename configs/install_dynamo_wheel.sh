@@ -30,7 +30,7 @@ SENTINEL="${LOCK_DIR}/.srtctl_dynamo_wheel_install.complete"
 
         # Patch handler_base.py: add conversation_id= arg after disagg_request_id block
         python3 - <<'PYEOF'
-import importlib.util, pathlib, sys
+import importlib.util, pathlib, re, sys
 
 spec = importlib.util.find_spec("dynamo.trtllm.request_handlers.handler_base")
 if spec is None:
@@ -38,28 +38,28 @@ if spec is None:
     sys.exit(0)
 
 path = pathlib.Path(spec.origin)
-old = "                    ),\n"
-new = "                    ),\n                    conversation_id=session_id_from_request(request),\n"
-marker = "                    disagg_request_id=get_global_disagg_request_id("
-injection = "                    conversation_id=session_id_from_request(request),"
-
 text = path.read_text()
+
+injection = "conversation_id=session_id_from_request(request),"
 if injection in text:
-    print(f"handler_base.py already patched, skipping")
+    print("handler_base.py already patched, skipping")
     sys.exit(0)
 
-# Find the closing paren of disagg_request_id(...) and insert after it
-idx = text.find(marker)
-if idx == -1:
+# Match disagg_request_id=get_global_disagg_request_id(\n...\n<indent>),
+# capturing the indentation so we can mirror it on the injected line.
+pattern = re.compile(
+    r'( +)disagg_request_id=get_global_disagg_request_id\('
+    r'[^)]*'           # args spanning one or more lines
+    r'\n\1\),'         # closing paren at same indentation
+)
+m = pattern.search(text)
+if m is None:
     print("WARNING: patch target not found in handler_base.py, skipping", file=sys.stderr)
     sys.exit(0)
 
-close = text.find(old, idx)
-if close == -1:
-    print("WARNING: could not find closing paren after disagg_request_id, skipping", file=sys.stderr)
-    sys.exit(0)
-
-text = text[:close + len(old)] + injection + "\n" + text[close + len(old):]
+indent = m.group(1)
+insert_at = m.end()  # position right after the closing "),"
+text = text[:insert_at] + f"\n{indent}{injection}" + text[insert_at:]
 path.write_text(text)
 print(f"Patched {path}")
 PYEOF
