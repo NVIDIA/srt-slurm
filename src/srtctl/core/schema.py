@@ -1597,9 +1597,9 @@ class SrtConfig:
         `vllm serve` owns the local DP ranks, so the layout is one process per
         node whatever dp_launch_mode says.
         """
-        if self.backend_type != "vllm" or self.frontend.type == "vllm":
+        if not isinstance(self.backend, VLLMProtocol) or self.frontend.type == "vllm":
             return
-        if getattr(self.backend, "dp_launch_mode", "per_gpu") != "per_gpu":
+        if self.backend.dp_launch_mode != "per_gpu":
             return
 
         dp_modes = self.backend.find_dp_modes()

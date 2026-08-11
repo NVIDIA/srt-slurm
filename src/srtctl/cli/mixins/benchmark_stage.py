@@ -163,16 +163,20 @@ class BenchmarkStageMixin:
         multi-node workers. Only rank zero owns the logical worker endpoint,
         so follower ranks must not be advertised to benchmark clients.
 
-        Dynamo exposes worker metrics on each leader's system port. Other
-        frontends expose them on the worker HTTP port, matching the endpoint
-        selection already used by the profiling integration.
+        Dynamo exposes worker metrics on each leader's system port. Direct
+        vLLM exposes aggregate metrics on the public frontend port, while
+        other frontends expose them on the worker HTTP port.
         """
-        use_sys_port = self.config.frontend.type == "dynamo"
         endpoints: list[tuple[str, str, int]] = []
         for process in self.backend_processes:
             if not process.is_leader:
                 continue
-            port = process.sys_port if use_sys_port else process.http_port
+            if self.config.frontend.type == "dynamo":
+                port = process.sys_port
+            elif self.config.frontend.type == "vllm":
+                port = self.runtime.frontend_port
+            else:
+                port = process.http_port
             if port <= 0:
                 continue
             host = get_hostname_ip(process.node, self.runtime.network_interface)
