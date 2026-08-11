@@ -155,17 +155,20 @@ def _scan(
             continue
 
         key = (window.benchmark_type, window.concurrency)
-        if key in parsed:
+        if key in duplicates:
+            artifact_errors.append(ArtifactError(path=relative, reason_codes=(Reason.MEASUREMENT_WINDOW_DUPLICATE,)))
+            continue
+
+        previous = parsed.pop(key, None)
+        if previous is not None:
             duplicates.add(key)
             artifact_errors.append(
-                ArtifactError(path=parsed[key].relative_path, reason_codes=(Reason.MEASUREMENT_WINDOW_DUPLICATE,))
+                ArtifactError(path=previous.relative_path, reason_codes=(Reason.MEASUREMENT_WINDOW_DUPLICATE,))
             )
             artifact_errors.append(ArtifactError(path=relative, reason_codes=(Reason.MEASUREMENT_WINDOW_DUPLICATE,)))
             continue
         parsed[key] = window
 
-    for key in duplicates:
-        parsed.pop(key, None)
     return parsed, duplicates
 
 
@@ -341,7 +344,7 @@ def _check_coverage(
             reasons.append(Reason.MEASUREMENT_WINDOW_NOT_BRACKETED)
             continue
         largest = max((later - earlier for earlier, later in itertools.pairwise(sequence)), default=0.0)
-        gaps[f"{device.hostname}/{device.gpu_uuids[0] if device.gpu_uuids else ''}"] = largest
+        gaps[f"{device.hostname}/{device.gpu_uuids[0]}"] = largest
         if largest > MAX_SAMPLE_GAP_SECONDS:
             reasons.append(Reason.SAMPLE_GAP_EXCEEDED)
 
