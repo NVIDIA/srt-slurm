@@ -51,7 +51,6 @@ def _dcgm_power(**overrides) -> TelemetryConfig:
         "required": True,
         "startup_timeout_seconds": 30.0,
         "request_timeout_seconds": 2.0,
-        "collector_join_timeout_seconds": 12.0,
         "dcgm_exporter": TelemetryExporterConfig(container_image="dcgm-exporter", port=9401),
     }
     fields.update(overrides)
@@ -89,7 +88,28 @@ class TestDcgmPowerConfig:
         assert defaults.required is False
         assert defaults.startup_timeout_seconds == 30.0
         assert defaults.request_timeout_seconds == 2.0
-        assert defaults.collector_join_timeout_seconds == 12.0
+        assert defaults.collector_join_timeout_seconds is None
+        assert defaults.resolved_collector_join_timeout_seconds == 12.0
+
+    def test_join_timeout_default_tracks_request_timeout(self):
+        config = _make_config(
+            telemetry=_dcgm_power(
+                request_timeout_seconds=3.0,
+            ),
+            benchmark=_sa_bench(),
+        )
+
+        assert config.telemetry.resolved_collector_join_timeout_seconds == 16.0
+
+    def test_explicit_join_timeout_still_has_to_clear_the_derived_floor(self):
+        with pytest.raises(ValidationError, match="collector_join_timeout_seconds"):
+            _make_config(
+                telemetry=_dcgm_power(
+                    request_timeout_seconds=3.0,
+                    collector_join_timeout_seconds=14.0,
+                ),
+                benchmark=_sa_bench(),
+            )
 
     def test_scraper_validation_is_unchanged(self):
         with pytest.raises(ValidationError, match="telemetry.node_exporter"):

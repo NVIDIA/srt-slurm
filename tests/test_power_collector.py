@@ -650,6 +650,7 @@ class TestSessionOwnership:
                 self.config.telemetry.startup_timeout_seconds = 0.2
                 self.config.telemetry.request_timeout_seconds = 0.1
                 self.config.telemetry.collector_join_timeout_seconds = 1.0
+                self.config.telemetry.resolved_collector_join_timeout_seconds = 1.0
                 self.config.telemetry.required = True
                 self.config.telemetry.dcgm_exporter = TelemetryExporterConfig(
                     container_image="dcgm-exporter", port=9401
@@ -805,9 +806,10 @@ class TestBenchmarkChildReaping:
     """An unreaped benchmark child is fatal and must never mutate a window."""
 
     class _Harness(TelemetryStageMixin):
-        def __init__(self, session, reaped):
+        def __init__(self, session, reaped, *, allows_window_mutation=None):
             self._power_session = session
             self.benchmark_child_reaped = reaped
+            self.benchmark_child_allows_window_mutation = allows_window_mutation
 
     def _session_with_running_window(self, tmp_path, exporters):
         a = exporters(_body("a"))
@@ -836,7 +838,7 @@ class TestBenchmarkChildReaping:
     def test_unreaped_child_is_recorded_and_leaves_the_window_alone(self, tmp_path, exporters):
         session = self._session_with_running_window(tmp_path, exporters)
 
-        exit_code = self._Harness(session, False).finalize_power_telemetry(0)
+        exit_code = self._Harness(session, False, allows_window_mutation=False).finalize_power_telemetry(0)
 
         window = json.loads((session.windows_dir / "results_concurrency_4_gpus_8_ctx_4_gen_4.json").read_text())
         manifest = _manifest(session)
@@ -849,7 +851,7 @@ class TestBenchmarkChildReaping:
     def test_reaped_child_converts_the_window_and_records_nothing(self, tmp_path, exporters):
         session = self._session_with_running_window(tmp_path, exporters)
 
-        self._Harness(session, True).finalize_power_telemetry(0)
+        self._Harness(session, True, allows_window_mutation=True).finalize_power_telemetry(0)
 
         window = json.loads((session.windows_dir / "results_concurrency_4_gpus_8_ctx_4_gen_4.json").read_text())
         manifest = _manifest(session)
@@ -858,10 +860,21 @@ class TestBenchmarkChildReaping:
         assert Reason.MEASUREMENT_WINDOW_INCOMPLETE in manifest["reason_codes"]
         assert manifest["publication_valid"] is False
 
+    def test_force_killed_local_child_leaves_the_window_alone(self, tmp_path, exporters):
+        session = self._session_with_running_window(tmp_path, exporters)
+
+        self._Harness(session, True, allows_window_mutation=False).finalize_power_telemetry(0)
+
+        window = json.loads((session.windows_dir / "results_concurrency_4_gpus_8_ctx_4_gen_4.json").read_text())
+        manifest = _manifest(session)
+        assert window["status"] == "running"
+        assert Reason.BENCHMARK_CHILD_REAP_TIMEOUT not in manifest["reason_codes"]
+        assert Reason.MEASUREMENT_WINDOW_INCOMPLETE in manifest["reason_codes"]
+
     def test_no_benchmark_child_is_not_a_reap_failure(self, tmp_path, exporters):
         session = self._session_with_running_window(tmp_path, exporters)
 
-        self._Harness(session, None).finalize_power_telemetry(0)
+        self._Harness(session, None, allows_window_mutation=None).finalize_power_telemetry(0)
 
         assert Reason.BENCHMARK_CHILD_REAP_TIMEOUT not in _manifest(session)["reason_codes"]
 
@@ -952,6 +965,23 @@ class TestBenchmarkChildReaping:
             harness._run_benchmark_script(runner, tmp_path / "benchmark.out", threading.Event())
 
         assert harness.benchmark_child_reaped is False
+
+    def test_force_killed_child_on_unwind_does_not_allow_window_mutation(self, tmp_path):
+        proc = MagicMock(spec=subprocess.Popen)
+        proc.poll.return_value = None
+        proc.wait.side_effect = [subprocess.TimeoutExpired(cmd="bench", timeout=1), -9]
+        harness, runner = self._benchmark_harness(tmp_path)
+
+        with (
+            patch("srtctl.cli.mixins.benchmark_stage.start_srun_process", return_value=proc),
+            patch("srtctl.analysis.live_metrics.try_start_snapshotter", return_value=None),
+            patch("srtctl.cli.mixins.benchmark_stage.time.sleep", side_effect=SystemExit(1)),
+            pytest.raises(SystemExit),
+        ):
+            harness._run_benchmark_script(runner, tmp_path / "benchmark.out", threading.Event())
+
+        assert harness.benchmark_child_reaped is True
+        assert harness.benchmark_child_allows_window_mutation is False
 
 
 class TestExporterIdentity:

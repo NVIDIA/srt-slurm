@@ -123,6 +123,7 @@ class BenchmarkStageMixin:
     config: "SrtConfig"
     runtime: "RuntimeContext"
     benchmark_child_reaped: bool | None = None
+    benchmark_child_allows_window_mutation: bool | None = None
 
     @property
     def endpoints(self) -> list["Endpoint"]:
@@ -330,9 +331,10 @@ class BenchmarkStageMixin:
             het_group=self.runtime.nodes.het_group_for(bench_node),
         )
 
-        # The signal handler raises SystemExit, so only finally can guarantee
-        # that the benchmark child is terminated and reaped before telemetry finalizes.
+        # The signal handler raises SystemExit, so only finally can establish
+        # how the local srun client stopped before telemetry finalizes.
         self.benchmark_child_reaped = False
+        self.benchmark_child_allows_window_mutation = False
         try:
             while proc.poll() is None:
                 if stop_event.is_set():
@@ -340,17 +342,23 @@ class BenchmarkStageMixin:
                     return 1
                 time.sleep(1)
             self.benchmark_child_reaped = True
+            self.benchmark_child_allows_window_mutation = True
             return proc.returncode or 0
         finally:
             if proc.poll() is None:
-                self.benchmark_child_reaped = terminate_and_reap(
+                outcome = terminate_and_reap(
                     proc,
                     terminate_timeout=_BENCHMARK_TERMINATE_TIMEOUT,
                     kill_timeout=_BENCHMARK_KILL_TIMEOUT,
                 )
+                self.benchmark_child_reaped = outcome.reaped
+                # Reaping a force-killed local srun client does not prove that
+                # its remote Slurm step can no longer write the window.
+                self.benchmark_child_allows_window_mutation = outcome.reaped and not outcome.force_killed
             elif self.benchmark_child_reaped is False:
                 proc.wait()
                 self.benchmark_child_reaped = True
+                self.benchmark_child_allows_window_mutation = True
             if snapshotter is not None:
                 snapshotter.stop()
 

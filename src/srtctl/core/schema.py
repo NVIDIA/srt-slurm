@@ -1097,9 +1097,18 @@ class TelemetryConfig:
     required: bool = False
     startup_timeout_seconds: float = 30.0
     request_timeout_seconds: float = 2.0
-    collector_join_timeout_seconds: float = 12.0
+    # None derives a safe shutdown budget from request_timeout_seconds.
+    collector_join_timeout_seconds: float | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
+
+    @property
+    def resolved_collector_join_timeout_seconds(self) -> float:
+        """Return the explicit join timeout or a request-timeout-aware default."""
+        if self.collector_join_timeout_seconds is not None:
+            return self.collector_join_timeout_seconds
+        worst_case = 2 * (2 * self.request_timeout_seconds + _DCGM_POWER_COLLECT_CYCLE_TIMEOUT_GRACE_SECONDS)
+        return worst_case + 2.0
 
 
 def build_otel_env(observability: ObservabilityConfig, component: str) -> dict[str, str]:
@@ -1874,9 +1883,10 @@ class SrtConfig:
         worst_case_join_seconds = 2 * (
             2 * telemetry.request_timeout_seconds + _DCGM_POWER_COLLECT_CYCLE_TIMEOUT_GRACE_SECONDS
         )
+        collector_join_timeout_seconds = telemetry.resolved_collector_join_timeout_seconds
         if (
-            not _is_finite_positive(telemetry.collector_join_timeout_seconds)
-            or telemetry.collector_join_timeout_seconds <= worst_case_join_seconds
+            not _is_finite_positive(collector_join_timeout_seconds)
+            or collector_join_timeout_seconds <= worst_case_join_seconds
         ):
             raise ValidationError(
                 "telemetry.collector_join_timeout_seconds must be finite, positive, "
