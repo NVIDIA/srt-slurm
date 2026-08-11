@@ -29,12 +29,19 @@ from srtctl.core.power.manifest import (
 )
 from srtctl.core.power.parser import parse_power_scrape
 from srtctl.core.power.samples import (
+    ObservedDevice,
     SampleRow,
     SampleWriter,
     derive_observed_devices,
     read_samples,
 )
-from srtctl.core.power.topology import build_expected_devices, resolve_het_groups, resolve_roles, validate_devices
+from srtctl.core.power.topology import (
+    ExpectedDevice,
+    build_expected_devices,
+    resolve_het_groups,
+    resolve_roles,
+    validate_devices,
+)
 from srtctl.core.power.windows import convert_running_windows, validate_expected_windows
 from srtctl.core.topology import Process
 
@@ -118,13 +125,13 @@ class TestDcgmParser:
         assert [r.gpu_index for r in scrape.readings] == [1]
         assert Reason.DUPLICATE_POWER_METRIC in scrape.reason_codes
 
-    def test_mig_instance_is_rejected(self):
+    def test_mig_instance_is_rejected_without_marking_metric_missing(self):
         text = _scrape(_metric(0, "GPU-aaa", 100.0, GPU_I_ID="3", GPU_I_PROFILE="1g.10gb"))
 
         scrape = parse_power_scrape(text)
 
         assert scrape.readings == ()
-        assert Reason.MIG_INSTANCE_UNSUPPORTED in scrape.reason_codes
+        assert scrape.reason_codes == (Reason.MIG_INSTANCE_UNSUPPORTED,)
 
     @pytest.mark.parametrize(
         ("value", "reason"),
@@ -185,6 +192,10 @@ class TestDcgmParser:
 
 class TestExpectedTopology:
     """Expected devices derived from srt-slurm backend processes."""
+
+    def test_empty_device_assignments_are_rejected(self):
+        with pytest.raises(ValueError, match="at least one assignment"):
+            ExpectedDevice(hostname="node-a", gpu_index=0, assignments=())
 
     def test_aggregated_topology(self):
         processes = [_process("node-a", range(4), "agg")]
@@ -543,6 +554,17 @@ class TestManifest:
 
         assert (manifest.status, manifest.stopped_at_unix, manifest.publication_valid) == first_terminal_state
 
+    def test_terminal_guard_survives_direct_status_reassignment(self):
+        manifest = self._manifest()
+        manifest.mark_terminal(status="complete", stopped_at_unix=1785168010.0, publication_valid=True)
+        first_terminal_evidence = (manifest.stopped_at_unix, manifest.publication_valid)
+        manifest.status = "running"
+
+        with pytest.raises(RuntimeError, match="already terminal"):
+            manifest.mark_terminal(status="failed", stopped_at_unix=1785168020.0, publication_valid=False)
+
+        assert (manifest.stopped_at_unix, manifest.publication_valid) == first_terminal_evidence
+
     def test_atomic_write_leaves_no_partial_file(self, tmp_path):
         target = tmp_path / MANIFEST_FILENAME
         atomic_write_json(target, {"a": 1})
@@ -636,6 +658,46 @@ class TestMeasurementWindowArtifacts:
 
         assert convert_running_windows(windows_dir, reason="interrupted") == 0
 
+    def test_interruption_cleanup_rejects_windows_directory_symlink_escape(self, tmp_path):
+        power_dir = tmp_path / "power"
+        power_dir.mkdir()
+        external_dir = tmp_path / "external"
+        external_dir.mkdir()
+        victim = external_dir / "victim.json"
+        victim.write_text(json.dumps({"status": "running", "sentinel": "unchanged"}))
+        windows_dir = power_dir / WINDOWS_DIRNAME
+        windows_dir.symlink_to(external_dir, target_is_directory=True)
+
+        original = victim.read_text()
+        converted = convert_running_windows(windows_dir, reason="interrupted")
+
+        assert converted == 0
+        assert victim.read_text() == original
+
+    def test_interruption_cleanup_converts_running_window(self, tmp_path):
+        windows_dir = tmp_path / WINDOWS_DIRNAME
+        windows_dir.mkdir()
+        window_path = windows_dir / "result.json"
+        window_path.write_text(
+            json.dumps(
+                {
+                    "status": "running",
+                    "benchmark_end_time_unix": 1002.0,
+                    "duration": 2.0,
+                    "reason": None,
+                }
+            )
+        )
+
+        converted = convert_running_windows(windows_dir, reason="benchmark child terminated")
+
+        payload = json.loads(window_path.read_text())
+        assert converted == 1
+        assert payload["status"] == "interrupted"
+        assert payload["benchmark_end_time_unix"] is None
+        assert payload["duration"] is None
+        assert payload["reason"] == "benchmark child terminated"
+
     def test_unresolvable_windows_directory_is_reported(self, tmp_path, monkeypatch):
         windows_dir = tmp_path / WINDOWS_DIRNAME
         windows_dir.mkdir()
@@ -721,6 +783,29 @@ class TestMeasurementWindowArtifacts:
             Reason.MEASUREMENT_WINDOW_NOT_BRACKETED,
         )
         assert row.per_device_max_sample_gap_seconds == {"node-a/GPU-a": 6.0}
+
+    def test_window_coverage_does_not_depend_on_sample_time_order(self, tmp_path):
+        self._write_completed_window(tmp_path, start=1000.0, end=1002.0, duration=2.0)
+        observed = [
+            ObservedDevice(
+                hostname="node-a",
+                gpu_index=0,
+                gpu_uuids=("GPU-a",),
+                first_sample_time_unix=999.0,
+                last_sample_time_unix=1003.0,
+                sample_times=(1000.0, 1003.0, 999.0, 1002.0),
+            )
+        ]
+
+        row, _ = self._validate(
+            tmp_path,
+            expected_device_keys={("node-a", 0)},
+            observed_devices=observed,
+        )
+
+        assert row.power_coverage_valid is True
+        assert row.reason_codes == ()
+        assert row.per_device_max_sample_gap_seconds == {"node-a/GPU-a": 2.0}
 
     def test_three_duplicate_windows_are_each_recorded_once(self, tmp_path):
         windows_dir = tmp_path / WINDOWS_DIRNAME
