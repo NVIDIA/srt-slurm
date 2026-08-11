@@ -525,10 +525,15 @@ def _random_dataset_cache_path(cache_dir: str, model_name: str, key: dict[str, A
     )
 
 
+def _log_stamp() -> str:
+    """Wall-clock prefix for progress lines, matching the format bench.sh prints."""
+    return datetime.now().strftime("[%H:%M:%S]")
+
+
 def _read_cached_random_requests(cache_path: Path, key: dict[str, Any]) -> list | None:
     """Return the cached dataset, or None when it is absent, unreadable or stale."""
     if not cache_path.exists():
-        print(f"[cache] miss: {cache_path} not found; generating dataset...")
+        print(f"{_log_stamp()} [cache] miss: {cache_path} not found")
         return None
 
     try:
@@ -536,15 +541,18 @@ def _read_cached_random_requests(cache_path: Path, key: dict[str, Any]) -> list 
             payload = pickle.load(f)
     except Exception as e:
         # A corrupt or truncated cache file must never fail the benchmark.
-        print(f"[cache] warning: cannot read {cache_path} ({e}); regenerating")
+        print(f"{_log_stamp()} [cache] warning: cannot read {cache_path} ({e}); regenerating")
         return None
 
     if not isinstance(payload, dict) or payload.get("key") != key:
-        print(f"[cache] stale: {cache_path} was built with different parameters; regenerating")
+        print(f"{_log_stamp()} [cache] stale: {cache_path} was built with different parameters; regenerating")
         return None
 
     requests = payload["requests"]
-    print(f"[cache] hit: reusing {len(requests)} prompts from {cache_path} (built {payload.get('created_utc')})")
+    print(
+        f"{_log_stamp()} [cache] hit: loaded {len(requests)} prompts from {cache_path} "
+        f"(built {payload.get('created_utc')})"
+    )
     return requests
 
 
@@ -561,10 +569,10 @@ def _write_cached_random_requests(cache_path: Path, key: dict[str, Any], request
         with open(tmp_path, "wb") as f:
             pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
         os.replace(tmp_path, cache_path)
-        print(f"[cache] saved dataset to {cache_path}")
+        print(f"{_log_stamp()} [cache] saved dataset to {cache_path}")
     except OSError as e:
         # Best effort: a read-only or full cache dir must not fail the benchmark.
-        print(f"[cache] warning: could not write {cache_path} ({e}); continuing")
+        print(f"{_log_stamp()} [cache] warning: could not write {cache_path} ({e}); continuing")
 
 
 def load_or_build_random_requests(
@@ -628,7 +636,12 @@ def load_or_build_random_requests(
     if cached is not None:
         return cached
 
+    print(f"{_log_stamp()} [cache] generating {num_prompts} prompts (isl={input_len}, osl={output_len})...")
+    build_started = time.perf_counter()
     input_requests = build()
+    print(
+        f"{_log_stamp()} [cache] generated {num_prompts} prompts in {time.perf_counter() - build_started:.1f}s"
+    )
     _write_cached_random_requests(cache_path, key, input_requests)
     return input_requests
 
@@ -1028,6 +1041,7 @@ async def benchmark(
         async with semaphore:
             return await request_func(request_func_input=request_func_input, pbar=pbar)
 
+    benchmark_started_at = datetime.now().astimezone()
     benchmark_start_time = time.perf_counter()
     tasks: list[asyncio.Task] = []
     try:
@@ -1089,6 +1103,7 @@ async def benchmark(
         pbar.close()
 
     benchmark_duration = time.perf_counter() - benchmark_start_time
+    benchmark_finished_at = datetime.now().astimezone()
     if backend == "dynamo" and request_session is not None and not request_session.closed:
         await request_session.close()
         # Allow asyncio to finish closing pooled transports before CPU-heavy metrics.
@@ -1106,6 +1121,8 @@ async def benchmark(
 
     print("{s:{c}^{n}}".format(s=" Serving Benchmark Result ", n=50, c="="))
     print("{:<40} {:<10}".format("Successful requests:", metrics.completed))
+    print("{:<40} {:<10}".format("Benchmark start:", benchmark_started_at.strftime("%H:%M:%S")))
+    print("{:<40} {:<10}".format("Benchmark finish:", benchmark_finished_at.strftime("%H:%M:%S")))
     print("{:<40} {:<10.2f}".format("Benchmark duration (s):", benchmark_duration))
     print("{:<40} {:<10}".format("Total input tokens:", metrics.total_input))
     print("{:<40} {:<10}".format("Total generated tokens:", metrics.total_output))
@@ -1118,6 +1135,8 @@ async def benchmark(
 
     result = {
         "duration": benchmark_duration,
+        "benchmark_start_time": benchmark_started_at.isoformat(timespec="seconds"),
+        "benchmark_finish_time": benchmark_finished_at.isoformat(timespec="seconds"),
         "completed": metrics.completed,
         "total_input_tokens": metrics.total_input,
         "total_output_tokens": metrics.total_output,

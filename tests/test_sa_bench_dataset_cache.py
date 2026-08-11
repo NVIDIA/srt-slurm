@@ -106,6 +106,32 @@ def test_second_run_hits_the_cache(sa_bench, counting_builder, tmp_path):
     assert second == first
 
 
+def test_generation_is_bracketed_by_timestamps(sa_bench, counting_builder, tmp_path, capsys):
+    """A miss reports when prompt generation started and how long it took."""
+    _load(sa_bench, str(tmp_path))
+
+    lines = capsys.readouterr().out.splitlines()
+    stamped = [line for line in lines if re.match(r"^\[\d{2}:\d{2}:\d{2}\] \[cache\] ", line)]
+
+    assert any("miss:" in line for line in stamped)
+    assert any(re.search(r"generating 32 prompts \(isl=8192, osl=1\)", line) for line in stamped)
+    assert any(re.search(r"generated 32 prompts in \d+\.\d+s", line) for line in stamped)
+    assert any("saved dataset to" in line for line in stamped)
+
+
+def test_cache_hit_reports_timestamp_and_full_path(sa_bench, counting_builder, tmp_path, capsys):
+    """A hit is traceable: when it happened and exactly which file was reused."""
+    _load(sa_bench, str(tmp_path))
+    (cache_file,) = list(tmp_path.glob("*.pkl"))
+    capsys.readouterr()
+
+    _load(sa_bench, str(tmp_path))
+
+    out = capsys.readouterr().out
+    assert re.search(rf"^\[\d{{2}}:\d{{2}}:\d{{2}}\] \[cache\] hit: loaded 32 prompts from {cache_file}", out, re.M)
+    assert "generating" not in out
+
+
 def test_cache_file_name_is_human_readable(sa_bench, counting_builder, tmp_path):
     """Model, ISL, OSL and prompt count stay legible for manual cleanup."""
     _load(sa_bench, str(tmp_path))
