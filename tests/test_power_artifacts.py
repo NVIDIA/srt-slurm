@@ -7,6 +7,7 @@ import csv
 import json
 import os
 from contextlib import suppress
+from pathlib import Path
 
 import pytest
 
@@ -555,6 +556,110 @@ class TestManifest:
 
 
 class TestMeasurementWindowArtifacts:
+    @staticmethod
+    def _write_completed_window(tmp_path, *, start, end, duration):
+        windows_dir = tmp_path / WINDOWS_DIRNAME
+        windows_dir.mkdir(exist_ok=True)
+        payload = {
+            "schema_version": SCHEMA_VERSION,
+            "benchmark_type": "sa-bench",
+            "result_path": "result.json",
+            "concurrency": 4,
+            "benchmark_start_time_unix": start,
+            "benchmark_end_time_unix": end,
+            "duration": duration,
+            "clock_source": "head_node_unix_clock",
+            "status": "completed",
+            "reason": None,
+        }
+        (windows_dir / "result.json").write_text(json.dumps(payload))
+        (tmp_path / "result.json").write_text(json.dumps(payload))
+
+    @staticmethod
+    def _validate(tmp_path, *, expected_device_keys=None, observed_devices=()):
+        errors = []
+        rows = validate_expected_windows(
+            power_dir=tmp_path,
+            result_root=tmp_path,
+            expected_windows=[ExpectedWindow("sa-bench", 4)],
+            expected_device_keys=set() if expected_device_keys is None else expected_device_keys,
+            observed_devices=observed_devices,
+            artifact_errors=errors,
+        )
+        return rows[0], errors
+
+    def test_unreadable_windows_directory_is_reported(self, tmp_path, monkeypatch):
+        windows_dir = tmp_path / WINDOWS_DIRNAME
+        windows_dir.mkdir()
+        original_iterdir = Path.iterdir
+
+        def fail_for_windows(path):
+            if path == windows_dir:
+                raise PermissionError("permission denied")
+            return original_iterdir(path)
+
+        monkeypatch.setattr(Path, "iterdir", fail_for_windows)
+        row, errors = self._validate(tmp_path)
+
+        assert row.reason_codes == (Reason.MEASUREMENT_WINDOW_MISSING,)
+        assert [(error.path, error.reason_codes) for error in errors] == [
+            (WINDOWS_DIRNAME, (Reason.MEASUREMENT_WINDOW_ARTIFACT_PATH_INVALID,))
+        ]
+
+    def test_unresolvable_windows_directory_is_reported(self, tmp_path, monkeypatch):
+        windows_dir = tmp_path / WINDOWS_DIRNAME
+        windows_dir.mkdir()
+        original_resolve = Path.resolve
+
+        def fail_for_windows(path, *args, **kwargs):
+            if path == windows_dir:
+                raise RuntimeError("symlink loop")
+            return original_resolve(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "resolve", fail_for_windows)
+        row, errors = self._validate(tmp_path)
+
+        assert row.reason_codes == (Reason.MEASUREMENT_WINDOW_MISSING,)
+        assert [(error.path, error.reason_codes) for error in errors] == [
+            (WINDOWS_DIRNAME, (Reason.MEASUREMENT_WINDOW_ARTIFACT_PATH_INVALID,))
+        ]
+
+    @pytest.mark.parametrize(
+        ("start", "end"),
+        [
+            (1000.1, 1000.0),
+            (1000.0, 1000.0),
+        ],
+    )
+    def test_non_positive_wall_clock_interval_is_rejected(self, tmp_path, start, end):
+        self._write_completed_window(tmp_path, start=start, end=end, duration=0.1)
+        row, _ = self._validate(tmp_path)
+
+        assert row.power_coverage_valid is False
+        assert row.reason_codes == (Reason.MEASUREMENT_WINDOW_CLOCK_MISMATCH,)
+
+    def test_computed_device_gaps_are_retained_when_coverage_is_invalid(self, tmp_path):
+        self._write_completed_window(tmp_path, start=1000.0, end=1004.0, duration=4.0)
+        observed = derive_observed_devices(
+            [
+                SampleRow(999.0, 0, "node-a", 0, "GPU-a", 400.0),
+                SampleRow(1005.0, 1, "node-a", 0, "GPU-a", 400.0),
+            ]
+        )
+
+        row, _ = self._validate(
+            tmp_path,
+            expected_device_keys={("node-a", 0), ("node-b", 0)},
+            observed_devices=observed,
+        )
+
+        assert row.power_coverage_valid is False
+        assert row.reason_codes == (
+            Reason.SAMPLE_GAP_EXCEEDED,
+            Reason.MEASUREMENT_WINDOW_NOT_BRACKETED,
+        )
+        assert row.per_device_max_sample_gap_seconds == {"node-a/GPU-a": 6.0}
+
     def test_three_duplicate_windows_are_each_recorded_once(self, tmp_path):
         windows_dir = tmp_path / WINDOWS_DIRNAME
         windows_dir.mkdir()
