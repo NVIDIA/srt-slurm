@@ -74,6 +74,7 @@ _PATTERN_CACHE: dict[str, re.Pattern[str]] = {}
 _TS_ANSI = re.compile(r"\[2m(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2}\.\d+)")
 _TS_BRACKET = re.compile(r"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?)")
 _DP_RANK = re.compile(r"\bDP(\d+)\b")
+_PP_RANK = re.compile(r"\bPP(\d+)\b")
 
 
 def _pattern(raw: str) -> re.Pattern[str]:
@@ -112,6 +113,16 @@ def _parse_dp_rank(line: str) -> int | None:
         return None
 
 
+def _parse_pp_rank(line: str) -> int | None:
+    m = _PP_RANK.search(line)
+    if m is None:
+        return None
+    try:
+        return int(m.group(1))
+    except ValueError:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Per-file series
 # ---------------------------------------------------------------------------
@@ -129,6 +140,7 @@ class FileSeries:
     path: Path
     timestamps: list[datetime] = field(default_factory=list)
     dp_ranks: list[int | None] = field(default_factory=list)
+    pp_ranks: list[int | None] = field(default_factory=list)
     metrics: dict[str, list[float | None]] = field(default_factory=dict)
     byte_offset: int = 0
 
@@ -183,6 +195,7 @@ def parse_file_incremental(series: FileSeries, keyword: str, metrics_def: dict[s
                 if ts is None:
                     continue
                 dp_rank = _parse_dp_rank(line)
+                pp_rank = _parse_pp_rank(line)
 
                 values: dict[str, float | None] = {}
                 any_value = False
@@ -202,6 +215,7 @@ def parse_file_incremental(series: FileSeries, keyword: str, metrics_def: dict[s
 
                 series.timestamps.append(ts)
                 series.dp_ranks.append(dp_rank)
+                series.pp_ranks.append(pp_rank)
                 for name in metrics_def:
                     series.metrics[name].append(values[name])
                 new_rows += 1
