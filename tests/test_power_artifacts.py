@@ -5,14 +5,18 @@
 
 import csv
 import json
+import os
+from contextlib import suppress
 
 import pytest
 
+import srtctl.core.power.parser as power_parser
 from srtctl.core.power.contract import (
     MANIFEST_FILENAME,
     SAMPLES_FILENAME,
     SAMPLES_HEADER,
     SCHEMA_VERSION,
+    WINDOWS_DIRNAME,
     Reason,
     atomic_write_json,
     is_safe_relative_subpath,
@@ -30,6 +34,7 @@ from srtctl.core.power.samples import (
     read_samples,
 )
 from srtctl.core.power.topology import build_expected_devices, resolve_het_groups, resolve_roles, validate_devices
+from srtctl.core.power.windows import validate_expected_windows
 from srtctl.core.topology import Process
 
 
@@ -148,6 +153,18 @@ class TestDcgmParser:
         assert scrape.readings == ()
         assert Reason.POWER_METRIC_MISSING in scrape.reason_codes
 
+    @pytest.mark.parametrize("error", [ValueError("malformed exposition"), IndexError("parser state")])
+    def test_exporter_parse_failures_are_classified_without_escaping(self, monkeypatch, error):
+        def fail(_text):
+            raise error
+
+        monkeypatch.setattr(power_parser, "text_string_to_metric_families", fail)
+
+        scrape = parse_power_scrape("malformed")
+
+        assert scrape.readings == ()
+        assert scrape.reason_codes == ("endpoint_parse_error",)
+
 
 class TestExpectedTopology:
     """Expected devices derived from srt-slurm backend processes."""
@@ -256,6 +273,27 @@ class TestSampleArtifact:
         assert observed[0].first_sample_time_unix == 1000.0
         assert observed[0].last_sample_time_unix == 1001.0
 
+    def test_writer_closes_handle_when_header_write_fails(self, tmp_path, monkeypatch):
+        opened = []
+
+        def tracking_open(*args, **kwargs):
+            handle = open(*args, **kwargs)  # noqa: SIM115 - retain the handle to assert explicit cleanup
+            opened.append(handle)
+            return handle
+
+        class FailingWriter:
+            def writerow(self, _row):
+                raise OSError("disk full")
+
+        monkeypatch.setattr("srtctl.core.power.samples.open", tracking_open, raising=False)
+        monkeypatch.setattr("srtctl.core.power.samples.csv.writer", lambda _handle: FailingWriter())
+
+        with pytest.raises(OSError, match="disk full"):
+            SampleWriter(tmp_path / SAMPLES_FILENAME)
+
+        assert len(opened) == 1
+        assert opened[0].closed is True
+
     def test_uuid_change_is_retained_and_flagged(self, tmp_path):
         path = tmp_path / SAMPLES_FILENAME
         writer = SampleWriter(path)
@@ -308,6 +346,16 @@ class TestSampleArtifact:
         _, reasons = read_samples(path)
 
         assert Reason.TIMESTAMP_NON_MONOTONIC in reasons
+
+    def test_equal_device_timestamps_are_allowed(self, tmp_path):
+        path = tmp_path / SAMPLES_FILENAME
+        path.write_text(
+            ",".join(SAMPLES_HEADER) + "\n1,1000.0,0,node-a,0,GPU-aaa,400.0\n1,1000.0,1,node-a,0,GPU-aaa,401.0\n"
+        )
+
+        _, reasons = read_samples(path)
+
+        assert Reason.TIMESTAMP_NON_MONOTONIC not in reasons
 
     def test_invalid_utf8_bytes_are_reported(self, tmp_path):
         path = tmp_path / SAMPLES_FILENAME
@@ -468,6 +516,16 @@ class TestManifest:
         assert payload["status"] == "failed"
         assert payload["publication_valid"] is False
 
+    def test_terminal_manifest_cannot_be_changed_by_a_second_call(self):
+        manifest = self._manifest()
+        manifest.mark_terminal(status="complete", stopped_at_unix=1785168010.0, publication_valid=True)
+        first_terminal_state = (manifest.status, manifest.stopped_at_unix, manifest.publication_valid)
+
+        with pytest.raises(RuntimeError, match="already terminal"):
+            manifest.mark_terminal(status="failed", stopped_at_unix=1785168020.0, publication_valid=False)
+
+        assert (manifest.status, manifest.stopped_at_unix, manifest.publication_valid) == first_terminal_state
+
     def test_atomic_write_leaves_no_partial_file(self, tmp_path):
         target = tmp_path / MANIFEST_FILENAME
         atomic_write_json(target, {"a": 1})
@@ -475,6 +533,67 @@ class TestManifest:
 
         assert json.loads(target.read_text()) == {"a": 2}
         assert sorted(p.name for p in tmp_path.iterdir()) == [MANIFEST_FILENAME]
+
+    def test_atomic_write_closes_raw_fd_when_fdopen_fails(self, tmp_path, monkeypatch):
+        captured = {}
+
+        def fail(fd, *_args, **_kwargs):
+            captured["fd"] = fd
+            raise OSError("too many open files")
+
+        monkeypatch.setattr("srtctl.core.power.contract.os.fdopen", fail)
+        try:
+            with pytest.raises(OSError, match="too many open files"):
+                atomic_write_json(tmp_path / MANIFEST_FILENAME, {"a": 1})
+
+            with pytest.raises(OSError):
+                os.fstat(captured["fd"])
+            assert list(tmp_path.iterdir()) == []
+        finally:
+            with suppress(OSError):
+                os.close(captured["fd"])
+
+
+class TestMeasurementWindowArtifacts:
+    def test_three_duplicate_windows_are_each_recorded_once(self, tmp_path):
+        windows_dir = tmp_path / WINDOWS_DIRNAME
+        windows_dir.mkdir()
+        for index in range(3):
+            stem = f"result-{index}"
+            (windows_dir / f"{stem}.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "benchmark_type": "sa-bench",
+                        "result_path": f"{stem}.json",
+                        "concurrency": 4,
+                        "benchmark_start_time_unix": 1000.0,
+                        "benchmark_end_time_unix": 1020.0,
+                        "duration": 20.0,
+                        "clock_source": "head_node_unix_clock",
+                        "status": "completed",
+                        "reason": None,
+                    }
+                )
+            )
+        errors = []
+
+        rows = validate_expected_windows(
+            power_dir=tmp_path,
+            result_root=tmp_path,
+            expected_windows=[ExpectedWindow("sa-bench", 4)],
+            expected_device_keys=set(),
+            observed_devices=[],
+            artifact_errors=errors,
+        )
+
+        assert rows[0].reason_codes == (Reason.MEASUREMENT_WINDOW_DUPLICATE,)
+        assert [error.path for error in errors] == [
+            f"{WINDOWS_DIRNAME}/result-0.json",
+            f"{WINDOWS_DIRNAME}/result-1.json",
+            f"{WINDOWS_DIRNAME}/result-2.json",
+        ]
+        assert all(error.reason_codes == (Reason.MEASUREMENT_WINDOW_DUPLICATE,) for error in errors)
 
 
 class TestStorageSubdirSafety:

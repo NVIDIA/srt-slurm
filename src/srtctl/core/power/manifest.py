@@ -127,6 +127,8 @@ class PowerManifest:
 
     def mark_terminal(self, *, status: str, stopped_at_unix: float, publication_valid: bool) -> None:
         """Freeze lifecycle state. Only ``complete`` may ever publish."""
+        if self.status in TERMINAL_STATUSES:
+            raise RuntimeError(f"manifest is already terminal: {self.status!r}")
         if status not in TERMINAL_STATUSES:
             raise ValueError(f"not a terminal status: {status!r}")
         self.status = status
