@@ -512,3 +512,28 @@ class TestDryRunVllmOrchestrationWarnings:
         output = capsys.readouterr().out
         assert "vllm_config.aggregated.headless" not in output
         assert "derives this from the job topology" not in output
+
+    def test_dynamo_recipe_has_no_direct_vllm_orchestration_warning(self, capsys):
+        config = _make_config(
+            {
+                "resources": {
+                    "gpu_type": "b200",
+                    "gpus_per_node": 8,
+                    "prefill_nodes": None,
+                    "decode_nodes": None,
+                    "prefill_workers": None,
+                    "decode_workers": None,
+                    "agg_nodes": 2,
+                    "agg_workers": 1,
+                },
+                "frontend": {"type": "dynamo"},
+                "backend": {
+                    "type": "vllm",
+                    "vllm_config": {"aggregated": {"master-addr": "10.9.9.9"}},
+                },
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "vllm_config.aggregated.master-addr" not in output
+        assert "configured value is ignored" not in output

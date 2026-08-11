@@ -3342,6 +3342,49 @@ class TestDirectVllmMultiNode:
         assert worker_cmd[worker_cmd.index("--master-port") + 1] == "26300"
         assert mock_get_hostname_ip.call_args_list == [call("node0", "ib0"), call("node0", "ib0")]
 
+    def test_dynamo_keeps_recipe_orchestration_flags_and_default_resolution(self):
+        """Direct-vLLM topology ownership must not change existing Dynamo commands."""
+        leader, worker = self._make_processes(["node0", "node1"])
+        from pathlib import Path
+        from unittest.mock import MagicMock, call, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+
+        backend = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                aggregated={
+                    "tensor-parallel-size": 8,
+                    "headless": True,
+                    "host": "10.9.9.8",
+                    "port": 9001,
+                    "master-addr": "10.9.9.9",
+                    "nnodes": 99,
+                    "node-rank": 42,
+                }
+            )
+        )
+        runtime = MagicMock()
+        runtime.model_path = Path("/model")
+        runtime.is_hf_model = False
+        runtime.network_interface = "ib0"
+        runtime.request_plane = "nats"
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1") as mock_get_hostname_ip:
+            cmd = backend.build_worker_command(
+                process=leader,
+                endpoint_processes=[leader, worker],
+                runtime=runtime,
+                frontend_type="dynamo",
+            )
+
+        assert mock_get_hostname_ip.call_args_list == [call("node0")]
+        assert cmd[cmd.index("--host") + 1] == "10.9.9.8"
+        assert cmd[cmd.index("--port") + 1] == "9001"
+        assert "10.9.9.9" in cmd
+        assert "99" in cmd
+        assert "42" in cmd
+        assert "--headless" in cmd
+
     def test_no_dp_launch_mode_warning_for_direct_vllm(self, caplog):
         """dp_launch_mode does not apply here: vllm serve owns the local DP ranks."""
         import logging

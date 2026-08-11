@@ -196,7 +196,7 @@ def show_config_details(config: SrtConfig) -> None:
     environment variables (global and backend per-mode) so users can verify their
     config is correct before submitting.
     """
-    if config.backend_type == "vllm":
+    if config.backend_type == "vllm" and config.frontend.type == "vllm":
         from srtctl.backends.vllm import find_vllm_orchestration_recipe_flags
 
         orchestration_flags = find_vllm_orchestration_recipe_flags(config.backend)

@@ -47,9 +47,9 @@ DPLaunchMode = Literal["per_gpu", "per_node"]
 
 logger = logging.getLogger(__name__)
 
-# vLLM CLI flags srtslurm derives from topology/runtime. Recipes may still set
-# these for backward compatibility; dry-run warns and runtime command building
-# strips them so user values cannot override allocation.
+# vLLM CLI flags srtslurm derives for the direct vLLM frontend. Recipes may
+# still set these for backward compatibility; dry-run warns and direct-vLLM
+# command building strips them so user values cannot override allocation.
 _VLLM_ORCHESTRATION_FLAGS = frozenset(
     {
         "headless",
@@ -755,14 +755,18 @@ class VLLMProtocol:
 
         mode = process.endpoint_mode
         config = self.get_config_for_mode(mode)
-        pop_vllm_orchestration_flags(config)
 
         # Determine if multi-node
         endpoint_nodes = list(dict.fromkeys(p.node for p in endpoint_processes))
         is_multi_node = len(endpoint_nodes) > 1
 
-        # Get leader IP for distributed init
-        leader_ip = get_hostname_ip(endpoint_nodes[0], runtime.network_interface)
+        # Direct vLLM rendezvous must use the configured interface. Keep the
+        # existing Dynamo resolution path unchanged to avoid affecting jobs
+        # outside the scope of the direct-vLLM frontend.
+        if frontend_type == "vllm":
+            leader_ip = get_hostname_ip(endpoint_nodes[0], runtime.network_interface)
+        else:
+            leader_ip = get_hostname_ip(endpoint_nodes[0])
 
         # Determine model path: HF model ID or container mount path
         # For HF models (hf:prefix), model_path contains the HF model ID (e.g., "facebook/opt-125m")
@@ -790,6 +794,7 @@ class VLLMProtocol:
             if mode != "agg":
                 raise ValueError("frontend.type: vllm supports aggregate vLLM jobs only")
 
+            pop_vllm_orchestration_flags(config)
             config.pop("connector", None)
             config.setdefault("served-model-name", served_model_name)
 
