@@ -35,7 +35,7 @@ from srtctl.core.power.samples import (
     read_samples,
 )
 from srtctl.core.power.topology import build_expected_devices, resolve_het_groups, resolve_roles, validate_devices
-from srtctl.core.power.windows import validate_expected_windows
+from srtctl.core.power.windows import convert_running_windows, validate_expected_windows
 from srtctl.core.topology import Process
 
 
@@ -605,6 +605,20 @@ class TestMeasurementWindowArtifacts:
         assert [(error.path, error.reason_codes) for error in errors] == [
             (WINDOWS_DIRNAME, (Reason.MEASUREMENT_WINDOW_ARTIFACT_PATH_INVALID,))
         ]
+
+    def test_unreadable_windows_directory_does_not_break_interruption_cleanup(self, tmp_path, monkeypatch):
+        windows_dir = tmp_path / WINDOWS_DIRNAME
+        windows_dir.mkdir()
+        original_glob = Path.glob
+
+        def fail_for_windows(path, pattern):
+            if path == windows_dir:
+                raise PermissionError("permission denied")
+            return original_glob(path, pattern)
+
+        monkeypatch.setattr(Path, "glob", fail_for_windows)
+
+        assert convert_running_windows(windows_dir, reason="interrupted") == 0
 
     def test_unresolvable_windows_directory_is_reported(self, tmp_path, monkeypatch):
         windows_dir = tmp_path / WINDOWS_DIRNAME
