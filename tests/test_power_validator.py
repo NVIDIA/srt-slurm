@@ -654,20 +654,30 @@ class TestEvidenceReconciliation:
         assert report.ok is False
         assert any("lifecycle-failure reasons" in failure for failure in report.failures)
 
-    @pytest.mark.parametrize(
-        "reason",
-        ["exporter_startup_timeout", "exporter_launch_failed", "endpoint_resolution_failed"],
-    )
-    def test_best_effort_accepts_complete_with_a_startup_failure_reason(self, package, reason):
-        """A slow exporter that recovered is genuine, publishable best-effort data.
+    def test_best_effort_accepts_a_recovered_exporter_startup_timeout(self, package):
+        """A slow exporter can recover and produce publishable best-effort data.
 
         Mirrors PowerTelemetrySession._terminal_status: only required mode turns
         a startup failure into a lifecycle failure.
         """
-        report = self._damaged(package, lambda m: m.update(required=False, reason_codes=[reason]))
+        report = self._damaged(
+            package,
+            lambda m: m.update(required=False, reason_codes=[Reason.EXPORTER_STARTUP_TIMEOUT]),
+        )
 
         assert report.ok is True
         assert report.failures == ()
+
+    @pytest.mark.parametrize(
+        "reason",
+        [Reason.EXPORTER_LAUNCH_FAILED, Reason.ENDPOINT_RESOLUTION_FAILED],
+    )
+    def test_best_effort_rejects_an_unrecoverable_startup_failure(self, package, reason):
+        """These paths cannot produce complete evidence without manifest forgery."""
+        report = self._damaged(package, lambda m: m.update(required=False, reason_codes=[reason]))
+
+        assert report.ok is False
+        assert any("publication_valid" in failure and "recomputed False" in failure for failure in report.failures)
 
     @pytest.mark.parametrize("required", [True, False])
     @pytest.mark.parametrize(

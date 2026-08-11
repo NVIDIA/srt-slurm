@@ -98,6 +98,13 @@ _RUNTIME_ONLY_REASON_CODES = frozenset(
     }
 )
 
+_UNRECOVERABLE_STARTUP_REASON_CODES = frozenset(
+    {
+        Reason.EXPORTER_LAUNCH_FAILED,
+        Reason.ENDPOINT_RESOLUTION_FAILED,
+    }
+)
+
 
 @dataclass(frozen=True)
 class ArtifactReport:
@@ -383,9 +390,19 @@ def _check_stored_evidence(
     lifecycle_complete = not (recorded & set(FATAL_LIFECYCLE_REASONS)) and not (
         manifest.get("required") is True and recorded & set(STARTUP_FAILURE_REASONS)
     )
+    # A readiness timeout can recover in best-effort mode because collection
+    # keeps running. A failed launch never starts collection, while resolution
+    # failure permanently omits an expected node; neither can produce the
+    # complete on-disk evidence this validator is recomputing.
+    startup_recovered = not (recorded & _UNRECOVERABLE_STARTUP_REASON_CODES)
     windows_valid = bool(expected_windows) and all(validation.power_coverage_valid for validation in validations)
     recomputed_publication_valid = (
-        lifecycle_complete and devices_valid and windows_valid and not sample_reason_codes and not artifact_errors
+        lifecycle_complete
+        and startup_recovered
+        and devices_valid
+        and windows_valid
+        and not sample_reason_codes
+        and not artifact_errors
     )
     stored_publication_valid = manifest.get("publication_valid")
     if isinstance(stored_publication_valid, bool):
