@@ -14,11 +14,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from srtctl.cli.do_sweep import SweepOrchestrator
+from srtctl.cli.mixins.benchmark_stage import BenchmarkStageMixin
 from srtctl.cli.mixins.telemetry_stage import TelemetryStageMixin
 from srtctl.core.power.contract import MANIFEST_FILENAME, SAMPLES_FILENAME, WINDOWS_DIRNAME, Reason
 from srtctl.core.power.manifest import ExpectedWindow
 from srtctl.core.power.samples import read_samples
-from srtctl.core.power.session import PowerEndpoint, PowerSessionSettings, PowerTelemetrySession
+from srtctl.core.power.session import PowerEndpoint, PowerSessionSettings, PowerTelemetrySession, _run_daemon_workers
 from srtctl.core.power.topology import build_expected_devices
 from srtctl.core.processes import ManagedProcess, ProcessRegistry
 from srtctl.core.schema import TelemetryExporterConfig, TelemetryProvider
@@ -176,6 +177,44 @@ def _exited_exporter(name, returncode):
 
 def _manifest(session):
     return json.loads((session.power_dir / MANIFEST_FILENAME).read_text())
+
+
+class TestDaemonWorkers:
+    def test_completed_workers_return_values_and_failures(self):
+        def succeed(value):
+            return value * 2
+
+        def fail(_value):
+            raise RuntimeError("worker failed")
+
+        results, failures = _run_daemon_workers(
+            [("success", succeed, 2), ("failure", fail, None)],
+            deadline=time.monotonic() + 1,
+        )
+
+        assert results == (4,)
+        assert len(failures) == 1
+        assert isinstance(failures[0], RuntimeError)
+
+    def test_late_worker_cannot_mutate_the_returned_snapshot(self):
+        release = threading.Event()
+        finished = threading.Event()
+
+        def finish_late(_argument):
+            release.wait(5)
+            finished.set()
+            return "late"
+
+        results, failures = _run_daemon_workers(
+            [("late-worker", finish_late, None)],
+            deadline=time.monotonic() + 0.01,
+        )
+
+        assert results == ()
+        assert failures == ()
+        release.set()
+        assert finished.wait(1)
+        assert results == ()
 
 
 class TestInitialize:
@@ -781,6 +820,64 @@ class TestBenchmarkChildReaping:
         self._Harness(session, None).finalize_power_telemetry(0)
 
         assert Reason.BENCHMARK_CHILD_REAP_TIMEOUT not in _manifest(session)["reason_codes"]
+
+    @staticmethod
+    def _benchmark_harness(tmp_path):
+        class Harness(BenchmarkStageMixin):
+            config = MagicMock()
+            runtime = MagicMock()
+
+            def _benchmark_node(self):
+                return "node-a"
+
+            def _get_benchmark_env(self, runner):
+                return {}
+
+        harness = Harness()
+        harness.runtime.log_dir = tmp_path
+        harness.runtime.srun_options = {}
+        harness.runtime.nodes.het_group_for.return_value = None
+        runner = MagicMock()
+        runner.build_command.return_value = ["bench"]
+        runner.get_environment.return_value = {}
+        runner.get_container_image.return_value = "img"
+        runner.get_container_mounts.return_value = {}
+        runner.name = "SA-Bench"
+        return harness, runner
+
+    def test_sigterm_unwind_still_reaps_the_child(self, tmp_path):
+        proc = MagicMock(spec=subprocess.Popen)
+        proc.poll.return_value = None
+        proc.wait.return_value = -15
+        harness, runner = self._benchmark_harness(tmp_path)
+
+        with (
+            patch("srtctl.cli.mixins.benchmark_stage.start_srun_process", return_value=proc),
+            patch("srtctl.analysis.live_metrics.try_start_snapshotter", return_value=None),
+            patch("srtctl.cli.mixins.benchmark_stage.time.sleep", side_effect=SystemExit(1)),
+            pytest.raises(SystemExit),
+        ):
+            harness._run_benchmark_script(runner, tmp_path / "benchmark.out", threading.Event())
+
+        proc.terminate.assert_called_once()
+        proc.kill.assert_not_called()
+        assert harness.benchmark_child_reaped is True
+
+    def test_unreapable_child_on_unwind_stays_false(self, tmp_path):
+        proc = MagicMock(spec=subprocess.Popen)
+        proc.poll.return_value = None
+        proc.wait.side_effect = subprocess.TimeoutExpired(cmd="bench", timeout=1)
+        harness, runner = self._benchmark_harness(tmp_path)
+
+        with (
+            patch("srtctl.cli.mixins.benchmark_stage.start_srun_process", return_value=proc),
+            patch("srtctl.analysis.live_metrics.try_start_snapshotter", return_value=None),
+            patch("srtctl.cli.mixins.benchmark_stage.time.sleep", side_effect=SystemExit(1)),
+            pytest.raises(SystemExit),
+        ):
+            harness._run_benchmark_script(runner, tmp_path / "benchmark.out", threading.Event())
+
+        assert harness.benchmark_child_reaped is False
 
 
 class TestExporterIdentity:

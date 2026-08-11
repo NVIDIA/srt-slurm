@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 from srtctl.core.fingerprint import format_identity_verification, verify_identity
 from srtctl.core.health import wait_for_model
 from srtctl.core.lockfile import collect_worker_fingerprints
+from srtctl.core.processes import terminate_and_reap
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
 from srtctl.core.status import JobStage, JobStatus, StatusReporter
 from srtctl.ports import FRONTEND_PUBLIC_PORT, SGLANG_HTTP_PORT_BASE
@@ -29,6 +30,9 @@ if TYPE_CHECKING:
     from srtctl.core.topology import Endpoint, Process
 
 logger = logging.getLogger(__name__)
+
+_BENCHMARK_TERMINATE_TIMEOUT_SECONDS = 15.0
+_BENCHMARK_KILL_TIMEOUT_SECONDS = 10.0
 
 
 def _vllm_data_parallel_size(config: "SrtConfig", mode: str) -> int:
@@ -112,6 +116,7 @@ class BenchmarkStageMixin:
     # Type hints for mixin dependencies
     config: "SrtConfig"
     runtime: "RuntimeContext"
+    benchmark_child_reaped: bool | None = None
 
     @property
     def endpoints(self) -> list["Endpoint"]:
@@ -319,15 +324,27 @@ class BenchmarkStageMixin:
             het_group=self.runtime.nodes.het_group_for(bench_node),
         )
 
+        # The signal handler raises SystemExit, so only finally can guarantee
+        # that the benchmark child is terminated and reaped before telemetry finalizes.
+        self.benchmark_child_reaped = False
         try:
             while proc.poll() is None:
                 if stop_event.is_set():
                     logger.info("Stop requested, terminating benchmark")
-                    proc.terminate()
                     return 1
                 time.sleep(1)
+            self.benchmark_child_reaped = True
             return proc.returncode or 0
         finally:
+            if proc.poll() is None:
+                self.benchmark_child_reaped = terminate_and_reap(
+                    proc,
+                    terminate_timeout=_BENCHMARK_TERMINATE_TIMEOUT_SECONDS,
+                    kill_timeout=_BENCHMARK_KILL_TIMEOUT_SECONDS,
+                )
+            elif self.benchmark_child_reaped is False:
+                proc.wait()
+                self.benchmark_child_reaped = True
             if snapshotter is not None:
                 snapshotter.stop()
 

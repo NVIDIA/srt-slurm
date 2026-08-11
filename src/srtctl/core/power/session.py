@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import queue
 import threading
 import time
 from collections.abc import Callable, Sequence
@@ -24,6 +25,7 @@ from typing import Any
 import requests
 
 from srtctl.core.power.contract import (
+    COLLECT_CYCLE_TIMEOUT_GRACE_SECONDS,
     FATAL_LIFECYCLE_REASONS,
     MANIFEST_FILENAME,
     OPERATIONAL_FAILURE_REASONS,
@@ -212,21 +214,20 @@ class PowerTelemetrySession:
 
     def _resolve_endpoints(self, deadline: float) -> None:
         """Resolve every allocated hostname once, concurrently, before sampling."""
-        resolved: dict[str, str] = {}
 
-        def resolve(node: str) -> None:
+        def resolve(node: str) -> tuple[str, str] | None:
             try:
                 ip = get_hostname_ip(node, self._settings.network_interface)
             except Exception as exc:  # noqa: BLE001 - an unresolvable node is a reason code
                 logger.warning("Power endpoint resolution failed for %s: %s", node, exc)
-                return
-            if ip:
-                resolved[node] = ip
+                return None
+            return (node, ip) if ip else None
 
-        _run_daemon_workers(
+        results, _ = _run_daemon_workers(
             [(f"PowerResolve-{node}", resolve, node) for node in self._nodes],
             deadline=deadline,
         )
+        resolved = dict(result for result in results if result is not None)
         self._endpoints_resolved = True
 
         for node in self._nodes:
@@ -274,18 +275,13 @@ class PowerTelemetrySession:
             self._scrape_seq += 1
             self._scrape_count += 1
 
-        results: list[_EndpointResult] = []
-        results_lock = threading.Lock()
-
-        def poll(endpoint: PowerEndpoint) -> None:
-            result = self._poll(endpoint, scrape_seq)
-            with results_lock:
-                results.append(result)
-
         # NOTE: requests applies its timeout to connect and read separately, so an endpoint can take 2x.
-        deadline = time.monotonic() + 2 * self._settings.request_timeout_seconds + 1.0
-        failures = _run_daemon_workers(
-            [(f"PowerScrape-{endpoint.hostname}", poll, endpoint) for endpoint in endpoints],
+        deadline = time.monotonic() + 2 * self._settings.request_timeout_seconds + COLLECT_CYCLE_TIMEOUT_GRACE_SECONDS
+        results, failures = _run_daemon_workers(
+            [
+                (f"PowerScrape-{endpoint.hostname}", lambda endpoint: self._poll(endpoint, scrape_seq), endpoint)
+                for endpoint in endpoints
+            ],
             deadline=deadline,
         )
         if failures:
@@ -294,8 +290,7 @@ class PowerTelemetrySession:
         rows: list[SampleRow] = []
         reasons: list[str] = []
         durations: list[float] = []
-        with results_lock:
-            settled = sorted(results, key=lambda item: item.hostname)
+        settled = sorted(results, key=lambda item: item.hostname)
         for result in settled:
             rows.extend(result.rows)
             reasons.extend(result.reason_codes)
@@ -550,32 +545,45 @@ def _exporter_identity(settings: PowerSessionSettings) -> DcgmExporterIdentity:
 
 
 def _run_daemon_workers(
-    jobs: Sequence[tuple[str, Callable[[Any], None], Any]],
+    jobs: Sequence[tuple[str, Callable[[Any], Any], Any]],
     *,
     deadline: float,
-) -> list[BaseException]:
+) -> tuple[tuple[Any, ...], tuple[BaseException, ...]]:
     """Run each job on its own daemon thread and abandon stragglers at ``deadline``.
 
     Daemon threads mean neither a stuck HTTP request nor a slow resolver can
     keep interpreter exit alive past the caller's absolute deadline. Worker
     exceptions are returned so the caller decides whether they are fatal.
     """
-    failures: list[BaseException] = []
+    outcomes: queue.Queue[tuple[float, bool, Any]] = queue.Queue()
+
+    def run(target: Callable[[Any], Any], argument: Any) -> None:
+        try:
+            value = target(argument)
+        except Exception as exc:  # noqa: BLE001 - reported to the caller, never swallowed
+            outcomes.put((time.monotonic(), False, exc))
+        else:
+            outcomes.put((time.monotonic(), True, value))
+
     threads = []
     for name, target, argument in jobs:
-        thread = threading.Thread(target=_capture(target, failures), name=name, args=(argument,), daemon=True)
+        thread = threading.Thread(target=run, name=name, args=(target, argument), daemon=True)
         thread.start()
         threads.append(thread)
     for thread in threads:
         thread.join(timeout=max(0.0, deadline - time.monotonic()))
-    return failures
 
-
-def _capture(target: Callable[[Any], None], failures: list[BaseException]) -> Callable[[Any], None]:
-    def run(argument: Any) -> None:
+    values: list[Any] = []
+    failures: list[BaseException] = []
+    while True:
         try:
-            target(argument)
-        except Exception as exc:  # noqa: BLE001 - reported to the caller, never swallowed
-            failures.append(exc)
-
-    return run
+            completed_at, succeeded, value = outcomes.get_nowait()
+        except queue.Empty:
+            break
+        if completed_at > deadline:
+            continue
+        if succeeded:
+            values.append(value)
+        else:
+            failures.append(value)
+    return tuple(values), tuple(failures)
