@@ -11,7 +11,7 @@ import os
 import tempfile
 from contextlib import suppress
 from pathlib import Path, PurePosixPath
-from typing import Any, TypeGuard
+from typing import Any, TypeGuard, cast
 
 SCHEMA_VERSION = 1
 
@@ -86,6 +86,11 @@ class Reason:
     MEASUREMENT_WINDOW_CLOCK_MISMATCH = "measurement_window_clock_mismatch"
     MEASUREMENT_WINDOW_NOT_BRACKETED = "measurement_window_not_bracketed"
     SAMPLE_GAP_EXCEEDED = "sample_gap_exceeded"
+
+
+ALL_REASON_CODES: frozenset[str] = frozenset(
+    cast(str, value) for name, value in vars(Reason).items() if name.isupper() and isinstance(value, str)
+)
 
 
 FATAL_LIFECYCLE_REASONS = (

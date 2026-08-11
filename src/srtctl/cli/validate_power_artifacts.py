@@ -10,6 +10,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from srtctl.core.power.topology import WORKER_ROLES
 from srtctl.core.power.validate_artifacts import validate_power_artifacts
 
 
@@ -18,6 +19,8 @@ def _expect_role(item: str) -> tuple[str, int]:
     role, sep, count_text = item.partition("=")
     if not sep or not role:
         raise argparse.ArgumentTypeError(f"expected ROLE=COUNT, got {item!r}")
+    if role not in WORKER_ROLES:
+        raise argparse.ArgumentTypeError(f"ROLE must be one of {', '.join(WORKER_ROLES)}, got {role!r}")
     try:
         count = int(count_text)
     except ValueError:

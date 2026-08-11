@@ -4,11 +4,21 @@
 """Offline re-validation of a retained power artifact package."""
 
 import json
+from pathlib import Path
 
 import pytest
 
+import srtctl.core.power.validate_artifacts as power_validator
 from srtctl.cli.validate_power_artifacts import main
-from srtctl.core.power.contract import MANIFEST_FILENAME, SAMPLES_FILENAME, WINDOWS_DIRNAME, atomic_write_json
+from srtctl.core.power.contract import (
+    ALL_REASON_CODES,
+    MANIFEST_FILENAME,
+    MAX_SAMPLE_GAP_SECONDS,
+    SAMPLES_FILENAME,
+    WINDOWS_DIRNAME,
+    Reason,
+    atomic_write_json,
+)
 from srtctl.core.power.manifest import (
     STATUS_COMPLETE,
     DcgmExporterIdentity,
@@ -153,6 +163,10 @@ def _validate(power_dir, log_dir, **kwargs):
 
 
 class TestRetainedPackage:
+    def test_core_module_documents_the_functional_console_entrypoint(self):
+        assert "srtctl-validate-power" in power_validator.__doc__
+        assert "python -m srtctl.core.power.validate_artifacts" not in power_validator.__doc__
+
     def test_valid_package_passes_every_canary_assertion(self, package):
         log_dir, power_dir = package()
 
@@ -191,6 +205,7 @@ class TestIndependenceFromTheManifestBooleans:
 
         assert report.ok is False
         assert any("expected_device_missing" in failure for failure in report.failures)
+        assert any("publication_valid" in failure and "recomputed" in failure for failure in report.failures)
         assert main(["--power-dir", str(power_dir), "--result-root", str(log_dir)]) == 1
         assert "expected_device_missing" in capsys.readouterr().out
 
@@ -213,8 +228,68 @@ class TestIndependenceFromTheManifestBooleans:
         assert report.ok is False
         assert any("sample_gap_exceeded" in failure for failure in report.failures)
 
+    def test_reversed_short_window_is_rejected_end_to_end(self, package):
+        log_dir, power_dir = package()
+        window_path = power_dir / WINDOWS_DIRNAME / f"{RESULT_STEM}.json"
+        result_path = log_dir / RESULT_SUBDIR / f"{RESULT_STEM}.json"
+        for path in (window_path, result_path):
+            payload = json.loads(path.read_text())
+            payload["benchmark_start_time_unix"] = START
+            payload["benchmark_end_time_unix"] = START - 0.1
+            payload["duration"] = 0.1
+            atomic_write_json(path, payload)
+
+        report = _validate(power_dir, log_dir)
+
+        assert report.ok is False
+        assert any(Reason.MEASUREMENT_WINDOW_CLOCK_MISMATCH in failure for failure in report.failures)
+
 
 class TestTopologyAssertions:
+    def test_zero_count_asserts_that_a_known_role_is_absent(self, package):
+        log_dir, power_dir = package()
+
+        report = _validate(
+            power_dir,
+            log_dir,
+            expected_roles={"prefill": 4, "decode": 4, "agg": 0},
+        )
+
+        assert report.ok is True
+        assert report.failures == ()
+
+    def test_zero_count_rejects_a_role_that_is_present(self, package):
+        processes = [
+            *_processes(),
+            Process(
+                node="node-c",
+                gpu_indices=frozenset(range(4)),
+                sys_port=8083,
+                http_port=30000,
+                endpoint_mode="agg",
+                endpoint_index=0,
+                het_group=2,
+            ),
+        ]
+        log_dir, power_dir = package(processes=processes)
+
+        report = _validate(
+            power_dir,
+            log_dir,
+            expected_roles={"prefill": 4, "decode": 4, "agg": 0},
+        )
+
+        assert report.ok is False
+        assert any("expected 0 agg GPUs" in failure for failure in report.failures)
+
+    def test_unknown_zero_count_role_is_rejected_by_the_direct_api(self, package):
+        log_dir, power_dir = package()
+
+        report = _validate(power_dir, log_dir, expected_roles={"bogus": 0})
+
+        assert report.ok is False
+        assert any("unknown expected roles" in failure for failure in report.failures)
+
     def test_shared_het_group_fails_the_distinct_group_requirement(self, package):
         log_dir, power_dir = package(processes=_processes(decode_het_group=0))
 
@@ -331,13 +406,27 @@ class TestWireContract:
             ("unit", "mW"),
             ("power_scope", "whole_node"),
             ("timestamp_source", "worker_node_clock"),
+            ("producer_version", ""),
+            ("producer_version", {}),
+            ("producer_git_commit", "abc123"),
+            ("job_id", ""),
+            ("run_name", []),
             ("started_at_unix", None),
             ("stopped_at_unix", None),
             ("sample_interval_seconds", 0),
+            ("sample_interval_seconds", MAX_SAMPLE_GAP_SECONDS + 0.1),
             ("request_timeout_seconds", -1.0),
+            ("max_scrape_duration_seconds", -0.1),
+            ("max_scrape_duration_seconds", float("nan")),
+            ("max_scrape_duration_seconds", {}),
             ("scrape_count", -1),
             ("sample_row_count", "many"),
+            ("publication_valid", None),
+            ("publication_valid", "true"),
+            ("publication_valid", 1),
             ("reason_codes", "not-a-list"),
+            ("reason_codes", ["not_a_v1_reason"]),
+            ("reason_codes", ["endpoint_timeout", "endpoint_timeout"]),
             ("dcgm_exporter", None),
         ],
     )
@@ -364,9 +453,38 @@ class TestWireContract:
         assert any("precedes" in failure for failure in report.failures)
 
     @pytest.mark.parametrize(
+        ("field", "value", "expected_failure"),
+        [
+            ("started_at_unix", START - 1.0, "samples.csv starts"),
+            ("stopped_at_unix", END + 1.0, "samples.csv ends"),
+        ],
+    )
+    def test_manifest_lifecycle_must_contain_all_samples(self, package, field, value, expected_failure):
+        log_dir, power_dir = package()
+        manifest = json.loads((power_dir / MANIFEST_FILENAME).read_text())
+        manifest[field] = value
+        atomic_write_json(power_dir / MANIFEST_FILENAME, manifest)
+
+        report = _validate(power_dir, log_dir)
+
+        assert report.ok is False
+        assert any(expected_failure in failure for failure in report.failures)
+
+    def test_samples_may_equal_the_manifest_lifecycle_boundaries(self, package):
+        log_dir, power_dir = package()
+        manifest = json.loads((power_dir / MANIFEST_FILENAME).read_text())
+        manifest["started_at_unix"] = START - 2.0
+        manifest["stopped_at_unix"] = END + 2.0
+        atomic_write_json(power_dir / MANIFEST_FILENAME, manifest)
+
+        assert _validate(power_dir, log_dir).ok is True
+
+    @pytest.mark.parametrize(
         ("field", "value"),
         [
             ("container_image_sha256", 123),
+            ("container_image_sha256", "x"),
+            ("container_image_sha256", "A" * 64),
             ("port", None),
             ("port", 0),
             ("port", True),
@@ -395,12 +513,24 @@ class TestWireContract:
         assert report.ok is False
         assert any("container_image_resolved" in failure for failure in report.failures)
 
-    def test_the_stored_verdict_itself_is_ignored(self, package):
-        """publication_valid=false must not veto an otherwise-valid package."""
+    def test_compatible_older_producer_identity_is_accepted(self, package):
+        log_dir, power_dir = package()
+        manifest = json.loads((power_dir / MANIFEST_FILENAME).read_text())
+        manifest["producer_version"] = "0.1.0-older"
+        manifest["producer_git_commit"] = None
+        manifest["dcgm_exporter"]["container_image_sha256"] = None
+        atomic_write_json(power_dir / MANIFEST_FILENAME, manifest)
+
+        assert _validate(power_dir, log_dir).ok is True
+
+    def test_a_false_stored_verdict_vetoes_an_otherwise_valid_package(self, package):
         log_dir, power_dir = package(publication_valid=False)
 
         assert json.loads((power_dir / MANIFEST_FILENAME).read_text())["publication_valid"] is False
-        assert _validate(power_dir, log_dir).ok is True
+        report = _validate(power_dir, log_dir)
+
+        assert report.ok is False
+        assert any("publication_valid" in failure and "recomputed" in failure for failure in report.failures)
 
 
 class TestEvidenceReconciliation:
@@ -464,6 +594,33 @@ class TestEvidenceReconciliation:
 
         assert report.ok is False
         assert any("artifact_errors does not match" in failure for failure in report.failures)
+
+    def test_a_stale_disk_derived_reason_is_rejected(self, package):
+        report = self._damaged(package, lambda m: m.update(reason_codes=[Reason.MEASUREMENT_WINDOW_MISSING]))
+
+        assert report.ok is False
+        assert any("disk-derived reason_codes mismatch" in failure for failure in report.failures)
+
+    def test_a_missing_disk_derived_reason_is_rejected(self, package):
+        expected = build_expected_devices(_processes())
+        log_dir, power_dir = package(rows=_rows(expected, step=4.0), publication_valid=False)
+
+        report = _validate(power_dir, log_dir)
+
+        assert report.ok is False
+        assert any("disk-derived reason_codes mismatch" in failure for failure in report.failures)
+
+    def test_a_runtime_only_reason_does_not_need_disk_reproduction(self, package):
+        report = self._damaged(package, lambda m: m.update(reason_codes=[Reason.ENDPOINT_TIMEOUT]))
+
+        assert report.ok is True
+        assert report.failures == ()
+
+    def test_every_v1_reason_has_exactly_one_reconciliation_class(self):
+        assert power_validator._DISK_DERIVED_REASON_CODES.isdisjoint(power_validator._RUNTIME_ONLY_REASON_CODES)
+        assert (
+            power_validator._DISK_DERIVED_REASON_CODES | power_validator._RUNTIME_ONLY_REASON_CODES
+        ) == ALL_REASON_CODES
 
     def test_zero_scrape_count_with_samples_present_is_rejected(self, package):
         report = self._damaged(package, lambda m: m.update(scrape_count=0))
@@ -588,7 +745,7 @@ class TestDamagedManifest:
         assert report.ok is False
         assert any(expected_failure in failure for failure in report.failures)
 
-    @pytest.mark.parametrize("value", ["prefill", "prefill=x", "=4", "prefill=-1"])
+    @pytest.mark.parametrize("value", ["prefill", "prefill=x", "=4", "prefill=-1", "bogus=0"])
     def test_a_malformed_expect_role_is_a_usage_error(self, package, value):
         log_dir, power_dir = package()
 
@@ -636,3 +793,20 @@ class TestDamagedManifest:
 
         assert report.ok is False
         assert any("manifest unreadable" in failure for failure in report.failures)
+
+    def test_unreadable_windows_directory_is_a_clean_cli_failure(self, package, monkeypatch, capsys):
+        log_dir, power_dir = package()
+        windows_dir = power_dir / WINDOWS_DIRNAME
+        original_iterdir = Path.iterdir
+
+        def fail_for_windows(path):
+            if path == windows_dir:
+                raise PermissionError("permission denied")
+            return original_iterdir(path)
+
+        monkeypatch.setattr(Path, "iterdir", fail_for_windows)
+
+        code = main(["--power-dir", str(power_dir), "--result-root", str(log_dir)])
+
+        assert code == 1
+        assert Reason.MEASUREMENT_WINDOW_ARTIFACT_PATH_INVALID in capsys.readouterr().out

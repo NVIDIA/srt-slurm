@@ -44,7 +44,7 @@ telemetry:
   required: true                    # exit non-zero when artifacts are unpublishable
   startup_timeout_seconds: 30
   request_timeout_seconds: 2
-  collector_join_timeout_seconds: 10
+  collector_join_timeout_seconds: 12
   dcgm_exporter:
     container_image: dcgm-exporter  # alias, path, or registry URI
     port: 9401
@@ -57,6 +57,9 @@ inconsistent values with actionable messages; in particular
 `default_frequency` must not exceed the 3-second max sample gap the validator
 accepts, or every window would fail `sample_gap_exceeded`. Telemetry stays
 disabled by default and existing `provider: scraper` recipes are unchanged.
+The collector join timeout must exceed two complete request-cycle budgets
+(`2 * (2 * request_timeout_seconds + 1 second)`), covering a scrape already in
+flight when shutdown starts plus the final bracketing scrape.
 
 ## Artifacts
 
@@ -100,8 +103,9 @@ job that was simply cancelled can record `exporter_exited`.
 
 ## Re-validating a retained run
 
-The artifact package is self-describing; the manifest supplies the expected
-topology, never the verdict:
+The artifact package is self-describing. The manifest supplies producer
+identity, expected topology, runtime-only failure history, and a stored
+verdict; the validator does not trust that verdict on its own:
 
 ```bash
 srtctl-validate-power \
@@ -111,6 +115,12 @@ srtctl-validate-power \
   --require-distinct-het-groups
 ```
 
-It exits `0` when the package is publishable and `1` otherwise, printing each
-failing reason code. The `--expect-*` flags optionally assert an expected job
-shape for hardware canaries.
+It recomputes every disk-derived claim from `samples.csv`, the result files,
+and `windows/`, then requires the stored disk-derived reason subset and
+`publication_valid` verdict to agree. Runtime-only reasons such as HTTP,
+exporter-process, and collector failures cannot be reconstructed after the
+live job is gone, so they are checked for a known v1 enum value and lifecycle
+consistency instead. Exit status is `0` only when the recomputed package is
+publishable, the stored verdict is `true`, and the two agree; otherwise it is
+`1` and every failure is printed. The `--expect-*` flags optionally assert an
+expected job shape for hardware canaries.
