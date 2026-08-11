@@ -2103,6 +2103,7 @@ class TestVLLMDataParallelMode:
         runtime.model_path = Path("/model")
         runtime.is_hf_model = False
         runtime.frontend_port = 9000
+        runtime.network_interface = "eth0"
 
         with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
             cmd = backend.build_worker_command(
@@ -3213,6 +3214,7 @@ class TestDirectVllmMultiNode:
         runtime.model_path = Path("/model")
         runtime.is_hf_model = False
         runtime.frontend_port = 9000
+        runtime.network_interface = "eth0"
 
         with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
             return backend.build_worker_command(
@@ -3293,8 +3295,8 @@ class TestDirectVllmMultiNode:
         assert "--master-addr" not in cmd
         assert "--headless" not in cmd
 
-    def test_direct_vllm_strips_recipe_orchestration_flags(self):
-        """Recipe orchestration flags are ignored; srtslurm owns leader/headless wiring."""
+    def test_direct_vllm_strips_derived_flags_but_keeps_master_port(self):
+        """Topology flags are ignored, while the rendezvous-port override reaches every rank."""
         leader, worker = self._make_processes(["node0", "node1"])
         from srtctl.backends import VLLMProtocol, VLLMServerConfig
 
@@ -3310,14 +3312,15 @@ class TestDirectVllmMultiNode:
             )
         )
         from pathlib import Path
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import MagicMock, call, patch
 
         runtime = MagicMock()
         runtime.model_path = Path("/model")
         runtime.is_hf_model = False
         runtime.frontend_port = 9000
+        runtime.network_interface = "ib0"
 
-        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1") as mock_get_hostname_ip:
             leader_cmd = backend.build_worker_command(
                 process=leader,
                 endpoint_processes=[leader, worker],
@@ -3335,8 +3338,9 @@ class TestDirectVllmMultiNode:
         assert worker_cmd.count("--headless") == 1
         assert leader_cmd[leader_cmd.index("--master-addr") + 1] == "10.0.0.1"
         assert "10.9.9.9" not in leader_cmd
-        assert "--master-port" not in leader_cmd
-        assert "--master-port" not in worker_cmd
+        assert leader_cmd[leader_cmd.index("--master-port") + 1] == "26300"
+        assert worker_cmd[worker_cmd.index("--master-port") + 1] == "26300"
+        assert mock_get_hostname_ip.call_args_list == [call("node0", "ib0"), call("node0", "ib0")]
 
     def test_no_dp_launch_mode_warning_for_direct_vllm(self, caplog):
         """dp_launch_mode does not apply here: vllm serve owns the local DP ranks."""

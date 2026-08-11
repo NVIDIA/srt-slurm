@@ -486,7 +486,7 @@ class TestDryRunVllmOrchestrationWarnings:
         assert "WARNING:" in output
         assert "vllm_config.aggregated.headless" in output
         assert "vllm_config.aggregated.master-addr" in output
-        assert "vllm_config.aggregated.master-port" in output
+        assert "vllm_config.aggregated.master-port" not in output
 
     def test_clean_recipe_has_no_orchestration_warnings(self, capsys):
         config = _make_config(

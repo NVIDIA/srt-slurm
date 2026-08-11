@@ -108,8 +108,9 @@ class TestTelemetryConfigGeneration:
         assert 'name = "frontend0"' in config_text
 
     @patch("srtctl.core.telemetry.get_hostname_ip")
-    def test_vllm_frontend_skips_nonleader_agg_metrics(self, mock_get_hostname_ip):
+    def test_vllm_frontend_targets_only_agg_leader_metrics(self, mock_get_hostname_ip):
         mock_get_hostname_ip.side_effect = lambda host, interface=None: {
+            "head": "10.0.0.10",
             "node-a": "10.0.0.1",
             "node-b": "10.0.0.2",
         }[host]
@@ -146,7 +147,7 @@ class TestTelemetryConfigGeneration:
         ]
         topology = FrontendTopology(
             nginx_node=None,
-            frontend_nodes=["node-a"],
+            frontend_nodes=["head"],
             frontend_port=8000,
             public_port=8000,
         )
@@ -161,6 +162,9 @@ class TestTelemetryConfigGeneration:
 
         assert 'name = "backend_agg0_rank0"' in config_text
         assert 'url = "http://10.0.0.1:8000/metrics"' in config_text
+        assert 'name = "frontend0"' in config_text
+        assert config_text.count('url = "http://10.0.0.1:8000/metrics"') == 2
+        assert "10.0.0.10:8000" not in config_text
         assert "backend_agg0_rank1" not in config_text
         assert "10.0.0.2:8000" not in config_text
 

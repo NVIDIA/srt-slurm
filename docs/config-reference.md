@@ -388,6 +388,10 @@ workers. Multi-node coordination flags (`--master-addr`, `--nnodes`,
 `--node-rank`, `--headless`) are derived from the allocated topology — **do not
 set them in the recipe**.
 
+`master-port` / `master_port` remains an optional recipe override and is passed
+to every node rank. Set it when jobs may share a leader node and need distinct
+vLLM rendezvous ports; otherwise vLLM's default is used.
+
 **Topology-managed `vllm_config` keys**
 
 The following keys are owned by srtctl and are stripped at runtime if present in
@@ -396,7 +400,6 @@ The following keys are owned by srtctl and are stripped at runtime if present in
 - `headless`
 - `host`, `port`
 - `master-addr` / `master_addr`
-- `master-port` / `master_port`
 - `nnodes`
 - `node-rank` / `node_rank`
 

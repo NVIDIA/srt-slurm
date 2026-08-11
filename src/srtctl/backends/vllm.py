@@ -56,7 +56,6 @@ _VLLM_ORCHESTRATION_FLAGS = frozenset(
         "host",
         "port",
         "master-addr",
-        "master-port",
         "nnodes",
         "node-rank",
     }
@@ -763,7 +762,7 @@ class VLLMProtocol:
         is_multi_node = len(endpoint_nodes) > 1
 
         # Get leader IP for distributed init
-        leader_ip = get_hostname_ip(endpoint_nodes[0])
+        leader_ip = get_hostname_ip(endpoint_nodes[0], runtime.network_interface)
 
         # Determine model path: HF model ID or container mount path
         # For HF models (hf:prefix), model_path contains the HF model ID (e.g., "facebook/opt-125m")
