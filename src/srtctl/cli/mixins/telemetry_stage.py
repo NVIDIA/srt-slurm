@@ -230,9 +230,10 @@ class TelemetryStageMixin:
         """Finalize the power session and fold required-mode invalidity into the exit code.
 
         Runs before ``ProcessRegistry.cleanup()`` so the writer is closed and
-        the manifest is durable while the exporters are still owned. Telemetry
-        never turns a passing benchmark into a crash: an unexpected finalizer
-        error is recorded and cleanup continues.
+        the manifest is durable while the exporters are still owned. Expected
+        measurement invalidity follows required/best-effort policy. An
+        unexpected finalizer exception is an operational failure: it is logged,
+        forces a nonzero exit, and still allows process cleanup to continue.
         """
         session = getattr(self, "_power_session", None)
         if session is None:
