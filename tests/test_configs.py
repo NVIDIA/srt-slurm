@@ -3342,6 +3342,53 @@ class TestDirectVllmMultiNode:
         assert worker_cmd[worker_cmd.index("--master-port") + 1] == "26300"
         assert mock_get_hostname_ip.call_args_list == [call("node0", "ib0"), call("node0", "ib0")]
 
+    def test_direct_vllm_logs_overridden_recipe_flags(self, caplog):
+        """A flag that silently vanishes is undebuggable, so report recipe -> effective."""
+        import logging
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+
+        leader, worker = self._make_processes(["node0", "node1"])
+        backend = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                aggregated={"headless": True, "master-addr": "10.9.9.9", "nnodes": 8}
+            )
+        )
+        runtime = MagicMock()
+        runtime.model_path = Path("/model")
+        runtime.is_hf_model = False
+        runtime.frontend_port = 9000
+        runtime.network_interface = "ib0"
+
+        with (
+            patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
+            caplog.at_level(logging.WARNING, logger="srtctl.backends.vllm"),
+        ):
+            backend.build_worker_command(
+                process=leader,
+                endpoint_processes=[leader, worker],
+                runtime=runtime,
+                frontend_type="vllm",
+            )
+
+        assert "--master-addr=10.9.9.9 -> 10.0.0.1" in caplog.text
+        assert "--nnodes=8 -> 2" in caplog.text
+        # The leader owns the API server, so the recipe's headless maps to nothing.
+        assert "--headless=True -> not passed" in caplog.text
+
+    def test_direct_vllm_override_report_is_quiet_without_recipe_flags(self, caplog):
+        """No report when the recipe leaves the topology flags alone."""
+        import logging
+
+        leader, worker = self._make_processes(["node0", "node1"])
+
+        with caplog.at_level(logging.WARNING, logger="srtctl.backends.vllm"):
+            self._build_command(leader, [leader, worker])
+
+        assert "Overriding topology-managed" not in caplog.text
+
     def test_dynamo_keeps_recipe_orchestration_flags_and_default_resolution(self):
         """Direct-vLLM topology ownership must not change existing Dynamo commands."""
         leader, worker = self._make_processes(["node0", "node1"])

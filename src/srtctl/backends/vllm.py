@@ -73,31 +73,53 @@ def normalize_vllm_config_key(key: str) -> str:
     return str(key).replace("_", "-")
 
 
-def _pop_flags(config: dict[str, Any], flags: frozenset[str]) -> list[str]:
-    found: list[str] = []
+def _pop_flags(config: dict[str, Any], flags: frozenset[str]) -> dict[str, Any]:
+    found: dict[str, Any] = {}
     for key in list(config.keys()):
         normalized = normalize_vllm_config_key(key)
         if normalized in flags:
-            config.pop(key)
-            if normalized not in found:
-                found.append(normalized)
+            found[normalized] = config.pop(key)
     return found
 
 
-def pop_vllm_orchestration_flags(config: dict[str, Any]) -> list[str]:
+def pop_vllm_orchestration_flags(config: dict[str, Any]) -> dict[str, Any]:
     """Remove topology-managed vLLM flags from a mode config dict.
 
-    Returns normalized flag names that were present.
+    Returns the normalized flag names that were present, mapped to the value the
+    recipe asked for, so callers can report what they overrode.
     """
     return _pop_flags(config, _VLLM_ORCHESTRATION_FLAGS)
 
 
-def pop_vllm_api_server_flags(config: dict[str, Any]) -> list[str]:
+def pop_vllm_api_server_flags(config: dict[str, Any]) -> dict[str, Any]:
     """Remove API-server-only vLLM flags from a mode config dict.
 
-    Returns normalized flag names that were present.
+    Returns the normalized flag names that were present, mapped to the recipe value.
     """
     return _pop_flags(config, _VLLM_API_SERVER_ONLY_FLAGS)
+
+
+def _log_overridden_recipe_flags(
+    overridden: dict[str, Any],
+    effective: dict[str, str],
+    node: str,
+) -> None:
+    """Report recipe flags srtslurm took over, alongside the values it used.
+
+    Without this the override is invisible at runtime: the flag simply vanishes
+    from the worker command and the recipe still claims otherwise.
+    """
+    if not overridden:
+        return
+
+    changes = ", ".join(
+        f"--{flag}={value!s} -> {effective.get(flag, 'not passed')}" for flag, value in overridden.items()
+    )
+    logger.warning(
+        "Overriding topology-managed vllm_config flags on %s: %s. srtslurm derives these from the allocation.",
+        node,
+        changes,
+    )
 
 
 def find_vllm_orchestration_recipe_flags(backend: VLLMProtocol) -> list[tuple[str, str]]:
@@ -794,14 +816,19 @@ class VLLMProtocol:
             if mode != "agg":
                 raise ValueError("frontend.type: vllm supports aggregate vLLM jobs only")
 
-            pop_vllm_orchestration_flags(config)
+            overridden = pop_vllm_orchestration_flags(config)
             config.pop("connector", None)
             config.setdefault("served-model-name", served_model_name)
 
             node_rank = endpoint_nodes.index(process.node)
             cmd.extend(["vllm", "serve", model_arg])
+            # Collected as the command is built so the override report below can
+            # name the value srtslurm actually passed for each flag it took over.
+            srtslurm_owned: dict[str, str] = {}
             if node_rank == 0:
                 cmd.extend(["--host", "0.0.0.0", "--port", str(runtime.frontend_port)])
+                srtslurm_owned["host"] = "0.0.0.0"
+                srtslurm_owned["port"] = str(runtime.frontend_port)
             if is_multi_node:
                 # vLLM-native multi-node serve (torchrun-style): the leader owns
                 # the OpenAI server; other node ranks run headless engine workers.
@@ -815,16 +842,21 @@ class VLLMProtocol:
                         str(node_rank),
                     ]
                 )
+                srtslurm_owned["master-addr"] = leader_ip
+                srtslurm_owned["nnodes"] = str(len(endpoint_nodes))
+                srtslurm_owned["node-rank"] = str(node_rank)
                 if node_rank > 0:
                     cmd.append("--headless")
+                    srtslurm_owned["headless"] = "true"
                     dropped = pop_vllm_api_server_flags(config)
                     if dropped:
                         logger.info(
-                            "Dropping %s on headless node rank %d (%s); API-server flags apply to rank 0 only",
-                            ", ".join(f"--{flag}" for flag in dropped),
+                            "Dropping %s on headless node rank %d (%s); headless ranks run no API server",
+                            ", ".join(f"--{flag}={value!s}" for flag, value in dropped.items()),
                             node_rank,
                             process.node,
                         )
+            _log_overridden_recipe_flags(overridden, srtslurm_owned, process.node)
             if not self.set_cuda_visible_devices:
                 device_ids = ",".join(str(i) for i in sorted(process.gpu_indices))
                 if device_ids:
