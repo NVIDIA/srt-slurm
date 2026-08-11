@@ -164,7 +164,7 @@ class TelemetryStageMixin:
                 sample_interval_seconds=telemetry.default_frequency,
                 startup_timeout_seconds=telemetry.startup_timeout_seconds,
                 request_timeout_seconds=telemetry.request_timeout_seconds,
-                collector_join_timeout_seconds=telemetry.collector_join_timeout_seconds,
+                collector_join_timeout_seconds=telemetry.resolved_collector_join_timeout_seconds,
                 required=telemetry.required,
                 exporter_port=exporter_config.port,
                 exporter_image=exporter_config.container_image,
@@ -240,13 +240,14 @@ class TelemetryStageMixin:
             return exit_code
 
         reaped = getattr(self, "benchmark_child_reaped", None)
+        allows_window_mutation = getattr(self, "benchmark_child_allows_window_mutation", None)
         if reaped is False:
             session.record_reason(Reason.BENCHMARK_CHILD_REAP_TIMEOUT)
 
         try:
             outcome = session.stop_and_finalize(
                 interrupted=interrupted,
-                allow_window_mutation=reaped is True,
+                allow_window_mutation=allows_window_mutation is True,
             )
         except Exception:
             logger.exception("Power telemetry finalization failed")

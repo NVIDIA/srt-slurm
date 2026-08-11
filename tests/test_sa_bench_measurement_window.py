@@ -224,6 +224,7 @@ class TestWindowStates:
 
         def fail(fd, *_args, **_kwargs):
             captured["fd"] = fd
+            assert _kwargs["closefd"] is False
             raise OSError("too many open files")
 
         monkeypatch.setattr(measurement_window.os, "fdopen", fail)
@@ -239,6 +240,34 @@ class TestWindowStates:
         finally:
             with suppress(OSError):
                 measurement_window.os.close(captured["fd"])
+
+    def test_atomic_writer_does_not_close_a_reused_fd_after_wrapper_failure(self, logs, monkeypatch):
+        real_fdopen = measurement_window.os.fdopen
+        replacement_fd = None
+        replacement_path = logs / "replacement"
+
+        def fail_after_wrapper_created(fd, *args, **kwargs):
+            nonlocal replacement_fd
+            handle = real_fdopen(fd, *args, **kwargs)
+            handle.close()
+            replacement_fd = measurement_window.os.open(
+                replacement_path,
+                measurement_window.os.O_CREAT | measurement_window.os.O_WRONLY,
+            )
+            raise OSError("wrapper setup failed")
+
+        monkeypatch.setattr(measurement_window.os, "fdopen", fail_after_wrapper_created)
+        target = logs / "power" / WINDOWS_DIRNAME / "failed.json"
+        try:
+            with pytest.raises(OSError, match="wrapper setup failed"):
+                measurement_window._atomic_write_json(str(target), {"status": "running"})
+
+            assert replacement_fd is not None
+            measurement_window.os.fstat(replacement_fd)
+        finally:
+            if replacement_fd is not None:
+                with suppress(OSError):
+                    measurement_window.os.close(replacement_fd)
 
     def test_atomic_replacement_leaves_no_partial_file(self, logs):
         window = _create(logs)
