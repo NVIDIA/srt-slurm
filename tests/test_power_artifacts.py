@@ -668,6 +668,26 @@ class TestMeasurementWindowArtifacts:
         assert row.power_coverage_valid is False
         assert row.reason_codes == (Reason.MEASUREMENT_WINDOW_CLOCK_MISMATCH,)
 
+    @pytest.mark.parametrize(
+        ("field", "boolean_value"),
+        [
+            ("benchmark_start_time_unix", False),
+            ("benchmark_end_time_unix", True),
+            ("duration", True),
+        ],
+    )
+    def test_result_timing_fields_reject_boolean_numbers(self, tmp_path, field, boolean_value):
+        self._write_completed_window(tmp_path, start=0.0, end=1.0, duration=1.0)
+        result_path = tmp_path / "result.json"
+        result = json.loads(result_path.read_text())
+        result[field] = boolean_value
+        result_path.write_text(json.dumps(result))
+
+        row, _ = self._validate(tmp_path)
+
+        assert row.power_coverage_valid is False
+        assert row.reason_codes == (Reason.MEASUREMENT_WINDOW_RESULT_MISMATCH,)
+
     def test_computed_device_gaps_are_retained_when_coverage_is_invalid(self, tmp_path):
         self._write_completed_window(tmp_path, start=1000.0, end=1004.0, duration=4.0)
         observed = derive_observed_devices(

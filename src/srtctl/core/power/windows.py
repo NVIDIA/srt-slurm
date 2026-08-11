@@ -316,10 +316,15 @@ def _check_result(window: _ParsedWindow, result_root: Path) -> list[str]:
 
     if window.end_unix is None or window.duration is None:
         return [Reason.MEASUREMENT_WINDOW_MALFORMED]
-    if (
-        result.get("benchmark_start_time_unix") != window.start_unix
-        or result.get("benchmark_end_time_unix") != window.end_unix
-        or result.get("duration") != window.duration
+    result_timings = (
+        result.get("benchmark_start_time_unix"),
+        result.get("benchmark_end_time_unix"),
+        result.get("duration"),
+    )
+    if not all(is_finite_number(value) for value in result_timings) or result_timings != (
+        window.start_unix,
+        window.end_unix,
+        window.duration,
     ):
         return [Reason.MEASUREMENT_WINDOW_RESULT_MISMATCH]
 
