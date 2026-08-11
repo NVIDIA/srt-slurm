@@ -128,6 +128,7 @@ class PowerTelemetrySession:
         self._state_lock = threading.Lock()
         self._exporters_lock = threading.Lock()
         self._stop = threading.Event()
+        self._ready = threading.Event()
         self._thread: threading.Thread | None = None
         self._writer: SampleWriter | None = None
         self._exporters: list[ManagedProcess] = []
@@ -138,6 +139,8 @@ class PowerTelemetrySession:
         self._reasons: list[str] = []
         self._outcome: SessionOutcome | None = None
         self._mutation_disabled = False
+        expected_device_list = list(expected_devices)
+        self._expected_device_keys = frozenset(device.key for device in expected_device_list)
 
         self._manifest = PowerManifest(
             job_id=settings.job_id,
@@ -148,7 +151,7 @@ class PowerTelemetrySession:
             started_at_unix=time.time(),
             producer_git_commit=settings.producer_git_commit,
             dcgm_exporter=_exporter_identity(settings),
-            expected_devices=list(expected_devices),
+            expected_devices=expected_device_list,
             expected_windows=list(expected_windows),
         )
 
@@ -246,20 +249,13 @@ class PowerTelemetrySession:
         self._thread.start()
 
     def _wait_for_readiness(self, deadline: float) -> bool:
-        """Wait for one *complete* scrape covering every expected device.
+        """Wait for one persisted *complete* scrape covering every expected device.
 
         The union of all scrapes is not enough: a flapping exporter could
         contribute one node per cycle and never have all devices live at once.
         """
-        expected_keys = {device.key for device in self._manifest.expected_devices}
-        while time.monotonic() < deadline:
-            rows = read_samples(self.samples_path)[0]
-            if expected_keys and rows:
-                latest = max(row.scrape_seq for row in rows)
-                observed = {(row.hostname, row.gpu_index) for row in rows if row.scrape_seq == latest}
-                if expected_keys <= observed:
-                    return True
-            time.sleep(0.02)
+        if self._ready.wait(timeout=max(0.0, deadline - time.monotonic())):
+            return True
 
         self.record_reason(Reason.EXPORTER_STARTUP_TIMEOUT)
         return False
@@ -311,6 +307,9 @@ class PowerTelemetrySession:
                 return 0
             self._writer.append(rows)
             self._writer.flush()
+            observed_keys = {(row.hostname, row.gpu_index) for row in rows}
+            if self._expected_device_keys and self._expected_device_keys <= observed_keys:
+                self._ready.set()
         return len(rows)
 
     def _poll(self, endpoint: PowerEndpoint, scrape_seq: int) -> _EndpointResult:

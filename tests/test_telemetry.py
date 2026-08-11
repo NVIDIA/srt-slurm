@@ -176,6 +176,29 @@ class TestDcgmPowerConfig:
         )
 
     @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            ("power", True),
+            ("nested/power", True),
+            ("./power", True),
+            ("power//samples", True),
+            ("", False),
+            (".", False),
+            ("/power", False),
+            ("~", False),
+            ("~/power", False),
+            ("../power", False),
+            ("power/../escape", False),
+        ],
+    )
+    def test_schema_path_copy_matches_the_power_contract(self, value, expected):
+        from srtctl.core import schema as schema_module
+        from srtctl.core.power import contract
+
+        assert schema_module._is_safe_relative_subpath(value) is expected
+        assert contract.is_safe_relative_subpath(value) is expected
+
+    @pytest.mark.parametrize(
         ("telemetry", "benchmark", "dedicated", "rejected"),
         [
             (_dcgm_power(), _sa_bench(), True, True),
