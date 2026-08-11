@@ -124,16 +124,18 @@ class PowerManifest:
     window_validations: list[WindowValidation] = field(default_factory=list)
     artifact_errors: list[ArtifactError] = field(default_factory=list)
     reason_codes: list[str] = field(default_factory=list)
+    _terminal_committed: bool = field(default=False, init=False, repr=False)
 
     def mark_terminal(self, *, status: str, stopped_at_unix: float, publication_valid: bool) -> None:
         """Freeze lifecycle state. Only ``complete`` may ever publish."""
-        if self.status in TERMINAL_STATUSES:
+        if self._terminal_committed or self.status in TERMINAL_STATUSES:
             raise RuntimeError(f"manifest is already terminal: {self.status!r}")
         if status not in TERMINAL_STATUSES:
             raise ValueError(f"not a terminal status: {status!r}")
         self.status = status
         self.stopped_at_unix = stopped_at_unix
         self.publication_valid = publication_valid and status == STATUS_COMPLETE
+        self._terminal_committed = True
 
     def to_dict(self) -> dict[str, Any]:
         return {

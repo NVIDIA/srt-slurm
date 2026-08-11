@@ -44,6 +44,10 @@ class ExpectedDevice:
     gpu_index: int
     assignments: tuple[DeviceAssignment, ...]
 
+    def __post_init__(self) -> None:
+        if not self.assignments:
+            raise ValueError("expected device requires at least one assignment")
+
     @property
     def key(self) -> DeviceKey:
         return (self.hostname, self.gpu_index)

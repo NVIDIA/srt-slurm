@@ -103,6 +103,8 @@ def convert_running_windows(windows_dir: Path, *, reason: str) -> int:
     """
     if not windows_dir.is_dir():
         return 0
+    if not _stays_below(windows_dir.parent, windows_dir.name):
+        return 0
 
     try:
         paths = sorted(windows_dir.glob("*.json"))
@@ -371,11 +373,12 @@ def _check_coverage(
 
 def _bracketing_sequence(times: Sequence[float], start: float, end: float) -> list[float] | None:
     """The last sample at or before start, every in-window sample, the first at or after end."""
-    before = [value for value in times if value <= start]
-    after = [value for value in times if value >= end]
+    ordered = sorted(times)
+    before = [value for value in ordered if value <= start]
+    after = [value for value in ordered if value >= end]
     if not before or not after:
         return None
-    inside = [value for value in times if start < value < end]
+    inside = [value for value in ordered if start < value < end]
     return [before[-1], *inside, after[0]]
 
 
