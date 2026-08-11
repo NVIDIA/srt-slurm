@@ -129,6 +129,7 @@ class PowerTelemetrySession:
         self._exporters_lock = threading.Lock()
         self._stop = threading.Event()
         self._ready = threading.Event()
+        self._ready_at_monotonic: float | None = None
         self._thread: threading.Thread | None = None
         self._writer: SampleWriter | None = None
         self._exporters: list[ManagedProcess] = []
@@ -254,7 +255,8 @@ class PowerTelemetrySession:
         The union of all scrapes is not enough: a flapping exporter could
         contribute one node per cycle and never have all devices live at once.
         """
-        if self._ready.wait(timeout=max(0.0, deadline - time.monotonic())):
+        self._ready.wait(timeout=max(0.0, deadline - time.monotonic()))
+        if self._ready_at_monotonic is not None and self._ready_at_monotonic < deadline:
             return True
 
         self.record_reason(Reason.EXPORTER_STARTUP_TIMEOUT)
@@ -308,7 +310,8 @@ class PowerTelemetrySession:
             self._writer.append(rows)
             self._writer.flush()
             observed_keys = {(row.hostname, row.gpu_index) for row in rows}
-            if self._expected_device_keys and self._expected_device_keys <= observed_keys:
+            if self._expected_device_keys and self._expected_device_keys <= observed_keys and not self._ready.is_set():
+                self._ready_at_monotonic = time.monotonic()
                 self._ready.set()
         return len(rows)
 

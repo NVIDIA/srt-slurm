@@ -360,6 +360,32 @@ class TestReadiness:
         assert ready is True
         session.stop_and_finalize()
 
+    def test_complete_scrape_after_the_startup_deadline_is_not_ready(self, tmp_path, exporters):
+        a = exporters(_body("a"))
+        b = exporters(_body("b"))
+        session = _session(tmp_path, _endpoints(("node-a", a.url), ("node-b", b.url)))
+        session.initialize()
+        session.collect_once()
+
+        assert session._wait_for_readiness(time.monotonic() - 1.0) is False
+
+        outcome = session.stop_and_finalize()
+        assert Reason.EXPORTER_STARTUP_TIMEOUT in outcome.reason_codes
+
+    def test_complete_scrape_before_deadline_survives_waiter_scheduling_delay(self, tmp_path, exporters):
+        a = exporters(_body("a"))
+        b = exporters(_body("b"))
+        session = _session(tmp_path, _endpoints(("node-a", a.url), ("node-b", b.url)))
+        session.initialize()
+        session.collect_once()
+        assert session._ready_at_monotonic is not None
+        deadline = session._ready_at_monotonic + 1.0
+
+        with patch("srtctl.core.power.session.time.monotonic", return_value=deadline + 1.0):
+            assert session._wait_for_readiness(deadline) is True
+
+        session.stop_and_finalize()
+
     def test_required_mode_reaches_readiness_when_every_device_reports(self, tmp_path, exporters):
         a = exporters(_body("a"))
         b = exporters(_body("b"))
