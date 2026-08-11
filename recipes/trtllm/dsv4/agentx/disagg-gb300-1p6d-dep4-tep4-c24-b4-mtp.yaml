@@ -71,7 +71,7 @@ backend:
       enable_chunked_prefill: true
       kv_cache_config:
         block_reuse_config:
-          block_reuse_policy: per_conversation
+          policy: per_conversation
           max_num_turns: 5
         dtype: fp8
         enable_block_reuse: true
