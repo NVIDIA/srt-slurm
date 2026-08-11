@@ -91,6 +91,19 @@ class FrontendProtocol(Protocol):
         """Parse health check response and return worker status."""
         ...
 
+    def get_backend_health_urls(
+        self,
+        backend: Any,
+        backend_processes: list["Process"],
+    ) -> list[str]:
+        """Return backend URLs that must be directly healthy before benchmarking.
+
+        Frontends that discover or gate their own backends return an empty list.
+        Static adapters may use this hook to require readiness at the exact URLs
+        they advertise to their router.
+        """
+        ...
+
     def start_frontends(
         self,
         topology: Any,  # FrontendTopology

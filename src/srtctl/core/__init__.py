@@ -37,6 +37,7 @@ from .health import (
     check_sglang_router_health,
     wait_for_etcd,
     wait_for_health,
+    wait_for_http_endpoints,
     wait_for_model,
     wait_for_port,
 )
@@ -140,6 +141,7 @@ __all__ = [
     "start_srun_process",
     "wait_for_etcd",
     "wait_for_health",
+    "wait_for_http_endpoints",
     "wait_for_model",
     # Health checks
     "wait_for_port",

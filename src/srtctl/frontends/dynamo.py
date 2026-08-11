@@ -50,6 +50,11 @@ class DynamoFrontend:
         """Parse dynamo /health endpoint response."""
         return check_dynamo_health(response_json, expected_prefill, expected_decode)
 
+    def get_backend_health_urls(self, backend: Any, backend_processes: list["Process"]) -> list[str]:
+        """Dynamo owns backend discovery and exposes readiness through its frontend."""
+        del backend, backend_processes
+        return []
+
     def get_frontend_args_list(self, args: dict[str, Any] | None) -> list[str]:
         """Convert frontend args dict to CLI arguments."""
         if not args:

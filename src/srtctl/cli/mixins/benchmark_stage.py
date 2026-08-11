@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from srtctl.core.fingerprint import format_identity_verification, verify_identity
-from srtctl.core.health import wait_for_model
+from srtctl.core.health import wait_for_http_endpoints, wait_for_model
 from srtctl.core.lockfile import collect_worker_fingerprints
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
 from srtctl.core.status import JobStage, JobStatus, StatusReporter
@@ -226,6 +226,27 @@ class BenchmarkStageMixin:
             if reporter:
                 reporter.report(JobStatus.FAILED, JobStage.BENCHMARK, "Workers failed health check")
             return 1
+
+        from srtctl.frontends import get_frontend
+
+        frontend = get_frontend(self.config.frontend.type)
+        backend_health_urls = frontend.get_backend_health_urls(self.config.backend, self.backend_processes)
+        if backend_health_urls:
+            logger.info(
+                "Frontend requires direct readiness from %d advertised backend URLs",
+                len(backend_health_urls),
+            )
+            if not wait_for_http_endpoints(
+                backend_health_urls,
+                poll_interval=float(hc.interval_seconds),
+                timeout=float(hc.max_attempts * hc.interval_seconds),
+                report_every=60.0,
+                stop_event=stop_event,
+            ):
+                logger.error("Advertised backend URLs did not become healthy")
+                if reporter:
+                    reporter.report(JobStatus.FAILED, JobStage.BENCHMARK, "Backends failed direct health check")
+                return 1
 
         logger.info("Server is healthy - starting benchmark")
 

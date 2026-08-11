@@ -46,6 +46,16 @@ class VLLMRouterFrontend(StaticRouterFrontend):
     pd_flag: ClassVar[str] = "--vllm-pd-disaggregation"
     process_name: ClassVar[str] = "vllm_router"
 
+    def get_backend_health_urls(self, backend: Any, backend_processes: list[Process]) -> list[str]:
+        """Return the exact logical vLLM endpoints advertised to Router.
+
+        Router expands node-local DP pools internally, but its worker-count view
+        can become complete before every advertised HTTP server is accepting
+        requests. Polling each logical server closes that readiness race without
+        changing the semantics of other frontend adapters.
+        """
+        return [f"{worker.url.rstrip('/')}/health" for worker in self.collect_workers(backend, backend_processes)]
+
     def get_managed_frontend_args(
         self,
         config: Any,

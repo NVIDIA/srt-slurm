@@ -102,6 +102,28 @@ def test_vllm_router_advertises_nixl_side_channel_port() -> None:
     assert workers == [RouterWorker("prefill", "http://10.0.0.1:30000", 13000)]
 
 
+def test_vllm_router_health_gates_every_advertised_2p2d_logical_worker() -> None:
+    frontend = VLLMRouterFrontend()
+    backend = MagicMock()
+    processes = [
+        SimpleNamespace(endpoint_mode="prefill", node="p0", http_port=6100, nixl_port=5400),
+        SimpleNamespace(endpoint_mode="prefill", node="p1", http_port=6100, nixl_port=5401),
+        SimpleNamespace(endpoint_mode="decode", node="d0", http_port=6100, nixl_port=5500),
+        SimpleNamespace(endpoint_mode="decode", node="d1", http_port=6100, nixl_port=5501),
+        SimpleNamespace(endpoint_mode="decode", node="tp-follower", http_port=0, nixl_port=5502),
+    ]
+
+    with patch.object(frontend, "get_hostname_ip", side_effect=lambda node: f"ip-{node}"):
+        urls = frontend.get_backend_health_urls(backend, processes)
+
+    assert urls == [
+        "http://ip-p0:6100/health",
+        "http://ip-p1:6100/health",
+        "http://ip-d0:6100/health",
+        "http://ip-d1:6100/health",
+    ]
+
+
 def test_vllm_router_derives_dep4_expansion_for_1p2d() -> None:
     """One P URL and two D URLs are each expanded to four ranks by Router."""
     frontend = VLLMRouterFrontend()

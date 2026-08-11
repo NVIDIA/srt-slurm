@@ -81,6 +81,11 @@ class StaticRouterFrontend:
         del backend, backend_processes
         return []
 
+    def get_backend_health_urls(self, backend: Any, backend_processes: list[Process]) -> list[str]:
+        """Keep existing static-router readiness semantics unless an adapter opts in."""
+        del backend, backend_processes
+        return []
+
     def worker_scheme(self, backend: Any, mode: str) -> str:
         """Return the protocol used to reach a worker endpoint."""
         return "http"

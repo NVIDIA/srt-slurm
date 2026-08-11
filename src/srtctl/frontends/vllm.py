@@ -57,6 +57,11 @@ class VLLMFrontend:
             decode_expected=expected_decode,
         )
 
+    def get_backend_health_urls(self, backend: Any, backend_processes: list[Process]) -> list[str]:
+        """The direct frontend health endpoint is the vLLM backend itself."""
+        del backend, backend_processes
+        return []
+
     def get_frontend_args_list(self, args: dict[str, Any] | None) -> list[str]:
         if not args:
             return []

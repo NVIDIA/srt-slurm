@@ -3,11 +3,45 @@
 
 """Tests for health check parsing (Dynamo and SGLang router)."""
 
+import threading
+from unittest.mock import MagicMock, patch
+
 from srtctl.core.health import (
     WorkerHealthResult,
     check_dynamo_health,
     check_sglang_router_health,
+    wait_for_http_endpoints,
 )
+
+
+def test_wait_for_http_endpoints_keeps_2p2d_blocked_while_one_base_is_unavailable() -> None:
+    urls = [f"http://{mode}{index}/health" for mode in ("p", "d") for index in range(2)]
+    responses = [
+        MagicMock(status_code=503),
+        MagicMock(status_code=200),
+        MagicMock(status_code=200),
+        MagicMock(status_code=200),
+        *[MagicMock(status_code=200) for _ in urls],
+    ]
+
+    with (
+        patch("srtctl.core.health.requests.get", side_effect=responses) as get,
+        patch("srtctl.core.health.time.sleep"),
+    ):
+        assert wait_for_http_endpoints(urls, timeout=10.0)
+
+    assert [call.args[0] for call in get.call_args_list] == [*urls, *urls]
+
+
+def test_wait_for_http_endpoints_honors_stop_event() -> None:
+    stop_event = threading.Event()
+    stop_event.set()
+
+    with patch("srtctl.core.health.requests.get") as get:
+        assert not wait_for_http_endpoints(["http://p/health"], stop_event=stop_event)
+
+    get.assert_not_called()
+
 
 # ============================================================================
 # Dynamo Health Check Tests
