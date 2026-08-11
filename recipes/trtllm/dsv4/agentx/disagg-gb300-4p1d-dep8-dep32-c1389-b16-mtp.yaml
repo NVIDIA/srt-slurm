@@ -1,0 +1,199 @@
+name: disagg-gb300-4p1d-dep8-dep32-c1389-b16-mtp
+setup_script: "install_dynamo_wheel.sh"
+
+extra_mount:
+  - /lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/dynamo_wheels:/dynamo_wheels
+  - /lustre:/lustre
+
+dynamo:
+  install: false
+
+model:
+  path: /lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/DeepSeek-V4-Pro
+  container: /lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/tensorrt-llm-release-arm64-1-3-0rc24.sqsh
+  precision: fp4
+  stage_dir: /raid/scratch/models
+identity:
+  model:
+    repo: deepseek-ai/DeepSeek-V4-Pro
+  container:
+    image: /scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/xqiao/docker_images/xqiao+trtllm+main-e409c1-aarch64-20260804.sqsh
+  frameworks:
+    tensorrt_llm: 1.3.0rc24
+slurm:
+  time_limit: 04:00:00
+health_check:
+  max_attempts: 540
+  interval_seconds: 10
+resources:
+  gpu_type: gb300
+  gpus_per_node: 4
+  prefill_nodes: 8
+  prefill_workers: 4
+  gpus_per_prefill: 8
+  decode_nodes: 8
+  decode_workers: 1
+  gpus_per_decode: 32
+backend:
+  type: trtllm
+  prefill_environment:
+    TLLM_LOG_LEVEL: INFO
+    TRTLLM_SERVER_DISABLE_GC: '1'
+    TRTLLM_WORKER_DISABLE_GC: '1'
+    NCCL_GRAPH_MIXING_SUPPORT: '0'
+    MIMALLOC_ARENA_RESERVE: '0'
+    TRTLLM_PINNED_WEIGHT_STAGING: '1'
+    PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+    CUDA_SCALE_LAUNCH_QUEUES: 4x
+    TLLM_SPEC_DECODE_FORCE_NUM_ACCEPTED_TOKENS: '1.48'
+    UCX_TLS: cuda_ipc,cuda_copy,sm,self,tcp
+  decode_environment:
+    TLLM_LOG_LEVEL: INFO
+    TRTLLM_SERVER_DISABLE_GC: '1'
+    TRTLLM_WORKER_DISABLE_GC: '1'
+    NCCL_GRAPH_MIXING_SUPPORT: '0'
+    MIMALLOC_ARENA_RESERVE: '0'
+    TRTLLM_PINNED_WEIGHT_STAGING: '1'
+    TLLM_SPEC_DECODE_FORCE_NUM_ACCEPTED_TOKENS: '1.48'
+    UCX_TLS: cuda_ipc,cuda_copy,sm,self,tcp
+  trtllm_config:
+    prefill:
+      attention_dp_config:
+        kv_cache_routing_conversation_affinity: true
+      cache_transceiver_config:
+        backend: NIXL
+        kv_transfer_timeout_ms: 600000
+        transceiver_runtime: PYTHON
+      cuda_graph_config: null
+      custom_tokenizer: deepseek_v4
+      disable_overlap_scheduler: false
+      enable_attention_dp: true
+      enable_chunked_prefill: true
+      kv_cache_config:
+        block_reuse_config:
+          block_reuse_policy: per_conversation
+          max_num_turns: 5
+        dtype: fp8
+        enable_block_reuse: true
+        event_buffer_max_size: 0
+        free_gpu_memory_fraction: 0.8
+        host_cache_size: 193273528320
+        pool_ratio:
+        - 0.55
+        - 0.22
+        - 0.23
+        tokens_per_block: 128
+      max_batch_size: 256
+      max_num_tokens: 8192
+      max_seq_len: 990016
+      moe_config:
+        backend: TRTLLM
+        load_balancer: /scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/xqiao/bench-trtllm-disagg/deepseek-V4-Pro-agent/offline_eplb_confs/moe_load_balancer_ctx_ep8_slots384.yaml
+      moe_expert_parallel_size: 8
+      num_serve_frontends: 8
+      perf_metrics_max_requests: 100000
+      perf_metrics_output_dir: /lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/metrics/ctx4_dep8_b256_mnt8192-gen1_dep32_b16_mnt64_eplb384_mtp3-conc1389-g1/perf_metrics/ctx
+      pipeline_parallel_size: 1
+      print_iter_log: true
+      return_perf_metrics: true
+      scheduler_config:
+        capacity_scheduler_policy: MAX_UTILIZATION
+      speculative_config:
+        decoding_type: MTP
+        max_draft_len: 3
+      tensor_parallel_size: 8
+    decode:
+      cache_transceiver_config:
+        backend: NIXL
+        kv_transfer_timeout_ms: 600000
+        transceiver_runtime: PYTHON
+      cuda_graph_config:
+        batch_sizes:
+        - 1
+        - 2
+        - 4
+        - 8
+        - 12
+        - 16
+        enable_padding: true
+      custom_tokenizer: deepseek_v4
+      enable_attention_dp: true
+      enable_lm_head_tp_in_adp: true
+      kv_cache_config:
+        avg_seq_len: 200000
+        dtype: fp8
+        enable_block_reuse: false
+        event_buffer_max_size: 0
+        free_gpu_memory_fraction: 0.8
+        host_cache_size: 0
+        tokens_per_block: 128
+      max_batch_size: 16
+      max_num_tokens: 64
+      max_seq_len: 996595
+      moe_config:
+        backend: MEGAMOE_DEEPGEMM
+        load_balancer: /scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/xqiao/bench-trtllm-disagg/deepseek-V4-Pro-agent/offline_eplb_confs/moe_load_balancer_gen_ep32_slots384.yaml
+        use_low_precision_moe_combine: true
+      moe_expert_parallel_size: 32
+      num_postprocess_workers: 4
+      num_serve_frontends: 4
+      perf_metrics_max_requests: 100000
+      perf_metrics_output_dir: /lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/metrics/ctx4_dep8_b256_mnt8192-gen1_dep32_b16_mnt64_eplb384_mtp3-conc1389-g1/perf_metrics/gen
+      pipeline_parallel_size: 1
+      print_iter_log: true
+      return_perf_metrics: true
+      sparse_attention_config:
+        algorithm: deepseek_v4
+        enable_heuristic_topk: true
+      speculative_config:
+        decoding_type: MTP
+        max_draft_len: 3
+      stream_interval: 20
+      tensor_parallel_size: 32
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+  orchestrator_placement: first_decode
+  env:
+    ETCD_LEASE_TTL: "120"
+    DYN_TOKENIZER_CACHE: "1"
+    DYN_TOKENIZER_CACHE_BYTES: "8000000000"
+    DYN_TOKENIZER: "fastokens"
+  args:
+    router-mode: kv
+    router-session-affinity-ttl-secs: '14400'
+    active-decode-blocks-threshold: None
+    active-prefill-tokens-threshold: None
+    active-prefill-tokens-threshold-frac: None
+
+benchmark:
+  type: custom
+  client_placement: last_decode
+  env:
+    AIPERF_REF: git+https://gitlab-master.nvidia.com/xqiao/aiperf.git@1d8cc6546a9d417d222b9ab871afff89cd7438ca
+    HF_HUB_CACHE: /scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/xqiao/hf_cache
+    HF_HOME: /scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/xqiao/hf_cache
+    AIPERF_DATASET_MMAP_CACHE_DIR: /scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/xqiao/hf_cache/aiperf_mmap
+    AIPERF_DATASET_CONFIGURATION_TIMEOUT: '1800'
+    AIPERF_SERVICE_PROFILE_CONFIGURE_TIMEOUT: '1800'
+  command: |
+    set -euo pipefail
+    AIPERF_VENV="${TMPDIR:-/tmp}/agentx-aiperf-${SLURM_JOB_ID:-$$}"
+    if [ ! -x "$AIPERF_VENV/bin/aiperf" ]; then
+      python3 -m venv "$AIPERF_VENV"
+      "$AIPERF_VENV/bin/pip" install -q --upgrade pip
+      "$AIPERF_VENV/bin/pip" install -q "aiperf @ $AIPERF_REF" "datasets>=4.7.0" "huggingface_hub[cli]>=0.25.0"
+    fi
+    mkdir -p /logs/agentic/concurrency_1389
+    "$AIPERF_VENV/bin/aiperf" profile --scenario inferencex-agentx-mvp \
+      --url http://$SRT_FRONTEND_HOST:$SRT_FRONTEND_PORT --endpoint /v1/chat/completions --endpoint-type chat --streaming \
+      -m DeepSeek-V4-Pro --tokenizer /model --tokenizer-trust-remote-code \
+      --public-dataset semianalysis_cc_traces_weka_062126 \
+      --max-context-length 996579 \
+      --trajectory-start-min-ratio 0.25 --trajectory-start-max-ratio 0.75 \
+      --trace-idle-gap-cap-seconds 300 --warmup-requests-per-lane 3 \
+      --num-dataset-entries 393 --slice-duration 1.0 --stats-interval 30 \
+      --use-server-token-count --no-gpu-telemetry --random-seed 42 \
+      --failed-request-threshold 0.1 \
+      --benchmark-duration 3600 --concurrency 1389 \
+      --output-artifact-dir /logs/agentic/concurrency_1389 --ui simple
