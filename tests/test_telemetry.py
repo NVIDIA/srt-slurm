@@ -51,7 +51,7 @@ def _dcgm_power(**overrides) -> TelemetryConfig:
         "required": True,
         "startup_timeout_seconds": 30.0,
         "request_timeout_seconds": 2.0,
-        "collector_join_timeout_seconds": 10.0,
+        "collector_join_timeout_seconds": 12.0,
         "dcgm_exporter": TelemetryExporterConfig(container_image="dcgm-exporter", port=9401),
     }
     fields.update(overrides)
@@ -89,7 +89,7 @@ class TestDcgmPowerConfig:
         assert defaults.required is False
         assert defaults.startup_timeout_seconds == 30.0
         assert defaults.request_timeout_seconds == 2.0
-        assert defaults.collector_join_timeout_seconds == 10.0
+        assert defaults.collector_join_timeout_seconds == 12.0
 
     def test_scraper_validation_is_unchanged(self):
         with pytest.raises(ValidationError, match="telemetry.node_exporter"):
@@ -127,6 +127,7 @@ class TestDcgmPowerConfig:
             ({"startup_timeout_seconds": 0.0}, None, "startup_timeout_seconds"),
             ({"request_timeout_seconds": -1.0}, None, "request_timeout_seconds"),
             ({"collector_join_timeout_seconds": 2.0}, None, "collector_join_timeout_seconds"),
+            ({"collector_join_timeout_seconds": 10.0}, None, "collector_join_timeout_seconds"),
             ({"storage_subdir": "/abs"}, None, "storage_subdir"),
             ({"storage_subdir": "../escape"}, None, "storage_subdir"),
             ({"storage_subdir": ""}, None, "storage_subdir"),
@@ -169,6 +170,10 @@ class TestDcgmPowerConfig:
 
         assert schema_module._BENCHMARK_TYPE_SA_BENCH == contract.BENCHMARK_TYPE_SA_BENCH
         assert schema_module._DCGM_POWER_MAX_SAMPLE_GAP_SECONDS == contract.MAX_SAMPLE_GAP_SECONDS
+        assert (
+            schema_module._DCGM_POWER_COLLECT_CYCLE_TIMEOUT_GRACE_SECONDS
+            == contract.COLLECT_CYCLE_TIMEOUT_GRACE_SECONDS
+        )
 
     @pytest.mark.parametrize(
         ("telemetry", "benchmark", "dedicated", "rejected"),
@@ -381,7 +386,9 @@ class TestTelemetryStageMixin:
 
         harness.start_telemetry()
 
-        exporter_calls = [call for call in mock_srun.call_args_list if call.kwargs.get("nodelist") == ["node-a", "node-b"]]
+        exporter_calls = [
+            call for call in mock_srun.call_args_list if call.kwargs.get("nodelist") == ["node-a", "node-b"]
+        ]
         assert len(exporter_calls) == 2
         for call in exporter_calls:
             assert call.kwargs["nodes"] == 2
@@ -403,7 +410,7 @@ def _power_harness(tmp_path, processes, *, het=False, het_groups=None):
                 telemetry=_dcgm_power(
                     startup_timeout_seconds=0.2,
                     request_timeout_seconds=0.1,
-                    collector_join_timeout_seconds=1.0,
+                    collector_join_timeout_seconds=3.0,
                 ),
                 benchmark=_sa_bench(),
             )
@@ -474,7 +481,7 @@ class TestDcgmPowerExporterLaunch:
             telemetry=_dcgm_power(
                 startup_timeout_seconds=0.2,
                 request_timeout_seconds=0.1,
-                collector_join_timeout_seconds=1.0,
+                collector_join_timeout_seconds=3.0,
                 dcgm_exporter=TelemetryExporterConfig(
                     container_image="dcgm-exporter",
                     port=9401,

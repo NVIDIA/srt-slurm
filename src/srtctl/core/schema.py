@@ -44,12 +44,14 @@ from srtctl.core.formatting import (
     FormattablePath,
     FormattablePathField,
 )
+
 logger = logging.getLogger(__name__)
 
 # Local copies of srtctl.core.power.contract values so that loading a config
 # never imports the power package; equality is pinned by tests.
 _BENCHMARK_TYPE_SA_BENCH = "sa-bench"
 _DCGM_POWER_MAX_SAMPLE_GAP_SECONDS = 3.0
+_DCGM_POWER_COLLECT_CYCLE_TIMEOUT_GRACE_SECONDS = 1.0
 
 
 def _is_safe_relative_subpath(value: str) -> bool:
@@ -1095,7 +1097,7 @@ class TelemetryConfig:
     required: bool = False
     startup_timeout_seconds: float = 30.0
     request_timeout_seconds: float = 2.0
-    collector_join_timeout_seconds: float = 10.0
+    collector_join_timeout_seconds: float = 12.0
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -1869,13 +1871,17 @@ class SrtConfig:
                 "every window would fail sample_gap_exceeded. Set it to the intended collector "
                 "period (e.g. 1.0)."
             )
+        worst_case_join_seconds = 2 * (
+            2 * telemetry.request_timeout_seconds + _DCGM_POWER_COLLECT_CYCLE_TIMEOUT_GRACE_SECONDS
+        )
         if (
             not _is_finite_positive(telemetry.collector_join_timeout_seconds)
-            or telemetry.collector_join_timeout_seconds <= telemetry.request_timeout_seconds
+            or telemetry.collector_join_timeout_seconds <= worst_case_join_seconds
         ):
             raise ValidationError(
                 "telemetry.collector_join_timeout_seconds must be finite, positive, "
-                "and greater than telemetry.request_timeout_seconds"
+                "and greater than two full collector cycles "
+                "(2 * (2 * telemetry.request_timeout_seconds + 1 second))"
             )
 
         if not _is_safe_relative_subpath(telemetry.storage_subdir):
