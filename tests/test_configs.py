@@ -3165,13 +3165,19 @@ class TestSequentialNodeStart:
         from srtctl.backends.trtllm import TRTLLMProtocol
 
         backend = TRTLLMProtocol()
-        assert backend.sequential_node_start is False
+        assert not backend.sequential_node_start
 
     def test_sequential_node_start_can_be_enabled(self):
         from srtctl.backends.trtllm import TRTLLMProtocol
 
         backend = TRTLLMProtocol(sequential_node_start=True)
-        assert backend.sequential_node_start is True
+        assert backend.sequential_node_start
+
+    def test_sequential_node_start_batch_size(self):
+        from srtctl.backends.trtllm import TRTLLMProtocol
+
+        backend = TRTLLMProtocol(sequential_node_start=2)
+        assert backend.sequential_node_start == 2
 
     def test_start_all_workers_sequential_same_node(self, tmp_path):
         """Workers on the same node are started one-by-one when sequential_node_start=True."""
