@@ -141,7 +141,15 @@ def _scan(
         )
         return parsed, duplicates
 
-    for path in sorted(windows_dir.iterdir()):
+    try:
+        paths = sorted(windows_dir.iterdir())
+    except OSError:
+        artifact_errors.append(
+            ArtifactError(path=WINDOWS_DIRNAME, reason_codes=(Reason.MEASUREMENT_WINDOW_ARTIFACT_PATH_INVALID,))
+        )
+        return parsed, duplicates
+
+    for path in paths:
         relative = f"{WINDOWS_DIRNAME}/{path.name}"
         if path.is_symlink() or not path.is_file():
             artifact_errors.append(
@@ -278,8 +286,6 @@ def _validate_one(
                 window.start_unix, window.end_unix, expected_device_keys, observed_devices
             )
             reasons.extend(coverage_reasons)
-            if coverage_reasons:
-                gaps = {}
 
     return WindowValidation(
         benchmark_type=expected.benchmark_type,
@@ -313,6 +319,8 @@ def _check_result(window: _ParsedWindow, result_root: Path) -> list[str]:
         return [Reason.MEASUREMENT_WINDOW_RESULT_MISMATCH]
 
     wall = window.end_unix - window.start_unix
+    if wall <= 0:
+        return [Reason.MEASUREMENT_WINDOW_CLOCK_MISMATCH]
     tolerance = max(_CLOCK_TOLERANCE_SECONDS, _CLOCK_TOLERANCE_FRACTION * window.duration)
     if abs(wall - window.duration) > tolerance:
         return [Reason.MEASUREMENT_WINDOW_CLOCK_MISMATCH]
@@ -364,6 +372,6 @@ def _bracketing_sequence(times: Sequence[float], start: float, end: float) -> li
 def _stays_below(root: Path, relative: str) -> bool:
     try:
         (root / relative).resolve().relative_to(root.resolve())
-    except ValueError:
+    except (OSError, RuntimeError, ValueError):
         return False
     return True
