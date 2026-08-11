@@ -104,8 +104,13 @@ def convert_running_windows(windows_dir: Path, *, reason: str) -> int:
     if not windows_dir.is_dir():
         return 0
 
+    try:
+        paths = sorted(windows_dir.glob("*.json"))
+    except OSError:
+        return 0
+
     converted = 0
-    for path in sorted(windows_dir.glob("*.json")):
+    for path in paths:
         if path.is_symlink() or not path.is_file():
             continue
         try:
