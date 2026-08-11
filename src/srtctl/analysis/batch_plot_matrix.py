@@ -5,12 +5,13 @@
 
 The parser lives in :mod:`.batch_log_parser`; this module only turns a
 populated :class:`~srtctl.analysis.batch_log_parser.LogState` into the
-per-worker 7x2 PNG view used by both the live snapshotter and the
+per-worker PNG matrix used by both the live snapshotter and the
 post-mortem ``plot_batch_metrics.py`` CLI.
 """
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from dataclasses import dataclass
@@ -29,10 +30,10 @@ if TYPE_CHECKING:
 # all parsed metrics remain available in LogState for other consumers.
 PLOT_ROWS: list[tuple[str | None, str | None]] = [
     ("input throughput (token/s)", "gen throughput (token/s)"),
-    ("#new-seq", "#running-req"),
+    ("total input throughput (token/s)", "#running-req"),
+    ("cache hit (%)", "full token usage"),
     ("#new-token", "#full token"),
-    ("#cached-token", "full token usage"),
-    ("#prealloc-req", "#prealloc-req"),
+    ("#new-seq", "#prealloc-req"),
     ("#queue-req", "#queue-req"),
     ("#inflight-req", "#transfer-req"),
 ]
@@ -72,35 +73,52 @@ def _dp_label(series: FileSeries, dp_rank: int) -> str:
     return f"{stem}_DP{dp_rank}"
 
 
-def _plot_series_for_files(files: Iterable[FileSeries]) -> list[_PlotSeries]:
-    """Split aggregated worker logs into one plot series per DP rank."""
+def _plot_series_for_files(
+    files: Iterable[FileSeries],
+    *,
+    prefill_stage_zero_only: bool = False,
+) -> list[_PlotSeries]:
+    """Prepare worker plot series, splitting aggregate logs by DP rank.
+
+    Pipeline-parallel prefill workers log the same logical batch once per PP
+    stage. For prefill plots, keep PP0 so token counts and derived throughput
+    are not duplicated. Logs without PP metadata retain their old behavior.
+    """
     out: list[_PlotSeries] = []
     for series in files:
         if series.empty:
             continue
 
-        dp_ranks = list(series.dp_ranks)
-        if len(dp_ranks) < len(series.timestamps):
-            dp_ranks.extend([None] * (len(series.timestamps) - len(dp_ranks)))
-        else:
-            dp_ranks = dp_ranks[: len(series.timestamps)]
+        row_count = len(series.timestamps)
+        dp_ranks = [series.dp_ranks[i] if i < len(series.dp_ranks) else None for i in range(row_count)]
+        pp_ranks = [series.pp_ranks[i] if i < len(series.pp_ranks) else None for i in range(row_count)]
+        idxs = list(range(row_count))
+        known_pps = {pp for pp in pp_ranks if pp is not None}
+        if prefill_stage_zero_only and 0 in known_pps and len(known_pps) > 1:
+            idxs = [i for i, pp in enumerate(pp_ranks) if pp == 0]
+
+        timestamps = [series.timestamps[i] for i in idxs]
+        dp_ranks = [dp_ranks[i] for i in idxs]
+        metrics = {
+            name: [values[i] if i < len(values) else None for i in idxs] for name, values in series.metrics.items()
+        }
 
         known_dps = sorted({dp for dp in dp_ranks if dp is not None})
         should_split = bool(known_dps) and (len(known_dps) > 1 or "_agg_" in series.path.name)
         if not should_split:
-            out.append(_PlotSeries(label=series.label, timestamps=series.timestamps, metrics=series.metrics))
+            out.append(_PlotSeries(label=series.label, timestamps=timestamps, metrics=metrics))
             continue
 
         for dp_rank in known_dps:
-            idxs = [i for i, dp in enumerate(dp_ranks) if dp == dp_rank]
-            metrics = {
-                name: [values[i] if i < len(values) else None for i in idxs] for name, values in series.metrics.items()
+            dp_idxs = [i for i, dp in enumerate(dp_ranks) if dp == dp_rank]
+            dp_metrics = {
+                name: [values[i] if i < len(values) else None for i in dp_idxs] for name, values in metrics.items()
             }
             out.append(
                 _PlotSeries(
                     label=_dp_label(series, dp_rank),
-                    timestamps=[series.timestamps[i] for i in idxs],
-                    metrics=metrics,
+                    timestamps=[timestamps[i] for i in dp_idxs],
+                    metrics=dp_metrics,
                 )
             )
 
@@ -142,8 +160,77 @@ def _derived_input_throughput(series: _PlotSeries, smooth_window: int) -> list[f
     return derived
 
 
+def _derived_total_input_throughput(series: _PlotSeries, smooth_window: int) -> list[float | None]:
+    """Derive logical prompt throughput, including cached and newly computed tokens.
+
+    SGLang's explicit input-throughput metric measures newly computed tokens.
+    Scaling it by ``(new + cached) / new`` preserves SGLang's precise internal
+    timing even when text-log timestamps have only one-second resolution. The
+    timestamp delta is retained as a fallback for logs without the explicit
+    throughput field.
+    """
+    new_tokens = series.metrics.get("#new-token")
+    cached_tokens = series.metrics.get("#cached-token")
+    explicit_input = series.metrics.get("input throughput (token/s)", [])
+    if not new_tokens or not cached_tokens:
+        return []
+
+    derived: list[float | None] = [None] * len(series.timestamps)
+    for i in range(len(series.timestamps)):
+        new = new_tokens[i] if i < len(new_tokens) else None
+        cached = cached_tokens[i] if i < len(cached_tokens) else None
+        if new is None or cached is None:
+            continue
+
+        explicit = explicit_input[i] if i < len(explicit_input) else None
+        if explicit is not None and new > 0:
+            derived[i] = explicit * (new + cached) / new
+            continue
+
+        if i == 0:
+            continue
+        dt = (series.timestamps[i] - series.timestamps[i - 1]).total_seconds()
+        if dt > 0:
+            derived[i] = (new + cached) / dt
+
+    if smooth_window > 1:
+        derived = _moving_average(derived, smooth_window)
+    return derived
+
+
+def _rolling_cache_hit(series: _PlotSeries, smooth_window: int) -> list[float | None]:
+    """Return token-weighted cache-hit percentage over a centered row window."""
+    new_tokens = series.metrics.get("#new-token")
+    cached_tokens = series.metrics.get("#cached-token")
+    if not new_tokens or not cached_tokens:
+        return []
+
+    window = max(1, smooth_window)
+    half = window // 2
+    out: list[float | None] = []
+    for i in range(len(series.timestamps)):
+        lo = max(0, i - half)
+        hi = min(len(series.timestamps), i + half + 1)
+        new_sum = 0.0
+        cached_sum = 0.0
+        for j in range(lo, hi):
+            new = new_tokens[j] if j < len(new_tokens) else None
+            cached = cached_tokens[j] if j < len(cached_tokens) else None
+            if new is None or cached is None:
+                continue
+            new_sum += new
+            cached_sum += cached
+        total = new_sum + cached_sum
+        out.append(100.0 * cached_sum / total if total > 0 else None)
+    return out
+
+
 def _values_for_metric(series: _PlotSeries, metric: str, smooth_input_window: int) -> list[float | None]:
     values = list(series.metrics.get(metric, []))
+    if metric == "total input throughput (token/s)":
+        return _derived_total_input_throughput(series, smooth_input_window)
+    if metric == "cache hit (%)":
+        return _rolling_cache_hit(series, smooth_input_window)
     if metric != "input throughput (token/s)":
         return values
 
@@ -171,14 +258,110 @@ def _global_origin(prefill: Iterable[_PlotSeries], decode: Iterable[_PlotSeries]
     return first_seen
 
 
+def _resolve_cmap(plt, name: str, lut: int):
+    """Return a discrete colormap across matplotlib versions.
+
+    ``plt.cm.get_cmap`` was removed in matplotlib 3.9; ``matplotlib.colormaps``
+    is the replacement but does not exist before 3.5.
+    """
+    getter = getattr(plt.cm, "get_cmap", None)
+    if getter is not None:
+        return getter(name, lut)
+    import matplotlib
+
+    return matplotlib.colormaps[name].resampled(lut)
+
+
+# Counters with a tiny integer range (e.g. #prealloc-req over 0..3) gain nothing
+# from percentile clipping, and the annotation would just be noise.
+_CLIP_MIN_MAX = 10.0
+# Only clip when the tail actually squashes the plot.
+_CLIP_TRIGGER_RATIO = 1.5
+
+
+def _annotate_axis(
+    ax,
+    pooled: list[float],
+    *,
+    show_median: bool,
+    clip_percentile: float | None,
+) -> None:
+    """Add a median reference line and optionally cap the y-axis at a percentile."""
+    values = [v for v in pooled if v is not None and math.isfinite(v)]
+    if not values:
+        return
+
+    ordered = sorted(values)
+    median = _quantile(ordered, 0.5)
+
+    if clip_percentile is not None:
+        high = _quantile(ordered, clip_percentile / 100.0)
+        low, top = ordered[0], ordered[-1]
+        span = high - low
+        n_over = sum(1 for v in ordered if v > high)
+        if n_over and top > high * _CLIP_TRIGGER_RATIO and top > _CLIP_MIN_MAX:
+            # A flat baseline punctuated by spikes has span == 0, which is exactly
+            # the case worth clipping; fall back to a magnitude-relative pad.
+            pad = span * 0.08 if span > 0 else max(abs(high) * 0.08, 1.0)
+            ax.set_ylim(low - pad, high + pad)
+            ax.annotate(
+                f"▲ {n_over} pt(s) > p{clip_percentile:g} (max {top:,.4g}, axis clipped)",
+                xy=(0.5, 0.03),
+                xycoords="axes fraction",
+                ha="center",
+                va="bottom",
+                fontsize=7,
+                color="darkred",
+                bbox={"boxstyle": "round,pad=0.25", "fc": "mistyrose", "ec": "darkred", "lw": 0.6, "alpha": 0.9},
+            )
+
+    if show_median:
+        ax.axhline(median, color="red", linestyle="--", linewidth=1.1, alpha=0.85, zorder=5)
+        ax.annotate(
+            f"median {median:,.4g}",
+            xy=(1.0, median),
+            xycoords=("axes fraction", "data"),
+            xytext=(-4, 3),
+            textcoords="offset points",
+            ha="right",
+            va="bottom",
+            fontsize=7.5,
+            color="darkred",
+            fontweight="bold",
+            bbox={"boxstyle": "round,pad=0.2", "fc": "white", "ec": "red", "lw": 0.6, "alpha": 0.85},
+            zorder=6,
+        )
+
+
+def _quantile(ordered: list[float], q: float) -> float:
+    """Linear-interpolated quantile over a pre-sorted list (avoids a numpy dep)."""
+    if len(ordered) == 1:
+        return ordered[0]
+    pos = q * (len(ordered) - 1)
+    lo = int(pos)
+    hi = min(lo + 1, len(ordered) - 1)
+    frac = pos - lo
+    return ordered[lo] * (1.0 - frac) + ordered[hi] * frac
+
+
 def render_batch_plot_matrix(
     state: LogState,
     output_path: str | Path,
     title: str | None = None,
     downsample: int = 1,
     smooth_input_window: int = 8,
+    show_median: bool = True,
+    clip_percentile: float | None = 99.0,
 ) -> bool:
     """Render per-worker time-series to a PNG.
+
+    Args:
+        show_median: draw a dashed reference line at the pooled median of each
+            subplot and label its value.
+        clip_percentile: cap the y-axis at this percentile so a handful of
+            spikes cannot squash the steady-state signal into a flat line.
+            Out-of-range points are annotated with their count and the true
+            maximum. Pass ``None`` to disable.
 
     Returns ``True`` when a PNG was written and ``False`` when the state
     has no parsed batch rows yet.
@@ -188,7 +371,7 @@ def render_batch_plot_matrix(
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    pf_files = _plot_series_for_files(state.prefill_files.values())
+    pf_files = _plot_series_for_files(state.prefill_files.values(), prefill_stage_zero_only=True)
     dc_files = _plot_series_for_files(state.decode_files.values())
 
     origin = _global_origin(pf_files, dc_files)
@@ -196,7 +379,7 @@ def render_batch_plot_matrix(
         return False
 
     n_rows = len(PLOT_ROWS)
-    cmap = plt.cm.get_cmap("tab20", max(len(pf_files), len(dc_files), 1))
+    cmap = _resolve_cmap(plt, "tab20", max(len(pf_files), len(dc_files), 1))
     colors = [cmap(i) for i in range(cmap.N)]
 
     fig, axes = plt.subplots(n_rows, 2, figsize=(20, 3.0 * n_rows), squeeze=False)
@@ -214,6 +397,7 @@ def render_batch_plot_matrix(
             return
 
         drawn = False
+        pooled: list[float] = []
         for idx, s in enumerate(files):
             vs = _values_for_metric(s, metric, smooth_input_window)
             if not vs:
@@ -225,6 +409,7 @@ def render_batch_plot_matrix(
                 continue
             elapsed = _elapsed_seconds([p[0] for p in pairs], origin)
             values = [p[1] for p in pairs]
+            pooled.extend(values)
             ax.plot(elapsed, values, color=colors[idx % len(colors)], linewidth=0.9, alpha=0.8, label=s.label)
             drawn = True
 
@@ -235,10 +420,16 @@ def render_batch_plot_matrix(
         ax.grid(True, alpha=0.3)
         if not drawn:
             ax.text(0.5, 0.5, "no data", ha="center", va="center", transform=ax.transAxes, color="grey", fontsize=9)
-        elif files:
+            return
+
+        _annotate_axis(ax, pooled, show_median=show_median, clip_percentile=clip_percentile)
+        if metric == "cache hit (%)":
+            ax.set_ylim(0.0, 100.0)
+
+        if files:
             ax.legend(
                 fontsize=7,
-                loc="upper right",
+                loc="upper left",
                 ncol=max(1, len(files) // 8 + 1),
                 framealpha=0.35,
                 facecolor="white",
