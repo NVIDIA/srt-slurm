@@ -42,7 +42,11 @@ def parse_power_scrape(text: str) -> ParsedScrape:
     reasons: list[str] = []
     try:
         families = list(text_string_to_metric_families(text))
-    except (KeyError, ValueError):
+    # prometheus-client releases in our supported >=0.20 range have raised
+    # ValueError, KeyError, and IndexError for malformed exposition. Keep this
+    # third-party boundary broad while still allowing BaseException control
+    # flow (for example KeyboardInterrupt) to propagate.
+    except Exception:  # noqa: BLE001
         return ParsedScrape(reason_codes=(Reason.ENDPOINT_PARSE_ERROR,))
 
     by_index: dict[int, PowerReading] = {}
