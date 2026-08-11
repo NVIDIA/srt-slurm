@@ -80,10 +80,16 @@ class SampleWriter:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
         self.row_count = 0
-        self._handle: TextIO | None = open(path, "w", newline="", encoding="utf-8")  # noqa: SIM115
-        self._writer = csv.writer(self._handle)
-        self._writer.writerow(SAMPLES_HEADER)
-        self._handle.flush()
+        handle = open(path, "w", newline="", encoding="utf-8")  # noqa: SIM115
+        try:
+            writer = csv.writer(handle)
+            writer.writerow(SAMPLES_HEADER)
+            handle.flush()
+        except BaseException:
+            handle.close()
+            raise
+        self._handle: TextIO | None = handle
+        self._writer = writer
 
     @property
     def closed(self) -> bool:
@@ -206,6 +212,6 @@ def _has_non_monotonic_device(rows: Sequence[SampleRow]) -> bool:
     for device_rows in per_device.values():
         ordered = sorted(device_rows, key=lambda row: row.scrape_seq)
         for previous, current in itertools.pairwise(ordered):
-            if current.timestamp_unix <= previous.timestamp_unix:
+            if current.timestamp_unix < previous.timestamp_unix:
                 return True
     return False

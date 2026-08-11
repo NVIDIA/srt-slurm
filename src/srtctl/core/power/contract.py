@@ -9,6 +9,7 @@ import json
 import math
 import os
 import tempfile
+from contextlib import suppress
 from pathlib import Path, PurePosixPath
 from typing import Any, TypeGuard
 
@@ -50,6 +51,7 @@ class Reason:
     EXPORTER_EXITED = "exporter_exited"
     ENDPOINT_TIMEOUT = "endpoint_timeout"
     ENDPOINT_HTTP_ERROR = "endpoint_http_error"
+    ENDPOINT_PARSE_ERROR = "endpoint_parse_error"
     ENDPOINT_RESOLUTION_FAILED = "endpoint_resolution_failed"
     POWER_METRIC_MISSING = "power_metric_missing"
     DUPLICATE_POWER_METRIC = "duplicate_power_metric"
@@ -129,7 +131,15 @@ def atomic_write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_path = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", text=True)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle = os.fdopen(fd, "w", encoding="utf-8")
+    except BaseException:
+        with suppress(OSError):
+            os.close(fd)
+        Path(temp_path).unlink(missing_ok=True)
+        raise
+
+    try:
+        with handle:
             handle.write(json.dumps(payload, indent=2, sort_keys=False) + "\n")
             handle.flush()
             os.fsync(handle.fileno())
