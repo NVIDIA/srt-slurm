@@ -403,9 +403,12 @@ The following keys are owned by srtctl and are stripped at runtime if present in
 - `nnodes`
 - `node-rank` / `node_rank`
 
-Existing recipes that still contain these keys continue to work (values are
-ignored). `srtctl dry-run` emits a **WARNING** for each one so operators can
-clean up recipes over time.
+Existing recipes that still contain these keys generally continue to work
+because the values are ignored. One exception is `headless` combined with
+`dp_launch_mode: per_node` and `data-parallel-size`: backend validation rejects
+that combination before direct-vLLM command construction, so remove `headless`
+from such recipes. `srtctl dry-run` emits a **WARNING** for each accepted key so
+operators can clean up recipes over time.
 
 Health checks, benchmark clients, and `SRT_FRONTEND_HOST` target the **aggregate
 endpoint leader** (the node running the public `vllm serve`), not necessarily the
