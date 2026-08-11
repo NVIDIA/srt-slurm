@@ -874,6 +874,7 @@ class TestBenchmarkChildReaping:
         return harness, runner
 
     def test_sigterm_unwind_still_reaps_the_child(self, tmp_path):
+        """The signal handler raises SystemExit, so only `finally` can reap."""
         proc = MagicMock(spec=subprocess.Popen)
         proc.poll.return_value = None
         proc.wait.return_value = -15

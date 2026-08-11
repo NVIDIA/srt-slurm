@@ -22,6 +22,9 @@ from srtctl.core.slurm import get_hostname_ip, start_srun_process
 from srtctl.core.status import JobStage, JobStatus, StatusReporter
 from srtctl.ports import FRONTEND_PUBLIC_PORT, SGLANG_HTTP_PORT_BASE
 
+_BENCHMARK_TERMINATE_TIMEOUT = 15.0
+_BENCHMARK_KILL_TIMEOUT = 10.0
+
 if TYPE_CHECKING:
     from srtctl.benchmarks.base import BenchmarkRunner
     from srtctl.core.processes import ProcessRegistry
@@ -30,9 +33,6 @@ if TYPE_CHECKING:
     from srtctl.core.topology import Endpoint, Process
 
 logger = logging.getLogger(__name__)
-
-_BENCHMARK_TERMINATE_TIMEOUT_SECONDS = 15.0
-_BENCHMARK_KILL_TIMEOUT_SECONDS = 10.0
 
 
 def _vllm_data_parallel_size(config: "SrtConfig", mode: str) -> int:
@@ -339,8 +339,8 @@ class BenchmarkStageMixin:
             if proc.poll() is None:
                 self.benchmark_child_reaped = terminate_and_reap(
                     proc,
-                    terminate_timeout=_BENCHMARK_TERMINATE_TIMEOUT_SECONDS,
-                    kill_timeout=_BENCHMARK_KILL_TIMEOUT_SECONDS,
+                    terminate_timeout=_BENCHMARK_TERMINATE_TIMEOUT,
+                    kill_timeout=_BENCHMARK_KILL_TIMEOUT,
                 )
             elif self.benchmark_child_reaped is False:
                 proc.wait()
