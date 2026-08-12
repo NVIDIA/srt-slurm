@@ -2,7 +2,7 @@ name: disagg-gb300-4p1d-dep8-dep32-c1389-b16-mtp
 setup_script: "install_dynamo_wheel.sh"
 
 extra_mount:
-  - /scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/dynamo_wheels:/dynamo_wheels
+  - /scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/rihuo/dynamo_wheels_ft:/dynamo_wheels
   - /scratch:/scratch
 
 dynamo:
