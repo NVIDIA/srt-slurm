@@ -44,7 +44,7 @@ from srtctl.core.processes import (
 )
 from srtctl.core.resource_snapshot import record_resource_snapshot
 from srtctl.core.runtime import RuntimeContext
-from srtctl.core.schema import SrtConfig
+from srtctl.core.schema import SrtConfig, TelemetryProvider
 from srtctl.core.slurm import get_slurm_job_id, start_srun_process
 from srtctl.core.status import JobStage, JobStatus, StatusReporter
 from srtctl.core.topology import Endpoint, NodePortAllocator, Process, allocate_endpoints_het
@@ -712,9 +712,19 @@ class SweepOrchestrator(
             for proc in frontend_procs:
                 registry.add_process(proc)
 
-            telemetry_procs = self.start_telemetry()
-            for proc in telemetry_procs:
-                registry.add_process(proc)
+            telemetry_config = self.config.telemetry
+            if telemetry_config.enabled and telemetry_config.provider == TelemetryProvider.DCGM_POWER:
+                if os.environ.get("EVAL_ONLY", "false").lower() == "true":
+                    # Eval-only runs skip the benchmark stage, so every expected
+                    # measurement window would be missing and required telemetry
+                    # would fail an otherwise successful evaluation.
+                    logger.info("EVAL_ONLY=true: skipping dcgm-power telemetry (no benchmark to measure)")
+                else:
+                    self.start_power_telemetry(registry)
+            else:
+                telemetry_procs = self.start_telemetry()
+                for proc in telemetry_procs:
+                    registry.add_process(proc)
 
             self._print_connection_info()
 
@@ -726,6 +736,10 @@ class SweepOrchestrator(
                     logger.error("Eval-only evaluation failed with exit code %d", exit_code)
                 else:
                     logger.info("Eval-only evaluation completed successfully")
+            elif self.power_telemetry_blocks_benchmark():
+                logger.error("Required power telemetry failed startup - skipping the formal benchmark")
+                reporter.report(JobStatus.FAILED, JobStage.BENCHMARK, "Required power telemetry failed startup")
+                exit_code = 1
             else:
                 # Stage 4: Benchmark (status reported AFTER health check passes)
                 exit_code = self.run_benchmark(registry, stop_event, reporter)
@@ -747,6 +761,8 @@ class SweepOrchestrator(
 
         finally:
             logger.info("Cleanup")
+            # NOTE: finalize before registry.cleanup() so samples and manifest are durable.
+            exit_code = self.finalize_power_telemetry(exit_code, interrupted=stop_event.is_set())
             stop_event.set()
             registry.cleanup()
             if exit_code != 0:

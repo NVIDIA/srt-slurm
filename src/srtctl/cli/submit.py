@@ -55,7 +55,7 @@ from srtctl.core.git_state import (
     write_git_state_snapshot,
 )
 from srtctl.core.lockfile import load_lockfile_fingerprints
-from srtctl.core.schema import SrtConfig, installs_dynamo
+from srtctl.core.schema import SrtConfig, TelemetryProvider, installs_dynamo
 from srtctl.core.status import create_job_record
 from srtctl.core.validation import preflight_config_variants
 from srtctl.ports import MOONCAKE_MASTER_PORT
@@ -355,6 +355,11 @@ def show_config_details(config: SrtConfig) -> None:
             details.add_row("telemetry", "container_image", config.telemetry.container_image or "<unset>")
             details.add_row("telemetry", "storage_subdir", config.telemetry.storage_subdir)
             details.add_row("telemetry", "frequency", str(config.telemetry.default_frequency))
+            exporter = config.telemetry.dcgm_exporter
+            if config.telemetry.provider == TelemetryProvider.DCGM_POWER and exporter is not None:
+                details.add_row("telemetry", "required", str(config.telemetry.required))
+                details.add_row("telemetry", "artifacts", f"<log_dir>/{config.telemetry.storage_subdir}")
+                details.add_row("telemetry", "dcgm_exporter", f"{exporter.container_image} (port {exporter.port})")
 
         if mooncake_cfg is not None:
             details.add_row("mooncake", "container", mooncake_cfg.container or "<job container>")

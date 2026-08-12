@@ -17,9 +17,19 @@ from typing import TYPE_CHECKING
 from srtctl.core.fingerprint import format_identity_verification, verify_identity
 from srtctl.core.health import wait_for_model
 from srtctl.core.lockfile import collect_worker_fingerprints
+from srtctl.core.power.contract import (
+    CONTAINER_LOG_DIR,
+    MEASUREMENT_WINDOW_DIR_ENV,
+    WINDOWS_DIRNAME,
+)
+from srtctl.core.processes import terminate_and_reap
+from srtctl.core.schema import TelemetryProvider
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
 from srtctl.core.status import JobStage, JobStatus, StatusReporter
 from srtctl.ports import FRONTEND_PUBLIC_PORT, SGLANG_HTTP_PORT_BASE
+
+_BENCHMARK_TERMINATE_TIMEOUT = 15.0
+_BENCHMARK_KILL_TIMEOUT = 10.0
 
 if TYPE_CHECKING:
     from srtctl.benchmarks.base import BenchmarkRunner
@@ -112,6 +122,8 @@ class BenchmarkStageMixin:
     # Type hints for mixin dependencies
     config: "SrtConfig"
     runtime: "RuntimeContext"
+    benchmark_child_reaped: bool | None = None
+    benchmark_child_allows_window_mutation: bool | None = None
 
     @property
     def endpoints(self) -> list["Endpoint"]:
@@ -334,15 +346,34 @@ class BenchmarkStageMixin:
             het_group=self.runtime.nodes.het_group_for(bench_node),
         )
 
+        # The signal handler raises SystemExit, so only finally can establish
+        # how the local srun client stopped before telemetry finalizes.
+        self.benchmark_child_reaped = False
+        self.benchmark_child_allows_window_mutation = False
         try:
             while proc.poll() is None:
                 if stop_event.is_set():
                     logger.info("Stop requested, terminating benchmark")
-                    proc.terminate()
                     return 1
                 time.sleep(1)
+            self.benchmark_child_reaped = True
+            self.benchmark_child_allows_window_mutation = True
             return proc.returncode or 0
         finally:
+            if proc.poll() is None:
+                outcome = terminate_and_reap(
+                    proc,
+                    terminate_timeout=_BENCHMARK_TERMINATE_TIMEOUT,
+                    kill_timeout=_BENCHMARK_KILL_TIMEOUT,
+                )
+                self.benchmark_child_reaped = outcome.reaped
+                # Reaping a force-killed local srun client does not prove that
+                # its remote Slurm step can no longer write the window.
+                self.benchmark_child_allows_window_mutation = outcome.reaped and not outcome.force_killed
+            elif self.benchmark_child_reaped is False:
+                proc.wait()
+                self.benchmark_child_reaped = True
+                self.benchmark_child_allows_window_mutation = True
             if snapshotter is not None:
                 snapshotter.stop()
 
@@ -468,6 +499,17 @@ class BenchmarkStageMixin:
             "SA_BENCH_SLOW_DOWN_WAIT_TIME": str(b.slow_down_wait_time),
         }
 
+    def _get_measurement_window_env(self) -> dict[str, str]:
+        """Point the benchmark child at the power artifact's windows directory.
+
+        ``runtime.log_dir`` is already mounted at ``/logs``, so the container
+        path and the host path the collector reads are the same directory.
+        """
+        telemetry = self.config.telemetry
+        if not telemetry.enabled or telemetry.provider != TelemetryProvider.DCGM_POWER:
+            return {}
+        return {MEASUREMENT_WINDOW_DIR_ENV: f"{CONTAINER_LOG_DIR}/{telemetry.storage_subdir}/{WINDOWS_DIRNAME}"}
+
     def _get_aiperf_server_metrics_env(
         self,
         logical_endpoints: list[tuple[str, str, int]] | None = None,
@@ -542,6 +584,10 @@ class BenchmarkStageMixin:
         # dataset prep against gated HF datasets).
         for key, value in self.runtime.environment.items():
             env[key] = value
+
+        # The windows directory is benchmark-agnostic: whichever benchmark runs
+        # may adopt window stamping, so the env is not tied to one runner.
+        env.update(self._get_measurement_window_env())
 
         if runner.name == "SA-Bench":
             env.update(self._get_sa_bench_slow_down_env())

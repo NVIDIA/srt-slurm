@@ -264,6 +264,27 @@ class TestDryRunExecutionExtensions:
         assert "scraper" in output
         assert "storage_subdir" in output
 
+    def test_dcgm_power_telemetry_details_shown(self, capsys):
+        config = _make_config(
+            {
+                "benchmark": {"type": "sa-bench", "isl": 8192, "osl": 1024, "concurrencies": [4]},
+                "telemetry": {
+                    "enabled": True,
+                    "provider": "dcgm-power",
+                    "default_frequency": 1.0,
+                    "storage_subdir": "power",
+                    "required": True,
+                    "dcgm_exporter": {"container_image": "dcgm-exporter", "port": 9401},
+                },
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "dcgm-power" in output
+        assert "required" in output
+        assert "<log_dir>/power" in output
+        assert "dcgm-exporter (port 9401)" in output
+
     def test_mooncake_kv_store_details_shown(self, capsys):
         """mooncake_kv_store should appear in env vars and execution extensions."""
         config = _make_config(
