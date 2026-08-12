@@ -298,6 +298,26 @@ class TestDynamoConfig:
         with pytest.raises(ValueError, match="cargo_patches requires a source build"):
             DynamoConfig(wheel="1.2.0.dev20260426", cargo_patches=["x = 1"])
 
+    def test_hash_with_source_patches(self):
+        """Source patches are applied after checkout and namespace the build cache."""
+        from srtctl.core.schema import DynamoConfig
+
+        config = DynamoConfig(hash="abc123", source_patches=["patches/hybrid-router.patch"])
+
+        cmd = config.get_install_commands()
+
+        assert "git checkout abc123" in cmd
+        assert "git apply --check /configs/patches/hybrid-router.patch" in cmd
+        assert "git apply /configs/patches/hybrid-router.patch" in cmd
+        assert "/configs/dynamo-wheels/abc123-srcpatch-" in cmd
+
+    def test_source_patches_require_hash(self):
+        """Source patches cannot be used with a wheel install."""
+        from srtctl.core.schema import DynamoConfig
+
+        with pytest.raises(ValueError, match="source_patches requires a source build"):
+            DynamoConfig(wheel="1.2.0.dev20260426", source_patches=["patches/hybrid-router.patch"])
+
     def test_top_of_tree_install_command(self):
         """Top-of-tree config generates source install without checkout."""
         from srtctl.core.schema import DynamoConfig

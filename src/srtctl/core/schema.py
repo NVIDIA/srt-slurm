@@ -1099,7 +1099,11 @@ def build_otel_env(observability: ObservabilityConfig, component: str) -> dict[s
 _DYNAMO_CACHE_ROOT = "/configs/dynamo-wheels"
 
 
-def _hash_cached_source_install(dynamo_hash: str, cargo_patches: list[str] | None = None) -> str:
+def _hash_cached_source_install(
+    dynamo_hash: str,
+    cargo_patches: list[str] | None = None,
+    source_patches: list[str] | None = None,
+) -> str:
     """Bash for hash-pinned source install with a /configs/dynamo-wheels cache.
 
     Cache layout: ``{root}/<key>/`` contains the maturin wheel
@@ -1142,6 +1146,16 @@ def _hash_cached_source_install(dynamo_hash: str, cargo_patches: list[str] | Non
             seds.append(f"find . -name Cargo.toml -exec sed -i -E {shlex.quote(script)} {{}} +")
         if seds:
             override_cmd = " && ".join(seds) + " && "
+    source_patch_cmd = ""
+    if source_patches:
+        patch_digest = hashlib.sha1(("source-patch-v1\n" + "\n".join(source_patches)).encode()).hexdigest()[:8]
+        cache_key = f"{cache_key}-srcpatch-{patch_digest}"
+        patch_commands = [
+            f"test -f /configs/{shlex.quote(patch)} && git apply --check /configs/{shlex.quote(patch)}"
+            f" && git apply /configs/{shlex.quote(patch)}"
+            for patch in source_patches
+        ]
+        source_patch_cmd = " && ".join(patch_commands) + " && "
     cache = f"{_DYNAMO_CACHE_ROOT}/{cache_key}"
     lock = f"{_DYNAMO_CACHE_ROOT}/.{cache_key}.lock"
     return (
@@ -1165,6 +1179,7 @@ def _hash_cached_source_install(dynamo_hash: str, cargo_patches: list[str] | Non
         f"DYN_BUILD_DIR=$(mktemp -d) && cd $DYN_BUILD_DIR && "
         f"git clone https://github.com/ai-dynamo/dynamo.git && "
         f"cd dynamo && git checkout {dynamo_hash} && "
+        f"{source_patch_cmd}"
         f"{override_cmd}"
         f"cd lib/bindings/python/ && "
         f'export RUSTFLAGS="${{RUSTFLAGS:-}} -C target-cpu=native --cfg tokio_unstable" && '
@@ -1321,6 +1336,9 @@ class DynamoConfig:
     # The crate's existing declaration is replaced tree-wide, letting a source build pull a crate
     # from an unmerged branch without waiting for a crates.io release.
     cargo_patches: list[str] | None = None
+    # Optional git-format patches applied after checking out ``hash`` and before
+    # building. Paths are relative to the mounted /configs directory.
+    source_patches: list[str] | None = None
 
     def __post_init__(self) -> None:
         install_sources = [
@@ -1346,6 +1364,8 @@ class DynamoConfig:
 
         if self.cargo_patches and self.hash is None:
             raise ValueError("dynamo.cargo_patches requires a source build — set dynamo.hash to a commit")
+        if self.source_patches and self.hash is None:
+            raise ValueError("dynamo.source_patches requires a source build — set dynamo.hash to a commit")
 
         if self.request_plane not in self._VALID_REQUEST_PLANES:
             raise ValueError(
@@ -1429,7 +1449,7 @@ class DynamoConfig:
         # to ~10 sec lustre access for repeat hashes. top_of_tree skips the
         # cache (no stable key) and always live-builds.
         if self.hash is not None:
-            return _hash_cached_source_install(self.hash, self.cargo_patches)
+            return _hash_cached_source_install(self.hash, self.cargo_patches, self.source_patches)
 
         return _live_source_install_for_top_of_tree()
 
