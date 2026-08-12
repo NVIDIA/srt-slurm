@@ -17,6 +17,7 @@ import itertools
 import logging
 import math
 import os
+import re
 import shlex
 from collections.abc import Iterator, Mapping
 from dataclasses import field
@@ -1111,6 +1112,61 @@ class TelemetryConfig:
         return worst_case + 2.0
 
 
+@dataclass(frozen=True)
+class KubernetesConfig:
+    """Kubernetes rendering and deployment settings.
+
+    The model container is the Dynamo runtime image. Kubernetes rendering does
+    not run the SLURM-only Dynamo installation or model-mount setup.
+    """
+
+    namespace: str = "default"
+    name: str | None = None
+    runtime_version: str | None = None
+    image_pull_policy: str = "IfNotPresent"
+    image_pull_secrets: list[str] = field(default_factory=list)
+    service_account_name: str | None = None
+    env_from_secrets: list[str] = field(default_factory=list)
+    env_from_config_maps: list[str] = field(default_factory=list)
+    node_selector: dict[str, str] = field(default_factory=dict)
+    tolerations: list[dict[str, Any]] = field(default_factory=list)
+    labels: dict[str, str] = field(default_factory=dict)
+    annotations: dict[str, str] = field(default_factory=dict)
+    component_resources: dict[str, dict[str, dict[str, str]]] = field(default_factory=dict)
+    volumes: list[dict[str, Any]] = field(default_factory=list)
+    volume_mounts: list[dict[str, Any]] = field(default_factory=list)
+    working_dir: str | None = None
+    priority_class_name: str | None = None
+    telemetry_persistent_volume_claim: str | None = None
+    telemetry_mount_path: str = "/logs"
+    startup_timeout_seconds: float = 600.0
+    poll_interval_seconds: float = 2.0
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+    def __post_init__(self):
+        dns_label = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+        if len(self.namespace) > 63 or re.fullmatch(dns_label, self.namespace) is None:
+            raise ValidationError("kubernetes.namespace must be a valid DNS label no longer than 63 characters")
+        if self.image_pull_policy not in {"Always", "IfNotPresent", "Never"}:
+            raise ValidationError("kubernetes.image_pull_policy must be Always, IfNotPresent, or Never")
+        if (
+            self.runtime_version is not None
+            and re.fullmatch(r"(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})", self.runtime_version)
+            is None
+        ):
+            raise ValidationError("kubernetes.runtime_version must use MAJOR.MINOR.PATCH")
+        if (
+            re.fullmatch(r"/[A-Za-z0-9._/-]+", self.telemetry_mount_path) is None
+            or ".." in PurePosixPath(self.telemetry_mount_path).parts
+        ):
+            raise ValidationError("kubernetes.telemetry_mount_path must be a safe absolute path")
+        if not _is_finite_positive(self.startup_timeout_seconds):
+            raise ValidationError("kubernetes.startup_timeout_seconds must be finite and positive")
+        if not _is_finite_positive(self.poll_interval_seconds):
+            raise ValidationError("kubernetes.poll_interval_seconds must be finite and positive")
+
+
 def build_otel_env(observability: ObservabilityConfig, component: str) -> dict[str, str]:
     """Build OTEL environment variables for a component.
 
@@ -1596,6 +1652,7 @@ class SrtConfig:
     infra: InfraConfig = field(default_factory=InfraConfig)
     observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
     telemetry: TelemetryConfig = field(default_factory=TelemetryConfig)
+    kubernetes: KubernetesConfig = field(default_factory=KubernetesConfig)
 
     environment: dict[str, str] = field(default_factory=dict)
     container_mounts: dict[
@@ -1941,6 +1998,8 @@ class SrtConfig:
             raise ValidationError("telemetry.sync_interval_secs must be >= 0")
         if telemetry.compaction_threads < 0:
             raise ValidationError("telemetry.compaction_threads must be >= 0")
+        if not _is_safe_relative_subpath(telemetry.storage_subdir):
+            raise ValidationError("telemetry.storage_subdir must be a safe relative path below the run log directory")
 
     @classmethod
     def from_yaml(cls, yaml_path: Path) -> "SrtConfig":

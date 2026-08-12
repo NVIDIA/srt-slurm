@@ -18,6 +18,7 @@ Complete reference for job configuration YAML files.
 - [output](#output)
 - [health_check](#health_check)
 - [infra](#infra)
+- [kubernetes](#kubernetes)
 - [sweep](#sweep)
 - [Config Overrides](#config-overrides)
 - [FormattablePath Template System](#formattablepath-template-system)
@@ -926,6 +927,23 @@ infra:
 - When `etcd_nats_dedicated_node: true`, the first allocated node is reserved exclusively for etcd and nats services.
 - This can improve stability for large-scale deployments by isolating infrastructure services.
 - The reserved node is not used for worker processes.
+
+---
+
+## kubernetes
+
+Settings used by `srtctl k8s generate`, `apply`, and `delete`. These fields do not change the existing SLURM execution path.
+
+```yaml
+kubernetes:
+  namespace: dynamo-bench
+  runtime_version: 1.4.0
+  env_from_secrets: [hf-token-secret]
+  node_selector:
+    accelerator: h100
+```
+
+The Kubernetes renderer creates a Dynamo `nvidia.com/v1beta1` DGD and optional telemetry resources. See [Dynamo Kubernetes deployments](kubernetes.md) for the full field list, prerequisites, topology mapping, and Tachometer behavior.
 
 ---
 

@@ -1304,6 +1304,9 @@ def main():
   srtctl dry-run -f config.yaml                  # Dry run
   srtctl resolve-override -f config.yaml         # Resolve override YAML (no submit)
   srtctl resolve-override -f config.yaml --stdout  # Print to stdout
+  srtctl k8s generate -f config.yaml             # Render Dynamo Kubernetes resources
+  srtctl k8s apply -f config.yaml                # Apply and wait for the DGD
+  srtctl k8s delete -f config.yaml               # Delete the DGD
   srtctl monitor                                 # Live job dashboard
   srtctl monitor --outputs /path/to/outputs      # Dashboard with custom outputs dir
 """,
@@ -1401,6 +1404,39 @@ def main():
         action="store_true",
         help="Print resolved YAML to stdout instead of writing files",
     )
+
+    k8s_parser = subparsers.add_parser("k8s", help="Render or manage Dynamo Kubernetes resources")
+    k8s_subparsers = k8s_parser.add_subparsers(dest="k8s_command", required=True)
+
+    def add_k8s_file_arg(p):
+        p.add_argument(
+            "-f",
+            "--file",
+            type=str,
+            required=True,
+            dest="config",
+            help="YAML config file, or file:selector for overrides",
+        )
+
+    k8s_generate_parser = k8s_subparsers.add_parser("generate", help="Render Kubernetes YAML")
+    add_k8s_file_arg(k8s_generate_parser)
+    k8s_generate_parser.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        dest="manifest_output",
+        help="Write the rendered resources to this file instead of stdout",
+    )
+
+    k8s_apply_parser = k8s_subparsers.add_parser("apply", help="Apply Kubernetes YAML and wait for readiness")
+    add_k8s_file_arg(k8s_apply_parser)
+    k8s_apply_parser.add_argument("--kubectl", default="kubectl", help="kubectl executable")
+    k8s_apply_parser.add_argument("--no-wait", action="store_true", help="Return after kubectl apply")
+    k8s_apply_parser.add_argument("--timeout", type=float, help="DGD readiness timeout in seconds")
+
+    k8s_delete_parser = k8s_subparsers.add_parser("delete", help="Delete the generated DGD")
+    add_k8s_file_arg(k8s_delete_parser)
+    k8s_delete_parser.add_argument("--kubectl", default="kubectl", help="kubectl executable")
 
     # Fingerprint comparison: srtctl diff <path_a> <path_b>
     diff_parser = subparsers.add_parser("diff", help="Compare fingerprints from two runs")
@@ -1503,6 +1539,22 @@ def main():
 
     # Parse config arg: supports path:selector format for overrides
     config_path, selector = parse_config_arg(args.config)
+
+    if args.command == "k8s":
+        from srtctl.cli.kubernetes import run_kubernetes_command
+
+        try:
+            with materialize_config_path(config_path) as effective_config_path:
+                if not effective_config_path.exists():
+                    raise FileNotFoundError(f"Config not found: {config_path}")
+                run_kubernetes_command(args, config_path=effective_config_path, selector=selector)
+        except Exception as e:
+            restore_console()
+            console.print(f"[bold red]Error:[/] {e}")
+            logger.debug("Full traceback:", exc_info=True)
+            sys.exit(1)
+        restore_console()
+        return
 
     is_dry_run = args.command == "dry-run"
     tags = [t.strip() for t in (getattr(args, "tags", "") or "").split(",") if t.strip()] or None

@@ -26,6 +26,7 @@
 ## Operations
 
 - [Monitoring](monitoring.md)
+- [Dynamo Kubernetes](kubernetes.md)
 - [Analyzing Results](analyzing.md)
 - [SLURM FAQ](slurm-faq.md)
 
