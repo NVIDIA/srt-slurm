@@ -543,6 +543,102 @@ class TestPreflightConfigVariants:
         assert len(telemetry_errors) == 1
         assert telemetry_errors[0].field == "telemetry.node_exporter.container_image"
 
+    def _dcgm_power_recipe(self, model_dir, container_file, dcgm_image):
+        return {
+            "name": "dcgm-power",
+            "model": {"path": str(model_dir), "container": str(container_file), "precision": "bf16"},
+            "resources": {
+                "gpu_type": "gb200",
+                "gpus_per_node": 4,
+                "prefill_nodes": 1,
+                "decode_nodes": 1,
+                "prefill_workers": 1,
+                "decode_workers": 1,
+            },
+            "benchmark": {"type": "sa-bench", "isl": 8192, "osl": 1024, "concurrencies": [4]},
+            "telemetry": {
+                "enabled": True,
+                "provider": "dcgm-power",
+                "default_frequency": 1.0,
+                "storage_subdir": "power",
+                "required": True,
+                "dcgm_exporter": {"container_image": str(dcgm_image), "port": 9401},
+            },
+        }
+
+    def test_dcgm_power_preflight_needs_only_the_exporter_image(self, tmp_path):
+        model_dir = tmp_path / "model"
+        model_dir.mkdir()
+        container_file = tmp_path / "container.sqsh"
+        container_file.write_text("sqsh")
+        dcgm_file = tmp_path / "dcgm.sqsh"
+        dcgm_file.write_text("sqsh")
+
+        results = preflight_config_variants(self._dcgm_power_recipe(model_dir, container_file, dcgm_file))
+
+        assert results[0].ok is True
+        assert not any(issue.code == "telemetry-container-not-available" for issue in results[0].errors)
+
+    def test_dcgm_power_preflight_accepts_a_registry_uri_exporter(self, tmp_path):
+        model_dir = tmp_path / "model"
+        model_dir.mkdir()
+        container_file = tmp_path / "container.sqsh"
+        container_file.write_text("sqsh")
+
+        results = preflight_config_variants(
+            self._dcgm_power_recipe(
+                model_dir, container_file, "docker://nvcr.io/nvidia/k8s/dcgm-exporter:3.3.5-3.4.0-ubuntu22.04"
+            )
+        )
+
+        assert results[0].ok is True
+        assert not any(issue.code == "telemetry-container-not-available" for issue in results[0].errors)
+
+    def test_dcgm_power_preflight_accepts_a_bare_registry_exporter(self, tmp_path):
+        model_dir = tmp_path / "model"
+        model_dir.mkdir()
+        container_file = tmp_path / "container.sqsh"
+        container_file.write_text("sqsh")
+
+        results = preflight_config_variants(
+            self._dcgm_power_recipe(model_dir, container_file, "nvcr.io/nvidia/k8s/dcgm-exporter:3.3.5-3.4.0-ubuntu22.04")
+        )
+
+        assert results[0].ok is True
+        assert not any(issue.code == "telemetry-container-not-available" for issue in results[0].errors)
+
+    def test_dcgm_power_preflight_ignores_scraper_and_node_exporter_images(self, tmp_path):
+        """Those images are never launched by this provider."""
+        model_dir = tmp_path / "model"
+        model_dir.mkdir()
+        container_file = tmp_path / "container.sqsh"
+        container_file.write_text("sqsh")
+        dcgm_file = tmp_path / "dcgm.sqsh"
+        dcgm_file.write_text("sqsh")
+
+        recipe = self._dcgm_power_recipe(model_dir, container_file, dcgm_file)
+        recipe["telemetry"]["container_image"] = str(tmp_path / "missing-scraper.sqsh")
+        recipe["telemetry"]["node_exporter"] = {"container_image": str(tmp_path / "missing-node.sqsh"), "port": 9101}
+
+        results = preflight_config_variants(recipe)
+
+        assert results[0].ok is True
+        assert not any(issue.code == "telemetry-container-not-available" for issue in results[0].errors)
+
+    def test_dcgm_power_preflight_rejects_missing_exporter_image(self, tmp_path):
+        model_dir = tmp_path / "model"
+        model_dir.mkdir()
+        container_file = tmp_path / "container.sqsh"
+        container_file.write_text("sqsh")
+
+        results = preflight_config_variants(
+            self._dcgm_power_recipe(model_dir, container_file, tmp_path / "missing-dcgm.sqsh")
+        )
+
+        assert results[0].ok is False
+        telemetry_errors = [issue for issue in results[0].errors if issue.code == "telemetry-container-not-available"]
+        assert [issue.field for issue in telemetry_errors] == ["telemetry.dcgm_exporter.container_image"]
+
     def test_telemetry_disabled_skips_preflight(self, tmp_path):
         model_dir = tmp_path / "model"
         model_dir.mkdir()

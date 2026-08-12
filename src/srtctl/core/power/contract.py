@@ -9,7 +9,6 @@ import json
 import math
 import os
 import tempfile
-from contextlib import suppress
 from pathlib import Path, PurePosixPath
 from typing import Any, TypeGuard
 
@@ -36,6 +35,7 @@ SAMPLES_HEADER = (
 )
 
 MAX_SAMPLE_GAP_SECONDS = 3.0
+COLLECT_CYCLE_TIMEOUT_GRACE_SECONDS = 1.0
 
 BENCHMARK_TYPE_SA_BENCH = "sa-bench"
 
@@ -131,18 +131,14 @@ def atomic_write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_path = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", text=True)
     try:
-        handle = os.fdopen(fd, "w", encoding="utf-8")
-    except BaseException:
-        with suppress(OSError):
+        try:
+            handle = os.fdopen(fd, "w", encoding="utf-8", closefd=False)
+            with handle:
+                handle.write(json.dumps(payload, indent=2, sort_keys=False) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+        finally:
             os.close(fd)
-        Path(temp_path).unlink(missing_ok=True)
-        raise
-
-    try:
-        with handle:
-            handle.write(json.dumps(payload, indent=2, sort_keys=False) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
         os.replace(temp_path, path)
     except BaseException:
         Path(temp_path).unlink(missing_ok=True)

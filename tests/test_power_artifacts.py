@@ -578,6 +578,7 @@ class TestManifest:
 
         def fail(fd, *_args, **_kwargs):
             captured["fd"] = fd
+            assert _kwargs["closefd"] is False
             raise OSError("too many open files")
 
         monkeypatch.setattr("srtctl.core.power.contract.os.fdopen", fail)
@@ -591,6 +592,29 @@ class TestManifest:
         finally:
             with suppress(OSError):
                 os.close(captured["fd"])
+
+    def test_atomic_write_does_not_close_a_reused_fd_after_wrapper_failure(self, tmp_path, monkeypatch):
+        real_fdopen = os.fdopen
+        replacement_fd = None
+
+        def fail_after_wrapper_created(fd, *args, **kwargs):
+            nonlocal replacement_fd
+            handle = real_fdopen(fd, *args, **kwargs)
+            handle.close()
+            replacement_fd = os.open(tmp_path / "replacement", os.O_CREAT | os.O_WRONLY)
+            raise OSError("wrapper setup failed")
+
+        monkeypatch.setattr("srtctl.core.power.contract.os.fdopen", fail_after_wrapper_created)
+        try:
+            with pytest.raises(OSError, match="wrapper setup failed"):
+                atomic_write_json(tmp_path / MANIFEST_FILENAME, {"a": 1})
+
+            assert replacement_fd is not None
+            os.fstat(replacement_fd)
+        finally:
+            if replacement_fd is not None:
+                with suppress(OSError):
+                    os.close(replacement_fd)
 
 
 class TestMeasurementWindowArtifacts:

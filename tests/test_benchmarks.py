@@ -254,6 +254,7 @@ class TestCustomBenchmarkRunner:
             ),
             frontend=SimpleNamespace(type=frontend_type),
             profiling=SimpleNamespace(enabled=False),
+            telemetry=SimpleNamespace(enabled=False),
         )
         stage.runtime = SimpleNamespace(
             environment={},
