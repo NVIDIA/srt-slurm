@@ -10,9 +10,11 @@ Handles starting backend worker processes (prefill/decode/agg).
 import logging
 import shlex
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Any
 
 from srtctl.core.fingerprint import generate_capture_script
+from srtctl.core.health import wait_for_health
 from srtctl.core.processes import ManagedProcess, NamedProcesses
 from srtctl.core.schema import build_otel_env, installs_dynamo
 from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, get_hostname_ip, start_srun_process
@@ -393,6 +395,35 @@ class WorkerStageMixin:
             critical=True,
         )
 
+    def _wait_for_worker_ready(self, leader: "Process") -> None:
+        """Wait for a single endpoint worker to become ready before starting the next.
+
+        For trtllm_serve: polls the worker's per-process HTTP health endpoint (http_port).
+        For dynamo.trtllm: polls the dynamo system status server on sys_port. The dynamo
+        runtime starts an axum HTTP server on DYN_SYSTEM_PORT (which we set to sys_port)
+        and exposes GET /health → 200 {"status":"ready"} once the model is loaded and the
+        NATS/TCP request endpoint is registered.
+        """
+        health_cfg = self.config.health_check
+        frontend_type = self.config.frontend.type
+
+        # dynamo.trtllm: DYN_SYSTEM_PORT is set to sys_port in start_endpoint_worker,
+        # which enables the per-worker axum HTTP server on that same port.
+        port = leader.http_port if frontend_type == "trtllm_serve" else leader.sys_port
+
+        logger.info(
+            "Sequential node start: waiting for worker %s:%d to be ready",
+            leader.node,
+            port,
+        )
+        if not wait_for_health(
+            leader.node,
+            port,
+            max_attempts=health_cfg.max_attempts,
+            interval=health_cfg.interval_seconds,
+        ):
+            raise RuntimeError(f"Sequential node start: worker on {leader.node}:{port} did not become healthy")
+
     def start_all_workers(self) -> NamedProcesses:
         """Start all backend workers."""
         logger.info("Starting backend workers")
@@ -410,9 +441,46 @@ class WorkerStageMixin:
 
         if launch_per_endpoint:
             # MPI-style: one srun per endpoint (TRTLLM)
-            for endpoint_processes in grouped.values():
-                managed = self.start_endpoint_worker(endpoint_processes)
-                result[managed.name] = managed
+            concurrency = int(getattr(self.backend, "sequential_node_start", 0))
+            if concurrency:
+                # Group endpoints by leader node; start in batches within each node
+                # so that model loading on a shared node doesn't cause resource contention.
+                # Different nodes start in parallel.
+                by_node: dict[str, list[list[Process]]] = defaultdict(list)
+                for ep_procs in grouped.values():
+                    by_node[ep_procs[0].node].append(ep_procs)
+
+                def start_node_workers(node: str, node_groups: list) -> list:
+                    if len(node_groups) == 1:
+                        return [self.start_endpoint_worker(node_groups[0])]
+                    logger.info(
+                        "Sequential node start: %d workers share node %s, starting %d at a time",
+                        len(node_groups),
+                        node,
+                        concurrency,
+                    )
+                    managed_list = []
+                    for batch_start in range(0, len(node_groups), concurrency):
+                        batch = node_groups[batch_start : batch_start + concurrency]
+                        batch_managed = [self.start_endpoint_worker(ep_procs) for ep_procs in batch]
+                        managed_list.extend(batch_managed)
+                        if batch_start + concurrency < len(node_groups):
+                            for ep_procs in batch:
+                                self._wait_for_worker_ready(ep_procs[0])
+                    return managed_list
+
+                with ThreadPoolExecutor(max_workers=len(by_node)) as executor:
+                    futures = {
+                        executor.submit(start_node_workers, node, node_groups): node
+                        for node, node_groups in by_node.items()
+                    }
+                    for future in as_completed(futures):
+                        for managed in future.result():
+                            result[managed.name] = managed
+            else:
+                for endpoint_processes in grouped.values():
+                    managed = self.start_endpoint_worker(endpoint_processes)
+                    result[managed.name] = managed
         else:
             # Per-process: one srun per node (SGLang)
             for endpoint_processes in grouped.values():
