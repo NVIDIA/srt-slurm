@@ -112,7 +112,6 @@ def test_render_disaggregated_sglang_dgd() -> None:
 
     rendered = dump_kubernetes_yaml(config)
     assert "&id" not in rendered
-    assert "router_zoo" not in rendered
 
 
 def test_render_tachometer_sidecars_and_node_daemon_set() -> None:

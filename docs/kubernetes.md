@@ -1,6 +1,6 @@
 # Dynamo Kubernetes deployments
 
-srtctl can render, deploy, monitor, benchmark, collect, and delete Dynamo `DynamoGraphDeployment` (DGD) resources from the same recipe format used for SLURM. Kubernetes support is implemented directly in srtctl and has no Router Zoo dependency.
+srtctl can render, deploy, monitor, benchmark, collect, and delete Dynamo `DynamoGraphDeployment` (DGD) resources from the same recipe format used for SLURM. Kubernetes support is implemented directly in srtctl.
 
 ## Scope
 
@@ -17,7 +17,7 @@ flowchart LR
     A -. "telemetry.enabled" .-> H["Tachometer sidecars and node DaemonSet"]
 ```
 
-It does not create a namespace, install the Dynamo operator, create secrets or PVCs, deploy an OTEL collector, or provide Router Zoo's API, worker queue, capacity scheduler, runtime builder, or object store.
+It does not create a namespace, install the Dynamo operator, create secrets or PVCs, deploy an OTEL collector, provide multi-user scheduling, build runtime images, or manage object storage.
 
 ## Prerequisites
 
@@ -133,7 +133,7 @@ outputs/<deployment>-k8s-<run-id>/
 └── <benchmark-generated files copied from /logs>
 ```
 
-The benchmark Job uses `benchmark.container_image` when set and otherwise uses `model.container`. Built-in benchmark scripts are packaged into a run-scoped ConfigMap and mounted read-only at `/srtctl-benchmarks`; Router Zoo is not installed in the image or cluster. The Job receives `SRT_FRONTEND_HOST`, `SRT_FRONTEND_PORT`, `SRTCTL_FRONTEND_TYPE`, top-level recipe environment, benchmark environment, and the existing Kubernetes secret/ConfigMap references.
+The benchmark Job uses `benchmark.container_image` when set and otherwise uses `model.container`. Built-in benchmark scripts are packaged into a run-scoped ConfigMap and mounted read-only at `/srtctl-benchmarks`. The Job receives `SRT_FRONTEND_HOST`, `SRT_FRONTEND_PORT`, `SRTCTL_FRONTEND_TYPE`, top-level recipe environment, benchmark environment, and the existing Kubernetes secret/ConfigMap references.
 
 ## Tachometer telemetry
 
