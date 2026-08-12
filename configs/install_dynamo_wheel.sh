@@ -28,10 +28,6 @@ SENTINEL="${LOCK_DIR}/.srtctl_dynamo_wheel_install.complete"
         python3 -m pip install --ignore-installed PyYAML==6.0.3
         pip install --no-cache-dir /dynamo_wheels/*.whl
 
-        # Copy patched handler_base.py into the installed package
-        cp /dynamo_wheels/handler_base.py /usr/local/lib/python3.12/dist-packages/dynamo/trtllm/request_handlers/handler_base.py
-        echo "Copied handler_base.py to dynamo package"
-
         touch "${SENTINEL}"
     fi
 ) 200>"${LOCK}"
