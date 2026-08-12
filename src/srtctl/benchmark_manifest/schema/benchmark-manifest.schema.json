@@ -1,0 +1,847 @@
+{
+  "$defs": {
+    "Artifacts": {
+      "additionalProperties": false,
+      "properties": {
+        "base_image": {
+          "$ref": "#/$defs/ImageRef",
+          "description": "TRT-LLM base image, by digest."
+        },
+        "wheels": {
+          "description": "Wheels installed on top, pinned.",
+          "items": {
+            "$ref": "#/$defs/WheelRef"
+          },
+          "title": "Wheels",
+          "type": "array"
+        },
+        "sbom": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SbomRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Built-image dependency lock (recommended)."
+        }
+      },
+      "required": [
+        "base_image"
+      ],
+      "title": "Artifacts",
+      "type": "object"
+    },
+    "BackendSelection": {
+      "additionalProperties": false,
+      "description": "Requested vs effective backend \u2014 the silent-fallback guard (generated).\n\n``requested`` is what the recipe asked for; ``effective`` is what the engine\nactually ran, read from its logs. The validator fails if they differ.",
+      "properties": {
+        "requested": {
+          "title": "Requested",
+          "type": "string"
+        },
+        "effective": {
+          "title": "Effective",
+          "type": "string"
+        }
+      },
+      "required": [
+        "requested",
+        "effective"
+      ],
+      "title": "BackendSelection",
+      "type": "object"
+    },
+    "Backends": {
+      "additionalProperties": false,
+      "properties": {
+        "moe": {
+          "$ref": "#/$defs/BackendSelection",
+          "description": "MoE kernel backend, e.g. TRTLLM vs MEGAMOE_DEEPGEMM."
+        },
+        "comm": {
+          "$ref": "#/$defs/BackendSelection",
+          "description": "KV/comm transfer backend, e.g. NIXL vs UCX."
+        }
+      },
+      "required": [
+        "moe",
+        "comm"
+      ],
+      "title": "Backends",
+      "type": "object"
+    },
+    "Capabilities": {
+      "additionalProperties": false,
+      "properties": {
+        "worker_without_frontend": {
+          "$ref": "#/$defs/CapabilityDecl",
+          "description": "A Dynamo worker that answers requests without the Dynamo frontend/router."
+        },
+        "prefill_only_discovery": {
+          "$ref": "#/$defs/CapabilityDecl",
+          "description": "Dynamo-frontend prefill-only topology discovery."
+        }
+      },
+      "required": [
+        "worker_without_frontend",
+        "prefill_only_discovery"
+      ],
+      "title": "Capabilities",
+      "type": "object"
+    },
+    "CapabilityDecl": {
+      "additionalProperties": false,
+      "properties": {
+        "available": {
+          "description": "Whether this capability exists today. If false, it is a declared gap.",
+          "title": "Available",
+          "type": "boolean"
+        },
+        "invocation": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "How to invoke it (required when available is true).",
+          "title": "Invocation"
+        },
+        "notes": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Notes"
+        }
+      },
+      "required": [
+        "available"
+      ],
+      "title": "CapabilityDecl",
+      "type": "object"
+    },
+    "Checkpoint": {
+      "additionalProperties": false,
+      "description": "Checkpoint by a shareable reference \u2014 never a private local path (generated).\n\nProvide EITHER (hf_id + hf_revision) OR oci_digest. The validator enforces\nthe one-of and rejects anything that looks like a bare filesystem path.",
+      "properties": {
+        "hf_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Hugging Face model id, e.g. 'deepseek-ai/DeepSeek-V4-Pro'.",
+          "title": "Hf Id"
+        },
+        "hf_revision": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Hugging Face revision (commit/tag) pinning the weights.",
+          "title": "Hf Revision"
+        },
+        "oci_digest": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "OCI/registry digest, if the checkpoint is stored that way.",
+          "title": "Oci Digest"
+        }
+      },
+      "title": "Checkpoint",
+      "type": "object"
+    },
+    "ClusterRequirements": {
+      "additionalProperties": false,
+      "description": "Cluster-specific settings that a naive replay would miss (recommended).",
+      "properties": {
+        "ucx": {
+          "additionalProperties": true,
+          "description": "UCX env/settings that must be reproduced.",
+          "title": "Ucx",
+          "type": "object"
+        },
+        "numa": {
+          "additionalProperties": true,
+          "description": "GPU/NIC/CPU affinity requirements.",
+          "title": "Numa",
+          "type": "object"
+        },
+        "mounts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Mounts",
+          "type": "array"
+        },
+        "preserve_engine_comm": {
+          "description": "Comm libs from the engine image that must not be overwritten.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Preserve Engine Comm",
+          "type": "array"
+        }
+      },
+      "title": "ClusterRequirements",
+      "type": "object"
+    },
+    "Conversion": {
+      "additionalProperties": false,
+      "description": "The image-conversion I/O contract for this run.\n\nThis fixes what the conversion must satisfy. Actually running the conversion\nis a separate ticket; only the contract is pinned here.",
+      "properties": {
+        "inputs": {
+          "$ref": "#/$defs/ConversionInputs"
+        },
+        "outputs": {
+          "$ref": "#/$defs/ConversionOutputs"
+        }
+      },
+      "required": [
+        "inputs"
+      ],
+      "title": "Conversion",
+      "type": "object"
+    },
+    "ConversionInputs": {
+      "additionalProperties": false,
+      "description": "Inputs that pin how the Dynamo image is produced (authored + generated).",
+      "properties": {
+        "trtllm_image_digest": {
+          "description": "Base TRT-LLM image digest to convert from.",
+          "title": "Trtllm Image Digest",
+          "type": "string"
+        },
+        "trtllm_source_commit": {
+          "description": "TRT-LLM source commit the base image was built at.",
+          "title": "Trtllm Source Commit",
+          "type": "string"
+        },
+        "dynamo_wheel": {
+          "$ref": "#/$defs/WheelRef",
+          "description": "Dynamo wheel to bake in (pinned, not runtime-installed)."
+        },
+        "compat_min_commit": {
+          "description": "Low end of the TRT-LLM source-commit range the wheel supports.",
+          "title": "Compat Min Commit",
+          "type": "string"
+        },
+        "compat_max_commit": {
+          "description": "High end of that range ('HEAD@<date>' allowed).",
+          "title": "Compat Max Commit",
+          "type": "string"
+        }
+      },
+      "required": [
+        "trtllm_image_digest",
+        "trtllm_source_commit",
+        "dynamo_wheel",
+        "compat_min_commit",
+        "compat_max_commit"
+      ],
+      "title": "ConversionInputs",
+      "type": "object"
+    },
+    "ConversionOutputs": {
+      "additionalProperties": false,
+      "description": "Outputs of the conversion (generated once the image is built; optional).",
+      "properties": {
+        "dynamo_image_digest": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Digest of the built Dynamo image, once baked.",
+          "title": "Dynamo Image Digest"
+        },
+        "build_command": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Exact command that produced it.",
+          "title": "Build Command"
+        },
+        "preserved_comm": {
+          "description": "Engine-provided comm libs that MUST survive conversion, e.g. ['nixl', 'ucx', 'libfabric'].",
+          "items": {
+            "type": "string"
+          },
+          "title": "Preserved Comm",
+          "type": "array"
+        }
+      },
+      "title": "ConversionOutputs",
+      "type": "object"
+    },
+    "FileRef": {
+      "additionalProperties": false,
+      "description": "A file inside the srt-slurm tree, referenced by path + hash (generated).",
+      "properties": {
+        "srt_slurm_relpath": {
+          "description": "Path relative to the srt-slurm repo root.",
+          "title": "Srt Slurm Relpath",
+          "type": "string"
+        },
+        "sha256": {
+          "description": "sha256 of the file at the recorded commit.",
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "srt_slurm_relpath",
+        "sha256"
+      ],
+      "title": "FileRef",
+      "type": "object"
+    },
+    "ImageRef": {
+      "additionalProperties": false,
+      "description": "A container image, pinned by content digest (generated).",
+      "properties": {
+        "ref": {
+          "description": "Human-readable image reference, e.g. 'nvcr.io/.../release:1.3.0rc23'.",
+          "title": "Ref",
+          "type": "string"
+        },
+        "digest": {
+          "description": "Content digest, 'sha256:<64 hex>'. The validator rejects a bare tag.",
+          "title": "Digest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "ref",
+        "digest"
+      ],
+      "title": "ImageRef",
+      "type": "object"
+    },
+    "Metadata": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "description": "Short benchmark name, e.g. 'dsv4-pro-8k1k-b300'.",
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "One-line human description.",
+          "title": "Description"
+        },
+        "owners": {
+          "$ref": "#/$defs/Owners"
+        }
+      },
+      "required": [
+        "name",
+        "owners"
+      ],
+      "title": "Metadata",
+      "type": "object"
+    },
+    "Metrics": {
+      "additionalProperties": false,
+      "description": "Per-point measured metrics. Absolute latencies are the portable ones.",
+      "properties": {
+        "concurrency": {
+          "minimum": 1,
+          "title": "Concurrency",
+          "type": "integer"
+        },
+        "ttft_ms": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Mean time-to-first-token, ms.",
+          "title": "Ttft Ms"
+        },
+        "tpot_ms": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Mean time-per-output-token, ms.",
+          "title": "Tpot Ms"
+        },
+        "output_tput_tok_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Output tokens/sec.",
+          "title": "Output Tput Tok S"
+        },
+        "total_tput_tok_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Total (in+out) tokens/sec, if reported.",
+          "title": "Total Tput Tok S"
+        }
+      },
+      "required": [
+        "concurrency"
+      ],
+      "title": "Metrics",
+      "type": "object"
+    },
+    "Model": {
+      "additionalProperties": false,
+      "properties": {
+        "served": {
+          "description": "Model name the server actually served (from the engine/worker logs).",
+          "title": "Served",
+          "type": "string"
+        },
+        "requested": {
+          "description": "Model name the client requested. Validator flags served != requested.",
+          "title": "Requested",
+          "type": "string"
+        },
+        "checkpoint": {
+          "$ref": "#/$defs/Checkpoint"
+        }
+      },
+      "required": [
+        "served",
+        "requested",
+        "checkpoint"
+      ],
+      "title": "Model",
+      "type": "object"
+    },
+    "Owners": {
+      "additionalProperties": false,
+      "description": "Named owners on both sides of the handoff (authored).",
+      "properties": {
+        "trtllm": {
+          "description": "Owner on the TRT-LLM (native) side.",
+          "title": "Trtllm",
+          "type": "string"
+        },
+        "dynamo": {
+          "description": "Owner on the Dynamo (replicating) side.",
+          "title": "Dynamo",
+          "type": "string"
+        }
+      },
+      "required": [
+        "trtllm",
+        "dynamo"
+      ],
+      "title": "Owners",
+      "type": "object"
+    },
+    "ResultPoint": {
+      "additionalProperties": false,
+      "description": "One reported number within this run's single, fully-pinned configuration.\n\nA manifest describes one configuration (topology + backends + effective_config),\nso ``point_id`` is the stable label identifying a point within that run (e.g. a\nconcurrency sweep step). The validator enforces it is present and unique; it does\nnot resolve it against a separate config table.",
+      "properties": {
+        "point_id": {
+          "description": "Stable, unique label for this point, e.g. '2p1d-b32-conc282'.",
+          "title": "Point Id",
+          "type": "string"
+        },
+        "metrics": {
+          "$ref": "#/$defs/Metrics"
+        }
+      },
+      "required": [
+        "point_id",
+        "metrics"
+      ],
+      "title": "ResultPoint",
+      "type": "object"
+    },
+    "Results": {
+      "additionalProperties": false,
+      "properties": {
+        "baseline": {
+          "description": "Native baseline points, each with a unique point_id within this run.",
+          "items": {
+            "$ref": "#/$defs/ResultPoint"
+          },
+          "title": "Baseline",
+          "type": "array"
+        }
+      },
+      "title": "Results",
+      "type": "object"
+    },
+    "Runtime": {
+      "additionalProperties": false,
+      "properties": {
+        "effective_config": {
+          "$ref": "#/$defs/FileRef",
+          "description": "Reference + hash to the engine's resolved config (trtllm_config_*.yaml), not recipe deltas."
+        },
+        "backends": {
+          "$ref": "#/$defs/Backends"
+        },
+        "environment": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Effective environment (recommended).",
+          "title": "Environment"
+        },
+        "cluster_requirements": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ClusterRequirements"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Recommended."
+        }
+      },
+      "required": [
+        "effective_config",
+        "backends"
+      ],
+      "title": "Runtime",
+      "type": "object"
+    },
+    "SbomRef": {
+      "additionalProperties": false,
+      "description": "Software bill of materials for the built image (recommended, generated).\n\nA dependency lock (e.g. ``pip freeze`` captured inside the built image). This\nis what catches the incompatible-nested-dependency failure class.",
+      "properties": {
+        "srt_slurm_relpath": {
+          "description": "Path relative to the srt-slurm repo root.",
+          "title": "Srt Slurm Relpath",
+          "type": "string"
+        },
+        "sha256": {
+          "description": "sha256 of the file at the recorded commit.",
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "srt_slurm_relpath",
+        "sha256"
+      ],
+      "title": "SbomRef",
+      "type": "object"
+    },
+    "Source": {
+      "additionalProperties": false,
+      "description": "Where the recipe/client/sweep scripts come from (generated).",
+      "properties": {
+        "repo": {
+          "description": "srt-slurm repository URL.",
+          "title": "Repo",
+          "type": "string"
+        },
+        "branch": {
+          "description": "Branch name.",
+          "title": "Branch",
+          "type": "string"
+        },
+        "commit": {
+          "description": "40-hex commit SHA. The validator rejects short or non-hex values.",
+          "title": "Commit",
+          "type": "string"
+        },
+        "bundle": {
+          "description": "Recipe/client/sweep files by relpath + sha256 at that commit (SHA-reference, not a copy).",
+          "items": {
+            "$ref": "#/$defs/FileRef"
+          },
+          "title": "Bundle",
+          "type": "array"
+        },
+        "launcher_patches": {
+          "description": "Out-of-band edits applied at launch, declared explicitly (e.g. an ENROOT_REMAP_ROOT sed).",
+          "items": {
+            "type": "string"
+          },
+          "title": "Launcher Patches",
+          "type": "array"
+        }
+      },
+      "required": [
+        "repo",
+        "branch",
+        "commit"
+      ],
+      "title": "Source",
+      "type": "object"
+    },
+    "Topology": {
+      "additionalProperties": false,
+      "properties": {
+        "prefill": {
+          "$ref": "#/$defs/WorkerGroup"
+        },
+        "decode": {
+          "$ref": "#/$defs/WorkerGroup"
+        }
+      },
+      "required": [
+        "prefill",
+        "decode"
+      ],
+      "title": "Topology",
+      "type": "object"
+    },
+    "WheelRef": {
+      "additionalProperties": false,
+      "description": "A Python wheel, pinned by SHA or git commit (generated).",
+      "properties": {
+        "name": {
+          "description": "Distribution name, e.g. 'ai-dynamo'.",
+          "title": "Name",
+          "type": "string"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Version string, if any (informational, NOT the pin).",
+          "title": "Version"
+        },
+        "sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Artifact sha256. Provide this OR git_commit.",
+          "title": "Sha256"
+        },
+        "git_commit": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Source commit the wheel was built from. Provide this OR sha256.",
+          "title": "Git Commit"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "WheelRef",
+      "type": "object"
+    },
+    "WorkerGroup": {
+      "additionalProperties": false,
+      "description": "One side of a disaggregated deployment (generated).",
+      "properties": {
+        "num_workers": {
+          "minimum": 1,
+          "title": "Num Workers",
+          "type": "integer"
+        },
+        "tp": {
+          "description": "Tensor-parallel size.",
+          "minimum": 1,
+          "title": "Tp",
+          "type": "integer"
+        },
+        "ep": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Expert-parallel size, if applicable.",
+          "title": "Ep"
+        },
+        "dp_attn": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Data-parallel attention size, if applicable.",
+          "title": "Dp Attn"
+        },
+        "nodes": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Nodes allocated to this group.",
+          "title": "Nodes"
+        }
+      },
+      "required": [
+        "num_workers",
+        "tp"
+      ],
+      "title": "WorkerGroup",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "A complete, portable description of one benchmark run.",
+  "properties": {
+    "manifest_version": {
+      "description": "Schema version, e.g. '0.1'. Required; the validator rejects a major it cannot read.",
+      "title": "Manifest Version",
+      "type": "string"
+    },
+    "metadata": {
+      "$ref": "#/$defs/Metadata"
+    },
+    "artifacts": {
+      "$ref": "#/$defs/Artifacts"
+    },
+    "source": {
+      "$ref": "#/$defs/Source"
+    },
+    "model": {
+      "$ref": "#/$defs/Model"
+    },
+    "topology": {
+      "$ref": "#/$defs/Topology"
+    },
+    "runtime": {
+      "$ref": "#/$defs/Runtime"
+    },
+    "conversion": {
+      "$ref": "#/$defs/Conversion"
+    },
+    "results": {
+      "$ref": "#/$defs/Results"
+    },
+    "capabilities": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Capabilities"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Dynamo capability declarations (recommended)."
+    }
+  },
+  "required": [
+    "manifest_version",
+    "metadata",
+    "artifacts",
+    "source",
+    "model",
+    "topology",
+    "runtime",
+    "conversion"
+  ],
+  "title": "Portable Benchmark Manifest",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}
