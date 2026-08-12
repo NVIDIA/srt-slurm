@@ -17,8 +17,12 @@ from srtctl.kubernetes import (
     apply_kubernetes,
     delete_kubernetes,
     dump_kubernetes_yaml,
+    get_kubernetes_status,
     render_kubernetes_manifests,
+    render_kubernetes_run_manifests,
+    run_kubernetes,
     wait_for_dgd,
+    wait_for_kubernetes_job,
 )
 
 
@@ -228,6 +232,8 @@ def test_aggregated_backend_rendering(backend: dict, module: str, supporting_kin
         ({"namespace": "Not-Valid"}, "namespace"),
         ({"image_pull_policy": "Sometimes"}, "image_pull_policy"),
         ({"telemetry_mount_path": "logs"}, "telemetry_mount_path"),
+        ({"benchmark_timeout_seconds": 0}, "benchmark_timeout_seconds"),
+        ({"job_ttl_after_finished_seconds": -1}, "job_ttl_after_finished_seconds"),
         ({"poll_interval_seconds": 0}, "poll_interval_seconds"),
     ],
 )
@@ -274,9 +280,11 @@ def test_apply_and_delete_use_generated_manifests(monkeypatch: pytest.MonkeyPatc
     assert apply_kubernetes(config) == "ok\n"
     assert calls[0][0] == ["apply", "--filename", "-"]
     assert "kind: DaemonSet" in (calls[0][1] or "")
-    assert delete_kubernetes(config) == "ok\n"
-    assert calls[1][0] == ["delete", "--filename", "-", "--ignore-not-found"]
-    assert calls[1][1] == calls[0][1]
+    assert delete_kubernetes(config) == "ok\nok\n"
+    assert calls[1][0][:2] == ["delete", "jobs,configmaps"]
+    assert calls[1][1] is None
+    assert calls[2][0] == ["delete", "--filename", "-", "--ignore-not-found"]
+    assert calls[2][1] == calls[0][1]
 
 
 @pytest.mark.parametrize(
@@ -298,3 +306,269 @@ def test_wait_for_dgd_status(monkeypatch: pytest.MonkeyPatch, status: dict, erro
             wait_for_dgd(_config())
     else:
         assert wait_for_dgd(_config()) == resource
+
+
+def test_render_benchmark_job_packages_scripts_and_targets_frontend_service() -> None:
+    raw = SrtConfig.Schema().dump(_config())
+    raw["benchmark"] = {
+        "type": "sa-bench",
+        "isl": 1024,
+        "osl": 128,
+        "concurrencies": [8, 16],
+        "container_image": "registry.example/benchmark:latest",
+        "env": {"HF_TOKEN": "from-secret-preferred"},
+    }
+    raw["kubernetes"].update(
+        {
+            "benchmark_persistent_volume_claim": "benchmark-results",
+            "benchmark_resources": {
+                "requests": {"cpu": "4", "memory": "8Gi"},
+                "limits": {"cpu": "8", "memory": "16Gi"},
+            },
+        }
+    )
+    config = SrtConfig.Schema().load(raw)
+
+    config_map, job = render_kubernetes_run_manifests(config, run_id="run-1")
+
+    assert config_map["kind"] == "ConfigMap"
+    item_paths = {item["path"] for item in job["spec"]["template"]["spec"]["volumes"][-1]["configMap"]["items"]}
+    assert "sa-bench/bench.sh" in item_paths
+    assert "lib/profiling.sh" in item_paths
+    container = job["spec"]["template"]["spec"]["containers"][0]
+    assert container["image"] == "registry.example/benchmark:latest"
+    assert container["command"][1] == "/srtctl-benchmarks/sa-bench/bench.sh"
+    assert container["command"][2] == "http://k8s-test-frontend.bench.svc.cluster.local:8000"
+    assert container["resources"]["limits"]["memory"] == "16Gi"
+    assert {
+        "name": "srt-benchmark-output",
+        "persistentVolumeClaim": {"claimName": "benchmark-results"},
+    } in job["spec"]["template"]["spec"]["volumes"]
+    assert job["spec"]["backoffLimit"] == 0
+    assert job["spec"]["activeDeadlineSeconds"] == 3600
+
+
+def test_render_custom_benchmark_job_needs_no_script_config_map() -> None:
+    raw = SrtConfig.Schema().dump(_config())
+    raw["benchmark"] = {
+        "type": "custom",
+        "command": 'curl -fsS "http://${SRT_FRONTEND_HOST}:${SRT_FRONTEND_PORT}/health"',
+        "container_image": "curlimages/curl:8.14.1",
+    }
+    config = SrtConfig.Schema().load(raw)
+
+    manifests = render_kubernetes_run_manifests(config, run_id="smoke")
+
+    assert len(manifests) == 1
+    job = manifests[0]
+    container = job["spec"]["template"]["spec"]["containers"][0]
+    assert container["command"] == [
+        "bash",
+        "-lc",
+        'curl -fsS "http://${SRT_FRONTEND_HOST}:${SRT_FRONTEND_PORT}/health"',
+    ]
+    assert all(volume["name"] != "srt-benchmark-scripts" for volume in job["spec"]["template"]["spec"]["volumes"])
+    retained_job = render_kubernetes_run_manifests(config, run_id="retained", retain_finished=True)[0]
+    assert "ttlSecondsAfterFinished" not in retained_job["spec"]
+
+
+def test_status_reports_jobs_pods_metrics_and_events(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_kubectl(
+        args: list[str], *, executable: str, input_text: str | None = None, check: bool = True
+    ) -> subprocess.CompletedProcess[str]:
+        del input_text, check
+        if args[:2] == ["get", "dynamographdeployment"]:
+            payload = {"status": {"conditions": [{"type": "Ready", "status": "True"}]}}
+        elif args[:2] == ["get", "jobs"]:
+            payload = {
+                "items": [
+                    {
+                        "metadata": {
+                            "name": "k8s-test-bench-run-1",
+                            "labels": {"srtctl.nvidia.com/run-id": "run-1"},
+                        },
+                        "status": {"active": 1},
+                    }
+                ]
+            }
+        elif args[:2] == ["get", "pods"]:
+            payload = {
+                "items": [
+                    {
+                        "metadata": {
+                            "name": "k8s-test-frontend-0",
+                            "labels": {"app.kubernetes.io/instance": "k8s-test"},
+                        },
+                        "spec": {"nodeName": "node-a"},
+                        "status": {
+                            "phase": "Running",
+                            "containerStatuses": [{"name": "main", "ready": True, "restartCount": 0}],
+                        },
+                    }
+                ]
+            }
+        elif args[:2] == ["get", "--raw"]:
+            payload = {
+                "items": [
+                    {
+                        "metadata": {"name": "k8s-test-frontend-0"},
+                        "containers": [{"name": "main", "usage": {"cpu": "2", "memory": "1Gi"}}],
+                    }
+                ]
+            }
+        elif args[:2] == ["get", "events"]:
+            payload = {
+                "items": [
+                    {
+                        "type": "Normal",
+                        "reason": "Started",
+                        "message": "Started container",
+                        "involvedObject": {"kind": "Pod", "name": "k8s-test-frontend-0"},
+                    }
+                ]
+            }
+        else:
+            raise AssertionError(args)
+        return subprocess.CompletedProcess([executable, *args], 0, json.dumps(payload), "")
+
+    monkeypatch.setattr("srtctl.kubernetes._kubectl", fake_kubectl)
+
+    status = get_kubernetes_status(_config())
+
+    assert status["deployment"]["ready"] is True
+    assert status["jobs"][0]["state"] == "running"
+    assert status["pods"][0]["metrics"]["main"]["memory"] == "1Gi"
+    assert status["events"][0]["reason"] == "Started"
+
+
+def test_wait_for_job_surfaces_terminal_pod_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_kubectl(
+        args: list[str], *, executable: str, input_text: str | None = None, check: bool = True
+    ) -> subprocess.CompletedProcess[str]:
+        del input_text, check
+        payload: dict
+        if args[:2] == ["get", "job"]:
+            payload = {"status": {"active": 1}}
+        else:
+            payload = {
+                "items": [
+                    {
+                        "metadata": {"name": "benchmark-pod"},
+                        "status": {
+                            "containerStatuses": [
+                                {
+                                    "name": "benchmark",
+                                    "restartCount": 0,
+                                    "state": {"terminated": {"exitCode": 137, "reason": "OOMKilled"}},
+                                }
+                            ]
+                        },
+                    }
+                ]
+            }
+        return subprocess.CompletedProcess([executable, *args], 0, json.dumps(payload), "")
+
+    monkeypatch.setattr("srtctl.kubernetes._kubectl", fake_kubectl)
+
+    with pytest.raises(RuntimeError, match="OOMKilled"):
+        wait_for_kubernetes_job(_config(), "benchmark")
+
+
+def test_run_cleans_up_after_benchmark_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    raw = SrtConfig.Schema().dump(_config())
+    raw["benchmark"] = {
+        "type": "custom",
+        "command": "false",
+        "container_image": "registry.example/benchmark:latest",
+    }
+    config = SrtConfig.Schema().load(raw)
+    cleaned: list[str] = []
+
+    monkeypatch.setattr("srtctl.kubernetes.apply_kubernetes", lambda *args, **kwargs: "")
+    monkeypatch.setattr(
+        "srtctl.kubernetes._kubectl",
+        lambda args, **kwargs: subprocess.CompletedProcess(args, 0, "", ""),
+    )
+    monkeypatch.setattr(
+        "srtctl.kubernetes.wait_for_kubernetes_job",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("benchmark failed")),
+    )
+    monkeypatch.setattr("srtctl.kubernetes.collect_kubernetes_diagnostics", lambda *args, **kwargs: [])
+    monkeypatch.setattr("srtctl.kubernetes.delete_kubernetes_run", lambda *args, **kwargs: cleaned.append("run") or "")
+    monkeypatch.setattr(
+        "srtctl.kubernetes.delete_kubernetes", lambda *args, **kwargs: cleaned.append("deployment") or ""
+    )
+
+    with pytest.raises(RuntimeError, match="benchmark failed"):
+        run_kubernetes(config, output_dir=tmp_path, stream_logs=False)
+
+    assert cleaned == ["run", "deployment"]
+
+
+def test_run_leaves_preexisting_deployment_after_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    raw = SrtConfig.Schema().dump(_config())
+    raw["benchmark"] = {
+        "type": "custom",
+        "command": "false",
+        "container_image": "registry.example/benchmark:latest",
+    }
+    config = SrtConfig.Schema().load(raw)
+    cleaned: list[str] = []
+
+    def fake_kubectl(args: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+        stdout = "dynamographdeployment.nvidia.com/k8s-test\n" if "--ignore-not-found" in args else ""
+        return subprocess.CompletedProcess(args, 0, stdout, "")
+
+    monkeypatch.setattr("srtctl.kubernetes.apply_kubernetes", lambda *args, **kwargs: "")
+    monkeypatch.setattr("srtctl.kubernetes._kubectl", fake_kubectl)
+    monkeypatch.setattr(
+        "srtctl.kubernetes.wait_for_kubernetes_job",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("benchmark failed")),
+    )
+    monkeypatch.setattr("srtctl.kubernetes.collect_kubernetes_diagnostics", lambda *args, **kwargs: [])
+    monkeypatch.setattr("srtctl.kubernetes.collect_kubernetes_artifacts", lambda *args, **kwargs: [])
+    monkeypatch.setattr("srtctl.kubernetes.delete_kubernetes_run", lambda *args, **kwargs: cleaned.append("run") or "")
+    monkeypatch.setattr(
+        "srtctl.kubernetes.delete_kubernetes", lambda *args, **kwargs: cleaned.append("deployment") or ""
+    )
+
+    with pytest.raises(RuntimeError, match="benchmark failed"):
+        run_kubernetes(config, output_dir=tmp_path, stream_logs=False)
+
+    assert cleaned == ["run"]
+
+
+def test_run_attempts_deployment_cleanup_when_job_cleanup_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    raw = SrtConfig.Schema().dump(_config())
+    raw["benchmark"] = {
+        "type": "custom",
+        "command": "true",
+        "container_image": "registry.example/benchmark:latest",
+    }
+    config = SrtConfig.Schema().load(raw)
+    cleaned: list[str] = []
+
+    monkeypatch.setattr("srtctl.kubernetes.apply_kubernetes", lambda *args, **kwargs: "")
+    monkeypatch.setattr(
+        "srtctl.kubernetes._kubectl",
+        lambda args, **kwargs: subprocess.CompletedProcess(args, 0, "", ""),
+    )
+    monkeypatch.setattr("srtctl.kubernetes.wait_for_kubernetes_job", lambda *args, **kwargs: {})
+    monkeypatch.setattr("srtctl.kubernetes.collect_kubernetes_diagnostics", lambda *args, **kwargs: [])
+    monkeypatch.setattr("srtctl.kubernetes.collect_kubernetes_artifacts", lambda *args, **kwargs: [])
+
+    def fail_run_cleanup(*args, **kwargs):
+        cleaned.append("run")
+        raise RuntimeError("run cleanup failed")
+
+    monkeypatch.setattr("srtctl.kubernetes.delete_kubernetes_run", fail_run_cleanup)
+    monkeypatch.setattr(
+        "srtctl.kubernetes.delete_kubernetes", lambda *args, **kwargs: cleaned.append("deployment") or ""
+    )
+
+    with pytest.raises(RuntimeError, match="run cleanup failed"):
+        run_kubernetes(config, output_dir=tmp_path, stream_logs=False)
+
+    assert cleaned == ["run", "deployment"]

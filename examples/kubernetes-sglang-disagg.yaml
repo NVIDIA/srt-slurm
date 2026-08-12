@@ -32,6 +32,16 @@ backend:
       trust-remote-code: true
       disaggregation-transfer-backend: nixl
 
+benchmark:
+  type: sa-bench
+  isl: 1024
+  osl: 128
+  concurrencies: [8, 16, 32]
+  req_rate: inf
+  # Defaults to model.container. Override when benchmark dependencies live in
+  # a separate image.
+  # container_image: my-registry/srt-benchmark:latest
+
 kubernetes:
   namespace: dynamo-bench
   runtime_version: 1.4.0
@@ -39,6 +49,12 @@ kubernetes:
     - hf-token-secret
   node_selector:
     accelerator: h100
+  benchmark_timeout_seconds: 3600
+  benchmark_resources:
+    requests: {cpu: "4", memory: 8Gi}
+    limits: {cpu: "8", memory: 16Gi}
+  # Optional durable benchmark /logs storage.
+  # benchmark_persistent_volume_claim: benchmark-results
   # Optional with telemetry.enabled: must be an existing RWX PVC.
   # telemetry_persistent_volume_claim: benchmark-telemetry
 

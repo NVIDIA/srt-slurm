@@ -1140,6 +1140,10 @@ class KubernetesConfig:
     telemetry_persistent_volume_claim: str | None = None
     telemetry_mount_path: str = "/logs"
     startup_timeout_seconds: float = 600.0
+    benchmark_timeout_seconds: float = 3600.0
+    benchmark_persistent_volume_claim: str | None = None
+    benchmark_resources: dict[str, dict[str, str]] = field(default_factory=dict)
+    job_ttl_after_finished_seconds: int = 600
     poll_interval_seconds: float = 2.0
 
     Schema: ClassVar[type[Schema]] = Schema
@@ -1163,6 +1167,10 @@ class KubernetesConfig:
             raise ValidationError("kubernetes.telemetry_mount_path must be a safe absolute path")
         if not _is_finite_positive(self.startup_timeout_seconds):
             raise ValidationError("kubernetes.startup_timeout_seconds must be finite and positive")
+        if not _is_finite_positive(self.benchmark_timeout_seconds):
+            raise ValidationError("kubernetes.benchmark_timeout_seconds must be finite and positive")
+        if self.job_ttl_after_finished_seconds < 0:
+            raise ValidationError("kubernetes.job_ttl_after_finished_seconds must be non-negative")
         if not _is_finite_positive(self.poll_interval_seconds):
             raise ValidationError("kubernetes.poll_interval_seconds must be finite and positive")
 

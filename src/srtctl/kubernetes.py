@@ -12,12 +12,19 @@ import re
 import shlex
 import subprocess
 import time
+from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from types import SimpleNamespace
+from typing import Any, Literal, cast
+from uuid import uuid4
 
 import yaml
 
 from srtctl.backends import MockerProtocol, SGLangProtocol, TRTLLMProtocol, VLLMProtocol
+from srtctl.benchmarks import get_runner
+from srtctl.benchmarks.base import SCRIPTS_DIR, BenchmarkRunner
+from srtctl.core.runtime import RuntimeContext
 from srtctl.core.schema import SrtConfig, TelemetryProvider, build_otel_env
 
 _DGD_API_VERSION = "nvidia.com/v1beta1"
@@ -29,6 +36,18 @@ _DEFAULT_SGLANG_KV_EVENTS_PORT = 5557
 _DEFAULT_VLLM_KV_EVENTS_PORT = 20080
 _DNS_LABEL = re.compile(r"[^a-z0-9-]+")
 _SEMVER = re.compile(r"^(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})$")
+_TERMINAL_WAITING_REASONS = {
+    "CreateContainerConfigError",
+    "CreateContainerError",
+    "ErrImagePull",
+    "ImagePullBackOff",
+    "InvalidImageName",
+    "RunContainerError",
+}
+_BENCHMARK_MOUNT_PATH = "/srtctl-benchmarks"
+_BENCHMARK_OUTPUT_PATH = "/logs"
+_MAX_CONFIG_MAP_BYTES = 900 * 1024
+_MAX_CAPTURED_LOG_BYTES = 8 * 1024 * 1024
 
 WorkerMode = Literal["prefill", "decode", "agg"]
 
@@ -765,6 +784,223 @@ def dump_kubernetes_yaml(config: SrtConfig) -> str:
     return yaml.safe_dump_all(render_kubernetes_manifests(config), sort_keys=False, explicit_start=True)
 
 
+def _benchmark_runtime(config: SrtConfig) -> RuntimeContext:
+    """Build the narrow runtime view consumed by benchmark runners."""
+    return cast(
+        RuntimeContext,
+        SimpleNamespace(
+            frontend_port=_DYNAMO_FRONTEND_PORT,
+            model_path=Path(_model_arg(config)),
+            is_hf_model=config.model.path.startswith("hf:"),
+            container_image=Path(config.model.container),
+            container_mounts={},
+        ),
+    )
+
+
+def _benchmark_command(config: SrtConfig, runner: BenchmarkRunner, frontend_host: str) -> list[str]:
+    command = runner.build_command(config, _benchmark_runtime(config))
+    local_url = f"http://localhost:{_DYNAMO_FRONTEND_PORT}"
+    service_url = f"http://{frontend_host}:{_DYNAMO_FRONTEND_PORT}"
+    return [
+        service_url if value == local_url else f"http://{frontend_host}" if value == "http://localhost" else value
+        for value in command
+    ]
+
+
+def _benchmark_script_config_map(
+    config: SrtConfig,
+    runner: BenchmarkRunner,
+    name: str,
+    labels: dict[str, str],
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    if config.benchmark.type == "custom":
+        return None, []
+    local_script_dir = getattr(runner, "local_script_dir", None)
+    if not local_script_dir:
+        raise ValueError(f"benchmark.type={config.benchmark.type!r} does not expose packaged scripts")
+
+    selected_root = Path(local_script_dir).resolve()
+    scripts_root = SCRIPTS_DIR.resolve()
+    try:
+        selected_root.relative_to(scripts_root)
+    except ValueError as error:
+        raise ValueError(f"benchmark script directory is outside the srtctl package: {selected_root}") from error
+
+    selected_files = {
+        path
+        for root in (selected_root, scripts_root / "lib")
+        if root.exists()
+        for path in root.rglob("*")
+        if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc"
+    }
+    data: dict[str, str] = {}
+    items: list[dict[str, Any]] = []
+    total_bytes = 0
+    for index, path in enumerate(sorted(selected_files)):
+        content = path.read_text(encoding="utf-8")
+        total_bytes += len(content.encode())
+        key = f"script-{index:04d}"
+        data[key] = content
+        items.append(
+            {
+                "key": key,
+                "path": str(path.relative_to(scripts_root)),
+                "mode": 0o555,
+            }
+        )
+    if total_bytes > _MAX_CONFIG_MAP_BYTES:
+        raise ValueError(
+            f"benchmark scripts require {total_bytes} bytes, above the {_MAX_CONFIG_MAP_BYTES}-byte ConfigMap budget"
+        )
+    return (
+        {
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": {
+                "name": name,
+                "namespace": config.kubernetes.namespace,
+                "labels": dict(labels),
+            },
+            "data": data,
+        },
+        items,
+    )
+
+
+def render_kubernetes_run_manifests(
+    config: SrtConfig,
+    *,
+    run_id: str,
+    timeout_seconds: float | None = None,
+    retain_finished: bool = False,
+) -> list[dict[str, Any]]:
+    """Render an ephemeral benchmark Job and its packaged scripts."""
+    if config.benchmark.type == "manual":
+        raise ValueError("k8s run requires a non-manual benchmark.type; use k8s apply for a manual deployment")
+    runner = get_runner(config.benchmark.type)
+    errors = runner.validate_config(config)
+    if errors:
+        raise ValueError("invalid benchmark configuration: " + "; ".join(errors))
+
+    timeout = config.kubernetes.benchmark_timeout_seconds if timeout_seconds is None else timeout_seconds
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("Kubernetes benchmark timeout must be finite and positive")
+
+    deployment_name = _safe_name(config.kubernetes.name or config.name)
+    safe_run_id = _safe_name(run_id, max_length=24)
+    job_name = _derived_name(deployment_name, f"bench-{safe_run_id}")
+    scripts_name = _derived_name(deployment_name, f"scripts-{safe_run_id}")
+    frontend_host = f"{deployment_name}-frontend.{config.kubernetes.namespace}.svc.cluster.local"
+    labels = {
+        "app.kubernetes.io/managed-by": "srtctl",
+        "app.kubernetes.io/instance": deployment_name,
+        "app.kubernetes.io/component": "benchmark",
+        "srtctl.nvidia.com/run-id": safe_run_id,
+    }
+    script_config_map, script_items = _benchmark_script_config_map(config, runner, scripts_name, labels)
+
+    environment = {
+        **config.environment,
+        **config.benchmark.env,
+        "SRTCTL_FRONTEND_TYPE": config.frontend.type,
+        "SRT_FRONTEND_HOST": frontend_host,
+        "SRT_FRONTEND_PORT": str(_DYNAMO_FRONTEND_PORT),
+    }
+    image = str(config.benchmark.container_image or runner.get_container_image(config, _benchmark_runtime(config)))
+    container: dict[str, Any] = {
+        "name": "benchmark",
+        "image": image,
+        "imagePullPolicy": config.kubernetes.image_pull_policy,
+        "command": _benchmark_command(config, runner, frontend_host),
+        "env": _string_env(environment),
+        "volumeMounts": copy.deepcopy(config.kubernetes.volume_mounts),
+    }
+    env_from = _env_from(config)
+    if env_from:
+        container["envFrom"] = env_from
+    if config.kubernetes.benchmark_resources:
+        container["resources"] = copy.deepcopy(config.kubernetes.benchmark_resources)
+    if config.kubernetes.working_dir:
+        container["workingDir"] = config.kubernetes.working_dir
+
+    volumes = copy.deepcopy(config.kubernetes.volumes)
+    mount_paths = {str(item.get("mountPath", "")) for item in container["volumeMounts"]}
+    volume_names = {str(item.get("name", "")) for item in volumes}
+    if _BENCHMARK_OUTPUT_PATH not in mount_paths:
+        if "srt-benchmark-output" in volume_names:
+            raise ValueError("kubernetes.volumes already contains the reserved name srt-benchmark-output")
+        output_volume: dict[str, Any] = {"name": "srt-benchmark-output"}
+        if config.kubernetes.benchmark_persistent_volume_claim:
+            output_volume["persistentVolumeClaim"] = {"claimName": config.kubernetes.benchmark_persistent_volume_claim}
+        else:
+            output_volume["emptyDir"] = {}
+        volumes.append(output_volume)
+        container["volumeMounts"].append({"name": "srt-benchmark-output", "mountPath": _BENCHMARK_OUTPUT_PATH})
+    if script_config_map is not None:
+        if "srt-benchmark-scripts" in volume_names:
+            raise ValueError("kubernetes.volumes already contains the reserved name srt-benchmark-scripts")
+        volumes.append(
+            {
+                "name": "srt-benchmark-scripts",
+                "configMap": {"name": scripts_name, "items": script_items},
+            }
+        )
+        container["volumeMounts"].append(
+            {"name": "srt-benchmark-scripts", "mountPath": _BENCHMARK_MOUNT_PATH, "readOnly": True}
+        )
+
+    pod_spec: dict[str, Any] = {
+        "automountServiceAccountToken": False,
+        "restartPolicy": "Never",
+        "containers": [container],
+        "nodeSelector": dict(config.kubernetes.node_selector),
+        "tolerations": copy.deepcopy(config.kubernetes.tolerations),
+        "volumes": volumes,
+    }
+    if config.kubernetes.service_account_name:
+        pod_spec["serviceAccountName"] = config.kubernetes.service_account_name
+    if config.kubernetes.image_pull_secrets:
+        pod_spec["imagePullSecrets"] = [{"name": value} for value in config.kubernetes.image_pull_secrets]
+    job_spec: dict[str, Any] = {
+        "backoffLimit": 0,
+        "activeDeadlineSeconds": math.ceil(timeout),
+        "template": {"metadata": {"labels": dict(labels)}, "spec": pod_spec},
+    }
+    if not retain_finished:
+        job_spec["ttlSecondsAfterFinished"] = config.kubernetes.job_ttl_after_finished_seconds
+    job = {
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": {
+            "name": job_name,
+            "namespace": config.kubernetes.namespace,
+            "labels": dict(labels),
+        },
+        "spec": job_spec,
+    }
+    return [resource for resource in (script_config_map, job) if resource is not None]
+
+
+def dump_kubernetes_run_yaml(
+    config: SrtConfig,
+    *,
+    run_id: str,
+    timeout_seconds: float | None = None,
+    retain_finished: bool = False,
+) -> str:
+    return yaml.safe_dump_all(
+        render_kubernetes_run_manifests(
+            config,
+            run_id=run_id,
+            timeout_seconds=timeout_seconds,
+            retain_finished=retain_finished,
+        ),
+        sort_keys=False,
+        explicit_start=True,
+    )
+
+
 def _kubectl(
     args: list[str],
     *,
@@ -785,6 +1021,672 @@ def _kubectl(
     except subprocess.CalledProcessError as error:
         detail = (error.stderr or error.stdout or str(error)).strip()
         raise RuntimeError(f"kubectl {' '.join(args)} failed: {detail}") from error
+
+
+def _kubectl_json(
+    args: list[str],
+    *,
+    executable: str,
+    allow_failure: bool = False,
+) -> dict[str, Any] | None:
+    result = _kubectl(args, executable=executable, check=not allow_failure)
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    try:
+        value = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"kubectl {' '.join(args)} returned invalid JSON") from error
+    if not isinstance(value, dict):
+        raise TypeError(f"kubectl {' '.join(args)} did not return a JSON object")
+    return value
+
+
+def _deployment_identity(config: SrtConfig) -> tuple[str, str]:
+    return _safe_name(config.kubernetes.name or config.name), config.kubernetes.namespace
+
+
+def _dgd_exists(config: SrtConfig, *, executable: str) -> bool:
+    name, namespace = _deployment_identity(config)
+    result = _kubectl(
+        [
+            "get",
+            "dynamographdeployment",
+            name,
+            "--namespace",
+            namespace,
+            "--ignore-not-found",
+            "--output",
+            "name",
+        ],
+        executable=executable,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise RuntimeError(f"could not check for DynamoGraphDeployment {namespace}/{name}: {detail}")
+    return bool(result.stdout.strip())
+
+
+def _resource_items(value: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    return [item for item in value.get("items", []) if isinstance(item, dict)]
+
+
+def _relevant_pods(config: SrtConfig, *, executable: str) -> list[dict[str, Any]]:
+    name, namespace = _deployment_identity(config)
+    response = _kubectl_json(
+        ["get", "pods", "--namespace", namespace, "--output", "json"],
+        executable=executable,
+        allow_failure=True,
+    )
+    result = []
+    for pod in _resource_items(response):
+        metadata = pod.get("metadata", {})
+        pod_name = str(metadata.get("name", ""))
+        labels = metadata.get("labels", {})
+        if labels.get("app.kubernetes.io/instance") == name or pod_name.startswith(f"{name}-"):
+            result.append(pod)
+    return result
+
+
+def _terminal_pod_failure(pods: list[dict[str, Any]]) -> str | None:
+    failures: list[tuple[int, str]] = []
+    for pod in pods:
+        pod_name = pod.get("metadata", {}).get("name", "<unknown>")
+        statuses = [
+            *pod.get("status", {}).get("initContainerStatuses", []),
+            *pod.get("status", {}).get("containerStatuses", []),
+        ]
+        for container in statuses:
+            name = container.get("name", "<unknown>")
+            state = container.get("state", {})
+            waiting = state.get("waiting", {})
+            reason = waiting.get("reason")
+            if reason in _TERMINAL_WAITING_REASONS:
+                failures.append(
+                    (
+                        150,
+                        f"pod {pod_name} container {name} is waiting: {reason}: {waiting.get('message', '')}".rstrip(),
+                    )
+                )
+            terminated = state.get("terminated") or container.get("lastState", {}).get("terminated")
+            if terminated and int(terminated.get("exitCode", 0)) != 0:
+                termination_reason = str(terminated.get("reason", "unknown"))
+                priority = 300 if termination_reason.casefold() == "oomkilled" else 100
+                failures.append(
+                    (
+                        priority,
+                        (
+                            f"pod {pod_name} container {name} exited with {terminated.get('exitCode')}; "
+                            f"reason={termination_reason}; restart count={container.get('restartCount', 0)}"
+                        ),
+                    )
+                )
+    return max(failures, key=lambda item: item[0])[1] if failures else None
+
+
+def _pod_summary(pod: dict[str, Any], metrics: dict[str, Any]) -> dict[str, Any]:
+    metadata = pod.get("metadata", {})
+    status = pod.get("status", {})
+    labels = metadata.get("labels", {})
+    container_statuses = status.get("containerStatuses", [])
+    waiting = {
+        item.get("name", "unknown"): item.get("state", {}).get("waiting", {}).get("reason")
+        for item in [*status.get("initContainerStatuses", []), *container_statuses]
+        if item.get("state", {}).get("waiting", {}).get("reason")
+    }
+    terminated = {
+        item.get("name", "unknown"): {
+            "exit_code": item.get("state", {}).get("terminated", {}).get("exitCode"),
+            "reason": item.get("state", {}).get("terminated", {}).get("reason"),
+        }
+        for item in container_statuses
+        if item.get("state", {}).get("terminated")
+    }
+    pod_name = str(metadata.get("name", ""))
+    return {
+        "name": pod_name,
+        "component": labels.get("srtctl.nvidia.com/component") or labels.get("app.kubernetes.io/component"),
+        "phase": status.get("phase", "Unknown"),
+        "ready": bool(container_statuses) and all(item.get("ready", False) for item in container_statuses),
+        "restarts": sum(int(item.get("restartCount", 0)) for item in container_statuses),
+        "node": pod.get("spec", {}).get("nodeName"),
+        "waiting": waiting,
+        "terminated": terminated,
+        "metrics": metrics.get(pod_name, {}),
+    }
+
+
+def _job_summary(job: dict[str, Any]) -> dict[str, Any]:
+    metadata = job.get("metadata", {})
+    status = job.get("status", {})
+    state = "pending"
+    if status.get("failed") or any(
+        item.get("type") == "Failed" and item.get("status") == "True" for item in status.get("conditions", [])
+    ):
+        state = "failed"
+    elif status.get("succeeded") or any(
+        item.get("type") == "Complete" and item.get("status") == "True" for item in status.get("conditions", [])
+    ):
+        state = "succeeded"
+    elif status.get("active"):
+        state = "running"
+    return {
+        "name": metadata.get("name"),
+        "run_id": metadata.get("labels", {}).get("srtctl.nvidia.com/run-id"),
+        "state": state,
+        "active": int(status.get("active", 0)),
+        "succeeded": int(status.get("succeeded", 0)),
+        "failed": int(status.get("failed", 0)),
+        "started_at": status.get("startTime"),
+        "completed_at": status.get("completionTime"),
+    }
+
+
+def get_kubernetes_status(config: SrtConfig, *, executable: str = "kubectl") -> dict[str, Any]:
+    """Return normalized deployment, Job, pod, event, and metrics state."""
+    name, namespace = _deployment_identity(config)
+    dgd = _kubectl_json(
+        ["get", "dynamographdeployment", name, "--namespace", namespace, "--output", "json"],
+        executable=executable,
+        allow_failure=True,
+    )
+    jobs = _kubectl_json(
+        [
+            "get",
+            "jobs",
+            "--namespace",
+            namespace,
+            "--selector",
+            f"app.kubernetes.io/instance={name}",
+            "--output",
+            "json",
+        ],
+        executable=executable,
+        allow_failure=True,
+    )
+    pods = _relevant_pods(config, executable=executable)
+    metrics_response = _kubectl_json(
+        ["get", "--raw", f"/apis/metrics.k8s.io/v1beta1/namespaces/{namespace}/pods"],
+        executable=executable,
+        allow_failure=True,
+    )
+    metrics = {
+        str(item.get("metadata", {}).get("name", "")): {
+            str(container.get("name", "")): container.get("usage", {}) for container in item.get("containers", [])
+        }
+        for item in _resource_items(metrics_response)
+    }
+    pod_names = {str(pod.get("metadata", {}).get("name", "")) for pod in pods}
+    job_items = _resource_items(jobs)
+    resource_names = {name, *pod_names, *(str(job.get("metadata", {}).get("name", "")) for job in job_items)}
+    events_response = _kubectl_json(
+        ["get", "events", "--namespace", namespace, "--output", "json"],
+        executable=executable,
+        allow_failure=True,
+    )
+    events = []
+    for event in _resource_items(events_response):
+        involved = event.get("involvedObject", {})
+        if str(involved.get("name", "")) not in resource_names:
+            continue
+        events.append(
+            {
+                "time": event.get("eventTime")
+                or event.get("lastTimestamp")
+                or event.get("metadata", {}).get("creationTimestamp"),
+                "type": event.get("type"),
+                "reason": event.get("reason"),
+                "object": f"{involved.get('kind', '')}/{involved.get('name', '')}",
+                "message": event.get("message"),
+                "count": event.get("count", 1),
+            }
+        )
+    events.sort(key=lambda event: str(event.get("time") or ""))
+
+    dgd_status = (dgd or {}).get("status", {})
+    ready = any(
+        condition.get("type") == "Ready" and condition.get("status") == "True"
+        for condition in dgd_status.get("conditions", [])
+    )
+    return {
+        "deployment": {
+            "name": name,
+            "namespace": namespace,
+            "exists": dgd is not None,
+            "ready": ready,
+            "state": dgd_status.get("state"),
+            "conditions": dgd_status.get("conditions", []),
+        },
+        "jobs": [
+            _job_summary(job)
+            for job in sorted(job_items, key=lambda item: item.get("metadata", {}).get("creationTimestamp", ""))
+        ],
+        "pods": [
+            _pod_summary(pod, metrics)
+            for pod in sorted(pods, key=lambda item: item.get("metadata", {}).get("name", ""))
+        ],
+        "events": events[-50:],
+        "metrics_available": metrics_response is not None,
+    }
+
+
+def wait_for_kubernetes_job(
+    config: SrtConfig,
+    job_name: str,
+    *,
+    executable: str = "kubectl",
+    timeout_seconds: float | None = None,
+    on_update: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    timeout = config.kubernetes.benchmark_timeout_seconds if timeout_seconds is None else timeout_seconds
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("Kubernetes benchmark timeout must be finite and positive")
+    namespace = config.kubernetes.namespace
+    deadline = time.monotonic() + timeout + config.kubernetes.startup_timeout_seconds
+    previous_state: str | None = None
+    while time.monotonic() < deadline:
+        job = _kubectl_json(
+            ["get", "job", job_name, "--namespace", namespace, "--output", "json"],
+            executable=executable,
+        )
+        assert job is not None
+        summary = _job_summary(job)
+        state = str(summary["state"])
+        if state != previous_state and on_update is not None:
+            on_update(f"Benchmark Job {namespace}/{job_name}: {state}")
+            previous_state = state
+        if state == "succeeded":
+            return job
+        pod_response = _kubectl_json(
+            [
+                "get",
+                "pods",
+                "--namespace",
+                namespace,
+                "--selector",
+                f"job-name={job_name}",
+                "--output",
+                "json",
+            ],
+            executable=executable,
+        )
+        failure = _terminal_pod_failure(_resource_items(pod_response))
+        if state == "failed" or failure is not None:
+            detail = failure or f"Job status: {job.get('status', {})}"
+            raise RuntimeError(f"Kubernetes benchmark Job {namespace}/{job_name} failed: {detail}")
+        serving_pods = [
+            pod
+            for pod in _relevant_pods(config, executable=executable)
+            if pod.get("metadata", {}).get("labels", {}).get("app.kubernetes.io/component") != "benchmark"
+        ]
+        serving_failure = _terminal_pod_failure(serving_pods)
+        if serving_failure is not None:
+            raise RuntimeError(f"DynamoGraphDeployment failed while the benchmark was running: {serving_failure}")
+        time.sleep(config.kubernetes.poll_interval_seconds)
+    raise TimeoutError(f"Kubernetes benchmark Job {namespace}/{job_name} exceeded {timeout}s")
+
+
+def stream_kubernetes_logs(
+    config: SrtConfig,
+    *,
+    executable: str = "kubectl",
+    follow: bool = False,
+    component: str | None = None,
+    tail: int = 200,
+) -> int:
+    """Stream or print logs from all deployment and benchmark containers."""
+    name, namespace = _deployment_identity(config)
+    selector = f"app.kubernetes.io/instance={name}"
+    if component:
+        label = (
+            "app.kubernetes.io/component" if component in {"benchmark", "telemetry"} else "srtctl.nvidia.com/component"
+        )
+        selector += f",{label}={component}"
+    args = [
+        executable,
+        "logs",
+        "--namespace",
+        namespace,
+        "--selector",
+        selector,
+        "--all-containers=true",
+        "--prefix=true",
+        "--max-log-requests=100",
+        f"--tail={tail}",
+    ]
+    if follow:
+        args.append("--follow")
+    try:
+        return subprocess.run(args, check=False).returncode
+    except FileNotFoundError as error:
+        raise RuntimeError(f"kubectl executable not found: {executable}") from error
+
+
+def _start_job_log_stream(
+    config: SrtConfig,
+    job_name: str,
+    *,
+    executable: str,
+) -> subprocess.Popen[Any]:
+    try:
+        return subprocess.Popen(
+            [
+                executable,
+                "logs",
+                f"job/{job_name}",
+                "--namespace",
+                config.kubernetes.namespace,
+                "--all-containers=true",
+                "--prefix=true",
+                "--follow",
+                f"--pod-running-timeout={math.ceil(config.kubernetes.startup_timeout_seconds)}s",
+            ]
+        )
+    except FileNotFoundError as error:
+        raise RuntimeError(f"kubectl executable not found: {executable}") from error
+
+
+def _stop_log_stream(process: subprocess.Popen[Any] | None) -> None:
+    if process is None or process.poll() is not None:
+        return
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+
+
+def _safe_file_name(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-") or "unknown"
+
+
+def collect_kubernetes_diagnostics(
+    config: SrtConfig,
+    output_dir: Path,
+    *,
+    executable: str = "kubectl",
+) -> list[str]:
+    """Capture bounded pod logs and normalized status without dumping secret-bearing pod specs."""
+    destination = output_dir / "kubernetes"
+    destination.mkdir(parents=True, exist_ok=True)
+    warnings: list[str] = []
+    try:
+        status = get_kubernetes_status(config, executable=executable)
+        (destination / "status.yaml").write_text(yaml.safe_dump(status, sort_keys=False), encoding="utf-8")
+    except Exception as error:  # noqa: BLE001 - diagnostics are best effort
+        warnings.append(f"could not capture Kubernetes status: {error}")
+
+    try:
+        pods = _relevant_pods(config, executable=executable)
+    except Exception as error:  # noqa: BLE001 - diagnostics are best effort
+        warnings.append(f"could not list Kubernetes pods: {error}")
+        return warnings
+    namespace = config.kubernetes.namespace
+    remaining = _MAX_CAPTURED_LOG_BYTES
+    logs_root = destination / "logs"
+    for pod in pods:
+        pod_name = str(pod.get("metadata", {}).get("name", "unknown"))
+        statuses = {
+            str(item.get("name", "")): item
+            for item in [
+                *pod.get("status", {}).get("initContainerStatuses", []),
+                *pod.get("status", {}).get("containerStatuses", []),
+            ]
+        }
+        containers = [
+            *pod.get("spec", {}).get("initContainers", []),
+            *pod.get("spec", {}).get("containers", []),
+        ]
+        for container in containers:
+            if remaining <= 0:
+                break
+            container_name = str(container.get("name", "unknown"))
+            for previous in (False, True):
+                if previous and int(statuses.get(container_name, {}).get("restartCount", 0)) < 1:
+                    continue
+                limit = min(512 * 1024, remaining)
+                args = [
+                    "logs",
+                    pod_name,
+                    "--namespace",
+                    namespace,
+                    "--container",
+                    container_name,
+                    f"--limit-bytes={limit}",
+                ]
+                if previous:
+                    args.append("--previous")
+                result = _kubectl(args, executable=executable, check=False)
+                if result.returncode != 0:
+                    continue
+                encoded = result.stdout.encode()
+                if len(encoded) > limit:
+                    encoded = encoded[-limit:]
+                remaining -= len(encoded)
+                logs_root.mkdir(parents=True, exist_ok=True)
+                suffix = "-previous" if previous else ""
+                path = logs_root / (f"{_safe_file_name(pod_name)}-{_safe_file_name(container_name)}{suffix}.log")
+                path.write_bytes(encoded)
+    return warnings
+
+
+def collect_kubernetes_artifacts(
+    config: SrtConfig,
+    job_name: str,
+    output_dir: Path,
+    *,
+    executable: str = "kubectl",
+) -> list[str]:
+    """Copy benchmark output and pod-local Tachometer data before cleanup."""
+    warnings: list[str] = []
+    namespace = config.kubernetes.namespace
+    pod_response = _kubectl_json(
+        [
+            "get",
+            "pods",
+            "--namespace",
+            namespace,
+            "--selector",
+            f"job-name={job_name}",
+            "--output",
+            "json",
+        ],
+        executable=executable,
+        allow_failure=True,
+    )
+    job_pods = _resource_items(pod_response)
+    if job_pods:
+        pod_name = str(job_pods[0].get("metadata", {}).get("name", ""))
+        output_dir.mkdir(parents=True, exist_ok=True)
+        result = _kubectl(
+            [
+                "cp",
+                "--namespace",
+                namespace,
+                "--container",
+                "benchmark",
+                f"{pod_name}:{_BENCHMARK_OUTPUT_PATH}/.",
+                str(output_dir),
+            ],
+            executable=executable,
+            check=False,
+        )
+        if result.returncode != 0:
+            warnings.append(f"could not copy benchmark artifacts: {(result.stderr or result.stdout).strip()}")
+    else:
+        warnings.append(f"could not find a pod for benchmark Job {namespace}/{job_name}")
+
+    if not config.telemetry.enabled:
+        return warnings
+    telemetry_root = output_dir / "telemetry"
+    telemetry_pods = [
+        pod
+        for pod in _relevant_pods(config, executable=executable)
+        if "srt-tachometer" in {str(item.get("name", "")) for item in pod.get("spec", {}).get("containers", [])}
+    ]
+    if config.kubernetes.telemetry_persistent_volume_claim:
+        telemetry_pods = telemetry_pods[:1]
+    for pod in telemetry_pods:
+        containers = {str(item.get("name", "")) for item in pod.get("spec", {}).get("containers", [])}
+        assert "srt-tachometer" in containers
+        pod_name = str(pod.get("metadata", {}).get("name", ""))
+        pod_destination = (
+            telemetry_root
+            if config.kubernetes.telemetry_persistent_volume_claim
+            else telemetry_root / _safe_file_name(pod_name)
+        )
+        pod_destination.mkdir(parents=True, exist_ok=True)
+        source = f"{config.kubernetes.telemetry_mount_path}/{config.telemetry.storage_subdir}/."
+        result = _kubectl(
+            [
+                "cp",
+                "--namespace",
+                namespace,
+                "--container",
+                "srt-tachometer",
+                f"{pod_name}:{source}",
+                str(pod_destination),
+            ],
+            executable=executable,
+            check=False,
+        )
+        if result.returncode != 0:
+            warnings.append(f"could not copy Tachometer artifacts from {pod_name}")
+    return warnings
+
+
+def delete_kubernetes_run(
+    config: SrtConfig,
+    *,
+    run_id: str,
+    executable: str = "kubectl",
+    timeout_seconds: float | None = None,
+) -> str:
+    result = _kubectl(
+        ["delete", "--filename", "-", "--ignore-not-found"],
+        executable=executable,
+        input_text=dump_kubernetes_run_yaml(config, run_id=run_id, timeout_seconds=timeout_seconds),
+    )
+    return result.stdout
+
+
+def run_kubernetes(
+    config: SrtConfig,
+    *,
+    executable: str = "kubectl",
+    readiness_timeout_seconds: float | None = None,
+    benchmark_timeout_seconds: float | None = None,
+    output_dir: Path | None = None,
+    keep_resources: bool = False,
+    stream_logs: bool = False,
+    on_update: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    """Deploy, run the recipe benchmark, capture diagnostics, and clean up."""
+    name, namespace = _deployment_identity(config)
+    run_id = f"{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:6]}"
+    destination = output_dir or Path("outputs") / f"{name}-k8s-{run_id}"
+    destination.mkdir(parents=True, exist_ok=True)
+    run_yaml = dump_kubernetes_run_yaml(
+        config,
+        run_id=run_id,
+        timeout_seconds=benchmark_timeout_seconds,
+        retain_finished=keep_resources,
+    )
+    run_manifests = list(yaml.safe_load_all(run_yaml))
+    job = next(resource for resource in run_manifests if resource.get("kind") == "Job")
+    job_name = str(job["metadata"]["name"])
+    log_process: subprocess.Popen[Any] | None = None
+    run_applied = False
+    deployment_applied = False
+    deployment_preexisting = False
+    primary_error: BaseException | None = None
+    try:
+        deployment_preexisting = _dgd_exists(config, executable=executable)
+        if on_update:
+            on_update(f"Applying DynamoGraphDeployment {namespace}/{name}")
+        deployment_applied = True
+        apply_kubernetes(
+            config,
+            executable=executable,
+            wait=True,
+            timeout_seconds=readiness_timeout_seconds,
+        )
+        if on_update:
+            on_update(f"Frontend ready at http://{name}-frontend.{namespace}.svc.cluster.local:8000")
+            on_update(f"Creating benchmark Job {namespace}/{job_name}")
+        _kubectl(["apply", "--filename", "-"], executable=executable, input_text=run_yaml)
+        run_applied = True
+        if stream_logs:
+            log_process = _start_job_log_stream(config, job_name, executable=executable)
+        wait_for_kubernetes_job(
+            config,
+            job_name,
+            executable=executable,
+            timeout_seconds=benchmark_timeout_seconds,
+            on_update=on_update,
+        )
+        _stop_log_stream(log_process)
+        log_process = None
+        warnings = collect_kubernetes_diagnostics(config, destination, executable=executable)
+        warnings.extend(collect_kubernetes_artifacts(config, job_name, destination, executable=executable))
+        for warning in warnings:
+            if on_update:
+                on_update(f"Warning: {warning}")
+        return {
+            "run_id": run_id,
+            "job": job_name,
+            "namespace": namespace,
+            "output_dir": str(destination.resolve()),
+            "warnings": warnings,
+        }
+    except BaseException as error:
+        primary_error = error
+        try:
+            warnings = collect_kubernetes_diagnostics(config, destination, executable=executable)
+            if run_applied:
+                warnings.extend(collect_kubernetes_artifacts(config, job_name, destination, executable=executable))
+            for warning in warnings:
+                if on_update:
+                    on_update(f"Warning: {warning}")
+        except Exception as diagnostic_error:  # noqa: BLE001 - preserve the run failure
+            if on_update:
+                on_update(f"Warning: could not capture diagnostics: {diagnostic_error}")
+        raise
+    finally:
+        _stop_log_stream(log_process)
+        if not keep_resources:
+            cleanup_failure: Exception | None = None
+            if run_applied:
+                try:
+                    delete_kubernetes_run(
+                        config,
+                        run_id=run_id,
+                        executable=executable,
+                        timeout_seconds=benchmark_timeout_seconds,
+                    )
+                except Exception as cleanup_error:  # noqa: BLE001 - finish all cleanup before reporting
+                    if on_update:
+                        on_update(f"Warning: benchmark cleanup failed: {cleanup_error}")
+                    if primary_error is None:
+                        cleanup_failure = cleanup_error
+            if deployment_applied and not deployment_preexisting:
+                try:
+                    delete_kubernetes(config, executable=executable, include_runs=False)
+                except Exception as cleanup_error:  # noqa: BLE001 - finish all cleanup before reporting
+                    if on_update:
+                        on_update(f"Warning: deployment cleanup failed: {cleanup_error}")
+                    if primary_error is None and cleanup_failure is None:
+                        cleanup_failure = cleanup_error
+            elif deployment_applied and deployment_preexisting and on_update:
+                on_update(f"Leaving pre-existing DynamoGraphDeployment {namespace}/{name} in place")
+            if cleanup_failure is not None:
+                raise cleanup_failure
 
 
 def wait_for_dgd(
@@ -813,6 +1715,9 @@ def wait_for_dgd(
             return resource
         if str(status.get("state", "")).lower() in {"failed", "error"}:
             raise RuntimeError(f"DynamoGraphDeployment {namespace}/{name} failed: {status}")
+        pod_failure = _terminal_pod_failure(_relevant_pods(config, executable=executable))
+        if pod_failure is not None:
+            raise RuntimeError(f"DynamoGraphDeployment {namespace}/{name} failed: {pod_failure}")
         time.sleep(config.kubernetes.poll_interval_seconds)
     raise TimeoutError(f"DynamoGraphDeployment {namespace}/{name} did not become ready within {timeout}s")
 
@@ -830,13 +1735,34 @@ def apply_kubernetes(
     return result.stdout
 
 
-def delete_kubernetes(config: SrtConfig, *, executable: str = "kubectl") -> str:
+def delete_kubernetes(
+    config: SrtConfig,
+    *,
+    executable: str = "kubectl",
+    include_runs: bool = True,
+) -> str:
+    output = ""
+    if include_runs:
+        name, namespace = _deployment_identity(config)
+        run_result = _kubectl(
+            [
+                "delete",
+                "jobs,configmaps",
+                "--namespace",
+                namespace,
+                "--selector",
+                f"app.kubernetes.io/instance={name},app.kubernetes.io/component=benchmark",
+                "--ignore-not-found",
+            ],
+            executable=executable,
+        )
+        output += run_result.stdout
     result = _kubectl(
         ["delete", "--filename", "-", "--ignore-not-found"],
         executable=executable,
         input_text=dump_kubernetes_yaml(config),
     )
-    return result.stdout
+    return output + result.stdout
 
 
 def write_kubernetes_yaml(config: SrtConfig, path: Path) -> None:

@@ -20,7 +20,7 @@ make setup ARCH=aarch64  # or ARCH=x86_64
 
 - [Installation](docs/installation.md) - Setup and configuration
 - [Monitoring](docs/monitoring.md) - Job logs and debugging
-- [Dynamo Kubernetes](docs/kubernetes.md) - Generate and manage DGD deployments
+- [Dynamo Kubernetes](docs/kubernetes.md) - Generate, run, and monitor DGD deployments
 - [Parameter Sweeps](docs/sweeps.md) - Grid searches
 - [Profiling](docs/profiling.md) - Torch/nsys profiling
 - [Analyzing Results](docs/analyzing.md) - Dashboard and visualization
@@ -42,6 +42,9 @@ srtctl dry-run -f config.yaml
 
 # Render a Dynamo Kubernetes deployment
 srtctl k8s generate -f config.yaml
+
+# Deploy it, run the configured benchmark, collect results, and clean up
+srtctl k8s run -f config.yaml
 
 # Launch analysis dashboard
 uv run streamlit run analysis/dashboard/app.py

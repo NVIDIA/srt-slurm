@@ -932,7 +932,7 @@ infra:
 
 ## kubernetes
 
-Settings used by `srtctl k8s generate`, `apply`, and `delete`. These fields do not change the existing SLURM execution path.
+Settings used by `srtctl k8s generate`, `apply`, `run`, `status`, `logs`, and `delete`. These fields do not change the existing SLURM execution path.
 
 ```yaml
 kubernetes:
@@ -941,9 +941,13 @@ kubernetes:
   env_from_secrets: [hf-token-secret]
   node_selector:
     accelerator: h100
+  benchmark_timeout_seconds: 3600
+  benchmark_resources:
+    requests: {cpu: "4", memory: 8Gi}
+    limits: {cpu: "8", memory: 16Gi}
 ```
 
-The Kubernetes renderer creates a Dynamo `nvidia.com/v1beta1` DGD and optional telemetry resources. See [Dynamo Kubernetes deployments](kubernetes.md) for the full field list, prerequisites, topology mapping, and Tachometer behavior.
+The Kubernetes renderer creates a Dynamo `nvidia.com/v1beta1` DGD and optional telemetry resources. The run path adds an ephemeral benchmark Job, monitoring, local result and diagnostic collection, and cleanup. See [Dynamo Kubernetes deployments](kubernetes.md) for the full field list, prerequisites, topology mapping, run lifecycle, and Tachometer behavior.
 
 ---
 

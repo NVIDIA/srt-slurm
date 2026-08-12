@@ -1306,6 +1306,9 @@ def main():
   srtctl resolve-override -f config.yaml --stdout  # Print to stdout
   srtctl k8s generate -f config.yaml             # Render Dynamo Kubernetes resources
   srtctl k8s apply -f config.yaml                # Apply and wait for the DGD
+  srtctl k8s run -f config.yaml                  # Deploy, benchmark, collect, and clean up
+  srtctl k8s status -f config.yaml               # Show DGD, Job, pod, event, and metrics state
+  srtctl k8s logs -f config.yaml --follow        # Follow deployment and benchmark logs
   srtctl k8s delete -f config.yaml               # Delete the DGD
   srtctl monitor                                 # Live job dashboard
   srtctl monitor --outputs /path/to/outputs      # Dashboard with custom outputs dir
@@ -1433,6 +1436,32 @@ def main():
     k8s_apply_parser.add_argument("--kubectl", default="kubectl", help="kubectl executable")
     k8s_apply_parser.add_argument("--no-wait", action="store_true", help="Return after kubectl apply")
     k8s_apply_parser.add_argument("--timeout", type=float, help="DGD readiness timeout in seconds")
+
+    k8s_run_parser = k8s_subparsers.add_parser(
+        "run", help="Deploy, run the benchmark Job, collect artifacts, and clean up"
+    )
+    add_k8s_file_arg(k8s_run_parser)
+    k8s_run_parser.add_argument("--kubectl", default="kubectl", help="kubectl executable")
+    k8s_run_parser.add_argument("--timeout", type=float, help="DGD readiness timeout in seconds")
+    k8s_run_parser.add_argument("--benchmark-timeout", type=float, help="Benchmark Job timeout in seconds")
+    k8s_run_parser.add_argument("--output-dir", type=Path, help="Local artifact and diagnostic directory")
+    k8s_run_parser.add_argument(
+        "--keep-resources", action="store_true", help="Leave the DGD and benchmark Job in the cluster"
+    )
+    k8s_run_parser.add_argument("--no-follow", action="store_true", help="Do not stream benchmark logs while waiting")
+
+    k8s_status_parser = k8s_subparsers.add_parser(
+        "status", help="Show DGD, Job, pod, event, and resource metrics state"
+    )
+    add_k8s_file_arg(k8s_status_parser)
+    k8s_status_parser.add_argument("--kubectl", default="kubectl", help="kubectl executable")
+
+    k8s_logs_parser = k8s_subparsers.add_parser("logs", help="Print or follow Kubernetes pod logs")
+    add_k8s_file_arg(k8s_logs_parser)
+    k8s_logs_parser.add_argument("--kubectl", default="kubectl", help="kubectl executable")
+    k8s_logs_parser.add_argument("--follow", action="store_true", help="Follow new log output")
+    k8s_logs_parser.add_argument("--component", help="Limit logs to a component label")
+    k8s_logs_parser.add_argument("--tail", type=int, default=200, help="Lines per container (default: 200)")
 
     k8s_delete_parser = k8s_subparsers.add_parser("delete", help="Delete the generated DGD")
     add_k8s_file_arg(k8s_delete_parser)
