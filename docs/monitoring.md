@@ -185,6 +185,23 @@ P99 TPOT (ms):                           22.36
 
 SGLang worker logs showing model loading, memory allocation, and runtime info. Check these for debugging CUDA errors, OOM issues, or NCCL failures.
 
+SA-Bench marks its phases inside these logs, so worker output can be attributed
+to the run that caused it without cross-referencing timestamps by hand:
+
+```
+======== [12:34:10] cc=1024 warmup begin ========
+...
+======== [12:35:58] cc=1024 warmup end ========
+
+======== [12:35:58] cc=1024 benchmark begin ========
+...
+======== [12:44:14] cc=1024 benchmark end ========
+```
+
+Every prefill, decode and aggregated worker log gets the same markers, so
+`grep -n '^========' *_w*.out` gives the timeline of a run, and the lines
+between two markers are exactly what that concurrency level produced.
+
 ### config.yaml
 
 The fully resolved configuration showing exactly what ran, with all aliases expanded and defaults applied.

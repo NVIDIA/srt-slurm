@@ -233,6 +233,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../lib/profiling.sh"
 profiling_init_from_env
 
+# Stage markers written into the live worker logs (see lib/stage_banner.sh)
+# shellcheck source=../lib/stage_banner.sh
+source "${SCRIPT_DIR}/../lib/stage_banner.sh"
+
 cleanup() { stop_all_profiling; }
 trap cleanup EXIT
 
@@ -266,6 +270,7 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
 
     if [ "$NUM_WARMUP_MULT" -gt 0 ]; then
         num_warmup_prompts=$((concurrency * NUM_WARMUP_MULT))
+        stage_banner "cc=${concurrency} warmup begin"
         python3 -u "${WORK_DIR}/benchmark_serving.py" \
             --model "${MODEL_NAME}" --tokenizer "${MODEL_PATH}" \
             --host "$HOST" --port "$PORT" \
@@ -283,6 +288,7 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
             "${HTTP_CONNECTION_ARGS[@]}" \
             "${CHAT_TEMPLATE_ARGS[@]}" \
             "${CUSTOM_TOKENIZER_ARGS[@]}"
+        stage_banner "cc=${concurrency} warmup end"
     fi
 
     num_prompts=$((concurrency * NUM_PROMPTS_MULT))
@@ -296,6 +302,7 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
 
     echo "Running benchmark with concurrency: $concurrency"
     echo "$(date '+%Y-%m-%d %H:%M:%S')"
+    stage_banner "cc=${concurrency} benchmark begin"
 
     set -x
     python3 -u "${WORK_DIR}/benchmark_serving.py" \
@@ -319,6 +326,7 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
         "${SLOW_DOWN_EXTRA[@]}" \
         --save-result --result-dir "$result_dir" --result-filename "$result_filename"
     set +x
+    stage_banner "cc=${concurrency} benchmark end"
 
     echo "$(date '+%Y-%m-%d %H:%M:%S')"
     echo "Completed benchmark with concurrency: $concurrency"
