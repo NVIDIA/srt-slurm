@@ -664,6 +664,15 @@ filesystem logs a warning and falls back to generating the dataset; the
 benchmark never fails because of the cache. Writes are published atomically, so
 concurrent sweeps sharing one directory cannot read a partially written file.
 
+By default the first job that needs a dataset pays for building it. To move that
+cost off the GPU allocation entirely, fill the cache ahead of time with
+[`srtctl cache-inputs`](cli.md#srtctl-cache-inputs), which builds every dataset
+the recipe's benchmark loop would build on a single node without GPUs:
+
+```bash
+srtctl cache-inputs -f disagg.yaml
+```
+
 ### sglang-bench
 
 SGLang `bench_serving` benchmark at various concurrency levels.

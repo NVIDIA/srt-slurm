@@ -159,6 +159,74 @@ WORK_DIR="$(dirname "$0")"
 
 echo "SA-Bench Config: endpoint=${ENDPOINT}; isl=${ISL}; osl=${OSL}; concurrencies=${CONCURRENCIES}; req_rate=${REQ_RATE}; model=${MODEL_NAME}; dataset=${DATASET_NAME}; dataset_path=${DATASET_PATH}; dataset_cache_dir=${DATASET_CACHE_DIR:-<off>}; http_connection_mode=${HTTP_CONNECTION_MODE}"
 
+# Parse concurrency list
+IFS='x' read -r -a CONCURRENCY_LIST <<< "$CONCURRENCIES"
+
+# Prompt counts the benchmark loop below asks for, warmup runs included and
+# duplicates collapsed. Kept next to the loop it mirrors so both change together.
+dataset_prompt_counts() {
+    local counts=() seen=" " concurrency candidates n
+    for concurrency in "${CONCURRENCY_LIST[@]}"; do
+        candidates=()
+        if [ "$NUM_WARMUP_MULT" -gt 0 ]; then
+            candidates+=($((concurrency * NUM_WARMUP_MULT)))
+        fi
+        candidates+=($((concurrency * NUM_PROMPTS_MULT)))
+        for n in "${candidates[@]}"; do
+            case "$seen" in
+                *" $n "*) continue ;;
+            esac
+            seen="${seen}${n} "
+            counts+=("$n")
+        done
+    done
+    echo "${counts[@]}"
+}
+
+# Prewarm mode (srtctl cache-inputs): build every dataset the run would build
+# and exit. No endpoint, no profiling, no results — only the prompt cache.
+# The dataset-shaping args below must match those in the benchmark loop, or the
+# real run gets a cache miss and regenerates.
+prewarm_dataset_cache() {
+    if [ "$DATASET_NAME" != "random" ]; then
+        echo "[sa-bench] prewarm: nothing to build for dataset '${DATASET_NAME}' (random only)" >&2
+        return 1
+    fi
+    if [ -z "$DATASET_CACHE_DIR" ]; then
+        echo "[sa-bench] prewarm: no dataset cache dir configured" >&2
+        return 1
+    fi
+
+    local counts index total
+    read -r -a counts <<< "$(dataset_prompt_counts)"
+    total=${#counts[@]}
+    echo "[sa-bench] prewarm: ${total} dataset(s) for concurrencies ${CONCURRENCIES} -> ${DATASET_CACHE_DIR}"
+
+    index=0
+    for n in "${counts[@]}"; do
+        index=$((index + 1))
+        echo "[sa-bench] prewarm ${index}/${total}: num_prompts=${n}"
+        python3 -u "${WORK_DIR}/benchmark_serving.py" \
+            --model "${MODEL_NAME}" --tokenizer "${MODEL_PATH}" \
+            --backend "dynamo" --endpoint /v1/completions \
+            "${DATASET_ARGS[@]}" \
+            --num-prompts "$n" \
+            "${RANDOM_LEN_ARGS[@]}" \
+            "${CACHE_ARGS[@]}" \
+            --trust-remote-code \
+            "${CHAT_TEMPLATE_ARGS[@]}" \
+            "${CUSTOM_TOKENIZER_ARGS[@]}" \
+            --prewarm-dataset-cache
+    done
+
+    echo "[sa-bench] prewarm: all ${total} dataset(s) ready in ${DATASET_CACHE_DIR}"
+}
+
+if [ "${SA_BENCH_PREWARM_ONLY:-0}" = "1" ] || [ "${SA_BENCH_PREWARM_ONLY:-0}" = "true" ]; then
+    prewarm_dataset_cache || exit $?
+    exit 0
+fi
+
 # Profiling shared helpers
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib/profiling.sh
@@ -167,9 +235,6 @@ profiling_init_from_env
 
 cleanup() { stop_all_profiling; }
 trap cleanup EXIT
-
-# Parse concurrency list
-IFS='x' read -r -a CONCURRENCY_LIST <<< "$CONCURRENCIES"
 
 # Quick curl to verify endpoint is working
 echo "Verifying endpoint..."

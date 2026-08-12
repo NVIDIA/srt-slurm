@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import argparse
 import ast
 import importlib
 import inspect
@@ -88,6 +89,33 @@ def test_main_call_site_matches_signature(sa_bench):
     keywords = {kw.arg: inspect.Parameter.empty for kw in call.keywords if kw.arg is not None}
 
     inspect.signature(sa_bench.load_or_build_random_requests).bind(*positional, **keywords)
+
+
+def _prewarm_args(**overrides) -> argparse.Namespace:
+    """The subset of main()'s args its prewarm guards look at."""
+    args = argparse.Namespace(
+        slow_down_servers=None,
+        prewarm_dataset_cache=True,
+        dataset_name="random",
+        dataset_cache_dir="/sa-bench-dataset-cache",
+    )
+    for name, value in overrides.items():
+        setattr(args, name, value)
+    return args
+
+
+def test_prewarm_without_a_cache_dir_fails_fast(sa_bench, monkeypatch):
+    """Prewarming with nowhere to write would silently do nothing useful."""
+    monkeypatch.delenv("SA_BENCH_DATASET_CACHE_DIR", raising=False)
+
+    with pytest.raises(ValueError, match="dataset-cache-dir"):
+        sa_bench.main(_prewarm_args(dataset_cache_dir=None))
+
+
+def test_prewarm_rejects_datasets_it_cannot_generate(sa_bench):
+    """Only the random dataset is generated locally; the rest are user files."""
+    with pytest.raises(ValueError, match="random"):
+        sa_bench.main(_prewarm_args(dataset_name="custom"))
 
 
 def test_no_cache_dir_always_rebuilds(sa_bench, counting_builder):

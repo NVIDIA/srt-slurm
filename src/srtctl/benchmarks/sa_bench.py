@@ -19,6 +19,13 @@ if TYPE_CHECKING:
 # are found by the next.
 DATASET_CACHE_MOUNT = "/sa-bench-dataset-cache"
 
+# Prompts per concurrency level for the measured and warmup runs. bench.sh
+# derives num_prompts from these, and srtctl cache-inputs needs the same
+# numbers to know which datasets to pre-generate.
+DEFAULT_NUM_PROMPTS_MULT = 10
+DEFAULT_NUM_WARMUP_MULT = 2
+DEFAULT_RANDOM_RANGE_RATIO = 0.8
+
 
 @register_benchmark("sa-bench")
 class SABenchRunner(BenchmarkRunner):
@@ -120,9 +127,9 @@ class SABenchRunner(BenchmarkRunner):
             str(total_gpus),
             str(prefill_gpus),
             str(decode_gpus),
-            str(b.random_range_ratio) if b.random_range_ratio is not None else "0.8",
-            str(b.num_prompts_mult) if b.num_prompts_mult is not None else "10",
-            str(b.num_warmup_mult) if b.num_warmup_mult is not None else "2",
+            str(b.random_range_ratio if b.random_range_ratio is not None else DEFAULT_RANDOM_RANGE_RATIO),
+            str(b.num_prompts_mult if b.num_prompts_mult is not None else DEFAULT_NUM_PROMPTS_MULT),
+            str(b.num_warmup_mult if b.num_warmup_mult is not None else DEFAULT_NUM_WARMUP_MULT),
             b.custom_tokenizer or "",
             str(b.use_chat_template).lower(),
             dataset_name,

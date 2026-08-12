@@ -1290,6 +1290,19 @@ def main(args: argparse.Namespace):
     print(args)
     if args.slow_down_servers is None:
         args.slow_down_servers = []
+
+    prewarm_cache_dir = args.dataset_cache_dir or os.environ.get("SA_BENCH_DATASET_CACHE_DIR")
+    if args.prewarm_dataset_cache:
+        if args.dataset_name != "random":
+            raise ValueError(
+                f"--prewarm-dataset-cache only applies to --dataset-name random, got '{args.dataset_name}'"
+            )
+        if not prewarm_cache_dir:
+            raise ValueError(
+                "--prewarm-dataset-cache needs a cache to fill: pass --dataset-cache-dir "
+                "or set SA_BENCH_DATASET_CACHE_DIR"
+            )
+
     random.seed(args.seed)
     np.random.seed(args.seed)
 
@@ -1430,7 +1443,7 @@ def main(args: argparse.Namespace):
 
         elif args.dataset_name == "random":
             input_requests = load_or_build_random_requests(
-                args.dataset_cache_dir or os.environ.get("SA_BENCH_DATASET_CACHE_DIR"),
+                prewarm_cache_dir,
                 args.model,
                 tokenizer_id,
                 args.seed,
@@ -1449,6 +1462,11 @@ def main(args: argparse.Namespace):
 
         else:
             raise ValueError(f"Unknown dataset: {args.dataset_name}")
+
+    if args.prewarm_dataset_cache:
+        # The dataset is on disk now; everything below needs a live server.
+        print(f"{_log_stamp()} [cache] prewarm done: {len(input_requests)} prompts ready in {prewarm_cache_dir}")
+        return
 
     goodput_config_dict = check_goodput_args(args)
 
@@ -1827,6 +1845,13 @@ if __name__ == "__main__":
         "later runs with identical parameters. Falls back to the "
         "SA_BENCH_DATASET_CACHE_DIR environment variable when unset. Only "
         "applies to the 'random' dataset.",
+    )
+    random_group.add_argument(
+        "--prewarm-dataset-cache",
+        action="store_true",
+        help="Populate --dataset-cache-dir and exit without sending any "
+        "requests. No server is contacted, so the dataset for a future run can "
+        "be built while the cluster is busy. Used by 'srtctl cache-inputs'.",
     )
     random_group.add_argument(
         "--random-num-workers",

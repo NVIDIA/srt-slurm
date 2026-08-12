@@ -1279,6 +1279,59 @@ def resolve_override_cmd(
         console.print(f"[green]Wrote:[/] {p}")
 
 
+def cache_inputs_cmd(
+    config_path: Path,
+    dry_run: bool = False,
+    account: str | None = None,
+    partition: str | None = None,
+    time_limit: str | None = None,
+    num_workers: int | None = None,
+) -> int:
+    """Pre-generate the SA-Bench datasets a recipe's benchmark run would build.
+
+    Returns the exit code of the prewarm step (0 for --dry-run).
+    """
+    from srtctl.core.cache_inputs import plan_cache_inputs, run_cache_inputs
+
+    config = load_config(config_path)
+    plan = plan_cache_inputs(
+        config,
+        account=account,
+        partition=partition,
+        time_limit=time_limit,
+        num_workers=num_workers,
+    )
+
+    table = Table(show_header=False, box=None, padding=(0, 2, 0, 0))
+    table.add_column(style="cyan")
+    table.add_column()
+    table.add_row("Recipe", plan.recipe_name)
+    table.add_row("Cache dir", str(plan.cache_dir))
+    table.add_row("Container", str(plan.container_image))
+    table.add_row("ISL / OSL", f"{config.benchmark.isl} / {config.benchmark.osl}")
+    table.add_row("Concurrencies", str(config.benchmark.concurrencies))
+    table.add_row(
+        f"Datasets ({len(plan.prompt_counts)})",
+        ", ".join(f"n={count}" for count in plan.prompt_counts),
+    )
+    if not plan.attaches_to_current_job:
+        table.add_row("Time limit", plan.time_limit)
+    console.print(Panel(table, title="Cache Inputs", border_style="cyan"))
+
+    command = shlex.join(plan.srun_command())
+    if dry_run:
+        console.print(Syntax(command, "bash", theme="monokai", word_wrap=True))
+        return 0
+
+    console.print(f"[dim]{command}[/dim]\n")
+    exit_code = run_cache_inputs(plan)
+    if exit_code == 0:
+        console.print(f"\n[green]Datasets ready:[/] {plan.cache_dir}")
+    else:
+        console.print(f"\n[bold red]Prewarm failed[/] (exit code {exit_code})")
+    return exit_code
+
+
 def main():
     # If no args at all, launch interactive mode
     if len(sys.argv) == 1:
@@ -1297,6 +1350,7 @@ def main():
   srtctl apply -f config.yaml --sweep            # Submit sweep
   srtctl preflight -f config.yaml                # Check model/container availability
   srtctl dry-run -f config.yaml                  # Dry run
+  srtctl cache-inputs -f config.yaml             # Pre-generate SA-Bench datasets
   srtctl resolve-override -f config.yaml         # Resolve override YAML (no submit)
   srtctl resolve-override -f config.yaml --stdout  # Print to stdout
   srtctl monitor                                 # Live job dashboard
@@ -1374,6 +1428,38 @@ def main():
         required=True,
         dest="config",
         help="YAML config file, or file:selector for overrides",
+    )
+
+    cache_inputs_parser = subparsers.add_parser(
+        "cache-inputs",
+        help="Pre-generate SA-Bench datasets into benchmark.dataset_cache_dir",
+    )
+    cache_inputs_parser.add_argument(
+        "-f",
+        "--file",
+        type=str,
+        required=True,
+        dest="config",
+        help="YAML config file, or file:selector for overrides",
+    )
+    cache_inputs_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the srun command and the datasets it would build, then exit",
+    )
+    cache_inputs_parser.add_argument("--account", type=str, help="SLURM account (default: recipe slurm.account)")
+    cache_inputs_parser.add_argument("--partition", type=str, help="SLURM partition (default: recipe slurm.partition)")
+    cache_inputs_parser.add_argument(
+        "--time",
+        dest="time_limit",
+        type=str,
+        help="SLURM time limit (default: recipe slurm.time_limit). Long-ISL sweeps need more than a benchmark run.",
+    )
+    cache_inputs_parser.add_argument(
+        "--num-workers",
+        dest="num_workers",
+        type=int,
+        help="Worker processes for prompt generation (default: auto, min(cpu_count, 8))",
     )
 
     monitor_parser = subparsers.add_parser("monitor", help="Live dashboard for srt-slurm jobs", add_help=False)
@@ -1545,6 +1631,25 @@ def main():
                     )
                 restore_console()
                 return
+
+            if args.command == "cache-inputs":
+                if effective_config_path.is_dir():
+                    raise ValueError("cache-inputs expects a recipe file, not a directory")
+                if is_override_config(effective_config_path):
+                    raise ValueError(
+                        "cache-inputs expects a plain recipe; resolve the variants first with "
+                        f"'srtctl resolve-override -f {config_path}' and pass one of the generated files"
+                    )
+                exit_code = cache_inputs_cmd(
+                    effective_config_path,
+                    dry_run=args.dry_run,
+                    account=args.account,
+                    partition=args.partition,
+                    time_limit=args.time_limit,
+                    num_workers=args.num_workers,
+                )
+                restore_console()
+                sys.exit(exit_code)
 
             setup_script = getattr(args, "setup_script", None)
             output_dir = getattr(args, "output_dir", None)
