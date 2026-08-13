@@ -502,6 +502,45 @@ class BenchmarkStageMixin:
         urls = list(dict.fromkeys(urls)) if logical_workers_only else sorted(set(urls))
         return {"AIPERF_SERVER_METRICS_URLS": ",".join(urls)}
 
+    def _get_analytics_benchmark_env(self, runner: "BenchmarkRunner") -> dict[str, str]:
+        """Client-side AIPerf analytics flags, active only when observability.enabled.
+
+        Scope is deliberately narrow: ``_get_benchmark_env`` already routes
+        ``AIPERF_SERVER_METRICS_URLS`` to both built-in AIPerf runners and
+        ``benchmark.type: custom`` commands, and the custom path must keep its
+        ``logical_workers_only=True`` view so distributed follower ranks are not
+        advertised as separate engines. This helper must not re-derive those
+        URLs or it would clobber that with the physical-process list.
+
+        What it adds is the request for AIPerf's per-scrape server-metrics
+        JSONL. That file is already in the schema the offline tooling reads,
+        but AIPerf's default format selection is json+csv only, so it is never
+        written unless asked for.
+
+        ``--export-level analytics`` is the single-knob form; the explicit
+        ``--server-metrics-formats`` is passed alongside deliberately, so that
+        an AIPerf build without the analytics level still produces the JSONL
+        rather than silently dropping the whole metrics leg.
+        """
+        # getattr, not attribute access: several tests build the config as a
+        # lightweight SimpleNamespace, and an optional analytics knob must not
+        # become a hard requirement of the benchmark path.
+        observability = getattr(self.config, "observability", None)
+        if observability is None or not getattr(observability, "enabled", False):
+            return {}
+
+        env: dict[str, str] = {}
+        extra: list[str] = []
+        if observability.aiperf_export_level:
+            extra += ["--export-level", observability.aiperf_export_level]
+        if observability.aiperf_server_metrics_formats:
+            extra += ["--server-metrics-formats", *observability.aiperf_server_metrics_formats]
+        if observability.aiperf_slice_duration:
+            extra += ["--slice-duration", str(observability.aiperf_slice_duration)]
+        if extra:
+            env["AIPERF_EXTRA_ARGS"] = " ".join(extra)
+        return env
+
     def _get_benchmark_env(self, runner: "BenchmarkRunner") -> dict[str, str]:
         """Get environment variables for the benchmark script."""
         from srtctl.benchmarks.base import AIPerfBenchmarkRunner
@@ -541,5 +580,9 @@ class BenchmarkStageMixin:
             env.update(self._get_aiperf_server_metrics_env(logical_endpoints, logical_workers_only=True))
         if isinstance(runner, AIPerfBenchmarkRunner) and self.config.benchmark.aiperf_package:
             env["AIPERF_PACKAGE"] = self.config.benchmark.aiperf_package
+
+        # observability.enabled: AIPerf analytics flags (server-metrics JSONL).
+        # The metrics URLs are handled above and must not be re-derived here.
+        env.update(self._get_analytics_benchmark_env(runner))
 
         return env

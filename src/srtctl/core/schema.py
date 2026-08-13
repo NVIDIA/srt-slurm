@@ -1000,15 +1000,53 @@ class ObservabilityConfig:
     dynamo-decode, dynamo-frontend) and can be overridden per-component via
     prefill_environment, decode_environment, or frontend.env.
 
+    ``enabled`` is the single analytics knob. Turning it on makes the run emit
+    every signal the offline perf-analysis tooling consumes, without the user
+    having to remember six independent flags. It expands (at config-load time,
+    via :func:`srtctl.core.config.expand_observability`) into:
+
+    * ``backend.publish_events_and_metrics: true`` -- the worker/frontend
+      Prometheus ``/metrics`` surface exists at all.
+    * ``enable_iter_perf_stats`` + ``return_perf_metrics`` on every engine
+      config -- the ``trtllm_kv_cache_*`` occupancy gauges and per-request
+      histograms appear on that surface.
+    * ``DYN_LOGGING_SPAN_EVENTS`` / ``DYN_LOGGING_JSONL`` / ``DYN_LOG=debug`` on
+      prefill, decode and frontend -- per-request ``SPAN_CLOSED`` trace lines.
+
+    and, at benchmark time (see ``BenchmarkStageMixin``):
+
+    * ``AIPERF_SERVER_METRICS_URLS`` for ``benchmark.type: custom`` runs, so
+      AIPerf scrapes the workers and not just its auto-detected frontend.
+
+    Every expansion uses setdefault semantics: an explicit value in the recipe
+    always wins, so ``observability.enabled`` is safe to switch on globally.
+
     Attributes:
+        enabled: Master analytics knob. Default: False.
         enable_otel: If True, inject OTEL environment variables into all workers
             and frontends. Requires otel_endpoint to be set. Default: False.
         otel_endpoint: OTEL collector endpoint (e.g. "http://10.0.0.1:4317").
             Required when enable_otel is True.
+        aiperf_export_level: Value passed through to AIPerf's ``--export-level``.
+            ``analytics`` implies per-record JSONL plus server-metrics JSONL on
+            builds that support it; older builds should use ``records`` and rely
+            on ``aiperf_server_metrics_formats``.
+        aiperf_server_metrics_formats: Formats AIPerf writes for server metrics.
+            ``jsonl`` is the one the dashboard's schema 2 reads directly; AIPerf
+            defaults to ``json,csv`` only.
+        aiperf_slice_duration: AIPerf ``--slice-duration`` (seconds).
     """
 
+    enabled: bool = False
     enable_otel: bool = False
     otel_endpoint: str | None = None
+
+    aiperf_export_level: str = "records"
+    aiperf_server_metrics_formats: tuple[str, ...] = ("json", "csv", "jsonl")
+    # None by default: InferenceX's benchmark_lib.sh already passes
+    # --slice-duration 1.0, and repeating a flag is at best redundant and at
+    # worst a CLI parse error. Set this only when driving AIPerf directly.
+    aiperf_slice_duration: float | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -1086,6 +1124,26 @@ def build_otel_env(observability: ObservabilityConfig, component: str) -> dict[s
         "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": observability.otel_endpoint,
         "OTEL_SERVICE_NAME": f"dynamo-{component}",
     }
+
+
+# Env that makes Dynamo emit one JSONL ``SPAN_CLOSED`` line per closed span on
+# the component's stdout. This is the *only* source for the per-request trace
+# leg of the offline perf tooling; without it those panels have no input.
+# DYN_LOG=debug is required because the span events are emitted at DEBUG level.
+ANALYTICS_SPAN_ENV: dict[str, str] = {
+    "DYN_LOGGING_SPAN_EVENTS": "true",
+    "DYN_LOGGING_JSONL": "true",
+    "DYN_LOG": "debug",
+}
+
+# Engine-config keys that surface per-request and per-iteration statistics on
+# the worker's /metrics endpoint. ``enable_iter_perf_stats`` is what produces
+# the ``trtllm_kv_cache_{used,free,max}_blocks`` gauges; ``return_perf_metrics``
+# adds the per-request latency / KV-transfer histograms.
+ANALYTICS_ENGINE_CONFIG: dict[str, bool] = {
+    "enable_iter_perf_stats": True,
+    "return_perf_metrics": True,
+}
 
 
 # /configs/dynamo-wheels is the lustre-mounted cache for hash-pinned dynamo
