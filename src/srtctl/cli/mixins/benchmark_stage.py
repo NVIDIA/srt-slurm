@@ -319,6 +319,7 @@ class BenchmarkStageMixin:
     ) -> int:
         """Run the actual benchmark script."""
         from srtctl.analysis.live_metrics import try_start_snapshotter
+        from srtctl.analysis.metrics_scraper import try_start_raw_scraper
 
         cmd = runner.build_command(self.config, self.runtime)
         env_to_set = self._get_benchmark_env(runner)
@@ -333,6 +334,17 @@ class BenchmarkStageMixin:
         # Optional in-flight batch-metrics snapshotter — no-op unless
         # opted in via reporting.live_metrics in the cluster config.
         snapshotter = try_start_snapshotter(self.runtime.log_dir, stop_event)
+
+        # RAW /metrics capture for the benchmark window — no-op unless
+        # observability.enabled. These endpoints die with the job, so this is
+        # the only chance to record them; it runs alongside the client rather
+        # than after it.
+        raw_scraper = try_start_raw_scraper(
+            self.runtime.log_dir,
+            self._analytics_scrape_targets(),
+            getattr(self.config, "observability", None),
+            stop_event,
+        )
 
         bench_node = self._benchmark_node()
         proc = start_srun_process(
@@ -376,6 +388,8 @@ class BenchmarkStageMixin:
                 self.benchmark_child_allows_window_mutation = True
             if snapshotter is not None:
                 snapshotter.stop()
+            if raw_scraper is not None:
+                raw_scraper.stop()
 
     def _get_benchmark_profiling_env(
         self,
@@ -558,6 +572,44 @@ class BenchmarkStageMixin:
         # runners retain their historical sorted physical-process list.
         urls = list(dict.fromkeys(urls)) if logical_workers_only else sorted(set(urls))
         return {"AIPERF_SERVER_METRICS_URLS": ",".join(urls)}
+
+    def _analytics_scrape_targets(self) -> list:
+        """Frontend + every worker leader, as RAW-scrape targets.
+
+        Worker leaders only: ``backend_processes`` holds one entry per physical
+        node for multi-node workers, but only rank zero serves the logical
+        worker's /metrics. Scraping followers would duplicate rows under a
+        misleading worker_id.
+        """
+        from srtctl.analysis.metrics_scraper import ScrapeTarget
+
+        targets: list[ScrapeTarget] = []
+
+        frontend_host = get_hostname_ip(self._orchestrator_node(), self.runtime.network_interface)
+        targets.append(
+            ScrapeTarget(
+                url=f"http://{frontend_host}:{FRONTEND_PUBLIC_PORT}/metrics",
+                role="frontend",
+                worker_id=None,
+            )
+        )
+
+        for process in self.backend_processes:
+            if not process.is_leader or process.sys_port <= 0:
+                continue
+            host = get_hostname_ip(process.node, self.runtime.network_interface)
+            # endpoint_mode is prefill | decode | agg; the RAW contract's role
+            # vocabulary is frontend | prefill | decode, so map agg -> decode
+            # (an agg worker owns the decode side of the KV panels).
+            role = "decode" if process.endpoint_mode == "agg" else process.endpoint_mode
+            targets.append(
+                ScrapeTarget(
+                    url=f"http://{host}:{process.sys_port}/metrics",
+                    role=role,
+                    worker_id=process.node,
+                )
+            )
+        return targets
 
     def _get_benchmark_env(self, runner: "BenchmarkRunner") -> dict[str, str]:
         """Get environment variables for the benchmark script."""

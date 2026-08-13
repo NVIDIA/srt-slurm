@@ -1032,13 +1032,18 @@ class ObservabilityConfig:
     * ``DYN_LOGGING_SPAN_EVENTS`` / ``DYN_LOGGING_JSONL`` / ``DYN_LOG=debug`` on
       prefill, decode and frontend -- per-request ``SPAN_CLOSED`` trace lines.
 
+    and, at benchmark time (see ``BenchmarkStageMixin``):
+
+    * an in-job Prometheus scraper writing ``raw_prometheus.jsonl`` for the whole
+      benchmark window (see ``scrape_*`` below).
+
     Every expansion uses setdefault semantics: an explicit value in the recipe
     always wins, so ``observability.enabled`` is safe to switch on globally.
 
     Scope is deliberately server-side. The knob configures what the workers and
-    frontend *emit*; it does not reach into the benchmark client. Capturing the
-    ``/metrics`` surface it creates is a separate concern, handled by scraping
-    those endpoints directly rather than by asking a client to re-export them.
+    frontend *emit*, and captures that surface by scraping the endpoints
+    directly. It never reaches into the benchmark client to ask it to re-export
+    what the servers already publish.
 
     Attributes:
         enabled: Master analytics knob. Default: False.
@@ -1046,13 +1051,26 @@ class ObservabilityConfig:
             and frontends. Requires otel_endpoint to be set. Default: False.
         otel_endpoint: OTEL collector endpoint (e.g. "http://10.0.0.1:4317").
             Required when enable_otel is True.
+        scrape_metrics: Run the in-job Prometheus scraper. Defaults to the value
+            of ``enabled``; set False to opt out while keeping the rest.
+        scrape_interval_seconds: Seconds between scrape sweeps.
+        scrape_output: Filename (under the run's log dir) for the RAW capture.
     """
 
     enabled: bool = False
     enable_otel: bool = False
     otel_endpoint: str | None = None
 
+    scrape_metrics: bool | None = None
+    scrape_interval_seconds: float = 3.0
+    scrape_output: str = "raw_prometheus.jsonl"
+
     Schema: ClassVar[type[Schema]] = Schema
+
+    @property
+    def scraper_enabled(self) -> bool:
+        """Whether the in-job Prometheus scraper should run."""
+        return self.enabled if self.scrape_metrics is None else self.scrape_metrics
 
 
 @dataclass(frozen=True)
