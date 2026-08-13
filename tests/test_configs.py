@@ -2103,6 +2103,7 @@ class TestVLLMDataParallelMode:
         runtime.model_path = Path("/model")
         runtime.is_hf_model = False
         runtime.frontend_port = 9000
+        runtime.network_interface = "eth0"
 
         with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
             cmd = backend.build_worker_command(
@@ -3156,6 +3157,384 @@ class TestExtraMountExpansion:
 
             assert extra_root.resolve() in runtime.container_mounts
             assert runtime.container_mounts[extra_root.resolve()] == Path("/extra")
+
+
+class TestDirectVllmMultiNode:
+    """Multi-node aggregate support for the direct vllm frontend."""
+
+    def _make_config(self, **resource_overrides):
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.schema import FrontendConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        resources_kwargs = {
+            "gpu_type": "b200",
+            "gpus_per_node": 8,
+            "agg_nodes": 2,
+            "agg_workers": 1,
+        }
+        resources_kwargs.update(resource_overrides)
+        return SrtConfig(
+            name="t",
+            model=ModelConfig(path="/m", container="/c.sqsh", precision="fp4"),
+            resources=ResourceConfig(**resources_kwargs),
+            frontend=FrontendConfig(type="vllm", enable_multiple_frontends=False),
+            backend=VLLMProtocol(
+                vllm_config=VLLMServerConfig(aggregated={"tensor-parallel-size": 8})
+            ),
+        )
+
+    def _make_processes(self, nodes):
+        from srtctl.core.topology import Process
+
+        return [
+            Process(
+                node=node,
+                gpu_indices=frozenset(range(8)),
+                sys_port=8081,
+                http_port=0,
+                endpoint_mode="agg",
+                endpoint_index=0,
+                node_rank=rank,
+            )
+            for rank, node in enumerate(nodes)
+        ]
+
+    def _build_command(self, process, endpoint_processes):
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+
+        backend = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                aggregated={"tensor-parallel-size": 8, "pipeline-parallel-size": 2}
+            )
+        )
+        runtime = MagicMock()
+        runtime.model_path = Path("/model")
+        runtime.is_hf_model = False
+        runtime.frontend_port = 9000
+        runtime.network_interface = "eth0"
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            return backend.build_worker_command(
+                process=process,
+                endpoint_processes=endpoint_processes,
+                runtime=runtime,
+                frontend_type="vllm",
+            )
+
+    def test_schema_accepts_multi_node_aggregate(self):
+        """agg_nodes > 1 no longer trips the vllm-frontend load-time validation."""
+        cfg = self._make_config()
+        assert cfg.resources.agg_nodes == 2
+        assert cfg.frontend.type == "vllm"
+
+    def test_schema_still_rejects_disaggregated(self):
+        import pytest
+        from marshmallow import ValidationError
+
+        with pytest.raises(ValidationError, match="aggregate jobs only"):
+            self._make_config(
+                agg_nodes=None,
+                agg_workers=None,
+                prefill_nodes=1,
+                decode_nodes=1,
+                prefill_workers=1,
+                decode_workers=1,
+            )
+
+    def test_schema_rejects_multiple_agg_workers(self):
+        """Extra replicas have no router, so point the user at the dynamo frontend."""
+        import pytest
+        from marshmallow import ValidationError
+
+        with pytest.raises(ValidationError, match="frontend.type: dynamo"):
+            self._make_config(agg_workers=2)
+
+    def test_multi_node_leader_owns_port_and_coordination(self):
+        """Rank 0 keeps the OpenAI port and gets the torchrun-style flags."""
+        leader, worker = self._make_processes(["node0", "node1"])
+
+        cmd = self._build_command(leader, [leader, worker])
+
+        assert cmd[:3] == ["vllm", "serve", "/model"]
+        assert cmd[cmd.index("--host") + 1] == "0.0.0.0"
+        assert cmd[cmd.index("--port") + 1] == "9000"
+        assert cmd[cmd.index("--master-addr") + 1] == "10.0.0.1"
+        assert cmd[cmd.index("--nnodes") + 1] == "2"
+        assert cmd[cmd.index("--node-rank") + 1] == "0"
+        assert "--headless" not in cmd
+        assert "dynamo.vllm" not in cmd
+        assert "--request-plane" not in cmd
+
+    def test_multi_node_nonleader_runs_headless_without_port(self):
+        """Ranks > 0 are headless engine workers and must not bind the API port."""
+        leader, worker = self._make_processes(["node0", "node1"])
+
+        cmd = self._build_command(worker, [leader, worker])
+
+        assert cmd[:3] == ["vllm", "serve", "/model"]
+        assert "--headless" in cmd
+        assert cmd[cmd.index("--node-rank") + 1] == "1"
+        assert cmd[cmd.index("--nnodes") + 1] == "2"
+        assert cmd[cmd.index("--master-addr") + 1] == "10.0.0.1"
+        assert "--host" not in cmd
+        assert "--port" not in cmd
+
+    def test_single_node_command_has_no_multinode_flags(self):
+        """The original single-node command shape is unchanged."""
+        (leader,) = self._make_processes(["node0"])
+
+        cmd = self._build_command(leader, [leader])
+
+        assert cmd[:3] == ["vllm", "serve", "/model"]
+        assert cmd[cmd.index("--port") + 1] == "9000"
+        assert "--nnodes" not in cmd
+        assert "--node-rank" not in cmd
+        assert "--master-addr" not in cmd
+        assert "--headless" not in cmd
+
+    def test_direct_vllm_strips_derived_flags_but_keeps_master_port(self):
+        """Topology flags are ignored, while the rendezvous-port override reaches every rank."""
+        leader, worker = self._make_processes(["node0", "node1"])
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+
+        backend = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                aggregated={
+                    "tensor-parallel-size": 8,
+                    "pipeline-parallel-size": 2,
+                    "headless": True,
+                    "master-addr": "10.9.9.9",
+                    "master-port": 26300,
+                }
+            )
+        )
+        from pathlib import Path
+        from unittest.mock import MagicMock, call, patch
+
+        runtime = MagicMock()
+        runtime.model_path = Path("/model")
+        runtime.is_hf_model = False
+        runtime.frontend_port = 9000
+        runtime.network_interface = "ib0"
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1") as mock_get_hostname_ip:
+            leader_cmd = backend.build_worker_command(
+                process=leader,
+                endpoint_processes=[leader, worker],
+                runtime=runtime,
+                frontend_type="vllm",
+            )
+            worker_cmd = backend.build_worker_command(
+                process=worker,
+                endpoint_processes=[leader, worker],
+                runtime=runtime,
+                frontend_type="vllm",
+            )
+
+        assert leader_cmd.count("--headless") == 0
+        assert worker_cmd.count("--headless") == 1
+        assert leader_cmd[leader_cmd.index("--master-addr") + 1] == "10.0.0.1"
+        assert "10.9.9.9" not in leader_cmd
+        assert leader_cmd[leader_cmd.index("--master-port") + 1] == "26300"
+        assert worker_cmd[worker_cmd.index("--master-port") + 1] == "26300"
+        assert mock_get_hostname_ip.call_args_list == [call("node0", "ib0"), call("node0", "ib0")]
+
+    def test_direct_vllm_logs_overridden_recipe_flags(self, caplog):
+        """A flag that silently vanishes is undebuggable, so report recipe -> effective."""
+        import logging
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+
+        leader, worker = self._make_processes(["node0", "node1"])
+        backend = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                aggregated={"headless": True, "master-addr": "10.9.9.9", "nnodes": 8}
+            )
+        )
+        runtime = MagicMock()
+        runtime.model_path = Path("/model")
+        runtime.is_hf_model = False
+        runtime.frontend_port = 9000
+        runtime.network_interface = "ib0"
+
+        with (
+            patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
+            caplog.at_level(logging.WARNING, logger="srtctl.backends.vllm"),
+        ):
+            backend.build_worker_command(
+                process=leader,
+                endpoint_processes=[leader, worker],
+                runtime=runtime,
+                frontend_type="vllm",
+            )
+
+        assert "--master-addr=10.9.9.9 -> 10.0.0.1" in caplog.text
+        assert "--nnodes=8 -> 2" in caplog.text
+        # The leader owns the API server, so the recipe's headless maps to nothing.
+        assert "--headless=True -> not passed" in caplog.text
+
+    def test_direct_vllm_override_report_is_quiet_without_recipe_flags(self, caplog):
+        """No report when the recipe leaves the topology flags alone."""
+        import logging
+
+        leader, worker = self._make_processes(["node0", "node1"])
+
+        with caplog.at_level(logging.WARNING, logger="srtctl.backends.vllm"):
+            self._build_command(leader, [leader, worker])
+
+        assert "Overriding topology-managed" not in caplog.text
+
+    def test_dynamo_keeps_recipe_orchestration_flags_and_default_resolution(self):
+        """Direct-vLLM topology ownership must not change existing Dynamo commands."""
+        leader, worker = self._make_processes(["node0", "node1"])
+        from pathlib import Path
+        from unittest.mock import MagicMock, call, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+
+        backend = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                aggregated={
+                    "tensor-parallel-size": 8,
+                    "headless": True,
+                    "host": "10.9.9.8",
+                    "port": 9001,
+                    "master-addr": "10.9.9.9",
+                    "nnodes": 99,
+                    "node-rank": 42,
+                }
+            )
+        )
+        runtime = MagicMock()
+        runtime.model_path = Path("/model")
+        runtime.is_hf_model = False
+        runtime.network_interface = "ib0"
+        runtime.request_plane = "nats"
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1") as mock_get_hostname_ip:
+            cmd = backend.build_worker_command(
+                process=leader,
+                endpoint_processes=[leader, worker],
+                runtime=runtime,
+                frontend_type="dynamo",
+            )
+
+        assert mock_get_hostname_ip.call_args_list == [call("node0")]
+        assert cmd[cmd.index("--host") + 1] == "10.9.9.8"
+        assert cmd[cmd.index("--port") + 1] == "9001"
+        assert "10.9.9.9" in cmd
+        assert "99" in cmd
+        assert "42" in cmd
+        assert "--headless" in cmd
+
+    def test_no_dp_launch_mode_warning_for_direct_vllm(self, caplog):
+        """dp_launch_mode does not apply here: vllm serve owns the local DP ranks."""
+        import logging
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.schema import FrontendConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        with caplog.at_level(logging.WARNING, logger="srtctl.core.schema"):
+            SrtConfig(
+                name="t",
+                model=ModelConfig(path="/m", container="/c.sqsh", precision="fp4"),
+                resources=ResourceConfig(gpu_type="b200", gpus_per_node=8, agg_nodes=2, agg_workers=1),
+                frontend=FrontendConfig(type="vllm", enable_multiple_frontends=False),
+                backend=VLLMProtocol(vllm_config=VLLMServerConfig(aggregated={"data-parallel-size": 16})),
+            )
+
+        assert "dp_launch_mode" not in caplog.text
+
+    def test_dp_launch_mode_warning_still_fires_for_dynamo(self, caplog):
+        """The advisory is still useful where the setting picks the process layout."""
+        import logging
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.schema import FrontendConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        with caplog.at_level(logging.WARNING, logger="srtctl.core.schema"):
+            SrtConfig(
+                name="t",
+                model=ModelConfig(path="/m", container="/c.sqsh", precision="fp4"),
+                resources=ResourceConfig(gpu_type="b200", gpus_per_node=8, agg_nodes=2, agg_workers=1),
+                frontend=FrontendConfig(type="dynamo"),
+                backend=VLLMProtocol(vllm_config=VLLMServerConfig(aggregated={"data-parallel-size": 16})),
+            )
+
+        assert "dp_launch_mode=per_gpu" in caplog.text
+
+    def test_direct_vllm_keeps_api_server_count_on_leader_only(self):
+        """vLLM rejects --api-server-count alongside --headless, so only rank 0 keeps it.
+
+        The flag matters under DP: without it vLLM defaults to one API server per
+        DP rank and then disables throughput/KV-cache stat logging.
+        """
+        leader, worker = self._make_processes(["node0", "node1"])
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+
+        backend = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                aggregated={
+                    "data-parallel-size": 16,
+                    "tensor-parallel-size": 1,
+                    "api-server-count": 1,
+                }
+            )
+        )
+        runtime = MagicMock()
+        runtime.model_path = Path("/model")
+        runtime.is_hf_model = False
+        runtime.frontend_port = 9000
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            leader_cmd = backend.build_worker_command(
+                process=leader,
+                endpoint_processes=[leader, worker],
+                runtime=runtime,
+                frontend_type="vllm",
+            )
+            worker_cmd = backend.build_worker_command(
+                process=worker,
+                endpoint_processes=[leader, worker],
+                runtime=runtime,
+                frontend_type="vllm",
+            )
+
+        assert leader_cmd[leader_cmd.index("--api-server-count") + 1] == "1"
+        assert "--api-server-count" not in worker_cmd
+        assert worker_cmd[worker_cmd.index("--data-parallel-size") + 1] == "16"
+
+    def test_direct_vllm_single_node_keeps_api_server_count(self):
+        """Single-node jobs have no headless rank, so the recipe value is untouched."""
+        (leader,) = self._make_processes(["node0"])
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+
+        backend = VLLMProtocol(vllm_config=VLLMServerConfig(aggregated={"api-server-count": 1}))
+        runtime = MagicMock()
+        runtime.model_path = Path("/model")
+        runtime.is_hf_model = False
+        runtime.frontend_port = 9000
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            cmd = backend.build_worker_command(
+                process=leader,
+                endpoint_processes=[leader],
+                runtime=runtime,
+                frontend_type="vllm",
+            )
+
+        assert cmd[cmd.index("--api-server-count") + 1] == "1"
 
 
 class TestSequentialNodeStart:

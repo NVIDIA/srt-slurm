@@ -196,6 +196,20 @@ def show_config_details(config: SrtConfig) -> None:
     environment variables (global and backend per-mode) so users can verify their
     config is correct before submitting.
     """
+    if config.frontend.type == "vllm":
+        from srtctl.backends.vllm import VLLMProtocol, find_vllm_orchestration_recipe_flags
+
+        if isinstance(config.backend, VLLMProtocol):
+            orchestration_flags = find_vllm_orchestration_recipe_flags(config.backend)
+            if orchestration_flags:
+                for mode_name, flag_name in orchestration_flags:
+                    console.print(
+                        "[yellow]WARNING:[/] "
+                        f"vllm_config.{mode_name}.{flag_name} is set in the recipe but srtslurm "
+                        "derives this from the job topology at runtime; remove it from the recipe "
+                        "to avoid confusion (the configured value is ignored)."
+                    )
+
     # --- Container Mounts ---
     mounts_table = Table(title="Container Mounts", show_lines=False, pad_edge=False)
     mounts_table.add_column("Source", style="dim", width=14)
