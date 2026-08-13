@@ -35,6 +35,7 @@ from srtctl.cli.mixins import (
 )
 from srtctl.core.config import load_config
 from srtctl.core.health import wait_for_port
+from srtctl.core.hwinfo import record_hwinfo_snapshot
 from srtctl.core.lockfile import write_lockfile
 from srtctl.core.processes import (
     ManagedProcess,
@@ -660,6 +661,10 @@ class SweepOrchestrator(
 
         resource_snapshot = record_resource_snapshot(self.config, self.runtime)
 
+        # Baseline the fabric before any load, so the snapshot taken when the run
+        # ends can be diffed against known-good NVLink error counters.
+        record_hwinfo_snapshot(self.runtime, "before")
+
         # Create status reporter (fire-and-forget, no-op if not configured)
         reporter = StatusReporter.from_config(self.config.reporting, self.runtime.job_id)
         reporter.report_started(self.config, self.runtime, resource_snapshot=resource_snapshot)
@@ -763,6 +768,10 @@ class SweepOrchestrator(
             logger.info("Cleanup")
             # NOTE: finalize before registry.cleanup() so samples and manifest are durable.
             exit_code = self.finalize_power_telemetry(exit_code, interrupted=stop_event.is_set())
+            # Snapshot the fabric while the allocation is still ours. Taken on
+            # success too: counters that grew during a run that happened to pass
+            # are the earliest warning of a link about to take a job down.
+            record_hwinfo_snapshot(self.runtime, "after")
             stop_event.set()
             registry.cleanup()
             if exit_code != 0:
