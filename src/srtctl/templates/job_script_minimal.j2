@@ -79,6 +79,12 @@
 
 set -e
 
+# sbatch is invoked with --export=NONE (or an explicit allowlist), which SLURM
+# also applies to every srun in this job. The filtering is meant for the
+# submit-side environment only; from here on the job's own environment must
+# reach the workers as usual, so restore the default propagation.
+export SLURM_EXPORT_ENV=ALL
+
 # Setup directories
 SRTCTL_SOURCE="{{ srtctl_source }}"
 OUTPUT_BASE="{{ output_base }}"

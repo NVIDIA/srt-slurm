@@ -117,11 +117,14 @@ The `srtslurm.yaml` file can contain the following fields:
 | `containers`                    | dict   | Container image aliases                               |
 | `default_mounts`                | dict   | Cluster-wide container mounts                         |
 | `default_bash_preamble`         | string | Shell snippet prepended to every container srun       |
+| `environment`                   | dict   | Cluster-wide environment variables                    |
 | `nginx_raise_ulimit`          | bool   | Optional default for `frontend.nginx_raise_ulimit`  |
 
 **output_dir**: When set, job logs are written to `output_dir/{job_id}/logs` instead of `srtctl_root/outputs/{job_id}/logs`. Useful for CI/CD and ephemeral environments.
 
 **default_bash_preamble**: A shell snippet (e.g. `"ulimit -n 1048576 -s unlimited -u 1048576"`) prepended to every container srun launched by srtctl — workers, frontends, telemetry, benchmark, postprocess. Runs before per-call `bash_preamble` and the main command, so cluster-wide ulimits apply to everything downstream. Silently dropped for distroless containers (e.g. `prom/node-exporter`) that bypass the bash wrapper; a WARNING log is emitted in that case.
+
+**environment**: Merged underneath every job's top-level [`environment`](#environment) block, so a recipe can override a single variable without restating the rest. Use it for anything cluster-specific that shouldn't clutter shareable recipes — a shared `HF_HOME`, a cluster-wide `NCCL_SOCKET_IFNAME`, or a `${VAR}` reference to a secret (see [Forwarding host variables](#forwarding-host-variables)).
 
 **nginx_raise_ulimit**: When set to `true` or `false`, this value is applied to jobs that omit `frontend.nginx_raise_ulimit` in the recipe. Use `true` on clusters where raising the nginx container’s open-file limit is allowed; leave unset if each job should rely on the frontend default (`false`). A recipe that sets `frontend.nginx_raise_ulimit` always wins.
 
@@ -1302,6 +1305,27 @@ environment:
 | Key    | Value  | Description                      |
 | ------ | ------ | -------------------------------- |
 | string | string | Environment variable name=value  |
+
+### Forwarding host variables
+
+Jobs start from a clean environment: srtctl submits with `sbatch --export=NONE`, so nothing that happens to be exported in your login shell — host CUDA paths, `LD_LIBRARY_PATH`, leftover module variables — reaches the containers by accident.
+
+To let a specific variable through, reference it with `${VAR}`:
+
+```yaml
+environment:
+  HF_TOKEN: ${HF_TOKEN}
+```
+
+srtctl asks SLURM to forward that variable by name and never reads the value itself, so the secret stays out of the generated sbatch script, the job's config copy, and the sweep logs. This works in any environment block: the global `environment`, `backend.*_environment`, `frontend.env`, `benchmark.env` — and in `srtslurm.yaml`, which is usually the better place, since it keeps recipes shareable.
+
+Three rules follow from forwarding by name rather than by value:
+
+- The reference must be the entire value. `Bearer ${HF_TOKEN}` is rejected.
+- The name cannot change. Write `HF_TOKEN: ${HF_TOKEN}`, not `MY_TOKEN: ${HF_TOKEN}`.
+- The variable must be set in the submitting shell, otherwise submission fails immediately rather than the job failing later with an unrelated-looking authorization error.
+
+A bare `$VAR` without braces is never treated as a reference, so values that merely contain a dollar sign are passed through untouched.
 
 ### Per-Worker Template Variables
 

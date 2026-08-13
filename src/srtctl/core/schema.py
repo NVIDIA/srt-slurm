@@ -221,6 +221,11 @@ class ClusterConfig:
     # Cluster-level container mounts (host_path -> container_path)
     # Applied to all jobs on this cluster, useful for cluster-specific paths
     default_mounts: dict[str, str] | None = None
+    # Cluster-level environment variables merged into every job's top-level
+    # ``environment:`` block; the recipe wins on key collision. Values may
+    # reference the submitting shell with ``${VAR}``, which keeps secrets such
+    # as HF_TOKEN out of both this file and the recipe.
+    environment: dict[str, str] | None = None
     # Shell snippet prepended to every container srun (after env exports, before
     # the main command). Useful for cluster-wide ulimits, e.g.
     # ``"ulimit -n 1048576 -s unlimited -u 1048576"``. Silently dropped for
@@ -1598,6 +1603,13 @@ class SrtConfig:
     telemetry: TelemetryConfig = field(default_factory=TelemetryConfig)
 
     environment: dict[str, str] = field(default_factory=dict)
+    # Host variables to forward into the job by name, derived from ``${VAR}``
+    # entries in the environment blocks. Populated during config resolution;
+    # writing it directly in a recipe is possible but not the intended path.
+    host_env_passthrough: tuple[str, ...] = field(
+        default=(),
+        metadata={"marshmallow_field": fields.List(fields.String(), load_default=())},
+    )
     container_mounts: dict[
         Annotated[FormattablePath, FormattablePathField()],
         Annotated[FormattablePath, FormattablePathField()],
@@ -1621,6 +1633,9 @@ class SrtConfig:
 
     def __post_init__(self):
         """Validate configuration after initialization."""
+        # marshmallow hands back a list; keep the frozen dataclass hashable/immutable.
+        if not isinstance(self.host_env_passthrough, tuple):
+            object.__setattr__(self, "host_env_passthrough", tuple(self.host_env_passthrough))
         self._validate_profiling()
         self._validate_telemetry()
         self._validate_mooncake_kv_store()
