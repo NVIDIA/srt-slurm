@@ -24,7 +24,7 @@ REQUIRED_COMMANDS = (
     "nvidia-smi topo -m",
     "ls -al /dev/nvidia-caps-imex-channels/",
     "cat /etc/nvidia-imex/nodes_config.cfg",
-    "nvidia-imex-ctl",
+    "nvidia-imex-ctl -c /tmp/imex_hwinfo_config.cfg -N -H",
     "dmesg",
 )
 

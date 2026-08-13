@@ -79,9 +79,14 @@ record 'systemctl is-active nvidia-imex'
 record 'systemctl status nvidia-imex --no-pager -l 2>&1 | head -30'
 # nvidia-imex-ctl parses /etc/nvidia-imex/config.cfg, whose LOG_FILE_NAME and
 # STATS_FILE_NAME point at root-only paths; unprivileged runs then fail while
-# parsing and report a misleading "invalid value". Point those at /tmp first.
-# The trap keeps the recorded exit status that of the work, not of the cleanup.
-record 'cfg=$(mktemp); trap "rm -f $cfg" EXIT; sed -e "s|^LOG_FILE_NAME=.*|LOG_FILE_NAME=/tmp/imex_hwinfo.log|" -e "s|^STATS_FILE_NAME=.*|STATS_FILE_NAME=/tmp/imex_hwinfo_stats|" /etc/nvidia-imex/config.cfg > "$cfg" && nvidia-imex-ctl -c "$cfg" -N'
+# parsing and report a misleading "invalid value". Point those at /tmp first,
+# then ask the daemon for the domain state (-N) and the hosts in it (-H).
+# Recording the sed separately keeps both commands in the snapshot short enough
+# to copy-paste when reproducing by hand.
+imex_cfg=/tmp/imex_hwinfo_config.cfg
+record "sed -e 's|^LOG_FILE_NAME=.*|LOG_FILE_NAME=/tmp/imex_hwinfo.log|' -e 's|^STATS_FILE_NAME=.*|STATS_FILE_NAME=/tmp/imex_hwinfo_stats|' /etc/nvidia-imex/config.cfg > ${imex_cfg}"
+record "nvidia-imex-ctl -c ${imex_cfg} -N -H"
+rm -f "$imex_cfg"
 # On NVL systems each GPU reports whether it joined the fabric (State/Status)
 # and which clique it landed in. A GPU outside the clique cannot reach remote
 # peers over NVLink even though its local links look healthy.

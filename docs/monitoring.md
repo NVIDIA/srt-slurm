@@ -210,8 +210,8 @@ GPU 0: NVIDIA GB300
 Collected per node: GPU inventory with serials and driver version; `nvidia-smi
 nvlink -s`, `-e` and `topo -m`; the MNNVL wiring (`/dev/nvidia-caps-imex-channels/`,
 `/etc/nvidia-imex/nodes_config.cfg`, `config.cfg`, the IMEX unit state and
-`nvidia-imex-ctl -N`); per-GPU fabric State/Status/CliqueId; and `dmesg` Xid
-lines plus the row remapper state.
+`nvidia-imex-ctl -N -H` for the domain state and its host list); per-GPU fabric
+State/Status/CliqueId; and `dmesg` Xid lines plus the row remapper state.
 
 The point is the difference between the two files:
 
