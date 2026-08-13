@@ -134,6 +134,17 @@ class BenchmarkStageMixin:
             self.backend_processes, placement, self.runtime.nodes.head, kind="frontend.orchestrator_placement"
         )
 
+    def _public_api_node(self) -> str:
+        """Node hosting the public OpenAI HTTP endpoint clients should probe."""
+        if self.config.frontend.type == "vllm" and self.config.resources.num_agg > 0:
+            agg_leaders = sorted(
+                (p for p in self.backend_processes if p.endpoint_mode == "agg" and p.is_leader),
+                key=lambda p: p.endpoint_index,
+            )
+            if len(agg_leaders) == 1:
+                return agg_leaders[0].node
+        return self._orchestrator_node()
+
     def _benchmark_node(self) -> str:
         """Node the benchmark client runs on (honors benchmark.client_placement)."""
         placement = getattr(self.config.benchmark, "client_placement", "head")
@@ -152,16 +163,20 @@ class BenchmarkStageMixin:
         multi-node workers. Only rank zero owns the logical worker endpoint,
         so follower ranks must not be advertised to benchmark clients.
 
-        Dynamo exposes worker metrics on each leader's system port. Other
-        frontends expose them on the worker HTTP port, matching the endpoint
-        selection already used by the profiling integration.
+        Dynamo exposes worker metrics on each leader's system port. Direct
+        vLLM exposes aggregate metrics on the public frontend port, while
+        other frontends expose them on the worker HTTP port.
         """
-        use_sys_port = self.config.frontend.type == "dynamo"
         endpoints: list[tuple[str, str, int]] = []
         for process in self.backend_processes:
             if not process.is_leader:
                 continue
-            port = process.sys_port if use_sys_port else process.http_port
+            if self.config.frontend.type == "dynamo":
+                port = process.sys_port
+            elif self.config.frontend.type == "vllm":
+                port = self.runtime.frontend_port
+            else:
+                port = process.http_port
             if port <= 0:
                 continue
             host = get_hostname_ip(process.node, self.runtime.network_interface)
@@ -194,7 +209,7 @@ class BenchmarkStageMixin:
 
         hc = self.config.health_check
         if not wait_for_model(
-            host=self._orchestrator_node(),
+            host=self._public_api_node(),
             port=FRONTEND_PUBLIC_PORT,
             n_prefill=n_prefill,
             n_decode=n_decode,
@@ -245,7 +260,7 @@ class BenchmarkStageMixin:
 
         if benchmark_type == "manual":
             logger.info("Benchmark type is 'manual' - server is ready for testing")
-            logger.info("Frontend URL: http://%s:%d", self._orchestrator_node(), FRONTEND_PUBLIC_PORT)
+            logger.info("Frontend URL: http://%s:%d", self._public_api_node(), FRONTEND_PUBLIC_PORT)
             logger.info("Press Ctrl+C to stop the job")
 
             while not stop_event.is_set():
@@ -525,7 +540,7 @@ class BenchmarkStageMixin:
         # a different node than the orchestrator (e.g. client_placement=last_decode
         # with orchestrator_placement=first_decode), "localhost" is wrong — the
         # command should target http://$SRT_FRONTEND_HOST:$SRT_FRONTEND_PORT.
-        env["SRT_FRONTEND_HOST"] = get_hostname_ip(self._orchestrator_node(), self.runtime.network_interface)
+        env["SRT_FRONTEND_HOST"] = get_hostname_ip(self._public_api_node(), self.runtime.network_interface)
         env["SRT_FRONTEND_PORT"] = str(self.runtime.frontend_port)
 
         # Propagate top-level recipe environment to the bench step. Workers

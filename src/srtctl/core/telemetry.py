@@ -85,6 +85,8 @@ def generate_telemetry_config(
         )
 
     for process in sorted(processes, key=lambda p: (p.endpoint_mode, p.endpoint_index, p.node_rank, p.node)):
+        if frontend_type == "vllm" and process.endpoint_mode == "agg" and not process.is_leader:
+            continue
         node_ip = get_hostname_ip(process.node, runtime.network_interface)
         port = FRONTEND_PUBLIC_PORT if frontend_type == "vllm" and process.endpoint_mode == "agg" else process.sys_port
         node_metadata = {

@@ -260,6 +260,8 @@ class TestCustomBenchmarkRunner:
             ),
             frontend=SimpleNamespace(type=frontend_type),
             profiling=SimpleNamespace(enabled=False),
+            resources=SimpleNamespace(num_agg=sum(p.endpoint_mode == "agg" and p.is_leader for p in processes)),
+            telemetry=SimpleNamespace(enabled=False),
         )
         stage.runtime = SimpleNamespace(
             environment={},

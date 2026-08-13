@@ -27,9 +27,10 @@ logger = logging.getLogger(__name__)
 class VLLMFrontend:
     """Direct vLLM OpenAI server frontend.
 
-    This frontend is intentionally narrow: aggregate vLLM jobs only, with the
-    backend worker binding the public OpenAI port directly. Disaggregated vLLM
-    still needs a real router/orchestrator such as Dynamo.
+    This frontend is intentionally narrow: a single aggregate vLLM worker, with
+    that worker binding the public OpenAI port directly. Disaggregated layouts
+    and multiple aggregate replicas still need a real router/orchestrator such
+    as Dynamo, since nothing here load-balances between endpoints.
     """
 
     @property
@@ -82,8 +83,13 @@ class VLLMFrontend:
                 "frontend.type: vllm binds vllm serve directly to the public port; "
                 "set frontend.enable_multiple_frontends: false"
             )
-        if config.resources.is_disaggregated or config.resources.num_agg < 1:
+        if config.resources.is_disaggregated:
             raise ValueError("frontend.type: vllm supports aggregate vLLM jobs only")
+        if config.resources.num_agg != 1:
+            raise ValueError(
+                f"frontend.type: vllm supports exactly one aggregate worker, got {config.resources.num_agg}; "
+                "use frontend.type: dynamo to route between multiple workers"
+            )
 
         logger.info("frontend.type=vllm: no separate frontend process; vllm serve owns port %d", topology.public_port)
         return []

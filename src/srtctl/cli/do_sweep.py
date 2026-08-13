@@ -368,7 +368,7 @@ class SweepOrchestrator(
         logger.info("=" * 60)
         logger.info("Connection Commands")
         logger.info("=" * 60)
-        logger.info("Frontend URL: http://%s:%d", self.runtime.nodes.head, FRONTEND_PUBLIC_PORT)
+        logger.info("Frontend URL: http://%s:%d", self._public_api_node(), FRONTEND_PUBLIC_PORT)
         logger.info("")
         logger.info("To connect to head node (%s):", self.runtime.nodes.head)
         logger.info(
@@ -608,7 +608,7 @@ class SweepOrchestrator(
             hc = self.config.health_check
             logger.info("EVAL_ONLY: Waiting for server health before eval...")
             if not wait_for_model(
-                host=self.runtime.nodes.head,
+                host=self._public_api_node(),
                 port=FRONTEND_PUBLIC_PORT,
                 n_prefill=n_prefill,
                 n_decode=n_decode,
@@ -621,7 +621,7 @@ class SweepOrchestrator(
                 logger.error("Server did not become healthy for eval")
                 return 1
         else:
-            if not wait_for_port(self.runtime.nodes.head, FRONTEND_PUBLIC_PORT, timeout=30):
+            if not wait_for_port(self._public_api_node(), FRONTEND_PUBLIC_PORT, timeout=30):
                 logger.error("Server health check failed before eval - skipping")
                 return 1
 

@@ -1594,6 +1594,29 @@ class SrtConfig:
         self._validate_het_jobs()
         self._validate_trtllm_serve()
         self._validate_vllm_frontend()
+        self._warn_dp_launch_mode()
+
+    def _warn_dp_launch_mode(self):
+        """Nudge vLLM DP recipes toward the per-node launch topology.
+
+        Skipped for frontend.type: vllm, where the setting has no effect —
+        `vllm serve` owns the local DP ranks, so the layout is one process per
+        node whatever dp_launch_mode says.
+        """
+        if not isinstance(self.backend, VLLMProtocol) or self.frontend.type == "vllm":
+            return
+        if self.backend.dp_launch_mode != "per_gpu":
+            return
+
+        dp_modes = self.backend.find_dp_modes()
+        if not dp_modes:
+            return
+
+        logger.warning(
+            "vLLM DP mode(s) %s use dp_launch_mode=per_gpu. per_node is the recommended topology "
+            "and will become the default in a future release; set backend.dp_launch_mode: per_node now",
+            ", ".join(mode_name for mode_name, _ in dp_modes),
+        )
 
     def _validate_trtllm_serve(self):
         """Catch trtllm_serve misconfigurations at load time (dry-run) instead of
@@ -1636,10 +1659,14 @@ class SrtConfig:
             )
         if self.resources.is_disaggregated:
             raise ValidationError("frontend.type: vllm supports aggregate jobs only, not disaggregated layouts")
-        if self.resources.num_agg < 1:
-            raise ValidationError("frontend.type: vllm requires resources.agg_workers >= 1")
-        if (self.resources.agg_nodes or 1) != 1:
-            raise ValidationError("frontend.type: vllm currently supports single-node aggregate jobs only")
+        if self.resources.num_agg != 1:
+            raise ValidationError(
+                f"frontend.type: vllm supports exactly one aggregate worker, got {self.resources.num_agg}. "
+                "vllm serve owns the public port directly and there is no router to load-balance "
+                "replicas, so extra workers would either idle or collide on the port. "
+                "Use frontend.type: dynamo to run multiple aggregate workers, or scale a single "
+                "worker across nodes with resources.agg_nodes."
+            )
 
     def _validate_het_jobs(self):
         """When ``resources.het_jobs`` is set to True, enforce supported shape.
