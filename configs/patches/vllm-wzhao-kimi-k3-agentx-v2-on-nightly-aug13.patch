@@ -1,0 +1,1645 @@
+diff --git a/vllm/config/speculative.py b/vllm/config/speculative.py
+index d8f049755ce44f21b4b400b0086b0a11ae4ad1be..55fb89e75751bf6cbbe86f29ffd021edd0524eac 100644
+--- a/vllm/config/speculative.py
++++ b/vllm/config/speculative.py
+@@ -1043,16 +1043,6 @@ class SpeculativeConfig:
+                 if self.method in ("dflash", "dspark"):
+                     self.parallel_drafting = True
+ 
+-                if (
+-                    self.method == "dspark"
+-                    and "K3DSparkModel" in self.draft_model_config.architectures
+-                    and self.target_parallel_config.decode_context_parallel_size > 1
+-                ):
+-                    raise ValueError(
+-                        "MLA DSpark does not currently support decode context "
+-                        "parallelism; set decode_context_parallel_size=1."
+-                    )
+-
+                 if self.num_speculative_tokens is not None and hasattr(
+                     self.draft_model_config.hf_config, "num_lookahead_tokens"
+                 ):
+diff --git a/vllm/distributed/kv_transfer/kv_connector/utils.py b/vllm/distributed/kv_transfer/kv_connector/utils.py
+index 7b068adf8b669ff0294475f97f6d15029bc3f094..7408c4eca9dc6f85c79405f622331068f7104d1d 100644
+--- a/vllm/distributed/kv_transfer/kv_connector/utils.py
++++ b/vllm/distributed/kv_transfer/kv_connector/utils.py
+@@ -395,6 +395,12 @@ class EngineTransferInfo:
+     remote_physical_blocks_per_logical: int
+     """Physical blocks per logical block."""
+ 
++    remote_dcp_size: int = 1
++    """Remote decode-context-parallel size."""
++
++    remote_cp_kv_cache_interleave_size: int = 1
++    """Remote DCP KV-cache token interleave."""
++
+     remote_pp_rank: int = 0
+     """Remote producer PP rank for this engine."""
+ 
+@@ -610,6 +616,7 @@ class TransferTopology:
+             f"num_kv_heads={self.total_num_kv_heads if not self.is_mla else 1}, "
+             f"local_tp={self.tp_size}, "
+             f"remote_tp={info.remote_tp_size}, "
++            f"remote_dcp={info.remote_dcp_size}, "
+             f"remote_pp={remote_pp_rank}, "
+             f"local_rank={self.tp_rank}, "
+             f"remote_block_len={info.remote_block_len})"
+diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/mooncake/store/connector.py b/vllm/distributed/kv_transfer/kv_connector/v1/mooncake/store/connector.py
+index ca32c3345c387f59e2735f7e6d067276fbf2887b..d4bde6be04fd5b96ea8c13510aa049da5a095841 100644
+--- a/vllm/distributed/kv_transfer/kv_connector/v1/mooncake/store/connector.py
++++ b/vllm/distributed/kv_transfer/kv_connector/v1/mooncake/store/connector.py
+@@ -115,11 +115,19 @@ class MooncakeStoreConnector(KVConnectorBase_V1, SupportsHMA):
+                     f"{cache_block_size} (mamba_cache_mode != 'align')"
+                 )
+         pcp = vllm_config.parallel_config.prefill_context_parallel_size
+-        dcp = vllm_config.parallel_config.decode_context_parallel_size
+-        if len(kv_cache_config.kv_cache_groups) > 1 and pcp * dcp > 1:
+-            unsupported.append(
+-                f"PCP/DCP > 1 (pcp={pcp}, dcp={dcp}) with hybrid attention"
+-            )
++        if len(kv_cache_config.kv_cache_groups) > 1 and pcp > 1:
++            # DCP is supported on hybrid models: the worker rescales each group
++            # to its effective block size (attention sharded over the CP ranks
++            # and scaled, Mamba replicated and unscaled -- see
++            # ``effective_kv_block_size``), and the store keys already carry
++            # ``dcp_rank`` so every rank round-trips its own shard. The
++            # divisibility invariant the coordinator needs is enforced upstream
++            # by ``resolve_kv_cache_block_sizes``, which raises if a group's
++            # DCP-scaled block size is not a multiple of ``prefix_match_unit``.
++            #
++            # PCP remains unsupported: it expands the world size and shards the
++            # prefill differently, which this connector has never been run with.
++            unsupported.append(f"PCP > 1 (pcp={pcp}) with hybrid attention")
+         if unsupported:
+             raise ValueError(
+                 "MooncakeStoreConnector does not support: " + "; ".join(unsupported)
+diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/mooncake/store/coordinator.py b/vllm/distributed/kv_transfer/kv_connector/v1/mooncake/store/coordinator.py
+index de5c8463542ffd4d1fd0fd4cad84e805e9215d1f..5d6e414368de845972647024de7ff118bade7992 100644
+--- a/vllm/distributed/kv_transfer/kv_connector/v1/mooncake/store/coordinator.py
++++ b/vllm/distributed/kv_transfer/kv_connector/v1/mooncake/store/coordinator.py
+@@ -98,6 +98,19 @@ class MooncakeStoreCoordinator:
+         )
+         return length // alignment * alignment
+ 
++    def get_replay_boundary(self, num_prompt_tokens: int) -> int:
++        """Mirror of ``KVCacheCoordinator.get_replay_boundary``.
++
++        The store's retention must name the same position the engine resumes
++        at; if the two disagree the store keeps state where nothing can reach
++        it. Model-level for the same reason: a hit is the shortest hit across
++        groups, so an EAGLE group's drop caps every group.
++        """
++        if not self.eagle_group_ids:
++            return num_prompt_tokens - 1
++        aligned = num_prompt_tokens // self.lcm_block_size * self.lcm_block_size
++        return max(aligned - self.lcm_block_size, 0)
++
+     def _verify_and_split_kv_cache_groups(self) -> None:
+         """Mirrors KVCacheCoordinator.verify_and_split_kv_cache_groups but
+         dispatches via spec_manager_map (we don't allocate managers).
+@@ -240,6 +253,13 @@ class MooncakeStoreCoordinator:
+             f"aligned_token_len ({aligned_token_len}) must be a multiple of "
+             f"{mask_alignment}"
+         )
++        # Model-level, so it is computed once and shared by every group (see
++        # KVCacheCoordinator.get_replay_boundary).
++        reachable_boundaries = (
++            ()
++            if num_prompt_tokens is None
++            else (self.get_replay_boundary(num_prompt_tokens),)
++        )
+         masks: list[list[bool] | None] = []
+         for g_idx, g in enumerate(self.kv_cache_groups):
+             spec = _unwrap_spec(g.kv_cache_spec)
+@@ -248,9 +268,6 @@ class MooncakeStoreCoordinator:
+             manager_cls = KVCacheSpecRegistry.get_manager_class(spec)
+             assert manager_cls is not None
+             use_eagle = g_idx in self.eagle_group_ids
+-            reachable_boundaries = (
+-                () if num_prompt_tokens is None else (num_prompt_tokens - 1,)
+-            )
+             mask = manager_cls.reachable_block_mask(
+                 start_block=start_chunk,
+                 end_block=end_chunk,
+diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/mooncake/store/worker.py b/vllm/distributed/kv_transfer/kv_connector/v1/mooncake/store/worker.py
+index 762e5eba9263f13a55aa5d3c5c7e2a85a018d20b..8156a8b812b6043eb7d96e68d5964f9ea0418a22 100644
+--- a/vllm/distributed/kv_transfer/kv_connector/v1/mooncake/store/worker.py
++++ b/vllm/distributed/kv_transfer/kv_connector/v1/mooncake/store/worker.py
+@@ -61,6 +61,7 @@ from vllm.utils.network_utils import get_ip, make_zmq_socket
+ from vllm.v1.attention.backends.utils import NULL_BLOCK_ID
+ from vllm.v1.core.kv_cache_utils import (
+     BlockHash,
++    effective_kv_block_size,
+     maybe_convert_block_hash,
+     resolve_kv_cache_block_sizes,
+ )
+@@ -1364,20 +1365,29 @@ class MooncakeStoreWorker:
+             )
+             return
+ 
+-        # Single-group + PCP/DCP > 1: scale the lone group's spec.block_size to
+-        # self.block_size (= scheduler_block_size) so the coordinator's
+-        # ``block_size % hash_block_size == 0`` invariant holds.
+-        groups = list(kv_cache_config.kv_cache_groups)
+-        if len(groups) == 1 and groups[0].kv_cache_spec.block_size != self.block_size:
+-            g = groups[0]
+-            groups = [
+-                dataclasses.replace(
++        # Under PCP/DCP the spec block_size is the *per-rank* size, while the
++        # coordinator reasons in tokens spanned across the CP ranks. Rescale
++        # each group to its effective span so the coordinator's invariants
++        # (``block_size % hash_block_size == 0`` and ``scheduler_block_size %
++        # block_size == 0``) hold. Attention groups are sharded over the CP
++        # ranks and scale; Mamba state is replicated and does not -- the same
++        # asymmetry ``resolve_kv_cache_block_sizes`` applies when it derives
++        # ``scheduler_block_size``. At cp == 1 this is a no-op, and for a
++        # single group it reproduces the previous behaviour of scaling the
++        # lone group up to ``scheduler_block_size``.
++        cp_world_size = (
++            vllm_config.parallel_config.decode_context_parallel_size
++            * vllm_config.parallel_config.prefill_context_parallel_size
++        )
++        groups = []
++        for g in kv_cache_config.kv_cache_groups:
++            eff = effective_kv_block_size(g.kv_cache_spec, cp_world_size)
++            if eff != g.kv_cache_spec.block_size:
++                g = dataclasses.replace(
+                     g,
+-                    kv_cache_spec=dataclasses.replace(
+-                        g.kv_cache_spec, block_size=self.block_size
+-                    ),
++                    kv_cache_spec=dataclasses.replace(g.kv_cache_spec, block_size=eff),
+                 )
+-            ]
++            groups.append(g)
+         self._kv_cache_groups: list[KVCacheGroupSpec] = groups
+         spec_cfg = getattr(vllm_config, "speculative_config", None)
+         use_eagle = bool(
+diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_worker.py b/vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_worker.py
+index 815eaba7decd91e1509b4e717bc7a5204680b190..352f8c2758397fa8e3e6d329a39cc2d9c841439e 100644
+--- a/vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_worker.py
++++ b/vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_worker.py
+@@ -740,6 +740,10 @@ class NixlBaseConnectorWorker:
+                 remote_physical_blocks_per_logical=(
+                     metadata.physical_blocks_per_logical_kv_block
+                 ),
++                remote_dcp_size=metadata.dcp_size,
++                remote_cp_kv_cache_interleave_size=(
++                    metadata.cp_kv_cache_interleave_size
++                ),
+             ),
+         )
+         return self.nixl_wrapper.add_remote_agent(metadata.agent_metadata)
+@@ -1026,6 +1030,10 @@ class NixlBaseConnectorWorker:
+             physical_blocks_per_logical_kv_block=(
+                 self._physical_blocks_per_logical_kv_block
+             ),
++            dcp_size=(self.vllm_config.parallel_config.decode_context_parallel_size),
++            cp_kv_cache_interleave_size=(
++                self.vllm_config.parallel_config.cp_kv_cache_interleave_size
++            ),
+         )
+         assert self.compat_hash is not None
+         encoder = msgspec.msgpack.Encoder()
+@@ -1267,6 +1275,10 @@ class NixlBaseConnectorWorker:
+             physical_blocks_per_logical_kv_block=(
+                 self._physical_blocks_per_logical_kv_block
+             ),
++            dcp_size=(self.vllm_config.parallel_config.decode_context_parallel_size),
++            cp_kv_cache_interleave_size=(
++                self.vllm_config.parallel_config.cp_kv_cache_interleave_size
++            ),
+         )
+         # Wrap metadata in payload with hash for defensive decoding
+         assert self.compat_hash is not None
+@@ -1575,6 +1587,10 @@ class NixlBaseConnectorWorker:
+             remote_block_size=nixl_agent_meta.block_size,
+             remote_block_len=nixl_agent_meta.block_lens[0],
+             remote_physical_blocks_per_logical=physical_blocks_per_logical,
++            remote_dcp_size=nixl_agent_meta.dcp_size,
++            remote_cp_kv_cache_interleave_size=(
++                nixl_agent_meta.cp_kv_cache_interleave_size
++            ),
+         )
+         transfer_topo.register_remote_engine(engine_id, transfer_info)
+         logger.info("Transfer plan: %s", transfer_topo.describe(engine_id))
+@@ -1583,6 +1599,10 @@ class NixlBaseConnectorWorker:
+             transfer_topology=transfer_topo,
+             remote_tp_size=remote_tp_size,
+             group_spec_types=self._group_spec_types,
++            remote_dcp_size=nixl_agent_meta.dcp_size,
++            local_dcp_size=(
++                self.vllm_config.parallel_config.decode_context_parallel_size
++            ),
+         )
+ 
+         remote_agent_name = self.nixl_wrapper.add_remote_agent(
+@@ -1723,10 +1743,31 @@ class NixlBaseConnectorWorker:
+         remote_physical_per_logical = (
+             nixl_agent_meta.physical_blocks_per_logical_kv_block
+         )
++        local_dcp_size = self.vllm_config.parallel_config.decode_context_parallel_size
++        remote_dcp_size = nixl_agent_meta.dcp_size
++        if local_dcp_size != remote_dcp_size:
++            sharded_dcp_size = max(local_dcp_size, remote_dcp_size)
++            assert min(local_dcp_size, remote_dcp_size) == 1, (
++                "NIXL DCP transfer currently requires one side to use DCP=1"
++            )
++            sharded_interleave = (
++                self.vllm_config.parallel_config.cp_kv_cache_interleave_size
++                if local_dcp_size == sharded_dcp_size
++                else nixl_agent_meta.cp_kv_cache_interleave_size
++            )
++            if sharded_interleave != self.block_size:
++                raise RuntimeError(
++                    "NIXL DCP transfer requires block-aligned KV-cache "
++                    f"interleaving ({self.block_size} tokens), got "
++                    f"{sharded_interleave}. Set "
++                    "--cp-kv-cache-interleave-size to the physical NIXL "
++                    "block size."
++                )
+         if (
+             self._has_mamba
+             and remote_physical_per_logical
+             != self._physical_blocks_per_logical_kv_block
++            and local_dcp_size == remote_dcp_size
+             and self.vllm_config.cache_config.enable_prefix_caching
+         ):
+             raise RuntimeError(
+@@ -2112,9 +2153,15 @@ class NixlBaseConnectorWorker:
+                         continue
+                     # Number of remote-sized sub-blocks the transfer covered;
+                     # everything past this was clipped and must be zeroed.
++                    remote_blocks = len(meta.remote.block_ids[g])
++                    local_dcp_size = (
++                        self.vllm_config.parallel_config.decode_context_parallel_size
++                    )
++                    if remote_info.remote_dcp_size > local_dcp_size:
++                        remote_blocks *= remote_info.remote_dcp_size // local_dcp_size
+                     covered_sub_blocks = min(
+                         len(local_group) * block_size_ratio,
+-                        len(meta.remote.block_ids[g]),
++                        remote_blocks,
+                     )
+                     block_ids_for_blocksize_post_process[block_size_ratio].append(
+                         (local_group, covered_sub_blocks)
+@@ -2395,6 +2442,35 @@ class NixlBaseConnectorWorker:
+                 )
+         return physical_block_ids
+ 
++    def _map_dcp_attention_block_ids(
++        self,
++        local_block_ids: BlockIds,
++        remote_block_ids: BlockIds,
++        remote_rank: int,
++        remote_info: EngineTransferInfo,
++    ) -> tuple[BlockIds, BlockIds]:
++        """Pair block-aligned DCP attention shards with an unsharded peer."""
++        local_dcp_size = self.vllm_config.parallel_config.decode_context_parallel_size
++        remote_dcp_size = remote_info.remote_dcp_size
++        if local_dcp_size == remote_dcp_size:
++            return local_block_ids, remote_block_ids
++
++        local_block_ids = [list(group) for group in local_block_ids]
++        remote_block_ids = [list(group) for group in remote_block_ids]
++        if remote_dcp_size > local_dcp_size:
++            assert local_dcp_size == 1
++            dcp_rank = remote_rank % remote_dcp_size
++            for i, group in enumerate(local_block_ids):
++                if _is_attention_spec(self._group_spec_types[i]):
++                    local_block_ids[i] = group[dcp_rank::remote_dcp_size]
++        else:
++            assert remote_dcp_size == 1
++            dcp_rank = self.tp_rank % local_dcp_size
++            for i, group in enumerate(remote_block_ids):
++                if _is_attention_spec(self._group_spec_types[i]):
++                    remote_block_ids[i] = group[dcp_rank::local_dcp_size]
++        return local_block_ids, remote_block_ids
++
+     def _apply_prefix_caching(
+         self,
+         decode_block_ids: BlockIds,
+@@ -2429,7 +2505,9 @@ class NixlBaseConnectorWorker:
+                 num_decode_blocks = len(decode_block_ids[i])
+                 assert num_decode_blocks <= len(prefill_group)
+                 if num_decode_blocks < len(prefill_group):
+-                    prefill_block_ids[i] = prefill_group[-num_decode_blocks:]
++                    prefill_block_ids[i] = (
++                        prefill_group[-num_decode_blocks:] if num_decode_blocks else []
++                    )
+         else:
+             # (NOTE: ZhanqiuHu) HeteroTP can cause different kernel block counts
+             # due to logical block rounding.
+@@ -2473,7 +2551,9 @@ class NixlBaseConnectorWorker:
+                     and num_decode_blocks < num_prefill_blocks
+                 ):
+                     # Partial prefix cache hit for FA group.
+-                    prefill_block_ids[i] = prefill_group[-num_decode_blocks:]
++                    prefill_block_ids[i] = (
++                        prefill_group[-num_decode_blocks:] if num_decode_blocks else []
++                    )
+                 else:
+                     # TODO Handle prefix caching with different block_sizes
+                     # Allocation rounding legitimately leaves up to
+diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/nixl/metadata.py b/vllm/distributed/kv_transfer/kv_connector/v1/nixl/metadata.py
+index 4758bab5d73c4ef9378eb6de5953fbcc64d34574..511e692a6d33160ce295d3c9677b3d2b6e9c4ea0 100644
+--- a/vllm/distributed/kv_transfer/kv_connector/v1/nixl/metadata.py
++++ b/vllm/distributed/kv_transfer/kv_connector/v1/nixl/metadata.py
+@@ -42,8 +42,9 @@ PUSH_REG_NOTIF_PREFIX = b"PUSH_REG:"
+ #   5: Add remote_blocks_expiry_time to kv_transfer_params + handshake
+ #      clock-sync timestamp
+ #   6: Validate EAGLE/MTP speculative configuration compatibility
++#   7: Add DCP size and KV-cache interleave geometry
+ #
+-NIXL_CONNECTOR_VERSION: int = 6
++NIXL_CONNECTOR_VERSION: int = 7
+ 
+ 
+ @dataclass
+@@ -59,6 +60,8 @@ class NixlAgentMetadata:
+     ssm_sizes: tuple[int, int]
+     attn_backend_name: str
+     physical_blocks_per_logical_kv_block: int
++    dcp_size: int = 1
++    cp_kv_cache_interleave_size: int = 1
+ 
+ 
+ @dataclass
+diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/nixl/pull_worker.py b/vllm/distributed/kv_transfer/kv_connector/v1/nixl/pull_worker.py
+index ecc11c480b0c998e3508f5493897828b76557886..a0d674256e9c2fe4742dfcddf1c44d573f6411d9 100644
+--- a/vllm/distributed/kv_transfer/kv_connector/v1/nixl/pull_worker.py
++++ b/vllm/distributed/kv_transfer/kv_connector/v1/nixl/pull_worker.py
+@@ -289,6 +289,12 @@ class NixlPullConnectorWorker(NixlBaseConnectorWorker):
+             == len(local_block_ids)
+             == len(self.kv_cache_config.kv_cache_groups)
+         )
++        local_block_ids, remote_block_ids = self._map_dcp_attention_block_ids(
++            local_block_ids,
++            remote_block_ids,
++            read_spec.remote_rank,
++            remote_info,
++        )
+         local_block_ids, remote_block_ids = self._apply_prefix_caching(
+             decode_block_ids=local_block_ids,
+             prefill_block_ids=remote_block_ids,
+diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/nixl/push_worker.py b/vllm/distributed/kv_transfer/kv_connector/v1/nixl/push_worker.py
+index 7fdde27dcc27bfda2554d56c397dbe05876f1a56..b57e42d0ad9e4c0db2abc8eaa054c837b6d843c7 100644
+--- a/vllm/distributed/kv_transfer/kv_connector/v1/nixl/push_worker.py
++++ b/vllm/distributed/kv_transfer/kv_connector/v1/nixl/push_worker.py
+@@ -625,6 +625,13 @@ class NixlPushConnectorWorker(NixlBaseConnectorWorker):
+             logger.warning("No blocks to push for request %s", request_id)
+             return None
+ 
++        local_block_ids, remote_block_ids = self._map_dcp_attention_block_ids(
++            local_block_ids,
++            remote_block_ids,
++            read_spec.remote_rank,
++            remote_info,
++        )
++
+         # Prefix caching: D allocated only uncached blocks, so on a partial hit it
+         # sends fewer than P's. End-trim P's blocks to that same suffix so we WRITE only
+         # the uncomputed tail into D's slots. Runs on kernel ids, post-expansion.
+diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/nixl/tp_mapping.py b/vllm/distributed/kv_transfer/kv_connector/v1/nixl/tp_mapping.py
+index b034b76050879682fca01826da237d3fde816ff6..dca04be3f2d8337ddc9a75c54509b8553c12a56d 100644
+--- a/vllm/distributed/kv_transfer/kv_connector/v1/nixl/tp_mapping.py
++++ b/vllm/distributed/kv_transfer/kv_connector/v1/nixl/tp_mapping.py
+@@ -66,6 +66,8 @@ def compute_tp_mapping(
+     transfer_topology: TransferTopology,
+     remote_tp_size: int,
+     group_spec_types: tuple[type[KVCacheSpec], ...],
++    remote_dcp_size: int = 1,
++    local_dcp_size: int = 1,
+ ) -> TPMapping:
+     """Build the complete local-to-remote TP mapping.
+ 
+@@ -94,6 +96,17 @@ def compute_tp_mapping(
+         _, unique_idx = np.unique(heads, return_index=True)
+         attn_ranks = (start + np.sort(unique_idx)).tolist()
+ 
++    if transfer_topology.is_mla and remote_dcp_size > local_dcp_size:
++        assert remote_dcp_size % local_dcp_size == 0
++        dcp_ratio = remote_dcp_size // local_dcp_size
++        tp_ratio = remote_tp_size // tp_size
++        assert tp_ratio == dcp_ratio, (
++            "NIXL DCP gather requires the remote/local DCP ratio to match "
++            "the remote/local TP ratio"
++        )
++        start = tp_rank * dcp_ratio
++        attn_ranks = list(range(start, start + dcp_ratio))
++
+     # --- SSM source ranks ---
+     has_ssm = any(_is_ssm_spec(t) for t in group_spec_types)
+     if has_ssm:
+diff --git a/vllm/models/kimi_k3/nvidia/kda_metadata.py b/vllm/models/kimi_k3/nvidia/kda_metadata.py
+index 0bb4864d2918061c7b0736f56d7aa4c05ac8e5a4..0c729bef910f5c6076d6332426683691334d7054 100644
+--- a/vllm/models/kimi_k3/nvidia/kda_metadata.py
++++ b/vllm/models/kimi_k3/nvidia/kda_metadata.py
+@@ -246,6 +246,7 @@ class KimiK3KDAMetadataBuilder(GDNAttentionMetadataBuilder):
+         query_start_loc = m.query_start_loc
+         query_start_loc_cpu = m.query_start_loc_cpu
+         assert isinstance(self.kv_cache_spec, MambaSpec)
++        self._check_block_table_width(m.block_table_tensor.shape[1])
+         # Equivalent PyTorch "align" path:
+         #   start = ((seq_lens - 1) // block_size).clamp_(min=0)
+         #   offsets = torch.arange(1 + num_speculative_blocks, dtype=torch.int32)
+@@ -485,6 +486,35 @@ class KimiK3KDAMetadataBuilder(GDNAttentionMetadataBuilder):
+             token_chunk_offset_ptr=token_chunk_offset_ptr,
+         )
+ 
++    def _check_block_table_width(self, width: int) -> None:
++        """Fail at startup if the block table cannot hold the slot we index.
++
++        ``_get_aligned_state_indices_kernel`` reads column
++        ``(seq_lens - 1) // spec.block_size`` and its mask bounds only the row,
++        so a table narrower than ``max_num_blocks_per_req`` reads off the end of
++        the row and yields an arbitrary block id. That surfaces far away, either
++        as an index-out-of-bounds assert in whichever consumer touches the state
++        cache first or, when the stray id happens to be in range, as silently
++        wrong recurrent state. Neither names this as the cause, so check it once
++        where the contract is stated.
++        """
++        if getattr(self, "_block_table_width_checked", False):
++            return
++        self._block_table_width_checked = True
++        required = self.kv_cache_spec.max_num_blocks_per_req(
++            self.vllm_config, self.vllm_config.model_config.max_model_len
++        )
++        if width < required:
++            raise ValueError(
++                f"KDA block table is {width} columns but the state slot is "
++                f"indexed over {required} (max_model_len="
++                f"{self.vllm_config.model_config.max_model_len}, block_size="
++                f"{self.kv_cache_spec.block_size}). Mamba state is replicated "
++                f"across DCP ranks, so its block table must not be scaled by "
++                f"decode_context_parallel_size="
++                f"{self.vllm_config.parallel_config.decode_context_parallel_size}."
++            )
++
+ 
+ class KimiK3KDAAttentionBackend(GDNAttentionBackend):
+     @staticmethod
+diff --git a/vllm/models/kimi_k3/nvidia/mla.py b/vllm/models/kimi_k3/nvidia/mla.py
+index 8f705741421ce99567d4212b793ba064f56ef5cd..85910990d11eca3f46f1e73dacb3b85b57406c27 100644
+--- a/vllm/models/kimi_k3/nvidia/mla.py
++++ b/vllm/models/kimi_k3/nvidia/mla.py
+@@ -320,11 +320,6 @@ class MultiHeadLatentAttention(nn.Module, AttentionLayerBase):
+             "parallelism."
+         )
+         self.dcp_world_size = parallel_config.decode_context_parallel_size
+-        assert self.dcp_world_size <= 1 or self.rotary_emb is None, (
+-            "Kimi-K3 MultiHeadLatentAttention does not support RoPE with decode "
+-            "context parallelism because gathered queries require gathered "
+-            "positions."
+-        )
+         self.dcp_manager: MLADCPManager | None = None
+         if self.dcp_world_size > 1:
+             query_dtype = (
+diff --git a/vllm/v1/attention/backends/mla/flashinfer_mla.py b/vllm/v1/attention/backends/mla/flashinfer_mla.py
+index bf92bf692bf0d07f3677126b4c1a618b6843e11b..9c15026e09441406f9c6700f54a0e0d491a8d4ce 100644
+--- a/vllm/v1/attention/backends/mla/flashinfer_mla.py
++++ b/vllm/v1/attention/backends/mla/flashinfer_mla.py
+@@ -1,7 +1,7 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ 
+-from typing import ClassVar
++from typing import TYPE_CHECKING, ClassVar
+ 
+ import torch
+ from flashinfer.decode import trtllm_batch_decode_with_kv_cache_mla
+@@ -30,6 +30,10 @@ from vllm.v1.attention.backend import (
+ )
+ from vllm.v1.attention.backends.utils import KVCacheLayoutType
+ 
++if TYPE_CHECKING:
++    from vllm.config import VllmConfig
++    from vllm.v1.kv_cache_interface import AttentionSpec
++
+ logger = init_logger(__name__)
+ 
+ 
+@@ -118,6 +122,22 @@ class FlashInferMLAMetadataBuilder(MLACommonMetadataBuilder[MLACommonMetadata]):
+     # Non-causal DSpark blocks are flattened to single-token rows in forward_mqa.
+     supports_non_causal_multi_token_decode: ClassVar[bool] = True
+ 
++    def __init__(
++        self,
++        kv_cache_spec: "AttentionSpec",
++        layer_names: list[str],
++        vllm_config: "VllmConfig",
++        device: torch.device,
++    ) -> None:
++        super().__init__(
++            kv_cache_spec,
++            layer_names,
++            vllm_config,
++            device,
++            MLACommonMetadata,
++            supports_dcp_with_varlen=True,
++        )
++
+ 
+ class FlashInferMLABackend(MLACommonBackend):
+     supported_dtypes: ClassVar[list[torch.dtype]] = [torch.float16, torch.bfloat16]
+@@ -195,6 +215,7 @@ class FlashInferMLABackend(MLACommonBackend):
+ 
+ class FlashInferMLAImpl(MLACommonImpl[MLACommonMetadata]):
+     can_return_lse_for_decode: bool = True
++    supports_mtp_with_cp_non_trivial_interleave_size: bool = True
+     # trtllm-gen MLA decode emits LSE in log2 (per flashinfer's own
+     # reference at flashinfer/trace/templates/attention.py:81:
+     # `logsumexp / log(2.0)`). Override the AttentionImplBase default
+@@ -276,16 +297,39 @@ class FlashInferMLAImpl(MLACommonImpl[MLACommonMetadata]):
+ 
+         block_table = attn_metadata.decode.block_table
+         seq_lens = attn_metadata.decode.seq_lens
++        query_len = attn_metadata.num_decode_tokens // attn_metadata.num_decodes
+ 
+         if not attn_metadata.causal:
+             # Non-causal DSpark block: flatten to single-token decode rows with
+             # per-row context seq_lens (trtllm-gen has no causal flag and would
+             # otherwise mask the block causally).
+-            query_len = attn_metadata.num_decode_tokens // attn_metadata.num_decodes
+             q = q.unsqueeze(1)
+             if query_len > 1:
+                 block_table = block_table.repeat_interleave(query_len, dim=0)
+                 seq_lens = seq_lens.repeat_interleave(query_len)
++        elif self.dcp_world_size > 1 and query_len > 1:
++            global_seq_lens = attn_metadata.decode.dcp_tot_seq_lens
++            assert global_seq_lens is not None
++            offsets = torch.arange(
++                query_len - 1,
++                -1,
++                -1,
++                device=global_seq_lens.device,
++                dtype=global_seq_lens.dtype,
++            )
++            per_query_global_lens = torch.clamp(
++                (global_seq_lens.unsqueeze(1) - offsets).reshape(-1), min=0
++            )
++            interleave = self.cp_kv_cache_interleave_size
++            dcp_span = self.dcp_world_size * interleave
++            remainder = torch.clamp(
++                per_query_global_lens % dcp_span - self.dcp_rank * interleave,
++                min=0,
++                max=interleave,
++            )
++            seq_lens = per_query_global_lens // dcp_span * interleave + remainder
++            block_table = block_table.repeat_interleave(query_len, dim=0)
++            q = q.unsqueeze(1)
+         # trtllm API requires extra dimension q_len_per_request for MTP
+         elif attn_metadata.num_decode_tokens % attn_metadata.num_decodes != 0:
+             logger.warning_once(
+diff --git a/vllm/v1/attention/backends/mla/tokenspeed_mla.py b/vllm/v1/attention/backends/mla/tokenspeed_mla.py
+index 8ab81c438f20e0c864de60a73b3b7204ac629ba8..96ff9a6077906c7a1071c5300eb850a03f952180 100644
+--- a/vllm/v1/attention/backends/mla/tokenspeed_mla.py
++++ b/vllm/v1/attention/backends/mla/tokenspeed_mla.py
+@@ -2,6 +2,7 @@
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ """TokenSpeed CuTe DSL MLA decode backend (Blackwell, FP8 KV cache only)."""
+ 
++import os
+ from typing import TYPE_CHECKING, ClassVar
+ 
+ import torch
+@@ -31,6 +32,14 @@ if TYPE_CHECKING:
+ 
+ logger = init_logger(__name__)
+ 
++# OFF by default. Restored purely to answer one question with GSM8K: every
++# measurement showing DSpark accuracy-neutral (0.951 at DCP=1 and DCP=4, pipeline
++# 61661482) was taken with this block present, and the first measurement without
++# it came back 0.923 against 0.950 no-spec. It was removed on an acceptance A/B,
++# and acceptance is exactly what a "target sees the drafted KV" defect inflates,
++# so acceptance could not have settled it.
++_DCP_FLATTEN = os.environ.get("VLLM_TS_MLA_DCP_FLATTEN", "0") == "1"
++
+ # Workspace upper bound for tokenspeed_mla_decode (per-device, lazy):
+ #   num_sms * num_heads * MAX_Q_LEN * (kv_lora_rank + 1) * sizeof(float32)
+ # Matches the kernel's `get_workspace_size` formula. MAX_Q_LEN=8 covers up to
+@@ -158,6 +167,7 @@ class TokenspeedMLABackend(MLACommonBackend):
+ 
+ class TokenspeedMLAImpl(MLACommonImpl[MLACommonMetadata]):
+     can_return_lse_for_decode: bool = True
++    supports_mtp_with_cp_non_trivial_interleave_size: bool = True
+     # tokenspeed_mla_decode returns LSE in log2 units; its own DCP test merges
+     # partial outputs with exp2(lse).
+     lse_base_on_e: bool = False
+@@ -266,9 +276,50 @@ class TokenspeedMLAImpl(MLACommonImpl[MLACommonMetadata]):
+         seq_lens = attn_metadata.decode.seq_lens
+         causal_seqs = attn_metadata.decode.dcp_tot_seq_lens
+ 
++        # Per-query causal bounds for a causal multi-token block under DCP.
++        # causal_seqs is ONE global bound per request, but query j of a q_len
++        # block ending at global length L must see KV only up to
++        # L - (q_len - 1 - j). The kernel does compute that -- k_bound =
++        # ceil((causal_seqs - cp_rank - (q_len-1) + q_tok) / cp_world) -- which
++        # is why this was removed. Off by default; the flag exists so GSM8K can
++        # decide, because acceptance already gave the wrong answer once.
++        q_len_per_req = num_decode_tokens // num_decodes if num_decodes else 0
++        if (
++            _DCP_FLATTEN
++            and attn_metadata.causal
++            and self.dcp_world_size > 1
++            and q_len_per_req > 1
++            and num_decode_tokens % num_decodes == 0
++            and causal_seqs is not None
++        ):
++            offsets = torch.arange(
++                q_len_per_req - 1,
++                -1,
++                -1,
++                device=causal_seqs.device,
++                dtype=causal_seqs.dtype,
++            )
++            per_q_global = torch.clamp(
++                (causal_seqs.unsqueeze(1) - offsets.unsqueeze(0)).reshape(-1), min=0
++            )
++            # Rank-local length of each global bound, matching
++            # prepare_dcp_local_seq_lens in vllm/v1/worker/gpu/cp_utils.py.
++            interleave = self.cp_kv_cache_interleave_size
++            span = self.dcp_world_size * interleave
++            remainder = torch.clamp(
++                per_q_global % span - self.dcp_rank * interleave, min=0
++            )
++            seq_lens = (per_q_global // span) * interleave + torch.clamp(
++                remainder, max=interleave
++            )
++            causal_seqs = per_q_global
++            block_tables = block_tables.repeat_interleave(q_len_per_req, dim=0)
++            q = q.view(num_decodes * q_len_per_req, 1, q.shape[-2], q.shape[-1])
+         # tokenspeed_mla_decode expects query shape
+-        # (num_decodes, q_len_per_request, num_heads, head_dim).
+-        if num_decode_tokens % num_decodes != 0:
++        # (num_decodes, q_len_per_request, num_heads, head_dim). Standalone `if`,
++        # never chained to the block above: chaining skips the reshape on exactly
++        # the DCP multi-token path and the kernel gets a 3D query.
++        elif num_decode_tokens % num_decodes != 0:
+             logger.warning_once(
+                 """TokenspeedMLAImpl got a query of uneven length.
+                 This usually indicates an issue in batch reordering
+diff --git a/vllm/v1/core/block_pool.py b/vllm/v1/core/block_pool.py
+index a8a6c1ca94dabfb8d432fdcfe0b3b21ca6f26d03..39530abb02e968c97e40b090d03474a8adfbf11e 100644
+--- a/vllm/v1/core/block_pool.py
++++ b/vllm/v1/core/block_pool.py
+@@ -655,10 +655,17 @@ class BlockPool:
+         Returns:
+             A list of new block.
+         """
++        if num_blocks < 0:
++            raise ValueError(
++                f"Cannot allocate a negative number of blocks: {num_blocks}"
++            )
+         if num_blocks > self.get_num_free_blocks():
+             raise ValueError(f"Cannot get {num_blocks} free blocks from the pool")
+ 
+         ret: list[KVCacheBlock] = self.free_block_queue.popleft_n(num_blocks)
++        assert all(block.block_id >= 0 and not block.is_null for block in ret), (
++            "Free block queue returned a sentinel or null block"
++        )
+ 
+         # In order to only iterate the list once, we duplicated code a bit
+         if self.enable_caching:
+@@ -708,9 +715,18 @@ class BlockPool:
+             blocks: A list of blocks to touch.
+         """
+         for block in blocks:
++            if block.is_null:
++                continue
++            is_linked = (
++                block.prev_free_block is not None and block.next_free_block is not None
++            )
++            assert (block.ref_cnt == 0) == is_linked, (
++                f"Block {block.block_id} has ref_cnt={block.ref_cnt} but "
++                f"free_queue_linked={is_linked}"
++            )
+             # ref_cnt=0 means this block is in the free list (i.e. eviction
+             # candidate), so remove it.
+-            if block.ref_cnt == 0 and not block.is_null:
++            if block.ref_cnt == 0:
+                 self.free_block_queue.remove(block)
+             block.ref_cnt += 1
+             if self.metrics_collector:
+@@ -728,8 +744,19 @@ class BlockPool:
+         blocks_to_evict_last = []
+         blocks_to_evict_first = []
+         for block in ordered_blocks:
++            if block.is_null:
++                continue
++            assert block.ref_cnt > 0, (
++                f"Cannot free block {block.block_id} with ref_cnt={block.ref_cnt}"
++            )
++            assert block.prev_free_block is None and block.next_free_block is None, (
++                f"Block {block.block_id} with ref_cnt={block.ref_cnt} is already "
++                "in the free queue"
++            )
+             block.ref_cnt -= 1
+-            if block.ref_cnt == 0 and not block.is_null:
++            if block.ref_cnt == 0:
++                # When caching is disabled we always append for better
++                # GPU cache locality from reusing recently used blocks
+                 if block.block_hash is None or not self.enable_caching:
+                     # LIFO reuse of non-cached blocks for better GPU locality.
+                     blocks_to_evict_first.append(block)
+@@ -816,7 +843,17 @@ class BlockPool:
+         total_gpu_blocks = self.num_gpu_blocks - 1
+         if not total_gpu_blocks:
+             return 0
+-        return 1.0 - (self.get_num_free_blocks() / total_gpu_blocks)
++        num_free_blocks = self.get_num_free_blocks()
++        usage = 1.0 - (num_free_blocks / total_gpu_blocks)
++        if not 0.0 <= usage <= 1.0:
++            logger.warning_once(
++                "KV cache usage is outside [0, 1]: usage=%f, free=%d, total=%d",
++                usage,
++                num_free_blocks,
++                total_gpu_blocks,
++            )
++            return min(max(usage, 0.0), 1.0)
++        return usage
+ 
+     def take_events(self) -> list[KVCacheEvent]:
+         """Atomically takes all events and clears the queue.
+diff --git a/vllm/v1/core/kv_cache_coordinator.py b/vllm/v1/core/kv_cache_coordinator.py
+index 321bbb0a76ac302c81e4cf4202f1b00fc22d24ab..6340001415a8c3323329a6b9efd55e25ac2d5c1c 100644
+--- a/vllm/v1/core/kv_cache_coordinator.py
++++ b/vllm/v1/core/kv_cache_coordinator.py
+@@ -275,6 +275,28 @@ class KVCacheCoordinator(ABC):
+             for manager in self.single_type_managers
+         )
+ 
++    def get_replay_boundary(self, request: Request) -> int:
++        """Return the position a later request replaying this prompt resumes at.
++
++        A cache hit is the shortest hit across all groups, so this is a
++        model-level position: every group has to retain state here, whether or
++        not it is the group that drops. Groups differ only in how much they
++        keep around it -- EAGLE groups also keep the block above, which they
++        match and drop back from (see ``reachable_block_mask``).
++
++        Under EAGLE that block must exist, so the boundary sits one alignment
++        unit below the prompt's last aligned position; every group's block size
++        divides the alignment, so the block above always fits in the prompt.
++        """
++        if not self.eagle_group_ids:
++            return request.num_prompt_tokens - 1
++        aligned = (
++            request.num_prompt_tokens
++            // self.scheduler_block_size
++            * self.scheduler_block_size
++        )
++        return max(aligned - self.scheduler_block_size, 0)
++
+     def cache_blocks(self, request: Request, num_computed_tokens: int) -> None:
+         """
+         Cache the blocks for the request.
+@@ -285,11 +307,13 @@ class KVCacheCoordinator(ABC):
+                 that need to be cached
+                 (including tokens that are already cached).
+         """
++        replay_boundary = self.get_replay_boundary(request)
+         for manager in self.single_type_managers:
+             manager.cache_blocks(
+                 request,
+                 num_computed_tokens,
+                 retention_interval=self.retention_interval,
++                replay_boundary=replay_boundary,
+             )
+ 
+     def free(self, request_id: str) -> None:
+@@ -584,14 +608,21 @@ class HybridKVCacheCoordinator(KVCacheCoordinator):
+                     f"{type(g.kv_cache_spec).__name__}."
+                 )
+         # Fine-grained hash hits require Mamba "align", no context
+-        # parallelism, and compatible cache managers in every group.
++        # parallelism, and compatible cache managers in every group. TP needs
++        # hashing finer than the Mamba block; DCP accepts equality because it
++        # scales the effective full-attention block instead.
+         has_partial_mamba_group = any(
+             isinstance(g.kv_cache_spec, MambaSpec)
+             and g.kv_cache_spec.mamba_cache_mode == "align"
+-            and g.kv_cache_spec.block_size > hash_block_size
++            and (
++                (dcp_world_size == 1 and g.kv_cache_spec.block_size > hash_block_size)
++                or (
++                    dcp_world_size > 1 and g.kv_cache_spec.block_size >= hash_block_size
++                )
++            )
+             for g in kv_cache_config.kv_cache_groups
+         )
+-        self.enable_partial_hash_hits = dcp_world_size == 1 and has_partial_mamba_group
++        self.enable_partial_hash_hits = has_partial_mamba_group
+         if self.enable_partial_hash_hits:
+             unsupported_partial_hit_managers = {
+                 type(manager).__name__
+@@ -683,6 +714,7 @@ class HybridKVCacheCoordinator(KVCacheCoordinator):
+                 // self.scheduler_block_size
+                 * self.scheduler_block_size
+             )
++        replay_boundary = self.get_replay_boundary(request)
+         for manager in self.single_type_managers:
+             num_tokens_to_cache = aligned_num_computed_tokens
+             # EAGLE groups match one block past each aligned boundary and drop
+@@ -700,6 +732,7 @@ class HybridKVCacheCoordinator(KVCacheCoordinator):
+                 request,
+                 num_tokens_to_cache,
+                 retention_interval=self.retention_interval,
++                replay_boundary=replay_boundary,
+             )
+ 
+     def find_longest_cache_hit(
+diff --git a/vllm/v1/core/kv_cache_utils.py b/vllm/v1/core/kv_cache_utils.py
+index 57d6600b368e4aa801cfb97c10100d742ff94153..406823aa1b09fdd83cb9e07f1b75201278057349 100644
+--- a/vllm/v1/core/kv_cache_utils.py
++++ b/vllm/v1/core/kv_cache_utils.py
+@@ -205,6 +205,11 @@ class FreeKVCacheBlockQueue:
+     """
+ 
+     def __init__(self, blocks: list[KVCacheBlock]) -> None:
++        block_ids = [block.block_id for block in blocks]
++        assert len(block_ids) == len(set(block_ids)), (
++            "Free block queue cannot contain duplicate block IDs"
++        )
++        self._free_block_ids = set(block_ids)
+         self.num_free_blocks = len(blocks)
+ 
+         # Initialize doubly links of consecutive blocks
+@@ -268,7 +273,10 @@ class FreeKVCacheBlockQueue:
+         # Remove the block from the linked list.
+         first_block.prev_free_block = first_block.next_free_block = None
+ 
++        assert first_block.block_id in self._free_block_ids
++        self._free_block_ids.remove(first_block.block_id)
+         self.num_free_blocks -= 1
++        assert self.num_free_blocks == len(self._free_block_ids)
+         return first_block
+ 
+     def popleft_n(self, n: int) -> list[KVCacheBlock]:
+@@ -280,16 +288,21 @@ class FreeKVCacheBlockQueue:
+         Returns:
+             A list of n free blocks.
+         """
++        if n < 0:
++            raise ValueError(f"Cannot pop a negative number of blocks: {n}")
+         if n == 0:
+             return []
+         assert self.num_free_blocks >= n
+-        self.num_free_blocks -= n
+-
+         curr_block = self.fake_free_list_head.next_free_block
+         # Pop n blocks from the head of the list
+         ret = []
+         for _ in range(n):
+-            assert curr_block is not None
++            assert curr_block is not None and curr_block is not self.fake_free_list_tail
++            assert curr_block.block_id in self._free_block_ids, (
++                f"Block {curr_block.block_id} is linked in the free queue but "
++                "missing from its membership set"
++            )
++            self._free_block_ids.remove(curr_block.block_id)
+             ret.append(curr_block)
+             last_block = curr_block
+             curr_block = curr_block.next_free_block
+@@ -302,6 +315,8 @@ class FreeKVCacheBlockQueue:
+             # the new first block.
+             self.fake_free_list_head.next_free_block = curr_block
+             curr_block.prev_free_block = self.fake_free_list_head
++        self.num_free_blocks -= n
++        assert self.num_free_blocks == len(self._free_block_ids)
+         return ret
+ 
+     def remove(self, block: KVCacheBlock) -> None:
+@@ -314,6 +329,10 @@ class FreeKVCacheBlockQueue:
+             # This should not happen if the block is from the free list.
+             # It indicates a bug in the caller's logic.
+             raise RuntimeError(f"remove() called on an invalid block: {block}")
++        assert block.block_id in self._free_block_ids, (
++            f"Block {block.block_id} is linked in the free queue but missing "
++            "from its membership set"
++        )
+ 
+         # Link the previous block to the next block.
+         block.prev_free_block.next_free_block = block.next_free_block
+@@ -322,7 +341,9 @@ class FreeKVCacheBlockQueue:
+ 
+         # Remove the block from the linked list.
+         block.prev_free_block = block.next_free_block = None
++        self._free_block_ids.remove(block.block_id)
+         self.num_free_blocks -= 1
++        assert self.num_free_blocks == len(self._free_block_ids)
+ 
+     def append(self, block: KVCacheBlock) -> None:
+         """Put a block back into the free list and increase
+@@ -331,6 +352,9 @@ class FreeKVCacheBlockQueue:
+         Args:
+             block: The block to append.
+         """
++        assert block.block_id not in self._free_block_ids, (
++            f"Block {block.block_id} is already in the free queue"
++        )
+         if self.fake_free_list_tail.prev_free_block is None:
+             raise RuntimeError(
+                 "prev_free_block of fake_free_list_tail should always exist"
+@@ -345,13 +369,24 @@ class FreeKVCacheBlockQueue:
+         block.next_free_block = self.fake_free_list_tail
+         self.fake_free_list_tail.prev_free_block = block
+ 
++        self._free_block_ids.add(block.block_id)
+         self.num_free_blocks += 1
++        assert self.num_free_blocks == len(self._free_block_ids)
+ 
+     def prepend_n(self, blocks: list[KVCacheBlock]) -> None:
+         """Put a list of blocks at the front of the free list."""
+         if len(blocks) == 0:
+             return
+ 
++        block_ids = [block.block_id for block in blocks]
++        assert len(block_ids) == len(set(block_ids)), (
++            f"Duplicate blocks passed to prepend_n: {block_ids}"
++        )
++        duplicate_ids = self._free_block_ids.intersection(block_ids)
++        assert not duplicate_ids, (
++            f"Blocks already in the free queue passed to prepend_n: {duplicate_ids}"
++        )
++
+         first_block = self.fake_free_list_head.next_free_block
+         assert first_block is not None, (
+             "next_free_block of fake_free_list_head should always exist"
+@@ -366,7 +401,9 @@ class FreeKVCacheBlockQueue:
+         prev_block.next_free_block = first_block
+         first_block.prev_free_block = prev_block
+ 
++        self._free_block_ids.update(block_ids)
+         self.num_free_blocks += len(blocks)
++        assert self.num_free_blocks == len(self._free_block_ids)
+ 
+     def append_n(self, blocks: list[KVCacheBlock]) -> None:
+         """Put a list of blocks back into the free list
+@@ -377,6 +414,15 @@ class FreeKVCacheBlockQueue:
+         if len(blocks) == 0:
+             return
+ 
++        block_ids = [block.block_id for block in blocks]
++        assert len(block_ids) == len(set(block_ids)), (
++            f"Duplicate blocks passed to append_n: {block_ids}"
++        )
++        duplicate_ids = self._free_block_ids.intersection(block_ids)
++        assert not duplicate_ids, (
++            f"Blocks already in the free queue passed to append_n: {duplicate_ids}"
++        )
++
+         last_block = self.fake_free_list_tail.prev_free_block
+         assert last_block is not None, (
+             "prev_free_block of fake_free_list_tail should always exist"
+@@ -391,7 +437,9 @@ class FreeKVCacheBlockQueue:
+         last_block.next_free_block = self.fake_free_list_tail
+         self.fake_free_list_tail.prev_free_block = last_block
+ 
++        self._free_block_ids.update(block_ids)
+         self.num_free_blocks += len(blocks)
++        assert self.num_free_blocks == len(self._free_block_ids)
+ 
+     def get_all_free_blocks(self) -> list[KVCacheBlock]:
+         """Get all free blocks in the free list. Mainly used for testing.
+@@ -604,6 +652,21 @@ def hash_block_tokens(
+     )
+ 
+ 
++def effective_kv_block_size(spec: KVCacheSpec, dcp_world_size: int) -> int:
++    """Tokens one block of this group spans across the DCP ranks.
++
++    Attention blocks are sharded over the DCP ranks, so one logical block
++    spans ``block_size * dcp``. Mamba/linear-attention state is replicated on
++    every rank and never sharded (``MambaSpec.max_num_blocks_per_req`` returns
++    the unscaled value), so it keeps ``block_size``. Scaling every group is a
++    no-op at ``dcp == 1``, which is why the distinction only shows up on hybrid
++    models under DCP.
++    """
++    if isinstance(spec, AttentionSpec):
++        return spec.block_size * dcp_world_size
++    return spec.block_size
++
++
+ def resolve_kv_cache_block_sizes(
+     kv_cache_config: KVCacheConfig,
+     vllm_config: VllmConfig,
+@@ -630,12 +693,7 @@ def resolve_kv_cache_block_sizes(
+         bs = cache_config.block_size * dcp
+         return bs, bs
+ 
+-    group_block_sizes = [
+-        g.kv_cache_spec.block_size * dcp
+-        if isinstance(g.kv_cache_spec, AttentionSpec)
+-        else g.kv_cache_spec.block_size
+-        for g in groups
+-    ]
++    group_block_sizes = [effective_kv_block_size(g.kv_cache_spec, dcp) for g in groups]
+     scheduler_block_size = math.lcm(*group_block_sizes)
+ 
+     # Block hashes are only consumed by prefix caching and KV connectors
+diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
+index 4ebc248b8449e99e25c896be2082c8e6e42c4f4c..21f66ef966f99e57b8626edd1c76bb1624ff7cb3 100644
+--- a/vllm/v1/core/sched/scheduler.py
++++ b/vllm/v1/core/sched/scheduler.py
+@@ -402,6 +402,11 @@ class Scheduler(SchedulerInterface):
+             if self.mamba_partial_cache_hit
+             else 0
+         )
++        if tail_boundary and self.use_eagle:
++            # Eagle matches one hash unit past the candidate and drops it, so
++            # nothing proves the prompt's own last hash boundary. Materialize
++            # the state one unit lower, where the hit can actually land.
++            tail_boundary = max(tail_boundary - self.hash_block_size, 0)
+         stops = (
+             # Same invariant: a chunk starting mid-block stops at the boundary
+             # rather than running past it.
+@@ -2809,8 +2814,16 @@ class Scheduler(SchedulerInterface):
+             is_affected = False
+             marked_invalid_block = False
+             req_id = request.request_id
+-            # TODO (davidb): add support for hybrid memory allocator
+-            (req_block_ids,) = self.kv_cache_manager.get_block_ids(req_id)
++            # get_block_ids returns one block-id list per KV-cache group.
++            # Hybrid models (e.g. Mamba + attention) expose several groups; in
++            # align mode they share the scheduler block_size and block count,
++            # and block_ids are globally unique. Scan by logical position and
++            # treat a position as invalid if ANY group's block there failed to
++            # load, truncating the request at the earliest such position.
++            # (Previously this unpacked a single group -- ``(req_block_ids,) =
++            # ...`` -- and crashed hybrid models with a failed external KV load
++            # via "ValueError: too many values to unpack (expected 1)".)
++            block_ids_per_group = self.kv_cache_manager.get_block_ids(req_id)
+             # We iterate only over blocks that may contain externally computed
+             # tokens
+             req_num_computed_tokens = (
+@@ -2820,23 +2833,35 @@ class Scheduler(SchedulerInterface):
+             req_num_computed_blocks = (
+                 req_num_computed_tokens + self.block_size - 1
+             ) // self.block_size
+-            for idx, block_id in zip(range(req_num_computed_blocks), req_block_ids):
+-                if block_id not in invalid_block_ids:
++            for idx in range(req_num_computed_blocks):
++                invalid_here = [
++                    group_block_ids[idx]
++                    for group_block_ids in block_ids_per_group
++                    if idx < len(group_block_ids)
++                    and group_block_ids[idx] in invalid_block_ids
++                ]
++                if not invalid_here:
+                     continue
+ 
+                 is_affected = True
+ 
+-                if block_id in marked_invalid_block_ids:
+-                    # This invalid block is shared with a previous request
+-                    # and was already marked for recomputation.
+-                    # This means this request can still consider this block
+-                    # as computed when rescheduled.
++                # A position is "shared" only if every invalid block at it was
++                # already marked by a previous request (which will recompute
++                # it), so this request can still treat it as computed.
++                new_invalid = [
++                    block_id
++                    for block_id in invalid_here
++                    if block_id not in marked_invalid_block_ids
++                ]
++                marked_invalid_block_ids.update(invalid_here)
++
++                if not new_invalid:
++                    # All invalid blocks here are shared with a previous request
++                    # and already marked for recomputation.
+                     # Currently this only applies to sync loading; Async
+-                    # loading does not yet support block sharing
++                    # loading does not yet support block sharing.
+                     continue
+ 
+-                marked_invalid_block_ids.add(block_id)
+-
+                 if marked_invalid_block:
+                     # This request has already marked an invalid block for
+                     # recomputation and updated its num_computed_tokens.
+@@ -2850,9 +2875,11 @@ class Scheduler(SchedulerInterface):
+                 )
+                 total_affected_tokens += num_affected_tokens
+ 
+-                # collect invalid block and all downstream dependent blocks
++                # collect invalid block and all downstream dependent blocks,
++                # across every group
+                 if evict_blocks:
+-                    blocks_to_evict.update(req_block_ids[idx:])
++                    for group_block_ids in block_ids_per_group:
++                        blocks_to_evict.update(group_block_ids[idx:])
+ 
+             if is_affected:
+                 if not marked_invalid_block:
+diff --git a/vllm/v1/core/single_type_kv_cache_manager.py b/vllm/v1/core/single_type_kv_cache_manager.py
+index f5f854a5dfd987f056e6a15cd911118eba914992..79af08860368b92788d519c7abb78dfb55a6eec1 100644
+--- a/vllm/v1/core/single_type_kv_cache_manager.py
++++ b/vllm/v1/core/single_type_kv_cache_manager.py
+@@ -108,7 +108,6 @@ class SingleTypeKVCacheManager(ABC):
+         # aligned segment (SWA). Initialized lazily by the coordinator after
+         # determining the attention groups.
+         self.use_eagle = False
+-
+         # Partial-hit copy-on-write bookkeeping. Populated only by fine-grained
+         # managers (full attention, mamba "align"); harmlessly empty elsewhere.
+         self._partial_hit_reqs: dict[str, tuple[int, KVCacheBlock]] = {}
+@@ -134,9 +133,13 @@ class SingleTypeKVCacheManager(ABC):
+     ) -> bool:
+         # The local prefix-cache hit ends inside one of this manager's
+         # blocks: the shared tail block needs CoW.
++        if num_local_computed_tokens % self.block_size == 0:
++            return False
++        block_idx = num_local_computed_tokens // self.block_size
+         return (
+-            len(new_computed_blocks) > 0
+-            and num_local_computed_tokens % self.block_size != 0
++            block_idx < len(new_computed_blocks)
++            and new_computed_blocks[block_idx].block_hash_num_tokens
++            == num_local_computed_tokens
+         )
+ 
+     def get_num_blocks_to_allocate(
+@@ -278,12 +281,12 @@ class SingleTypeKVCacheManager(ABC):
+         # them so cache_blocks() will not try to re-cache blocks that already
+         # have a block_hash set.
+         self.num_cached_block[request_id] = len(req_blocks)
+-        if self._has_partial_local_hit(new_computed_blocks, num_local_computed_tokens):
++        if self._has_partial_local_hit(req_blocks, num_local_computed_tokens):
+             # Record the partial tail for the CoW redirect in
+             # allocate_new_blocks; cap the cached count at the full blocks so
+             # cache_blocks() re-caches the private copy once full.
+             block_idx = num_local_computed_tokens // self.block_size
+-            self._partial_hit_reqs[request_id] = (block_idx, new_computed_blocks[-1])
++            self._partial_hit_reqs[request_id] = (block_idx, req_blocks[block_idx])
+             self.num_cached_block[request_id] = block_idx
+ 
+     def allocate_external_computed_blocks(
+@@ -318,9 +321,11 @@ class SingleTypeKVCacheManager(ABC):
+             return
+ 
+         req_blocks = self.req_to_blocks[request_id]
+-        allocated_blocks = self.block_pool.get_new_blocks(
+-            cdiv(num_total_computed_tokens, self.block_size) - len(req_blocks)
++        num_blocks_to_allocate = max(
++            0,
++            cdiv(num_total_computed_tokens, self.block_size) - len(req_blocks),
+         )
++        allocated_blocks = self.block_pool.get_new_blocks(num_blocks_to_allocate)
+         req_blocks.extend(allocated_blocks)
+         if self._record_new_block_ids:
+             self.new_block_ids.extend(b.block_id for b in allocated_blocks)
+@@ -415,18 +420,28 @@ class SingleTypeKVCacheManager(ABC):
+         request.
+         """
+         req_blocks = self.req_to_blocks[request_id]
+-        assert block_idx < len(req_blocks)
+-        assert req_blocks[block_idx] is source_block
++        assert block_idx < len(req_blocks), (
++            f"request={request_id}, group={self.kv_cache_group_id}, "
++            f"block_idx={block_idx}, num_blocks={len(req_blocks)}, "
++            f"source={source_block.block_id}"
++        )
++        assert req_blocks[block_idx] is source_block, (
++            f"request={request_id}, group={self.kv_cache_group_id}, "
++            f"block_idx={block_idx}, actual={req_blocks[block_idx].block_id}, "
++            f"source={source_block.block_id}, source_ref={source_block.ref_cnt}"
++        )
+         assert not source_block.is_null and source_block.ref_cnt > 0
+         req_blocks[block_idx] = cow_block
+         self._pending_cow_copies.append((source_block, cow_block))
+-        cow_block.ref_cnt += 1
++        self.block_pool.touch((cow_block,))
+ 
+     def cache_blocks(
+         self,
+         request: Request,
+         num_tokens: int,
+         retention_interval: int | None = None,
++        *,
++        replay_boundary: int,
+     ) -> None:
+         """
+         Cache the blocks for the request.
+@@ -449,7 +464,7 @@ class SingleTypeKVCacheManager(ABC):
+         # Token boundaries whose reachable tail must be retained under sparse
+         # retention: the replay boundary (``num_prompt - 1``, capped by
+         # ``get_computed_blocks``) and any detected shared-prefix junction.
+-        reachable_boundaries = [request.num_prompt_tokens - 1]
++        reachable_boundaries = [replay_boundary]
+         if request.shared_prefix_boundary:
+             reachable_boundaries.append(request.shared_prefix_boundary)
+ 
+@@ -779,8 +794,15 @@ class FullAttentionManager(SingleTypeKVCacheManager):
+         request: Request,
+         num_tokens: int,
+         retention_interval: int | None = None,
++        *,
++        replay_boundary: int,
+     ) -> None:
+-        super().cache_blocks(request, num_tokens, retention_interval=retention_interval)
++        super().cache_blocks(
++            request,
++            num_tokens,
++            retention_interval=retention_interval,
++            replay_boundary=replay_boundary,
++        )
+         hash_block_size = self.block_pool.hash_block_size
+         if self.block_size == hash_block_size:
+             return
+@@ -1620,7 +1642,7 @@ class MambaManager(SingleTypeKVCacheManager):
+                         assert req_blocks[block_idx] is source_block
+                         self.block_pool.move_block_hashes(source_block, cow_block)
+                         self._pending_cow_copies.append((source_block, cow_block))
+-                        source_block.ref_cnt += 1
++                        self.block_pool.touch((source_block,))
+                         boundary_tokens = self._producer_partial_tail_reqs.pop(
+                             request_id, None
+                         )
+@@ -1676,9 +1698,16 @@ class MambaManager(SingleTypeKVCacheManager):
+         request: Request,
+         num_tokens: int,
+         retention_interval: int | None = None,
++        *,
++        replay_boundary: int,
+     ) -> None:
+         num_cached_blocks_before = self.num_cached_block.get(request.request_id, 0)
+-        super().cache_blocks(request, num_tokens, retention_interval=retention_interval)
++        super().cache_blocks(
++            request,
++            num_tokens,
++            retention_interval=retention_interval,
++            replay_boundary=replay_boundary,
++        )
+         num_cached_blocks_after = self.num_cached_block.get(request.request_id, 0)
+         if self.mamba_cache_mode == "align":
+             partial_hash = self._cache_partial_tail_block(request, num_tokens)
+@@ -1714,6 +1743,12 @@ class MambaManager(SingleTypeKVCacheManager):
+         latest_prompt_hash_boundary = (
+             request.num_prompt_tokens // hash_block_size
+         ) * hash_block_size
++        if self.use_eagle:
++            # Eagle groups match one hash unit past the candidate and drop it,
++            # so register the tail one unit lower.
++            latest_prompt_hash_boundary = max(
++                latest_prompt_hash_boundary - hash_block_size, 0
++            )
+         if num_tokens != latest_prompt_hash_boundary:
+             return None
+ 
+@@ -1771,6 +1806,8 @@ class CrossAttentionManager(SingleTypeKVCacheManager):
+         request: Request,
+         num_tokens: int,
+         retention_interval: int | None = None,
++        *,
++        replay_boundary: int,
+     ) -> None:
+         # We do not cache blocks for cross-attention to be shared between
+         # requests, so this method is not relevant.
+diff --git a/vllm/v1/simple_kv_offload/manager.py b/vllm/v1/simple_kv_offload/manager.py
+index 2e6839fef557bb4c2310e56b27a704e609309bf6..a60a1cfd1b992f136e4fbfa089a99d0db0d21062 100644
+--- a/vllm/v1/simple_kv_offload/manager.py
++++ b/vllm/v1/simple_kv_offload/manager.py
+@@ -20,6 +20,7 @@ from vllm.v1.core.kv_cache_coordinator import (
+ from vllm.v1.core.sched.output import SchedulerOutput
+ from vllm.v1.kv_cache_interface import (
+     FullAttentionSpec,
++    KVCacheSpec,
+     MambaSpec,
+     SlidingWindowSpec,
+ )
+@@ -107,11 +108,8 @@ class SimpleCPUOffloadScheduler:
+         assert 0 <= self.fa_gidx < len(self.cpu_kv_cache_config.kv_cache_groups)
+         # FA group's own block_size; divides scheduler_block_size (the LCM)
+         # but is NOT assumed to equal it.
+-        self.fa_block_size: int = (
+-            self.cpu_kv_cache_config.kv_cache_groups[
+-                self.fa_gidx
+-            ].kv_cache_spec.block_size
+-            * self.cp_world_size
++        self.fa_block_size: int = self._group_block_size(
++            self.cpu_kv_cache_config.kv_cache_groups[self.fa_gidx].kv_cache_spec
+         )
+         assert self.block_size % self.fa_block_size == 0
+ 
+@@ -221,6 +219,22 @@ class SimpleCPUOffloadScheduler:
+             kv_cache_groups=gpu_config.kv_cache_groups,
+         )
+ 
++    def _group_block_size(self, spec: KVCacheSpec) -> int:
++        """Tokens one block of this group covers across the DCP ranks.
++
++        Mirrors ``resolve_kv_cache_block_sizes`` and the ``dcp_world_size`` that
++        ``HybridKVCacheCoordinator.find_longest_cache_hit`` passes down: DCP
++        shards the sequence for full-attention groups only, so a full-attention
++        block spans ``block_size * dcp`` tokens while a Mamba group keeps its
++        full per-rank state and spans ``block_size``. Scaling every group is a
++        no-op at dcp=1, which is why it went unnoticed; on a hybrid model at
++        dcp=4 it makes this manager take a quarter of the Mamba blocks it
++        should.
++        """
++        if isinstance(spec, FullAttentionSpec):
++            return spec.block_size * self.cp_world_size
++        return spec.block_size
++
+     @staticmethod
+     def _estimate_lazy_target_blocks(
+         kv_cache_config: "KVCacheConfig",
+@@ -272,6 +286,12 @@ class SimpleCPUOffloadScheduler:
+             remaining_hashes, max_hit_len
+         )
+ 
++        # update_state_after_alloc() indexes whole scheduler blocks per group and
++        # asserts that contract. Partial hash hits can return a finer length --
++        # under DCP the full-attention block is dcp x the hash block, so a hybrid
++        # model reports multiples of the hash block -- so re-align here. The
++        # surplus blocks stay pinned and are released with the rest.
++        hit_length = hit_length // self.block_size * self.block_size
+         if hit_length > 0:
+             pin_blocks = [
+                 blk for grp in cpu_hit_blocks for blk in grp if not blk.is_null
+@@ -355,9 +375,7 @@ class SimpleCPUOffloadScheduler:
+         # the rest will be released along with the temp pin below.
+         cpu_hit_blocks: list[list[KVCacheBlock]] = []
+         for g in range(num_groups):
+-            g_block_size = (
+-                kv_cache_groups[g].kv_cache_spec.block_size * self.cp_world_size
+-            )
++            g_block_size = self._group_block_size(kv_cache_groups[g].kv_cache_spec)
+             assert num_external_tokens % g_block_size == 0, (
+                 f"num_external_tokens={num_external_tokens} not aligned to "
+                 f"group {g} block_size={g_block_size}"
+@@ -376,9 +394,7 @@ class SimpleCPUOffloadScheduler:
+                 continue
+ 
+             # Number of blocks in the computed range for this group.
+-            g_block_size = (
+-                kv_cache_groups[g].kv_cache_spec.block_size * self.cp_world_size
+-            )
++            g_block_size = self._group_block_size(kv_cache_groups[g].kv_cache_spec)
+             n_computed_g = cdiv(total_computed_tokens, g_block_size)
+ 
+             # Back-trace: ext blocks sit at the tail of the computed range.
+@@ -595,9 +611,7 @@ class SimpleCPUOffloadScheduler:
+                 already_stored_g = state.num_stored_blocks[g]
+                 group_gpu_ids = block_ids_by_group[g]
+ 
+-                g_block_size = (
+-                    kv_cache_groups[g].kv_cache_spec.block_size * self.cp_world_size
+-                )
++                g_block_size = self._group_block_size(kv_cache_groups[g].kv_cache_spec)
+                 ready_blocks_g = aligned_tokens // g_block_size
+                 scannable = group_gpu_ids[already_stored_g:ready_blocks_g]
+ 
+diff --git a/vllm/v1/worker/gpu/cp_utils.py b/vllm/v1/worker/gpu/cp_utils.py
+index 6dd8fd34743e103f891c0997d424e4dfa2729428..c1b62290a6cb50b1fa83020153ef8aad8711a0cf 100644
+--- a/vllm/v1/worker/gpu/cp_utils.py
++++ b/vllm/v1/worker/gpu/cp_utils.py
+@@ -59,3 +59,32 @@ def _dcp_local_seq_lens_kernel(
+     # For [num_reqs, max_num_reqs), pad with 0
+     local_seq_lens = tl.where(block < num_reqs, local_seq_lens, 0)
+     tl.store(out_ptr + block, local_seq_lens, mask=block < max_num_reqs)
++
++
++@triton.jit
++def cp_local_slot(
++    positions,
++    block_numbers,
++    block_size,
++    cp_rank,
++    CP_SIZE: tl.constexpr,
++    CP_INTERLEAVE: tl.constexpr,
++    PAD_ID: tl.constexpr,
++):
++    """KV slot for `positions` on this CP rank, or PAD_ID if not owned here.
++
++    DCP distributes a sequence round-robin over the CP ranks in chunks of
++    CP_INTERLEAVE, so a token's rank-local offset is not its global offset.
++    At CP_SIZE == 1 this reduces to the non-CP expression exactly.
++
++    `block_numbers` must have been loaded with the matching block index,
++    `positions // (block_size * CP_SIZE)`.
++    """
++    block_offsets = positions % (block_size * CP_SIZE)
++    if CP_SIZE == 1:
++        return block_numbers * block_size + block_offsets
++    is_local = block_offsets // CP_INTERLEAVE % CP_SIZE == cp_rank
++    rounds = block_offsets // (CP_INTERLEAVE * CP_SIZE)
++    remainder = block_offsets % CP_INTERLEAVE
++    local_offsets = rounds * CP_INTERLEAVE + remainder
++    return tl.where(is_local, block_numbers * block_size + local_offsets, PAD_ID)
+diff --git a/vllm/v1/worker/gpu/model_runner.py b/vllm/v1/worker/gpu/model_runner.py
+index 23a037bef99ad714d5cc506c1eabdbd78e44cb37..0dd37e7ef0b484a6e512fb005e9e610c7e2f52e2 100644
+--- a/vllm/v1/worker/gpu/model_runner.py
++++ b/vllm/v1/worker/gpu/model_runner.py
+@@ -505,9 +505,13 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+             block_sizes.append(spec.block_size)
+             # When using DCP, each request's KV cache is sharded among different ranks.
+             # As a result, one block on the current rank covers `block_size * cp_size`
+-            # tokens in the full, global (unsharded) sequence.
++            # tokens in the full, global (unsharded) sequence. Mamba state is
++            # replicated across DCP/PCP ranks and never sharded, so its rows stay
++            # position-indexed over the unsharded sequence -- the same rule
++            # MambaSpec.max_num_blocks_per_req states.
++            kv_shard_count = 1 if isinstance(spec, MambaSpec) else self.dcp_size
+             max_num_blocks = cdiv(
+-                block_table_max_model_len, spec.block_size * self.dcp_size
++                block_table_max_model_len, spec.block_size * kv_shard_count
+             )
+             # For Mamba/Hybrid Model, KVCaches need extra blocks for speculative tokens
+             if isinstance(spec, MambaSpec):
+diff --git a/vllm/v1/worker/gpu/spec_decode/dflash/cudagraph.py b/vllm/v1/worker/gpu/spec_decode/dflash/cudagraph.py
+index e59202c87988f8a3ee29e52ee0c3e5d7f85cb369..93dbb5aa1497fc32c69236920d3c3b9cae16679d 100644
+--- a/vllm/v1/worker/gpu/spec_decode/dflash/cudagraph.py
++++ b/vllm/v1/worker/gpu/spec_decode/dflash/cudagraph.py
+@@ -11,6 +11,7 @@ from vllm.v1.worker.gpu.attn_utils import (
+     build_slot_mappings_by_layer,
+ )
+ from vllm.v1.worker.gpu.block_table import BlockTables
++from vllm.v1.worker.gpu.cp_utils import prepare_dcp_local_seq_lens
+ from vllm.v1.worker.gpu.cudagraph_utils import (
+     AttentionState,
+     BatchExecutionDescriptor,
+@@ -41,6 +42,21 @@ def _prepare_dflash_inputs_to_capture(
+     attn_metadata = None
+     if not skip_attn:
+         query_start_loc_cpu = torch.from_numpy(input_batch.query_start_loc_np)
++        # The draft has two independent metadata paths -- this one for capture
++        # and DFlashSpeculator._build_draft_attn_metadata for serving. Only the
++        # serving one was DCP-aware, so build() dereferenced a None
++        # dcp_local_seq_lens during capture.
++        dcp_local_seq_lens = None
++        if block_tables.cp_size > 1:
++            prepare_dcp_local_seq_lens(
++                input_buffers.dcp_local_seq_lens,
++                input_buffers.seq_lens,
++                num_reqs,
++                block_tables.cp_size,
++                block_tables.cp_rank,
++                block_tables.cp_interleave,
++            )
++            dcp_local_seq_lens = input_buffers.dcp_local_seq_lens
+         attn_metadata = build_attn_metadata(
+             attn_groups=attn_groups,
+             num_reqs=num_reqs,
+@@ -49,6 +65,7 @@ def _prepare_dflash_inputs_to_capture(
+             query_start_loc_cpu=query_start_loc_cpu,
+             max_query_len=num_tokens // num_reqs,
+             seq_lens=input_batch.seq_lens,
++            dcp_local_seq_lens=dcp_local_seq_lens,
+             max_seq_len=max_model_len,
+             block_tables=input_block_tables,
+             slot_mappings=slot_mappings,
+diff --git a/vllm/v1/worker/gpu/spec_decode/dflash/speculator.py b/vllm/v1/worker/gpu/spec_decode/dflash/speculator.py
+index 97c284c03d4aaaa91717d19c2f9099f61cb457e7..56561ccfefbd18df557272eaae8c320f6dafd0c6 100644
+--- a/vllm/v1/worker/gpu/spec_decode/dflash/speculator.py
++++ b/vllm/v1/worker/gpu/spec_decode/dflash/speculator.py
+@@ -17,6 +17,7 @@ from vllm.v1.attention.backends.utils import PAD_SLOT_ID
+ from vllm.v1.kv_cache_interface import KVCacheConfig
+ from vllm.v1.worker.gpu.attn_utils import build_slot_mappings_by_layer
+ from vllm.v1.worker.gpu.block_table import BlockTables
++from vllm.v1.worker.gpu.cp_utils import cp_local_slot, prepare_dcp_local_seq_lens
+ from vllm.v1.worker.gpu.dp_utils import dispatch_cg_and_sync_dp
+ from vllm.v1.worker.gpu.input_batch import InputBatch, InputBuffers
+ from vllm.v1.worker.gpu.model_states.interface import ModelState
+@@ -283,10 +284,25 @@ class DFlashSpeculator(DraftModelSpeculator):
+         num_query_per_req: int | None = None,
+         causal: bool | Mapping[int, bool] = False,
+         query_start_loc_np: np.ndarray | None = None,
++        dcp_local_seq_lens: torch.Tensor | None = None,
+     ) -> dict[str, Any] | None:
+         if not self.draft_attn_layer_names:
+             return None
+         assert num_query_per_req is None  # Omitted for DFlash, read from self instead
++        assert dcp_local_seq_lens is None  # Computed from DFlash's input buffers
++        if self.block_tables.cp_size > 1:
++            # prepare_dflash_inputs has already written the draft's absolute
++            # sequence length (context + query block) into input_buffers.seq_lens,
++            # so this is the same call the target makes.
++            prepare_dcp_local_seq_lens(
++                self.input_buffers.dcp_local_seq_lens,
++                self.input_buffers.seq_lens,
++                num_reqs,
++                self.block_tables.cp_size,
++                self.block_tables.cp_rank,
++                self.block_tables.cp_interleave,
++            )
++            dcp_local_seq_lens = self.input_buffers.dcp_local_seq_lens
+         return super()._build_draft_attn_metadata(
+             num_reqs,
+             num_reqs_padded,
+@@ -296,6 +312,7 @@ class DFlashSpeculator(DraftModelSpeculator):
+             num_query_per_req=self.num_query_per_req,
+             causal=causal,
+             query_start_loc_np=query_start_loc_np,
++            dcp_local_seq_lens=dcp_local_seq_lens,
+         )
+ 
+     @torch.inference_mode()
+@@ -391,6 +408,9 @@ class DFlashSpeculator(DraftModelSpeculator):
+                 seeds,
+                 self.block_tables.input_block_tables[gid],
+                 self.block_tables.kernel_block_sizes[gid],
++                self.block_tables.cp_rank,
++                self.block_tables.cp_size,
++                self.block_tables.cp_interleave,
+                 self.parallel_drafting_token_id,
+                 self.num_query_per_req,
+                 self.num_speculative_steps,
+@@ -505,8 +525,11 @@ def _prepare_dflash_inputs_kernel(
+     max_num_reqs,
+     max_num_tokens,
+     max_model_len,
++    cp_rank,
+     SAMPLE_FROM_ANCHOR: tl.constexpr,
+     PAD_SLOT_ID: tl.constexpr,
++    CP_SIZE: tl.constexpr,
++    CP_INTERLEAVE: tl.constexpr,
+     BLOCK_SIZE: tl.constexpr,
+ ):
+     req_idx = tl.program_id(0)
+@@ -539,14 +562,16 @@ def _prepare_dflash_inputs_kernel(
+     # --- Context positions / slots ---
+     ctx_pos_idx = ctx_start + tl.where(is_ctx, j, 0)
+     ctx_pos = tl.load(target_positions_ptr + ctx_pos_idx, mask=is_ctx, other=0)
+-    ctx_block_num = ctx_pos // block_size
++    ctx_block_num = ctx_pos // (block_size * CP_SIZE)
+     ctx_block_num = tl.minimum(ctx_block_num, block_table_stride - 1)
+     ctx_block_id = tl.load(
+         block_table_ptr + req_idx * block_table_stride + ctx_block_num,
+         mask=is_ctx,
+         other=0,
+     ).to(tl.int64)
+-    ctx_slot = ctx_block_id * block_size + (ctx_pos % block_size)
++    ctx_slot = cp_local_slot(
++        ctx_pos, ctx_block_id, block_size, cp_rank, CP_SIZE, CP_INTERLEAVE, PAD_SLOT_ID
++    )
+     tl.store(out_context_positions_ptr + ctx_start + j, ctx_pos, mask=is_ctx)
+     tl.store(out_context_slot_mapping_ptr + ctx_start + j, ctx_slot, mask=is_ctx)
+ 
+@@ -556,14 +581,16 @@ def _prepare_dflash_inputs_kernel(
+     is_bonus = is_query & (query_off == 0)
+     input_id = tl.where(is_bonus, bonus_token, parallel_drafting_token_id)
+ 
+-    q_block_num = query_pos // block_size
++    q_block_num = query_pos // (block_size * CP_SIZE)
+     q_block_num = tl.minimum(q_block_num, block_table_stride - 1)
+     q_block_id = tl.load(
+         block_table_ptr + req_idx * block_table_stride + q_block_num,
+         mask=is_query,
+         other=0,
+     ).to(tl.int64)
+-    q_slot = q_block_id * block_size + (query_pos % block_size)
++    q_slot = cp_local_slot(
++        query_pos, q_block_id, block_size, cp_rank, CP_SIZE, CP_INTERLEAVE, PAD_SLOT_ID
++    )
+ 
+     tl.store(out_input_ids_ptr + query_idx, input_id, mask=is_query)
+     clamped_query_pos = tl.minimum(query_pos, max_model_len - 1)
+@@ -657,6 +684,9 @@ def prepare_dflash_inputs(
+     # [max_num_reqs, max_num_blocks]
+     block_table: torch.Tensor,
+     block_size: int,
++    cp_rank: int,
++    cp_size: int,
++    cp_interleave: int,
+     parallel_drafting_token_id: int,
+     num_query_per_req: int,
+     num_speculative_steps: int,
+@@ -704,7 +734,10 @@ def prepare_dflash_inputs(
+         max_num_reqs,
+         max_num_tokens,
+         max_model_len,
++        cp_rank,
+         SAMPLE_FROM_ANCHOR=sample_from_anchor,
+         PAD_SLOT_ID=PAD_SLOT_ID,
++        CP_SIZE=cp_size,
++        CP_INTERLEAVE=cp_interleave,
+         BLOCK_SIZE=BLOCK_SIZE,
+     )
+diff --git a/vllm/v1/worker/gpu/spec_decode/speculator.py b/vllm/v1/worker/gpu/spec_decode/speculator.py
+index 69e0cc1091603907441545759fd2bef25bf89d2e..80de83109bf5023550db2bd04215c4488a4df71e 100644
+--- a/vllm/v1/worker/gpu/spec_decode/speculator.py
++++ b/vllm/v1/worker/gpu/spec_decode/speculator.py
+@@ -234,6 +234,7 @@ class DraftModelSpeculator(BaseSpeculator):
+         num_query_per_req: int = 1,
+         causal: bool | Mapping[int, bool] = True,
+         query_start_loc_np: np.ndarray | None = None,
++        dcp_local_seq_lens: torch.Tensor | None = None,
+     ) -> dict[str, Any] | None:
+         if query_start_loc_np is not None:
+             # Non-uniform query layout (e.g. multi-module MTP's mixed
+@@ -278,6 +279,11 @@ class DraftModelSpeculator(BaseSpeculator):
+             query_start_loc_cpu=query_start_loc_cpu,
+             max_query_len=max_query_len,
+             seq_lens=self.input_buffers.seq_lens[:num_reqs_padded],
++            dcp_local_seq_lens=(
++                None
++                if dcp_local_seq_lens is None
++                else dcp_local_seq_lens[:num_reqs_padded]
++            ),
+             max_seq_len=self.draft_max_seq_len,
+             block_tables=block_tables,
+             slot_mappings=slot_mappings,
+
