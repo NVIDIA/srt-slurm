@@ -57,7 +57,11 @@ setup:
 		echo "⬇️  Downloading NATS ($(NATS_VERSION)) for $$ARCH_SHORT..."; \
 		NATS_DEB="nats-server-$(NATS_VERSION)-$$ARCH_SHORT.deb"; \
 		NATS_URL="https://github.com/nats-io/nats-server/releases/download/$(NATS_VERSION)/$$NATS_DEB"; \
-		wget -q --show-progress --tries=3 --waitretry=5 "$$NATS_URL" -O "configs/$$NATS_DEB"; \
+		if ! wget -q --show-progress --tries=3 --waitretry=5 "$$NATS_URL" -O "configs/$$NATS_DEB"; then \
+			rm -f "configs/$$NATS_DEB"; \
+			echo "❌ Failed to download NATS from $$NATS_URL"; \
+			exit 1; \
+		fi; \
 		echo "📁 Extracting NATS binary..."; \
 		TMP_DIR=$$(mktemp -d); \
 		dpkg-deb -x "configs/$$NATS_DEB" "$$TMP_DIR"; \
@@ -82,7 +86,11 @@ setup:
 		echo "⬇️  Downloading ETCD ($(ETCD_VERSION)) for $$ARCH_SHORT..."; \
 		ETCD_TAR="etcd-$(ETCD_VERSION)-linux-$$ARCH_SHORT.tar.gz"; \
 		ETCD_URL="https://github.com/etcd-io/etcd/releases/download/$(ETCD_VERSION)/$$ETCD_TAR"; \
-		wget -q --show-progress --tries=3 --waitretry=5 "$$ETCD_URL" -O "configs/$$ETCD_TAR"; \
+		if ! wget -q --show-progress --tries=3 --waitretry=5 "$$ETCD_URL" -O "configs/$$ETCD_TAR"; then \
+			rm -f "configs/$$ETCD_TAR"; \
+			echo "❌ Failed to download ETCD from $$ETCD_URL"; \
+			exit 1; \
+		fi; \
 		echo "📁 Extracting ETCD binaries..."; \
 		tar -xzf "configs/$$ETCD_TAR" --strip-components=1 -C configs etcd-$(ETCD_VERSION)-linux-$$ARCH_SHORT/etcd etcd-$(ETCD_VERSION)-linux-$$ARCH_SHORT/etcdctl; \
 		chmod +x configs/etcd configs/etcdctl; \
