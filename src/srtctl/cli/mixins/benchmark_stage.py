@@ -335,16 +335,30 @@ class BenchmarkStageMixin:
         # opted in via reporting.live_metrics in the cluster config.
         snapshotter = try_start_snapshotter(self.runtime.log_dir, stop_event)
 
-        # RAW /metrics capture for the benchmark window — no-op unless
-        # observability.enabled. These endpoints die with the job, so this is
-        # the only chance to record them; it runs alongside the client rather
-        # than after it.
-        raw_scraper = try_start_raw_scraper(
-            self.runtime.log_dir,
-            self._analytics_scrape_targets(),
-            getattr(self.config, "observability", None),
-            stop_event,
-        )
+        # RAW /metrics capture for the benchmark window — no-op unless opted in.
+        # These endpoints die with the job, so this is the only chance to record
+        # them; it runs alongside the client rather than after it.
+        #
+        # The opt-in is re-checked here rather than left to try_start_raw_scraper
+        # alone: Python evaluates arguments before the call, so building the
+        # target list inside the argument list would run regardless of the knob,
+        # and _analytics_scrape_targets() resolves one get_hostname_ip() per
+        # target — an srun round-trip each, inside a Slurm job. An opted-out run
+        # must not pay that, and must not fail on it.
+        #
+        # `is True` is deliberate, not a truthiness check: scraper_enabled is a
+        # bool property, while this mixin is routinely driven with a mocked
+        # config whose every attribute is truthy. Plain truthiness would silently
+        # switch the scraper on for those callers.
+        observability = getattr(self.config, "observability", None)
+        raw_scraper = None
+        if getattr(observability, "scraper_enabled", False) is True:
+            raw_scraper = try_start_raw_scraper(
+                self.runtime.log_dir,
+                self._analytics_scrape_targets(),
+                observability,
+                stop_event,
+            )
 
         bench_node = self._benchmark_node()
         proc = start_srun_process(
