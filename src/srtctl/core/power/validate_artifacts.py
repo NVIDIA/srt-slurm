@@ -113,10 +113,11 @@ class ArtifactReport:
 
     ok: bool
     failures: tuple[str, ...]
+    publication_valid: bool | None = None
     summary: dict[str, Any] = field(default_factory=dict)
 
     def render(self) -> str:
-        lines = [f"publication_valid: {self.ok}"]
+        lines = [f"validation_ok: {self.ok}", f"publication_valid: {self.publication_valid}"]
         lines += [f"  {key}: {value}" for key, value in self.summary.items()]
         lines += [f"  FAIL {failure}" for failure in self.failures]
         return "\n".join(lines)
@@ -140,6 +141,10 @@ def validate_power_artifacts(
     if not isinstance(manifest, dict):
         return ArtifactReport(ok=False, failures=(f"manifest malformed: not an object ({type(manifest).__name__})",))
 
+    stored_publication_valid = manifest.get("publication_valid")
+    if not isinstance(stored_publication_valid, bool):
+        stored_publication_valid = None
+
     failures: list[str] = _check_wire_contract(manifest)
     failures += _check_samples_digest(manifest, power_dir / SAMPLES_FILENAME)
 
@@ -147,7 +152,12 @@ def validate_power_artifacts(
         expected_devices = _expected_devices(manifest)
         expected_windows = _expected_windows(manifest)
     except (AttributeError, KeyError, TypeError, ValueError) as exc:
-        return ArtifactReport(ok=False, failures=(f"manifest malformed: {exc!r}",))
+        failures.append(f"manifest malformed: {exc!r}")
+        return ArtifactReport(
+            ok=False,
+            failures=tuple(failures),
+            publication_valid=stored_publication_valid,
+        )
 
     rows, sample_reasons = read_samples(power_dir / SAMPLES_FILENAME)
     failures += [f"{reason} in {SAMPLES_FILENAME}" for reason in sample_reasons]
@@ -200,7 +210,12 @@ def validate_power_artifacts(
         "windows": len(validations),
         "max_sample_gap_seconds": max(gaps) if gaps else None,
     }
-    return ArtifactReport(ok=not failures, failures=tuple(failures), summary=summary)
+    return ArtifactReport(
+        ok=not failures,
+        failures=tuple(failures),
+        publication_valid=stored_publication_valid,
+        summary=summary,
+    )
 
 
 def _check_sample_lifecycle(manifest: dict[str, Any], rows: Sequence[SampleRow]) -> list[str]:

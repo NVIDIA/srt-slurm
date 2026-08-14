@@ -195,6 +195,15 @@ class TestRetainedPackage:
         assert code == 0
         assert "publication_valid" in capsys.readouterr().out
 
+    def test_render_separates_canary_failure_from_publication_validity(self, package):
+        log_dir, power_dir = package()
+
+        report = _validate(power_dir, log_dir, expected_roles={"prefill": 8, "decode": 4})
+
+        assert report.ok is False
+        assert report.publication_valid is True
+        assert report.render().splitlines()[:2] == ["validation_ok: False", "publication_valid: True"]
+
 
 class TestIndependenceFromTheManifestBooleans:
     def test_a_manifest_claiming_validity_cannot_rescue_missing_samples(self, package, capsys):
@@ -781,6 +790,22 @@ class TestDamagedManifest:
         report = _validate(power_dir, log_dir)
 
         assert report.ok is False
+        assert any("manifest malformed" in failure for failure in report.failures)
+
+    def test_malformed_topology_preserves_wire_contract_failures(self, package):
+        log_dir, power_dir = package()
+        manifest_path = power_dir / MANIFEST_FILENAME
+        manifest = json.loads(manifest_path.read_text())
+        manifest["status"] = "running"
+        manifest["dcgm_exporter"]["port"] = 0
+        manifest["expected_devices"][0]["gpu_index"] = None
+        atomic_write_json(manifest_path, manifest)
+
+        report = _validate(power_dir, log_dir)
+
+        assert report.ok is False
+        assert any("status is 'running'" in failure for failure in report.failures)
+        assert any("dcgm_exporter.port is not a valid port number" in failure for failure in report.failures)
         assert any("manifest malformed" in failure for failure in report.failures)
 
     @pytest.mark.parametrize(
