@@ -60,9 +60,7 @@ class TestScraperConfig:
         assert cfg.observability.scraper_enabled is True
 
     def test_scraper_can_be_opted_out_independently(self):
-        cfg = SrtConfig.Schema().load(
-            {**BASE_CONFIG, "observability": {"enabled": True, "scrape_metrics": False}}
-        )
+        cfg = SrtConfig.Schema().load({**BASE_CONFIG, "observability": {"enabled": True, "scrape_metrics": False}})
         assert cfg.observability.enabled is True
         assert cfg.observability.scraper_enabled is False
 
@@ -79,19 +77,13 @@ class TestScraperConfig:
 
 class TestRawMetricsScraper:
     def test_emits_the_raw_l1_contract(self, metrics_server, tmp_path):
-        target = ScrapeTarget(
-            url=f"http://127.0.0.1:{metrics_server}/metrics", role="decode", worker_id="node9"
-        )
+        target = ScrapeTarget(url=f"http://127.0.0.1:{metrics_server}/metrics", role="decode", worker_id="node9")
         scraper = RawMetricsScraper(tmp_path, [target], interval_seconds=0.5)
         scraper.start(threading.Event())
         time.sleep(1.6)
         scraper.stop()
 
-        lines = [
-            json.loads(x)
-            for x in (tmp_path / "raw_prometheus.jsonl").read_text().splitlines()
-            if x.strip()
-        ]
+        lines = [json.loads(x) for x in (tmp_path / "raw_prometheus.jsonl").read_text().splitlines() if x.strip()]
         assert lines, "scraper produced no output"
         record = lines[0]
         assert set(record) == {"timestamp_ns", "endpoint_url", "role", "worker_id", "text"}
@@ -102,20 +94,14 @@ class TestRawMetricsScraper:
         assert "trtllm_kv_cache_used_blocks" in record["text"]
 
     def test_unreachable_endpoint_degrades_without_killing_the_sweep(self, metrics_server, tmp_path):
-        good = ScrapeTarget(
-            url=f"http://127.0.0.1:{metrics_server}/metrics", role="prefill", worker_id="ok"
-        )
+        good = ScrapeTarget(url=f"http://127.0.0.1:{metrics_server}/metrics", role="prefill", worker_id="ok")
         dead = ScrapeTarget(url="http://127.0.0.1:1/metrics", role="decode", worker_id="dead")
         scraper = RawMetricsScraper(tmp_path, [good, dead], interval_seconds=0.5)
         scraper.start(threading.Event())
         time.sleep(1.6)
         scraper.stop()
 
-        lines = [
-            json.loads(x)
-            for x in (tmp_path / "raw_prometheus.jsonl").read_text().splitlines()
-            if x.strip()
-        ]
+        lines = [json.loads(x) for x in (tmp_path / "raw_prometheus.jsonl").read_text().splitlines() if x.strip()]
         assert lines
         assert all(r["worker_id"] == "ok" for r in lines)
         assert scraper.sweeps >= 2
@@ -124,9 +110,7 @@ class TestRawMetricsScraper:
         """The benchmark stage's stop_event only fires on abort, not on normal
         completion, so the scraper must also stop on its own signal -- otherwise
         it outlives the client and keeps polling endpoints being torn down."""
-        target = ScrapeTarget(
-            url=f"http://127.0.0.1:{metrics_server}/metrics", role="frontend", worker_id=None
-        )
+        target = ScrapeTarget(url=f"http://127.0.0.1:{metrics_server}/metrics", role="frontend", worker_id=None)
         scraper = RawMetricsScraper(tmp_path, [target], interval_seconds=0.5)
         shared = threading.Event()
         scraper.start(shared)
