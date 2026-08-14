@@ -24,6 +24,7 @@ from srtctl.core.config import (
     generate_override_configs,
     resolve_config_with_defaults,
 )
+from srtctl.core.schema import TelemetryProvider
 
 if TYPE_CHECKING:
     from srtctl.core.schema import SrtConfig
@@ -75,6 +76,14 @@ class PreflightResult:
             "container": self.container.__dict__,
             "errors": [issue.__dict__ for issue in self.errors],
         }
+
+
+def _is_registry_uri(value: str) -> bool:
+    # Mirrors the runtime classification in runtime.py (RuntimeContext.from_config):
+    # anything not starting with "/" or "./" is forwarded to ``srun --container-image``,
+    # which Pyxis/enroot pulls on first use. The ":" guard distinguishes a URI
+    # (registry/...:tag or scheme://...) from a typo'd local relative path.
+    return not value.startswith(("/", "./")) and ":" in value
 
 
 def _expand_path(value: str) -> str:
@@ -210,13 +219,8 @@ def _preflight_container(
         )
 
     # Container image URIs (e.g. "nvcr.io/nvidia/sglang-runtime:0.8.1",
-    # "vllm/vllm-openai:latest", "docker://...").  Mirrors the runtime
-    # classification in runtime.py (RuntimeContext.from_config): anything
-    # not starting with "/" or "./" is forwarded to ``srun
-    # --container-image``, which Pyxis/enroot pulls on first use.  The
-    # ":" guard distinguishes a URI (registry/...:tag or scheme://...)
-    # from a typo'd local relative path.
-    if isinstance(raw, str) and not raw.startswith(("/", "./")) and ":" in raw:
+    # "vllm/vllm-openai:latest", "docker://...").
+    if isinstance(raw, str) and _is_registry_uri(raw):
         return (
             PreflightResolution(
                 field="model.container",
@@ -291,7 +295,12 @@ def _preflight_telemetry(
     raw_telemetry = raw_config.get("telemetry") or {}
     issues: list[PreflightIssue] = []
 
-    for field, path in _TELEMETRY_IMAGE_FIELDS:
+    # NOTE: dcgm-power launches only the exporter, so the other images are never referenced.
+    fields = _TELEMETRY_IMAGE_FIELDS
+    if telemetry.get("provider") == TelemetryProvider.DCGM_POWER.value:
+        fields = tuple(field for field in fields if field[1][0] == "dcgm_exporter")
+
+    for field, path in fields:
         resolved_value: Any = telemetry
         raw_value: Any = raw_telemetry
         for key in path:
@@ -299,6 +308,9 @@ def _preflight_telemetry(
             raw_value = (raw_value or {}).get(key) if isinstance(raw_value, dict) else None
         if not resolved_value:
             continue  # schema-level validator handles required-when-enabled
+        # NOTE: a registry URI is pulled at srun time, so there is no local file to stat.
+        if _is_registry_uri(str(resolved_value)):
+            continue
 
         ok, _ = _check_path(_expand_path(resolved_value), expect="file")
         if ok:

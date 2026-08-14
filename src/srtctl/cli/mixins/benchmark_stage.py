@@ -17,9 +17,19 @@ from typing import TYPE_CHECKING
 from srtctl.core.fingerprint import format_identity_verification, verify_identity
 from srtctl.core.health import wait_for_model
 from srtctl.core.lockfile import collect_worker_fingerprints
+from srtctl.core.power.contract import (
+    CONTAINER_LOG_DIR,
+    MEASUREMENT_WINDOW_DIR_ENV,
+    WINDOWS_DIRNAME,
+)
+from srtctl.core.processes import terminate_and_reap
+from srtctl.core.schema import TelemetryProvider
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
 from srtctl.core.status import JobStage, JobStatus, StatusReporter
 from srtctl.ports import FRONTEND_PUBLIC_PORT, SGLANG_HTTP_PORT_BASE
+
+_BENCHMARK_TERMINATE_TIMEOUT = 15.0
+_BENCHMARK_KILL_TIMEOUT = 10.0
 
 if TYPE_CHECKING:
     from srtctl.benchmarks.base import BenchmarkRunner
@@ -112,6 +122,8 @@ class BenchmarkStageMixin:
     # Type hints for mixin dependencies
     config: "SrtConfig"
     runtime: "RuntimeContext"
+    benchmark_child_reaped: bool | None = None
+    benchmark_child_allows_window_mutation: bool | None = None
 
     @property
     def endpoints(self) -> list["Endpoint"]:
@@ -134,6 +146,17 @@ class BenchmarkStageMixin:
             self.backend_processes, placement, self.runtime.nodes.head, kind="frontend.orchestrator_placement"
         )
 
+    def _public_api_node(self) -> str:
+        """Node hosting the public OpenAI HTTP endpoint clients should probe."""
+        if self.config.frontend.type == "vllm" and self.config.resources.num_agg > 0:
+            agg_leaders = sorted(
+                (p for p in self.backend_processes if p.endpoint_mode == "agg" and p.is_leader),
+                key=lambda p: p.endpoint_index,
+            )
+            if len(agg_leaders) == 1:
+                return agg_leaders[0].node
+        return self._orchestrator_node()
+
     def _benchmark_node(self) -> str:
         """Node the benchmark client runs on (honors benchmark.client_placement)."""
         placement = getattr(self.config.benchmark, "client_placement", "head")
@@ -152,16 +175,20 @@ class BenchmarkStageMixin:
         multi-node workers. Only rank zero owns the logical worker endpoint,
         so follower ranks must not be advertised to benchmark clients.
 
-        Dynamo exposes worker metrics on each leader's system port. Other
-        frontends expose them on the worker HTTP port, matching the endpoint
-        selection already used by the profiling integration.
+        Dynamo exposes worker metrics on each leader's system port. Direct
+        vLLM exposes aggregate metrics on the public frontend port, while
+        other frontends expose them on the worker HTTP port.
         """
-        use_sys_port = self.config.frontend.type == "dynamo"
         endpoints: list[tuple[str, str, int]] = []
         for process in self.backend_processes:
             if not process.is_leader:
                 continue
-            port = process.sys_port if use_sys_port else process.http_port
+            if self.config.frontend.type == "dynamo":
+                port = process.sys_port
+            elif self.config.frontend.type == "vllm":
+                port = self.runtime.frontend_port
+            else:
+                port = process.http_port
             if port <= 0:
                 continue
             host = get_hostname_ip(process.node, self.runtime.network_interface)
@@ -194,7 +221,7 @@ class BenchmarkStageMixin:
 
         hc = self.config.health_check
         if not wait_for_model(
-            host=self._orchestrator_node(),
+            host=self._public_api_node(),
             port=FRONTEND_PUBLIC_PORT,
             n_prefill=n_prefill,
             n_decode=n_decode,
@@ -245,7 +272,7 @@ class BenchmarkStageMixin:
 
         if benchmark_type == "manual":
             logger.info("Benchmark type is 'manual' - server is ready for testing")
-            logger.info("Frontend URL: http://%s:%d", self._orchestrator_node(), FRONTEND_PUBLIC_PORT)
+            logger.info("Frontend URL: http://%s:%d", self._public_api_node(), FRONTEND_PUBLIC_PORT)
             logger.info("Press Ctrl+C to stop the job")
 
             while not stop_event.is_set():
@@ -319,15 +346,34 @@ class BenchmarkStageMixin:
             het_group=self.runtime.nodes.het_group_for(bench_node),
         )
 
+        # The signal handler raises SystemExit, so only finally can establish
+        # how the local srun client stopped before telemetry finalizes.
+        self.benchmark_child_reaped = False
+        self.benchmark_child_allows_window_mutation = False
         try:
             while proc.poll() is None:
                 if stop_event.is_set():
                     logger.info("Stop requested, terminating benchmark")
-                    proc.terminate()
                     return 1
                 time.sleep(1)
+            self.benchmark_child_reaped = True
+            self.benchmark_child_allows_window_mutation = True
             return proc.returncode or 0
         finally:
+            if proc.poll() is None:
+                outcome = terminate_and_reap(
+                    proc,
+                    terminate_timeout=_BENCHMARK_TERMINATE_TIMEOUT,
+                    kill_timeout=_BENCHMARK_KILL_TIMEOUT,
+                )
+                self.benchmark_child_reaped = outcome.reaped
+                # Reaping a force-killed local srun client does not prove that
+                # its remote Slurm step can no longer write the window.
+                self.benchmark_child_allows_window_mutation = outcome.reaped and not outcome.force_killed
+            elif self.benchmark_child_reaped is False:
+                proc.wait()
+                self.benchmark_child_reaped = True
+                self.benchmark_child_allows_window_mutation = True
             if snapshotter is not None:
                 snapshotter.stop()
 
@@ -453,6 +499,17 @@ class BenchmarkStageMixin:
             "SA_BENCH_SLOW_DOWN_WAIT_TIME": str(b.slow_down_wait_time),
         }
 
+    def _get_measurement_window_env(self) -> dict[str, str]:
+        """Point the benchmark child at the power artifact's windows directory.
+
+        ``runtime.log_dir`` is already mounted at ``/logs``, so the container
+        path and the host path the collector reads are the same directory.
+        """
+        telemetry = self.config.telemetry
+        if not telemetry.enabled or telemetry.provider != TelemetryProvider.DCGM_POWER:
+            return {}
+        return {MEASUREMENT_WINDOW_DIR_ENV: f"{CONTAINER_LOG_DIR}/{telemetry.storage_subdir}/{WINDOWS_DIRNAME}"}
+
     def _get_aiperf_server_metrics_env(
         self,
         logical_endpoints: list[tuple[str, str, int]] | None = None,
@@ -557,7 +614,7 @@ class BenchmarkStageMixin:
         # a different node than the orchestrator (e.g. client_placement=last_decode
         # with orchestrator_placement=first_decode), "localhost" is wrong — the
         # command should target http://$SRT_FRONTEND_HOST:$SRT_FRONTEND_PORT.
-        env["SRT_FRONTEND_HOST"] = get_hostname_ip(self._orchestrator_node(), self.runtime.network_interface)
+        env["SRT_FRONTEND_HOST"] = get_hostname_ip(self._public_api_node(), self.runtime.network_interface)
         env["SRT_FRONTEND_PORT"] = str(self.runtime.frontend_port)
 
         # Propagate top-level recipe environment to the bench step. Workers
@@ -566,6 +623,10 @@ class BenchmarkStageMixin:
         # dataset prep against gated HF datasets).
         for key, value in self.runtime.environment.items():
             env[key] = value
+
+        # The windows directory is benchmark-agnostic: whichever benchmark runs
+        # may adopt window stamping, so the env is not tied to one runner.
+        env.update(self._get_measurement_window_env())
 
         if runner.name == "SA-Bench":
             env.update(self._get_sa_bench_slow_down_env())

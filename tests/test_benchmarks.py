@@ -254,6 +254,8 @@ class TestCustomBenchmarkRunner:
             ),
             frontend=SimpleNamespace(type=frontend_type),
             profiling=SimpleNamespace(enabled=False),
+            resources=SimpleNamespace(num_agg=sum(p.endpoint_mode == "agg" and p.is_leader for p in processes)),
+            telemetry=SimpleNamespace(enabled=False),
         )
         stage.runtime = SimpleNamespace(
             environment={},
@@ -357,6 +359,28 @@ class TestCustomBenchmarkRunner:
         assert "SRT_PREFILL_ENDPOINTS" not in env
         assert "SRT_DECODE_ENDPOINTS" not in env
         assert env["AIPERF_SERVER_METRICS_URLS"] == "http://ip-node-a:6100/metrics"
+
+    def test_direct_vllm_aggregated_worker_endpoint_uses_frontend_port(self):
+        from unittest.mock import patch
+
+        from srtctl.benchmarks.custom import CustomBenchmarkRunner
+        from srtctl.core.topology import Process
+
+        processes = [
+            Process("node-a", frozenset(range(4)), 7500, 6100, "agg", 0, node_rank=0),
+            Process("node-b", frozenset(range(4)), 7501, 0, "agg", 0, node_rank=1),
+        ]
+        stage = self._benchmark_stage("vllm", processes)
+
+        with patch(
+            "srtctl.cli.mixins.benchmark_stage.get_hostname_ip",
+            side_effect=lambda node, interface: f"ip-{node}",
+        ):
+            env = stage._get_benchmark_env(CustomBenchmarkRunner())
+
+        assert env["SRT_AGG_IPS"] == "ip-node-a"
+        assert env["SRT_AGG_ENDPOINTS"] == "ip-node-a:8000"
+        assert env["AIPERF_SERVER_METRICS_URLS"] == "http://ip-node-a:8000/metrics"
 
     def test_worker_endpoint_order_keeps_colocated_logical_workers_aligned(self):
         from unittest.mock import patch
