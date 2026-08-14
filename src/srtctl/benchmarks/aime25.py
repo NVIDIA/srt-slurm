@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""GPQA accuracy benchmark runner."""
+"""AIME25 accuracy benchmark runner."""
 
 from __future__ import annotations
 
@@ -14,17 +14,16 @@ if TYPE_CHECKING:
     from srtctl.core.schema import SrtConfig
 
 
-@register_benchmark("gpqa")
-class GPQARunner(BenchmarkRunner):
-    """GPQA (Graduate-level science QA) accuracy evaluation.
+@register_benchmark("aime25")
+class AIME25Runner(BenchmarkRunner):
+    """AIME25 (American Invitational Mathematics Examination 2025) accuracy eval.
 
-    Uses sgl-eval (`sgl-eval run gpqa`) against the OpenAI-compatible endpoint.
-    bench.sh installs sgl-eval and maps the args below to sgl-eval flags
-    (repeat -> --n-repeats). HF_TOKEN must be set via the recipe `environment:`
-    block (the GPQA dataset is gated on HuggingFace).
+    Uses sgl-eval (`sgl-eval run aime25`) against the OpenAI-compatible endpoint.
+    Mirrors the GPQA runner; bench.sh maps the args below to sgl-eval flags
+    (repeat -> --n-repeats).
 
     Optional config fields:
-        - benchmark.num_examples: Number of examples (default: 198)
+        - benchmark.num_examples: Number of examples (default: 30, AIME25 total)
         - benchmark.max_tokens: Max tokens per response (default: 32768)
         - benchmark.repeat: Number of repeats -> sgl-eval --n-repeats (default: 8)
         - benchmark.num_threads: Concurrent threads (default: 128)
@@ -34,18 +33,18 @@ class GPQARunner(BenchmarkRunner):
 
     @property
     def name(self) -> str:
-        return "GPQA"
+        return "AIME25"
 
     @property
     def script_path(self) -> str:
-        return "/srtctl-benchmarks/gpqa/bench.sh"
+        return "/srtctl-benchmarks/aime25/bench.sh"
 
     @property
     def local_script_dir(self) -> str:
-        return str(SCRIPTS_DIR / "gpqa")
+        return str(SCRIPTS_DIR / "aime25")
 
     def validate_config(self, config: SrtConfig) -> list[str]:
-        # GPQA has sensible defaults
+        # AIME25 has sensible defaults
         return []
 
     def build_command(
@@ -60,7 +59,7 @@ class GPQARunner(BenchmarkRunner):
             "bash",
             self.script_path,
             endpoint,
-            str(b.num_examples or 198),
+            str(b.num_examples or 30),
             str(b.max_tokens or 32768),
             str(b.repeat or 8),
             str(b.num_threads or 128),
