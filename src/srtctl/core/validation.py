@@ -276,7 +276,6 @@ def _preflight_container(
 
 
 _TELEMETRY_IMAGE_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("telemetry.container_image", ("container_image",)),
     ("telemetry.dcgm_exporter.container_image", ("dcgm_exporter", "container_image")),
     ("telemetry.node_exporter.container_image", ("node_exporter", "container_image")),
 )

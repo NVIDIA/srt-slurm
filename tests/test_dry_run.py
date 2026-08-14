@@ -262,6 +262,8 @@ class TestDryRunExecutionExtensions:
         output = capsys.readouterr().out
         assert "telemetry" in output
         assert "scraper" in output
+        assert "binary_path" in output
+        assert "tachometer-scraper" in output
         assert "storage_subdir" in output
 
     def test_dcgm_power_telemetry_details_shown(self, capsys):

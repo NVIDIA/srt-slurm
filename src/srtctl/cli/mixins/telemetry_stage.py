@@ -270,7 +270,7 @@ class TelemetryStageMixin:
         if not telemetry.enabled:
             logger.info("Telemetry disabled")
             return []
-        if telemetry.dcgm_exporter is None or telemetry.node_exporter is None or telemetry.container_image is None:
+        if telemetry.dcgm_exporter is None or telemetry.node_exporter is None:
             raise ValueError("Telemetry is enabled but required provider configuration is missing")
 
         logger.info("Starting telemetry provider: %s", telemetry.provider.value)
@@ -319,9 +319,9 @@ class TelemetryStageMixin:
         cmd = [
             telemetry.binary_path,
             "--config",
-            "/telemetry_config.toml",
+            str(config_path),
             "--local-dir",
-            f"/logs/{telemetry.storage_subdir}/local",
+            str(local_dir),
         ]
         if telemetry.sync_interval_secs > 0:
             cmd.extend(["--sync-interval", str(telemetry.sync_interval_secs)])
@@ -330,9 +330,6 @@ class TelemetryStageMixin:
         if telemetry.compaction_threads > 0:
             env_to_set["POLARS_MAX_THREADS"] = str(telemetry.compaction_threads)
 
-        scraper_mounts = self.runtime.container_mounts | {
-            config_path: Path("/telemetry_config.toml"),
-        }
         processes.append(
             ManagedProcess(
                 name="telemetry",
@@ -340,8 +337,6 @@ class TelemetryStageMixin:
                     command=cmd,
                     nodelist=[self.runtime.nodes.head],
                     output=str(self.runtime.log_dir / "telemetry.out"),
-                    container_image=telemetry.container_image,
-                    container_mounts=scraper_mounts,
                     env_to_set=env_to_set,
                     srun_options=self.runtime.srun_options,
                     het_group=self.runtime.nodes.het_group_for(self.runtime.nodes.head),

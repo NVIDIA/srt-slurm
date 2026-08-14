@@ -1067,15 +1067,16 @@ class LiveMetricsConfig:
 class TelemetryConfig:
     """Telemetry configuration for benchmark jobs.
 
-    The default provider bundles a scraper with dcgm_exporter and node_exporter.
-    Other providers can reuse the same top-level contract later.
+    The default provider runs the bundled Tachometer scraper binary with
+    dcgm_exporter and node_exporter. ``container_image`` remains accepted for
+    compatibility with existing configs but is not used by the native scraper.
 
     ``live_metrics`` is a lightweight complementary signal: it tails worker
     logs in-process (no external stack required) and writes a per-run
     ``batch_metrics.png`` during the benchmark.
 
     The ``dcgm-power`` provider needs only ``dcgm_exporter``: it runs a
-    head-node collector inside srtctl instead of the scraper container, so
+    head-node collector inside srtctl instead of the Tachometer scraper, so
     ``container_image``, ``binary_path``, and ``node_exporter`` stay unused.
     For that provider ``default_frequency`` is the collector cycle period in
     seconds, and ``required`` decides whether telemetry invalidity fails the job.
@@ -1085,7 +1086,7 @@ class TelemetryConfig:
     # NOTE: without by_value the schema accepts only enum member names, not "dcgm-power".
     provider: Annotated[TelemetryProvider, fields.Enum(TelemetryProvider, by_value=True)] = TelemetryProvider.SCRAPER
     container_image: str | None = None
-    binary_path: str = "/usr/local/bin/telemetry-scraper"
+    binary_path: str = "tachometer-scraper"
     default_frequency: float = 5.0
     sync_interval_secs: int = 120
     compaction_threads: int = 4
@@ -1929,12 +1930,12 @@ class SrtConfig:
         if telemetry.provider != TelemetryProvider.SCRAPER:
             raise ValidationError(f"Unsupported telemetry provider: {telemetry.provider}")
 
-        if not telemetry.container_image:
-            raise ValidationError("telemetry.container_image is required when telemetry is enabled")
         if telemetry.dcgm_exporter is None:
             raise ValidationError("telemetry.dcgm_exporter is required when telemetry is enabled")
         if telemetry.node_exporter is None:
             raise ValidationError("telemetry.node_exporter is required when telemetry is enabled")
+        if not telemetry.binary_path:
+            raise ValidationError("telemetry.binary_path must be non-empty")
         if telemetry.default_frequency <= 0:
             raise ValidationError("telemetry.default_frequency must be positive")
         if telemetry.sync_interval_secs < 0:

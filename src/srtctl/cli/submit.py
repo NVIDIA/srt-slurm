@@ -338,9 +338,10 @@ def show_config_details(config: SrtConfig) -> None:
 
         if config.telemetry.enabled:
             details.add_row("telemetry", "provider", config.telemetry.provider.value)
-            details.add_row("telemetry", "container_image", config.telemetry.container_image or "<unset>")
             details.add_row("telemetry", "storage_subdir", config.telemetry.storage_subdir)
             details.add_row("telemetry", "frequency", str(config.telemetry.default_frequency))
+            if config.telemetry.provider == TelemetryProvider.SCRAPER:
+                details.add_row("telemetry", "binary_path", config.telemetry.binary_path)
             exporter = config.telemetry.dcgm_exporter
             if config.telemetry.provider == TelemetryProvider.DCGM_POWER and exporter is not None:
                 details.add_row("telemetry", "required", str(config.telemetry.required))
@@ -376,7 +377,7 @@ def show_config_details(config: SrtConfig) -> None:
 def validate_setup(srtctl_source: Path) -> None:
     """Validate that make setup has been run and required binaries exist.
 
-    Checks for NATS, etcd, and compute-arch uv binaries. Raises SystemExit
+    Checks for NATS, etcd, Tachometer, and compute-arch uv binaries. Raises SystemExit
     with a clear error message if anything is missing.
     """
     missing = []
@@ -388,6 +389,8 @@ def validate_setup(srtctl_source: Path) -> None:
         missing.append("configs/etcd")
     if not (srtctl_source / "bin" / "uv").exists():
         missing.append("bin/uv (compute-arch uv)")
+    if not (srtctl_source / "bin" / "tachometer-scraper").exists():
+        missing.append("bin/tachometer-scraper (compute-arch Tachometer scraper)")
 
     if missing:
         console.print(f"\n[red bold]ERROR:[/] Required binaries not found in {srtctl_source}:")
