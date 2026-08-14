@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Port wzhao/kimi-k3-agentx-v2 runtime changes onto nightly-aug13 in place.
+# Port wzhao/kimi-k3-agentx-v2@face29e65 runtime changes onto the Aug 13
+# nightly in place.
 
 set -euo pipefail
 
@@ -7,7 +8,7 @@ readonly SITE_PACKAGES="${VLLM_SITE_PACKAGES:-/usr/local/lib/python3.12/dist-pac
 readonly VLLM_ROOT="${SITE_PACKAGES}/vllm"
 readonly VERSION_FILE="${VLLM_ROOT}/_version.py"
 readonly PATCH_FILE="${VLLM_DCP_PATCH_FILE:-/configs/patches/vllm-wzhao-kimi-k3-agentx-v2-on-nightly-aug13.patch}"
-readonly MARKER_FILE="${VLLM_ROOT}/.wzhao_kimi_k3_agentx_v2_on_g3d204dfda"
+readonly MARKER_FILE="${VLLM_ROOT}/.wzhao_kimi_k3_agentx_v2_face29e65_on_g3d204dfda"
 
 if [[ -f "${MARKER_FILE}" ]]; then
   echo "Kimi-K3 DCP runtime patch is already applied."
