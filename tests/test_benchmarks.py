@@ -438,6 +438,41 @@ class TestCustomBenchmarkRunner:
         assert len(frontend) == 1
         assert frontend[0].url == "http://ip-node-a:8000/metrics"
 
+    def test_raw_scrape_worker_targets_are_dynamo_scoped(self, caplog):
+        """Only Dynamo publishes worker /metrics on DYN_SYSTEM_PORT.
+
+        Other frontends get the frontend endpoint and a warning, rather than a
+        list of ports nothing is serving -- a run that looks instrumented but
+        yields no worker rows is the failure mode this knob exists to prevent.
+        """
+        import logging
+        from unittest.mock import patch
+
+        from srtctl.core.topology import Process
+
+        processes = [
+            Process("node-a", frozenset(range(4)), 7500, 6100, "prefill", 0, node_rank=0),
+            Process("node-b", frozenset(range(4)), 7501, 6101, "decode", 0, node_rank=0),
+        ]
+
+        with patch(
+            "srtctl.cli.mixins.benchmark_stage.get_hostname_ip",
+            side_effect=lambda node, interface: f"ip-{node}",
+        ):
+            dynamo = self._benchmark_stage("dynamo", processes)._analytics_scrape_targets()
+            with caplog.at_level(logging.WARNING):
+                sglang = self._benchmark_stage("sglang", processes)._analytics_scrape_targets()
+
+        assert [t.role for t in dynamo] == ["frontend", "prefill", "decode"]
+        assert [t.url for t in dynamo[1:]] == [
+            "http://ip-node-a:7500/metrics",
+            "http://ip-node-b:7501/metrics",
+        ]
+        assert [t.worker_id for t in dynamo[1:]] == ["node-a", "node-b"]
+
+        assert [t.role for t in sglang] == ["frontend"]
+        assert "does not publish worker /metrics" in caplog.text
+
     def test_worker_endpoint_order_keeps_colocated_logical_workers_aligned(self):
         from unittest.mock import patch
 

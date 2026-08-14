@@ -600,6 +600,20 @@ class BenchmarkStageMixin:
         agg leader -- not the orchestrator -- is what listens on
         ``FRONTEND_PUBLIC_PORT``. Every other pairing of that port in this file
         uses the same helper.
+
+        **Worker capture is Dynamo-scoped, by design.** Worker targets are the
+        leaders' ``DYN_SYSTEM_PORT``, which is where Dynamo publishes the worker
+        ``/metrics`` surface. That matches the rest of the knob rather than
+        narrowing it: ``expand_observability`` sets ``publish_events_and_metrics``
+        and the ``DYN_LOGGING_*`` span env, none of which a non-Dynamo frontend
+        consumes, so a non-Dynamo run has no worker surface for this capture to
+        find in the first place. Other frontends publish worker metrics on the
+        frontend or worker HTTP port instead -- ``_logical_worker_endpoints`` has
+        that mapping if this ever needs to grow one.
+
+        Rather than emit targets known to be wrong, such a run is warned once and
+        gets the frontend endpoint only. Silence would be the worse failure: the
+        run would look instrumented and yield no worker rows.
         """
         from srtctl.analysis.metrics_scraper import ScrapeTarget
 
@@ -613,6 +627,14 @@ class BenchmarkStageMixin:
                 worker_id=None,
             )
         )
+
+        if self.config.frontend.type != "dynamo":
+            logger.warning(
+                "observability scraper: frontend.type=%s does not publish worker /metrics on "
+                "DYN_SYSTEM_PORT; capturing the frontend endpoint only, no per-worker rows",
+                self.config.frontend.type,
+            )
+            return targets
 
         for process in self.backend_processes:
             if not process.is_leader or process.sys_port <= 0:
