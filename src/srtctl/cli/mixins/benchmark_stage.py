@@ -594,12 +594,18 @@ class BenchmarkStageMixin:
         node for multi-node workers, but only rank zero serves the logical
         worker's /metrics. Scraping followers would duplicate rows under a
         misleading worker_id.
+
+        The frontend target is ``_public_api_node``, not ``_orchestrator_node``:
+        those diverge for a single-worker direct-vLLM aggregated job, where the
+        agg leader -- not the orchestrator -- is what listens on
+        ``FRONTEND_PUBLIC_PORT``. Every other pairing of that port in this file
+        uses the same helper.
         """
         from srtctl.analysis.metrics_scraper import ScrapeTarget
 
         targets: list[ScrapeTarget] = []
 
-        frontend_host = get_hostname_ip(self._orchestrator_node(), self.runtime.network_interface)
+        frontend_host = get_hostname_ip(self._public_api_node(), self.runtime.network_interface)
         targets.append(
             ScrapeTarget(
                 url=f"http://{frontend_host}:{FRONTEND_PUBLIC_PORT}/metrics",

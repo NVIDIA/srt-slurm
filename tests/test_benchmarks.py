@@ -410,6 +410,34 @@ class TestCustomBenchmarkRunner:
         assert env["SRT_AGG_ENDPOINTS"] == "ip-node-a:8000"
         assert env["AIPERF_SERVER_METRICS_URLS"] == "http://ip-node-a:8000/metrics"
 
+    def test_raw_scrape_frontend_target_follows_the_public_api_node(self):
+        """The frontend /metrics target must be whoever serves the public port.
+
+        For a single-worker direct-vLLM aggregated job that is the agg leader,
+        not the orchestrator -- scraping the orchestrator would poll a node that
+        is not listening on FRONTEND_PUBLIC_PORT and lose the frontend rows.
+        """
+        from unittest.mock import patch
+
+        from srtctl.core.topology import Process
+
+        processes = [
+            Process("node-a", frozenset(range(4)), 7500, 6100, "agg", 0, node_rank=0),
+            Process("node-b", frozenset(range(4)), 7501, 0, "agg", 0, node_rank=1),
+        ]
+        stage = self._benchmark_stage("vllm", processes)
+        assert stage._orchestrator_node() == "head-node"  # the wrong answer, kept distinct on purpose
+
+        with patch(
+            "srtctl.cli.mixins.benchmark_stage.get_hostname_ip",
+            side_effect=lambda node, interface: f"ip-{node}",
+        ):
+            targets = stage._analytics_scrape_targets()
+
+        frontend = [t for t in targets if t.role == "frontend"]
+        assert len(frontend) == 1
+        assert frontend[0].url == "http://ip-node-a:8000/metrics"
+
     def test_worker_endpoint_order_keeps_colocated_logical_workers_aligned(self):
         from unittest.mock import patch
 
