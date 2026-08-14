@@ -470,3 +470,91 @@ class TestDryRunRemapRoot:
         show_config_details(config)
         output = capsys.readouterr().out
         assert "ENROOT_REMAP_ROOT" not in output
+
+
+class TestDryRunVllmOrchestrationWarnings:
+    """Dry-run warns when recipes set topology-managed vLLM flags."""
+
+    def test_orchestration_flags_emit_warnings(self, capsys):
+        config = _make_config(
+            {
+                "resources": {
+                    "gpu_type": "b200",
+                    "gpus_per_node": 8,
+                    "prefill_nodes": None,
+                    "decode_nodes": None,
+                    "prefill_workers": None,
+                    "decode_workers": None,
+                    "agg_nodes": 2,
+                    "agg_workers": 1,
+                },
+                "frontend": {"type": "vllm", "enable_multiple_frontends": False},
+                "backend": {
+                    "type": "vllm",
+                    "vllm_config": {
+                        "aggregated": {
+                            "tensor-parallel-size": 8,
+                            "headless": True,
+                            "master-addr": "10.9.9.9",
+                            "master-port": 26300,
+                        }
+                    },
+                },
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "WARNING:" in output
+        assert "vllm_config.aggregated.headless" in output
+        assert "vllm_config.aggregated.master-addr" in output
+        assert "vllm_config.aggregated.master-port" not in output
+
+    def test_clean_recipe_has_no_orchestration_warnings(self, capsys):
+        config = _make_config(
+            {
+                "resources": {
+                    "gpu_type": "b200",
+                    "gpus_per_node": 8,
+                    "prefill_nodes": None,
+                    "decode_nodes": None,
+                    "prefill_workers": None,
+                    "decode_workers": None,
+                    "agg_nodes": 2,
+                    "agg_workers": 1,
+                },
+                "frontend": {"type": "vllm", "enable_multiple_frontends": False},
+                "backend": {
+                    "type": "vllm",
+                    "vllm_config": {"aggregated": {"tensor-parallel-size": 8}},
+                },
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "vllm_config.aggregated.headless" not in output
+        assert "derives this from the job topology" not in output
+
+    def test_dynamo_recipe_has_no_direct_vllm_orchestration_warning(self, capsys):
+        config = _make_config(
+            {
+                "resources": {
+                    "gpu_type": "b200",
+                    "gpus_per_node": 8,
+                    "prefill_nodes": None,
+                    "decode_nodes": None,
+                    "prefill_workers": None,
+                    "decode_workers": None,
+                    "agg_nodes": 2,
+                    "agg_workers": 1,
+                },
+                "frontend": {"type": "dynamo"},
+                "backend": {
+                    "type": "vllm",
+                    "vllm_config": {"aggregated": {"master-addr": "10.9.9.9"}},
+                },
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "vllm_config.aggregated.master-addr" not in output
+        assert "configured value is ignored" not in output
