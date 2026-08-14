@@ -75,7 +75,7 @@ class RawMetricsScraper:
         self,
         log_dir: Path,
         targets: list[ScrapeTarget],
-        interval_seconds: float = 3.0,
+        interval_seconds: float = 1.0,
         output_name: str = "raw_prometheus.jsonl",
     ) -> None:
         self.output_path = Path(log_dir) / output_name
@@ -211,7 +211,7 @@ def try_start_raw_scraper(
         scraper = RawMetricsScraper(
             log_dir=log_dir,
             targets=targets,
-            interval_seconds=getattr(observability, "scrape_interval_seconds", 3.0),
+            interval_seconds=getattr(observability, "scrape_interval_seconds", 1.0),
             output_name=getattr(observability, "scrape_output", "raw_prometheus.jsonl"),
         )
         scraper.start(stop_event)

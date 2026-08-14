@@ -1053,7 +1053,10 @@ class ObservabilityConfig:
             Required when enable_otel is True.
         scrape_metrics: Run the in-job Prometheus scraper. Defaults to the value
             of ``enabled``; set False to opt out while keeping the rest.
-        scrape_interval_seconds: Seconds between scrape sweeps.
+        scrape_interval_seconds: Seconds between scrape sweeps. Default: 1.0.
+            The floor is 0.5; a sweep slower than the interval simply runs
+            back-to-back rather than queueing (see the drift-free pacing in
+            ``RawMetricsScraper``).
         scrape_output: Filename (under the run's log dir) for the RAW capture.
     """
 
@@ -1062,7 +1065,7 @@ class ObservabilityConfig:
     otel_endpoint: str | None = None
 
     scrape_metrics: bool | None = None
-    scrape_interval_seconds: float = 3.0
+    scrape_interval_seconds: float = 1.0
     scrape_output: str = "raw_prometheus.jsonl"
 
     Schema: ClassVar[type[Schema]] = Schema

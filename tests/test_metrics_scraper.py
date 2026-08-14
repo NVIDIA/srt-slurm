@@ -74,6 +74,17 @@ class TestScraperConfig:
         )
         assert cfg.observability.scrape_interval_seconds == 2.5
 
+    def test_interval_defaults_to_one_second(self, tmp_path):
+        """The schema default and the scraper's own fallback must not drift apart.
+
+        try_start_raw_scraper reads the interval off the config with a getattr
+        fallback, so a SimpleNamespace-style config that omits the field has to
+        land on the same cadence as one that went through the schema.
+        """
+        cfg = SrtConfig.Schema().load({**BASE_CONFIG, "observability": {"enabled": True}})
+        assert cfg.observability.scrape_interval_seconds == 1.0
+        assert RawMetricsScraper(tmp_path, []).interval_seconds == 1.0
+
 
 class TestRawMetricsScraper:
     def test_emits_the_raw_l1_contract(self, metrics_server, tmp_path):
