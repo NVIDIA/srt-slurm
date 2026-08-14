@@ -1032,13 +1032,13 @@ class ObservabilityConfig:
     * ``DYN_LOGGING_SPAN_EVENTS`` / ``DYN_LOGGING_JSONL`` / ``DYN_LOG=debug`` on
       prefill, decode and frontend -- per-request ``SPAN_CLOSED`` trace lines.
 
-    and, at benchmark time (see ``BenchmarkStageMixin``):
-
-    * ``AIPERF_SERVER_METRICS_URLS`` for ``benchmark.type: custom`` runs, so
-      AIPerf scrapes the workers and not just its auto-detected frontend.
-
     Every expansion uses setdefault semantics: an explicit value in the recipe
     always wins, so ``observability.enabled`` is safe to switch on globally.
+
+    Scope is deliberately server-side. The knob configures what the workers and
+    frontend *emit*; it does not reach into the benchmark client. Capturing the
+    ``/metrics`` surface it creates is a separate concern, handled by scraping
+    those endpoints directly rather than by asking a client to re-export them.
 
     Attributes:
         enabled: Master analytics knob. Default: False.
@@ -1046,26 +1046,11 @@ class ObservabilityConfig:
             and frontends. Requires otel_endpoint to be set. Default: False.
         otel_endpoint: OTEL collector endpoint (e.g. "http://10.0.0.1:4317").
             Required when enable_otel is True.
-        aiperf_export_level: Value passed through to AIPerf's ``--export-level``.
-            ``analytics`` implies per-record JSONL plus server-metrics JSONL on
-            builds that support it; older builds should use ``records`` and rely
-            on ``aiperf_server_metrics_formats``.
-        aiperf_server_metrics_formats: Formats AIPerf writes for server metrics.
-            ``jsonl`` is the one the dashboard's schema 2 reads directly; AIPerf
-            defaults to ``json,csv`` only.
-        aiperf_slice_duration: AIPerf ``--slice-duration`` (seconds).
     """
 
     enabled: bool = False
     enable_otel: bool = False
     otel_endpoint: str | None = None
-
-    aiperf_export_level: str = "records"
-    aiperf_server_metrics_formats: tuple[str, ...] = ("json", "csv", "jsonl")
-    # None by default: InferenceX's benchmark_lib.sh already passes
-    # --slice-duration 1.0, and repeating a flag is at best redundant and at
-    # worst a CLI parse error. Set this only when driving AIPerf directly.
-    aiperf_slice_duration: float | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 

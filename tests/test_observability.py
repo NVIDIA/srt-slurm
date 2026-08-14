@@ -102,16 +102,12 @@ class TestObservabilitySchema:
         assert cfg.observability.enabled is False
         assert cfg.observability.enable_otel is False
 
-    def test_aiperf_knobs_round_trip(self):
-        cfg = SrtConfig.Schema().load(
-            {
-                **BASE_CONFIG,
-                "observability": {
-                    "enabled": True,
-                    "aiperf_server_metrics_formats": ["json", "jsonl"],
-                },
-            }
-        )
-        assert list(cfg.observability.aiperf_server_metrics_formats) == ["json", "jsonl"]
-        # None by default: benchmark_lib.sh already passes --slice-duration.
-        assert cfg.observability.aiperf_slice_duration is None
+    def test_knob_exposes_no_benchmark_client_fields(self):
+        """The knob's scope is server-side emission only.
+
+        Client-side capture flags belong to whatever drives the client, not
+        here -- the ``/metrics`` surface this turns on is captured by scraping
+        the endpoints directly. Guards against the scope creeping back.
+        """
+        cfg = SrtConfig.Schema().load({**BASE_CONFIG, "observability": {"enabled": True}})
+        assert not [f for f in vars(cfg.observability) if f.startswith("aiperf")]
