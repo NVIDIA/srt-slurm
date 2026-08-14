@@ -36,6 +36,7 @@ from srtctl.core.power.contract import (
     STARTUP_FAILURE_REASONS,
     Reason,
     is_finite_number,
+    sha256_file,
 )
 from srtctl.core.power.manifest import STATUS_COMPLETE, ArtifactError, ExpectedWindow, WindowValidation
 from srtctl.core.power.samples import ObservedDevice, SampleRow, derive_observed_devices, read_samples
@@ -140,6 +141,7 @@ def validate_power_artifacts(
         return ArtifactReport(ok=False, failures=(f"manifest malformed: not an object ({type(manifest).__name__})",))
 
     failures: list[str] = _check_wire_contract(manifest)
+    failures += _check_samples_digest(manifest, power_dir / SAMPLES_FILENAME)
 
     try:
         expected_devices = _expected_devices(manifest)
@@ -220,6 +222,20 @@ def _check_sample_lifecycle(manifest: dict[str, Any], rows: Sequence[SampleRow])
     return failures
 
 
+def _check_samples_digest(manifest: dict[str, Any], samples_path: Path) -> list[str]:
+    """Require ``samples.csv`` to match the bytes finalized by the producer."""
+    stored = manifest.get("samples_sha256")
+    if not (isinstance(stored, str) and re.fullmatch(r"[0-9a-f]{64}", stored)):
+        return []
+    try:
+        actual = sha256_file(samples_path)
+    except OSError as exc:
+        return [f"samples_sha256 could not be verified: {exc}"]
+    if actual != stored:
+        return [f"samples_sha256 mismatch: manifest records {stored}, recomputed {actual}"]
+    return []
+
+
 def _check_wire_contract(manifest: dict[str, Any]) -> list[str]:
     """Reject a manifest whose own v1 wire and lifecycle metadata is invalid.
 
@@ -278,6 +294,10 @@ def _check_wire_contract(manifest: dict[str, Any]) -> list[str]:
         value = manifest.get(key)
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             failures.append(f"{key} is not a non-negative integer")
+
+    samples_digest = manifest.get("samples_sha256")
+    if not (isinstance(samples_digest, str) and re.fullmatch(r"[0-9a-f]{64}", samples_digest)):
+        failures.append("samples_sha256 is not a lowercase SHA-256 digest")
 
     required = manifest.get("required")
     if not isinstance(required, bool):

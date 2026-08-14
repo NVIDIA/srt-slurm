@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -129,6 +130,15 @@ def is_finite_number(value: Any) -> TypeGuard[int | float]:
 def dedupe(values: list[str]) -> tuple[str, ...]:
     """First-seen-order deduplication for reason-code accumulation."""
     return tuple(dict.fromkeys(values))
+
+
+def sha256_file(path: Path) -> str:
+    """Return the lowercase SHA-256 digest of the exact bytes at ``path``."""
+    hasher = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
 
 
 def atomic_write_json(path: Path, payload: Any) -> None:

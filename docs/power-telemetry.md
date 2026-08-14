@@ -79,10 +79,13 @@ group live once in the manifest topology.
 
 `manifest.json` records producer identity (version, git commit, exporter image
 and its SHA-256), the sample interval, expected and observed device sets, the
-topology mapping, the expected window list, terminal status, per-window
-coverage validation, and reason codes. `status` is the lifecycle outcome;
+topology mapping, the expected window list, the SHA-256 of the finalized
+`samples.csv` bytes, terminal status, per-window coverage validation, and
+reason codes. `status` is the lifecycle outcome;
 `publication_valid` is the separate publication gate. Reason codes are stable
 machine-readable strings enumerated in `srtctl/core/power/contract.py`.
+The digest is required for offline publication validation, so packages created
+before `samples_sha256` was recorded cannot be certified by this validator.
 
 A window file records the formal benchmark boundaries on the head-node Unix
 clock plus a monotonic `duration`, and points at the SA-Bench result it

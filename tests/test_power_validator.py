@@ -3,6 +3,7 @@
 
 """Offline re-validation of a retained power artifact package."""
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -123,6 +124,7 @@ def package(tmp_path):
         observed = derive_observed_devices(written)
         manifest.observed_devices = observed
         manifest.sample_row_count = len(written)
+        manifest.samples_sha256 = hashlib.sha256((power_dir / SAMPLES_FILENAME).read_bytes()).hexdigest()
         manifest.scrape_count = (max(row.scrape_seq for row in written) + 1) if written else 0
         # The audit the producer stores is the one the validator recomputes, so it can never drift.
         manifest.window_validations = validate_expected_windows(
@@ -218,6 +220,32 @@ class TestIndependenceFromTheManifestBooleans:
 
         assert report.ok is False
         assert any("samples_csv_malformed" in failure for failure in report.failures)
+
+    def test_changed_power_values_are_rejected(self, package):
+        log_dir, power_dir = package()
+        samples = power_dir / SAMPLES_FILENAME
+        samples.write_text(samples.read_text().replace("400.0", "1.0"))
+
+        report = _validate(power_dir, log_dir)
+
+        assert report.ok is False
+        assert any("samples_sha256 mismatch" in failure for failure in report.failures)
+
+    @pytest.mark.parametrize("digest", [None, "", "A" * 64, "0" * 63])
+    def test_missing_or_malformed_samples_digest_is_rejected(self, package, digest):
+        log_dir, power_dir = package()
+        manifest_path = power_dir / MANIFEST_FILENAME
+        manifest = json.loads(manifest_path.read_text())
+        if digest is None:
+            manifest.pop("samples_sha256", None)
+        else:
+            manifest["samples_sha256"] = digest
+        atomic_write_json(manifest_path, manifest)
+
+        report = _validate(power_dir, log_dir)
+
+        assert report.ok is False
+        assert any("samples_sha256 is not a lowercase SHA-256 digest" in failure for failure in report.failures)
 
     def test_gap_beyond_the_threshold_is_rejected(self, package):
         expected = build_expected_devices(_processes())

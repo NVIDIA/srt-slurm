@@ -3,6 +3,7 @@
 
 """Head-node power collector lifecycle against fake DCGM endpoints."""
 
+import hashlib
 import json
 import subprocess
 import threading
@@ -254,6 +255,21 @@ class TestCollection:
         assert len({row.gpu_uuid for row in rows}) == 2 * GPUS_PER_NODE
         assert {row.hostname for row in rows} == {"node-a", "node-b"}
         assert {row.scrape_seq for row in rows} == {0}
+
+    def test_terminal_manifest_records_the_samples_digest(self, tmp_path, exporters):
+        endpoint = exporters(_body("a"))
+        session = _session(
+            tmp_path,
+            _endpoints(("node-a", endpoint.url)),
+            processes=_processes()[:1],
+        )
+        session.initialize()
+        session.collect_once()
+
+        session.stop_and_finalize()
+
+        samples = session.power_dir / SAMPLES_FILENAME
+        assert _manifest(session)["samples_sha256"] == hashlib.sha256(samples.read_bytes()).hexdigest()
 
     def test_hostname_comes_from_the_endpoint_map(self, tmp_path, exporters):
         a = exporters(_body("a"))
