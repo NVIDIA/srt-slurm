@@ -30,7 +30,7 @@ window themselves.
 # NOTE: unsupported end-to-end until a benchmark adapter stamps windows —
 # with this exact config every run is unpublishable and `required: true` fails.
 benchmark:
-  type: sa-bench          # window stamping ships with the benchmark adapter
+  type: sa-bench          # future benchmark-side adapter must stamp the windows
   client_placement: head  # keeps sample and window clocks on one host
   isl: 8192
   osl: 1024
