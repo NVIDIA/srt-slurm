@@ -212,7 +212,7 @@ def show_config_details(config: SrtConfig) -> None:
 
     # --- Container Mounts ---
     mounts_table = Table(title="Container Mounts", show_lines=False, pad_edge=False)
-    mounts_table.add_column("Source", style="dim", width=14)
+    mounts_table.add_column("Source", style="dim", width=20)
     mounts_table.add_column("Host Path", style="green")
     mounts_table.add_column("Container Path", style="cyan")
 
@@ -227,6 +227,12 @@ def show_config_details(config: SrtConfig) -> None:
         for host_path, container_path in cluster_mounts.items():
             expanded = os.path.expandvars(host_path)
             mounts_table.add_row("srtslurm.yaml", expanded, container_path)
+
+    # Host nsys tree from profiling.nsys_dir
+    nsys_mount = config.profiling.nsys_container_mount()
+    if nsys_mount is not None:
+        host_nsys_dir, container_nsys_dir = nsys_mount
+        mounts_table.add_row("profiling.nsys_dir", str(host_nsys_dir), str(container_nsys_dir))
 
     # Recipe extra_mount (simple string mounts)
     if config.extra_mount:

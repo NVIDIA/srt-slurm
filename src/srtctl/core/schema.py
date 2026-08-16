@@ -291,6 +291,10 @@ NSYS_MANUAL_DEFAULT_ARGS: tuple[str, ...] = (
 # Capture window used by ``nsys-manual.sh`` when a recipe omits ``duration_secs``.
 NSYS_MANUAL_DEFAULT_DURATION_SECS = 5
 
+# Bind-mount destination for a host Nsight Systems *target* tree
+# (``profiling.nsys_dir``). The in-container binary is ``{this}/nsys``.
+NSYS_HOST_CONTAINER_DIR = "/opt/srtctl-nsys"
+
 
 class TelemetryProvider(str, Enum):
     SCRAPER = "scraper"
@@ -878,8 +882,16 @@ class ProfilingConfig:
     duration_secs: int | None = None  # nsys --duration: seconds to capture after delay
     benchmark_duration_secs: int = 300  # total traffic generation duration (must cover delay + duration)
 
-    # Default nsys binary name/path. ``SRTCTL_NSYS_BIN`` env overrides this at runtime.
+    # Default nsys binary name/path inside the container. ``SRTCTL_NSYS_BIN``
+    # overrides this at runtime. Ignored when ``nsys_dir`` is set.
     nsys_path: str = "nsys"
+
+    # Host path to an Nsight Systems *target* directory (the tree that contains
+    # ``nsys``, ``nsys-launcher``, and the sibling ``.so`` files — e.g.
+    # ``.../nsight-systems-*/target-linux-sbsa-armv8``). Bind-mounted at
+    # ``NSYS_HOST_CONTAINER_DIR`` so the image does not need nsys installed.
+    # A path to the ``nsys`` binary itself is also accepted (parent is mounted).
+    nsys_dir: str | None = None
 
     # Restrict nsys wrapping to specific DP ranks (``nsys``/``nsys-time`` only).
     profile_ranks: tuple[int, ...] | None = field(
@@ -997,14 +1009,35 @@ class ProfilingConfig:
 
         return env
 
+    def resolved_nsys_host_dir(self) -> Path | None:
+        """Absolute host directory of the Nsight Systems target tree, or None."""
+        if not self.nsys_dir:
+            return None
+        path = Path(os.path.expandvars(self.nsys_dir)).expanduser()
+        if path.is_file():
+            path = path.parent
+        return path.resolve()
+
+    def nsys_container_mount(self) -> tuple[Path, Path] | None:
+        """Host dir -> ``NSYS_HOST_CONTAINER_DIR``, or None when ``nsys_dir`` is unset."""
+        host = self.resolved_nsys_host_dir()
+        if host is None:
+            return None
+        return host, Path(NSYS_HOST_CONTAINER_DIR)
+
     @property
     def nsys_binary(self) -> str:
-        """nsys executable to invoke.
+        """nsys executable to invoke inside the container.
 
-        Defaults to ``nsys_path``. Override at runtime via ``SRTCTL_NSYS_BIN`` when
-        the container doesn't ship nsys on PATH.
+        Order: ``SRTCTL_NSYS_BIN`` env, then ``{NSYS_HOST_CONTAINER_DIR}/nsys``
+        when ``nsys_dir`` is set, else ``nsys_path`` (default ``nsys`` on PATH).
         """
-        return os.environ.get("SRTCTL_NSYS_BIN", self.nsys_path)
+        override = os.environ.get("SRTCTL_NSYS_BIN")
+        if override:
+            return override
+        if self.nsys_dir:
+            return f"{NSYS_HOST_CONTAINER_DIR}/nsys"
+        return self.nsys_path
 
     def _get_nsys_prefix_trtllm(self, output_file: str) -> list[str]:
         """Get nsys command prefix for TRTLLM workers.
@@ -1951,6 +1984,7 @@ class SrtConfig:
         known_types = tuple(t.value for t in ProfilingType)
         if prof.type not in known_types:
             raise ValidationError(f"Unknown profiling.type {prof.type!r}. Supported types: {', '.join(known_types)}")
+        self._validate_nsys_dir()
         if not prof.enabled:
             return
 
@@ -2017,6 +2051,21 @@ class SrtConfig:
             self._validate_nsys_profiling_steps()
             if backend_type == "vllm":
                 self._validate_vllm_nsys_profiler_config_not_set()
+
+    def _validate_nsys_dir(self) -> None:
+        """``nsys_dir`` is an nsys-only host bind-mount; do not combine with ``nsys_path``."""
+        prof = self.profiling
+        if not prof.nsys_dir:
+            return
+        if not prof.is_nsys:
+            raise ValidationError(
+                "profiling.nsys_dir is only valid when profiling.type is nsys, nsys-manual, or nsys-time"
+            )
+        if prof.nsys_path != "nsys":
+            raise ValidationError(
+                "profiling.nsys_dir already selects the nsys binary at "
+                f"{NSYS_HOST_CONTAINER_DIR}/nsys; do not also set profiling.nsys_path"
+            )
 
     def _validate_nsys_manual(self) -> None:
         """Validate ``nsys-manual`` recipe shape (``phases``, ``duration_secs``)."""

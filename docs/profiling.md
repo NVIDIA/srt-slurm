@@ -92,6 +92,8 @@ profiling:
 | `decode.stop_step`      | Step number to end decode profiling           | `50`     |
 | `aggregated.start_step` | Step number to begin aggregated profiling     | `0`      |
 | `aggregated.stop_step`  | Step number to end aggregated profiling       | `50`     |
+| `nsys_dir`              | Host Nsight target tree, mounted at `/opt/srtctl-nsys` | unset |
+| `nsys_path`             | In-container nsys binary (ignored if `nsys_dir` is set) | `nsys` |
 
 ## Constraints
 
@@ -147,6 +149,10 @@ profiling:
   phases: prefill      # "prefill" or "decode". Required for disaggregated jobs,
                        # must be omitted for aggregated ones.
   duration_secs: 5     # Optional, defaults to 5.
+  # Optional: bind-mount a host Nsight Systems *target* tree so the image does
+  # not need nsys installed. Point at target-linux-sbsa-armv8 (or
+  # target-linux-x64), not the installer root. Mounted at /opt/srtctl-nsys.
+  # nsys_dir: /path/to/nsight-systems-*/target-linux-sbsa-armv8
 ```
 
 Exactly one process is profiled: **endpoint 0, rank 0** of the chosen phase. Every
@@ -205,6 +211,30 @@ Note that the report is written when the worker exits, not when the window
 closes, and nsys buffers those messages — so they show up at teardown, below the
 SLURM step-cancellation notice. That ordering is normal and does not mean the
 capture failed.
+
+### Using a host nsys instead of the container's
+
+Do not overlay a single `nsys` binary onto `/usr/bin/nsys`. The target package
+is a relocatable tree: `nsys` has `RPATH $ORIGIN` and needs sibling libraries
+(`libcupti*.so`, `libcrypto.so.3`, `nsys-launcher`, `plugins/`, …). Mount the
+whole architecture-specific directory.
+
+The recipe field does that for you:
+
+```yaml
+profiling:
+  type: "nsys-manual"
+  phases: prefill
+  duration_secs: 5
+  nsys_dir: /home/you/nsight-systems-2026.1.3/target-linux-sbsa-armv8
+```
+
+srtctl bind-mounts that host path at `/opt/srtctl-nsys` and wraps workers with
+`/opt/srtctl-nsys/nsys`. The same field works for `nsys` and `nsys-time`.
+
+You can still do the mount yourself (`extra_mount` or `srtslurm.yaml`
+`default_mounts`) and set `profiling.nsys_path: /opt/nsys-host/nsys` instead —
+do not set both `nsys_dir` and `nsys_path`.
 
 A full working recipe lives in
 [`examples/nsys-manual-qwen35-disagg.yaml`](../examples/nsys-manual-qwen35-disagg.yaml).
@@ -324,6 +354,7 @@ logs/{job_id}_{workers}_{timestamp}/
 - Disaggregated mode requires both `profiling.prefill` and `profiling.decode` to be set.
 - Aggregated mode requires `profiling.aggregated` to be set (and `profiling.prefill`/`profiling.decode` must not be set).
 - For `nsys-manual`, disaggregated jobs require `profiling.phases`, aggregated jobs must omit it, and the per-phase sections are not allowed at all.
+- `profiling.nsys_dir` is only valid with `nsys` / `nsys-manual` / `nsys-time`, and cannot be combined with `profiling.nsys_path`.
 
 ### Empty profile output
 Ensure the benchmark workload is generating requests during the profiling window.

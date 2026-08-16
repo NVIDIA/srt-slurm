@@ -113,6 +113,22 @@ class TestDryRunMounts:
         assert "/model" in output
         assert "recipe" not in output
 
+    def test_nsys_dir_mount_shown(self, capsys):
+        config = _make_config(
+            {
+                "profiling": {
+                    "type": "nsys-manual",
+                    "phases": "prefill",
+                    "nsys_dir": "/host/nsys-tree",
+                }
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "/host/nsys-tree" in output
+        assert "/opt/srtctl-nsys" in output
+        assert "profiling.nsys_dir" in output
+
 
 class TestDryRunEnvironment:
     """Test that environment variables from all levels appear in dry-run output."""

@@ -120,6 +120,72 @@ class TestProfilingConfig:
         # trtllm path
         assert ProfilingConfig(type="nsys").get_nsys_prefix("/out/w0", backend_type="trtllm")[0] == "/opt/nsight/nsys"
 
+    def test_nsys_dir_selects_mounted_binary(self, monkeypatch):
+        """profiling.nsys_dir points the wrapper at the bind-mounted host nsys."""
+        from srtctl.core.schema import NSYS_HOST_CONTAINER_DIR, ProfilingConfig
+
+        monkeypatch.delenv("SRTCTL_NSYS_BIN", raising=False)
+        prof = ProfilingConfig(
+            type="nsys-manual",
+            phases="prefill",
+            nsys_dir="/host/nsight/target-linux-sbsa-armv8",
+        )
+        assert prof.nsys_binary == f"{NSYS_HOST_CONTAINER_DIR}/nsys"
+        assert prof.get_nsys_prefix("/out", mode="prefill")[0] == f"{NSYS_HOST_CONTAINER_DIR}/nsys"
+
+    def test_nsys_dir_env_override_still_wins(self, monkeypatch):
+        """SRTCTL_NSYS_BIN still overrides even when nsys_dir is set."""
+        from srtctl.core.schema import ProfilingConfig
+
+        monkeypatch.setenv("SRTCTL_NSYS_BIN", "/custom/nsys")
+        prof = ProfilingConfig(type="nsys", nsys_dir="/host/nsight")
+        assert prof.nsys_binary == "/custom/nsys"
+
+    def test_nsys_dir_rejected_for_non_nsys_types(self):
+        """nsys_dir is meaningless for torch / none."""
+        from marshmallow import ValidationError
+
+        from srtctl.core.schema import ModelConfig, ProfilingConfig, ResourceConfig, SrtConfig
+
+        with pytest.raises(ValidationError, match="nsys_dir is only valid"):
+            SrtConfig(
+                name="test",
+                model=ModelConfig(path="/model", container="/container", precision="fp8"),
+                resources=ResourceConfig(
+                    gpu_type="h100",
+                    prefill_nodes=1,
+                    decode_nodes=1,
+                    prefill_workers=1,
+                    decode_workers=1,
+                ),
+                profiling=ProfilingConfig(type="torch", nsys_dir="/host/nsight"),
+            )
+
+    def test_nsys_dir_rejects_custom_nsys_path(self):
+        """nsys_dir already chooses the binary; nsys_path would conflict."""
+        from marshmallow import ValidationError
+
+        from srtctl.core.schema import ModelConfig, ProfilingConfig, ResourceConfig, SrtConfig
+
+        with pytest.raises(ValidationError, match="do not also set profiling.nsys_path"):
+            SrtConfig(
+                name="test",
+                model=ModelConfig(path="/model", container="/container", precision="fp8"),
+                resources=ResourceConfig(
+                    gpu_type="h100",
+                    prefill_nodes=1,
+                    decode_nodes=1,
+                    prefill_workers=1,
+                    decode_workers=1,
+                ),
+                profiling=ProfilingConfig(
+                    type="nsys-manual",
+                    phases="prefill",
+                    nsys_dir="/host/nsight",
+                    nsys_path="/usr/bin/nsys",
+                ),
+            )
+
     def test_manual_nsys_phase_parsing(self):
         """phases: decode loads as nsys-manual with built-in nsys flags."""
         from srtctl.core.schema import NSYS_MANUAL_DEFAULT_ARGS, ProfilingConfig
@@ -1078,3 +1144,88 @@ class TestProfilingIntegration:
             "1x2",
             "inf",
         ]
+
+
+class TestNsysDirMount:
+    """profiling.nsys_dir bind-mounts a host Nsight target tree into the container."""
+
+    def _runtime_from_config(self, tmp_path, config):
+        import os
+        import subprocess
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.core.runtime import RuntimeContext
+
+        slurm_env = {
+            "SLURM_JOB_ID": "12345",
+            "SLURM_JOBID": "12345",
+            "SLURM_NODELIST": "gpu-[01-02]",
+            "SLURM_JOB_NUM_NODES": "2",
+            "SRTCTL_SOURCE_DIR": str(Path(__file__).parent.parent),
+        }
+
+        def mock_scontrol(cmd, **kwargs):
+            if cmd[0] == "scontrol" and "hostnames" in cmd:
+                result = MagicMock()
+                result.stdout = "gpu-01\ngpu-02"
+                result.returncode = 0
+                return result
+            raise subprocess.CalledProcessError(1, cmd)
+
+        with (
+            patch.dict(os.environ, slurm_env),
+            patch("subprocess.run", mock_scontrol),
+            patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
+        ):
+            return RuntimeContext.from_config(config, job_id="12345", log_dir_base=tmp_path)
+
+    def _config(self, tmp_path, nsys_dir):
+        from srtctl.core.schema import ModelConfig, ProfilingConfig, ResourceConfig, SrtConfig
+
+        model_path = tmp_path / "model"
+        model_path.mkdir()
+        container_path = tmp_path / "container.sqsh"
+        container_path.touch()
+        return SrtConfig(
+            name="test",
+            model=ModelConfig(path=str(model_path), container=str(container_path), precision="fp8"),
+            resources=ResourceConfig(
+                gpu_type="h100",
+                gpus_per_node=8,
+                prefill_nodes=1,
+                decode_nodes=1,
+                prefill_workers=1,
+                decode_workers=1,
+            ),
+            profiling=ProfilingConfig(type="nsys-manual", phases="prefill", nsys_dir=nsys_dir),
+        )
+
+    def test_mounts_host_tree_at_opt_srtctl_nsys(self, tmp_path):
+        from pathlib import Path
+
+        from srtctl.core.schema import NSYS_HOST_CONTAINER_DIR
+
+        nsys_dir = tmp_path / "target-linux-sbsa-armv8"
+        nsys_dir.mkdir()
+        (nsys_dir / "nsys").write_text("")
+        runtime = self._runtime_from_config(tmp_path, self._config(tmp_path, str(nsys_dir)))
+        assert runtime.container_mounts[nsys_dir.resolve()] == Path(NSYS_HOST_CONTAINER_DIR)
+
+    def test_accepts_path_to_nsys_binary(self, tmp_path):
+        from pathlib import Path
+
+        from srtctl.core.schema import NSYS_HOST_CONTAINER_DIR
+
+        nsys_dir = tmp_path / "target-linux-sbsa-armv8"
+        nsys_dir.mkdir()
+        nsys_bin = nsys_dir / "nsys"
+        nsys_bin.write_text("")
+        runtime = self._runtime_from_config(tmp_path, self._config(tmp_path, str(nsys_bin)))
+        assert runtime.container_mounts[nsys_dir.resolve()] == Path(NSYS_HOST_CONTAINER_DIR)
+
+    def test_missing_nsys_binary_raises(self, tmp_path):
+        empty = tmp_path / "not-an-nsys-tree"
+        empty.mkdir()
+        with pytest.raises(FileNotFoundError, match="containing an nsys binary"):
+            self._runtime_from_config(tmp_path, self._config(tmp_path, str(empty)))
