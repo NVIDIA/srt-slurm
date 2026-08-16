@@ -14,6 +14,7 @@ dependencies = [
     "marshmallow>=3.20.0",
     "marshmallow-dataclass>=8.6.0",
     "mcp>=1.27.0",
+    "prometheus-client>=0.20.0",
     "pydantic>=2.5.0",
     "requests>=2.31.0",
     "rich>=13.0.0",

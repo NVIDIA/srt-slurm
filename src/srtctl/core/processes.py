@@ -22,23 +22,33 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-def terminate_and_reap(popen: subprocess.Popen, *, terminate_timeout: float = 10.0, kill_timeout: float = 5.0) -> bool:
-    """Terminate, then kill, then report whether the child was reaped."""
+@dataclass(frozen=True)
+class TerminationOutcome:
+    """How local process termination completed."""
+
+    reaped: bool
+    force_killed: bool
+
+
+def terminate_and_reap(
+    popen: subprocess.Popen, *, terminate_timeout: float = 10.0, kill_timeout: float = 5.0
+) -> TerminationOutcome:
+    """Terminate, then kill, while preserving whether SIGKILL was required."""
     if popen.poll() is not None:
-        return True
+        return TerminationOutcome(reaped=True, force_killed=False)
     popen.terminate()
     try:
         popen.wait(timeout=terminate_timeout)
-        return True
+        return TerminationOutcome(reaped=True, force_killed=False)
     except subprocess.TimeoutExpired:
         logger.warning("Process did not terminate, killing...")
     popen.kill()
     try:
         popen.wait(timeout=kill_timeout)
-        return True
+        return TerminationOutcome(reaped=True, force_killed=True)
     except subprocess.TimeoutExpired:
         logger.error("Process was not reaped after SIGKILL")
-        return False
+        return TerminationOutcome(reaped=False, force_killed=True)
 
 
 @dataclass
@@ -74,7 +84,8 @@ class ManagedProcess:
         if not self.is_running:
             return
 
-        if not terminate_and_reap(self.popen, terminate_timeout=timeout, kill_timeout=5):
+        outcome = terminate_and_reap(self.popen, terminate_timeout=timeout, kill_timeout=5)
+        if not outcome.reaped:
             logger.error("Process %s was not reaped after SIGKILL", self.name)
 
 

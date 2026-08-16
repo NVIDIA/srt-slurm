@@ -707,7 +707,7 @@ class TestVllmNsysProfilerConfig:
         from srtctl.backends.vllm import VLLMProtocol, VLLMServerConfig
         from srtctl.core.topology import Process
 
-        monkeypatch.setattr(slurm_mod, "get_hostname_ip", lambda node: "10.0.0.1")
+        monkeypatch.setattr(slurm_mod, "get_hostname_ip", lambda node, interface=None: "10.0.0.1")
 
         backend = VLLMProtocol(vllm_config=VLLMServerConfig(decode=decode_cfg or {"tensor-parallel-size": 1}))
         process = Process(
@@ -719,7 +719,12 @@ class TestVllmNsysProfilerConfig:
             endpoint_index=endpoint_index,
             node_rank=node_rank,
         )
-        runtime = SimpleNamespace(model_path=Path("/model"), is_hf_model=False, request_plane="nats")
+        runtime = SimpleNamespace(
+            model_path=Path("/model"),
+            is_hf_model=False,
+            request_plane="nats",
+            network_interface="eth0",
+        )
         return backend.build_worker_command(
             process=process,
             endpoint_processes=[process],
