@@ -736,6 +736,10 @@ async def benchmark(
 
     print("Starting initial single prompt test run...")
     test_prompt, test_prompt_len, test_output_len, test_mm_content = input_requests[0]
+    test_output_len = min(
+        test_output_len,
+        int(os.environ.get("SA_BENCH_TEST_OUTPUT_LEN", "16")),
+    )
     if backend != "openai-chat" and test_mm_content is not None:
         # multi-modal benchmark is only available on OpenAI Chat backend.
         raise ValueError("Multi-modal content is only supported on 'openai-chat' backend.")
