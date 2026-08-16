@@ -1227,5 +1227,23 @@ class TestNsysDirMount:
     def test_missing_nsys_binary_raises(self, tmp_path):
         empty = tmp_path / "not-an-nsys-tree"
         empty.mkdir()
-        with pytest.raises(FileNotFoundError, match="containing an nsys binary"):
+        with pytest.raises(FileNotFoundError, match="bin/nsys"):
             self._runtime_from_config(tmp_path, self._config(tmp_path, str(empty)))
+
+    def test_walks_up_target_tree_to_bin_nsys_symlink(self, tmp_path):
+        """Nsight refuses to run the ELF in target-linux-*; use bin/nsys instead."""
+        from pathlib import Path
+
+        from srtctl.core.schema import NSYS_HOST_CONTAINER_DIR
+
+        install = tmp_path / "nsight-systems-2026.1.3"
+        target = install / "target-linux-sbsa-armv8"
+        target.mkdir(parents=True)
+        (target / "nsys").write_text("")
+        (install / "bin").mkdir()
+        (install / "bin" / "nsys").symlink_to("../target-linux-sbsa-armv8/nsys")
+
+        config = self._config(tmp_path, str(target))
+        runtime = self._runtime_from_config(tmp_path, config)
+        assert runtime.container_mounts[install.resolve()] == Path(NSYS_HOST_CONTAINER_DIR)
+        assert config.profiling.nsys_binary == f"{NSYS_HOST_CONTAINER_DIR}/bin/nsys"

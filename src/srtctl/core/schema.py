@@ -291,9 +291,27 @@ NSYS_MANUAL_DEFAULT_ARGS: tuple[str, ...] = (
 # Capture window used by ``nsys-manual.sh`` when a recipe omits ``duration_secs``.
 NSYS_MANUAL_DEFAULT_DURATION_SECS = 5
 
-# Bind-mount destination for a host Nsight Systems *target* tree
-# (``profiling.nsys_dir``). The in-container binary is ``{this}/nsys``.
+# Bind-mount destination for a host Nsight Systems install
+# (``profiling.nsys_dir``). The in-container CLI is ``{this}/bin/nsys`` when
+# the host tree has the usual ``bin/nsys -> ../target-linux-*/nsys`` layout.
 NSYS_HOST_CONTAINER_DIR = "/opt/srtctl-nsys"
+
+
+def _promote_nsys_install_root(path: Path) -> Path:
+    """Prefer the Nsight install root that contains ``bin/nsys``.
+
+    The ELF in ``target-linux-*/nsys`` refuses to run unless invoked through
+    that symlink ("Modify the executable in your command to be a symbolic
+    link pointing to 'target-linux-.../nsys'").
+    """
+    if (path / "bin" / "nsys").exists():
+        return path
+    if path.name == "bin" and (path / "nsys").exists():
+        return path.parent
+    parent = path.parent
+    if path.name.startswith("target-linux-") and (parent / "bin" / "nsys").exists():
+        return parent
+    return path
 
 
 class TelemetryProvider(str, Enum):
@@ -886,11 +904,11 @@ class ProfilingConfig:
     # overrides this at runtime. Ignored when ``nsys_dir`` is set.
     nsys_path: str = "nsys"
 
-    # Host path to an Nsight Systems *target* directory (the tree that contains
-    # ``nsys``, ``nsys-launcher``, and the sibling ``.so`` files — e.g.
-    # ``.../nsight-systems-*/target-linux-sbsa-armv8``). Bind-mounted at
-    # ``NSYS_HOST_CONTAINER_DIR`` so the image does not need nsys installed.
-    # A path to the ``nsys`` binary itself is also accepted (parent is mounted).
+    # Host path to an Nsight Systems install. Either the install root
+    # (``.../nsight-systems-*/``, containing ``bin/nsys``) or the architecture
+    # target tree (``.../target-linux-sbsa-armv8``) — the latter is walked up
+    # to the install root so nsys is invoked via the ``bin/nsys`` symlink.
+    # Bind-mounted at ``NSYS_HOST_CONTAINER_DIR``.
     nsys_dir: str | None = None
 
     # Restrict nsys wrapping to specific DP ranks (``nsys``/``nsys-time`` only).
@@ -1010,13 +1028,30 @@ class ProfilingConfig:
         return env
 
     def resolved_nsys_host_dir(self) -> Path | None:
-        """Absolute host directory of the Nsight Systems target tree, or None."""
+        """Absolute host directory to bind-mount, or None.
+
+        This is the Nsight install root when ``bin/nsys`` exists (possibly after
+        walking up from ``target-linux-*``), otherwise the path as given.
+        """
         if not self.nsys_dir:
             return None
         path = Path(os.path.expandvars(self.nsys_dir)).expanduser()
         if path.is_file():
             path = path.parent
-        return path.resolve()
+        return _promote_nsys_install_root(path.resolve())
+
+    def nsys_host_cli(self) -> Path | None:
+        """Host nsys CLI to expose in the container (``bin/nsys`` preferred)."""
+        host = self.resolved_nsys_host_dir()
+        if host is None:
+            return None
+        cli = host / "bin" / "nsys"
+        if cli.exists():
+            return cli
+        direct = host / "nsys"
+        if direct.is_file():
+            return direct
+        return None
 
     def nsys_container_mount(self) -> tuple[Path, Path] | None:
         """Host dir -> ``NSYS_HOST_CONTAINER_DIR``, or None when ``nsys_dir`` is unset."""
@@ -1029,15 +1064,19 @@ class ProfilingConfig:
     def nsys_binary(self) -> str:
         """nsys executable to invoke inside the container.
 
-        Order: ``SRTCTL_NSYS_BIN`` env, then ``{NSYS_HOST_CONTAINER_DIR}/nsys``
+        Order: ``SRTCTL_NSYS_BIN`` env, then ``{NSYS_HOST_CONTAINER_DIR}/bin/nsys``
+        when the host install has that symlink, else ``{NSYS_HOST_CONTAINER_DIR}/nsys``
         when ``nsys_dir`` is set, else ``nsys_path`` (default ``nsys`` on PATH).
         """
         override = os.environ.get("SRTCTL_NSYS_BIN")
         if override:
             return override
-        if self.nsys_dir:
-            return f"{NSYS_HOST_CONTAINER_DIR}/nsys"
-        return self.nsys_path
+        if not self.nsys_dir:
+            return self.nsys_path
+        host_cli = self.nsys_host_cli()
+        if host_cli is not None and host_cli.parent.name == "bin":
+            return f"{NSYS_HOST_CONTAINER_DIR}/bin/nsys"
+        return f"{NSYS_HOST_CONTAINER_DIR}/nsys"
 
     def _get_nsys_prefix_trtllm(self, output_file: str) -> list[str]:
         """Get nsys command prefix for TRTLLM workers.

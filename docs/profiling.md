@@ -92,7 +92,7 @@ profiling:
 | `decode.stop_step`      | Step number to end decode profiling           | `50`     |
 | `aggregated.start_step` | Step number to begin aggregated profiling     | `0`      |
 | `aggregated.stop_step`  | Step number to end aggregated profiling       | `50`     |
-| `nsys_dir`              | Host Nsight target tree, mounted at `/opt/srtctl-nsys` | unset |
+| `nsys_dir`              | Host Nsight install root (or its `target-linux-*` tree); mounted at `/opt/srtctl-nsys` | unset |
 | `nsys_path`             | In-container nsys binary (ignored if `nsys_dir` is set) | `nsys` |
 
 ## Constraints
@@ -149,10 +149,10 @@ profiling:
   phases: prefill      # "prefill" or "decode". Required for disaggregated jobs,
                        # must be omitted for aggregated ones.
   duration_secs: 5     # Optional, defaults to 5.
-  # Optional: bind-mount a host Nsight Systems *target* tree so the image does
-  # not need nsys installed. Point at target-linux-sbsa-armv8 (or
-  # target-linux-x64), not the installer root. Mounted at /opt/srtctl-nsys.
-  # nsys_dir: /path/to/nsight-systems-*/target-linux-sbsa-armv8
+  # Optional: bind-mount a host Nsight Systems install so the image does
+  # not need nsys installed. Point at nsight-systems-* or its
+  # target-linux-* tree (srtctl walks up to bin/nsys). Mounted at /opt/srtctl-nsys.
+  # nsys_dir: /path/to/nsight-systems-2026.1.3
 ```
 
 Exactly one process is profiled: **endpoint 0, rank 0** of the chosen phase. Every
@@ -214,23 +214,24 @@ capture failed.
 
 ### Using a host nsys instead of the container's
 
-Do not overlay a single `nsys` binary onto `/usr/bin/nsys`. The target package
-is a relocatable tree: `nsys` has `RPATH $ORIGIN` and needs sibling libraries
-(`libcupti*.so`, `libcrypto.so.3`, `nsys-launcher`, `plugins/`, …). Mount the
-whole architecture-specific directory.
-
-The recipe field does that for you:
+Do not overlay a single `nsys` binary onto `/usr/bin/nsys`, and do not invoke
+the ELF in `target-linux-sbsa-armv8/` directly — Nsight exits with
+"Modify the executable in your command to be a symbolic link pointing to
+'target-linux-.../nsys'". The CLI must be the install's `bin/nsys` symlink, and
+the target tree has to come along for `$ORIGIN` libraries (`libcupti*.so`,
+`libcrypto.so.3`, `nsys-launcher`, `plugins/`, …).
 
 ```yaml
 profiling:
   type: "nsys-manual"
   phases: prefill
   duration_secs: 5
-  nsys_dir: /home/you/nsight-systems-2026.1.3/target-linux-sbsa-armv8
+  nsys_dir: /home/you/nsight-systems-2026.1.3
+  # or .../nsight-systems-2026.1.3/target-linux-sbsa-armv8 — srtctl walks up
 ```
 
-srtctl bind-mounts that host path at `/opt/srtctl-nsys` and wraps workers with
-`/opt/srtctl-nsys/nsys`. The same field works for `nsys` and `nsys-time`.
+srtctl bind-mounts the install root at `/opt/srtctl-nsys` and wraps workers with
+`/opt/srtctl-nsys/bin/nsys`. The same field works for `nsys` and `nsys-time`.
 
 You can still do the mount yourself (`extra_mount` or `srtslurm.yaml`
 `default_mounts`) and set `profiling.nsys_path: /opt/nsys-host/nsys` instead —

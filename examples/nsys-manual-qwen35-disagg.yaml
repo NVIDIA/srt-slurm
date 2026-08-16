@@ -52,10 +52,9 @@ profiling:
   phases: prefill
   # Length of the window fired by nsys-manual.sh. Defaults to 5.
   duration_secs: 5
-  # Optional: host Nsight Systems *target* tree (contains nsys, nsys-launcher,
-  # and sibling .so files). Bind-mounted at /opt/srtctl-nsys so the container
-  # does not need nsys installed. Do not overlay a single nsys onto /usr/bin.
-  # nsys_dir: /path/to/nsight-systems-*/target-linux-sbsa-armv8
+  # Optional: host Nsight Systems install (bin/nsys + target-linux-* tree).
+  # Bind-mounted at /opt/srtctl-nsys; workers run /opt/srtctl-nsys/bin/nsys.
+  # nsys_dir: /path/to/nsight-systems-2026.1.3
 
 backend:
   type: vllm
