@@ -8,6 +8,7 @@ It runs inside the container and starts the infrastructure services.
 """
 
 import argparse
+import contextlib
 import logging
 import os
 import shutil
@@ -42,15 +43,15 @@ def get_local_ip() -> str:
     import subprocess
 
     def _is_bad_ip(ip: str) -> bool:
-        return not ip or ip == "0.0.0.0" or ip.startswith("127.") or ip.startswith("169.254.")
+        return not ip or ip == "0.0.0.0" or ip.startswith(("127.", "169.254."))
 
     def _is_private_ip(ip: str) -> bool:
-        if ip.startswith("10.") or ip.startswith("192.168."):
+        if ip.startswith(("10.", "192.168.")):
             return True
         if ip.startswith("172."):
             try:
                 second = int(ip.split(".", 2)[1])
-            except Exception:
+            except Exception:  # noqa: BLE001
                 return False
             return 16 <= second <= 31
         return False
@@ -68,27 +69,27 @@ def get_local_ip() -> str:
         return None
 
     # Method 1: hostname -I
-    try:
+    with contextlib.suppress(Exception):
         result = subprocess.run(
             ["hostname", "-I"],
             capture_output=True,
             text=True,
             timeout=5,
+            check=False,
         )
         if result.returncode == 0 and result.stdout.strip():
             ips = [s for s in result.stdout.strip().split() if s]
             if (ip := _select_best_ip(ips)) is not None:
                 return ip
-    except Exception:
-        pass
 
     # Method 2: ip route get 8.8.8.8
-    try:
+    with contextlib.suppress(Exception):
         result = subprocess.run(
             ["ip", "route", "get", "8.8.8.8"],
             capture_output=True,
             text=True,
             timeout=5,
+            check=False,
         )
         if result.returncode == 0:
             # Parse "8.8.8.8 via X.X.X.X dev ethX src Y.Y.Y.Y"
@@ -97,8 +98,6 @@ def get_local_ip() -> str:
                 ip = parts[1].split()[0]
                 if not _is_bad_ip(ip):
                     return ip
-    except Exception:
-        pass
 
     # Method 3: socket fallback
     try:
@@ -317,8 +316,8 @@ def main():
 
     except KeyboardInterrupt:
         logger.info("Received interrupt, shutting down...")
-    except Exception as e:
-        logger.exception("Error: %s", e)
+    except Exception:
+        logger.exception("Error")
         sys.exit(1)
     finally:
         # Cleanup

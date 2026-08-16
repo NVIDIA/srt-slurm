@@ -397,6 +397,6 @@ def record_resource_snapshot(config: SrtConfig, runtime: RuntimeContext) -> dict
         else:
             logger.info("CPU allocation check: %s", cpu_check["message"])
         return snapshot
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001
         logger.warning("Failed to capture resource snapshot: %s", error)
         return None

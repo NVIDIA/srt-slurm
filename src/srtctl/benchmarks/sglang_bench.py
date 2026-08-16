@@ -59,7 +59,7 @@ class SGLangBenchRunner(BenchmarkRunner):
         else:
             try:
                 concurrency_list = b.get_concurrency_list()
-            except Exception:
+            except Exception:  # noqa: BLE001
                 concurrency_list = []
                 errors.append(
                     "benchmark.concurrencies must be a list of ints or an 'x'-separated string for sglang-bench"

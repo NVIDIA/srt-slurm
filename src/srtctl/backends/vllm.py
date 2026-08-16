@@ -4,7 +4,8 @@
 vLLM backend configuration.
 
 Implements BackendProtocol for vLLM inference serving with prefill/decode disaggregation.
-Uses dynamo.vllm integration module.
+Supports either Dynamo's vLLM integration module or direct `vllm serve` for
+aggregate jobs.
 """
 
 from __future__ import annotations
@@ -46,6 +47,101 @@ WorkerMode = Literal["prefill", "decode", "agg"]
 DPLaunchMode = Literal["per_gpu", "per_node"]
 
 logger = logging.getLogger(__name__)
+
+# vLLM CLI flags srtslurm derives for the direct vLLM frontend. Recipes may
+# still set these for backward compatibility; dry-run warns and direct-vLLM
+# command building strips them so user values cannot override allocation.
+_VLLM_ORCHESTRATION_FLAGS = frozenset(
+    {
+        "headless",
+        "host",
+        "port",
+        "master-addr",
+        "nnodes",
+        "node-rank",
+    }
+)
+
+
+# vLLM CLI flags that only apply where the OpenAI API server runs. Headless node
+# ranks host engine workers only, and vLLM rejects a positive --api-server-count
+# there instead of ignoring it.
+_VLLM_API_SERVER_ONLY_FLAGS = frozenset({"api-server-count"})
+
+
+def normalize_vllm_config_key(key: str) -> str:
+    """Normalize a vllm_config dict key to kebab-case CLI flag form."""
+    return str(key).replace("_", "-")
+
+
+def _pop_flags(config: dict[str, Any], flags: frozenset[str]) -> dict[str, Any]:
+    found: dict[str, Any] = {}
+    for key in list(config.keys()):
+        normalized = normalize_vllm_config_key(key)
+        if normalized in flags:
+            found[normalized] = config.pop(key)
+    return found
+
+
+def pop_vllm_orchestration_flags(config: dict[str, Any]) -> dict[str, Any]:
+    """Remove topology-managed vLLM flags from a mode config dict.
+
+    Returns the normalized flag names that were present, mapped to the value the
+    recipe asked for, so callers can report what they overrode.
+    """
+    return _pop_flags(config, _VLLM_ORCHESTRATION_FLAGS)
+
+
+def pop_vllm_api_server_flags(config: dict[str, Any]) -> dict[str, Any]:
+    """Remove API-server-only vLLM flags from a mode config dict.
+
+    Returns the normalized flag names that were present, mapped to the recipe value.
+    """
+    return _pop_flags(config, _VLLM_API_SERVER_ONLY_FLAGS)
+
+
+def _log_overridden_recipe_flags(
+    overridden: dict[str, Any],
+    effective: dict[str, str],
+    node: str,
+) -> None:
+    """Report recipe flags srtslurm took over, alongside the values it used.
+
+    Without this the override is invisible at runtime: the flag simply vanishes
+    from the worker command and the recipe still claims otherwise.
+    """
+    if not overridden:
+        return
+
+    changes = ", ".join(
+        f"--{flag}={value!s} -> {effective.get(flag, 'not passed')}" for flag, value in overridden.items()
+    )
+    logger.warning(
+        "Overriding topology-managed vllm_config flags on %s: %s. srtslurm derives these from the allocation.",
+        node,
+        changes,
+    )
+
+
+def find_vllm_orchestration_recipe_flags(backend: VLLMProtocol) -> list[tuple[str, str]]:
+    """Return ``(mode, flag)`` pairs set in recipe ``vllm_config``."""
+    if backend.vllm_config is None:
+        return []
+
+    findings: list[tuple[str, str]] = []
+    for mode_name, mode_config in (
+        ("prefill", backend.vllm_config.prefill),
+        ("decode", backend.vllm_config.decode),
+        ("aggregated", backend.vllm_config.aggregated),
+    ):
+        if not mode_config:
+            continue
+        for key in mode_config:
+            normalized = normalize_vllm_config_key(key)
+            if normalized in _VLLM_ORCHESTRATION_FLAGS:
+                findings.append((mode_name, normalized))
+    return findings
+
 
 # Filename for the mooncake-store JSON config srtslurm writes to log_dir at job
 # start. log_dir is mounted into every worker at /logs, so workers read the JSON
@@ -101,6 +197,7 @@ class VLLMMooncakeKVStoreConfig:
 
     container: str | None = None
     env: dict[str, str] = field(default_factory=dict)
+    master_extra_args: list[str] = field(default_factory=list)
     standalone: MooncakeStandaloneStoreConfig | None = None
     # ``store_config`` values are JSON-serialized into MOONCAKE_CONFIG_PATH and
     # parsed by vLLM's ``MooncakeStoreConfig`` dataclass — fields are a mix of
@@ -205,10 +302,10 @@ class VLLMProtocol:
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
-    def __post_init__(self) -> None:
-        """Validate flags whose behavior is fixed by the per-node launch topology."""
+    def find_dp_modes(self) -> list[tuple[str, dict[str, Any]]]:
+        """Return ``(mode, config)`` pairs whose recipe config sets data-parallel-size."""
         if self.vllm_config is None:
-            return
+            return []
 
         dp_mode_configs: list[tuple[str, dict[str, Any]]] = []
         for mode_name, mode_config in (
@@ -221,17 +318,15 @@ class VLLMProtocol:
                 for key, value in mode_config.items()
             ):
                 dp_mode_configs.append((mode_name, mode_config))
+        return dp_mode_configs
 
-        if not dp_mode_configs:
-            return
+    def __post_init__(self) -> None:
+        """Validate flags whose behavior is fixed by the per-node launch topology."""
+        dp_mode_configs = self.find_dp_modes()
 
-        if self.dp_launch_mode == "per_gpu":
-            modes = ", ".join(mode_name for mode_name, _ in dp_mode_configs)
-            logger.warning(
-                "vLLM DP mode(s) %s use dp_launch_mode=per_gpu. per_node is the recommended topology "
-                "and will become the default in a future release; set backend.dp_launch_mode: per_node now",
-                modes,
-            )
+        # The per_gpu advisory lives in SrtConfig, which can tell whether the
+        # setting applies at all: a direct vLLM frontend ignores it.
+        if not dp_mode_configs or self.dp_launch_mode == "per_gpu":
             return
 
         hybrid_lb_modes: list[str] = []
@@ -493,13 +588,19 @@ class VLLMProtocol:
         endpoints: list[Endpoint],
         base_sys_port: int = DYN_SYSTEM_PORT_BASE,
         port_allocator: NodePortAllocator | None = None,
+        frontend_type: str = "dynamo",
     ) -> list[Process]:
         """Convert endpoints to processes.
 
-        DP+EP mode uses the configured per-GPU or per-node process layout.
+        Dynamo DP+EP mode uses the configured per-GPU or per-node process layout.
+        For direct vLLM aggregate jobs, `vllm serve` manages local DP ranks from
+        one process, so keep the standard one-process-per-node topology.
         For standard TP mode, creates one process per node.
         """
         from srtctl.core.topology import NodePortAllocator, Process, endpoints_to_processes
+
+        if frontend_type == "vllm":
+            return endpoints_to_processes(endpoints, base_sys_port=base_sys_port, port_allocator=port_allocator)
 
         # Check if any endpoint uses DP mode
         has_dp_mode = any(self._is_dp_mode(ep.mode) for ep in endpoints)
@@ -669,7 +770,7 @@ class VLLMProtocol:
             process: The process to start
             endpoint_processes: All processes for this endpoint (for multi-node)
             runtime: Runtime context with paths and settings
-            frontend_type: Frontend type (currently only "dynamo" supported for vLLM)
+            frontend_type: Frontend type ("dynamo" or direct "vllm")
             nsys_prefix: Optional nsys profiling command prefix
             dump_config_path: Path to dump config JSON
             profiling: Profiling config; drives --profiler-config for iteration-based nsys
@@ -683,8 +784,13 @@ class VLLMProtocol:
         endpoint_nodes = list(dict.fromkeys(p.node for p in endpoint_processes))
         is_multi_node = len(endpoint_nodes) > 1
 
-        # Get leader IP for distributed init
-        leader_ip = get_hostname_ip(endpoint_nodes[0])
+        # Direct vLLM rendezvous must use the configured interface. Keep the
+        # existing Dynamo resolution path unchanged to avoid affecting jobs
+        # outside the scope of the direct-vLLM frontend.
+        if frontend_type == "vllm":
+            leader_ip = get_hostname_ip(endpoint_nodes[0], runtime.network_interface)
+        else:
+            leader_ip = get_hostname_ip(endpoint_nodes[0])
 
         # Determine model path: HF model ID or container mount path
         # For HF models (hf:prefix), model_path contains the HF model ID (e.g., "facebook/opt-125m")
@@ -696,6 +802,69 @@ class VLLMProtocol:
 
         # Start with nsys prefix if provided
         cmd: list[str] = list(nsys_prefix) if nsys_prefix else []
+
+        if profiling is not None and profiling.is_nsys and not profiling.is_nsys_time:
+            phase = profiling._get_phase_config(mode)
+            if phase is not None and phase.start_step is not None and phase.stop_step is not None:
+                config["profiler-config"] = json.dumps(
+                    {
+                        "profiler": "cuda",
+                        "delay_iterations": phase.vllm_nsys_delay_iterations,
+                        "max_iterations": phase.vllm_nsys_max_iterations,
+                    }
+                )
+
+        if frontend_type == "vllm":
+            if mode != "agg":
+                raise ValueError("frontend.type: vllm supports aggregate vLLM jobs only")
+
+            overridden = pop_vllm_orchestration_flags(config)
+            config.pop("connector", None)
+            config.setdefault("served-model-name", served_model_name)
+
+            node_rank = endpoint_nodes.index(process.node)
+            cmd.extend(["vllm", "serve", model_arg])
+            # Collected as the command is built so the override report below can
+            # name the value srtslurm actually passed for each flag it took over.
+            srtslurm_owned: dict[str, str] = {}
+            if node_rank == 0:
+                cmd.extend(["--host", "0.0.0.0", "--port", str(runtime.frontend_port)])
+                srtslurm_owned["host"] = "0.0.0.0"
+                srtslurm_owned["port"] = str(runtime.frontend_port)
+            if is_multi_node:
+                # vLLM-native multi-node serve (torchrun-style): the leader owns
+                # the OpenAI server; other node ranks run headless engine workers.
+                cmd.extend(
+                    [
+                        "--master-addr",
+                        leader_ip,
+                        "--nnodes",
+                        str(len(endpoint_nodes)),
+                        "--node-rank",
+                        str(node_rank),
+                    ]
+                )
+                srtslurm_owned["master-addr"] = leader_ip
+                srtslurm_owned["nnodes"] = str(len(endpoint_nodes))
+                srtslurm_owned["node-rank"] = str(node_rank)
+                if node_rank > 0:
+                    cmd.append("--headless")
+                    srtslurm_owned["headless"] = "true"
+                    dropped = pop_vllm_api_server_flags(config)
+                    if dropped:
+                        logger.info(
+                            "Dropping %s on headless node rank %d (%s); headless ranks run no API server",
+                            ", ".join(f"--{flag}={value!s}" for flag, value in dropped.items()),
+                            node_rank,
+                            process.node,
+                        )
+            _log_overridden_recipe_flags(overridden, srtslurm_owned, process.node)
+            if not self.set_cuda_visible_devices:
+                device_ids = ",".join(str(i) for i in sorted(process.gpu_indices))
+                if device_ids:
+                    cmd.extend(["--device-ids", device_ids])
+            cmd.extend(_config_to_cli_args(config))
+            return cmd
 
         # Base command - use dynamo.vllm module
         cmd.extend(
@@ -815,17 +984,6 @@ class VLLMProtocol:
         if kv_cfg and process.kv_events_port is not None:
             kv_cfg["endpoint"] = f"tcp://*:{process.kv_events_port}"
             cmd.extend(["--kv-events-config", json.dumps(kv_cfg)])
-
-        if profiling is not None and profiling.is_nsys and not profiling.is_nsys_time:
-            phase = profiling._get_phase_config(mode)
-            if phase is not None and phase.start_step is not None and phase.stop_step is not None:
-                config["profiler-config"] = json.dumps(
-                    {
-                        "profiler": "cuda",
-                        "delay_iterations": phase.vllm_nsys_delay_iterations,
-                        "max_iterations": phase.vllm_nsys_max_iterations,
-                    }
-                )
 
         # Add all config flags from vllm_config
         cmd.extend(_config_to_cli_args(config))

@@ -195,6 +195,7 @@ class FrontendStageMixin:
             nginx_raise_ulimit=self.config.frontend.nginx_raise_ulimit,
             nginx_session_affinity=self.config.frontend.nginx_session_affinity,
             nginx_session_affinity_header=self.config.frontend.nginx_session_affinity_header,
+            nginx_keepalive_timeout=self.config.frontend.nginx_keepalive_timeout,
         )
 
     def start_frontend(

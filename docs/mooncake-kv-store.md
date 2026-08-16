@@ -122,6 +122,7 @@ backend:
   type: sglang
   mooncake_kv_store:
     container: nvcr.io/nvidia/mooncake:latest  # optional, default: job container
+    master_extra_args: []                      # optional, appended to mooncake_master
     env:                                        # optional, default: {}
       MOONCAKE_PROTOCOL: rdma
       MOONCAKE_GLOBAL_SEGMENT_SIZE: "4gb"
@@ -140,6 +141,7 @@ backend:
   type: vllm
   mooncake_kv_store:
     container: ...                       # optional, default: job container
+    master_extra_args: []                # optional, appended to mooncake_master
     env:                                 # optional, injected on every vLLM worker (in-process Mooncake C++ knobs)
       MC_ENABLE_DEST_DEVICE_AFFINITY: "1"
       MC_STORE_CLIENT_METRIC: "1"        # default 1 (enabled)
@@ -155,6 +157,7 @@ backend:
 ### Fields
 
 - **`container`** (`str`, optional): Container image used for the `mooncake_master` srun and as the fallback for standalone Store services. Defaults to the job container if unset. Useful when Mooncake needs a different runtime than the inference workers.
+- **`master_extra_args`** (`list[str]`, optional): Extra arguments appended to the standalone `mooncake_master` command. Use this for flags supported only by the Mooncake version in the selected container. Do not use it to override the RPC, HTTP metadata, or metrics ports because srtslurm configures worker endpoints and readiness checks from its own port values.
 - **`env`** (`dict[str, str]`, optional): Pass-through env vars injected on every prefill and decode worker.
   - For **SGLang**, keys map directly to mooncake's environment variable names — see the [SGLang server_args.py](https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/environ.py) and [mooncake_store.py](https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/mem_cache/storage/mooncake_store/mooncake_store.py) for the full list.
   - For **vLLM**, this is for in-process Mooncake C++ knobs (`MC_*`) read by the transfer engine / store client. vLLM's connector itself reads configuration from `MOONCAKE_CONFIG_PATH` (the JSON rendered from `store_config:`), not from these env vars.
@@ -241,6 +244,18 @@ The following environment variables are added automatically to every standalone 
 | `critical` | `true` | Treat a non-zero service exit as a job failure. |
 
 Values in `command`, `args`, `env`, and `preamble` support `{node}`, `{node_ip}`, `{node_id}`, `{role}`, `{index}`, `{infra_node}`, `{infra_ip}`, `{master_port}`, and `{metadata_port}` templates. Keep numeric Mooncake Store settings in environment variables or a generated JSON configuration when the installed `mooncake_store_service` CLI does not parse typed `-D` overrides.
+
+Mooncake `v0.3.11+` adds NoF SSD-tier eviction flags. Enable them only in recipes using a compatible Mooncake image:
+
+```yaml
+backend:
+  type: vllm
+  mooncake_kv_store:
+    master_extra_args:
+      - --nof_eviction_high_watermark_ratio=0.9
+```
+
+Older Mooncake versions do not recognize this option, so leave it out of those recipes. The existing `--eviction_high_watermark_ratio` controls memory eviction; the `--nof_...` option independently controls the NVMe-over-Fabrics SSD tier.
 
 ## Master Metrics Endpoint
 

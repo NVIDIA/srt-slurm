@@ -73,6 +73,14 @@ class TRTLLMProtocol:
     # is not needed.
     publish_events_and_metrics: bool = False
 
+    # Controls batched startup of workers that share the same node.
+    # 0 = start all workers in parallel (no constraint).
+    # 1 = fully sequential: one worker at a time, each must be ready before the next.
+    # N > 1 = start N workers simultaneously per batch, wait for all to be ready, then next batch.
+    # For trtllm_serve: readiness is an HTTP 200 on the worker's http_port.
+    # For dynamo.trtllm: readiness is a TCP connection on the worker's sys_port.
+    sequential_node_start: int = 0
+
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
     # =========================================================================
@@ -159,6 +167,7 @@ class TRTLLMProtocol:
         endpoints: list["Endpoint"],
         base_sys_port: int = DYN_SYSTEM_PORT_BASE,
         port_allocator: "NodePortAllocator | None" = None,
+        frontend_type: str = "dynamo",
     ) -> list["Process"]:
         """Convert endpoints to processes."""
         from srtctl.core.topology import endpoints_to_processes

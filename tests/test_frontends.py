@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for frontend implementations (SGLang and Dynamo)."""
+"""Tests for frontend implementations."""
 
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from srtctl.core.schema import ObservabilityConfig
-from srtctl.frontends import DynamoFrontend, SGLangFrontend, get_frontend
+from srtctl.frontends import DynamoFrontend, SGLangFrontend, VLLMFrontend, get_frontend
 
 # ============================================================================
 # get_frontend() Tests
@@ -33,13 +33,19 @@ class TestGetFrontend:
         assert isinstance(frontend, SGLangFrontend)
         assert frontend.type == "sglang"
 
+    def test_get_vllm_frontend(self):
+        """get_frontend('vllm') returns VLLMFrontend."""
+        frontend = get_frontend("vllm")
+        assert isinstance(frontend, VLLMFrontend)
+        assert frontend.type == "vllm"
+
     def test_get_unknown_frontend_raises(self):
         """get_frontend() with unknown type raises ValueError."""
         with pytest.raises(ValueError, match="Unknown frontend type"):
             get_frontend("unknown")
 
         with pytest.raises(ValueError, match="Unknown frontend type"):
-            get_frontend("vllm")
+            get_frontend("invalid")
 
 
 # ============================================================================
@@ -60,6 +66,11 @@ class TestFrontendProperties:
         frontend = SGLangFrontend()
         assert frontend.type == "sglang"
 
+    def test_vllm_type(self):
+        """VLLMFrontend.type is 'vllm'."""
+        frontend = VLLMFrontend()
+        assert frontend.type == "vllm"
+
     def test_dynamo_health_endpoint(self):
         """DynamoFrontend uses /health endpoint."""
         frontend = DynamoFrontend()
@@ -69,6 +80,11 @@ class TestFrontendProperties:
         """SGLangFrontend uses /workers endpoint."""
         frontend = SGLangFrontend()
         assert frontend.health_endpoint == "/workers"
+
+    def test_vllm_health_endpoint(self):
+        """VLLMFrontend uses /health endpoint."""
+        frontend = VLLMFrontend()
+        assert frontend.health_endpoint == "/health"
 
 
 # ============================================================================

@@ -270,7 +270,7 @@ Frontend/router configuration.
 
 ```yaml
 frontend:
-  # Frontend type: "dynamo" (default), "sglang", or "trtllm_serve"
+  # Frontend type: "dynamo" (default), "sglang", "trtllm_serve", or "vllm"
   type: dynamo
 
   # Scaling
@@ -294,7 +294,7 @@ frontend:
 
 | Field                       | Type | Default       | Description                         |
 | --------------------------- | ---- | ------------- | ----------------------------------- |
-| `type`                      | str  | dynamo        | Frontend type: "dynamo", "sglang", or "trtllm_serve" |
+| `type`                      | str  | dynamo        | Frontend type: "dynamo", "sglang", "trtllm_serve", or "vllm" |
 | `enable_multiple_frontends` | bool | true          | Scale with nginx + multiple routers |
 | `num_additional_frontends`  | int  | 9             | Additional routers beyond master    |
 | `nginx_container`           | str  | nginx:1.27.4  | Custom nginx container image        |
@@ -318,6 +318,104 @@ Because the orchestrator is a single process, set
 supported). A recipe can be switched between the two TRT-LLM serving stacks by
 changing only `frontend.type` between `dynamo` and `trtllm_serve`. See the sample
 recipe `recipes/trtllm/b200-fp8/1k1k/stp/ctx1_gen3_tp8_batch1024_eplb0_mtp0_4_trtllm_serve.yaml`.
+
+### vllm frontend
+
+`type: vllm` runs aggregate vLLM jobs **without Dynamo**. The OpenAI-compatible
+HTTP server is the aggregate `vllm serve` worker itself — there is no separate
+router/frontend process, and srtctl skips NATS/etcd startup.
+
+Use this for aggregate throughput benchmarks where Dynamo orchestration is not
+needed. Disaggregated prefill/decode layouts still require a real router such as
+Dynamo (`frontend.type: dynamo`).
+
+**Requirements**
+
+| Constraint | Value |
+| ---------- | ----- |
+| `backend.type` | `vllm` |
+| Job layout | Aggregate only; no prefill/decode workers |
+| `agg_workers` | Exactly `1` — scale across nodes with `agg_nodes`, not with replicas |
+| `enable_multiple_frontends` | `false` (nginx + multi-router path is unsupported) |
+
+Nothing load-balances between aggregate endpoints here, so `agg_workers: 2` is
+rejected at load time: the extra replica would either idle behind the single
+public address or collide on the port. Use `frontend.type: dynamo` when you want
+several aggregate replicas behind one endpoint.
+
+**Single-node example**
+
+```yaml
+frontend:
+  type: vllm
+  enable_multiple_frontends: false
+
+resources:
+  agg_nodes: 1
+  agg_workers: 1
+  gpus_per_node: 8
+
+backend:
+  type: vllm
+  vllm_config:
+    aggregated:
+      tensor-parallel-size: 8
+```
+
+**Multi-node example (TP/PP across nodes)**
+
+```yaml
+frontend:
+  type: vllm
+  enable_multiple_frontends: false
+
+resources:
+  agg_nodes: 2
+  agg_workers: 1
+  gpus_per_node: 8
+
+backend:
+  type: vllm
+  vllm_config:
+    aggregated:
+      tensor-parallel-size: 8
+      pipeline-parallel-size: 2
+```
+
+srtctl launches one `vllm serve` process per node. The endpoint leader
+(`node_rank=0`) binds the public OpenAI port; follower ranks run headless engine
+workers. Multi-node coordination flags (`--master-addr`, `--nnodes`,
+`--node-rank`, `--headless`) are derived from the allocated topology — **do not
+set them in the recipe**.
+
+`master-port` / `master_port` remains an optional recipe override and is passed
+to every node rank. Set it when jobs may share a leader node and need distinct
+vLLM rendezvous ports; otherwise vLLM's default is used.
+
+**Topology-managed `vllm_config` keys**
+
+The following keys are owned by srtctl and are stripped at runtime if present in
+`vllm_config.{aggregated,prefill,decode}`:
+
+- `headless`
+- `host`, `port`
+- `master-addr` / `master_addr`
+- `nnodes`
+- `node-rank` / `node_rank`
+
+Existing recipes that still contain these keys generally continue to work
+because the values are ignored. One exception is `headless` combined with
+`dp_launch_mode: per_node` and `data-parallel-size`: backend validation rejects
+that combination before direct-vLLM command construction, so remove `headless`
+from such recipes. `srtctl dry-run` emits a **WARNING** for each accepted key so
+operators can clean up recipes over time.
+
+Health checks, benchmark clients, and `SRT_FRONTEND_HOST` target the **aggregate
+endpoint leader** (the node running the public `vllm serve`), not necessarily the
+Slurm head node.
+
+Compare with `frontend.type: dynamo` + `backend.type: vllm`, which keeps Dynamo as
+the request router and uses `python3 -m dynamo.vllm` workers with NATS/etcd.
 
 ---
 
@@ -529,6 +627,7 @@ benchmark:
 | Type              | Description                                    |
 | ----------------- | ---------------------------------------------- |
 | `manual`          | No benchmark (default), manual testing mode    |
+| `custom`          | Arbitrary command with runtime endpoint metadata |
 | `sa-bench`        | Throughput/latency serving benchmark           |
 | `sglang-bench`    | SGLang bench_serving benchmark                 |
 | `mmlu`            | MMLU accuracy evaluation                       |
@@ -545,6 +644,45 @@ No benchmark is run. Use for manual testing and debugging.
 benchmark:
   type: "manual"
 ```
+
+### custom
+
+Run an arbitrary command with `bash -lc`. The command is passed verbatim; srt-slurm does not
+expand `{placeholder}` expressions. Use environment variables for runtime-discovered values:
+
+```yaml
+benchmark:
+  type: custom
+  command: >-
+    ./run-benchmark.sh "$SRT_FRONTEND_HOST:$SRT_FRONTEND_PORT"
+  env:
+    MY_BENCHMARK_OPTION: "value"
+```
+
+Every custom benchmark command receives frontend metadata plus mode-specific metadata for each
+logical worker leader:
+
+| Variable                        | Format                         | Description |
+| ------------------------------- | ------------------------------ | ----------- |
+| `SRT_FRONTEND_HOST`             | IP                             | Frontend/orchestrator IP |
+| `SRT_FRONTEND_PORT`             | port                           | Frontend public port |
+| `SRT_PREFILL_IPS`               | comma-separated IPs            | Prefill worker leader IPs |
+| `SRT_PREFILL_ENDPOINTS`         | comma-separated `IP:port`      | Prefill worker endpoints |
+| `SRT_DECODE_IPS`                | comma-separated IPs            | Decode worker leader IPs |
+| `SRT_DECODE_ENDPOINTS`          | comma-separated `IP:port`      | Decode worker endpoints |
+| `SRT_AGG_IPS`                   | comma-separated IPs            | Aggregated worker leader IPs |
+| `SRT_AGG_ENDPOINTS`             | comma-separated `IP:port`      | Aggregated worker endpoints |
+| `AIPERF_SERVER_METRICS_URLS`    | comma-separated HTTP URLs      | AIPerf-compatible `/metrics` URLs for all logical workers |
+
+Only variables for modes present in the recipe are emitted. Entries follow logical topology order
+(prefill index, decode index, or aggregated index). Multi-node follower ranks are excluded because
+they do not own separate engines; co-located logical workers retain repeated IPs and distinct ports
+so list positions remain aligned. With a Dynamo frontend, endpoint and metrics URLs use each
+leader's `DYN_SYSTEM_PORT`; other frontends use the worker HTTP port. If KVBM metrics are configured,
+their URLs are appended to `AIPERF_SERVER_METRICS_URLS` after the logical worker URLs.
+
+Values in `benchmark.env` are applied last and can explicitly override any automatically injected
+variable.
 
 ### sa-bench (Serving Accuracy)
 

@@ -9,12 +9,6 @@ from typing import ClassVar
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
-DEFAULT_MOONCAKE_MASTER_ARGS: tuple[str, ...] = (
-    "--eviction_high_watermark_ratio=0.9",
-    "--default_kv_lease_ttl=10000",
-    "--rpc_thread_num=16",
-)
-
 
 @dataclass(frozen=True)
 class MooncakeStandalonePlacementConfig:

@@ -193,7 +193,7 @@ def _already_installed(version: str) -> bool:
 
     try:
         importlib.import_module("dynamo.llm")
-    except Exception:
+    except Exception:  # noqa: BLE001
         return False
     return True
 

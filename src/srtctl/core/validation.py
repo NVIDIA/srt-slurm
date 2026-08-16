@@ -24,6 +24,7 @@ from srtctl.core.config import (
     generate_override_configs,
     resolve_config_with_defaults,
 )
+from srtctl.core.schema import TelemetryProvider
 
 if TYPE_CHECKING:
     from srtctl.core.schema import SrtConfig
@@ -75,6 +76,14 @@ class PreflightResult:
             "container": self.container.__dict__,
             "errors": [issue.__dict__ for issue in self.errors],
         }
+
+
+def _is_registry_uri(value: str) -> bool:
+    # Mirrors the runtime classification in runtime.py (RuntimeContext.from_config):
+    # anything not starting with "/" or "./" is forwarded to ``srun --container-image``,
+    # which Pyxis/enroot pulls on first use. The ":" guard distinguishes a URI
+    # (registry/...:tag or scheme://...) from a typo'd local relative path.
+    return not value.startswith(("/", "./")) and ":" in value
 
 
 def _expand_path(value: str) -> str:
@@ -210,13 +219,8 @@ def _preflight_container(
         )
 
     # Container image URIs (e.g. "nvcr.io/nvidia/sglang-runtime:0.8.1",
-    # "vllm/vllm-openai:latest", "docker://...").  Mirrors the runtime
-    # classification in runtime.py (RuntimeContext.from_config): anything
-    # not starting with "/" or "./" is forwarded to ``srun
-    # --container-image``, which Pyxis/enroot pulls on first use.  The
-    # ":" guard distinguishes a URI (registry/...:tag or scheme://...)
-    # from a typo'd local relative path.
-    if isinstance(raw, str) and not raw.startswith(("/", "./")) and ":" in raw:
+    # "vllm/vllm-openai:latest", "docker://...").
+    if isinstance(raw, str) and _is_registry_uri(raw):
         return (
             PreflightResolution(
                 field="model.container",
@@ -291,7 +295,12 @@ def _preflight_telemetry(
     raw_telemetry = raw_config.get("telemetry") or {}
     issues: list[PreflightIssue] = []
 
-    for field, path in _TELEMETRY_IMAGE_FIELDS:
+    # NOTE: dcgm-power launches only the exporter, so the other images are never referenced.
+    fields = _TELEMETRY_IMAGE_FIELDS
+    if telemetry.get("provider") == TelemetryProvider.DCGM_POWER.value:
+        fields = tuple(field for field in fields if field[1][0] == "dcgm_exporter")
+
+    for field, path in fields:
         resolved_value: Any = telemetry
         raw_value: Any = raw_telemetry
         for key in path:
@@ -299,6 +308,9 @@ def _preflight_telemetry(
             raw_value = (raw_value or {}).get(key) if isinstance(raw_value, dict) else None
         if not resolved_value:
             continue  # schema-level validator handles required-when-enabled
+        # NOTE: a registry URI is pulled at srun time, so there is no local file to stat.
+        if _is_registry_uri(str(resolved_value)):
+            continue
 
         ok, _ = _check_path(_expand_path(resolved_value), expect="file")
         if ok:
@@ -501,7 +513,7 @@ def validate_local_path(name: str, path: str) -> ValidationResult:
             return ValidationResult(name, True, f"{file_count} files, {total_bytes / 1e9:.1f}GB")
         size_gb = p.stat().st_size / 1e9
         return ValidationResult(name, True, f"{size_gb:.1f}GB")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return ValidationResult(name, False, f"check failed: {e}")
 
 
@@ -530,7 +542,7 @@ def validate_hf_model(name: str | None, revision: str | None) -> ValidationResul
         return ValidationResult("hf_model", False, f"unexpected status {resp.status_code}")
     except requests.Timeout:
         return ValidationResult("hf_model", False, "HuggingFace check timed out")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return ValidationResult("hf_model", False, f"HuggingFace check failed: {e}")
 
 
@@ -576,7 +588,7 @@ def validate_docker_image(image: str | None, digest: str | None) -> ValidationRe
         return ValidationResult("docker_image", False, f"unexpected status {resp.status_code}")
     except requests.Timeout:
         return ValidationResult("docker_image", False, "Docker registry check timed out")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return ValidationResult("docker_image", False, f"Docker check failed: {e}")
 
 
@@ -587,13 +599,13 @@ def run_all_validations(config: SrtConfig) -> list[ValidationResult]:
     # Local model path
     try:
         results.append(validate_local_path("model_path", config.model.path))
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         results.append(ValidationResult("model_path", False, f"check failed: {e}"))
 
     # Local container path
     try:
         results.append(validate_local_path("container_path", config.model.container))
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         results.append(ValidationResult("container_path", False, f"check failed: {e}"))
 
     # HuggingFace model (from identity block)
@@ -604,7 +616,7 @@ def run_all_validations(config: SrtConfig) -> list[ValidationResult]:
             hf_repo = config.identity.model.repo
             hf_rev = config.identity.model.revision
         results.append(validate_hf_model(hf_repo, hf_rev))
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         results.append(ValidationResult("hf_model", False, f"check failed: {e}"))
 
     return results
@@ -627,7 +639,7 @@ def run_validations_background(config: SrtConfig) -> threading.Thread:
             results = run_all_validations(config)
             output = _format_validation_results(results)
             logger.info("\n%s", output)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.debug("Background validation failed: %s", e)
 
     thread = threading.Thread(target=_run, daemon=True, name="srtctl-validation")
