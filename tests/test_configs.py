@@ -1902,6 +1902,14 @@ class TestVLLMDataParallelMode:
         assert backend_dp._is_dp_mode("decode") is True
         assert backend_dp._get_dp_size("prefill") == 16
 
+        backend_dp1 = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                prefill={"data-parallel-size": 1, "pipeline-parallel-size": 6},
+            )
+        )
+        assert backend_dp1._get_dp_size("prefill") == 1
+        assert backend_dp1._is_dp_mode("prefill") is False
+
     def test_dp_mode_creates_per_gpu_processes(self):
         """Test that DP mode creates one process per GPU instead of per node."""
         from srtctl.backends import VLLMProtocol, VLLMServerConfig
@@ -1946,6 +1954,62 @@ class TestVLLMDataParallelMode:
         # dp_rank (stored in node_rank) should go from 0 to 15
         dp_ranks = [p.node_rank for p in processes]
         assert dp_ranks == list(range(16))
+
+    def test_dp_size_one_pp_across_nodes_uses_nnodes_not_dp_ranks(self):
+        """PP6 on 2×3 GPUs is TP/PP launch, not one DP rank owning 6 GPUs."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import allocate_endpoints
+
+        backend = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                prefill={
+                    "tensor-parallel-size": 1,
+                    "pipeline-parallel-size": 6,
+                    "data-parallel-size": 1,
+                },
+            )
+        )
+        endpoints = allocate_endpoints(
+            num_prefill=1,
+            num_decode=0,
+            num_agg=0,
+            gpus_per_prefill=6,
+            gpus_per_decode=1,
+            gpus_per_agg=0,
+            gpus_per_node=4,
+            available_nodes=("node0", "node1"),
+        )
+        assert endpoints[0].total_gpus == 6
+        assert endpoints[0].gpu_indices == frozenset({0, 1, 2})
+
+        processes = backend.endpoints_to_processes(endpoints)
+        assert len(processes) == 2
+        assert [p.node for p in processes] == ["node0", "node1"]
+        assert all(p.gpu_indices == frozenset({0, 1, 2}) for p in processes)
+        assert [p.node_rank for p in processes] == [0, 1]
+
+        mock_runtime = MagicMock()
+        mock_runtime.model_path = Path("/model")
+        mock_runtime.is_hf_model = False
+        mock_runtime.request_plane = "tcp"
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            follower = backend.build_worker_command(
+                process=processes[1],
+                endpoint_processes=processes,
+                runtime=mock_runtime,
+            )
+
+        assert follower[follower.index("--nnodes") + 1] == "2"
+        assert follower[follower.index("--node-rank") + 1] == "1"
+        assert "--headless" in follower
+        assert "--data-parallel-rank" not in follower
+        assert follower[follower.index("--pipeline-parallel-size") + 1] == "6"
+        assert follower[follower.index("--data-parallel-size") + 1] == "1"
+        assert follower[follower.index("--device-ids") + 1] == "0,1,2"
 
     def test_dp_per_node_mode_creates_per_node_processes(self):
         """Per-node DP owns all local GPUs and reserves rank-sized port blocks."""
