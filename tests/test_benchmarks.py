@@ -360,6 +360,34 @@ class TestCustomBenchmarkRunner:
         assert "SRT_DECODE_ENDPOINTS" not in env
         assert env["AIPERF_SERVER_METRICS_URLS"] == "http://ip-node-a:6100/metrics"
 
+    def test_observability_does_not_reach_the_benchmark_client(self):
+        """``observability`` configures what the servers emit, not the client.
+
+        The ``/metrics`` surface the knob turns on is captured by scraping those
+        endpoints directly, so switching it on must leave the benchmark
+        environment byte-identical -- no client-side flags, for any runner.
+        """
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from srtctl.benchmarks.custom import CustomBenchmarkRunner
+        from srtctl.core.topology import Process
+
+        processes = [Process("node-a", frozenset(range(4)), 7500, 6100, "agg", 0, node_rank=0)]
+        off = self._benchmark_stage("sglang", processes)
+        on = self._benchmark_stage("sglang", processes)
+        on.config.observability = SimpleNamespace(enabled=True)
+
+        with patch(
+            "srtctl.cli.mixins.benchmark_stage.get_hostname_ip",
+            side_effect=lambda node, interface: f"ip-{node}",
+        ):
+            env_off = off._get_benchmark_env(CustomBenchmarkRunner())
+            env_on = on._get_benchmark_env(CustomBenchmarkRunner())
+
+        assert env_on == env_off
+        assert "AIPERF_EXTRA_ARGS" not in env_on
+
     def test_direct_vllm_aggregated_worker_endpoint_uses_frontend_port(self):
         from unittest.mock import patch
 
