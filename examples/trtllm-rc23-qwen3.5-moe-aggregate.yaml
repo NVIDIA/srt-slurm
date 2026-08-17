@@ -1,0 +1,100 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-License-Identifier: Apache-2.0
+#
+# TensorRT-LLM 1.3.0rc23 aggregate smoke for the Qwen3.5-397B-A17B NVFP4
+# MoE checkpoint. Replace only model.path before running preflight. The
+# container, topology, engine settings, and benchmark contract reproduce the
+# validated raw aggregate TEP8 baseline.
+#
+# This is a functional 128/32 smoke, not an 8K/1K performance recipe.
+
+name: "qwen3.5-397b-moe-nvfp4-trtllm-rc23-aggregate-tep8-smoke"
+
+model:
+  # Must be an absolute shared-filesystem path visible on every compute node.
+  path: "/shared/models/Qwen3.5-397B-A17B-NVFP4"
+  container: "nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc23"
+  precision: "fp4"
+
+identity:
+  container:
+    image: "nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc23"
+
+resources:
+  # The example assumes GB300 nodes with four GPUs each.
+  gpu_type: "gb300"
+  gpus_per_node: 4
+  agg_nodes: 2
+  agg_workers: 1
+  gpus_per_agg: 8
+
+srun_options:
+  mem: "0"
+  container-remap-root: ""
+  cpu-bind: "none"
+
+frontend:
+  # The single aggregate worker owns the public port directly. This path does
+  # not launch Dynamo, NATS, etcd, nginx, or a separate router.
+  type: "trtllm_serve"
+  enable_multiple_frontends: false
+
+backend:
+  type: "trtllm"
+
+  aggregated_environment:
+    PYTHONUNBUFFERED: "1"
+    NCCL_DEBUG: "WARN"
+    NCCL_GRAPH_MIXING_SUPPORT: "0"
+    NCCL_MNNVL_ENABLE: "1"
+    NCCL_CUMEM_ENABLE: "1"
+    OMPI_MCA_coll_ucc_enable: "0"
+    TLLM_ALL_RANK_LOG: "1"
+    TLLM_LOG_LEVEL: "INFO"
+    TRTLLM_ENABLE_PDL: "1"
+    TRTLLM_SERVER_DISABLE_GC: "1"
+    TRTLLM_WORKER_DISABLE_GC: "1"
+
+  trtllm_config:
+    aggregated:
+      # TEP8: attention tensor parallel and MoE expert parallel both span the
+      # same eight-rank TensorRT-LLM worker. EP does not multiply world size.
+      tensor_parallel_size: 8
+      moe_expert_parallel_size: 8
+      pipeline_parallel_size: 1
+      enable_attention_dp: false
+
+      max_batch_size: 8
+      max_num_tokens: 2048
+      max_seq_len: 512
+      trust_remote_code: true
+      enable_chunked_prefill: true
+      allreduce_strategy: AUTO
+      print_iter_log: true
+      num_postprocess_workers: 4
+      cuda_graph_config:
+        enable_padding: true
+        max_batch_size: 8
+      moe_config:
+        backend: CUTEDSL
+      kv_cache_config:
+        dtype: fp8
+        free_gpu_memory_fraction: 0.8
+        enable_block_reuse: false
+
+health_check:
+  max_attempts: 180
+  interval_seconds: 10
+
+benchmark:
+  type: "sa-bench"
+  dataset_name: "random"
+  isl: 128
+  osl: 32
+  concurrencies: [1]
+  req_rate: "inf"
+  random_range_ratio: 0.8
+  num_prompts_mult: 5
+  num_warmup_mult: 1
+  use_chat_template: false
+  reuse_http_connections: false
