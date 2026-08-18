@@ -34,10 +34,14 @@ class WaveSummary:
     failed: int
     input_tokens: int
     cached_input_tokens_reported: int | None
+    cached_input_tokens_reported_requests: int
     output_tokens: int
     request_throughput: float
     output_token_throughput: float
     logical_total_token_throughput: float
+    logical_total_token_throughput_per_gpu: float
+    uncached_total_token_throughput: float | None
+    uncached_total_token_throughput_per_gpu: float | None
     output_token_throughput_per_gpu: float
     median_ttft_ms: float | None
     median_tpot_ms: float | None
@@ -188,6 +192,15 @@ async def _run_wave(
     reported_cached = [
         output.usage_cached_tokens for output in completed_outputs if output.usage_cached_tokens is not None
     ]
+    cached_input_tokens = sum(reported_cached) if reported_cached else None
+    # Only derive physical/uncached input throughput when every successful
+    # response reported cached-token usage; a partial sum would be misleading.
+    fully_reported_cache_usage = len(reported_cached) == len(completed_outputs) and bool(completed_outputs)
+    uncached_total_tokens = (
+        input_tokens - cached_input_tokens + output_tokens
+        if fully_reported_cache_usage and cached_input_tokens is not None
+        else None
+    )
     ttfts = [output.ttft * 1000 for output in completed_outputs]
     tpots = [output.tpot * 1000 for output in completed_outputs if output.tpot > 0]
     if not tpots:
@@ -204,11 +217,19 @@ async def _run_wave(
         completed=len(completed_outputs),
         failed=len(outputs) - len(completed_outputs),
         input_tokens=input_tokens,
-        cached_input_tokens_reported=sum(reported_cached) if reported_cached else None,
+        cached_input_tokens_reported=cached_input_tokens,
+        cached_input_tokens_reported_requests=len(reported_cached),
         output_tokens=output_tokens,
         request_throughput=len(completed_outputs) / duration,
         output_token_throughput=output_tokens / duration,
         logical_total_token_throughput=(input_tokens + output_tokens) / duration,
+        logical_total_token_throughput_per_gpu=(input_tokens + output_tokens) / duration / total_gpus,
+        uncached_total_token_throughput=(
+            uncached_total_tokens / duration if uncached_total_tokens is not None else None
+        ),
+        uncached_total_token_throughput_per_gpu=(
+            uncached_total_tokens / duration / total_gpus if uncached_total_tokens is not None else None
+        ),
         output_token_throughput_per_gpu=output_tokens / duration / total_gpus,
         median_ttft_ms=_percentile_median(ttfts),
         median_tpot_ms=median_tpot,
@@ -272,6 +293,10 @@ async def main() -> int:
         "prefix_cache_metric_delta_replay": _metrics_delta(after_seed, after_replay),
         "notes": {
             "logical_total_token_throughput": "Includes cached input tokens; do not treat it as physical GPU token work.",
+            "uncached_total_token_throughput": (
+                "Input tokens not reported as cached plus output tokens; emitted only when every completed request "
+                "reports cached-token usage."
+            ),
             "decode_comparison": "Use replay output throughput, TPOT/interactivity, iteration logs, and nsys kernels.",
         },
     }

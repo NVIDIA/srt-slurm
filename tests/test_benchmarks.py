@@ -86,6 +86,49 @@ class TestPrefixReplayRunner:
         assert any("aggregated" in error for error in errors)
         assert any("exactly one" in error for error in errors)
 
+    def test_wrapper_uses_explicit_python3_contract(self, tmp_path, monkeypatch):
+        """Exercise the shell wrapper without relying on a `python` alias."""
+        import os
+        import subprocess
+
+        from srtctl.benchmarks.base import SCRIPTS_DIR
+
+        invocation = tmp_path / "invocation.txt"
+        stub = tmp_path / "python3"
+        stub.write_text(
+            "#!/bin/bash\n"
+            "if [[ $1 == -c ]]; then exit 0; fi\n"
+            f"printf '%s\\n' \"$@\" > {invocation}\n",
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+        monkeypatch.setenv("PYTHON_BIN", str(stub))
+
+        wrapper = SCRIPTS_DIR / "sa-bench" / "prefix_replay.sh"
+        subprocess.run(
+            [
+                "bash",
+                str(wrapper),
+                "http://localhost:8000",
+                "256000",
+                "768",
+                "64",
+                "32",
+                "/model",
+                "moonshotai/Kimi-K3",
+                "16",
+                "16",
+                "5",
+            ],
+            check=True,
+            env=os.environ.copy(),
+        )
+
+        args = invocation.read_text(encoding="utf-8").splitlines()
+        assert args[0] == "-u"
+        assert args[1].endswith("/prefix_replay.py")
+        assert args[-2:] == ["--settle-seconds", "5"]
+
 
 class TestSABenchRunner:
     """Test SA-Bench runner."""
