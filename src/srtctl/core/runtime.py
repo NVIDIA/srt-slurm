@@ -154,6 +154,44 @@ class Nodes:
         )
 
 
+def resolve_model_path(path: str) -> tuple[Path, bool]:
+    """Resolve ``model.path`` into an absolute path and an is-HF-model flag.
+
+    HuggingFace ids ("hf:facebook/opt-125m") are returned unvalidated as Paths —
+    they are downloaded at runtime and never mounted. Local paths are resolved
+    and checked here so a typo fails before anything is launched.
+    """
+    model_path_str = os.path.expandvars(path)
+    if model_path_str.startswith("hf:"):
+        return Path(model_path_str[3:]), True
+
+    model_path = Path(model_path_str).resolve()
+    if not model_path.exists():
+        raise FileNotFoundError(f"Model path does not exist: {model_path}")
+    if not model_path.is_dir():
+        raise ValueError(f"Model path is not a directory: {model_path}")
+    return model_path, False
+
+
+def resolve_container_image(image: str) -> Path:
+    """Resolve ``model.container`` into a path or a registry image name.
+
+    Only file-like values (starting with "/" or "./") are validated; registry
+    names such as "nvcr.io/nvidia/pytorch:23.12" are returned as-is, wrapped in
+    a Path for type compatibility with the rest of the runtime.
+    """
+    container_image_str = os.path.expandvars(image)
+    if not container_image_str.startswith(("/", "./")):
+        return Path(container_image_str)
+
+    container_image = Path(container_image_str).resolve()
+    if not container_image.exists():
+        raise FileNotFoundError(f"Container image path does not exist: {container_image}")
+    if not container_image.is_file():
+        raise ValueError(f"Container image path is not a file: {container_image}")
+    return container_image
+
+
 @dataclass(frozen=True)
 class RuntimeContext:
     """Runtime context with all computed values.
@@ -244,40 +282,8 @@ class RuntimeContext:
             log_dir = log_dir_base / job_id / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
 
-        # Resolve model path (expand env vars)
-        # Support HuggingFace model IDs with "hf:" prefix (e.g., "hf:facebook/opt-125m")
-        model_path_str = os.path.expandvars(config.model.path)
-        is_hf_model = model_path_str.startswith("hf:")
-
-        if is_hf_model:
-            # HuggingFace model ID - store as Path for compatibility, skip validation
-            hf_model_id = model_path_str[3:]  # Remove "hf:" prefix
-            model_path = Path(hf_model_id)
-        else:
-            # Local path - validate exists
-            model_path = Path(model_path_str).resolve()
-            if not model_path.exists():
-                raise FileNotFoundError(f"Model path does not exist: {model_path}")
-            if not model_path.is_dir():
-                raise ValueError(f"Model path is not a directory: {model_path}")
-
-        # Resolve container image (expand env vars)
-        # container_image can be either:
-        # 1. A path to a container file (e.g., /containers/sglang.sqsh) - validate it exists
-        # 2. An image name (e.g., nvcr.io/nvidia/pytorch:23.12) - don't validate
-        container_image_str = os.path.expandvars(config.model.container)
-
-        # If it looks like a file path (starts with / or ./), validate it exists
-        # Image names are typically registry paths without leading / or ./
-        if container_image_str.startswith(("/", "./")):
-            container_image = Path(container_image_str).resolve()
-            if not container_image.exists():
-                raise FileNotFoundError(f"Container image path does not exist: {container_image}")
-            if not container_image.is_file():
-                raise ValueError(f"Container image path is not a file: {container_image}")
-        else:
-            # Image name (e.g., nvcr.io/nvidia/pytorch:23.12) - keep as string, convert to Path for type compatibility
-            container_image = Path(container_image_str)
+        model_path, is_hf_model = resolve_model_path(config.model.path)
+        container_image = resolve_container_image(config.model.container)
 
         # Build container mounts
         container_mounts: dict[Path, Path] = {

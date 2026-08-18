@@ -17,6 +17,7 @@
 - [Commands](#commands)
   - [srtctl apply](#srtctl-apply)
   - [srtctl dry-run](#srtctl-dry-run)
+  - [srtctl cache-inputs](#srtctl-cache-inputs)
   - [srtctl resolve-override](#srtctl-resolve-override)
 - [Output](#output)
 - [Sweep Support](#sweep-support)
@@ -36,6 +37,9 @@ srtctl apply -f recipes/gb200-fp8/sglang-1p4d.yaml
 
 # Preview without submitting
 srtctl dry-run -f config.yaml
+
+# Pre-generate SA-Bench datasets so the benchmark job starts measuring right away
+srtctl cache-inputs -f config.yaml
 
 # Live dashboard - monitor all jobs in one place
 srtctl monitor
@@ -311,6 +315,58 @@ Dry-run output includes:
 - srun options (if configured)
 - For sweeps: table of all jobs with parameters
 - Generated configs saved to `dry-runs/` folder
+
+### `srtctl cache-inputs`
+
+Pre-generate the SA-Bench datasets a recipe's benchmark run would build, so the
+benchmark job spends its GPU time measuring instead of tokenizing.
+
+```bash
+srtctl cache-inputs -f <config.yaml> [options]
+```
+
+Requires `benchmark.dataset_cache_dir` in the recipe — that is where the datasets
+are written, and where the benchmark looks for them. See
+[Dataset caching](config-reference.md#dataset-caching).
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `-f, --file` | Recipe YAML file (required) |
+| `--dry-run` | Print the datasets and the srun command, then exit |
+| `--account` | SLURM account (default: recipe `slurm.account`) |
+| `--partition` | SLURM partition (default: recipe `slurm.partition`) |
+| `--time` | SLURM time limit (default: recipe `slurm.time_limit`) |
+| `--num-workers` | Worker processes for prompt generation (default: `min(cpu_count, 8)`) |
+
+**Examples:**
+
+```bash
+# Build every dataset the recipe needs
+srtctl cache-inputs -f disagg.yaml
+
+# See what it would build first
+srtctl cache-inputs -f disagg.yaml --dry-run
+
+# Long sweep on a wide node
+srtctl cache-inputs -f disagg.yaml --time 4:00:00 --num-workers 32
+```
+
+One dataset is built per prompt count the run asks for. Warmup and measured runs
+each get their own file because `num_prompts` changes how many draws come out of
+the seeded RNG, so a recipe with `concurrencies: "64x128"`, `num_prompts_mult: 8`
+and `num_warmup_mult: 1` produces four datasets: `n=64`, `n=512`, `n=128`,
+`n=1024`. Counts that repeat across concurrency levels are built once.
+
+The command allocates a single node with no GPUs and runs only the prompt build
+in the recipe's container, so it can run while the cluster is busy with the jobs
+it is preparing for. Run from inside an existing allocation it attaches to it
+instead of queueing again.
+
+Re-running is cheap and safe: datasets already in the cache are verified and
+skipped, and only missing ones are generated. That makes this the fastest way to
+resume after a time limit cut a long prewarm short.
 
 ### `srtctl resolve-override`
 

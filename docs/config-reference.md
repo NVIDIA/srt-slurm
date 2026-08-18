@@ -695,6 +695,7 @@ benchmark:
   concurrencies: [256, 512]          # Required: Concurrency levels to test
   req_rate: "inf"                    # Optional: Request rate (default: "inf")
   reuse_http_connections: false      # Optional: Reuse HTTP connections (default: false)
+  dataset_cache_dir: "/lustre/shared/sa-bench-cache"  # Optional: Cache generated prompts
 ```
 
 | Field                    | Type        | Required | Default | Description                                                   |
@@ -704,6 +705,7 @@ benchmark:
 | `concurrencies`          | list/string | Yes      | -       | Concurrency levels (list or "NxM" format)                     |
 | `req_rate`               | string/int  | No       | "inf"   | Request rate                                                  |
 | `reuse_http_connections` | bool        | No       | `false` | Reuse a process-scoped HTTP pool for the SA-Bench Dynamo adapter |
+| `dataset_cache_dir`      | string      | No       | -       | Host dir for caching generated `random` prompts across runs   |
 
 **Concurrencies format**: Can be a list `[128, 256, 512]` or x-separated string `"128x256x512"`.
 
@@ -711,6 +713,63 @@ When `reuse_http_connections` is enabled, each `benchmark_serving.py` process
 uses one keep-alive connection pool. Warmup and formal runs remain isolated in
 separate processes and therefore never share a pool. The option currently
 applies only to SA-Bench's Dynamo HTTP adapter.
+
+#### Dataset caching
+
+Building the `random` dataset tokenizes and decodes every prompt, which costs
+minutes per run at long ISL and repeats for every concurrency point in a sweep.
+Set `dataset_cache_dir` to a host directory to do that work once and reuse it:
+
+```yaml
+benchmark:
+  type: "sa-bench"
+  isl: 8192
+  osl: 1
+  concurrencies: "1x2x4x8x16"
+  dataset_cache_dir: "/lustre/shared/sa-bench-cache"
+```
+
+The directory is created if missing and mounted into the benchmark container at
+`/sa-bench-dataset-cache`, so cache files written by one job are picked up by
+the next. Caching applies to `dataset_name: random` only; leaving the field
+unset keeps the default behavior of regenerating prompts every run. The
+`SA_BENCH_DATASET_CACHE_DIR` environment variable works as a fallback when the
+benchmark script is invoked directly.
+
+Cache files are named for the values that matter when deciding what to delete —
+served model name, ISL, OSL and prompt count — followed by a digest of the
+remaining key fields:
+
+```
+my-model-fp8_isl8192_osl1_n32_3f9ac2b1.pkl
+```
+
+The digest covers the seed, range ratio, prefix length, chat-template flag and
+tokenizer, so datasets that differ only in those never collide. A separate file
+per prompt count is expected: `num_prompts` is derived from the concurrency
+level, and because it changes how many draws come out of the seeded RNG, a
+dataset built for one concurrency is not a subset of another.
+
+Each file stores the full parameter set alongside the prompts, including a
+SHA-256 fingerprint of the tokenizer files (`tokenizer.json`,
+`tokenizer_config.json`, `special_tokens_map.json`). That fingerprint is
+verified on load, so replacing a checkpoint at the same path invalidates the
+cache instead of silently reusing prompts built for the old tokenizer. Model
+weights are deliberately not hashed — they never affect prompt generation.
+
+Caching is best effort. A corrupt file, a read-only directory or a full
+filesystem logs a warning and falls back to generating the dataset; the
+benchmark never fails because of the cache. Writes are published atomically, so
+concurrent sweeps sharing one directory cannot read a partially written file.
+
+By default the first job that needs a dataset pays for building it. To move that
+cost off the GPU allocation entirely, fill the cache ahead of time with
+[`srtctl cache-inputs`](cli.md#srtctl-cache-inputs), which builds every dataset
+the recipe's benchmark loop would build on a single node without GPUs:
+
+```bash
+srtctl cache-inputs -f disagg.yaml
+```
 
 ### sglang-bench
 
