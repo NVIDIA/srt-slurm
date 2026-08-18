@@ -539,8 +539,13 @@ backend:
 
 | Value      | Process layout                                      |
 | ---------- | --------------------------------------------------- |
-| `per_gpu`  | One process per DP rank/GPU (default)               |
+| `per_gpu`  | One process per DP rank (TP×PP GPUs each)           |
 | `per_node` | One process manages all DP ranks allocated per node |
+
+World size is `tensor-parallel-size × data-parallel-size × pipeline-parallel-size`
+and must equal the GPUs allocated to the endpoint. srtslurm derives
+`--data-parallel-size-local` as `GPUs_on_node / (TP × PP)`, not as the raw GPU
+count. A DP rank must fit on one node (TP×PP cannot exceed GPUs per node).
 
 `per_gpu` remains the compatibility default for now, but srtslurm will switch
 the default to `per_node` in a future release. Existing vLLM DP configurations

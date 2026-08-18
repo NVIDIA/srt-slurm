@@ -572,6 +572,72 @@ class VLLMProtocol:
         config = self.get_config_for_mode(mode)
         return config.get("data-parallel-size") or config.get("data_parallel_size")
 
+    def _get_int_flag(self, mode: WorkerMode, name: str, default: int = 1) -> int:
+        """Read a positive integer CLI flag from the mode config."""
+        config = self.get_config_for_mode(mode)
+        raw = config.get(name)
+        if raw is None:
+            raw = config.get(name.replace("-", "_"))
+        if raw is None:
+            return default
+        try:
+            value = int(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{mode} {name}={raw!r} is not an integer") from exc
+        if value < 1:
+            raise ValueError(f"{mode} {name}={value} must be >= 1")
+        return value
+
+    def _tp_size(self, mode: WorkerMode) -> int:
+        return self._get_int_flag(mode, "tensor-parallel-size", 1)
+
+    def _pp_size(self, mode: WorkerMode) -> int:
+        return self._get_int_flag(mode, "pipeline-parallel-size", 1)
+
+    def _gpus_per_dp_rank(self, mode: WorkerMode) -> int:
+        """GPUs consumed by one DP rank: TP × PP."""
+        return self._tp_size(mode) * self._pp_size(mode)
+
+    def _local_dp_size(self, mode: WorkerMode, gpu_count: int) -> int:
+        """DP ranks owned by one process that sees ``gpu_count`` GPUs.
+
+        vLLM world size is TP × DP × PP, so a DP rank occupies TP × PP GPUs.
+        Those GPUs must fit on the node: a DP rank that spans nodes needs the
+        non-DP TP launch path (``--nnodes`` / ``--node-rank``), not DP local ranks.
+        """
+        tp = self._tp_size(mode)
+        pp = self._pp_size(mode)
+        gpus_per_rank = tp * pp
+        if gpu_count % gpus_per_rank != 0:
+            raise ValueError(
+                f"{mode} tensor-parallel-size={tp} * pipeline-parallel-size={pp} "
+                f"= {gpus_per_rank} GPUs per DP rank does not divide the "
+                f"{gpu_count} GPUs allocated on each node"
+            )
+        return gpu_count // gpus_per_rank
+
+    def _validate_dp_world_size(self, mode: WorkerMode, dp_size: int, total_gpus: int) -> None:
+        """Require TP × DP × PP to match the GPUs allocated to the endpoint."""
+        tp = self._tp_size(mode)
+        pp = self._pp_size(mode)
+        world = dp_size * tp * pp
+        if world != total_gpus:
+            raise ValueError(
+                f"{mode} data-parallel-size={dp_size} * tensor-parallel-size={tp} "
+                f"* pipeline-parallel-size={pp} = {world} does not match "
+                f"the endpoint's {total_gpus} allocated GPUs"
+            )
+
+    def _dp_rank_gpu_groups(self, mode: WorkerMode, gpu_indices: frozenset[int]) -> list[frozenset[int]]:
+        """Split a node's GPUs into one group per local DP rank."""
+        gpus_per_rank = self._gpus_per_dp_rank(mode)
+        self._local_dp_size(mode, len(gpu_indices))
+        sorted_gpus = sorted(gpu_indices)
+        return [
+            frozenset(sorted_gpus[offset : offset + gpus_per_rank])
+            for offset in range(0, len(sorted_gpus), gpus_per_rank)
+        ]
+
     def should_set_cuda_visible_devices(self, process: Process) -> bool:
         """Whether worker_stage should set CUDA_VISIBLE_DEVICES.
 
@@ -614,7 +680,7 @@ class VLLMProtocol:
                 port_allocator=port_allocator,
             )
 
-        # DP+EP mode: one process per GPU
+        # DP+EP mode: one process per DP rank (TP×PP GPUs each)
         processes: list[Process] = []
         current_sys_port = base_sys_port
         if port_allocator is None:
@@ -649,18 +715,20 @@ class VLLMProtocol:
                     )
                     current_sys_port += 1
             else:
-                # DP+EP mode: one process per GPU
-                # Each process gets a single GPU and a unique dp_rank
+                # DP+EP mode: one process per DP rank. With TP=1 this is one GPU;
+                # with TP>1 the process owns the TP×PP GPUs for that rank.
                 dp_rank = 0
-                # Allocate a unique DP RPC port for this endpoint's leader node
                 dp_rpc_port = port_allocator.next_dp_rpc_port(endpoint.leader_node)
-                # Allocate a single NIXL base port for this endpoint.
+                dp_size = self._get_dp_size(endpoint.mode) or (
+                    endpoint.total_gpus // self._gpus_per_dp_rank(endpoint.mode)
+                )
+                self._validate_dp_world_size(endpoint.mode, dp_size, endpoint.total_gpus)
+                rank_gpu_groups = self._dp_rank_gpu_groups(endpoint.mode, endpoint.gpu_indices)
                 # vLLM internally computes: actual_port = base + data_parallel_rank
                 # so all DP ranks in the endpoint share the same base port.
-                dp_size = self._get_dp_size(endpoint.mode) or len(endpoint.gpu_indices)
                 nixl_base_port = port_allocator.next_nixl_port_block(dp_size)
                 for _node_rank, node in enumerate(endpoint.nodes):
-                    for gpu_idx in sorted(endpoint.gpu_indices):
+                    for rank_gpus in rank_gpu_groups:
                         is_leader = dp_rank == 0
                         http_port = port_allocator.next_http_port(node) if is_leader else 0
                         bootstrap_port = (
@@ -674,7 +742,7 @@ class VLLMProtocol:
                         processes.append(
                             Process(
                                 node=node,
-                                gpu_indices=frozenset([gpu_idx]),  # Single GPU per process
+                                gpu_indices=rank_gpus,
                                 sys_port=current_sys_port,
                                 http_port=http_port,
                                 endpoint_mode=endpoint.mode,
@@ -697,7 +765,11 @@ class VLLMProtocol:
         base_sys_port: int = DYN_SYSTEM_PORT_BASE,
         port_allocator: NodePortAllocator | None = None,
     ) -> list[Process]:
-        """Convert DP endpoints to one process per node."""
+        """Convert DP endpoints to one process per node.
+
+        ``--data-parallel-size-local`` is GPUs-on-node / (TP × PP), not the GPU
+        count. Start ranks advance by that local DP size.
+        """
         from srtctl.core.topology import NodePortAllocator, Process, endpoints_to_processes
 
         processes: list[Process] = []
@@ -716,14 +788,11 @@ class VLLMProtocol:
                 current_sys_port += len(non_dp)
                 continue
 
-            dp_size = self._get_dp_size(endpoint.mode) or endpoint.total_gpus
-            if dp_size != endpoint.total_gpus:
-                raise ValueError(
-                    f"{endpoint.mode} data-parallel-size={dp_size} does not match "
-                    f"the endpoint's {endpoint.total_gpus} allocated GPUs"
-                )
-
-            local_dp_size = len(endpoint.gpu_indices)
+            dp_size = self._get_dp_size(endpoint.mode) or (
+                endpoint.total_gpus // self._gpus_per_dp_rank(endpoint.mode)
+            )
+            self._validate_dp_world_size(endpoint.mode, dp_size, endpoint.total_gpus)
+            local_dp_size = self._local_dp_size(endpoint.mode, len(endpoint.gpu_indices))
             dp_rpc_port = port_allocator.next_dp_rpc_port(endpoint.leader_node)
             nixl_base_port = port_allocator.next_nixl_port_block(dp_size)
             dp_start_rank = 0
@@ -917,7 +986,7 @@ class VLLMProtocol:
             cmd.extend(
                 [
                     "--data-parallel-size-local",
-                    str(len(process.gpu_indices)),
+                    str(self._local_dp_size(mode, len(process.gpu_indices))),
                     "--data-parallel-start-rank",
                     str(process.node_rank),
                     "--data-parallel-address",
@@ -928,7 +997,7 @@ class VLLMProtocol:
                 ]
             )
         elif is_dp_mode:
-            # DP+EP mode: each GPU runs its own process
+            # DP+EP per_gpu: each process is one DP rank (TP×PP GPUs).
             # process.node_rank is the dp_rank (set in endpoints_to_processes)
             dp_rank = process.node_rank
             # Use the per-endpoint dp_rpc_port allocated by NodePortAllocator
