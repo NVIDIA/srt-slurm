@@ -257,6 +257,7 @@ class BenchmarkType(str, Enum):
     MANUAL = "manual"
     CUSTOM = "custom"
     SA_BENCH = "sa-bench"
+    PREFIX_REPLAY = "prefix-replay"
     ROUTER = "router"
     MOONCAKE_ROUTER = "mooncake-router"
     TRACE_REPLAY = "trace-replay"
@@ -716,6 +717,10 @@ class BenchmarkConfig:
     random_range_ratio: float | None = None  # Random input/output length range ratio (default: 0.8)
     num_prompts_mult: int | None = None  # Multiplier for num_prompts = concurrency * mult (default: 10)
     num_warmup_mult: int | None = None  # Multiplier for warmup prompts = concurrency * mult (default: 2)
+    # Prefix-replay: first seed the prefix cache, then replay the exact same
+    # prompts while measuring a short decode-only wave.
+    seed_osl: int | None = None  # Output length for the cache-seeding wave (default: 1)
+    settle_seconds: float | None = None  # Pause between seed and replay waves (default: 5)
     # Custom dataset fields (sa-bench)
     dataset_name: str | None = None  # "random" (default) or "custom"
     dataset_path: str | None = None  # Container path to dataset file (mount via extra_mount)

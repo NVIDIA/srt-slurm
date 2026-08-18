@@ -70,16 +70,17 @@ profiling__start_profile_on_worker() {
 
     echo "Starting profiling on http://${hostport} (steps ${start_step}-${stop_step})"
     if [[ -z "${SRTCTL_FRONTEND_TYPE}" ]]; then
-        echo "Error: SRTCTL_FRONTEND_TYPE is not set (expected 'dynamo' or 'sglang')" >&2
+        echo "Error: SRTCTL_FRONTEND_TYPE is not set (expected 'dynamo', 'vllm', or 'sglang')" >&2
         return 1
     fi
 
     local start_path=""
     case "${SRTCTL_FRONTEND_TYPE}" in
         dynamo) start_path="/engine/control/start_profile" ;;
+        vllm) start_path="/start_profile" ;;
         sglang) start_path="/start_profile" ;;
         *)
-            echo "Error: unsupported SRTCTL_FRONTEND_TYPE='${SRTCTL_FRONTEND_TYPE}' (expected 'dynamo' or 'sglang')" >&2
+            echo "Error: unsupported SRTCTL_FRONTEND_TYPE='${SRTCTL_FRONTEND_TYPE}' (expected 'dynamo', 'vllm', or 'sglang')" >&2
             return 1
             ;;
     esac
@@ -103,16 +104,17 @@ profiling__stop_profile_on_worker() {
 
     echo "Stopping profiling on http://${hostport}"
     if [[ -z "${SRTCTL_FRONTEND_TYPE}" ]]; then
-        echo "Error: SRTCTL_FRONTEND_TYPE is not set (expected 'dynamo' or 'sglang')" >&2
+        echo "Error: SRTCTL_FRONTEND_TYPE is not set (expected 'dynamo', 'vllm', or 'sglang')" >&2
         return 1
     fi
 
     local stop_path=""
     case "${SRTCTL_FRONTEND_TYPE}" in
         dynamo) stop_path="/engine/control/stop_profile" ;;
+        vllm) stop_path="/stop_profile" ;;
         sglang) stop_path="/stop_profile" ;;
         *)
-            echo "Error: unsupported SRTCTL_FRONTEND_TYPE='${SRTCTL_FRONTEND_TYPE}' (expected 'dynamo' or 'sglang')" >&2
+            echo "Error: unsupported SRTCTL_FRONTEND_TYPE='${SRTCTL_FRONTEND_TYPE}' (expected 'dynamo', 'vllm', or 'sglang')" >&2
             return 1
             ;;
     esac

@@ -17,6 +17,7 @@ class TestBenchmarkRegistry:
         benchmarks = list_benchmarks()
         assert "custom" in benchmarks
         assert "sa-bench" in benchmarks
+        assert "prefix-replay" in benchmarks
         assert "sglang-bench" in benchmarks
         assert "mmlu" in benchmarks
         assert "gpqa" in benchmarks
@@ -34,6 +35,56 @@ class TestBenchmarkRegistry:
         """Raises ValueError for unknown benchmark type."""
         with pytest.raises(ValueError, match="Unknown benchmark type"):
             get_runner("nonexistent-benchmark")
+
+
+class TestPrefixReplayRunner:
+    """Test exact-prefix replay benchmark configuration."""
+
+    def test_build_command_preserves_dp_and_exact_wave_sizes(self):
+        from unittest.mock import MagicMock
+
+        from srtctl.backends.vllm import VLLMProtocol, VLLMServerConfig
+        from srtctl.benchmarks.prefix_replay import PrefixReplayRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        config = SrtConfig(
+            name="prefix-replay",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="gb300", agg_nodes=4, agg_workers=1),
+            backend=VLLMProtocol(
+                vllm_config=VLLMServerConfig(
+                    aggregated={"data-parallel-size": 16},
+                )
+            ),
+            benchmark=BenchmarkConfig(
+                type="prefix-replay",
+                isl=256000,
+                osl=16,
+                concurrencies=[64],
+                seed_osl=1,
+            ),
+        )
+        runtime = MagicMock(frontend_port=8888, model_path="/model", is_hf_model=False)
+
+        runner = PrefixReplayRunner()
+        assert runner.validate_config(config) == []
+        command = runner.build_command(config, runtime)
+        assert command[-5:] == ["/model", config.served_model_name, "16", "16", "5"]
+        assert command[3:7] == ["256000", "16", "64", "1"]
+
+    def test_rejects_disaggregated_or_multiple_concurrencies(self):
+        from srtctl.benchmarks.prefix_replay import PrefixReplayRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        config = SrtConfig(
+            name="invalid-prefix-replay",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="gb300", prefill_nodes=1, decode_nodes=1),
+            benchmark=BenchmarkConfig(type="prefix-replay", isl=256000, osl=16, concurrencies=[32, 64]),
+        )
+        errors = PrefixReplayRunner().validate_config(config)
+        assert any("aggregated" in error for error in errors)
+        assert any("exactly one" in error for error in errors)
 
 
 class TestSABenchRunner:

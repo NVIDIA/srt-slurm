@@ -481,7 +481,7 @@ class BenchmarkStageMixin:
             env["PROFILE_AGG_ENDPOINTS"] = ",".join(agg_endpoints)
 
         # Set profile output directory and common env vars for benchmarks that support profiling
-        if runner.name in ("SA-Bench", "SGLang-Bench", "Trace-Replay-Bench"):
+        if runner.name in ("SA-Bench", "SGLang-Bench", "Trace-Replay-Bench", "Prefix-Replay-Bench"):
             env["PROFILE_OUTPUT_DIR"] = profiles_dir_in_container
             env["BENCH_MODEL_NAME"] = self.config.served_model_name
             env["HEAD_NODE"] = self.runtime.nodes.head
@@ -658,9 +658,11 @@ class BenchmarkStageMixin:
         from srtctl.benchmarks.base import AIPerfBenchmarkRunner
 
         is_custom = self.config.benchmark.type == "custom"
-        logical_endpoints = self._logical_worker_endpoints() if self.config.profiling.enabled or is_custom else None
+        is_prefix_replay = self.config.benchmark.type == "prefix-replay"
+        needs_worker_endpoints = self.config.profiling.enabled or is_custom or is_prefix_replay
+        logical_endpoints = self._logical_worker_endpoints() if needs_worker_endpoints else None
         env = self._get_benchmark_profiling_env(runner, logical_endpoints)
-        if is_custom:
+        if is_custom or is_prefix_replay:
             assert logical_endpoints is not None
             env.update(self._get_worker_endpoint_env(logical_endpoints))
         env["SRTCTL_FRONTEND_TYPE"] = self.config.frontend.type
@@ -689,7 +691,7 @@ class BenchmarkStageMixin:
         # Built-in AIPerf runners retain physical-process metrics for vLLM DP.
         # Custom commands commonly wrap AIPerf but do not inherit from its base
         # class, so give them the logical-worker view needed by SGLang TP.
-        if isinstance(runner, AIPerfBenchmarkRunner):
+        if isinstance(runner, AIPerfBenchmarkRunner) or is_prefix_replay:
             env.update(self._get_aiperf_server_metrics_env())
         elif is_custom:
             assert logical_endpoints is not None

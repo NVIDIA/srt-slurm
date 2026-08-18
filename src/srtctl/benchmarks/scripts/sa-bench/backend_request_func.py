@@ -41,6 +41,7 @@ class RequestFuncInput:
     extra_body: dict | None = None
     multi_modal_content: dict | None = None
     ignore_eos: bool = False
+    extra_headers: dict[str, str] | None = None
 
 
 @dataclass
@@ -50,6 +51,8 @@ class RequestFuncOutput:
     latency: float = 0.0
     # output_tokens: int = 0
     output_tokens: int | None = None
+    usage_prompt_tokens: int | None = None
+    usage_cached_tokens: int | None = None
     ttft: float = 0.0  # Time to first token
     itl: list[float] = field(default_factory=list)  # List of inter-token latencies (one per SSE chunk)
     tpot: float = 0.0  # avg next-token latencies
@@ -267,6 +270,8 @@ async def async_request_openai_completions(
         if request_func_input.extra_body:
             payload.update(request_func_input.extra_body)
         headers = {"Authorization": f"Bearer {os.environ.get('OPENAI_API_KEY')}"}
+        if request_func_input.extra_headers:
+            headers.update(request_func_input.extra_headers)
 
         output = RequestFuncOutput()
         output.prompt_len = request_func_input.prompt_len
@@ -371,6 +376,8 @@ async def async_request_dynamo_completions(
         if request_func_input.extra_body:
             payload.update(request_func_input.extra_body)
         headers = {"Authorization": f"Bearer {os.environ.get('OPENAI_API_KEY')}"}
+        if request_func_input.extra_headers:
+            headers.update(request_func_input.extra_headers)
 
         output = RequestFuncOutput()
         output.prompt_len = request_func_input.prompt_len
@@ -421,6 +428,9 @@ async def async_request_dynamo_completions(
                                 output.text_chunks.append(text or "")
                             if usage := data.get("usage"):
                                 output.output_tokens = usage.get("completion_tokens")
+                                output.usage_prompt_tokens = usage.get("prompt_tokens")
+                                prompt_details = usage.get("prompt_tokens_details") or {}
+                                output.usage_cached_tokens = prompt_details.get("cached_tokens")
                     if first_chunk_received:
                         output.success = True
                     else:
