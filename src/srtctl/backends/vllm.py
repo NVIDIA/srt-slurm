@@ -572,6 +572,11 @@ class VLLMProtocol:
         config = self.get_config_for_mode(mode)
         return config.get("data-parallel-size") or config.get("data_parallel_size")
 
+    def _get_tp_size(self, mode: WorkerMode) -> int:
+        """Get the tensor-parallel-size for a mode, defaulting to 1."""
+        config = self.get_config_for_mode(mode)
+        return config.get("tensor-parallel-size") or config.get("tensor_parallel_size") or 1
+
     def should_set_cuda_visible_devices(self, process: Process) -> bool:
         """Whether worker_stage should set CUDA_VISIBLE_DEVICES.
 
@@ -716,14 +721,16 @@ class VLLMProtocol:
                 current_sys_port += len(non_dp)
                 continue
 
-            dp_size = self._get_dp_size(endpoint.mode) or endpoint.total_gpus
-            if dp_size != endpoint.total_gpus:
+            tp_size = self._get_tp_size(endpoint.mode)
+            dp_size = self._get_dp_size(endpoint.mode) or endpoint.total_gpus // tp_size
+            if dp_size * tp_size != endpoint.total_gpus:
                 raise ValueError(
-                    f"{endpoint.mode} data-parallel-size={dp_size} does not match "
+                    f"{endpoint.mode} data-parallel-size={dp_size} x "
+                    f"tensor-parallel-size={tp_size} does not match "
                     f"the endpoint's {endpoint.total_gpus} allocated GPUs"
                 )
 
-            local_dp_size = len(endpoint.gpu_indices)
+            local_dp_size = len(endpoint.gpu_indices) // tp_size
             dp_rpc_port = port_allocator.next_dp_rpc_port(endpoint.leader_node)
             nixl_base_port = port_allocator.next_nixl_port_block(dp_size)
             dp_start_rank = 0
