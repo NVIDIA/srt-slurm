@@ -1,0 +1,78 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: qwen-sglang-disagg
+
+model:
+  path: hf:Qwen/Qwen3-0.6B
+  container: my-registry/dynamo-sglang:1.4.0
+  precision: bf16
+
+resources:
+  gpu_type: h100
+  gpus_per_node: 8
+  prefill_nodes: 1
+  prefill_workers: 1
+  decode_nodes: 1
+  decode_workers: 1
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+  args:
+    router-mode: kv
+
+backend:
+  type: sglang
+  sglang_config:
+    prefill:
+      trust-remote-code: true
+      disaggregation-transfer-backend: nixl
+    decode:
+      trust-remote-code: true
+      disaggregation-transfer-backend: nixl
+
+benchmark:
+  type: sa-bench
+  isl: 1024
+  osl: 128
+  concurrencies: [8, 16, 32]
+  req_rate: inf
+  # Defaults to model.container. Override when benchmark dependencies live in
+  # a separate image.
+  # container_image: my-registry/srt-benchmark:latest
+
+kubernetes:
+  namespace: dynamo-bench
+  runtime_version: 1.4.0
+  env_from_secrets:
+    - hf-token-secret
+  node_selector:
+    accelerator: h100
+  benchmark_timeout_seconds: 3600
+  benchmark_resources:
+    requests: {cpu: "4", memory: 8Gi}
+    limits: {cpu: "8", memory: 16Gi}
+  # Optional durable benchmark /logs storage.
+  # benchmark_persistent_volume_claim: benchmark-results
+  # Optional with telemetry.enabled: must be an existing RWX PVC.
+  # telemetry_persistent_volume_claim: benchmark-telemetry
+
+# Optional: inject OTEL export settings into Dynamo containers. The collector
+# is not installed by srtctl.
+observability:
+  enable_otel: false
+  otel_endpoint: http://otel-collector.observability.svc:4317
+
+# Optional: uncomment after replacing image tags and creating an RWX PVC.
+# telemetry:
+#   enabled: true
+#   provider: scraper
+#   container_image: ghcr.io/nvidia-dev/warnold-tachometer-scraper:<tag>
+#   binary_path: /usr/local/bin/tachometer-scraper
+#   dcgm_exporter:
+#     container_image: nvcr.io/nvidia/k8s/dcgm-exporter:<tag>
+#     port: 9400
+#   node_exporter:
+#     container_image: quay.io/prometheus/node-exporter:<tag>
+#     port: 9100
