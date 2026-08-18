@@ -137,7 +137,7 @@ base:
         enable-flashinfer-allreduce-fusion: true
         weight-loader-prefetch-checkpoints: true
         model-loader-extra-config: '{"enable_multithread_load": true}'
-        mem-fraction-static: 0.946
+        mem-fraction-static: 0.92
         disaggregation-decode-extra-slots: 0
         enable-metrics: true
         enable-cache-report: true
