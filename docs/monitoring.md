@@ -127,6 +127,10 @@ logs/4459_4P_1D_20251122_041341/
 ├── {node}_nginx.err                         # Nginx stderr
 ├── {node}_config.json                       # Per-node SGLang config dump
 │
+├── hwinfo/                                  # NVLink/MNNVL snapshots
+│   ├── before.out                           # Fabric state before the run
+│   └── after.out                            # Fabric state when the run ended
+│
 ├── cached_assets/                           # Cached model assets
 └── sa-bench_isl_1024_osl_1024/              # Benchmark results
     ├── isl_1024_osl_1024_concurrency_128_req_rate_inf.json
@@ -184,6 +188,46 @@ P99 TPOT (ms):                           22.36
 ### Worker Logs ({node}\_prefill_w0.err, {node}\_decode_w0.err)
 
 SGLang worker logs showing model loading, memory allocation, and runtime info. Check these for debugging CUDA errors, OOM issues, or NCCL failures.
+
+### hwinfo/before.out, hwinfo/after.out
+
+NVLink and MNNVL state on every worker node, captured before any load and again
+when the run ends (on success as well as failure). Each command is recorded with
+its output and, when it failed, its exit code:
+
+```
+===== theia0245 | before | 2026-08-13T07:53:30Z =====
+
+# ---------- NVLink ----------
+
+$ nvidia-smi nvlink -e
+GPU 0: NVIDIA GB300
+	 Link 0: Replay Errors: 0
+	 Link 0: Recovery Errors: 0
+	 Link 0: CRC Errors: 0
+```
+
+Collected per node: GPU inventory with serials and driver version; `nvidia-smi
+nvlink -s`, `-e` and `topo -m`; the MNNVL wiring (`/dev/nvidia-caps-imex-channels/`,
+`/etc/nvidia-imex/nodes_config.cfg`, `config.cfg`, the IMEX unit state and
+`nvidia-imex-ctl -N -H` for the domain state and its host list); per-GPU fabric
+State/Status/CliqueId; and `dmesg` Xid lines plus the row remapper state.
+
+The point is the difference between the two files:
+
+```bash
+diff hwinfo/before.out hwinfo/after.out
+```
+
+A job that died with `CUDA error: uncorrectable NVLink error` reports nothing
+about which link failed. Error counters that moved between the snapshots do, and
+the GPU serials in the same file are what a hardware ticket needs. Counters that
+grow during a run that still passed are the earliest warning that a link is
+about to take the next job down.
+
+Everything here is best effort: a missing tool or a read the job user is not
+allowed to make is recorded and skipped, and a hung driver call is cut off after
+20 seconds (`HWINFO_CMD_TIMEOUT`). Collection never fails a job.
 
 ### config.yaml
 
