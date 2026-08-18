@@ -2037,6 +2037,53 @@ class TestVLLMDataParallelMode:
         with pytest.raises(ValueError, match="data-parallel-size=7"):
             backend.endpoints_to_processes([endpoint])
 
+    def test_dp_per_node_mode_allows_tensor_parallel_ranks(self):
+        """A DP rank may span several GPUs; size ranks by tensor-parallel-size."""
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Endpoint
+
+        backend = VLLMProtocol(
+            dp_launch_mode="per_node",
+            vllm_config=VLLMServerConfig(
+                prefill={"data-parallel-size": 2, "tensor-parallel-size": 8}
+            ),
+        )
+        endpoint = Endpoint(
+            mode="prefill",
+            index=0,
+            nodes=("node0", "node1"),
+            gpu_indices=frozenset(range(8)),
+            gpus_per_node=8,
+        )
+
+        processes = backend.endpoints_to_processes([endpoint])
+
+        # One process per node, each owning a single TP8 data-parallel rank.
+        assert len(processes) == 2
+        assert [p.node_rank for p in processes] == [0, 1]
+
+    def test_dp_per_node_mode_rejects_tensor_parallel_mismatch(self):
+        """dp_size x tp_size must still account for every allocated GPU."""
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Endpoint
+
+        backend = VLLMProtocol(
+            dp_launch_mode="per_node",
+            vllm_config=VLLMServerConfig(
+                prefill={"data-parallel-size": 3, "tensor-parallel-size": 8}
+            ),
+        )
+        endpoint = Endpoint(
+            mode="prefill",
+            index=0,
+            nodes=("node0", "node1"),
+            gpu_indices=frozenset(range(8)),
+            gpus_per_node=8,
+        )
+
+        with pytest.raises(ValueError, match="tensor-parallel-size=8"):
+            backend.endpoints_to_processes([endpoint])
+
     def test_dp_per_node_mode_rejects_headless(self):
         """Headless node processes cannot satisfy per-node Dynamo health expectations."""
         from marshmallow import ValidationError
