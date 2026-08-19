@@ -18,6 +18,19 @@ if actual != expected:
 print(f"Mooncake CUDA 13 runtime pinned to {actual}")
 PY
 
+# EngineCore applies per-rank numactl policies after this setup finishes.
+# Validate both sockets now so Slurm/cgroup restrictions cannot silently turn
+# the NUMA-1 ranks into unbound processes later during engine startup.
+for numa_node in 0 1; do
+  if ! numactl --cpunodebind="${numa_node}" --membind="${numa_node}" true; then
+    echo "ERROR: NUMA node ${numa_node} is not available for EngineCore CPU/memory binding" >&2
+    echo "Allowed CPUs: $(grep '^Cpus_allowed_list:' /proc/self/status | awk '{print $2}')" >&2
+    echo "Allowed memory nodes: $(grep '^Mems_allowed_list:' /proc/self/status | awk '{print $2}')" >&2
+    exit 1
+  fi
+done
+echo "Verified: EngineCore can bind CPU and memory on NUMA nodes 0 and 1"
+
 # Fail closed: neither the legacy interleave patch nor Recovery-v3 may be
 # present. NUMA placement comes from the physical-GPU map rendered by
 # srt-slurm for each per-GPU service.
