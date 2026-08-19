@@ -121,6 +121,13 @@ class VLLMMooncakeKVStoreConfig:
     # quote numeric values.
     store_config: dict[str, Any] | None = None
 
+    # Optional per-role overlays for heterogeneous TP layouts. Values are
+    # merged over store_config and emitted as separate JSON files so each
+    # worker role can contribute a different per-service segment size.
+    prefill_store_config: dict[str, Any] | None = None
+    decode_store_config: dict[str, Any] | None = None
+    aggregated_store_config: dict[str, Any] | None = None
+
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
 
@@ -368,7 +375,23 @@ class VLLMProtocol:
         env["VLLM_PORT"] = str(VLLM_PORT_BASE + proc_index * VLLM_PORT_STRIDE)
         return env
 
-    def get_mooncake_worker_env(self, infra_node_ip: str, local_hostname: str) -> dict[str, str]:
+    def _mooncake_store_config_override(self, mode: WorkerMode | None) -> dict[str, Any] | None:
+        if self.mooncake_kv_store is None or mode is None:
+            return None
+        field_name = "aggregated_store_config" if mode == "agg" else f"{mode}_store_config"
+        return getattr(self.mooncake_kv_store, field_name)
+
+    def get_mooncake_store_config_filename(self, mode: WorkerMode | None = None) -> str:
+        if self._mooncake_store_config_override(mode) is None:
+            return MOONCAKE_STORE_CONFIG_FILENAME
+        return f"mooncake_store_config_{mode}.json"
+
+    def get_mooncake_worker_env(
+        self,
+        infra_node_ip: str,
+        local_hostname: str,
+        mode: WorkerMode | None = None,
+    ) -> dict[str, str]:
         """Get mooncake env vars to inject on a specific vLLM worker.
 
         Returns ``{}`` when ``mooncake_kv_store`` is unset. Otherwise:
@@ -385,15 +408,16 @@ class VLLMProtocol:
         """
         if self.mooncake_kv_store is None:
             return {}
+        config_path = f"/logs/{self.get_mooncake_store_config_filename(mode)}"
         return {
             "MOONCAKE_LOCAL_HOSTNAME": local_hostname,
             **self.mooncake_kv_store.env,
             "MOONCAKE_MASTER": f"{infra_node_ip}:{MOONCAKE_MASTER_PORT}",
             "MOONCAKE_TE_META_DATA_SERVER": (f"http://{infra_node_ip}:{MOONCAKE_HTTP_METADATA_PORT}/metadata"),
-            "MOONCAKE_CONFIG_PATH": MOONCAKE_STORE_CONFIG_CONTAINER_PATH,
+            "MOONCAKE_CONFIG_PATH": config_path,
         }
 
-    def build_mooncake_store_config(self, infra_node_ip: str) -> dict[str, Any]:
+    def build_mooncake_store_config(self, infra_node_ip: str, mode: WorkerMode | None = None) -> dict[str, Any]:
         """Build the JSON payload for vLLM's ``MooncakeStoreConfig.load_from_env()``.
 
         Pass-through of ``mooncake_kv_store.store_config`` with
@@ -408,6 +432,9 @@ class VLLMProtocol:
         result: dict[str, Any] = {}
         if self.mooncake_kv_store is not None and self.mooncake_kv_store.store_config:
             result.update(self.mooncake_kv_store.store_config)
+        override = self._mooncake_store_config_override(mode)
+        if override:
+            result.update(override)
         result["master_server_address"] = f"{infra_node_ip}:{MOONCAKE_MASTER_PORT}"
         return result
 
@@ -696,6 +723,34 @@ class VLLMProtocol:
 
         mode = process.endpoint_mode
         config = self.get_config_for_mode(mode)
+
+        # --numa-bind-nodes is expressed once in YAML as a physical-GPU map,
+        # e.g. [0, 0, 1, 1] on a four-GPU GB300 node. Under per-GPU launch,
+        # every independent service numbers its visible GPUs from zero, so
+        # passing the complete map is wrong for a service assigned GPUs 2-3
+        # and for a one-GPU DP-rank service. Slice the map by all physical GPUs
+        # assigned to this process.
+        if self.dp_launch_mode == "per_gpu" and process.gpu_indices:
+            numa_key = None
+            if "numa-bind-nodes" in config:
+                numa_key = "numa-bind-nodes"
+            elif "numa_bind_nodes" in config:
+                numa_key = "numa_bind_nodes"
+            if numa_key is not None:
+                numa_map = config[numa_key]
+                if not isinstance(numa_map, list):
+                    raise ValueError(
+                        f"{numa_key} must be a physical-GPU list in per_gpu mode, "
+                        f"found {numa_map!r}"
+                    )
+                physical_gpus = sorted(process.gpu_indices)
+                if physical_gpus[-1] >= len(numa_map):
+                    raise ValueError(
+                        f"{numa_key} does not cover physical GPUs {physical_gpus}: "
+                        f"{numa_map}"
+                    )
+                config.pop("numa_bind_nodes", None)
+                config["numa-bind-nodes"] = [numa_map[gpu] for gpu in physical_gpus]
 
         # Determine if multi-node
         endpoint_nodes = list(dict.fromkeys(p.node for p in endpoint_processes))

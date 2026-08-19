@@ -298,6 +298,19 @@ class SweepOrchestrator(
             store_cfg_path = self.runtime.log_dir / MOONCAKE_STORE_CONFIG_FILENAME
             store_cfg_path.write_text(json.dumps(store_cfg, indent=2))
             logger.info("Wrote mooncake_store_config to %s: %s", store_cfg_path, store_cfg)
+            for mode in ("prefill", "decode", "agg"):
+                filename = backend.get_mooncake_store_config_filename(mode)
+                if filename == MOONCAKE_STORE_CONFIG_FILENAME:
+                    continue
+                role_cfg = backend.build_mooncake_store_config(self.runtime.infra_node_ip, mode)
+                role_cfg_path = self.runtime.log_dir / filename
+                role_cfg_path.write_text(json.dumps(role_cfg, indent=2))
+                logger.info(
+                    "Wrote %s mooncake_store_config to %s: %s",
+                    mode,
+                    role_cfg_path,
+                    role_cfg,
+                )
 
         logger.info(
             "Starting mooncake_master on %s (rpc=%d, http_metadata=%d, metrics=%d)",

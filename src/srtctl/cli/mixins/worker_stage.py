@@ -208,7 +208,7 @@ class WorkerStageMixin:
         # peer-to-peer transfers (defaulting to "localhost" silently breaks them).
         if hasattr(self.backend, "get_mooncake_worker_env"):
             local_hostname = get_hostname_ip(process.node, self.runtime.network_interface)
-            env_to_set.update(self.backend.get_mooncake_worker_env(self.runtime.infra_node_ip, local_hostname))
+            env_to_set.update(self.backend.get_mooncake_worker_env(self.runtime.infra_node_ip, local_hostname, mode))
 
         self._apply_kvbm_endpoint_env(env_to_set, endpoint_processes)
 
@@ -345,7 +345,7 @@ class WorkerStageMixin:
         # one srun for the whole endpoint, so leader IP is the best we can do.
         if hasattr(self.backend, "get_mooncake_worker_env"):
             local_hostname = get_hostname_ip(leader.node, self.runtime.network_interface)
-            env_to_set.update(self.backend.get_mooncake_worker_env(self.runtime.infra_node_ip, local_hostname))
+            env_to_set.update(self.backend.get_mooncake_worker_env(self.runtime.infra_node_ip, local_hostname, mode))
 
         self._apply_kvbm_endpoint_env(env_to_set, endpoint_processes)
 

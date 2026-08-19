@@ -1018,6 +1018,36 @@ backend:
         assert cfg["protocol"] == "tcp"
         assert cfg["device_name"] == "mlx5_0"
 
+    def test_vllm_mooncake_role_store_config_overrides_segment_size(self):
+        """Per-role store settings override only the selected worker role."""
+        from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMProtocol
+
+        backend = VLLMProtocol(
+            mooncake_kv_store=VLLMMooncakeKVStoreConfig(
+                store_config={"global_segment_size": "180GB", "protocol": "rdma"},
+                prefill_store_config={"global_segment_size": "200GB"},
+                decode_store_config={"global_segment_size": "180GB"},
+            )
+        )
+        assert backend.build_mooncake_store_config("10.0.0.1", "prefill")["global_segment_size"] == "200GB"
+        assert backend.build_mooncake_store_config("10.0.0.1", "decode")["global_segment_size"] == "180GB"
+        assert backend.build_mooncake_store_config("10.0.0.1", "prefill")["protocol"] == "rdma"
+
+    def test_vllm_mooncake_role_store_config_sets_role_path(self):
+        """Workers with role overlays receive their role-specific JSON path."""
+        from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMProtocol
+
+        backend = VLLMProtocol(
+            mooncake_kv_store=VLLMMooncakeKVStoreConfig(
+                store_config={"global_segment_size": "180GB"},
+                prefill_store_config={"global_segment_size": "200GB"},
+            )
+        )
+        prefill_env = backend.get_mooncake_worker_env("10.0.0.1", "10.0.0.2", "prefill")
+        decode_env = backend.get_mooncake_worker_env("10.0.0.1", "10.0.0.3", "decode")
+        assert prefill_env["MOONCAKE_CONFIG_PATH"] == "/logs/mooncake_store_config_prefill.json"
+        assert decode_env["MOONCAKE_CONFIG_PATH"] == "/logs/mooncake_store_config.json"
+
     def test_vllm_mooncake_store_config_passes_unknown_keys_through(self):
         """Unknown keys in store_config pass through so new vLLM fields work without code changes."""
         from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig, VLLMProtocol
