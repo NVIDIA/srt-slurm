@@ -158,6 +158,11 @@ When `mooncake_kv_store` is set under an SGLang or vLLM backend, srtslurm:
 4. For vLLM, also renders `mooncake_kv_store.store_config` into the JSON file
    pointed to by `MOONCAKE_CONFIG_PATH` (vLLM's `MooncakeStoreConnector` reads
    its config from JSON, not env vars). See `docs/mooncake-kv-store.md`.
+5. Optionally launches one managed `mooncake_kv_store.standalone` service per
+   selected physical worker node after the master is ready and before workers.
+
+The Mooncake master RPC, HTTP metadata, metrics endpoint, and tuning flags
+remain owned by srtslurm.
 
 ```yaml
 backend:
@@ -279,4 +284,3 @@ tail -f outputs/<job_id>/logs/sweep_<job_id>.log | grep "srun command"
 ```
 
 Per-worker env vars and commands are also logged individually (search for `Env:` and `Command:` lines).
-
