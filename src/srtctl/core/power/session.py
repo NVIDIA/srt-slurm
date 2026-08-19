@@ -445,6 +445,8 @@ class PowerTelemetrySession:
         rows, sample_reasons = read_samples(self.samples_path)
         try:
             self._manifest.samples_sha256 = sha256_file(self.samples_path)
+        except FileNotFoundError:
+            pass
         except OSError:
             sample_reasons = dedupe([*sample_reasons, Reason.SAMPLES_CSV_MALFORMED])
         observed = derive_observed_devices(rows)

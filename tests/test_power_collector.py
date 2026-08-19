@@ -719,6 +719,16 @@ class TestSessionOwnership:
         assert manifest["stopped_at_unix"] is not None
         assert exit_code == 1
 
+    def test_missing_samples_are_not_reclassified_as_malformed(self, tmp_path):
+        session = _session(tmp_path, [])
+
+        outcome = session.stop_and_finalize()
+        report = validate_power_artifacts(power_dir=session.power_dir, result_root=session.power_dir.parent)
+
+        assert Reason.SAMPLES_CSV_MISSING in outcome.reason_codes
+        assert Reason.SAMPLES_CSV_MALFORMED not in outcome.reason_codes
+        assert not any("disk-derived reason_codes mismatch" in failure for failure in report.failures)
+
     def test_exporter_launch_failure_blocks_the_benchmark(self, tmp_path):
         """Sibling of the readiness gate: a failed launch must not run the workload."""
         harness = self._harness(tmp_path, None)
