@@ -6,7 +6,7 @@ on:
       - Cargo.toml
       - Cargo.lock
       - rust-toolchain.toml
-      - rust/**
+      - src/tachometer/**
       - docker/Dockerfile.tachometer-scraper
       - .dockerignore
   push:
@@ -15,7 +15,7 @@ on:
       - Cargo.toml
       - Cargo.lock
       - rust-toolchain.toml
-      - rust/**
+      - src/tachometer/**
       - docker/Dockerfile.tachometer-scraper
       - .dockerignore
   workflow_dispatch:

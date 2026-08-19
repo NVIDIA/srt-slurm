@@ -21,10 +21,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
-COPY rust/tachometer-writer/Cargo.toml rust/tachometer-writer/Cargo.toml
-COPY rust/tachometer-scraper/Cargo.toml rust/tachometer-scraper/Cargo.toml
-COPY rust/tachometer-writer/src rust/tachometer-writer/src
-COPY rust/tachometer-scraper/src rust/tachometer-scraper/src
+COPY src/tachometer/tachometer-writer/Cargo.toml src/tachometer/tachometer-writer/Cargo.toml
+COPY src/tachometer/tachometer-scraper/Cargo.toml src/tachometer/tachometer-scraper/Cargo.toml
+COPY src/tachometer/tachometer-writer/src src/tachometer/tachometer-writer/src
+COPY src/tachometer/tachometer-scraper/src src/tachometer/tachometer-scraper/src
 
 RUN if [ "$TARGETARCH" = "arm64" ]; then rustup target add aarch64-unknown-linux-gnu; fi
 

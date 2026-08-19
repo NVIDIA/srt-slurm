@@ -1,5 +1,8 @@
 [workspace]
-members = ["rust/tachometer-writer", "rust/tachometer-scraper"]
+members = [
+    "src/tachometer/tachometer-writer",
+    "src/tachometer/tachometer-scraper",
+]
 resolver = "2"
 
 [workspace.package]
