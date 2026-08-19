@@ -22,6 +22,7 @@ from srtctl.core.power.manifest import ExpectedWindow
 from srtctl.core.power.samples import read_samples
 from srtctl.core.power.session import PowerEndpoint, PowerSessionSettings, PowerTelemetrySession, _run_daemon_workers
 from srtctl.core.power.topology import build_expected_devices
+from srtctl.core.power.validate_artifacts import validate_power_artifacts
 from srtctl.core.processes import ManagedProcess, ProcessRegistry
 from srtctl.core.schema import TelemetryExporterConfig, TelemetryProvider
 from srtctl.core.topology import Process
@@ -603,6 +604,14 @@ class TestPublication:
         assert manifest["window_validations"][0]["power_coverage_valid"] is True
         assert len(manifest["window_validations"][0]["per_device_max_sample_gap_seconds"]) == 2 * GPUS_PER_NODE
         assert manifest["artifact_errors"] == []
+
+        # Round-trip the producer's package through the offline validator so the
+        # two publication_valid formulas can never drift apart silently.
+        report = validate_power_artifacts(
+            power_dir=session.power_dir,
+            result_root=session.power_dir.parent,
+        )
+        assert report.ok is True, report.failures
 
     def test_a_stray_artifact_file_blocks_publication(self, tmp_path, exporters):
         """A valid expected window must not publish beside an unusable file."""
