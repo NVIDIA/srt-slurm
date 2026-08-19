@@ -65,6 +65,34 @@ logger = logging.getLogger(__name__)
 MOONCAKE_MASTER_STARTUP_TIMEOUT_SECONDS = 600
 
 
+def _log_tail(path: Path, max_lines: int = 80) -> str:
+    """Return a bounded log tail for startup errors."""
+    try:
+        return "\n".join(path.read_text(errors="replace").splitlines()[-max_lines:])
+    except OSError as exc:
+        return f"<unable to read {path}: {exc}>"
+
+
+def _wait_for_infra_port(
+    proc: subprocess.Popen,
+    log_path: Path,
+    host: str,
+    port: int,
+    service: str,
+    timeout: float,
+) -> None:
+    """Wait for an infra port, failing immediately if its srun exits."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            raise RuntimeError(
+                f"{service} launch exited with code {proc.returncode}. Infra log tail:\n{_log_tail(log_path)}"
+            )
+        if wait_for_port(host, port, timeout=1, interval=0.1):
+            return
+    raise RuntimeError(f"{service} failed to start. Infra log tail:\n{_log_tail(log_path)}")
+
+
 def _build_mooncake_master_command(
     mooncake_cfg: object | str | None = None,
     *,
@@ -248,15 +276,15 @@ class SweepOrchestrator(
             critical=True,
         )
 
-        # 300s timeout to handle slow container imports on first run
+        # 300s timeout to handle slow container imports on first run. Observe
+        # the srun process so launch failures surface immediately with infra.out
+        # instead of being hidden behind a five-minute port timeout.
         logger.info("Waiting for NATS (port %d) on %s...", NATS_PORT, infra_node)
-        if not wait_for_port(infra_node, NATS_PORT, timeout=300):
-            raise RuntimeError("NATS failed to start")
+        _wait_for_infra_port(proc, infra_log, infra_node, NATS_PORT, "NATS", 300)
         logger.info("NATS is ready")
 
         logger.info("Waiting for etcd (port %d) on %s...", ETCD_CLIENT_PORT, infra_node)
-        if not wait_for_port(infra_node, ETCD_CLIENT_PORT, timeout=300):
-            raise RuntimeError("etcd failed to start")
+        _wait_for_infra_port(proc, infra_log, infra_node, ETCD_CLIENT_PORT, "etcd", 300)
         logger.info("etcd is ready")
 
         return managed

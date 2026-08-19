@@ -11,6 +11,7 @@ import argparse
 import contextlib
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -29,6 +30,25 @@ except ModuleNotFoundError:
 ETCD_LISTEN_ADDR = "http://0.0.0.0"
 
 logger = logging.getLogger(__name__)
+
+
+def service_state_dir(run_name: str, service: str) -> Path:
+    """Return a job-unique local state directory for an infra service.
+
+    ``do_sweep`` mounts host ``/tmp`` at ``/host-tmp`` so service state stays on
+    node-local storage.  The previous fixed ``/tmp/nats`` and ``/tmp/etcd``
+    paths could collide with stale state from an earlier allocation owned by
+    the same user (or fail to clean up due to permissions).  Include the Slurm
+    job and run name so a new allocation never reuses those paths.
+    """
+    base = Path("/host-tmp") if Path("/host-tmp").is_dir() else Path("/tmp")
+    job_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", os.environ.get("SLURM_JOB_ID", "local"))
+    safe_run_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", run_name)
+    path = base / "srtctl" / job_id / safe_run_name / service
+    if path.exists():
+        shutil.rmtree(path)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def get_local_ip() -> str:
@@ -125,6 +145,7 @@ def setup_logging():
 def start_nats(
     binary_path: str = "/configs/nats-server",
     max_payload_mb: int | None = None,
+    state_dir: Path | None = None,
 ) -> subprocess.Popen:
     """Start NATS server.
 
@@ -139,16 +160,16 @@ def start_nats(
     if not os.path.exists(binary_path):
         raise FileNotFoundError(f"NATS binary not found: {binary_path}")
 
-    # Use /tmp for JetStream storage - avoids "Temporary storage directory" warning
-    # and ensures we're using fast local storage
-    if os.path.exists("/tmp/nats"):
-        shutil.rmtree("/tmp/nats")
-    nats_store_dir = "/tmp/nats"
-    os.makedirs(nats_store_dir, exist_ok=True)
+    # Use job-unique local storage. A fixed /tmp/nats path can retain state or
+    # permissions from an earlier allocation on the same compute node.
+    nats_state_dir = state_dir or Path("/tmp/nats")
+    nats_state_dir.mkdir(parents=True, exist_ok=True)
+    nats_store_dir = nats_state_dir / "jetstream"
+    nats_store_dir.mkdir(parents=True, exist_ok=True)
 
     if max_payload_mb is not None:
         # Write NATS config with custom max_payload
-        nats_config_path = "/tmp/nats.conf"
+        nats_config_path = nats_state_dir / "nats.conf"
         max_payload_bytes = max_payload_mb * 1024 * 1024
         with open(nats_config_path, "w") as f:
             f.write(f"max_payload: {max_payload_bytes}\n")
@@ -171,6 +192,7 @@ def start_etcd(
     host_ip: str,
     binary_path: str = "/configs/etcd",
     log_dir: Path | None = None,
+    state_dir: Path | None = None,
 ) -> subprocess.Popen:
     """Start etcd server.
 
@@ -187,13 +209,9 @@ def start_etcd(
 
     logger.info("Starting etcd server...")
 
-    # Use /tmp for etcd data directory - this is typically on fast local storage
-    # (often tmpfs on HPC systems). Without this, etcd uses "default.etcd" in CWD
-    # which may be on slow network storage, causing Raft consensus timeouts.
-    if os.path.exists("/tmp/etcd"):
-        shutil.rmtree("/tmp/etcd")
-    etcd_data_dir = "/tmp/etcd"
-    os.makedirs(etcd_data_dir, exist_ok=True)
+    # Keep etcd data node-local and isolated from previous Slurm allocations.
+    etcd_data_dir = state_dir or Path("/tmp/etcd")
+    etcd_data_dir.mkdir(parents=True, exist_ok=True)
 
     cmd = [
         binary_path,
@@ -288,8 +306,17 @@ def main():
     etcd_proc = None
 
     try:
-        nats_proc = start_nats(args.nats_binary, max_payload_mb=args.nats_max_payload_mb)
-        etcd_proc = start_etcd(host_ip, args.etcd_binary, log_dir)
+        nats_proc = start_nats(
+            args.nats_binary,
+            max_payload_mb=args.nats_max_payload_mb,
+            state_dir=service_state_dir(args.name, "nats"),
+        )
+        etcd_proc = start_etcd(
+            host_ip,
+            args.etcd_binary,
+            log_dir,
+            state_dir=service_state_dir(args.name, "etcd"),
+        )
 
         # Wait for services
         if not wait_for_service("localhost", NATS_PORT, "NATS"):
