@@ -1,0 +1,107 @@
+# Reference benchmark manifest — DeepSeek-V4-Pro, 8k/1k, B300 (disaggregated).
+#
+# This is a WORKED EXAMPLE for the schema + validator skeleton. It is structured
+# to pass `srtctl-validate-manifest`. Digests, commits, and SBOM hashes below are
+# illustrative placeholders in the correct format (sha256:<64 hex>, 40-hex sha);
+# a generator will emit the real values from a completed run. See docs.
+manifest_version: "0.1"
+
+metadata:
+  name: dsv4-pro-8k1k-b300
+  description: DeepSeek-V4-Pro disaggregated throughput frontier, 8192/1024, on B300.
+  owners:
+    trtllm: TODO-trtllm-owner
+    dynamo: tanmayv
+
+artifacts:
+  base_image:
+    ref: nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc23
+    digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+  wheels:
+    - name: ai-dynamo
+      version: "1.3.0.dev2026071601"
+      sha256: "2222222222222222222222222222222222222222222222222222222222222222"
+  sbom:
+    srt_slurm_relpath: examples/benchmark-manifest/dsv4-pro-8k1k-b300/sbom/pip-freeze.txt
+    sha256: "3333333333333333333333333333333333333333333333333333333333333333"
+
+source:
+  repo: https://github.com/NVIDIA/srt-slurm
+  branch: main
+  commit: "abcabcabcabcabcabcabcabcabcabcabcabcabca"
+  bundle:
+    - srt_slurm_relpath: recipes/deepseek-v4/8k1k/b300/disagg-b300-8k-2p1d-dep4-dep8-b32-mtp0.yaml
+      sha256: "4444444444444444444444444444444444444444444444444444444444444444"
+  launcher_patches:
+    - "sed ENROOT_REMAP_ROOT=yes -> no in launcher (required for PMIx)."
+
+model:
+  served: deepseek-ai/DeepSeek-V4-Pro
+  requested: deepseek-ai/DeepSeek-V4-Pro
+  checkpoint:
+    hf_id: deepseek-ai/DeepSeek-V4-Pro
+    hf_revision: "0000000000000000000000000000000000000000"
+
+topology:
+  prefill:
+    num_workers: 2
+    tp: 4
+    ep: 4
+    dp_attn: 4
+    nodes: 1
+  decode:
+    num_workers: 1
+    tp: 8
+    ep: 8
+    dp_attn: 8
+    nodes: 1
+
+runtime:
+  effective_config:
+    srt_slurm_relpath: examples/benchmark-manifest/dsv4-pro-8k1k-b300/effective-config/trtllm_config_decode.yaml
+    sha256: "5555555555555555555555555555555555555555555555555555555555555555"
+  backends:
+    moe:
+      requested: TRTLLM
+      effective: TRTLLM
+    comm:
+      requested: NIXL
+      effective: NIXL
+  cluster_requirements:
+    numa:
+      gpu_nic_affinity: required
+    preserve_engine_comm:
+      - nixl
+      - ucx
+
+conversion:
+  inputs:
+    trtllm_image_digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    trtllm_source_commit: "def0def0def0def0def0def0def0def0def0def0"
+    dynamo_wheel:
+      name: ai-dynamo
+      version: "1.3.0.dev2026071601"
+      sha256: "2222222222222222222222222222222222222222222222222222222222222222"
+    compat_min_commit: "def0def0def0def0def0def0def0def0def0def0"
+    compat_max_commit: "HEAD@2026-07-16"
+  outputs:
+    preserved_comm:
+      - nixl
+      - ucx
+
+results:
+  baseline:
+    - point_id: 2p1d-b32-conc282
+      metrics:
+        concurrency: 282
+        ttft_ms: 950.0
+        tpot_ms: 25.0
+        output_tput_tok_s: 22090.0
+
+capabilities:
+  worker_without_frontend:
+    available: false
+    notes: TODO confirm with the Dynamo team and record the invocation.
+  prefill_only_discovery:
+    available: false
+    notes: TODO confirm with the Dynamo team and record the invocation.
