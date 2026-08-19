@@ -593,7 +593,11 @@ def expand_observability(cfg: dict) -> dict:
 
     No-op unless ``observability.enabled`` is truthy.
     """
-    from srtctl.core.schema import ANALYTICS_ENGINE_CONFIG, ANALYTICS_SPAN_ENV
+    from srtctl.core.schema import (
+        ANALYTICS_ENGINE_CONFIG,
+        ANALYTICS_REQUEST_TRACE_ENV,
+        ANALYTICS_SPAN_ENV,
+    )
 
     observability = cfg.get("observability")
     if not isinstance(observability, dict) or not observability.get("enabled"):
@@ -613,6 +617,13 @@ def expand_observability(cfg: dict) -> dict:
         frontend = {}
         cfg["frontend"] = frontend
     _setdefault_nested(frontend, "env", ANALYTICS_SPAN_ENV)
+
+    # --- request-trace leg: per-request phase timings, frontend only ---------
+    # Complements the span leg rather than duplicating it. Spans decompose the
+    # router but stop at one opaque handle_payload per worker; these records
+    # carry prefill_wait / prefill / kv_transfer_estimated for the same request,
+    # keyed by x_request_id so all three legs join on one id.
+    _setdefault_nested(frontend, "env", ANALYTICS_REQUEST_TRACE_ENV)
 
     # --- metrics leg: the /metrics surface and what appears on it ------------
     # publish_events_and_metrics is what creates the endpoint; without it the

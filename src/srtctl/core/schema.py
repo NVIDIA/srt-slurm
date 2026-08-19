@@ -45,6 +45,9 @@ from srtctl.core.formatting import (
     FormattablePathField,
 )
 
+# Leaf module (stdlib-only imports), so this cannot cycle back into schema.
+from srtctl.core.power.contract import CONTAINER_LOG_DIR
+
 logger = logging.getLogger(__name__)
 
 # Local copies of srtctl.core.power.contract values so that loading a config
@@ -1180,6 +1183,35 @@ ANALYTICS_SPAN_ENV: dict[str, str] = {
     "DYN_LOGGING_SPAN_EVENTS": "true",
     "DYN_LOGGING_JSONL": "true",
     "DYN_LOG": "debug",
+}
+
+# Env that makes the Dynamo *frontend* write one ``dynamo.request.trace.v1``
+# ``request_end`` record per request to a JSONL file. This is a different signal
+# from the span leg above: spans decompose the router in detail but treat each
+# worker as one opaque ``handle_payload``, whereas these records carry the
+# frontend's own phase timings -- ``prefill_wait_time_ms`` (receive to dispatch),
+# ``prefill_time_ms`` (dispatch to first token) and, on disagg,
+# ``kv_transfer_estimated_latency_ms`` -- plus ``x_request_id``, so they join to
+# the client and span legs on the key those already use.
+#
+# Frontend-only: the timings come from the router's RequestTracker
+# (``lib/llm/src/protocols/common/timing.rs``) and are emitted from the
+# preprocessor. Workers have no tracker and would write empty files.
+#
+# All three vars are required together:
+#   * DYN_REQUEST_TRACE selects which record kinds exist. Without it the record
+#     list is empty, which makes the whole policy disabled -- and ``load_sinks``
+#     then returns no sinks at all, so DYN_REQUEST_TRACE_SINKS alone writes
+#     nothing.
+#   * DYN_REQUEST_TRACE_SINKS picks the file sink and the uncompressed format
+#     (the built-in default is jsonl_gz).
+#   * DYN_REQUEST_TRACE_FILE_PATH must be overridden. The built-in default is
+#     /tmp/dynamo-request-trace, and container /tmp does not survive the job --
+#     the capture would be written and then thrown away with the node.
+ANALYTICS_REQUEST_TRACE_ENV: dict[str, str] = {
+    "DYN_REQUEST_TRACE": "1",
+    "DYN_REQUEST_TRACE_SINKS": "jsonl",
+    "DYN_REQUEST_TRACE_FILE_PATH": f"{CONTAINER_LOG_DIR}/dynamo-request-trace",
 }
 
 # Engine-config keys that surface per-request and per-iteration statistics on
