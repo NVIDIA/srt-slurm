@@ -159,7 +159,10 @@ class Endpoint:
         mode: Worker mode ("prefill", "decode", or "agg")
         index: Zero-based index within the mode (e.g., prefill worker 0, 1, 2)
         nodes: Tuple of node hostnames this endpoint uses
-        gpu_indices: Set of GPU indices used on each node (e.g., {0,1,2,3,4,5,6,7})
+        gpu_indices: GPU indices used on each node. Multi-node workers that do
+            not fill the node (e.g. 6 GPUs on 2×4-GPU nodes) use the same
+            subset on every node ({0,1,2}) so ``--nnodes`` local world sizes
+            match. Leftover GPUs stay idle.
         gpus_per_node: Number of GPUs per node in the cluster
     """
 
@@ -407,16 +410,33 @@ def allocate_endpoints(
 
         for i in range(count):
             if nodes_per_worker >= 1 and gpus_per_worker >= gpus_per_node:
-                # Multi-node or full-node worker
+                # Multi-node or full-node worker. When gpus_per_worker is not a
+                # multiple of gpus_per_node, leave GPUs idle so every node of
+                # this worker sees the same count (required by --nnodes).
+                # 6 GPUs on 4-GPU nodes → 2 nodes × {0,1,2}, not 4+2.
                 worker_nodes = tuple(available_nodes[node_idx + j] for j in range(nodes_per_worker))
                 node_idx += nodes_per_worker
+                per_node, uneven = divmod(gpus_per_worker, nodes_per_worker)
+                if uneven:
+                    raise ValueError(
+                        f"{mode} worker {i} needs {gpus_per_worker} GPUs across "
+                        f"{nodes_per_worker} nodes, which is not an even split "
+                        f"({gpus_per_worker} % {nodes_per_worker} = {uneven}). "
+                        f"--nnodes requires the same GPU count on every node; "
+                        f"use {per_node * nodes_per_worker} or "
+                        f"{(per_node + 1) * nodes_per_worker} GPUs"
+                    )
+                if per_node > gpus_per_node:
+                    raise ValueError(
+                        f"{mode} worker {i} would place {per_node} GPUs on a {gpus_per_node}-GPU node"
+                    )
 
                 result.append(
                     Endpoint(
                         mode=mode,
                         index=i,
                         nodes=worker_nodes,
-                        gpu_indices=frozenset(range(gpus_per_node)),
+                        gpu_indices=frozenset(range(per_node)),
                         gpus_per_node=gpus_per_node,
                     )
                 )

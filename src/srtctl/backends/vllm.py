@@ -559,13 +559,15 @@ class VLLMProtocol:
         )
 
     def _is_dp_mode(self, mode: WorkerMode) -> bool:
-        """Check if this mode uses Data Parallel + Expert Parallel pattern.
+        """Check if this mode uses Data Parallel + Expert Parallel launch.
 
-        DP+EP mode is detected when data-parallel-size is set in the mode's config.
+        ``data-parallel-size: 1`` is still passed to vLLM, but launch is the
+        standard TP/PP ``--nnodes`` / ``--node-rank`` path. A PP stage that
+        spans nodes cannot be one DP rank's local GPU group.
         ``dp_launch_mode`` controls whether a process owns one rank or all local ranks.
         """
-        config = self.get_config_for_mode(mode)
-        return config.get("data-parallel-size") is not None or config.get("data_parallel_size") is not None
+        dp_size = self._get_dp_size(mode)
+        return dp_size is not None and dp_size > 1
 
     def _get_dp_size(self, mode: WorkerMode) -> int | None:
         """Get the data-parallel-size for a mode, or None if not in DP mode."""

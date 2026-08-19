@@ -99,6 +99,49 @@ class TestAllocateEndpoints:
         for ep in endpoints:
             assert len(ep.nodes) == 2
             assert ep.total_gpus == 8
+            assert ep.gpu_indices == frozenset(range(4))
+
+    def test_multi_node_worker_leaves_gpus_idle_evenly(self):
+        """6 GPUs on 4-GPU nodes use 3+3, not 4+2 (nnodes needs an even split)."""
+        endpoints = allocate_endpoints(
+            num_prefill=2,
+            num_decode=1,
+            num_agg=0,
+            gpus_per_prefill=6,
+            gpus_per_decode=8,
+            gpus_per_agg=0,
+            gpus_per_node=4,
+            available_nodes=("n0", "n1", "n2", "n3", "n4", "n5"),
+        )
+
+        prefill = [e for e in endpoints if e.mode == "prefill"]
+        decode = [e for e in endpoints if e.mode == "decode"]
+
+        assert [ep.nodes for ep in prefill] == [("n0", "n1"), ("n2", "n3")]
+        for ep in prefill:
+            assert ep.gpu_indices == frozenset({0, 1, 2})
+            assert ep.total_gpus == 6
+        assert decode[0].nodes == ("n4", "n5")
+        assert decode[0].gpu_indices == frozenset(range(4))
+        assert decode[0].total_gpus == 8
+
+        processes = endpoints_to_processes(prefill)
+        assert len(processes) == 4
+        assert all(p.gpu_indices == frozenset({0, 1, 2}) for p in processes)
+
+    def test_multi_node_worker_rejects_uneven_gpu_split(self):
+        """A GPU count that cannot split evenly across spanned nodes is rejected."""
+        with pytest.raises(ValueError, match="not an even split"):
+            allocate_endpoints(
+                num_prefill=1,
+                num_decode=0,
+                num_agg=0,
+                gpus_per_prefill=5,
+                gpus_per_decode=1,
+                gpus_per_agg=0,
+                gpus_per_node=4,
+                available_nodes=("n0", "n1"),
+            )
 
     def test_insufficient_gpus(self):
         """Test that we raise an error when there are insufficient GPUs."""
