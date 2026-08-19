@@ -1019,17 +1019,61 @@ class ObservabilityConfig:
     dynamo-decode, dynamo-frontend) and can be overridden per-component via
     prefill_environment, decode_environment, or frontend.env.
 
+    ``enabled`` is the single analytics knob. Turning it on makes the run emit
+    every signal the offline perf-analysis tooling consumes, without the user
+    having to remember six independent flags. It expands (at config-load time,
+    via :func:`srtctl.core.config.expand_observability`) into:
+
+    * ``backend.publish_events_and_metrics: true`` -- the worker/frontend
+      Prometheus ``/metrics`` surface exists at all.
+    * ``enable_iter_perf_stats`` + ``return_perf_metrics`` on every engine
+      config -- the ``trtllm_kv_cache_*`` occupancy gauges and per-request
+      histograms appear on that surface.
+    * ``DYN_LOGGING_SPAN_EVENTS`` / ``DYN_LOGGING_JSONL`` / ``DYN_LOG=debug`` on
+      prefill, decode and frontend -- per-request ``SPAN_CLOSED`` trace lines.
+
+    and, at benchmark time (see ``BenchmarkStageMixin``):
+
+    * an in-job Prometheus scraper writing ``raw_prometheus.jsonl`` for the whole
+      benchmark window (see ``scrape_*`` below).
+
+    Every expansion uses setdefault semantics: an explicit value in the recipe
+    always wins, so ``observability.enabled`` is safe to switch on globally.
+
+    Scope is deliberately server-side. The knob configures what the workers and
+    frontend *emit*, and captures that surface by scraping the endpoints
+    directly. It never reaches into the benchmark client to ask it to re-export
+    what the servers already publish.
+
     Attributes:
+        enabled: Master analytics knob. Default: False.
         enable_otel: If True, inject OTEL environment variables into all workers
             and frontends. Requires otel_endpoint to be set. Default: False.
         otel_endpoint: OTEL collector endpoint (e.g. "http://10.0.0.1:4317").
             Required when enable_otel is True.
+        scrape_metrics: Run the in-job Prometheus scraper. Defaults to the value
+            of ``enabled``; set False to opt out while keeping the rest.
+        scrape_interval_seconds: Seconds between scrape sweeps. Default: 1.0.
+            The floor is 0.5; a sweep slower than the interval simply runs
+            back-to-back rather than queueing (see the drift-free pacing in
+            ``RawMetricsScraper``).
+        scrape_output: Filename (under the run's log dir) for the RAW capture.
     """
 
+    enabled: bool = False
     enable_otel: bool = False
     otel_endpoint: str | None = None
 
+    scrape_metrics: bool | None = None
+    scrape_interval_seconds: float = 1.0
+    scrape_output: str = "raw_prometheus.jsonl"
+
     Schema: ClassVar[type[Schema]] = Schema
+
+    @property
+    def scraper_enabled(self) -> bool:
+        """Whether the in-job Prometheus scraper should run."""
+        return self.enabled if self.scrape_metrics is None else self.scrape_metrics
 
 
 @dataclass(frozen=True)
@@ -1125,6 +1169,26 @@ def build_otel_env(observability: ObservabilityConfig, component: str) -> dict[s
         "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": observability.otel_endpoint,
         "OTEL_SERVICE_NAME": f"dynamo-{component}",
     }
+
+
+# Env that makes Dynamo emit one JSONL ``SPAN_CLOSED`` line per closed span on
+# the component's stdout. This is the *only* source for the per-request trace
+# leg of the offline perf tooling; without it those panels have no input.
+# DYN_LOG=debug is required because the span events are emitted at DEBUG level.
+ANALYTICS_SPAN_ENV: dict[str, str] = {
+    "DYN_LOGGING_SPAN_EVENTS": "true",
+    "DYN_LOGGING_JSONL": "true",
+    "DYN_LOG": "debug",
+}
+
+# Engine-config keys that surface per-request and per-iteration statistics on
+# the worker's /metrics endpoint. ``enable_iter_perf_stats`` is what produces
+# the ``trtllm_kv_cache_{used,free,max}_blocks`` gauges; ``return_perf_metrics``
+# adds the per-request latency / KV-transfer histograms.
+ANALYTICS_ENGINE_CONFIG: dict[str, bool] = {
+    "enable_iter_perf_stats": True,
+    "return_perf_metrics": True,
+}
 
 
 # /configs/dynamo-wheels is the lustre-mounted cache for hash-pinned dynamo
@@ -1655,8 +1719,8 @@ class SrtConfig:
         """Catch trtllm_serve misconfigurations at load time (dry-run) instead of
         failing mid-job at the frontend stage.
 
-        The trtllm_serve frontend runs a single ``trtllm-serve disaggregated``
-        orchestrator, so it needs the trtllm backend, a disaggregated layout, and the
+        The trtllm_serve frontend supports either one direct aggregate worker or a
+        single ``trtllm-serve disaggregated`` orchestrator. Both use the
         single-frontend path (no nginx/multi-frontend).
         """
         if self.frontend.type != "trtllm_serve":
@@ -1667,12 +1731,12 @@ class SrtConfig:
             )
         if self.frontend.enable_multiple_frontends:
             raise ValidationError(
-                "frontend.type: trtllm_serve runs a single orchestrator; set frontend.enable_multiple_frontends: false"
+                "frontend.type: trtllm_serve uses one public endpoint; set frontend.enable_multiple_frontends: false"
             )
-        if not self.resources.is_disaggregated:
+        if not self.resources.is_disaggregated and self.resources.num_agg != 1:
             raise ValidationError(
-                "frontend.type: trtllm_serve requires a disaggregated layout "
-                "(set resources.prefill_nodes/prefill_workers and decode_nodes/decode_workers)"
+                "frontend.type: trtllm_serve aggregate mode requires exactly one "
+                "aggregate worker (set resources.agg_workers: 1)"
             )
 
     def _validate_vllm_frontend(self):
