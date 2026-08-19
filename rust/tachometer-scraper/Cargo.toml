@@ -30,7 +30,6 @@ bytes.workspace = true
 futures.workspace = true
 
 [dev-dependencies]
-flate2 = "1.0"
 tempfile = "3.8"
 parquet = { workspace = true }
 arrow = { workspace = true }

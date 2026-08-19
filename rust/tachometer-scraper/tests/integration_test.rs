@@ -1,34 +1,14 @@
 use std::collections::HashMap;
-use std::fs;
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tachometer_scraper::{get_filter, scrape_endpoint};
 use tachometer_writer::{compact_and_upload, DatasetWriter};
 use tempfile::TempDir;
 
-/// Helper function to get decompressed sample file path
-/// Decompresses .txt.gz files on demand if the .txt file doesn't exist
 fn get_sample_file_path(filename: &str) -> PathBuf {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let sample_dir = manifest_dir.join("sample-metrics");
-    let txt_path = sample_dir.join(filename);
-    let gz_path = sample_dir.join(format!("{}.gz", filename));
-
-    // If .txt doesn't exist but .txt.gz does, decompress it
-    if !txt_path.exists() && gz_path.exists() {
-        let mut decoder = flate2::read::GzDecoder::new(
-            fs::File::open(&gz_path).expect("Failed to open compressed file"),
-        );
-        let mut decompressed = Vec::new();
-        std::io::copy(&mut decoder, &mut decompressed).expect("Failed to decompress file");
-
-        let mut file = fs::File::create(&txt_path).expect("Failed to create decompressed file");
-        file.write_all(&decompressed)
-            .expect("Failed to write decompressed file");
-    }
-
-    txt_path
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("sample-metrics")
+        .join(filename)
 }
 
 #[tokio::test]
