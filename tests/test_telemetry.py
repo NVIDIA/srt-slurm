@@ -60,11 +60,24 @@ def _dcgm_power(**overrides) -> TelemetryConfig:
 class TestTelemetryConfig:
     """Telemetry schema validation."""
 
-    def test_requires_container_image_when_enabled(self):
-        with pytest.raises(ValidationError, match="telemetry.container_image"):
+    def test_scraper_does_not_require_container_image(self):
+        config = _make_config(
+            telemetry=TelemetryConfig(
+                enabled=True,
+                dcgm_exporter=TelemetryExporterConfig(container_image="dcgm:latest", port=9401),
+                node_exporter=TelemetryExporterConfig(container_image="node:latest", port=9101),
+            )
+        )
+
+        assert config.telemetry.container_image is None
+        assert config.telemetry.binary_path == "tachometer-scraper"
+
+    def test_scraper_requires_nonempty_binary_path(self):
+        with pytest.raises(ValidationError, match="telemetry.binary_path"):
             _make_config(
                 telemetry=TelemetryConfig(
                     enabled=True,
+                    binary_path="",
                     dcgm_exporter=TelemetryExporterConfig(container_image="dcgm:latest", port=9401),
                     node_exporter=TelemetryExporterConfig(container_image="node:latest", port=9101),
                 )
@@ -280,6 +293,7 @@ class TestTelemetryConfigGeneration:
         runtime.job_id = "12345"
         runtime.run_name = "test_12345"
         runtime.network_interface = "eth0"
+        runtime.log_dir = Path("/runs/12345/logs")
         processes = [
             Process(
                 node="node-a",
@@ -314,7 +328,7 @@ class TestTelemetryConfigGeneration:
             telemetry=telemetry,
         )
 
-        assert 'storage = "/logs/telemetry"' in config_text
+        assert 'storage = "/runs/12345/logs/telemetry"' in config_text
         assert 'name = "dcgm_node-a"' in config_text
         assert 'url = "http://10.0.0.1:8081/metrics"' in config_text
         assert '"cluster" = "pdx"' in config_text
@@ -386,7 +400,7 @@ class TestTelemetryStageMixin:
     """Telemetry stage startup."""
 
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
-    @patch("srtctl.cli.mixins.telemetry_stage.generate_telemetry_config", return_value='storage = "/logs/telemetry"\n')
+    @patch("srtctl.cli.mixins.telemetry_stage.generate_telemetry_config", return_value='storage = "/run/telemetry"\n')
     def test_start_telemetry_starts_exporters_and_scraper(self, _mock_config, mock_srun, tmp_path):
         class Harness(TelemetryStageMixin):
             def __init__(self):
@@ -437,9 +451,21 @@ class TestTelemetryStageMixin:
         assert (tmp_path / "telemetry_config.toml").exists()
         assert (tmp_path / "telemetry" / "local").exists()
         assert mock_srun.call_count == 3
+        scraper_call = mock_srun.call_args_list[-1]
+        assert scraper_call.kwargs["command"] == [
+            "tachometer-scraper",
+            "--config",
+            str(tmp_path / "telemetry_config.toml"),
+            "--local-dir",
+            str(tmp_path / "telemetry" / "local"),
+            "--sync-interval",
+            "120",
+        ]
+        assert "container_image" not in scraper_call.kwargs
+        assert "container_mounts" not in scraper_call.kwargs
 
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
-    @patch("srtctl.cli.mixins.telemetry_stage.generate_telemetry_config", return_value='storage = "/logs/telemetry"\n')
+    @patch("srtctl.cli.mixins.telemetry_stage.generate_telemetry_config", return_value='storage = "/run/telemetry"\n')
     def test_multinode_exporters_request_one_node_per_task(self, _mock_config, mock_srun, tmp_path):
         """srun rejects --nodes 1 with a longer --nodelist, so the exporter launch
         must size --nodes to the worker set."""

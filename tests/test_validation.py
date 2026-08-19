@@ -543,6 +543,33 @@ class TestPreflightConfigVariants:
         assert len(telemetry_errors) == 1
         assert telemetry_errors[0].field == "telemetry.node_exporter.container_image"
 
+    def test_scraper_preflight_ignores_legacy_container_image(self, tmp_path):
+        model_dir = tmp_path / "model"
+        model_dir.mkdir()
+        container_file = tmp_path / "container.sqsh"
+        container_file.write_text("sqsh")
+        dcgm_file = tmp_path / "dcgm.sqsh"
+        dcgm_file.write_text("sqsh")
+        node_file = tmp_path / "node.sqsh"
+        node_file.write_text("sqsh")
+
+        results = preflight_config_variants(
+            {
+                "name": "native-scraper",
+                "model": {"path": str(model_dir), "container": str(container_file), "precision": "bf16"},
+                "resources": {"gpu_type": "gb200", "gpus_per_node": 4, "agg_nodes": 1, "agg_workers": 1},
+                "telemetry": {
+                    "enabled": True,
+                    "container_image": str(tmp_path / "missing-legacy-scraper.sqsh"),
+                    "dcgm_exporter": {"container_image": str(dcgm_file), "port": 9401},
+                    "node_exporter": {"container_image": str(node_file), "port": 9101},
+                },
+            }
+        )
+
+        assert results[0].ok is True
+        assert results[0].errors == []
+
     def _dcgm_power_recipe(self, model_dir, container_file, dcgm_image):
         return {
             "name": "dcgm-power",

@@ -18,6 +18,7 @@ Complete reference for job configuration YAML files.
 - [output](#output)
 - [health_check](#health_check)
 - [infra](#infra)
+- [telemetry](#telemetry)
 - [sweep](#sweep)
 - [Config Overrides](#config-overrides)
 - [FormattablePath Template System](#formattablepath-template-system)
@@ -1024,6 +1025,48 @@ infra:
 - When `etcd_nats_dedicated_node: true`, the first allocated node is reserved exclusively for etcd and nats services.
 - This can improve stability for large-scale deployments by isolating infrastructure services.
 - The reserved node is not used for worker processes.
+
+---
+
+## telemetry
+
+The `scraper` provider records Prometheus metrics from workers, frontends, DCGM exporter, and node exporter. `make setup` downloads the Tachometer scraper binary for the compute-node architecture.
+
+```yaml
+telemetry:
+  enabled: true
+  provider: scraper
+  default_frequency: 5
+  sync_interval_secs: 120
+  compaction_threads: 4
+  storage_subdir: telemetry
+  extra_metadata:
+    cluster: production
+  dcgm_exporter:
+    container_image: /containers/dcgm-exporter.sqsh
+    port: 9400
+  node_exporter:
+    container_image: /containers/node-exporter.sqsh
+    port: 9100
+```
+
+| Field | Type | Default | Description |
+| ----- | ---- | ------- | ----------- |
+| `enabled` | bool | `false` | Enable telemetry collection |
+| `provider` | string | `scraper` | Telemetry provider |
+| `binary_path` | string | `tachometer-scraper` | Scraper command or path on the compute nodes |
+| `container_image` | string/null | `null` | Legacy scraper image field; the native Slurm scraper ignores it |
+| `default_frequency` | float | `5.0` | Scrape frequency in Hz |
+| `sync_interval_secs` | int | `120` | Interval for intermediate Parquet compaction; `0` disables it |
+| `compaction_threads` | int | `4` | Value passed as `POLARS_MAX_THREADS` |
+| `storage_subdir` | string | `telemetry` | Output directory below the run log directory |
+| `extra_metadata` | dict | `{}` | Static string metadata added to every endpoint |
+| `dcgm_exporter` | object | required | DCGM exporter image, port, and optional command |
+| `node_exporter` | object | required | Node exporter image, port, and optional command |
+
+The scraper runs as a native `srun` process on the head node. The exporter processes remain containerized on each worker node. Run `make tachometer-scraper` to build the pinned source locally instead of downloading the release asset.
+
+The output is `<log_dir>/<storage_subdir>/final.parquet`. Intermediate files remain in `<log_dir>/<storage_subdir>/local` until shutdown compaction completes.
 
 ---
 
