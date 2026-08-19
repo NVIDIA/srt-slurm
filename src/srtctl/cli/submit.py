@@ -55,7 +55,7 @@ from srtctl.core.git_state import (
     write_git_state_snapshot,
 )
 from srtctl.core.lockfile import load_lockfile_fingerprints
-from srtctl.core.schema import SrtConfig, TelemetryProvider, installs_dynamo
+from srtctl.core.schema import DYNAMO_DEFAULT_ENV, SrtConfig, TelemetryProvider, installs_dynamo
 from srtctl.core.status import create_job_record
 from srtctl.core.validation import preflight_config_variants
 from srtctl.ports import MOONCAKE_MASTER_PORT
@@ -212,7 +212,7 @@ def show_config_details(config: SrtConfig) -> None:
 
     # --- Container Mounts ---
     mounts_table = Table(title="Container Mounts", show_lines=False, pad_edge=False)
-    mounts_table.add_column("Source", style="dim", width=14)
+    mounts_table.add_column("Source", style="dim", width=20)
     mounts_table.add_column("Host Path", style="green")
     mounts_table.add_column("Container Path", style="cyan")
 
@@ -227,6 +227,12 @@ def show_config_details(config: SrtConfig) -> None:
         for host_path, container_path in cluster_mounts.items():
             expanded = os.path.expandvars(host_path)
             mounts_table.add_row("srtslurm.yaml", expanded, container_path)
+
+    # Host nsys tree from profiling.nsys_dir
+    nsys_mount = config.profiling.nsys_container_mount()
+    if nsys_mount is not None:
+        host_nsys_dir, container_nsys_dir = nsys_mount
+        mounts_table.add_row("profiling.nsys_dir", str(host_nsys_dir), str(container_nsys_dir))
 
     # Recipe extra_mount (simple string mounts)
     if config.extra_mount:
@@ -313,6 +319,14 @@ def show_config_details(config: SrtConfig) -> None:
         console.print(Panel(env_table, border_style="yellow"))
     else:
         console.print("[dim]No custom environment variables configured.[/]")
+
+    # srtctl exports these to every dynamo worker and frontend; any scope above wins.
+    overridden = set(config.environment) | set(config.frontend.env or {})
+    overridden.update(var for _, env in mode_envs for var in env)
+    console.print("[dim]dynamo defaults (workers + frontend):[/]")
+    for var, val in sorted(DYNAMO_DEFAULT_ENV.items()):
+        suffix = " (overridden)" if var in overridden else ""
+        console.print(f"[dim]  {var}={val}{suffix}[/]")
 
     # --- srun options ---
     if config.srun_options:

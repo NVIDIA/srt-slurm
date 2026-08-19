@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 from srtctl.core.fingerprint import generate_capture_script
 from srtctl.core.health import wait_for_health
 from srtctl.core.processes import ManagedProcess, NamedProcesses
-from srtctl.core.schema import build_otel_env, installs_dynamo
+from srtctl.core.schema import DYNAMO_DEFAULT_ENV, build_otel_env, installs_dynamo
 from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, get_hostname_ip, start_srun_process
 from srtctl.ports import ETCD_CLIENT_PORT, KV_EVENTS_PORT_BASE, KVBM_ZMQ_PORT_BASE, NATS_PORT
 
@@ -26,10 +26,6 @@ if TYPE_CHECKING:
     from srtctl.core.topology import Endpoint, Process
 
 logger = logging.getLogger(__name__)
-
-# Dynamo runtime (Rust) log filter for worker containers; YAML prefill_environment /
-# decode_environment / aggregated_environment override via the merge below.
-_DEFAULT_WORKER_DYN_LOG = "info,dynamo_runtime::pipeline::network::ingress::push_handler=warn"
 
 
 class WorkerStageMixin:
@@ -137,13 +133,23 @@ class WorkerStageMixin:
         # Profiling setup
         profiling = self.config.profiling
         nsys_prefix = None
-        if profiling.enabled:
+        if profiling.enabled and profiling.profiles_mode(mode):
             (self.runtime.log_dir / "profiles" / mode).mkdir(parents=True, exist_ok=True)
-        if profiling.is_nsys:
+        if (
+            profiling.is_nsys
+            and profiling.profiles_mode(mode)
+            and profiling.should_wrap_process_with_nsys(
+                endpoint_index=process.endpoint_index,
+                node_rank=process.node_rank,
+            )
+        ):
             gpu_label = process.cuda_visible_devices.replace(",", "-")
             nsys_output = f"/logs/profiles/{mode}/{process.node}_{mode}_w{index}_profile_gpu{gpu_label}"
             nsys_prefix = profiling.get_nsys_prefix(
-                nsys_output, frontend_type=self.config.frontend.type, backend_type=self.config.backend_type
+                nsys_output,
+                mode=mode,
+                frontend_type=self.config.frontend.type,
+                backend_type=self.config.backend_type,
             )
 
         # Build command using backend's method
@@ -159,6 +165,7 @@ class WorkerStageMixin:
 
         # Environment variables
         env_to_set = {
+            **DYNAMO_DEFAULT_ENV,
             "HEAD_NODE_IP": self.runtime.head_node_ip,
             "ETCD_ENDPOINTS": f"http://{self.runtime.nodes.infra}:{ETCD_CLIENT_PORT}",
             "NATS_SERVER": f"nats://{self.runtime.nodes.infra}:{NATS_PORT}",
@@ -171,8 +178,6 @@ class WorkerStageMixin:
 
         # Add OTEL env vars (before mode-specific env so OTEL_SERVICE_NAME can be overridden)
         env_to_set.update(build_otel_env(self.config.observability, mode))
-
-        env_to_set.setdefault("DYN_LOG", _DEFAULT_WORKER_DYN_LOG)
 
         # Add mode-specific environment variables from backend
         # Support simple {node} and {node_id} templating
@@ -291,12 +296,22 @@ class WorkerStageMixin:
         # Profiling setup
         profiling = self.config.profiling
         nsys_prefix = None
-        if profiling.enabled:
+        if profiling.enabled and profiling.profiles_mode(mode):
             (self.runtime.log_dir / "profiles" / mode).mkdir(parents=True, exist_ok=True)
-        if profiling.is_nsys:
+        if (
+            profiling.is_nsys
+            and profiling.profiles_mode(mode)
+            and profiling.should_wrap_process_with_nsys(
+                endpoint_index=leader.endpoint_index,
+                node_rank=leader.node_rank,
+            )
+        ):
             nsys_output = f"/logs/profiles/{mode}/{leader.node}_{mode}_w{index}_profile_rank%q{{SLURM_PROCID}}"
             nsys_prefix = profiling.get_nsys_prefix(
-                nsys_output, frontend_type=self.config.frontend.type, backend_type=self.config.backend_type
+                nsys_output,
+                mode=mode,
+                frontend_type=self.config.frontend.type,
+                backend_type=self.config.backend_type,
             )
 
         # Build command using backend's method
@@ -312,6 +327,7 @@ class WorkerStageMixin:
 
         # Environment variables
         env_to_set = {
+            **DYNAMO_DEFAULT_ENV,
             "HEAD_NODE_IP": self.runtime.head_node_ip,
             "ETCD_ENDPOINTS": f"http://{self.runtime.nodes.infra}:{ETCD_CLIENT_PORT}",
             "NATS_SERVER": f"nats://{self.runtime.nodes.infra}:{NATS_PORT}",
@@ -323,8 +339,6 @@ class WorkerStageMixin:
 
         # Add OTEL env vars (before mode-specific env so OTEL_SERVICE_NAME can be overridden)
         env_to_set.update(build_otel_env(self.config.observability, mode))
-
-        env_to_set.setdefault("DYN_LOG", _DEFAULT_WORKER_DYN_LOG)
 
         # Add mode-specific environment variables from backend
         env_to_set.update(self.backend.get_environment_for_mode(mode))
@@ -394,6 +408,82 @@ class WorkerStageMixin:
             node=leader.node,
             critical=True,
         )
+
+    def _write_nsys_manual_script(self) -> None:
+        """Write an on-demand nsys-manual trigger script into the job output directory."""
+        import stat
+
+        profiling = self.config.profiling
+        job_dir = self.runtime.log_dir.parent
+        frontend_type = self.config.frontend.type
+        if frontend_type == "dynamo":
+            start_path, stop_path = "/engine/start_profile", "/engine/stop_profile"
+            use_sys_port = True
+        else:
+            start_path, stop_path = "/start_profile", "/stop_profile"
+            use_sys_port = False
+
+        endpoints: list[str] = []
+        for process in self.backend_processes:
+            mode = process.endpoint_mode
+            if not profiling.profiles_mode(mode):
+                continue
+            if not profiling.should_wrap_process_with_nsys(
+                endpoint_index=process.endpoint_index,
+                node_rank=process.node_rank,
+            ):
+                continue
+            if not use_sys_port and not process.is_leader:
+                continue
+            host = get_hostname_ip(process.node, self.runtime.network_interface)
+            port = process.sys_port if use_sys_port else process.http_port
+            if not port:
+                continue
+            endpoints.append(f"{host}:{port}")
+            break  # endpoint 0 rank 0 only
+
+        if not endpoints:
+            return
+
+        profiles_dir = self.runtime.log_dir / "profiles"
+        duration = profiling.manual_duration_secs
+        ep_lines = "\n".join(f'  "{ep}"' for ep in endpoints)
+        script = f"""#!/usr/bin/env bash
+# Auto-generated by srtctl (nsys-manual profiling). Run with NO arguments:
+#   bash {job_dir}/nsys-manual.sh
+set -u
+DURATION={duration}
+ENDPOINTS=(
+{ep_lines}
+)
+
+fanout() {{
+  local path="$1" verb="$2" ok="$3"
+  local ep
+  for ep in "${{ENDPOINTS[@]}}"; do
+    (
+      if curl -sS -f -m 30 --noproxy '*' -X POST "http://${{ep}}${{path}}" \\
+        -H 'Content-Type: application/json' -d '{{}}' >/dev/null 2>&1; then
+        echo "  ${{ok}} ${{ep}}"
+      else
+        echo "  WARN: ${{verb}} failed for ${{ep}}"
+      fi
+    ) &
+  done
+  wait
+}}
+
+echo "[nsys-manual] START -> ${{#ENDPOINTS[@]}} worker(s) (parallel), capturing ${{DURATION}}s"
+fanout "{start_path}" start started
+echo "[nsys-manual] capturing for ${{DURATION}}s ..."
+sleep "${{DURATION}}"
+fanout "{stop_path}" stop stopped
+echo "[nsys-manual] done. nsys reports land in: {profiles_dir} (written when workers exit)"
+"""
+        script_path = job_dir / "nsys-manual.sh"
+        script_path.write_text(script)
+        script_path.chmod(stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
+        logger.info("nsys-manual profiling: run `%s` to capture a window.", script_path)
 
     def _wait_for_worker_ready(self, leader: "Process") -> None:
         """Wait for a single endpoint worker to become ready before starting the next.
@@ -489,4 +579,8 @@ class WorkerStageMixin:
                     result[managed.name] = managed
 
         logger.info("Started %d worker processes", len(result))
+
+        if self.config.profiling.is_nsys_manual:
+            self._write_nsys_manual_script()
+
         return result

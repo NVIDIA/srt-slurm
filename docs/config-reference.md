@@ -903,8 +903,10 @@ profiling:
 
 | Field         | Type   | Required | Default | Description                              |
 | ------------- | ------ | -------- | ------- | ---------------------------------------- |
-| `type`        | string | No       | "none"  | Profiling type: "none", "nsys", "torch"  |
+| `type`        | string | No       | "none"  | Profiling type: "none", "nsys", "nsys-manual", "nsys-time", "torch"  |
 | `extra_nsys_args` | list[string] | No | null | Extra args for nsys profile (when type is `nsys` or `nsys-time`) |
+| `nsys_path`   | string | No       | `"nsys"` | In-container nsys binary. Ignored when `nsys_dir` is set. |
+| `nsys_dir`    | string | No       | null    | Host Nsight Systems install root (or `target-linux-*`). Bind-mounted at `/opt/srtctl-nsys`; CLI is `bin/nsys`. |
 | `prefill`     | object | Disaggregated | null | Prefill phase config                   |
 | `decode`      | object | Disaggregated | null | Decode phase config                    |
 | `aggregated`  | object | Aggregated | null | Aggregated phase config                  |
@@ -921,7 +923,15 @@ Each phase config has:
 ### Profiling Modes
 
 - **nsys**: NVIDIA Nsight Systems profiling. Wraps worker command with `nsys profile`.
+- **nsys-manual**: On-demand nsys capture via `nsys-manual.sh`. See [profiling.md](profiling.md).
+- **nsys-time**: Wall-clock nsys capture (`delay_secs` / `duration_secs`).
 - **torch**: PyTorch profiler. Sets `SGLANG_TORCH_PROFILER_DIR` environment variable.
+
+`nsys_dir` bind-mounts a host Nsight Systems install at `/opt/srtctl-nsys` and
+invokes `/opt/srtctl-nsys/bin/nsys` (the symlink Nsight requires). Point at
+`nsight-systems-<ver>` or its `target-linux-*` tree. Do not invoke the ELF in
+`target-linux-*` directly. Do not overlay a single `nsys` binary onto
+`/usr/bin/nsys`. Do not set `nsys_path` together with `nsys_dir`.
 
 ### Validation Rules
 

@@ -280,6 +280,12 @@ def start_srun_process(
 
     if output:
         srun_cmd.extend(["--output", output])
+        # Open the log in append mode so srun streams task output with O_APPEND.
+        # This lets other same-FS processes (e.g. bench.sh writing stage banners
+        # into the live worker logs) inject lines via their own O_APPEND writes
+        # without srun clobbering them on its next write. Files are unique per
+        # job, so append is equivalent to truncate for the first open.
+        srun_cmd.extend(["--open-mode", "append"])
 
     # Container options
     if container_image:

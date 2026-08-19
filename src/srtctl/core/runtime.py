@@ -334,6 +334,21 @@ class RuntimeContext:
                 expanded_host = os.path.expandvars(host_path)
                 container_mounts[Path(expanded_host).expanduser().resolve()] = Path(container_path)
 
+        # Host Nsight Systems install (profiling.nsys_dir) -> /opt/srtctl-nsys
+        nsys_mount = config.profiling.nsys_container_mount()
+        if nsys_mount is not None:
+            host_nsys_dir, container_nsys_dir = nsys_mount
+            nsys_cli = config.profiling.nsys_host_cli()
+            if nsys_cli is None:
+                raise FileNotFoundError(
+                    "profiling.nsys_dir must be an Nsight Systems install containing "
+                    f"bin/nsys (or nsys in the directory itself); got {host_nsys_dir}. "
+                    "Point at nsight-systems-<ver> or its target-linux-* tree. "
+                    "Do not invoke the ELF in target-linux-* directly — nsys must be "
+                    "run via the bin/nsys symlink."
+                )
+            container_mounts[host_nsys_dir] = container_nsys_dir
+
         # Mount InferenceX workspace if available (for lm-eval support).
         # Skip exists() check: the orchestrator runs on the SLURM head node
         # where the GH Actions workspace path may not be directly accessible,

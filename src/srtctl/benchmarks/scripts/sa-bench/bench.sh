@@ -159,6 +159,27 @@ profiling_init_from_env
 cleanup() { stop_all_profiling; }
 trap cleanup EXIT
 
+# Visual stage separator written directly into the prefill/decode worker logs
+# (not benchmark.out), so those logs stay readable across warmup vs measured
+# runs and across concurrencies. The job log dir is mounted at /logs, so worker
+# logs are /logs/<node>_<mode>_w<i>.out. srun opens them with --open-mode=append,
+# so our O_APPEND writes interleave atomically with the worker output.
+WORKER_LOG_ROOT="$(dirname "${PROFILE_OUTPUT_DIR:-/logs/profiles}")"
+stage_banner() {
+    local line
+    line="======== [$(date '+%H:%M:%S')] $* ========"
+    local f wrote=0
+    for f in "${WORKER_LOG_ROOT}"/*_prefill_w*.out \
+             "${WORKER_LOG_ROOT}"/*_decode_w*.out \
+             "${WORKER_LOG_ROOT}"/*_agg_w*.out; do
+        [ -e "$f" ] || continue
+        printf '\n%s\n\n' "$line" >> "$f"
+        wrote=1
+    done
+    # Fall back to stdout only if no worker logs were found (e.g. unexpected layout).
+    [ "$wrote" -eq 1 ] || echo "$line"
+}
+
 # Parse concurrency list
 IFS='x' read -r -a CONCURRENCY_LIST <<< "$CONCURRENCIES"
 
@@ -192,6 +213,7 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
 
     if [ "$NUM_WARMUP_MULT" -gt 0 ]; then
         num_warmup_prompts=$((concurrency * NUM_WARMUP_MULT))
+        stage_banner "cc=${concurrency} warmup begin"
         python3 -u "${WORK_DIR}/benchmark_serving.py" \
             --model "${MODEL_NAME}" --tokenizer "${MODEL_PATH}" \
             --host "$HOST" --port "$PORT" \
@@ -208,6 +230,7 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
             "${HTTP_CONNECTION_ARGS[@]}" \
             "${CHAT_TEMPLATE_ARGS[@]}" \
             "${CUSTOM_TOKENIZER_ARGS[@]}"
+        stage_banner "cc=${concurrency} warmup end"
     fi
 
     num_prompts=$((concurrency * NUM_PROMPTS_MULT))
@@ -221,6 +244,7 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
 
     echo "Running benchmark with concurrency: $concurrency"
     echo "$(date '+%Y-%m-%d %H:%M:%S')"
+    stage_banner "cc=${concurrency} benchmark begin"
 
     set -x
     python3 -u "${WORK_DIR}/benchmark_serving.py" \
@@ -244,6 +268,7 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
         --save-result --result-dir "$result_dir" --result-filename "$result_filename"
     set +x
 
+    stage_banner "cc=${concurrency} benchmark end"
     echo "$(date '+%Y-%m-%d %H:%M:%S')"
     echo "Completed benchmark with concurrency: $concurrency"
     echo "-----------------------------------------"

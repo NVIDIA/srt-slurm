@@ -331,6 +331,65 @@ def test_session_is_closed_before_metrics(monkeypatch):
     assert request_sessions == [sessions[0], sessions[0], sessions[0]]
 
 
+def test_measured_window_is_reported_as_wall_clock(monkeypatch, capsys):
+    """Worker logs and nsys captures are lined up against the run by wall clock, so
+    the measured window must be printed and recorded, not just its duration."""
+    from datetime import datetime, timezone
+
+    _import_sa_bench_module("backend_request_func")
+    module = _import_sa_bench_module("benchmark_serving")
+
+    async def fake_request(request_func_input, pbar=None, **kwargs):
+        return module.RequestFuncOutput(
+            success=True,
+            output_tokens=1,
+            prompt_len=request_func_input.prompt_len,
+            start_time=1.0,
+            ttft=0.01,
+            latency=0.02,
+        )
+
+    monkeypatch.setitem(module.ASYNC_REQUEST_FUNCS, "dynamo", fake_request)
+
+    before = datetime.now(timezone.utc)
+    result = asyncio.run(
+        module.benchmark(
+            backend="dynamo",
+            api_url="http://localhost:8000/v1/completions",
+            base_url="http://localhost:8000",
+            model_id="model",
+            model_name="model",
+            tokenizer=object(),
+            input_requests=[("prompt", 1, 1, None)],
+            logprobs=None,
+            best_of=1,
+            request_rate=float("inf"),
+            burstiness=1.0,
+            disable_tqdm=True,
+            profile=False,
+            selected_percentile_metrics=[],
+            selected_percentiles=[50.0],
+            ignore_eos=True,
+            goodput_config_dict={},
+            max_concurrency=1,
+            lora_modules=None,
+        )
+    )
+    after = datetime.now(timezone.utc)
+
+    start = datetime.fromisoformat(result["benchmark_start_time_utc"])
+    end = datetime.fromisoformat(result["benchmark_end_time_utc"])
+    assert before <= start <= end <= after
+    assert result["benchmark_start_time_unix_s"] == start.timestamp()
+    assert result["benchmark_end_time_unix_s"] == end.timestamp()
+
+    out = capsys.readouterr().out
+    # Printed once up front so the window is visible before the run finishes,
+    # then again in the summary table next to the duration.
+    assert out.count(result["benchmark_start_time_utc"]) == 2
+    assert f"Benchmark measurement end (UTC):         {result['benchmark_end_time_utc']}" in out
+
+
 @pytest.mark.parametrize("failure", [RuntimeError("probe failed"), asyncio.CancelledError()])
 def test_benchmark_wrapper_closes_session_on_failure(monkeypatch, failure):
     _import_sa_bench_module("backend_request_func")

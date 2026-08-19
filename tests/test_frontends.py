@@ -526,7 +526,13 @@ class TestFrontendEnvHandling:
 # ============================================================================
 
 
-def _dynamo_frontend_call(*, dynamo_install: bool, event_plane: str | None = "zmq"):
+def _dynamo_frontend_call(
+    *,
+    dynamo_install: bool,
+    event_plane: str | None = "zmq",
+    environment: dict[str, str] | None = None,
+    frontend_env: dict[str, str] | None = None,
+):
     """Invoke DynamoFrontend.start_frontends with a minimal config; return the mock srun call."""
     frontend = DynamoFrontend()
     topology = SimpleNamespace(frontend_nodes=["node0"], frontend_port=8180)
@@ -535,10 +541,10 @@ def _dynamo_frontend_call(*, dynamo_install: bool, event_plane: str | None = "zm
         nodes=SimpleNamespace(infra="infra-node", het_group_for=lambda node: None),
         container_image=Path("/container.sqsh"),
         container_mounts={},
-        environment={},
+        environment=environment or {},
     )
     config = SimpleNamespace(
-        frontend=SimpleNamespace(args=None, env=None),
+        frontend=SimpleNamespace(args=None, env=frontend_env),
         observability=ObservabilityConfig(),
         dynamo=SimpleNamespace(
             install=dynamo_install,
@@ -564,6 +570,27 @@ class TestDynamoFrontendRemapRoot:
     def test_no_remap_root_when_install_false(self):
         mock_srun = _dynamo_frontend_call(dynamo_install=False)
         assert mock_srun.call_args.kwargs["srun_export_env"] is None
+
+
+class TestDynamoFrontendLogDefaults:
+    """The frontend gets the same quiet dynamo defaults as workers."""
+
+    def test_defaults_applied(self):
+        env = _dynamo_frontend_call(dynamo_install=False).call_args.kwargs["env_to_set"]
+        assert env["DYN_LOG"] == "error"
+        assert env["DYN_SDK_DISABLE_ANSI_LOGGING"] == "1"
+
+    def test_global_environment_overrides(self):
+        env = _dynamo_frontend_call(dynamo_install=False, environment={"DYN_LOG": "debug"}).call_args.kwargs[
+            "env_to_set"
+        ]
+        assert env["DYN_LOG"] == "debug"
+
+    def test_frontend_env_overrides(self):
+        env = _dynamo_frontend_call(dynamo_install=False, frontend_env={"DYN_LOG": "warn"}).call_args.kwargs[
+            "env_to_set"
+        ]
+        assert env["DYN_LOG"] == "warn"
 
 
 class TestDynamoFrontendEventPlane:

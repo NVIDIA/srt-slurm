@@ -116,6 +116,32 @@ def test_srun_options_use_equals_separator() -> None:
     assert "--exclusive" in srun_cmd
 
 
+def test_srun_output_uses_append_open_mode() -> None:
+    """Worker logs must be O_APPEND so bench.sh stage banners are not clobbered."""
+    with (
+        patch("srtctl.core.slurm.get_slurm_job_id", return_value="12345"),
+        patch("srtctl.core.slurm._get_cluster_bash_preamble", return_value=None),
+        patch("subprocess.Popen") as mock_popen,
+    ):
+        mock_popen.return_value = MagicMock()
+        start_srun_process(["python3", "-m", "server"], output="/logs/node0_decode_w0.out")
+
+    srun_cmd = mock_popen.call_args.args[0]
+    assert srun_cmd[srun_cmd.index("--open-mode") + 1] == "append"
+
+
+def test_srun_without_output_has_no_open_mode() -> None:
+    with (
+        patch("srtctl.core.slurm.get_slurm_job_id", return_value="12345"),
+        patch("srtctl.core.slurm._get_cluster_bash_preamble", return_value=None),
+        patch("subprocess.Popen") as mock_popen,
+    ):
+        mock_popen.return_value = MagicMock()
+        start_srun_process(["python3", "-m", "server"])
+
+    assert "--open-mode" not in mock_popen.call_args.args[0]
+
+
 def test_srun_export_env_renders_export_with_all_prefix() -> None:
     with (
         patch("srtctl.core.slurm.get_slurm_job_id", return_value="12345"),
