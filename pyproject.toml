@@ -23,6 +23,11 @@ dependencies = [
     "matplotlib>=3.7.0",
 ]
 
+[project.optional-dependencies]
+ruter = [
+    "pyarrow>=25.0.0",
+]
+
 [project.scripts]
 srtctl = "srtctl.cli.submit:main"
 srtctl-i = "srtctl.cli.interactive:main"

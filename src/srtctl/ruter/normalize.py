@@ -182,9 +182,8 @@ def parse_worker_file(path: Path, *, worker_index: int) -> Iterator[NormalizedEv
 
 def parse_router_line(raw: str) -> NormalizedEvent | None:
     """Parse one Dynamo frontend/KV-router log line."""
-    line = _ANSI.sub("", raw)
-    fields = _parse_fields(line)
-    timestamp_ns = _timestamp_ns(line)
+    line, fields = _structured_log_fields(raw)
+    timestamp_ns = _timestamp_ns(raw)
     formula = _ROUTING_FORMULA.search(line)
     if formula is not None:
         fields.update(
@@ -202,7 +201,7 @@ def parse_router_line(raw: str) -> NormalizedEvent | None:
                 "overlap_credit_decay": formula["overlap_credit_decay"],
             }
         )
-        return _event("dynamo_router", "routing_formula", timestamp_ns, None, fields, line)
+        return _event("dynamo_router", "routing_formula", timestamp_ns, None, fields, raw)
 
     if "Selected worker" in line or "[ROUTING] Best:" in line:
         worker = _ROUTING_WORKER.search(line)
@@ -217,30 +216,31 @@ def parse_router_line(raw: str) -> NormalizedEvent | None:
             value = routing_request["quoted"] or routing_request["bare"]
             fields.setdefault("dynamo_request_id", value)
         kind = "routing_decision" if "[ROUTING] Best:" in line else "routing_candidate"
-        return _event("dynamo_router", kind, timestamp_ns, None, fields, line)
+        if kind == "routing_decision" and fields.get("request_id"):
+            fields.setdefault("dynamo_request_id", fields["request_id"])
+        return _event("dynamo_router", kind, timestamp_ns, None, fields, raw)
 
     if "request received" in line:
-        return _event("dynamo_router", "router_admission", timestamp_ns, None, fields, line)
+        return _event("dynamo_router", "router_admission", timestamp_ns, None, fields, raw)
     return None
 
 
 def parse_worker_line(raw: str, *, worker_index: int) -> NormalizedEvent | None:
     """Parse one Dynamo-hosted SGLang worker log line."""
-    line = _ANSI.sub("", raw)
-    fields = _parse_fields(line)
-    timestamp_ns = _timestamp_ns(line)
+    line, fields = _structured_log_fields(raw)
+    timestamp_ns = _timestamp_ns(raw)
     if "Prefill batch," in line:
-        return _event("dynamo_worker", "worker_prefill_batch", timestamp_ns, worker_index, fields, line)
+        return _event("dynamo_worker", "worker_prefill_batch", timestamp_ns, worker_index, fields, raw)
     if "Decode batch," in line:
-        return _event("dynamo_worker", "worker_decode_batch", timestamp_ns, worker_index, fields, line)
+        return _event("dynamo_worker", "worker_decode_batch", timestamp_ns, worker_index, fields, raw)
     rid = _RID.search(line)
     if rid is not None:
         fields["rid"] = rid["quoted"] or rid["bare"]
-        return _event("dynamo_worker", "worker_request", timestamp_ns, worker_index, fields, line)
+        return _event("dynamo_worker", "worker_request", timestamp_ns, worker_index, fields, raw)
     if "instance_id" in fields and ("request received" in line or "request completed" in line):
-        return _event("dynamo_worker", "worker_request", timestamp_ns, worker_index, fields, line)
+        return _event("dynamo_worker", "worker_request", timestamp_ns, worker_index, fields, raw)
     if "Model registration succeeded" in line or "server ready" in line:
-        return _event("dynamo_worker", "worker_lifecycle", timestamp_ns, worker_index, fields, line)
+        return _event("dynamo_worker", "worker_lifecycle", timestamp_ns, worker_index, fields, raw)
     return None
 
 
@@ -263,13 +263,28 @@ def _event(
     )
 
 
-def _parse_fields(line: str) -> dict[str, str]:
+def _structured_log_fields(raw: str) -> tuple[str, dict[str, str]]:
+    """Return a log message plus scalar JSON fields, when Dynamo emitted JSONL."""
+    raw = _ANSI.sub("", raw)
     fields: dict[str, str] = {}
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        payload = None
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            if isinstance(value, (str, int, float, bool)):
+                fields[key] = str(value)
+        line = payload.get("message")
+        if not isinstance(line, str):
+            line = raw
+    else:
+        line = raw
     for match in _LOGFMT.finditer(line):
         fields[match["key"]] = (match["quoted"] or match["bare"]).rstrip("}")
     for match in _SCHEDULER_FIELD.finditer(line):
         fields[match["key"]] = match["value"].strip()
-    return fields
+    return line, fields
 
 
 def _timestamp_ns(line: str) -> int | None:

@@ -1398,6 +1398,7 @@ def main():
   srtctl resolve-override -f config.yaml --stdout  # Print to stdout
   srtctl monitor                                 # Live job dashboard
   srtctl monitor --outputs /path/to/outputs      # Dashboard with custom outputs dir
+  srtctl view /path/to/run-output                # Local ruter route-decision viewer
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1481,6 +1482,13 @@ def main():
 
     monitor_parser = subparsers.add_parser("monitor", help="Live dashboard for srt-slurm jobs", add_help=False)
     monitor_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    view_parser = subparsers.add_parser("view", help="Serve the local ruter route-decision viewer")
+    view_parser.add_argument(
+        "root", nargs="?", type=Path, default=Path("."), help="srt-slurm run directory or logs/.ruter"
+    )
+    view_parser.add_argument("--port", type=int, default=8877, help="Loopback port (default: 8877)")
+    view_parser.add_argument("--refresh", action="store_true", help="Reparse logs before loading the viewer")
 
     resolve_parser = subparsers.add_parser(
         "resolve-override",
@@ -1605,6 +1613,15 @@ def main():
 
         sys.argv = [sys.argv[0]] + (args.args or [])
         _monitor_main()
+        return
+
+    if args.command == "view":
+        from srtctl.ruter.view import main as _view_main
+
+        view_args = [str(args.root), "--port", str(args.port)]
+        if args.refresh:
+            view_args.append("--refresh")
+        _view_main(view_args)
         return
 
     # Parse config arg: supports path:selector format for overrides

@@ -64,6 +64,19 @@ def test_router_parser_preserves_overlap_when_only_debug_message_has_it() -> Non
     assert event.fields["total_blocks"] == "12"
 
 
+def test_router_parser_preserves_json_debug_request_and_worker_ids() -> None:
+    event = parse_router_line(
+        '{"time":"2026-08-20T19:15:32.905245Z","message":"[ROUTING] Best: worker_42 dp_rank=0 with 8/16 blocks overlap","request_id":"internal-1","worker_id":42}'
+    )
+
+    assert event is not None
+    assert event.kind == "routing_decision"
+    assert event.request_id == "internal-1"
+    assert event.fields["dynamo_request_id"] == "internal-1"
+    assert event.fields["worker_id"] == "42"
+    assert event.fields["overlap_blocks"] == "8"
+
+
 def test_slurm_postprocess_normalizes_before_artifact_upload(tmp_path: Path) -> None:
     log_dir = tmp_path / "logs"
     _write(

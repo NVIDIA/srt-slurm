@@ -1,6 +1,6 @@
 # ruter
 
-`ruter` prepares the raw artifacts from a Dynamo KV-router benchmark. It does not serve a dashboard and it does not interpret or alter the benchmark data.
+`ruter` prepares the raw artifacts from a Dynamo KV-router benchmark, then optionally serves the local route-decision dashboard. It never alters raw logs or Tachometer Parquet.
 
 1. Enable the signals in the recipe:
 
@@ -39,4 +39,13 @@
    uv run ruter init /path/to/run-output
    ```
 
-The JSONL records are deliberately small and direct: router records include the exact Dynamo KV routing formula or selected worker, and worker records include batch, request, and lifecycle events. A future viewer can read these files together with Tachometer Parquet without re-parsing logs.
+5. Install the optional viewer and open the same bundle:
+
+   ```bash
+   uv sync --extra ruter
+   uv run srtctl view /path/to/run-output
+   ```
+
+   The viewer binds only to `127.0.0.1:8877`; use `--port 9000` to choose another port. It loads the normalized events, request trace, AIPerf results, and Tachometer worker snapshots before serving the static dashboard. Use `--refresh` to rebuild `logs/.ruter/` after updating a parser.
+
+The JSONL records are deliberately small and direct: router records include the exact Dynamo KV routing formula or selected worker, and worker records include batch, request, and lifecycle events.
