@@ -96,7 +96,6 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
     """
     # Deep copy to avoid mutating original
     config = copy.deepcopy(user_config)
-
     if cluster_config is None:
         return config
 
@@ -190,18 +189,12 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
         config["benchmark"] = benchmark
         logger.debug(f"Resolved benchmark.container_image alias '{benchmark_container}' -> '{resolved_bench}'")
 
-    # Resolve telemetry container aliases (scraper + dcgm/node exporters). All
-    # three are nullable in the schema; only resolve fields that are set.
-    telemetry = config.get("telemetry")
-    if telemetry and containers:
-        scraper_image = telemetry.get("container_image")
-        if scraper_image and scraper_image in containers:
-            resolved_scraper = containers[scraper_image]
-            telemetry["container_image"] = resolved_scraper
-            logger.debug(f"Resolved telemetry.container_image alias '{scraper_image}' -> '{resolved_scraper}'")
-
+    # Resolve Tachometer exporter aliases from the observability block.
+    observability = config.get("observability")
+    tachometer = observability.get("tachometer") if isinstance(observability, dict) else None
+    if tachometer and containers:
         for exporter_key in ("dcgm_exporter", "node_exporter"):
-            exporter = telemetry.get(exporter_key)
+            exporter = tachometer.get(exporter_key)
             if not exporter:
                 continue
             exporter_image = exporter.get("container_image")
@@ -209,9 +202,21 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
                 resolved_exporter = containers[exporter_image]
                 exporter["container_image"] = resolved_exporter
                 logger.debug(
-                    f"Resolved telemetry.{exporter_key}.container_image alias "
+                    f"Resolved observability.tachometer.{exporter_key}.container_image alias "
                     f"'{exporter_image}' -> '{resolved_exporter}'"
                 )
+
+    # Telemetry is reserved for the DCGM power collector.
+    telemetry = config.get("telemetry")
+    if telemetry and containers:
+        exporter = telemetry.get("dcgm_exporter")
+        exporter_image = exporter.get("container_image") if isinstance(exporter, dict) else None
+        if exporter_image and exporter_image in containers:
+            resolved_exporter = containers[exporter_image]
+            exporter["container_image"] = resolved_exporter
+            logger.debug(
+                f"Resolved telemetry.dcgm_exporter.container_image alias '{exporter_image}' -> '{resolved_exporter}'"
+            )
 
     return config
 

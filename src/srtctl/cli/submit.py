@@ -55,7 +55,7 @@ from srtctl.core.git_state import (
     write_git_state_snapshot,
 )
 from srtctl.core.lockfile import load_lockfile_fingerprints
-from srtctl.core.schema import SrtConfig, TelemetryProvider, installs_dynamo
+from srtctl.core.schema import SrtConfig, installs_dynamo
 from srtctl.core.status import create_job_record
 from srtctl.core.validation import preflight_config_variants
 from srtctl.ports import MOONCAKE_MASTER_PORT
@@ -333,6 +333,8 @@ def show_config_details(config: SrtConfig) -> None:
     show_extensions = (
         config.benchmark.type == "custom"
         or config.benchmark.container_image
+        or config.observability.enabled
+        or config.observability.tachometer.enabled
         or config.telemetry.enabled
         or mooncake_cfg is not None
     )
@@ -354,16 +356,21 @@ def show_config_details(config: SrtConfig) -> None:
         if config.benchmark.container_image:
             details.add_row("benchmark", "container_image", config.benchmark.container_image)
 
+        if config.observability.enabled:
+            details.add_row("observability", "raw_metrics", str(config.observability.scraper_enabled))
+        tachometer = config.observability.tachometer
+        if tachometer.enabled:
+            details.add_row("observability", "tachometer", "enabled")
+            details.add_row("observability", "storage_subdir", tachometer.storage_subdir)
+            details.add_row("observability", "frequency", str(tachometer.default_frequency))
+            details.add_row("observability", "binary_path", tachometer.binary_path)
+
         if config.telemetry.enabled:
-            details.add_row("telemetry", "provider", config.telemetry.provider.value)
-            details.add_row("telemetry", "storage_subdir", config.telemetry.storage_subdir)
-            details.add_row("telemetry", "frequency", str(config.telemetry.default_frequency))
-            if config.telemetry.provider == TelemetryProvider.SCRAPER:
-                details.add_row("telemetry", "binary_path", config.telemetry.binary_path)
             exporter = config.telemetry.dcgm_exporter
-            if config.telemetry.provider == TelemetryProvider.DCGM_POWER and exporter is not None:
-                details.add_row("telemetry", "required", str(config.telemetry.required))
-                details.add_row("telemetry", "artifacts", f"<log_dir>/{config.telemetry.storage_subdir}")
+            details.add_row("telemetry", "provider", "dcgm-power")
+            details.add_row("telemetry", "required", str(config.telemetry.required))
+            details.add_row("telemetry", "artifacts", f"<log_dir>/{config.telemetry.storage_subdir}")
+            if exporter is not None:
                 details.add_row("telemetry", "dcgm_exporter", f"{exporter.container_image} (port {exporter.port})")
 
         if mooncake_cfg is not None:

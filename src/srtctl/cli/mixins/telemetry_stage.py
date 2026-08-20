@@ -17,9 +17,9 @@ from srtctl.core.power.manifest import ExpectedWindow
 from srtctl.core.power.session import PowerSessionSettings, PowerTelemetrySession
 from srtctl.core.power.topology import build_expected_devices
 from srtctl.core.processes import ManagedProcess, ProcessRegistry
-from srtctl.core.schema import TelemetryExporterConfig, TelemetryProvider
+from srtctl.core.schema import TelemetryExporterConfig
 from srtctl.core.slurm import start_srun_process
-from srtctl.core.telemetry import generate_telemetry_config
+from srtctl.core.telemetry import generate_tachometer_config
 
 if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
@@ -137,19 +137,19 @@ class TelemetryStageMixin:
         return managed
 
     def start_power_telemetry(self, registry: ProcessRegistry) -> PowerTelemetrySession | None:
-        """Start the ``dcgm-power`` provider; return ``None`` for other providers.
+        """Start DCGM power telemetry when it is enabled.
 
         Every provider-originated startup failure becomes session state once the
         session exists, so the orchestrator can still finalize artifacts and
         decide the exit code after the benchmark stage.
         """
         telemetry = self.config.telemetry
-        if not telemetry.enabled or telemetry.provider != TelemetryProvider.DCGM_POWER:
+        if not telemetry.enabled:
             return None
 
         exporter_config = telemetry.dcgm_exporter
         if exporter_config is None:  # guaranteed by schema validation
-            raise ValueError("telemetry.dcgm_exporter is required for provider dcgm-power")
+            raise ValueError("telemetry.dcgm_exporter is required when telemetry is enabled")
 
         worker_nodes = sorted({process.node for process in self.backend_processes})
         power_dir = self.runtime.log_dir / telemetry.storage_subdir
@@ -183,7 +183,7 @@ class TelemetryStageMixin:
         self._power_session = session
         self._power_telemetry_ready = False
         session.initialize()
-        logger.info("Starting telemetry provider: %s (artifacts under %s)", telemetry.provider.value, power_dir)
+        logger.info("Starting DCGM power telemetry (artifacts under %s)", power_dir)
 
         def own(process: ManagedProcess) -> None:
             registry.add_process(process)
@@ -264,86 +264,89 @@ class TelemetryStageMixin:
             return 1
         return exit_code
 
-    def start_telemetry(self) -> list[ManagedProcess]:
-        """Start the configured telemetry provider."""
-        telemetry = self.config.telemetry
-        if not telemetry.enabled:
-            logger.info("Telemetry disabled")
+    def start_tachometer(self) -> list[ManagedProcess]:
+        """Start optional Tachometer collection from observability."""
+        tachometer = self.config.observability.tachometer
+        if tachometer.enabled is not True:
+            logger.info("Tachometer disabled")
             return []
-        if telemetry.dcgm_exporter is None or telemetry.node_exporter is None:
-            raise ValueError("Telemetry is enabled but required provider configuration is missing")
 
-        logger.info("Starting telemetry provider: %s", telemetry.provider.value)
+        logger.info("Starting Tachometer")
 
+        power_telemetry = self.config.telemetry
+        dcgm_exporter = power_telemetry.dcgm_exporter if power_telemetry.enabled else tachometer.dcgm_exporter
         topology = self._compute_frontend_topology()
-        config_path = self.runtime.log_dir / "telemetry_config.toml"
+        config_path = self.runtime.log_dir / "tachometer_config.toml"
         config_path.write_text(
-            generate_telemetry_config(
+            generate_tachometer_config(
                 processes=self.backend_processes,
                 frontend_topology=topology,
                 runtime=self.runtime,
-                telemetry=telemetry,
+                tachometer=tachometer,
+                dcgm_exporter=dcgm_exporter,
                 frontend_type=self.config.frontend.type,
             )
         )
 
-        telemetry_dir = self.runtime.log_dir / telemetry.storage_subdir
-        telemetry_dir.mkdir(parents=True, exist_ok=True)
-        local_dir = telemetry_dir / "local"
+        tachometer_dir = self.runtime.log_dir / tachometer.storage_subdir
+        tachometer_dir.mkdir(parents=True, exist_ok=True)
+        local_dir = tachometer_dir / "local"
         local_dir.mkdir(parents=True, exist_ok=True)
 
         worker_nodes = sorted({process.node for process in self.backend_processes})
         processes: list[ManagedProcess] = []
-        processes.extend(
-            self._start_exporter_container(
-                exporter_config=telemetry.dcgm_exporter,
-                name="telemetry_dcgm_exporter",
-                nodelist=worker_nodes,
-                log_file=self.runtime.log_dir / "telemetry_dcgm_exporter.out",
-                default_command_template=DCGM_EXPORTER_COMMAND_TEMPLATE,
+        if not power_telemetry.enabled and tachometer.dcgm_exporter is not None:
+            processes.extend(
+                self._start_exporter_container(
+                    exporter_config=tachometer.dcgm_exporter,
+                    name="tachometer_dcgm_exporter",
+                    nodelist=worker_nodes,
+                    log_file=self.runtime.log_dir / "tachometer_dcgm_exporter.out",
+                    default_command_template=DCGM_EXPORTER_COMMAND_TEMPLATE,
+                )
             )
-        )
-        processes.extend(
-            self._start_exporter_container(
-                exporter_config=telemetry.node_exporter,
-                name="telemetry_node_exporter",
-                nodelist=worker_nodes,
-                log_file=self.runtime.log_dir / "telemetry_node_exporter.out",
-                default_command_template=(
-                    "/bin/node_exporter --web.listen-address=:{port} "
-                    "--collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo"
-                ),
+        if tachometer.node_exporter is not None:
+            processes.extend(
+                self._start_exporter_container(
+                    exporter_config=tachometer.node_exporter,
+                    name="tachometer_node_exporter",
+                    nodelist=worker_nodes,
+                    log_file=self.runtime.log_dir / "tachometer_node_exporter.out",
+                    default_command_template=(
+                        "/bin/node_exporter --web.listen-address=:{port} "
+                        "--collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo"
+                    ),
+                )
             )
-        )
 
         cmd = [
-            telemetry.binary_path,
+            tachometer.binary_path,
             "--config",
             str(config_path),
             "--local-dir",
             str(local_dir),
         ]
-        if telemetry.sync_interval_secs > 0:
-            cmd.extend(["--sync-interval", str(telemetry.sync_interval_secs)])
+        if tachometer.sync_interval_secs > 0:
+            cmd.extend(["--sync-interval", str(tachometer.sync_interval_secs)])
 
         env_to_set: dict[str, str] = {}
-        if telemetry.compaction_threads > 0:
-            env_to_set["POLARS_MAX_THREADS"] = str(telemetry.compaction_threads)
+        if tachometer.compaction_threads > 0:
+            env_to_set["POLARS_MAX_THREADS"] = str(tachometer.compaction_threads)
 
         processes.append(
             ManagedProcess(
-                name="telemetry",
+                name="tachometer",
                 popen=start_srun_process(
                     command=cmd,
                     nodelist=[self.runtime.nodes.head],
-                    output=str(self.runtime.log_dir / "telemetry.out"),
+                    output=str(self.runtime.log_dir / "tachometer.out"),
                     env_to_set=env_to_set,
                     srun_options=self.runtime.srun_options,
                     het_group=self.runtime.nodes.het_group_for(self.runtime.nodes.head),
                 ),
-                log_file=self.runtime.log_dir / "telemetry.out",
+                log_file=self.runtime.log_dir / "tachometer.out",
                 node=self.runtime.nodes.head,
             )
         )
-        logger.info("Telemetry started with artifacts under %s", telemetry_dir)
+        logger.info("Tachometer started with artifacts under %s", tachometer_dir)
         return processes

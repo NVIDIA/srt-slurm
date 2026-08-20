@@ -104,7 +104,7 @@ srt_stop_tachometer() {
 }
 
 srt_compact_tachometer() {
-{% if context.telemetry_enabled %}
+{% if context.tachometer_enabled %}
     if [[ -n "${TACHOMETER_LOCAL_DIR}" ]] && find "${TACHOMETER_LOCAL_DIR}" -maxdepth 1 -type f \( -name '*.parquet' -o -name 'current.arrow' \) -print -quit | grep -q .; then
         "${SRTCTL_TACHOMETER}" compact "${TACHOMETER_LOCAL_DIR}" --output "${ARTIFACT_DIR}/tachometer/final" >>"${LOG_DIR}/tachometer.log" 2>&1
     fi
@@ -260,7 +260,7 @@ srt_launch_shell "router" "${LOG_DIR}/router.log" {{ quote(context.router_comman
 srt_wait_router_ready >"${LOG_DIR}/readiness.log" 2>&1
 srt_smoke_chat
 
-{% if context.telemetry_enabled %}
+{% if context.tachometer_enabled %}
 SRTCTL_TACHOMETER_DEFAULT={{ quote(context.tachometer_binary or '') }}
 SRTCTL_TACHOMETER="${SRTCTL_TACHOMETER:-${SRTCTL_TACHOMETER_DEFAULT}}"
 # Tachometer owns its final storage directory and rejects a pre-existing leaf.

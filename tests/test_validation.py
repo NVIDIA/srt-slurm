@@ -461,13 +461,11 @@ class TestPreflightConfigVariants:
             issue.code == "container-not-available" for issue in results[0].errors
         )
 
-    def test_telemetry_aliases_resolve_and_pass_when_files_exist(self, tmp_path):
+    def test_tachometer_aliases_resolve_and_pass_when_files_exist(self, tmp_path):
         model_dir = tmp_path / "model"
         model_dir.mkdir()
         container_file = tmp_path / "container.sqsh"
         container_file.write_text("sqsh")
-        scraper_file = tmp_path / "scraper.sqsh"
-        scraper_file.write_text("sqsh")
         dcgm_file = tmp_path / "dcgm.sqsh"
         dcgm_file.write_text("sqsh")
         node_file = tmp_path / "node.sqsh"
@@ -475,7 +473,7 @@ class TestPreflightConfigVariants:
 
         results = preflight_config_variants(
             {
-                "name": "telemetry-ok",
+                "name": "tachometer-ok",
                 "model": {"path": "qwen32b", "container": "sglang-latest", "precision": "bf16"},
                 "resources": {
                     "gpu_type": "gb200",
@@ -485,18 +483,19 @@ class TestPreflightConfigVariants:
                     "prefill_workers": 1,
                     "decode_workers": 1,
                 },
-                "telemetry": {
+                "observability": {
                     "enabled": True,
-                    "container_image": "telemetry-scraper",
-                    "dcgm_exporter": {"container_image": "dcgm-exporter", "port": 9401},
-                    "node_exporter": {"container_image": "node-exporter", "port": 9101},
+                    "tachometer": {
+                        "enabled": True,
+                        "dcgm_exporter": {"container_image": "dcgm-exporter", "port": 9401},
+                        "node_exporter": {"container_image": "node-exporter", "port": 9101},
+                    },
                 },
             },
             cluster_config={
                 "model_paths": {"qwen32b": str(model_dir)},
                 "containers": {
                     "sglang-latest": str(container_file),
-                    "telemetry-scraper": str(scraper_file),
                     "dcgm-exporter": str(dcgm_file),
                     "node-exporter": str(node_file),
                 },
@@ -506,20 +505,18 @@ class TestPreflightConfigVariants:
         assert results[0].ok is True
         assert results[0].errors == []
 
-    def test_telemetry_missing_sqsh_fails_preflight(self, tmp_path):
+    def test_tachometer_missing_sqsh_fails_preflight(self, tmp_path):
         model_dir = tmp_path / "model"
         model_dir.mkdir()
         container_file = tmp_path / "container.sqsh"
         container_file.write_text("sqsh")
-        scraper_file = tmp_path / "scraper.sqsh"
-        scraper_file.write_text("sqsh")
         dcgm_file = tmp_path / "dcgm.sqsh"
         dcgm_file.write_text("sqsh")
         # node.sqsh deliberately missing
 
         results = preflight_config_variants(
             {
-                "name": "telemetry-bad",
+                "name": "tachometer-bad",
                 "model": {"path": str(model_dir), "container": str(container_file), "precision": "bf16"},
                 "resources": {
                     "gpu_type": "gb200",
@@ -529,40 +526,35 @@ class TestPreflightConfigVariants:
                     "prefill_workers": 1,
                     "decode_workers": 1,
                 },
-                "telemetry": {
+                "observability": {
                     "enabled": True,
-                    "container_image": str(scraper_file),
-                    "dcgm_exporter": {"container_image": str(dcgm_file), "port": 9401},
-                    "node_exporter": {"container_image": str(tmp_path / "node.sqsh"), "port": 9101},
+                    "tachometer": {
+                        "enabled": True,
+                        "dcgm_exporter": {"container_image": str(dcgm_file), "port": 9401},
+                        "node_exporter": {"container_image": str(tmp_path / "node.sqsh"), "port": 9101},
+                    },
                 },
             },
         )
 
         assert results[0].ok is False
-        telemetry_errors = [issue for issue in results[0].errors if issue.code == "telemetry-container-not-available"]
-        assert len(telemetry_errors) == 1
-        assert telemetry_errors[0].field == "telemetry.node_exporter.container_image"
+        tachometer_errors = [issue for issue in results[0].errors if issue.code == "tachometer-container-not-available"]
+        assert len(tachometer_errors) == 1
+        assert tachometer_errors[0].field == "observability.tachometer.node_exporter.container_image"
 
-    def test_scraper_preflight_ignores_legacy_container_image(self, tmp_path):
+    def test_tachometer_without_exporters_skips_exporter_preflight(self, tmp_path):
         model_dir = tmp_path / "model"
         model_dir.mkdir()
         container_file = tmp_path / "container.sqsh"
         container_file.write_text("sqsh")
-        dcgm_file = tmp_path / "dcgm.sqsh"
-        dcgm_file.write_text("sqsh")
-        node_file = tmp_path / "node.sqsh"
-        node_file.write_text("sqsh")
-
         results = preflight_config_variants(
             {
-                "name": "native-scraper",
+                "name": "native-tachometer",
                 "model": {"path": str(model_dir), "container": str(container_file), "precision": "bf16"},
                 "resources": {"gpu_type": "gb200", "gpus_per_node": 4, "agg_nodes": 1, "agg_workers": 1},
-                "telemetry": {
+                "observability": {
                     "enabled": True,
-                    "container_image": str(tmp_path / "missing-legacy-scraper.sqsh"),
-                    "dcgm_exporter": {"container_image": str(dcgm_file), "port": 9401},
-                    "node_exporter": {"container_image": str(node_file), "port": 9101},
+                    "tachometer": {"enabled": True},
                 },
             }
         )
@@ -585,7 +577,6 @@ class TestPreflightConfigVariants:
             "benchmark": {"type": "sa-bench", "isl": 8192, "osl": 1024, "concurrencies": [4]},
             "telemetry": {
                 "enabled": True,
-                "provider": "dcgm-power",
                 "default_frequency": 1.0,
                 "storage_subdir": "power",
                 "required": True,
@@ -634,24 +625,6 @@ class TestPreflightConfigVariants:
         assert results[0].ok is True
         assert not any(issue.code == "telemetry-container-not-available" for issue in results[0].errors)
 
-    def test_dcgm_power_preflight_ignores_scraper_and_node_exporter_images(self, tmp_path):
-        """Those images are never launched by this provider."""
-        model_dir = tmp_path / "model"
-        model_dir.mkdir()
-        container_file = tmp_path / "container.sqsh"
-        container_file.write_text("sqsh")
-        dcgm_file = tmp_path / "dcgm.sqsh"
-        dcgm_file.write_text("sqsh")
-
-        recipe = self._dcgm_power_recipe(model_dir, container_file, dcgm_file)
-        recipe["telemetry"]["container_image"] = str(tmp_path / "missing-scraper.sqsh")
-        recipe["telemetry"]["node_exporter"] = {"container_image": str(tmp_path / "missing-node.sqsh"), "port": 9101}
-
-        results = preflight_config_variants(recipe)
-
-        assert results[0].ok is True
-        assert not any(issue.code == "telemetry-container-not-available" for issue in results[0].errors)
-
     def test_dcgm_power_preflight_rejects_missing_exporter_image(self, tmp_path):
         model_dir = tmp_path / "model"
         model_dir.mkdir()
@@ -686,9 +659,7 @@ class TestPreflightConfigVariants:
                 },
                 "telemetry": {
                     "enabled": False,
-                    "container_image": "/does/not/exist.sqsh",
                     "dcgm_exporter": {"container_image": "/does/not/exist.sqsh", "port": 9401},
-                    "node_exporter": {"container_image": "/does/not/exist.sqsh", "port": 9101},
                 },
             },
         )

@@ -27,9 +27,9 @@
 ## Clone and Install
 
 ```bash
-git clone https://github.com/ishandhanani/srt-slurm.git
+git clone https://github.com/NVIDIA/srt-slurm.git
 cd srt-slurm
-pip install -e .
+uv pip install -e .
 ```
 
 ## Gather your cluster user and target partition
@@ -63,7 +63,16 @@ The setup will:
 4. Create `srtslurm.yaml` with your settings
 5. Auto-detect and set `srtctl_root` path
 
-The scraper binaries are attached to srt-slurm GitHub releases for `x86_64` and `aarch64`. Run `make tachometer-scraper` to build the vendored source instead.
+The scraper binaries are attached to srt-slurm GitHub releases for `x86_64` and `aarch64`. `make setup` downloads the matching asset from the latest release and verifies its SHA-256 checksum. Run `make tachometer-scraper` to build the vendored source instead.
+
+After setup, the existing Python observability capture needs only:
+
+```yaml
+observability:
+  enabled: true
+```
+
+Add `tachometer: {enabled: true}` under `observability` when parsed Parquet output is also needed. See [Observability](config-reference.md#observability) for optional DCGM and node exporter collection.
 
 ## Configure srtslurm.yaml
 

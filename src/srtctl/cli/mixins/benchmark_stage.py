@@ -23,7 +23,6 @@ from srtctl.core.power.contract import (
     WINDOWS_DIRNAME,
 )
 from srtctl.core.processes import terminate_and_reap
-from srtctl.core.schema import TelemetryProvider
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
 from srtctl.core.status import JobStage, JobStatus, StatusReporter
 from srtctl.ports import FRONTEND_PUBLIC_PORT, SGLANG_HTTP_PORT_BASE
@@ -534,7 +533,7 @@ class BenchmarkStageMixin:
         path and the host path the collector reads are the same directory.
         """
         telemetry = self.config.telemetry
-        if not telemetry.enabled or telemetry.provider != TelemetryProvider.DCGM_POWER:
+        if not telemetry.enabled:
             return {}
         return {MEASUREMENT_WINDOW_DIR_ENV: f"{CONTAINER_LOG_DIR}/{telemetry.storage_subdir}/{WINDOWS_DIRNAME}"}
 

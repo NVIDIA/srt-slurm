@@ -3,6 +3,10 @@
 
 """Tests for the `observability.enabled` knob and its config expansion."""
 
+import pytest
+import yaml
+from marshmallow import ValidationError
+
 from srtctl.core.config import expand_observability
 from srtctl.core.schema import SrtConfig
 
@@ -77,6 +81,7 @@ class TestExpandObservability:
 
     def test_enabled_turns_on_metrics_surface_and_iteration_stats(self):
         cfg = expand_observability(_trtllm_config(enabled=True))
+        assert "telemetry" not in cfg
         assert cfg["backend"]["publish_events_and_metrics"] is True
         for mode in ("prefill", "decode"):
             section = cfg["backend"]["trtllm_config"][mode]
@@ -113,6 +118,110 @@ class TestExpandObservability:
         assert out["backend"]["prefill_environment"]["DYN_LOGGING_JSONL"] == "true"
         assert out["frontend"]["env"]["DYN_LOGGING_JSONL"] == "true"
 
+    def test_nested_tachometer_settings_stay_under_observability(self):
+        cfg = _trtllm_config(
+            enabled=True,
+            tachometer={
+                "enabled": True,
+                "default_frequency": 2.0,
+                "dcgm_exporter": {"container_image": "dcgm", "port": 9401},
+            },
+        )
+
+        out = expand_observability(cfg)
+
+        assert out["observability"]["tachometer"] == {
+            "enabled": True,
+            "default_frequency": 2.0,
+            "dcgm_exporter": {"container_image": "dcgm", "port": 9401},
+        }
+        assert "telemetry" not in out
+
+    def test_tachometer_and_power_telemetry_can_be_enabled_together(self):
+        cfg = _trtllm_config(enabled=True, tachometer={"enabled": True})
+        cfg["telemetry"] = {
+            "enabled": True,
+            "default_frequency": 1.0,
+            "dcgm_exporter": {"container_image": "dcgm", "port": 9401},
+        }
+
+        out = expand_observability(cfg)
+
+        assert out["observability"]["tachometer"]["enabled"] is True
+        assert out["telemetry"]["enabled"] is True
+
+    def test_tachometer_reuses_the_power_dcgm_exporter(self):
+        cfg = {
+            **BASE_CONFIG,
+            "benchmark": {"type": "sa-bench", "concurrencies": [4]},
+            "observability": {"enabled": True, "tachometer": {"enabled": True}},
+            "telemetry": {
+                "enabled": True,
+                "dcgm_exporter": {"container_image": "dcgm", "port": 9401},
+            },
+        }
+
+        loaded = SrtConfig.Schema().load(cfg)
+
+        assert loaded.observability.tachometer.enabled is True
+        assert loaded.telemetry.dcgm_exporter.container_image == "dcgm"
+
+    def test_tachometer_rejects_a_duplicate_power_dcgm_exporter(self):
+        cfg = {
+            **BASE_CONFIG,
+            "benchmark": {"type": "sa-bench", "concurrencies": [4]},
+            "observability": {
+                "enabled": True,
+                "tachometer": {
+                    "enabled": True,
+                    "dcgm_exporter": {"container_image": "tach-dcgm", "port": 9401},
+                },
+            },
+            "telemetry": {
+                "enabled": True,
+                "dcgm_exporter": {"container_image": "power-dcgm", "port": 9401},
+            },
+        }
+
+        with pytest.raises(ValidationError, match="shared DCGM exporter"):
+            SrtConfig.Schema().load(cfg)
+
+    def test_tachometer_rejects_the_power_artifact_directory(self):
+        cfg = {
+            **BASE_CONFIG,
+            "benchmark": {"type": "sa-bench", "concurrencies": [4]},
+            "observability": {
+                "enabled": True,
+                "tachometer": {"enabled": True, "storage_subdir": "power"},
+            },
+            "telemetry": {
+                "enabled": True,
+                "storage_subdir": "power",
+                "dcgm_exporter": {"container_image": "dcgm", "port": 9401},
+            },
+        }
+
+        with pytest.raises(ValidationError, match="storage_subdir"):
+            SrtConfig.Schema().load(cfg)
+
+    def test_tachometer_requires_master_observability_knob(self):
+        cfg = _trtllm_config(enabled=False, tachometer={"enabled": True})
+
+        with pytest.raises(ValidationError, match="requires observability.enabled"):
+            SrtConfig.Schema().load(cfg)
+
+    def test_telemetry_rejects_tachometer_fields(self):
+        cfg = {
+            **BASE_CONFIG,
+            "telemetry": {
+                "enabled": True,
+                "binary_path": "tachometer-scraper",
+            },
+        }
+
+        with pytest.raises(ValidationError, match="binary_path"):
+            SrtConfig.Schema().load(cfg)
+
 
 class TestObservabilitySchema:
     def test_defaults_are_off(self):
@@ -129,3 +238,23 @@ class TestObservabilitySchema:
         """
         cfg = SrtConfig.Schema().load({**BASE_CONFIG, "observability": {"enabled": True}})
         assert not [f for f in vars(cfg.observability) if f.startswith("aiperf")]
+
+    def test_from_yaml_loads_nested_tachometer(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    **BASE_CONFIG,
+                    "observability": {
+                        "enabled": True,
+                        "tachometer": {"enabled": True, "default_frequency": 2.0},
+                    },
+                }
+            )
+        )
+
+        cfg = SrtConfig.from_yaml(config_path)
+
+        assert cfg.observability.scraper_enabled is True
+        assert cfg.observability.tachometer.enabled is True
+        assert cfg.observability.tachometer.default_frequency == 2.0
