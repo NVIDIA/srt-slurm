@@ -11,7 +11,7 @@ from srtctl.core.schema import SrtConfig
 from srtctl.render.lifecycle import build_local_lifecycle_render_context, render_local_lifecycle
 
 
-def _config(*, frontend_type: str = "sglang") -> SrtConfig:
+def _config(*, frontend_type: str = "sglang", frontend_env: dict[str, str] | None = None) -> SrtConfig:
     raw = {
         "name": "direct-render",
         "model": {
@@ -40,6 +40,7 @@ def _config(*, frontend_type: str = "sglang") -> SrtConfig:
             "type": frontend_type,
             "enable_multiple_frontends": False,
             "args": {"policy": "cache_aware"} if frontend_type == "sglang" else {"router-mode": "kv"},
+            "env": frontend_env,
         },
         "benchmark": {"type": "custom", "command": "aiperf profile --ui none"},
         "telemetry": {
@@ -91,5 +92,23 @@ def test_local_dynamo_lifecycle_starts_owned_infrastructure(tmp_path) -> None:
     assert 'srt_launch "nats"' in script
     assert 'srt_launch "etcd"' in script
     assert "DYN_SYSTEM_PORT=7500" in context.worker_processes[0].command
+    syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
+    assert syntax.returncode == 0, syntax.stderr
+
+
+def test_local_lifecycle_expands_artifact_dir_in_frontend_environment(tmp_path) -> None:
+    context = build_local_lifecycle_render_context(
+        _config(
+            frontend_type="dynamo",
+            frontend_env={"DYN_REQUEST_TRACE_FILE_PATH": "{artifact_dir}/dynamo-request-trace.jsonl"},
+        ),
+        source_dir=tmp_path / "srt-slurm",
+        output_base=tmp_path / "outputs",
+    )
+    script = render_local_lifecycle(context)
+
+    assert 'DYN_REQUEST_TRACE_FILE_PATH="${ARTIFACT_DIR}"/dynamo-request-trace.jsonl' in context.router_command
+    assert "DYN_REQUEST_TRACE_FILE_PATH=\"${ARTIFACT_DIR}\"/dynamo-request-trace.jsonl" in script
+    assert 'export OUTPUT_DIR LOG_DIR ARTIFACT_DIR' in script
     syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
     assert syntax.returncode == 0, syntax.stderr

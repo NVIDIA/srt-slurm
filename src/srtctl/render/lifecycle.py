@@ -20,6 +20,8 @@ from srtctl.core.schema import SrtConfig, TelemetryProvider
 from srtctl.core.topology import Process
 from srtctl.ports import ETCD_CLIENT_PORT, FRONTEND_PUBLIC_PORT, NATS_PORT
 
+_ARTIFACT_DIR_PLACEHOLDER = "__SRTCTL_ARTIFACT_DIR__"
+
 
 @dataclass(frozen=True)
 class LocalProcess:
@@ -71,7 +73,12 @@ def _shell_command(args: list[str], environment: dict[str, str] | None = None) -
     for key, value in sorted((environment or {}).items()):
         if not key.replace("_", "").isalnum() or key[0].isdigit():
             raise ValueError(f"Invalid environment variable name for --bash: {key!r}")
-        parts.append(f"{key}={shlex.quote(str(value))}")
+        quoted_value = shlex.quote(str(value))
+        # ``ARTIFACT_DIR`` is selected by the lifecycle script at runtime.  Keep
+        # all other config values shell-quoted while letting this one placeholder
+        # expand in the child process that owns the frontend.
+        quoted_value = quoted_value.replace(_ARTIFACT_DIR_PLACEHOLDER, '"${ARTIFACT_DIR}"')
+        parts.append(f"{key}={quoted_value}")
     parts.append("$SRTCTL_PYTHON")
     parts.extend(shlex.quote(str(arg)) for arg in args)
     return " ".join(parts)
@@ -103,14 +110,21 @@ def _local_model_path(config: SrtConfig) -> str:
     return str(Path(path).expanduser().resolve())
 
 
-def _format_environment(values: dict[str, str], *, node: str = "127.0.0.1") -> dict[str, str]:
-    """Apply the two topology placeholders supported by normal worker launch."""
+def _format_environment(
+    values: dict[str, str],
+    *,
+    node: str = "127.0.0.1",
+    artifact_dir: str | None = None,
+) -> dict[str, str]:
+    """Apply topology placeholders and direct-lifecycle runtime paths."""
 
     class SafeDict(dict[str, str]):
         def __missing__(self, key: str) -> str:
             return "{" + key + "}"
 
     substitutions = SafeDict(node=node, node_id="0")
+    if artifact_dir is not None:
+        substitutions["artifact_dir"] = artifact_dir
     return {key: str(value).format_map(substitutions) for key, value in values.items()}
 
 
@@ -225,7 +239,9 @@ def _build_local_processes(config: SrtConfig) -> tuple[list[Process], tuple[Loca
 
 
 def _build_router_command(config: SrtConfig, processes: list[Process]) -> str:
-    frontend_environment = _format_environment(dict(config.frontend.env or {}))
+    frontend_environment = _format_environment(
+        dict(config.frontend.env or {}), artifact_dir=_ARTIFACT_DIR_PLACEHOLDER
+    )
     if config.frontend.type == "dynamo":
         frontend_environment.update(
             {

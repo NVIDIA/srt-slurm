@@ -1,0 +1,70 @@
+# Direct-host artifact recipe for ruter's per-request Dynamo view.
+# Render with: srtctl apply -f recipes/qwen3-32b/agg-kv-dynamo-ruter.yaml --bash
+name: qwen3-32b-fp8-dynamo-ruter
+
+model:
+  path: /home/nvidia/.cache/huggingface/hub/models--Qwen--Qwen3-32B-FP8/snapshots/aa55da1ecc13d006e8b8e4f54579b1ea8c3db2df
+  container: direct-host
+  precision: fp8
+
+resources:
+  gpu_type: h100
+  gpus_per_node: 8
+  agg_nodes: 1
+  agg_workers: 8
+  gpus_per_agg: 1
+
+dynamo:
+  install: false
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+  args:
+    router-mode: kv
+  env:
+    # Exact router decisions, including selected worker and overlap blocks.
+    DYN_LOG: debug
+    # Context-free request_end rows from Dynamo PR #13590 include the actual
+    # cache-hit rate, cached tokens, latency, queue depth, and worker placement.
+    DYN_REQUEST_TRACE: "1"
+    DYN_REQUEST_TRACE_RECORDS: request_end
+    DYN_REQUEST_TRACE_SINKS: file
+    DYN_REQUEST_TRACE_FILE_FORMAT: jsonl
+    DYN_REQUEST_TRACE_FILE_PATH: "{artifact_dir}/dynamo-request-trace.jsonl"
+    DYN_REQUEST_TRACE_FILE_FLUSH_INTERVAL_MS: "1000"
+
+backend:
+  type: sglang
+  kv_events_config:
+    aggregated: true
+  sglang_config:
+    aggregated:
+      served-model-name: Qwen/Qwen3-32B-FP8
+      tensor-parallel-size: 1
+      page-size: 16
+      trust-remote-code: true
+      mem-fraction-static: 0.85
+      context-length: 40960
+      max-running-requests: 64
+      enable-metrics: true
+      disable-piecewise-cuda-graph: true
+
+telemetry:
+  enabled: true
+  provider: scraper
+  binary_path: /data/agent-sessions/20260820T032546Z-qwen32b-router-ab/tachometer-target/release/tachometer-scraper
+  default_frequency: 1.0
+  sync_interval_secs: 0
+  storage_subdir: tachometer
+  dcgm_exporter:
+    container_image: direct-host-placeholder
+    port: 9401
+  node_exporter:
+    container_image: direct-host-placeholder
+    port: 9101
+
+benchmark:
+  type: custom
+  command: |
+    aiperf profile --model Qwen/Qwen3-32B-FP8 --tokenizer /home/nvidia/.cache/huggingface/hub/models--Qwen--Qwen3-32B-FP8/snapshots/aa55da1ecc13d006e8b8e4f54579b1ea8c3db2df --tokenizer-trust-remote-code --url "$SRT_FRONTEND_URL" --endpoint-type chat --streaming --input-file /data/agent-sessions/20260820T032546Z-qwen32b-router-ab/artifacts/mooncake_refined.jsonl --custom-dataset-type mooncake_trace --fixed-schedule --fixed-schedule-auto-offset --extra-inputs ignore_eos:true --use-legacy-max-tokens --request-timeout-seconds 900 --workers-max 128 --output-artifact-dir "$AIPERF_ARTIFACT_DIR" --profile-export-prefix trace --ui none --no-server-metrics

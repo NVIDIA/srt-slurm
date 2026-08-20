@@ -20,6 +20,7 @@ SRTCTL_PYTHON="${SRTCTL_PYTHON:-python3}"
 OUTPUT_DIR="${OUTPUT_BASE}/${RUN_NAME}-$(date -u +%Y%m%dT%H%M%SZ)-$$"
 LOG_DIR="${OUTPUT_DIR}/logs"
 ARTIFACT_DIR="${OUTPUT_DIR}/artifacts"
+export OUTPUT_DIR LOG_DIR ARTIFACT_DIR
 
 {% for key, value in context.global_environment %}
 export {{ key }}={{ quote(value) }}
