@@ -29,8 +29,6 @@ frontend:
   args:
     router-mode: kv
   env:
-    # Exact router decisions, including selected worker and overlap blocks.
-    DYN_LOG: debug
     # Dynamo defaults retain context-free request_end rows as rotated gzip JSONL.
     # Put that prefix in the bundle instead of Dynamo's default /tmp location.
     DYN_REQUEST_TRACE: "1"
@@ -56,19 +54,12 @@ backend:
       # and request trace contract unchanged.
       fp8-gemm-backend: triton
 
-telemetry:
+observability:
   enabled: true
-  provider: scraper
-  binary_path: /data/agent-sessions/20260820T032546Z-qwen32b-router-ab/tachometer-target/release/tachometer-scraper
-  default_frequency: 1.0
-  sync_interval_secs: 0
-  storage_subdir: tachometer
-  dcgm_exporter:
-    container_image: direct-host-placeholder
-    port: 9401
-  node_exporter:
-    container_image: direct-host-placeholder
-    port: 9101
+  # ruter consumes Tachometer Parquet; skip the redundant raw JSONL scrape.
+  scrape_metrics: false
+  tachometer:
+    enabled: true
 
 benchmark:
   type: custom
