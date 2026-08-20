@@ -20,6 +20,7 @@ SRTCTL_PYTHON="${SRTCTL_PYTHON:-python3}"
 OUTPUT_DIR="${OUTPUT_BASE}/${RUN_NAME}-$(date -u +%Y%m%dT%H%M%SZ)-$$"
 LOG_DIR="${OUTPUT_DIR}/logs"
 ARTIFACT_DIR="${OUTPUT_DIR}/artifacts"
+export OUTPUT_DIR LOG_DIR ARTIFACT_DIR
 
 {% for key, value in context.global_environment %}
 export {{ key }}={{ quote(value) }}
@@ -49,9 +50,14 @@ srt_launch_shell() {
     local label="$1"
     local log_file="$2"
     local command="$3"
+    local python_bin_dir
+    python_bin_dir="$(dirname "${SRTCTL_PYTHON}")"
     mkdir -p "$(dirname "${log_file}")"
     printf '%s\n' "${command}" > "${log_file}.command"
-    setsid bash -lc "${command}" >"${log_file}" 2>&1 &
+    # Worker commands run in a login shell. Re-add the selected interpreter's
+    # bin directory afterwards so tools installed in its isolated venv (for
+    # example SGLang's JIT compiler dependency, ninja) are available too.
+    setsid bash -lc "export PATH=$(printf '%q' "${python_bin_dir}"):\$PATH; ${command}" >"${log_file}" 2>&1 &
     local pid=$!
     printf '%s\n' "${pid}" > "${log_file}.pid"
     SRT_OWNED_PIDS+=("${pid}")
@@ -234,9 +240,9 @@ SRTCTL_ETCD_BINARY="${SRTCTL_ETCD_BINARY:-${SRTCTL_SOURCE}/configs/etcd}"
 [[ -x "${SRTCTL_NATS_BINARY}" ]] || srt_die "NATS binary is not executable: ${SRTCTL_NATS_BINARY}"
 [[ -x "${SRTCTL_ETCD_BINARY}" ]] || srt_die "etcd binary is not executable: ${SRTCTL_ETCD_BINARY}"
 mkdir -p "${OUTPUT_DIR}/nats" "${OUTPUT_DIR}/etcd"
-srt_launch "nats" "${LOG_DIR}/nats.log" "${SRTCTL_NATS_BINARY}" -js -sd "${OUTPUT_DIR}/nats"
-srt_launch "etcd" "${LOG_DIR}/etcd.log" "${SRTCTL_ETCD_BINARY}" --data-dir "${OUTPUT_DIR}/etcd" --listen-client-urls "http://127.0.0.1:{{ 2379 }}" --advertise-client-urls "http://127.0.0.1:{{ 2379 }}"
-srt_wait_http_ready "http://127.0.0.1:{{ 2379 }}/health" "etcd"
+srt_launch "nats" "${LOG_DIR}/nats.log" "${SRTCTL_NATS_BINARY}" -js -a "127.0.0.1" -p {{ context.nats_port }} -sd "${OUTPUT_DIR}/nats"
+srt_launch "etcd" "${LOG_DIR}/etcd.log" "${SRTCTL_ETCD_BINARY}" --data-dir "${OUTPUT_DIR}/etcd" --listen-client-urls "http://127.0.0.1:{{ context.etcd_client_port }}" --advertise-client-urls "http://127.0.0.1:{{ context.etcd_client_port }}" --listen-peer-urls "http://127.0.0.1:{{ context.etcd_peer_port }}" --initial-advertise-peer-urls "http://127.0.0.1:{{ context.etcd_peer_port }}" --initial-cluster "default=http://127.0.0.1:{{ context.etcd_peer_port }}"
+srt_wait_http_ready "http://127.0.0.1:{{ context.etcd_client_port }}/health" "etcd"
 {% else %}
 "${SRTCTL_PYTHON}" -c 'import sglang_router' || srt_die "sglang-router (Model Gateway) is not installed for ${SRTCTL_PYTHON}"
 {% endif %}
@@ -244,9 +250,11 @@ srt_wait_http_ready "http://127.0.0.1:{{ 2379 }}/health" "etcd"
 {% for worker in context.worker_processes %}
 srt_launch_shell {{ quote(worker.label) }} "${LOG_DIR}/{{ worker.log_name }}" {{ quote(worker.command) }}
 {% endfor %}
+{% if context.frontend_type != "dynamo" %}
 {% for worker in context.worker_processes %}
 srt_wait_http_ready "http://127.0.0.1:{{ worker.http_port }}/health" {{ quote(worker.label) }}
 {% endfor %}
+{% endif %}
 
 srt_launch_shell "router" "${LOG_DIR}/router.log" {{ quote(context.router_command) }}
 srt_wait_router_ready >"${LOG_DIR}/readiness.log" 2>&1
@@ -255,11 +263,13 @@ srt_smoke_chat
 {% if context.telemetry_enabled %}
 SRTCTL_TACHOMETER_DEFAULT={{ quote(context.tachometer_binary or '') }}
 SRTCTL_TACHOMETER="${SRTCTL_TACHOMETER:-${SRTCTL_TACHOMETER_DEFAULT}}"
-TACHOMETER_STORAGE="${ARTIFACT_DIR}/tachometer/raw"
+# Tachometer owns its final storage directory and rejects a pre-existing leaf.
+# Keep it nested beneath the run artifact directory but create only its parent.
+TACHOMETER_STORAGE="${ARTIFACT_DIR}/tachometer/raw/scrape"
 TACHOMETER_LOCAL_DIR="${ARTIFACT_DIR}/tachometer/local"
 TACHOMETER_CONFIG="${OUTPUT_DIR}/tachometer.toml"
 command -v "${SRTCTL_TACHOMETER}" >/dev/null 2>&1 || srt_die "Tachometer scraper not found: ${SRTCTL_TACHOMETER}"
-mkdir -p "${TACHOMETER_STORAGE}" "${TACHOMETER_LOCAL_DIR}"
+mkdir -p "$(dirname "${TACHOMETER_STORAGE}")" "${TACHOMETER_LOCAL_DIR}"
 cat > "${TACHOMETER_CONFIG}" <<{{ telemetry_marker }}
 {{ context.tachometer_config }}{{ telemetry_marker }}
 srt_launch "tachometer" "${LOG_DIR}/tachometer.log" "${SRTCTL_TACHOMETER}" --config "${TACHOMETER_CONFIG}" --local-dir "${TACHOMETER_LOCAL_DIR}"

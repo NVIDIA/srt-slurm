@@ -27,6 +27,7 @@ from srtctl.ports import (
     MOONCAKE_HTTP_METADATA_PORT,
     MOONCAKE_MASTER_PORT,
     SGLANG_DIST_INIT_PORT_BASE,
+    SGLANG_NCCL_PORT_BASE,
 )
 
 if TYPE_CHECKING:
@@ -310,6 +311,12 @@ class SGLangProtocol:
         config.pop("model_path", None)
         config.pop("served-model-name", None)
         config.pop("served_model_name", None)
+        # SGLang's dynamic default probes a free TCP port. On a node that
+        # launches several workers concurrently, those probes can race. Use a
+        # unique port derived from the topology-assigned system-status port.
+        config.pop("nccl-port", None)
+        config.pop("nccl_port", None)
+        nccl_port = SGLANG_NCCL_PORT_BASE + process.sys_port - DYN_SYSTEM_PORT_BASE
 
         # Determine if multi-node
         endpoint_nodes = list(dict.fromkeys(p.node for p in endpoint_processes))
@@ -350,6 +357,7 @@ class SGLangProtocol:
 
         # Always pass --port when using sglang.launch_server or dynamo.sglang
         cmd.extend(["--port", str(process.http_port)])
+        cmd.extend(["--nccl-port", str(nccl_port)])
 
         # Add disaggregation mode for prefill/decode workers (both dynamo and sglang frontend)
         if mode != "agg":

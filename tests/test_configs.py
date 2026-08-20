@@ -16,6 +16,7 @@ from srtctl.ports import (
     SGLANG_BOOTSTRAP_PORT_BASE,
     SGLANG_HTTP_PORT_BASE,
     SGLANG_HTTP_PORT_STRIDE,
+    SGLANG_NCCL_PORT_BASE,
     VLLM_DATA_PARALLEL_RPC_PORT,
     VLLM_NIXL_PORT_BASE,
 )
@@ -540,6 +541,30 @@ class TestSGLangProtocol:
         assert config.is_grpc_mode("prefill") is True
         assert config.is_grpc_mode("decode") is True
         assert config.is_grpc_mode("agg") is False
+
+    def test_worker_command_assigns_deterministic_nccl_port(self):
+        """Each SGLang server gets a unique rendezvous port from its sys port."""
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.core.topology import Process
+
+        process = Process(
+            node="node0",
+            gpu_indices=frozenset({5}),
+            sys_port=7505,
+            http_port=6105,
+            endpoint_mode="agg",
+            endpoint_index=5,
+            node_rank=5,
+        )
+        runtime = MagicMock()
+        runtime.model_path = Path("/model")
+        runtime.is_hf_model = False
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            command = SGLangProtocol().build_worker_command(process, [process], runtime)
+
+        assert command[command.index("--nccl-port") + 1] == str(SGLANG_NCCL_PORT_BASE + 5)
 
 
 class TestServedModelName:
