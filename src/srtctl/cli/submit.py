@@ -54,6 +54,19 @@ from srtctl.core.git_state import (
     git_snapshot_sources_from_extra_mounts,
     write_git_state_snapshot,
 )
+from srtctl.core.image_bake import (
+    DEFAULT_TIME_LIMIT as BAKE_DEFAULT_TIME_LIMIT,
+)
+from srtctl.core.image_bake import (
+    BakePlan,
+    bake_image,
+    build_vllm_patches,
+    default_configs_dir,
+    default_output_image,
+    read_sa_bench_deps,
+    resolve_setup_script,
+    resolve_vllm_patch,
+)
 from srtctl.core.lockfile import load_lockfile_fingerprints
 from srtctl.core.schema import SrtConfig, TelemetryProvider, installs_dynamo
 from srtctl.core.status import create_job_record
@@ -1368,6 +1381,64 @@ def resolve_override_cmd(
         console.print(f"[green]Wrote:[/] {p}")
 
 
+def _resolve_container_alias(name: str) -> Path:
+    """Accept either a raw .sqsh path or a container alias from srtslurm.yaml."""
+    containers = get_srtslurm_setting("containers") or {}
+    return Path(containers.get(name, name)).expanduser()
+
+
+def _run_bake_image(args) -> int:
+    source = _resolve_container_alias(args.source_image)
+    setup_script: Path | None = None
+    configs_dir: Path | None = None
+    if args.setup_script:
+        configs_dir = default_configs_dir()
+        if not configs_dir.is_dir():
+            raise FileNotFoundError(f"configs directory not found: {configs_dir}")
+        setup_script = resolve_setup_script(args.setup_script, configs_dir=configs_dir)
+
+    vllm_patches = ()
+    raw_patches = getattr(args, "patches", None) or []
+    if raw_patches:
+        configs_dir = configs_dir or default_configs_dir()
+        host_paths = [resolve_vllm_patch(item, configs_dir=configs_dir) for item in raw_patches]
+        vllm_patches = build_vllm_patches(host_paths)
+
+    output = args.output_image or default_output_image(
+        source,
+        dynamo_version=args.dynamo_version,
+        sa_bench=args.sa_bench,
+        setup_script=setup_script,
+        vllm_patches=vllm_patches,
+    )
+    output = Path(output).expanduser()
+
+    if output.exists() and not args.force:
+        console.print(f"[bold red]Output already exists:[/] {output}")
+        console.print("Pass --force to overwrite it.")
+        return 1
+
+    deps: tuple[str, ...] = ()
+    imports = ""
+    if args.sa_bench:
+        deps, imports = read_sa_bench_deps()
+
+    plan = BakePlan(
+        source_image=source,
+        output_image=output,
+        dynamo_version=args.dynamo_version,
+        sa_bench=args.sa_bench,
+        sa_bench_deps=deps,
+        sa_bench_imports=imports,
+        setup_script=setup_script,
+        configs_dir=configs_dir,
+        vllm_patches=vllm_patches,
+        time_limit=args.bake_time_limit,
+        slurm_overrides={"account": args.bake_account, "partition": args.bake_partition},
+    )
+    return bake_image(plan, dry_run=args.bake_dry_run)
+
+
 def main():
     # If no args at all, launch interactive mode
     if len(sys.argv) == 1:
@@ -1504,6 +1575,81 @@ def main():
     check_parser.add_argument("path", type=Path, help="Lockfile or output dir to check against")
     check_parser.add_argument("--json", action="store_true", dest="json_output", help="Output as JSON")
 
+    # Image baking: srtctl bake-image --image IMAGE --dynamo VERSION --sa-bench --script NAME --patch FILE
+    bake_parser = subparsers.add_parser(
+        "bake-image",
+        help="Preinstall dynamo / sa-bench deps / a setup script / a vLLM patch into a new container image",
+    )
+    bake_parser.add_argument(
+        "--image",
+        dest="source_image",
+        required=True,
+        help="Source .sqsh path, or a container alias from srtslurm.yaml",
+    )
+    bake_parser.add_argument(
+        "-o",
+        "--output",
+        dest="output_image",
+        type=Path,
+        help="Output .sqsh path (default: source name plus what was installed)",
+    )
+    bake_parser.add_argument(
+        "--dynamo",
+        dest="dynamo_version",
+        help="ai-dynamo version to install, e.g. 1.2.0.dev20260526",
+    )
+    bake_parser.add_argument(
+        "--sa-bench",
+        action="store_true",
+        help="Install the Python packages sa-bench needs at runtime",
+    )
+    bake_parser.add_argument(
+        "--script",
+        "--setup-script",
+        dest="setup_script",
+        help=(
+            "Run a configs/ setup script inside the image before saving it "
+            "(same as recipe setup_script). Name or path, e.g. install-nixl-dsv4.sh"
+        ),
+    )
+    bake_parser.add_argument(
+        "--patch",
+        dest="patches",
+        action="append",
+        metavar="FILE.diff",
+        help=(
+            "Apply a unified diff to vLLM in the image (repeatable). Name under "
+            "configs/patches/ or a path. Conflicts abort the bake; no image is kept."
+        ),
+    )
+    bake_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite the output image if it already exists",
+    )
+    bake_parser.add_argument(
+        "--time",
+        dest="bake_time_limit",
+        default=BAKE_DEFAULT_TIME_LIMIT,
+        help=f"Time limit when srun allocates a node itself (default: {BAKE_DEFAULT_TIME_LIMIT})",
+    )
+    bake_parser.add_argument(
+        "--account",
+        dest="bake_account",
+        help="SLURM account (default: default_account from srtslurm.yaml)",
+    )
+    bake_parser.add_argument(
+        "--partition",
+        dest="bake_partition",
+        help="SLURM partition (default: default_partition from srtslurm.yaml)",
+    )
+    bake_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="bake_dry_run",
+        help="Print the srun command and install script without running them",
+    )
+
     args = parser.parse_args()
 
     json_mode = bool(getattr(args, "json_output", False))
@@ -1534,6 +1680,15 @@ def main():
     _mock_patch_teardowns: list = []
     if mock_mode:
         _mock_patch_teardowns = _install_mock_submit_patches()
+
+    if args.command == "bake-image":
+        try:
+            exit_code = _run_bake_image(args)
+        except (ValueError, RuntimeError, FileNotFoundError) as e:
+            console.print(f"[bold red]bake-image failed:[/] {e}")
+            exit_code = 1
+        restore_console()
+        sys.exit(exit_code)
 
     # Handle diff and check commands first (they don't use -f/config)
     if args.command == "diff":
