@@ -98,6 +98,13 @@ def test_local_dynamo_lifecycle_starts_owned_infrastructure(tmp_path) -> None:
     assert 'srt_launch "nats"' in script
     assert 'srt_launch "etcd"' in script
     assert "DYN_SYSTEM_PORT=7500" in context.worker_processes[0].command
+    assert all(
+        f"--nccl-port {17_500 + index}" in worker.command
+        for index, worker in enumerate(context.worker_processes)
+    )
+    assert 'srt_wait_http_ready "http://127.0.0.1:6100/health"' not in script
+    assert "srt_wait_router_ready" in script
+    assert 'TACHOMETER_STORAGE="${ARTIFACT_DIR}/tachometer/raw/scrape"' in script
     syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
     assert syntax.returncode == 0, syntax.stderr
 

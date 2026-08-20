@@ -197,6 +197,15 @@ def _build_local_processes(
         worker_config = backend.get_config_for_mode(mode)
         for key in ("model-path", "model_path", "served-model-name", "served_model_name"):
             worker_config.pop(key, None)
+        # SGLang otherwise probes a random free TCP port for its TP rendezvous.
+        # Multiple direct-host workers probe concurrently, so two can select the
+        # same port before either binds it. Derive one stable, distinct port from
+        # the already unique Dynamo system-status port instead.
+        worker_config.pop("nccl-port", None)
+        worker_config.pop("nccl_port", None)
+        nccl_port = process.sys_port + 10_000
+        if nccl_port > 65_535:
+            raise ValueError(f"Direct-host NCCL port exceeds range: {nccl_port}")
 
         module = "dynamo.sglang" if config.frontend.type == "dynamo" else "sglang.launch_server"
         args = [
@@ -210,6 +219,8 @@ def _build_local_processes(
             "127.0.0.1",
             "--port",
             str(process.http_port),
+            "--nccl-port",
+            str(nccl_port),
         ]
         if mode != "agg":
             args.extend(("--disaggregation-mode", mode))
