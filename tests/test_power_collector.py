@@ -24,7 +24,7 @@ from srtctl.core.power.session import PowerEndpoint, PowerSessionSettings, Power
 from srtctl.core.power.topology import build_expected_devices
 from srtctl.core.power.validate_artifacts import validate_power_artifacts
 from srtctl.core.processes import ManagedProcess, ProcessRegistry
-from srtctl.core.schema import TelemetryExporterConfig, TelemetryProvider
+from srtctl.core.schema import TelemetryExporterConfig
 from srtctl.core.topology import Process
 
 GPUS_PER_NODE = 4
@@ -691,7 +691,6 @@ class TestSessionOwnership:
             def __init__(self):
                 self.config = MagicMock()
                 self.config.telemetry.enabled = True
-                self.config.telemetry.provider = TelemetryProvider.DCGM_POWER
                 self.config.telemetry.storage_subdir = "power"
                 self.config.telemetry.default_frequency = 0.05
                 self.config.telemetry.startup_timeout_seconds = 0.2
@@ -773,7 +772,6 @@ class TestRequiredReadinessGate:
     def _orchestrator(self, tmp_path, *, required, ready):
         config = MagicMock()
         config.telemetry.enabled = True
-        config.telemetry.provider = TelemetryProvider.DCGM_POWER
         config.telemetry.required = required
         config.frontend.type = "dynamo"
         config.profiling.enabled = False
@@ -805,6 +803,7 @@ class TestRequiredReadinessGate:
         orchestrator = self._orchestrator(tmp_path, required=True, ready=False)
 
         with (
+            patch.object(SweepOrchestrator, "start_tachometer", return_value=[]) as start_tachometer,
             patch.object(SweepOrchestrator, "start_power_telemetry") as start_power,
             patch.object(SweepOrchestrator, "run_benchmark") as run_benchmark,
             patch.object(SweepOrchestrator, "start_all_workers", return_value={}),
@@ -826,6 +825,7 @@ class TestRequiredReadinessGate:
             exit_code = orchestrator.run()
 
         run_benchmark.assert_not_called()
+        start_tachometer.assert_called_once()
         assert exit_code == 1
 
     def test_eval_only_run_never_starts_power_telemetry(self, tmp_path):
@@ -834,6 +834,7 @@ class TestRequiredReadinessGate:
         orchestrator._power_session = None
 
         with (
+            patch.object(SweepOrchestrator, "start_tachometer", return_value=[]) as start_tachometer,
             patch.object(SweepOrchestrator, "start_power_telemetry") as start_power,
             patch.object(SweepOrchestrator, "run_benchmark") as run_benchmark,
             patch.object(SweepOrchestrator, "_run_post_eval", return_value=0),
@@ -855,6 +856,7 @@ class TestRequiredReadinessGate:
             exit_code = orchestrator.run()
 
         start_power.assert_not_called()
+        start_tachometer.assert_called_once()
         run_benchmark.assert_not_called()
         assert exit_code == 0
 

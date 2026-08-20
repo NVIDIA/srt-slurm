@@ -16,6 +16,7 @@ from srtctl.ports import (
     SGLANG_BOOTSTRAP_PORT_BASE,
     SGLANG_HTTP_PORT_BASE,
     SGLANG_HTTP_PORT_STRIDE,
+    SGLANG_NCCL_PORT_BASE,
     VLLM_DATA_PARALLEL_RPC_PORT,
     VLLM_NIXL_PORT_BASE,
 )
@@ -541,6 +542,30 @@ class TestSGLangProtocol:
         assert config.is_grpc_mode("decode") is True
         assert config.is_grpc_mode("agg") is False
 
+    def test_worker_command_assigns_deterministic_nccl_port(self):
+        """Each SGLang server gets a unique rendezvous port from its sys port."""
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.core.topology import Process
+
+        process = Process(
+            node="node0",
+            gpu_indices=frozenset({5}),
+            sys_port=7505,
+            http_port=6105,
+            endpoint_mode="agg",
+            endpoint_index=5,
+            node_rank=5,
+        )
+        runtime = MagicMock()
+        runtime.model_path = Path("/model")
+        runtime.is_hf_model = False
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            command = SGLangProtocol().build_worker_command(process, [process], runtime)
+
+        assert command[command.index("--nccl-port") + 1] == str(SGLANG_NCCL_PORT_BASE + 5)
+
 
 class TestServedModelName:
     """Tests for served_model_name property extraction from backend configs."""
@@ -786,7 +811,7 @@ class TestFrontendConfig:
 
         assert "sbatch_directives" not in resolved
 
-    def test_telemetry_container_aliases_resolve(self):
+    def test_power_telemetry_container_alias_resolves(self):
         from srtctl.core.config import resolve_config_with_defaults
 
         user_config = {
@@ -795,15 +820,39 @@ class TestFrontendConfig:
             "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
             "telemetry": {
                 "enabled": True,
-                "container_image": "telemetry-scraper",
                 "dcgm_exporter": {"container_image": "dcgm-exporter", "port": 9401},
-                "node_exporter": {"container_image": "node-exporter", "port": 9101},
             },
         }
         cluster_config = {
             "containers": {
                 "sglang": "/path/to/sglang.sqsh",
-                "telemetry-scraper": "/path/to/scraper.sqsh",
+                "dcgm-exporter": "/path/to/dcgm.sqsh",
+            }
+        }
+
+        resolved = resolve_config_with_defaults(user_config, cluster_config)
+
+        assert resolved["telemetry"]["dcgm_exporter"]["container_image"] == "/path/to/dcgm.sqsh"
+
+    def test_observability_tachometer_aliases_resolve(self):
+        from srtctl.core.config import resolve_config_with_defaults
+
+        user_config = {
+            "name": "test",
+            "model": {"path": "/model", "container": "sglang", "precision": "fp8"},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+            "observability": {
+                "enabled": True,
+                "tachometer": {
+                    "enabled": True,
+                    "dcgm_exporter": {"container_image": "dcgm-exporter", "port": 9401},
+                    "node_exporter": {"container_image": "node-exporter", "port": 9101},
+                },
+            },
+        }
+        cluster_config = {
+            "containers": {
+                "sglang": "/path/to/sglang.sqsh",
                 "dcgm-exporter": "/path/to/dcgm.sqsh",
                 "node-exporter": "/path/to/node.sqsh",
             }
@@ -811,31 +860,38 @@ class TestFrontendConfig:
 
         resolved = resolve_config_with_defaults(user_config, cluster_config)
 
-        assert resolved["telemetry"]["container_image"] == "/path/to/scraper.sqsh"
-        assert resolved["telemetry"]["dcgm_exporter"]["container_image"] == "/path/to/dcgm.sqsh"
-        assert resolved["telemetry"]["node_exporter"]["container_image"] == "/path/to/node.sqsh"
+        assert resolved["observability"] == {
+            "enabled": True,
+            "tachometer": {
+                "enabled": True,
+                "dcgm_exporter": {"container_image": "/path/to/dcgm.sqsh", "port": 9401},
+                "node_exporter": {"container_image": "/path/to/node.sqsh", "port": 9101},
+            },
+        }
 
-    def test_telemetry_literal_paths_pass_through(self):
+    def test_tachometer_literal_paths_pass_through(self):
         from srtctl.core.config import resolve_config_with_defaults
 
         user_config = {
             "name": "test",
             "model": {"path": "/model", "container": "/container.sqsh", "precision": "fp8"},
             "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
-            "telemetry": {
+            "observability": {
                 "enabled": True,
-                "container_image": "/abs/scraper.sqsh",
-                "dcgm_exporter": {"container_image": "/abs/dcgm.sqsh", "port": 9401},
-                "node_exporter": {"container_image": "/abs/node.sqsh", "port": 9101},
+                "tachometer": {
+                    "enabled": True,
+                    "dcgm_exporter": {"container_image": "/abs/dcgm.sqsh", "port": 9401},
+                    "node_exporter": {"container_image": "/abs/node.sqsh", "port": 9101},
+                },
             },
         }
         cluster_config = {"containers": {"dcgm-exporter": "/aliased/dcgm.sqsh"}}
 
         resolved = resolve_config_with_defaults(user_config, cluster_config)
 
-        assert resolved["telemetry"]["container_image"] == "/abs/scraper.sqsh"
-        assert resolved["telemetry"]["dcgm_exporter"]["container_image"] == "/abs/dcgm.sqsh"
-        assert resolved["telemetry"]["node_exporter"]["container_image"] == "/abs/node.sqsh"
+        tachometer = resolved["observability"]["tachometer"]
+        assert tachometer["dcgm_exporter"]["container_image"] == "/abs/dcgm.sqsh"
+        assert tachometer["node_exporter"]["container_image"] == "/abs/node.sqsh"
 
 
 class TestSetupScript:

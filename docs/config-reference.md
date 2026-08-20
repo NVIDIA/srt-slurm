@@ -18,6 +18,7 @@ Complete reference for job configuration YAML files.
 - [output](#output)
 - [health_check](#health_check)
 - [infra](#infra)
+- [telemetry](#telemetry)
 - [sweep](#sweep)
 - [Config Overrides](#config-overrides)
 - [FormattablePath Template System](#formattablepath-template-system)
@@ -1024,6 +1025,105 @@ infra:
 - When `etcd_nats_dedicated_node: true`, the first allocated node is reserved exclusively for etcd and nats services.
 - This can improve stability for large-scale deployments by isolating infrastructure services.
 - The reserved node is not used for worker processes.
+
+---
+
+## observability
+
+`observability.enabled` turns on the server metrics and trace surfaces and captures raw Prometheus responses during the benchmark window:
+
+```yaml
+observability:
+  enabled: true
+```
+
+The default Python scraper writes `<log_dir>/raw_prometheus.jsonl`. To additionally collect parsed Parquet with the native Tachometer scraper:
+
+```yaml
+observability:
+  enabled: true
+  tachometer:
+    enabled: true
+```
+
+Set `scrape_metrics: false` beside `enabled` to use Tachometer without also writing the raw JSONL capture. Otherwise the Python RAW scraper and Tachometer run together.
+
+| Field | Type | Default | Description |
+| ----- | ---- | ------- | ----------- |
+| `enabled` | bool | `false` | Enable server-side metrics/traces and the raw Python scraper |
+| `scrape_metrics` | bool/null | `null` | Override raw capture; `null` follows `enabled` |
+| `scrape_interval_seconds` | float | `1.0` | Interval between raw Prometheus scrape sweeps |
+| `scrape_output` | string | `raw_prometheus.jsonl` | Raw capture filename below the run log directory |
+| `enable_otel` | bool | `false` | Inject OTEL tracing environment variables |
+| `otel_endpoint` | string/null | `null` | OTEL collector endpoint |
+| `tachometer` | object | `enabled: false` | Native Tachometer collection settings |
+
+Tachometer always collects worker and frontend metrics. DCGM and node exporters are optional additions:
+
+```yaml
+observability:
+  enabled: true
+  tachometer:
+    enabled: true
+    default_frequency: 5
+    sync_interval_secs: 120
+    compaction_threads: 4
+    storage_subdir: tachometer
+    extra_metadata:
+      cluster: production
+    dcgm_exporter:
+      container_image: /containers/dcgm-exporter.sqsh
+      port: 9400
+    node_exporter:
+      container_image: /containers/node-exporter.sqsh
+      port: 9100
+```
+
+| Tachometer field | Type | Default | Description |
+| ---------------- | ---- | ------- | ----------- |
+| `enabled` | bool | `false` | Enable native Tachometer collection |
+| `binary_path` | string | `tachometer-scraper` | Scraper command or path on the compute nodes |
+| `default_frequency` | float | `5.0` | Scrape frequency in Hz |
+| `sync_interval_secs` | int | `120` | Interval for intermediate Parquet compaction; `0` disables it |
+| `compaction_threads` | int | `4` | Value passed as `POLARS_MAX_THREADS` |
+| `storage_subdir` | string | `tachometer` | Output directory below the run log directory |
+| `extra_metadata` | dict | `{}` | Static string metadata added to every endpoint |
+| `dcgm_exporter` | object/null | `null` | Optional DCGM exporter image, port, and command |
+| `node_exporter` | object/null | `null` | Optional node exporter image, port, and command |
+
+`make setup ARCH=<compute_arch>` downloads and checksum-verifies the matching Tachometer binary from the latest srt-slurm release. The scraper runs as a native `srun` process on the head node; configured exporters remain containerized on worker nodes. Run `make tachometer-scraper` to build from source instead.
+
+Tachometer writes `<log_dir>/<storage_subdir>/final.parquet`. Intermediate files remain in `<log_dir>/<storage_subdir>/local` until shutdown compaction completes.
+
+---
+
+## telemetry
+
+`telemetry` is reserved for DCGM power measurement. It can run alongside `observability.tachometer`; it does not start Tachometer itself.
+
+When both are enabled, `telemetry.dcgm_exporter` is shared with Tachometer. Do not also configure `observability.tachometer.dcgm_exporter`; Tachometer can still launch an optional node exporter from its own block.
+
+```yaml
+telemetry:
+  enabled: true
+  default_frequency: 1.0
+  storage_subdir: power
+  required: true
+  dcgm_exporter:
+    container_image: /containers/dcgm-exporter.sqsh
+    port: 9400
+```
+
+| Field | Type | Default | Description |
+| ----- | ---- | ------- | ----------- |
+| `enabled` | bool | `false` | Enable DCGM power collection |
+| `dcgm_exporter` | object/null | `null` | DCGM exporter image, port, and optional command; required when enabled |
+| `default_frequency` | float | `1.0` | Power sample interval in seconds; must be at most `3.0` |
+| `storage_subdir` | string | `power` | Output directory below the run log directory |
+| `required` | bool | `false` | Fail the benchmark when publishable power artifacts cannot be produced |
+| `startup_timeout_seconds` | float | `30.0` | Exporter readiness timeout |
+| `request_timeout_seconds` | float | `2.0` | Per-request exporter timeout |
+| `collector_join_timeout_seconds` | float/null | `null` | Shutdown join timeout; defaults from `request_timeout_seconds` |
 
 ---
 

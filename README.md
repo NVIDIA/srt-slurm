@@ -39,6 +39,11 @@ srtctl apply -f config.yaml --tags experiment,baseline
 # Dry-run (validate without submitting)
 srtctl dry-run -f config.yaml
 
+# Emit a direct single-node lifecycle script without submitting
+srtctl apply -f config.yaml --bash > job.sh
+chmod +x job.sh
+./job.sh
+
 # Launch analysis dashboard
 uv run streamlit run analysis/dashboard/app.py
 ```
