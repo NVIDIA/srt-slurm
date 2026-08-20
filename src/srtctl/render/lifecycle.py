@@ -271,12 +271,8 @@ def _build_local_processes(
     return processes, tuple(rendered)
 
 
-def _build_router_command(
-    config: SrtConfig, processes: list[Process], *, etcd_client_port: int, nats_port: int
-) -> str:
-    frontend_environment = _format_environment(
-        dict(config.frontend.env or {}), artifact_dir=_ARTIFACT_DIR_PLACEHOLDER
-    )
+def _build_router_command(config: SrtConfig, processes: list[Process], *, etcd_client_port: int, nats_port: int) -> str:
+    frontend_environment = _format_environment(dict(config.frontend.env or {}), artifact_dir=_ARTIFACT_DIR_PLACEHOLDER)
     if config.frontend.type == "dynamo":
         frontend_environment.update(
             {
