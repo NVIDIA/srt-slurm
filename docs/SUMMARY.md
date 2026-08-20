@@ -27,6 +27,7 @@
 
 - [Monitoring](monitoring.md)
 - [Analyzing Results](analyzing.md)
+- [Component Performance Dashboard](component-dashboard.md)
 - [SLURM FAQ](slurm-faq.md)
 
 ## Reference

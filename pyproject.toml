@@ -60,8 +60,16 @@ dev = [
 [tool.ruff]
 line-length = 120
 target-version = "py310"
-# Exclude external benchmark scripts (from vLLM/other sources)
-exclude = ["src/srtctl/benchmarks/scripts/*"]
+# Exclude third-party / vendored sources kept byte-comparable with upstream:
+#   - external benchmark scripts (from vLLM/other sources)
+#   - the perf-dashboard ingest + renderer (see docs/component-dashboard.md).
+#     Reformatting them would rewrite ~100 lines of deliberately dense upstream
+#     style and destroy the diff against the repo they are re-synced from.
+exclude = [
+    "src/srtctl/benchmarks/scripts/*",
+    "src/ingest/*",
+    "src/visualization/*",
+]
 
 [tool.ruff.lint]
 extend-select = [
@@ -86,7 +94,10 @@ known-first-party = ["srtctl"]
 # =============================================================================
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["tests"]
+# "." puts the repo root on sys.path so the vendored `src.ingest` /
+# `src.visualization` packages are importable from tests (they are not part of
+# the installed `srtctl` wheel; see docs/component-dashboard.md).
+pythonpath = ["tests", "."]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short -m 'not integration'"
@@ -104,6 +115,8 @@ exclude = [
     "scripts/",
     "analysis/",
     "ignition/",
+    "src/ingest/",
+    "src/visualization/",
 ]
 
 [tool.ty.environment]
