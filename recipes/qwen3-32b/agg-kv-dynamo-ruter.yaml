@@ -55,6 +55,10 @@ backend:
       max-running-requests: 64
       enable-metrics: true
       disable-piecewise-cuda-graph: true
+      # Avoid DeepGEMM's host-NVCC JIT path on this CUDA 13.3 image. Triton is
+      # SGLang's portable FP8 fallback and leaves the Dynamo routing experiment
+      # and request trace contract unchanged.
+      fp8-gemm-backend: triton
 
 telemetry:
   enabled: true
