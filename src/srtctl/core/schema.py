@@ -1054,8 +1054,8 @@ class ObservabilityConfig:
             and frontends. Requires otel_endpoint to be set. Default: False.
         otel_endpoint: OTEL collector endpoint (e.g. "http://10.0.0.1:4317").
             Required when enable_otel is True.
-        scrape_metrics: Run the in-job Prometheus scraper. Defaults to the value
-            of ``enabled``; set False to opt out while keeping the rest.
+        scrape_metrics: Run the in-job RAW Prometheus scraper. Defaults to the
+            value of ``enabled``; set False to opt out while keeping the rest.
         scrape_interval_seconds: Seconds between scrape sweeps. Default: 1.0.
             The floor is 0.5; a sweep slower than the interval simply runs
             back-to-back rather than queueing (see the drift-free pacing in
@@ -1075,7 +1075,7 @@ class ObservabilityConfig:
 
     @property
     def scraper_enabled(self) -> bool:
-        """Whether the in-job Prometheus scraper should run."""
+        """Whether the in-job RAW Prometheus scraper should run."""
         return self.enabled if self.scrape_metrics is None else self.scrape_metrics
 
 
@@ -1114,8 +1114,9 @@ class LiveMetricsConfig:
 class TelemetryConfig:
     """Telemetry configuration for benchmark jobs.
 
-    The default provider runs the bundled Tachometer scraper binary with
-    dcgm_exporter and node_exporter. ``container_image`` remains accepted for
+    The default provider runs the bundled Tachometer scraper binary. DCGM and
+    node exporters are optional additions; frontend and backend endpoints are
+    collected without them. ``container_image`` remains accepted for
     compatibility with existing configs but is not used by the native scraper.
 
     ``live_metrics`` is a lightweight complementary signal: it tails worker
@@ -2053,10 +2054,14 @@ class SrtConfig:
         if telemetry.provider != TelemetryProvider.SCRAPER:
             raise ValidationError(f"Unsupported telemetry provider: {telemetry.provider}")
 
-        if telemetry.dcgm_exporter is None:
-            raise ValidationError("telemetry.dcgm_exporter is required when telemetry is enabled")
-        if telemetry.node_exporter is None:
-            raise ValidationError("telemetry.node_exporter is required when telemetry is enabled")
+        for name in ("dcgm_exporter", "node_exporter"):
+            exporter = getattr(telemetry, name)
+            if exporter is None:
+                continue
+            if not exporter.container_image:
+                raise ValidationError(f"telemetry.{name}.container_image must be non-empty")
+            if not 1 <= exporter.port <= 65535:
+                raise ValidationError(f"telemetry.{name}.port must be in 1..65535")
         if not telemetry.binary_path:
             raise ValidationError("telemetry.binary_path must be non-empty")
         if telemetry.default_frequency <= 0:
@@ -2068,8 +2073,11 @@ class SrtConfig:
 
     @classmethod
     def from_yaml(cls, yaml_path: Path) -> "SrtConfig":
+        from srtctl.core.config import expand_observability
+
         with open(yaml_path) as f:
             data = yaml.safe_load(f)
+        expand_observability(data)
         schema = cls.Schema()
         return schema.load(data)
 

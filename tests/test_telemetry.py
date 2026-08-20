@@ -72,6 +72,12 @@ class TestTelemetryConfig:
         assert config.telemetry.container_image is None
         assert config.telemetry.binary_path == "tachometer-scraper"
 
+    def test_scraper_exporters_are_optional(self):
+        config = _make_config(telemetry=TelemetryConfig(enabled=True))
+
+        assert config.telemetry.dcgm_exporter is None
+        assert config.telemetry.node_exporter is None
+
     def test_scraper_requires_nonempty_binary_path(self):
         with pytest.raises(ValidationError, match="telemetry.binary_path"):
             _make_config(
@@ -124,15 +130,16 @@ class TestDcgmPowerConfig:
                 benchmark=_sa_bench(),
             )
 
-    def test_scraper_validation_is_unchanged(self):
-        with pytest.raises(ValidationError, match="telemetry.node_exporter"):
-            _make_config(
-                telemetry=TelemetryConfig(
-                    enabled=True,
-                    container_image="scraper:latest",
-                    dcgm_exporter=TelemetryExporterConfig(container_image="dcgm:latest", port=9401),
-                )
-            )
+    @pytest.mark.parametrize(
+        ("field_name", "exporter", "match"),
+        [
+            ("dcgm_exporter", TelemetryExporterConfig(container_image="", port=9401), "container_image"),
+            ("node_exporter", TelemetryExporterConfig(container_image="node", port=0), "port"),
+        ],
+    )
+    def test_configured_scraper_exporters_are_validated(self, field_name, exporter, match):
+        with pytest.raises(ValidationError, match=match):
+            _make_config(telemetry=TelemetryConfig(enabled=True, **{field_name: exporter}))
 
     @pytest.mark.parametrize(
         ("telemetry_overrides", "benchmark", "match"),
@@ -334,6 +341,41 @@ class TestTelemetryConfigGeneration:
         assert '"cluster" = "pdx"' in config_text
         assert 'name = "frontend0"' in config_text
 
+    @patch("srtctl.core.telemetry.get_hostname_ip", return_value="10.0.0.1")
+    def test_generate_config_without_exporters_targets_servers_only(self, _mock_get_hostname_ip):
+        telemetry = TelemetryConfig(enabled=True)
+        runtime = MagicMock(job_id="12345", run_name="test_12345", network_interface="eth0")
+        runtime.log_dir = Path("/runs/12345/logs")
+        processes = [
+            Process(
+                node="node-a",
+                gpu_indices=frozenset({0}),
+                sys_port=8081,
+                http_port=30000,
+                endpoint_mode="agg",
+                endpoint_index=0,
+                node_rank=0,
+            )
+        ]
+        topology = FrontendTopology(
+            nginx_node=None,
+            frontend_nodes=["node-a"],
+            frontend_port=8000,
+            public_port=8000,
+        )
+
+        config_text = generate_telemetry_config(
+            processes=processes,
+            frontend_topology=topology,
+            runtime=runtime,
+            telemetry=telemetry,
+        )
+
+        assert 'name = "backend_agg0_rank0"' in config_text
+        assert 'name = "frontend0"' in config_text
+        assert "dcgm_" not in config_text
+        assert "node_exporter_" not in config_text
+
     @patch("srtctl.core.telemetry.get_hostname_ip")
     def test_vllm_frontend_targets_only_agg_leader_metrics(self, mock_get_hostname_ip):
         mock_get_hostname_ip.side_effect = lambda host, interface=None: {
@@ -463,6 +505,47 @@ class TestTelemetryStageMixin:
         ]
         assert "container_image" not in scraper_call.kwargs
         assert "container_mounts" not in scraper_call.kwargs
+
+    @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
+    def test_start_telemetry_without_exporters_starts_only_scraper(self, mock_srun, tmp_path):
+        class Harness(TelemetryStageMixin):
+            def __init__(self):
+                self.config = _make_config(telemetry=TelemetryConfig(enabled=True))
+                self.runtime = MagicMock()
+                self.runtime.log_dir = tmp_path
+                self.runtime.nodes.head = "node-a"
+                self.runtime.nodes.het = False
+                self.runtime.srun_options = {}
+                self._backend_processes = [
+                    Process(
+                        node="node-a",
+                        gpu_indices=frozenset({0}),
+                        sys_port=8081,
+                        http_port=30000,
+                        endpoint_mode="agg",
+                        endpoint_index=0,
+                        node_rank=0,
+                    )
+                ]
+
+            @property
+            def backend_processes(self):
+                return self._backend_processes
+
+            def _compute_frontend_topology(self):
+                return FrontendTopology(
+                    nginx_node=None,
+                    frontend_nodes=["node-a"],
+                    frontend_port=8000,
+                    public_port=8000,
+                )
+
+        mock_srun.return_value = _running_exporter()
+
+        processes = Harness().start_telemetry()
+
+        assert [process.name for process in processes] == ["telemetry"]
+        assert mock_srun.call_count == 1
 
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
     @patch("srtctl.cli.mixins.telemetry_stage.generate_telemetry_config", return_value='storage = "/run/telemetry"\n')

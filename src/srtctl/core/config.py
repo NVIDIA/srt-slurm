@@ -96,6 +96,7 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
     """
     # Deep copy to avoid mutating original
     config = copy.deepcopy(user_config)
+    _normalize_observability_telemetry(config)
 
     if cluster_config is None:
         return config
@@ -581,6 +582,26 @@ def _setdefault_nested(parent: dict, key: str, values: dict) -> None:
         child.setdefault(k, v)
 
 
+def _normalize_observability_telemetry(cfg: dict) -> None:
+    """Map the canonical observability surface onto the telemetry runtime."""
+    observability = cfg.get("observability")
+    if not isinstance(observability, dict):
+        return
+
+    tachometer = observability.pop("tachometer", None)
+    if tachometer is not None and not isinstance(tachometer, dict):
+        raise TypeError("observability.tachometer must be a mapping")
+    if tachometer is not None and "telemetry" in cfg:
+        raise ValueError("use observability.tachometer or the legacy top-level telemetry block, not both")
+
+    if tachometer is not None:
+        if tachometer.get("enabled") and not observability.get("enabled"):
+            raise ValueError("observability.tachometer requires observability.enabled: true")
+        telemetry = copy.deepcopy(tachometer)
+        telemetry.setdefault("provider", "scraper")
+        cfg["telemetry"] = telemetry
+
+
 def expand_observability(cfg: dict) -> dict:
     """Expand ``observability.enabled`` into the individual launch flags.
 
@@ -599,6 +620,7 @@ def expand_observability(cfg: dict) -> dict:
         ANALYTICS_SPAN_ENV,
     )
 
+    _normalize_observability_telemetry(cfg)
     observability = cfg.get("observability")
     if not isinstance(observability, dict) or not observability.get("enabled"):
         return cfg

@@ -247,20 +247,20 @@ class TestDryRunExecutionExtensions:
         assert "container_image" in output
         assert "nvcr.io/nvidia/python:3.11" in output
 
-    def test_telemetry_details_shown(self, capsys):
+    def test_observability_tachometer_details_shown(self, capsys):
         config = _make_config(
             {
-                "telemetry": {
+                "observability": {
                     "enabled": True,
-                    "container_image": "telemetry:latest",
-                    "dcgm_exporter": {"container_image": "dcgm:latest", "port": 9401},
-                    "node_exporter": {"container_image": "node:latest", "port": 9101},
+                    "tachometer": {"enabled": True},
                 }
             }
         )
         show_config_details(config)
         output = capsys.readouterr().out
-        assert "telemetry" in output
+        assert "observability" in output
+        assert "raw_metrics" in output
+        assert "metrics_provider" in output
         assert "scraper" in output
         assert "binary_path" in output
         assert "tachometer-scraper" in output

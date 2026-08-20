@@ -291,7 +291,7 @@ def _preflight_telemetry(
         return []
 
     aliases = (cluster_config or {}).get("containers") or {}
-    raw_telemetry = raw_config.get("telemetry") or {}
+    raw_telemetry = resolve_config_with_defaults(raw_config, None).get("telemetry") or {}
     issues: list[PreflightIssue] = []
 
     # NOTE: dcgm-power launches only the exporter, so the other images are never referenced.
@@ -306,7 +306,7 @@ def _preflight_telemetry(
             resolved_value = (resolved_value or {}).get(key) if isinstance(resolved_value, dict) else None
             raw_value = (raw_value or {}).get(key) if isinstance(raw_value, dict) else None
         if not resolved_value:
-            continue  # schema-level validator handles required-when-enabled
+            continue
         # NOTE: a registry URI is pulled at srun time, so there is no local file to stat.
         if _is_registry_uri(str(resolved_value)):
             continue

@@ -354,17 +354,20 @@ def show_config_details(config: SrtConfig) -> None:
         if config.benchmark.container_image:
             details.add_row("benchmark", "container_image", config.benchmark.container_image)
 
+        if config.observability.enabled:
+            details.add_row("observability", "raw_metrics", str(config.observability.scraper_enabled))
+
         if config.telemetry.enabled:
-            details.add_row("telemetry", "provider", config.telemetry.provider.value)
-            details.add_row("telemetry", "storage_subdir", config.telemetry.storage_subdir)
-            details.add_row("telemetry", "frequency", str(config.telemetry.default_frequency))
+            details.add_row("observability", "metrics_provider", config.telemetry.provider.value)
+            details.add_row("observability", "storage_subdir", config.telemetry.storage_subdir)
+            details.add_row("observability", "frequency", str(config.telemetry.default_frequency))
             if config.telemetry.provider == TelemetryProvider.SCRAPER:
-                details.add_row("telemetry", "binary_path", config.telemetry.binary_path)
+                details.add_row("observability", "binary_path", config.telemetry.binary_path)
             exporter = config.telemetry.dcgm_exporter
             if config.telemetry.provider == TelemetryProvider.DCGM_POWER and exporter is not None:
-                details.add_row("telemetry", "required", str(config.telemetry.required))
-                details.add_row("telemetry", "artifacts", f"<log_dir>/{config.telemetry.storage_subdir}")
-                details.add_row("telemetry", "dcgm_exporter", f"{exporter.container_image} (port {exporter.port})")
+                details.add_row("observability", "required", str(config.telemetry.required))
+                details.add_row("observability", "artifacts", f"<log_dir>/{config.telemetry.storage_subdir}")
+                details.add_row("observability", "dcgm_exporter", f"{exporter.container_image} (port {exporter.port})")
 
         if mooncake_cfg is not None:
             details.add_row("mooncake", "container", mooncake_cfg.container or "<job container>")

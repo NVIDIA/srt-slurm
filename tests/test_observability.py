@@ -3,6 +3,9 @@
 
 """Tests for the `observability.enabled` knob and its config expansion."""
 
+import pytest
+import yaml
+
 from srtctl.core.config import expand_observability
 from srtctl.core.schema import SrtConfig
 
@@ -77,6 +80,7 @@ class TestExpandObservability:
 
     def test_enabled_turns_on_metrics_surface_and_iteration_stats(self):
         cfg = expand_observability(_trtllm_config(enabled=True))
+        assert "telemetry" not in cfg
         assert cfg["backend"]["publish_events_and_metrics"] is True
         for mode in ("prefill", "decode"):
             section = cfg["backend"]["trtllm_config"][mode]
@@ -113,6 +117,47 @@ class TestExpandObservability:
         assert out["backend"]["prefill_environment"]["DYN_LOGGING_JSONL"] == "true"
         assert out["frontend"]["env"]["DYN_LOGGING_JSONL"] == "true"
 
+    def test_nested_tachometer_settings_normalize_to_runtime_config(self):
+        cfg = _trtllm_config(
+            enabled=True,
+            tachometer={
+                "enabled": True,
+                "default_frequency": 2.0,
+                "dcgm_exporter": {"container_image": "dcgm", "port": 9401},
+            },
+        )
+
+        out = expand_observability(cfg)
+
+        assert "tachometer" not in out["observability"]
+        assert out["telemetry"] == {
+            "enabled": True,
+            "provider": "scraper",
+            "default_frequency": 2.0,
+            "dcgm_exporter": {"container_image": "dcgm", "port": 9401},
+        }
+
+    def test_explicit_legacy_telemetry_disable_wins(self):
+        cfg = _trtllm_config(enabled=True)
+        cfg["telemetry"] = {"enabled": False}
+
+        out = expand_observability(cfg)
+
+        assert out["telemetry"] == {"enabled": False}
+
+    def test_nested_and_legacy_telemetry_are_rejected_together(self):
+        cfg = _trtllm_config(enabled=True, tachometer={"default_frequency": 2.0})
+        cfg["telemetry"] = {"enabled": True}
+
+        with pytest.raises(ValueError, match="not both"):
+            expand_observability(cfg)
+
+    def test_tachometer_requires_master_observability_knob(self):
+        cfg = _trtllm_config(enabled=False, tachometer={"enabled": True})
+
+        with pytest.raises(ValueError, match="requires observability.enabled"):
+            expand_observability(cfg)
+
 
 class TestObservabilitySchema:
     def test_defaults_are_off(self):
@@ -129,3 +174,23 @@ class TestObservabilitySchema:
         """
         cfg = SrtConfig.Schema().load({**BASE_CONFIG, "observability": {"enabled": True}})
         assert not [f for f in vars(cfg.observability) if f.startswith("aiperf")]
+
+    def test_from_yaml_normalizes_nested_tachometer(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    **BASE_CONFIG,
+                    "observability": {
+                        "enabled": True,
+                        "tachometer": {"enabled": True, "default_frequency": 2.0},
+                    },
+                }
+            )
+        )
+
+        cfg = SrtConfig.from_yaml(config_path)
+
+        assert cfg.observability.scraper_enabled is True
+        assert cfg.telemetry.enabled is True
+        assert cfg.telemetry.default_frequency == 2.0

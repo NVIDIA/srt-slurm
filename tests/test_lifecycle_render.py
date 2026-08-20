@@ -7,6 +7,7 @@ import subprocess
 
 import yaml
 
+from srtctl.core.config import expand_observability
 from srtctl.core.schema import SrtConfig
 from srtctl.render.lifecycle import build_local_lifecycle_render_context, render_local_lifecycle
 
@@ -49,13 +50,12 @@ def _config(
         },
         "environment": environment or {},
         "benchmark": {"type": "custom", "command": "aiperf profile --ui none"},
-        "telemetry": {
+        "observability": {
             "enabled": True,
-            "binary_path": "tachometer-scraper",
-            "dcgm_exporter": {"container_image": "unused", "port": 9401},
-            "node_exporter": {"container_image": "unused", "port": 9101},
+            "tachometer": {"enabled": True},
         },
     }
+    expand_observability(raw)
     return SrtConfig.Schema().load(yaml.safe_load(yaml.safe_dump(raw)))
 
 

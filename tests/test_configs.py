@@ -840,6 +840,40 @@ class TestFrontendConfig:
         assert resolved["telemetry"]["dcgm_exporter"]["container_image"] == "/path/to/dcgm.sqsh"
         assert resolved["telemetry"]["node_exporter"]["container_image"] == "/path/to/node.sqsh"
 
+    def test_observability_tachometer_aliases_resolve(self):
+        from srtctl.core.config import resolve_config_with_defaults
+
+        user_config = {
+            "name": "test",
+            "model": {"path": "/model", "container": "sglang", "precision": "fp8"},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+            "observability": {
+                "enabled": True,
+                "tachometer": {
+                    "enabled": True,
+                    "dcgm_exporter": {"container_image": "dcgm-exporter", "port": 9401},
+                    "node_exporter": {"container_image": "node-exporter", "port": 9101},
+                },
+            },
+        }
+        cluster_config = {
+            "containers": {
+                "sglang": "/path/to/sglang.sqsh",
+                "dcgm-exporter": "/path/to/dcgm.sqsh",
+                "node-exporter": "/path/to/node.sqsh",
+            }
+        }
+
+        resolved = resolve_config_with_defaults(user_config, cluster_config)
+
+        assert resolved["observability"] == {"enabled": True}
+        assert resolved["telemetry"] == {
+            "enabled": True,
+            "provider": "scraper",
+            "dcgm_exporter": {"container_image": "/path/to/dcgm.sqsh", "port": 9401},
+            "node_exporter": {"container_image": "/path/to/node.sqsh", "port": 9101},
+        }
+
     def test_telemetry_literal_paths_pass_through(self):
         from srtctl.core.config import resolve_config_with_defaults
 

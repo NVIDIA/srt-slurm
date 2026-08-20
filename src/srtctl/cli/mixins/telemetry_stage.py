@@ -270,8 +270,6 @@ class TelemetryStageMixin:
         if not telemetry.enabled:
             logger.info("Telemetry disabled")
             return []
-        if telemetry.dcgm_exporter is None or telemetry.node_exporter is None:
-            raise ValueError("Telemetry is enabled but required provider configuration is missing")
 
         logger.info("Starting telemetry provider: %s", telemetry.provider.value)
 
@@ -294,27 +292,29 @@ class TelemetryStageMixin:
 
         worker_nodes = sorted({process.node for process in self.backend_processes})
         processes: list[ManagedProcess] = []
-        processes.extend(
-            self._start_exporter_container(
-                exporter_config=telemetry.dcgm_exporter,
-                name="telemetry_dcgm_exporter",
-                nodelist=worker_nodes,
-                log_file=self.runtime.log_dir / "telemetry_dcgm_exporter.out",
-                default_command_template=DCGM_EXPORTER_COMMAND_TEMPLATE,
+        if telemetry.dcgm_exporter is not None:
+            processes.extend(
+                self._start_exporter_container(
+                    exporter_config=telemetry.dcgm_exporter,
+                    name="telemetry_dcgm_exporter",
+                    nodelist=worker_nodes,
+                    log_file=self.runtime.log_dir / "telemetry_dcgm_exporter.out",
+                    default_command_template=DCGM_EXPORTER_COMMAND_TEMPLATE,
+                )
             )
-        )
-        processes.extend(
-            self._start_exporter_container(
-                exporter_config=telemetry.node_exporter,
-                name="telemetry_node_exporter",
-                nodelist=worker_nodes,
-                log_file=self.runtime.log_dir / "telemetry_node_exporter.out",
-                default_command_template=(
-                    "/bin/node_exporter --web.listen-address=:{port} "
-                    "--collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo"
-                ),
+        if telemetry.node_exporter is not None:
+            processes.extend(
+                self._start_exporter_container(
+                    exporter_config=telemetry.node_exporter,
+                    name="telemetry_node_exporter",
+                    nodelist=worker_nodes,
+                    log_file=self.runtime.log_dir / "telemetry_node_exporter.out",
+                    default_command_template=(
+                        "/bin/node_exporter --web.listen-address=:{port} "
+                        "--collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo"
+                    ),
+                )
             )
-        )
 
         cmd = [
             telemetry.binary_path,
