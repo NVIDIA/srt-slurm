@@ -69,9 +69,11 @@ class TRTLLMServeFrontend:
     def _build_ser(config: Any, prefill_urls: list[str], decode_urls: list[str], port: int) -> dict:
         """Build the trtllm-serve disaggregated ser.yaml, merging the optional
         orchestrator-side router / server_config_extra from frontend config."""
-        ser: dict = {
-            "context_servers": {"num_instances": len(prefill_urls), "urls": prefill_urls},
-            "generation_servers": {"num_instances": len(decode_urls), "urls": decode_urls},
+        context_servers: dict[str, Any] = {"num_instances": len(prefill_urls), "urls": prefill_urls}
+        generation_servers: dict[str, Any] = {"num_instances": len(decode_urls), "urls": decode_urls}
+        ser: dict[str, Any] = {
+            "context_servers": context_servers,
+            "generation_servers": generation_servers,
             "hostname": "0.0.0.0",
             "port": port,
         }

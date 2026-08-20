@@ -6,7 +6,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 
 from srtctl.mcp.spec_tools import (
     explain_field as explain_field_impl,
@@ -27,11 +27,7 @@ from srtctl.mcp.spec_tools import (
     validate_config as validate_config_impl,
 )
 
-mcp = FastMCP(
-    "srtctl-spec",
-    host=os.getenv("SRTCTL_MCP_HOST", "127.0.0.1"),
-    port=int(os.getenv("SRTCTL_MCP_PORT", "18082")),
-)
+mcp = MCPServer("srtctl-spec")
 
 
 @mcp.tool()
@@ -103,7 +99,9 @@ def resolve_config(
 def main() -> None:
     transport = os.getenv("SRTCTL_MCP_TRANSPORT", "stdio")
     if transport == "streamable-http":
-        mcp.run(transport="streamable-http")
+        host = os.getenv("SRTCTL_MCP_HOST", "127.0.0.1")
+        port = int(os.getenv("SRTCTL_MCP_PORT", "18082"))
+        mcp.run(transport="streamable-http", host=host, port=port)
     elif transport == "stdio":
         mcp.run()
     else:

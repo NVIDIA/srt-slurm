@@ -283,7 +283,7 @@ _BENCH_SECTION_RE = re.compile(
 _BENCH_SEP_RE = re.compile(r"^-{5,}$")
 
 
-def _split_bench_sections(lines: list[str]) -> list[tuple[int, list[str]]]:
+def _split_bench_sections(lines: list[str]) -> list[tuple[int | None, list[str]]]:
     """Split benchmark.out into per-concurrency sections, keeping the real run.
 
     bench.sh runs each concurrency twice: warmup first, real benchmark second.
@@ -326,7 +326,7 @@ def _split_bench_sections(lines: list[str]) -> list[tuple[int, list[str]]]:
         last_seen[conc] = i
 
     if not first_seen:
-        return [(None, lines)]  # type: ignore[return-value]
+        return [(None, lines)]
 
     # first_seen is insertion-ordered (Python 3.7+), already in first-appearance order.
     def _trim(sec_lines: list[str]) -> list[str]:

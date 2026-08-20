@@ -35,6 +35,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.syntax import Syntax
 from rich.table import Table
 
+from srtctl.backends import VLLMProtocol
 from srtctl.core.config import (
     generate_override_configs,
     get_srtslurm_setting,
@@ -338,9 +339,12 @@ def show_config_details(config: SrtConfig) -> None:
 
         if config.telemetry.enabled:
             details.add_row("telemetry", "provider", config.telemetry.provider.value)
-            details.add_row("telemetry", "container_image", config.telemetry.container_image or "<unset>")
             details.add_row("telemetry", "storage_subdir", config.telemetry.storage_subdir)
             details.add_row("telemetry", "frequency", str(config.telemetry.default_frequency))
+            if config.telemetry.provider == TelemetryProvider.SCRAPER:
+                details.add_row("telemetry", "binary_path", config.telemetry.binary_path)
+                if config.telemetry.container_image:
+                    details.add_row("telemetry", "kubernetes_container_image", config.telemetry.container_image)
             exporter = config.telemetry.dcgm_exporter
             if config.telemetry.provider == TelemetryProvider.DCGM_POWER and exporter is not None:
                 details.add_row("telemetry", "required", str(config.telemetry.required))
@@ -352,7 +356,7 @@ def show_config_details(config: SrtConfig) -> None:
             details.add_row("mooncake", "master_port", f"{MOONCAKE_MASTER_PORT} (auto)")
             if mooncake_cfg.master_extra_args:
                 details.add_row("mooncake", "master_extra_args", shlex.join(mooncake_cfg.master_extra_args))
-            if hasattr(backend, "build_mooncake_store_config"):
+            if isinstance(backend, VLLMProtocol):
                 # vLLM workers need MOONCAKE_CONFIG_PATH pointing at a JSON file
                 # — srtslurm writes this at job start. Show the resolved JSON
                 # so operators can sanity-check protocol/device_name/sizes
@@ -376,7 +380,7 @@ def show_config_details(config: SrtConfig) -> None:
 def validate_setup(srtctl_source: Path) -> None:
     """Validate that make setup has been run and required binaries exist.
 
-    Checks for NATS, etcd, and compute-arch uv binaries. Raises SystemExit
+    Checks for NATS, etcd, Tachometer, and compute-arch uv binaries. Raises SystemExit
     with a clear error message if anything is missing.
     """
     missing = []
@@ -388,6 +392,8 @@ def validate_setup(srtctl_source: Path) -> None:
         missing.append("configs/etcd")
     if not (srtctl_source / "bin" / "uv").exists():
         missing.append("bin/uv (compute-arch uv)")
+    if not (srtctl_source / "bin" / "tachometer-scraper").exists():
+        missing.append("bin/tachometer-scraper (compute-arch Tachometer scraper)")
 
     if missing:
         console.print(f"\n[red bold]ERROR:[/] Required binaries not found in {srtctl_source}:")

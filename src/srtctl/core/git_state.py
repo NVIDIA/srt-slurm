@@ -78,7 +78,8 @@ def head_commit(path: Path) -> tuple[Path, str] | None:
 def _split_mount(mount_spec: str) -> tuple[str, str] | None:
     if ":" not in mount_spec:
         return None
-    return mount_spec.split(":", 1)
+    source, dest = mount_spec.split(":", 1)
+    return (source, dest)
 
 
 def git_snapshot_sources_from_extra_mounts(config: SrtConfig) -> list[GitSnapshotSource]:
