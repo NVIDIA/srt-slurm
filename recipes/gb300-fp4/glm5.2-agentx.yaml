@@ -192,7 +192,7 @@ base:
     container-remap-root: ''
 # ################# agentx #################
 zip_override_mtp_agentx_hightpt:
-  name: [agentx-2p1d_dep16-c128, agentx-2p1d_dep16-c192]
+  name: [agentx-2p1d_dep16-c182]
   backend:
     sglang_config:
       decode:
@@ -220,7 +220,7 @@ zip_override_mtp_agentx_hightpt:
         tensor-parallel-size: 8
   benchmark:
     env:
-      CONCURRENCY: ['128', '192']
+      CONCURRENCY: '182'
   resources:
     decode_nodes: 4
     decode_workers: 1
@@ -229,10 +229,10 @@ zip_override_mtp_agentx_hightpt:
     prefill_nodes: 4
     prefill_workers: 2
 zip_override_mtp_agentx_lowlat:
-  name: [agentx-1p2d_tp4-c48, agentx-1p4d_tp4-c48, agentx-1p6d_tp4-c45]
+  name: [agentx-1p2d_tp4-c42, agentx-1p4d_tp4-c42, agentx-1p6d_tp4-c42]
   benchmark:
     env:
-      CONCURRENCY: ['48', '48', '45']
+      CONCURRENCY: ['42', '42', '42']
   resources:
     decode_nodes: [2, 4, 6]
     decode_workers: [2, 4, 6]
