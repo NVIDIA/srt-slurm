@@ -1,0 +1,95 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
+
+import subprocess
+
+import yaml
+
+from srtctl.core.schema import SrtConfig
+from srtctl.render.lifecycle import build_local_lifecycle_render_context, render_local_lifecycle
+
+
+def _config(*, frontend_type: str = "sglang") -> SrtConfig:
+    raw = {
+        "name": "direct-render",
+        "model": {
+            "path": "hf:fake/mock-model",
+            "container": "unused-on-direct-host",
+            "precision": "fp8",
+        },
+        "resources": {
+            "gpu_type": "h100",
+            "gpus_per_node": 8,
+            "agg_nodes": 1,
+            "agg_workers": 8,
+            "gpus_per_agg": 1,
+        },
+        "backend": {
+            "type": "sglang",
+            "sglang_config": {
+                "aggregated": {
+                    "served-model-name": "fake/mock-model",
+                    "tp": 1,
+                    "enable-metrics": True,
+                }
+            },
+        },
+        "frontend": {
+            "type": frontend_type,
+            "enable_multiple_frontends": False,
+            "args": {"policy": "cache_aware"} if frontend_type == "sglang" else {"router-mode": "kv"},
+        },
+        "benchmark": {"type": "custom", "command": "aiperf profile --ui none"},
+        "telemetry": {
+            "enabled": True,
+            "binary_path": "tachometer-scraper",
+            "dcgm_exporter": {"container_image": "unused", "port": 9401},
+            "node_exporter": {"container_image": "unused", "port": 9101},
+        },
+    }
+    return SrtConfig.Schema().load(yaml.safe_load(yaml.safe_dump(raw)))
+
+
+def test_local_lifecycle_renders_eight_tp1_workers_with_separate_logs(tmp_path) -> None:
+    context = build_local_lifecycle_render_context(
+        _config(),
+        source_dir=tmp_path / "srt-slurm",
+        output_base=tmp_path / "outputs",
+    )
+    script = render_local_lifecycle(context)
+
+    assert len(context.worker_processes) == 8
+    assert {worker.log_name for worker in context.worker_processes} == {f"worker-{index}.log" for index in range(8)}
+    assert all(f"CUDA_VISIBLE_DEVICES={index}" in worker.command for index, worker in enumerate(context.worker_processes))
+    assert "-m sglang_router.launch_router" in context.router_command
+    assert "--policy cache_aware" in context.router_command
+    assert 'name = "router"' in context.tachometer_config
+    assert script.count('"${LOG_DIR}/worker-') == 8
+    assert '"${LOG_DIR}/router.log"' in script
+    assert '"${LOG_DIR}/tachometer.log"' in script
+    assert "setsid" in script
+    assert "kill -TERM 0" not in script
+    for forbidden in ("#SBATCH", "SLURM_", "scontrol", "srun", "do_sweep", "run_benchmark"):
+        assert forbidden not in script
+    syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
+    assert syntax.returncode == 0, syntax.stderr
+
+
+def test_local_dynamo_lifecycle_starts_owned_infrastructure(tmp_path) -> None:
+    context = build_local_lifecycle_render_context(
+        _config(frontend_type="dynamo"),
+        source_dir=tmp_path / "srt-slurm",
+        output_base=tmp_path / "outputs",
+    )
+    script = render_local_lifecycle(context)
+
+    assert context.needs_dynamo_infra
+    assert "-m dynamo.sglang" in context.worker_processes[0].command
+    assert "-m dynamo.frontend" in context.router_command
+    assert 'srt_launch "nats"' in script
+    assert 'srt_launch "etcd"' in script
+    assert "DYN_SYSTEM_PORT=7500" in context.worker_processes[0].command
+    syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
+    assert syntax.returncode == 0, syntax.stderr

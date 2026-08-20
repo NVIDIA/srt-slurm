@@ -59,6 +59,10 @@ from srtctl.core.schema import SrtConfig, TelemetryProvider, installs_dynamo
 from srtctl.core.status import create_job_record
 from srtctl.core.validation import preflight_config_variants
 from srtctl.ports import MOONCAKE_MASTER_PORT
+from srtctl.render.lifecycle import (
+    build_local_lifecycle_render_context,
+    render_local_lifecycle,
+)
 
 console = Console()
 logger = logging.getLogger(__name__)
@@ -1165,6 +1169,69 @@ def materialize_config_path(config_path: Path):
             os.remove(temp_path)
 
 
+def render_bash_script(
+    config_path: Path,
+    selector: str | None = None,
+    setup_script: str | None = None,
+    output_dir: Path | None = None,
+) -> str:
+    """Render a directly executable, single-node lifecycle script.
+
+    ``--bash`` deliberately bypasses the SLURM orchestration path. The emitted
+    file starts only processes it owns on the current host, writes separate
+    logs, gates load on readiness, and cleans up those process groups on exit.
+    """
+    if config_path.is_dir():
+        raise ValueError("--bash expects a single config file, not a directory")
+
+    srtctl_root = get_srtslurm_setting("srtctl_root")
+    source_dir = Path(srtctl_root) if srtctl_root else Path(__file__).parent.parent.parent.parent
+    if output_dir:
+        output_base = output_dir.resolve()
+    else:
+        configured_output_dir = get_srtslurm_setting("output_dir")
+        output_base = (
+            Path(os.path.expandvars(configured_output_dir)).resolve()
+            if configured_output_dir
+            else (source_dir / "outputs").resolve()
+        )
+
+    def render(config: SrtConfig) -> str:
+        context = build_local_lifecycle_render_context(
+            config,
+            source_dir=source_dir,
+            output_base=output_base,
+        )
+        return render_local_lifecycle(context)
+
+    if is_override_config(config_path):
+        from srtctl.core.config import resolve_override_yaml
+
+        resolved_variants = resolve_override_yaml(config_path, selector=selector)
+        if len(resolved_variants) != 1:
+            raise ValueError(
+                "--bash for override configs requires a selector that resolves to exactly one variant "
+                "(for example: -f config.yaml:base or -f config.yaml:override_name)"
+            )
+
+        _suffix, config_cm = resolved_variants[0]
+        if "sweep" in config_cm:
+            raise ValueError("--bash does not support override variants that contain a sweep")
+
+        resolved_config = resolve_config_with_defaults(config_cm, load_cluster_config())
+        config = SrtConfig.Schema().load(resolved_config)
+        return render(config)
+
+    if selector:
+        logger.warning(f"Selector ':{selector}' ignored — config is not an override file")
+
+    if is_sweep_config(config_path):
+        raise ValueError("--bash currently supports single-job configs only; sweeps expand to multiple direct runs")
+
+    config = load_config(config_path)
+    return render(config)
+
+
 def submit_override(
     config_path: Path,
     selector: str | None = None,
@@ -1315,6 +1382,7 @@ def main():
         epilog="""Examples:
   srtctl                                         # Interactive mode
   srtctl apply -f config.yaml                    # Submit job
+  srtctl apply -f config.yaml --bash             # Print a direct single-node Bash lifecycle script
   srtctl apply -f ./configs/                     # Submit all YAMLs in directory
   srtctl apply -f config.yaml --sweep            # Submit sweep
   srtctl preflight -f config.yaml                # Check model/container availability
@@ -1346,6 +1414,12 @@ def main():
     add_common_args(apply_parser)
     apply_parser.add_argument("--setup-script", type=str, help="Custom setup script in configs/")
     apply_parser.add_argument("--tags", type=str, help="Comma-separated tags")
+    apply_parser.add_argument(
+        "--bash",
+        action="store_true",
+        dest="bash_output",
+        help="Print a direct single-node Bash lifecycle script to stdout and exit without submitting.",
+    )
     apply_parser.add_argument(
         "--json",
         action="store_true",
@@ -1434,13 +1508,21 @@ def main():
 
     json_mode = bool(getattr(args, "json_output", False))
     mock_mode = bool(getattr(args, "mock_mode", False))
+    bash_mode = bool(getattr(args, "bash_output", False))
+    if bash_mode and json_mode:
+        parser.error("--bash cannot be combined with --json")
+    if bash_mode and mock_mode:
+        parser.error("--bash cannot be combined with --mock")
+    if bash_mode and getattr(args, "sweep", False):
+        parser.error("--bash currently supports single-job configs only; sweeps expand to multiple sbatch jobs")
+
     # Always rebind the module console on each invocation so json-mode prose
     # goes to stderr and non-json prose returns to stdout. Save the original
     # so we can restore it on exit — direct library callers of submit_single /
     # submit_override (tests, etc.) must not see a leaked stderr binding.
     global console
     _original_console = console
-    console = Console(file=sys.stderr) if json_mode else Console()
+    console = Console(file=sys.stderr) if json_mode or bash_mode else Console()
 
     def restore_console() -> None:
         global console
@@ -1570,6 +1652,20 @@ def main():
 
             setup_script = getattr(args, "setup_script", None)
             output_dir = getattr(args, "output_dir", None)
+
+            if bash_mode:
+                script_content = render_bash_script(
+                    effective_config_path,
+                    selector=selector,
+                    setup_script=setup_script,
+                    output_dir=output_dir,
+                )
+                sys.stdout.write(script_content)
+                if not script_content.endswith("\n"):
+                    sys.stdout.write("\n")
+                sys.stdout.flush()
+                restore_console()
+                return
 
             # --no-preflight is only registered on the apply parser, so
             # dry-run / preflight / resolve-override won't carry it. Default
