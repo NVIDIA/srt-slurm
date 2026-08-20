@@ -249,7 +249,7 @@ srtctl apply -f <config.yaml> [options]
 | `--sweep` | Force sweep mode (usually auto-detected) |
 | `--setup-script` | Custom setup script from `configs/` |
 | `--tags` | Comma-separated tags for the run |
-| `--bash` | Print a standalone lifecycle sbatch/bash script to stdout without submitting |
+| `--bash` | Print a direct single-node lifecycle script to stdout without submitting |
 | `-y, --yes` | Skip confirmation prompts |
 
 **Examples:**
@@ -270,24 +270,22 @@ srtctl apply -f config.yaml:override_tp64
 # Submit only the base config (ignore overrides)
 srtctl apply -f config.yaml:base
 
-# Emit standalone sbatch/bash script without submitting
+# Emit a direct single-node lifecycle script without submitting
 srtctl apply -f config.yaml --bash > job.sh
+chmod +x job.sh
+./job.sh
 
 # With tags
 srtctl apply -f config.yaml --tags "experiment-1,baseline"
 ```
 
-`--bash` renders a self-contained lifecycle script for one concrete config. The script embeds a manual
-server config plus the original benchmark config, installs signal cleanup traps, optionally starts
-`tachometer` telemetry, waits for the expected worker counts, then runs the benchmark phase.
-
-Useful telemetry controls:
-
-```bash
-SRTCTL_ENABLE_TACHOMETER=0 srtctl apply -f config.yaml --bash > job.sh
-SRTCTL_REQUIRE_TACHOMETER=1 srtctl apply -f config.yaml --bash > job.sh
-SRTCTL_TACHOMETER_ARGS="..." srtctl apply -f config.yaml --bash > job.sh
-```
+`--bash` renders a self-contained script for one direct host; it is not an sbatch script. It currently
+supports a one-node SGLang backend with a Dynamo or SGLang Model Gateway frontend, with
+`frontend.enable_multiple_frontends: false` and a `benchmark.type: custom` command. The host must already
+provide the configured Python environment and, for Dynamo, the `configs/nats-server` and `configs/etcd`
+binaries. The script creates one process group and log per worker/router, waits for worker and router
+readiness plus a chat-completions smoke request, starts the configured Tachometer scraper, runs the benchmark,
+then stops only its owned process groups and compacts Tachometer artifacts.
 
 ### `srtctl dry-run`
 
