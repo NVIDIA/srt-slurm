@@ -250,9 +250,11 @@ srt_wait_http_ready "http://127.0.0.1:{{ context.etcd_client_port }}/health" "et
 {% for worker in context.worker_processes %}
 srt_launch_shell {{ quote(worker.label) }} "${LOG_DIR}/{{ worker.log_name }}" {{ quote(worker.command) }}
 {% endfor %}
+{% if context.frontend_type != "dynamo" %}
 {% for worker in context.worker_processes %}
 srt_wait_http_ready "http://127.0.0.1:{{ worker.http_port }}/health" {{ quote(worker.label) }}
 {% endfor %}
+{% endif %}
 
 srt_launch_shell "router" "${LOG_DIR}/router.log" {{ quote(context.router_command) }}
 srt_wait_router_ready >"${LOG_DIR}/readiness.log" 2>&1
