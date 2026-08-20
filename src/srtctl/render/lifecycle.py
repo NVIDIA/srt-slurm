@@ -43,6 +43,9 @@ class LocalLifecycleRenderContext:
     model_name: str
     frontend_type: str
     frontend_port: int
+    etcd_client_port: int
+    etcd_peer_port: int
+    nats_port: int
     worker_processes: tuple[LocalProcess, ...]
     router_command: str
     expected_prefill: int
@@ -148,7 +151,21 @@ def _validate_local_config(config: SrtConfig) -> None:
         raise ValueError("--bash currently supports telemetry.provider: scraper only")
 
 
-def _build_local_processes(config: SrtConfig) -> tuple[list[Process], tuple[LocalProcess, ...]]:
+def _direct_port(config: SrtConfig, name: str, default: int) -> int:
+    """Read an optional direct-host port override from global environment."""
+    value = config.environment.get(name, str(default))
+    try:
+        port = int(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{name} must be an integer port, got {value!r}") from error
+    if not 1 <= port <= 65535:
+        raise ValueError(f"{name} must be between 1 and 65535, got {port}")
+    return port
+
+
+def _build_local_processes(
+    config: SrtConfig, *, etcd_client_port: int, nats_port: int
+) -> tuple[list[Process], tuple[LocalProcess, ...]]:
     """Use the normal topology allocation, constrained to a single loopback host."""
     resources = config.resources
     backend = config.backend
@@ -217,8 +234,8 @@ def _build_local_processes(config: SrtConfig) -> tuple[list[Process], tuple[Loca
                     "DYN_SYSTEM_PORT": str(process.sys_port),
                     "DYN_REQUEST_PLANE": config.dynamo.request_plane,
                     "DYN_SKIP_SGLANG_LOG_FORMATTING": "1",
-                    "ETCD_ENDPOINTS": f"http://127.0.0.1:{ETCD_CLIENT_PORT}",
-                    "NATS_SERVER": f"nats://127.0.0.1:{NATS_PORT}",
+                    "ETCD_ENDPOINTS": f"http://127.0.0.1:{etcd_client_port}",
+                    "NATS_SERVER": f"nats://127.0.0.1:{nats_port}",
                 }
             )
             if config.dynamo.event_plane:
@@ -238,15 +255,17 @@ def _build_local_processes(config: SrtConfig) -> tuple[list[Process], tuple[Loca
     return processes, tuple(rendered)
 
 
-def _build_router_command(config: SrtConfig, processes: list[Process]) -> str:
+def _build_router_command(
+    config: SrtConfig, processes: list[Process], *, etcd_client_port: int, nats_port: int
+) -> str:
     frontend_environment = _format_environment(
         dict(config.frontend.env or {}), artifact_dir=_ARTIFACT_DIR_PLACEHOLDER
     )
     if config.frontend.type == "dynamo":
         frontend_environment.update(
             {
-                "ETCD_ENDPOINTS": f"http://127.0.0.1:{ETCD_CLIENT_PORT}",
-                "NATS_SERVER": f"nats://127.0.0.1:{NATS_PORT}",
+                "ETCD_ENDPOINTS": f"http://127.0.0.1:{etcd_client_port}",
+                "NATS_SERVER": f"nats://127.0.0.1:{nats_port}",
                 "DYN_REQUEST_PLANE": config.dynamo.request_plane,
                 "DYN_SKIP_SGLANG_LOG_FORMATTING": "1",
             }
@@ -329,7 +348,10 @@ def build_local_lifecycle_render_context(
     """Build the direct-host lifecycle plan for ``srtctl apply --bash``."""
     _validate_local_config(config)
     assert config.benchmark.command is not None
-    processes, workers = _build_local_processes(config)
+    etcd_client_port = _direct_port(config, "SRTCTL_ETCD_PORT", ETCD_CLIENT_PORT)
+    etcd_peer_port = _direct_port(config, "SRTCTL_ETCD_PEER_PORT", etcd_client_port + 1)
+    nats_port = _direct_port(config, "SRTCTL_NATS_PORT", NATS_PORT)
+    processes, workers = _build_local_processes(config, etcd_client_port=etcd_client_port, nats_port=nats_port)
     telemetry_config = _build_tachometer_config(config, processes)
     resources = config.resources
     expected_prefill = resources.num_prefill
@@ -342,8 +364,11 @@ def build_local_lifecycle_render_context(
         model_name=config.served_model_name,
         frontend_type=config.frontend.type,
         frontend_port=FRONTEND_PUBLIC_PORT,
+        etcd_client_port=etcd_client_port,
+        etcd_peer_port=etcd_peer_port,
+        nats_port=nats_port,
         worker_processes=workers,
-        router_command=_build_router_command(config, processes),
+        router_command=_build_router_command(config, processes, etcd_client_port=etcd_client_port, nats_port=nats_port),
         expected_prefill=expected_prefill,
         expected_decode=expected_decode,
         health_timeout_seconds=max(1, int(config.health_check.max_attempts) * health_interval),

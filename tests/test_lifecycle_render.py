@@ -11,7 +11,12 @@ from srtctl.core.schema import SrtConfig
 from srtctl.render.lifecycle import build_local_lifecycle_render_context, render_local_lifecycle
 
 
-def _config(*, frontend_type: str = "sglang", frontend_env: dict[str, str] | None = None) -> SrtConfig:
+def _config(
+    *,
+    frontend_type: str = "sglang",
+    frontend_env: dict[str, str] | None = None,
+    environment: dict[str, str] | None = None,
+) -> SrtConfig:
     raw = {
         "name": "direct-render",
         "model": {
@@ -42,6 +47,7 @@ def _config(*, frontend_type: str = "sglang", frontend_env: dict[str, str] | Non
             "args": {"policy": "cache_aware"} if frontend_type == "sglang" else {"router-mode": "kv"},
             "env": frontend_env,
         },
+        "environment": environment or {},
         "benchmark": {"type": "custom", "command": "aiperf profile --ui none"},
         "telemetry": {
             "enabled": True,
@@ -112,3 +118,26 @@ def test_local_lifecycle_expands_artifact_dir_in_frontend_environment(tmp_path) 
     assert 'export OUTPUT_DIR LOG_DIR ARTIFACT_DIR' in script
     syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
     assert syntax.returncode == 0, syntax.stderr
+
+
+def test_local_dynamo_lifecycle_accepts_isolated_infra_ports(tmp_path) -> None:
+    config = _config(
+        frontend_type="dynamo",
+        environment={
+            "SRTCTL_ETCD_PORT": "22379",
+            "SRTCTL_ETCD_PEER_PORT": "22380",
+            "SRTCTL_NATS_PORT": "24222",
+        },
+    )
+    context = build_local_lifecycle_render_context(
+        config,
+        source_dir=tmp_path / "srt-slurm",
+        output_base=tmp_path / "outputs",
+    )
+    script = render_local_lifecycle(context)
+
+    assert "ETCD_ENDPOINTS=http://127.0.0.1:22379" in context.router_command
+    assert "NATS_SERVER=nats://127.0.0.1:24222" in context.router_command
+    assert '"${SRTCTL_NATS_BINARY}" -js -a "127.0.0.1" -p 24222' in script
+    assert "http://127.0.0.1:22379/health" in script
+    assert "--listen-peer-urls \"http://127.0.0.1:22380\"" in script

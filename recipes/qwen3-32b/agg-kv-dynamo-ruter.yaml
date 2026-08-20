@@ -17,6 +17,12 @@ resources:
 dynamo:
   install: false
 
+# Avoid shared host NATS/etcd. These are consumed by the direct-host renderer.
+environment:
+  SRTCTL_ETCD_PORT: "22379"
+  SRTCTL_ETCD_PEER_PORT: "22380"
+  SRTCTL_NATS_PORT: "24222"
+
 frontend:
   type: dynamo
   enable_multiple_frontends: false

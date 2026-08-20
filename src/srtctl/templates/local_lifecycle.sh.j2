@@ -235,9 +235,9 @@ SRTCTL_ETCD_BINARY="${SRTCTL_ETCD_BINARY:-${SRTCTL_SOURCE}/configs/etcd}"
 [[ -x "${SRTCTL_NATS_BINARY}" ]] || srt_die "NATS binary is not executable: ${SRTCTL_NATS_BINARY}"
 [[ -x "${SRTCTL_ETCD_BINARY}" ]] || srt_die "etcd binary is not executable: ${SRTCTL_ETCD_BINARY}"
 mkdir -p "${OUTPUT_DIR}/nats" "${OUTPUT_DIR}/etcd"
-srt_launch "nats" "${LOG_DIR}/nats.log" "${SRTCTL_NATS_BINARY}" -js -sd "${OUTPUT_DIR}/nats"
-srt_launch "etcd" "${LOG_DIR}/etcd.log" "${SRTCTL_ETCD_BINARY}" --data-dir "${OUTPUT_DIR}/etcd" --listen-client-urls "http://127.0.0.1:{{ 2379 }}" --advertise-client-urls "http://127.0.0.1:{{ 2379 }}"
-srt_wait_http_ready "http://127.0.0.1:{{ 2379 }}/health" "etcd"
+srt_launch "nats" "${LOG_DIR}/nats.log" "${SRTCTL_NATS_BINARY}" -js -a "127.0.0.1" -p {{ context.nats_port }} -sd "${OUTPUT_DIR}/nats"
+srt_launch "etcd" "${LOG_DIR}/etcd.log" "${SRTCTL_ETCD_BINARY}" --data-dir "${OUTPUT_DIR}/etcd" --listen-client-urls "http://127.0.0.1:{{ context.etcd_client_port }}" --advertise-client-urls "http://127.0.0.1:{{ context.etcd_client_port }}" --listen-peer-urls "http://127.0.0.1:{{ context.etcd_peer_port }}" --initial-advertise-peer-urls "http://127.0.0.1:{{ context.etcd_peer_port }}" --initial-cluster "default=http://127.0.0.1:{{ context.etcd_peer_port }}"
+srt_wait_http_ready "http://127.0.0.1:{{ context.etcd_client_port }}/health" "etcd"
 {% else %}
 "${SRTCTL_PYTHON}" -c 'import sglang_router' || srt_die "sglang-router (Model Gateway) is not installed for ${SRTCTL_PYTHON}"
 {% endif %}
