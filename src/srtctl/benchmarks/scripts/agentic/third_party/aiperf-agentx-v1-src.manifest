@@ -1,4 +1,4 @@
 repository=https://github.com/SemiAnalysisAI/aiperf.git
-commit=b7b16cf851885567988a643282266bce74e34437
-archive_sha256=1d96dacab5c0021cff1c668f8514355c78d83fb48a61b842a983817d337bfc1e
-notes=InferenceX AgentX client with canonical timing and 98-percent profiling metric coverage validation.
+commit=754356e9a39acc6cc6afb242d123bb57c3fb6f75
+archive_sha256=cfae0010ef60fda40df88132e701fbaf276c4305813a01a5357cf4c35ec1e680
+notes=Published InferenceX #2658 client with canonical timing, full-response metrics, and sparse low-concurrency tail validation.

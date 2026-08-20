@@ -2,12 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-trtllm-serve disaggregated frontend implementation.
+Direct and disaggregated trtllm-serve frontend implementation.
 
-Runs `trtllm-serve disaggregated` as the router. Unlike dynamo (which discovers
-workers via etcd/NATS), trtllm-serve needs a static config (ser.yaml) listing the
-context (prefill) and generation (decode) server URLs. We build that from the
-backend worker leaders, then launch the orchestrator on the head frontend node.
+For aggregate jobs, the one backend worker owns the public OpenAI port and no
+separate frontend process is needed. For disaggregated jobs, this runs
+`trtllm-serve disaggregated` as the router. Unlike Dynamo (which discovers workers
+via etcd/NATS), the disaggregated server needs a static config (ser.yaml) listing
+the context (prefill) and generation (decode) server URLs.
 """
 
 import logging
@@ -29,11 +30,11 @@ logger = logging.getLogger(__name__)
 
 
 class TRTLLMServeFrontend:
-    """trtllm-serve disaggregated frontend.
+    """Direct aggregate or disaggregated trtllm-serve frontend.
 
-    Launches `trtllm-serve disaggregated --config ser.yaml` on the head node,
-    where ser.yaml lists prefill (context_servers) and decode (generation_servers)
-    worker URLs collected from the backend processes. Health via /health.
+    Aggregate mode launches no extra process because the worker itself binds the
+    public port. Disaggregated mode launches `trtllm-serve disaggregated --config
+    ser.yaml` on the head node. Health is exposed at /health in both modes.
     """
 
     @property
@@ -66,20 +67,22 @@ class TRTLLMServeFrontend:
         return result
 
     @staticmethod
-    def _build_ser(config: Any, prefill_urls: list[str], decode_urls: list[str], port: int) -> dict:
+    def _build_ser(config: Any, prefill_urls: list[str], decode_urls: list[str], port: int) -> dict[str, Any]:
         """Build the trtllm-serve disaggregated ser.yaml, merging the optional
         orchestrator-side router / server_config_extra from frontend config."""
-        ser: dict = {
-            "context_servers": {"num_instances": len(prefill_urls), "urls": prefill_urls},
-            "generation_servers": {"num_instances": len(decode_urls), "urls": decode_urls},
+        context_servers: dict[str, Any] = {"num_instances": len(prefill_urls), "urls": prefill_urls}
+        generation_servers: dict[str, Any] = {"num_instances": len(decode_urls), "urls": decode_urls}
+        ser: dict[str, Any] = {
+            "context_servers": context_servers,
+            "generation_servers": generation_servers,
             "hostname": "0.0.0.0",
             "port": port,
         }
         fe = config.frontend
         if getattr(fe, "ctx_router", None):
-            ser["context_servers"]["router"] = dict(fe.ctx_router)
+            context_servers["router"] = dict(fe.ctx_router)
         if getattr(fe, "gen_router", None):
-            ser["generation_servers"]["router"] = dict(fe.gen_router)
+            generation_servers["router"] = dict(fe.gen_router)
         if getattr(fe, "server_config_extra", None):
             ser.update(dict(fe.server_config_extra))
         return ser
@@ -93,22 +96,38 @@ class TRTLLMServeFrontend:
         backend_processes: list["Process"],
         stop_event: "threading.Event | None" = None,
     ) -> list["ManagedProcess"]:
-        """Write ser.yaml from worker leaders and launch the disaggregated orchestrator."""
+        """Use the aggregate worker directly or launch the disaggregated orchestrator."""
         from srtctl.core.processes import ManagedProcess
 
         # trtllm-serve disaggregated fronts trtllm workers; it can't route to other backends.
         if config.backend.type != "trtllm":
             raise ValueError(f"frontend.type: trtllm_serve requires backend.type: trtllm (got {config.backend.type!r})")
 
-        # trtllm-serve disaggregated is a single orchestrator process; the nginx +
-        # multi-frontend path is not supported. uses_nginx also catches the 2-node case
-        # where the topology is nginx + a single frontend node (frontend_nodes len == 1).
+        # trtllm-serve exposes one public endpoint: either the aggregate worker or
+        # a disaggregated orchestrator. The nginx + multi-frontend path is not
+        # supported. uses_nginx also catches the two-node case where the topology
+        # is nginx + one frontend node (frontend_nodes len == 1).
         if topology.uses_nginx or len(topology.frontend_nodes) != 1:
             raise ValueError(
-                "trtllm_serve frontend runs a single disaggregated orchestrator and does "
-                "not support the nginx/multi-frontend path; set "
+                "trtllm_serve uses one public endpoint and does not support "
+                "the nginx/multi-frontend path; set "
                 "frontend.enable_multiple_frontends: false"
             )
+
+        if not config.resources.is_disaggregated:
+            agg_leaders = [
+                process for process in backend_processes if process.endpoint_mode == "agg" and process.is_leader
+            ]
+            if len(agg_leaders) != 1:
+                raise ValueError(
+                    f"trtllm_serve aggregate mode requires exactly one aggregate worker (got {len(agg_leaders)})"
+                )
+            logger.info(
+                "frontend.type=trtllm_serve: no separate frontend process; aggregate trtllm-serve owns port %d",
+                topology.public_port,
+            )
+            return []
+
         frontend_node = topology.frontend_nodes[0]
 
         # Collect prefill/decode worker URLs from endpoint leaders.

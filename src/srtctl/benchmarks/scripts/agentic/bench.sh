@@ -28,25 +28,29 @@ if [[ -n "${SRT_FRONTEND_HOST:-}" ]]; then
 fi
 export PORT="${PORT:-$PORT_FROM_ENDPOINT}"
 
-# The final-submission AgentX command always scrapes the serving endpoint.
-# Preserve any worker endpoints supplied by disaggregated launchers while
-# ensuring aggregate runs do not silently omit server metrics.
-FRONTEND_METRICS_URL="http://localhost:${PORT}/metrics"
-case ",${AIPERF_SERVER_METRICS_URLS:-}," in
-  *",${FRONTEND_METRICS_URL},"*) ;;
-  ",,") export AIPERF_SERVER_METRICS_URLS="$FRONTEND_METRICS_URL" ;;
-  *) export AIPERF_SERVER_METRICS_URLS="$FRONTEND_METRICS_URL,$AIPERF_SERVER_METRICS_URLS" ;;
-esac
+# The published direct TRT-LLM AgentX job does not scrape server metrics. Keep
+# the normal srt-slurm default for other studies, but allow an exact public-job
+# reproduction to opt out so the client does not add a polling workload.
+if [[ "${AGENTX_DISABLE_SERVER_METRICS:-0}" == "1" ]]; then
+  unset AIPERF_SERVER_METRICS_URLS
+else
+  FRONTEND_METRICS_URL="http://localhost:${PORT}/metrics"
+  case ",${AIPERF_SERVER_METRICS_URLS:-}," in
+    *",${FRONTEND_METRICS_URL},"*) ;;
+    ",,") export AIPERF_SERVER_METRICS_URLS="$FRONTEND_METRICS_URL" ;;
+    *) export AIPERF_SERVER_METRICS_URLS="$FRONTEND_METRICS_URL,$AIPERF_SERVER_METRICS_URLS" ;;
+  esac
+fi
 
 PINNED_INFERENCEX_AGENTX_COMMIT="f6c1f5b5d122bc4a62b93c9bd2919dfef68ccbcd"
-PINNED_AIPERF_AGENTX_REF="b7b16cf851885567988a643282266bce74e34437"
-PINNED_AIPERF_ARCHIVE_SHA256="1d96dacab5c0021cff1c668f8514355c78d83fb48a61b842a983817d337bfc1e"
+PINNED_AIPERF_AGENTX_REF="754356e9a39acc6cc6afb242d123bb57c3fb6f75"
+PINNED_AIPERF_ARCHIVE_SHA256="cfae0010ef60fda40df88132e701fbaf276c4305813a01a5357cf4c35ec1e680"
 PINNED_BENCHMARK_LIB_SHA256="bb65f69ec8bec16c95e0f59779e94e02efff1ecc57b663d16e52e4121e3aae36"
 PINNED_AGENTIC_SRT_SHA256="9f68b35323b11f2261c20b2f6fdc5df0902f81f2c2ec1d94840e1df7cde2b898"
 
 INFERENCEX_AGENTX_COMMIT="${INFERENCEX_AGENTX_COMMIT:-$PINNED_INFERENCEX_AGENTX_COMMIT}"
 # InferenceX's final-submission AIPerf pin includes the canonical timing policy
-# and rejects runs whose TTFT or ITL observations cover less than 98% of the
+# and rejects runs whose TTFT or ITL observations cover less than 95% of the
 # profiling phase.
 AIPERF_AGENTX_REF="${AIPERF_AGENTX_REF:-$PINNED_AIPERF_AGENTX_REF}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -150,7 +154,7 @@ scenario = scenario_path.read_text()
 required_scenario = (
     "system_idle_gap_cap_seconds=10.0",
     "forbid_inter_turn_delay_cap=True",
-    "minimum_profile_metric_coverage_ratio=0.98",
+    "minimum_profile_metric_coverage_ratio=0.95",
 )
 missing = [item for item in required_scenario if item not in scenario]
 if missing:

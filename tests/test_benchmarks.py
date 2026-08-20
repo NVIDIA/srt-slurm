@@ -1041,7 +1041,7 @@ class TestAgenticRunner:
         text = script.read_text()
 
         assert "f6c1f5b5d122bc4a62b93c9bd2919dfef68ccbcd" in text
-        assert "b7b16cf851885567988a643282266bce74e34437" in text
+        assert "754356e9a39acc6cc6afb242d123bb57c3fb6f75" in text
         assert "AGENTX_DYNAMO_HEADER_AFFINITY" not in text
         assert "Verified AIPerf AgentX PR #31 policy" in text
         assert "PINNED_AIPERF_ARCHIVE_SHA256" in text
@@ -1063,14 +1063,14 @@ class TestAgenticRunner:
             / "aiperf-agentx-v1-src.manifest"
         )
         manifest_text = manifest.read_text()
-        assert "commit=b7b16cf851885567988a643282266bce74e34437" in manifest_text
+        assert "commit=754356e9a39acc6cc6afb242d123bb57c3fb6f75" in manifest_text
         assert (
             "archive_sha256="
-            "1d96dacab5c0021cff1c668f8514355c78d83fb48a61b842a983817d337bfc1e"
+            "cfae0010ef60fda40df88132e701fbaf276c4305813a01a5357cf4c35ec1e680"
             in manifest_text
         )
         assert hashlib.sha256(bundle.read_bytes()).hexdigest() == (
-            "1d96dacab5c0021cff1c668f8514355c78d83fb48a61b842a983817d337bfc1e"
+            "cfae0010ef60fda40df88132e701fbaf276c4305813a01a5357cf4c35ec1e680"
         )
 
         inferencex_manifest = (
@@ -1121,7 +1121,7 @@ class TestAgenticRunner:
         assert 'headers["X-Dynamo-Parent-Session-ID"]' in transport_text
         assert "system_idle_gap_cap_seconds=10.0" in scenario_text
         assert "forbid_inter_turn_delay_cap=True" in scenario_text
-        assert "minimum_profile_metric_coverage_ratio=0.98" in scenario_text
+        assert "minimum_profile_metric_coverage_ratio=0.95" in scenario_text
         assert re.search(r"burst_phase_starts:.*?Field\(\s*default=False,", phases_text, re.DOTALL)
         assert "idle_cap_expired" in dependencies_text
         assert "_handoff_replay_offset_ms" in replay_text

@@ -4,6 +4,7 @@
 """Tests for lustre->node-local model staging (model.stage_dir)."""
 
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -107,6 +108,20 @@ class TestWorkerCommandUsesStagedPath:
         )
         assert "/raid/scratch/models/DeepSeek-V4-Pro" in cmd
         assert "/model" not in cmd
+
+    def test_trtllm_serve_aggregate_worker_binds_public_port_and_adds_serve_args(self, tmp_path):
+        process = replace(self._proc(), endpoint_mode="agg")
+        runtime = self._runtime_mock(tmp_path, "/model")
+        runtime.frontend_port = 8000
+        backend = TRTLLMProtocol(
+            trtllm_config=TRTLLMServerConfig(aggregated={"tensor_parallel_size": 8}),
+            trtllm_serve_args={"chat_template": "/model/chat_template.jinja"},
+        )
+
+        cmd = backend.build_worker_command(process, [process], runtime, frontend_type="trtllm_serve")
+
+        assert cmd[cmd.index("--port") + 1] == "8000"
+        assert cmd[cmd.index("--chat_template") + 1] == "/model/chat_template.jinja"
 
     def test_dynamo_worker_uses_staged_path(self, tmp_path):
         backend = TRTLLMProtocol(trtllm_config=TRTLLMServerConfig(decode={"tensor_parallel_size": 4}))

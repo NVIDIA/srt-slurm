@@ -65,6 +65,10 @@ class TRTLLMProtocol:
     aggregated_environment: dict[str, str] = field(default_factory=dict)
 
     trtllm_config: TRTLLMServerConfig | None = None
+    # Extra CLI arguments for direct ``trtllm-serve`` workers. This is kept
+    # separate from ``trtllm_config`` because options such as ``chat_template``
+    # are serve CLI arguments, not LLM API engine settings.
+    trtllm_serve_args: dict[str, Any] = field(default_factory=dict)
 
     # Whether dynamo.trtllm workers pass `--publish-events-and-metrics`.
     # Enables the worker to publish KV-cache events (add/evict) + metrics, which
@@ -199,18 +203,21 @@ class TRTLLMProtocol:
         )
         base_prefix = list(nsys_prefix or []) + numactl_prefix + ["trtllm-llmapi-launch"]
 
-        # trtllm-serve path: launch an OpenAI-compatible trtllm-serve worker. The
-        # trtllm_serve frontend fronts these via a static ser.yaml (context/generation
-        # server URLs), so there is no dynamo request plane and no --disaggregation-mode:
-        # a worker is prefill or decode purely by which list it appears in in ser.yaml.
+        # trtllm-serve path: launch an OpenAI-compatible trtllm-serve worker. In
+        # disaggregated mode the trtllm_serve frontend fronts these via a static
+        # ser.yaml (context/generation server URLs). In aggregated mode the one
+        # worker is also the public frontend, so it binds runtime.frontend_port.
+        # There is no Dynamo request plane and no --disaggregation-mode: a disagg
+        # worker is prefill or decode purely by which list it appears in in ser.yaml.
         if frontend_type == "trtllm_serve":
+            http_port = runtime.frontend_port if mode == "agg" else process.http_port
             cmd = base_prefix + [
                 "trtllm-serve",
                 model_arg,
                 "--host",
                 "0.0.0.0",
                 "--port",
-                str(process.http_port),
+                str(http_port),
             ]
             # Parallelism also lives in the engine yaml, but pass it explicitly to match
             # the trtllm-serve CLI contract (srun --ntasks == TP*PP is set by the worker stage).
@@ -226,6 +233,12 @@ class TRTLLMProtocol:
             # ai-dynamo tensorrtllm-runtime 1.3.0-dev.1 container, which accept --config;
             # some trtllm-serve builds spell this --extra_llm_api_options.
             cmd.extend(["--config", str(container_config_path)])
+            for key, value in self.trtllm_serve_args.items():
+                flag = f"--{key}"
+                if value is True:
+                    cmd.append(flag)
+                elif value is not False and value is not None:
+                    cmd.extend([flag, str(value)])
             return cmd
 
         # dynamo.trtllm path (default): workers register into etcd/NATS and the dynamo
