@@ -17,6 +17,13 @@ FRONTEND_PORT={{ context.frontend_port }}
 SRT_READY_TIMEOUT={{ context.health_timeout_seconds }}
 SRT_READY_INTERVAL={{ context.health_interval_seconds }}
 SRTCTL_PYTHON="${SRTCTL_PYTHON:-python3}"
+# The server environment need not contain srtctl's orchestration dependencies.
+# Prefer the source checkout's uv environment for the lightweight offline
+# normalizer, while retaining the serving interpreter as a standalone fallback.
+SRTCTL_RUTER_PYTHON="${SRTCTL_RUTER_PYTHON:-${SRTCTL_SOURCE}/.venv/bin/python}"
+if [[ ! -x "${SRTCTL_RUTER_PYTHON}" ]]; then
+    SRTCTL_RUTER_PYTHON="${SRTCTL_PYTHON}"
+fi
 OUTPUT_DIR="${OUTPUT_BASE}/${RUN_NAME}-$(date -u +%Y%m%dT%H%M%SZ)-$$"
 LOG_DIR="${OUTPUT_DIR}/logs"
 ARTIFACT_DIR="${OUTPUT_DIR}/artifacts"
@@ -113,6 +120,19 @@ srt_compact_tachometer() {
 {% endif %}
 }
 
+srt_normalize_ruter() {
+{% if context.ruter_enabled %}
+    # Keep this under logs so the existing SLURM artifact sync carries the
+    # prepared bundle. The normalizer only reads raw logs and Tachometer's
+    # final Parquet; it does not touch either input.
+    if ! PYTHONPATH="${SRTCTL_SOURCE}/src${PYTHONPATH:+:${PYTHONPATH}}" "${SRTCTL_RUTER_PYTHON}" -m srtctl.ruter init "${OUTPUT_DIR}" --output "${LOG_DIR}/.ruter" >>"${LOG_DIR}/ruter.log" 2>&1; then
+        srt_log "WARNING: ruter normalization failed; inspect ${LOG_DIR}/ruter.log"
+    fi
+{% else %}
+    return 0
+{% endif %}
+}
+
 srt_cleanup() {
     local rc=$?
     trap - EXIT INT TERM
@@ -122,6 +142,7 @@ srt_cleanup() {
 {% raw %}    for ((index=${#SRT_OWNED_PIDS[@]} - 1; index >= 0; index--)); do{% endraw %}
         srt_stop_group "${SRT_OWNED_PIDS[index]}"
     done
+    srt_normalize_ruter
     exit "${rc}"
 }
 trap srt_cleanup EXIT
@@ -232,6 +253,9 @@ PY
 
 mkdir -p "${LOG_DIR}" "${ARTIFACT_DIR}"
 srt_log "Run directory: ${OUTPUT_DIR}"
+{% if context.ruter_enabled %}
+srt_log "Observability enabled: Dynamo request tracing is on (DYN_REQUEST_TRACE=1; request-end gzip JSONL: ${ARTIFACT_DIR}/dynamo-request-trace.*.jsonl.gz)"
+{% endif %}
 "${SRTCTL_PYTHON}" -c 'import sglang' || srt_die "SGLang is not installed for ${SRTCTL_PYTHON}"
 {% if context.frontend_type == "dynamo" %}
 "${SRTCTL_PYTHON}" -c 'import dynamo' || srt_die "Dynamo is not installed for ${SRTCTL_PYTHON}"

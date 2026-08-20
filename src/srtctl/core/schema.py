@@ -1169,19 +1169,14 @@ ANALYTICS_SPAN_ENV: dict[str, str] = {
 # (``lib/llm/src/protocols/common/timing.rs``) and are emitted from the
 # preprocessor. Workers have no tracker and would write empty files.
 #
-# All three vars are required together:
-#   * DYN_REQUEST_TRACE selects which record kinds exist. Without it the record
-#     list is empty, which makes the whole policy disabled -- and ``load_sinks``
-#     then returns no sinks at all, so DYN_REQUEST_TRACE_SINKS alone writes
-#     nothing.
-#   * DYN_REQUEST_TRACE_SINKS picks the file sink and the uncompressed format
-#     (the built-in default is jsonl_gz).
+# Only two vars are needed:
+#   * DYN_REQUEST_TRACE enables the default request-end records, the file sink,
+#     and Dynamo's rotated jsonl_gz format.
 #   * DYN_REQUEST_TRACE_FILE_PATH must be overridden. The built-in default is
 #     /tmp/dynamo-request-trace, and container /tmp does not survive the job --
 #     the capture would be written and then thrown away with the node.
 ANALYTICS_REQUEST_TRACE_ENV: dict[str, str] = {
     "DYN_REQUEST_TRACE": "1",
-    "DYN_REQUEST_TRACE_SINKS": "jsonl",
     "DYN_REQUEST_TRACE_FILE_PATH": f"{CONTAINER_LOG_DIR}/dynamo-request-trace",
 }
 
