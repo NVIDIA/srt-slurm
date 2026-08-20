@@ -263,11 +263,13 @@ srt_smoke_chat
 {% if context.telemetry_enabled %}
 SRTCTL_TACHOMETER_DEFAULT={{ quote(context.tachometer_binary or '') }}
 SRTCTL_TACHOMETER="${SRTCTL_TACHOMETER:-${SRTCTL_TACHOMETER_DEFAULT}}"
-TACHOMETER_STORAGE="${ARTIFACT_DIR}/tachometer/raw"
+# Tachometer owns its final storage directory and rejects a pre-existing leaf.
+# Keep it nested beneath the run artifact directory but create only its parent.
+TACHOMETER_STORAGE="${ARTIFACT_DIR}/tachometer/raw/scrape"
 TACHOMETER_LOCAL_DIR="${ARTIFACT_DIR}/tachometer/local"
 TACHOMETER_CONFIG="${OUTPUT_DIR}/tachometer.toml"
 command -v "${SRTCTL_TACHOMETER}" >/dev/null 2>&1 || srt_die "Tachometer scraper not found: ${SRTCTL_TACHOMETER}"
-mkdir -p "${TACHOMETER_STORAGE}" "${TACHOMETER_LOCAL_DIR}"
+mkdir -p "$(dirname "${TACHOMETER_STORAGE}")" "${TACHOMETER_LOCAL_DIR}"
 cat > "${TACHOMETER_CONFIG}" <<{{ telemetry_marker }}
 {{ context.tachometer_config }}{{ telemetry_marker }}
 srt_launch "tachometer" "${LOG_DIR}/tachometer.log" "${SRTCTL_TACHOMETER}" --config "${TACHOMETER_CONFIG}" --local-dir "${TACHOMETER_LOCAL_DIR}"
