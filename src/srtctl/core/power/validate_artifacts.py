@@ -92,6 +92,7 @@ _RUNTIME_ONLY_REASON_CODES = frozenset(
         Reason.GPU_UUID_MISSING,
         Reason.INVALID_POWER_VALUE,
         Reason.MIG_INSTANCE_UNSUPPORTED,
+        Reason.SAMPLES_DIGEST_UNAVAILABLE,
         Reason.COLLECTOR_EXCEPTION,
         Reason.COLLECTOR_INTERRUPTED,
         Reason.COLLECTOR_JOIN_TIMEOUT,
@@ -311,7 +312,9 @@ def _check_wire_contract(manifest: dict[str, Any]) -> list[str]:
             failures.append(f"{key} is not a non-negative integer")
 
     samples_digest = manifest.get("samples_sha256")
-    if not (isinstance(samples_digest, str) and re.fullmatch(r"[0-9a-f]{64}", samples_digest)):
+    if samples_digest is None:
+        failures.append("samples_sha256 is missing")
+    elif not (isinstance(samples_digest, str) and re.fullmatch(r"[0-9a-f]{64}", samples_digest)):
         failures.append("samples_sha256 is not a lowercase SHA-256 digest")
 
     required = manifest.get("required")
@@ -436,12 +439,15 @@ def _check_stored_evidence(
     # complete on-disk evidence this validator is recomputing.
     startup_recovered = not (recorded & _UNRECOVERABLE_STARTUP_REASON_CODES)
     windows_valid = bool(expected_windows) and all(validation.power_coverage_valid for validation in validations)
+    samples_digest = manifest.get("samples_sha256")
+    digest_valid = isinstance(samples_digest, str) and re.fullmatch(r"[0-9a-f]{64}", samples_digest) is not None
     recomputed_publication_valid = (
         lifecycle_complete
         and startup_recovered
         and devices_valid
         and windows_valid
         and not sample_reason_codes
+        and digest_valid
         and not artifact_errors
     )
     stored_publication_valid = manifest.get("publication_valid")
@@ -562,7 +568,12 @@ def _check_topology(
     failures: list[str] = []
     roles, role_conflicts = resolve_roles(expected_devices)
     if role_conflicts:
-        return [f"{reason} (topology)" for reason in role_conflicts]
+        failures.extend(f"{reason} (topology)" for reason in role_conflicts)
+        if expected_roles is not None:
+            failures.append("role count assertions not evaluated because worker roles conflict")
+        if require_distinct_het_groups:
+            failures.append("distinct het-group assertion not evaluated because worker roles conflict")
+        return failures
 
     counts: dict[str, int] = {}
     for role in roles.values():

@@ -240,15 +240,28 @@ class TestIndependenceFromTheManifestBooleans:
         assert report.ok is False
         assert any("samples_sha256 mismatch" in failure for failure in report.failures)
 
-    @pytest.mark.parametrize("digest", [None, "", "A" * 64, "0" * 63])
-    def test_missing_or_malformed_samples_digest_is_rejected(self, package, digest):
+    @pytest.mark.parametrize("present", [False, True], ids=["absent", "null"])
+    def test_missing_samples_digest_is_rejected_with_a_specific_message(self, package, present):
         log_dir, power_dir = package()
         manifest_path = power_dir / MANIFEST_FILENAME
         manifest = json.loads(manifest_path.read_text())
-        if digest is None:
-            manifest.pop("samples_sha256", None)
+        if present:
+            manifest["samples_sha256"] = None
         else:
-            manifest["samples_sha256"] = digest
+            manifest.pop("samples_sha256", None)
+        atomic_write_json(manifest_path, manifest)
+
+        report = _validate(power_dir, log_dir)
+
+        assert report.ok is False
+        assert any("samples_sha256 is missing" in failure for failure in report.failures)
+
+    @pytest.mark.parametrize("digest", ["", "A" * 64, "0" * 63])
+    def test_malformed_samples_digest_is_rejected(self, package, digest):
+        log_dir, power_dir = package()
+        manifest_path = power_dir / MANIFEST_FILENAME
+        manifest = json.loads(manifest_path.read_text())
+        manifest["samples_sha256"] = digest
         atomic_write_json(manifest_path, manifest)
 
         report = _validate(power_dir, log_dir)
@@ -283,6 +296,30 @@ class TestIndependenceFromTheManifestBooleans:
 
 
 class TestTopologyAssertions:
+    def test_role_conflict_marks_requested_assertions_as_not_evaluated(self):
+        processes = [
+            _processes()[0],
+            Process(
+                node="node-a",
+                gpu_indices=frozenset(range(4)),
+                sys_port=8082,
+                http_port=30001,
+                endpoint_mode="decode",
+                endpoint_index=0,
+                het_group=1,
+            ),
+        ]
+
+        failures = power_validator._check_topology(
+            build_expected_devices(processes),
+            expected_roles={"prefill": 4, "decode": 4},
+            require_distinct_het_groups=True,
+        )
+
+        assert f"{Reason.CONFLICTING_WORKER_ROLES} (topology)" in failures
+        assert "role count assertions not evaluated because worker roles conflict" in failures
+        assert "distinct het-group assertion not evaluated because worker roles conflict" in failures
+
     def test_zero_count_asserts_that_a_known_role_is_absent(self, package):
         log_dir, power_dir = package()
 

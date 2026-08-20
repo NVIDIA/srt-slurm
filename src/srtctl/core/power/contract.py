@@ -59,6 +59,7 @@ class Reason:
     SAMPLES_CSV_MISSING = "samples_csv_missing"
     SAMPLES_CSV_HEADER_MISMATCH = "samples_csv_header_mismatch"
     SAMPLES_CSV_MALFORMED = "samples_csv_malformed"
+    SAMPLES_DIGEST_UNAVAILABLE = "samples_digest_unavailable"
     DUPLICATE_SAMPLE_ROW = "duplicate_sample_row"
     GPU_INDEX_MISSING = "gpu_index_missing"
     GPU_UUID_MISSING = "gpu_uuid_missing"

@@ -448,7 +448,7 @@ class PowerTelemetrySession:
         except FileNotFoundError:
             pass
         except OSError:
-            sample_reasons = dedupe([*sample_reasons, Reason.SAMPLES_CSV_MALFORMED])
+            self.record_reason(Reason.SAMPLES_DIGEST_UNAVAILABLE)
         observed = derive_observed_devices(rows)
         devices = validate_devices(self._manifest.expected_devices, observed)
 
@@ -483,6 +483,7 @@ class PowerTelemetrySession:
             and devices.valid
             and windows_valid
             and not sample_reasons
+            and self._manifest.samples_sha256 is not None
             and not self._manifest.artifact_errors
         )
 

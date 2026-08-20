@@ -613,6 +613,28 @@ class TestPublication:
         )
         assert report.ok is True, report.failures
 
+    def test_digest_io_failure_is_not_reclassified_as_malformed(self, tmp_path, exporters):
+        a = exporters(_body("a"))
+        b = exporters(_body("b"))
+        session = _session(tmp_path, _endpoints(("node-a", a.url), ("node-b", b.url)), sample_interval_seconds=0.2)
+        session.initialize()
+        assert session.start_and_wait_for_readiness() is True
+
+        start = time.time()
+        time.sleep(0.6)
+        end = time.time()
+        self._write_window_and_result(session, start, end)
+
+        with patch("srtctl.core.power.session.sha256_file", side_effect=PermissionError("digest denied")):
+            outcome = session.stop_and_finalize(allow_window_mutation=True)
+        report = validate_power_artifacts(power_dir=session.power_dir, result_root=session.power_dir.parent)
+
+        assert outcome.publication_valid is False
+        assert Reason.SAMPLES_DIGEST_UNAVAILABLE in outcome.reason_codes
+        assert Reason.SAMPLES_CSV_MALFORMED not in outcome.reason_codes
+        assert not any("disk-derived reason_codes mismatch" in failure for failure in report.failures)
+        assert not any("publication_valid is False, recomputed True" in failure for failure in report.failures)
+
     def test_a_stray_artifact_file_blocks_publication(self, tmp_path, exporters):
         """A valid expected window must not publish beside an unusable file."""
         a = exporters(_body("a"))
