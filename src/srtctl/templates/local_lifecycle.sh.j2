@@ -50,9 +50,14 @@ srt_launch_shell() {
     local label="$1"
     local log_file="$2"
     local command="$3"
+    local python_bin_dir
+    python_bin_dir="$(dirname "${SRTCTL_PYTHON}")"
     mkdir -p "$(dirname "${log_file}")"
     printf '%s\n' "${command}" > "${log_file}.command"
-    setsid bash -lc "${command}" >"${log_file}" 2>&1 &
+    # Worker commands run in a login shell. Re-add the selected interpreter's
+    # bin directory afterwards so tools installed in its isolated venv (for
+    # example SGLang's JIT compiler dependency, ninja) are available too.
+    setsid bash -lc "export PATH=$(printf '%q' "${python_bin_dir}"):\$PATH; ${command}" >"${log_file}" 2>&1 &
     local pid=$!
     printf '%s\n' "${pid}" > "${log_file}.pid"
     SRT_OWNED_PIDS+=("${pid}")
