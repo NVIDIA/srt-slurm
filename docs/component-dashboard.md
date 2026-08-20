@@ -59,7 +59,7 @@ capture legs below. Without it you still get the Log-analysis tab, and nothing e
 | --- | ------------------ | -------- | ----- |
 | **Metrics** | `observability.enabled` | `<log_dir>/raw_prometheus.jsonl` | Router, Engine, Frontend |
 | **Traces** | `observability.enabled` **and** an AIPerf-based benchmark | `SPAN_CLOSED` lines in `<log_dir>/*.out` | Overview |
-| **Client** | an AIPerf-based benchmark | `<log_dir>/artifacts/<run>/profile_export.jsonl` | Overview |
+| **Client** | an AIPerf-based benchmark at export level `records` (the default) | `<log_dir>/artifacts/<run>/profile_export.jsonl` | Overview |
 | **Frontend log** | *nothing* — always written | `<log_dir>/<node>_frontend_<i>.out` | Log analysis |
 
 ### Which tabs a run can populate
@@ -80,6 +80,14 @@ only — there are no per-request records to join, so Overview is dropped. The
 Log-analysis tab exists exactly for this case: it reconstructs per-request TTFT and a
 shallow stage breakdown from the frontend log alone, and feeds the *same* renderer as
 the span-sourced Overview panel.
+
+> **`--export-level summary` silently removes the Overview tab.** AIPerf writes
+> `profile_export.jsonl` only at export level `records` or `raw`. `records` is the
+> default, so the stock `bench.sh` invocations are fine — but a recipe that passes
+> `--export-level summary` keeps `profile_export_aiperf.json` (which the rollup reads)
+> and drops the per-request export, and the join key goes with it. AIPerf is also what
+> sets the `X-Request-ID` header the Dynamo spans carry, which is what makes the client
+> and trace legs joinable in the first place.
 
 ---
 
