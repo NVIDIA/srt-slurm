@@ -85,6 +85,8 @@ def generate_telemetry_config(
         )
 
     for process in sorted(processes, key=lambda p: (p.endpoint_mode, p.endpoint_index, p.node_rank, p.node)):
+        if frontend_type == "vllm" and process.endpoint_mode == "agg" and not process.is_leader:
+            continue
         node_ip = get_hostname_ip(process.node, runtime.network_interface)
         port = FRONTEND_PUBLIC_PORT if frontend_type == "vllm" and process.endpoint_mode == "agg" else process.sys_port
         node_metadata = {
@@ -104,7 +106,20 @@ def generate_telemetry_config(
             )
         )
 
-    for frontend_index, node in enumerate(frontend_topology.frontend_nodes):
+    frontend_nodes = frontend_topology.frontend_nodes
+    if frontend_type == "vllm":
+        # Direct vLLM has no separate frontend process. Its public endpoint is
+        # the aggregate leader, which may differ from the Slurm/orchestrator
+        # head recorded in FrontendTopology.
+        agg_leader_nodes = [
+            process.node
+            for process in sorted(processes, key=lambda p: (p.endpoint_index, p.node_rank, p.node))
+            if process.endpoint_mode == "agg" and process.is_leader
+        ]
+        if agg_leader_nodes:
+            frontend_nodes = list(dict.fromkeys(agg_leader_nodes))
+
+    for frontend_index, node in enumerate(frontend_nodes):
         node_ip = get_hostname_ip(node, runtime.network_interface)
         node_metadata = {
             "frontend_index": str(frontend_index),
@@ -123,7 +138,7 @@ def generate_telemetry_config(
 
     return _dump_toml(
         endpoints=endpoints,
-        storage=f"/logs/{telemetry.storage_subdir}",
+        storage=str(runtime.log_dir / telemetry.storage_subdir),
     )
 
 

@@ -53,14 +53,17 @@ make setup ARCH=aarch64  # or ARCH=x86_64
 
 The setup will:
 
-1. Download NATS/ETCD binaries for your architecture
-2. Prompt you for cluster settings:
+1. Download NATS, ETCD, uv, and the Tachometer scraper for your compute-node architecture
+2. Verify the downloaded Tachometer scraper with its release checksum
+3. Prompt you for cluster settings:
    - SLURM account (default: `restricted`)
    - SLURM partition (default: `batch`)
    - GPUs per node (default: `4`)
    - Time limit (default: `4:00:00`)
-3. Create `srtslurm.yaml` with your settings
-4. Auto-detect and set `srtctl_root` path
+4. Create `srtslurm.yaml` with your settings
+5. Auto-detect and set `srtctl_root` path
+
+The scraper binaries are attached to srt-slurm GitHub releases for `x86_64` and `aarch64`. Run `make tachometer-scraper` to build the vendored source instead.
 
 ## Configure srtslurm.yaml
 

@@ -73,6 +73,14 @@ class TRTLLMProtocol:
     # is not needed.
     publish_events_and_metrics: bool = False
 
+    # Controls batched startup of workers that share the same node.
+    # 0 = start all workers in parallel (no constraint).
+    # 1 = fully sequential: one worker at a time, each must be ready before the next.
+    # N > 1 = start N workers simultaneously per batch, wait for all to be ready, then next batch.
+    # For trtllm_serve: readiness is an HTTP 200 on the worker's http_port.
+    # For dynamo.trtllm: readiness is a TCP connection on the worker's sys_port.
+    sequential_node_start: int = 0
+
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
     # =========================================================================
@@ -199,18 +207,21 @@ class TRTLLMProtocol:
         )
         base_prefix = list(nsys_prefix or []) + numactl_prefix + ["trtllm-llmapi-launch"]
 
-        # trtllm-serve path: launch an OpenAI-compatible trtllm-serve worker. The
-        # trtllm_serve frontend fronts these via a static ser.yaml (context/generation
-        # server URLs), so there is no dynamo request plane and no --disaggregation-mode:
-        # a worker is prefill or decode purely by which list it appears in in ser.yaml.
+        # trtllm-serve path: launch an OpenAI-compatible trtllm-serve worker. In
+        # disaggregated mode the trtllm_serve frontend fronts these via a static
+        # ser.yaml (context/generation server URLs). In aggregated mode the one
+        # worker is also the public frontend, so it binds runtime.frontend_port.
+        # There is no Dynamo request plane and no --disaggregation-mode: a disagg
+        # worker is prefill or decode purely by which list it appears in in ser.yaml.
         if frontend_type == "trtllm_serve":
+            http_port = runtime.frontend_port if mode == "agg" else process.http_port
             cmd = base_prefix + [
                 "trtllm-serve",
                 model_arg,
                 "--host",
                 "0.0.0.0",
                 "--port",
-                str(process.http_port),
+                str(http_port),
             ]
             # Parallelism also lives in the engine yaml, but pass it explicitly to match
             # the trtllm-serve CLI contract (srun --ntasks == TP*PP is set by the worker stage).

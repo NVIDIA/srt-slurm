@@ -45,6 +45,9 @@ from srtctl.core.formatting import (
     FormattablePathField,
 )
 
+# Leaf module (stdlib-only imports), so this cannot cycle back into schema.
+from srtctl.core.power.contract import CONTAINER_LOG_DIR
+
 logger = logging.getLogger(__name__)
 
 # Local copies of srtctl.core.power.contract values so that loading a config
@@ -1019,17 +1022,61 @@ class ObservabilityConfig:
     dynamo-decode, dynamo-frontend) and can be overridden per-component via
     prefill_environment, decode_environment, or frontend.env.
 
+    ``enabled`` is the single analytics knob. Turning it on makes the run emit
+    every signal the offline perf-analysis tooling consumes, without the user
+    having to remember six independent flags. It expands (at config-load time,
+    via :func:`srtctl.core.config.expand_observability`) into:
+
+    * ``backend.publish_events_and_metrics: true`` -- the worker/frontend
+      Prometheus ``/metrics`` surface exists at all.
+    * ``enable_iter_perf_stats`` + ``return_perf_metrics`` on every engine
+      config -- the ``trtllm_kv_cache_*`` occupancy gauges and per-request
+      histograms appear on that surface.
+    * ``DYN_LOGGING_SPAN_EVENTS`` / ``DYN_LOGGING_JSONL`` / ``DYN_LOG=debug`` on
+      prefill, decode and frontend -- per-request ``SPAN_CLOSED`` trace lines.
+
+    and, at benchmark time (see ``BenchmarkStageMixin``):
+
+    * an in-job Prometheus scraper writing ``raw_prometheus.jsonl`` for the whole
+      benchmark window (see ``scrape_*`` below).
+
+    Every expansion uses setdefault semantics: an explicit value in the recipe
+    always wins, so ``observability.enabled`` is safe to switch on globally.
+
+    Scope is deliberately server-side. The knob configures what the workers and
+    frontend *emit*, and captures that surface by scraping the endpoints
+    directly. It never reaches into the benchmark client to ask it to re-export
+    what the servers already publish.
+
     Attributes:
+        enabled: Master analytics knob. Default: False.
         enable_otel: If True, inject OTEL environment variables into all workers
             and frontends. Requires otel_endpoint to be set. Default: False.
         otel_endpoint: OTEL collector endpoint (e.g. "http://10.0.0.1:4317").
             Required when enable_otel is True.
+        scrape_metrics: Run the in-job Prometheus scraper. Defaults to the value
+            of ``enabled``; set False to opt out while keeping the rest.
+        scrape_interval_seconds: Seconds between scrape sweeps. Default: 1.0.
+            The floor is 0.5; a sweep slower than the interval simply runs
+            back-to-back rather than queueing (see the drift-free pacing in
+            ``RawMetricsScraper``).
+        scrape_output: Filename (under the run's log dir) for the RAW capture.
     """
 
+    enabled: bool = False
     enable_otel: bool = False
     otel_endpoint: str | None = None
 
+    scrape_metrics: bool | None = None
+    scrape_interval_seconds: float = 1.0
+    scrape_output: str = "raw_prometheus.jsonl"
+
     Schema: ClassVar[type[Schema]] = Schema
+
+    @property
+    def scraper_enabled(self) -> bool:
+        """Whether the in-job Prometheus scraper should run."""
+        return self.enabled if self.scrape_metrics is None else self.scrape_metrics
 
 
 @dataclass(frozen=True)
@@ -1067,15 +1114,16 @@ class LiveMetricsConfig:
 class TelemetryConfig:
     """Telemetry configuration for benchmark jobs.
 
-    The default provider bundles a scraper with dcgm_exporter and node_exporter.
-    Other providers can reuse the same top-level contract later.
+    The default provider runs the bundled Tachometer scraper binary with
+    dcgm_exporter and node_exporter. ``container_image`` remains accepted for
+    compatibility with existing configs but is not used by the native scraper.
 
     ``live_metrics`` is a lightweight complementary signal: it tails worker
     logs in-process (no external stack required) and writes a per-run
     ``batch_metrics.png`` during the benchmark.
 
     The ``dcgm-power`` provider needs only ``dcgm_exporter``: it runs a
-    head-node collector inside srtctl instead of the scraper container, so
+    head-node collector inside srtctl instead of the Tachometer scraper, so
     ``container_image``, ``binary_path``, and ``node_exporter`` stay unused.
     For that provider ``default_frequency`` is the collector cycle period in
     seconds, and ``required`` decides whether telemetry invalidity fails the job.
@@ -1085,7 +1133,7 @@ class TelemetryConfig:
     # NOTE: without by_value the schema accepts only enum member names, not "dcgm-power".
     provider: Annotated[TelemetryProvider, fields.Enum(TelemetryProvider, by_value=True)] = TelemetryProvider.SCRAPER
     container_image: str | None = None
-    binary_path: str = "/usr/local/bin/telemetry-scraper"
+    binary_path: str = "tachometer-scraper"
     default_frequency: float = 5.0
     sync_interval_secs: int = 120
     compaction_threads: int = 4
@@ -1125,6 +1173,55 @@ def build_otel_env(observability: ObservabilityConfig, component: str) -> dict[s
         "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": observability.otel_endpoint,
         "OTEL_SERVICE_NAME": f"dynamo-{component}",
     }
+
+
+# Env that makes Dynamo emit one JSONL ``SPAN_CLOSED`` line per closed span on
+# the component's stdout. This is the *only* source for the per-request trace
+# leg of the offline perf tooling; without it those panels have no input.
+# DYN_LOG=debug is required because the span events are emitted at DEBUG level.
+ANALYTICS_SPAN_ENV: dict[str, str] = {
+    "DYN_LOGGING_SPAN_EVENTS": "true",
+    "DYN_LOGGING_JSONL": "true",
+    "DYN_LOG": "debug",
+}
+
+# Env that makes the Dynamo *frontend* write one ``dynamo.request.trace.v1``
+# ``request_end`` record per request to a JSONL file. This is a different signal
+# from the span leg above: spans decompose the router in detail but treat each
+# worker as one opaque ``handle_payload``, whereas these records carry the
+# frontend's own phase timings -- ``prefill_wait_time_ms`` (receive to dispatch),
+# ``prefill_time_ms`` (dispatch to first token) and, on disagg,
+# ``kv_transfer_estimated_latency_ms`` -- plus ``x_request_id``, so they join to
+# the client and span legs on the key those already use.
+#
+# Frontend-only: the timings come from the router's RequestTracker
+# (``lib/llm/src/protocols/common/timing.rs``) and are emitted from the
+# preprocessor. Workers have no tracker and would write empty files.
+#
+# All three vars are required together:
+#   * DYN_REQUEST_TRACE selects which record kinds exist. Without it the record
+#     list is empty, which makes the whole policy disabled -- and ``load_sinks``
+#     then returns no sinks at all, so DYN_REQUEST_TRACE_SINKS alone writes
+#     nothing.
+#   * DYN_REQUEST_TRACE_SINKS picks the file sink and the uncompressed format
+#     (the built-in default is jsonl_gz).
+#   * DYN_REQUEST_TRACE_FILE_PATH must be overridden. The built-in default is
+#     /tmp/dynamo-request-trace, and container /tmp does not survive the job --
+#     the capture would be written and then thrown away with the node.
+ANALYTICS_REQUEST_TRACE_ENV: dict[str, str] = {
+    "DYN_REQUEST_TRACE": "1",
+    "DYN_REQUEST_TRACE_SINKS": "jsonl",
+    "DYN_REQUEST_TRACE_FILE_PATH": f"{CONTAINER_LOG_DIR}/dynamo-request-trace",
+}
+
+# Engine-config keys that surface per-request and per-iteration statistics on
+# the worker's /metrics endpoint. ``enable_iter_perf_stats`` is what produces
+# the ``trtllm_kv_cache_{used,free,max}_blocks`` gauges; ``return_perf_metrics``
+# adds the per-request latency / KV-transfer histograms.
+ANALYTICS_ENGINE_CONFIG: dict[str, bool] = {
+    "enable_iter_perf_stats": True,
+    "return_perf_metrics": True,
+}
 
 
 # /configs/dynamo-wheels is the lustre-mounted cache for hash-pinned dynamo
@@ -1632,13 +1729,36 @@ class SrtConfig:
         self._validate_het_jobs()
         self._validate_trtllm_serve()
         self._validate_vllm_frontend()
+        self._warn_dp_launch_mode()
+
+    def _warn_dp_launch_mode(self):
+        """Nudge vLLM DP recipes toward the per-node launch topology.
+
+        Skipped for frontend.type: vllm, where the setting has no effect —
+        `vllm serve` owns the local DP ranks, so the layout is one process per
+        node whatever dp_launch_mode says.
+        """
+        if not isinstance(self.backend, VLLMProtocol) or self.frontend.type == "vllm":
+            return
+        if self.backend.dp_launch_mode != "per_gpu":
+            return
+
+        dp_modes = self.backend.find_dp_modes()
+        if not dp_modes:
+            return
+
+        logger.warning(
+            "vLLM DP mode(s) %s use dp_launch_mode=per_gpu. per_node is the recommended topology "
+            "and will become the default in a future release; set backend.dp_launch_mode: per_node now",
+            ", ".join(mode_name for mode_name, _ in dp_modes),
+        )
 
     def _validate_trtllm_serve(self):
         """Catch trtllm_serve misconfigurations at load time (dry-run) instead of
         failing mid-job at the frontend stage.
 
-        The trtllm_serve frontend runs a single ``trtllm-serve disaggregated``
-        orchestrator, so it needs the trtllm backend, a disaggregated layout, and the
+        The trtllm_serve frontend supports either one direct aggregate worker or a
+        single ``trtllm-serve disaggregated`` orchestrator. Both use the
         single-frontend path (no nginx/multi-frontend).
         """
         if self.frontend.type != "trtllm_serve":
@@ -1649,12 +1769,12 @@ class SrtConfig:
             )
         if self.frontend.enable_multiple_frontends:
             raise ValidationError(
-                "frontend.type: trtllm_serve runs a single orchestrator; set frontend.enable_multiple_frontends: false"
+                "frontend.type: trtllm_serve uses one public endpoint; set frontend.enable_multiple_frontends: false"
             )
-        if not self.resources.is_disaggregated:
+        if not self.resources.is_disaggregated and self.resources.num_agg != 1:
             raise ValidationError(
-                "frontend.type: trtllm_serve requires a disaggregated layout "
-                "(set resources.prefill_nodes/prefill_workers and decode_nodes/decode_workers)"
+                "frontend.type: trtllm_serve aggregate mode requires exactly one "
+                "aggregate worker (set resources.agg_workers: 1)"
             )
 
     def _validate_vllm_frontend(self):
@@ -1674,10 +1794,14 @@ class SrtConfig:
             )
         if self.resources.is_disaggregated:
             raise ValidationError("frontend.type: vllm supports aggregate jobs only, not disaggregated layouts")
-        if self.resources.num_agg < 1:
-            raise ValidationError("frontend.type: vllm requires resources.agg_workers >= 1")
-        if (self.resources.agg_nodes or 1) != 1:
-            raise ValidationError("frontend.type: vllm currently supports single-node aggregate jobs only")
+        if self.resources.num_agg != 1:
+            raise ValidationError(
+                f"frontend.type: vllm supports exactly one aggregate worker, got {self.resources.num_agg}. "
+                "vllm serve owns the public port directly and there is no router to load-balance "
+                "replicas, so extra workers would either idle or collide on the port. "
+                "Use frontend.type: dynamo to run multiple aggregate workers, or scale a single "
+                "worker across nodes with resources.agg_nodes."
+            )
 
     def _validate_het_jobs(self):
         """When ``resources.het_jobs`` is set to True, enforce supported shape.
@@ -1934,12 +2058,12 @@ class SrtConfig:
         if telemetry.provider != TelemetryProvider.SCRAPER:
             raise ValidationError(f"Unsupported telemetry provider: {telemetry.provider}")
 
-        if not telemetry.container_image:
-            raise ValidationError("telemetry.container_image is required when telemetry is enabled")
         if telemetry.dcgm_exporter is None:
             raise ValidationError("telemetry.dcgm_exporter is required when telemetry is enabled")
         if telemetry.node_exporter is None:
             raise ValidationError("telemetry.node_exporter is required when telemetry is enabled")
+        if not telemetry.binary_path:
+            raise ValidationError("telemetry.binary_path must be non-empty")
         if telemetry.default_frequency <= 0:
             raise ValidationError("telemetry.default_frequency must be positive")
         if telemetry.sync_interval_secs < 0:

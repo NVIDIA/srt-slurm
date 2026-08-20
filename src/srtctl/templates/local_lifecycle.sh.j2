@@ -1,0 +1,279 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Direct single-node lifecycle rendered by `srtctl apply --bash`.
+# It requires the serving dependencies named by this config to be installed on
+# this host. It does not use a scheduler, containers, or a cluster launcher.
+
+set -Eeuo pipefail
+
+SRTCTL_SOURCE={{ quote(context.source_dir) }}
+OUTPUT_BASE={{ quote(context.output_base) }}
+RUN_NAME={{ quote(context.name) }}
+MODEL={{ quote(context.model_name) }}
+FRONTEND_TYPE={{ quote(context.frontend_type) }}
+FRONTEND_PORT={{ context.frontend_port }}
+SRT_READY_TIMEOUT={{ context.health_timeout_seconds }}
+SRT_READY_INTERVAL={{ context.health_interval_seconds }}
+SRTCTL_PYTHON="${SRTCTL_PYTHON:-python3}"
+OUTPUT_DIR="${OUTPUT_BASE}/${RUN_NAME}-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+LOG_DIR="${OUTPUT_DIR}/logs"
+ARTIFACT_DIR="${OUTPUT_DIR}/artifacts"
+
+{% for key, value in context.global_environment %}
+export {{ key }}={{ quote(value) }}
+{% endfor %}
+export SRT_FRONTEND_URL="http://127.0.0.1:${FRONTEND_PORT}"
+export SRT_FRONTEND_HOST="127.0.0.1"
+export AIPERF_ARTIFACT_DIR="${ARTIFACT_DIR}/aiperf"
+{% for key, value in context.benchmark_environment %}
+export {{ key }}={{ quote(value) }}
+{% endfor %}
+
+declare -a SRT_OWNED_PIDS=()
+SRT_TACHOMETER_PID=""
+SRTCTL_TACHOMETER=""
+TACHOMETER_LOCAL_DIR=""
+
+srt_log() {
+    printf '[srtctl:%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"
+}
+
+srt_die() {
+    srt_log "ERROR: $*"
+    exit 1
+}
+
+srt_launch_shell() {
+    local label="$1"
+    local log_file="$2"
+    local command="$3"
+    mkdir -p "$(dirname "${log_file}")"
+    printf '%s\n' "${command}" > "${log_file}.command"
+    setsid bash -lc "${command}" >"${log_file}" 2>&1 &
+    local pid=$!
+    printf '%s\n' "${pid}" > "${log_file}.pid"
+    SRT_OWNED_PIDS+=("${pid}")
+    srt_log "Started ${label}: pid=${pid} log=${log_file}"
+}
+
+srt_launch() {
+    local label="$1"
+    local log_file="$2"
+    shift 2
+    mkdir -p "$(dirname "${log_file}")"
+    printf '%q ' "$@" > "${log_file}.command"
+    printf '\n' >> "${log_file}.command"
+    setsid "$@" >"${log_file}" 2>&1 &
+    local pid=$!
+    printf '%s\n' "${pid}" > "${log_file}.pid"
+    SRT_OWNED_PIDS+=("${pid}")
+    srt_log "Started ${label}: pid=${pid} log=${log_file}"
+}
+
+srt_stop_group() {
+    local pid="$1"
+    local timeout_seconds="${2:-30}"
+    [[ -n "${pid}" ]] || return 0
+    if kill -0 "${pid}" 2>/dev/null; then
+        kill -TERM -- "-${pid}" 2>/dev/null || true
+        local deadline=$((SECONDS + timeout_seconds))
+        while kill -0 "${pid}" 2>/dev/null && (( SECONDS < deadline )); do
+            sleep 1
+        done
+        if kill -0 "${pid}" 2>/dev/null; then
+            srt_log "pid=${pid} did not stop after ${timeout_seconds}s; sending SIGKILL"
+            kill -KILL -- "-${pid}" 2>/dev/null || true
+        fi
+    fi
+    wait "${pid}" 2>/dev/null || true
+}
+
+srt_stop_tachometer() {
+    if [[ -n "${SRT_TACHOMETER_PID}" ]]; then
+        srt_stop_group "${SRT_TACHOMETER_PID}"
+        SRT_TACHOMETER_PID=""
+    fi
+}
+
+srt_compact_tachometer() {
+{% if context.telemetry_enabled %}
+    if [[ -n "${TACHOMETER_LOCAL_DIR}" ]] && find "${TACHOMETER_LOCAL_DIR}" -maxdepth 1 -type f \( -name '*.parquet' -o -name 'current.arrow' \) -print -quit | grep -q .; then
+        "${SRTCTL_TACHOMETER}" compact "${TACHOMETER_LOCAL_DIR}" --output "${ARTIFACT_DIR}/tachometer/final" >>"${LOG_DIR}/tachometer.log" 2>&1
+    fi
+{% else %}
+    return 0
+{% endif %}
+}
+
+srt_cleanup() {
+    local rc=$?
+    trap - EXIT INT TERM
+    srt_stop_tachometer
+    srt_compact_tachometer || rc=1
+    local index
+{% raw %}    for ((index=${#SRT_OWNED_PIDS[@]} - 1; index >= 0; index--)); do{% endraw %}
+        srt_stop_group "${SRT_OWNED_PIDS[index]}"
+    done
+    exit "${rc}"
+}
+trap srt_cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+srt_assert_services_alive() {
+    local pid
+    for pid in "${SRT_OWNED_PIDS[@]}"; do
+        kill -0 "${pid}" 2>/dev/null || srt_die "owned service pid=${pid} exited; inspect ${LOG_DIR}"
+    done
+}
+
+srt_wait_http_ready() {
+    local url="$1"
+    local label="$2"
+    local timeout_seconds="${3:-${SRT_READY_TIMEOUT}}"
+    local deadline=$((SECONDS + timeout_seconds))
+    while (( SECONDS < deadline )); do
+        srt_assert_services_alive
+        if curl -fsS --max-time 5 "${url}" >/dev/null 2>&1; then
+            srt_log "${label} is ready"
+            return 0
+        fi
+        sleep "${SRT_READY_INTERVAL}"
+    done
+    srt_die "${label} did not become ready: ${url}"
+}
+
+srt_wait_router_ready() {
+    local path="/health"
+    if [[ "${FRONTEND_TYPE}" == "sglang" ]]; then
+        path="/workers"
+    fi
+    SRT_WATCH_PIDS="${SRT_OWNED_PIDS[*]}" "${SRTCTL_PYTHON}" - "http://127.0.0.1:${FRONTEND_PORT}${path}" {{ context.expected_prefill }} {{ context.expected_decode }} "${FRONTEND_TYPE}" "${SRT_READY_TIMEOUT}" "${SRT_READY_INTERVAL}" <<'PY'
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+
+url, expected_prefill, expected_decode, frontend_type, timeout_seconds, interval_seconds = sys.argv[1:]
+expected_prefill = int(expected_prefill)
+expected_decode = int(expected_decode)
+deadline = time.monotonic() + int(timeout_seconds)
+interval_seconds = int(interval_seconds)
+
+def dynamo_counts(payload):
+    prefill = decode = 0
+    for instance in payload.get("instances", []):
+        if instance.get("endpoint") != "generate":
+            continue
+        if instance.get("component") == "prefill":
+            prefill += 1
+        elif instance.get("component") in ("decode", "tensorrt_llm", "backend"):
+            decode += 1
+    return prefill, decode
+
+def sglang_counts(payload):
+    stats = payload.get("stats", {})
+    return int(stats.get("prefill_count", 0) or 0), int(stats.get("decode_count", 0) or 0) + int(stats.get("regular_count", 0) or 0)
+
+while time.monotonic() < deadline:
+    for raw_pid in os.environ.get("SRT_WATCH_PIDS", "").split():
+        try:
+            os.kill(int(raw_pid), 0)
+        except ProcessLookupError:
+            raise SystemExit(f"Owned process {raw_pid} exited before router readiness")
+    try:
+        with urllib.request.urlopen(url, timeout=5) as response:
+            payload = json.loads(response.read().decode())
+        prefill, decode = sglang_counts(payload) if frontend_type == "sglang" else dynamo_counts(payload)
+        if prefill >= expected_prefill and decode >= expected_decode:
+            print(f"Router ready: prefill={prefill}/{expected_prefill} decode={decode}/{expected_decode}")
+            raise SystemExit(0)
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+        pass
+    time.sleep(interval_seconds)
+raise SystemExit(f"Router did not report expected workers before timeout: {url}")
+PY
+}
+
+srt_smoke_chat() {
+    "${SRTCTL_PYTHON}" - "${SRT_FRONTEND_URL}" "${MODEL}" >"${LOG_DIR}/smoke.json" <<'PY'
+import json
+import sys
+import urllib.request
+
+base_url, model = sys.argv[1:]
+payload = json.dumps({
+    "model": model,
+    "messages": [{"role": "user", "content": "Reply with one word: ready"}],
+    "max_tokens": 1,
+    "temperature": 0,
+}).encode()
+request = urllib.request.Request(
+    f"{base_url}/v1/chat/completions",
+    data=payload,
+    headers={"Content-Type": "application/json"},
+)
+with urllib.request.urlopen(request, timeout=120) as response:
+    body = json.loads(response.read())
+assert body.get("choices"), body
+print(json.dumps(body))
+PY
+}
+
+mkdir -p "${LOG_DIR}" "${ARTIFACT_DIR}"
+srt_log "Run directory: ${OUTPUT_DIR}"
+"${SRTCTL_PYTHON}" -c 'import sglang' || srt_die "SGLang is not installed for ${SRTCTL_PYTHON}"
+{% if context.frontend_type == "dynamo" %}
+"${SRTCTL_PYTHON}" -c 'import dynamo' || srt_die "Dynamo is not installed for ${SRTCTL_PYTHON}"
+SRTCTL_NATS_BINARY="${SRTCTL_NATS_BINARY:-${SRTCTL_SOURCE}/configs/nats-server}"
+SRTCTL_ETCD_BINARY="${SRTCTL_ETCD_BINARY:-${SRTCTL_SOURCE}/configs/etcd}"
+[[ -x "${SRTCTL_NATS_BINARY}" ]] || srt_die "NATS binary is not executable: ${SRTCTL_NATS_BINARY}"
+[[ -x "${SRTCTL_ETCD_BINARY}" ]] || srt_die "etcd binary is not executable: ${SRTCTL_ETCD_BINARY}"
+mkdir -p "${OUTPUT_DIR}/nats" "${OUTPUT_DIR}/etcd"
+srt_launch "nats" "${LOG_DIR}/nats.log" "${SRTCTL_NATS_BINARY}" -js -sd "${OUTPUT_DIR}/nats"
+srt_launch "etcd" "${LOG_DIR}/etcd.log" "${SRTCTL_ETCD_BINARY}" --data-dir "${OUTPUT_DIR}/etcd" --listen-client-urls "http://127.0.0.1:{{ 2379 }}" --advertise-client-urls "http://127.0.0.1:{{ 2379 }}"
+srt_wait_http_ready "http://127.0.0.1:{{ 2379 }}/health" "etcd"
+{% else %}
+"${SRTCTL_PYTHON}" -c 'import sglang_router' || srt_die "sglang-router (Model Gateway) is not installed for ${SRTCTL_PYTHON}"
+{% endif %}
+
+{% for worker in context.worker_processes %}
+srt_launch_shell {{ quote(worker.label) }} "${LOG_DIR}/{{ worker.log_name }}" {{ quote(worker.command) }}
+{% endfor %}
+{% for worker in context.worker_processes %}
+srt_wait_http_ready "http://127.0.0.1:{{ worker.http_port }}/health" {{ quote(worker.label) }}
+{% endfor %}
+
+srt_launch_shell "router" "${LOG_DIR}/router.log" {{ quote(context.router_command) }}
+srt_wait_router_ready >"${LOG_DIR}/readiness.log" 2>&1
+srt_smoke_chat
+
+{% if context.telemetry_enabled %}
+SRTCTL_TACHOMETER_DEFAULT={{ quote(context.tachometer_binary or '') }}
+SRTCTL_TACHOMETER="${SRTCTL_TACHOMETER:-${SRTCTL_TACHOMETER_DEFAULT}}"
+TACHOMETER_STORAGE="${ARTIFACT_DIR}/tachometer/raw"
+TACHOMETER_LOCAL_DIR="${ARTIFACT_DIR}/tachometer/local"
+TACHOMETER_CONFIG="${OUTPUT_DIR}/tachometer.toml"
+command -v "${SRTCTL_TACHOMETER}" >/dev/null 2>&1 || srt_die "Tachometer scraper not found: ${SRTCTL_TACHOMETER}"
+mkdir -p "${TACHOMETER_STORAGE}" "${TACHOMETER_LOCAL_DIR}"
+cat > "${TACHOMETER_CONFIG}" <<{{ telemetry_marker }}
+{{ context.tachometer_config }}{{ telemetry_marker }}
+srt_launch "tachometer" "${LOG_DIR}/tachometer.log" "${SRTCTL_TACHOMETER}" --config "${TACHOMETER_CONFIG}" --local-dir "${TACHOMETER_LOCAL_DIR}"
+SRT_TACHOMETER_PID="${SRT_OWNED_PIDS[-1]}"
+sleep 2
+kill -0 "${SRT_TACHOMETER_PID}" 2>/dev/null || srt_die "Tachometer exited at startup; inspect ${LOG_DIR}/tachometer.log"
+{% endif %}
+
+srt_log "Starting benchmark"
+srt_launch_shell "benchmark" "${LOG_DIR}/aiperf.log" {{ quote(context.benchmark_command) }}
+SRT_BENCHMARK_PID="${SRT_OWNED_PIDS[-1]}"
+while kill -0 "${SRT_BENCHMARK_PID}" 2>/dev/null; do
+    srt_assert_services_alive
+    sleep 1
+done
+wait "${SRT_BENCHMARK_PID}"
+srt_log "Benchmark completed successfully"

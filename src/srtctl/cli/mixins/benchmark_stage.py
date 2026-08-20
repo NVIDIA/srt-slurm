@@ -146,6 +146,17 @@ class BenchmarkStageMixin:
             self.backend_processes, placement, self.runtime.nodes.head, kind="frontend.orchestrator_placement"
         )
 
+    def _public_api_node(self) -> str:
+        """Node hosting the public OpenAI HTTP endpoint clients should probe."""
+        if self.config.frontend.type == "vllm" and self.config.resources.num_agg > 0:
+            agg_leaders = sorted(
+                (p for p in self.backend_processes if p.endpoint_mode == "agg" and p.is_leader),
+                key=lambda p: p.endpoint_index,
+            )
+            if len(agg_leaders) == 1:
+                return agg_leaders[0].node
+        return self._orchestrator_node()
+
     def _benchmark_node(self) -> str:
         """Node the benchmark client runs on (honors benchmark.client_placement)."""
         placement = getattr(self.config.benchmark, "client_placement", "head")
@@ -164,16 +175,20 @@ class BenchmarkStageMixin:
         multi-node workers. Only rank zero owns the logical worker endpoint,
         so follower ranks must not be advertised to benchmark clients.
 
-        Dynamo exposes worker metrics on each leader's system port. Other
-        frontends expose them on the worker HTTP port, matching the endpoint
-        selection already used by the profiling integration.
+        Dynamo exposes worker metrics on each leader's system port. Direct
+        vLLM exposes aggregate metrics on the public frontend port, while
+        other frontends expose them on the worker HTTP port.
         """
-        use_sys_port = self.config.frontend.type == "dynamo"
         endpoints: list[tuple[str, str, int]] = []
         for process in self.backend_processes:
             if not process.is_leader:
                 continue
-            port = process.sys_port if use_sys_port else process.http_port
+            if self.config.frontend.type == "dynamo":
+                port = process.sys_port
+            elif self.config.frontend.type == "vllm":
+                port = self.runtime.frontend_port
+            else:
+                port = process.http_port
             if port <= 0:
                 continue
             host = get_hostname_ip(process.node, self.runtime.network_interface)
@@ -206,7 +221,7 @@ class BenchmarkStageMixin:
 
         hc = self.config.health_check
         if not wait_for_model(
-            host=self._orchestrator_node(),
+            host=self._public_api_node(),
             port=FRONTEND_PUBLIC_PORT,
             n_prefill=n_prefill,
             n_decode=n_decode,
@@ -257,7 +272,7 @@ class BenchmarkStageMixin:
 
         if benchmark_type == "manual":
             logger.info("Benchmark type is 'manual' - server is ready for testing")
-            logger.info("Frontend URL: http://%s:%d", self._orchestrator_node(), FRONTEND_PUBLIC_PORT)
+            logger.info("Frontend URL: http://%s:%d", self._public_api_node(), FRONTEND_PUBLIC_PORT)
             logger.info("Press Ctrl+C to stop the job")
 
             while not stop_event.is_set():
@@ -304,6 +319,7 @@ class BenchmarkStageMixin:
     ) -> int:
         """Run the actual benchmark script."""
         from srtctl.analysis.live_metrics import try_start_snapshotter
+        from srtctl.analysis.metrics_scraper import try_start_raw_scraper
 
         cmd = runner.build_command(self.config, self.runtime)
         env_to_set = self._get_benchmark_env(runner)
@@ -318,6 +334,31 @@ class BenchmarkStageMixin:
         # Optional in-flight batch-metrics snapshotter — no-op unless
         # opted in via reporting.live_metrics in the cluster config.
         snapshotter = try_start_snapshotter(self.runtime.log_dir, stop_event)
+
+        # RAW /metrics capture for the benchmark window — no-op unless opted in.
+        # These endpoints die with the job, so this is the only chance to record
+        # them; it runs alongside the client rather than after it.
+        #
+        # The opt-in is re-checked here rather than left to try_start_raw_scraper
+        # alone: Python evaluates arguments before the call, so building the
+        # target list inside the argument list would run regardless of the knob,
+        # and _analytics_scrape_targets() resolves one get_hostname_ip() per
+        # target — an srun round-trip each, inside a Slurm job. An opted-out run
+        # must not pay that, and must not fail on it.
+        #
+        # `is True` is deliberate, not a truthiness check: scraper_enabled is a
+        # bool property, while this mixin is routinely driven with a mocked
+        # config whose every attribute is truthy. Plain truthiness would silently
+        # switch the scraper on for those callers.
+        observability = getattr(self.config, "observability", None)
+        raw_scraper = None
+        if getattr(observability, "scraper_enabled", False) is True:
+            raw_scraper = try_start_raw_scraper(
+                self.runtime.log_dir,
+                self._analytics_scrape_targets(),
+                observability,
+                stop_event,
+            )
 
         bench_node = self._benchmark_node()
         proc = start_srun_process(
@@ -361,6 +402,8 @@ class BenchmarkStageMixin:
                 self.benchmark_child_allows_window_mutation = True
             if snapshotter is not None:
                 snapshotter.stop()
+            if raw_scraper is not None:
+                raw_scraper.stop()
 
     def _get_benchmark_profiling_env(
         self,
@@ -544,6 +587,72 @@ class BenchmarkStageMixin:
         urls = list(dict.fromkeys(urls)) if logical_workers_only else sorted(set(urls))
         return {"AIPERF_SERVER_METRICS_URLS": ",".join(urls)}
 
+    def _analytics_scrape_targets(self) -> list:
+        """Frontend + every worker leader, as RAW-scrape targets.
+
+        Worker leaders only: ``backend_processes`` holds one entry per physical
+        node for multi-node workers, but only rank zero serves the logical
+        worker's /metrics. Scraping followers would duplicate rows under a
+        misleading worker_id.
+
+        The frontend target is ``_public_api_node``, not ``_orchestrator_node``:
+        those diverge for a single-worker direct-vLLM aggregated job, where the
+        agg leader -- not the orchestrator -- is what listens on
+        ``FRONTEND_PUBLIC_PORT``. Every other pairing of that port in this file
+        uses the same helper.
+
+        **Worker capture is Dynamo-scoped, by design.** Worker targets are the
+        leaders' ``DYN_SYSTEM_PORT``, which is where Dynamo publishes the worker
+        ``/metrics`` surface. That matches the rest of the knob rather than
+        narrowing it: ``expand_observability`` sets ``publish_events_and_metrics``
+        and the ``DYN_LOGGING_*`` span env, none of which a non-Dynamo frontend
+        consumes, so a non-Dynamo run has no worker surface for this capture to
+        find in the first place. Other frontends publish worker metrics on the
+        frontend or worker HTTP port instead -- ``_logical_worker_endpoints`` has
+        that mapping if this ever needs to grow one.
+
+        Rather than emit targets known to be wrong, such a run is warned once and
+        gets the frontend endpoint only. Silence would be the worse failure: the
+        run would look instrumented and yield no worker rows.
+        """
+        from srtctl.analysis.metrics_scraper import ScrapeTarget
+
+        targets: list[ScrapeTarget] = []
+
+        frontend_host = get_hostname_ip(self._public_api_node(), self.runtime.network_interface)
+        targets.append(
+            ScrapeTarget(
+                url=f"http://{frontend_host}:{FRONTEND_PUBLIC_PORT}/metrics",
+                role="frontend",
+                worker_id=None,
+            )
+        )
+
+        if self.config.frontend.type != "dynamo":
+            logger.warning(
+                "observability scraper: frontend.type=%s does not publish worker /metrics on "
+                "DYN_SYSTEM_PORT; capturing the frontend endpoint only, no per-worker rows",
+                self.config.frontend.type,
+            )
+            return targets
+
+        for process in self.backend_processes:
+            if not process.is_leader or process.sys_port <= 0:
+                continue
+            host = get_hostname_ip(process.node, self.runtime.network_interface)
+            # endpoint_mode is prefill | decode | agg; the RAW contract's role
+            # vocabulary is frontend | prefill | decode, so map agg -> decode
+            # (an agg worker owns the decode side of the KV panels).
+            role = "decode" if process.endpoint_mode == "agg" else process.endpoint_mode
+            targets.append(
+                ScrapeTarget(
+                    url=f"http://{host}:{process.sys_port}/metrics",
+                    role=role,
+                    worker_id=process.node,
+                )
+            )
+        return targets
+
     def _get_benchmark_env(self, runner: "BenchmarkRunner") -> dict[str, str]:
         """Get environment variables for the benchmark script."""
         from srtctl.benchmarks.base import AIPerfBenchmarkRunner
@@ -560,7 +669,7 @@ class BenchmarkStageMixin:
         # a different node than the orchestrator (e.g. client_placement=last_decode
         # with orchestrator_placement=first_decode), "localhost" is wrong — the
         # command should target http://$SRT_FRONTEND_HOST:$SRT_FRONTEND_PORT.
-        env["SRT_FRONTEND_HOST"] = get_hostname_ip(self._orchestrator_node(), self.runtime.network_interface)
+        env["SRT_FRONTEND_HOST"] = get_hostname_ip(self._public_api_node(), self.runtime.network_interface)
         env["SRT_FRONTEND_PORT"] = str(self.runtime.frontend_port)
 
         # Propagate top-level recipe environment to the bench step. Workers

@@ -1,9 +1,10 @@
-.PHONY: lint test test-cov ci check setup cleanup gb200-fp8 gb200-fp4
+.PHONY: lint test test-cov ci check setup cleanup gb200-fp8 gb200-fp4 tachometer-scraper tachometer-scraper-download
 
 NATS_VERSION ?= v2.10.28
 ETCD_VERSION ?= v3.5.21
 LOGS_DIR ?= logs
 ARCH ?= $(shell uname -m)
+TACHOMETER_RELEASE ?= latest
 
 default:
 	./run_dashboard.sh
@@ -24,6 +25,35 @@ test-cov:
 check: lint test
 	@echo "✓ All checks passed"
 
+tachometer-scraper:
+	cargo build --release --locked --bin tachometer-scraper
+	install -Dm755 target/release/tachometer-scraper bin/tachometer-scraper
+
+tachometer-scraper-download:
+	@set -eu; \
+	case "$(ARCH)" in \
+		x86_64)  asset="tachometer-scraper-x86_64-unknown-linux-gnu"; file_pattern="x86-64" ;; \
+		aarch64) asset="tachometer-scraper-aarch64-unknown-linux-gnu"; file_pattern="aarch64" ;; \
+		*) echo "Unsupported architecture: $(ARCH)"; exit 1 ;; \
+	esac; \
+	if [ -f bin/tachometer-scraper ] && file bin/tachometer-scraper | grep -q "$$file_pattern"; then \
+		echo "Tachometer scraper already installed at bin/tachometer-scraper ($(ARCH))"; \
+		exit 0; \
+	fi; \
+	if [ "$(TACHOMETER_RELEASE)" = "latest" ]; then \
+		base_url="https://github.com/NVIDIA/srt-slurm/releases/latest/download"; \
+	else \
+		base_url="https://github.com/NVIDIA/srt-slurm/releases/download/$(TACHOMETER_RELEASE)"; \
+	fi; \
+	tmp_dir=$$(mktemp -d); \
+	trap 'rm -rf "$$tmp_dir"' EXIT; \
+	echo "Downloading $$asset from srt-slurm $(TACHOMETER_RELEASE)"; \
+	curl --fail --location --retry 3 --retry-delay 2 "$$base_url/$$asset" --output "$$tmp_dir/$$asset"; \
+	curl --fail --location --retry 3 --retry-delay 2 "$$base_url/$$asset.sha256" --output "$$tmp_dir/$$asset.sha256"; \
+	(cd "$$tmp_dir" && sha256sum --check "$$asset.sha256"); \
+	install -Dm755 "$$tmp_dir/$$asset" bin/tachometer-scraper; \
+	echo "Installed Tachometer scraper at bin/tachometer-scraper"
+
 # Runners
 gb200-fp8:
 	srtctl apply -f recipes/gb200-fp8/1k1k/low-latency.yaml
@@ -40,7 +70,7 @@ gb200-fp4:
 	srtctl apply -f recipes/gb200-fp4/8k1k/max-tpt.yaml
 	srtctl apply -f recipes/gb200-fp4/8k1k/mid-curve.yaml
 
-setup:
+setup: tachometer-scraper-download
 	@echo "📦 Setting up configs and logs directories..."
 	@mkdir -p logs
 	@echo "🖥️  Using architecture: $(ARCH)"
@@ -57,7 +87,11 @@ setup:
 		echo "⬇️  Downloading NATS ($(NATS_VERSION)) for $$ARCH_SHORT..."; \
 		NATS_DEB="nats-server-$(NATS_VERSION)-$$ARCH_SHORT.deb"; \
 		NATS_URL="https://github.com/nats-io/nats-server/releases/download/$(NATS_VERSION)/$$NATS_DEB"; \
-		wget -q --show-progress --tries=3 --waitretry=5 "$$NATS_URL" -O "configs/$$NATS_DEB"; \
+		if ! wget -q --show-progress --tries=3 --waitretry=5 "$$NATS_URL" -O "configs/$$NATS_DEB"; then \
+			rm -f "configs/$$NATS_DEB"; \
+			echo "❌ Failed to download NATS from $$NATS_URL"; \
+			exit 1; \
+		fi; \
 		echo "📁 Extracting NATS binary..."; \
 		TMP_DIR=$$(mktemp -d); \
 		dpkg-deb -x "configs/$$NATS_DEB" "$$TMP_DIR"; \
@@ -82,7 +116,11 @@ setup:
 		echo "⬇️  Downloading ETCD ($(ETCD_VERSION)) for $$ARCH_SHORT..."; \
 		ETCD_TAR="etcd-$(ETCD_VERSION)-linux-$$ARCH_SHORT.tar.gz"; \
 		ETCD_URL="https://github.com/etcd-io/etcd/releases/download/$(ETCD_VERSION)/$$ETCD_TAR"; \
-		wget -q --show-progress --tries=3 --waitretry=5 "$$ETCD_URL" -O "configs/$$ETCD_TAR"; \
+		if ! wget -q --show-progress --tries=3 --waitretry=5 "$$ETCD_URL" -O "configs/$$ETCD_TAR"; then \
+			rm -f "configs/$$ETCD_TAR"; \
+			echo "❌ Failed to download ETCD from $$ETCD_URL"; \
+			exit 1; \
+		fi; \
 		echo "📁 Extracting ETCD binaries..."; \
 		tar -xzf "configs/$$ETCD_TAR" --strip-components=1 -C configs etcd-$(ETCD_VERSION)-linux-$$ARCH_SHORT/etcd etcd-$(ETCD_VERSION)-linux-$$ARCH_SHORT/etcdctl; \
 		chmod +x configs/etcd configs/etcdctl; \
