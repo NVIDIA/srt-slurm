@@ -163,9 +163,7 @@ def build_vllm_patches(paths: list[Path]) -> tuple[VllmPatch, ...]:
         n = used_names.get(path.name, 0)
         used_names[path.name] = n + 1
         container_name = path.name if n == 0 else f"{n}-{path.name}"
-        patches.append(
-            VllmPatch(host_path=path.resolve(), container_name=container_name, strip=strip, root=root)
-        )
+        patches.append(VllmPatch(host_path=path.resolve(), container_name=container_name, strip=strip, root=root))
     return tuple(patches)
 
 
@@ -284,15 +282,8 @@ class BakePlan:
     slurm_overrides: Mapping[str, str | None] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if (
-            not self.dynamo_version
-            and not self.sa_bench
-            and self.setup_script is None
-            and not self.vllm_patches
-        ):
-            raise ValueError(
-                "nothing to install; pass --dynamo, --sa-bench, --script, and/or --patch"
-            )
+        if not self.dynamo_version and not self.sa_bench and self.setup_script is None and not self.vllm_patches:
+            raise ValueError("nothing to install; pass --dynamo, --sa-bench, --script, and/or --patch")
         if self.sa_bench and not self.sa_bench_deps:
             raise ValueError("sa-bench requested without a package list")
         if self.setup_script is not None:

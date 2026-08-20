@@ -252,8 +252,7 @@ class TestVllmPatch:
 
     def test_paths_inside_the_package_use_vllm_root(self):
         strip, root = infer_vllm_patch_args(
-            "--- a/distributed/device_communicators/all2all.py\n"
-            "+++ b/distributed/device_communicators/all2all.py\n"
+            "--- a/distributed/device_communicators/all2all.py\n+++ b/distributed/device_communicators/all2all.py\n"
         )
 
         assert strip == 1
@@ -270,7 +269,7 @@ class TestVllmPatch:
         assert dry_at != -1
         assert apply_at != -1
         assert dry_at < apply_at
-        assert "_bake_apply_patch /bake-patches/mine.diff 1 \"${SITE_PACKAGES}\"" in script
+        assert '_bake_apply_patch /bake-patches/mine.diff 1 "${SITE_PACKAGES}"' in script
 
     def test_setup_script_runs_before_patch(self, tmp_path):
         configs, overlay = _script_tree(tmp_path)
