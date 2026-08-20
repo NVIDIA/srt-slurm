@@ -60,8 +60,12 @@ from srtctl.core.image_bake import (
 from srtctl.core.image_bake import (
     BakePlan,
     bake_image,
+    build_vllm_patches,
+    default_configs_dir,
     default_output_image,
     read_sa_bench_deps,
+    resolve_setup_script,
+    resolve_vllm_patch,
 )
 from srtctl.core.lockfile import load_lockfile_fingerprints
 from srtctl.core.schema import SrtConfig, TelemetryProvider, installs_dynamo
@@ -1301,8 +1305,27 @@ def _resolve_container_alias(name: str) -> Path:
 
 def _run_bake_image(args) -> int:
     source = _resolve_container_alias(args.source_image)
+    setup_script: Path | None = None
+    configs_dir: Path | None = None
+    if args.setup_script:
+        configs_dir = default_configs_dir()
+        if not configs_dir.is_dir():
+            raise FileNotFoundError(f"configs directory not found: {configs_dir}")
+        setup_script = resolve_setup_script(args.setup_script, configs_dir=configs_dir)
+
+    vllm_patches = ()
+    raw_patches = getattr(args, "patches", None) or []
+    if raw_patches:
+        configs_dir = configs_dir or default_configs_dir()
+        host_paths = [resolve_vllm_patch(item, configs_dir=configs_dir) for item in raw_patches]
+        vllm_patches = build_vllm_patches(host_paths)
+
     output = args.output_image or default_output_image(
-        source, dynamo_version=args.dynamo_version, sa_bench=args.sa_bench
+        source,
+        dynamo_version=args.dynamo_version,
+        sa_bench=args.sa_bench,
+        setup_script=setup_script,
+        vllm_patches=vllm_patches,
     )
     output = Path(output).expanduser()
 
@@ -1323,6 +1346,9 @@ def _run_bake_image(args) -> int:
         sa_bench=args.sa_bench,
         sa_bench_deps=deps,
         sa_bench_imports=imports,
+        setup_script=setup_script,
+        configs_dir=configs_dir,
+        vllm_patches=vllm_patches,
         time_limit=args.bake_time_limit,
         slurm_overrides={"account": args.bake_account, "partition": args.bake_partition},
     )
@@ -1458,10 +1484,10 @@ def main():
     check_parser.add_argument("path", type=Path, help="Lockfile or output dir to check against")
     check_parser.add_argument("--json", action="store_true", dest="json_output", help="Output as JSON")
 
-    # Image baking: srtctl bake-image --image IMAGE --dynamo VERSION --sa-bench
+    # Image baking: srtctl bake-image --image IMAGE --dynamo VERSION --sa-bench --script NAME --patch FILE
     bake_parser = subparsers.add_parser(
         "bake-image",
-        help="Preinstall dynamo / sa-bench deps into a new container image",
+        help="Preinstall dynamo / sa-bench deps / a setup script / a vLLM patch into a new container image",
     )
     bake_parser.add_argument(
         "--image",
@@ -1485,6 +1511,25 @@ def main():
         "--sa-bench",
         action="store_true",
         help="Install the Python packages sa-bench needs at runtime",
+    )
+    bake_parser.add_argument(
+        "--script",
+        "--setup-script",
+        dest="setup_script",
+        help=(
+            "Run a configs/ setup script inside the image before saving it "
+            "(same as recipe setup_script). Name or path, e.g. install-nixl-dsv4.sh"
+        ),
+    )
+    bake_parser.add_argument(
+        "--patch",
+        dest="patches",
+        action="append",
+        metavar="FILE.diff",
+        help=(
+            "Apply a unified diff to vLLM in the image (repeatable). Name under "
+            "configs/patches/ or a path. Conflicts abort the bake; no image is kept."
+        ),
     )
     bake_parser.add_argument(
         "--force",
