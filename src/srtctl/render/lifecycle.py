@@ -16,7 +16,7 @@ from typing import Any
 from jinja2 import Environment, FileSystemLoader
 
 from srtctl.backends.sglang import SGLangProtocol
-from srtctl.core.schema import SrtConfig, TelemetryProvider
+from srtctl.core.schema import SrtConfig
 from srtctl.core.topology import Process
 from srtctl.ports import (
     DYN_SYSTEM_PORT_BASE,
@@ -62,7 +62,7 @@ class LocalLifecycleRenderContext:
     global_environment: tuple[tuple[str, str], ...]
     benchmark_environment: tuple[tuple[str, str], ...]
     benchmark_command: str
-    telemetry_enabled: bool
+    tachometer_enabled: bool
     tachometer_binary: str | None
     tachometer_config: str | None
 
@@ -153,8 +153,8 @@ def _validate_local_config(config: SrtConfig) -> None:
         raise ValueError("--bash requires frontend.enable_multiple_frontends: false")
     if config.benchmark.type != "custom" or not config.benchmark.command:
         raise ValueError("--bash requires benchmark.type: custom with benchmark.command")
-    if config.telemetry.enabled and config.telemetry.provider != TelemetryProvider.SCRAPER:
-        raise ValueError("--bash currently supports telemetry.provider: scraper only")
+    if config.telemetry.enabled:
+        raise ValueError("--bash does not support DCGM power telemetry")
 
 
 def _direct_port(config: SrtConfig, name: str, default: int) -> int:
@@ -309,8 +309,8 @@ def _build_router_command(config: SrtConfig, processes: list[Process], *, etcd_c
 
 
 def _build_tachometer_config(config: SrtConfig, processes: list[Process]) -> str | None:
-    telemetry = config.telemetry
-    if not telemetry.enabled:
+    tachometer = config.observability.tachometer
+    if not tachometer.enabled:
         return None
 
     def append_endpoint(name: str, url: str, metric_filter: str, metadata: dict[str, str]) -> None:
@@ -319,7 +319,7 @@ def _build_tachometer_config(config: SrtConfig, processes: list[Process]) -> str
                 "[[endpoints]]",
                 f"name = {json.dumps(name)}",
                 f"url = {json.dumps(url)}",
-                f"frequency = {telemetry.default_frequency}",
+                f"frequency = {tachometer.default_frequency}",
                 f"filter = {json.dumps(metric_filter)}",
                 "[endpoints.node_metadata]",
                 *(f"{json.dumps(key)} = {json.dumps(value)}" for key, value in sorted(metadata.items())),
@@ -364,7 +364,7 @@ def build_local_lifecycle_render_context(
     etcd_peer_port = _direct_port(config, "SRTCTL_ETCD_PEER_PORT", etcd_client_port + 1)
     nats_port = _direct_port(config, "SRTCTL_NATS_PORT", NATS_PORT)
     processes, workers = _build_local_processes(config, etcd_client_port=etcd_client_port, nats_port=nats_port)
-    telemetry_config = _build_tachometer_config(config, processes)
+    tachometer_config = _build_tachometer_config(config, processes)
     resources = config.resources
     expected_prefill = resources.num_prefill
     expected_decode = resources.num_agg if resources.num_agg else resources.num_decode
@@ -389,9 +389,9 @@ def build_local_lifecycle_render_context(
         global_environment=tuple(sorted((key, str(value)) for key, value in config.environment.items())),
         benchmark_environment=tuple(sorted((key, str(value)) for key, value in config.benchmark.env.items())),
         benchmark_command=config.benchmark.command,
-        telemetry_enabled=telemetry_config is not None,
-        tachometer_binary=config.telemetry.binary_path if telemetry_config is not None else None,
-        tachometer_config=telemetry_config,
+        tachometer_enabled=tachometer_config is not None,
+        tachometer_binary=config.observability.tachometer.binary_path if tachometer_config is not None else None,
+        tachometer_config=tachometer_config,
     )
 
 

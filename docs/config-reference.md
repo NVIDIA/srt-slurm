@@ -1046,7 +1046,7 @@ observability:
     enabled: true
 ```
 
-Set `scrape_metrics: false` beside `enabled` to use Tachometer without also writing the raw JSONL capture.
+Set `scrape_metrics: false` beside `enabled` to use Tachometer without also writing the raw JSONL capture. Otherwise the Python RAW scraper and Tachometer run together.
 
 | Field | Type | Default | Description |
 | ----- | ---- | ------- | ----------- |
@@ -1056,7 +1056,7 @@ Set `scrape_metrics: false` beside `enabled` to use Tachometer without also writ
 | `scrape_output` | string | `raw_prometheus.jsonl` | Raw capture filename below the run log directory |
 | `enable_otel` | bool | `false` | Inject OTEL tracing environment variables |
 | `otel_endpoint` | string/null | `null` | OTEL collector endpoint |
-| `tachometer` | object/null | `null` | Optional native Tachometer collection settings |
+| `tachometer` | object | `enabled: false` | Native Tachometer collection settings |
 
 Tachometer always collects worker and frontend metrics. DCGM and node exporters are optional additions:
 
@@ -1068,7 +1068,7 @@ observability:
     default_frequency: 5
     sync_interval_secs: 120
     compaction_threads: 4
-    storage_subdir: telemetry
+    storage_subdir: tachometer
     extra_metadata:
       cluster: production
     dcgm_exporter:
@@ -1086,7 +1086,7 @@ observability:
 | `default_frequency` | float | `5.0` | Scrape frequency in Hz |
 | `sync_interval_secs` | int | `120` | Interval for intermediate Parquet compaction; `0` disables it |
 | `compaction_threads` | int | `4` | Value passed as `POLARS_MAX_THREADS` |
-| `storage_subdir` | string | `telemetry` | Output directory below the run log directory |
+| `storage_subdir` | string | `tachometer` | Output directory below the run log directory |
 | `extra_metadata` | dict | `{}` | Static string metadata added to every endpoint |
 | `dcgm_exporter` | object/null | `null` | Optional DCGM exporter image, port, and command |
 | `node_exporter` | object/null | `null` | Optional node exporter image, port, and command |
@@ -1095,7 +1095,35 @@ observability:
 
 Tachometer writes `<log_dir>/<storage_subdir>/final.parquet`. Intermediate files remain in `<log_dir>/<storage_subdir>/local` until shutdown compaction completes.
 
-The legacy top-level `telemetry:` block remains accepted for existing recipes. New recipes should configure Tachometer under `observability:`; do not set both `observability.tachometer` and top-level `telemetry`.
+---
+
+## telemetry
+
+`telemetry` is reserved for DCGM power measurement. It can run alongside `observability.tachometer`; it does not start Tachometer itself.
+
+When both are enabled, `telemetry.dcgm_exporter` is shared with Tachometer. Do not also configure `observability.tachometer.dcgm_exporter`; Tachometer can still launch an optional node exporter from its own block.
+
+```yaml
+telemetry:
+  enabled: true
+  default_frequency: 1.0
+  storage_subdir: power
+  required: true
+  dcgm_exporter:
+    container_image: /containers/dcgm-exporter.sqsh
+    port: 9400
+```
+
+| Field | Type | Default | Description |
+| ----- | ---- | ------- | ----------- |
+| `enabled` | bool | `false` | Enable DCGM power collection |
+| `dcgm_exporter` | object/null | `null` | DCGM exporter image, port, and optional command; required when enabled |
+| `default_frequency` | float | `1.0` | Power sample interval in seconds; must be at most `3.0` |
+| `storage_subdir` | string | `power` | Output directory below the run log directory |
+| `required` | bool | `false` | Fail the benchmark when publishable power artifacts cannot be produced |
+| `startup_timeout_seconds` | float | `30.0` | Exporter readiness timeout |
+| `request_timeout_seconds` | float | `2.0` | Per-request exporter timeout |
+| `collector_join_timeout_seconds` | float/null | `null` | Shutdown join timeout; defaults from `request_timeout_seconds` |
 
 ---
 

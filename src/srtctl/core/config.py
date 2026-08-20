@@ -96,8 +96,6 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
     """
     # Deep copy to avoid mutating original
     config = copy.deepcopy(user_config)
-    _normalize_observability_telemetry(config)
-
     if cluster_config is None:
         return config
 
@@ -191,18 +189,12 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
         config["benchmark"] = benchmark
         logger.debug(f"Resolved benchmark.container_image alias '{benchmark_container}' -> '{resolved_bench}'")
 
-    # Resolve telemetry container aliases (scraper + dcgm/node exporters). All
-    # three are nullable in the schema; only resolve fields that are set.
-    telemetry = config.get("telemetry")
-    if telemetry and containers:
-        scraper_image = telemetry.get("container_image")
-        if scraper_image and scraper_image in containers:
-            resolved_scraper = containers[scraper_image]
-            telemetry["container_image"] = resolved_scraper
-            logger.debug(f"Resolved telemetry.container_image alias '{scraper_image}' -> '{resolved_scraper}'")
-
+    # Resolve Tachometer exporter aliases from the observability block.
+    observability = config.get("observability")
+    tachometer = observability.get("tachometer") if isinstance(observability, dict) else None
+    if tachometer and containers:
         for exporter_key in ("dcgm_exporter", "node_exporter"):
-            exporter = telemetry.get(exporter_key)
+            exporter = tachometer.get(exporter_key)
             if not exporter:
                 continue
             exporter_image = exporter.get("container_image")
@@ -210,9 +202,21 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
                 resolved_exporter = containers[exporter_image]
                 exporter["container_image"] = resolved_exporter
                 logger.debug(
-                    f"Resolved telemetry.{exporter_key}.container_image alias "
+                    f"Resolved observability.tachometer.{exporter_key}.container_image alias "
                     f"'{exporter_image}' -> '{resolved_exporter}'"
                 )
+
+    # Telemetry is reserved for the DCGM power collector.
+    telemetry = config.get("telemetry")
+    if telemetry and containers:
+        exporter = telemetry.get("dcgm_exporter")
+        exporter_image = exporter.get("container_image") if isinstance(exporter, dict) else None
+        if exporter_image and exporter_image in containers:
+            resolved_exporter = containers[exporter_image]
+            exporter["container_image"] = resolved_exporter
+            logger.debug(
+                f"Resolved telemetry.dcgm_exporter.container_image alias '{exporter_image}' -> '{resolved_exporter}'"
+            )
 
     return config
 
@@ -582,26 +586,6 @@ def _setdefault_nested(parent: dict, key: str, values: dict) -> None:
         child.setdefault(k, v)
 
 
-def _normalize_observability_telemetry(cfg: dict) -> None:
-    """Map the canonical observability surface onto the telemetry runtime."""
-    observability = cfg.get("observability")
-    if not isinstance(observability, dict):
-        return
-
-    tachometer = observability.pop("tachometer", None)
-    if tachometer is not None and not isinstance(tachometer, dict):
-        raise TypeError("observability.tachometer must be a mapping")
-    if tachometer is not None and "telemetry" in cfg:
-        raise ValueError("use observability.tachometer or the legacy top-level telemetry block, not both")
-
-    if tachometer is not None:
-        if tachometer.get("enabled") and not observability.get("enabled"):
-            raise ValueError("observability.tachometer requires observability.enabled: true")
-        telemetry = copy.deepcopy(tachometer)
-        telemetry.setdefault("provider", "scraper")
-        cfg["telemetry"] = telemetry
-
-
 def expand_observability(cfg: dict) -> dict:
     """Expand ``observability.enabled`` into the individual launch flags.
 
@@ -620,7 +604,6 @@ def expand_observability(cfg: dict) -> dict:
         ANALYTICS_SPAN_ENV,
     )
 
-    _normalize_observability_telemetry(cfg)
     observability = cfg.get("observability")
     if not isinstance(observability, dict) or not observability.get("enabled"):
         return cfg

@@ -260,8 +260,7 @@ class TestDryRunExecutionExtensions:
         output = capsys.readouterr().out
         assert "observability" in output
         assert "raw_metrics" in output
-        assert "metrics_provider" in output
-        assert "scraper" in output
+        assert "tachometer" in output
         assert "binary_path" in output
         assert "tachometer-scraper" in output
         assert "storage_subdir" in output
@@ -272,7 +271,6 @@ class TestDryRunExecutionExtensions:
                 "benchmark": {"type": "sa-bench", "isl": 8192, "osl": 1024, "concurrencies": [4]},
                 "telemetry": {
                     "enabled": True,
-                    "provider": "dcgm-power",
                     "default_frequency": 1.0,
                     "storage_subdir": "power",
                     "required": True,

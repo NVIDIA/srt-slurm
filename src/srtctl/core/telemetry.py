@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Telemetry configuration helpers."""
+"""Tachometer configuration helpers."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from srtctl.ports import FRONTEND_PUBLIC_PORT
 if TYPE_CHECKING:
     from srtctl.cli.mixins.frontend_stage import FrontendTopology
     from srtctl.core.runtime import RuntimeContext
-    from srtctl.core.schema import TelemetryConfig
+    from srtctl.core.schema import TachometerConfig, TelemetryExporterConfig
     from srtctl.core.topology import Process
 
 
@@ -31,17 +31,18 @@ class TelemetryEndpoint:
     gpu_metadata: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
-def generate_telemetry_config(
+def generate_tachometer_config(
     *,
     processes: list[Process],
     frontend_topology: FrontendTopology,
     runtime: RuntimeContext,
-    telemetry: TelemetryConfig,
+    tachometer: TachometerConfig,
+    dcgm_exporter: TelemetryExporterConfig | None = None,
     frontend_type: str = "dynamo",
 ) -> str:
-    """Generate telemetry TOML from backend and frontend topology."""
-    dcgm_exporter = telemetry.dcgm_exporter
-    node_exporter = telemetry.node_exporter
+    """Generate Tachometer TOML from backend and frontend topology."""
+    dcgm_exporter = dcgm_exporter or tachometer.dcgm_exporter
+    node_exporter = tachometer.node_exporter
     endpoints: list[TelemetryEndpoint] = []
     physical_nodes: dict[str, list[Process]] = {}
     for process in processes:
@@ -50,7 +51,7 @@ def generate_telemetry_config(
     for node in sorted(physical_nodes):
         node_processes = physical_nodes[node]
         node_metadata = {"hostname": node, "job_id": runtime.job_id, "run_name": runtime.run_name}
-        node_metadata.update(telemetry.extra_metadata)
+        node_metadata.update(tachometer.extra_metadata)
 
         gpu_metadata: dict[str, dict[str, str]] = {}
         for process in node_processes:
@@ -66,7 +67,7 @@ def generate_telemetry_config(
                 TelemetryEndpoint(
                     name=f"dcgm_{node}",
                     url=f"http://{node}:{dcgm_exporter.port}/metrics",
-                    frequency=telemetry.default_frequency,
+                    frequency=tachometer.default_frequency,
                     filter="dcgm",
                     node_metadata=node_metadata,
                     gpu_metadata=gpu_metadata,
@@ -77,7 +78,7 @@ def generate_telemetry_config(
                 TelemetryEndpoint(
                     name=f"node_exporter_{node}",
                     url=f"http://{node}:{node_exporter.port}/metrics",
-                    frequency=telemetry.default_frequency,
+                    frequency=tachometer.default_frequency,
                     filter="node_exporter",
                     node_metadata=node_metadata,
                 )
@@ -94,12 +95,12 @@ def generate_telemetry_config(
             "worker_process": str(process.node_rank),
             "worker_role": process.endpoint_mode,
         }
-        node_metadata.update(telemetry.extra_metadata)
+        node_metadata.update(tachometer.extra_metadata)
         endpoints.append(
             TelemetryEndpoint(
                 name=f"backend_{process.endpoint_mode}{process.endpoint_index}_rank{process.node_rank}",
                 url=f"http://{node_ip}:{port}/metrics",
-                frequency=telemetry.default_frequency,
+                frequency=tachometer.default_frequency,
                 filter="backend",
                 node_metadata=node_metadata,
             )
@@ -124,12 +125,12 @@ def generate_telemetry_config(
             "frontend_index": str(frontend_index),
             "hostname": node,
         }
-        node_metadata.update(telemetry.extra_metadata)
+        node_metadata.update(tachometer.extra_metadata)
         endpoints.append(
             TelemetryEndpoint(
                 name=f"frontend{frontend_index}",
                 url=f"http://{node_ip}:{frontend_topology.frontend_port}/metrics",
-                frequency=telemetry.default_frequency,
+                frequency=tachometer.default_frequency,
                 filter="frontend",
                 node_metadata=node_metadata,
             )
@@ -137,7 +138,7 @@ def generate_telemetry_config(
 
     return _dump_toml(
         endpoints=endpoints,
-        storage=str(runtime.log_dir / telemetry.storage_subdir),
+        storage=str(runtime.log_dir / tachometer.storage_subdir),
     )
 
 

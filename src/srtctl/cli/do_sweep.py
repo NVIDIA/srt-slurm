@@ -44,7 +44,7 @@ from srtctl.core.processes import (
 )
 from srtctl.core.resource_snapshot import record_resource_snapshot
 from srtctl.core.runtime import RuntimeContext
-from srtctl.core.schema import SrtConfig, TelemetryProvider
+from srtctl.core.schema import SrtConfig
 from srtctl.core.slurm import get_slurm_job_id, start_srun_process
 from srtctl.core.status import JobStage, JobStatus, StatusReporter
 from srtctl.core.topology import Endpoint, NodePortAllocator, Process, allocate_endpoints_het
@@ -712,8 +712,7 @@ class SweepOrchestrator(
             for proc in frontend_procs:
                 registry.add_process(proc)
 
-            telemetry_config = self.config.telemetry
-            if telemetry_config.enabled and telemetry_config.provider == TelemetryProvider.DCGM_POWER:
+            if self.config.telemetry.enabled:
                 if os.environ.get("EVAL_ONLY", "false").lower() == "true":
                     # Eval-only runs skip the benchmark stage, so every expected
                     # measurement window would be missing and required telemetry
@@ -721,10 +720,10 @@ class SweepOrchestrator(
                     logger.info("EVAL_ONLY=true: skipping dcgm-power telemetry (no benchmark to measure)")
                 else:
                     self.start_power_telemetry(registry)
-            else:
-                telemetry_procs = self.start_telemetry()
-                for proc in telemetry_procs:
-                    registry.add_process(proc)
+
+            tachometer_procs = self.start_tachometer()
+            for proc in tachometer_procs:
+                registry.add_process(proc)
 
             self._print_connection_info()
 

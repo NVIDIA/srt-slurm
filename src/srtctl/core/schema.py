@@ -275,11 +275,6 @@ class ProfilingType(str, Enum):
     NONE = "none"
 
 
-class TelemetryProvider(str, Enum):
-    SCRAPER = "scraper"
-    DCGM_POWER = "dcgm-power"
-
-
 # ============================================================================
 # Marshmallow Custom Fields
 # ============================================================================
@@ -1011,6 +1006,34 @@ class ProfilingConfig:
 
 
 @dataclass(frozen=True)
+class TelemetryExporterConfig:
+    """Configuration for a metrics exporter deployed on worker nodes."""
+
+    container_image: str
+    port: int
+    command: str | None = None
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
+class TachometerConfig:
+    """Native Tachometer collection for an observability-enabled run."""
+
+    enabled: bool = False
+    binary_path: str = "tachometer-scraper"
+    default_frequency: float = 5.0
+    sync_interval_secs: int = 120
+    compaction_threads: int = 4
+    storage_subdir: str = "tachometer"
+    extra_metadata: dict[str, str] = field(default_factory=dict)
+    dcgm_exporter: TelemetryExporterConfig | None = None
+    node_exporter: TelemetryExporterConfig | None = None
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
 class ObservabilityConfig:
     """Observability configuration for OTEL tracing.
 
@@ -1061,6 +1084,8 @@ class ObservabilityConfig:
             back-to-back rather than queueing (see the drift-free pacing in
             ``RawMetricsScraper``).
         scrape_output: Filename (under the run's log dir) for the RAW capture.
+        tachometer: Optional native Tachometer capture configuration. It runs
+            alongside RAW capture when both are enabled.
     """
 
     enabled: bool = False
@@ -1070,6 +1095,7 @@ class ObservabilityConfig:
     scrape_metrics: bool | None = None
     scrape_interval_seconds: float = 1.0
     scrape_output: str = "raw_prometheus.jsonl"
+    tachometer: TachometerConfig = field(default_factory=TachometerConfig)
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -1080,69 +1106,13 @@ class ObservabilityConfig:
 
 
 @dataclass(frozen=True)
-class TelemetryExporterConfig:
-    """Configuration for telemetry exporters deployed on worker nodes."""
-
-    container_image: str
-    port: int
-    command: str | None = None
-
-    Schema: ClassVar[type[Schema]] = Schema
-
-
-@dataclass(frozen=True)
-class LiveMetricsConfig:
-    """In-flight batch-metrics snapshotter (a form of lightweight telemetry).
-
-    When enabled, the orchestrator spawns a daemon thread during the benchmark
-    stage that re-parses prefill/decode worker logs every ``interval_seconds``
-    and atomically overwrites ``<log_dir>/batch_metrics.png``, giving a
-    near-real-time view of the run without any external monitoring stack.
-
-    Lives entirely in :mod:`srtctl.analysis.live_metrics`; this dataclass
-    only defines the user-visible knobs.
-    """
-
-    enabled: bool = False
-    interval_seconds: int = 60
-    downsample: int = 1
-
-    Schema: ClassVar[type[Schema]] = Schema
-
-
-@dataclass(frozen=True)
 class TelemetryConfig:
-    """Telemetry configuration for benchmark jobs.
-
-    The default provider runs the bundled Tachometer scraper binary. DCGM and
-    node exporters are optional additions; frontend and backend endpoints are
-    collected without them. ``container_image`` remains accepted for
-    compatibility with existing configs but is not used by the native scraper.
-
-    ``live_metrics`` is a lightweight complementary signal: it tails worker
-    logs in-process (no external stack required) and writes a per-run
-    ``batch_metrics.png`` during the benchmark.
-
-    The ``dcgm-power`` provider needs only ``dcgm_exporter``: it runs a
-    head-node collector inside srtctl instead of the Tachometer scraper, so
-    ``container_image``, ``binary_path``, and ``node_exporter`` stay unused.
-    For that provider ``default_frequency`` is the collector cycle period in
-    seconds, and ``required`` decides whether telemetry invalidity fails the job.
-    """
+    """DCGM power telemetry for benchmark measurement windows."""
 
     enabled: bool = False
-    # NOTE: without by_value the schema accepts only enum member names, not "dcgm-power".
-    provider: Annotated[TelemetryProvider, fields.Enum(TelemetryProvider, by_value=True)] = TelemetryProvider.SCRAPER
-    container_image: str | None = None
-    binary_path: str = "tachometer-scraper"
-    default_frequency: float = 5.0
-    sync_interval_secs: int = 120
-    compaction_threads: int = 4
-    storage_subdir: str = "telemetry"
-    extra_metadata: dict[str, str] = field(default_factory=dict)
     dcgm_exporter: TelemetryExporterConfig | None = None
-    node_exporter: TelemetryExporterConfig | None = None
-    live_metrics: LiveMetricsConfig | None = None
+    default_frequency: float = 1.0
+    storage_subdir: str = "power"
     required: bool = False
     startup_timeout_seconds: float = 30.0
     request_timeout_seconds: float = 2.0
@@ -1720,6 +1690,7 @@ class SrtConfig:
     def __post_init__(self):
         """Validate configuration after initialization."""
         self._validate_profiling()
+        self._validate_observability()
         self._validate_telemetry()
         self._validate_mooncake_kv_store()
         self._validate_het_jobs()
@@ -1979,7 +1950,7 @@ class SrtConfig:
                 )
 
     def _validate_dcgm_power(self):
-        """Validate the DCGM-only power provider.
+        """Validate DCGM power telemetry.
 
         It runs its collector in the orchestrator process, so it needs neither
         the scraper image nor node_exporter. Sample and window timestamps must
@@ -1989,7 +1960,7 @@ class SrtConfig:
         telemetry = self.telemetry
         exporter = telemetry.dcgm_exporter
         if exporter is None:
-            raise ValidationError("telemetry.dcgm_exporter is required for provider dcgm-power")
+            raise ValidationError("telemetry.dcgm_exporter is required when telemetry is enabled")
         if not exporter.container_image:
             raise ValidationError("telemetry.dcgm_exporter.container_image must be non-empty")
         if not 1 <= exporter.port <= 65535:
@@ -2023,53 +1994,67 @@ class SrtConfig:
             raise ValidationError("telemetry.storage_subdir must be a safe relative path below the run log directory")
 
         if self.benchmark.type != _BENCHMARK_TYPE_SA_BENCH:
-            raise ValidationError(f"telemetry provider dcgm-power requires benchmark.type: {_BENCHMARK_TYPE_SA_BENCH}")
+            raise ValidationError(f"telemetry requires benchmark.type: {_BENCHMARK_TYPE_SA_BENCH}")
         if self.benchmark.client_placement != "head":
-            raise ValidationError("telemetry provider dcgm-power requires benchmark.client_placement: head")
+            raise ValidationError("telemetry requires benchmark.client_placement: head")
 
         # NOTE: a dedicated infra node moves nodes.head off the batch host the collector runs on.
         if self.infra.etcd_nats_dedicated_node:
             raise ValidationError(
-                "telemetry provider dcgm-power requires infra.etcd_nats_dedicated_node: false, because a "
+                "telemetry requires infra.etcd_nats_dedicated_node: false, because a "
                 "dedicated infra node moves nodes.head off the batch host and power samples would no longer "
                 "share the benchmark's clock"
             )
 
         concurrencies = self.benchmark.get_concurrency_list()
         if not concurrencies or len(set(concurrencies)) != len(concurrencies) or any(c <= 0 for c in concurrencies):
+            raise ValidationError("telemetry requires a non-empty list of unique positive benchmark.concurrencies")
+
+    def _validate_observability(self):
+        """Validate optional Tachometer collection under observability."""
+        observability = self.observability
+        tachometer = observability.tachometer
+        if not tachometer.enabled:
+            return
+        if not observability.enabled:
+            raise ValidationError("observability.tachometer requires observability.enabled: true")
+        if self.telemetry.enabled and tachometer.dcgm_exporter is not None:
             raise ValidationError(
-                "telemetry provider dcgm-power requires a non-empty list of unique positive benchmark.concurrencies"
+                "configure the shared DCGM exporter under telemetry, not observability.tachometer, "
+                "when DCGM power telemetry is enabled"
+            )
+        if self.telemetry.enabled and tachometer.storage_subdir == self.telemetry.storage_subdir:
+            raise ValidationError(
+                "observability.tachometer.storage_subdir and telemetry.storage_subdir must be different"
             )
 
-    def _validate_telemetry(self):
-        """Validate telemetry configuration."""
-        telemetry = self.telemetry
-        if telemetry is None or not telemetry.enabled:
-            return
-
-        if telemetry.provider == TelemetryProvider.DCGM_POWER:
-            self._validate_dcgm_power()
-            return
-
-        if telemetry.provider != TelemetryProvider.SCRAPER:
-            raise ValidationError(f"Unsupported telemetry provider: {telemetry.provider}")
-
         for name in ("dcgm_exporter", "node_exporter"):
-            exporter = getattr(telemetry, name)
+            exporter = getattr(tachometer, name)
             if exporter is None:
                 continue
             if not exporter.container_image:
-                raise ValidationError(f"telemetry.{name}.container_image must be non-empty")
+                raise ValidationError(f"observability.tachometer.{name}.container_image must be non-empty")
             if not 1 <= exporter.port <= 65535:
-                raise ValidationError(f"telemetry.{name}.port must be in 1..65535")
-        if not telemetry.binary_path:
-            raise ValidationError("telemetry.binary_path must be non-empty")
-        if telemetry.default_frequency <= 0:
-            raise ValidationError("telemetry.default_frequency must be positive")
-        if telemetry.sync_interval_secs < 0:
-            raise ValidationError("telemetry.sync_interval_secs must be >= 0")
-        if telemetry.compaction_threads < 0:
-            raise ValidationError("telemetry.compaction_threads must be >= 0")
+                raise ValidationError(f"observability.tachometer.{name}.port must be in 1..65535")
+        if not tachometer.binary_path:
+            raise ValidationError("observability.tachometer.binary_path must be non-empty")
+        if tachometer.default_frequency <= 0:
+            raise ValidationError("observability.tachometer.default_frequency must be positive")
+        if tachometer.sync_interval_secs < 0:
+            raise ValidationError("observability.tachometer.sync_interval_secs must be >= 0")
+        if tachometer.compaction_threads < 0:
+            raise ValidationError("observability.tachometer.compaction_threads must be >= 0")
+        if not _is_safe_relative_subpath(tachometer.storage_subdir):
+            raise ValidationError(
+                "observability.tachometer.storage_subdir must be a safe relative path below the run log directory"
+            )
+
+    def _validate_telemetry(self):
+        """Validate DCGM power telemetry."""
+        telemetry = self.telemetry
+        if telemetry is None or not telemetry.enabled:
+            return
+        self._validate_dcgm_power()
 
     @classmethod
     def from_yaml(cls, yaml_path: Path) -> "SrtConfig":
