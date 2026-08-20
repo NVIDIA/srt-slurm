@@ -23,6 +23,7 @@ make setup ARCH=aarch64  # or ARCH=x86_64
 - [Parameter Sweeps](docs/sweeps.md) - Grid searches
 - [Profiling](docs/profiling.md) - Torch/nsys profiling
 - [Analyzing Results](docs/analyzing.md) - Dashboard and visualization
+- [ruter](docs/ruter.md) - Dynamo router post-processing
 
 ## Commands
 

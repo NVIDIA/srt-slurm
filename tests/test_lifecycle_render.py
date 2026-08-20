@@ -105,6 +105,8 @@ def test_local_dynamo_lifecycle_starts_owned_infrastructure(tmp_path) -> None:
     assert 'srt_wait_http_ready "http://127.0.0.1:6100/health"' not in script
     assert "srt_wait_router_ready" in script
     assert 'TACHOMETER_STORAGE="${ARTIFACT_DIR}/tachometer/raw/scrape"' in script
+    assert context.ruter_enabled
+    assert 'srtctl.ruter init "${OUTPUT_DIR}" --output "${LOG_DIR}/.ruter"' in script
     syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
     assert syntax.returncode == 0, syntax.stderr
 

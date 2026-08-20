@@ -65,6 +65,7 @@ class LocalLifecycleRenderContext:
     tachometer_enabled: bool
     tachometer_binary: str | None
     tachometer_config: str | None
+    ruter_enabled: bool
 
 
 def heredoc_marker(payload: str, *, prefix: str = "SRTCTL_RUNTIME_CONFIG") -> str:
@@ -392,6 +393,7 @@ def build_local_lifecycle_render_context(
         tachometer_enabled=tachometer_config is not None,
         tachometer_binary=config.observability.tachometer.binary_path if tachometer_config is not None else None,
         tachometer_config=tachometer_config,
+        ruter_enabled=config.frontend.type == "dynamo" and config.observability.enabled,
     )
 
 
