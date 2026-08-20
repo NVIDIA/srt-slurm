@@ -253,6 +253,9 @@ PY
 
 mkdir -p "${LOG_DIR}" "${ARTIFACT_DIR}"
 srt_log "Run directory: ${OUTPUT_DIR}"
+{% if context.ruter_enabled %}
+srt_log "Observability enabled: Dynamo request tracing is on (DYN_REQUEST_TRACE=1; request-end gzip JSONL: ${ARTIFACT_DIR}/dynamo-request-trace.*.jsonl.gz)"
+{% endif %}
 "${SRTCTL_PYTHON}" -c 'import sglang' || srt_die "SGLang is not installed for ${SRTCTL_PYTHON}"
 {% if context.frontend_type == "dynamo" %}
 "${SRTCTL_PYTHON}" -c 'import dynamo' || srt_die "Dynamo is not installed for ${SRTCTL_PYTHON}"

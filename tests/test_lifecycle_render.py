@@ -108,6 +108,7 @@ def test_local_dynamo_lifecycle_starts_owned_infrastructure(tmp_path) -> None:
     assert 'TACHOMETER_STORAGE="${ARTIFACT_DIR}/tachometer/raw/scrape"' in script
     assert context.ruter_enabled
     assert 'SRTCTL_RUTER_PYTHON="${SRTCTL_RUTER_PYTHON:-${SRTCTL_SOURCE}/.venv/bin/python}"' in script
+    assert 'Observability enabled: Dynamo request tracing is on (DYN_REQUEST_TRACE=1; request-end gzip JSONL: ${ARTIFACT_DIR}/dynamo-request-trace.*.jsonl.gz)' in script
     assert '"${SRTCTL_RUTER_PYTHON}" -m srtctl.ruter init "${OUTPUT_DIR}" --output "${LOG_DIR}/.ruter"' in script
     syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
     assert syntax.returncode == 0, syntax.stderr
