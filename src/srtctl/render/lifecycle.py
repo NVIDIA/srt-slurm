@@ -210,7 +210,9 @@ def _build_local_processes(config: SrtConfig) -> tuple[list[Process], tuple[Loca
             if config.dynamo.event_plane:
                 environment["DYN_EVENT_PLANE"] = config.dynamo.event_plane
 
-        log_name = f"worker-{process.endpoint_index}.log" if mode == "agg" else f"worker-{mode}-{process.endpoint_index}.log"
+        log_name = (
+            f"worker-{process.endpoint_index}.log" if mode == "agg" else f"worker-{mode}-{process.endpoint_index}.log"
+        )
         rendered.append(
             LocalProcess(
                 label=f"{mode}-{process.endpoint_index}",
@@ -284,7 +286,9 @@ def _build_tachometer_config(config: SrtConfig, processes: list[Process]) -> str
         "save_interval_secs = 5",
         "",
     ]
-    append_endpoint("router", f"http://127.0.0.1:{FRONTEND_PUBLIC_PORT}/metrics", "frontend", {"router": config.frontend.type})
+    append_endpoint(
+        "router", f"http://127.0.0.1:{FRONTEND_PUBLIC_PORT}/metrics", "frontend", {"router": config.frontend.type}
+    )
     for process in sorted(processes, key=lambda item: (item.endpoint_mode, item.endpoint_index, item.node_rank)):
         metrics_port = process.sys_port if config.frontend.type == "dynamo" else process.http_port
         append_endpoint(
