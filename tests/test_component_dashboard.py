@@ -1016,3 +1016,34 @@ class TestInstantaneousImbalancePanels:
         self._trace(run_dir, [0, 0, 1, 2])
         p = self._panels(run_dir, tmp_path)["bal_prefill_dp_rank"]
         assert {"tab", "title", "unit", "kind", "why", "source", "caveat", "series"} <= set(p)
+
+
+class TestRoutingOutcomeAndBeliefCheck:
+    """Entity type 2 asks the card to explain the routing decision, not just the timing."""
+
+    @staticmethod
+    def _bundle(run_dir: Path, tmp_path: Path):
+        src = run_dir / "dynamo-request-trace"
+        src.write_text("\n".join(
+            json.dumps(_trace_record(xid, "s1", 1_787_174_000_000 + i * 1000,
+                                     prefill_wait=2.0, prefill=500.0, kv_transfer=50.0,
+                                     total=1000.0, avg_itl=20.0, osl=11, hashes=[1, 2]))
+            for i, xid in enumerate(XIDS)) + "\n")
+        bundle = tmp_path / "bundle"
+        _run_ingest(run_dir, bundle)
+        payload = tmp_path / "dash.json"
+        proc = _render(bundle, tmp_path / "dash.html", "--d3-cdn", "--dump-json", str(payload))
+        assert proc.returncode == 0, proc.stderr
+        return json.loads(payload.read_text())
+
+    def test_cards_exist_without_spans(self, run_dir: Path, tmp_path: Path):
+        """The fixture has no SPAN_CLOSED logs, so routing is unjoinable. The card must
+        still be produced with routing None rather than fabricating a decision."""
+        rt = self._bundle(run_dir, tmp_path)["rt"]
+        assert rt["requests"]
+        assert all(c["routing"] is None for c in rt["requests"].values())
+
+    def test_belief_summary_absent_without_routing(self, run_dir: Path, tmp_path: Path):
+        """No overlap_blocks means the belief check has nothing to compare; it must
+        report nothing rather than a vacuous 100% agreement."""
+        assert self._bundle(run_dir, tmp_path)["rt"]["belief"] is None

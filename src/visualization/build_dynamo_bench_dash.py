@@ -220,7 +220,11 @@ for f in (glob.glob(os.path.join(SRC,"tempo_traces","*.json")) if HAS_TRACES els
         "osl":c["osl"] or 0,"adm":sched[0] if sched else 0,"pf":hp_pf[0] if hp_pf else 0,
         "de":hp_de[0] if hp_de else 0,"rhash":hashm,"rfind":findm,"rroute":routem,
         "ov":int(at(rr_pf[1],"overlap_blocks") or 0) if rr_pf else 0,
-        "wpf":at(rr_pf[1],"worker_id") if rr_pf else None})
+        "wpf":at(rr_pf[1],"worker_id") if rr_pf else None,
+        # dp_rank off the SAME span as overlap_blocks. The router's free-text selector
+        # line carries a richer cost breakdown but has no request_id on it, so it
+        # cannot be joined per request -- this span is the joinable substitute.
+        "rank":at(rr_pf[1],"dp_rank") if rr_pf else None})
     # Requests-in-flight occupancy window per worker role: min(start)..max(end) across
     # EVERY handle_payload on that component, not just the longest one (mx() above).
     # This matches gpu_occupancy.compute_requests_in_flight, which spans the envelope so
@@ -846,16 +850,42 @@ if rt_rows and client:
         _log.warning(f"request trace: only {len(_keep)}/{len(rt_rows)} rows match the client "
                      f"export; leaving unfiltered (different run?)")
 
-rt_requests={}; rt_sessions=[]; rt_const={}
+_SPAN_BY_XID={r["xid"]:r for r in rows}
+rt_requests={}; rt_sessions=[]; rt_const={}; rt_belief=None
 if rt_rows:
     _t0=min(r["received_ms"] for r in rt_rows if r.get("received_ms"))
     for r in rt_rows:
         _bands=[[k,l,r.get(k)] for k,l in RT_BANDS]
+        # Routing OUTCOME, joined from the prefill kv_router.route_request span.
+        # Deliberately labelled an outcome and not a rationale: the router's own cost
+        # comparison lives on a free-text selector line that carries no request_id, so
+        # "which worker was chosen, with how much prefix overlap" is joinable per
+        # request while "why it beat the alternatives" is not. Claiming the latter
+        # would be inventing an explanation.
+        _sp=_SPAN_BY_XID.get(r["x_request_id"]) or {}
+        _routing={"overlap_blocks":_sp.get("ov"),"worker_id":_sp.get("wpf"),
+                  "dp_rank":_sp.get("rank"),
+                  "router_ms":round((_sp.get("rhash") or 0)+(_sp.get("rfind") or 0)
+                                    +(_sp.get("rroute") or 0),3) if _sp else None,
+                  "admission_ms":round(_sp["adm"],3) if _sp.get("adm") is not None else None}
+        # Router belief vs engine reality, per request. The router scores candidates on
+        # overlap_blocks; the engine reports what it actually reused as cached_tokens.
+        # In blocks-to-tokens terms they should be the same number, and a divergence is
+        # the signature of a router confidently routing on a prefix the engine does not
+        # have -- reported in the field as high advertised reuse on traffic with none.
+        # Computed every run rather than only when suspected, because the failure is
+        # silent: the routing still "works", it is just routing on fiction.
+        _ob=_sp.get("ov"); _ct=r.get("cached_tokens")
+        if _ob is not None and _ct is not None and BLK:
+            _pred=_ob*BLK
+            _routing["overlap_tokens"]=_pred
+            _routing["belief_error"]=0.0 if (_pred==0 and _ct==0) else round(abs(_pred-_ct)/max(1,_ct),4)
         rt_requests[r["x_request_id"]]={
             "t":round((r.get("received_ms") or _t0)-_t0,1),
             "session_id":r.get("session_id"),
             "bands":_bands,
             "attrs":{k:r.get(k) for k in RT_ATTRS},
+            "routing":_routing if _sp else None,
         }
     # A field that never varies carries no information for THIS run; report it once
     # here rather than drawing a flat line per panel, so the reader learns it was
@@ -896,6 +926,16 @@ if rt_rows:
     _log.info(f"request trace: {len(rt_requests)} requests, {len(rt_sessions)} sessions, "
               f"{_pin}/{len(rt_sessions)} pinned to a single decode worker, "
               f"{len(rt_const)} constant field(s): {sorted(rt_const)}")
+    _errs=[v["routing"]["belief_error"] for v in rt_requests.values()
+           if (v.get("routing") or {}).get("belief_error") is not None]
+    if _errs:
+        _bad=[e for e in _errs if e>0.02]
+        rt_belief={"n":len(_errs),"disagree":len(_bad),
+                   "worst":round(max(_errs),4),"threshold":0.02}
+        _log.info(f"router belief vs engine reality: {len(_errs)-len(_bad)}/{len(_errs)} agree "
+                  f"(overlap_blocks x {BLK} == cached_tokens within 2%), worst error {max(_errs):.1%}")
+    else:
+        rt_belief=None
 
 # ============ 6. declarative time-series panels ==============================
 # One generic evaluator over the panel table in panels.py. Every panel is a data row;
@@ -980,7 +1020,7 @@ if panels:
 DATA={
  "logdrill":logdrill,
  "panels":panels,
- "rt":{"requests":rt_requests,"sessions":rt_sessions,"bands":RT_BANDS,"const":rt_const},
+ "rt":{"requests":rt_requests,"sessions":rt_sessions,"bands":RT_BANDS,"const":rt_const,"belief":rt_belief},
  "iter":iter_series,
  "iter_cfg":{"pf_batch":CFG_PF_BATCH,"pf_tok":CFG_PF_TOK,"de_batch":CFG_DE_BATCH,"de_tok":CFG_DE_TOK},
  "drill":{"series":drill_series,"extrema":drill_extrema,"spans":drill_spans,
