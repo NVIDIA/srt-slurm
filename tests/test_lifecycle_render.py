@@ -246,6 +246,8 @@ def test_local_lifecycle_can_run_inside_sglang_container(tmp_path) -> None:
     assert "srt_install_sglang_from_source" in script
     assert 'pip install --quiet --editable "${source_copy}/python"' in script
     assert 'pip install --quiet --force-reinstall --no-deps "${wheel}"' in script
+    assert 'if [[ "${SRTCTL_LOCAL_CONTAINERIZED:-}" == "1" ]]; then' in script
+    assert "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq libclang-dev protobuf-compiler" in script
     syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
     assert syntax.returncode == 0, syntax.stderr
 
