@@ -69,6 +69,8 @@ Processor registry
       "spanlog" Dynamo SPAN_CLOSED logs -> schema 3.         (traces_spanlog.process)
     metrics -> server_metrics_export.jsonl
       "prometheus" raw_prometheus.jsonl -> schema 2.         (metrics_prometheus.process)
+    request_trace -> request_trace.jsonl
+      "dynamo"  dynamo-request-trace -> schema 4.            (request_trace.process)
 
 The upstream repo also registers an ``agentperf`` client processor and a live
 ``tempo`` trace scraper. Neither is reachable from an srt-slurm run -- srt-slurm's
@@ -155,6 +157,9 @@ PROCESSORS: dict[str, dict[str, Callable]] = {
     },
     "metrics": {
         "prometheus": _lazy("metrics_prometheus"),
+    },
+    "request_trace": {
+        "dynamo": _lazy("request_trace"),
     },
 }
 

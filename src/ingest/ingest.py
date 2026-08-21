@@ -226,6 +226,7 @@ def generate_dashboard_yaml(
     have_aiperf: bool,
     have_traces: bool,
     have_metrics: bool,
+    have_request_trace: bool = False,
 ) -> str:
     """Render a dashboard.yaml (skeleton fields: name/description/mode/framework/
     topology/sources) whose ``sources:`` point at the bundle's own files (so the
@@ -263,6 +264,8 @@ def generate_dashboard_yaml(
         lines.append("  tempo_traces:   tempo_traces")
     if have_metrics:
         lines.append("  server_metrics: server_metrics_export.jsonl")
+    if have_request_trace:
+        lines.append("  request_trace:  request_trace.jsonl")
     return "\n".join(lines) + "\n"
 
 
@@ -276,15 +279,26 @@ def run_client(args, run_dir: Path, bundle: Path) -> bool:
     if args.client == "none":
         _log("L2 client", "skipped (--client none)")
         return False
-    # srt-slurm's AIPerf benchmarks write into <log_dir>/artifacts/<model>_<workload>_<ts>/,
-    # so the default reaches one level down rather than assuming the run-dir root.
-    default = "artifacts/*/profile_export.jsonl"
-    pattern = args.client_input or default
-    inputs = resolve_inputs(pattern, run_dir)
+    # Two client layouts exist and neither is a superset of the other, so both are
+    # tried rather than making the caller know which harness ran:
+    #   AgentX   <log_dir>/agentic/conc_<N>/aiperf_artifacts/profile_export.jsonl
+    #   AIPerf   <log_dir>/artifacts/<model>_<workload>_<ts>/profile_export.jsonl
+    # AgentX nests one level deeper AND shards by concurrency level. A sweep that ran
+    # several concurrencies yields several files; they are stitched, which puts each
+    # phase in sequence on the run-relative time axis rather than averaging them
+    # together -- the phases stay visually separable, and no phase is silently dropped.
+    patterns = [args.client_input] if args.client_input else [
+        "agentic/*/aiperf_artifacts/profile_export.jsonl",
+        "artifacts/*/profile_export.jsonl",
+    ]
+    inputs: list[str] = []
+    for pat in patterns:
+        inputs.extend(resolve_inputs(pat, run_dir))
+    inputs = sorted(dict.fromkeys(inputs))
     if not inputs:
-        _log("L2 client", f"WARN no client inputs matched {pattern!r} under {run_dir} -- skipping")
+        _log("L2 client", f"WARN no client inputs matched {patterns} under {run_dir} -- skipping")
         return False
-    _log("L1", f"client raw: {len(inputs)} file(s) matching {pattern!r} (shard-stitch)")
+    _log("L1", f"client raw: {len(inputs)} file(s) matching {patterns} (shard-stitch)")
     out = bundle / "profile_export.jsonl"
     proc = get_processor("client", args.client)
     # agentperf/passthrough both accept a shard list and stitch it in sorted order.
@@ -361,6 +375,33 @@ def run_metrics(args, run_dir: Path, bundle: Path) -> bool:
     return out.exists()
 
 
+def run_request_trace(args, run_dir: Path, bundle: Path) -> bool:
+    """L2 request-trace axis -> request_trace.jsonl. Returns whether produced.
+
+    The frontend's per-request record. It is the only source of KV-transfer cost --
+    the Prometheus ``trtllm_kv_transfer_*`` family is declared but never sampled -- and
+    the only one carrying ``session_id``, so both the per-request waterfall and the
+    per-session view depend on it.
+
+    Dynamo writes it to the path in ``DYN_REQUEST_TRACE_FILE_PATH``, which srt-slurm
+    sets to ``<log_dir>/dynamo-request-trace`` (no extension, despite being JSON lines).
+    """
+    if args.request_trace == "none":
+        _log("L2 req-trace", "skipped (--request-trace none)")
+        return False
+    pattern = args.request_trace_input or "dynamo-request-trace"
+    srcs = resolve_inputs(pattern, run_dir)
+    if not srcs:
+        _log("L2 req-trace", f"WARN no request trace matched {pattern!r} under {run_dir}; skipping")
+        return False
+    out = bundle / "request_trace.jsonl"
+    _log("L1", f"request trace raw: {srcs[0]}")
+    proc = get_processor("request_trace", "dynamo")
+    n = proc(srcs[0], str(out))
+    _log("L2 req-trace", f"dynamo -> {out.name}: {n} requests")
+    return n > 0
+
+
 def run_engine_configs(run_dir: Path, bundle: Path) -> list[str]:
     """Copy the run's resolved engine configs into the bundle, verbatim.
 
@@ -424,6 +465,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--span-logs", action="append", default=[], metavar="GLOB",
                    help="SPAN_CLOSED log path/glob, repeatable (default: *.out, srt-slurm worker/frontend logs)")
 
+    # request-trace axis
+    p.add_argument("--request-trace", choices=["dynamo", "none"], default="dynamo")
+    p.add_argument("--request-trace-input", default=None,
+                   help="dynamo-request-trace path/glob (default: dynamo-request-trace)")
+
     # metrics axis
     p.add_argument("--metrics", choices=["prometheus", "none"], default="prometheus")
     p.add_argument("--raw-prometheus", default=None,
@@ -459,6 +505,7 @@ def main(argv=None) -> int:
     profile_path = bundle / "profile_export.jsonl" if have_aiperf else None
     have_traces = run_traces(args, run_dir, bundle, profile_path)
     have_metrics = run_metrics(args, run_dir, bundle)
+    have_req_trace = run_request_trace(args, run_dir, bundle)
     run_engine_configs(run_dir, bundle)
 
     yaml_text = generate_dashboard_yaml(
@@ -471,13 +518,15 @@ def main(argv=None) -> int:
         have_aiperf=have_aiperf,
         have_traces=have_traces,
         have_metrics=have_metrics,
+        have_request_trace=have_req_trace,
     )
     yaml_path = bundle / "dashboard.yaml"
     yaml_path.write_text(yaml_text)
     _log("L3-prep", f"wrote {yaml_path}")
 
     _log("done", f"bundle ready in {time.time() - t0:.1f}s: "
-                  f"aiperf={have_aiperf} traces={have_traces} metrics={have_metrics}")
+                  f"aiperf={have_aiperf} traces={have_traces} metrics={have_metrics} "
+                  f"request_trace={have_req_trace}")
     _log("next", f"python3 -m src.visualization.build_dynamo_bench_dash {bundle} {bundle / 'dashboard.html'}")
     return 0
 
