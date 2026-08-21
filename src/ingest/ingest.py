@@ -476,6 +476,43 @@ def run_engine_configs(run_dir: Path, bundle: Path) -> list[str]:
     return copied
 
 
+def run_provenance(run_dir: Path, bundle: Path) -> list[str]:
+    """Copy the run's provenance files into the bundle: what actually ran.
+
+    ``config.yaml`` is the RESOLVED recipe, which is the only record of the run's
+    frontend/worker environment -- and therefore the only way to prove, after the fact,
+    that two runs differed in exactly one variable. An A/B whose single-variable claim
+    rests on the submitter's memory is not an A/B.
+
+    ``fingerprint_<role>_w<i>.json`` carries per-worker ground truth: ``frameworks``
+    (the real inner ``tensorrt_llm`` / ``dynamo`` versions), ``cuda_version``,
+    ``nccl_version``, ``gpu``, ``pip_packages``. This matters because container tags
+    routinely disagree with what they bundle -- an image tagged 1.1.0-rc3 shipping
+    1.3.0rc11 is an observed case, not a hypothetical. It is also per-worker, so a
+    deployment where prefill and decode ended up on different builds is visible here
+    and nowhere else.
+
+    ``resource_snapshot.json`` records the allocation the numbers were produced on.
+
+    All small (~35 KB per fingerprint), so they are copied verbatim rather than
+    summarised: a provenance record that has already been filtered cannot answer the
+    question nobody thought to ask when writing the filter.
+    """
+    copied: list[str] = []
+    src_dir = Path(run_dir)
+    for pattern in ("config.yaml", "resource_snapshot.json", "fingerprint_*.json"):
+        for src in sorted(src_dir.glob(pattern)):
+            shutil.copyfile(src, bundle / src.name)
+            copied.append(src.name)
+    if copied:
+        _log("L2 provenance", f"copied {len(copied)} provenance file(s): "
+                              f"{', '.join(copied[:4])}{' ...' if len(copied) > 4 else ''}")
+    else:
+        _log("L2 provenance", "no config.yaml / fingerprint_*.json in the run dir; two "
+                              "bundles cannot be compared for what actually differed")
+    return copied
+
+
 def run_client_summary(run_dir: Path, bundle: Path, patterns: list[str] | None = None) -> str | None:
     """Copy AIPerf's run-level summary (``profile_export_aiperf.json``) into the bundle.
 
@@ -601,6 +638,7 @@ def main(argv=None) -> int:
     run_iter_log(args, run_dir, bundle)
     run_engine_configs(run_dir, bundle)
     run_client_summary(run_dir, bundle)
+    run_provenance(run_dir, bundle)
 
     yaml_text = generate_dashboard_yaml(
         name=name,

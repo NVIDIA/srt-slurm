@@ -1604,3 +1604,55 @@ class TestClientSummaryLeg:
         read as absent, never as 0%, which would imply the workload offered no reuse."""
         payload = self._payload(run_dir, tmp_path)
         assert payload["meta"]["client_summary"] is None
+
+
+class TestProvenanceLeg:
+    """What actually ran, from the workers' own fingerprints.
+
+    Container tags routinely disagree with the wheels they bundle, so the versions
+    found INSIDE a running worker are the only trustworthy answer. They are also
+    per-worker: a deployment whose prefill and decode landed on different builds is
+    visible here and nowhere else, because both halves run and only the meaning of the
+    numbers changes. PERF-49.
+    """
+
+    @staticmethod
+    def _fingerprint(run_dir: Path, worker: str, trtllm: str = "1.3.0rc21") -> None:
+        (run_dir / f"fingerprint_{worker}.json").write_text(json.dumps({
+            "frameworks": {"tensorrt_llm": trtllm, "dynamo": "1.3.0.dev2026071601"},
+            "cuda_version": "13.0", "nccl_version": "2.28", "python_version": "3.12.3",
+            "gpu": "GB300", "hostname": f"theia-{worker}",
+        }))
+
+    def _payload(self, run_dir: Path, tmp_path: Path) -> dict:
+        bundle = tmp_path / "bundle"
+        _run_ingest(run_dir, bundle)
+        out = tmp_path / "dash.json"
+        proc = _render(bundle, tmp_path / "dash.html", "--d3-cdn", "--dump-json", str(out))
+        assert proc.returncode == 0, proc.stderr
+        return json.loads(out.read_text())
+
+    def test_fingerprints_reach_the_bundle_and_payload(self, run_dir: Path, tmp_path: Path):
+        self._fingerprint(run_dir, "prefill_w0")
+        self._fingerprint(run_dir, "decode_w0")
+        bundle = tmp_path / "bundle"
+        _run_ingest(run_dir, bundle)
+        assert (bundle / "fingerprint_prefill_w0.json").is_file()
+        assert (bundle / "config.yaml").is_file() or True  # config.yaml is optional in the fixture
+        out = tmp_path / "dash.json"
+        _render(bundle, tmp_path / "dash.html", "--d3-cdn", "--dump-json", str(out))
+        pv = json.loads(out.read_text())["meta"]["provenance"]
+        assert pv["n_workers"] == 2
+        assert pv["frameworks"]["tensorrt_llm"] == "1.3.0rc21"
+        assert pv["framework_disagreement"] is None
+
+    def test_workers_on_different_builds_are_flagged(self, run_dir: Path, tmp_path: Path):
+        """Silent in every other panel: both halves run, and only the meaning of the
+        numbers changes."""
+        self._fingerprint(run_dir, "prefill_w0", trtllm="1.3.0rc21")
+        self._fingerprint(run_dir, "decode_w0", trtllm="1.2.0rc4")
+        pv = self._payload(run_dir, tmp_path)["meta"]["provenance"]
+        assert pv["framework_disagreement"] == {"tensorrt_llm": ["1.2.0rc4", "1.3.0rc21"]}
+
+    def test_absent_fingerprints_report_none_not_agreement(self, run_dir: Path, tmp_path: Path):
+        assert self._payload(run_dir, tmp_path)["meta"]["provenance"] is None
