@@ -2017,3 +2017,47 @@ class TestHostTelemetry:
 
     def test_absent_sampler_yields_no_host_block(self, run_dir: Path, tmp_path: Path):
         assert self._host(run_dir, tmp_path) == {}
+
+
+class TestHostSamplerProcessSelection:
+    """Real processes must outrank launcher wrappers within the sample budget.
+
+    On a real GB300 node (theia0019, job 2753007) a naive cmdline match filled 14 of 24
+    slots with `srun` -- one per launched process -- crowding out the TRT-LLM workers
+    and the AIPerf client, which are the only processes PERF-37/38/40 are about.
+    """
+
+    def test_wrappers_sort_after_real_processes(self, monkeypatch):
+        from srtctl.analysis import host_sampler as hs
+
+        procs = {  # pid -> (cmdline, comm)
+            "10": ("srun --overlap dynamo-worker", "srun"),
+            "11": ("srun --overlap dynamo-worker", "srun"),
+            "12": ("python -m dynamo.trtllm", "trtllm-llmapi-l"),
+            "13": ("aiperf profile --model dynamo", "aiperf system_c"),
+            "14": ("bash -c dynamo", "bash"),
+        }
+        monkeypatch.setattr(hs.os, "listdir", lambda p: list(procs) if p == "/proc" else [])
+        monkeypatch.setattr(
+            hs, "_read",
+            lambda path: procs[path.split("/")[2]][0] if path.endswith("cmdline")
+            else procs[path.split("/")[2]][1] if path.endswith("comm") else None)
+
+        got = hs._interesting_pids()
+        assert set(got[:2]) == {12, 13}, f"real processes must come first, got {got}"
+        assert set(got[2:]) == {10, 11, 14}
+
+    def test_budget_drops_wrappers_not_workers(self, monkeypatch):
+        from srtctl.analysis import host_sampler as hs
+
+        procs = {str(i): ("srun dynamo", "srun") for i in range(20, 60)}
+        procs["12"] = ("python -m dynamo.trtllm", "trtllm-llmapi-l")
+        monkeypatch.setattr(hs.os, "listdir", lambda p: list(procs) if p == "/proc" else [])
+        monkeypatch.setattr(
+            hs, "_read",
+            lambda path: procs[path.split("/")[2]][0] if path.endswith("cmdline")
+            else procs[path.split("/")[2]][1] if path.endswith("comm") else None)
+
+        got = hs._interesting_pids(limit=5)
+        assert 12 in got, "the one real worker must survive a budget full of wrappers"
+        assert len(got) == 5

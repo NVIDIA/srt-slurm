@@ -84,19 +84,37 @@ def _meminfo() -> dict:
     return out
 
 
-def _interesting_pids() -> list[int]:
-    pids = []
+# Launcher processes whose cmdline mentions a worker without BEING one. On a real node
+# `srun` appears once per launched process, so a naive cmdline match spends most of the
+# budget on wrappers: observed 14 of 24 slots on theia0019 (job 2753007), crowding out
+# the very workers the sampler exists to watch. Wrappers are kept, but sorted last.
+_WRAPPER_COMMS = ("srun", "bash", "sh", "slurmstepd", "timeout", "env")
+
+
+def _comm(pid: str) -> str:
+    return (_read(f"/proc/{pid}/comm") or "").strip()
+
+
+def _interesting_pids(limit: int = 32) -> list[int]:
+    """PIDs worth sampling, real processes before launchers.
+
+    Bounded so a storm of short-lived children cannot blow up a row, and ORDERED so the
+    bound falls on wrappers rather than on the workers and the client -- which are the
+    only processes any of PERF-37/38/40 is actually about.
+    """
+    real, wrappers = [], []
     try:
         entries = os.listdir("/proc")
     except OSError:
-        return pids
+        return []
     for e in entries:
         if not e.isdigit():
             continue
         cmd = _read(f"/proc/{e}/cmdline")
-        if cmd and any(p in cmd for p in _PROC_PATTERNS):
-            pids.append(int(e))
-    return pids[:24]  # bounded: a storm of short-lived children must not blow up a row
+        if not cmd or not any(p in cmd for p in _PROC_PATTERNS):
+            continue
+        (wrappers if _comm(e) in _WRAPPER_COMMS else real).append(int(e))
+    return (real + wrappers)[:limit]
 
 
 def _proc_sample(pid: int) -> dict | None:
