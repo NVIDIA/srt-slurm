@@ -214,12 +214,24 @@ def test_local_lifecycle_can_run_inside_sglang_container(tmp_path) -> None:
     assert "--network host" in script
     assert "--ipc host" in script
     assert "--gpus all" in script
-    assert 'docker run "${SRT_CONTAINER_ARGS[@]}" "${SRTCTL_LOCAL_CONTAINER_IMAGE}"' in script
+    assert '--detach\n        --name "srtctl-lifecycle-$$"' in script
+    assert 'docker run "${SRT_CONTAINER_ARGS[@]}" >/dev/null' in script
+    assert (
+        'docker exec "${SRT_CONTAINER_EXEC_ARGS[@]}" "${SRTCTL_CONTAINER_NAME}" bash /run/srtctl-lifecycle.sh' in script
+    )
+    assert 'docker rm -f "${SRTCTL_CONTAINER_NAME}"' in script
+    assert "SRTCTL_OUTPUT_DIR=${OUTPUT_DIR}" in script
+    assert "SRTCTL_SGLANG_RUNTIME_DIR=${SRTCTL_SGLANG_RUNTIME_DIR}" in script
+    assert 'chown -R "${owner}" "${OUTPUT_DIR}"' in script
+    assert 'chown -R "${owner}" "${SRTCTL_SGLANG_RUNTIME_DIR}"' in script
+    assert "--user" not in script
+    assert "SRTCTL_HOST_CARGO_HOME" not in script
     assert 'mkdir -p "${OUTPUT_BASE}"' in script
     assert 'if [[ "${mode}" == "readonly" ]]; then' in script
     assert 'mount+=",readonly"' in script
-    assert 'SRTCTL_HOST_CARGO_HOME="${CARGO_HOME:-${HOME}/.cargo}"' in script
-    assert 'SRTCTL_HOST_RUSTUP_HOME="${RUSTUP_HOME:-${HOME}/.rustup}"' in script
+    assert 'if [[ ! -f "${runtime_dir}/.complete" ]]; then' in script
+    assert 'touch "${runtime_dir}/.complete"' in script
+    assert 'runtime_dir="${SRTCTL_SGLANG_RUNTIME_DIR:-${runtime_root}/sglang-${revision}}"' in script
     assert (
         'SRTCTL_DYNAMO_CACHE_ROOT="${SRTCTL_DYNAMO_CACHE_ROOT:-${OUTPUT_BASE}/.srtctl-cache/dynamo-wheels}"' in script
     )

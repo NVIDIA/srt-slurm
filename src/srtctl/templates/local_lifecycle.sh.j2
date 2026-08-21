@@ -14,6 +14,24 @@ OUTPUT_BASE={{ quote(context.output_base) }}
 SRTCTL_LOCAL_CONTAINER_IMAGE={{ quote(context.local_container_image or '') }}
 SRTCTL_RENDERED_MODEL_PATH={{ quote(context.model_path) }}
 SRTCTL_SGLANG_SOURCE={{ quote(context.sglang_source or '') }}
+RUN_NAME={{ quote(context.name) }}
+MODEL={{ quote(context.model_name) }}
+FRONTEND_TYPE={{ quote(context.frontend_type) }}
+FRONTEND_PORT={{ context.frontend_port }}
+SRT_READY_TIMEOUT={{ context.health_timeout_seconds }}
+SRT_READY_INTERVAL={{ context.health_interval_seconds }}
+SRTCTL_PYTHON="${SRTCTL_PYTHON:-python3}"
+# The server environment need not contain srtctl's orchestration dependencies.
+# Prefer the source checkout's uv environment for the lightweight offline
+# normalizer, while retaining the serving interpreter as a standalone fallback.
+SRTCTL_RUTER_PYTHON="${SRTCTL_RUTER_PYTHON:-${SRTCTL_SOURCE}/.venv/bin/python}"
+if [[ ! -x "${SRTCTL_RUTER_PYTHON}" ]]; then
+    SRTCTL_RUTER_PYTHON="${SRTCTL_PYTHON}"
+fi
+OUTPUT_DIR="${SRTCTL_OUTPUT_DIR:-${OUTPUT_BASE}/${RUN_NAME}-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
+LOG_DIR="${OUTPUT_DIR}/logs"
+ARTIFACT_DIR="${OUTPUT_DIR}/artifacts"
+export OUTPUT_DIR LOG_DIR ARTIFACT_DIR
 
 if [[ -n "${SRTCTL_LOCAL_CONTAINER_IMAGE}" && "${SRTCTL_LOCAL_CONTAINERIZED:-}" != "1" ]]; then
     command -v docker >/dev/null 2>&1 || {
@@ -26,16 +44,14 @@ if [[ -n "${SRTCTL_LOCAL_CONTAINER_IMAGE}" && "${SRTCTL_LOCAL_CONTAINERIZED:-}" 
         exit 1
     }
     declare -a SRT_CONTAINER_ARGS=(
-        --rm
+        --detach
+        --name "srtctl-lifecycle-$$"
         --network host
         --ipc host
         --gpus all
         --ulimit memlock=-1
         --ulimit stack=67108864
-        --user "$(id -u):$(id -g)"
         --entrypoint bash
-        -e HOME=/tmp/srtctl-home
-        -e XDG_CACHE_HOME=/tmp/srtctl-cache
         --mount "type=bind,src=${SCRIPT_PATH},dst=/run/srtctl-lifecycle.sh,readonly"
     )
     srt_container_mount() {
@@ -56,17 +72,14 @@ if [[ -n "${SRTCTL_LOCAL_CONTAINER_IMAGE}" && "${SRTCTL_LOCAL_CONTAINERIZED:-}" 
     srt_container_mount "${SRTCTL_SOURCE}" readonly
     srt_container_mount "${OUTPUT_BASE}" rw
     srt_container_mount "${SRTCTL_RENDERED_MODEL_PATH}" readonly
+    SRTCTL_SGLANG_RUNTIME_DIR=""
     if [[ -n "${SRTCTL_SGLANG_SOURCE}" ]]; then
         srt_container_mount "${SRTCTL_SGLANG_SOURCE}" readonly
-        SRTCTL_HOST_CARGO_HOME="${CARGO_HOME:-${HOME}/.cargo}"
-        SRTCTL_HOST_RUSTUP_HOME="${RUSTUP_HOME:-${HOME}/.rustup}"
-        srt_container_mount "${SRTCTL_HOST_CARGO_HOME}" readonly
-        srt_container_mount "${SRTCTL_HOST_RUSTUP_HOME}" readonly
-        SRT_CONTAINER_ARGS+=(
-            -e "CARGO_HOME=${SRTCTL_HOST_CARGO_HOME}"
-            -e "RUSTUP_HOME=${SRTCTL_HOST_RUSTUP_HOME}"
-            -e "PATH=${SRTCTL_HOST_CARGO_HOME}/bin:/opt/sglang/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-        )
+        SRTCTL_SGLANG_REVISION="$(git -C "${SRTCTL_SGLANG_SOURCE}" rev-parse --verify HEAD)" || {
+            echo "srtctl: unable to identify SGLang source revision: ${SRTCTL_SGLANG_SOURCE}" >&2
+            exit 1
+        }
+        SRTCTL_SGLANG_RUNTIME_DIR="${OUTPUT_BASE}/.srtctl-runtime/sglang-${SRTCTL_SGLANG_REVISION}"
     fi
     if [[ -n "${RUTER_MOONCAKE_TRACE:-}" ]]; then
         srt_container_mount "${RUTER_MOONCAKE_TRACE}" readonly
@@ -84,31 +97,44 @@ if [[ -n "${SRTCTL_LOCAL_CONTAINER_IMAGE}" && "${SRTCTL_LOCAL_CONTAINERIZED:-}" 
     mkdir -p "${SRTCTL_DYNAMO_CACHE_ROOT}"
     srt_container_mount "${SRTCTL_DYNAMO_CACHE_ROOT}" rw
     SRT_CONTAINER_ARGS+=(
-        -e SRTCTL_LOCAL_CONTAINERIZED=1
-        -e "SRTCTL_DYNAMO_CACHE_ROOT=${SRTCTL_DYNAMO_CACHE_ROOT}"
-        -e "SRTCTL_SGLANG_SOURCE=${SRTCTL_SGLANG_SOURCE}"
+        "${SRTCTL_LOCAL_CONTAINER_IMAGE}"
+        -lc 'trap "exit 0" TERM INT; while :; do sleep 3600; done'
     )
-    exec docker run "${SRT_CONTAINER_ARGS[@]}" "${SRTCTL_LOCAL_CONTAINER_IMAGE}" /run/srtctl-lifecycle.sh
+    SRTCTL_CONTAINER_NAME="srtctl-lifecycle-$$"
+    srt_container_cleanup() {
+        local rc=$?
+        trap - EXIT INT TERM
+        docker rm -f "${SRTCTL_CONTAINER_NAME}" >/dev/null 2>&1 || true
+        local owner
+        owner="$(id -u):$(id -g)"
+        [[ ! -e "${OUTPUT_DIR}" ]] || chown -R "${owner}" "${OUTPUT_DIR}" || true
+        [[ -z "${SRTCTL_SGLANG_RUNTIME_DIR}" || ! -e "${SRTCTL_SGLANG_RUNTIME_DIR}" ]] || chown -R "${owner}" "${SRTCTL_SGLANG_RUNTIME_DIR}" || true
+        exit "${rc}"
+    }
+    trap srt_container_cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    docker run "${SRT_CONTAINER_ARGS[@]}" >/dev/null
+    declare -a SRT_CONTAINER_EXEC_ARGS=(
+        -e SRTCTL_LOCAL_CONTAINERIZED=1
+        -e "SRTCTL_OUTPUT_DIR=${OUTPUT_DIR}"
+        -e "SRTCTL_DYNAMO_CACHE_ROOT=${SRTCTL_DYNAMO_CACHE_ROOT}"
+    )
+    if [[ -n "${SRTCTL_SGLANG_RUNTIME_DIR}" ]]; then
+        SRT_CONTAINER_EXEC_ARGS+=(-e "SRTCTL_SGLANG_RUNTIME_DIR=${SRTCTL_SGLANG_RUNTIME_DIR}")
+    fi
+    if [[ -n "${RUTER_MOONCAKE_TRACE:-}" ]]; then
+        SRT_CONTAINER_EXEC_ARGS+=(-e "RUTER_MOONCAKE_TRACE=${RUTER_MOONCAKE_TRACE}")
+    fi
+    if [[ -n "${SRTCTL_TACHOMETER:-}" ]]; then
+        SRT_CONTAINER_EXEC_ARGS+=(-e "SRTCTL_TACHOMETER=${SRTCTL_TACHOMETER}")
+    fi
+    if [[ -n "${SRTCTL_RUTER_PYTHON:-}" ]]; then
+        SRT_CONTAINER_EXEC_ARGS+=(-e "SRTCTL_RUTER_PYTHON=${SRTCTL_RUTER_PYTHON}")
+    fi
+    docker exec "${SRT_CONTAINER_EXEC_ARGS[@]}" "${SRTCTL_CONTAINER_NAME}" bash /run/srtctl-lifecycle.sh
+    exit $?
 fi
-
-RUN_NAME={{ quote(context.name) }}
-MODEL={{ quote(context.model_name) }}
-FRONTEND_TYPE={{ quote(context.frontend_type) }}
-FRONTEND_PORT={{ context.frontend_port }}
-SRT_READY_TIMEOUT={{ context.health_timeout_seconds }}
-SRT_READY_INTERVAL={{ context.health_interval_seconds }}
-SRTCTL_PYTHON="${SRTCTL_PYTHON:-python3}"
-# The server environment need not contain srtctl's orchestration dependencies.
-# Prefer the source checkout's uv environment for the lightweight offline
-# normalizer, while retaining the serving interpreter as a standalone fallback.
-SRTCTL_RUTER_PYTHON="${SRTCTL_RUTER_PYTHON:-${SRTCTL_SOURCE}/.venv/bin/python}"
-if [[ ! -x "${SRTCTL_RUTER_PYTHON}" ]]; then
-    SRTCTL_RUTER_PYTHON="${SRTCTL_PYTHON}"
-fi
-OUTPUT_DIR="${OUTPUT_BASE}/${RUN_NAME}-$(date -u +%Y%m%dT%H%M%SZ)-$$"
-LOG_DIR="${OUTPUT_DIR}/logs"
-ARTIFACT_DIR="${OUTPUT_DIR}/artifacts"
-export OUTPUT_DIR LOG_DIR ARTIFACT_DIR
 
 {% for key, value in context.global_environment %}
 export {{ key }}={{ quote(value) }}
@@ -144,21 +170,25 @@ srt_install_sglang_from_source() {
     [[ -n "${SRTCTL_SGLANG_SOURCE}" ]] || return 0
     [[ -d "${SRTCTL_SGLANG_SOURCE}/python/sglang" ]] || srt_die "Invalid SGLang source: ${SRTCTL_SGLANG_SOURCE}"
     command -v git >/dev/null 2>&1 || srt_die "git is required to identify SGLang source"
-    local revision runtime_root runtime_dir source_copy bootstrap_python
+    local revision runtime_root runtime_dir source_copy bootstrap_python installed_source
     revision="$(git -C "${SRTCTL_SGLANG_SOURCE}" rev-parse --verify HEAD)"
     runtime_root="${SRTCTL_SGLANG_RUNTIME_ROOT:-${OUTPUT_BASE}/.srtctl-runtime}"
-    runtime_dir="${runtime_root}/sglang-${revision}"
+    runtime_dir="${SRTCTL_SGLANG_RUNTIME_DIR:-${runtime_root}/sglang-${revision}}"
     source_copy="${runtime_dir}/source"
     bootstrap_python="${SRTCTL_PYTHON}"
-    if [[ ! -x "${runtime_dir}/.venv/bin/python" ]]; then
+    if [[ ! -f "${runtime_dir}/.complete" ]]; then
         srt_log "Installing SGLang ${revision} into ${runtime_dir}/.venv"
         mkdir -p "${runtime_dir}"
+        rm -rf "${runtime_dir}/.venv" "${source_copy}" "${runtime_dir}/.complete"
         "${bootstrap_python}" -m venv --system-site-packages "${runtime_dir}/.venv"
         rm -rf "${source_copy}"
         mkdir -p "${source_copy}"
         tar --exclude='.git' --exclude='target' -C "${SRTCTL_SGLANG_SOURCE}" -cf - . | tar -C "${source_copy}" -xf -
         "${runtime_dir}/.venv/bin/python" -m pip install --quiet --upgrade pip
         "${runtime_dir}/.venv/bin/python" -m pip install --quiet --editable "${source_copy}/python"
+        installed_source="$("${runtime_dir}/.venv/bin/python" -c 'import sglang; print(sglang.__file__)')"
+        [[ "${installed_source}" == "${source_copy}/python/sglang/__init__.py" ]] || srt_die "SGLang editable install resolved to ${installed_source}"
+        touch "${runtime_dir}/.complete"
     fi
     SRTCTL_PYTHON="${runtime_dir}/.venv/bin/python"
     export SRTCTL_PYTHON
