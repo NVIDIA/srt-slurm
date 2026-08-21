@@ -599,8 +599,13 @@ def _router_settings(root: Path) -> dict[str, Any] | None:
         "router_temperature",
     )
     with path.open(encoding="utf-8", errors="replace") as handle:
-        for line in handle:
-            if "CONFIG_DUMP: " not in line:
+        for raw in handle:
+            try:
+                logged = json.loads(raw)
+            except json.JSONDecodeError:
+                logged = None
+            line = logged.get("message") if isinstance(logged, dict) else raw
+            if not isinstance(line, str) or "CONFIG_DUMP: " not in line:
                 continue
             try:
                 config = json.loads(line.split("CONFIG_DUMP: ", 1)[1]).get("config", {})

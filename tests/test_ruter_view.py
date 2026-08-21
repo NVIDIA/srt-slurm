@@ -15,7 +15,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from srtctl.ruter.normalize import normalize_run
-from srtctl.ruter.view import _handler, load_view_data
+from srtctl.ruter.view import _handler, _router_settings, load_view_data
 
 
 def _write(path: Path, contents: str) -> None:
@@ -203,6 +203,24 @@ def test_view_reads_extensionless_dynamo_request_trace(tmp_path: Path) -> None:
     normalize_run(run)
 
     assert load_view_data(run).summary()["requestTraces"] == 1
+
+
+def test_view_reads_json_logged_router_config_dump(tmp_path: Path) -> None:
+    run = _make_run(tmp_path / "run")
+    config = {
+        "router_mode": "kv",
+        "overlap_score_credit": 1.0,
+        "overlap_score_credit_decay": 0.0,
+        "prefill_load_scale": 1.0,
+        "decode_active_request_weight": 0.5,
+        "router_temperature": 0.0,
+    }
+    _write(
+        run / "logs" / "router.log",
+        _json_line({"time": "2026-08-20T00:00:00Z", "message": f"CONFIG_DUMP: {json.dumps({'config': config})}"}),
+    )
+
+    assert _router_settings(run) == config
 
 
 def test_view_splits_prefill_and_decode_score_batches(tmp_path: Path) -> None:
