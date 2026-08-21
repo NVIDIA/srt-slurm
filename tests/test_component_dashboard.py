@@ -962,3 +962,57 @@ class TestWaterfallKvTransferBand:
         _render(bundle, tmp_path / "dash.html", "--d3-cdn", "--dump-json", str(payload))
         for band in json.loads(payload.read_text())["waterfall"].values():
             assert band["kvt"] == 0
+
+
+class TestInstantaneousImbalancePanels:
+    """Balance over a phase and balance at an instant are different properties.
+
+    Reported in the field as: "Over the whole benchmark phase, I don't see a large
+    imbalance between DP ranks. However, there is a large instantaneously imbalance."
+    A run-total per rank is exactly the aggregate that hides it.
+    """
+
+    @staticmethod
+    def _trace(run_dir: Path, ranks_by_turn):
+        recs = []
+        for i, rank in enumerate(ranks_by_turn):
+            r = _trace_record(f"x{i}", "s1", 1_787_174_000_000 + i * 10,
+                              prefill_wait=1.0, prefill=10.0, kv_transfer=1.0,
+                              total=1000.0, avg_itl=2.0, osl=11, hashes=[1])
+            r["event"]["request"]["worker"]["prefill_dp_rank"] = rank
+            recs.append(r)
+        (run_dir / "dynamo-request-trace").write_text(
+            "\n".join(json.dumps(r) for r in recs) + "\n")
+
+    def _panels(self, run_dir: Path, tmp_path: Path):
+        bundle = tmp_path / "bundle"
+        _run_ingest(run_dir, bundle)
+        payload = tmp_path / "dash.json"
+        proc = _render(bundle, tmp_path / "dash.html", "--d3-cdn", "--dump-json", str(payload))
+        assert proc.returncode == 0, proc.stderr
+        return json.loads(payload.read_text())["panels"]
+
+    def test_concurrent_skew_is_detected(self, run_dir: Path, tmp_path: Path):
+        """Every request lands on rank 0 while ranks 1-3 idle."""
+        self._trace(run_dir, [0, 0, 0, 0, 0, 1])
+        p = self._panels(run_dir, tmp_path)["bal_prefill_dp_rank"]
+        assert max(v for _, v in p["series"]["max-min"]) >= 4
+
+    def test_balanced_load_shows_no_spread(self, run_dir: Path, tmp_path: Path):
+        """Overlapping requests spread evenly across ranks must not raise an alarm."""
+        self._trace(run_dir, [0, 1, 2, 3])
+        p = self._panels(run_dir, tmp_path)["bal_prefill_dp_rank"]
+        assert max(v for _, v in p["series"]["max-min"]) <= 1
+
+    def test_single_rank_run_emits_no_panel(self, run_dir: Path, tmp_path: Path):
+        """With one rank there is no imbalance to express; a flat zero line would
+        imply the run was checked and found balanced."""
+        self._trace(run_dir, [0, 0, 0])
+        assert "bal_prefill_dp_rank" not in self._panels(run_dir, tmp_path)
+
+    def test_derived_panel_matches_the_spec_panel_shape(self, run_dir: Path, tmp_path: Path):
+        """It must be indistinguishable from a spec panel to the renderer -- a
+        different source, not a different kind of panel."""
+        self._trace(run_dir, [0, 0, 1, 2])
+        p = self._panels(run_dir, tmp_path)["bal_prefill_dp_rank"]
+        assert {"tab", "title", "unit", "kind", "why", "source", "caveat", "series"} <= set(p)
