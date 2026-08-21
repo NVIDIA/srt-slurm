@@ -69,6 +69,11 @@ Processor registry
       "spanlog" Dynamo SPAN_CLOSED logs -> schema 3.         (traces_spanlog.process)
     metrics -> server_metrics_export.jsonl
       "prometheus" raw_prometheus.jsonl -> schema 2.         (metrics_prometheus.process)
+      "aiperf-json" AIPerf server_metrics_export.json -> schema 2.
+                                                          (metrics_aiperf_json.process)
+                   The only server-metrics source on runs predating
+                   `observability.enabled`, which is where the before/after
+                   pairs for already-landed fixes live.
     request_trace -> request_trace.jsonl
       "dynamo"  dynamo-request-trace -> schema 4.            (request_trace.process)
     iter_log -> iter_bins.json
@@ -159,6 +164,7 @@ PROCESSORS: dict[str, dict[str, Callable]] = {
     },
     "metrics": {
         "prometheus": _lazy("metrics_prometheus"),
+        "aiperf-json": _lazy("metrics_aiperf_json"),
     },
     "request_trace": {
         "dynamo": _lazy("request_trace"),
