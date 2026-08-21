@@ -68,6 +68,21 @@ rates sit at zero through their idle windows), and labels which statistic each r
 used. Without that fallback an 8x concurrency change reported 30 panels as unchanged
 when only 8 genuinely were.
 
+It also prints a **PROVENANCE** section, which answers the question the rest of the
+report assumes: *were these two runs actually comparable?*
+
+* **Framework drift** — the versions found inside the running workers, from
+  `fingerprint_*.json`. If baseline and compared ran different `tensorrt_llm` builds,
+  nothing else in the report means what it appears to. This is invisible otherwise:
+  both runs simply work.
+* **CONFIG DELTA** — every differing key of the resolved `config.yaml`, flattened to
+  dotted paths. For an ablation this should name exactly one setting, and the section
+  says outright whether the comparison is `SINGLE-VARIABLE` or how many settings
+  differ. A confound becomes something you see rather than something you argue about.
+
+Both degrade honestly: when either bundle lacks the provenance files the section says
+the changed variables are **UNKNOWN** rather than implying the runs matched.
+
 ### Running a job against a modified checkout
 
 If you are testing dashboard changes, the compute node runs whatever `srtctl_root` in
@@ -171,6 +186,10 @@ Produces:
 <bundle>/request_trace.jsonl         request-trace axis  (schema 4)
 <bundle>/iter_bins.json              per-iteration axis  (schema 5)
 <bundle>/trtllm_config_*.yaml        engine ceilings, copied verbatim
+<bundle>/profile_export_aiperf.json  client run summary: workload cache ceiling, validity
+<bundle>/config.yaml                 the RESOLVED recipe — what was configured
+<bundle>/fingerprint_*.json          per-worker ground truth: framework versions, GPU, CUDA
+<bundle>/resource_snapshot.json      the allocation the numbers came from
 <bundle>/dashboard.yaml              generated sidecar (header labels + topology)
 ```
 
@@ -184,6 +203,8 @@ Produces:
 | `--request-trace` | `dynamo` | parses `dynamo-request-trace`; the only source of KV-transfer cost and `session_id` |
 | `--iter-log` | `trtllm` | parses `print_iter_log` lines from the worker logs; local->UTC offset is derived per run, not hardcoded |
 | *(automatic)* | — | `trtllm_config_*.yaml` are copied from the run dir into the bundle, giving the Engine tab its real in-flight-batch ceilings instead of the `--max-batch-*` defaults |
+| *(automatic)* | — | `profile_export_aiperf.json` — AIPerf's run summary. Carries `theoretical_prefix_cache_hit` (the ceiling the *workload* offered), `error_summary` / `was_cancelled` / `branch_stats` (run validity), and `effective_concurrency`. Its **absence** is a signal too: AIPerf writes it when a concurrency finishes, so a run killed by its wall clock has none |
+| *(automatic)* | — | `config.yaml`, `fingerprint_*.json`, `resource_snapshot.json` — run provenance. Without these, two bundles can be compared for what *moved* but never for what *changed* |
 | `--worker` | — | repeatable `ROLE=PARALLELISM:RANK:COUNT`, e.g. `prefill=dep:4:6` |
 | `--jobs` | `4` | parallelism for the `SPAN_CLOSED` pre-grep |
 
@@ -297,6 +318,22 @@ measuring think time.
   splits by `dp_rank`.
 - **Some queue gauges read a constant 0** on a run that never queued. They are still
   specified: queue depth is the strongest single TTFT predictor when it is not zero.
+- **The KV-routing panels can describe a small slice of the traffic.** Session affinity
+  pins a request to the worker already holding its conversation, and a pinned request
+  never reaches the KV scorer — on run 2751593 that was 248 of 274 decisions (90.5%).
+  The router tab states its own coverage from `ro.coverage`, but only when the
+  frontend-log leg is present; without it, no decision count exists and no coverage
+  claim is made.
+- **`meta.n = 0` does not mean the run served nothing.** It counts *profiling*-phase
+  requests, and a run that hits its wall clock during warmup has none — reference run
+  2750618 has 118 client records, all `benchmark_phase: warmup`. Scrape-derived KPIs
+  (`tok_cache`, `kv_hit_true`) are still valid on such a run; the per-request and
+  per-session cards are the parts that need `meta.n > 0`. `meta.phase_filter` states
+  which case you are looking at.
+- **Worker fingerprints do not cover the frontend.** They are written per worker, so a
+  frontend-only setting such as `DYN_TOKENIZER_CACHE` appears in no fingerprint. Its
+  record is `meta.provenance.config`, taken from the resolved `config.yaml` — a
+  configured value rather than an observation from inside the running process.
 
 ## Provenance and re-syncing
 
