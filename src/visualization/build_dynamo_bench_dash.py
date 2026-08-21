@@ -123,7 +123,12 @@ def _benchmark_status():
         return {"exit_code": d.get("exit_code"),
                 # 6, not 4: a check_env_vars failure is a header plus one line per
                 # missing variable, and truncating to 4 drops the variables.
-                "errors": (d.get("errors") or [])[:6]}
+                "errors": (d.get("errors") or [])[:6],
+                # AIPerf's own completed/cancelled census per phase. Frequently the ONLY
+                # account of what happened: arm 2752189 exited 1 with zero error-marker
+                # lines in benchmark.out, so without this the banner could say nothing
+                # beyond the exit code.
+                "phases": (d.get("phases") or [])[:4]}
     return None
 
 
@@ -1595,7 +1600,11 @@ function hTip(){tip.style('display','none')}
   const BS=M.benchmark_status;
   if(BS){
     head += `  —  BENCHMARK FAILED (exit ${BS.exit_code||'?'})`
-          + (BS.errors && BS.errors.length ? `: ${BS.errors[0]}` : '');
+          + (BS.errors && BS.errors.length ? `: ${BS.errors[0]}` : '')
+          // The phase census when there is no error line: it distinguishes "never
+          // started" from "ran and was cut short", which have opposite fixes.
+          + (!(BS.errors||[]).length && (BS.phases||[]).length
+               ? ` — ${BS.phases[BS.phases.length-1]}` : '');
   }
   // Run validity bounds every number on the page, so it belongs in the header rather
   // than on one tab. A cancelled run, a run with client errors, or an agentic run
