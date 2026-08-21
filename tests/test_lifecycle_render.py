@@ -102,6 +102,7 @@ def test_local_dynamo_lifecycle_starts_owned_infrastructure(tmp_path) -> None:
 
     assert context.needs_dynamo_infra
     assert "-m dynamo.sglang" in context.worker_processes[0].command
+    assert "--host 0.0.0.0" in context.worker_processes[0].command
     assert "-m dynamo.frontend" in context.router_command
     assert "--model-name fake/mock-model" in context.router_command
     assert "--model-path fake/mock-model" in context.router_command

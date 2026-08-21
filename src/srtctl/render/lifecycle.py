@@ -230,6 +230,10 @@ def _build_local_processes(
             raise ValueError(f"Direct-host NCCL port exceeds range: {nccl_port}")
 
         module = "dynamo.sglang" if config.frontend.type == "dynamo" else "sglang.launch_server"
+        # Dynamo's P/D workers advertise the host-reachable bootstrap address
+        # to their decode peers. Match the Slurm launcher and bind those
+        # workers beyond loopback; SGLang Model Gateway workers stay local.
+        worker_host = "0.0.0.0" if config.frontend.type == "dynamo" else "127.0.0.1"
         args = [
             "-m",
             module,
@@ -238,7 +242,7 @@ def _build_local_processes(
             "--served-model-name",
             served_model_name,
             "--host",
-            "127.0.0.1",
+            worker_host,
             "--port",
             str(process.http_port),
             "--nccl-port",
