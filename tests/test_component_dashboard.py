@@ -762,3 +762,98 @@ class TestRequestAndSessionEntities:
         data = json.loads(payload.read_text())
         assert data["tabs"]["session"] is False
         assert data["rt"]["sessions"] == []
+
+
+class TestPanelSpec:
+    """The declarative panel layer: one evaluator, no per-panel code."""
+
+    def test_every_panel_row_is_well_formed(self):
+        """A malformed row would fail at render time on a cluster, hours after the
+        run it was meant to explain."""
+        from src.visualization.panels import KINDS, PANELS
+
+        ids = [p["id"] for p in PANELS]
+        assert len(ids) == len(set(ids)), "panel ids must be unique"
+        for p in PANELS:
+            assert p["kind"] in KINDS, f"{p['id']}: bad kind"
+            assert p["metrics"], f"{p['id']}: no source metric"
+            assert p["title"] and p["why"], f"{p['id']}: missing title/why"
+            if p["kind"] == "ratio":
+                assert len(p["metrics"]) == 2, f"{p['id']}: ratio needs exactly two counters"
+
+    def test_titles_are_run_independent(self):
+        """Principle: no panel title may encode the run it was written against."""
+        import re
+
+        from src.visualization.panels import PANELS
+
+        for p in PANELS:
+            assert not re.search(r"\d", p["title"]), f"{p['id']}: digit in title suggests a hardcoded count"
+            for banned in ("agentx", "2739690", "deepseek", "lyris", "gb200", "gb300"):
+                assert banned not in p["title"].lower(), f"{p['id']}: run-specific title"
+
+    def test_no_engine_metric_is_split_by_dp_rank(self):
+        """Engine-side dp_rank is a replicated broadcast -- every rank reports
+        identical values. Splitting on it renders a flat family of lines that reads as
+        'no imbalance' on a run that had a 12x spread."""
+        from src.visualization.panels import PANELS
+
+        for p in PANELS:
+            if any(m.startswith("trtllm_") for m in p["metrics"]):
+                assert p["split_by"] != "dp_rank", f"{p['id']}: would render a false flat"
+
+    def test_counter_rate_ignores_a_counter_reset(self):
+        """A restart makes a counter go backwards. Emitting the negative delta draws a
+        throughput cliff that never happened."""
+        from src.visualization.panels import evaluate
+
+        spec = [{"id": "c", "tab": "t", "title": "T", "unit": "u", "kind": "counter_rate",
+                 "metrics": ["m"], "split_by": None, "why": "w", "issues": [], "caveat": None}]
+        scrapes = [(i * 1_000_000_000, {"m": [{"labels": {}, "value": v}]})
+                   for i, v in enumerate([10, 20, 5, 15])]
+        series = evaluate(scrapes, spec)["c"]["series"]["all"]
+        assert [v for _, v in series] == [10.0, 10.0], "the reset must be dropped, not plotted"
+
+    def test_hist_mean_is_an_interval_mean(self):
+        """A cumulative mean flattens over a long run and hides the late degradation
+        these panels exist to catch."""
+        from src.visualization.panels import evaluate
+
+        spec = [{"id": "h", "tab": "t", "title": "T", "unit": "s", "kind": "hist_mean",
+                 "metrics": ["lat"], "split_by": None, "why": "w", "issues": [], "caveat": None}]
+        # interval 1: 10 events / 10s -> 1.0 ; interval 2: 10 events / 100s -> 10.0
+        scrapes = [
+            (0, {"lat_sum": [{"labels": {}, "value": 0.0}], "lat_count": [{"labels": {}, "value": 0}]}),
+            (1_000_000_000, {"lat_sum": [{"labels": {}, "value": 10.0}], "lat_count": [{"labels": {}, "value": 10}]}),
+            (2_000_000_000, {"lat_sum": [{"labels": {}, "value": 110.0}], "lat_count": [{"labels": {}, "value": 20}]}),
+        ]
+        assert [v for _, v in evaluate(scrapes, spec)["h"]["series"]["all"]] == [1.0, 10.0]
+
+    def test_split_by_produces_one_series_per_worker(self):
+        from src.visualization.panels import evaluate
+
+        spec = [{"id": "g", "tab": "t", "title": "T", "unit": "u", "kind": "gauge",
+                 "metrics": ["m"], "split_by": "worker_id", "why": "w", "issues": [], "caveat": None}]
+        scrapes = [(0, {"m": [{"labels": {"worker_id": "a"}, "value": 1},
+                              {"labels": {"worker_id": "b"}, "value": 2}]})]
+        assert set(evaluate(scrapes, spec)["g"]["series"]) == {"a", "b"}
+
+    def test_panels_with_no_data_are_omitted(self):
+        """Omission is what lets a tab drop cleanly instead of rendering empty."""
+        from src.visualization.panels import evaluate
+
+        spec = [{"id": "absent", "tab": "t", "title": "T", "unit": "u", "kind": "gauge",
+                 "metrics": ["never_emitted"], "split_by": None, "why": "w", "issues": [], "caveat": None}]
+        assert evaluate([(0, {"other": [{"labels": {}, "value": 1}]})], spec) == {}
+
+    def test_panels_reach_the_payload(self, run_dir: Path, tmp_path: Path):
+        bundle = tmp_path / "bundle"
+        _run_ingest(run_dir, bundle)
+        payload = tmp_path / "dash.json"
+        proc = _render(bundle, tmp_path / "dash.html", "--d3-cdn", "--dump-json", str(payload))
+        assert proc.returncode == 0, proc.stderr
+
+        panels = json.loads(payload.read_text())["panels"]
+        assert panels, "the fixture emits KV-cache metrics, so panels must be present"
+        for p in panels.values():
+            assert {"tab", "title", "unit", "kind", "why", "source", "series"} <= set(p)

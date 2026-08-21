@@ -40,6 +40,12 @@ from collections import Counter, defaultdict, deque
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _VENDORED_D3 = os.path.join(_HERE, "d3.v7.min.js")
 
+# Repo root, so `src.visualization` / `src.ingest` resolve whether this is run with
+# -m or as a bare script path.
+import sys as _sys  # noqa: E402
+_sys.path.insert(0, os.path.dirname(os.path.dirname(_HERE)))
+from src.visualization.panels import evaluate as _evaluate_panels  # noqa: E402
+
 _ap = argparse.ArgumentParser(description="Render the Dynamo benchmark component dashboard from an ingest bundle.")
 _ap.add_argument("bundle_dir", nargs="?", help="ingest bundle dir (profile_export.jsonl, tempo_traces/, server_metrics_export.jsonl). Optional: omit for a log-only build.")
 _ap.add_argument("out_html", nargs="?", help="output HTML path")
@@ -878,8 +884,25 @@ if rt_rows:
               f"{_pin}/{len(rt_sessions)} pinned to a single decode worker, "
               f"{len(rt_const)} constant field(s): {sorted(rt_const)}")
 
+# ============ 6. declarative time-series panels ==============================
+# One generic evaluator over the panel table in panels.py. Every panel is a data row;
+# none of them has bespoke code, so none can drift into being run-specific.
+panels=_evaluate_panels(scr)
+if panels:
+    _by_tab={}
+    for _pid,_p in panels.items(): _by_tab.setdefault(_p["tab"],[]).append(_pid)
+    _log.info("panels: "+", ".join(f"{t}={len(v)}" for t,v in sorted(_by_tab.items()))
+              +f" ({sum(len(p['series']) for p in panels.values())} series total)")
+    _flat=[pid for pid,p in panels.items()
+           if all(len({round(v,9) for _,v in s})==1 for s in p["series"].values())]
+    if _flat:
+        # Named rather than dropped: a flat queue-depth panel says the run never
+        # queued, which is one of the more useful things a run can tell you.
+        _log.info(f"panels reading a single constant value: {sorted(_flat)}")
+
 DATA={
  "logdrill":logdrill,
+ "panels":panels,
  "rt":{"requests":rt_requests,"sessions":rt_sessions,"bands":RT_BANDS,"const":rt_const},
  "iter":iter_series,
  "iter_cfg":{"pf_batch":CFG_PF_BATCH,"pf_tok":CFG_PF_TOK,"de_batch":CFG_DE_BATCH,"de_tok":CFG_DE_TOK},
