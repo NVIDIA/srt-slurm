@@ -530,3 +530,161 @@ class TestPerfDashboardPipeline:
         monkeypatch.setattr(pd, "find_repo_root", lambda: None)
         runtime = SimpleNamespace(log_dir=run_dir, job_id="12345")
         assert pd.try_build(_stub_config(), runtime) is None
+
+
+# ---------------------------------------------------------------------------
+# request-trace leg (schema 4)
+# ---------------------------------------------------------------------------
+
+
+def _trace_record(xid, sid, received_ms, *, prefill_wait, prefill, kv_transfer, total,
+                  avg_itl, osl, hashes, turn_hashes_shared=None):
+    """One dynamo.request.trace.v1 request_end record, real field paths."""
+    return {
+        "timestamp": 700000,
+        "event": {
+            "schema": "dynamo.request.trace.v1",
+            "event_type": "request_end",
+            "event_source": "dynamo",
+            "agent_context": {"session_id": sid},
+            "request": {
+                "request_id": f"rid-{xid}",
+                "x_request_id": xid,
+                "model": "DeepSeek-V4-Pro",
+                "input_tokens": 1024,
+                "output_tokens": osl,
+                "cached_tokens": 512,
+                "request_received_ms": received_ms,
+                "prefill_wait_time_ms": prefill_wait,
+                "prefill_time_ms": prefill,
+                "ttft_ms": prefill_wait + prefill,
+                "total_time_ms": total,
+                "avg_itl_ms": avg_itl,
+                "kv_hit_rate": 0.5,
+                "kv_transfer_estimated_latency_ms": kv_transfer,
+                "queue_depth": 0,
+                "worker": {
+                    "prefill_worker_id": 111, "prefill_dp_rank": 2,
+                    "decode_worker_id": 222, "decode_dp_rank": 0,
+                },
+                "replay": {"trace_block_size": 32, "input_length": 1024,
+                           "input_sequence_hashes": hashes},
+                "finish_reason_metadata": {"finish_reason": "length"},
+            },
+        },
+    }
+
+
+class TestRequestTraceProcessor:
+    def test_ttft_is_corrected_for_kv_transfer(self, tmp_path: Path):
+        """`ttft_ms` in the file is the PREFILL worker's first token. On disagg the
+        client waits for decode, which cannot start until KV has transferred. Measured
+        over 557 joined requests, adding kv_transfer moves the client-TTFT residual
+        from 'wrong on 510/557' to 'wrong on 0/557'."""
+        from src.ingest.request_trace import flatten
+
+        row = flatten(_trace_record("x1", "s1", 1000, prefill_wait=4.0, prefill=680.0,
+                                    kv_transfer=130.0, total=2500.0, avg_itl=66.0,
+                                    osl=11, hashes=[1, 2, 3]))
+        assert row["ttft_prefill_ms"] == 684.0
+        assert row["client_ttft_ms"] == 814.0, "must add KV transfer"
+        assert row["steady_decode_ms"] == pytest.approx(2500.0 - 814.0)
+
+    def test_itl_is_decontaminated(self, tmp_path: Path):
+        """avg_itl averages over a decode span starting at the PREFILL first token, so
+        it absorbs the whole KV transfer. On the reference run that inflates p50 ITL
+        roughly 11x (66.4ms raw vs 5.9ms clean)."""
+        from src.ingest.request_trace import flatten
+
+        row = flatten(_trace_record("x1", "s1", 1000, prefill_wait=4.0, prefill=680.0,
+                                    kv_transfer=130.0, total=2500.0, avg_itl=66.0,
+                                    osl=11, hashes=[1]))
+        assert row["clean_itl_ms"] == pytest.approx(66.0 - 130.0 / 10)
+
+    def test_aggregated_run_has_no_kv_transfer_correction(self):
+        """Non-disagg: no transfer, so client TTFT IS the prefill-side TTFT."""
+        from src.ingest.request_trace import flatten
+
+        rec = _trace_record("x1", "s1", 1000, prefill_wait=4.0, prefill=680.0,
+                            kv_transfer=None, total=2500.0, avg_itl=66.0, osl=11, hashes=[1])
+        del rec["event"]["request"]["kv_transfer_estimated_latency_ms"]
+        row = flatten(rec)
+        assert row["client_ttft_ms"] == row["ttft_prefill_ms"] == 684.0
+        assert row["clean_itl_ms"] == 66.0
+
+    def test_non_request_end_records_are_skipped(self):
+        from src.ingest.request_trace import flatten
+
+        rec = _trace_record("x1", "s1", 1000, prefill_wait=1.0, prefill=1.0,
+                            kv_transfer=1.0, total=1.0, avg_itl=1.0, osl=2, hashes=[1])
+        rec["event"]["event_type"] = "tool_start"
+        assert flatten(rec) is None
+
+    def test_prefix_reuse_and_turn_order(self, tmp_path: Path):
+        """Turn order is by received_ms (verified to reproduce the client's own
+        turn_index on 33/33 sessions). Turn 0 has no predecessor, so its reuse is
+        None -- 'no previous turn' is not 'no reuse'."""
+        from src.ingest.request_trace import process
+
+        src = tmp_path / "dynamo-request-trace"
+        with src.open("w") as f:
+            # deliberately out of chronological order in the file
+            f.write(json.dumps(_trace_record("x2", "s1", 2000, prefill_wait=1.0, prefill=1.0,
+                                             kv_transfer=1.0, total=10.0, avg_itl=1.0, osl=3,
+                                             hashes=[1, 2, 3, 9])) + "\n")
+            f.write(json.dumps(_trace_record("x1", "s1", 1000, prefill_wait=1.0, prefill=1.0,
+                                             kv_transfer=1.0, total=10.0, avg_itl=1.0, osl=3,
+                                             hashes=[1, 2, 3])) + "\n")
+        out = tmp_path / "request_trace.jsonl"
+        assert process(str(src), str(out)) == 2
+
+        rows = {r["x_request_id"]: r for r in (json.loads(x) for x in out.read_text().splitlines())}
+        assert rows["x1"]["turn_index"] == 0 and rows["x1"]["prefix_reuse_ratio"] is None
+        assert rows["x2"]["turn_index"] == 1
+        assert rows["x2"]["prefix_reuse_ratio"] == pytest.approx(0.75)  # 3 of 4 blocks shared
+
+    def test_bulky_hashes_never_reach_the_bundle(self, tmp_path: Path):
+        """input_sequence_hashes is 463k entries on a 20-min run and would dominate any
+        embedded payload. Only the derived reuse ratio survives."""
+        from src.ingest.request_trace import process
+
+        src = tmp_path / "dynamo-request-trace"
+        src.write_text(json.dumps(_trace_record("x1", "s1", 1000, prefill_wait=1.0, prefill=1.0,
+                                                kv_transfer=1.0, total=10.0, avg_itl=1.0, osl=3,
+                                                hashes=list(range(5000)))) + "\n")
+        out = tmp_path / "request_trace.jsonl"
+        process(str(src), str(out))
+        row = json.loads(out.read_text().strip())
+        assert "input_sequence_hashes" not in json.dumps(row)
+        assert row["n_hash_blocks"] == 5000
+
+
+class TestClientLayouts:
+    @pytest.mark.parametrize("relpath", [
+        "agentic/conc_3/aiperf_artifacts/profile_export.jsonl",  # AgentX
+        "artifacts/Qwen3-32B_conversation_20260820/profile_export.jsonl",  # AIPerf bench.sh
+    ])
+    def test_both_client_layouts_are_found(self, tmp_path: Path, relpath: str):
+        """AgentX nests one level deeper than the AIPerf harness. Missing the AgentX
+        layout silently kills the Overview tab AND the trace leg, which is gated on
+        the client xids."""
+        from src.ingest.ingest import main
+
+        d = tmp_path / "logs"
+        d.mkdir()
+        _write_raw_prometheus(d)
+        export = d / relpath
+        export.parent.mkdir(parents=True)
+        export.write_text(
+            json.dumps({
+                "metadata": {"x_request_id": "xid0", "request_start_ns": T0,
+                             "request_end_ns": T0 + 1_000_000_000},
+                "metrics": {"time_to_first_token": {"value": 120.0},
+                            "request_latency": {"value": 1200.0},
+                            "input_sequence_length": {"value": 1024},
+                            "output_sequence_length": {"value": 128}},
+            }) + "\n"
+        )
+        bundle = tmp_path / "bundle"
+        assert main(["--run-dir", str(d), "--out", str(bundle), "--traces", "none"]) == 0
+        assert (bundle / "profile_export.jsonl").read_text().count("xid0") == 1
