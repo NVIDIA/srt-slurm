@@ -901,6 +901,70 @@ if rt_rows:
 # One generic evaluator over the panel table in panels.py. Every panel is a data row;
 # none of them has bespoke code, so none can drift into being run-specific.
 panels=_evaluate_panels(scr)
+
+# ---- derived panels: in-flight balance across ranks and workers -------------
+# Emitted in the SAME shape as the spec panels so the generic renderer draws them
+# with no extra code -- a different SOURCE, not a different kind of panel.
+#
+# Why this cannot come from the metrics stream: engine-side per-rank series are a
+# replicated broadcast (identical across ranks in every sweep), so splitting an
+# engine gauge by rank renders a flat family of lines and reads as "balanced" on a
+# run that was not. The request trace carries the rank that actually served each
+# request, so occupancy per rank can be reconstructed from it instead.
+#
+# Why INSTANTANEOUS rather than a whole-run total, in the reporter's own words:
+#   "Over the whole benchmark phase, I don't see a large imbalance between DP ranks.
+#    However, there is a large instantaneously imbalance."
+# A run-total request count per rank is exactly the aggregate that hides this, which
+# is why the panel is max-minus-min occupancy over time and not a bar chart.
+#
+# The spread statistic follows the documented method -- "using running-request and
+# looking at min/max between DP ranks" -- with the normalised form alongside, since
+# max-min of 4 means something different at 5 in flight than at 500.
+def _inflight_spread(rows, field, nbins=240):
+    live=[r for r in rows if r.get(field) is not None and r.get("received_ms") and r.get("total_ms")]
+    if len({r[field] for r in live})<2: return None,None
+    t0=min(r["received_ms"] for r in live); t1=max(r["received_ms"]+r["total_ms"] for r in live)
+    if t1<=t0: return None,None
+    step=(t1-t0)/nbins
+    keys=sorted({r[field] for r in live})
+    spread=[]; norm=[]
+    for i in range(nbins):
+        t=t0+i*step
+        counts={k:0 for k in keys}
+        for r in live:
+            if r["received_ms"]<=t<r["received_ms"]+r["total_ms"]: counts[r[field]]+=1
+        hi,lo=max(counts.values()),min(counts.values())
+        mean=sum(counts.values())/len(counts)
+        spread.append([round(i*step/1000,1),hi-lo])
+        # Normalised only where there is load; (hi-lo)/0 is undefined, and reporting
+        # perfect balance for an idle window would dilute the very spikes being hunted.
+        if mean>0: norm.append([round(i*step/1000,1),round((hi-lo)/mean,3)])
+    return spread,norm
+
+for _field,_label,_tab in (("prefill_dp_rank","prefill DP rank","router"),
+                           ("decode_worker_id","decode worker","engine")):
+    _sp,_nm=_inflight_spread(rt_rows,_field)
+    if not _sp: continue
+    panels[f"bal_{_field}"]={
+      "tab":_tab,
+      "title":f"In-flight imbalance across {_label}s",
+      "unit":"requests","kind":"derived","split_by":None,
+      "why":"Concurrent requests on the busiest minus the least busy, sampled over the "
+            "run. A whole-run total per rank averages this away: balance over a phase "
+            "and balance at an instant are different properties, and it is the "
+            "instantaneous spread that stalls a synchronised step.",
+      "source":["request_trace.jsonl"],
+      "caveat":"Reconstructed from per-request attribution, not from an engine gauge -- "
+               "engine-side per-rank series are a replicated broadcast and cannot show "
+               "imbalance at all. Counts a request as occupying its rank for its whole "
+               "lifetime, so it measures occupancy, not instantaneous GPU work.",
+      "issues":["PERF-dp-imbalance"],
+      "series":{"max-min":_sp,**({"normalised (max-min)/mean":_nm} if _nm else {})},
+    }
+    _peak=max(v for _,v in _sp)
+    _log.info(f"balance [{_field}]: peak instantaneous spread {_peak} requests "
+              f"across {len({r[_field] for r in rt_rows if r.get(_field) is not None})} keys")
 if panels:
     _by_tab={}
     for _pid,_p in panels.items(): _by_tab.setdefault(_p["tab"],[]).append(_pid)
