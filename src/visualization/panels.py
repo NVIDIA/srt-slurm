@@ -680,8 +680,12 @@ PANELS: list[dict] = [
                "budget means token-budget-bound, a diagnosis that looks like an unremarkable "
                "number until it is divided by the configured ceiling.",
         "issues": ["PERF-15", "PERF-08", "PERF-14"],
-        "caveat": "Emitted by prefill-role workers only. The ceiling it must be divided by lives "
-                  "in the engine config file in the bundle, not in any metric.",
+        "caveat": "Emitted by prefill-role workers only. The ceiling it must be divided by "
+                  "lives in the engine config file in the bundle, not in any metric. Read it "
+                  "as a distribution and not only as this interval mean -- the share of "
+                  "iterations that actually REACH the ceiling and the average fraction of it "
+                  "are different quantities, and a run can look budget-bound on one while "
+                  "being far from it on the other.",
     },
     # E6
     {
@@ -839,6 +843,29 @@ PANELS: list[dict] = [
         "caveat": "A leak and out-of-memory canary, nothing more: there is no utilisation, "
                   "occupancy, power or temperature signal anywhere in the capture. Host and "
                   "pinned memory gauges exist but read a constant zero.",
+    },
+
+    # --- closing the remaining AVAILABLE issues from the coverage audit ---------
+    {
+        # PERF-21
+        "id": "ro_work_ttfr", "tab": "router", "unit": "s", "kind": "hist_mean",
+        "title": "Work-handler time to first response",
+        "metrics": ["dynamo_work_handler_time_to_first_response_seconds"],
+        "split_by": "dynamo_component",
+        "why": "How long the request plane took to get anything back from a component. "
+               "It separates a component that is slow to start responding from one that "
+               "is slow to finish, which end-to-end latency alone cannot.",
+        "issues": ["PERF-21"], "caveat": None,
+    },
+    {
+        # PERF-22
+        "id": "ro_component_requests", "tab": "router", "unit": "requests/s",
+        "kind": "counter_rate", "title": "Component request rate",
+        "metrics": ["dynamo_component_requests_total"], "split_by": "worker_id",
+        "why": "Delivered request rate per worker as the request plane saw it. Read "
+               "against the engine's own completion rate, a persistent gap means work "
+               "is being accepted faster than it is finished.",
+        "issues": ["PERF-22"], "caveat": None,
     },
 
 ]
