@@ -1,8 +1,8 @@
 # Component Performance Dashboard
 
-A single self-contained HTML page with **Overview / Router / Engine / Frontend** tabs,
-plus an optional **Log analysis** tab, built offline from the artifacts an srt-slurm
-job already captures.
+A single self-contained HTML page with **Overview / Frontend / Router / Engine /
+Session / Log analysis** tabs, built offline from the artifacts an srt-slurm job
+already captures.
 
 It answers component questions the aggregate benchmark numbers cannot: where TTFT
 went (admission queue vs. routing vs. prefill vs. KV transfer), whether KV cache or
@@ -13,7 +13,7 @@ Two pieces, vendored from the `dynamo-benchmark-perf-dashboard` repo:
 
 | Layer | Path | Role |
 | ----- | ---- | ---- |
-| **L2 ingest** | `src/ingest/` | RAW capture -> three fixed intermediate schemas (a *bundle*) |
+| **L2 ingest** | `src/ingest/` | RAW capture -> five fixed intermediate schemas (a *bundle*) |
 | **L3 render** | `src/visualization/` | bundle -> one self-contained `.html` |
 
 Both are stdlib-only and are **not** part of the installed `srtctl` wheel. Run them
@@ -79,15 +79,18 @@ observability:
   enabled: true
 ```
 
-That expands (see `ObservabilityConfig` in `src/srtctl/core/schema.py`) into the three
+That expands (see `ObservabilityConfig` in `src/srtctl/core/schema.py`) into the
 capture legs below. Without it you still get the Log-analysis tab, and nothing else.
 
-| Leg | Recipe requirement | Artifact | Feeds |
-| --- | ------------------ | -------- | ----- |
-| **Metrics** | `observability.enabled` | `<log_dir>/raw_prometheus.jsonl` | Router, Engine, Frontend |
-| **Traces** | `observability.enabled` **and** an AIPerf-based benchmark | `SPAN_CLOSED` lines in `<log_dir>/*.out` | Overview |
-| **Client** | an AIPerf-based benchmark at export level `records` (the default) | `<log_dir>/artifacts/<run>/profile_export.jsonl` | Overview |
-| **Frontend log** | *nothing* — always written | `<log_dir>/<node>_frontend_<i>.out` | Log analysis |
+| Leg | Recipe requirement | Artifact | Bundle output | Feeds |
+| --- | ------------------ | -------- | ------------- | ----- |
+| **Metrics** | `observability.enabled` | `<log_dir>/raw_prometheus.jsonl` | `server_metrics_export.jsonl` | every time-series panel |
+| **Request trace** | `observability.enabled` | `<log_dir>/dynamo-request-trace` | `request_trace.jsonl` | per-request card, per-session view, the waterfall's KV-transfer band |
+| **Per-iteration** | `print_iter_log: true` in the engine config | `SPAN`-free lines in `<log_dir>/*_w*.out` | `iter_bins.json` | batch composition, host/device step time |
+| **Traces** | `observability.enabled` **and** an AIPerf benchmark | `SPAN_CLOSED` lines in `<log_dir>/*.out` | `tempo_traces/<xid>.json` | Overview, routing outcome on the card |
+| **Client** | an AIPerf benchmark at export level `records` (default) | `<log_dir>/agentic/*/aiperf_artifacts/` or `artifacts/*/` | `profile_export.jsonl` | Overview, warmup filtering |
+| **Engine config** | TRT-LLM backend | `<log_dir>/trtllm_config_*.yaml` | copied verbatim | in-flight-batch ceilings |
+| **Frontend log** | *nothing* — always written | `<log_dir>/<node>_frontend_<i>.out` | *(read directly)* | Log analysis |
 
 ### Which tabs a run can populate
 
@@ -127,19 +130,24 @@ python3 -m src.ingest.ingest --run-dir <log_dir> --out <bundle> [flags]
 Produces:
 
 ```
-<bundle>/profile_export.jsonl        client axis   (schema 1)
-<bundle>/tempo_traces/<xid>.json     traces axis   (schema 3)
-<bundle>/server_metrics_export.jsonl metrics axis  (schema 2)
+<bundle>/profile_export.jsonl        client axis         (schema 1)
+<bundle>/server_metrics_export.jsonl metrics axis        (schema 2)
+<bundle>/tempo_traces/<xid>.json     traces axis         (schema 3)
+<bundle>/request_trace.jsonl         request-trace axis  (schema 4)
+<bundle>/iter_bins.json              per-iteration axis  (schema 5)
+<bundle>/trtllm_config_*.yaml        engine ceilings, copied verbatim
 <bundle>/dashboard.yaml              generated sidecar (header labels + topology)
 ```
 
 | Flag | Default | Notes |
 | ---- | ------- | ----- |
 | `--client` | `aiperf` | `none` to skip. The AIPerf export is already schema 1, so this is a passthrough |
-| `--client-input` | `artifacts/*/profile_export.jsonl` | reaches into the per-run artifact dir `bench.sh` creates |
+| `--client-input` | `agentic/*/aiperf_artifacts/…` then `artifacts/*/…` | both harness layouts are tried; AgentX nests one level deeper and shards by concurrency |
 | `--traces` | `spanlog` | `none` to skip |
 | `--span-logs` | `*.out` | srt-slurm's worker/frontend log naming |
 | `--metrics` | `prometheus` | parses `raw_prometheus.jsonl` |
+| `--request-trace` | `dynamo` | parses `dynamo-request-trace`; the only source of KV-transfer cost and `session_id` |
+| `--iter-log` | `trtllm` | parses `print_iter_log` lines from the worker logs; local->UTC offset is derived per run, not hardcoded |
 | *(automatic)* | — | `trtllm_config_*.yaml` are copied from the run dir into the bundle, giving the Engine tab its real in-flight-batch ceilings instead of the `--max-batch-*` defaults |
 | `--worker` | — | repeatable `ROLE=PARALLELISM:RANK:COUNT`, e.g. `prefill=dep:4:6` |
 | `--jobs` | `4` | parallelism for the `SPAN_CLOSED` pre-grep |
@@ -187,14 +195,73 @@ warmup/phase filter onto the log source.
 
 ---
 
+## The three dashboard entities
+
+Everything the page draws is one of exactly three things. Nothing is bespoke to a run.
+
+### 1. Time-series panels — `src/visualization/panels.py`
+
+77 panels declared as data rows, evaluated by one generic function. Adding a signal
+means adding a dict; there is no per-panel rendering code, which is what stops a panel
+acquiring behaviour another panel lacks. Four kinds cover every catalogued signal:
+
+| kind | arithmetic |
+| ---- | ---------- |
+| `gauge` | the sample as-is |
+| `counter_rate` | successive differences / dt. A backwards step means the process restarted and is **dropped**, not drawn as a negative spike |
+| `hist_mean` | `Δ_sum / Δ_count` — the **interval** mean. The cumulative form flattens over a long run and hides late degradation |
+| `ratio` | `a / (a+b)` on interval deltas, for genuine partner counters only |
+
+Two more panel kinds are computed rather than scraped (`kind: "derived"`), and are
+emitted in the same shape so the same renderer draws them: in-flight imbalance across
+ranks/workers, and batch composition.
+
+A panel whose series never moves is **stated in words**, not drawn. A flat line reads
+as a broken chart; "constant 0 for the whole run" is the finding.
+
+### 2. Per-request card — `DATA.rt.requests[<x_request_id>]`
+
+Four bands that sum to `total_ms` by construction: admission+routing, prefill compute,
+KV transfer, steady decode. Plus what the request *was* (`isl`, `osl`, `cached_tokens`,
+`kv_hit_rate`, `turn_index`, `prefix_reuse_ratio`) and where it went
+(`routing.worker_id`, `.dp_rank`, `.overlap_blocks`, `.router_ms`, `.admission_ms`).
+
+`routing` is an **outcome, not a rationale**. The router's cost comparison lives on a
+free-text selector line carrying no `request_id`, so "which worker, with how much
+overlap" is joinable per request while "why it beat the alternatives" is not.
+
+`routing.belief_error` compares the router's `overlap_blocks × block_size` against the
+engine's reported `cached_tokens`. They are the same quantity, so a divergence means
+the router is routing on a prefix the engine does not hold.
+
+### 3. Per-session view — `DATA.rt.sessions`
+
+One row per session, identical columns for every session and every run: turns,
+span/busy/**idle**, per-turn TTFT / KV-hit / prefix-reuse series, and which decode
+workers and prefill ranks it touched.
+
+Idle is broken out because a session can spend most of its wall-clock waiting on the
+harness rather than the server; a session-level latency figure that absorbs that is
+measuring think time.
+
 ## Known limitations
 
-- **Interpretive captions were developed on an admission/queue-bound reference run.**
-  The numbers are data-driven, but the framing reads best on queue-bound runs.
-- **Nothing is wired into the job path.** These are offline tools run against a
-  finished log directory; no stage of a benchmark invokes them.
-
----
+- **Interpretive captions on the older panels** were developed on an
+  admission/queue-bound reference run. The numbers are data-driven, but the framing
+  reads best on queue-bound runs. The declarative panels in `panels.py` do not have
+  this problem — their captions are fixed prose assembled from `why` / `source` /
+  `caveat` and never interpolate a run's values.
+- **Router *rationale* is not recoverable.** The selector line carrying logit, overlap
+  credit and prefill load scale has no `request_id`, so it cannot be joined per
+  request. Only the outcome is shown.
+- **`iter_bins.json` is rank 0 only**, so it cannot show TP/EP-rank divergence; and
+  `iter` restarts per engine lifecycle, so it is not a usable x-axis.
+- **Engine-side `dp_rank` is a replicated broadcast.** Splitting an engine metric by
+  rank renders a flat family of lines that reads as "balanced" on an imbalanced run.
+  Per-rank truth is frontend-side only; a test enforces that no `trtllm_*` panel
+  splits by `dp_rank`.
+- **Some queue gauges read a constant 0** on a run that never queued. They are still
+  specified: queue depth is the strongest single TTFT predictor when it is not zero.
 
 ## Provenance and re-syncing
 
