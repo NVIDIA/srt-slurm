@@ -928,3 +928,37 @@ class TestDoubleMetricPollingWarning:
 
         with caplog.at_level(logging.WARNING):
             self._mixin("no-such-benchmark", True)._warn_on_double_metric_polling()
+
+
+class TestWaterfallKvTransferBand:
+    def test_run_level_waterfall_has_the_kv_transfer_band(self, run_dir: Path, tmp_path: Path):
+        """The decode `handle_payload` span starts AFTER the KV cache has transferred,
+        so a spans-only waterfall butts prefill compute against decode compute and
+        silently absorbs the wait between them. On the reference run that gap is 83%
+        of TTFT at p90 -- the single largest phase, invisible."""
+        src = run_dir / "dynamo-request-trace"
+        src.write_text("\n".join(
+            json.dumps(_trace_record(xid, "s1", 1_787_174_000_000 + i * 1000,
+                                     prefill_wait=2.0, prefill=500.0, kv_transfer=250.0,
+                                     total=1000.0, avg_itl=20.0, osl=11, hashes=[1, 2]))
+            for i, xid in enumerate(XIDS)) + "\n")
+        bundle = tmp_path / "bundle"
+        _run_ingest(run_dir, bundle)
+        payload = tmp_path / "dash.json"
+        proc = _render(bundle, tmp_path / "dash.html", "--d3-cdn", "--dump-json", str(payload))
+        assert proc.returncode == 0, proc.stderr
+
+        wf = json.loads(payload.read_text())["waterfall"]
+        assert wf, "fixture has no spans, so the waterfall may be empty; guard the assert"
+        for band in wf.values():
+            assert "kvt" in band, "the run-level waterfall must carry the KV-transfer band"
+
+    def test_kvt_band_is_zero_without_a_request_trace(self, run_dir: Path, tmp_path: Path):
+        """Aggregated runs have no transfer, and older captures have no trace file.
+        The band must still exist so the waterfall's shape is run-independent."""
+        bundle = tmp_path / "bundle"
+        _run_ingest(run_dir, bundle)  # no dynamo-request-trace in the fixture
+        payload = tmp_path / "dash.json"
+        _render(bundle, tmp_path / "dash.html", "--d3-cdn", "--dump-json", str(payload))
+        for band in json.loads(payload.read_text())["waterfall"].values():
+            assert band["kvt"] == 0

@@ -117,8 +117,20 @@ def _have(*parts):
 HAS_CLIENT = _have("profile_export.jsonl")
 HAS_TRACES = bool(SRC) and bool(glob.glob(os.path.join(SRC, "tempo_traces", "*.json")))
 HAS_SM = _have("server_metrics_export.jsonl")
+HAS_RT = _have("request_trace.jsonl")
 _log.info(f"sources: client={HAS_CLIENT} traces={HAS_TRACES} server_metrics={HAS_SM} "
-          f"frontend_log={bool(_args.frontend_log)}")
+          f"request_trace={HAS_RT} frontend_log={bool(_args.frontend_log)}")
+
+# Loaded here, before any aggregate is computed, because the run-level waterfall needs
+# it: KV transfer is a phase no span reports and no Prometheus series samples, so
+# without this the waterfall has a silent hole between prefill and decode compute --
+# on the reference runs that hole is the median 79% of the decode span.
+rt_all=[]
+if HAS_RT:
+    for _l in open(os.path.join(SRC,"request_trace.jsonl")):
+        _l=_l.strip()
+        if _l: rt_all.append(json.loads(_l))
+RT_BY_XID={r["x_request_id"]:r for r in rt_all if r.get("x_request_id")}
 
 
 def _load_meta(bundle_dir):
@@ -443,7 +455,13 @@ en["true_hit_kpi"]=round(pct(_hitvals,50),1) if _hitvals else None
 def col(k): return [r[k] for r in rows]
 def band(sortkey,p):
     v=sorted(rows,key=lambda r:r[sortkey]); lo=max(0,int(len(v)*(p-5)/100)); hi=max(lo+1,int(len(v)*min(100,p+5)/100)); sub=v[lo:hi]
+    # kvt comes from the request trace, not from spans: the decode `handle_payload`
+    # span starts AFTER the KV cache has transferred, so a spans-only waterfall places
+    # prefill compute directly against decode compute and silently omits the wait
+    # between them. 0.0 when the run is aggregated (no transfer) or the trace is absent.
+    _kvt=[(RT_BY_XID.get(r["xid"],{}) or {}).get("kv_transfer_ms") or 0 for r in sub]
     return {"adm":pct([r["adm"] for r in sub],50),"pf":pct([r["pf"] for r in sub],50),
+            "kvt":pct(_kvt,50),
             "de":pct([r["de"] for r in sub],50),"route":pct([r["rroute"]+r["rhash"]+r["rfind"] for r in sub],50),
             "ttft":pct([r["ttft"] for r in sub],50),"e2e":pct([r["e2e"] for r in sub],50)}
 waterfall={p:band("e2e",p) for p in (50,90,95,99)}
@@ -814,24 +832,19 @@ RT_ATTRS = ["isl","osl","cached_tokens","kv_hit_rate","queue_depth","finish_reas
             "turn_index","prefix_reuse_ratio","client_ttft_ms","clean_itl_ms",
             "avg_itl_ms","total_ms"]
 
-rt_rows=[]
-_rt_path=os.path.join(SRC,"request_trace.jsonl") if SRC else ""
-if _rt_path and os.path.exists(_rt_path):
-    for _l in open(_rt_path):
-        _l=_l.strip()
-        if _l: rt_rows.append(json.loads(_l))
-    # Same warmup exclusion as every other source, via the x_request_id pivot. `client`
-    # was already phase-filtered at load, so intersecting transfers that decision here.
-    # Only applied when the two artifacts are the same run -- a tiny overlap means they
-    # are not, and silently emptying the view is worse than leaving it whole.
-    if client:
-        _keep=[r for r in rt_rows if r.get("x_request_id") in client]
-        if len(_keep) >= .10*max(1,len(rt_rows)):
-            _log.info(f"request trace: phase-filtered via x_request_id ({len(_keep)} of {len(rt_rows)} kept)")
-            rt_rows=_keep
-        else:
-            _log.warning(f"request trace: only {len(_keep)}/{len(rt_rows)} rows match the client "
-                         f"export; leaving unfiltered (different run?)")
+rt_rows=list(rt_all)   # loaded at the top; see the HAS_RT block
+# Same warmup exclusion as every other source, via the x_request_id pivot. `client`
+# was already phase-filtered at load, so intersecting transfers that decision here.
+# Only applied when the two artifacts are the same run -- a tiny overlap means they
+# are not, and silently emptying the view is worse than leaving it whole.
+if rt_rows and client:
+    _keep=[r for r in rt_rows if r.get("x_request_id") in client]
+    if len(_keep) >= .10*max(1,len(rt_rows)):
+        _log.info(f"request trace: phase-filtered via x_request_id ({len(_keep)} of {len(rt_rows)} kept)")
+        rt_rows=_keep
+    else:
+        _log.warning(f"request trace: only {len(_keep)}/{len(rt_rows)} rows match the client "
+                     f"export; leaving unfiltered (different run?)")
 
 rt_requests={}; rt_sessions=[]; rt_const={}
 if rt_rows:
