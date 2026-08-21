@@ -1673,7 +1673,8 @@ class TestConfigProvenance:
             "frontend:\n  env:\n"
             f"    DYN_TOKENIZER_CACHE: '{tok_cache}'\n"
             "    DYN_ROUTER_TRACK_PREFILL_TOKENS: '1'\n"
-            "backend:\n  publish_events_and_metrics: true\n")
+            "backend:\n  publish_events_and_metrics: true\n"
+            "benchmark:\n  env:\n    RESULT_FILENAME: per_arm_file\n")
 
     def _cfg(self, run_dir: Path, tmp_path: Path) -> dict:
         bundle = tmp_path / "bundle"
@@ -1689,11 +1690,16 @@ class TestConfigProvenance:
         assert cfg["frontend.env.DYN_TOKENIZER_CACHE"] == "1"
         assert cfg["backend.publish_events_and_metrics"] is True
 
-    def test_name_is_dropped_so_arms_diff_by_one_key(self, run_dir: Path, tmp_path: Path):
-        """Every arm of an ablation renames itself; keeping `name` would make a clean
-        single-variable diff report two differences instead of one."""
+    def test_identity_fields_are_dropped_so_arms_diff_by_one_key(self, run_dir: Path, tmp_path: Path):
+        """Every arm renames itself AND writes its own result file. Keeping either makes
+        a genuinely single-variable comparison report two differences, so the
+        SINGLE-VARIABLE verdict never fires and the reader learns to ignore the count.
+        Observed on the real a0-vs-a1 diff, which reported 2 settings differing when
+        only DYN_TOKENIZER_CACHE was a treatment."""
         self._setup(run_dir, "1")
-        assert "name" not in self._cfg(run_dir, tmp_path)
+        cfg = self._cfg(run_dir, tmp_path)
+        assert "name" not in cfg
+        assert "benchmark.env.RESULT_FILENAME" not in cfg
 
     def test_two_arms_differ_by_exactly_the_ablated_key(self, run_dir: Path, tmp_path: Path):
         self._setup(run_dir, "1")
