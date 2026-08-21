@@ -536,12 +536,9 @@ def _dynamo_frontend_call(*, dynamo_install: bool, event_plane: str | None = "zm
         container_image=Path("/container.sqsh"),
         container_mounts={},
         environment={},
-        model_path=Path("/host/model"),
-        is_hf_model=False,
     )
     config = SimpleNamespace(
         frontend=SimpleNamespace(args=None, env=None),
-        served_model_name="test-model",
         observability=ObservabilityConfig(),
         dynamo=SimpleNamespace(
             install=dynamo_install,
