@@ -141,6 +141,36 @@ capture legs below. Without it you still get the Log-analysis tab, and nothing e
 | **Client** | an AIPerf benchmark at export level `records` (default) | `<log_dir>/agentic/*/aiperf_artifacts/` or `artifacts/*/` | `profile_export.jsonl` | Overview, warmup filtering |
 | **Engine config** | TRT-LLM backend | `<log_dir>/trtllm_config_*.yaml` | copied verbatim | in-flight-batch ceilings |
 | **Frontend log** | *nothing* — always written | `<log_dir>/<node>_frontend_<i>.out` | *(read directly)* | Log analysis |
+| **Host telemetry** | `observability.enabled` | `<log_dir>/host_samples.jsonl` | `host_series.json` | host/process CPU, ctx switches, fd headroom |
+
+### Host telemetry — what the metrics stream cannot say
+
+`srtctl.analysis.host_sampler` runs in-process beside the metrics scraper, on the same
+opt-in, reading only `/proc`. It exists because every other leg describes what Dynamo
+and TRT-LLM *choose to publish*, and three failure modes live below that line:
+
+* **Host CPU saturation / lock convoys.** A frontend pinned at 100% of one core is
+  indistinguishable, in every published metric, from an idle one — both report low queue
+  depth and low in-flight. The discriminator is host CPU busy % together with
+  **involuntary** context switches per thread: a convoy is a thread descheduled against
+  its will, which no application-level counter expresses.
+* **File-descriptor exhaustion.** An accept loop out of descriptors logs nothing;
+  connections are refused before the application sees them. Open fds against
+  `RLIMIT_NOFILE` is the only available warning, and `fd_headroom_pct` is reported even
+  when comfortable — *"the peak was 2% of the limit"* is the answer that rules the
+  hypothesis out.
+* **A load generator that has become the bottleneck.** Client 100% / server 0% is the
+  whole diagnosis and is invisible from the server side by construction.
+
+The sampler stores **cumulative** jiffie counters; the ingest derives percentages by
+differencing, so the capture cadence is never baked into a stored number. Per-process
+CPU is percent of **one** core, so >100 means genuinely more than one.
+
+**Scope limit, stated because it bounds every conclusion drawn from it:** the sampler
+observes the node driving the sweep — the one hosting the frontend — and the Dynamo /
+AIPerf processes on it. It does **not** reach the worker nodes; that would cost an srun
+round-trip per sample, which is the expense the scraper's opt-in exists to avoid. Worker-
+side host health is not covered.
 
 ### Which tabs a run can populate
 
@@ -190,6 +220,10 @@ Produces:
 <bundle>/config.yaml                 the RESOLVED recipe — what was configured
 <bundle>/fingerprint_*.json          per-worker ground truth: framework versions, GPU, CUDA
 <bundle>/resource_snapshot.json      the allocation the numbers came from
+<bundle>/benchmark_status.json       exit code, error lines, AIPerf phase census
+<bundle>/log_signals.json            log-only signals: counts, timestamps, samples
+<bundle>/run_lifecycle.json          time-to-ready, readiness gap, terminal cause
+<bundle>/host_series.json            host + per-process CPU, RSS, ctx switches, fds
 <bundle>/dashboard.yaml              generated sidecar (header labels + topology)
 ```
 
@@ -205,6 +239,10 @@ Produces:
 | *(automatic)* | — | `trtllm_config_*.yaml` are copied from the run dir into the bundle, giving the Engine tab its real in-flight-batch ceilings instead of the `--max-batch-*` defaults |
 | *(automatic)* | — | `profile_export_aiperf.json` — AIPerf's run summary. Carries `theoretical_prefix_cache_hit` (the ceiling the *workload* offered), `error_summary` / `was_cancelled` / `branch_stats` (run validity), and `effective_concurrency`. Its **absence** is a signal too: AIPerf writes it when a concurrency finishes, so a run killed by its wall clock has none |
 | *(automatic)* | — | `config.yaml`, `fingerprint_*.json`, `resource_snapshot.json` — run provenance. Without these, two bundles can be compared for what *moved* but never for what *changed* |
+| *(automatic)* | — | `benchmark_status.json` — why an empty dashboard is empty: exit code, error lines, and AIPerf's per-phase completed/cancelled census. A run can exit non-zero with no error-marker line at all, and the census is then the only account of what happened |
+| *(automatic)* | — | `log_signals.json` — signals whose only evidence is a log line and which have no metric behind them: worker crash, Dynamo recompile storm, OOM, KV-index desync, KV-transfer timeout, NCCL error, engine stall, etcd disconnect, client cancel. Counts + timestamps + 2 sample lines each, bounded regardless of log size. **Zero counts are kept** — "no crashes" is a statement; absence is not |
+| *(automatic)* | — | `run_lifecycle.json` — time-to-ready, the readiness gap (frontend accepting before the router can place), and the run's terminal cause. On run 2752632 that was **650 s of 28 held GPUs serving nothing**, invisible on an x-axis starting at the first request |
+| *(automatic)* | — | `host_series.json` — host CPU %, memory, per-process CPU / RSS / **involuntary** context switches / open fds, and fd headroom against `RLIMIT_NOFILE`. Requires the sampler (below); everything else in the bundle describes what Dynamo publishes, not the machine under it |
 | `--worker` | — | repeatable `ROLE=PARALLELISM:RANK:COUNT`, e.g. `prefill=dep:4:6` |
 | `--jobs` | `4` | parallelism for the `SPAN_CLOSED` pre-grep |
 
