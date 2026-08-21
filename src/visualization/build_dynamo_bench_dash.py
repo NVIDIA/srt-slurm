@@ -101,6 +101,28 @@ def _cfg_max_batch(mode):
         except Exception:
             pass
     return None, None
+def _cfg_tokens_per_block():
+    """Engine KV block size from the run's own config, prefill or decode.
+
+    Either mode answers: the two engines pool the same KV block size, and a run may
+    ship only one of the two configs. Nested under `kv_cache_config` in current
+    TRT-LLM configs, top-level in older ones, so both are accepted.
+    """
+    if not SRC:
+        return None
+    for mode in ("decode", "prefill"):
+        for cand in (os.path.join(SRC, f"trtllm_config_{mode}.yaml"),
+                     os.path.join(SRC, "..", "..", f"trtllm_config_{mode}.yaml")):
+            try:
+                import yaml as _y
+                c = _y.safe_load(open(cand)) or {}
+                v = (c.get("kv_cache_config") or {}).get("tokens_per_block",
+                                                         c.get("tokens_per_block"))
+                if v:
+                    return int(v)
+            except Exception:
+                pass
+    return None
 CFG_PF_BATCH, CFG_PF_TOK = _cfg_max_batch("prefill")
 CFG_DE_BATCH, CFG_DE_TOK = _cfg_max_batch("decode")
 MAX_BATCH_PF = CFG_PF_BATCH if CFG_PF_BATCH else _args.max_batch_prefill
@@ -633,8 +655,23 @@ def _block_size_mismatch():
     constant 0. So the only way to surface it is to compare the two configured sizes
     directly, which is what this does.
 
-    Returns (router_blk, engine_tpb) or None when either is unavailable -- "cannot
-    tell" rather than a guessed all-clear.
+    TWO sources for the engine side, in this order:
+      1. the scrape's `trtllm_kv_cache_tokens_per_block` gauge
+      2. `tokens_per_block` in the run's own resolved `trtllm_config_<mode>.yaml`
+
+    The fallback is not decoration. The gauge is only exported when the engine
+    publishes its KV-cache family, so on a run whose workers are up but not yet
+    publishing -- exactly the e2e self-build run 2751593 -- source 1 is empty and the
+    check reported "cannot tell" for a value that was sitting in the bundle all along.
+    The config is the same authority `_cfg_max_batch` already trusts for the engine
+    ceilings, and it is present whenever the ingest ran at all.
+
+    Always returns (router_blk, engine_tpb, source), either side possibly None. The two
+    sides are reported INDEPENDENTLY on purpose: an earlier version returned nothing
+    unless both were known, which threw away a perfectly good engine value whenever the
+    router gauge was missing. "engine 256, router unknown" is a useful thing to show;
+    silence is not. The mismatch VERDICT is what requires both, and that is decided by
+    the caller.
     """
     eng=None
     for _,m in scr:
@@ -642,15 +679,24 @@ def _block_size_mismatch():
             v=e.get("value")
             if isinstance(v,(int,float)) and v>0: eng=int(v); break
         if eng: break
-    return (BLK,eng) if (BLK and eng) else None
+    src="scrape" if eng else None
+    if not eng:
+        eng=_cfg_tokens_per_block()
+        src="engine config" if eng else None
+    return (BLK,eng,src)
 
-_BLK_MISMATCH=_block_size_mismatch()
-if _BLK_MISMATCH and _BLK_MISMATCH[0]!=_BLK_MISMATCH[1]:
-    _log.warning(f"KV block-size mismatch: router indexes {_BLK_MISMATCH[0]}-token blocks "
-                 f"while the engine pools {_BLK_MISMATCH[1]}-token blocks; router KV events "
-                 f"will reference blocks the engine cannot match")
-elif _BLK_MISMATCH:
-    _log.info(f"KV block size agrees across router and engine: {_BLK_MISMATCH[0]} tokens")
+_BLK_ROUTER,_BLK_ENGINE,_BLK_SRC=_block_size_mismatch()
+if _BLK_ROUTER and _BLK_ENGINE and _BLK_ROUTER!=_BLK_ENGINE:
+    _log.warning(f"KV block-size mismatch: router indexes {_BLK_ROUTER}-token blocks "
+                 f"while the engine pools {_BLK_ENGINE}-token blocks (engine size via "
+                 f"{_BLK_SRC}); router KV events will reference blocks the engine "
+                 f"cannot match")
+elif _BLK_ROUTER and _BLK_ENGINE:
+    _log.info(f"KV block size agrees across router and engine: {_BLK_ROUTER} tokens "
+              f"(engine size via {_BLK_SRC})")
+else:
+    _log.warning(f"KV block-size agreement UNKNOWN (router={_BLK_ROUTER} "
+                 f"engine={_BLK_ENGINE}); reported as unknown rather than as agreement")
 if BLK is None: _log.warning("no dynamo_frontend_model_kv_cache_block_size in the stream; "
                              "decode tokens-in-flight stays in BLOCKS")
 load={"tput":_rolling_tput(GPUS),
@@ -658,8 +704,7 @@ load={"tput":_rolling_tput(GPUS),
       "tif_pf":_worker_bins("dynamo_frontend_worker_active_prefill_tokens","prefill"),
       "tif_de":_worker_bins("dynamo_frontend_worker_active_decode_blocks","decode",scale=BLK or 1),
       "gpus":GPUS,"blk":BLK,"win_s":TPUT_WIN_S,"bins":NBW,
-      "blk_router":(_BLK_MISMATCH or [None,None])[0],
-      "blk_engine":(_BLK_MISMATCH or [None,None])[1]}
+      "blk_router":_BLK_ROUTER,"blk_engine":_BLK_ENGINE,"blk_src":_BLK_SRC}
 _log.info(f"load rows: tput={len(load['tput'])}pts gpus={GPUS} "
           f"rif_pf={len(load['rif_pf'])} rif_de={len(load['rif_de'])} "
           f"tif_pf={len(load['tif_pf'])}series tif_de={len(load['tif_de'])}series block={BLK}")
