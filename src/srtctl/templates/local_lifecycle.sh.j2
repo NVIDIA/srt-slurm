@@ -109,12 +109,9 @@ srt_install_dynamo_from_source_cache() {
     mkdir -p "${source_dir}"
     tar -xzf "${cache}/dynamo-src.tar.gz" -C "${source_dir}"
     "${SRTCTL_PYTHON}" -m pip install --quiet --force-reinstall --no-deps "${wheel}"
-    # Preserve the selected SGLang/AIPerf environment. Dynamo's SGLang image
-    # does this too: install its package and adapter requirements without
-    # running a second resolver over the upstream SGLang dependency stack.
-    "${SRTCTL_PYTHON}" -m pip install --quiet --editable --no-deps "${source_dir}/dynamo"
-    "${SRTCTL_PYTHON}" -m pip install --quiet --force-reinstall --no-deps \
-        -r "${source_dir}/dynamo/container/deps/requirements.sglang.txt"
+    # The selected interpreter is the SGLang environment. Match the Slurm
+    # path and install plain Dynamo into that already-provisioned venv.
+    "${SRTCTL_PYTHON}" -m pip install --quiet --editable "${source_dir}/dynamo"
     srt_log "Installed Dynamo ${SRTCTL_DYNAMO_SOURCE_HASH} from ${cache}"
 }
 {% endif %}
