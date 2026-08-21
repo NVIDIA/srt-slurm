@@ -191,6 +191,30 @@ def diff(base: dict, new: dict, top: int, min_pct: float) -> int:
             if pv.get("framework_disagreement"):
                 out.append(f"  {tag}: WORKERS DISAGREE INTERNALLY {pv['framework_disagreement']}")
 
+        # The single-variable check. For an ablation this should list exactly the one
+        # setting the experiment moved; anything else in the list is a confound that
+        # would otherwise be argued about rather than seen.
+        bc, nc = bpv.get("config"), npv.get("config")
+        if bc is None or nc is None:
+            out.append("  config unavailable on at least one side "
+                       "(no config.yaml in the bundle) -- variables changed are UNKNOWN")
+        else:
+            keys = sorted(set(bc) | set(nc))
+            delta = [(k, bc.get(k, "<absent>"), nc.get(k, "<absent>"))
+                     for k in keys if bc.get(k, "<absent>") != nc.get(k, "<absent>")]
+            if not delta:
+                out.append("  config IDENTICAL between the two runs "
+                           "-- any movement above is run-to-run variance, not a change")
+            else:
+                label = ("SINGLE-VARIABLE: this is a clean ablation"
+                         if len(delta) == 1 else
+                         f"{len(delta)} settings differ -- NOT a single-variable comparison")
+                out.append(f"  CONFIG DELTA ({label})")
+                for k, a, b in delta[:20]:
+                    out.append(f"    {k}: {a!r} -> {b!r}")
+                if len(delta) > 20:
+                    out.append(f"    ... and {len(delta) - 20} more")
+
     bb, nb = brt.get("belief"), nrt.get("belief")
     if bb or nb:
         out.append("\nROUTER BELIEF vs ENGINE REALITY")

@@ -1656,3 +1656,49 @@ class TestProvenanceLeg:
 
     def test_absent_fingerprints_report_none_not_agreement(self, run_dir: Path, tmp_path: Path):
         assert self._payload(run_dir, tmp_path)["meta"]["provenance"] is None
+
+
+class TestConfigProvenance:
+    """The resolved recipe, flattened, so an ablation's single-variable claim is
+    checkable rather than asserted. It is also the ONLY record of the frontend
+    environment -- worker fingerprints cover prefill and decode, but settings like
+    DYN_TOKENIZER_CACHE live on the frontend and appear in no fingerprint."""
+
+    @staticmethod
+    def _setup(run_dir: Path, tok_cache: str) -> None:
+        (run_dir / "fingerprint_prefill_w0.json").write_text(json.dumps(
+            {"frameworks": {"tensorrt_llm": "1.3.0rc21"}}))
+        (run_dir / "config.yaml").write_text(
+            "name: arm-x\n"
+            "frontend:\n  env:\n"
+            f"    DYN_TOKENIZER_CACHE: '{tok_cache}'\n"
+            "    DYN_ROUTER_TRACK_PREFILL_TOKENS: '1'\n"
+            "backend:\n  publish_events_and_metrics: true\n")
+
+    def _cfg(self, run_dir: Path, tmp_path: Path) -> dict:
+        bundle = tmp_path / "bundle"
+        _run_ingest(run_dir, bundle)
+        out = tmp_path / "dash.json"
+        proc = _render(bundle, tmp_path / "dash.html", "--d3-cdn", "--dump-json", str(out))
+        assert proc.returncode == 0, proc.stderr
+        return json.loads(out.read_text())["meta"]["provenance"]["config"]
+
+    def test_frontend_env_is_recorded(self, run_dir: Path, tmp_path: Path):
+        self._setup(run_dir, "1")
+        cfg = self._cfg(run_dir, tmp_path)
+        assert cfg["frontend.env.DYN_TOKENIZER_CACHE"] == "1"
+        assert cfg["backend.publish_events_and_metrics"] is True
+
+    def test_name_is_dropped_so_arms_diff_by_one_key(self, run_dir: Path, tmp_path: Path):
+        """Every arm of an ablation renames itself; keeping `name` would make a clean
+        single-variable diff report two differences instead of one."""
+        self._setup(run_dir, "1")
+        assert "name" not in self._cfg(run_dir, tmp_path)
+
+    def test_two_arms_differ_by_exactly_the_ablated_key(self, run_dir: Path, tmp_path: Path):
+        self._setup(run_dir, "1")
+        base = self._cfg(run_dir, tmp_path / "a")
+        self._setup(run_dir, "0")
+        arm = self._cfg(run_dir, tmp_path / "b")
+        delta = {k for k in set(base) | set(arm) if base.get(k) != arm.get(k)}
+        assert delta == {"frontend.env.DYN_TOKENIZER_CACHE"}
