@@ -67,12 +67,16 @@ class LocalLifecycleRenderContext:
     dynamo_source_hash: str | None
     dynamo_source_cache_key: str | None
     dynamo_cargo_patch_commands: tuple[str, ...]
+    dynamo_package_version: str | None
+    sglang_runtime_key: str
     global_environment: tuple[tuple[str, str], ...]
     benchmark_environment: tuple[tuple[str, str], ...]
     benchmark_command: str
     tachometer_enabled: bool
     tachometer_binary: str | None
     tachometer_config: str | None
+    tachometer_sync_interval_secs: int
+    tachometer_compaction_threads: int
     ruter_enabled: bool
 
 
@@ -158,12 +162,27 @@ def _validate_local_config(config: SrtConfig) -> None:
         raise ValueError("--bash currently supports frontend.type: dynamo or sglang")
     if config.frontend.type == "sglang" and (config.frontend.args or {}).get("policy") == "cache-aware-zmq":
         raise ValueError("--bash uses the SGLang Model Gateway; use frontend.args.policy: cache_aware")
+    if config.frontend.type == "sglang" and resources.is_disaggregated:
+        raise ValueError("--bash supports disaggregated serving with frontend.type: dynamo only")
     if config.frontend.enable_multiple_frontends:
         raise ValueError("--bash requires frontend.enable_multiple_frontends: false")
     if config.benchmark.type != "custom" or not config.benchmark.command:
         raise ValueError("--bash requires benchmark.type: custom with benchmark.command")
     if config.telemetry.enabled:
         raise ValueError("--bash does not support DCGM power telemetry")
+    if config.profiling.enabled:
+        raise ValueError("--bash does not support profiling; use the Slurm lifecycle")
+    if config.setup_script:
+        raise ValueError("--bash does not support setup_script; build it into the direct container image")
+    if getattr(config.backend, "mooncake_kv_store", None) is not None:
+        raise ValueError("--bash does not manage backend.mooncake_kv_store; use the Slurm lifecycle")
+    tachometer = config.observability.tachometer
+    if tachometer.dcgm_exporter is not None or tachometer.node_exporter is not None:
+        raise ValueError("--bash does not manage Tachometer exporter containers")
+    if tachometer.storage_subdir != "tachometer":
+        raise ValueError("--bash requires observability.tachometer.storage_subdir: tachometer")
+    if config.frontend.type == "dynamo" and config.dynamo.install and config.dynamo.top_of_tree:
+        raise ValueError("--bash does not support dynamo.top_of_tree; pin dynamo.hash or dynamo.wheel")
     container_image = config.environment.get("SRTCTL_LOCAL_CONTAINER_IMAGE")
     if container_image is not None and not str(container_image).strip():
         raise ValueError("SRTCTL_LOCAL_CONTAINER_IMAGE must be non-empty when configured")
@@ -370,8 +389,12 @@ def _build_tachometer_config(config: SrtConfig, processes: list[Process]) -> str
         "save_interval_secs = 5",
         "",
     ]
+    common_metadata = {"hostname": "127.0.0.1", "run_name": config.name, **tachometer.extra_metadata}
     append_endpoint(
-        "router", f"http://127.0.0.1:{FRONTEND_PUBLIC_PORT}/metrics", "frontend", {"router": config.frontend.type}
+        "router",
+        f"http://127.0.0.1:{FRONTEND_PUBLIC_PORT}/metrics",
+        "frontend",
+        {"router": config.frontend.type, **common_metadata},
     )
     for process in sorted(processes, key=lambda item: (item.endpoint_mode, item.endpoint_index, item.node_rank)):
         metrics_port = process.sys_port if config.frontend.type == "dynamo" else process.http_port
@@ -383,6 +406,7 @@ def _build_tachometer_config(config: SrtConfig, processes: list[Process]) -> str
                 "worker_role": process.endpoint_mode,
                 "worker_index": str(process.endpoint_index),
                 "worker_process": str(process.node_rank),
+                **common_metadata,
             },
         )
     return "\n".join(lines)
@@ -408,6 +432,11 @@ def build_local_lifecycle_render_context(
     health_interval = max(1, int(config.health_check.interval_seconds))
     dynamo_source_hash = config.dynamo.hash if config.frontend.type == "dynamo" and config.dynamo.install else None
     cargo_patches = config.dynamo.cargo_patches if dynamo_source_hash else None
+    dynamo_package_version = (
+        (config.dynamo.wheel or config.dynamo.version)
+        if config.frontend.type == "dynamo" and config.dynamo.install and not dynamo_source_hash
+        else None
+    )
     model_path = _local_model_path(config)
     local_container_image = config.environment.get("SRTCTL_LOCAL_CONTAINER_IMAGE")
     sglang_source = config.environment.get("SRTCTL_SGLANG_SOURCE")
@@ -416,6 +445,18 @@ def build_local_lifecycle_render_context(
     global_environment = dict(config.environment)
     if sglang_source is not None:
         global_environment["SRTCTL_SGLANG_SOURCE"] = sglang_source
+    runtime_identity = json.dumps(
+        {
+            "dynamo_source_cache_key": dynamo_source_cache_key(dynamo_source_hash, cargo_patches)
+            if dynamo_source_hash
+            else None,
+            "dynamo_package_version": dynamo_package_version,
+            "dynamo_preinstalled": config.frontend.type == "dynamo" and not config.dynamo.install,
+            "container_image": str(local_container_image or "host"),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     return LocalLifecycleRenderContext(
         name=config.name,
         source_dir=str(source_dir.resolve()),
@@ -441,12 +482,16 @@ def build_local_lifecycle_render_context(
         if dynamo_source_hash
         else None,
         dynamo_cargo_patch_commands=dynamo_cargo_patch_commands(cargo_patches),
+        dynamo_package_version=dynamo_package_version,
+        sglang_runtime_key=hashlib.sha256(runtime_identity.encode("utf-8")).hexdigest()[:16],
         global_environment=tuple(sorted((key, str(value)) for key, value in global_environment.items())),
         benchmark_environment=tuple(sorted((key, str(value)) for key, value in config.benchmark.env.items())),
         benchmark_command=config.benchmark.command,
         tachometer_enabled=tachometer_config is not None,
         tachometer_binary=config.observability.tachometer.binary_path if tachometer_config is not None else None,
         tachometer_config=tachometer_config,
+        tachometer_sync_interval_secs=config.observability.tachometer.sync_interval_secs,
+        tachometer_compaction_threads=config.observability.tachometer.compaction_threads,
         ruter_enabled=config.frontend.type == "dynamo" and config.observability.enabled,
     )
 

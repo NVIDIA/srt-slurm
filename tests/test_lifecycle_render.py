@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import subprocess
 
+import pytest
 import yaml
 
 from srtctl.core.config import expand_observability
@@ -19,6 +20,10 @@ def _config(
     environment: dict[str, str] | None = None,
     dynamo_hash: str | None = None,
     cargo_patches: list[str] | None = None,
+    dynamo: dict[str, object] | None = None,
+    tachometer: dict[str, object] | None = None,
+    setup_script: str | None = None,
+    profiling_type: str | None = None,
 ) -> SrtConfig:
     raw = {
         "name": "direct-render",
@@ -54,13 +59,22 @@ def _config(
         "benchmark": {"type": "custom", "command": "aiperf profile --ui none"},
         "observability": {
             "enabled": True,
-            "tachometer": {"enabled": True},
+            "tachometer": tachometer or {"enabled": True},
         },
     }
-    if dynamo_hash:
+    if dynamo is not None:
+        raw["dynamo"] = dynamo
+    elif dynamo_hash:
         raw["dynamo"] = {"hash": dynamo_hash}
         if cargo_patches:
             raw["dynamo"]["cargo_patches"] = cargo_patches
+    if setup_script:
+        raw["setup_script"] = setup_script
+    if profiling_type:
+        raw["profiling"] = {
+            "type": profiling_type,
+            "aggregated": {"start_step": 0, "stop_step": 1},
+        }
     expand_observability(raw)
     return SrtConfig.Schema().load(yaml.safe_load(yaml.safe_dump(raw)))
 
@@ -187,6 +201,10 @@ def test_local_dynamo_lifecycle_caches_a_hash_pinned_source_build(tmp_path) -> N
     assert "srt_install_dynamo_from_source_cache" in script
     assert "SRTCTL_DYNAMO_SOURCE_HASH=a6261680a974ca7c74dcf49592a7376d7de99380" in script
     assert 'cache_root="${SRTCTL_DYNAMO_CACHE_ROOT:-${SRTCTL_SOURCE}/configs/dynamo-wheels}"' in script
+    assert 'cache_key="$(srt_dynamo_source_cache_key "${SRTCTL_DYNAMO_SOURCE_CACHE_KEY}")"' in script
+    assert "srt_dynamo_source_cache_key()" in script
+    assert "python_abi=" in script
+    assert "cpu_features=" in script
     assert "flock -x 201" in script
     assert 'maturin build --release --out "${cache}"' in script
     assert '"${SRTCTL_PYTHON}" -m ensurepip --upgrade' in script
@@ -223,7 +241,10 @@ def test_local_lifecycle_can_run_inside_sglang_container(tmp_path) -> None:
     assert 'SRTCTL_MODEL_MOUNT_PATH="${SRTCTL_RENDERED_MODEL_PATH}"' in script
     assert '"$(basename "$(dirname "${SRTCTL_MODEL_MOUNT_PATH}")")" == "snapshots"' in script
     assert 'SRTCTL_MODEL_MOUNT_PATH="$(dirname "$(dirname "${SRTCTL_MODEL_MOUNT_PATH}")")"' in script
-    assert '--detach\n        --name "srtctl-lifecycle-$$"' in script
+    assert 'SRTCTL_CONTAINER_NAME="srtctl-lifecycle-$$"' in script
+    assert '--detach\n        --name "${SRTCTL_CONTAINER_NAME}"' in script
+    assert '--label "${SRTCTL_CONTAINER_LABEL}"' in script
+    assert 'docker ps -aq --filter "label=${SRTCTL_CONTAINER_LABEL}"' in script
     assert 'docker run "${SRT_CONTAINER_ARGS[@]}" >/dev/null' in script
     assert (
         'docker exec "${SRT_CONTAINER_EXEC_ARGS[@]}" "${SRTCTL_CONTAINER_NAME}" bash /run/srtctl-lifecycle.sh' in script
@@ -239,7 +260,12 @@ def test_local_lifecycle_can_run_inside_sglang_container(tmp_path) -> None:
     assert 'mount+=",readonly"' in script
     assert 'if [[ ! -f "${runtime_dir}/.complete" ]]; then' in script
     assert 'touch "${runtime_dir}/.complete"' in script
-    assert 'runtime_dir="${SRTCTL_SGLANG_RUNTIME_DIR:-${runtime_root}/sglang-${revision}}"' in script
+    assert (
+        'runtime_dir="${SRTCTL_SGLANG_RUNTIME_DIR:-${runtime_root}/sglang-${revision}-${SRTCTL_SGLANG_RUNTIME_KEY}}"'
+        in script
+    )
+    assert 'runtime_lock="${runtime_root}/.sglang-${revision}-${SRTCTL_SGLANG_RUNTIME_KEY}.lock"' in script
+    assert "flock -x 202" in script
     assert 'git -c safe.directory="${SRTCTL_SGLANG_SOURCE}"' in script
     assert "Installing source-pinned Rust ${rust_toolchain}" in script
     assert 'rustup toolchain install "${rust_toolchain}" --profile minimal' in script
@@ -275,3 +301,49 @@ def test_local_dynamo_lifecycle_uses_slurm_cache_key_and_patches(tmp_path) -> No
     assert "find . -name Cargo.toml -exec sed -i -E" in script
     syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
     assert syntax.returncode == 0, syntax.stderr
+
+
+@pytest.mark.parametrize(
+    ("dynamo", "version"),
+    [
+        ({"version": "0.8.0"}, "0.8.0"),
+        ({"wheel": "1.2.0.dev20260426"}, "1.2.0.dev20260426"),
+    ],
+)
+def test_local_dynamo_lifecycle_stages_exact_package_wheels(tmp_path, dynamo, version: str) -> None:
+    context = build_local_lifecycle_render_context(
+        _config(frontend_type="dynamo", dynamo=dynamo),
+        source_dir=tmp_path / "srt-slurm",
+        output_base=tmp_path / "outputs",
+    )
+    script = render_local_lifecycle(context)
+
+    assert context.dynamo_source_hash is None
+    assert context.dynamo_package_version == version
+    assert f"SRTCTL_DYNAMO_PACKAGE_VERSION={version}" in script
+    assert "srt_install_dynamo_from_wheel_cache()" in script
+    assert 'DYNAMO_WHEEL_HOST_DIR="${wheel_dir}"' in script
+    assert 'DYNAMO_WHEEL_DIRS="${wheel_dir}"' in script
+    assert '"${wheel_script}" prefetch' in script
+    assert '"${wheel_script}" install' in script
+    assert "srt_install_dynamo_from_wheel_cache" in script
+    syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
+    assert syntax.returncode == 0, syntax.stderr
+
+
+@pytest.mark.parametrize(
+    ("config", "message"),
+    [
+        (_config(frontend_type="dynamo", setup_script="setup.sh"), "setup_script"),
+        (_config(frontend_type="dynamo", profiling_type="nsys"), "profiling"),
+        (_config(frontend_type="dynamo", dynamo={"top_of_tree": True}), "top_of_tree"),
+        (_config(frontend_type="dynamo", tachometer={"enabled": True, "storage_subdir": "custom"}), "storage_subdir"),
+    ],
+)
+def test_local_lifecycle_rejects_slurm_only_yaml_features(tmp_path, config: SrtConfig, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        build_local_lifecycle_render_context(
+            config,
+            source_dir=tmp_path / "srt-slurm",
+            output_base=tmp_path / "outputs",
+        )

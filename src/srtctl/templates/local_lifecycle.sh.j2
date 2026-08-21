@@ -14,6 +14,7 @@ OUTPUT_BASE={{ quote(context.output_base) }}
 SRTCTL_LOCAL_CONTAINER_IMAGE={{ quote(context.local_container_image or '') }}
 SRTCTL_RENDERED_MODEL_PATH={{ quote(context.model_path) }}
 SRTCTL_SGLANG_SOURCE={{ quote(context.sglang_source or '') }}
+SRTCTL_SGLANG_RUNTIME_KEY={{ quote(context.sglang_runtime_key) }}
 RUN_NAME={{ quote(context.name) }}
 MODEL={{ quote(context.model_name) }}
 FRONTEND_TYPE={{ quote(context.frontend_type) }}
@@ -43,9 +44,17 @@ if [[ -n "${SRTCTL_LOCAL_CONTAINER_IMAGE}" && "${SRTCTL_LOCAL_CONTAINERIZED:-}" 
         echo "srtctl: containerized --bash lifecycle must be saved to a file before execution" >&2
         exit 1
     }
+    SRTCTL_CONTAINER_NAME="srtctl-lifecycle-$$"
+    SRTCTL_CONTAINER_LABEL="io.nvidia.srtctl.lifecycle-output=$(printf '%s' "${OUTPUT_DIR}" | sha256sum | awk '{print $1}')"
+    # A hard-killed wrapper cannot run its EXIT trap. Reap only containers
+    # belonging to this exact output directory before creating its replacement.
+    while IFS= read -r stale_container; do
+        [[ -z "${stale_container}" ]] || docker rm -f "${stale_container}" >/dev/null 2>&1 || true
+    done < <(docker ps -aq --filter "label=${SRTCTL_CONTAINER_LABEL}")
     declare -a SRT_CONTAINER_ARGS=(
         --detach
-        --name "srtctl-lifecycle-$$"
+        --name "${SRTCTL_CONTAINER_NAME}"
+        --label "${SRTCTL_CONTAINER_LABEL}"
         --network host
         --ipc host
         --gpus all
@@ -87,7 +96,7 @@ if [[ -n "${SRTCTL_LOCAL_CONTAINER_IMAGE}" && "${SRTCTL_LOCAL_CONTAINERIZED:-}" 
             echo "srtctl: unable to identify SGLang source revision: ${SRTCTL_SGLANG_SOURCE}" >&2
             exit 1
         }
-        SRTCTL_SGLANG_RUNTIME_DIR="${OUTPUT_BASE}/.srtctl-runtime/sglang-${SRTCTL_SGLANG_REVISION}"
+        SRTCTL_SGLANG_RUNTIME_DIR="${OUTPUT_BASE}/.srtctl-runtime/sglang-${SRTCTL_SGLANG_REVISION}-${SRTCTL_SGLANG_RUNTIME_KEY}"
     fi
     if [[ -n "${RUTER_MOONCAKE_TRACE:-}" ]]; then
         srt_container_mount "${RUTER_MOONCAKE_TRACE}" readonly
@@ -108,7 +117,6 @@ if [[ -n "${SRTCTL_LOCAL_CONTAINER_IMAGE}" && "${SRTCTL_LOCAL_CONTAINERIZED:-}" 
         "${SRTCTL_LOCAL_CONTAINER_IMAGE}"
         -lc 'trap "exit 0" TERM INT; while :; do sleep 3600; done'
     )
-    SRTCTL_CONTAINER_NAME="srtctl-lifecycle-$$"
     srt_restore_owner() {
         local path="$1"
         local owner="$2"
@@ -170,6 +178,13 @@ TACHOMETER_LOCAL_DIR=""
 SRTCTL_DYNAMO_SOURCE_HASH={{ quote(context.dynamo_source_hash) }}
 SRTCTL_DYNAMO_SOURCE_CACHE_KEY={{ quote(context.dynamo_source_cache_key) }}
 {% endif %}
+{% if context.dynamo_package_version %}
+SRTCTL_DYNAMO_PACKAGE_VERSION={{ quote(context.dynamo_package_version) }}
+{% endif %}
+{% if context.tachometer_enabled %}
+TACHOMETER_SYNC_INTERVAL_SECS={{ context.tachometer_sync_interval_secs }}
+TACHOMETER_COMPACTION_THREADS={{ context.tachometer_compaction_threads }}
+{% endif %}
 
 srt_log() {
     printf '[srtctl:%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"
@@ -184,46 +199,54 @@ srt_install_sglang_from_source() {
     [[ -n "${SRTCTL_SGLANG_SOURCE}" ]] || return 0
     [[ -d "${SRTCTL_SGLANG_SOURCE}/python/sglang" ]] || srt_die "Invalid SGLang source: ${SRTCTL_SGLANG_SOURCE}"
     command -v git >/dev/null 2>&1 || srt_die "git is required to identify SGLang source"
-    local revision runtime_root runtime_dir source_copy bootstrap_python installed_source rust_toolchain
+    local revision runtime_root runtime_dir source_copy bootstrap_python installed_source rust_toolchain runtime_lock
     revision="$(git -c safe.directory="${SRTCTL_SGLANG_SOURCE}" -C "${SRTCTL_SGLANG_SOURCE}" rev-parse --verify HEAD)"
     runtime_root="${SRTCTL_SGLANG_RUNTIME_ROOT:-${OUTPUT_BASE}/.srtctl-runtime}"
-    runtime_dir="${SRTCTL_SGLANG_RUNTIME_DIR:-${runtime_root}/sglang-${revision}}"
+    runtime_dir="${SRTCTL_SGLANG_RUNTIME_DIR:-${runtime_root}/sglang-${revision}-${SRTCTL_SGLANG_RUNTIME_KEY}}"
     source_copy="${runtime_dir}/source"
     bootstrap_python="${SRTCTL_PYTHON}"
-    if [[ ! -f "${runtime_dir}/.complete" ]]; then
-        srt_log "Installing SGLang ${revision} into ${runtime_dir}/.venv"
-        mkdir -p "${runtime_dir}"
-        rm -rf "${runtime_dir}/.venv" "${source_copy}" "${runtime_dir}/.complete"
-        "${bootstrap_python}" -m venv --system-site-packages "${runtime_dir}/.venv"
-        rm -rf "${source_copy}"
-        mkdir -p "${source_copy}"
-        tar --exclude='.git' --exclude='target' -C "${SRTCTL_SGLANG_SOURCE}" -cf - . | tar -C "${source_copy}" -xf -
-        rust_toolchain="$(sed -nE 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "${source_copy}/rust/rust-toolchain.toml" | head -n 1)"
-        if [[ -n "${rust_toolchain}" ]]; then
-            command -v rustup >/dev/null 2>&1 || srt_die "rustup is required for SGLang's source-pinned Rust toolchain"
-            srt_log "Installing source-pinned Rust ${rust_toolchain}"
-            rustup toolchain install "${rust_toolchain}" --profile minimal
-            export RUSTUP_TOOLCHAIN="${rust_toolchain}"
+    mkdir -p "${runtime_root}"
+    runtime_lock="${runtime_root}/.sglang-${revision}-${SRTCTL_SGLANG_RUNTIME_KEY}.lock"
+    (
+        flock -x 202
+        if [[ ! -f "${runtime_dir}/.complete" ]]; then
+            srt_log "Installing SGLang ${revision} into ${runtime_dir}/.venv"
+            mkdir -p "${runtime_dir}"
+            rm -rf "${runtime_dir}/.venv" "${source_copy}" "${runtime_dir}/.complete"
+            "${bootstrap_python}" -m venv --system-site-packages "${runtime_dir}/.venv"
+            rm -rf "${source_copy}"
+            mkdir -p "${source_copy}"
+            tar --exclude='.git' --exclude='target' -C "${SRTCTL_SGLANG_SOURCE}" -cf - . | tar -C "${source_copy}" -xf -
+            rust_toolchain="$(sed -nE 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "${source_copy}/rust/rust-toolchain.toml" | head -n 1)"
+            if [[ -n "${rust_toolchain}" ]]; then
+                command -v rustup >/dev/null 2>&1 || srt_die "rustup is required for SGLang's source-pinned Rust toolchain"
+                srt_log "Installing source-pinned Rust ${rust_toolchain}"
+                rustup toolchain install "${rust_toolchain}" --profile minimal
+                export RUSTUP_TOOLCHAIN="${rust_toolchain}"
+            fi
+            "${runtime_dir}/.venv/bin/python" -m pip install --quiet --upgrade pip
+            "${runtime_dir}/.venv/bin/python" -m pip install --quiet --editable "${source_copy}/python"
+            installed_source="$("${runtime_dir}/.venv/bin/python" -c 'import sglang; print(sglang.__file__)')"
+            [[ "${installed_source}" == "${source_copy}/python/sglang/__init__.py" ]] || srt_die "SGLang editable install resolved to ${installed_source}"
+            "${runtime_dir}/.venv/bin/python" -c 'import nixl' || "${runtime_dir}/.venv/bin/python" -m pip install --quiet nixl
+            "${runtime_dir}/.venv/bin/python" -c 'import blake3' || "${runtime_dir}/.venv/bin/python" -m pip install --quiet blake3
+            touch "${runtime_dir}/.complete"
         fi
-        "${runtime_dir}/.venv/bin/python" -m pip install --quiet --upgrade pip
-        "${runtime_dir}/.venv/bin/python" -m pip install --quiet --editable "${source_copy}/python"
-        installed_source="$("${runtime_dir}/.venv/bin/python" -c 'import sglang; print(sglang.__file__)')"
-        [[ "${installed_source}" == "${source_copy}/python/sglang/__init__.py" ]] || srt_die "SGLang editable install resolved to ${installed_source}"
-        touch "${runtime_dir}/.complete"
-    fi
+    ) 202>"${runtime_lock}"
     SRTCTL_PYTHON="${runtime_dir}/.venv/bin/python"
     export SRTCTL_PYTHON
     "${SRTCTL_PYTHON}" -c 'import sglang' || srt_die "SGLang source install failed"
-    "${SRTCTL_PYTHON}" -c 'import nixl' || "${SRTCTL_PYTHON}" -m pip install --quiet nixl
-    "${SRTCTL_PYTHON}" -c 'import blake3' || "${SRTCTL_PYTHON}" -m pip install --quiet blake3
+    "${SRTCTL_PYTHON}" -c 'import nixl, blake3' || srt_die "SGLang runtime dependencies are incomplete"
 }
 
 {% if context.dynamo_source_hash %}
 srt_install_dynamo_from_source_cache() {
     local cache_root="${SRTCTL_DYNAMO_CACHE_ROOT:-${SRTCTL_SOURCE}/configs/dynamo-wheels}"
-    local cache="${cache_root}/${SRTCTL_DYNAMO_SOURCE_CACHE_KEY}"
-    local lock="${cache_root}/.${SRTCTL_DYNAMO_SOURCE_CACHE_KEY}.lock"
-    local build_dir source_dir wheel
+    local cache_key cache lock build_dir source_dir wheel
+
+    cache_key="$(srt_dynamo_source_cache_key "${SRTCTL_DYNAMO_SOURCE_CACHE_KEY}")"
+    cache="${cache_root}/${cache_key}"
+    lock="${cache_root}/.${cache_key}.lock"
 
     mkdir -p "${cache_root}"
     (
@@ -283,6 +306,36 @@ srt_install_dynamo_from_source_cache() {
 }
 {% endif %}
 
+{% if context.dynamo_source_hash %}
+srt_dynamo_source_cache_key() {
+    local base_key="$1"
+    local architecture python_abi cpu_features
+    architecture="$(uname -m)"
+    python_abi="$("${SRTCTL_PYTHON}" -c 'import sys; print(sys.implementation.cache_tag)')"
+    cpu_features="$(LC_ALL=C awk -F: '/^(flags|Features)[[:space:]]*:/ {print $2; exit}' /proc/cpuinfo 2>/dev/null | sha256sum | cut -c1-12)"
+    printf '%s-%s-%s-%s\n' "${base_key}" "${architecture}" "${python_abi}" "${cpu_features}"
+}
+{% endif %}
+
+{% if context.dynamo_package_version %}
+srt_install_dynamo_from_wheel_cache() {
+    local wheel_dir="${SRTCTL_DYNAMO_CACHE_ROOT:-${SRTCTL_SOURCE}/configs/dynamo-wheels}/wheels/${SRTCTL_DYNAMO_PACKAGE_VERSION}"
+    local wheel_script="${SRTCTL_SOURCE}/src/srtctl/runtime_scripts/dynamo_wheels.py"
+    local python_version
+    [[ -f "${wheel_script}" ]] || srt_die "Dynamo wheel helper not found: ${wheel_script}"
+    "${SRTCTL_PYTHON}" -m pip --version >/dev/null 2>&1 || "${SRTCTL_PYTHON}" -m ensurepip --upgrade
+    python_version="$("${SRTCTL_PYTHON}" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+    DYNAMO_VERSION="${SRTCTL_DYNAMO_PACKAGE_VERSION}" \
+        DYNAMO_WHEEL_HOST_DIR="${wheel_dir}" \
+        DYNAMO_PYTHON_VERSION="${python_version}" \
+        "${SRTCTL_PYTHON}" "${wheel_script}" prefetch
+    DYNAMO_VERSION="${SRTCTL_DYNAMO_PACKAGE_VERSION}" \
+        DYNAMO_WHEEL_DIRS="${wheel_dir}" \
+        "${SRTCTL_PYTHON}" "${wheel_script}" install
+    srt_log "Installed Dynamo ${SRTCTL_DYNAMO_PACKAGE_VERSION} from ${wheel_dir}"
+}
+{% endif %}
+
 srt_launch_shell() {
     local label="$1"
     local log_file="$2"
@@ -319,13 +372,13 @@ srt_stop_group() {
     local pid="$1"
     local timeout_seconds="${2:-30}"
     [[ -n "${pid}" ]] || return 0
-    if kill -0 "${pid}" 2>/dev/null; then
+    if kill -0 -- "-${pid}" 2>/dev/null; then
         kill -TERM -- "-${pid}" 2>/dev/null || true
         local deadline=$((SECONDS + timeout_seconds))
-        while kill -0 "${pid}" 2>/dev/null && (( SECONDS < deadline )); do
+        while kill -0 -- "-${pid}" 2>/dev/null && (( SECONDS < deadline )); do
             sleep 1
         done
-        if kill -0 "${pid}" 2>/dev/null; then
+        if kill -0 -- "-${pid}" 2>/dev/null; then
             srt_log "pid=${pid} did not stop after ${timeout_seconds}s; sending SIGKILL"
             kill -KILL -- "-${pid}" 2>/dev/null || true
         fi
@@ -343,7 +396,11 @@ srt_stop_tachometer() {
 srt_compact_tachometer() {
 {% if context.tachometer_enabled %}
     if [[ -n "${TACHOMETER_LOCAL_DIR}" ]] && find "${TACHOMETER_LOCAL_DIR}" -maxdepth 1 -type f \( -name '*.parquet' -o -name 'current.arrow' \) -print -quit | grep -q .; then
-        "${SRTCTL_TACHOMETER}" compact "${TACHOMETER_LOCAL_DIR}" --output "${ARTIFACT_DIR}/tachometer/final" >>"${LOG_DIR}/tachometer.log" 2>&1
+        if (( TACHOMETER_COMPACTION_THREADS > 0 )); then
+            POLARS_MAX_THREADS="${TACHOMETER_COMPACTION_THREADS}" "${SRTCTL_TACHOMETER}" compact "${TACHOMETER_LOCAL_DIR}" --output "${ARTIFACT_DIR}/tachometer/final" >>"${LOG_DIR}/tachometer.log" 2>&1
+        else
+            "${SRTCTL_TACHOMETER}" compact "${TACHOMETER_LOCAL_DIR}" --output "${ARTIFACT_DIR}/tachometer/final" >>"${LOG_DIR}/tachometer.log" 2>&1
+        fi
     fi
 {% else %}
     return 0
@@ -495,6 +552,8 @@ srt_install_sglang_from_source
 {% if context.frontend_type == "dynamo" %}
 {% if context.dynamo_source_hash %}
 srt_install_dynamo_from_source_cache
+{% elif context.dynamo_package_version %}
+srt_install_dynamo_from_wheel_cache
 {% endif %}
 "${SRTCTL_PYTHON}" -c 'import dynamo' || srt_die "Dynamo is not installed for ${SRTCTL_PYTHON}"
 SRTCTL_NATS_BINARY="${SRTCTL_NATS_BINARY:-${SRTCTL_SOURCE}/configs/nats-server}"
@@ -537,7 +596,15 @@ command -v "${SRTCTL_TACHOMETER}" >/dev/null 2>&1 || srt_die "Tachometer scraper
 mkdir -p "$(dirname "${TACHOMETER_STORAGE}")" "${TACHOMETER_LOCAL_DIR}"
 cat > "${TACHOMETER_CONFIG}" <<{{ telemetry_marker }}
 {{ context.tachometer_config }}{{ telemetry_marker }}
-srt_launch "tachometer" "${LOG_DIR}/tachometer.log" "${SRTCTL_TACHOMETER}" --config "${TACHOMETER_CONFIG}" --local-dir "${TACHOMETER_LOCAL_DIR}"
+declare -a SRT_TACHOMETER_COMMAND=("${SRTCTL_TACHOMETER}" --config "${TACHOMETER_CONFIG}" --local-dir "${TACHOMETER_LOCAL_DIR}")
+if (( TACHOMETER_SYNC_INTERVAL_SECS > 0 )); then
+    SRT_TACHOMETER_COMMAND+=(--sync-interval "${TACHOMETER_SYNC_INTERVAL_SECS}")
+fi
+if (( TACHOMETER_COMPACTION_THREADS > 0 )); then
+    srt_launch "tachometer" "${LOG_DIR}/tachometer.log" env "POLARS_MAX_THREADS=${TACHOMETER_COMPACTION_THREADS}" "${SRT_TACHOMETER_COMMAND[@]}"
+else
+    srt_launch "tachometer" "${LOG_DIR}/tachometer.log" "${SRT_TACHOMETER_COMMAND[@]}"
+fi
 SRT_TACHOMETER_PID="${SRT_OWNED_PIDS[-1]}"
 sleep 2
 kill -0 "${SRT_TACHOMETER_PID}" 2>/dev/null || srt_die "Tachometer exited at startup; inspect ${LOG_DIR}/tachometer.log"
