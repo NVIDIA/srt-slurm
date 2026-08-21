@@ -101,6 +101,49 @@ def _cfg_max_batch(mode):
         except Exception:
             pass
     return None, None
+def _flat_config():
+    """The run's resolved recipe, flattened to {dotted.path: scalar}.
+
+    Flattened rather than cherry-picked because the interesting key is whichever one
+    an experiment happened to move, and a hand-maintained list of "settings worth
+    recording" is guaranteed to omit exactly that one the first time it matters.
+
+    This is also the only record of the FRONTEND environment. The worker fingerprints
+    capture prefill and decode, but settings like DYN_TOKENIZER_CACHE live on the
+    frontend and appear in no fingerprint at all -- so without this, an ablation on a
+    frontend variable has no artifact proving what it changed.
+
+    `name` is dropped: every arm of an ablation renames itself, and leaving it in makes
+    a clean single-variable diff report two differences instead of one.
+    """
+    if not SRC:
+        return None
+    for cand in (os.path.join(SRC, "config.yaml"),
+                 os.path.join(SRC, "..", "..", "config.yaml")):
+        try:
+            import yaml as _y
+            with open(cand) as fh:
+                doc = _y.safe_load(fh) or {}
+        except Exception:
+            continue
+        flat = {}
+
+        def _walk(node, prefix=""):
+            if isinstance(node, dict):
+                for k, v in node.items():
+                    _walk(v, f"{prefix}{k}.")
+            elif isinstance(node, list):
+                # Joined rather than indexed: a reordered list is not a config change,
+                # and per-index keys would report one for every shifted element.
+                flat[prefix.rstrip(".")] = ",".join(str(x) for x in node)
+            else:
+                flat[prefix.rstrip(".")] = node
+        _walk(doc)
+        flat.pop("name", None)
+        return flat
+    return None
+
+
 def _provenance():
     """What actually ran: framework versions, GPU, and per-worker agreement.
 
@@ -139,6 +182,7 @@ def _provenance():
             frameworks.setdefault(k, set()).add(v)
     if not per_worker:
         return None
+    cfg = _flat_config()
     # A framework name mapping to more than one version means the workers are not
     # running the same build. Reported as a first-class disagreement rather than
     # collapsed to "the version", which would silently pick one arbitrarily.
@@ -146,7 +190,8 @@ def _provenance():
     return {"workers": per_worker,
             "frameworks": {k: sorted(v)[0] for k, v in frameworks.items()},
             "framework_disagreement": disagree or None,
-            "n_workers": len(per_worker)}
+            "n_workers": len(per_worker),
+            "config": cfg}
 
 
 def _client_summary():
