@@ -204,10 +204,13 @@ def pct(v, p):
 # 918 at p99 88.5s -- mixing them roughly halves the reported tail. Records with
 # no benchmark_phase (plain, non-AgentX AIPerf runs) are always kept.
 client={}; _skipped_phase=0
+_phase_seen={}   # every phase value in the file, kept or dropped
 for l in (open(os.path.join(SRC,"profile_export.jsonl")) if HAS_CLIENT else []):
     l=l.strip()
     if not l: continue
     r=json.loads(l); m=r["metadata"]; mt=r["metrics"]
+    _ph=m.get("benchmark_phase")
+    _phase_seen[_ph or "(none)"]=_phase_seen.get(_ph or "(none)",0)+1
     if not _args.include_warmup and m.get("benchmark_phase") not in (None,"profiling"):
         _skipped_phase+=1; continue
     g=lambda k:(mt.get(k) or {}).get("value")
@@ -1274,7 +1277,19 @@ DATA={
    # that fallback (512) disagreed with both the measured value (32) and the engine
    # config (256) -- three numbers, of which the header was showing the wrong one.
    "topo":(META_TOPO or f"max batch prefill {MAX_BATCH_PF} / decode {MAX_BATCH_DE}")
-          .replace("__BLK__", str(BLK) if BLK else "unknown")},
+          .replace("__BLK__", str(BLK) if BLK else "unknown"),
+   # Why the population is the size it is. `n` alone cannot distinguish "this run
+   # served nothing" from "this run never left warmup", and those call for opposite
+   # responses: the first is a broken deployment, the second is a run that needed
+   # more wall clock. Verified on the c32 reference run 2750618, where all 118 client
+   # records are benchmark_phase=warmup because the job hit its 20-minute limit before
+   # profiling began -- a reader seeing only n=0 would conclude the stack was dead.
+   #
+   # The page says this in its header already; this is the same statement in the
+   # payload, which is what anything downstream of the HTML actually reads.
+   "phase_filter":{"applied":not _args.include_warmup,
+                   "kept":len(client),"dropped":_skipped_phase,
+                   "phases":_phase_seen}},
  "kpi":{"ttft_p50":round(pct(col("ttft"),50)/1000,1),"ttft_p99":round(pct(col("ttft"),99)/1000,1),
    "adm_p50":round(pct(col("adm"),50)/1000,1),"pf_p50":round(pct(col("pf"),50)/1000,1),
    "reqs":N,"adm_share":round(pct(col("adm"),50)/max(1,pct(col("ttft"),50))*100,0),
