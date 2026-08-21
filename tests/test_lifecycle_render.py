@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 
 import pytest
@@ -26,7 +27,7 @@ def _config(
     profiling_type: str | None = None,
     mooncake: dict[str, object] | None = None,
 ) -> SrtConfig:
-    raw = {
+    raw: dict[str, object] = {
         "name": "direct-render",
         "model": {
             "path": "hf:fake/mock-model",
@@ -82,6 +83,24 @@ def _config(
     return SrtConfig.Schema().load(yaml.safe_load(yaml.safe_dump(raw)))
 
 
+def _plan(context) -> dict[str, object]:
+    return json.loads(context.direct_lifecycle_plan)
+
+
+def _assert_valid_direct_script(script: str) -> None:
+    syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
+    assert syntax.returncode == 0, syntax.stderr
+    assert (
+        'exec "${SRTCTL_PYTHON}" "${SRTCTL_SOURCE}/src/srtctl/render/direct_lifecycle.py" --plan "${DIRECT_PLAN}"'
+        in script
+    )
+    assert "direct-lifecycle-plan.json" in script
+    assert "srt_launch" not in script
+    assert "srt_stop_group" not in script
+    for forbidden in ("#SBATCH", "SLURM_", "scontrol", "srun", "do_sweep", "run_benchmark"):
+        assert forbidden not in script
+
+
 def test_local_lifecycle_renders_eight_tp1_workers_with_separate_logs(tmp_path) -> None:
     context = build_local_lifecycle_render_context(
         _config(),
@@ -89,6 +108,7 @@ def test_local_lifecycle_renders_eight_tp1_workers_with_separate_logs(tmp_path) 
         output_base=tmp_path / "outputs",
     )
     script = render_local_lifecycle(context)
+    plan = _plan(context)
 
     assert len(context.worker_processes) == 8
     assert {worker.log_name for worker in context.worker_processes} == {f"worker-{index}.log" for index in range(8)}
@@ -97,25 +117,20 @@ def test_local_lifecycle_renders_eight_tp1_workers_with_separate_logs(tmp_path) 
     )
     assert "-m sglang_router.launch_router" in context.router_command
     assert "--policy cache_aware" in context.router_command
-    assert 'name = "router"' in context.tachometer_config
-    assert script.count('"${LOG_DIR}/worker-') == 8
-    assert '"${LOG_DIR}/router.log"' in script
-    assert '"${LOG_DIR}/tachometer.log"' in script
-    assert "setsid" in script
-    assert "kill -TERM 0" not in script
-    for forbidden in ("#SBATCH", "SLURM_", "scontrol", "srun", "do_sweep", "run_benchmark"):
-        assert forbidden not in script
-    syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
-    assert syntax.returncode == 0, syntax.stderr
+    assert 'name = "router"' in str(plan["tachometer_config"])
+    assert [worker["log_name"] for worker in plan["worker_processes"]] == [f"worker-{index}.log" for index in range(8)]
+    assert plan["router_command"] == context.router_command
+    _assert_valid_direct_script(script)
 
 
-def test_local_dynamo_lifecycle_starts_owned_infrastructure(tmp_path) -> None:
+def test_local_dynamo_plan_contains_owned_infrastructure_and_observability(tmp_path) -> None:
     context = build_local_lifecycle_render_context(
         _config(frontend_type="dynamo"),
         source_dir=tmp_path / "srt-slurm",
         output_base=tmp_path / "outputs",
     )
     script = render_local_lifecycle(context)
+    plan = _plan(context)
 
     assert context.needs_dynamo_infra
     assert "-m dynamo.sglang" in context.worker_processes[0].command
@@ -123,32 +138,18 @@ def test_local_dynamo_lifecycle_starts_owned_infrastructure(tmp_path) -> None:
     assert "-m dynamo.frontend" in context.router_command
     assert "--model-name fake/mock-model" in context.router_command
     assert "--model-path fake/mock-model" in context.router_command
-    assert 'srt_launch "nats"' in script
-    assert 'srt_launch "etcd"' in script
     assert "DYN_SYSTEM_PORT=7500" in context.worker_processes[0].command
     assert 'DYN_REQUEST_TRACE_FILE_PATH="${ARTIFACT_DIR}"/dynamo-request-trace' in context.router_command
     assert all(
         f"--nccl-port {17_500 + index}" in worker.command for index, worker in enumerate(context.worker_processes)
     )
-    assert 'srt_wait_http_ready "http://127.0.0.1:6100/health"' not in script
-    assert "srt_wait_router_ready" in script
-    assert 'TACHOMETER_STORAGE="${ARTIFACT_DIR}/tachometer/raw/scrape"' in script
-    assert '"${SRTCTL_TACHOMETER_DEFAULT}" == "tachometer-scraper"' in script
-    assert 'SRTCTL_TACHOMETER_DEFAULT="${SRTCTL_SOURCE}/bin/tachometer-scraper"' in script
-    assert (
-        'export AIPERF_DATASET_MMAP_BASE_PATH="${AIPERF_DATASET_MMAP_BASE_PATH:-${ARTIFACT_DIR}/aiperf-mmap}"' in script
-    )
-    assert 'mkdir -p "${LOG_DIR}" "${ARTIFACT_DIR}" "${AIPERF_DATASET_MMAP_BASE_PATH}"' in script
-    assert context.ruter_enabled
-    assert 'SRTCTL_RUTER_PYTHON="${SRTCTL_RUTER_PYTHON:-${SRTCTL_SOURCE}/.venv/bin/python}"' in script
-    assert (
-        "Observability enabled: Dynamo request tracing is on (DYN_REQUEST_TRACE=1; request-end gzip JSONL: ${ARTIFACT_DIR}/dynamo-request-trace.*.jsonl.gz)"
-        in script
-    )
-    assert '"${SRTCTL_RUTER_PYTHON}" -m srtctl.ruter init "${OUTPUT_DIR}" --output "${LOG_DIR}/.ruter"' in script
-    assert '"max_tokens": 16' in script
-    syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
-    assert syntax.returncode == 0, syntax.stderr
+    assert plan["needs_dynamo_infra"] is True
+    assert plan["etcd_client_port"] == 2379
+    assert plan["nats_port"] == 4222
+    assert plan["tachometer_enabled"] is True
+    assert plan["ruter_enabled"] is True
+    assert plan["benchmark_command"] == "aiperf profile --ui none"
+    _assert_valid_direct_script(script)
 
 
 def test_local_lifecycle_expands_artifact_dir_in_frontend_environment(tmp_path) -> None:
@@ -160,16 +161,13 @@ def test_local_lifecycle_expands_artifact_dir_in_frontend_environment(tmp_path) 
         source_dir=tmp_path / "srt-slurm",
         output_base=tmp_path / "outputs",
     )
-    script = render_local_lifecycle(context)
+    plan = _plan(context)
 
     assert 'DYN_REQUEST_TRACE_FILE_PATH="${ARTIFACT_DIR}"/dynamo-request-trace.jsonl' in context.router_command
-    assert 'DYN_REQUEST_TRACE_FILE_PATH="${ARTIFACT_DIR}"/dynamo-request-trace.jsonl' in script
-    assert "export OUTPUT_DIR LOG_DIR ARTIFACT_DIR" in script
-    syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
-    assert syntax.returncode == 0, syntax.stderr
+    assert 'DYN_REQUEST_TRACE_FILE_PATH="${ARTIFACT_DIR}"/dynamo-request-trace.jsonl' in str(plan["router_command"])
 
 
-def test_local_dynamo_lifecycle_accepts_isolated_infra_ports(tmp_path) -> None:
+def test_local_dynamo_plan_accepts_isolated_infra_ports(tmp_path) -> None:
     config = _config(
         frontend_type="dynamo",
         environment={
@@ -183,39 +181,28 @@ def test_local_dynamo_lifecycle_accepts_isolated_infra_ports(tmp_path) -> None:
         source_dir=tmp_path / "srt-slurm",
         output_base=tmp_path / "outputs",
     )
-    script = render_local_lifecycle(context)
+    plan = _plan(context)
 
     assert "ETCD_ENDPOINTS=http://127.0.0.1:22379" in context.router_command
     assert "NATS_SERVER=nats://127.0.0.1:24222" in context.router_command
-    assert '"${SRTCTL_NATS_BINARY}" -js -a "127.0.0.1" -p 24222' in script
-    assert "http://127.0.0.1:22379/health" in script
-    assert '--listen-peer-urls "http://127.0.0.1:22380"' in script
+    assert plan["etcd_client_port"] == 22379
+    assert plan["etcd_peer_port"] == 22380
+    assert plan["nats_port"] == 24222
 
 
-def test_local_dynamo_lifecycle_caches_a_hash_pinned_source_build(tmp_path) -> None:
+def test_local_dynamo_plan_caches_a_hash_pinned_source_build(tmp_path) -> None:
     context = build_local_lifecycle_render_context(
         _config(frontend_type="dynamo", dynamo_hash="a6261680a974ca7c74dcf49592a7376d7de99380"),
         source_dir=tmp_path / "srt-slurm",
         output_base=tmp_path / "outputs",
     )
-    script = render_local_lifecycle(context)
+    plan = _plan(context)
 
     assert context.dynamo_source_hash == "a6261680a974ca7c74dcf49592a7376d7de99380"
-    assert "srt_install_dynamo_from_source_cache" in script
-    assert "SRTCTL_DYNAMO_SOURCE_HASH=a6261680a974ca7c74dcf49592a7376d7de99380" in script
-    assert 'cache_root="${SRTCTL_DYNAMO_CACHE_ROOT:-${SRTCTL_SOURCE}/configs/dynamo-wheels}"' in script
-    assert 'cache_key="$(srt_dynamo_source_cache_key "${SRTCTL_DYNAMO_SOURCE_CACHE_KEY}")"' in script
-    assert "srt_dynamo_source_cache_key()" in script
-    assert "python_abi=" in script
-    assert "cpu_features=" in script
-    assert "flock -x 201" in script
-    assert 'maturin build --release --out "${cache}"' in script
-    assert '"${SRTCTL_PYTHON}" -m ensurepip --upgrade' in script
-    assert 'pip install --quiet --force-reinstall --no-deps "${wheel}"' in script
-    assert 'pip install --quiet --editable "${source_dir}/dynamo"' in script
-    assert "requirements.sglang.txt" not in script
-    syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
-    assert syntax.returncode == 0, syntax.stderr
+    assert plan["dynamo_source_hash"] == context.dynamo_source_hash
+    assert plan["dynamo_source_cache_key"] == context.dynamo_source_cache_key
+    assert plan["dynamo_package_version"] is None
+    assert plan["dynamo_top_of_tree"] is False
 
 
 def test_local_lifecycle_can_run_inside_sglang_container(tmp_path) -> None:
@@ -261,31 +248,10 @@ def test_local_lifecycle_can_run_inside_sglang_container(tmp_path) -> None:
     assert 'mkdir -p "${OUTPUT_BASE}"' in script
     assert 'if [[ "${mode}" == "readonly" ]]; then' in script
     assert 'mount+=",readonly"' in script
-    assert 'if [[ ! -f "${runtime_dir}/.complete" ]]; then' in script
-    assert 'touch "${runtime_dir}/.complete"' in script
-    assert (
-        'runtime_dir="${SRTCTL_SGLANG_RUNTIME_DIR:-${runtime_root}/sglang-${revision}-${SRTCTL_SGLANG_RUNTIME_KEY}}"'
-        in script
-    )
-    assert 'runtime_lock="${runtime_root}/.sglang-${revision}-${SRTCTL_SGLANG_RUNTIME_KEY}.lock"' in script
-    assert "flock -x 202" in script
-    assert 'git -c safe.directory="${SRTCTL_SGLANG_SOURCE}"' in script
-    assert "Installing source-pinned Rust ${rust_toolchain}" in script
-    assert 'rustup toolchain install "${rust_toolchain}" --profile minimal' in script
-    assert 'export RUSTUP_TOOLCHAIN="${rust_toolchain}"' in script
-    assert (
-        'SRTCTL_DYNAMO_CACHE_ROOT="${SRTCTL_DYNAMO_CACHE_ROOT:-${OUTPUT_BASE}/.srtctl-cache/dynamo-wheels}"' in script
-    )
-    assert "srt_install_sglang_from_source" in script
-    assert 'pip install --quiet --editable "${source_copy}/python"' in script
-    assert 'pip install --quiet --force-reinstall --no-deps "${wheel}"' in script
-    assert 'if [[ "${SRTCTL_LOCAL_CONTAINERIZED:-}" == "1" ]]; then' in script
-    assert "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq libclang-dev protobuf-compiler" in script
-    syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
-    assert syntax.returncode == 0, syntax.stderr
+    _assert_valid_direct_script(script)
 
 
-def test_local_dynamo_lifecycle_uses_slurm_cache_key_and_patches(tmp_path) -> None:
+def test_local_dynamo_plan_uses_slurm_cache_key_and_patches(tmp_path) -> None:
     patch = 'dynamo-tokenizers = { git = "https://github.com/ai-dynamo/frontend-crates", branch = "trace" }'
     context = build_local_lifecycle_render_context(
         _config(
@@ -296,33 +262,26 @@ def test_local_dynamo_lifecycle_uses_slurm_cache_key_and_patches(tmp_path) -> No
         source_dir=tmp_path / "srt-slurm",
         output_base=tmp_path / "outputs",
     )
-    script = render_local_lifecycle(context)
+    plan = _plan(context)
 
     assert context.dynamo_source_cache_key == "a6261680a974ca7c74dcf49592a7376d7de99380-patch-52bdcd85"
     assert context.dynamo_cargo_patch_commands
-    assert f"SRTCTL_DYNAMO_SOURCE_CACHE_KEY={context.dynamo_source_cache_key}" in script
-    assert "find . -name Cargo.toml -exec sed -i -E" in script
-    syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
-    assert syntax.returncode == 0, syntax.stderr
+    assert plan["dynamo_source_cache_key"] == context.dynamo_source_cache_key
+    assert plan["dynamo_cargo_patch_commands"] == list(context.dynamo_cargo_patch_commands)
 
 
-def test_local_dynamo_lifecycle_supports_top_of_tree_and_setup_script(tmp_path) -> None:
+def test_local_dynamo_plan_supports_top_of_tree_and_setup_script(tmp_path) -> None:
     context = build_local_lifecycle_render_context(
         _config(frontend_type="dynamo", dynamo={"top_of_tree": True}, setup_script="install-nixl.sh"),
         source_dir=tmp_path / "srt-slurm",
         output_base=tmp_path / "outputs",
     )
-    script = render_local_lifecycle(context)
+    plan = _plan(context)
 
     assert context.dynamo_top_of_tree
     assert context.setup_script == "install-nixl.sh"
-    assert "srt_install_dynamo_from_top_of_tree()" in script
-    assert "git clone --depth 1 https://github.com/ai-dynamo/dynamo.git" in script
-    assert "SRTCTL_SETUP_SCRIPT=install-nixl.sh" in script
-    assert 'script_path="${SRTCTL_SOURCE}/configs/${SRTCTL_SETUP_SCRIPT}"' in script
-    assert script.rindex("srt_run_setup_script") < script.rindex("srt_install_sglang_from_source")
-    syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
-    assert syntax.returncode == 0, syntax.stderr
+    assert plan["dynamo_top_of_tree"] is True
+    assert plan["setup_script"] == "install-nixl.sh"
 
 
 def test_local_dynamo_lifecycle_starts_mooncake_and_injects_worker_environment(tmp_path) -> None:
@@ -340,6 +299,7 @@ def test_local_dynamo_lifecycle_starts_mooncake_and_injects_worker_environment(t
         output_base=tmp_path / "outputs",
     )
     script = render_local_lifecycle(context)
+    plan = _plan(context)
 
     assert context.mooncake_master_command is not None
     assert "--custom-flag=true" in context.mooncake_master_command
@@ -347,13 +307,11 @@ def test_local_dynamo_lifecycle_starts_mooncake_and_injects_worker_environment(t
     assert "MOONCAKE_MASTER=127.0.0.1:8700" in context.worker_processes[0].command
     assert "MOONCAKE_TE_META_DATA_SERVER=http://127.0.0.1:8701/metadata" in context.worker_processes[0].command
     assert "MOONCAKE_PROTOCOL=rdma" in context.worker_processes[0].command
+    assert plan["mooncake_master_command"] == list(context.mooncake_master_command)
     assert 'SRTCTL_MOONCAKE_CONTAINER_NAME="${SRTCTL_CONTAINER_NAME}-mooncake"' in script
     assert "nvcr.io/nvidia/mooncake:latest" in script
     assert 'docker logs -f "${SRTCTL_MOONCAKE_CONTAINER_NAME}"' in script
-    assert 'srt_launch "mooncake-master"' in script
-    assert 'srt_wait_tcp_ready "127.0.0.1" 8700 "mooncake master"' in script
-    syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
-    assert syntax.returncode == 0, syntax.stderr
+    _assert_valid_direct_script(script)
 
 
 @pytest.mark.parametrize(
@@ -363,25 +321,18 @@ def test_local_dynamo_lifecycle_starts_mooncake_and_injects_worker_environment(t
         ({"wheel": "1.2.0.dev20260426"}, "1.2.0.dev20260426"),
     ],
 )
-def test_local_dynamo_lifecycle_stages_exact_package_wheels(tmp_path, dynamo, version: str) -> None:
+def test_local_dynamo_plan_stages_exact_package_wheels(tmp_path, dynamo, version: str) -> None:
     context = build_local_lifecycle_render_context(
         _config(frontend_type="dynamo", dynamo=dynamo),
         source_dir=tmp_path / "srt-slurm",
         output_base=tmp_path / "outputs",
     )
-    script = render_local_lifecycle(context)
+    plan = _plan(context)
 
     assert context.dynamo_source_hash is None
     assert context.dynamo_package_version == version
-    assert f"SRTCTL_DYNAMO_PACKAGE_VERSION={version}" in script
-    assert "srt_install_dynamo_from_wheel_cache()" in script
-    assert 'DYNAMO_WHEEL_HOST_DIR="${wheel_dir}"' in script
-    assert 'DYNAMO_WHEEL_DIRS="${wheel_dir}"' in script
-    assert '"${wheel_script}" prefetch' in script
-    assert '"${wheel_script}" install' in script
-    assert "srt_install_dynamo_from_wheel_cache" in script
-    syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
-    assert syntax.returncode == 0, syntax.stderr
+    assert plan["dynamo_package_version"] == version
+    assert plan["dynamo_source_hash"] is None
 
 
 @pytest.mark.parametrize(

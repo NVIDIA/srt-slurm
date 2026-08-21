@@ -9,7 +9,7 @@ import hashlib
 import json
 import os
 import shlex
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -89,6 +89,7 @@ class LocalLifecycleRenderContext:
     tachometer_sync_interval_secs: int
     tachometer_compaction_threads: int
     ruter_enabled: bool
+    direct_lifecycle_plan: str
 
 
 def heredoc_marker(payload: str, *, prefix: str = "SRTCTL_RUNTIME_CONFIG") -> str:
@@ -443,6 +444,54 @@ def _build_local_mooncake_master_command(config: SrtConfig) -> tuple[str, ...] |
     )
 
 
+def _direct_lifecycle_plan(context: LocalLifecycleRenderContext) -> str:
+    """Serialize the direct-only execution plan consumed inside the container.
+
+    This intentionally contains launch facts rather than the complete YAML:
+    the direct runner has no srtctl imports and can therefore run in the
+    serving venv created from SGLang source.
+    """
+    plan = {
+        "name": context.name,
+        "source_dir": context.source_dir,
+        "output_base": context.output_base,
+        "model_name": context.model_name,
+        "frontend_type": context.frontend_type,
+        "frontend_port": context.frontend_port,
+        "etcd_client_port": context.etcd_client_port,
+        "etcd_peer_port": context.etcd_peer_port,
+        "nats_port": context.nats_port,
+        "worker_processes": [asdict(process) for process in context.worker_processes],
+        "router_command": context.router_command,
+        "expected_prefill": context.expected_prefill,
+        "expected_decode": context.expected_decode,
+        "health_timeout_seconds": context.health_timeout_seconds,
+        "health_interval_seconds": context.health_interval_seconds,
+        "needs_dynamo_infra": context.needs_dynamo_infra,
+        "dynamo_source_hash": context.dynamo_source_hash,
+        "dynamo_source_cache_key": context.dynamo_source_cache_key,
+        "dynamo_cargo_patch_commands": list(context.dynamo_cargo_patch_commands),
+        "dynamo_package_version": context.dynamo_package_version,
+        "dynamo_top_of_tree": context.dynamo_top_of_tree,
+        "sglang_runtime_key": context.sglang_runtime_key,
+        "setup_script": context.setup_script,
+        "mooncake_master_command": list(context.mooncake_master_command or ()),
+        "mooncake_master_port": context.mooncake_master_port,
+        "mooncake_metadata_port": context.mooncake_metadata_port,
+        "mooncake_metrics_port": context.mooncake_metrics_port,
+        "global_environment": list(context.global_environment),
+        "benchmark_environment": list(context.benchmark_environment),
+        "benchmark_command": context.benchmark_command,
+        "tachometer_enabled": context.tachometer_enabled,
+        "tachometer_binary": context.tachometer_binary,
+        "tachometer_config": context.tachometer_config,
+        "tachometer_sync_interval_secs": context.tachometer_sync_interval_secs,
+        "tachometer_compaction_threads": context.tachometer_compaction_threads,
+        "ruter_enabled": context.ruter_enabled,
+    }
+    return json.dumps(plan, sort_keys=True, separators=(",", ":"))
+
+
 def build_local_lifecycle_render_context(
     config: SrtConfig,
     *,
@@ -491,7 +540,7 @@ def build_local_lifecycle_render_context(
         separators=(",", ":"),
     )
     mooncake_cfg = config.backend.mooncake_kv_store
-    return LocalLifecycleRenderContext(
+    context = LocalLifecycleRenderContext(
         name=config.name,
         source_dir=str(source_dir.resolve()),
         output_base=str(output_base.resolve()),
@@ -535,7 +584,9 @@ def build_local_lifecycle_render_context(
         tachometer_sync_interval_secs=config.observability.tachometer.sync_interval_secs,
         tachometer_compaction_threads=config.observability.tachometer.compaction_threads,
         ruter_enabled=config.frontend.type == "dynamo" and config.observability.enabled,
+        direct_lifecycle_plan="",
     )
+    return replace(context, direct_lifecycle_plan=_direct_lifecycle_plan(context))
 
 
 def render_local_lifecycle(context: LocalLifecycleRenderContext) -> str:
@@ -545,5 +596,5 @@ def render_local_lifecycle(context: LocalLifecycleRenderContext) -> str:
     return environment.get_template("local_lifecycle.sh.j2").render(
         context=context,
         quote=shlex.quote,
-        telemetry_marker=heredoc_marker(context.tachometer_config or "", prefix="SRTCTL_TACHOMETER"),
+        direct_plan_marker=heredoc_marker(context.direct_lifecycle_plan, prefix="SRTCTL_DIRECT_PLAN"),
     )

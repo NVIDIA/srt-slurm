@@ -2,10 +2,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
-# Single-node lifecycle rendered by `srtctl apply --bash`.
-# A recipe may set SRTCTL_LOCAL_CONTAINER_IMAGE to execute this complete
-# lifecycle inside the same SGLang OCI image used by the Slurm path. Models,
-# source checkouts, caches, logs, and artifacts remain host-mounted files.
+# Direct lifecycle rendered by `srtctl apply --bash`.
+#
+# Bash owns only the host/container boundary.  The serialized plan below is
+# executed by direct_lifecycle.py, inside the same SGLang environment as the
+# workers, which owns installation, processes, readiness, telemetry, cleanup,
+# and ruter normalization.
 
 set -Eeuo pipefail
 
@@ -16,15 +18,7 @@ SRTCTL_RENDERED_MODEL_PATH={{ quote(context.model_path) }}
 SRTCTL_SGLANG_SOURCE={{ quote(context.sglang_source or '') }}
 SRTCTL_SGLANG_RUNTIME_KEY={{ quote(context.sglang_runtime_key) }}
 RUN_NAME={{ quote(context.name) }}
-MODEL={{ quote(context.model_name) }}
-FRONTEND_TYPE={{ quote(context.frontend_type) }}
-FRONTEND_PORT={{ context.frontend_port }}
-SRT_READY_TIMEOUT={{ context.health_timeout_seconds }}
-SRT_READY_INTERVAL={{ context.health_interval_seconds }}
 SRTCTL_PYTHON="${SRTCTL_PYTHON:-python3}"
-# The server environment need not contain srtctl's orchestration dependencies.
-# Prefer the source checkout's uv environment for the lightweight offline
-# normalizer, while retaining the serving interpreter as a standalone fallback.
 SRTCTL_RUTER_PYTHON="${SRTCTL_RUTER_PYTHON:-${SRTCTL_SOURCE}/.venv/bin/python}"
 if [[ ! -x "${SRTCTL_RUTER_PYTHON}" ]]; then
     SRTCTL_RUTER_PYTHON="${SRTCTL_PYTHON}"
@@ -32,7 +26,7 @@ fi
 OUTPUT_DIR="${SRTCTL_OUTPUT_DIR:-${OUTPUT_BASE}/${RUN_NAME}-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
 LOG_DIR="${OUTPUT_DIR}/logs"
 ARTIFACT_DIR="${OUTPUT_DIR}/artifacts"
-export OUTPUT_DIR LOG_DIR ARTIFACT_DIR
+export OUTPUT_DIR LOG_DIR ARTIFACT_DIR SRTCTL_PYTHON SRTCTL_RUTER_PYTHON
 {% if context.mooncake_master_command %}
 SRTCTL_MOONCAKE_CONTAINER_NAME=""
 SRTCTL_MOONCAKE_LOG_PID=""
@@ -48,13 +42,13 @@ if [[ -n "${SRTCTL_LOCAL_CONTAINER_IMAGE}" && "${SRTCTL_LOCAL_CONTAINERIZED:-}" 
         echo "srtctl: containerized --bash lifecycle must be saved to a file before execution" >&2
         exit 1
     }
+
     SRTCTL_CONTAINER_NAME="srtctl-lifecycle-$$"
     SRTCTL_CONTAINER_LABEL="io.nvidia.srtctl.lifecycle-output=$(printf '%s' "${OUTPUT_DIR}" | sha256sum | awk '{print $1}')"
-    # A hard-killed wrapper cannot run its EXIT trap. Reap only containers
-    # belonging to this exact output directory before creating its replacement.
     while IFS= read -r stale_container; do
         [[ -z "${stale_container}" ]] || docker rm -f "${stale_container}" >/dev/null 2>&1 || true
     done < <(docker ps -aq --filter "label=${SRTCTL_CONTAINER_LABEL}")
+
     declare -a SRT_CONTAINER_ARGS=(
         --detach
         --name "${SRTCTL_CONTAINER_NAME}"
@@ -81,18 +75,18 @@ if [[ -n "${SRTCTL_LOCAL_CONTAINER_IMAGE}" && "${SRTCTL_LOCAL_CONTAINERIZED:-}" 
         fi
         SRT_CONTAINER_ARGS+=(--mount "${mount}")
     }
+
     mkdir -p "${OUTPUT_BASE}"
     srt_container_mount "${SRTCTL_SOURCE}" readonly
     srt_container_mount "${OUTPUT_BASE}" rw
-    # Hugging Face snapshots store files as relative symlinks into their
-    # repository-level blobs directory. Mounting only snapshots/<revision>
-    # lets those links resolve against files from the image instead of the
-    # selected local model. Preserve the repository root when present.
+    # A Hugging Face snapshot contains relative links into the repository blob
+    # store, so mount its repository root when it is available.
     SRTCTL_MODEL_MOUNT_PATH="${SRTCTL_RENDERED_MODEL_PATH}"
     if [[ "$(basename "$(dirname "${SRTCTL_MODEL_MOUNT_PATH}")")" == "snapshots" && -d "$(dirname "$(dirname "${SRTCTL_MODEL_MOUNT_PATH}")")/blobs" ]]; then
         SRTCTL_MODEL_MOUNT_PATH="$(dirname "$(dirname "${SRTCTL_MODEL_MOUNT_PATH}")")"
     fi
     srt_container_mount "${SRTCTL_MODEL_MOUNT_PATH}" readonly
+
     SRTCTL_SGLANG_RUNTIME_DIR=""
     if [[ -n "${SRTCTL_SGLANG_SOURCE}" ]]; then
         srt_container_mount "${SRTCTL_SGLANG_SOURCE}" readonly
@@ -102,6 +96,7 @@ if [[ -n "${SRTCTL_LOCAL_CONTAINER_IMAGE}" && "${SRTCTL_LOCAL_CONTAINERIZED:-}" 
         }
         SRTCTL_SGLANG_RUNTIME_DIR="${OUTPUT_BASE}/.srtctl-runtime/sglang-${SRTCTL_SGLANG_REVISION}-${SRTCTL_SGLANG_RUNTIME_KEY}"
     fi
+
     if [[ -n "${RUTER_MOONCAKE_TRACE:-}" ]]; then
         srt_container_mount "${RUTER_MOONCAKE_TRACE}" readonly
         SRT_CONTAINER_ARGS+=(-e RUTER_MOONCAKE_TRACE)
@@ -117,6 +112,7 @@ if [[ -n "${SRTCTL_LOCAL_CONTAINER_IMAGE}" && "${SRTCTL_LOCAL_CONTAINERIZED:-}" 
     SRTCTL_DYNAMO_CACHE_ROOT="${SRTCTL_DYNAMO_CACHE_ROOT:-${OUTPUT_BASE}/.srtctl-cache/dynamo-wheels}"
     mkdir -p "${SRTCTL_DYNAMO_CACHE_ROOT}"
     srt_container_mount "${SRTCTL_DYNAMO_CACHE_ROOT}" rw
+
     SRT_CONTAINER_ARGS+=(
         "${SRTCTL_LOCAL_CONTAINER_IMAGE}"
         -lc 'trap "exit 0" TERM INT; while :; do sleep 3600; done'
@@ -150,6 +146,7 @@ if [[ -n "${SRTCTL_LOCAL_CONTAINER_IMAGE}" && "${SRTCTL_LOCAL_CONTAINERIZED:-}" 
     trap srt_container_cleanup EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
+
 {% if context.mooncake_master_command %}
     mkdir -p "${LOG_DIR}"
     SRTCTL_MOONCAKE_CONTAINER_NAME="${SRTCTL_CONTAINER_NAME}-mooncake"
@@ -174,6 +171,7 @@ if [[ -n "${SRTCTL_LOCAL_CONTAINER_IMAGE}" && "${SRTCTL_LOCAL_CONTAINERIZED:-}" 
     docker logs -f "${SRTCTL_MOONCAKE_CONTAINER_NAME}" >"${LOG_DIR}/mooncake-master.log" 2>&1 &
     SRTCTL_MOONCAKE_LOG_PID=$!
 {% endif %}
+
     docker run "${SRT_CONTAINER_ARGS[@]}" >/dev/null
     declare -a SRT_CONTAINER_EXEC_ARGS=(
         -e SRTCTL_LOCAL_CONTAINERIZED=1
@@ -199,562 +197,9 @@ if [[ -n "${SRTCTL_LOCAL_CONTAINER_IMAGE}" && "${SRTCTL_LOCAL_CONTAINERIZED:-}" 
     exit $?
 fi
 
-{% for key, value in context.global_environment %}
-export {{ key }}={{ quote(value) }}
-{% endfor %}
-export SRT_FRONTEND_URL="http://127.0.0.1:${FRONTEND_PORT}"
-export SRT_FRONTEND_HOST="127.0.0.1"
-export AIPERF_ARTIFACT_DIR="${ARTIFACT_DIR}/aiperf"
-{% for key, value in context.benchmark_environment %}
-export {{ key }}={{ quote(value) }}
-{% endfor %}
-# AIPerf otherwise reuses a system-temp mmap directory. A fresh run-scoped
-# base avoids cross-run dataset metadata races while retaining mmap throughput.
-export AIPERF_DATASET_MMAP_BASE_PATH="${AIPERF_DATASET_MMAP_BASE_PATH:-${ARTIFACT_DIR}/aiperf-mmap}"
-
-declare -a SRT_OWNED_PIDS=()
-SRT_TACHOMETER_PID=""
-TACHOMETER_LOCAL_DIR=""
-{% if context.dynamo_source_hash %}
-SRTCTL_DYNAMO_SOURCE_HASH={{ quote(context.dynamo_source_hash) }}
-SRTCTL_DYNAMO_SOURCE_CACHE_KEY={{ quote(context.dynamo_source_cache_key) }}
-{% endif %}
-{% if context.dynamo_package_version %}
-SRTCTL_DYNAMO_PACKAGE_VERSION={{ quote(context.dynamo_package_version) }}
-{% endif %}
-{% if context.setup_script %}
-SRTCTL_SETUP_SCRIPT={{ quote(context.setup_script) }}
-{% endif %}
-{% if context.tachometer_enabled %}
-TACHOMETER_SYNC_INTERVAL_SECS={{ context.tachometer_sync_interval_secs }}
-TACHOMETER_COMPACTION_THREADS={{ context.tachometer_compaction_threads }}
-{% endif %}
-
-srt_log() {
-    printf '[srtctl:%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"
-}
-
-srt_die() {
-    srt_log "ERROR: $*"
-    exit 1
-}
-
-{% if context.setup_script %}
-srt_run_setup_script() {
-    local script_path="${SRTCTL_SOURCE}/configs/${SRTCTL_SETUP_SCRIPT}"
-    local patch_script_path="${SRTCTL_SOURCE}/configs/patches/${SRTCTL_SETUP_SCRIPT}"
-    if [[ -f "${script_path}" ]]; then
-        srt_log "Running setup script: ${script_path}"
-        bash "${script_path}"
-    elif [[ -f "${patch_script_path}" ]]; then
-        srt_log "Running setup script: ${patch_script_path}"
-        bash "${patch_script_path}"
-    else
-        srt_log "WARNING: setup script not found: ${script_path} (or ${patch_script_path})"
-    fi
-}
-{% endif %}
-
-srt_install_sglang_from_source() {
-    [[ -n "${SRTCTL_SGLANG_SOURCE}" ]] || return 0
-    [[ -d "${SRTCTL_SGLANG_SOURCE}/python/sglang" ]] || srt_die "Invalid SGLang source: ${SRTCTL_SGLANG_SOURCE}"
-    command -v git >/dev/null 2>&1 || srt_die "git is required to identify SGLang source"
-    local revision runtime_root runtime_dir source_copy bootstrap_python installed_source rust_toolchain runtime_lock
-    revision="$(git -c safe.directory="${SRTCTL_SGLANG_SOURCE}" -C "${SRTCTL_SGLANG_SOURCE}" rev-parse --verify HEAD)"
-    runtime_root="${SRTCTL_SGLANG_RUNTIME_ROOT:-${OUTPUT_BASE}/.srtctl-runtime}"
-    runtime_dir="${SRTCTL_SGLANG_RUNTIME_DIR:-${runtime_root}/sglang-${revision}-${SRTCTL_SGLANG_RUNTIME_KEY}}"
-    source_copy="${runtime_dir}/source"
-    bootstrap_python="${SRTCTL_PYTHON}"
-    mkdir -p "${runtime_root}"
-    runtime_lock="${runtime_root}/.sglang-${revision}-${SRTCTL_SGLANG_RUNTIME_KEY}.lock"
-    (
-        flock -x 202
-        if [[ ! -f "${runtime_dir}/.complete" ]]; then
-            srt_log "Installing SGLang ${revision} into ${runtime_dir}/.venv"
-            mkdir -p "${runtime_dir}"
-            rm -rf "${runtime_dir}/.venv" "${source_copy}" "${runtime_dir}/.complete"
-            "${bootstrap_python}" -m venv --system-site-packages "${runtime_dir}/.venv"
-            rm -rf "${source_copy}"
-            mkdir -p "${source_copy}"
-            tar --exclude='.git' --exclude='target' -C "${SRTCTL_SGLANG_SOURCE}" -cf - . | tar -C "${source_copy}" -xf -
-            rust_toolchain="$(sed -nE 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "${source_copy}/rust/rust-toolchain.toml" | head -n 1)"
-            if [[ -n "${rust_toolchain}" ]]; then
-                command -v rustup >/dev/null 2>&1 || srt_die "rustup is required for SGLang's source-pinned Rust toolchain"
-                srt_log "Installing source-pinned Rust ${rust_toolchain}"
-                rustup toolchain install "${rust_toolchain}" --profile minimal
-                export RUSTUP_TOOLCHAIN="${rust_toolchain}"
-            fi
-            "${runtime_dir}/.venv/bin/python" -m pip install --quiet --upgrade pip
-            "${runtime_dir}/.venv/bin/python" -m pip install --quiet --editable "${source_copy}/python"
-            installed_source="$("${runtime_dir}/.venv/bin/python" -c 'import sglang; print(sglang.__file__)')"
-            [[ "${installed_source}" == "${source_copy}/python/sglang/__init__.py" ]] || srt_die "SGLang editable install resolved to ${installed_source}"
-            "${runtime_dir}/.venv/bin/python" -c 'import nixl' || "${runtime_dir}/.venv/bin/python" -m pip install --quiet nixl
-            "${runtime_dir}/.venv/bin/python" -c 'import blake3' || "${runtime_dir}/.venv/bin/python" -m pip install --quiet blake3
-            touch "${runtime_dir}/.complete"
-        fi
-    ) 202>"${runtime_lock}"
-    SRTCTL_PYTHON="${runtime_dir}/.venv/bin/python"
-    export SRTCTL_PYTHON
-    "${SRTCTL_PYTHON}" -c 'import sglang' || srt_die "SGLang source install failed"
-    "${SRTCTL_PYTHON}" -c 'import nixl, blake3' || srt_die "SGLang runtime dependencies are incomplete"
-}
-
-{% if context.dynamo_source_hash or context.dynamo_top_of_tree %}
-srt_prepare_dynamo_source_build() {
-    # Match the Slurm cold-build path: build Dynamo in the SGLang container,
-    # provisioning bindgen/prost prerequisites there. A direct host lifecycle
-    # must supply its own toolchain instead of modifying the host.
-    if [[ "${SRTCTL_LOCAL_CONTAINERIZED:-}" == "1" ]]; then
-        srt_log "Installing Dynamo source build prerequisites"
-        apt-get update -qq
-        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq libclang-dev protobuf-compiler
-    fi
-    command -v git >/dev/null 2>&1 || srt_die "git is required for a Dynamo source build"
-    command -v cargo >/dev/null 2>&1 || srt_die "cargo is required for a Dynamo source build"
-    command -v protoc >/dev/null 2>&1 || srt_die "protoc is required for a Dynamo source build"
-    "${SRTCTL_PYTHON}" -m pip --version >/dev/null 2>&1 || "${SRTCTL_PYTHON}" -m ensurepip --upgrade
-    "${SRTCTL_PYTHON}" -m pip install --quiet --upgrade maturin
-}
-{% endif %}
-
-{% if context.dynamo_source_hash %}
-srt_install_dynamo_from_source_cache() {
-    local cache_root="${SRTCTL_DYNAMO_CACHE_ROOT:-${SRTCTL_SOURCE}/configs/dynamo-wheels}"
-    local cache_key cache lock build_dir source_dir wheel
-
-    cache_key="$(srt_dynamo_source_cache_key "${SRTCTL_DYNAMO_SOURCE_CACHE_KEY}")"
-    cache="${cache_root}/${cache_key}"
-    lock="${cache_root}/.${cache_key}.lock"
-
-    mkdir -p "${cache_root}"
-    (
-        flock -x 201
-        if [[ ! -f "${cache}/.complete" ]]; then
-            srt_prepare_dynamo_source_build
-            srt_log "Building Dynamo ${SRTCTL_DYNAMO_SOURCE_HASH} into ${cache}"
-            build_dir="$(mktemp -d)"
-            trap 'rm -rf "${build_dir}"' EXIT
-            git clone --no-checkout https://github.com/ai-dynamo/dynamo.git "${build_dir}/dynamo"
-            git -C "${build_dir}/dynamo" fetch --depth 1 origin "${SRTCTL_DYNAMO_SOURCE_HASH}"
-            git -C "${build_dir}/dynamo" checkout --detach FETCH_HEAD
-            (
-                cd "${build_dir}/dynamo"
-{% for command in context.dynamo_cargo_patch_commands %}
-                {{ command }}
-{% endfor %}
-            )
-            mkdir -p "${cache}"
-            rm -f "${cache}"/ai_dynamo_runtime-*.whl "${cache}/dynamo-src.tar.gz" "${cache}/.complete"
-            (
-                cd "${build_dir}/dynamo/lib/bindings/python"
-                RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native --cfg tokio_unstable" \
-                CARGO_TARGET_DIR="${build_dir}/target" \
-                    "${SRTCTL_PYTHON}" -m maturin build --release --out "${cache}"
-            )
-            tar --exclude='target' --exclude='.git' -czf "${cache}/dynamo-src.tar.gz" -C "${build_dir}" dynamo
-            touch "${cache}/.complete"
-        fi
-    ) 201>"${lock}"
-
-    wheel="$(compgen -G "${cache}/ai_dynamo_runtime-*.whl" | head -n 1 || true)"
-    [[ -n "${wheel}" ]] || srt_die "Dynamo cache is incomplete: ${cache}"
-    source_dir="${OUTPUT_DIR}/runtime/dynamo-src"
-    rm -rf "${source_dir}"
-    mkdir -p "${source_dir}"
-    tar -xzf "${cache}/dynamo-src.tar.gz" -C "${source_dir}"
-    "${SRTCTL_PYTHON}" -m pip install --quiet --force-reinstall --no-deps "${wheel}"
-    # The selected interpreter is the SGLang environment. Match the Slurm
-    # path and install plain Dynamo into that already-provisioned venv.
-    "${SRTCTL_PYTHON}" -m pip install --quiet --editable "${source_dir}/dynamo"
-    srt_log "Installed Dynamo ${SRTCTL_DYNAMO_SOURCE_HASH} from ${cache}"
-}
-{% endif %}
-
-{% if context.dynamo_top_of_tree %}
-srt_install_dynamo_from_top_of_tree() {
-    local build_dir source_dir wheel
-    srt_prepare_dynamo_source_build
-    build_dir="$(mktemp -d)"
-    srt_log "Building Dynamo top-of-tree"
-    git clone --depth 1 https://github.com/ai-dynamo/dynamo.git "${build_dir}/dynamo"
-    (
-        cd "${build_dir}/dynamo/lib/bindings/python"
-        RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native --cfg tokio_unstable" \
-        CARGO_TARGET_DIR="${build_dir}/target" \
-            "${SRTCTL_PYTHON}" -m maturin build --release --out "${build_dir}/wheels"
-    )
-    wheel="$(compgen -G "${build_dir}/wheels/ai_dynamo_runtime-*.whl" | head -n 1 || true)"
-    [[ -n "${wheel}" ]] || srt_die "Dynamo top-of-tree build produced no runtime wheel"
-    source_dir="${OUTPUT_DIR}/runtime/dynamo-src"
-    rm -rf "${source_dir}"
-    mkdir -p "${source_dir}"
-    tar --exclude='target' --exclude='.git' -C "${build_dir}/dynamo" -cf - . | tar -C "${source_dir}" -xf -
-    "${SRTCTL_PYTHON}" -m pip install --quiet --force-reinstall --no-deps "${wheel}"
-    "${SRTCTL_PYTHON}" -m pip install --quiet --editable "${source_dir}"
-    rm -rf "${build_dir}"
-    srt_log "Installed Dynamo top-of-tree"
-}
-{% endif %}
-
-{% if context.dynamo_source_hash %}
-srt_dynamo_source_cache_key() {
-    local base_key="$1"
-    local architecture python_abi cpu_features
-    architecture="$(uname -m)"
-    python_abi="$("${SRTCTL_PYTHON}" -c 'import sys; print(sys.implementation.cache_tag)')"
-    cpu_features="$(LC_ALL=C awk -F: '/^(flags|Features)[[:space:]]*:/ {print $2; exit}' /proc/cpuinfo 2>/dev/null | sha256sum | cut -c1-12)"
-    printf '%s-%s-%s-%s\n' "${base_key}" "${architecture}" "${python_abi}" "${cpu_features}"
-}
-{% endif %}
-
-{% if context.dynamo_package_version %}
-srt_install_dynamo_from_wheel_cache() {
-    local wheel_dir="${SRTCTL_DYNAMO_CACHE_ROOT:-${SRTCTL_SOURCE}/configs/dynamo-wheels}/wheels/${SRTCTL_DYNAMO_PACKAGE_VERSION}"
-    local wheel_script="${SRTCTL_SOURCE}/src/srtctl/runtime_scripts/dynamo_wheels.py"
-    local python_version
-    [[ -f "${wheel_script}" ]] || srt_die "Dynamo wheel helper not found: ${wheel_script}"
-    "${SRTCTL_PYTHON}" -m pip --version >/dev/null 2>&1 || "${SRTCTL_PYTHON}" -m ensurepip --upgrade
-    python_version="$("${SRTCTL_PYTHON}" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
-    DYNAMO_VERSION="${SRTCTL_DYNAMO_PACKAGE_VERSION}" \
-        DYNAMO_WHEEL_HOST_DIR="${wheel_dir}" \
-        DYNAMO_PYTHON_VERSION="${python_version}" \
-        "${SRTCTL_PYTHON}" "${wheel_script}" prefetch
-    DYNAMO_VERSION="${SRTCTL_DYNAMO_PACKAGE_VERSION}" \
-        DYNAMO_WHEEL_DIRS="${wheel_dir}" \
-        "${SRTCTL_PYTHON}" "${wheel_script}" install
-    srt_log "Installed Dynamo ${SRTCTL_DYNAMO_PACKAGE_VERSION} from ${wheel_dir}"
-}
-{% endif %}
-
-srt_launch_shell() {
-    local label="$1"
-    local log_file="$2"
-    local command="$3"
-    local python_bin_dir
-    python_bin_dir="$(dirname "${SRTCTL_PYTHON}")"
-    mkdir -p "$(dirname "${log_file}")"
-    printf '%s\n' "${command}" > "${log_file}.command"
-    # Worker commands run in a login shell. Re-add the selected interpreter's
-    # bin directory afterwards so tools installed in its isolated venv (for
-    # example SGLang's JIT compiler dependency, ninja) are available too.
-    setsid bash -lc "export PATH=$(printf '%q' "${python_bin_dir}"):\$PATH; ${command}" >"${log_file}" 2>&1 &
-    local pid=$!
-    printf '%s\n' "${pid}" > "${log_file}.pid"
-    SRT_OWNED_PIDS+=("${pid}")
-    srt_log "Started ${label}: pid=${pid} log=${log_file}"
-}
-
-srt_launch() {
-    local label="$1"
-    local log_file="$2"
-    shift 2
-    mkdir -p "$(dirname "${log_file}")"
-    printf '%q ' "$@" > "${log_file}.command"
-    printf '\n' >> "${log_file}.command"
-    setsid "$@" >"${log_file}" 2>&1 &
-    local pid=$!
-    printf '%s\n' "${pid}" > "${log_file}.pid"
-    SRT_OWNED_PIDS+=("${pid}")
-    srt_log "Started ${label}: pid=${pid} log=${log_file}"
-}
-
-srt_stop_group() {
-    local pid="$1"
-    local timeout_seconds="${2:-30}"
-    [[ -n "${pid}" ]] || return 0
-    if kill -0 -- "-${pid}" 2>/dev/null; then
-        kill -TERM -- "-${pid}" 2>/dev/null || true
-        local deadline=$((SECONDS + timeout_seconds))
-        while kill -0 -- "-${pid}" 2>/dev/null && (( SECONDS < deadline )); do
-            sleep 1
-        done
-        if kill -0 -- "-${pid}" 2>/dev/null; then
-            srt_log "pid=${pid} did not stop after ${timeout_seconds}s; sending SIGKILL"
-            kill -KILL -- "-${pid}" 2>/dev/null || true
-        fi
-    fi
-    wait "${pid}" 2>/dev/null || true
-}
-
-srt_stop_tachometer() {
-    if [[ -n "${SRT_TACHOMETER_PID}" ]]; then
-        srt_stop_group "${SRT_TACHOMETER_PID}"
-        SRT_TACHOMETER_PID=""
-    fi
-}
-
-srt_compact_tachometer() {
-{% if context.tachometer_enabled %}
-    if [[ -n "${TACHOMETER_LOCAL_DIR}" ]] && find "${TACHOMETER_LOCAL_DIR}" -maxdepth 1 -type f \( -name '*.parquet' -o -name 'current.arrow' \) -print -quit | grep -q .; then
-        if (( TACHOMETER_COMPACTION_THREADS > 0 )); then
-            POLARS_MAX_THREADS="${TACHOMETER_COMPACTION_THREADS}" "${SRTCTL_TACHOMETER}" compact "${TACHOMETER_LOCAL_DIR}" --output "${ARTIFACT_DIR}/tachometer/final" >>"${LOG_DIR}/tachometer.log" 2>&1
-        else
-            "${SRTCTL_TACHOMETER}" compact "${TACHOMETER_LOCAL_DIR}" --output "${ARTIFACT_DIR}/tachometer/final" >>"${LOG_DIR}/tachometer.log" 2>&1
-        fi
-    fi
-{% else %}
-    return 0
-{% endif %}
-}
-
-srt_normalize_ruter() {
-{% if context.ruter_enabled %}
-    # Keep this under logs so the existing SLURM artifact sync carries the
-    # prepared bundle. The normalizer only reads raw logs and Tachometer's
-    # final Parquet; it does not touch either input.
-    if ! PYTHONPATH="${SRTCTL_SOURCE}/src${PYTHONPATH:+:${PYTHONPATH}}" "${SRTCTL_RUTER_PYTHON}" -m srtctl.ruter init "${OUTPUT_DIR}" --output "${LOG_DIR}/.ruter" >>"${LOG_DIR}/ruter.log" 2>&1; then
-        srt_log "WARNING: ruter normalization failed; inspect ${LOG_DIR}/ruter.log"
-    fi
-{% else %}
-    return 0
-{% endif %}
-}
-
-srt_cleanup() {
-    local rc=$?
-    trap - EXIT INT TERM
-    srt_stop_tachometer
-    srt_compact_tachometer || rc=1
-    local index
-{% raw %}    for ((index=${#SRT_OWNED_PIDS[@]} - 1; index >= 0; index--)); do{% endraw %}
-        srt_stop_group "${SRT_OWNED_PIDS[index]}"
-    done
-    srt_normalize_ruter
-    exit "${rc}"
-}
-trap srt_cleanup EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
-
-srt_assert_services_alive() {
-    local pid
-    for pid in "${SRT_OWNED_PIDS[@]}"; do
-        kill -0 "${pid}" 2>/dev/null || srt_die "owned service pid=${pid} exited; inspect ${LOG_DIR}"
-    done
-}
-
-srt_wait_http_ready() {
-    local url="$1"
-    local label="$2"
-    local timeout_seconds="${3:-${SRT_READY_TIMEOUT}}"
-    local deadline=$((SECONDS + timeout_seconds))
-    while (( SECONDS < deadline )); do
-        srt_assert_services_alive
-        if curl -fsS --max-time 5 "${url}" >/dev/null 2>&1; then
-            srt_log "${label} is ready"
-            return 0
-        fi
-        sleep "${SRT_READY_INTERVAL}"
-    done
-    srt_die "${label} did not become ready: ${url}"
-}
-
-{% if context.mooncake_master_command %}
-srt_wait_tcp_ready() {
-    local host="$1"
-    local port="$2"
-    local label="$3"
-    "${SRTCTL_PYTHON}" - "${host}" "${port}" "${label}" "${SRT_READY_TIMEOUT}" "${SRT_READY_INTERVAL}" <<'PY'
-import socket
-import sys
-import time
-
-host, raw_port, label, raw_timeout, raw_interval = sys.argv[1:]
-port = int(raw_port)
-deadline = time.monotonic() + int(raw_timeout)
-interval = int(raw_interval)
-while time.monotonic() < deadline:
-    try:
-        with socket.create_connection((host, port), timeout=3):
-            print(f"{label} is ready")
-            raise SystemExit(0)
-    except OSError:
-        time.sleep(interval)
-raise SystemExit(f"{label} did not become ready on {host}:{port}")
-PY
-}
-
-srt_start_mooncake_master() {
-    if [[ "${SRTCTL_MOONCAKE_CONTAINERIZED:-}" != "1" ]]; then
-        declare -a SRT_MOONCAKE_COMMAND=(
-{% for argument in context.mooncake_master_command %}
-            {{ quote(argument) }}
-{% endfor %}
-        )
-        srt_launch "mooncake-master" "${LOG_DIR}/mooncake-master.log" "${SRT_MOONCAKE_COMMAND[@]}"
-    fi
-    srt_wait_tcp_ready "127.0.0.1" {{ context.mooncake_master_port }} "mooncake master"
-    srt_wait_tcp_ready "127.0.0.1" {{ context.mooncake_metadata_port }} "mooncake metadata"
-    srt_wait_tcp_ready "127.0.0.1" {{ context.mooncake_metrics_port }} "mooncake metrics"
-}
-{% endif %}
-
-srt_wait_router_ready() {
-    local path="/health"
-    if [[ "${FRONTEND_TYPE}" == "sglang" ]]; then
-        path="/workers"
-    fi
-    SRT_WATCH_PIDS="${SRT_OWNED_PIDS[*]}" "${SRTCTL_PYTHON}" - "http://127.0.0.1:${FRONTEND_PORT}${path}" {{ context.expected_prefill }} {{ context.expected_decode }} "${FRONTEND_TYPE}" "${SRT_READY_TIMEOUT}" "${SRT_READY_INTERVAL}" <<'PY'
-import json
-import os
-import sys
-import time
-import urllib.error
-import urllib.request
-
-url, expected_prefill, expected_decode, frontend_type, timeout_seconds, interval_seconds = sys.argv[1:]
-expected_prefill = int(expected_prefill)
-expected_decode = int(expected_decode)
-deadline = time.monotonic() + int(timeout_seconds)
-interval_seconds = int(interval_seconds)
-
-def dynamo_counts(payload):
-    prefill = decode = 0
-    for instance in payload.get("instances", []):
-        if instance.get("endpoint") != "generate":
-            continue
-        if instance.get("component") == "prefill":
-            prefill += 1
-        elif instance.get("component") in ("decode", "tensorrt_llm", "backend"):
-            decode += 1
-    return prefill, decode
-
-def sglang_counts(payload):
-    stats = payload.get("stats", {})
-    return int(stats.get("prefill_count", 0) or 0), int(stats.get("decode_count", 0) or 0) + int(stats.get("regular_count", 0) or 0)
-
-while time.monotonic() < deadline:
-    for raw_pid in os.environ.get("SRT_WATCH_PIDS", "").split():
-        try:
-            os.kill(int(raw_pid), 0)
-        except ProcessLookupError:
-            raise SystemExit(f"Owned process {raw_pid} exited before router readiness")
-    try:
-        with urllib.request.urlopen(url, timeout=5) as response:
-            payload = json.loads(response.read().decode())
-        prefill, decode = sglang_counts(payload) if frontend_type == "sglang" else dynamo_counts(payload)
-        if prefill >= expected_prefill and decode >= expected_decode:
-            print(f"Router ready: prefill={prefill}/{expected_prefill} decode={decode}/{expected_decode}")
-            raise SystemExit(0)
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
-        pass
-    time.sleep(interval_seconds)
-raise SystemExit(f"Router did not report expected workers before timeout: {url}")
-PY
-}
-
-srt_smoke_chat() {
-    "${SRTCTL_PYTHON}" - "${SRT_FRONTEND_URL}" "${MODEL}" >"${LOG_DIR}/smoke.json" <<'PY'
-import json
-import sys
-import urllib.request
-
-base_url, model = sys.argv[1:]
-payload = json.dumps({
-    "model": model,
-    "messages": [{"role": "user", "content": "Reply with one word: ready"}],
-    # Reasoning-capable models can consume a one-token budget before emitting
-    # visible assistant text, so use a small but meaningful smoke budget.
-    "max_tokens": 16,
-    "temperature": 0,
-}).encode()
-request = urllib.request.Request(
-    f"{base_url}/v1/chat/completions",
-    data=payload,
-    headers={"Content-Type": "application/json"},
-)
-with urllib.request.urlopen(request, timeout=120) as response:
-    body = json.loads(response.read())
-choices = body.get("choices") or []
-content = (choices[0].get("message") or {}).get("content") if choices else None
-assert isinstance(content, str) and content.strip(), body
-print(json.dumps(body))
-PY
-}
-
-mkdir -p "${LOG_DIR}" "${ARTIFACT_DIR}" "${AIPERF_DATASET_MMAP_BASE_PATH}"
-srt_log "Run directory: ${OUTPUT_DIR}"
-{% if context.ruter_enabled %}
-srt_log "Observability enabled: Dynamo request tracing is on (DYN_REQUEST_TRACE=1; request-end gzip JSONL: ${ARTIFACT_DIR}/dynamo-request-trace.*.jsonl.gz)"
-{% endif %}
-{% if context.setup_script %}
-srt_run_setup_script
-{% endif %}
-srt_install_sglang_from_source
-"${SRTCTL_PYTHON}" -c 'import sglang' || srt_die "SGLang is not installed for ${SRTCTL_PYTHON}"
-{% if context.frontend_type == "dynamo" %}
-{% if context.dynamo_source_hash %}
-srt_install_dynamo_from_source_cache
-{% elif context.dynamo_top_of_tree %}
-srt_install_dynamo_from_top_of_tree
-{% elif context.dynamo_package_version %}
-srt_install_dynamo_from_wheel_cache
-{% endif %}
-"${SRTCTL_PYTHON}" -c 'import dynamo' || srt_die "Dynamo is not installed for ${SRTCTL_PYTHON}"
-SRTCTL_NATS_BINARY="${SRTCTL_NATS_BINARY:-${SRTCTL_SOURCE}/configs/nats-server}"
-SRTCTL_ETCD_BINARY="${SRTCTL_ETCD_BINARY:-${SRTCTL_SOURCE}/configs/etcd}"
-[[ -x "${SRTCTL_NATS_BINARY}" ]] || srt_die "NATS binary is not executable: ${SRTCTL_NATS_BINARY}"
-[[ -x "${SRTCTL_ETCD_BINARY}" ]] || srt_die "etcd binary is not executable: ${SRTCTL_ETCD_BINARY}"
-mkdir -p "${OUTPUT_DIR}/nats" "${OUTPUT_DIR}/etcd"
-srt_launch "nats" "${LOG_DIR}/nats.log" "${SRTCTL_NATS_BINARY}" -js -a "127.0.0.1" -p {{ context.nats_port }} -sd "${OUTPUT_DIR}/nats"
-srt_launch "etcd" "${LOG_DIR}/etcd.log" "${SRTCTL_ETCD_BINARY}" --data-dir "${OUTPUT_DIR}/etcd" --listen-client-urls "http://127.0.0.1:{{ context.etcd_client_port }}" --advertise-client-urls "http://127.0.0.1:{{ context.etcd_client_port }}" --listen-peer-urls "http://127.0.0.1:{{ context.etcd_peer_port }}" --initial-advertise-peer-urls "http://127.0.0.1:{{ context.etcd_peer_port }}" --initial-cluster "default=http://127.0.0.1:{{ context.etcd_peer_port }}"
-srt_wait_http_ready "http://127.0.0.1:{{ context.etcd_client_port }}/health" "etcd"
-{% else %}
-"${SRTCTL_PYTHON}" -c 'import sglang_router' || srt_die "sglang-router (Model Gateway) is not installed for ${SRTCTL_PYTHON}"
-{% endif %}
-
-{% if context.mooncake_master_command %}
-srt_start_mooncake_master
-{% endif %}
-
-{% for worker in context.worker_processes %}
-srt_launch_shell {{ quote(worker.label) }} "${LOG_DIR}/{{ worker.log_name }}" {{ quote(worker.command) }}
-{% endfor %}
-{% if context.frontend_type != "dynamo" %}
-{% for worker in context.worker_processes %}
-srt_wait_http_ready "http://127.0.0.1:{{ worker.http_port }}/health" {{ quote(worker.label) }}
-{% endfor %}
-{% endif %}
-
-srt_launch_shell "router" "${LOG_DIR}/router.log" {{ quote(context.router_command) }}
-srt_wait_router_ready >"${LOG_DIR}/readiness.log" 2>&1
-srt_smoke_chat
-
-{% if context.tachometer_enabled %}
-SRTCTL_TACHOMETER_DEFAULT={{ quote(context.tachometer_binary or '') }}
-if [[ ( -z "${SRTCTL_TACHOMETER_DEFAULT}" || "${SRTCTL_TACHOMETER_DEFAULT}" == "tachometer-scraper" ) && -x "${SRTCTL_SOURCE}/bin/tachometer-scraper" ]]; then
-    SRTCTL_TACHOMETER_DEFAULT="${SRTCTL_SOURCE}/bin/tachometer-scraper"
-fi
-SRTCTL_TACHOMETER="${SRTCTL_TACHOMETER:-${SRTCTL_TACHOMETER_DEFAULT}}"
-# Tachometer owns its final storage directory and rejects a pre-existing leaf.
-# Keep it nested beneath the run artifact directory but create only its parent.
-TACHOMETER_STORAGE="${ARTIFACT_DIR}/tachometer/raw/scrape"
-TACHOMETER_LOCAL_DIR="${ARTIFACT_DIR}/tachometer/local"
-TACHOMETER_CONFIG="${OUTPUT_DIR}/tachometer.toml"
-command -v "${SRTCTL_TACHOMETER}" >/dev/null 2>&1 || srt_die "Tachometer scraper not found: ${SRTCTL_TACHOMETER}"
-mkdir -p "$(dirname "${TACHOMETER_STORAGE}")" "${TACHOMETER_LOCAL_DIR}"
-cat > "${TACHOMETER_CONFIG}" <<{{ telemetry_marker }}
-{{ context.tachometer_config }}{{ telemetry_marker }}
-declare -a SRT_TACHOMETER_COMMAND=("${SRTCTL_TACHOMETER}" --config "${TACHOMETER_CONFIG}" --local-dir "${TACHOMETER_LOCAL_DIR}")
-if (( TACHOMETER_SYNC_INTERVAL_SECS > 0 )); then
-    SRT_TACHOMETER_COMMAND+=(--sync-interval "${TACHOMETER_SYNC_INTERVAL_SECS}")
-fi
-if (( TACHOMETER_COMPACTION_THREADS > 0 )); then
-    srt_launch "tachometer" "${LOG_DIR}/tachometer.log" env "POLARS_MAX_THREADS=${TACHOMETER_COMPACTION_THREADS}" "${SRT_TACHOMETER_COMMAND[@]}"
-else
-    srt_launch "tachometer" "${LOG_DIR}/tachometer.log" "${SRT_TACHOMETER_COMMAND[@]}"
-fi
-SRT_TACHOMETER_PID="${SRT_OWNED_PIDS[-1]}"
-sleep 2
-kill -0 "${SRT_TACHOMETER_PID}" 2>/dev/null || srt_die "Tachometer exited at startup; inspect ${LOG_DIR}/tachometer.log"
-{% endif %}
-
-srt_log "Starting benchmark"
-srt_launch_shell "benchmark" "${LOG_DIR}/aiperf.log" {{ quote(context.benchmark_command) }}
-SRT_BENCHMARK_PID="${SRT_OWNED_PIDS[-1]}"
-while kill -0 "${SRT_BENCHMARK_PID}" 2>/dev/null; do
-    srt_assert_services_alive
-    sleep 1
-done
-wait "${SRT_BENCHMARK_PID}"
-srt_log "Benchmark completed successfully"
+mkdir -p "${OUTPUT_DIR}"
+DIRECT_PLAN="${OUTPUT_DIR}/direct-lifecycle-plan.json"
+cat >"${DIRECT_PLAN}" <<{{ direct_plan_marker }}
+{{ context.direct_lifecycle_plan }}
+{{ direct_plan_marker }}
+exec "${SRTCTL_PYTHON}" "${SRTCTL_SOURCE}/src/srtctl/render/direct_lifecycle.py" --plan "${DIRECT_PLAN}"
