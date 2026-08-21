@@ -111,6 +111,16 @@ def _write_aiperf_export(run_dir: Path) -> Path:
     return path
 
 
+def _write_engine_configs(run_dir: Path) -> None:
+    """The resolved engine configs srt-slurm's TRTLLM backend dumps per mode.
+
+    Values are the real ones from AgentX run 2739690 -- decode max_batch_size is 1,
+    which is what makes the renderer's 256 default so badly wrong.
+    """
+    (run_dir / "trtllm_config_prefill.yaml").write_text("max_batch_size: 128\nmax_num_tokens: 4096\n")
+    (run_dir / "trtllm_config_decode.yaml").write_text("max_batch_size: 1\nmax_num_tokens: 4\n")
+
+
 def _write_frontend_log(run_dir: Path) -> Path:
     """A Dynamo frontend log in the raw-container-stdout flavour srtctl produces.
 
@@ -143,6 +153,7 @@ def run_dir(tmp_path: Path) -> Path:
     _write_raw_prometheus(d)
     _write_aiperf_export(d)
     _write_frontend_log(d)
+    _write_engine_configs(d)
     return d
 
 
@@ -285,6 +296,39 @@ class TestIngestBundle:
         # Absent leg must not be advertised, or the renderer looks for a file that
         # was never produced.
         assert "tempo_traces" not in yaml_text
+
+    def test_engine_configs_are_carried_into_the_bundle(self, run_dir: Path, tmp_path: Path):
+        """srt-slurm writes trtllm_config_<mode>.yaml into the LOG dir; the renderer
+        looks for it in the BUNDLE. Without the copy the renderer silently falls back
+        to --max-batch-* defaults, and on a real run decode's true ceiling is 1 against
+        a default of 256 -- the Engine tab then reads as "far from saturated" while the
+        engine is pinned at its limit."""
+        bundle = tmp_path / "bundle"
+        _run_ingest(run_dir, bundle)
+
+        assert (bundle / "trtllm_config_prefill.yaml").exists()
+        assert (bundle / "trtllm_config_decode.yaml").exists()
+        assert "max_batch_size: 1" in (bundle / "trtllm_config_decode.yaml").read_text()
+
+    def test_renderer_reads_real_ceilings_not_defaults(self, run_dir: Path, tmp_path: Path):
+        bundle = tmp_path / "bundle"
+        _run_ingest(run_dir, bundle)
+        # The renderer logs the resolved ceilings to stderr at INFO.
+        proc = _render(bundle, tmp_path / "dash.html", "--d3-cdn")
+        assert proc.returncode == 0, proc.stderr
+        assert "prefill max_batch_size=128" in proc.stderr
+        assert "decode max_batch_size=1" in proc.stderr, "must be 1 from config, not the 256 default"
+
+    def test_missing_engine_configs_are_not_fatal(self, tmp_path: Path):
+        """A non-TRTLLM run has no such files; ingest must still produce a bundle."""
+        d = tmp_path / "logs"
+        d.mkdir()
+        _write_raw_prometheus(d)
+        _write_aiperf_export(d)
+        bundle = tmp_path / "bundle"
+        _run_ingest(d, bundle)
+        assert (bundle / "server_metrics_export.jsonl").exists()
+        assert not list(bundle.glob("trtllm_config_*.yaml"))
 
     def test_span_log_default_matches_srtslurm_naming(self):
         """srt-slurm writes <node>_<mode>_w<i>.out; upstream defaulted to *.log."""
