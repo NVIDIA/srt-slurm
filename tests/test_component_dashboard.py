@@ -1353,3 +1353,31 @@ class TestMetricNameResolution:
         assert "_entries" in src and "name + \"_total\"" in src, (
             f"bare counter names {sorted(bare)} are referenced, so the central "
             "_total-resolution helper must still exist")
+
+
+class TestKpiProvenance:
+    def test_kpi_items_carry_a_source(self, run_dir: Path, tmp_path: Path):
+        """A KPI with no provenance is indistinguishable from one computed off the
+        wrong population -- which has happened here more than once (the tokenizer-cache
+        KPI read 0.0% against a real 99.2% because of a metric-name mismatch)."""
+        bundle = tmp_path / "bundle"
+        _run_ingest(run_dir, bundle)
+        out = tmp_path / "dash.html"
+        assert _render(bundle, out, "--d3-cdn",
+                       "--frontend-log", str(run_dir / "node0_frontend_0.out")).returncode == 0
+
+        html = out.read_text()
+        assert "'routing decisions seen'" in html or "routing decisions seen" in html
+        assert ".kpi .src{" in html, "the per-KPI source annotation style must exist"
+
+    def test_no_branching_prose_in_the_log_tab_note(self, run_dir: Path, tmp_path: Path):
+        """One caption when a feature is present and a different one when it is absent
+        is the varying-description defect: the caption becomes a function of the run
+        instead of the value doing that job."""
+        bundle = tmp_path / "bundle"
+        _run_ingest(run_dir, bundle)
+        out = tmp_path / "dash.html"
+        _render(bundle, out, "--d3-cdn", "--frontend-log", str(run_dir / "node0_frontend_0.out"))
+
+        html = out.read_text()
+        assert "not available in this run, so TTFT is a single opaque block" not in html
