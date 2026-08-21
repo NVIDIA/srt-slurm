@@ -17,7 +17,7 @@ from jinja2 import Environment, FileSystemLoader
 
 from srtctl.backends.sglang import SGLangProtocol
 from srtctl.core.power.contract import CONTAINER_LOG_DIR
-from srtctl.core.schema import SrtConfig
+from srtctl.core.schema import SrtConfig, dynamo_cargo_patch_commands, dynamo_source_cache_key
 from srtctl.core.topology import Process
 from srtctl.ports import (
     DYN_SYSTEM_PORT_BASE,
@@ -61,6 +61,8 @@ class LocalLifecycleRenderContext:
     health_interval_seconds: int
     needs_dynamo_infra: bool
     dynamo_source_hash: str | None
+    dynamo_source_cache_key: str | None
+    dynamo_cargo_patch_commands: tuple[str, ...]
     global_environment: tuple[tuple[str, str], ...]
     benchmark_environment: tuple[tuple[str, str], ...]
     benchmark_command: str
@@ -381,6 +383,8 @@ def build_local_lifecycle_render_context(
     expected_prefill = resources.num_prefill
     expected_decode = resources.num_agg if resources.num_agg else resources.num_decode
     health_interval = max(1, int(config.health_check.interval_seconds))
+    dynamo_source_hash = config.dynamo.hash if config.frontend.type == "dynamo" and config.dynamo.install else None
+    cargo_patches = config.dynamo.cargo_patches if dynamo_source_hash else None
     return LocalLifecycleRenderContext(
         name=config.name,
         source_dir=str(source_dir.resolve()),
@@ -398,7 +402,11 @@ def build_local_lifecycle_render_context(
         health_timeout_seconds=max(1, int(config.health_check.max_attempts) * health_interval),
         health_interval_seconds=health_interval,
         needs_dynamo_infra=config.frontend.type == "dynamo",
-        dynamo_source_hash=config.dynamo.hash if config.frontend.type == "dynamo" and config.dynamo.install else None,
+        dynamo_source_hash=dynamo_source_hash,
+        dynamo_source_cache_key=dynamo_source_cache_key(dynamo_source_hash, cargo_patches)
+        if dynamo_source_hash
+        else None,
+        dynamo_cargo_patch_commands=dynamo_cargo_patch_commands(cargo_patches),
         global_environment=tuple(sorted((key, str(value)) for key, value in config.environment.items())),
         benchmark_environment=tuple(sorted((key, str(value)) for key, value in config.benchmark.env.items())),
         benchmark_command=config.benchmark.command,

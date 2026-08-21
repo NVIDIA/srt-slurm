@@ -18,6 +18,7 @@ def _config(
     frontend_env: dict[str, str] | None = None,
     environment: dict[str, str] | None = None,
     dynamo_hash: str | None = None,
+    cargo_patches: list[str] | None = None,
 ) -> SrtConfig:
     raw = {
         "name": "direct-render",
@@ -58,6 +59,8 @@ def _config(
     }
     if dynamo_hash:
         raw["dynamo"] = {"hash": dynamo_hash}
+        if cargo_patches:
+            raw["dynamo"]["cargo_patches"] = cargo_patches
     expand_observability(raw)
     return SrtConfig.Schema().load(yaml.safe_load(yaml.safe_dump(raw)))
 
@@ -175,5 +178,26 @@ def test_local_dynamo_lifecycle_caches_a_hash_pinned_source_build(tmp_path) -> N
     assert "flock -x 201" in script
     assert 'maturin build --release --out "${cache}"' in script
     assert 'pip install --quiet --force-reinstall --no-deps "${wheel}"' in script
+    syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
+    assert syntax.returncode == 0, syntax.stderr
+
+
+def test_local_dynamo_lifecycle_uses_slurm_cache_key_and_patches(tmp_path) -> None:
+    patch = 'dynamo-tokenizers = { git = "https://github.com/ai-dynamo/frontend-crates", branch = "trace" }'
+    context = build_local_lifecycle_render_context(
+        _config(
+            frontend_type="dynamo",
+            dynamo_hash="a6261680a974ca7c74dcf49592a7376d7de99380",
+            cargo_patches=[patch],
+        ),
+        source_dir=tmp_path / "srt-slurm",
+        output_base=tmp_path / "outputs",
+    )
+    script = render_local_lifecycle(context)
+
+    assert context.dynamo_source_cache_key == "a6261680a974ca7c74dcf49592a7376d7de99380-patch-52bdcd85"
+    assert context.dynamo_cargo_patch_commands
+    assert f'SRTCTL_DYNAMO_SOURCE_CACHE_KEY={context.dynamo_source_cache_key}' in script
+    assert "find . -name Cargo.toml -exec sed -i -E" in script
     syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
     assert syntax.returncode == 0, syntax.stderr

@@ -47,6 +47,7 @@ SRT_TACHOMETER_PID=""
 TACHOMETER_LOCAL_DIR=""
 {% if context.dynamo_source_hash %}
 SRTCTL_DYNAMO_SOURCE_HASH={{ quote(context.dynamo_source_hash) }}
+SRTCTL_DYNAMO_SOURCE_CACHE_KEY={{ quote(context.dynamo_source_cache_key) }}
 {% endif %}
 
 srt_log() {
@@ -61,8 +62,8 @@ srt_die() {
 {% if context.dynamo_source_hash %}
 srt_install_dynamo_from_source_cache() {
     local cache_root="${SRTCTL_DYNAMO_CACHE_ROOT:-${SRTCTL_SOURCE}/configs/dynamo-wheels}"
-    local cache="${cache_root}/${SRTCTL_DYNAMO_SOURCE_HASH}"
-    local lock="${cache_root}/.${SRTCTL_DYNAMO_SOURCE_HASH}.lock"
+    local cache="${cache_root}/${SRTCTL_DYNAMO_SOURCE_CACHE_KEY}"
+    local lock="${cache_root}/.${SRTCTL_DYNAMO_SOURCE_CACHE_KEY}.lock"
     local build_dir source_dir wheel
 
     mkdir -p "${cache_root}"
@@ -79,6 +80,12 @@ srt_install_dynamo_from_source_cache() {
             git clone --no-checkout https://github.com/ai-dynamo/dynamo.git "${build_dir}/dynamo"
             git -C "${build_dir}/dynamo" fetch --depth 1 origin "${SRTCTL_DYNAMO_SOURCE_HASH}"
             git -C "${build_dir}/dynamo" checkout --detach FETCH_HEAD
+            (
+                cd "${build_dir}/dynamo"
+{% for command in context.dynamo_cargo_patch_commands %}
+                {{ command }}
+{% endfor %}
+            )
             mkdir -p "${cache}"
             rm -f "${cache}"/ai_dynamo_runtime-*.whl "${cache}/dynamo-src.tar.gz" "${cache}/.complete"
             (
