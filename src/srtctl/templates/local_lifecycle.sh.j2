@@ -83,6 +83,7 @@ srt_install_dynamo_from_source_cache() {
             rm -f "${cache}"/ai_dynamo_runtime-*.whl "${cache}/dynamo-src.tar.gz" "${cache}/.complete"
             (
                 cd "${build_dir}/dynamo/lib/bindings/python"
+                RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native --cfg tokio_unstable" \
                 CARGO_TARGET_DIR="${build_dir}/target" \
                     "${SRTCTL_PYTHON}" -m maturin build --release --out "${cache}"
             )
