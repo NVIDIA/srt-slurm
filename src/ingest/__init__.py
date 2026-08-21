@@ -71,6 +71,8 @@ Processor registry
       "prometheus" raw_prometheus.jsonl -> schema 2.         (metrics_prometheus.process)
     request_trace -> request_trace.jsonl
       "dynamo"  dynamo-request-trace -> schema 4.            (request_trace.process)
+    iter_log -> iter_bins.json
+      "trtllm"  print_iter_log worker lines -> schema 5.     (iter_log.process)
 
 The upstream repo also registers an ``agentperf`` client processor and a live
 ``tempo`` trace scraper. Neither is reachable from an srt-slurm run -- srt-slurm's
@@ -160,6 +162,9 @@ PROCESSORS: dict[str, dict[str, Callable]] = {
     },
     "request_trace": {
         "dynamo": _lazy("request_trace"),
+    },
+    "iter_log": {
+        "trtllm": _lazy("iter_log"),
     },
 }
 

@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1047,3 +1048,89 @@ class TestRoutingOutcomeAndBeliefCheck:
         """No overlap_blocks means the belief check has nothing to compare; it must
         report nothing rather than a vacuous 100% agreement."""
         assert self._bundle(run_dir, tmp_path)["rt"]["belief"] is None
+
+
+_ITER_LINE = (
+    "[08/19/2026-14:11:49] [TRT-LLM] [I] [_torch][RANK 0] iter = {i}, global_rank = 0, "
+    "rank = 0, num_scheduled_requests = {sched}, kv_cache_util = {kv}, "
+    "currank_total_requests = 0/1, host_step_time = {host}ms, "
+    "prev_device_step_time = {dev}, timestamp = 2026-08-19 14:11:{sec:02d}, "
+    "states = {{'num_ctx_requests': 1, 'num_ctx_tokens': 4, "
+    "'num_generation_tokens': {gen}, 'cached_kv_tokens': 0}}"
+)
+
+
+class TestIterLogProcessor:
+    """TRT-LLM print_iter_log -> iter_bins.json. The only source for batch composition."""
+
+    def test_parses_a_real_line(self):
+        from src.ingest.iter_log import parse_line
+
+        r = parse_line(_ITER_LINE.format(i=2, sched=3, kv="0.112", host="4.08",
+                                         dev="243.13ms", sec=49, gen=7))
+        assert r["iter"] == 2 and r["num_scheduled_requests"] == 3
+        assert r["kv_cache_util"] == 0.112
+        assert r["host_step_time_ms"] == 4.08 and r["device_step_time_ms"] == 243.13
+        assert r["num_generation_tokens"] == 7
+
+    def test_na_device_time_is_none_not_zero(self):
+        """N/A on the first iteration of a lifecycle. Zero would be a real measurement
+        and would drag any aggregate toward it."""
+        from src.ingest.iter_log import parse_line
+
+        assert parse_line(_ITER_LINE.format(i=1, sched=1, kv="0.001", host="243.17",
+                                            dev="N/A", sec=49, gen=0))["device_step_time_ms"] is None
+
+    def test_non_iter_lines_are_ignored(self):
+        from src.ingest.iter_log import parse_line
+
+        assert parse_line("[TRT-LLM] [I] some other log line entirely") is None
+
+    def test_timezone_offset_is_derived_not_hardcoded(self, tmp_path: Path):
+        """TRT-LLM stamps worker-LOCAL time while every other bundle source is UTC.
+        Reading it naively puts engine events hours from the frontend events they
+        belong to. The offset is derived from the run window, so it follows the
+        cluster and DST instead of assuming one zone."""
+        from src.ingest.iter_log import derive_offset_hours
+
+        recs = [{"local_ts": "2026-08-19 14:11:49"}]
+        # Log says 14:11 local; the run window is centred 7h later in UTC.
+        base = int(datetime(2026, 8, 19, 21, 11, 49, tzinfo=timezone.utc).timestamp() * 1e9)
+        assert derive_offset_hours(recs, base - 10**11, base + 10**11) == 7
+        # A window centred on the log time itself needs no shift.
+        base0 = int(datetime(2026, 8, 19, 14, 11, 49, tzinfo=timezone.utc).timestamp() * 1e9)
+        assert derive_offset_hours(recs, base0 - 10**11, base0 + 10**11) == 0
+
+    def test_no_window_means_no_guess(self):
+        """An underived offset beats an invented one."""
+        from src.ingest.iter_log import derive_offset_hours
+
+        assert derive_offset_hours([{"local_ts": "2026-08-19 14:11:49"}], None, None) == 0
+
+    def test_bins_carry_the_scheduled_distribution(self, tmp_path: Path):
+        """A median alone cannot answer "did it ever batch" -- the distribution can."""
+        from src.ingest.iter_log import process
+
+        log = tmp_path / "node_decode_w0.out"
+        lines = [_ITER_LINE.format(i=i, sched=s, kv="0.01", host="13.0", dev="12.0ms",
+                                   sec=49, gen=1)
+                 for i, s in enumerate([0, 1, 1, 4], start=1)]
+        log.write_text("\n".join(lines) + "\n")
+        out = tmp_path / "iter_bins.json"
+        assert process(str(out), [str(log)]) >= 1
+
+        d = json.loads(out.read_text())
+        rows = d["bins"]["node_decode_w0"]
+        hist = {}
+        for r in rows:
+            for k, v in r["sched_hist"].items():
+                hist[k] = hist.get(k, 0) + v
+        assert hist == {"0": 1, "1": 2, "4": 1}
+        assert max(r["sched_max"] for r in rows) == 4
+
+    def test_no_iter_lines_is_not_an_error(self, tmp_path: Path):
+        from src.ingest.iter_log import process
+
+        log = tmp_path / "node_decode_w0.out"
+        log.write_text("nothing of interest here\n")
+        assert process(str(tmp_path / "iter_bins.json"), [str(log)]) == 0

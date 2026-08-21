@@ -645,9 +645,9 @@ def _ordered_spans(sp):
 # The engine ceilings it captions against are resolved at the top of this file,
 # before any panel consumes them.
 _iter_path=os.path.join(SRC,"iter_bins.json") if SRC else ""
-iter_series={}
+iter_series={}; iter_bins=None
 if os.path.exists(_iter_path):
-    _ib=json.load(open(_iter_path))
+    _ib=json.load(open(_iter_path)); iter_bins=_ib
     for _wkey,_rows in (_ib.get("bins") or {}).items():
         out={k:[] for k in ("kv_cache_util","num_scheduled_requests","num_ctx_requests","num_generation_tokens")}
         for r in _rows:
@@ -981,6 +981,53 @@ def _inflight_spread(rows, field, nbins=240):
         # perfect balance for an idle window would dilute the very spikes being hunted.
         if mean>0: norm.append([round(i*step/1000,1),round((hi-lo)/mean,3)])
     return spread,norm
+
+# ---- derived panel: batch composition, from the per-iteration log ----------
+# The scrape stream says how BUSY the engine was; only the per-iteration log says
+# what "busy" consisted of. An engine scheduling one request per step at high
+# occupancy is saturated in a completely different way from one scheduling many, and
+# the two are indistinguishable in every aggregate gauge.
+if iter_series and 'iter_bins' in globals() and iter_bins:
+    _bf={}; _mx={}
+    for _w,_rows in iter_bins.get("bins",{}).items():
+        _fr=[];_m=[]
+        for _r in _rows:
+            _h={int(k):v for k,v in (_r.get("sched_hist") or {}).items()}
+            _active=sum(v for k,v in _h.items() if k>=1)
+            _batched=sum(v for k,v in _h.items() if k>=2)
+            _t=relt(int(_r["t"])*10**9)
+            if _t<0 or _t>run_dur+60: continue
+            # Fraction is over ACTIVE iterations only: an idle step did not decline to
+            # batch, it had nothing to batch, and counting it would read as a batching
+            # failure during a quiet period.
+            if _active: _fr.append([round(_t,1),round(_batched/_active,4)])
+            _m.append([round(_t,1),_r.get("sched_max") or 0])
+        if _fr: _bf[_w]=_fr
+        if _m: _mx[_w]=_m
+    if _bf:
+        panels["en_batched_fraction"]={
+          "tab":"engine","title":"Batched iterations, share of active steps",
+          "unit":"ratio","kind":"derived","split_by":None,
+          "why":"Of the steps that had work, the share that scheduled more than one "
+                "request. A value pinned near zero means the engine is stepping one "
+                "request at a time -- the same wall-clock occupancy as a healthy engine, "
+                "at a fraction of the throughput.",
+          "source":["iter_bins.json"],
+          "caveat":"From rank 0 only, so it cannot show per-rank divergence. Idle steps "
+                   "are excluded from the denominator; a quiet period is not a batching "
+                   "failure.",
+          "issues":["PERF-batch-starvation"],"series":_bf}
+    if _mx:
+        panels["en_sched_max"]={
+          "tab":"engine","title":"Peak scheduled requests per step",
+          "unit":"requests","kind":"derived","split_by":None,
+          "why":"The most the scheduler ever managed in a single step, against the "
+                "engine's configured batch ceiling. A peak far below the ceiling means "
+                "the limit is arrival or admission, not engine capacity.",
+          "source":["iter_bins.json"],
+          "caveat":"Rank 0 only.","issues":["PERF-batch-starvation"],"series":_mx}
+        _log.info("batch composition: "+", ".join(
+            f"{w}={sum(v for _,v in s)/max(1,len(s)):.2f} batched-share" for w,s in _bf.items()))
 
 for _field,_label,_tab in (("prefill_dp_rank","prefill DP rank","router"),
                            ("decode_worker_id","decode worker","engine")):
