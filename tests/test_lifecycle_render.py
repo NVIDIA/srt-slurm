@@ -179,6 +179,8 @@ def test_local_dynamo_lifecycle_caches_a_hash_pinned_source_build(tmp_path) -> N
     assert 'maturin build --release --out "${cache}"' in script
     assert '"${SRTCTL_PYTHON}" -m ensurepip --upgrade' in script
     assert 'pip install --quiet --force-reinstall --no-deps "${wheel}"' in script
+    assert 'pip install --quiet --editable --no-deps "${source_dir}/dynamo"' in script
+    assert '-r "${source_dir}/dynamo/container/deps/requirements.sglang.txt"' in script
     syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
     assert syntax.returncode == 0, syntax.stderr
 
