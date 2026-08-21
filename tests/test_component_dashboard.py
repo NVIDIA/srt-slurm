@@ -2061,3 +2061,422 @@ class TestHostSamplerProcessSelection:
         got = hs._interesting_pids(limit=5)
         assert 12 in got, "the one real worker must survive a budget full of wrappers"
         assert len(got) == 5
+
+
+class TestAiperfJsonMetrics:
+    """AIPerf's own server-metrics export as a second metrics source.
+
+    This is the only server-metrics leg a run predating ``observability.enabled`` has,
+    which makes it the difference between a landed fix being demonstrable against its
+    own baseline and not. Two behaviours are load-bearing and both fail *silently*:
+    picking up ``summary``'s children as if they were metrics families, and reading
+    interval slices as if they were cumulative.
+    """
+
+    @staticmethod
+    def _export(path: Path) -> Path:
+        def sl(i, **kw):
+            return dict(start_ns=T0 + i * 10**9, end_ns=T0 + (i + 1) * 10**9, **kw)
+
+        doc = {
+            "schema_version": "1",
+            # `summary` is a sibling object, so its children sit at the same indent
+            # as a metrics family. Anything that scans on indent alone merges them.
+            "summary": {
+                "decoy_family": {
+                    "type": "counter",
+                    "series": [
+                        {
+                            "endpoint_url": "x",
+                            "labels": {},
+                            "stats": {"total": 999.0},
+                            "timeslices": [sl(0, total=999.0)],
+                        }
+                    ],
+                }
+            },
+            "metrics_phase": "profiling",
+            "metrics": {
+                "dynamo_frontend_tokenize_seconds": {
+                    "type": "histogram",
+                    "series": [
+                        {
+                            "endpoint_url": "http://f:8000/metrics",
+                            "labels": {"model": "m"},
+                            "stats": {"count": 6, "sum": 12.0},
+                            "timeslices": [
+                                sl(0, count=1, sum=2.0),
+                                sl(1, count=2, sum=4.0),
+                                sl(2, count=3, sum=6.0),
+                            ],
+                        }
+                    ],
+                },
+                "dynamo_frontend_requests": {
+                    "type": "counter",
+                    "series": [
+                        {
+                            "endpoint_url": "http://f:8000/metrics",
+                            "labels": {"status": "ok"},
+                            "stats": {"total": 30.0},
+                            "timeslices": [sl(0, total=10.0), sl(1, total=20.0)],
+                        }
+                    ],
+                },
+                "dynamo_tokio_blocking_queue_depth": {
+                    "type": "gauge",
+                    "series": [
+                        {
+                            "endpoint_url": "http://f:8000/metrics",
+                            "labels": {"worker": "3"},
+                            "stats": {"avg": 5.0},
+                            "timeslices": [
+                                sl(0, avg=4.0, min=0, max=9),
+                                sl(1, avg=6.0, min=1, max=646),
+                            ],
+                        }
+                    ],
+                },
+            },
+        }
+        path.write_text(json.dumps(doc, indent=2))
+        return path
+
+    @staticmethod
+    def _convert(tmp_path: Path):
+        sys.path.insert(0, str(REPO_ROOT))
+        from src.ingest.metrics_aiperf_json import process
+
+        src = TestAiperfJsonMetrics._export(tmp_path / "server_metrics_export.json")
+        out = tmp_path / "server_metrics_export.jsonl"
+        process(str(src), str(out))
+        return [json.loads(line) for line in out.read_text().splitlines()]
+
+    def test_summary_section_is_not_mistaken_for_metrics(self, tmp_path: Path):
+        recs = self._convert(tmp_path)
+        names = {k for r in recs for k in r["metrics"]}
+        assert "decoy_family" not in names
+
+    def test_interval_slices_are_accumulated_into_cumulative_series(self, tmp_path: Path):
+        """`hist_mean` and `counter_rate` both differentiate. Feed them interval slices
+        unchanged and the panel shows a jagged line around zero instead of a trend."""
+        recs = self._convert(tmp_path)
+        counts = [
+            r["metrics"]["dynamo_frontend_tokenize_seconds_count"][0]["value"]
+            for r in recs
+            if "dynamo_frontend_tokenize_seconds_count" in r["metrics"]
+        ]
+        assert counts == [1.0, 3.0, 6.0]
+        assert counts[-1] == 6, "the cumulative end value must reproduce stats.count"
+
+        totals = [
+            r["metrics"]["dynamo_frontend_requests_total"][0]["value"]
+            for r in recs
+            if "dynamo_frontend_requests_total" in r["metrics"]
+        ]
+        assert totals == [10.0, 30.0]
+
+    def test_counter_is_emitted_under_both_names(self, tmp_path: Path):
+        """AIPerf keys a counter by its base name, exposition adds `_total`; a panel may
+        name either, so both resolve."""
+        names = {k for r in self._convert(tmp_path) for k in r["metrics"]}
+        assert {"dynamo_frontend_requests", "dynamo_frontend_requests_total"} <= names
+
+    def test_gauge_uses_the_per_slice_average(self, tmp_path: Path):
+        recs = self._convert(tmp_path)
+        vals = [
+            r["metrics"]["dynamo_tokio_blocking_queue_depth"][0]["value"]
+            for r in recs
+            if "dynamo_tokio_blocking_queue_depth" in r["metrics"]
+        ]
+        assert vals == [4.0, 6.0]
+
+    def test_schema_matches_the_prometheus_processor(self, tmp_path: Path):
+        """Both metrics sources must be interchangeable at the panel layer."""
+        for rec in self._convert(tmp_path):
+            assert set(rec) == {"timestamp_ns", "metrics"}
+            assert isinstance(rec["timestamp_ns"], int)
+            for entries in rec["metrics"].values():
+                for e in entries:
+                    assert set(e) == {"labels", "value"}
+                    assert isinstance(e["labels"], dict)
+                    assert isinstance(e["value"], float)
+
+
+class TestIterLogOnlyBuild:
+    """A bundle whose ONLY leg is the per-iteration log must still render.
+
+    This is the trtllm-serve shape: no Dynamo frontend means no ``/metrics`` surface
+    and no spans, so `iter_bins.json` is the whole bundle. It is also every run whose
+    recipe sets ``print_iter_log`` without ``observability.enabled``.
+
+    Two things used to drop it on the floor, both silently:
+      * the run window was built from traces + scrapes only, so with neither it
+        collapsed to 1 ns and the ``t > run_dur + 60`` guard discarded every bin;
+      * the Engine tab was gated on the scrape stream alone.
+    The failure mode was an empty page and one INFO line reading ``0pts`` -- on a run
+    with 175,800 real iterations.
+    """
+
+    @staticmethod
+    def _iter_only_bundle(tmp_path: Path) -> Path:
+        bundle = tmp_path / "bundle"
+        bundle.mkdir()
+        t0 = T0 // 10**9
+        bins = {
+            "node0_prefill_w0": [
+                {"t": t0 + i, "n_iters": 3, "kv_cache_util": 0.4 + i * 0.01,
+                 "num_scheduled_requests": 1, "num_ctx_requests": 1,
+                 "num_ctx_tokens": 8192, "num_generation_tokens": 0,
+                 "host_step_time_ms": 340.0 + i, "device_step_time_ms": 335.0 + i,
+                 "sched_max": 1, "host_step_time_ms_max": 340.0 + i,
+                 "device_step_time_ms_max": 335.0 + i, "sched_hist": {"1": 3}}
+                for i in range(120)
+            ],
+            "node9_decode_w0": [
+                {"t": t0 + i, "n_iters": 28, "kv_cache_util": 0.40,
+                 "num_scheduled_requests": 64, "num_ctx_requests": 0,
+                 "num_ctx_tokens": 0, "num_generation_tokens": 64,
+                 "host_step_time_ms": 36.1, "device_step_time_ms": 35.7,
+                 "sched_max": 64, "host_step_time_ms_max": 36.1,
+                 "device_step_time_ms_max": 35.7, "sched_hist": {"64": 28}}
+                for i in range(120)
+            ],
+        }
+        (bundle / "iter_bins.json").write_text(json.dumps(
+            {"meta": {"bin_seconds": 1.0, "offset_hours_applied": 0,
+                      "iterations": 3720, "workers": sorted(bins)},
+             "bins": bins}))
+        return bundle
+
+    def test_engine_tab_survives_without_a_scrape_stream(self, tmp_path: Path):
+        bundle = self._iter_only_bundle(tmp_path)
+        out = tmp_path / "d.html"
+        proc = _render(bundle, out, "--d3-cdn")
+        assert proc.returncode == 0, proc.stderr
+        tabs = _tabs(out.read_text())
+        assert tabs.get("engine") is True, f"engine tab dropped on an iter-log-only bundle: {tabs}"
+        assert tabs.get("frontend") is False and tabs.get("router") is False
+
+    def test_the_run_window_comes_from_the_iter_log_when_nothing_else_exists(
+        self, tmp_path: Path
+    ):
+        """`run_dur` of ~0 is what silently discarded every bin."""
+        bundle = self._iter_only_bundle(tmp_path)
+        out = tmp_path / "d.html"
+        dump = tmp_path / "d.json"
+        proc = _render(bundle, out, "--d3-cdn", "--dump-json", str(dump))
+        assert proc.returncode == 0, proc.stderr
+        payload = json.loads(dump.read_text())
+        assert payload["meta"]["run_dur_s"] >= 110, payload["meta"]["run_dur_s"]
+
+    def test_every_iteration_bin_reaches_the_payload(self, tmp_path: Path):
+        bundle = self._iter_only_bundle(tmp_path)
+        out = tmp_path / "d.html"
+        dump = tmp_path / "d.json"
+        _render(bundle, out, "--d3-cdn", "--dump-json", str(dump))
+        it = json.loads(dump.read_text())["iter"]
+        assert set(it) == {"node0_prefill_w0", "node9_decode_w0"}
+        for worker, series in it.items():
+            pts = series["kv_cache_util"]
+            assert len(pts) == 120, f"{worker}: {len(pts)} of 120 bins survived"
+
+    def test_both_batch_panels_render_with_srtslurm_worker_names(self, tmp_path: Path):
+        """srt-slurm names a worker `<node>_<role>_w<N>`, so the role is in the MIDDLE.
+
+        A `startsWith(role)` filter matched nothing on every srt-slurm run, and the
+        panel builder returns silently on an empty match -- so both in-flight batch
+        panels were simply absent, with no warning anywhere.
+        """
+        bundle = self._iter_only_bundle(tmp_path)
+        out = tmp_path / "d.html"
+        _render(bundle, out, "--d3-cdn")
+        html = out.read_text()
+        # The Prefill/Decode prefix is interpolated at runtime, so only the invariant
+        # tail of the title template is literal in the HTML. Asserting the full string
+        # would fail against a page that renders perfectly.
+        assert "in-flight batch size per worker" in html
+        # The regression itself: the role sits in the MIDDLE of `<node>_<role>_w<N>`.
+        assert "startsWith(role)" not in html, "role filter reverted to a prefix match"
+        # And the filter must actually select this fixture's worker names.
+        workers = list(json.loads((bundle / "iter_bins.json").read_text())["bins"])
+        for role in ("prefill", "decode"):
+            assert [w for w in workers if f"_{role}_" in w or f"_{role}" in w], role
+
+    def test_kv_panels_fall_back_to_the_iteration_log(self, tmp_path: Path):
+        """Both KV gauges live on the WORKER endpoint. When it was never scraped the
+        panels emitted a full-length series of nulls -- an empty chart, which reads as
+        a measured zero rather than as absent data."""
+        bundle = self._iter_only_bundle(tmp_path)
+        out = tmp_path / "d.html"
+        dump = tmp_path / "d.json"
+        _render(bundle, out, "--d3-cdn", "--dump-json", str(dump))
+        en = json.loads(dump.read_text())["en"]
+        assert en["kvutil_src"].startswith("iter_bins"), en["kvutil_src"]
+        assert en["true_hit_src"].startswith("iter_bins"), en["true_hit_src"]
+        assert [p for p in en["kvutil_pf"] if p[1] is not None], "kvutil still all-null"
+        assert en["true_hit_kpi"] is not None, "true-hit KPI still None"
+
+    def test_derived_reuse_matches_the_hand_computed_ratio(self, tmp_path: Path):
+        """cached_kv_tokens/(cached+num_ctx_tokens); the fixture is 0 cached, so 0%."""
+        bundle = self._iter_only_bundle(tmp_path)
+        src = json.loads((bundle / "iter_bins.json").read_text())
+        for r in src["bins"]["node0_prefill_w0"]:
+            r["cached_kv_tokens"] = 9000          # 9000 / (9000 + 8192)
+        (bundle / "iter_bins.json").write_text(json.dumps(src))
+        out = tmp_path / "d.html"; dump = tmp_path / "d.json"
+        _render(bundle, out, "--d3-cdn", "--dump-json", str(dump))
+        en = json.loads(dump.read_text())["en"]
+        expected = 9000 / (9000 + 8192) * 100
+        vals = [p[1] for p in en["true_hit_pct"] if p[1] is not None]
+        assert vals, "no reuse series produced"
+        assert abs(vals[0] - expected) < 0.05, (vals[0], expected)
+
+
+class TestWarmupMarker:
+    """The load generator's warmup phase, marked on every time-axis chart.
+
+    Carried as an OPTIONAL field on the panel entity. Optional is the design: many
+    harnesses have no warmup phase, and a marker invented for them would assert a
+    boundary that does not exist. Absent must mean "unknown", never "t=0".
+    """
+
+    @staticmethod
+    def _client(run_dir: Path, *, warmup: int, profiling: int) -> None:
+        """AgentX-shaped export: a warmup phase, then the measured phase."""
+        # The scrape window defines the rendered axis, and a boundary outside it is
+        # correctly refused -- so widen the capture to cover the phases being written.
+        _write_raw_prometheus(run_dir, sweeps=warmup + profiling + 2)
+        art = run_dir / "artifacts" / "run"
+        art.mkdir(parents=True, exist_ok=True)
+        recs = []
+        for i in range(warmup):
+            recs.append({"metadata": {"x_request_id": f"w{i}", "benchmark_phase": "warmup",
+                                      "request_start_ns": T0 + i * 10**9,
+                                      "request_end_ns": T0 + (i + 1) * 10**9},
+                         "metrics": {"time_to_first_token": {"value": 100.0},
+                                     "request_latency": {"value": 200.0}}})
+        for i in range(profiling):
+            t = T0 + (warmup + i) * 10**9
+            recs.append({"metadata": {"x_request_id": XIDS[i % len(XIDS)],
+                                      "benchmark_phase": "profiling",
+                                      "request_start_ns": t, "request_end_ns": t + 10**9},
+                         "metrics": {"time_to_first_token": {"value": 100.0},
+                                     "request_latency": {"value": 200.0}}})
+        (art / "profile_export.jsonl").write_text(
+            "\n".join(json.dumps(r) for r in recs) + "\n")
+
+    def test_boundary_is_the_first_profiling_request(self, run_dir: Path, tmp_path: Path):
+        self._client(run_dir, warmup=20, profiling=40)
+        bundle = tmp_path / "b"
+        _run_ingest(run_dir, bundle)
+        dump = tmp_path / "d.json"
+        _render(bundle, tmp_path / "d.html", "--d3-cdn", "--dump-json", str(dump))
+        meta = json.loads(dump.read_text())["meta"]
+        assert meta["warmup_end_s"] is not None
+        assert "benchmark_phase" in (meta["warmup_src"] or "")
+
+    def test_absent_when_the_harness_tags_no_phase(self, run_dir: Path, tmp_path: Path):
+        """A plain AIPerf run has no benchmark_phase. It must not acquire a boundary."""
+        bundle = tmp_path / "b"
+        _run_ingest(run_dir, bundle)
+        dump = tmp_path / "d.json"
+        _render(bundle, tmp_path / "d.html", "--d3-cdn", "--dump-json", str(dump))
+        meta = json.loads(dump.read_text())["meta"]
+        assert meta["warmup_end_s"] is None, meta["warmup_end_s"]
+        assert meta["warmup_src"] is None
+
+    def test_every_panel_entity_carries_the_field(self, run_dir: Path, tmp_path: Path):
+        """One marker source, so it cannot appear on some tabs and not others."""
+        self._client(run_dir, warmup=20, profiling=40)
+        bundle = tmp_path / "b"
+        _run_ingest(run_dir, bundle)
+        dump = tmp_path / "d.json"
+        _render(bundle, tmp_path / "d.html", "--d3-cdn", "--dump-json", str(dump))
+        payload = json.loads(dump.read_text())
+        panels = payload["panels"]
+        assert panels, "no panels to check"
+        missing = [k for k, p in panels.items() if p.get("warmup_end_s") is None]
+        assert not missing, f"panels without the marker: {missing[:5]}"
+        assert all(p["warmup_end_s"] == payload["meta"]["warmup_end_s"] for p in panels.values())
+
+    def test_the_page_draws_it(self, run_dir: Path, tmp_path: Path):
+        self._client(run_dir, warmup=20, profiling=40)
+        bundle = tmp_path / "b"
+        _run_ingest(run_dir, bundle)
+        out = tmp_path / "d.html"
+        _render(bundle, out, "--d3-cdn")
+        html = out.read_text()
+        assert "warmup ends" in html, "marker label absent from the page"
+        assert "function wmLine" in html
+
+
+class TestMetricsSourceAutoSelect:
+    """`--metrics auto` picks the source the run actually captured.
+
+    A run with `observability.enabled` has `raw_prometheus.jsonl`. A run without it
+    usually still has AIPerf's own export, because the frontend's `/metrics` surface
+    exists regardless of that knob. Selecting per-run is what lets ONE ingest command
+    -- in particular the in-job postprocess hook, which takes no source flag -- work
+    on both.
+    """
+
+    @staticmethod
+    def _aiperf_export(run_dir: Path, nested: bool = False) -> None:
+        # Two layouts in the wild, and the deeper one is NOT a superset of the other:
+        # some harness builds write `agentic/<conc>/aiperf_artifacts/...`, others
+        # `agentic/<conc>/...`, and stock AIPerf `artifacts/<run>/...`.
+        art = (run_dir / "agentic" / "conc_4" / "aiperf_artifacts") if nested \
+            else (run_dir / "artifacts" / "run")
+        art.mkdir(parents=True, exist_ok=True)
+        t0 = T0
+        doc = {"metrics": {"dynamo_frontend_requests": {"type": "counter", "series": [
+            {"endpoint_url": "http://f:8000/metrics", "labels": {},
+             "stats": {"total": 30.0},
+             "timeslices": [
+                 {"start_ns": t0 + i * 10**9, "end_ns": t0 + (i + 1) * 10**9, "total": 10.0}
+                 for i in range(3)]}]}}}
+        (art / "server_metrics_export.json").write_text(json.dumps(doc, indent=2))
+
+    def test_prefers_the_in_job_scraper_when_present(self, run_dir: Path, tmp_path: Path):
+        self._aiperf_export(run_dir)          # both sources available
+        bundle = tmp_path / "b"
+        _run_ingest(run_dir, bundle)          # no --metrics flag => auto
+        rec = json.loads((bundle / "server_metrics_export.jsonl").read_text().splitlines()[0])
+        # the raw-prometheus fixture carries this family; the aiperf fixture does not
+        assert "dynamo_frontend_queued_requests" in rec["metrics"]
+
+    def test_falls_back_to_the_aiperf_export_without_observability(
+        self, run_dir: Path, tmp_path: Path
+    ):
+        """The `observability.enabled: false` shape: no raw scrape, AIPerf export only."""
+        (run_dir / "raw_prometheus.jsonl").unlink()
+        self._aiperf_export(run_dir)
+        bundle = tmp_path / "b"
+        _run_ingest(run_dir, bundle)
+        out = bundle / "server_metrics_export.jsonl"
+        assert out.exists(), "auto did not fall back to the AIPerf export"
+        rec = json.loads(out.read_text().splitlines()[0])
+        assert "dynamo_frontend_requests_total" in rec["metrics"]
+
+    def test_the_server_metrics_tabs_survive_that_fallback(self, run_dir: Path, tmp_path: Path):
+        """This is the property that matters: a run without observability still gets
+        the Frontend / Router / Engine tabs rather than a log-only page."""
+        (run_dir / "raw_prometheus.jsonl").unlink()
+        self._aiperf_export(run_dir)
+        bundle = tmp_path / "b"
+        _run_ingest(run_dir, bundle)
+        out = tmp_path / "d.html"
+        _render(bundle, out, "--d3-cdn")
+        tabs = _tabs(out.read_text())
+        assert tabs.get("frontend") and tabs.get("router"), tabs
+
+    def test_finds_the_nested_aiperf_artifacts_layout(self, run_dir: Path, tmp_path: Path):
+        """`agentic/<conc>/aiperf_artifacts/server_metrics_export.json` -- the layout an
+        srt-slurm AgentX run on lyris writes. Missing it silently costs three tabs."""
+        (run_dir / "raw_prometheus.jsonl").unlink()
+        self._aiperf_export(run_dir, nested=True)
+        bundle = tmp_path / "b"
+        _run_ingest(run_dir, bundle)
+        assert (bundle / "server_metrics_export.jsonl").exists(), \
+            "auto did not find the nested aiperf_artifacts layout"

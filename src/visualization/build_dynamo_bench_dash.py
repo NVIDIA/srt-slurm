@@ -453,15 +453,26 @@ def pct(v, p):
 # percentile: on run 2674375 warmup was 1180 requests at p99 43.5s vs profiling
 # 918 at p99 88.5s -- mixing them roughly halves the reported tail. Records with
 # no benchmark_phase (plain, non-AgentX AIPerf runs) are always kept.
+# The phase boundary is captured HERE rather than re-derived, because this loop is
+# already the only place that sees warmup records -- the filter below drops them.
+# Preferred boundary is the first PROFILING request's start; the last warmup end is
+# the fallback for a run whose profiling phase never began.
 client={}; _skipped_phase=0
 _phase_seen={}   # every phase value in the file, kept or dropped
+_prof_min_start=None; _warm_max_end=None
 for l in (open(os.path.join(SRC,"profile_export.jsonl")) if HAS_CLIENT else []):
     l=l.strip()
     if not l: continue
     r=json.loads(l); m=r["metadata"]; mt=r["metrics"]
     _ph=m.get("benchmark_phase")
     _phase_seen[_ph or "(none)"]=_phase_seen.get(_ph or "(none)",0)+1
-    if not _args.include_warmup and m.get("benchmark_phase") not in (None,"profiling"):
+    if _ph=="profiling":
+        _s=m.get("request_start_ns")
+        if _s: _prof_min_start=_s if _prof_min_start is None else min(_prof_min_start,_s)
+    elif _ph is not None:
+        _e=m.get("request_end_ns") or m.get("request_start_ns")
+        if _e: _warm_max_end=_e if _warm_max_end is None else max(_warm_max_end,_e)
+    if not _args.include_warmup and _ph not in (None,"profiling"):
         _skipped_phase+=1; continue
     g=lambda k:(mt.get(k) or {}).get("value")
     client[m["x_request_id"]]={"start_ns":m.get("request_start_ns") or 0,"ttft":g("time_to_first_token"),
@@ -529,17 +540,79 @@ if HAS_SM:
 sm_start=scr[0][0] if scr else None
 sm_end=scr[-1][0] if scr else None
 
-# The run window is whichever of traces / scrapes actually exist. With neither
-# (log-only build) it collapses to a unit window; nothing that consumes it is
-# rendered in that mode.
-_starts=[t for t in (trace_start, sm_start) if t is not None]
-_ends=[t for t in (trace_end, sm_end) if t is not None]
+# The run window is whichever source actually exists. The iter log has to be in
+# here, not just traces/scrapes: it is the ONLY leg a trtllm-serve run produces (no
+# Dynamo frontend means no /metrics surface and no spans at all), and it is present
+# on any run whose recipe sets `print_iter_log` regardless of `observability.enabled`.
+# Left out, `run_dur` collapses to 1 ns, the `t > run_dur + 60` guard below discards
+# every bin, and a run with 175,800 real iterations renders as an empty page while
+# only logging "0pts" -- which is how it read before this was fixed.
+def _load_iter_bins(src):
+    p=os.path.join(src,"iter_bins.json") if src else ""
+    if not os.path.exists(p): return None
+    try: return json.load(open(p))
+    except Exception: return None
+
+# Loaded ONCE here, before the run window, because three separate consumers need it
+# and two of them run earlier than the panel section: the window itself, and the KV
+# fallbacks below.
+_IB=_load_iter_bins(SRC)
+
+def _iter_bins_window(ib):
+    if not ib: return None,None
+    ts=[r["t"] for rows in (ib.get("bins") or {}).values() for r in rows if r.get("t")]
+    if not ts: return None,None
+    return int(min(ts)*10**9), int(max(ts)*10**9)
+
+_it_start,_it_end=_iter_bins_window(_IB)
+_starts=[t for t in (trace_start, sm_start, _it_start) if t is not None]
+_ends=[t for t in (trace_end, sm_end, _it_end) if t is not None]
 run_start=min(_starts) if _starts else 0
 run_end=max(_ends) if _ends else run_start+1
 run_dur=(run_end-run_start)/1e9
 
 def relt(ns): return round((ns-run_start)/1e9,1)
 for r in rows: r["ts"]=relt(r["ts_ns"]);
+
+# ---- end of the load generator's warmup phase -----------------------------------
+# Optional, and deliberately so: many harnesses have no warmup phase at all, and a
+# marker invented for them would be a lie. Resolved once here, from the highest-
+# confidence source available, and carried as an OPTIONAL field -- absent means "no
+# warmup boundary is known", never "warmup ended at t=0".
+#
+# Precedence:
+#   1. the client export's own `benchmark_phase` (authoritative; the harness said so)
+#   2. `warmup_end_ns` recorded in dashboard.yaml by ingest, for bundles built
+#      without the client leg -- the export is routinely ~700 MB and is not copied
+#   3. nothing
+def _yaml_warmup_ns(bundle_dir):
+    if not bundle_dir: return None
+    ypath=os.path.join(bundle_dir,"dashboard.yaml")
+    if not os.path.exists(ypath): return None
+    try:
+        import yaml as _y
+        return ((_y.safe_load(open(ypath)) or {}).get("warmup") or {}).get("end_ns")
+    except Exception:
+        return None
+
+WARMUP_END_S=None; WARMUP_SRC=None
+_w_ns=_prof_min_start or _warm_max_end
+if _w_ns: WARMUP_SRC="profile_export.jsonl (benchmark_phase)"
+else:
+    _w_ns=_yaml_warmup_ns(SRC)
+    if _w_ns: WARMUP_SRC="dashboard.yaml (warmup.end_ns)"
+if _w_ns:
+    _v=relt(int(_w_ns))
+    # A boundary outside the rendered window is not plottable and would draw a line
+    # on the axis edge implying the whole run was one phase. Dropped, with a warning.
+    if 0 < _v < run_dur:
+        WARMUP_END_S=_v
+        _log.info(f"warmup ends at t+{_v:.1f}s of {run_dur:.0f}s "
+                  f"({_v/run_dur*100:.0f}% of the run) — source: {WARMUP_SRC}")
+    else:
+        _log.warning(f"warmup boundary t+{_v:.1f}s falls outside the run window "
+                     f"(0..{run_dur:.0f}s); no marker drawn")
+        WARMUP_SRC=None
 # ---- metric extractors ----
 def gsingle(m,name):
     a=m.get(name)
@@ -779,6 +852,34 @@ else:
     _log.warning("KV hit rate: no engine config in the bundle, so reuse-disabled "
                  "components cannot be excluded; the series may understate the true rate")
 
+def _iter_reuse_series():
+    """Context-phase block reuse per 1 s bin, from the per-iteration log.
+
+    A fallback for ``trtllm_kv_cache_hit_rate``, which only exists if a WORKER
+    ``/metrics`` endpoint was scraped. It frequently was not -- AIPerf's own export
+    scrapes the frontend only, and a trtllm-serve run has no Dynamo endpoint at all --
+    and the panel then drew a full-length series of nulls, i.e. an empty chart that
+    reads as "reuse is zero" rather than "reuse was not captured".
+
+    ``cached_kv_tokens / (cached_kv_tokens + num_ctx_tokens)`` over context workers.
+    Validated against the client's own Prompt Cache Read % on three runs of the same
+    point: 95.88 / 95.76 / 94.27 % here vs 95.6-97.2 % reported. Close, but NOT the
+    same estimator -- this is token-weighted over prefill workers, so it is labelled
+    as the derived series it is rather than presented as the gauge.
+    """
+    if not _IB: return []
+    acc={}
+    for w,rows in (_IB.get("bins") or {}).items():
+        if "prefill" not in w and "ctx" not in w: continue
+        for r in rows:
+            c=r.get("cached_kv_tokens") or 0; t=r.get("num_ctx_tokens") or 0
+            if c+t<=0: continue
+            k=relt(int(r["t"])*10**9)
+            a=acc.setdefault(k,[0,0]); a[0]+=c; a[1]+=c+t
+    return [[k, round(v[0]/v[1]*100,2)] for k,v in sorted(acc.items())
+            if 0<=k<=run_dur+60 and v[1]]
+
+
 def kvhit_series():
     out=[]
     for ts,m in scr:
@@ -788,7 +889,51 @@ def kvhit_series():
         vals=[x for vs in g.values() for x in vs]
         out.append([relt(ts), round(sum(vals)/len(vals)*100,2) if vals else None])
     return out
+def _iter_kvutil_series(role):
+    """Peak-worker KV pool occupancy per 1 s bin, from the per-iteration log.
+
+    Fallback for ``dynamo_component_gpu_cache_usage_percent`` on the same grounds as
+    the reuse fallback: the gauge lives on the worker endpoint, which is frequently
+    not scraped. `max` across workers of that role, matching the gauge's own
+    peak-worker aggregation so the two are read the same way.
+    """
+    if not _IB: return []
+    acc={}
+    for w,rows in (_IB.get("bins") or {}).items():
+        if role not in w: continue
+        for r in rows:
+            v=r.get("kv_cache_util")
+            if v is None: continue
+            k=relt(int(r["t"])*10**9)
+            if not (0<=k<=run_dur+60): continue
+            acc[k]=max(acc.get(k,0.0), v*100)
+    return [[k,round(v,2)] for k,v in sorted(acc.items())]
+
+
+# The gauge is absent whenever no worker endpoint was scraped. Falling back keeps the
+# panel honest: before this it emitted a full-length series of Nones, which draws an
+# empty axis -- indistinguishable from "utilisation was zero".
+en["kvutil_src"]="dynamo_component_gpu_cache_usage_percent"
+if not [p for p in en["kvutil_pf"] if p[1] is not None] and \
+   not [p for p in en["kvutil_de"] if p[1] is not None]:
+    _pf,_de=_iter_kvutil_series("prefill"),_iter_kvutil_series("decode")
+    if _pf or _de:
+        _grid=sorted({k for s in (_pf,_de) for k,_ in s})
+        _pfm,_dem=dict(_pf),dict(_de)
+        en["kvutil_pf"]=[[k,_pfm.get(k)] for k in _grid]
+        en["kvutil_de"]=[[k,_dem.get(k)] for k in _grid]
+        en["kvutil_src"]="iter_bins.json (kv_cache_util)"
+        _log.info(f"KV utilisation: gauge absent, derived from the iteration log "
+                  f"({len(_grid)} bins)")
+
 en["true_hit_pct"]=kvhit_series()
+en["true_hit_src"]="trtllm_kv_cache_hit_rate"
+if not [p for p in en["true_hit_pct"] if p[1] is not None]:
+    _fb=_iter_reuse_series()
+    if _fb:
+        en["true_hit_pct"]=_fb; en["true_hit_src"]="iter_bins.json (cached_kv_tokens)"
+        _log.info(f"KV hit rate: gauge absent, derived from the iteration log "
+                  f"({len(_fb)} bins)")
 en["reuse_components"]=sorted(_REUSE_COMPONENTS) if _REUSE_COMPONENTS is not None else None
 _hitvals=[p[1] for p in en["true_hit_pct"] if p[1] is not None]
 en["true_hit_kpi"]=round(pct(_hitvals,50),1) if _hitvals else None
@@ -1041,10 +1186,9 @@ def _ordered_spans(sp):
 # 1s by parse_iterlog.py. Optional: absent unless that parser has been run.
 # The engine ceilings it captions against are resolved at the top of this file,
 # before any panel consumes them.
-_iter_path=os.path.join(SRC,"iter_bins.json") if SRC else ""
 iter_series={}; iter_bins=None
-if os.path.exists(_iter_path):
-    _ib=json.load(open(_iter_path)); iter_bins=_ib
+if _IB:
+    _ib=_IB; iter_bins=_ib
     for _wkey,_rows in (_ib.get("bins") or {}).items():
         out={k:[] for k in ("kv_cache_util","num_scheduled_requests","num_ctx_requests","num_generation_tokens")}
         for r in _rows:
@@ -1361,6 +1505,19 @@ if rt_rows:
 # none of them has bespoke code, so none can drift into being run-specific.
 panels=_evaluate_panels(scr)
 
+# The warmup boundary rides on the PANEL ENTITY, not on a global the renderer reaches
+# for. A panel is then self-describing -- it carries its own series, its own units and
+# its own phase marker -- so any consumer that can draw one panel can draw the marker,
+# and a panel whose x-axis is not run-time simply never sets the field.
+# Applied just before the payload is assembled, NOT here: the derived panels
+# (batch composition, step stalls, rank balance) are appended to `panels` further
+# down, and marking at this point would silently skip every one of them.
+def _mark_warmup(ps):
+    if WARMUP_END_S is None: return ps
+    for _p in ps.values():
+        _p["warmup_end_s"]=WARMUP_END_S
+    return ps
+
 # ---- derived panels: in-flight balance across ranks and workers -------------
 # Emitted in the SAME shape as the spec panels so the generic renderer draws them
 # with no extra code -- a different SOURCE, not a different kind of panel.
@@ -1508,7 +1665,7 @@ if panels:
 
 DATA={
  "logdrill":logdrill,
- "panels":panels,
+ "panels":_mark_warmup(panels),
  "rt":{"requests":rt_requests,"sessions":rt_sessions,"bands":RT_BANDS,"const":rt_const,"belief":rt_belief},
  "iter":iter_series,
  "iter_cfg":{"pf_batch":CFG_PF_BATCH,"pf_tok":CFG_PF_TOK,"de_batch":CFG_DE_BATCH,"de_tok":CFG_DE_TOK},
@@ -1517,10 +1674,15 @@ DATA={
  # Which tabs have inputs. A tab with no data is DROPPED, not rendered empty:
  # an empty Router tab reads as "this run had no queueing" rather than "this run
  # was not instrumented", which is the more dangerous of the two misreadings.
+ # Engine is the one tab with two independent producers: the scrape stream and the
+ # per-iteration log. Gating it on scrapes alone drops it on a run that has full
+ # engine telemetry and no /metrics surface -- exactly the trtllm-serve control a
+ # Dynamo run has to be compared against.
  "tabs":{"overview":bool(rows),"frontend":bool(scr),"router":bool(scr),
-         "engine":bool(scr),"loganalysis":logdrill is not None,
+         "engine":bool(scr) or bool(iter_series),"loganalysis":logdrill is not None,
          "session":bool(rt_sessions)},
  "meta":{"n":N,"run_dur_s":round(run_dur,1),"scrapes":len(scr),
+   "warmup_end_s":WARMUP_END_S,"warmup_src":WARMUP_SRC,
    "src":META_SRC,
    # Substitute the authoritative block size measured from the metrics stream. The
    # yaml only ever carried ingest's --block-size fallback, and on the reference run
@@ -1716,7 +1878,26 @@ function note(view,html,cls){vsel(view).append('div').attr('class','note '+(cls|
 function svg(el,w,h){return el.append('svg').attr('viewBox',`0 0 ${w} ${h}`)}
 function lg(el,items){el.append('div').attr('class','lg').html(items.map(([c,t])=>`<span><span class="sw" style="background:${c}"></span>${t}</span>`).join(''))}
 
-function lineChart(el,series,{unit='ms',w=VW,h=220,cols=null,keys=null,legend=null,ymax=null,hline=null,logy=false}={}){
+// ---- warmup phase marker ----------------------------------------------------
+// Drawn by every time-axis chart, from ONE helper, so the marker cannot be present
+// on some tabs and missing on others. The value is an OPTIONAL field on the panel
+// entity (`p.warmup_end_s`), falling back to the run-level `DATA.meta.warmup_end_s`
+// for the hand-written charts that have no panel entity. Absent => nothing drawn:
+// a harness with no warmup phase must not grow an invented boundary.
+function wmVal(p){
+  const v = (p && p.warmup_end_s!=null) ? p.warmup_end_s : (DATA.meta||{}).warmup_end_s;
+  return (v==null || !isFinite(v)) ? null : v;
+}
+function wmLine(s,x,hTop,hBot,p){
+  const v=wmVal(p); if(v==null) return;
+  const px=x(v); const [lo,hi]=x.range();
+  if(px<lo || px>hi) return;          // boundary outside this chart's window
+  s.append('line').attr('x1',px).attr('x2',px).attr('y1',hTop).attr('y2',hBot)
+   .attr('stroke','#8b949e').attr('stroke-width',1).attr('stroke-dasharray','3,3').attr('opacity',.75);
+  s.append('text').attr('x',px+3).attr('y',hTop+9).attr('fill','#8b949e')
+   .attr('font-size','9px').text('warmup ends');
+}
+function lineChart(el,series,{unit='ms',w=VW,h=220,cols=null,keys=null,legend=null,ymax=null,hline=null,logy=false,panelSpec=null}={}){
   if(legend)lg(el,legend);
   const s=svg(el,w,h),L=56,B=26,R=12;
   const x=d3.scaleLinear().domain([0,RD]).range([L,w-R]);
@@ -1731,6 +1912,7 @@ function lineChart(el,series,{unit='ms',w=VW,h=220,cols=null,keys=null,legend=nu
     ? d3.scaleLog().domain([Math.max(1e-9,d3.min(series,d=>d3.min(lines.map(k=>d[Array.isArray(k)?k[0]:k]).filter(v=>v!=null&&v>0)))||1), mx*1.6]).range([h-B,8])
     : d3.scaleLinear().domain([0,mx*1.05]).range([h-B,8]);
   s.append('g').attr('class','axis').attr('transform',`translate(0,${h-B})`).call(d3.axisBottom(x).ticks(8).tickFormat(d=>d+'s'));
+  wmLine(s,x,8,h-B,panelSpec);
   s.append('g').attr('class','axis').attr('transform',`translate(${L},0)`).call((logy?d3.axisLeft(y).ticks(6,'~s'):d3.axisLeft(y).ticks(5).tickFormat(d=>unit==='ms'?fmtS(d):(unit==='%'?d+'%':d3.format('~s')(d)))));
   if(hline!=null){s.append('line').attr('x1',L).attr('x2',w-R).attr('y1',y(hline)).attr('y2',y(hline)).attr('stroke','#666').attr('stroke-dasharray','5 3');
     s.append('text').attr('x',w-R-3).attr('y',y(hline)-4).attr('text-anchor','end').attr('fill','#8b949e').attr('font-size',10).text('max '+hline);}
@@ -1791,6 +1973,7 @@ function multiLine(el,series,{h=240,unitLabel='',area=false,xmax=null}={}){
   const mx=d3.max(labels,k=>d3.max(series[k],d=>d[1]))||1;
   const y=d3.scaleLinear().domain([0,mx*1.05]).range([h-B,8]);
   s.append('g').attr('class','axis').attr('transform',`translate(0,${h-B})`).call(d3.axisBottom(x).ticks(8).tickFormat(d=>d+'s'));
+  wmLine(s,x,8,h-B,null);
   s.append('g').attr('class','axis').attr('transform',`translate(${L},0)`).call(d3.axisLeft(y).ticks(5).tickFormat(fmtN));
   if(unitLabel)s.append('text').attr('x',6).attr('y',12).attr('font-size',11).attr('fill',C.dim).text(unitLabel);
   const ln=d3.line().defined(d=>d[1]!=null).x(d=>x(d[0])).y(d=>y(d[1])).curve(d3.curveStepAfter);
@@ -2113,10 +2296,32 @@ drillPanel('overview',DATA.drill,{
  }
  note('engine',`Engine occupancy from Prometheus: <b>KV utilisation</b>, <b>in-flight batch vs configured max</b>, and the <b>true block cache-hit</b>. Read together — low KV utilisation with in-flight batch far below the max ceiling means the engines are starved (requests held upstream in admission — see Router), not compute-bound. Caveats (image-gated): no <code>llm_request</code> span (coarse gantt), no per-pool KV, no DCGM GPU-compute util.`+ceil,'hl');
 })();
-(function(){const el=panel('engine','KV cache utilisation over the run (% — peak worker)','dynamo_component_gpu_cache_usage_percent, max across dp-ranks per role (the busiest worker). Peaks &lt;4% ⇒ KV cache nearly empty: workers idle waiting on admission, not KV-bound.',true);
- lg(el,[[C.pf,'prefill (6 CTX)'],[C.de,'decode (1 GEN)']]);
- lineChart(el,DATA.en.kvutil_pf.map((d,i)=>[d[0],d[1],DATA.en.kvutil_de[i][1]]),{unit:'%',keys:[[1,C.pf],[2,C.de]]});})();
-(function(){const el=panel('engine','True block cache-hit over the run (%)','trtllm_kv_cache_hit_rate (engine, per CTX worker) — the REAL reuse. Perf-OFF client reports 0% as an artifact; the log-residency proxy inflates.',true);
+// A series of all-nulls is NOT the same as a series of zeros, and an empty axis
+// says the second. Every panel below states which source produced it and, when
+// neither the gauge nor the iteration-log fallback exists, says so in words.
+function notCaptured(el,what){
+  el.append('div').attr('class','cap')
+    .style('padding','14px 0').style('color','#d29922')
+    .html(`<b>Not captured in this run.</b> ${what} No worker <code>/metrics</code> endpoint `
+         +`was scraped and the per-iteration log carries no substitute, so this is absent `
+         +`data — not a measured zero.`);
+}
+function anyVal(s,i){return (s||[]).some(d=>d[i]!=null);}
+(function(){const src=DATA.en.kvutil_src||'';
+ const el=panel('engine','KV cache utilisation over the run (% — peak worker)',
+  `Source: <code>${src}</code>, max across workers per role (the busiest worker). `
+ +`Low peaks with in-flight batch far below the ceiling ⇒ the engines are starved, not KV-bound.`
+ +(src.startsWith('iter_bins')?' <b>Derived from the per-iteration log</b> because the Prometheus gauge was not scraped; same quantity, denser sampling.':''),true);
+ if(!anyVal(DATA.en.kvutil_pf,1)&&!anyVal(DATA.en.kvutil_de,1)){
+   notCaptured(el,'<code>dynamo_component_gpu_cache_usage_percent</code> is a worker-side gauge.');return;}
+ lg(el,[[C.pf,'prefill'],[C.de,'decode']]);
+ lineChart(el,DATA.en.kvutil_pf.map((d,i)=>[d[0],d[1],(DATA.en.kvutil_de[i]||[])[1]]),{unit:'%',keys:[[1,C.pf],[2,C.de]]});})();
+(function(){const src=DATA.en.true_hit_src||'';
+ const el=panel('engine','True block cache-hit over the run (%)',
+  `Source: <code>${src}</code> — the REAL reuse, measured at the engine rather than inferred from the client.`
+ +(src.startsWith('iter_bins')?' <b>Derived from the per-iteration log</b> as <code>cached_kv_tokens / (cached_kv_tokens + num_ctx_tokens)</code> over context workers, because <code>trtllm_kv_cache_hit_rate</code> was not scraped. Token-weighted and context-phase only, so it is close to but not identical to the gauge.':''),true);
+ if(!anyVal(DATA.en.true_hit_pct,1)){
+   notCaptured(el,'<code>trtllm_kv_cache_hit_rate</code> is a worker-side gauge.');return;}
  lineChart(el,DATA.en.true_hit_pct,{unit:'%',keys:[[1,C.grn]]});})();
 
 // ================= FRONTEND =================
@@ -2135,6 +2340,7 @@ drillPanel('overview',DATA.drill,{
   const y=d3.scaleLinear().domain([0,d3.max(all,d=>d[1])*1.1||1]).nice().range([h-B,8]);
   s.append('g').attr('class','axis').attr('transform',`translate(0,${h-B})`).call(d3.axisBottom(x).ticks(8).tickFormat(v=>v+'s'));
   s.append('g').attr('class','axis').attr('transform',`translate(${L},0)`).call(d3.axisLeft(y).ticks(5).tickFormat(v=>(v*100).toFixed(0)+'%'));
+  wmLine(s,x,8,h-B,null);
   const ln=d3.line().x(d=>x(d[0])).y(d=>y(d[1]));
   ser.forEach((d,i)=>s.append('path').datum(d).attr('fill','none').attr('stroke',keys[i][1]).attr('stroke-width',1.2).attr('opacity',.9).attr('d',ln));
  })();
@@ -2145,24 +2351,53 @@ drillPanel('overview',DATA.drill,{
  const WK=Object.keys(IT).sort();
  const PAL=[C.pf,C.de,C.grn,C.route,C.cy,C.adm];
  function batchPanel(role, ceil, tok){
-   const wk=WK.filter(w=>w.startsWith(role)); if(!wk.length) return;
-   const cap=`<code>num_scheduled_requests</code> from the TRT-LLM per-iteration log, one line per `
-     +`${role} worker, raw integer (max per 1s bin). <b>Configured ceiling: `
-     +`<code>max_batch_size = ${ceil==null?'?':ceil}</code>`+(tok?` , <code>max_num_tokens = ${tok}</code>`:'')
-     +`</b> from this run's <code>trtllm_config_${role}.yaml</code> — shown here as text, not as a line, since a `
-     +`ceiling far above the data squashes the series onto the axis.`;
-   const el=panel('engine',`${role==='prefill'?'Prefill':'Decode'} in-flight batch per worker`,cap,true);
-   lg(el,wk.map((w,i)=>[PAL[i%PAL.length],w]));
-   const L=54,B=28,h=230,s=svg(el,VW,h);
+   // Worker keys are the LOG FILE stem, `<node>_<role>_w<N>` (e.g.
+   // `hecate0176_decode_w0`) -- the role is in the middle, not at the front. A
+   // startsWith() here matched nothing on every srt-slurm run ever rendered, and
+   // because the function returns silently on an empty match, both batch panels
+   // were absent rather than broken. Substring match, anchored on the `_role_`
+   // separator so a node named e.g. `decode01` cannot be mistaken for a role.
+   const wk=WK.filter(w=>w.includes('_'+role+'_')||w.includes('_'+role));
+   if(!wk.length) return;
    const all=wk.flatMap(w=>IT[w].num_scheduled_requests);
    if(!all.length) return;
    const ymax=d3.max(all,d=>d[1]);
+   const vals=all.map(d=>d[1]).sort((a,b)=>a-b);
+   const med=vals[Math.floor(vals.length/2)];
+   // The ceiling is drawn whenever it is on a comparable scale to the data. When it
+   // is far above (prefill runs a batch of ~1-10 against max_batch_size 256) drawing
+   // it to scale squashes every series onto the axis and the panel says nothing, so
+   // the axis stays on the data and the ceiling is reported as a utilisation figure.
+   const onScale = ceil!=null && ceil>0 && ymax >= ceil*0.25;
+   const pctOf = ceil ? v=>` (${(v/ceil*100).toFixed(1)}% of ceiling)` : ()=>'';
+   const cap=`<code>num_scheduled_requests</code> from the TRT-LLM per-iteration log, one line per `
+     +`${role} worker, raw integer (max per 1s bin), plotted against this run's configured `
+     +`<b><code>max_batch_size = ${ceil==null?'?':ceil}</code></b>`+(tok?` (<code>max_num_tokens = ${tok}</code>)`:'')
+     +` from <code>trtllm_config_${role}.yaml</code>. `
+     +(onScale
+        ? `The ceiling is the dashed line — the gap between it and the series is unserved batch capacity.`
+        : `The ceiling is <b>off-scale</b> here and is not drawn, because plotting it would squash `
+          +`every series onto the axis. Peak batch <b>${ymax}</b>${pctOf(ymax)}, median <b>${med}</b>${pctOf(med)} `
+          +`— at this ratio the batch is bounded by something other than <code>max_batch_size</code>`
+          +(tok?`, most likely the <code>max_num_tokens = ${tok}</code> budget.`:'.'));
+   const el=panel('engine',`${role==='prefill'?'Prefill':'Decode'} in-flight batch size per worker`,cap,true);
+   lg(el,wk.map((w,i)=>[PAL[i%PAL.length],w])
+        .concat(onScale?[['#d29922',`max_batch_size = ${ceil}`]]:[]));
+   const L=54,B=28,h=230,s=svg(el,VW,h);
+   const ytop = onScale ? ceil*1.06 : ymax;
    const x=d3.scaleLinear().domain([0,RD]).range([L,VW-10]);
-   const y=d3.scaleLinear().domain([0,ymax]).range([h-B,10]);
+   const y=d3.scaleLinear().domain([0,ytop]).range([h-B,10]);
    s.append('g').attr('class','axis').attr('transform',`translate(0,${h-B})`)
     .call(d3.axisBottom(x).ticks(8).tickFormat(v=>v+'s'));
    s.append('g').attr('class','axis').attr('transform',`translate(${L},0)`)
-    .call(d3.axisLeft(y).ticks(Math.min(ymax,6)).tickFormat(d3.format('d')));
+    .call(d3.axisLeft(y).ticks(Math.min(Math.ceil(ytop),6)).tickFormat(d3.format('d')));
+   wmLine(s,x,10,h-B,null);
+   if(onScale){
+     s.append('line').attr('x1',L).attr('x2',VW-10).attr('y1',y(ceil)).attr('y2',y(ceil))
+      .attr('stroke','#d29922').attr('stroke-width',1.4).attr('stroke-dasharray','6,4').attr('opacity',.95);
+     s.append('text').attr('x',VW-14).attr('y',y(ceil)-5).attr('text-anchor','end')
+      .attr('fill','#d29922').attr('font-size','10px').text(`max_batch_size = ${ceil}`);
+   }
    const ln=d3.line().x(d=>x(d[0])).y(d=>y(d[1]));
    wk.forEach((w,i)=>s.append('path').datum(IT[w].num_scheduled_requests).attr('fill','none')
      .attr('stroke',PAL[i%PAL.length]).attr('stroke-width',1.2).attr('opacity',.85).attr('d',ln));
@@ -2243,6 +2478,7 @@ note('frontend',`Both panels come from the <b>frontend</b> endpoint (<code>:8000
    .call(d3.axisBottom(x).ticks(8).tickFormat(v=>v.toFixed(0)+'s'));
   s.append('g').attr('class','axis').attr('transform',`translate(${L},0)`)
    .call(d3.axisLeft(y).ticks(5).tickFormat(fmtU(p.unit)));
+  wmLine(s,x,8,H-B,p);
   const ln=d3.line().x(d=>x(d[0])).y(d=>y(d[1]));
   drawn.forEach((k,i)=>s.append('path').datum(p.series[k]).attr('fill','none')
     .attr('stroke',PAL[i%PAL.length]).attr('stroke-width',1.2).attr('opacity',.9).attr('d',ln));

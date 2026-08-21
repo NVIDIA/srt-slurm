@@ -84,6 +84,23 @@ def _log(tag: str, msg: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+# Every client-export layout seen in the wild. AgentX nests under `agentic/<conc>/`
+# (with or without an `aiperf_artifacts/` level, which differs per harness build);
+# stock AIPerf uses `artifacts/<run>/`.
+# Where each harness puts AIPerf's server-metrics export, mirroring CLIENT_PATTERNS.
+AIPERF_METRIC_PATTERNS = [
+    "agentic/*/aiperf_artifacts/server_metrics_export.json",
+    "agentic/*/server_metrics_export.json",
+    "artifacts/*/server_metrics_export.json",
+]
+
+CLIENT_PATTERNS = [
+    "agentic/*/aiperf_artifacts/profile_export.jsonl",
+    "agentic/*/profile_export.jsonl",
+    "artifacts/*/profile_export.jsonl",
+]
+
+
 def resolve_inputs(pattern, run_dir: Path) -> list[str]:
     """Resolve a source flag to a sorted list of concrete files.
 
@@ -216,6 +233,61 @@ def parse_worker_spec(spec: str) -> tuple[str, dict]:
     return role, {"parallelism": parallelism, "rank": rank, "worker_count": count}
 
 
+def probe_warmup_end_ns(
+    run_dir: Path, patterns: list[str]
+) -> tuple[int | None, str | None, int | None, int | None]:
+    """First PROFILING request start (ns) from the client export, without copying it.
+
+    The load generator's warmup phase is tagged per record as
+    ``metadata.benchmark_phase``. The renderer reads that directly when the client leg
+    is in the bundle -- but the export is routinely 700 MB+ and is often not copied,
+    and the boundary is one integer. So it is probed here and recorded in
+    dashboard.yaml, which keeps the marker available to a metrics-only bundle.
+
+    Streamed with a substring pre-filter so the JSON parser only sees candidate lines;
+    a full parse of every record would cost minutes on a 700 MB export for one number.
+    Returns ``(None, None)`` when the harness tags no phase -- which is not a failure,
+    it means this run has no warmup boundary to mark.
+    """
+    srcs: list[str] = []
+    for pat in patterns:
+        srcs.extend(resolve_inputs(pat, run_dir))
+    srcs = sorted(dict.fromkeys(srcs))
+    if not srcs:
+        return None, None, None, None
+    prof_min = warm_max = None
+    span_lo = span_hi = None
+    scanned = 0
+    for src in srcs:
+        with open(src) as f:
+            for line in f:
+                if '"benchmark_phase"' not in line:
+                    continue
+                scanned += 1
+                try:
+                    md = json.loads(line).get("metadata", {})
+                except Exception:
+                    continue
+                st = md.get("request_start_ns")
+                if st:
+                    span_lo = st if span_lo is None else min(span_lo, st)
+                    span_hi = st if span_hi is None else max(span_hi, st)
+                ph = md.get("benchmark_phase")
+                if ph == "profiling":
+                    v = md.get("request_start_ns")
+                    if v:
+                        prof_min = v if prof_min is None else min(prof_min, v)
+                elif ph:
+                    v = md.get("request_end_ns") or md.get("request_start_ns")
+                    if v:
+                        warm_max = v if warm_max is None else max(warm_max, v)
+    if prof_min:
+        return prof_min, "first profiling request", span_lo, span_hi
+    if warm_max:
+        return warm_max, "last warmup request (profiling phase never began)", span_lo, span_hi
+    return None, None, span_lo, span_hi
+
+
 def generate_dashboard_yaml(
     *,
     name: str,
@@ -228,6 +300,8 @@ def generate_dashboard_yaml(
     have_traces: bool,
     have_metrics: bool,
     have_request_trace: bool = False,
+    warmup_end_ns: int | None = None,
+    warmup_source: str | None = None,
 ) -> str:
     """Render a dashboard.yaml (skeleton fields: name/description/mode/framework/
     topology/sources) whose ``sources:`` point at the bundle's own files (so the
@@ -258,6 +332,14 @@ def generate_dashboard_yaml(
         else:
             lines.append("    prefill: {parallelism: dep, rank: 4, worker_count: 1}  # TODO: set from your run")
             lines.append("    decode:  {parallelism: tep, rank: 4, worker_count: 1}  # TODO: set from your run")
+    if warmup_end_ns:
+        # Carried so a bundle WITHOUT the client leg can still mark the phase
+        # boundary. Absent when the harness tags no phase -- which the renderer must
+        # read as "no boundary known", not as "warmup ended at t=0".
+        lines.append("warmup:")
+        lines.append(f"  end_ns: {int(warmup_end_ns)}")
+        if warmup_source:
+            lines.append(f"  source: {warmup_source}")
     lines.append("sources:")
     if have_aiperf:
         lines.append("  aiperf_profile: profile_export.jsonl")
@@ -288,10 +370,7 @@ def run_client(args, run_dir: Path, bundle: Path) -> bool:
     # several concurrencies yields several files; they are stitched, which puts each
     # phase in sequence on the run-relative time axis rather than averaging them
     # together -- the phases stay visually separable, and no phase is silently dropped.
-    patterns = [args.client_input] if args.client_input else [
-        "agentic/*/aiperf_artifacts/profile_export.jsonl",
-        "artifacts/*/profile_export.jsonl",
-    ]
+    patterns = [args.client_input] if args.client_input else list(CLIENT_PATTERNS)
     inputs: list[str] = []
     for pat in patterns:
         inputs.extend(resolve_inputs(pat, run_dir))
@@ -360,6 +439,43 @@ def run_metrics(args, run_dir: Path, bundle: Path) -> bool:
         _log("L2 metrics", "skipped (--metrics none)")
         return False
 
+    mode = args.metrics
+    if mode == "auto":
+        # Pick the source the run actually captured. An `observability.enabled` run has
+        # raw_prometheus.jsonl; a run without it usually still has AIPerf's own export,
+        # because the frontend's /metrics surface exists regardless of that knob and
+        # the benchmark scrapes it. Choosing here rather than at every call site is
+        # what lets one ingest command work on both.
+        raw = resolve_inputs(args.raw_prometheus or "raw_prometheus.jsonl", run_dir)
+        if raw:
+            mode = "prometheus"
+        else:
+            found: list[str] = []
+            for pat in AIPERF_METRIC_PATTERNS:
+                found.extend(resolve_inputs(pat, run_dir))
+            mode = "aiperf-json" if found else "prometheus"
+        _log("L2 metrics", f"auto-selected source: {mode}")
+
+    if mode == "aiperf-json":
+        # AIPerf's own export. The only server-metrics source on a run that predates
+        # `observability.enabled`, so it is what makes the historical before/after
+        # corpus renderable without re-running anything.
+        patterns = ([args.aiperf_server_metrics] if args.aiperf_server_metrics
+                    else list(AIPERF_METRIC_PATTERNS))
+        srcs: list[str] = []
+        for pat in patterns:
+            srcs.extend(resolve_inputs(pat, run_dir))
+        srcs = sorted(dict.fromkeys(srcs))
+        if not srcs:
+            _log("L2 metrics", f"WARN no aiperf server metrics matched {patterns} under {run_dir}; skipping")
+            return False
+        _log("L1", f"metrics raw: {srcs[0]} (AIPerf server_metrics_export.json)")
+        proc = get_processor("metrics", "aiperf-json")
+        n = proc(srcs[0], str(out))
+        nin, nout = dedup_server_metrics(out)
+        _log("L2 metrics", f"aiperf-json -> {out.name}: {n} timestamps, dedup {nin} -> {nout} lines")
+        return out.exists()
+
     # metrics == prometheus: parse RAW -> schema 2.
     pattern = args.raw_prometheus or "raw_prometheus.jsonl"
     srcs = resolve_inputs(pattern, run_dir)
@@ -403,7 +519,9 @@ def run_request_trace(args, run_dir: Path, bundle: Path) -> bool:
     return n > 0
 
 
-def run_iter_log(args, run_dir: Path, bundle: Path) -> bool:
+def run_iter_log(args, run_dir: Path, bundle: Path,
+                 fallback_start_ns: int | None = None,
+                 fallback_end_ns: int | None = None) -> bool:
     """L2 per-iteration axis -> iter_bins.json. Returns whether produced.
 
     Parses TRT-LLM's ``print_iter_log`` lines out of the worker logs. This is the only
@@ -440,6 +558,14 @@ def run_iter_log(args, run_dir: Path, bundle: Path) -> bool:
                         end_ns = json.loads(line)["timestamp_ns"]
         except Exception as e:  # noqa: BLE001 - anchoring is best-effort
             _log("L2 iter-log", f"WARN could not read the run window: {e}")
+    if start_ns is None and fallback_start_ns is not None:
+        # No metrics stream to anchor against -- a trtllm-serve run has no Dynamo
+        # endpoint at all. The client export's own span is UTC and covers the same
+        # run, so it anchors the offset just as well. Without it the offset silently
+        # defaults to 0 and the engine timeline sits hours away from every other
+        # source, which only shows up when something tries to join them.
+        start_ns, end_ns = fallback_start_ns, fallback_end_ns
+        _log("L2 iter-log", "UTC anchor from the client export (no metrics stream)")
     out = bundle / "iter_bins.json"
     _log("L1", f"iter-log raw: {len(logs)} worker log(s)")
     proc = get_processor("iter_log", "trtllm")
@@ -1006,9 +1132,15 @@ def build_parser() -> argparse.ArgumentParser:
                         "(default: *_prefill_w*.out, *_decode_w*.out, *_agg_w*.out)")
 
     # metrics axis
-    p.add_argument("--metrics", choices=["prometheus", "none"], default="prometheus")
+    p.add_argument("--metrics", choices=["auto", "prometheus", "aiperf-json", "none"],
+                   default="auto",
+                   help="metrics source; 'auto' uses raw_prometheus.jsonl when the run has it "
+                        "and falls back to AIPerf's own export when it does not")
     p.add_argument("--raw-prometheus", default=None,
                    help="raw_prometheus.jsonl path/glob (default: raw_prometheus.jsonl)")
+    p.add_argument("--aiperf-server-metrics", default=None,
+                   help="AIPerf server_metrics_export.json path/glob for --metrics aiperf-json "
+                        "(default: agentic/*/ then artifacts/*/)")
     p.add_argument("--server-metrics", default=None,
                    help="pre-existing server_metrics_export.jsonl to pass through (with --metrics none)")
 
@@ -1041,7 +1173,23 @@ def main(argv=None) -> int:
     have_traces = run_traces(args, run_dir, bundle, profile_path)
     have_metrics = run_metrics(args, run_dir, bundle)
     have_req_trace = run_request_trace(args, run_dir, bundle)
-    run_iter_log(args, run_dir, bundle)
+
+    # Probed here, before the iteration log, for two reasons: it supplies the warmup
+    # boundary for a bundle without the client leg, AND its time span is the fallback
+    # UTC anchor for the iter-log offset. Skipped when the client leg is in the bundle
+    # -- the renderer reads benchmark_phase off it directly and the metrics stream
+    # already anchors the offset.
+    warmup_ns = warmup_src = None
+    client_lo = client_hi = None
+    if not have_aiperf:
+        warmup_ns, warmup_src, client_lo, client_hi = probe_warmup_end_ns(
+            run_dir, list(CLIENT_PATTERNS))
+        if warmup_ns:
+            _log("L2 warmup", f"phase boundary {warmup_ns} ns ({warmup_src})")
+        else:
+            _log("L2 warmup", "no benchmark_phase tag found; no warmup marker")
+
+    run_iter_log(args, run_dir, bundle, client_lo, client_hi)
     run_engine_configs(run_dir, bundle)
     run_client_summary(run_dir, bundle)
     run_provenance(run_dir, bundle)
@@ -1061,6 +1209,8 @@ def main(argv=None) -> int:
         have_traces=have_traces,
         have_metrics=have_metrics,
         have_request_trace=have_req_trace,
+        warmup_end_ns=warmup_ns,
+        warmup_source=warmup_src,
     )
     yaml_path = bundle / "dashboard.yaml"
     yaml_path.write_text(yaml_text)
