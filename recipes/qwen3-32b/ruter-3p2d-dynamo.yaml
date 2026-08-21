@@ -31,7 +31,7 @@ resources:
 dynamo:
   # Resolve current Dynamo main to an immutable SHA before committing a run.
   # `apply --bash` builds this once into its hash-keyed local wheel cache.
-  hash: a6261680a974ca7c74dcf49592a7376d7de99380
+  hash: 341f9ac96a9e8b736e1d08576eaca9e0cf32786a
 
 # Avoid host-shared NATS and etcd. The direct lifecycle owns and cleans these.
 environment:
