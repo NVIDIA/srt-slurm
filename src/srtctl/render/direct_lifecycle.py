@@ -58,10 +58,11 @@ class DirectLifecycle:
         self.artifact_dir = Path(os.environ["ARTIFACT_DIR"]).resolve()
         self.source_dir = Path(str(plan["source_dir"])).resolve()
         self.output_base = Path(str(plan["output_base"])).resolve()
+        self.sglang_source = Path(str(plan["sglang_source"])).resolve()
+        self.ruter_python = self.source_dir / ".venv" / "bin" / "python"
         self.python = os.environ.get("SRTCTL_PYTHON", sys.executable)
         self.processes: list[ManagedProcess] = []
         self.tachometer: ManagedProcess | None = None
-        self.tachometer_binary: str | None = None
         self.tachometer_local_dir: Path | None = None
         self._configure_environment()
 
@@ -72,6 +73,7 @@ class DirectLifecycle:
             os.environ[str(key)] = str(value)
         os.environ["SRT_FRONTEND_URL"] = f"http://127.0.0.1:{self.plan['frontend_port']}"
         os.environ["SRT_FRONTEND_HOST"] = "127.0.0.1"
+        os.environ["SRTCTL_RUTER_PYTHON"] = str(self.ruter_python)
         os.environ["AIPERF_ARTIFACT_DIR"] = str(self.artifact_dir / "aiperf")
         os.environ.setdefault("AIPERF_DATASET_MMAP_BASE_PATH", str(self.artifact_dir / "aiperf-mmap"))
 
@@ -141,7 +143,7 @@ class DirectLifecycle:
         for managed in self.processes:
             if managed.process.poll() is not None:
                 self._die(f"owned service {managed.label} exited; inspect {managed.log_path}")
-        if os.environ.get("SRTCTL_MOONCAKE_CONTAINERIZED") == "1":
+        if self.plan["mooncake_master_command"]:
             self._assert_tcp("127.0.0.1", int(self.plan["mooncake_master_port"]), "mooncake master")
 
     def _wait_http_ready(self, url: str, label: str) -> None:
@@ -188,22 +190,14 @@ class DirectLifecycle:
         self._run_logged(["bash", str(selected)], log_name="setup.log")
 
     def _install_sglang_from_source(self) -> None:
-        source_value = os.environ.get("SRTCTL_SGLANG_SOURCE", "")
-        if not source_value:
-            return
-        source = Path(source_value)
+        source = self.sglang_source
         if not (source / "python" / "sglang").is_dir():
             self._die(f"Invalid SGLang source: {source}")
         revision = _run_capture(
             ["git", "-c", f"safe.directory={source}", "-C", str(source), "rev-parse", "--verify", "HEAD"]
         )
-        runtime_root = Path(os.environ.get("SRTCTL_SGLANG_RUNTIME_ROOT", str(self.output_base / ".srtctl-runtime")))
-        runtime_dir = Path(
-            os.environ.get(
-                "SRTCTL_SGLANG_RUNTIME_DIR",
-                str(runtime_root / f"sglang-{revision}-{self.plan['sglang_runtime_key']}"),
-            )
-        )
+        runtime_dir = Path(os.environ["SRTCTL_SGLANG_RUNTIME_DIR"])
+        runtime_root = runtime_dir.parent
         runtime_root.mkdir(parents=True, exist_ok=True)
         lock = runtime_root / f".sglang-{revision}-{self.plan['sglang_runtime_key']}.lock"
         with lock.open("w", encoding="utf-8") as handle:
@@ -395,34 +389,6 @@ class DirectLifecycle:
             )
         self.log("Installed Dynamo top-of-tree")
 
-    def _install_dynamo_from_wheel_cache(self) -> None:
-        version = str(self.plan["dynamo_package_version"])
-        cache_root = Path(
-            os.environ.get("SRTCTL_DYNAMO_CACHE_ROOT", str(self.source_dir / "configs" / "dynamo-wheels"))
-        )
-        wheel_dir = cache_root / "wheels" / version
-        helper = self.source_dir / "src" / "srtctl" / "runtime_scripts" / "dynamo_wheels.py"
-        if not helper.is_file():
-            self._die(f"Dynamo wheel helper not found: {helper}")
-        if subprocess.run([self.python, "-m", "pip", "--version"], check=False).returncode != 0:
-            self._run_logged([self.python, "-m", "ensurepip", "--upgrade"], log_name="install-dynamo.log")
-        version_info = _run_capture(
-            [self.python, "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"]
-        )
-        environment = dict(os.environ)
-        environment.update(
-            {
-                "DYNAMO_VERSION": version,
-                "DYNAMO_WHEEL_HOST_DIR": str(wheel_dir),
-                "DYNAMO_PYTHON_VERSION": version_info,
-            }
-        )
-        self._run_logged([self.python, str(helper), "prefetch"], log_name="install-dynamo.log", env=environment)
-        environment.pop("DYNAMO_WHEEL_HOST_DIR")
-        environment["DYNAMO_WHEEL_DIRS"] = str(wheel_dir)
-        self._run_logged([self.python, str(helper), "install"], log_name="install-dynamo.log", env=environment)
-        self.log(f"Installed Dynamo {version} from {wheel_dir}")
-
     @staticmethod
     def _write_archive(root: Path, name: str, destination: Path) -> None:
         with tarfile.open(destination, "w:gz") as archive:
@@ -435,18 +401,13 @@ class DirectLifecycle:
     def _install_dynamo(self) -> None:
         if self.plan["dynamo_source_hash"]:
             self._install_dynamo_from_source_cache()
-        elif self.plan["dynamo_top_of_tree"]:
+        else:
             self._install_dynamo_from_top_of_tree()
-        elif self.plan["dynamo_package_version"]:
-            self._install_dynamo_from_wheel_cache()
         self._run_logged([self.python, "-c", "import dynamo"], log_name="install-dynamo.log")
 
     def _start_infrastructure(self) -> None:
-        if not self.plan["needs_dynamo_infra"]:
-            self._run_logged([self.python, "-c", "import sglang_router"], log_name="router.log")
-            return
-        nats = os.environ.get("SRTCTL_NATS_BINARY", str(self.source_dir / "configs" / "nats-server"))
-        etcd = os.environ.get("SRTCTL_ETCD_BINARY", str(self.source_dir / "configs" / "etcd"))
+        nats = str(self.source_dir / "configs" / "nats-server")
+        etcd = str(self.source_dir / "configs" / "etcd")
         if not os.access(nats, os.X_OK):
             self._die(f"NATS binary is not executable: {nats}")
         if not os.access(etcd, os.X_OK):
@@ -485,8 +446,6 @@ class DirectLifecycle:
         command = [str(value) for value in self.plan["mooncake_master_command"]]
         if not command:
             return
-        if os.environ.get("SRTCTL_MOONCAKE_CONTAINERIZED") != "1":
-            self._launch("mooncake-master", "mooncake-master.log", command)
         self._wait_tcp_ready("127.0.0.1", int(self.plan["mooncake_master_port"]), "mooncake master")
         self._wait_tcp_ready("127.0.0.1", int(self.plan["mooncake_metadata_port"]), "mooncake metadata")
         self._wait_tcp_ready("127.0.0.1", int(self.plan["mooncake_metrics_port"]), "mooncake metrics")
@@ -496,15 +455,11 @@ class DirectLifecycle:
             self._launch_shell(
                 str(worker["label"]), str(worker["log_name"]), str(worker["command"]), env=dict(os.environ)
             )
-        if self.plan["frontend_type"] != "dynamo":
-            for worker in self.plan["worker_processes"]:
-                self._wait_http_ready(f"http://127.0.0.1:{worker['http_port']}/health", str(worker["label"]))
         self._launch_shell("router", "router.log", str(self.plan["router_command"]), env=dict(os.environ))
         self._wait_router_ready()
 
     def _wait_router_ready(self) -> None:
-        path = "/workers" if self.plan["frontend_type"] == "sglang" else "/health"
-        url = f"http://127.0.0.1:{self.plan['frontend_port']}{path}"
+        url = f"http://127.0.0.1:{self.plan['frontend_port']}/health"
         deadline = time.monotonic() + int(self.plan["health_timeout_seconds"])
         interval = int(self.plan["health_interval_seconds"])
         readiness_log = self.log_dir / "readiness.log"
@@ -514,7 +469,7 @@ class DirectLifecycle:
                 try:
                     with urllib.request.urlopen(url, timeout=5) as response:
                         payload = json.loads(response.read().decode())
-                    prefill, decode = _router_counts(payload, str(self.plan["frontend_type"]))
+                    prefill, decode = _router_counts(payload)
                     if prefill >= int(self.plan["expected_prefill"]) and decode >= int(self.plan["expected_decode"]):
                         handle.write(
                             f"Router ready: prefill={prefill}/{self.plan['expected_prefill']} decode={decode}/{self.plan['expected_decode']}\n"
@@ -553,12 +508,9 @@ class DirectLifecycle:
     def _start_tachometer(self) -> None:
         if not self.plan["tachometer_enabled"]:
             return
-        configured = self.plan["tachometer_binary"] or ""
-        source_binary = self.source_dir / "bin" / "tachometer-scraper"
-        if (not configured or configured == "tachometer-scraper") and os.access(source_binary, os.X_OK):
-            configured = str(source_binary)
-        if not configured or (not Path(configured).exists() and shutil.which(configured) is None):
-            self._die(f"Tachometer scraper not found: {configured}")
+        configured = str(self.source_dir / "bin" / "tachometer-scraper")
+        if not os.access(configured, os.X_OK):
+            self._die(f"Tachometer scraper is not executable: {configured}")
         storage = self.artifact_dir / "tachometer" / "raw" / "scrape"
         local_dir = self.artifact_dir / "tachometer" / "local"
         storage.parent.mkdir(parents=True, exist_ok=True)
@@ -573,14 +525,13 @@ class DirectLifecycle:
         if int(self.plan["tachometer_compaction_threads"]) > 0:
             environment["POLARS_MAX_THREADS"] = str(self.plan["tachometer_compaction_threads"])
         self.tachometer = self._launch("tachometer", "tachometer.log", args, env=environment)
-        self.tachometer_binary = configured
         self.tachometer_local_dir = local_dir
         time.sleep(2)
         if self.tachometer.process.poll() is not None:
             self._die(f"Tachometer exited at startup; inspect {self.tachometer.log_path}")
 
     def _compact_tachometer(self) -> None:
-        if self.tachometer_binary is None or self.tachometer_local_dir is None:
+        if self.tachometer_local_dir is None:
             return
         if (
             not any(self.tachometer_local_dir.glob("*.parquet"))
@@ -592,7 +543,7 @@ class DirectLifecycle:
             environment["POLARS_MAX_THREADS"] = str(self.plan["tachometer_compaction_threads"])
         self._run_logged(
             [
-                self.tachometer_binary,
+                str(self.source_dir / "bin" / "tachometer-scraper"),
                 "compact",
                 str(self.tachometer_local_dir),
                 "--output",
@@ -617,7 +568,6 @@ class DirectLifecycle:
     def _normalize_ruter(self) -> None:
         if not self.plan["ruter_enabled"]:
             return
-        python = os.environ.get("SRTCTL_RUTER_PYTHON", self.python)
         environment = dict(os.environ)
         existing = environment.get("PYTHONPATH")
         environment["PYTHONPATH"] = (
@@ -625,7 +575,15 @@ class DirectLifecycle:
         )
         try:
             self._run_logged(
-                [python, "-m", "srtctl.ruter", "init", str(self.output_dir), "--output", str(self.log_dir / ".ruter")],
+                [
+                    str(self.ruter_python),
+                    "-m",
+                    "srtctl.ruter",
+                    "init",
+                    str(self.output_dir),
+                    "--output",
+                    str(self.log_dir / ".ruter"),
+                ],
                 log_name="ruter.log",
                 env=environment,
             )
@@ -657,10 +615,11 @@ class DirectLifecycle:
         }
         try:
             self._run_setup_script()
+            if self.plan["ruter_enabled"] and not os.access(self.ruter_python, os.X_OK):
+                self._die(f"ruter control Python is not executable: {self.ruter_python}")
             self._install_sglang_from_source()
             self._run_logged([self.python, "-c", "import sglang"], log_name="install-sglang.log")
-            if self.plan["needs_dynamo_infra"]:
-                self._install_dynamo()
+            self._install_dynamo()
             self._start_infrastructure()
             self._start_mooncake()
             self._start_workers_and_router()
@@ -683,12 +642,7 @@ class DirectLifecycle:
                 signal.signal(signal_number, previous)
 
 
-def _router_counts(payload: dict[str, Any], frontend_type: str) -> tuple[int, int]:
-    if frontend_type == "sglang":
-        stats = payload.get("stats", {})
-        return int(stats.get("prefill_count", 0) or 0), int(stats.get("decode_count", 0) or 0) + int(
-            stats.get("regular_count", 0) or 0
-        )
+def _router_counts(payload: dict[str, Any]) -> tuple[int, int]:
     prefill = decode = 0
     for instance in payload.get("instances", []):
         if instance.get("endpoint") != "generate":

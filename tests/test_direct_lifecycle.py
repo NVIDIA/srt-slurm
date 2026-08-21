@@ -16,6 +16,7 @@ def _plan(tmp_path) -> dict[str, object]:
     return {
         "source_dir": str(tmp_path / "source"),
         "output_base": str(tmp_path / "output-base"),
+        "sglang_source": str(tmp_path / "sglang-source"),
         "frontend_port": 8000,
         "global_environment": [],
         "benchmark_environment": [],
@@ -38,8 +39,7 @@ def _runner(tmp_path, monkeypatch) -> DirectLifecycle:
     return DirectLifecycle(_plan(tmp_path))
 
 
-def test_router_counts_accepts_both_frontend_health_shapes() -> None:
-    assert _router_counts({"stats": {"prefill_count": 3, "decode_count": 2, "regular_count": 4}}, "sglang") == (3, 6)
+def test_router_counts_accepts_dynamo_health_shape() -> None:
     assert _router_counts(
         {
             "instances": [
@@ -49,7 +49,6 @@ def test_router_counts_accepts_both_frontend_health_shapes() -> None:
                 {"endpoint": "metrics", "component": "prefill"},
             ]
         },
-        "dynamo",
     ) == (1, 2)
 
 
@@ -86,7 +85,6 @@ def test_runner_converts_termination_to_cleanup_signal(tmp_path, monkeypatch) ->
 def test_runner_keeps_cleanup_best_effort_when_ruter_python_is_missing(tmp_path, monkeypatch) -> None:
     runner = _runner(tmp_path, monkeypatch)
     runner.plan["ruter_enabled"] = True
-    monkeypatch.setenv("SRTCTL_RUTER_PYTHON", str(tmp_path / "missing-python"))
 
     runner._normalize_ruter()
 

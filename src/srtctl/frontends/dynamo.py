@@ -79,13 +79,8 @@ class DynamoFrontend:
             logger.info("Starting dynamo frontend %d on %s", idx, node)
 
             frontend_log = runtime.log_dir / f"{node}_frontend_{idx}.out"
-            frontend_args = dict(config.frontend.args or {})
-            # Dynamo's OpenAI chat route is enabled from the frontend model
-            # card, independently of the worker model configuration.
-            frontend_args.setdefault("model-name", config.served_model_name)
-            frontend_args.setdefault("model-path", str(runtime.model_path) if runtime.is_hf_model else "/model")
             cmd = ["python3", "-m", "dynamo.frontend", f"--http-port={topology.frontend_port}"]
-            cmd.extend(self.get_frontend_args_list(frontend_args))
+            cmd.extend(self.get_frontend_args_list(config.frontend.args))
 
             env_to_set = {
                 "ETCD_ENDPOINTS": f"http://{runtime.nodes.infra}:{ETCD_CLIENT_PORT}",

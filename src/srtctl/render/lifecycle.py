@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Render a self-contained, single-node server lifecycle script."""
+"""Render the containerized single-node Dynamo lifecycle."""
 
 from __future__ import annotations
 
@@ -31,12 +31,15 @@ from srtctl.ports import (
 )
 
 _ARTIFACT_DIR_PLACEHOLDER = "__SRTCTL_ARTIFACT_DIR__"
-_LOCAL_LIFECYCLE_ONLY_ENV = frozenset({"SRTCTL_LOCAL_CONTAINER_IMAGE", "SRTCTL_SGLANG_SOURCE"})
+_DIRECT_RUNTIME_ENV = frozenset({"SRTCTL_LOCAL_CONTAINER_IMAGE", "SRTCTL_SGLANG_SOURCE"})
+_REMOVED_DIRECT_ENV = frozenset(
+    {"SRTCTL_ETCD_BINARY", "SRTCTL_NATS_BINARY", "SRTCTL_RUTER_PYTHON", "SRTCTL_TACHOMETER"}
+)
 
 
 @dataclass(frozen=True)
 class LocalProcess:
-    """One direct-host process emitted into the lifecycle script."""
+    """One Dynamo worker emitted into the direct lifecycle plan."""
 
     label: str
     log_name: str
@@ -46,16 +49,15 @@ class LocalProcess:
 
 @dataclass(frozen=True)
 class LocalLifecycleRenderContext:
-    """All values needed by the single-node Bash lifecycle template."""
+    """All values needed by the direct-container Bash shim and plan."""
 
     name: str
     source_dir: str
     output_base: str
     model_name: str
     model_path: str
-    local_container_image: str | None
-    sglang_source: str | None
-    frontend_type: str
+    local_container_image: str
+    sglang_source: str
     frontend_port: int
     etcd_client_port: int
     etcd_peer_port: int
@@ -66,11 +68,9 @@ class LocalLifecycleRenderContext:
     expected_decode: int
     health_timeout_seconds: int
     health_interval_seconds: int
-    needs_dynamo_infra: bool
     dynamo_source_hash: str | None
     dynamo_source_cache_key: str | None
     dynamo_cargo_patch_commands: tuple[str, ...]
-    dynamo_package_version: str | None
     dynamo_top_of_tree: bool
     sglang_runtime_key: str
     setup_script: str | None
@@ -84,7 +84,6 @@ class LocalLifecycleRenderContext:
     benchmark_environment: tuple[tuple[str, str], ...]
     benchmark_command: str
     tachometer_enabled: bool
-    tachometer_binary: str | None
     tachometer_config: str | None
     tachometer_sync_interval_secs: int
     tachometer_compaction_threads: int
@@ -170,12 +169,8 @@ def _validate_local_config(config: SrtConfig) -> None:
         raise ValueError("--bash requires a single-node resource topology")
     if config.infra.etcd_nats_dedicated_node:
         raise ValueError("--bash does not support infra.etcd_nats_dedicated_node on a single host")
-    if config.frontend.type not in {"dynamo", "sglang"}:
-        raise ValueError("--bash currently supports frontend.type: dynamo or sglang")
-    if config.frontend.type == "sglang" and (config.frontend.args or {}).get("policy") == "cache-aware-zmq":
-        raise ValueError("--bash uses the SGLang Model Gateway; use frontend.args.policy: cache_aware")
-    if config.frontend.type == "sglang" and resources.is_disaggregated:
-        raise ValueError("--bash supports disaggregated serving with frontend.type: dynamo only")
+    if config.frontend.type != "dynamo":
+        raise ValueError("--bash supports frontend.type: dynamo only")
     if config.frontend.enable_multiple_frontends:
         raise ValueError("--bash requires frontend.enable_multiple_frontends: false")
     if config.benchmark.type != "custom" or not config.benchmark.command:
@@ -184,26 +179,33 @@ def _validate_local_config(config: SrtConfig) -> None:
         raise ValueError("--bash does not support DCGM power telemetry")
     if config.profiling.enabled:
         raise ValueError("--bash does not support profiling; use the Slurm lifecycle")
+    removed_environment = sorted(_REMOVED_DIRECT_ENV & config.environment.keys())
+    if removed_environment:
+        raise ValueError(f"--bash no longer supports direct runtime overrides: {', '.join(removed_environment)}")
     tachometer = config.observability.tachometer
     if tachometer.dcgm_exporter is not None or tachometer.node_exporter is not None:
         raise ValueError("--bash does not manage Tachometer exporter containers")
     if tachometer.storage_subdir != "tachometer":
         raise ValueError("--bash requires observability.tachometer.storage_subdir: tachometer")
-    container_image = config.environment.get("SRTCTL_LOCAL_CONTAINER_IMAGE")
-    if container_image is not None and not str(container_image).strip():
-        raise ValueError("SRTCTL_LOCAL_CONTAINER_IMAGE must be non-empty when configured")
-    mooncake_cfg = getattr(config.backend, "mooncake_kv_store", None)
-    if mooncake_cfg is not None and mooncake_cfg.container is not None and container_image is None:
-        raise ValueError("--bash with backend.mooncake_kv_store.container requires SRTCTL_LOCAL_CONTAINER_IMAGE")
+    if tachometer.binary_path not in (None, "tachometer-scraper"):
+        raise ValueError("--bash uses the bundled tachometer-scraper")
+    container_image = str(config.environment.get("SRTCTL_LOCAL_CONTAINER_IMAGE", "")).strip()
+    if not container_image:
+        raise ValueError("--bash requires environment.SRTCTL_LOCAL_CONTAINER_IMAGE")
     sglang_source = config.environment.get("SRTCTL_SGLANG_SOURCE")
-    if sglang_source is not None:
-        sglang_source = os.path.expandvars(str(sglang_source))
-    if sglang_source is not None and not str(sglang_source).startswith("/"):
+    if not sglang_source:
+        raise ValueError("--bash requires environment.SRTCTL_SGLANG_SOURCE")
+    if not os.path.expandvars(str(sglang_source)).startswith("/"):
         raise ValueError("SRTCTL_SGLANG_SOURCE must be an absolute path")
+    if not config.dynamo.install or not (config.dynamo.hash or config.dynamo.top_of_tree):
+        raise ValueError("--bash requires dynamo.hash or dynamo.top_of_tree")
+    mooncake_cfg = config.backend.mooncake_kv_store
+    if mooncake_cfg is not None and not mooncake_cfg.container:
+        raise ValueError("--bash requires backend.mooncake_kv_store.container")
 
 
 def _direct_port(config: SrtConfig, name: str, default: int) -> int:
-    """Read an optional direct-host port override from global environment."""
+    """Read an optional direct lifecycle port override from global environment."""
     value = config.environment.get(name, str(default))
     try:
         port = int(value)
@@ -235,7 +237,7 @@ def _build_local_processes(
     if any(endpoint.num_nodes != 1 for endpoint in endpoints):
         raise ValueError("--bash cannot place a tensor-parallel worker across multiple hosts")
 
-    processes = backend.endpoints_to_processes(endpoints, frontend_type=config.frontend.type)
+    processes = backend.endpoints_to_processes(endpoints, frontend_type="dynamo")
     used_gpus = {gpu for process in processes for gpu in process.gpu_indices}
     if len(used_gpus) > resources.gpus_per_node:
         raise ValueError("--bash worker GPU allocations exceed resources.gpus_per_node")
@@ -257,20 +259,15 @@ def _build_local_processes(
         if nccl_port > 65_535:
             raise ValueError(f"Direct-host NCCL port exceeds range: {nccl_port}")
 
-        module = "dynamo.sglang" if config.frontend.type == "dynamo" else "sglang.launch_server"
-        # Dynamo's P/D workers advertise the host-reachable bootstrap address
-        # to their decode peers. Match the Slurm launcher and bind those
-        # workers beyond loopback; SGLang Model Gateway workers stay local.
-        worker_host = "0.0.0.0" if config.frontend.type == "dynamo" else "127.0.0.1"
         args = [
             "-m",
-            module,
+            "dynamo.sglang",
             "--model-path",
             model_path,
             "--served-model-name",
             served_model_name,
             "--host",
-            worker_host,
+            "0.0.0.0",
             "--port",
             str(process.http_port),
             "--nccl-port",
@@ -286,27 +283,23 @@ def _build_local_processes(
             kv_events = dict(kv_events)
             kv_events["endpoint"] = f"tcp://*:{process.kv_events_port}"
             args.extend(("--kv-events-config", json.dumps(kv_events, separators=(",", ":"))))
-        if config.frontend.type == "dynamo":
-            args.extend(("--request-plane", config.dynamo.request_plane))
+        args.extend(("--request-plane", config.dynamo.request_plane))
         args.extend(_cli_args(worker_config))
 
         environment = _format_environment(backend.get_environment_for_mode(mode))
-        environment.update(
-            {key: value for key, value in config.environment.items() if key not in _LOCAL_LIFECYCLE_ONLY_ENV}
-        )
+        environment.update({key: value for key, value in config.environment.items() if key not in _DIRECT_RUNTIME_ENV})
         environment["CUDA_VISIBLE_DEVICES"] = process.cuda_visible_devices
-        if config.frontend.type == "dynamo":
-            environment.update(
-                {
-                    "DYN_SYSTEM_PORT": str(process.sys_port),
-                    "DYN_REQUEST_PLANE": config.dynamo.request_plane,
-                    "DYN_SKIP_SGLANG_LOG_FORMATTING": "1",
-                    "ETCD_ENDPOINTS": f"http://127.0.0.1:{etcd_client_port}",
-                    "NATS_SERVER": f"nats://127.0.0.1:{nats_port}",
-                }
-            )
-            if config.dynamo.event_plane:
-                environment["DYN_EVENT_PLANE"] = config.dynamo.event_plane
+        environment.update(
+            {
+                "DYN_SYSTEM_PORT": str(process.sys_port),
+                "DYN_REQUEST_PLANE": config.dynamo.request_plane,
+                "DYN_SKIP_SGLANG_LOG_FORMATTING": "1",
+                "ETCD_ENDPOINTS": f"http://127.0.0.1:{etcd_client_port}",
+                "NATS_SERVER": f"nats://127.0.0.1:{nats_port}",
+            }
+        )
+        if config.dynamo.event_plane:
+            environment["DYN_EVENT_PLANE"] = config.dynamo.event_plane
         if backend.mooncake_kv_store is not None:
             environment.update(backend.get_mooncake_worker_env("127.0.0.1", "127.0.0.1"))
 
@@ -324,55 +317,29 @@ def _build_local_processes(
     return processes, tuple(rendered)
 
 
-def _build_router_command(config: SrtConfig, processes: list[Process], *, etcd_client_port: int, nats_port: int) -> str:
+def _build_router_command(config: SrtConfig, *, etcd_client_port: int, nats_port: int) -> str:
     frontend_environment = _format_environment(dict(config.frontend.env or {}), artifact_dir=_ARTIFACT_DIR_PLACEHOLDER)
-    if config.frontend.type == "dynamo":
-        frontend_args = dict(config.frontend.args or {})
-        # Match the Slurm frontend: the model card enables Dynamo's OpenAI
-        # chat route and should describe the same model as the workers.
-        frontend_args.setdefault("model-name", config.served_model_name)
-        frontend_args.setdefault("model-path", _local_model_path(config))
-        # ``observability.enabled`` uses the container-stable ``/logs`` path
-        # for SLURM. A direct-host lifecycle has no such mount, so preserve the
-        # same relative trace name below this run's artifacts instead.
-        trace_path = frontend_environment.get("DYN_REQUEST_TRACE_FILE_PATH")
-        container_trace_prefix = f"{CONTAINER_LOG_DIR}/"
-        if trace_path and trace_path.startswith(container_trace_prefix):
-            frontend_environment["DYN_REQUEST_TRACE_FILE_PATH"] = (
-                f"{_ARTIFACT_DIR_PLACEHOLDER}/{trace_path.removeprefix(container_trace_prefix)}"
-            )
-        frontend_environment.update(
-            {
-                "ETCD_ENDPOINTS": f"http://127.0.0.1:{etcd_client_port}",
-                "NATS_SERVER": f"nats://127.0.0.1:{nats_port}",
-                "DYN_REQUEST_PLANE": config.dynamo.request_plane,
-                "DYN_SKIP_SGLANG_LOG_FORMATTING": "1",
-            }
+    frontend_args = dict(config.frontend.args or {})
+    trace_path = frontend_environment.get("DYN_REQUEST_TRACE_FILE_PATH")
+    container_trace_prefix = f"{CONTAINER_LOG_DIR}/"
+    if trace_path and trace_path.startswith(container_trace_prefix):
+        frontend_environment["DYN_REQUEST_TRACE_FILE_PATH"] = (
+            f"{_ARTIFACT_DIR_PLACEHOLDER}/{trace_path.removeprefix(container_trace_prefix)}"
         )
-        if config.dynamo.event_plane:
-            frontend_environment["DYN_EVENT_PLANE"] = config.dynamo.event_plane
-        return _shell_command(
-            ["-m", "dynamo.frontend", "--http-port", str(FRONTEND_PUBLIC_PORT), *_cli_args(frontend_args)],
-            frontend_environment,
-        )
-
-    worker_urls = [
-        f"http://127.0.0.1:{process.http_port}"
-        for process in sorted(processes, key=lambda item: (item.endpoint_mode, item.endpoint_index, item.node_rank))
-        if process.is_leader
-    ]
-    args = [
-        "-m",
-        "sglang_router.launch_router",
-        "--worker-urls",
-        *worker_urls,
-        "--host",
-        "127.0.0.1",
-        "--port",
-        str(FRONTEND_PUBLIC_PORT),
-        *_cli_args(config.frontend.args),
-    ]
-    return _shell_command(args, frontend_environment)
+    frontend_environment.update(
+        {
+            "ETCD_ENDPOINTS": f"http://127.0.0.1:{etcd_client_port}",
+            "NATS_SERVER": f"nats://127.0.0.1:{nats_port}",
+            "DYN_REQUEST_PLANE": config.dynamo.request_plane,
+            "DYN_SKIP_SGLANG_LOG_FORMATTING": "1",
+        }
+    )
+    if config.dynamo.event_plane:
+        frontend_environment["DYN_EVENT_PLANE"] = config.dynamo.event_plane
+    return _shell_command(
+        ["-m", "dynamo.frontend", "--http-port", str(FRONTEND_PUBLIC_PORT), *_cli_args(frontend_args)],
+        frontend_environment,
+    )
 
 
 def _build_tachometer_config(config: SrtConfig, processes: list[Process]) -> str | None:
@@ -408,10 +375,9 @@ def _build_tachometer_config(config: SrtConfig, processes: list[Process]) -> str
         {"router": config.frontend.type, **common_metadata},
     )
     for process in sorted(processes, key=lambda item: (item.endpoint_mode, item.endpoint_index, item.node_rank)):
-        metrics_port = process.sys_port if config.frontend.type == "dynamo" else process.http_port
         append_endpoint(
             f"worker_{process.endpoint_mode}_{process.endpoint_index}_{process.node_rank}",
-            f"http://127.0.0.1:{metrics_port}/metrics",
+            f"http://127.0.0.1:{process.sys_port}/metrics",
             "backend",
             {
                 "worker_role": process.endpoint_mode,
@@ -456,7 +422,6 @@ def _direct_lifecycle_plan(context: LocalLifecycleRenderContext) -> str:
         "source_dir": context.source_dir,
         "output_base": context.output_base,
         "model_name": context.model_name,
-        "frontend_type": context.frontend_type,
         "frontend_port": context.frontend_port,
         "etcd_client_port": context.etcd_client_port,
         "etcd_peer_port": context.etcd_peer_port,
@@ -467,12 +432,11 @@ def _direct_lifecycle_plan(context: LocalLifecycleRenderContext) -> str:
         "expected_decode": context.expected_decode,
         "health_timeout_seconds": context.health_timeout_seconds,
         "health_interval_seconds": context.health_interval_seconds,
-        "needs_dynamo_infra": context.needs_dynamo_infra,
         "dynamo_source_hash": context.dynamo_source_hash,
         "dynamo_source_cache_key": context.dynamo_source_cache_key,
         "dynamo_cargo_patch_commands": list(context.dynamo_cargo_patch_commands),
-        "dynamo_package_version": context.dynamo_package_version,
         "dynamo_top_of_tree": context.dynamo_top_of_tree,
+        "sglang_source": context.sglang_source,
         "sglang_runtime_key": context.sglang_runtime_key,
         "setup_script": context.setup_script,
         "mooncake_master_command": list(context.mooncake_master_command or ()),
@@ -483,7 +447,6 @@ def _direct_lifecycle_plan(context: LocalLifecycleRenderContext) -> str:
         "benchmark_environment": list(context.benchmark_environment),
         "benchmark_command": context.benchmark_command,
         "tachometer_enabled": context.tachometer_enabled,
-        "tachometer_binary": context.tachometer_binary,
         "tachometer_config": context.tachometer_config,
         "tachometer_sync_interval_secs": context.tachometer_sync_interval_secs,
         "tachometer_compaction_threads": context.tachometer_compaction_threads,
@@ -510,31 +473,20 @@ def build_local_lifecycle_render_context(
     expected_prefill = resources.num_prefill
     expected_decode = resources.num_agg if resources.num_agg else resources.num_decode
     health_interval = max(1, int(config.health_check.interval_seconds))
-    dynamo_source_hash = config.dynamo.hash if config.frontend.type == "dynamo" and config.dynamo.install else None
+    dynamo_source_hash = config.dynamo.hash if config.dynamo.install else None
     cargo_patches = config.dynamo.cargo_patches if dynamo_source_hash else None
-    dynamo_package_version = (
-        (config.dynamo.wheel or config.dynamo.version)
-        if config.frontend.type == "dynamo" and config.dynamo.install and not dynamo_source_hash
-        else None
-    )
-    dynamo_top_of_tree = config.frontend.type == "dynamo" and config.dynamo.install and config.dynamo.top_of_tree
+    dynamo_top_of_tree = config.dynamo.install and config.dynamo.top_of_tree
     model_path = _local_model_path(config)
-    local_container_image = config.environment.get("SRTCTL_LOCAL_CONTAINER_IMAGE")
-    sglang_source = config.environment.get("SRTCTL_SGLANG_SOURCE")
-    if sglang_source is not None:
-        sglang_source = os.path.expandvars(str(sglang_source))
-    global_environment = dict(config.environment)
-    if sglang_source is not None:
-        global_environment["SRTCTL_SGLANG_SOURCE"] = sglang_source
+    local_container_image = str(config.environment["SRTCTL_LOCAL_CONTAINER_IMAGE"])
+    sglang_source = os.path.expandvars(str(config.environment["SRTCTL_SGLANG_SOURCE"]))
+    global_environment = {key: value for key, value in config.environment.items() if key not in _DIRECT_RUNTIME_ENV}
     runtime_identity = json.dumps(
         {
             "dynamo_source_cache_key": dynamo_source_cache_key(dynamo_source_hash, cargo_patches)
             if dynamo_source_hash
             else None,
-            "dynamo_package_version": dynamo_package_version,
             "dynamo_top_of_tree": dynamo_top_of_tree,
-            "dynamo_preinstalled": config.frontend.type == "dynamo" and not config.dynamo.install,
-            "container_image": str(local_container_image or "host"),
+            "container_image": local_container_image,
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -546,26 +498,23 @@ def build_local_lifecycle_render_context(
         output_base=str(output_base.resolve()),
         model_name=config.served_model_name,
         model_path=model_path,
-        local_container_image=str(local_container_image) if local_container_image else None,
-        sglang_source=str(sglang_source) if sglang_source else None,
-        frontend_type=config.frontend.type,
+        local_container_image=local_container_image,
+        sglang_source=sglang_source,
         frontend_port=FRONTEND_PUBLIC_PORT,
         etcd_client_port=etcd_client_port,
         etcd_peer_port=etcd_peer_port,
         nats_port=nats_port,
         worker_processes=workers,
-        router_command=_build_router_command(config, processes, etcd_client_port=etcd_client_port, nats_port=nats_port),
+        router_command=_build_router_command(config, etcd_client_port=etcd_client_port, nats_port=nats_port),
         expected_prefill=expected_prefill,
         expected_decode=expected_decode,
         health_timeout_seconds=max(1, int(config.health_check.max_attempts) * health_interval),
         health_interval_seconds=health_interval,
-        needs_dynamo_infra=config.frontend.type == "dynamo",
         dynamo_source_hash=dynamo_source_hash,
         dynamo_source_cache_key=dynamo_source_cache_key(dynamo_source_hash, cargo_patches)
         if dynamo_source_hash
         else None,
         dynamo_cargo_patch_commands=dynamo_cargo_patch_commands(cargo_patches),
-        dynamo_package_version=dynamo_package_version,
         dynamo_top_of_tree=dynamo_top_of_tree,
         sglang_runtime_key=hashlib.sha256(runtime_identity.encode("utf-8")).hexdigest()[:16],
         setup_script=config.setup_script,
@@ -579,11 +528,10 @@ def build_local_lifecycle_render_context(
         benchmark_environment=tuple(sorted((key, str(value)) for key, value in config.benchmark.env.items())),
         benchmark_command=config.benchmark.command,
         tachometer_enabled=tachometer_config is not None,
-        tachometer_binary=config.observability.tachometer.binary_path if tachometer_config is not None else None,
         tachometer_config=tachometer_config,
         tachometer_sync_interval_secs=config.observability.tachometer.sync_interval_secs,
         tachometer_compaction_threads=config.observability.tachometer.compaction_threads,
-        ruter_enabled=config.frontend.type == "dynamo" and config.observability.enabled,
+        ruter_enabled=config.observability.enabled,
         direct_lifecycle_plan="",
     )
     return replace(context, direct_lifecycle_plan=_direct_lifecycle_plan(context))

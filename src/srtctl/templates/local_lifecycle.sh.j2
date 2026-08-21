@@ -13,26 +13,22 @@ set -Eeuo pipefail
 
 SRTCTL_SOURCE={{ quote(context.source_dir) }}
 OUTPUT_BASE={{ quote(context.output_base) }}
-SRTCTL_LOCAL_CONTAINER_IMAGE={{ quote(context.local_container_image or '') }}
+SRTCTL_LOCAL_CONTAINER_IMAGE={{ quote(context.local_container_image) }}
 SRTCTL_RENDERED_MODEL_PATH={{ quote(context.model_path) }}
-SRTCTL_SGLANG_SOURCE={{ quote(context.sglang_source or '') }}
+SRTCTL_SGLANG_SOURCE={{ quote(context.sglang_source) }}
 SRTCTL_SGLANG_RUNTIME_KEY={{ quote(context.sglang_runtime_key) }}
 RUN_NAME={{ quote(context.name) }}
 SRTCTL_PYTHON="${SRTCTL_PYTHON:-python3}"
-SRTCTL_RUTER_PYTHON="${SRTCTL_RUTER_PYTHON:-${SRTCTL_SOURCE}/.venv/bin/python}"
-if [[ ! -x "${SRTCTL_RUTER_PYTHON}" ]]; then
-    SRTCTL_RUTER_PYTHON="${SRTCTL_PYTHON}"
-fi
 OUTPUT_DIR="${SRTCTL_OUTPUT_DIR:-${OUTPUT_BASE}/${RUN_NAME}-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
 LOG_DIR="${OUTPUT_DIR}/logs"
 ARTIFACT_DIR="${OUTPUT_DIR}/artifacts"
-export OUTPUT_DIR LOG_DIR ARTIFACT_DIR SRTCTL_PYTHON SRTCTL_RUTER_PYTHON
+export OUTPUT_DIR LOG_DIR ARTIFACT_DIR SRTCTL_PYTHON
 {% if context.mooncake_master_command %}
 SRTCTL_MOONCAKE_CONTAINER_NAME=""
 SRTCTL_MOONCAKE_LOG_PID=""
 {% endif %}
 
-if [[ -n "${SRTCTL_LOCAL_CONTAINER_IMAGE}" && "${SRTCTL_LOCAL_CONTAINERIZED:-}" != "1" ]]; then
+if [[ "${SRTCTL_LOCAL_CONTAINERIZED:-}" != "1" ]]; then
     command -v docker >/dev/null 2>&1 || {
         echo "srtctl: SRTCTL_LOCAL_CONTAINER_IMAGE requires docker" >&2
         exit 1
@@ -87,29 +83,17 @@ if [[ -n "${SRTCTL_LOCAL_CONTAINER_IMAGE}" && "${SRTCTL_LOCAL_CONTAINERIZED:-}" 
     fi
     srt_container_mount "${SRTCTL_MODEL_MOUNT_PATH}" readonly
 
-    SRTCTL_SGLANG_RUNTIME_DIR=""
-    if [[ -n "${SRTCTL_SGLANG_SOURCE}" ]]; then
-        srt_container_mount "${SRTCTL_SGLANG_SOURCE}" readonly
-        SRTCTL_SGLANG_REVISION="$(git -c safe.directory="${SRTCTL_SGLANG_SOURCE}" -C "${SRTCTL_SGLANG_SOURCE}" rev-parse --verify HEAD)" || {
-            echo "srtctl: unable to identify SGLang source revision: ${SRTCTL_SGLANG_SOURCE}" >&2
-            exit 1
-        }
-        SRTCTL_SGLANG_RUNTIME_DIR="${OUTPUT_BASE}/.srtctl-runtime/sglang-${SRTCTL_SGLANG_REVISION}-${SRTCTL_SGLANG_RUNTIME_KEY}"
-    fi
-
+    srt_container_mount "${SRTCTL_SGLANG_SOURCE}" readonly
+    SRTCTL_SGLANG_REVISION="$(git -c safe.directory="${SRTCTL_SGLANG_SOURCE}" -C "${SRTCTL_SGLANG_SOURCE}" rev-parse --verify HEAD)" || {
+        echo "srtctl: unable to identify SGLang source revision: ${SRTCTL_SGLANG_SOURCE}" >&2
+        exit 1
+    }
+    SRTCTL_SGLANG_RUNTIME_DIR="${OUTPUT_BASE}/.srtctl-runtime/sglang-${SRTCTL_SGLANG_REVISION}-${SRTCTL_SGLANG_RUNTIME_KEY}"
     if [[ -n "${RUTER_MOONCAKE_TRACE:-}" ]]; then
         srt_container_mount "${RUTER_MOONCAKE_TRACE}" readonly
         SRT_CONTAINER_ARGS+=(-e RUTER_MOONCAKE_TRACE)
     fi
-    if [[ -n "${SRTCTL_TACHOMETER:-}" ]]; then
-        srt_container_mount "${SRTCTL_TACHOMETER}" readonly
-        SRT_CONTAINER_ARGS+=(-e SRTCTL_TACHOMETER)
-    fi
-    if [[ -n "${SRTCTL_RUTER_PYTHON:-}" ]]; then
-        srt_container_mount "$(dirname "$(dirname "${SRTCTL_RUTER_PYTHON}")")" readonly
-        SRT_CONTAINER_ARGS+=(-e SRTCTL_RUTER_PYTHON)
-    fi
-    SRTCTL_DYNAMO_CACHE_ROOT="${SRTCTL_DYNAMO_CACHE_ROOT:-${OUTPUT_BASE}/.srtctl-cache/dynamo-wheels}"
+    SRTCTL_DYNAMO_CACHE_ROOT="${OUTPUT_BASE}/.srtctl-cache/dynamo-wheels"
     mkdir -p "${SRTCTL_DYNAMO_CACHE_ROOT}"
     srt_container_mount "${SRTCTL_DYNAMO_CACHE_ROOT}" rw
 
@@ -140,7 +124,7 @@ if [[ -n "${SRTCTL_LOCAL_CONTAINER_IMAGE}" && "${SRTCTL_LOCAL_CONTAINERIZED:-}" 
         local owner
         owner="$(id -u):$(id -g)"
         srt_restore_owner "${OUTPUT_DIR}" "${owner}" || echo "srtctl: failed to restore output ownership: ${OUTPUT_DIR}" >&2
-        [[ -z "${SRTCTL_SGLANG_RUNTIME_DIR}" ]] || srt_restore_owner "${SRTCTL_SGLANG_RUNTIME_DIR}" "${owner}" || echo "srtctl: failed to restore SGLang runtime ownership: ${SRTCTL_SGLANG_RUNTIME_DIR}" >&2
+        srt_restore_owner "${SRTCTL_SGLANG_RUNTIME_DIR}" "${owner}" || echo "srtctl: failed to restore SGLang runtime ownership: ${SRTCTL_SGLANG_RUNTIME_DIR}" >&2
         exit "${rc}"
     }
     trap srt_container_cleanup EXIT
@@ -178,20 +162,9 @@ if [[ -n "${SRTCTL_LOCAL_CONTAINER_IMAGE}" && "${SRTCTL_LOCAL_CONTAINERIZED:-}" 
         -e "SRTCTL_OUTPUT_DIR=${OUTPUT_DIR}"
         -e "SRTCTL_DYNAMO_CACHE_ROOT=${SRTCTL_DYNAMO_CACHE_ROOT}"
     )
-{% if context.mooncake_master_command %}
-    SRT_CONTAINER_EXEC_ARGS+=(-e SRTCTL_MOONCAKE_CONTAINERIZED=1)
-{% endif %}
-    if [[ -n "${SRTCTL_SGLANG_RUNTIME_DIR}" ]]; then
-        SRT_CONTAINER_EXEC_ARGS+=(-e "SRTCTL_SGLANG_RUNTIME_DIR=${SRTCTL_SGLANG_RUNTIME_DIR}")
-    fi
+    SRT_CONTAINER_EXEC_ARGS+=(-e "SRTCTL_SGLANG_RUNTIME_DIR=${SRTCTL_SGLANG_RUNTIME_DIR}")
     if [[ -n "${RUTER_MOONCAKE_TRACE:-}" ]]; then
         SRT_CONTAINER_EXEC_ARGS+=(-e "RUTER_MOONCAKE_TRACE=${RUTER_MOONCAKE_TRACE}")
-    fi
-    if [[ -n "${SRTCTL_TACHOMETER:-}" ]]; then
-        SRT_CONTAINER_EXEC_ARGS+=(-e "SRTCTL_TACHOMETER=${SRTCTL_TACHOMETER}")
-    fi
-    if [[ -n "${SRTCTL_RUTER_PYTHON:-}" ]]; then
-        SRT_CONTAINER_EXEC_ARGS+=(-e "SRTCTL_RUTER_PYTHON=${SRTCTL_RUTER_PYTHON}")
     fi
     docker exec "${SRT_CONTAINER_EXEC_ARGS[@]}" "${SRTCTL_CONTAINER_NAME}" bash /run/srtctl-lifecycle.sh
     exit $?

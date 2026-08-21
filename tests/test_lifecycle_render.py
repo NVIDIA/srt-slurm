@@ -16,7 +16,7 @@ from srtctl.render.lifecycle import build_local_lifecycle_render_context, render
 
 def _config(
     *,
-    frontend_type: str = "sglang",
+    frontend_type: str = "dynamo",
     frontend_env: dict[str, str] | None = None,
     environment: dict[str, str] | None = None,
     dynamo_hash: str | None = None,
@@ -27,6 +27,11 @@ def _config(
     profiling_type: str | None = None,
     mooncake: dict[str, object] | None = None,
 ) -> SrtConfig:
+    direct_environment = {
+        "SRTCTL_LOCAL_CONTAINER_IMAGE": "lmsysorg/sglang:dev",
+        "SRTCTL_SGLANG_SOURCE": "/tmp/sglang-source",
+    }
+    direct_environment.update(environment or {})
     raw: dict[str, object] = {
         "name": "direct-render",
         "model": {
@@ -54,10 +59,10 @@ def _config(
         "frontend": {
             "type": frontend_type,
             "enable_multiple_frontends": False,
-            "args": {"policy": "cache_aware"} if frontend_type == "sglang" else {"router-mode": "kv"},
+            "args": {"router-mode": "kv"},
             "env": frontend_env,
         },
-        "environment": environment or {},
+        "environment": direct_environment,
         "benchmark": {"type": "custom", "command": "aiperf profile --ui none"},
         "observability": {
             "enabled": True,
@@ -70,6 +75,8 @@ def _config(
         raw["dynamo"] = {"hash": dynamo_hash}
         if cargo_patches:
             raw["dynamo"]["cargo_patches"] = cargo_patches
+    else:
+        raw["dynamo"] = {"top_of_tree": True}
     if setup_script:
         raw["setup_script"] = setup_script
     if profiling_type:
@@ -97,6 +104,8 @@ def _assert_valid_direct_script(script: str) -> None:
     assert "direct-lifecycle-plan.json" in script
     assert "srt_launch" not in script
     assert "srt_stop_group" not in script
+    for removed_compatibility_path in ("SRTCTL_TACHOMETER", "SRTCTL_NATS_BINARY"):
+        assert removed_compatibility_path not in script
     for forbidden in ("#SBATCH", "SLURM_", "scontrol", "srun", "do_sweep", "run_benchmark"):
         assert forbidden not in script
 
@@ -115,8 +124,10 @@ def test_local_lifecycle_renders_eight_tp1_workers_with_separate_logs(tmp_path) 
     assert all(
         f"CUDA_VISIBLE_DEVICES={index}" in worker.command for index, worker in enumerate(context.worker_processes)
     )
-    assert "-m sglang_router.launch_router" in context.router_command
-    assert "--policy cache_aware" in context.router_command
+    assert "-m dynamo.sglang" in context.worker_processes[0].command
+    assert "-m dynamo.frontend" in context.router_command
+    assert "--model-name" not in context.router_command
+    assert "--model-path" not in context.router_command
     assert 'name = "router"' in str(plan["tachometer_config"])
     assert [worker["log_name"] for worker in plan["worker_processes"]] == [f"worker-{index}.log" for index in range(8)]
     assert plan["router_command"] == context.router_command
@@ -132,23 +143,21 @@ def test_local_dynamo_plan_contains_owned_infrastructure_and_observability(tmp_p
     script = render_local_lifecycle(context)
     plan = _plan(context)
 
-    assert context.needs_dynamo_infra
     assert "-m dynamo.sglang" in context.worker_processes[0].command
     assert "--host 0.0.0.0" in context.worker_processes[0].command
     assert "-m dynamo.frontend" in context.router_command
-    assert "--model-name fake/mock-model" in context.router_command
-    assert "--model-path fake/mock-model" in context.router_command
     assert "DYN_SYSTEM_PORT=7500" in context.worker_processes[0].command
     assert 'DYN_REQUEST_TRACE_FILE_PATH="${ARTIFACT_DIR}"/dynamo-request-trace' in context.router_command
     assert all(
         f"--nccl-port {17_500 + index}" in worker.command for index, worker in enumerate(context.worker_processes)
     )
-    assert plan["needs_dynamo_infra"] is True
     assert plan["etcd_client_port"] == 2379
     assert plan["nats_port"] == 4222
     assert plan["tachometer_enabled"] is True
     assert plan["ruter_enabled"] is True
     assert plan["benchmark_command"] == "aiperf profile --ui none"
+    assert plan["sglang_source"] == "/tmp/sglang-source"
+    assert not {"frontend_type", "needs_dynamo_infra", "dynamo_package_version", "tachometer_binary"} & set(plan)
     _assert_valid_direct_script(script)
 
 
@@ -201,7 +210,6 @@ def test_local_dynamo_plan_caches_a_hash_pinned_source_build(tmp_path) -> None:
     assert context.dynamo_source_hash == "a6261680a974ca7c74dcf49592a7376d7de99380"
     assert plan["dynamo_source_hash"] == context.dynamo_source_hash
     assert plan["dynamo_source_cache_key"] == context.dynamo_source_cache_key
-    assert plan["dynamo_package_version"] is None
     assert plan["dynamo_top_of_tree"] is False
 
 
@@ -246,6 +254,7 @@ def test_local_lifecycle_can_run_inside_sglang_container(tmp_path) -> None:
     assert "--user" not in script
     assert "SRTCTL_HOST_CARGO_HOME" not in script
     assert 'mkdir -p "${OUTPUT_BASE}"' in script
+    assert 'if [[ "${SRTCTL_LOCAL_CONTAINERIZED:-}" != "1" ]]; then' in script
     assert 'if [[ "${mode}" == "readonly" ]]; then' in script
     assert 'mount+=",readonly"' in script
     _assert_valid_direct_script(script)
@@ -315,24 +324,36 @@ def test_local_dynamo_lifecycle_starts_mooncake_and_injects_worker_environment(t
 
 
 @pytest.mark.parametrize(
-    ("dynamo", "version"),
+    "dynamo",
     [
-        ({"version": "0.8.0"}, "0.8.0"),
-        ({"wheel": "1.2.0.dev20260426"}, "1.2.0.dev20260426"),
+        {"version": "0.8.0"},
+        {"wheel": "1.2.0.dev20260426"},
     ],
 )
-def test_local_dynamo_plan_stages_exact_package_wheels(tmp_path, dynamo, version: str) -> None:
-    context = build_local_lifecycle_render_context(
-        _config(frontend_type="dynamo", dynamo=dynamo),
-        source_dir=tmp_path / "srt-slurm",
-        output_base=tmp_path / "outputs",
-    )
-    plan = _plan(context)
+def test_local_lifecycle_rejects_package_wheel_installs(tmp_path, dynamo) -> None:
+    with pytest.raises(ValueError, match="dynamo.hash or dynamo.top_of_tree"):
+        build_local_lifecycle_render_context(
+            _config(frontend_type="dynamo", dynamo=dynamo),
+            source_dir=tmp_path / "srt-slurm",
+            output_base=tmp_path / "outputs",
+        )
 
-    assert context.dynamo_source_hash is None
-    assert context.dynamo_package_version == version
-    assert plan["dynamo_package_version"] == version
-    assert plan["dynamo_source_hash"] is None
+
+@pytest.mark.parametrize(
+    ("config", "message"),
+    [
+        (_config(frontend_type="sglang"), "frontend.type: dynamo only"),
+        (_config(environment={"SRTCTL_LOCAL_CONTAINER_IMAGE": ""}), "SRTCTL_LOCAL_CONTAINER_IMAGE"),
+        (_config(environment={"SRTCTL_SGLANG_SOURCE": ""}), "SRTCTL_SGLANG_SOURCE"),
+    ],
+)
+def test_local_lifecycle_rejects_removed_compatibility_paths(tmp_path, config: SrtConfig, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        build_local_lifecycle_render_context(
+            config,
+            source_dir=tmp_path / "srt-slurm",
+            output_base=tmp_path / "outputs",
+        )
 
 
 @pytest.mark.parametrize(
