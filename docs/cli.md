@@ -280,10 +280,12 @@ srtctl apply -f config.yaml --tags "experiment-1,baseline"
 ```
 
 `--bash` renders a self-contained script for one direct host; it is not an sbatch script. It currently
-supports a one-node SGLang backend with a Dynamo or SGLang Model Gateway frontend, with
+supports a one-node SGLang backend with a Dynamo, SGLang Model Gateway, or experimental Rust `sgl-router` frontend, with
 `frontend.enable_multiple_frontends: false` and a `benchmark.type: custom` command. The host must already
 provide the configured Python environment and, for Dynamo, the `configs/nats-server` and `configs/etcd`
-binaries. The script creates one process group and log per worker/router, waits for worker and router
+binaries. For `sgl-router`, `frontend.sgl_router.source` must name a local SGLang checkout; the script builds
+`experimental/sgl-router` unless `frontend.sgl_router.binary` or `SRTCTL_SGL_ROUTER` provides an executable.
+The script creates one process group and log per worker/router, waits for worker and router
 readiness plus a chat-completions smoke request, starts the configured Tachometer scraper, runs the benchmark,
 then stops only its owned process groups and compacts Tachometer artifacts.
 

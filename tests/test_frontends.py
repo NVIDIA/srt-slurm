@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from srtctl.core.schema import ObservabilityConfig
-from srtctl.frontends import DynamoFrontend, SGLangFrontend, VLLMFrontend, get_frontend
+from srtctl.frontends import DynamoFrontend, SGLangFrontend, SGLRouterFrontend, VLLMFrontend, get_frontend
 
 # ============================================================================
 # get_frontend() Tests
@@ -32,6 +32,12 @@ class TestGetFrontend:
         frontend = get_frontend("sglang")
         assert isinstance(frontend, SGLangFrontend)
         assert frontend.type == "sglang"
+
+    def test_get_sgl_router_frontend(self):
+        """get_frontend('sgl-router') returns the experimental Rust router."""
+        frontend = get_frontend("sgl-router")
+        assert isinstance(frontend, SGLRouterFrontend)
+        assert frontend.type == "sgl-router"
 
     def test_get_vllm_frontend(self):
         """get_frontend('vllm') returns VLLMFrontend."""
@@ -66,6 +72,11 @@ class TestFrontendProperties:
         frontend = SGLangFrontend()
         assert frontend.type == "sglang"
 
+    def test_sgl_router_type(self):
+        """SGLRouterFrontend.type is 'sgl-router'."""
+        frontend = SGLRouterFrontend()
+        assert frontend.type == "sgl-router"
+
     def test_vllm_type(self):
         """VLLMFrontend.type is 'vllm'."""
         frontend = VLLMFrontend()
@@ -80,6 +91,11 @@ class TestFrontendProperties:
         """SGLangFrontend uses /workers endpoint."""
         frontend = SGLangFrontend()
         assert frontend.health_endpoint == "/workers"
+
+    def test_sgl_router_health_endpoint(self):
+        """SGLRouterFrontend uses /metrics for static worker registration."""
+        frontend = SGLRouterFrontend()
+        assert frontend.health_endpoint == "/metrics"
 
     def test_vllm_health_endpoint(self):
         """VLLMFrontend uses /health endpoint."""
@@ -403,6 +419,81 @@ class TestSGLangGrpcScheme:
         # Check aggregated mode flags
         assert "--worker-urls" in cmd
         assert "--pd-disaggregation" not in cmd
+
+
+class TestSGLRouterFrontend:
+    """Tests for the experimental Rust router's static worker launch path."""
+
+    @patch("srtctl.frontends.sgl_router.start_srun_process")
+    @patch("srtctl.frontends.sgl_router.get_hostname_ip")
+    def test_builds_binary_and_registers_static_http_workers(self, mock_get_ip, mock_srun):
+        mock_get_ip.side_effect = lambda node: {"node1": "10.0.0.1", "node2": "10.0.0.2"}[node]
+        mock_srun.return_value = MagicMock()
+        frontend = SGLRouterFrontend()
+        topology = MockTopology(frontend_nodes=["router0"])
+        config = SimpleNamespace(
+            frontend=SimpleNamespace(
+                sgl_router=SimpleNamespace(source="/opt/sglang", binary=None),
+                args={"policy": "cache_aware_zmq"},
+                env={"RUST_LOG": "info"},
+            ),
+            served_model_name="Qwen/Qwen3-32B-FP8",
+        )
+        runtime = SimpleNamespace(
+            log_dir=Path("/logs"),
+            container_image=Path("/containers/sglang.sqsh"),
+            container_mounts={},
+            worker_model_arg="/model",
+            is_hf_model=False,
+            nodes=SimpleNamespace(het_group_for=lambda node: None),
+        )
+        workers = [
+            MockProcess(node="node1", endpoint_mode="agg", http_port=30000),
+            MockProcess(node="node2", endpoint_mode="agg", http_port=30001),
+        ]
+
+        processes = frontend.start_frontends(topology, runtime, config, MagicMock(), workers)
+
+        assert processes[0].name == "sgl_router_0"
+        assert processes[0].log_file == Path("/logs/router0_sgl_router_0.out")
+        call = mock_srun.call_args.kwargs
+        assert call["command"][:4] == ["bash", "-lc", 'exec "$SRTCTL_SGL_ROUTER_BINARY" "$@"', "sgl-router"]
+        assert "--tokenizer-path" in call["command"]
+        assert "/model/tokenizer.json" in call["command"]
+        assert "http://10.0.0.1:30000" in call["command"]
+        assert "http://10.0.0.2:30001" in call["command"]
+        assert (
+            "cargo build --manifest-path /opt/sglang/experimental/sgl-router/Cargo.toml --release"
+            in call["bash_preamble"]
+        )
+        assert call["env_to_set"] == {"RUST_LOG": "info"}
+
+    def test_worker_command_uses_direct_sglang_server(self):
+        """The experimental router needs HTTP SGLang workers, not dynamo.sglang."""
+        from srtctl.backends import SGLangProtocol
+        from srtctl.core.topology import Process
+
+        process = Process(
+            node="node0",
+            gpu_indices=frozenset({0}),
+            sys_port=7500,
+            http_port=6100,
+            endpoint_mode="agg",
+            endpoint_index=0,
+        )
+        runtime = SimpleNamespace(model_path=Path("/model"), is_hf_model=False)
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            command = SGLangProtocol().build_worker_command(
+                process,
+                [process],
+                runtime,
+                frontend_type="sgl-router",
+            )
+
+        assert "sglang.launch_server" in command
+        assert "dynamo.sglang" not in command
+        assert "--request-plane" not in command
 
 
 # ============================================================================

@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from srtctl.core.topology import Process
 
 # Supported frontend types - extensible by adding new literals
-FrontendType = Literal["dynamo", "sglang", "trtllm_serve", "vllm"]
+FrontendType = Literal["dynamo", "sglang", "sgl-router", "trtllm_serve", "vllm"]
 
 
 class FrontendProtocol(Protocol):
@@ -44,7 +44,7 @@ class FrontendProtocol(Protocol):
 
     def parse_health(
         self,
-        response_json: dict,
+        response_json: Any,
         expected_prefill: int,
         expected_decode: int,
     ) -> "WorkerHealthResult":
@@ -95,6 +95,7 @@ def get_frontend(frontend_type: str) -> FrontendProtocol:
     """
     # Import here to avoid circular imports
     from srtctl.frontends.dynamo import DynamoFrontend
+    from srtctl.frontends.sgl_router import SGLRouterFrontend
     from srtctl.frontends.sglang import SGLangFrontend
     from srtctl.frontends.trtllm_serve import TRTLLMServeFrontend
     from srtctl.frontends.vllm import VLLMFrontend
@@ -103,9 +104,13 @@ def get_frontend(frontend_type: str) -> FrontendProtocol:
         return DynamoFrontend()
     elif frontend_type == "sglang":
         return SGLangFrontend()
+    elif frontend_type == "sgl-router":
+        return SGLRouterFrontend()
     elif frontend_type == "trtllm_serve":
         return TRTLLMServeFrontend()
     elif frontend_type == "vllm":
         return VLLMFrontend()
     else:
-        raise ValueError(f"Unknown frontend type: {frontend_type!r}. Supported: dynamo, sglang, trtllm_serve, vllm")
+        raise ValueError(
+            f"Unknown frontend type: {frontend_type!r}. Supported: dynamo, sglang, sgl-router, trtllm_serve, vllm"
+        )

@@ -271,7 +271,7 @@ Frontend/router configuration.
 
 ```yaml
 frontend:
-  # Frontend type: "dynamo" (default), "sglang", "trtllm_serve", or "vllm"
+  # Frontend type: "dynamo" (default), "sglang", "sgl-router", "trtllm_serve", or "vllm"
   type: dynamo
 
   # Scaling
@@ -295,13 +295,38 @@ frontend:
 
 | Field                       | Type | Default       | Description                         |
 | --------------------------- | ---- | ------------- | ----------------------------------- |
-| `type`                      | str  | dynamo        | Frontend type: "dynamo", "sglang", "trtllm_serve", or "vllm" |
+| `type`                      | str  | dynamo        | Frontend type: "dynamo", "sglang", "sgl-router", "trtllm_serve", or "vllm" |
 | `enable_multiple_frontends` | bool | true          | Scale with nginx + multiple routers |
 | `num_additional_frontends`  | int  | 9             | Additional routers beyond master    |
 | `nginx_container`           | str  | nginx:1.27.4  | Custom nginx container image        |
 | `nginx_raise_ulimit`      | bool | false         | When true with nginx in use, run `ulimit -n 1048576` before nginx and emit `worker_rlimit_nofile 1048576` in generated `nginx.conf`. Off by default so restrictive clusters do not fail. Cluster `srtslurm.yaml` may set `nginx_raise_ulimit` for jobs that omit this field. |
 | `args`                      | dict | null          | CLI args for the frontend           |
 | `env`                       | dict | null          | Env vars for frontend processes     |
+
+### Experimental `sgl-router` frontend
+
+`frontend.type: sgl-router` launches SGLang's experimental Rust router against static HTTP aggregate workers. It requires `backend.type: sglang`, `frontend.enable_multiple_frontends: false`, and an aggregate-only resource layout. Static prefill/decode jobs are rejected because upstream's P/D mode uses Kubernetes EndpointSlice discovery rather than worker URLs.
+
+The binary is built from the configured SGLang checkout when the job starts. In a Slurm container, `source` must be the path inside the container; mount the host checkout using `container_mounts`. Set `binary` to use a prebuilt executable instead.
+
+```yaml
+container_mounts:
+  /data/src/sglang: /opt/sglang
+
+frontend:
+  type: sgl-router
+  enable_multiple_frontends: false
+  sgl_router:
+    source: /opt/sglang
+    # binary: /opt/sglang/experimental/sgl-router/target/release/sgl-router
+  args:
+    policy: cache_aware_zmq
+```
+
+| Field | Type | Required | Description |
+| ----- | ---- | -------- | ----------- |
+| `sgl_router.source` | str | yes | SGLang checkout that contains `experimental/sgl-router` |
+| `sgl_router.binary` | str | no | Prebuilt `sgl-router` binary; otherwise srtctl runs Cargo build |
 
 See [SGLang Router](sglang-router.md) for detailed architecture.
 

@@ -67,6 +67,8 @@ class LocalLifecycleRenderContext:
     tachometer_binary: str | None
     tachometer_config: str | None
     ruter_enabled: bool
+    sgl_router_source: str | None
+    sgl_router_binary: str | None
 
 
 def heredoc_marker(payload: str, *, prefix: str = "SRTCTL_RUNTIME_CONFIG") -> str:
@@ -78,8 +80,10 @@ def heredoc_marker(payload: str, *, prefix: str = "SRTCTL_RUNTIME_CONFIG") -> st
     return marker
 
 
-def _shell_command(args: list[str], environment: dict[str, str] | None = None) -> str:
-    """Return a shell-safe command that uses the script-selected Python."""
+def _shell_command(
+    args: list[str], environment: dict[str, str] | None = None, *, executable: str = "$SRTCTL_PYTHON"
+) -> str:
+    """Return a shell-safe command with a script-selected executable."""
     parts = []
     for key, value in sorted((environment or {}).items()):
         if not key.replace("_", "").isalnum() or key[0].isdigit():
@@ -90,7 +94,7 @@ def _shell_command(args: list[str], environment: dict[str, str] | None = None) -
         # expand in the child process that owns the frontend.
         quoted_value = quoted_value.replace(_ARTIFACT_DIR_PLACEHOLDER, '"${ARTIFACT_DIR}"')
         parts.append(f"{key}={quoted_value}")
-    parts.append("$SRTCTL_PYTHON")
+    parts.append(executable)
     parts.extend(shlex.quote(str(arg)) for arg in args)
     return " ".join(parts)
 
@@ -147,8 +151,8 @@ def _validate_local_config(config: SrtConfig) -> None:
         raise ValueError("--bash requires a single-node resource topology")
     if config.infra.etcd_nats_dedicated_node:
         raise ValueError("--bash does not support infra.etcd_nats_dedicated_node on a single host")
-    if config.frontend.type not in {"dynamo", "sglang"}:
-        raise ValueError("--bash currently supports frontend.type: dynamo or sglang")
+    if config.frontend.type not in {"dynamo", "sglang", "sgl-router"}:
+        raise ValueError("--bash currently supports frontend.type: dynamo, sglang, or sgl-router")
     if config.frontend.type == "sglang" and (config.frontend.args or {}).get("policy") == "cache-aware-zmq":
         raise ValueError("--bash uses the SGLang Model Gateway; use frontend.args.policy: cache_aware")
     if config.frontend.enable_multiple_frontends:
@@ -305,6 +309,25 @@ def _build_router_command(config: SrtConfig, processes: list[Process], *, etcd_c
         for process in sorted(processes, key=lambda item: (item.endpoint_mode, item.endpoint_index, item.node_rank))
         if process.is_leader
     ]
+    if config.frontend.type == "sgl-router":
+        tokenizer_path = _local_model_path(config)
+        if not config.model.path.startswith("hf:"):
+            tokenizer_path = f"{tokenizer_path}/tokenizer.json"
+        args = [
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(FRONTEND_PUBLIC_PORT),
+            "--model-id",
+            config.served_model_name,
+            "--tokenizer-path",
+            tokenizer_path,
+            "--worker-urls",
+            *worker_urls,
+            *_cli_args(config.frontend.args),
+        ]
+        return _shell_command(args, frontend_environment, executable="$SRTCTL_SGL_ROUTER")
+
     args = [
         "-m",
         "sglang_router.launch_router",
@@ -380,6 +403,7 @@ def build_local_lifecycle_render_context(
     expected_prefill = resources.num_prefill
     expected_decode = resources.num_agg if resources.num_agg else resources.num_decode
     health_interval = max(1, int(config.health_check.interval_seconds))
+    sgl_router_config = config.frontend.sgl_router
     return LocalLifecycleRenderContext(
         name=config.name,
         source_dir=str(source_dir.resolve()),
@@ -404,6 +428,8 @@ def build_local_lifecycle_render_context(
         tachometer_binary=config.observability.tachometer.binary_path if tachometer_config is not None else None,
         tachometer_config=tachometer_config,
         ruter_enabled=config.frontend.type == "dynamo" and config.observability.enabled,
+        sgl_router_source=sgl_router_config.source if sgl_router_config is not None else None,
+        sgl_router_binary=sgl_router_config.binary if sgl_router_config is not None else None,
     )
 
 

@@ -6,6 +6,7 @@
 from srtctl.core.health import (
     WorkerHealthResult,
     check_dynamo_health,
+    check_sgl_router_health,
     check_sglang_router_health,
 )
 
@@ -364,6 +365,35 @@ class TestSGLangRouterHealthAggregated:
 
         assert result.ready is True
         assert result.decode_ready == 4  # 2 decode + 2 regular
+
+
+class TestExperimentalSGLRouterHealth:
+    """Test experimental sgl-router Prometheus worker-count parsing."""
+
+    def test_static_workers_ready(self):
+        metrics = '# HELP sgl_router_workers Connected workers\nsgl_router_workers{mode="plain"} 8\n'
+
+        result = check_sgl_router_health(metrics, expected_prefill=0, expected_decode=8)
+
+        assert result.ready is True
+        assert result.decode_ready == 8
+
+    def test_static_workers_wait_for_full_pool(self):
+        result = check_sgl_router_health('sgl_router_workers{mode="plain"} 7\n', expected_prefill=0, expected_decode=8)
+
+        assert result.ready is False
+        assert result.decode_ready == 7
+
+    def test_disaggregated_expectation_never_reports_ready(self):
+        result = check_sgl_router_health('sgl_router_workers{mode="plain"} 8\n', expected_prefill=1, expected_decode=8)
+
+        assert result.ready is False
+
+    def test_missing_metric_is_not_ready(self):
+        result = check_sgl_router_health("other_metric 1\n", expected_prefill=0, expected_decode=1)
+
+        assert result.ready is False
+        assert "not found" in result.message
 
 
 class TestSGLangRouterHealthErrors:

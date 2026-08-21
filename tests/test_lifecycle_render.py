@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import subprocess
 
+import pytest
 import yaml
+from marshmallow import ValidationError
 
 from srtctl.core.config import expand_observability
 from srtctl.core.schema import SrtConfig
@@ -45,7 +47,13 @@ def _config(
         "frontend": {
             "type": frontend_type,
             "enable_multiple_frontends": False,
-            "args": {"policy": "cache_aware"} if frontend_type == "sglang" else {"router-mode": "kv"},
+            "args": (
+                {"policy": "cache_aware"}
+                if frontend_type == "sglang"
+                else {"policy": "cache_aware_zmq"}
+                if frontend_type == "sgl-router"
+                else {"router-mode": "kv"}
+            ),
             "env": frontend_env,
         },
         "environment": environment or {},
@@ -55,6 +63,8 @@ def _config(
             "tachometer": {"enabled": True},
         },
     }
+    if frontend_type == "sgl-router":
+        raw["frontend"]["sgl_router"] = {"source": "/opt/sglang"}
     expand_observability(raw)
     return SrtConfig.Schema().load(yaml.safe_load(yaml.safe_dump(raw)))
 
@@ -69,7 +79,9 @@ def test_local_lifecycle_renders_eight_tp1_workers_with_separate_logs(tmp_path) 
 
     assert len(context.worker_processes) == 8
     assert {worker.log_name for worker in context.worker_processes} == {f"worker-{index}.log" for index in range(8)}
-    assert all(f"CUDA_VISIBLE_DEVICES={index}" in worker.command for index, worker in enumerate(context.worker_processes))
+    assert all(
+        f"CUDA_VISIBLE_DEVICES={index}" in worker.command for index, worker in enumerate(context.worker_processes)
+    )
     assert "-m sglang_router.launch_router" in context.router_command
     assert "--policy cache_aware" in context.router_command
     assert 'name = "router"' in context.tachometer_config
@@ -100,18 +112,70 @@ def test_local_dynamo_lifecycle_starts_owned_infrastructure(tmp_path) -> None:
     assert "DYN_SYSTEM_PORT=7500" in context.worker_processes[0].command
     assert 'DYN_REQUEST_TRACE_FILE_PATH="${ARTIFACT_DIR}"/dynamo-request-trace' in context.router_command
     assert all(
-        f"--nccl-port {17_500 + index}" in worker.command
-        for index, worker in enumerate(context.worker_processes)
+        f"--nccl-port {17_500 + index}" in worker.command for index, worker in enumerate(context.worker_processes)
     )
     assert 'srt_wait_http_ready "http://127.0.0.1:6100/health"' not in script
     assert "srt_wait_router_ready" in script
     assert 'TACHOMETER_STORAGE="${ARTIFACT_DIR}/tachometer/raw/scrape"' in script
     assert context.ruter_enabled
     assert 'SRTCTL_RUTER_PYTHON="${SRTCTL_RUTER_PYTHON:-${SRTCTL_SOURCE}/.venv/bin/python}"' in script
-    assert 'Observability enabled: Dynamo request tracing is on (DYN_REQUEST_TRACE=1; request-end gzip JSONL: ${ARTIFACT_DIR}/dynamo-request-trace.*.jsonl.gz)' in script
+    assert (
+        "Observability enabled: Dynamo request tracing is on (DYN_REQUEST_TRACE=1; request-end gzip JSONL: ${ARTIFACT_DIR}/dynamo-request-trace.*.jsonl.gz)"
+        in script
+    )
     assert '"${SRTCTL_RUTER_PYTHON}" -m srtctl.ruter init "${OUTPUT_DIR}" --output "${LOG_DIR}/.ruter"' in script
     syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
     assert syntax.returncode == 0, syntax.stderr
+
+
+def test_local_sgl_router_lifecycle_builds_and_waits_for_all_static_workers(tmp_path) -> None:
+    context = build_local_lifecycle_render_context(
+        _config(frontend_type="sgl-router"),
+        source_dir=tmp_path / "srt-slurm",
+        output_base=tmp_path / "outputs",
+    )
+    script = render_local_lifecycle(context)
+
+    assert context.sgl_router_source == "/opt/sglang"
+    assert "$SRTCTL_SGL_ROUTER --host 127.0.0.1 --port 8000" in context.router_command
+    assert "--model-id fake/mock-model" in context.router_command
+    assert "--tokenizer-path fake/mock-model" in context.router_command
+    assert f"--worker-urls http://127.0.0.1:{context.worker_processes[0].http_port}" in context.router_command
+    assert "--policy cache_aware_zmq" in context.router_command
+    assert (
+        'cargo build --manifest-path "${SRTCTL_SGL_ROUTER_SOURCE}/experimental/sgl-router/Cargo.toml" --release'
+        in script
+    )
+    assert '"${LOG_DIR}/sgl-router-build.log"' in script
+    assert 'path="/metrics"' in script
+    assert 'sgl_router_workers\\{mode="plain"\\}' in script
+    assert '"${LOG_DIR}/router.log"' in script
+    syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
+    assert syntax.returncode == 0, syntax.stderr
+
+
+def test_local_sgl_router_rejects_disaggregated_topology() -> None:
+    raw = {
+        "name": "direct-sgl-router-disagg",
+        "model": {"path": "hf:fake/mock-model", "container": "unused", "precision": "fp8"},
+        "resources": {
+            "gpu_type": "h100",
+            "gpus_per_node": 8,
+            "prefill_nodes": 1,
+            "decode_nodes": 1,
+            "prefill_workers": 1,
+            "decode_workers": 1,
+        },
+        "backend": {"type": "sglang", "sglang_config": {"prefill": {}, "decode": {}}},
+        "frontend": {
+            "type": "sgl-router",
+            "enable_multiple_frontends": False,
+            "sgl_router": {"source": "/opt/sglang"},
+        },
+    }
+
+    with pytest.raises(ValidationError, match="aggregate jobs only"):
+        SrtConfig.Schema().load(raw)
 
 
 def test_local_lifecycle_expands_artifact_dir_in_frontend_environment(tmp_path) -> None:
@@ -126,8 +190,8 @@ def test_local_lifecycle_expands_artifact_dir_in_frontend_environment(tmp_path) 
     script = render_local_lifecycle(context)
 
     assert 'DYN_REQUEST_TRACE_FILE_PATH="${ARTIFACT_DIR}"/dynamo-request-trace.jsonl' in context.router_command
-    assert "DYN_REQUEST_TRACE_FILE_PATH=\"${ARTIFACT_DIR}\"/dynamo-request-trace.jsonl" in script
-    assert 'export OUTPUT_DIR LOG_DIR ARTIFACT_DIR' in script
+    assert 'DYN_REQUEST_TRACE_FILE_PATH="${ARTIFACT_DIR}"/dynamo-request-trace.jsonl' in script
+    assert "export OUTPUT_DIR LOG_DIR ARTIFACT_DIR" in script
     syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
     assert syntax.returncode == 0, syntax.stderr
 
@@ -152,4 +216,4 @@ def test_local_dynamo_lifecycle_accepts_isolated_infra_ports(tmp_path) -> None:
     assert "NATS_SERVER=nats://127.0.0.1:24222" in context.router_command
     assert '"${SRTCTL_NATS_BINARY}" -js -a "127.0.0.1" -p 24222' in script
     assert "http://127.0.0.1:22379/health" in script
-    assert "--listen-peer-urls \"http://127.0.0.1:22380\"" in script
+    assert '--listen-peer-urls "http://127.0.0.1:22380"' in script
