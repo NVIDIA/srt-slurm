@@ -269,9 +269,26 @@ for r in rows: r["ts"]=relt(r["ts_ns"]);
 def gsingle(m,name):
     a=m.get(name)
     return a[0]["value"] if a else None
+def _entries(m, name):
+    """Entries for a metric family in one scrape, tolerating the `_total` suffix.
+
+    Prometheus counters conventionally end in `_total`, and the ingest layer keeps the
+    scraped name verbatim -- so a lookup written without the suffix silently finds
+    nothing and the caller reads a hard zero. That is not hypothetical: five families
+    here (`dynamo_frontend_requests` and all four `dynamo_frontend_tokenizer_cache_*`)
+    were being read without it, which pinned the tokenizer-cache KPI to 0.0% on a run
+    whose real hit rate was ~99%.
+
+    Resolving centrally rather than fixing each call site, because the failure is
+    invisible at the call site: a missing family and an all-zero family look identical
+    downstream.
+    """
+    return m.get(name) or m.get(name + "_total")
+
+
 def ggroup(m,name,by="dynamo_component"):
     out=defaultdict(list)
-    for e in m.get(name,[]):
+    for e in (_entries(m,name) or []):
         out[e.get("labels",{}).get(by)].append(e["value"])
     return out
 def hsc(m,name):
@@ -315,7 +332,7 @@ def peak_with(m_name,key="count"):
     """
     best={}; bv=-1.0
     for _,m in scr:
-        ents=m.get(m_name)
+        ents=_entries(m,m_name)
         if not ents: continue
         tot=0.0
         for e in ents:
@@ -356,7 +373,7 @@ def hist_mean_series(name,by=None,group=None,scale_ms=1000.0):
 
 def _csum(m,name,label=None,val=None):
     """Total of a counter/gauge family in one scrape, or None if absent here."""
-    ents=m.get(name)
+    ents=_entries(m,name)
     if not ents: return None
     tot=0.0
     for e in ents:
@@ -423,7 +440,10 @@ fe = {
 }
 # Not plotted on this tab any more, but still feeds the shared KPI strip.
 def cval(name):
-    a=peak_with(name,key="value").get(name); return a[0]["value"] if a else 0
+    # Resolve through _entries on BOTH lookups: peak_with finds the right scrape, but
+    # indexing the returned scrape by the un-suffixed name misses it a second time.
+    a=_entries(peak_with(name,key="value"), name)
+    return a[0]["value"] if a else 0
 tk_h=cval("dynamo_frontend_tokenizer_cache_hits"); tk_m=cval("dynamo_frontend_tokenizer_cache_misses")
 fe["tok_cache_hit_pct"]=round(100*tk_h/max(1,tk_h+tk_m),1)
 
