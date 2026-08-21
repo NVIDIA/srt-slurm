@@ -1209,6 +1209,31 @@ ANALYTICS_ENGINE_CONFIG: dict[str, bool] = {
 _DYNAMO_CACHE_ROOT = "/configs/dynamo-wheels"
 
 
+def dynamo_source_cache_key(dynamo_hash: str, cargo_patches: list[str] | None = None) -> str:
+    """Return the cache key shared by Slurm and direct source builds."""
+    if not cargo_patches:
+        return dynamo_hash
+    # Version the build recipe so a patching change invalidates old artifacts
+    # even when the dependency declarations themselves do not change.
+    digest = hashlib.sha1(("dep-override-v3\n" + "\n".join(cargo_patches)).encode()).hexdigest()[:8]
+    return f"{dynamo_hash}-patch-{digest}"
+
+
+def dynamo_cargo_patch_commands(cargo_patches: list[str] | None = None) -> tuple[str, ...]:
+    """Return shell-safe Cargo.toml replacement commands for a source build."""
+    if not cargo_patches:
+        return ()
+    commands = []
+    for entry in cargo_patches:
+        crate = entry.split("=", 1)[0].strip()
+        if not crate:
+            continue
+        repl = entry.replace("&", r"\&")  # '&' is the sed replacement metachar
+        script = f"s|^{crate}[[:space:]]*=.*|{repl}|"
+        commands.append(f"find . -name Cargo.toml -exec sed -i -E {shlex.quote(script)} {{}} +")
+    return tuple(commands)
+
+
 def _hash_cached_source_install(dynamo_hash: str, cargo_patches: list[str] | None = None) -> str:
     """Bash for hash-pinned source install with a /configs/dynamo-wheels cache.
 
@@ -1227,31 +1252,14 @@ def _hash_cached_source_install(dynamo_hash: str, cargo_patches: list[str] | Non
     Uses FD 201 (not 200) so it nests cleanly inside the node-local
     ``flock -x 200`` from ``_serialize_node_install``.
     """
-    cache_key = dynamo_hash
-    override_cmd = ""
-    if cargo_patches:
-        # The marker prefix versions the override build-recipe so a recipe fix busts the
-        # cache even when the override strings are unchanged.
-        digest = hashlib.sha1(("dep-override-v3\n" + "\n".join(cargo_patches)).encode()).hexdigest()[:8]
-        cache_key = f"{dynamo_hash}-patch-{digest}"
-        # Replace each crate's dependency DECLARATION (a full `<crate> = <spec>` line) across
-        # every Cargo.toml in the tree — retargeting the workspace dependency (and any direct
-        # decls, incl. `{ workspace = true }` members) at, typically, a git branch.
-        # Why source-replacement and not [patch.crates-io]: a patch is silently dropped when
-        # the branch version doesn't satisfy dynamo's exact pin (e.g. dynamo pins "=1.5.0" but
-        # the branch is 1.5.3 -> "patch ... was not used in the crate graph"), and relaxing the
-        # pin alone loses to the committed Cargo.lock. Changing the dependency SOURCE needs no
-        # version match and forces Cargo to re-resolve, so the branch is actually built.
-        seds = []
-        for entry in cargo_patches:
-            crate = entry.split("=", 1)[0].strip()
-            if not crate:
-                continue
-            repl = entry.replace("&", r"\&")  # '&' is the sed replacement metachar
-            script = f"s|^{crate}[[:space:]]*=.*|{repl}|"
-            seds.append(f"find . -name Cargo.toml -exec sed -i -E {shlex.quote(script)} {{}} +")
-        if seds:
-            override_cmd = " && ".join(seds) + " && "
+    cache_key = dynamo_source_cache_key(dynamo_hash, cargo_patches)
+    # Replace each crate's dependency declaration tree-wide. Source replacement
+    # (rather than [patch.crates-io]) forces Cargo to resolve the requested source
+    # even when its version would not satisfy Dynamo's exact existing pin.
+    patch_commands = dynamo_cargo_patch_commands(cargo_patches)
+    override_cmd = " && ".join(patch_commands)
+    if override_cmd:
+        override_cmd += " && "
     cache = f"{_DYNAMO_CACHE_ROOT}/{cache_key}"
     lock = f"{_DYNAMO_CACHE_ROOT}/.{cache_key}.lock"
     return (

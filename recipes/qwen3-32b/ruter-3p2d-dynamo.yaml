@@ -1,0 +1,111 @@
+# Direct-host Dynamo 3P2D route-observability benchmark.
+#
+# Required at render time:
+#   export RUTER_MODEL_PATH=/absolute/path/to/Qwen3-32B-FP8
+#   export RUTER_MOONCAKE_TRACE=/absolute/path/to/mooncake_refined.jsonl
+#   export RUTER_SGLANG_SOURCE=/absolute/path/to/sglang-main
+#
+# Render through srt-slurm only:
+#   make setup ARCH=x86_64
+#   srtctl apply -f recipes/qwen3-32b/ruter-3p2d-dynamo.yaml --bash > run.sh
+
+name: qwen3-32b-fp8-dynamo-ruter-3p2d
+
+model:
+  path: $RUTER_MODEL_PATH
+  # Used directly by Slurm and by the single-node Docker lifecycle below.
+  container: lmsysorg/sglang:dev
+  precision: fp8
+
+resources:
+  gpu_type: h100
+  gpus_per_node: 8
+  prefill_nodes: 1
+  # Decode shares the direct-host prefill node.
+  decode_nodes: 0
+  prefill_workers: 3
+  decode_workers: 2
+  gpus_per_prefill: 1
+  gpus_per_decode: 1
+
+dynamo:
+  # Resolve current Dynamo main to an immutable SHA before committing a run.
+  # `apply --bash` builds this once into its hash-keyed local wheel cache.
+  hash: 341f9ac96a9e8b736e1d08576eaca9e0cf32786a
+
+# Avoid host-shared NATS and etcd. The direct lifecycle owns and cleans these.
+environment:
+  # The direct lifecycle runs inside the same SGLang OCI image selected above.
+  # It mounts this checkout read-only, creates a cached venv outside the
+  # container, installs SGLang main, then installs plain Dynamo from source.
+  SRTCTL_LOCAL_CONTAINER_IMAGE: lmsysorg/sglang:dev
+  SRTCTL_SGLANG_SOURCE: $RUTER_SGLANG_SOURCE
+  SRTCTL_ETCD_PORT: "23379"
+  SRTCTL_ETCD_PEER_PORT: "23380"
+  SRTCTL_NATS_PORT: "25222"
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+  args:
+    router-mode: kv
+
+backend:
+  type: sglang
+  kv_events_config:
+    prefill: true
+    decode: true
+  sglang_config:
+    prefill:
+      served-model-name: Qwen/Qwen3-32B-FP8
+      tensor-parallel-size: 1
+      page-size: 16
+      trust-remote-code: true
+      mem-fraction-static: 0.85
+      context-length: 40960
+      max-running-requests: 64
+      enable-metrics: true
+      disable-piecewise-cuda-graph: true
+      fp8-gemm-backend: triton
+      disaggregation-transfer-backend: nixl
+    decode:
+      served-model-name: Qwen/Qwen3-32B-FP8
+      tensor-parallel-size: 1
+      page-size: 16
+      trust-remote-code: true
+      mem-fraction-static: 0.85
+      context-length: 40960
+      max-running-requests: 64
+      enable-metrics: true
+      disable-piecewise-cuda-graph: true
+      fp8-gemm-backend: triton
+      disaggregation-transfer-backend: nixl
+
+observability:
+  enabled: true
+  scrape_metrics: false
+  tachometer:
+    enabled: true
+
+benchmark:
+  type: custom
+  # Let AIPerf use its built-in 32-worker cap. This trace peaks at 17 arrivals/10s.
+  command: |
+    "$SRTCTL_RUTER_PYTHON" -m aiperf profile \
+      --model Qwen/Qwen3-32B-FP8 \
+      --tokenizer Qwen/Qwen3-32B-FP8 \
+      --tokenizer-trust-remote-code \
+      --url "$SRT_FRONTEND_URL" \
+      --endpoint-type chat \
+      --streaming \
+      --input-file "$RUTER_MOONCAKE_TRACE" \
+      --custom-dataset-type mooncake_trace \
+      --fixed-schedule \
+      --fixed-schedule-auto-offset \
+      --extra-inputs ignore_eos:true \
+      --use-legacy-max-tokens \
+      --request-timeout-seconds 900 \
+      --output-artifact-dir "$AIPERF_ARTIFACT_DIR" \
+      --profile-export-prefix trace \
+      --ui none \
+      --no-server-metrics
