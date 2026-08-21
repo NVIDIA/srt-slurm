@@ -216,6 +216,9 @@ def test_local_lifecycle_can_run_inside_sglang_container(tmp_path) -> None:
     assert "--network host" in script
     assert "--ipc host" in script
     assert "--gpus all" in script
+    assert 'SRTCTL_MODEL_MOUNT_PATH="${SRTCTL_RENDERED_MODEL_PATH}"' in script
+    assert '"$(basename "$(dirname "${SRTCTL_MODEL_MOUNT_PATH}")")" == "snapshots"' in script
+    assert 'SRTCTL_MODEL_MOUNT_PATH="$(dirname "$(dirname "${SRTCTL_MODEL_MOUNT_PATH}")")"' in script
     assert '--detach\n        --name "srtctl-lifecycle-$$"' in script
     assert 'docker run "${SRT_CONTAINER_ARGS[@]}" >/dev/null' in script
     assert (
