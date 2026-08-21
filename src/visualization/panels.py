@@ -118,7 +118,11 @@ PANELS: list[dict] = [
     {
         "id": "fe_tokio_busy", "tab": "frontend", "unit": "ratio", "kind": "gauge",
         "title": "Tokio worker busy ratio", "metrics": ["dynamo_tokio_worker_busy_ratio"],
-        "split_by": None,
+        # One series PER WORKER THREAD. Collapsing them into a single unsplit series
+        # interleaves every thread's samples at the same timestamps and draws a point
+        # cloud, not a trend -- and a runtime is saturated when its BUSIEST threads
+        # are, which an undifferentiated blob cannot show.
+        "split_by": "worker",
         "why": "Runtime saturation. A saturated runtime makes host-side work, not the "
                "GPU, the limiter.",
         "issues": ["PERF-gil", "PERF-tokio-starvation"], "caveat": None,

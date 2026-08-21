@@ -1134,3 +1134,75 @@ class TestIterLogProcessor:
         log = tmp_path / "node_decode_w0.out"
         log.write_text("nothing of interest here\n")
         assert process(str(tmp_path / "iter_bins.json"), [str(log)]) == 0
+
+
+class TestRenderedEntities:
+    """Payload without a renderer is not coverage. These pin the JS consumers."""
+
+    def test_request_cards_have_a_renderer(self, run_dir: Path, tmp_path: Path):
+        src = run_dir / "dynamo-request-trace"
+        src.write_text("\n".join(
+            json.dumps(_trace_record(x, "s1", 1_787_174_000_000 + i * 1000,
+                                     prefill_wait=2.0, prefill=500.0, kv_transfer=50.0,
+                                     total=1000.0, avg_itl=20.0, osl=11, hashes=[1, 2]))
+            for i, x in enumerate(XIDS)) + "\n")
+        bundle = tmp_path / "bundle"
+        _run_ingest(run_dir, bundle)
+        out = tmp_path / "dash.html"
+        assert _render(bundle, out, "--d3-cdn").returncode == 0
+
+        html = out.read_text()
+        # DATA.rt.requests carried the per-request card for several commits with no JS
+        # consumer at all -- the payload existed and nothing drew it.
+        for marker in ("Per-request decomposition", "reqcard", "DATA.rt.requests",
+                       "Router belief vs engine reality"):
+            assert marker in html, f"per-request entity lost its renderer: {marker}"
+
+    def test_high_cardinality_panels_state_what_they_omit(self, run_dir: Path, tmp_path: Path):
+        """A per-thread runtime gauge is ~144 series. Drawing all is unreadable and
+        drawing some silently reads as complete."""
+        bundle = tmp_path / "bundle"
+        _run_ingest(run_dir, bundle)
+        out = tmp_path / "dash.html"
+        _render(bundle, out, "--d3-cdn")
+        assert "highest-peak of" in out.read_text()
+
+
+class TestKvHitRateGating:
+    def test_reuse_disabled_components_are_excluded(self, run_dir: Path, tmp_path: Path):
+        """A worker with enable_block_reuse:false reports a hard 0 -- correctly, it does
+        no reuse. Averaging that into the run-level rate makes the number fall as the
+        deployment adds decode workers. On the reference run the naive mean reported
+        0.0 where the true prefill rate was 65.1."""
+        (run_dir / "trtllm_config_prefill.yaml").write_text(
+            "max_batch_size: 128\nmax_num_tokens: 4096\nkv_cache_config:\n  enable_block_reuse: true\n")
+        (run_dir / "trtllm_config_decode.yaml").write_text(
+            "max_batch_size: 1\nmax_num_tokens: 4\nkv_cache_config:\n  enable_block_reuse: false\n")
+        bundle = tmp_path / "bundle"
+        _run_ingest(run_dir, bundle)
+        payload = tmp_path / "dash.json"
+        proc = _render(bundle, tmp_path / "dash.html", "--d3-cdn", "--dump-json", str(payload))
+        assert proc.returncode == 0, proc.stderr
+        assert json.loads(payload.read_text())["en"]["reuse_components"] == ["prefill"]
+
+    def test_absent_config_keeps_every_component(self, run_dir: Path, tmp_path: Path):
+        """No engine config means "cannot tell", which must not silently drop data."""
+        for f in run_dir.glob("trtllm_config_*.yaml"):
+            f.unlink()
+        bundle = tmp_path / "bundle"
+        _run_ingest(run_dir, bundle)
+        payload = tmp_path / "dash.json"
+        _render(bundle, tmp_path / "dash.html", "--d3-cdn", "--dump-json", str(payload))
+        assert json.loads(payload.read_text())["en"]["reuse_components"] is None
+
+    def test_header_block_size_comes_from_the_stream(self, run_dir: Path, tmp_path: Path):
+        """The yaml carries only ingest's --block-size fallback; on the reference run
+        that fallback (512) disagreed with the measured value (32) and the engine
+        config (256). The header must not show the fallback."""
+        bundle = tmp_path / "bundle"
+        _run_ingest(run_dir, bundle)
+        payload = tmp_path / "dash.json"
+        _render(bundle, tmp_path / "dash.html", "--d3-cdn", "--dump-json", str(payload))
+        topo = json.loads(payload.read_text())["meta"]["topo"]
+        assert "__BLK__" not in topo
+        assert "block 512" not in topo

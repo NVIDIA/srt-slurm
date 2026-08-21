@@ -151,8 +151,12 @@ def _load_meta(bundle_dir):
             t = cfg.get("topology") or {}
             parts = [f"{role} {w.get('worker_count','?')}×{w.get('parallelism','?')}{w.get('rank','')}"
                      for role, w in (t.get("workers") or {}).items()]
+            # block_size from the yaml is only ingest's --block-size fallback. The
+            # authoritative value comes from the metrics stream and is substituted
+            # later; emitting the fallback here would put a third, wrong number in the
+            # header while the panels use the right one.
             if t.get("block_size"):
-                parts.append(f"block {t['block_size']}")
+                parts.append("block __BLK__")
             topo = " · ".join(parts)
             gpus = sum(int(w.get("rank") or 0) * int(w.get("worker_count") or 0)
                        for w in (t.get("workers") or {}).values()) or None
@@ -444,14 +448,53 @@ en = {
   "max_batch_de": MAX_BATCH_DE,   # decode max_batch_size ceiling (--max-batch-decode)
 }
 # true cache-hit (trtllm_kv_cache_hit_rate gauge, per ctx worker) — mean over scrapes where present
+def _reuse_enabled_components():
+    """Components whose engine config actually enables KV block reuse.
+
+    A worker with ``kv_cache_config.enable_block_reuse: false`` reports a hard 0 for
+    trtllm_kv_cache_hit_rate -- correctly, because it does no reuse. Averaging that 0
+    in with the components that DO reuse does not produce a run-level hit rate; it
+    produces a number that falls as the deployment adds decode workers. On the
+    reference 1P3D run the true prefill hit rate is ~0.65-0.76 while the naive mean
+    over four components reports ~0.16.
+
+    Returns None when no engine config is available, which means "cannot tell" -- the
+    caller then keeps every component rather than silently dropping data.
+    """
+    keep=set()
+    seen_cfg=False
+    for mode,comp in (("prefill","prefill"),("decode","backend"),("aggregated","backend")):
+        for cand in (os.path.join(SRC or "", f"trtllm_config_{mode}.yaml"),):
+            if not cand or not os.path.exists(cand): continue
+            try:
+                import yaml as _y
+                c=_y.safe_load(open(cand)) or {}
+            except Exception:
+                continue
+            seen_cfg=True
+            if ((c.get("kv_cache_config") or {}).get("enable_block_reuse")) is not False:
+                keep.add(comp)
+    return keep if seen_cfg else None
+
+_REUSE_COMPONENTS=_reuse_enabled_components()
+if _REUSE_COMPONENTS is not None:
+    _log.info(f"KV hit rate: averaging only components with block reuse enabled: "
+              f"{sorted(_REUSE_COMPONENTS) or 'NONE'}")
+else:
+    _log.warning("KV hit rate: no engine config in the bundle, so reuse-disabled "
+                 "components cannot be excluded; the series may understate the true rate")
+
 def kvhit_series():
     out=[]
     for ts,m in scr:
         g=ggroup(m,"trtllm_kv_cache_hit_rate",by="dynamo_component")
+        if _REUSE_COMPONENTS is not None:
+            g={k:v for k,v in g.items() if k in _REUSE_COMPONENTS}
         vals=[x for vs in g.values() for x in vs]
         out.append([relt(ts), round(sum(vals)/len(vals)*100,2) if vals else None])
     return out
 en["true_hit_pct"]=kvhit_series()
+en["reuse_components"]=sorted(_REUSE_COMPONENTS) if _REUSE_COMPONENTS is not None else None
 _hitvals=[p[1] for p in en["true_hit_pct"] if p[1] is not None]
 en["true_hit_kpi"]=round(pct(_hitvals,50),1) if _hitvals else None
 
@@ -1080,7 +1123,12 @@ DATA={
          "session":bool(rt_sessions)},
  "meta":{"n":N,"run_dur_s":round(run_dur,1),"scrapes":len(scr),
    "src":META_SRC,
-   "topo":META_TOPO or f"max batch prefill {MAX_BATCH_PF} / decode {MAX_BATCH_DE}"},
+   # Substitute the authoritative block size measured from the metrics stream. The
+   # yaml only ever carried ingest's --block-size fallback, and on the reference run
+   # that fallback (512) disagreed with both the measured value (32) and the engine
+   # config (256) -- three numbers, of which the header was showing the wrong one.
+   "topo":(META_TOPO or f"max batch prefill {MAX_BATCH_PF} / decode {MAX_BATCH_DE}")
+          .replace("__BLK__", str(BLK) if BLK else "unknown")},
  "kpi":{"ttft_p50":round(pct(col("ttft"),50)/1000,1),"ttft_p99":round(pct(col("ttft"),99)/1000,1),
    "adm_p50":round(pct(col("adm"),50)/1000,1),"pf_p50":round(pct(col("pf"),50)/1000,1),
    "reqs":N,"adm_share":round(pct(col("adm"),50)/max(1,pct(col("ttft"),50))*100,0),
@@ -1124,6 +1172,9 @@ h1{margin:0;font-size:16px}.sub{color:var(--dim);font-size:12px;margin-top:3px}
 .panel{background:var(--panel);border:1px solid var(--edge);border-radius:10px;padding:12px 14px;min-width:0}
 .panel h2{margin:0 0 2px;font-size:13px}.panel .src{color:#6e7681;font-size:11px}
 .warn{color:#d29922;font-size:11px}
+.reqcard{border-top:1px solid #21262d;padding:8px 0}
+.reqhead{font-size:12px;color:#c9d1d9;margin-bottom:2px}
+.reqmeta{font-size:11px;color:#8b949e;margin-top:2px}
 .tbl{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}
 .tbl th{text-align:left;color:#8b949e;font-weight:600;border-bottom:1px solid #30363d;padding:4px 8px}
 .tbl td{padding:4px 8px;border-bottom:1px solid #21262d;color:#c9d1d9;font-variant-numeric:tabular-nums}
@@ -1661,9 +1712,22 @@ note('frontend',`Both panels come from the <b>frontend</b> endpoint (<code>:8000
       +`${keys.length} series &mdash; this run never exercised this signal.`);
     return;
   }
-  if(keys.length>1) lg(el,keys.map((k,i)=>[PAL[i%PAL.length],p.split_by?`${p.split_by}=${k}`:k]));
+  // High-cardinality panels (a per-thread runtime gauge is ~144 series) draw the
+  // busiest few rather than everything. Drawing all of them is a point cloud and a
+  // legend nobody can read; drawing one merged series hides which thread saturated.
+  // Ranked by PEAK because saturation is a property of the busiest members, and the
+  // omitted count is always stated -- a silently truncated panel reads as complete.
+  const MAXS=12; let drawn=keys, omitted=0;
+  if(keys.length>MAXS){
+    drawn=keys.slice().sort((a,b)=>d3.max(p.series[b],d=>d[1])-d3.max(p.series[a],d=>d[1])).slice(0,MAXS);
+    omitted=keys.length-MAXS;
+  }
+  if(drawn.length>1) lg(el,drawn.map((k,i)=>[PAL[i%PAL.length],p.split_by?`${p.split_by}=${k}`:k]));
+  if(omitted) el.append('div').attr('class','note').html(
+    `Showing the <b>${MAXS}</b> highest-peak of <b>${keys.length}</b> series; `
+    +`<b>${omitted}</b> lower-peak series omitted from the chart.`);
   const L=58,B=28,H=keys.length>3?250:200,s=svg(el,VW,H);
-  const all=keys.flatMap(k=>p.series[k]);
+  const all=drawn.flatMap(k=>p.series[k]);
   const x=d3.scaleLinear().domain([0,d3.max(all,d=>d[0])||1]).range([L,VW-12]);
   const y=d3.scaleLinear().domain([0,(d3.max(all,d=>d[1])||1)*1.08]).nice().range([H-B,8]);
   s.append('g').attr('class','axis').attr('transform',`translate(0,${H-B})`)
@@ -1671,9 +1735,76 @@ note('frontend',`Both panels come from the <b>frontend</b> endpoint (<code>:8000
   s.append('g').attr('class','axis').attr('transform',`translate(${L},0)`)
    .call(d3.axisLeft(y).ticks(5).tickFormat(fmtU(p.unit)));
   const ln=d3.line().x(d=>x(d[0])).y(d=>y(d[1]));
-  keys.forEach((k,i)=>s.append('path').datum(p.series[k]).attr('fill','none')
+  drawn.forEach((k,i)=>s.append('path').datum(p.series[k]).attr('fill','none')
     .attr('stroke',PAL[i%PAL.length]).attr('stroke-width',1.2).attr('opacity',.9).attr('d',ln));
  });
+})();
+
+// ---- per-request decomposition cards (DATA.rt.requests) --------------------
+// Entity type 2. One card shape for every request in every run: the four bands that
+// sum to total_ms, what the request WAS, and where it was routed. Nothing here is
+// conditional on the run -- a field the run did not produce renders as an em dash
+// rather than changing the card's shape.
+(function(){
+ const RT=DATA.rt||{}, R=RT.requests||{}; const xids=Object.keys(R);
+ if(!xids.length) return;
+ const BANDC=[C.adm,C.pf,C.route,C.de];
+ const el=panel('session','Per-request decomposition',
+   'The slowest requests in the run, each broken into the four phases that sum to its '
+   +'total. <b>Routing is an outcome, not a rationale</b>: the router\'s cost comparison '
+   +'is logged without a request id and cannot be joined, so this shows which worker was '
+   +'chosen and with how much prefix overlap, not why it won.'
+   +'<br><span class="src">source: <code>request_trace.jsonl</code> + <code>tempo_traces/</code></span>',true);
+
+ if(RT.belief){
+   const b=RT.belief, bad=b.disagree;
+   el.append('div').attr('class','note'+(bad?' warn':'')).html(
+     `Router belief vs engine reality: <b>${b.n-bad}/${b.n}</b> requests agree within `
+     +`${(b.threshold*100).toFixed(0)}% (router <code>overlap_blocks</code> x block size `
+     +`vs engine <code>cached_tokens</code>), worst error <b>${(b.worst*100).toFixed(1)}%</b>. `
+     +(bad?'A disagreement means the router scored a candidate on a prefix the engine does not hold.'
+          :'The router scored candidates on a prefix the engine actually had.'));
+ }
+
+ const slowest=xids.map(x=>[x,R[x]])
+   .sort((a,b)=>(b[1].attrs.total_ms||0)-(a[1].attrs.total_ms||0)).slice(0,12);
+ const W=760,BH=26;
+ slowest.forEach(([xid,c])=>{
+   const tot=c.bands.reduce((a,[,,v])=>a+(v||0),0)||1;
+   const row=el.append('div').attr('class','reqcard');
+   const a=c.attrs, rt=c.routing;
+   row.append('div').attr('class','reqhead').html(
+     `<code>${xid.slice(0,8)}</code> &middot; <b>${fmtS(tot)}</b> total`
+     +` &middot; ISL ${d3.format('~s')(a.isl||0)} &rarr; OSL ${d3.format('~s')(a.osl||0)}`
+     +` &middot; cache hit ${a.kv_hit_rate==null?'&mdash;':(a.kv_hit_rate*100).toFixed(1)+'%'}`
+     +` &middot; turn ${a.turn_index==null?'&mdash;':a.turn_index}`);
+   const sv=svg(row,W,BH+6); let x0=0;
+   c.bands.forEach(([,label,v],i)=>{
+     const w=(v||0)/tot*W;
+     if(w>0){
+       sv.append('rect').attr('x',x0).attr('y',3).attr('width',w).attr('height',BH)
+         .attr('fill',BANDC[i%BANDC.length]).attr('opacity',.85)
+         .append('title').text(`${label}: ${fmtS(v)}`);
+       if(w>54) sv.append('text').attr('x',x0+4).attr('y',3+BH/2+4).attr('fill','#0d1117')
+         .attr('font-size',10).text(fmtS(v));
+     }
+     x0+=w;
+   });
+   row.append('div').attr('class','reqmeta').html(
+     rt ? `routed to worker <code>${String(rt.worker_id??'').slice(-6)||'&mdash;'}</code>`
+          +` rank <code>${rt.dp_rank??'&mdash;'}</code>`
+          +` &middot; overlap <b>${rt.overlap_blocks==null?'&mdash;':d3.format('~s')(rt.overlap_blocks)}</b> blocks`
+          +` &middot; router ${rt.router_ms==null?'&mdash;':rt.router_ms+'ms'}`
+          +` &middot; admission ${rt.admission_ms==null?'&mdash;':rt.admission_ms+'ms'}`
+        : 'routing not joinable for this run (no span data)');
+ });
+ lg(el,c_bandLegend());
+ function c_bandLegend(){return (RT.bands||[]).map((b,i)=>[BANDC[i%BANDC.length],b[1]])}
+ const cst=RT.const||{};
+ if(Object.keys(cst).length) el.append('div').attr('class','note').html(
+   'Constant for every request in this run: '
+   +Object.entries(cst).map(([k,v])=>`<code>${k}</code>=${v}`).join(', ')
+   +' &mdash; reported rather than charted.');
 })();
 
 // ---- session decomposition (DATA.rt) ---------------------------------------
