@@ -98,6 +98,32 @@ If you are testing dashboard changes, the compute node runs whatever `srtctl_roo
   those files, and the job then fails somewhere unrelated (a model path resolving
   against the wrong root, for instance).
 
+### If the job hit its wall clock
+
+A SLURM `TIMEOUT` kills the job hard, so **post-processing never runs and no dashboard is
+written** — even though the capture itself completed. This matters because the runs most
+worth looking at are often the ones that ran out of time.
+
+Nothing is lost. Every raw input survives the kill, and the bundle rebuilds from the run
+directory in under a minute:
+
+```bash
+cd /path/to/srt-slurm
+python3 -m src.ingest.ingest --run-dir outputs/<job_id>/logs --out /tmp/<job_id>-bundle
+python3 -m src.visualization.build_dynamo_bench_dash \
+    /tmp/<job_id>-bundle /tmp/<job_id>.html \
+    --frontend-log outputs/<job_id>/logs/<node>_frontend_0.out
+```
+
+Verified on job 2753007 (TIMEOUT at 20:12): `raw_prometheus.jsonl`, `host_samples.jsonl`,
+`dynamo-request-trace`, all four `fingerprint_*.json` and `resource_snapshot.json` were
+intact, and the bundle rebuilt in **53 s** with `aiperf=True traces=True metrics=True
+request_trace=True`.
+
+> Rebuild on a compute node, not the login node, for a full-length run. The login node's
+> memory limit will OOM-kill a render whose `server_metrics_export.jsonl` is a few hundred
+> MB (observed at exit 137 on a 243-request run), and its `/tmp` is a 2 GB tmpfs.
+
 ## Running it by hand
 
 Against any past run — including one captured before this existed:
