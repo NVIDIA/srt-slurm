@@ -63,11 +63,30 @@ def _vllm_health_entries(
 ) -> int:
     """Return expected Dynamo generate registrations for a vLLM worker mode."""
     dp_size = _vllm_data_parallel_size(config, mode)
-    if dp_size > 1 and getattr(config.backend, "dp_launch_mode", "per_gpu") == "per_node":
+    dp_launch_mode = getattr(config.backend, "dp_launch_mode", "per_gpu")
+    if dp_size > 1 and dp_launch_mode == "per_node":
         if backend_processes is None:
             raise ValueError("backend_processes are required for per-node DP health expectations")
         endpoint_mode = "agg" if mode == "aggregated" else mode
-        return sum(process.endpoint_mode == endpoint_mode for process in backend_processes)
+        mode_processes = [process for process in backend_processes if process.endpoint_mode == endpoint_mode]
+        if not mode_processes:
+            return 0
+
+        vllm_config = getattr(config.backend, "vllm_config", None)
+        mode_config = getattr(vllm_config, mode, None) if vllm_config else None
+        mode_config = mode_config or {}
+        tp_size = int(mode_config.get("tensor-parallel-size") or mode_config.get("tensor_parallel_size") or 1)
+        pp_size = int(mode_config.get("pipeline-parallel-size") or mode_config.get("pipeline_parallel_size") or 1)
+        gpu_indices = getattr(mode_processes[0], "gpu_indices", None)
+        if gpu_indices is None:
+            # Compatibility for callers that provide only registration-count
+            # process stubs. Real launch processes always carry GPU indices.
+            return len(mode_processes)
+        local_gpu_count = len(gpu_indices)
+        spans_nodes = tp_size * pp_size > local_gpu_count
+        if spans_nodes:
+            return logical_workers
+        return len(mode_processes)
 
     return logical_workers * dp_size
 
