@@ -157,10 +157,15 @@ class BenchmarkStageMixin:
         return self._orchestrator_node()
 
     def _benchmark_node(self) -> str:
-        """Node the benchmark client runs on (honors benchmark.client_placement)."""
+        """Node the benchmark client runs on (honors benchmark.client_placement).
+
+        ``nodes.bench`` equals ``nodes.head`` unless a dedicated client node was
+        carved out (benchmark.client_dedicated_node), in which case it points at
+        that reserved node instead.
+        """
         placement = getattr(self.config.benchmark, "client_placement", "head")
         if placement == "head":
-            return self.runtime.nodes.head
+            return self.runtime.nodes.bench
         from srtctl.core.topology import placed_node
 
         return placed_node(

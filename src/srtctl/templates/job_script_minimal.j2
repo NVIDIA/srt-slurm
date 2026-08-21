@@ -110,10 +110,6 @@ echo ""
 # For override jobs it also writes the resolved runtime config below.
 echo "Runtime config: ${OUTPUT_DIR}/{{ runtime_config_filename }}"
 
-# Get head node
-HEAD_NODE=$(scontrol show hostnames ${SLURM_NODELIST} | head -n1)
-echo "Head node: ${HEAD_NODE}"
-
 # Set source directory for container mounts (/configs)
 export SRTCTL_SOURCE_DIR="${SRTCTL_SOURCE}"
 

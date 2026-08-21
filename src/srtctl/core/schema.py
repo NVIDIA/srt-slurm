@@ -691,6 +691,18 @@ class BenchmarkConfig:
     #                       a different node than the orchestrator, use the injected
     #                       $SRT_FRONTEND_HOST env in the benchmark command's URL.
     client_placement: str = "head"
+    # If True, reserve a node exclusively for the benchmark client instead of
+    # running it on a worker node. Requires at least 2 nodes. Not supported
+    # together with resources.het_jobs: true.
+    # Default: False.
+    client_dedicated_node: bool = False
+    # Governs how the dedicated-node flags combine when more than one of
+    # client_dedicated_node, frontend.dedicated_node, and
+    # infra.etcd_nats_dedicated_node is set. If True (default), every
+    # requested role shares a single reserved node. If False, each requested
+    # role gets its own reserved node (requires enough total nodes: worker
+    # count + number of dedicated roles).
+    colocate_with_frontend: bool = True
     sweep: Annotated[SweepConfig, SweepConfigField(allow_none=True, load_default=None, dump_default=None)] | None = None
     # Accuracy benchmark fields
     num_examples: int | None = None
@@ -1585,6 +1597,10 @@ class FrontendConfig:
     #   "head" (default) -> nodes.head (first prefill/CTX node)
     #   "first_decode"   -> first decode/GEN worker-leader node
     orchestrator_placement: str = "head"
+    # If True, reserve a node exclusively for the frontend/orchestrator instead
+    # of running it on a worker node. Requires at least 2 nodes. Not supported
+    # together with resources.het_jobs: true. Default: False.
+    dedicated_node: bool = False
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
@@ -1689,6 +1705,7 @@ class SrtConfig:
         self._validate_telemetry()
         self._validate_mooncake_kv_store()
         self._validate_het_jobs()
+        self._validate_dedicated_node_placement()
         self._validate_trtllm_serve()
         self._validate_vllm_frontend()
         self._warn_dp_launch_mode()
@@ -1785,6 +1802,27 @@ class SrtConfig:
         if self.backend_type != "sglang":
             raise ValidationError(
                 f"het_jobs=true is only supported on the sglang backend; got backend.type={self.backend_type!r}"
+            )
+        if self.frontend.dedicated_node or self.benchmark.client_dedicated_node:
+            raise ValidationError(
+                "frontend.dedicated_node/benchmark.client_dedicated_node are not supported together with "
+                "het_jobs=true (a dedicated frontend/client node is not carved out of a het allocation)"
+            )
+
+    def _validate_dedicated_node_placement(self):
+        """A dedicated node is wasted if a placement override routes the
+        orchestrator/client somewhere else — the reserved node would then sit
+        idle while the intended workload runs on a worker node instead.
+        """
+        if self.frontend.dedicated_node and self.frontend.orchestrator_placement != "head":
+            raise ValidationError(
+                f"frontend.dedicated_node requires frontend.orchestrator_placement: head "
+                f"(got {self.frontend.orchestrator_placement!r}); otherwise the reserved node is never used"
+            )
+        if self.benchmark.client_dedicated_node and self.benchmark.client_placement != "head":
+            raise ValidationError(
+                f"benchmark.client_dedicated_node requires benchmark.client_placement: head "
+                f"(got {self.benchmark.client_placement!r}); otherwise the reserved node is never used"
             )
 
     def _validate_mooncake_kv_store(self):
