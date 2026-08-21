@@ -478,11 +478,31 @@ def generate_minimal_sbatch_script(
         infra_dedicated=config.infra.etcd_nats_dedicated_node,
         cluster_default=get_srtslurm_setting("use_het_jobs", False),
     )
+    if het_components is not None and (config.frontend.dedicated_node or config.benchmark.client_dedicated_node):
+        # SrtConfig validation only catches resources.het_jobs: true explicitly
+        # set in the recipe — it can't see a cluster-level use_het_jobs default,
+        # which is only resolved here via het_components(). Catch the combo now,
+        # before sbatch submits a heterogeneous allocation that Nodes.from_slurm
+        # will then reject at job startup after the nodes are already granted.
+        raise ValueError(
+            "frontend.dedicated_node/benchmark.client_dedicated_node are not supported with heterogeneous "
+            "SLURM jobs, and this job resolved to heterogeneous (either resources.het_jobs: true or the "
+            "cluster's use_het_jobs default)"
+        )
     if het_components is None:
         total_nodes = config.total_nodes
-        # Add extra node for dedicated etcd/nats infrastructure
-        if config.infra.etcd_nats_dedicated_node:
-            total_nodes += 1
+        # Add extra node(s) for any dedicated-node role requested (etcd/nats,
+        # frontend, benchmark client). Colocated roles share one reserved node;
+        # otherwise each gets its own.
+        num_dedicated_roles = sum(
+            (
+                config.infra.etcd_nats_dedicated_node,
+                config.frontend.dedicated_node,
+                config.benchmark.client_dedicated_node,
+            )
+        )
+        if num_dedicated_roles > 0:
+            total_nodes += 1 if config.benchmark.colocate_with_frontend else num_dedicated_roles
     else:
         # Sum is informational only — the template iterates het_components and
         # ignores total_nodes when het_components is set.
