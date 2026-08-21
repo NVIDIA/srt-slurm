@@ -312,13 +312,36 @@ class TestIngestBundle:
         assert "max_batch_size: 1" in (bundle / "trtllm_config_decode.yaml").read_text()
 
     def test_renderer_reads_real_ceilings_not_defaults(self, run_dir: Path, tmp_path: Path):
+        """Assert on the DATA payload, not the log line.
+
+        The renderer logged the config-derived ceilings correctly while the Engine
+        panel still consumed the CLI defaults -- the ceilings were parsed into a
+        variable only the per-iteration panel read. A log-line assertion passes
+        against that bug; only the payload catches it.
+        """
         bundle = tmp_path / "bundle"
         _run_ingest(run_dir, bundle)
-        # The renderer logs the resolved ceilings to stderr at INFO.
-        proc = _render(bundle, tmp_path / "dash.html", "--d3-cdn")
+        payload = tmp_path / "dash.json"
+        proc = _render(bundle, tmp_path / "dash.html", "--d3-cdn", "--dump-json", str(payload))
         assert proc.returncode == 0, proc.stderr
-        assert "prefill max_batch_size=128" in proc.stderr
-        assert "decode max_batch_size=1" in proc.stderr, "must be 1 from config, not the 256 default"
+
+        engine = json.loads(payload.read_text())["en"]
+        assert engine["max_batch_pf"] == 128
+        assert engine["max_batch_de"] == 1, "the decode in-flight panel must be drawn against 1, not the 256 default"
+
+    def test_cli_ceilings_apply_only_without_a_run_config(self, tmp_path: Path):
+        """The CLI flags stay a fallback for bundles carrying no engine config."""
+        d = tmp_path / "logs"
+        d.mkdir()
+        _write_raw_prometheus(d)
+        _write_aiperf_export(d)  # deliberately no _write_engine_configs
+        bundle = tmp_path / "bundle"
+        _run_ingest(d, bundle)
+        payload = tmp_path / "dash.json"
+        proc = _render(bundle, tmp_path / "dash.html", "--d3-cdn", "--dump-json", str(payload),
+                       "--max-batch-decode", "77")
+        assert proc.returncode == 0, proc.stderr
+        assert json.loads(payload.read_text())["en"]["max_batch_de"] == 77
 
     def test_missing_engine_configs_are_not_fatal(self, tmp_path: Path):
         """A non-TRTLLM run has no such files; ingest must still produce a bundle."""
