@@ -248,7 +248,35 @@ def show_config_details(config: SrtConfig) -> None:
         for host_template, container_template in config.container_mounts.items():
             mounts_table.add_row("recipe", str(host_template), str(container_template))
 
+    # InferenceX workspace, mounted by RuntimeContext.from_config when
+    # INFMAX_WORKSPACE is set in the submitting environment (core/runtime.py).
+    #
+    # It comes from the environment rather than the recipe, which is exactly why it has
+    # to be shown: nothing in the config file mentions it, so a reader comparing recipe
+    # to dry-run sees a complete picture and is wrong. Recipes whose benchmark command
+    # lives under /infmax-workspace (the agentic suites) fail with exit 127 twelve
+    # minutes in when it is missing, and the dry-run gave no hint either way -- the
+    # table listed every other mount, which made its absence read as "no such mount
+    # exists" rather than "not set".
+    infmax_ws = os.environ.get("INFMAX_WORKSPACE")
+    if infmax_ws:
+        mounts_table.add_row("INFMAX_WORKSPACE", infmax_ws, "/infmax-workspace")
+    elif "/infmax-workspace" in str(config.benchmark.command or ""):
+        mounts_table.add_row(
+            "[red]MISSING[/]",
+            "[red]INFMAX_WORKSPACE is not set in this environment[/]",
+            "[red]/infmax-workspace[/]",
+        )
+
     console.print(Panel(mounts_table, border_style="green"))
+
+    if not infmax_ws and "/infmax-workspace" in str(config.benchmark.command or ""):
+        console.print(
+            "[red bold]ERROR:[/] this recipe runs its benchmark from /infmax-workspace, "
+            "but INFMAX_WORKSPACE is not set, so that mount will be absent and the "
+            "benchmark command will fail with exit 127 after the workers have loaded. "
+            "Export INFMAX_WORKSPACE=<path to the InferenceX checkout> before submitting."
+        )
 
     # --- SLURM heterogeneous job structure ---
     het_components = config.resources.het_components(
