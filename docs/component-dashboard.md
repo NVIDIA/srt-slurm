@@ -113,6 +113,7 @@ Produces:
 | `--traces` | `spanlog` | `none` to skip |
 | `--span-logs` | `*.out` | srt-slurm's worker/frontend log naming |
 | `--metrics` | `prometheus` | parses `raw_prometheus.jsonl` |
+| *(automatic)* | — | `trtllm_config_*.yaml` are copied from the run dir into the bundle, giving the Engine tab its real in-flight-batch ceilings instead of the `--max-batch-*` defaults |
 | `--worker` | — | repeatable `ROLE=PARALLELISM:RANK:COUNT`, e.g. `prefill=dep:4:6` |
 | `--jobs` | `4` | parallelism for the `SPAN_CLOSED` pre-grep |
 
@@ -134,7 +135,7 @@ python3 -m src.visualization.build_dynamo_bench_dash <bundle> <out.html> [flags]
 | `--frontend-log PATH` | — | adds the Log-analysis tab |
 | `--d3 PATH` | vendored `src/visualization/d3.v7.min.js` | inlined for a self-contained page |
 | `--d3-cdn` | off | load D3 from the CDN instead (smaller file, needs network to view) |
-| `--max-batch-prefill / --max-batch-decode` | `128` / `256` | in-flight-batch ceilings drawn on the Engine tab |
+| `--max-batch-prefill / --max-batch-decode` | `128` / `256` | in-flight-batch ceilings drawn on the Engine tab. **Only used when the bundle has no `trtllm_config_*.yaml`** — ingest copies those in automatically, and the real values win. On AgentX run 2739690 the true decode ceiling is `1`, so the `256` default would misdraw that panel by 256x |
 | `--gpus N` | from `dashboard.yaml` | tok/s/GPU denominator |
 | `--include-warmup` | off | by default only the profiling phase is kept |
 
@@ -160,12 +161,6 @@ warmup/phase filter onto the log source.
 
 ## Known limitations
 
-- **Engine ceilings are inputs, not measurements.** The renderer looks for
-  `trtllm_config_{prefill,decode}.yaml` in the bundle; srt-slurm dumps engine config as
-  `<log_dir>/<node>_config.json` instead, so that lookup misses and the
-  `--max-batch-*` defaults apply. Pass them explicitly to match your run — the defaults
-  (128 / 256) are frequently wrong by orders of magnitude, and the Engine tab's captions
-  are drawn against them.
 - **Interpretive captions were developed on an admission/queue-bound reference run.**
   The numbers are data-driven, but the framing reads best on queue-bound runs.
 - **Nothing is wired into the job path.** These are offline tools run against a

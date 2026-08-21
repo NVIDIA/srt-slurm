@@ -361,6 +361,35 @@ def run_metrics(args, run_dir: Path, bundle: Path) -> bool:
     return out.exists()
 
 
+def run_engine_configs(run_dir: Path, bundle: Path) -> list[str]:
+    """Copy the run's resolved engine configs into the bundle, verbatim.
+
+    L3 reads ``<bundle>/trtllm_config_{prefill,decode}.yaml`` for the in-flight-batch
+    ceilings drawn on the Engine tab, and falls back to its ``--max-batch-*`` CLI
+    defaults when they are absent. srt-slurm writes exactly those filenames, but into
+    the run's log dir (``backends/trtllm.py``: ``runtime.log_dir / f"trtllm_config_{mode}.yaml"``),
+    which is one level above the bundle -- so without this copy the fallback always won.
+
+    That fallback is not a cosmetic default. On AgentX run 2739690 the real decode
+    ``max_batch_size`` is 1 while the CLI default is 256, so every decode in-flight
+    panel was drawn against a ceiling 256x too high and read as "nowhere near
+    saturated" when the engine was in fact pinned at its limit. Prefill happened to
+    match (128) which is exactly what makes the decode error easy to miss.
+
+    Globbed rather than enumerated so aggregated-mode runs (``trtllm_config_agg*.yaml``)
+    are carried across without a second code path.
+    """
+    copied: list[str] = []
+    for src in sorted(Path(run_dir).glob("trtllm_config_*.yaml")):
+        shutil.copyfile(src, bundle / src.name)
+        copied.append(src.name)
+    if copied:
+        _log("L2 engine-cfg", f"copied {len(copied)} engine config(s): {', '.join(copied)}")
+    else:
+        _log("L2 engine-cfg", "no trtllm_config_*.yaml in run dir; Engine tab will use --max-batch-* defaults")
+    return copied
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -430,6 +459,7 @@ def main(argv=None) -> int:
     profile_path = bundle / "profile_export.jsonl" if have_aiperf else None
     have_traces = run_traces(args, run_dir, bundle, profile_path)
     have_metrics = run_metrics(args, run_dir, bundle)
+    run_engine_configs(run_dir, bundle)
 
     yaml_text = generate_dashboard_yaml(
         name=name,
