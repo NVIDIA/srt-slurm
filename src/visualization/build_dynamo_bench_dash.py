@@ -894,6 +894,28 @@ if _args.frontend_log:
         _log.info(f"log analysis: {len(_lrows)} requests, "
                   f"p50={logdrill['global']['p50']}ms p99={logdrill['global']['p99']}ms, "
                   f"routing_join={'yes' if logdrill['routing'] else 'no'}")
+
+        # How much of the run's traffic the KV-routing panels actually describe.
+        #
+        # Computed HERE, into the payload, rather than formatted inside the page's JS.
+        # The HTML is frequently unreadable where it lands -- a headless node, a CI log,
+        # an S3 prefix -- so a caveat that exists only in rendered DOM is invisible to
+        # every consumer that reads the JSON, which is the primary artifact. It also
+        # makes the caveat testable: asserting on the HTML text cannot distinguish a
+        # rendered string from the template literal that would produce it.
+        #
+        # Session-affinity pins a request to the worker already holding its
+        # conversation, and a pinned request never reaches the KV scorer. On the e2e
+        # run 2751593 that was 248 of 274 decisions -- 90.5% -- so the KV-routing
+        # panels there describe under a tenth of the traffic.
+        _tot=_fst.get("selector_without_request_id") or 0
+        if _tot:
+            _pin=_fst.get("selector_decisions_pinned") or 0
+            ro["coverage"]={"decisions":_tot,"pinned":_pin,
+                            "pct_pinned":round(100.0*_pin/_tot,1)}
+            _log.info(f"router coverage: {_pin}/{_tot} decisions pinned by session affinity "
+                      f"({ro['coverage']['pct_pinned']}%); the KV-routing panels describe the "
+                      f"remaining {100-ro['coverage']['pct_pinned']:.1f}%")
     else:
         _log.warning("log analysis: no usable requests in the frontend log; tab omitted")
 
@@ -1738,7 +1760,25 @@ drillPanel('overview',DATA.drill,{
 })();
 
 // ================= ROUTER =================
-note('router',`Both panels come from the <b>frontend</b> endpoint (<code>:8000/metrics</code>). The KV router runs in-process in the frontend, so every router metric is published there — the prefill and decode endpoints expose none.`,'hl');
+// The coverage clause is appended only when the frontend-log leg is present, because
+// only that leg can count routing decisions. The SENTENCE is fixed; the numbers in it
+// are measured per run. Without it these panels read as "how the router chose", when
+// on a session-affinity deployment most requests never reach the KV scorer at all --
+// they are pinned to the worker that already holds the conversation. A reader drawing
+// conclusions about KV-aware routing from a run that barely used it is the failure
+// this sentence exists to prevent.
+(function(){
+ let cov='';
+ const CV=DATA.ro.coverage;
+ if(CV){
+   cov=`<br><br><b>Routing-decision coverage.</b> ${CV.decisions.toLocaleString()} routing decisions were
+     observed and <b>${CV.pinned.toLocaleString()} (${CV.pct_pinned.toFixed(1)}%)</b> were pinned by session
+     affinity, so they bypassed KV scoring entirely. These panels therefore describe the
+     <b>${(100-CV.pct_pinned).toFixed(1)}%</b> of decisions that actually reached the scorer. Read the KV-routing
+     panels as a description of that slice, not of the run's whole traffic.`;
+ }
+ note('router',`Both panels come from the <b>frontend</b> endpoint (<code>:8000/metrics</code>). The KV router runs in-process in the frontend, so every router metric is published there — the prefill and decode endpoints expose none.`+cov,'hl');
+})();
 (function(){const el=panel('router','Router overhead',
   '<code>dynamo_router_overhead_total_ms</code> — "Total routing overhead per request in milliseconds". A Prometheus histogram, plotted as the <b>interval mean</b> (Δsum/Δcount between consecutive scrapes), so each point is the average routing cost of the requests routed during that interval.',true);
  lg(el,[[C.grn,'router overhead (ms/request)']]);

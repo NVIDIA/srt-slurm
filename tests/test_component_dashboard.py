@@ -1208,6 +1208,60 @@ class TestKvHitRateGating:
         assert "block 512" not in topo
 
 
+class TestRouterCoverageCaveat:
+    """The KV-routing panels must say how much of the traffic they describe.
+
+    On a session-affinity deployment most requests never reach the KV scorer: they are
+    pinned to the worker already holding the conversation. On the e2e run 2751593, 248
+    of 274 routing decisions (90.5%) were pinned. Without the caveat these panels read
+    as "how the router chose" for the whole run, when they describe under a tenth of it.
+    """
+
+    @staticmethod
+    def _with_selector(run_dir: Path, n_pinned: int, n_fresh: int) -> None:
+        """Append selector decisions in the JSONL flavour the frontend emits."""
+        log = run_dir / "node0_frontend_0.out"
+        out = [log.read_text()]
+        for i in range(n_pinned + n_fresh):
+            pinned = "pinned " if i < n_pinned else ""
+            out.append(json.dumps({
+                "time": f"2026-08-20T10:00:{i % 60:02d}.000000Z",
+                "target": "dynamo_llm::kv_router::scheduling::selector",
+                "message": f"Selected {pinned}worker: worker_type=decode, worker_id=1 dp_rank=0, logit=0.5",
+            }))
+        log.write_text("\n".join(out) + "\n")
+
+    def test_coverage_is_measured_into_the_payload(self, run_dir: Path, tmp_path: Path):
+        """Asserted on the JSON, not the HTML.
+
+        The HTML always contains the template literal that WOULD render the caveat, so
+        a text search cannot tell a rendered string from its source. The payload is
+        also the artifact most consumers actually read.
+        """
+        self._with_selector(run_dir, n_pinned=90, n_fresh=10)
+        bundle = tmp_path / "bundle"
+        _run_ingest(run_dir, bundle)
+        payload = tmp_path / "dash.json"
+        proc = _render(bundle, tmp_path / "dash.html", "--d3-cdn", "--dump-json", str(payload),
+                       "--frontend-log", str(run_dir / "node0_frontend_0.out"))
+        assert proc.returncode == 0, proc.stderr
+        cov = json.loads(payload.read_text())["ro"]["coverage"]
+        assert cov["decisions"] == 100
+        assert cov["pinned"] == 90
+        assert cov["pct_pinned"] == 90.0
+
+    def test_absent_without_the_log_leg(self, run_dir: Path, tmp_path: Path):
+        """No frontend log means no decision count. A coverage claim with no
+        measurement behind it is worse than no claim at all, so the key must be
+        absent rather than defaulted to zero -- zero pinned would read as
+        'every request reached the scorer', the opposite of not knowing."""
+        bundle = tmp_path / "bundle"
+        _run_ingest(run_dir, bundle)
+        payload = tmp_path / "dash.json"
+        _render(bundle, tmp_path / "dash.html", "--d3-cdn", "--dump-json", str(payload))
+        assert "coverage" not in json.loads(payload.read_text())["ro"]
+
+
 class TestBlockSizeMismatch:
     """Router block size vs engine tokens-per-block.
 
