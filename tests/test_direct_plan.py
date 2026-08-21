@@ -11,7 +11,7 @@ import yaml
 
 from srtctl.core.config import expand_observability
 from srtctl.core.schema import SrtConfig
-from srtctl.render.lifecycle import build_local_lifecycle_render_context, render_local_lifecycle
+from srtctl.render.direct_plan import build_direct_plan_context, render_direct_container_shim
 
 
 def _config(
@@ -91,17 +91,17 @@ def _config(
 
 
 def _plan(context) -> dict[str, object]:
-    return json.loads(context.direct_lifecycle_plan)
+    return json.loads(context.direct_plan_json)
 
 
 def _assert_valid_direct_script(script: str) -> None:
     syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
     assert syntax.returncode == 0, syntax.stderr
     assert (
-        'exec "${SRTCTL_PYTHON}" "${SRTCTL_SOURCE}/src/srtctl/render/direct_lifecycle.py" --plan "${DIRECT_PLAN}"'
+        'exec "${SRTCTL_PYTHON}" "${SRTCTL_SOURCE}/src/srtctl/render/direct_runner.py" --plan "${DIRECT_PLAN}"'
         in script
     )
-    assert "direct-lifecycle-plan.json" in script
+    assert "direct-plan.json" in script
     assert "srt_launch" not in script
     assert "srt_stop_group" not in script
     for removed_compatibility_path in ("SRTCTL_TACHOMETER", "SRTCTL_NATS_BINARY"):
@@ -110,13 +110,13 @@ def _assert_valid_direct_script(script: str) -> None:
         assert forbidden not in script
 
 
-def test_local_lifecycle_renders_eight_tp1_workers_with_separate_logs(tmp_path) -> None:
-    context = build_local_lifecycle_render_context(
+def test_direct_plan_renders_eight_tp1_workers_with_separate_logs(tmp_path) -> None:
+    context = build_direct_plan_context(
         _config(),
         source_dir=tmp_path / "srt-slurm",
         output_base=tmp_path / "outputs",
     )
-    script = render_local_lifecycle(context)
+    script = render_direct_container_shim(context)
     plan = _plan(context)
 
     assert len(context.worker_processes) == 8
@@ -134,13 +134,13 @@ def test_local_lifecycle_renders_eight_tp1_workers_with_separate_logs(tmp_path) 
     _assert_valid_direct_script(script)
 
 
-def test_local_dynamo_plan_contains_owned_infrastructure_and_observability(tmp_path) -> None:
-    context = build_local_lifecycle_render_context(
+def test_direct_plan_contains_owned_infrastructure_and_observability(tmp_path) -> None:
+    context = build_direct_plan_context(
         _config(frontend_type="dynamo"),
         source_dir=tmp_path / "srt-slurm",
         output_base=tmp_path / "outputs",
     )
-    script = render_local_lifecycle(context)
+    script = render_direct_container_shim(context)
     plan = _plan(context)
 
     assert "-m dynamo.sglang" in context.worker_processes[0].command
@@ -161,8 +161,8 @@ def test_local_dynamo_plan_contains_owned_infrastructure_and_observability(tmp_p
     _assert_valid_direct_script(script)
 
 
-def test_local_lifecycle_expands_artifact_dir_in_frontend_environment(tmp_path) -> None:
-    context = build_local_lifecycle_render_context(
+def test_direct_plan_expands_artifact_dir_in_frontend_environment(tmp_path) -> None:
+    context = build_direct_plan_context(
         _config(
             frontend_type="dynamo",
             frontend_env={"DYN_REQUEST_TRACE_FILE_PATH": "{artifact_dir}/dynamo-request-trace.jsonl"},
@@ -176,7 +176,7 @@ def test_local_lifecycle_expands_artifact_dir_in_frontend_environment(tmp_path) 
     assert 'DYN_REQUEST_TRACE_FILE_PATH="${ARTIFACT_DIR}"/dynamo-request-trace.jsonl' in str(plan["router_command"])
 
 
-def test_local_dynamo_plan_accepts_isolated_infra_ports(tmp_path) -> None:
+def test_direct_plan_accepts_isolated_infra_ports(tmp_path) -> None:
     config = _config(
         frontend_type="dynamo",
         environment={
@@ -185,7 +185,7 @@ def test_local_dynamo_plan_accepts_isolated_infra_ports(tmp_path) -> None:
             "SRTCTL_NATS_PORT": "24222",
         },
     )
-    context = build_local_lifecycle_render_context(
+    context = build_direct_plan_context(
         config,
         source_dir=tmp_path / "srt-slurm",
         output_base=tmp_path / "outputs",
@@ -199,8 +199,8 @@ def test_local_dynamo_plan_accepts_isolated_infra_ports(tmp_path) -> None:
     assert plan["nats_port"] == 24222
 
 
-def test_local_dynamo_plan_caches_a_hash_pinned_source_build(tmp_path) -> None:
-    context = build_local_lifecycle_render_context(
+def test_direct_plan_caches_a_hash_pinned_source_build(tmp_path) -> None:
+    context = build_direct_plan_context(
         _config(frontend_type="dynamo", dynamo_hash="a6261680a974ca7c74dcf49592a7376d7de99380"),
         source_dir=tmp_path / "srt-slurm",
         output_base=tmp_path / "outputs",
@@ -213,10 +213,10 @@ def test_local_dynamo_plan_caches_a_hash_pinned_source_build(tmp_path) -> None:
     assert plan["dynamo_top_of_tree"] is False
 
 
-def test_local_lifecycle_can_run_inside_sglang_container(tmp_path) -> None:
+def test_direct_container_shim_runs_inside_sglang_container(tmp_path) -> None:
     source = tmp_path / "sglang"
     source.mkdir()
-    context = build_local_lifecycle_render_context(
+    context = build_direct_plan_context(
         _config(
             frontend_type="dynamo",
             dynamo_hash="a6261680a974ca7c74dcf49592a7376d7de99380",
@@ -228,7 +228,7 @@ def test_local_lifecycle_can_run_inside_sglang_container(tmp_path) -> None:
         source_dir=tmp_path / "srt-slurm",
         output_base=tmp_path / "outputs",
     )
-    script = render_local_lifecycle(context)
+    script = render_direct_container_shim(context)
 
     assert context.local_container_image == "lmsysorg/sglang:dev"
     assert context.sglang_source == str(source)
@@ -239,14 +239,12 @@ def test_local_lifecycle_can_run_inside_sglang_container(tmp_path) -> None:
     assert 'SRTCTL_MODEL_MOUNT_PATH="${SRTCTL_RENDERED_MODEL_PATH}"' in script
     assert '"$(basename "$(dirname "${SRTCTL_MODEL_MOUNT_PATH}")")" == "snapshots"' in script
     assert 'SRTCTL_MODEL_MOUNT_PATH="$(dirname "$(dirname "${SRTCTL_MODEL_MOUNT_PATH}")")"' in script
-    assert 'SRTCTL_CONTAINER_NAME="srtctl-lifecycle-$$"' in script
+    assert 'SRTCTL_CONTAINER_NAME="srtctl-direct-$$"' in script
     assert '--detach\n        --name "${SRTCTL_CONTAINER_NAME}"' in script
     assert '--label "${SRTCTL_CONTAINER_LABEL}"' in script
     assert 'docker ps -aq --filter "label=${SRTCTL_CONTAINER_LABEL}"' in script
     assert 'docker run "${SRT_CONTAINER_ARGS[@]}" >/dev/null' in script
-    assert (
-        'docker exec "${SRT_CONTAINER_EXEC_ARGS[@]}" "${SRTCTL_CONTAINER_NAME}" bash /run/srtctl-lifecycle.sh' in script
-    )
+    assert 'docker exec "${SRT_CONTAINER_EXEC_ARGS[@]}" "${SRTCTL_CONTAINER_NAME}" bash /run/srtctl-direct.sh' in script
     assert 'docker rm -f "${SRTCTL_CONTAINER_NAME}"' in script
     assert "SRTCTL_OUTPUT_DIR=${OUTPUT_DIR}" in script
     assert "SRTCTL_SGLANG_RUNTIME_DIR=${SRTCTL_SGLANG_RUNTIME_DIR}" in script
@@ -260,9 +258,9 @@ def test_local_lifecycle_can_run_inside_sglang_container(tmp_path) -> None:
     _assert_valid_direct_script(script)
 
 
-def test_local_dynamo_plan_uses_slurm_cache_key_and_patches(tmp_path) -> None:
+def test_direct_plan_uses_slurm_cache_key_and_patches(tmp_path) -> None:
     patch = 'dynamo-tokenizers = { git = "https://github.com/ai-dynamo/frontend-crates", branch = "trace" }'
-    context = build_local_lifecycle_render_context(
+    context = build_direct_plan_context(
         _config(
             frontend_type="dynamo",
             dynamo_hash="a6261680a974ca7c74dcf49592a7376d7de99380",
@@ -279,8 +277,8 @@ def test_local_dynamo_plan_uses_slurm_cache_key_and_patches(tmp_path) -> None:
     assert plan["dynamo_cargo_patch_commands"] == list(context.dynamo_cargo_patch_commands)
 
 
-def test_local_dynamo_plan_supports_top_of_tree_and_setup_script(tmp_path) -> None:
-    context = build_local_lifecycle_render_context(
+def test_direct_plan_supports_top_of_tree_and_setup_script(tmp_path) -> None:
+    context = build_direct_plan_context(
         _config(frontend_type="dynamo", dynamo={"top_of_tree": True}, setup_script="install-nixl.sh"),
         source_dir=tmp_path / "srt-slurm",
         output_base=tmp_path / "outputs",
@@ -293,8 +291,8 @@ def test_local_dynamo_plan_supports_top_of_tree_and_setup_script(tmp_path) -> No
     assert plan["setup_script"] == "install-nixl.sh"
 
 
-def test_local_dynamo_lifecycle_starts_mooncake_and_injects_worker_environment(tmp_path) -> None:
-    context = build_local_lifecycle_render_context(
+def test_direct_plan_starts_mooncake_and_injects_worker_environment(tmp_path) -> None:
+    context = build_direct_plan_context(
         _config(
             frontend_type="dynamo",
             environment={"SRTCTL_LOCAL_CONTAINER_IMAGE": "lmsysorg/sglang:dev"},
@@ -307,7 +305,7 @@ def test_local_dynamo_lifecycle_starts_mooncake_and_injects_worker_environment(t
         source_dir=tmp_path / "srt-slurm",
         output_base=tmp_path / "outputs",
     )
-    script = render_local_lifecycle(context)
+    script = render_direct_container_shim(context)
     plan = _plan(context)
 
     assert context.mooncake_master_command is not None
@@ -330,9 +328,9 @@ def test_local_dynamo_lifecycle_starts_mooncake_and_injects_worker_environment(t
         {"wheel": "1.2.0.dev20260426"},
     ],
 )
-def test_local_lifecycle_rejects_package_wheel_installs(tmp_path, dynamo) -> None:
+def test_direct_plan_rejects_package_wheel_installs(tmp_path, dynamo) -> None:
     with pytest.raises(ValueError, match="dynamo.hash or dynamo.top_of_tree"):
-        build_local_lifecycle_render_context(
+        build_direct_plan_context(
             _config(frontend_type="dynamo", dynamo=dynamo),
             source_dir=tmp_path / "srt-slurm",
             output_base=tmp_path / "outputs",
@@ -347,9 +345,9 @@ def test_local_lifecycle_rejects_package_wheel_installs(tmp_path, dynamo) -> Non
         (_config(environment={"SRTCTL_SGLANG_SOURCE": ""}), "SRTCTL_SGLANG_SOURCE"),
     ],
 )
-def test_local_lifecycle_rejects_removed_compatibility_paths(tmp_path, config: SrtConfig, message: str) -> None:
+def test_direct_plan_rejects_removed_compatibility_paths(tmp_path, config: SrtConfig, message: str) -> None:
     with pytest.raises(ValueError, match=message):
-        build_local_lifecycle_render_context(
+        build_direct_plan_context(
             config,
             source_dir=tmp_path / "srt-slurm",
             output_base=tmp_path / "outputs",
@@ -363,9 +361,9 @@ def test_local_lifecycle_rejects_removed_compatibility_paths(tmp_path, config: S
         (_config(frontend_type="dynamo", tachometer={"enabled": True, "storage_subdir": "custom"}), "storage_subdir"),
     ],
 )
-def test_local_lifecycle_rejects_slurm_only_yaml_features(tmp_path, config: SrtConfig, message: str) -> None:
+def test_direct_plan_rejects_slurm_only_yaml_features(tmp_path, config: SrtConfig, message: str) -> None:
     with pytest.raises(ValueError, match=message):
-        build_local_lifecycle_render_context(
+        build_direct_plan_context(
             config,
             source_dir=tmp_path / "srt-slurm",
             output_base=tmp_path / "outputs",

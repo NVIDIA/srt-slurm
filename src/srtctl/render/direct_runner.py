@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Direct-host lifecycle supervisor executed inside the serving environment.
+"""Direct benchmark runner executed inside the serving environment.
 
 The renderer writes a JSON launch plan and the small Bash entrypoint invokes
 this module directly.  It deliberately uses only the standard library so the
@@ -33,14 +33,14 @@ from typing import Any
 
 @dataclass
 class ManagedProcess:
-    """A direct-lifecycle subprocess and its process-group leader."""
+    """A direct-run subprocess and its process-group leader."""
 
     label: str
     process: subprocess.Popen[Any]
     log_path: Path
 
 
-class LifecycleInterrupted(Exception):
+class DirectRunInterrupted(Exception):
     """Signal delivered to the supervisor while it owns child process groups."""
 
     def __init__(self, signal_number: int) -> None:
@@ -48,8 +48,8 @@ class LifecycleInterrupted(Exception):
         super().__init__(f"received signal {signal_number}")
 
 
-class DirectLifecycle:
-    """Own one direct benchmark lifecycle from install through normalization."""
+class DirectRunner:
+    """Own one direct benchmark run from install through normalization."""
 
     def __init__(self, plan: dict[str, Any]) -> None:
         self.plan = plan
@@ -602,7 +602,7 @@ class DirectLifecycle:
         self._normalize_ruter()
 
     def _on_signal(self, signal_number: int, _frame: Any) -> None:
-        raise LifecycleInterrupted(signal_number)
+        raise DirectRunInterrupted(signal_number)
 
     def run(self) -> int:
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -627,7 +627,7 @@ class DirectLifecycle:
             self._start_tachometer()
             self._run_benchmark()
             return 0
-        except LifecycleInterrupted as error:
+        except DirectRunInterrupted as error:
             self.log(f"Interrupted by signal {error.signal_number}")
             return 128 + error.signal_number
         except KeyboardInterrupt:
@@ -676,11 +676,11 @@ def _shell_quote(value: str) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--plan", required=True, type=Path, help="Rendered direct lifecycle JSON plan")
+    parser.add_argument("--plan", required=True, type=Path, help="Rendered direct execution plan")
     args = parser.parse_args(argv)
     with args.plan.open(encoding="utf-8") as handle:
         plan = json.load(handle)
-    return DirectLifecycle(plan).run()
+    return DirectRunner(plan).run()
 
 
 if __name__ == "__main__":

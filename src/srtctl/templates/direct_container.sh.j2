@@ -2,10 +2,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
-# Direct lifecycle rendered by `srtctl apply --bash`.
+# Direct-container shim rendered by `srtctl apply --bash`.
 #
 # Bash owns only the host/container boundary.  The serialized plan below is
-# executed by direct_lifecycle.py, inside the same SGLang environment as the
+# executed by direct_runner.py, inside the same SGLang environment as the
 # workers, which owns installation, processes, readiness, telemetry, cleanup,
 # and ruter normalization.
 
@@ -35,12 +35,12 @@ if [[ "${SRTCTL_LOCAL_CONTAINERIZED:-}" != "1" ]]; then
     }
     SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
     [[ -f "${SCRIPT_PATH}" ]] || {
-        echo "srtctl: containerized --bash lifecycle must be saved to a file before execution" >&2
+        echo "srtctl: containerized --bash script must be saved to a file before execution" >&2
         exit 1
     }
 
-    SRTCTL_CONTAINER_NAME="srtctl-lifecycle-$$"
-    SRTCTL_CONTAINER_LABEL="io.nvidia.srtctl.lifecycle-output=$(printf '%s' "${OUTPUT_DIR}" | sha256sum | awk '{print $1}')"
+    SRTCTL_CONTAINER_NAME="srtctl-direct-$$"
+    SRTCTL_CONTAINER_LABEL="io.nvidia.srtctl.direct-output=$(printf '%s' "${OUTPUT_DIR}" | sha256sum | awk '{print $1}')"
     while IFS= read -r stale_container; do
         [[ -z "${stale_container}" ]] || docker rm -f "${stale_container}" >/dev/null 2>&1 || true
     done < <(docker ps -aq --filter "label=${SRTCTL_CONTAINER_LABEL}")
@@ -55,7 +55,7 @@ if [[ "${SRTCTL_LOCAL_CONTAINERIZED:-}" != "1" ]]; then
         --ulimit memlock=-1
         --ulimit stack=67108864
         --entrypoint bash
-        --mount "type=bind,src=${SCRIPT_PATH},dst=/run/srtctl-lifecycle.sh,readonly"
+        --mount "type=bind,src=${SCRIPT_PATH},dst=/run/srtctl-direct.sh,readonly"
     )
     srt_container_mount() {
         local path="$1"
@@ -166,13 +166,13 @@ if [[ "${SRTCTL_LOCAL_CONTAINERIZED:-}" != "1" ]]; then
     if [[ -n "${RUTER_MOONCAKE_TRACE:-}" ]]; then
         SRT_CONTAINER_EXEC_ARGS+=(-e "RUTER_MOONCAKE_TRACE=${RUTER_MOONCAKE_TRACE}")
     fi
-    docker exec "${SRT_CONTAINER_EXEC_ARGS[@]}" "${SRTCTL_CONTAINER_NAME}" bash /run/srtctl-lifecycle.sh
+    docker exec "${SRT_CONTAINER_EXEC_ARGS[@]}" "${SRTCTL_CONTAINER_NAME}" bash /run/srtctl-direct.sh
     exit $?
 fi
 
 mkdir -p "${OUTPUT_DIR}"
-DIRECT_PLAN="${OUTPUT_DIR}/direct-lifecycle-plan.json"
+DIRECT_PLAN="${OUTPUT_DIR}/direct-plan.json"
 cat >"${DIRECT_PLAN}" <<{{ direct_plan_marker }}
-{{ context.direct_lifecycle_plan }}
+{{ context.direct_plan_json }}
 {{ direct_plan_marker }}
-exec "${SRTCTL_PYTHON}" "${SRTCTL_SOURCE}/src/srtctl/render/direct_lifecycle.py" --plan "${DIRECT_PLAN}"
+exec "${SRTCTL_PYTHON}" "${SRTCTL_SOURCE}/src/srtctl/render/direct_runner.py" --plan "${DIRECT_PLAN}"

@@ -59,9 +59,9 @@ from srtctl.core.schema import SrtConfig, installs_dynamo
 from srtctl.core.status import create_job_record
 from srtctl.core.validation import preflight_config_variants
 from srtctl.ports import MOONCAKE_MASTER_PORT
-from srtctl.render.lifecycle import (
-    build_local_lifecycle_render_context,
-    render_local_lifecycle,
+from srtctl.render.direct_plan import (
+    build_direct_plan_context,
+    render_direct_container_shim,
 )
 
 console = Console()
@@ -1224,12 +1224,12 @@ def render_bash_script(
         )
 
     def render(config: SrtConfig) -> str:
-        context = build_local_lifecycle_render_context(
+        context = build_direct_plan_context(
             config,
             source_dir=source_dir,
             output_base=output_base,
         )
-        return render_local_lifecycle(context)
+        return render_direct_container_shim(context)
 
     if is_override_config(config_path):
         from srtctl.core.config import resolve_override_yaml

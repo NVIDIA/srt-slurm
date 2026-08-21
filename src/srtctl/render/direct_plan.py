@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Render the containerized single-node Dynamo lifecycle."""
+"""Compile the containerized single-node Dynamo execution plan."""
 
 from __future__ import annotations
 
@@ -38,8 +38,8 @@ _REMOVED_DIRECT_ENV = frozenset(
 
 
 @dataclass(frozen=True)
-class LocalProcess:
-    """One Dynamo worker emitted into the direct lifecycle plan."""
+class DirectProcess:
+    """One Dynamo worker emitted into the direct execution plan."""
 
     label: str
     log_name: str
@@ -48,8 +48,8 @@ class LocalProcess:
 
 
 @dataclass(frozen=True)
-class LocalLifecycleRenderContext:
-    """All values needed by the direct-container Bash shim and plan."""
+class DirectPlanContext:
+    """All values needed by the direct-container shim and execution plan."""
 
     name: str
     source_dir: str
@@ -62,7 +62,7 @@ class LocalLifecycleRenderContext:
     etcd_client_port: int
     etcd_peer_port: int
     nats_port: int
-    worker_processes: tuple[LocalProcess, ...]
+    worker_processes: tuple[DirectProcess, ...]
     router_command: str
     expected_prefill: int
     expected_decode: int
@@ -88,7 +88,7 @@ class LocalLifecycleRenderContext:
     tachometer_sync_interval_secs: int
     tachometer_compaction_threads: int
     ruter_enabled: bool
-    direct_lifecycle_plan: str
+    direct_plan_json: str
 
 
 def heredoc_marker(payload: str, *, prefix: str = "SRTCTL_RUNTIME_CONFIG") -> str:
@@ -107,7 +107,7 @@ def _shell_command(args: list[str], environment: dict[str, str] | None = None) -
         if not key.replace("_", "").isalnum() or key[0].isdigit():
             raise ValueError(f"Invalid environment variable name for --bash: {key!r}")
         quoted_value = shlex.quote(str(value))
-        # ``ARTIFACT_DIR`` is selected by the lifecycle script at runtime.  Keep
+        # ``ARTIFACT_DIR`` is selected by the direct runner at runtime.  Keep
         # all other config values shell-quoted while letting this one placeholder
         # expand in the child process that owns the frontend.
         quoted_value = quoted_value.replace(_ARTIFACT_DIR_PLACEHOLDER, '"${ARTIFACT_DIR}"')
@@ -136,7 +136,7 @@ def _cli_args(values: dict[str, Any] | None) -> list[str]:
     return args
 
 
-def _local_model_path(config: SrtConfig) -> str:
+def _direct_model_path(config: SrtConfig) -> str:
     path = os.path.expandvars(config.model.path)
     if path.startswith("hf:"):
         return path.removeprefix("hf:")
@@ -149,7 +149,7 @@ def _format_environment(
     node: str = "127.0.0.1",
     artifact_dir: str | None = None,
 ) -> dict[str, str]:
-    """Apply topology placeholders and direct-lifecycle runtime paths."""
+    """Apply topology placeholders and direct-runner runtime paths."""
 
     class SafeDict(dict[str, str]):
         def __missing__(self, key: str) -> str:
@@ -161,7 +161,7 @@ def _format_environment(
     return {key: str(value).format_map(substitutions) for key, value in values.items()}
 
 
-def _validate_local_config(config: SrtConfig) -> None:
+def _validate_direct_config(config: SrtConfig) -> None:
     resources = config.resources
     if not isinstance(config.backend, SGLangProtocol):
         raise NotImplementedError("--bash currently supports backend.type: sglang only")
@@ -205,7 +205,7 @@ def _validate_local_config(config: SrtConfig) -> None:
 
 
 def _direct_port(config: SrtConfig, name: str, default: int) -> int:
-    """Read an optional direct lifecycle port override from global environment."""
+    """Read an optional direct-run port override from global environment."""
     value = config.environment.get(name, str(default))
     try:
         port = int(value)
@@ -216,9 +216,9 @@ def _direct_port(config: SrtConfig, name: str, default: int) -> int:
     return port
 
 
-def _build_local_processes(
+def _build_direct_processes(
     config: SrtConfig, *, etcd_client_port: int, nats_port: int
-) -> tuple[list[Process], tuple[LocalProcess, ...]]:
+) -> tuple[list[Process], tuple[DirectProcess, ...]]:
     """Use the normal topology allocation, constrained to a single loopback host."""
     resources = config.resources
     backend = config.backend
@@ -242,9 +242,9 @@ def _build_local_processes(
     if len(used_gpus) > resources.gpus_per_node:
         raise ValueError("--bash worker GPU allocations exceed resources.gpus_per_node")
 
-    model_path = _local_model_path(config)
+    model_path = _direct_model_path(config)
     served_model_name = config.served_model_name
-    rendered: list[LocalProcess] = []
+    rendered: list[DirectProcess] = []
     for process in processes:
         mode = process.endpoint_mode
         worker_config = backend.get_config_for_mode(mode)
@@ -307,7 +307,7 @@ def _build_local_processes(
             f"worker-{process.endpoint_index}.log" if mode == "agg" else f"worker-{mode}-{process.endpoint_index}.log"
         )
         rendered.append(
-            LocalProcess(
+            DirectProcess(
                 label=f"{mode}-{process.endpoint_index}",
                 log_name=log_name,
                 command=_shell_command(args, environment),
@@ -389,7 +389,7 @@ def _build_tachometer_config(config: SrtConfig, processes: list[Process]) -> str
     return "\n".join(lines)
 
 
-def _build_local_mooncake_master_command(config: SrtConfig) -> tuple[str, ...] | None:
+def _build_direct_mooncake_master_command(config: SrtConfig) -> tuple[str, ...] | None:
     """Return the direct-host Mooncake master command from the shared YAML fields."""
     backend = config.backend
     assert isinstance(backend, SGLangProtocol)
@@ -410,7 +410,7 @@ def _build_local_mooncake_master_command(config: SrtConfig) -> tuple[str, ...] |
     )
 
 
-def _direct_lifecycle_plan(context: LocalLifecycleRenderContext) -> str:
+def _build_direct_plan_json(context: DirectPlanContext) -> str:
     """Serialize the direct-only execution plan consumed inside the container.
 
     This intentionally contains launch facts rather than the complete YAML:
@@ -455,19 +455,19 @@ def _direct_lifecycle_plan(context: LocalLifecycleRenderContext) -> str:
     return json.dumps(plan, sort_keys=True, separators=(",", ":"))
 
 
-def build_local_lifecycle_render_context(
+def build_direct_plan_context(
     config: SrtConfig,
     *,
     source_dir: Path,
     output_base: Path,
-) -> LocalLifecycleRenderContext:
-    """Build the direct-host lifecycle plan for ``srtctl apply --bash``."""
-    _validate_local_config(config)
+) -> DirectPlanContext:
+    """Build the direct execution plan for ``srtctl apply --bash``."""
+    _validate_direct_config(config)
     assert config.benchmark.command is not None
     etcd_client_port = _direct_port(config, "SRTCTL_ETCD_PORT", ETCD_CLIENT_PORT)
     etcd_peer_port = _direct_port(config, "SRTCTL_ETCD_PEER_PORT", etcd_client_port + 1)
     nats_port = _direct_port(config, "SRTCTL_NATS_PORT", NATS_PORT)
-    processes, workers = _build_local_processes(config, etcd_client_port=etcd_client_port, nats_port=nats_port)
+    processes, workers = _build_direct_processes(config, etcd_client_port=etcd_client_port, nats_port=nats_port)
     tachometer_config = _build_tachometer_config(config, processes)
     resources = config.resources
     expected_prefill = resources.num_prefill
@@ -476,7 +476,7 @@ def build_local_lifecycle_render_context(
     dynamo_source_hash = config.dynamo.hash if config.dynamo.install else None
     cargo_patches = config.dynamo.cargo_patches if dynamo_source_hash else None
     dynamo_top_of_tree = config.dynamo.install and config.dynamo.top_of_tree
-    model_path = _local_model_path(config)
+    model_path = _direct_model_path(config)
     local_container_image = str(config.environment["SRTCTL_LOCAL_CONTAINER_IMAGE"])
     sglang_source = os.path.expandvars(str(config.environment["SRTCTL_SGLANG_SOURCE"]))
     global_environment = {key: value for key, value in config.environment.items() if key not in _DIRECT_RUNTIME_ENV}
@@ -492,7 +492,7 @@ def build_local_lifecycle_render_context(
         separators=(",", ":"),
     )
     mooncake_cfg = config.backend.mooncake_kv_store
-    context = LocalLifecycleRenderContext(
+    context = DirectPlanContext(
         name=config.name,
         source_dir=str(source_dir.resolve()),
         output_base=str(output_base.resolve()),
@@ -518,7 +518,7 @@ def build_local_lifecycle_render_context(
         dynamo_top_of_tree=dynamo_top_of_tree,
         sglang_runtime_key=hashlib.sha256(runtime_identity.encode("utf-8")).hexdigest()[:16],
         setup_script=config.setup_script,
-        mooncake_master_command=_build_local_mooncake_master_command(config),
+        mooncake_master_command=_build_direct_mooncake_master_command(config),
         mooncake_container=mooncake_cfg.container if mooncake_cfg is not None else None,
         mooncake_environment=tuple(sorted(mooncake_cfg.env.items())) if mooncake_cfg is not None else (),
         mooncake_master_port=MOONCAKE_MASTER_PORT,
@@ -532,17 +532,17 @@ def build_local_lifecycle_render_context(
         tachometer_sync_interval_secs=config.observability.tachometer.sync_interval_secs,
         tachometer_compaction_threads=config.observability.tachometer.compaction_threads,
         ruter_enabled=config.observability.enabled,
-        direct_lifecycle_plan="",
+        direct_plan_json="",
     )
-    return replace(context, direct_lifecycle_plan=_direct_lifecycle_plan(context))
+    return replace(context, direct_plan_json=_build_direct_plan_json(context))
 
 
-def render_local_lifecycle(context: LocalLifecycleRenderContext) -> str:
-    """Render the self-contained local Bash execution artifact."""
+def render_direct_container_shim(context: DirectPlanContext) -> str:
+    """Render the self-contained direct-container execution artifact."""
     template_dir = Path(__file__).parent.parent / "templates"
     environment = Environment(loader=FileSystemLoader(str(template_dir)), keep_trailing_newline=True)
-    return environment.get_template("local_lifecycle.sh.j2").render(
+    return environment.get_template("direct_container.sh.j2").render(
         context=context,
         quote=shlex.quote,
-        direct_plan_marker=heredoc_marker(context.direct_lifecycle_plan, prefix="SRTCTL_DIRECT_PLAN"),
+        direct_plan_marker=heredoc_marker(context.direct_plan_json, prefix="SRTCTL_DIRECT_PLAN"),
     )

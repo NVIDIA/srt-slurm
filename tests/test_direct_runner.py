@@ -9,7 +9,7 @@ import tarfile
 
 import pytest
 
-from srtctl.render.direct_lifecycle import DirectLifecycle, LifecycleInterrupted, _router_counts
+from srtctl.render.direct_runner import DirectRunInterrupted, DirectRunner, _router_counts
 
 
 def _plan(tmp_path) -> dict[str, object]:
@@ -26,7 +26,7 @@ def _plan(tmp_path) -> dict[str, object]:
     }
 
 
-def _runner(tmp_path, monkeypatch) -> DirectLifecycle:
+def _runner(tmp_path, monkeypatch) -> DirectRunner:
     output = tmp_path / "output"
     logs = output / "logs"
     artifacts = output / "artifacts"
@@ -36,7 +36,7 @@ def _runner(tmp_path, monkeypatch) -> DirectLifecycle:
     monkeypatch.setenv("LOG_DIR", str(logs))
     monkeypatch.setenv("ARTIFACT_DIR", str(artifacts))
     monkeypatch.setenv("SRTCTL_PYTHON", sys.executable)
-    return DirectLifecycle(_plan(tmp_path))
+    return DirectRunner(_plan(tmp_path))
 
 
 def test_router_counts_accepts_dynamo_health_shape() -> None:
@@ -76,7 +76,7 @@ def test_dynamo_cache_key_includes_current_python_and_host_shape(tmp_path, monke
 def test_runner_converts_termination_to_cleanup_signal(tmp_path, monkeypatch) -> None:
     runner = _runner(tmp_path, monkeypatch)
 
-    with pytest.raises(LifecycleInterrupted) as error:
+    with pytest.raises(DirectRunInterrupted) as error:
         runner._on_signal(signal.SIGTERM, None)
 
     assert error.value.signal_number == signal.SIGTERM
@@ -101,7 +101,7 @@ def test_dynamo_source_archive_excludes_build_artifacts(tmp_path) -> None:
     (source / ".git" / "ignored").write_text("ignored\n", encoding="utf-8")
     archive = tmp_path / "dynamo-src.tar.gz"
 
-    DirectLifecycle._write_archive(tmp_path / "build", "dynamo", archive)
+    DirectRunner._write_archive(tmp_path / "build", "dynamo", archive)
 
     with tarfile.open(archive, "r:gz") as handle:
         names = handle.getnames()
