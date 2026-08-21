@@ -691,6 +691,96 @@ def run_log_signals(run_dir: Path, bundle: Path, max_samples: int = 2) -> dict:
     return out
 
 
+# Run lifecycle milestones, in the order they must occur. Each is (id, regex).
+# Fixed and ordered so the leg means the same thing on every run.
+_LIFECYCLE = [
+    ("infra_start", r"Starting infrastructure services"),
+    ("workers_start", r"Starting backend workers"),
+    ("frontend_start", r"Starting frontend layer"),
+    ("model_ready", r"Model is ready\."),
+    ("benchmark_start", r"Server is healthy - starting benchmark"),
+    ("benchmark_end", r"Benchmark (?:completed|failed)"),
+    ("run_end", r"(?:✗ Sweep failed|✓ Sweep complete|End:)"),
+]
+
+
+def run_lifecycle(run_dir: Path, bundle: Path) -> dict:
+    """Time-to-ready and terminal cause -> ``run_lifecycle.json`` (PERF-45).
+
+    Two questions no panel could answer, because both live in srtctl's own sweep log
+    rather than in any metric or client artifact:
+
+    * **How long until the deployment could serve?** On run 2752632 the workers start at
+      02:23:19 and the model is ready at 02:34:09 -- **650 s** during which the job holds
+      28 GPUs and serves nothing. That is a first-order cost of every run and it is
+      invisible in a dashboard whose x-axis starts at the first request.
+    * **Why did the run end?** srtctl writes its own verdict, and a reader looking at an
+      empty or truncated dashboard needs it before anything else.
+
+    The readiness GAP matters as much as the total: `model_ready` is when the health
+    check passes, but the frontend has been accepting connections since `frontend_start`.
+    Requests arriving in that window meet a router with nowhere to place them.
+
+    Derived durations are emitted alongside the raw timestamps so a consumer never has to
+    re-parse them, and a milestone that never happened is recorded as null rather than
+    omitted -- "the model never became ready" is the single most useful thing a failed
+    run can say.
+    """
+    import re as _re
+    from datetime import datetime as _dt
+
+    sweeps = sorted(Path(run_dir).glob("sweep_*.log"))
+    if not sweeps:
+        _log("L2 lifecycle", "no sweep_*.log; time-to-ready and terminal cause unavailable")
+        return {}
+
+    pats = [(mid, _re.compile(rx)) for mid, rx in _LIFECYCLE]
+    ts_re = _re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)")
+    marks: dict = {mid: None for mid, _ in _LIFECYCLE}
+    terminal = None
+    for sw in sweeps:
+        try:
+            fh = open(sw, errors="replace")
+        except OSError:
+            continue
+        with fh:
+            for line in fh:
+                m = ts_re.match(line)
+                for mid, rx in pats:
+                    # First occurrence wins: these are one-shot transitions, and a
+                    # retry loop would otherwise overwrite the real start time.
+                    if marks[mid] is None and rx.search(line):
+                        marks[mid] = m.group(1) if m else "unknown"
+                if "Sweep failed" in line or "Sweep complete" in line:
+                    terminal = line.strip()[:200]
+
+    def _delta(a, b):
+        try:
+            return round((_dt.strptime(marks[b], "%Y-%m-%d %H:%M:%S")
+                          - _dt.strptime(marks[a], "%Y-%m-%d %H:%M:%S")).total_seconds(), 1)
+        except Exception:
+            return None
+
+    out = {
+        "milestones": marks,
+        "terminal_cause": terminal,
+        "durations_s": {
+            # workers up -> health check passes: the GPUs-held-but-idle window.
+            "time_to_ready": _delta("workers_start", "model_ready"),
+            # frontend accepting -> router able to place: requests here have nowhere to go.
+            "readiness_gap": _delta("frontend_start", "model_ready"),
+            "benchmark": _delta("benchmark_start", "benchmark_end"),
+            "total": _delta("infra_start", "run_end"),
+        },
+    }
+    with open(bundle / "run_lifecycle.json", "w") as f:
+        json.dump(out, f)
+    d = out["durations_s"]
+    _log("L2 lifecycle", f"time_to_ready={d['time_to_ready']}s readiness_gap={d['readiness_gap']}s "
+                         f"benchmark={d['benchmark']}s | terminal: {terminal or 'unknown'}")
+    return out
+
+
 def run_provenance(run_dir: Path, bundle: Path) -> list[str]:
     """Copy the run's provenance files into the bundle: what actually ran.
 
@@ -856,6 +946,7 @@ def main(argv=None) -> int:
     run_provenance(run_dir, bundle)
     run_benchmark_status(run_dir, bundle)
     run_log_signals(run_dir, bundle)
+    run_lifecycle(run_dir, bundle)
 
     yaml_text = generate_dashboard_yaml(
         name=name,

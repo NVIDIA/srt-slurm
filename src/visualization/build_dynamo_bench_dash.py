@@ -101,6 +101,17 @@ def _cfg_max_batch(mode):
         except Exception:
             pass
     return None, None
+def _lifecycle():
+    """Time-to-ready and terminal cause from ``run_lifecycle.json`` (PERF-45)."""
+    if not SRC:
+        return None
+    try:
+        with open(os.path.join(SRC, "run_lifecycle.json")) as fh:
+            return json.load(fh) or None
+    except Exception:
+        return None
+
+
 def _log_signals():
     """Log-only signals from ``log_signals.json``: the ones with no metric behind them.
 
@@ -314,6 +325,11 @@ CLIENT_SUMMARY = _client_summary()
 PROVENANCE = _provenance()
 BENCH_STATUS = _benchmark_status()
 LOG_SIGNALS = _log_signals()
+LIFECYCLE = _lifecycle()
+if LIFECYCLE:
+    _d = LIFECYCLE.get("durations_s") or {}
+    _log.info(f"lifecycle: time_to_ready={_d.get('time_to_ready')}s "
+              f"readiness_gap={_d.get('readiness_gap')}s | {LIFECYCLE.get('terminal_cause')}")
 if LOG_SIGNALS:
     _fired = {k: v["count"] for k, v in LOG_SIGNALS.items() if v.get("count")}
     _log.info(f"log-only signals: {_fired}" if _fired
@@ -1508,7 +1524,8 @@ DATA={
    "client_summary":CLIENT_SUMMARY,
    "provenance":PROVENANCE,
    "benchmark_status":BENCH_STATUS,
-   "log_signals":LOG_SIGNALS},
+   "log_signals":LOG_SIGNALS,
+   "lifecycle":LIFECYCLE},
  "kpi":{"ttft_p50":round(pct(col("ttft"),50)/1000,1),"ttft_p99":round(pct(col("ttft"),99)/1000,1),
    "adm_p50":round(pct(col("adm"),50)/1000,1),"pf_p50":round(pct(col("pf"),50)/1000,1),
    "reqs":N,"adm_share":round(pct(col("adm"),50)/max(1,pct(col("ttft"),50))*100,0),
@@ -1631,6 +1648,12 @@ function hTip(){tip.style('display','none')}
   // than on one tab. A cancelled run, a run with client errors, or an agentic run
   // whose child branches errored produced figures that must not be compared against a
   // clean run -- and nothing in the per-request stream says so.
+  const LC=M.lifecycle;
+  if(LC && LC.durations_s && LC.durations_s.time_to_ready!=null){
+    head += `  —  ready in ${LC.durations_s.time_to_ready}s`
+          + (LC.durations_s.readiness_gap!=null
+               ? ` (frontend accepted ${LC.durations_s.readiness_gap}s before the router could place)` : '');
+  }
   const CS=M.client_summary;
   if(CS){
     const bad=[];
