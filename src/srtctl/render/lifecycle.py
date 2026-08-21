@@ -23,6 +23,9 @@ from srtctl.ports import (
     DYN_SYSTEM_PORT_BASE,
     ETCD_CLIENT_PORT,
     FRONTEND_PUBLIC_PORT,
+    MOONCAKE_HTTP_METADATA_PORT,
+    MOONCAKE_MASTER_PORT,
+    MOONCAKE_METRICS_PORT,
     NATS_PORT,
     SGLANG_NCCL_PORT_BASE,
 )
@@ -68,7 +71,15 @@ class LocalLifecycleRenderContext:
     dynamo_source_cache_key: str | None
     dynamo_cargo_patch_commands: tuple[str, ...]
     dynamo_package_version: str | None
+    dynamo_top_of_tree: bool
     sglang_runtime_key: str
+    setup_script: str | None
+    mooncake_master_command: tuple[str, ...] | None
+    mooncake_container: str | None
+    mooncake_environment: tuple[tuple[str, str], ...]
+    mooncake_master_port: int
+    mooncake_metadata_port: int
+    mooncake_metrics_port: int
     global_environment: tuple[tuple[str, str], ...]
     benchmark_environment: tuple[tuple[str, str], ...]
     benchmark_command: str
@@ -172,20 +183,17 @@ def _validate_local_config(config: SrtConfig) -> None:
         raise ValueError("--bash does not support DCGM power telemetry")
     if config.profiling.enabled:
         raise ValueError("--bash does not support profiling; use the Slurm lifecycle")
-    if config.setup_script:
-        raise ValueError("--bash does not support setup_script; build it into the direct container image")
-    if getattr(config.backend, "mooncake_kv_store", None) is not None:
-        raise ValueError("--bash does not manage backend.mooncake_kv_store; use the Slurm lifecycle")
     tachometer = config.observability.tachometer
     if tachometer.dcgm_exporter is not None or tachometer.node_exporter is not None:
         raise ValueError("--bash does not manage Tachometer exporter containers")
     if tachometer.storage_subdir != "tachometer":
         raise ValueError("--bash requires observability.tachometer.storage_subdir: tachometer")
-    if config.frontend.type == "dynamo" and config.dynamo.install and config.dynamo.top_of_tree:
-        raise ValueError("--bash does not support dynamo.top_of_tree; pin dynamo.hash or dynamo.wheel")
     container_image = config.environment.get("SRTCTL_LOCAL_CONTAINER_IMAGE")
     if container_image is not None and not str(container_image).strip():
         raise ValueError("SRTCTL_LOCAL_CONTAINER_IMAGE must be non-empty when configured")
+    mooncake_cfg = getattr(config.backend, "mooncake_kv_store", None)
+    if mooncake_cfg is not None and mooncake_cfg.container is not None and container_image is None:
+        raise ValueError("--bash with backend.mooncake_kv_store.container requires SRTCTL_LOCAL_CONTAINER_IMAGE")
     sglang_source = config.environment.get("SRTCTL_SGLANG_SOURCE")
     if sglang_source is not None:
         sglang_source = os.path.expandvars(str(sglang_source))
@@ -298,6 +306,8 @@ def _build_local_processes(
             )
             if config.dynamo.event_plane:
                 environment["DYN_EVENT_PLANE"] = config.dynamo.event_plane
+        if backend.mooncake_kv_store is not None:
+            environment.update(backend.get_mooncake_worker_env("127.0.0.1", "127.0.0.1"))
 
         log_name = (
             f"worker-{process.endpoint_index}.log" if mode == "agg" else f"worker-{mode}-{process.endpoint_index}.log"
@@ -412,6 +422,27 @@ def _build_tachometer_config(config: SrtConfig, processes: list[Process]) -> str
     return "\n".join(lines)
 
 
+def _build_local_mooncake_master_command(config: SrtConfig) -> tuple[str, ...] | None:
+    """Return the direct-host Mooncake master command from the shared YAML fields."""
+    backend = config.backend
+    assert isinstance(backend, SGLangProtocol)
+    mooncake_cfg = backend.mooncake_kv_store
+    if mooncake_cfg is None:
+        return None
+    return (
+        "mooncake_master",
+        f"--port={MOONCAKE_MASTER_PORT}",
+        "--enable_http_metadata_server=true",
+        f"--http_metadata_server_port={MOONCAKE_HTTP_METADATA_PORT}",
+        "--eviction_high_watermark_ratio=0.9",
+        "--default_kv_lease_ttl=10000",
+        "--rpc_thread_num=16",
+        "--enable_metric_reporting=true",
+        f"--metrics_port={MOONCAKE_METRICS_PORT}",
+        *mooncake_cfg.master_extra_args,
+    )
+
+
 def build_local_lifecycle_render_context(
     config: SrtConfig,
     *,
@@ -437,6 +468,7 @@ def build_local_lifecycle_render_context(
         if config.frontend.type == "dynamo" and config.dynamo.install and not dynamo_source_hash
         else None
     )
+    dynamo_top_of_tree = config.frontend.type == "dynamo" and config.dynamo.install and config.dynamo.top_of_tree
     model_path = _local_model_path(config)
     local_container_image = config.environment.get("SRTCTL_LOCAL_CONTAINER_IMAGE")
     sglang_source = config.environment.get("SRTCTL_SGLANG_SOURCE")
@@ -451,12 +483,14 @@ def build_local_lifecycle_render_context(
             if dynamo_source_hash
             else None,
             "dynamo_package_version": dynamo_package_version,
+            "dynamo_top_of_tree": dynamo_top_of_tree,
             "dynamo_preinstalled": config.frontend.type == "dynamo" and not config.dynamo.install,
             "container_image": str(local_container_image or "host"),
         },
         sort_keys=True,
         separators=(",", ":"),
     )
+    mooncake_cfg = config.backend.mooncake_kv_store
     return LocalLifecycleRenderContext(
         name=config.name,
         source_dir=str(source_dir.resolve()),
@@ -483,7 +517,15 @@ def build_local_lifecycle_render_context(
         else None,
         dynamo_cargo_patch_commands=dynamo_cargo_patch_commands(cargo_patches),
         dynamo_package_version=dynamo_package_version,
+        dynamo_top_of_tree=dynamo_top_of_tree,
         sglang_runtime_key=hashlib.sha256(runtime_identity.encode("utf-8")).hexdigest()[:16],
+        setup_script=config.setup_script,
+        mooncake_master_command=_build_local_mooncake_master_command(config),
+        mooncake_container=mooncake_cfg.container if mooncake_cfg is not None else None,
+        mooncake_environment=tuple(sorted(mooncake_cfg.env.items())) if mooncake_cfg is not None else (),
+        mooncake_master_port=MOONCAKE_MASTER_PORT,
+        mooncake_metadata_port=MOONCAKE_HTTP_METADATA_PORT,
+        mooncake_metrics_port=MOONCAKE_METRICS_PORT,
         global_environment=tuple(sorted((key, str(value)) for key, value in global_environment.items())),
         benchmark_environment=tuple(sorted((key, str(value)) for key, value in config.benchmark.env.items())),
         benchmark_command=config.benchmark.command,

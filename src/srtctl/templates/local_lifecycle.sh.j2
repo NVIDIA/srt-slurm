@@ -33,6 +33,10 @@ OUTPUT_DIR="${SRTCTL_OUTPUT_DIR:-${OUTPUT_BASE}/${RUN_NAME}-$(date -u +%Y%m%dT%H
 LOG_DIR="${OUTPUT_DIR}/logs"
 ARTIFACT_DIR="${OUTPUT_DIR}/artifacts"
 export OUTPUT_DIR LOG_DIR ARTIFACT_DIR
+{% if context.mooncake_master_command %}
+SRTCTL_MOONCAKE_CONTAINER_NAME=""
+SRTCTL_MOONCAKE_LOG_PID=""
+{% endif %}
 
 if [[ -n "${SRTCTL_LOCAL_CONTAINER_IMAGE}" && "${SRTCTL_LOCAL_CONTAINERIZED:-}" != "1" ]]; then
     command -v docker >/dev/null 2>&1 || {
@@ -126,6 +130,16 @@ if [[ -n "${SRTCTL_LOCAL_CONTAINER_IMAGE}" && "${SRTCTL_LOCAL_CONTAINERIZED:-}" 
     srt_container_cleanup() {
         local rc=$?
         trap - EXIT INT TERM
+{% if context.mooncake_master_command %}
+        if [[ -n "${SRTCTL_MOONCAKE_LOG_PID}" ]]; then
+            kill "${SRTCTL_MOONCAKE_LOG_PID}" 2>/dev/null || true
+            wait "${SRTCTL_MOONCAKE_LOG_PID}" 2>/dev/null || true
+        fi
+        if [[ -n "${SRTCTL_MOONCAKE_CONTAINER_NAME}" ]]; then
+            docker logs "${SRTCTL_MOONCAKE_CONTAINER_NAME}" >>"${LOG_DIR}/mooncake-master.log" 2>&1 || true
+            docker rm -f "${SRTCTL_MOONCAKE_CONTAINER_NAME}" >/dev/null 2>&1 || true
+        fi
+{% endif %}
         docker rm -f "${SRTCTL_CONTAINER_NAME}" >/dev/null 2>&1 || true
         local owner
         owner="$(id -u):$(id -g)"
@@ -136,12 +150,39 @@ if [[ -n "${SRTCTL_LOCAL_CONTAINER_IMAGE}" && "${SRTCTL_LOCAL_CONTAINERIZED:-}" 
     trap srt_container_cleanup EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
+{% if context.mooncake_master_command %}
+    mkdir -p "${LOG_DIR}"
+    SRTCTL_MOONCAKE_CONTAINER_NAME="${SRTCTL_CONTAINER_NAME}-mooncake"
+    declare -a SRT_MOONCAKE_CONTAINER_ARGS=(
+        --detach
+        --name "${SRTCTL_MOONCAKE_CONTAINER_NAME}"
+        --label "${SRTCTL_CONTAINER_LABEL}"
+        --network host
+        --ipc host
+        --gpus all
+        --ulimit memlock=-1
+        --ulimit stack=67108864
+{% for key, value in context.mooncake_environment %}
+        --env {{ quote(key + "=" + value) }}
+{% endfor %}
+    )
+    docker run "${SRT_MOONCAKE_CONTAINER_ARGS[@]}" {{ quote(context.mooncake_container or context.local_container_image or '') }} \
+{% for argument in context.mooncake_master_command %}
+        {{ quote(argument) }}{% if not loop.last %} \
+{% endif %}
+{% endfor %}        >"${LOG_DIR}/mooncake-master.container-id"
+    docker logs -f "${SRTCTL_MOONCAKE_CONTAINER_NAME}" >"${LOG_DIR}/mooncake-master.log" 2>&1 &
+    SRTCTL_MOONCAKE_LOG_PID=$!
+{% endif %}
     docker run "${SRT_CONTAINER_ARGS[@]}" >/dev/null
     declare -a SRT_CONTAINER_EXEC_ARGS=(
         -e SRTCTL_LOCAL_CONTAINERIZED=1
         -e "SRTCTL_OUTPUT_DIR=${OUTPUT_DIR}"
         -e "SRTCTL_DYNAMO_CACHE_ROOT=${SRTCTL_DYNAMO_CACHE_ROOT}"
     )
+{% if context.mooncake_master_command %}
+    SRT_CONTAINER_EXEC_ARGS+=(-e SRTCTL_MOONCAKE_CONTAINERIZED=1)
+{% endif %}
     if [[ -n "${SRTCTL_SGLANG_RUNTIME_DIR}" ]]; then
         SRT_CONTAINER_EXEC_ARGS+=(-e "SRTCTL_SGLANG_RUNTIME_DIR=${SRTCTL_SGLANG_RUNTIME_DIR}")
     fi
@@ -181,6 +222,9 @@ SRTCTL_DYNAMO_SOURCE_CACHE_KEY={{ quote(context.dynamo_source_cache_key) }}
 {% if context.dynamo_package_version %}
 SRTCTL_DYNAMO_PACKAGE_VERSION={{ quote(context.dynamo_package_version) }}
 {% endif %}
+{% if context.setup_script %}
+SRTCTL_SETUP_SCRIPT={{ quote(context.setup_script) }}
+{% endif %}
 {% if context.tachometer_enabled %}
 TACHOMETER_SYNC_INTERVAL_SECS={{ context.tachometer_sync_interval_secs }}
 TACHOMETER_COMPACTION_THREADS={{ context.tachometer_compaction_threads }}
@@ -194,6 +238,22 @@ srt_die() {
     srt_log "ERROR: $*"
     exit 1
 }
+
+{% if context.setup_script %}
+srt_run_setup_script() {
+    local script_path="${SRTCTL_SOURCE}/configs/${SRTCTL_SETUP_SCRIPT}"
+    local patch_script_path="${SRTCTL_SOURCE}/configs/patches/${SRTCTL_SETUP_SCRIPT}"
+    if [[ -f "${script_path}" ]]; then
+        srt_log "Running setup script: ${script_path}"
+        bash "${script_path}"
+    elif [[ -f "${patch_script_path}" ]]; then
+        srt_log "Running setup script: ${patch_script_path}"
+        bash "${patch_script_path}"
+    else
+        srt_log "WARNING: setup script not found: ${script_path} (or ${patch_script_path})"
+    fi
+}
+{% endif %}
 
 srt_install_sglang_from_source() {
     [[ -n "${SRTCTL_SGLANG_SOURCE}" ]] || return 0
@@ -239,6 +299,24 @@ srt_install_sglang_from_source() {
     "${SRTCTL_PYTHON}" -c 'import nixl, blake3' || srt_die "SGLang runtime dependencies are incomplete"
 }
 
+{% if context.dynamo_source_hash or context.dynamo_top_of_tree %}
+srt_prepare_dynamo_source_build() {
+    # Match the Slurm cold-build path: build Dynamo in the SGLang container,
+    # provisioning bindgen/prost prerequisites there. A direct host lifecycle
+    # must supply its own toolchain instead of modifying the host.
+    if [[ "${SRTCTL_LOCAL_CONTAINERIZED:-}" == "1" ]]; then
+        srt_log "Installing Dynamo source build prerequisites"
+        apt-get update -qq
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq libclang-dev protobuf-compiler
+    fi
+    command -v git >/dev/null 2>&1 || srt_die "git is required for a Dynamo source build"
+    command -v cargo >/dev/null 2>&1 || srt_die "cargo is required for a Dynamo source build"
+    command -v protoc >/dev/null 2>&1 || srt_die "protoc is required for a Dynamo source build"
+    "${SRTCTL_PYTHON}" -m pip --version >/dev/null 2>&1 || "${SRTCTL_PYTHON}" -m ensurepip --upgrade
+    "${SRTCTL_PYTHON}" -m pip install --quiet --upgrade maturin
+}
+{% endif %}
+
 {% if context.dynamo_source_hash %}
 srt_install_dynamo_from_source_cache() {
     local cache_root="${SRTCTL_DYNAMO_CACHE_ROOT:-${SRTCTL_SOURCE}/configs/dynamo-wheels}"
@@ -252,22 +330,8 @@ srt_install_dynamo_from_source_cache() {
     (
         flock -x 201
         if [[ ! -f "${cache}/.complete" ]]; then
-            # Match the Slurm cold-build path: build Dynamo in the SGLang
-            # container, and provision bindgen/prost prerequisites there. Do
-            # not mutate a direct host lifecycle; it must supply its own tools.
-            if [[ "${SRTCTL_LOCAL_CONTAINERIZED:-}" == "1" ]]; then
-                srt_log "Installing Dynamo source build prerequisites"
-                apt-get update -qq
-                DEBIAN_FRONTEND=noninteractive apt-get install -y -qq libclang-dev protobuf-compiler
-            fi
-            command -v git >/dev/null 2>&1 || { echo "git is required for a Dynamo source build" >&2; exit 1; }
-            command -v cargo >/dev/null 2>&1 || { echo "cargo is required for a Dynamo source build" >&2; exit 1; }
-            command -v protoc >/dev/null 2>&1 || { echo "protoc is required for a Dynamo source build" >&2; exit 1; }
+            srt_prepare_dynamo_source_build
             srt_log "Building Dynamo ${SRTCTL_DYNAMO_SOURCE_HASH} into ${cache}"
-            # Slurm images ship pip; uv-created direct-host environments do
-            # not necessarily. Bootstrap it in the selected local venv only.
-            "${SRTCTL_PYTHON}" -m pip --version >/dev/null 2>&1 || "${SRTCTL_PYTHON}" -m ensurepip --upgrade
-            "${SRTCTL_PYTHON}" -m pip install --quiet --upgrade maturin
             build_dir="$(mktemp -d)"
             trap 'rm -rf "${build_dir}"' EXIT
             git clone --no-checkout https://github.com/ai-dynamo/dynamo.git "${build_dir}/dynamo"
@@ -303,6 +367,32 @@ srt_install_dynamo_from_source_cache() {
     # path and install plain Dynamo into that already-provisioned venv.
     "${SRTCTL_PYTHON}" -m pip install --quiet --editable "${source_dir}/dynamo"
     srt_log "Installed Dynamo ${SRTCTL_DYNAMO_SOURCE_HASH} from ${cache}"
+}
+{% endif %}
+
+{% if context.dynamo_top_of_tree %}
+srt_install_dynamo_from_top_of_tree() {
+    local build_dir source_dir wheel
+    srt_prepare_dynamo_source_build
+    build_dir="$(mktemp -d)"
+    srt_log "Building Dynamo top-of-tree"
+    git clone --depth 1 https://github.com/ai-dynamo/dynamo.git "${build_dir}/dynamo"
+    (
+        cd "${build_dir}/dynamo/lib/bindings/python"
+        RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native --cfg tokio_unstable" \
+        CARGO_TARGET_DIR="${build_dir}/target" \
+            "${SRTCTL_PYTHON}" -m maturin build --release --out "${build_dir}/wheels"
+    )
+    wheel="$(compgen -G "${build_dir}/wheels/ai_dynamo_runtime-*.whl" | head -n 1 || true)"
+    [[ -n "${wheel}" ]] || srt_die "Dynamo top-of-tree build produced no runtime wheel"
+    source_dir="${OUTPUT_DIR}/runtime/dynamo-src"
+    rm -rf "${source_dir}"
+    mkdir -p "${source_dir}"
+    tar --exclude='target' --exclude='.git' -C "${build_dir}/dynamo" -cf - . | tar -C "${source_dir}" -xf -
+    "${SRTCTL_PYTHON}" -m pip install --quiet --force-reinstall --no-deps "${wheel}"
+    "${SRTCTL_PYTHON}" -m pip install --quiet --editable "${source_dir}"
+    rm -rf "${build_dir}"
+    srt_log "Installed Dynamo top-of-tree"
 }
 {% endif %}
 
@@ -459,6 +549,46 @@ srt_wait_http_ready() {
     srt_die "${label} did not become ready: ${url}"
 }
 
+{% if context.mooncake_master_command %}
+srt_wait_tcp_ready() {
+    local host="$1"
+    local port="$2"
+    local label="$3"
+    "${SRTCTL_PYTHON}" - "${host}" "${port}" "${label}" "${SRT_READY_TIMEOUT}" "${SRT_READY_INTERVAL}" <<'PY'
+import socket
+import sys
+import time
+
+host, raw_port, label, raw_timeout, raw_interval = sys.argv[1:]
+port = int(raw_port)
+deadline = time.monotonic() + int(raw_timeout)
+interval = int(raw_interval)
+while time.monotonic() < deadline:
+    try:
+        with socket.create_connection((host, port), timeout=3):
+            print(f"{label} is ready")
+            raise SystemExit(0)
+    except OSError:
+        time.sleep(interval)
+raise SystemExit(f"{label} did not become ready on {host}:{port}")
+PY
+}
+
+srt_start_mooncake_master() {
+    if [[ "${SRTCTL_MOONCAKE_CONTAINERIZED:-}" != "1" ]]; then
+        declare -a SRT_MOONCAKE_COMMAND=(
+{% for argument in context.mooncake_master_command %}
+            {{ quote(argument) }}
+{% endfor %}
+        )
+        srt_launch "mooncake-master" "${LOG_DIR}/mooncake-master.log" "${SRT_MOONCAKE_COMMAND[@]}"
+    fi
+    srt_wait_tcp_ready "127.0.0.1" {{ context.mooncake_master_port }} "mooncake master"
+    srt_wait_tcp_ready "127.0.0.1" {{ context.mooncake_metadata_port }} "mooncake metadata"
+    srt_wait_tcp_ready "127.0.0.1" {{ context.mooncake_metrics_port }} "mooncake metrics"
+}
+{% endif %}
+
 srt_wait_router_ready() {
     local path="/health"
     if [[ "${FRONTEND_TYPE}" == "sglang" ]]; then
@@ -547,11 +677,16 @@ srt_log "Run directory: ${OUTPUT_DIR}"
 {% if context.ruter_enabled %}
 srt_log "Observability enabled: Dynamo request tracing is on (DYN_REQUEST_TRACE=1; request-end gzip JSONL: ${ARTIFACT_DIR}/dynamo-request-trace.*.jsonl.gz)"
 {% endif %}
+{% if context.setup_script %}
+srt_run_setup_script
+{% endif %}
 srt_install_sglang_from_source
 "${SRTCTL_PYTHON}" -c 'import sglang' || srt_die "SGLang is not installed for ${SRTCTL_PYTHON}"
 {% if context.frontend_type == "dynamo" %}
 {% if context.dynamo_source_hash %}
 srt_install_dynamo_from_source_cache
+{% elif context.dynamo_top_of_tree %}
+srt_install_dynamo_from_top_of_tree
 {% elif context.dynamo_package_version %}
 srt_install_dynamo_from_wheel_cache
 {% endif %}
@@ -566,6 +701,10 @@ srt_launch "etcd" "${LOG_DIR}/etcd.log" "${SRTCTL_ETCD_BINARY}" --data-dir "${OU
 srt_wait_http_ready "http://127.0.0.1:{{ context.etcd_client_port }}/health" "etcd"
 {% else %}
 "${SRTCTL_PYTHON}" -c 'import sglang_router' || srt_die "sglang-router (Model Gateway) is not installed for ${SRTCTL_PYTHON}"
+{% endif %}
+
+{% if context.mooncake_master_command %}
+srt_start_mooncake_master
 {% endif %}
 
 {% for worker in context.worker_processes %}

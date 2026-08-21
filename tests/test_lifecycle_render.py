@@ -24,6 +24,7 @@ def _config(
     tachometer: dict[str, object] | None = None,
     setup_script: str | None = None,
     profiling_type: str | None = None,
+    mooncake: dict[str, object] | None = None,
 ) -> SrtConfig:
     raw = {
         "name": "direct-render",
@@ -75,6 +76,8 @@ def _config(
             "type": profiling_type,
             "aggregated": {"start_step": 0, "stop_step": 1},
         }
+    if mooncake is not None:
+        raw["backend"]["mooncake_kv_store"] = mooncake
     expand_observability(raw)
     return SrtConfig.Schema().load(yaml.safe_load(yaml.safe_dump(raw)))
 
@@ -303,6 +306,56 @@ def test_local_dynamo_lifecycle_uses_slurm_cache_key_and_patches(tmp_path) -> No
     assert syntax.returncode == 0, syntax.stderr
 
 
+def test_local_dynamo_lifecycle_supports_top_of_tree_and_setup_script(tmp_path) -> None:
+    context = build_local_lifecycle_render_context(
+        _config(frontend_type="dynamo", dynamo={"top_of_tree": True}, setup_script="install-nixl.sh"),
+        source_dir=tmp_path / "srt-slurm",
+        output_base=tmp_path / "outputs",
+    )
+    script = render_local_lifecycle(context)
+
+    assert context.dynamo_top_of_tree
+    assert context.setup_script == "install-nixl.sh"
+    assert "srt_install_dynamo_from_top_of_tree()" in script
+    assert "git clone --depth 1 https://github.com/ai-dynamo/dynamo.git" in script
+    assert "SRTCTL_SETUP_SCRIPT=install-nixl.sh" in script
+    assert 'script_path="${SRTCTL_SOURCE}/configs/${SRTCTL_SETUP_SCRIPT}"' in script
+    assert script.rindex("srt_run_setup_script") < script.rindex("srt_install_sglang_from_source")
+    syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
+    assert syntax.returncode == 0, syntax.stderr
+
+
+def test_local_dynamo_lifecycle_starts_mooncake_and_injects_worker_environment(tmp_path) -> None:
+    context = build_local_lifecycle_render_context(
+        _config(
+            frontend_type="dynamo",
+            environment={"SRTCTL_LOCAL_CONTAINER_IMAGE": "lmsysorg/sglang:dev"},
+            mooncake={
+                "container": "nvcr.io/nvidia/mooncake:latest",
+                "env": {"MOONCAKE_PROTOCOL": "rdma"},
+                "master_extra_args": ["--custom-flag=true"],
+            },
+        ),
+        source_dir=tmp_path / "srt-slurm",
+        output_base=tmp_path / "outputs",
+    )
+    script = render_local_lifecycle(context)
+
+    assert context.mooncake_master_command is not None
+    assert "--custom-flag=true" in context.mooncake_master_command
+    assert context.mooncake_container == "nvcr.io/nvidia/mooncake:latest"
+    assert "MOONCAKE_MASTER=127.0.0.1:8700" in context.worker_processes[0].command
+    assert "MOONCAKE_TE_META_DATA_SERVER=http://127.0.0.1:8701/metadata" in context.worker_processes[0].command
+    assert "MOONCAKE_PROTOCOL=rdma" in context.worker_processes[0].command
+    assert 'SRTCTL_MOONCAKE_CONTAINER_NAME="${SRTCTL_CONTAINER_NAME}-mooncake"' in script
+    assert "nvcr.io/nvidia/mooncake:latest" in script
+    assert 'docker logs -f "${SRTCTL_MOONCAKE_CONTAINER_NAME}"' in script
+    assert 'srt_launch "mooncake-master"' in script
+    assert 'srt_wait_tcp_ready "127.0.0.1" 8700 "mooncake master"' in script
+    syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
+    assert syntax.returncode == 0, syntax.stderr
+
+
 @pytest.mark.parametrize(
     ("dynamo", "version"),
     [
@@ -334,9 +387,7 @@ def test_local_dynamo_lifecycle_stages_exact_package_wheels(tmp_path, dynamo, ve
 @pytest.mark.parametrize(
     ("config", "message"),
     [
-        (_config(frontend_type="dynamo", setup_script="setup.sh"), "setup_script"),
         (_config(frontend_type="dynamo", profiling_type="nsys"), "profiling"),
-        (_config(frontend_type="dynamo", dynamo={"top_of_tree": True}), "top_of_tree"),
         (_config(frontend_type="dynamo", tachometer={"enabled": True, "storage_subdir": "custom"}), "storage_subdir"),
     ],
 )
