@@ -857,3 +857,37 @@ class TestPanelSpec:
         assert panels, "the fixture emits KV-cache metrics, so panels must be present"
         for p in panels.values():
             assert {"tab", "title", "unit", "kind", "why", "source", "series"} <= set(p)
+
+
+class TestGeneratedPageStructure:
+    """Dependency-free structural checks on the emitted HTML.
+
+    These cannot prove the page RENDERS -- that needs a DOM, and
+    ``tools/dashboard_render_check.js`` does it with jsdom. What they do catch is the
+    page losing a whole feature (a tab, the spec-panel renderer, the session table)
+    without anyone noticing, which is cheap to check and has no npm cost.
+    """
+
+    def test_page_carries_every_tab_and_renderer(self, run_dir: Path, tmp_path: Path):
+        bundle = tmp_path / "bundle"
+        _run_ingest(run_dir, bundle)
+        out = tmp_path / "dash.html"
+        assert _render(bundle, out, "--d3-cdn").returncode == 0
+
+        html = out.read_text()
+        for marker in ("['session','Session']", "declarative spec panels",
+                       "DATA.panels", "DATA.rt", ".tbl th{", "attr('class','tbl')"):
+            assert marker in html, f"page lost: {marker}"
+
+    def test_page_js_has_balanced_script_tags(self, run_dir: Path, tmp_path: Path):
+        """A truncated template would produce a page that silently renders nothing."""
+        bundle = tmp_path / "bundle"
+        _run_ingest(run_dir, bundle)
+        out = tmp_path / "dash.html"
+        _render(bundle, out, "--d3-cdn")
+
+        html = out.read_text()
+        assert html.rstrip().endswith("</html>")
+        # `<script` not `<script>`: with --d3-cdn one tag is `<script src=...>`, so
+        # counting only the bare form is asymmetric by construction.
+        assert html.count("<script") == html.count("</script>")

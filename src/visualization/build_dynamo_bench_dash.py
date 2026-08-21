@@ -958,7 +958,12 @@ h1{margin:0;font-size:16px}.sub{color:var(--dim);font-size:12px;margin-top:3px}
 .view{display:none;padding:16px 20px 60px}.view.on{display:block}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(400px,1fr));gap:14px}
 .panel{background:var(--panel);border:1px solid var(--edge);border-radius:10px;padding:12px 14px;min-width:0}
-.panel h2{margin:0 0 2px;font-size:13px}.panel .cap{color:var(--dim);font-size:11px;margin-bottom:8px}
+.panel h2{margin:0 0 2px;font-size:13px}.panel .src{color:#6e7681;font-size:11px}
+.warn{color:#d29922;font-size:11px}
+.tbl{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}
+.tbl th{text-align:left;color:#8b949e;font-weight:600;border-bottom:1px solid #30363d;padding:4px 8px}
+.tbl td{padding:4px 8px;border-bottom:1px solid #21262d;color:#c9d1d9;font-variant-numeric:tabular-nums}
+.cap{color:var(--dim);font-size:11px;margin-bottom:8px}
 .kpis{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px}
 .kpi{background:var(--panel);border:1px solid var(--edge);border-radius:9px;padding:9px 14px;min-width:110px}
 .kpi .v{font-size:22px;font-weight:700;color:var(--grn)}.kpi .l{color:var(--dim);font-size:11px}
@@ -1003,7 +1008,7 @@ document.getElementById('sub').textContent=`${DATA.meta.n.toLocaleString()} requ
 // 'Log analysis' only exists when --frontend-log was supplied; the tab is dropped
 // entirely rather than rendered empty, so a bundle-only build looks unchanged.
 const ALL_TABS=[['overview','Overview'],['frontend','Frontend'],['router','Router'],
-                ['engine','Engine'],['loganalysis','Log analysis']];
+                ['engine','Engine'],['session','Session'],['loganalysis','Log analysis']];
 const OK=DATA.tabs||{};
 const TABS=ALL_TABS.filter(([id])=>OK[id]);
 const te=d3.select('#tabs'),ve=d3.select('#views');
@@ -1458,6 +1463,91 @@ note('frontend',`Both panels come from the <b>frontend</b> endpoint (<code>:8000
   {unit:'n',keys:[[1,C.grn],[2,C.adm],[3,C.cy],[4,C.pf]],logy:true});})();
 
 // hash-based tab select (for headless screenshots) + default
+// ---- declarative spec panels (src/visualization/panels.py) ------------------
+// ONE renderer for every spec panel. It is handed {series,unit,split_by,...} and
+// knows nothing else about the signal, so no panel can acquire bespoke drawing
+// behaviour -- which is the property the spec table exists to guarantee. The
+// caption is assembled from fixed fields (why / source / caveat), never from the
+// run's values, so two runs produce byte-identical captions.
+(function(){
+ const P=DATA.panels; if(!P||!Object.keys(P).length) return;
+ const PAL=[C.pf,C.de,C.grn,C.route,C.cy,C.adm,'#d29922','#a371f7','#db6d28','#3fb950'];
+ const fmtU=(u)=>{
+   if(u==='ratio')  return v=>(v*100).toFixed(0)+'%';
+   if(u==='s')      return v=>v>=1?v.toFixed(1)+'s':(v*1000).toFixed(0)+'ms';
+   if(u==='ms')     return v=>v>=1000?(v/1000).toFixed(1)+'s':v.toFixed(0)+'ms';
+   return d3.format('~s');
+ };
+ Object.keys(P).sort().forEach(pid=>{
+  const p=P[pid], keys=Object.keys(p.series).sort();
+  if(!keys.length) return;
+  // Fixed-composition caption: purpose, then provenance, then the known trap.
+  let cap=p.why
+    +`<br><span class="src">source: <code>${p.source.join('</code> + <code>')}</code>`
+    +` &middot; ${p.kind}${p.split_by?' &middot; split by <code>'+p.split_by+'</code>':''}</span>`;
+  if(p.caveat) cap+=`<br><span class="warn">caveat: ${p.caveat}</span>`;
+  const el=panel(p.tab,p.title,cap,keys.length>3);
+  // A series that never moves is stated in words. Drawing a flat line invites the
+  // reader to conclude the panel is broken, when "it never moved" is the finding.
+  const flat=keys.every(k=>{const v=p.series[k].map(d=>d[1]);return Math.max(...v)===Math.min(...v)});
+  if(flat){
+    const v=p.series[keys[0]][0][1];
+    el.append('div').attr('class','note').html(
+      `Constant <b>${fmtU(p.unit)(v)}</b> for the whole run across `
+      +`${keys.length} series &mdash; this run never exercised this signal.`);
+    return;
+  }
+  if(keys.length>1) lg(el,keys.map((k,i)=>[PAL[i%PAL.length],p.split_by?`${p.split_by}=${k}`:k]));
+  const L=58,B=28,H=keys.length>3?250:200,s=svg(el,VW,H);
+  const all=keys.flatMap(k=>p.series[k]);
+  const x=d3.scaleLinear().domain([0,d3.max(all,d=>d[0])||1]).range([L,VW-12]);
+  const y=d3.scaleLinear().domain([0,(d3.max(all,d=>d[1])||1)*1.08]).nice().range([H-B,8]);
+  s.append('g').attr('class','axis').attr('transform',`translate(0,${H-B})`)
+   .call(d3.axisBottom(x).ticks(8).tickFormat(v=>v.toFixed(0)+'s'));
+  s.append('g').attr('class','axis').attr('transform',`translate(${L},0)`)
+   .call(d3.axisLeft(y).ticks(5).tickFormat(fmtU(p.unit)));
+  const ln=d3.line().x(d=>x(d[0])).y(d=>y(d[1]));
+  keys.forEach((k,i)=>s.append('path').datum(p.series[k]).attr('fill','none')
+    .attr('stroke',PAL[i%PAL.length]).attr('stroke-width',1.2).attr('opacity',.9).attr('d',ln));
+ });
+})();
+
+// ---- session decomposition (DATA.rt) ---------------------------------------
+// One row per session, same columns for every session and every run.
+(function(){
+ const S=(DATA.rt||{}).sessions||[]; if(!S.length) return;
+ const el=panel('session','Sessions',
+   'One row per session, ordered by first request. <b>busy</b> is time the server was '
+   +'working on this session\'s turns; <b>idle</b> is wall-clock the session existed '
+   +'without work in flight &mdash; harness think time, which a session-level latency '
+   +'figure would otherwise absorb and attribute to the server.'
+   +'<br><span class="src">source: <code>request_trace.jsonl</code></span>',true);
+ const t=el.append('table').attr('class','tbl');
+ t.append('thead').append('tr').selectAll('th')
+  .data(['session','turns','span','busy','idle','TTFT p50','KV hit p50','decode workers','prefill ranks'])
+  .join('th').text(d=>d);
+ const med=a=>{const v=a.filter(x=>x!=null).sort((p,q)=>p-q);return v.length?v[Math.floor(v.length/2)]:null};
+ const tb=t.append('tbody');
+ S.forEach(s=>{
+   const ttft=med(s.ttft_ms), kv=med(s.kv_hit);
+   tb.append('tr').selectAll('td').data([
+     s.session_id.slice(0,8), s.turns,
+     (s.span_ms/1000).toFixed(1)+'s', (s.busy_ms/1000).toFixed(1)+'s',
+     (s.idle_ms/1000).toFixed(1)+'s',
+     ttft==null?'-':(ttft/1000).toFixed(2)+'s',
+     kv==null?'-':(kv*100).toFixed(1)+'%',
+     s.decode_workers.map(w=>String(w).slice(-6)).join(', ')||'-',
+     s.prefill_ranks.join(', ')||'-',
+   ]).join('td').text(d=>d);
+ });
+ const cst=(DATA.rt||{}).const||{};
+ if(Object.keys(cst).length) note('session',
+   'Constant for every request in this run: '
+   +Object.entries(cst).map(([k,v])=>`<code>${k}</code>=${v}`).join(', ')
+   +'. Reported rather than charted &mdash; a flat line reads as a broken panel, '
+   +'whereas "this never varied" is itself a result.');
+})();
+
 const h=(location.hash||'').replace('#','');
 if(TABS.some(t=>t[0]===h)) act(h); else if(TABS.length) act(TABS[0][0]);
 </script></body></html>"""
