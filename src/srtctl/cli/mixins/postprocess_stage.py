@@ -202,6 +202,12 @@ class PostProcessStageMixin:
         # Export per-node batch CSVs + gen_throughput summary (optional)
         self._export_node_metrics_csv()
 
+        # Build the component perf dashboard (optional). Deliberately ordered BEFORE
+        # the S3 sync below: the sync ships the whole log dir, so building here is what
+        # gets perf_dashboard.{html,json} and its bundle off the cluster. Building
+        # after would leave them behind on a node whose /lustre scratch is transient.
+        self._build_perf_dashboard()
+
         # Run srtlog + S3 upload in single container (if S3 configured)
         _parquet_path, s3_url = self._run_postprocess_container()
 
@@ -220,6 +226,27 @@ class PostProcessStageMixin:
             if ai_config and ai_config.enabled:
                 logger.info("Running AI-powered failure analysis...")
                 self._run_ai_analysis(ai_config)
+
+    def _build_perf_dashboard(self) -> None:
+        """Render the component perf dashboard from this run's own capture.
+
+        Closes the loop `observability.enabled` opens: that knob makes the run emit
+        raw_prometheus.jsonl, SPAN_CLOSED lines and the frontend request-trace, and
+        this turns them into `<log_dir>/perf_dashboard.{html,json}` plus the
+        intermediate bundle — so one submission yields the page, with no second
+        hand-driven step from a checkout.
+
+        Gated on `observability.build_dashboard`, which follows `observability.enabled`
+        by default. Best-effort: `try_build` swallows its own failures, and the extra
+        guard here means even an import error cannot fail a benchmark that has already
+        produced results.
+        """
+        try:
+            from srtctl.analysis.perf_dashboard import try_build
+
+            try_build(self.config, self.runtime)
+        except Exception as e:  # noqa: BLE001 - visualisation is never fatal
+            logger.warning("Perf dashboard build skipped: %s", e)
 
     def _generate_rollup(self) -> None:
         """Run benchmark-specific rollup script to generate benchmark-rollup.json.

@@ -21,9 +21,36 @@ from a repo checkout.
 
 ---
 
-## Quick start
+## Quick start — one run, built automatically
 
-Point the ingest at a job's log directory, then render the bundle:
+Set the analytics knob in the recipe and the dashboard is produced by the job itself:
+
+```yaml
+observability:
+  enabled: true          # capture + build the dashboard
+  # build_dashboard: false   # capture only, skip rendering
+```
+
+Post-processing then writes, into the run's log dir:
+
+```
+perf_dashboard.html          self-contained page (D3 inlined, no network needed)
+perf_dashboard.json          the page's DATA payload — same object the HTML embeds
+perf_dashboard_bundle/       the intermediate schemas, re-renderable in seconds
+```
+
+`perf_dashboard.json` exists because the HTML is often unreadable where it lands — a
+headless cluster, a CI log, an S3 prefix. It is the machine-readable form of
+everything the page shows, so a run can be diffed against another, asserted on in a
+test, or simply read without a browser. It is built before the S3 sync, so all three
+artifacts ship with the rest of the log dir.
+
+Driven by `srtctl.analysis.perf_dashboard`, which is best-effort: a rendering failure
+is logged and never changes the outcome of a benchmark that already produced results.
+
+## Running it by hand
+
+Against any past run — including one captured before this existed:
 
 ```bash
 cd /path/to/srt-slurm
@@ -137,6 +164,7 @@ python3 -m src.visualization.build_dynamo_bench_dash <bundle> <out.html> [flags]
 | `--d3-cdn` | off | load D3 from the CDN instead (smaller file, needs network to view) |
 | `--max-batch-prefill / --max-batch-decode` | `128` / `256` | in-flight-batch ceilings drawn on the Engine tab. **Only used when the bundle has no `trtllm_config_*.yaml`** — ingest copies those in automatically, and the real values win. On AgentX run 2739690 the true decode ceiling is `1`, so the `256` default would misdraw that panel by 256x |
 | `--gpus N` | from `dashboard.yaml` | tok/s/GPU denominator |
+| `--dump-json PATH` | — | also write the DATA payload as indented JSON (what the automatic build produces as `perf_dashboard.json`) |
 | `--include-warmup` | off | by default only the profiling phase is kept |
 
 The bundle argument is optional — with only `--frontend-log`, you get a

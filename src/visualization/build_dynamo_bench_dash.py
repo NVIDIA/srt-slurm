@@ -49,6 +49,11 @@ _ap.add_argument("--max-batch-prefill", type=int, default=128, help="prefill max
 _ap.add_argument("--max-batch-decode", type=int, default=256, help="decode max_batch_size ceiling for the in-flight panel")
 _ap.add_argument("--include-warmup", action="store_true", help="keep AgentX cache-warmup requests (default: profiling phase only)")
 _ap.add_argument("--gpus", type=int, default=None, help="total GPU count for tok/s/GPU (default: sum(rank x worker_count) from the bundle's dashboard.yaml)")
+_ap.add_argument("--dump-json", default=None, metavar="PATH",
+                 help="also write the page's underlying DATA payload as indented JSON. The HTML embeds "
+                      "this same object, so the dump is the machine-readable form of everything the "
+                      "dashboard shows -- for diffing two runs, for CI assertions, and for reading a "
+                      "result on a machine with no browser.")
 _ap.add_argument("--frontend-log", default=None, metavar="PATH",
                  help="Dynamo frontend log (INFO level) to populate the 'Log analysis' tab. "
                       "Accepts raw container stdout or sflow-wrapped. Tab is omitted if not given.")
@@ -1333,3 +1338,12 @@ if(TABS.some(t=>t[0]===h)) act(h); else if(TABS.length) act(TABS[0][0]);
 html=HTML.replace("__D3__",D3_TAG).replace("__DATA__",json.dumps(DATA,separators=(",",":")))
 open(OUT,"w").write(html)
 _log.info(f"wrote {OUT} ({os.path.getsize(OUT)/1024/1024:.1f} MB)")
+
+# The HTML embeds DATA verbatim, so dumping it is not a second rendering path --
+# it is the same payload in a form that can be diffed between two runs, asserted
+# on in CI, or read at all on a machine with no browser.
+if _args.dump_json:
+    with open(_args.dump_json,"w") as _jf:
+        json.dump(DATA,_jf,indent=1,sort_keys=True)
+    _log.info(f"wrote {_args.dump_json} ({os.path.getsize(_args.dump_json)/1024/1024:.1f} MB) "
+              f"-- tabs={[k for k,v in DATA['tabs'].items() if v]}")
