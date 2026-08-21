@@ -216,6 +216,8 @@ def test_local_lifecycle_can_run_inside_sglang_container(tmp_path) -> None:
     assert "--gpus all" in script
     assert 'docker run "${SRT_CONTAINER_ARGS[@]}" "${SRTCTL_LOCAL_CONTAINER_IMAGE}"' in script
     assert 'mkdir -p "${OUTPUT_BASE}"' in script
+    assert 'if [[ "${mode}" == "readonly" ]]; then' in script
+    assert 'mount+=",readonly"' in script
     assert (
         'SRTCTL_DYNAMO_CACHE_ROOT="${SRTCTL_DYNAMO_CACHE_ROOT:-${OUTPUT_BASE}/.srtctl-cache/dynamo-wheels}"' in script
     )
