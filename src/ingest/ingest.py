@@ -781,6 +781,107 @@ def run_lifecycle(run_dir: Path, bundle: Path) -> dict:
     return out
 
 
+def run_host_samples(run_dir: Path, bundle: Path) -> dict:
+    """``host_samples.jsonl`` -> ``host_series.json``: host and per-process health.
+
+    Closes the three issues that live below the application: host CPU saturation
+    (PERF-37), a load generator that has become the bottleneck (PERF-38), and
+    file-descriptor exhaustion (PERF-40). None is expressible in any published metric.
+
+    The sampler writes CUMULATIVE jiffie counters, so the busy percentage is derived
+    HERE by differencing consecutive samples. That keeps the sampler's interval out of
+    the stored numbers -- a percentage computed at capture time would silently bake in
+    whatever cadence that run happened to use.
+
+    Per-process CPU is likewise a delta over the same window, expressed as percent of a
+    single core, so >100 means the process is genuinely using more than one.
+    """
+    src = Path(run_dir) / "host_samples.jsonl"
+    if not src.exists():
+        _log("L2 host", "no host_samples.jsonl; host CPU / fd / client-bottleneck "
+                        "signals unavailable for this run")
+        return {}
+
+    rows = []
+    with open(src, errors="replace") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except Exception:
+                continue
+    if len(rows) < 2:
+        _log("L2 host", f"only {len(rows)} host sample(s); a rate needs two")
+        return {}
+
+    host_cpu, fds, conns, mem = [], [], [], []
+    procs: dict = {}
+    for prev, cur in zip(rows, rows[1:]):
+        dt = (cur.get("t") or 0) - (prev.get("t") or 0)
+        if dt <= 0:
+            continue
+        t = cur["t"]
+        pb, pt = prev.get("cpu_busy_jiffies"), prev.get("cpu_total_jiffies")
+        cb, ct = cur.get("cpu_busy_jiffies"), cur.get("cpu_total_jiffies")
+        if None not in (pb, pt, cb, ct) and ct > pt:
+            host_cpu.append([t, round(100.0 * (cb - pb) / (ct - pt), 2)])
+        m = cur.get("mem") or {}
+        if m.get("MemTotal") and m.get("MemAvailable") is not None:
+            mem.append([t, round(100.0 * (1 - m["MemAvailable"] / m["MemTotal"]), 2)])
+        if cur.get("established_conns") is not None:
+            conns.append([t, cur["established_conns"]])
+
+        prev_by_pid = {p["pid"]: p for p in (prev.get("procs") or [])}
+        for p in cur.get("procs") or []:
+            q = prev_by_pid.get(p["pid"])
+            key = f"{p.get('name', 'proc')}:{p['pid']}"
+            e = procs.setdefault(key, {"cpu_pct": [], "rss_kb": [], "ctx_invol_rate": [],
+                                       "open_fds": [], "threads": []})
+            if q and p.get("cpu_jiffies") is not None and q.get("cpu_jiffies") is not None:
+                # Jiffies are 1/100 s on Linux; /dt gives percent of ONE core.
+                e["cpu_pct"].append([t, round((p["cpu_jiffies"] - q["cpu_jiffies"]) / dt, 1)])
+            if q and p.get("ctx_invol") is not None and q.get("ctx_invol") is not None:
+                e["ctx_invol_rate"].append(
+                    [t, round((p["ctx_invol"] - q["ctx_invol"]) / dt, 1)])
+            if p.get("rss_kb") is not None:
+                e["rss_kb"].append([t, p["rss_kb"]])
+            if p.get("open_fds") is not None:
+                e["open_fds"].append([t, p["open_fds"]])
+            if p.get("threads") is not None:
+                e["threads"].append([t, p["threads"]])
+        if cur.get("procs"):
+            tot = sum((p.get("open_fds") or 0) for p in cur["procs"])
+            fds.append([t, tot])
+
+    fd_limit = rows[-1].get("fd_limit")
+    peak_fds = max((v for _, v in fds), default=0)
+    out = {
+        "host_cpu_pct": host_cpu,
+        "host_mem_used_pct": mem,
+        "established_conns": conns,
+        "open_fds_total": fds,
+        "fd_limit": fd_limit,
+        # The number that matters for PERF-40: how close the run came to the ceiling.
+        # Reported even when comfortable, because "we were at 3%" is the answer that
+        # rules the hypothesis out.
+        "fd_headroom_pct": (round(100.0 * peak_fds / fd_limit, 2)
+                            if fd_limit else None),
+        "procs": procs,
+        "samples": len(rows),
+        "host": rows[-1].get("host"),
+    }
+    with open(bundle / "host_series.json", "w") as f:
+        json.dump(out, f)
+    peak_cpu = max((v for _, v in host_cpu), default=None)
+    _log("L2 host", f"{len(rows)} samples on {out['host']}: peak host CPU {peak_cpu}%, "
+                    f"peak open fds {peak_fds}/{fd_limit} "
+                    f"({out['fd_headroom_pct']}% of limit), "
+                    f"{len(procs)} process(es) tracked")
+    return out
+
+
 def run_provenance(run_dir: Path, bundle: Path) -> list[str]:
     """Copy the run's provenance files into the bundle: what actually ran.
 
@@ -947,6 +1048,7 @@ def main(argv=None) -> int:
     run_benchmark_status(run_dir, bundle)
     run_log_signals(run_dir, bundle)
     run_lifecycle(run_dir, bundle)
+    run_host_samples(run_dir, bundle)
 
     yaml_text = generate_dashboard_yaml(
         name=name,
