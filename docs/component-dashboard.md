@@ -48,6 +48,41 @@ artifacts ship with the rest of the log dir.
 Driven by `srtctl.analysis.perf_dashboard`, which is best-effort: a rendering failure
 is logged and never changes the outcome of a benchmark that already produced results.
 
+Nothing else is required. One `srtctl` submission collects the data, post-processes it
+and renders the page, in that order, inside the job.
+
+### Comparing two runs
+
+```bash
+python3 tools/dashboard_diff.py BASELINE/perf_dashboard.json COMPARED/perf_dashboard.json
+```
+
+Reports KPI deltas, tab-availability changes, per-panel movement ranked by magnitude,
+and population changes. Built for the ablation shape -- change one variable, run both,
+ask which signals responded -- which is also the honest test of whether a panel earns
+its place: a panel that does not move between a healthy run and a known-degraded one
+is not diagnostic.
+
+It compares medians, falling back to peaks when both medians are zero (sparse counter
+rates sit at zero through their idle windows), and labels which statistic each row
+used. Without that fallback an 8x concurrency change reported 30 panels as unchanged
+when only 8 genuinely were.
+
+### Running a job against a modified checkout
+
+If you are testing dashboard changes, the compute node runs whatever `srtctl_root` in
+`srtslurm.yaml` points at -- not the tree you edited. Two things bite:
+
+* **`srtctl_root` is the only lever.** Staging a second checkout and `cd`-ing into it
+  does not select it. Point `srtctl_root` at the new tree and confirm the job's own
+  `uv sync` line reports `srtctl==… (from file:///<your tree>)`.
+* **The runtime state is gitignored, so a fresh checkout does not have it.**
+  `srtslurm.yaml`, `configs/nats-server`, `configs/etcd`, `configs/etcdctl`,
+  `wheelhouse/dynamo` and `bin/uv` all live outside git. Copy or symlink them from a
+  working checkout, and do not `rsync --delete` over the result -- it removes exactly
+  those files, and the job then fails somewhere unrelated (a model path resolving
+  against the wrong root, for instance).
+
 ## Running it by hand
 
 Against any past run — including one captured before this existed:
