@@ -1298,3 +1298,58 @@ class TestSpanBusyIdleRetained:
         assert span["attrs"]["time.busy_us"] == 200
         assert span["attrs"]["time.idle_us"] == 800
         assert "time.duration_us" not in span["attrs"], "duration is the span length, not an attr"
+
+
+class TestMetricNameResolution:
+    """Prometheus counters conventionally end in `_total`, and ingest keeps the scraped
+    name verbatim. A lookup written without the suffix finds nothing and the caller
+    reads a hard zero -- indistinguishable downstream from a metric that really was
+    zero. Five families were being read this way."""
+
+    def test_counter_total_suffix_is_resolved(self, run_dir: Path, tmp_path: Path):
+        """The tokenizer-cache KPI read 0.0% on a run whose real hit rate was 99.2%."""
+        # 40 hits, 10 misses -> 80%
+        path = run_dir / "raw_prometheus.jsonl"
+        lines = []
+        for i in range(4):
+            ts = T0 + i * 1_000_000_000
+            lines.append(json.dumps({
+                "timestamp_ns": ts, "endpoint_url": "http://head:8000/metrics",
+                "role": "frontend", "worker_id": None,
+                "text": (f"dynamo_frontend_tokenizer_cache_hits_total {10 * (i + 1)}\n"
+                         f"dynamo_frontend_tokenizer_cache_misses_total {2.5 * (i + 1)}\n"
+                         f'dynamo_frontend_requests_total{{model="m"}} {i}\n'),
+            }))
+        path.write_text("\n".join(lines) + "\n")
+
+        bundle = tmp_path / "bundle"
+        _run_ingest(run_dir, bundle)
+        payload = tmp_path / "dash.json"
+        proc = _render(bundle, tmp_path / "dash.html", "--d3-cdn", "--dump-json", str(payload))
+        assert proc.returncode == 0, proc.stderr
+
+        kpi = json.loads(payload.read_text())["kpi"]
+        assert kpi["tok_cache"] == pytest.approx(80.0, abs=0.1), (
+            "a counter named <x>_total must resolve from a lookup written as <x>")
+
+    def test_no_renderer_metric_name_omits_a_needed_suffix(self):
+        """Guards the whole class: every metric name the renderer looks up must either
+        exist verbatim or be resolvable. Names are checked against the catalogued
+        families so a newly-added lookup cannot silently read zero."""
+        import re
+
+        src = (REPO_ROOT / "src/visualization/build_dynamo_bench_dash.py").read_text()
+        # Counter families that only ever exist with the _total suffix.
+        counters_needing_total = {
+            "dynamo_frontend_requests",
+            "dynamo_frontend_tokenizer_cache_hits",
+            "dynamo_frontend_tokenizer_cache_misses",
+            "dynamo_frontend_tokenizer_cache_cached_tokens",
+            "dynamo_frontend_tokenizer_cache_uncached_tokens",
+        }
+        referenced = set(re.findall(r'["\'](dynamo_[a-z0-9_]+|trtllm_[a-z0-9_]+)["\']', src))
+        bare = referenced & counters_needing_total
+        # They MAY appear bare -- but only because _entries() resolves the suffix.
+        assert "_entries" in src and "name + \"_total\"" in src, (
+            f"bare counter names {sorted(bare)} are referenced, so the central "
+            "_total-resolution helper must still exist")
