@@ -1793,3 +1793,53 @@ class TestBenchmarkStatusMessageQuality:
         assert errs, "the real message must be captured"
         assert not any(e.lstrip().startswith("+") for e in errs), \
             "a trace line shows the mechanism instead of the message"
+
+
+class TestBenchmarkPhaseCensus:
+    """AIPerf's completed/cancelled split, from its own log.
+
+    A run can exit non-zero with NO error-marker line in benchmark.out at all — arm
+    2752189 did exactly that — leaving the banner able to report only "exit 1". The
+    phase census is then the sole account of what happened, and it distinguishes
+    "the workload never started" from "it ran and was cut short", which have opposite
+    fixes: on the v4 arms a0/a1 aborted in warmup so profiling never ran, while a2/a3
+    passed warmup clean and had profiling time out with ~47 requests in flight.
+    """
+
+    @staticmethod
+    def _aiperf_log(run_dir: Path, lines: str) -> None:
+        d = run_dir / "agentic" / "conc_32" / "aiperf_artifacts" / "logs"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "aiperf.log").write_text(lines)
+        (run_dir / "sweep_9.log").write_text("[ERROR] Benchmark failed with exit code 1\n")
+        (run_dir / "benchmark.out").write_text("+ set -x\nno error markers here\n")
+
+    def _status(self, run_dir: Path, tmp_path: Path) -> dict:
+        bundle = tmp_path / "bundle"
+        _run_ingest(run_dir, bundle)
+        out = tmp_path / "d.json"
+        proc = _render(bundle, tmp_path / "d.html", "--d3-cdn", "--dump-json", str(out))
+        assert proc.returncode == 0, proc.stderr
+        return json.loads(out.read_text())["meta"]["benchmark_status"] or {}
+
+    def test_census_is_captured_when_no_error_line_exists(self, run_dir: Path, tmp_path: Path):
+        self._aiperf_log(run_dir,
+            "2026-08-21 01:56:55.025 - PhaseRunner - NOTICE - Phase warmup complete | "
+            "completed=123, cancelled=0, errors=0 | elapsed=641.51s\n"
+            "2026-08-21 01:59:35.175 - PhaseRunner - NOTICE - Phase profiling complete | "
+            "completed=30, cancelled=46, errors=0 | elapsed=160.0\n")
+        bs = self._status(run_dir, tmp_path)
+        assert bs.get("exit_code") == "1"
+        joined = " ".join(bs.get("phases") or [])
+        assert "cancelled=46" in joined, "the cancelled count is the diagnosis; got " + joined
+        assert "warmup complete" in joined
+
+    def test_warmup_abort_is_distinguishable_from_profiling_timeout(self, run_dir: Path, tmp_path: Path):
+        """a0/a1's mode: warmup cancels, profiling never runs — so there is exactly one
+        phase line, and its cancelled count is non-zero."""
+        self._aiperf_log(run_dir,
+            "2026-08-21 01:57:52.022 - PhaseRunner - NOTICE - Phase warmup complete | "
+            "completed=122, cancelled=4, errors=0 | elapsed=707.04s\n")
+        phases = self._status(run_dir, tmp_path).get("phases") or []
+        assert len(phases) == 1, "profiling never ran, so it must not be reported"
+        assert "cancelled=4" in phases[0]

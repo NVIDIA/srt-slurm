@@ -54,6 +54,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -477,7 +478,19 @@ def run_engine_configs(run_dir: Path, bundle: Path) -> list[str]:
 
 
 _BENCH_ERROR_MARKERS = ("Error:", "ERROR:", "Traceback", "command not found",
-                        "No such file or directory", "Permission denied")
+                        "No such file or directory", "Permission denied",
+                        # Not every fatal message is prefixed "Error:". These are real
+                        # lines from real failures whose absence left the banner able to
+                        # say only "exit 1": the post-run env guard writes a bare
+                        # "<VAR> is required when ...", and a phase abort writes
+                        # "Benchmark aborted: <reason>".
+                        "is required when", "Benchmark aborted", "ProfileAborted")
+
+# AIPerf's own phase census. This is the single most informative line about what the
+# benchmark actually did, and it is in aiperf.log rather than benchmark.out -- so a run
+# whose benchmark.out carries no error marker at all (arm 2752189: zero markers, exit 1)
+# otherwise yields a banner that reports a failure with no reason attached.
+_PHASE_RE = "Phase (warmup|profiling) complete"
 
 
 def run_benchmark_status(run_dir: Path, bundle: Path) -> dict | None:
@@ -544,7 +557,12 @@ def run_benchmark_status(run_dir: Path, bundle: Path) -> dict | None:
             raw = ln.rstrip("\n")
             if raw.lstrip().startswith("+"):      # set -x trace, not output
                 continue
-            s = raw.strip()[:400]
+            # AIPerf frames fatal messages in a Rich box, so the raw line arrives as
+            # "|    Error: ProfileAborted                     |" -- box rule, message,
+            # padding, box rule. Stripped here so the banner shows the message rather
+            # than the frame it happened to be drawn in.
+            s = raw.strip().strip("\u2502\u2503|").strip()
+            s = re.sub(r"\s{2,}", " ", s)[:400]
             if any(m in raw for m in _BENCH_ERROR_MARKERS):
                 if s and s not in status["errors"]:
                     status["errors"].append(s)
@@ -558,11 +576,30 @@ def run_benchmark_status(run_dir: Path, bundle: Path) -> dict | None:
             if len(status["errors"]) >= 12:
                 break
 
+    # AIPerf's phase census, from its own log. Carries the completed/cancelled split that
+    # distinguishes "the workload never started" from "it ran and was cut short" -- and
+    # those have opposite fixes. On the v4 arms it separated two failure modes that looked
+    # identical from the exit code alone: a0/a1 aborted in WARMUP (cancelled 4 and 6, so
+    # profiling never ran), while a2/a3 passed warmup clean and had PROFILING time out
+    # with ~47 requests still in flight.
+    status["phases"] = []
+    for lg in sorted(src_dir.glob("agentic/*/aiperf_artifacts/logs/aiperf.log")):
+        try:
+            with open(lg, errors="replace") as fh:
+                for line in fh:
+                    if re.search(_PHASE_RE, line):
+                        # Keep the census, drop the log preamble before it.
+                        status["phases"].append(line.split(" - ")[-1].strip()[:300])
+        except OSError:
+            pass
+
     with open(bundle / "benchmark_status.json", "w") as f:
         json.dump(status, f)
-    if status["exit_code"] or status["errors"]:
+    if status["exit_code"] or status["errors"] or status["phases"]:
         _log("L2 bench-status", f"benchmark exit={status['exit_code']} "
-                                f"first error: {(status['errors'] or ['-'])[0][:120]}")
+                                f"first error: {(status['errors'] or ['-'])[0][:110]}")
+        for ph in status["phases"]:
+            _log("L2 bench-status", f"  {ph[:140]}")
     else:
         _log("L2 bench-status", "benchmark reported no error")
     return status
