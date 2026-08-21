@@ -1354,6 +1354,103 @@ class TestNodesInfraAllocation:
         ):
             Nodes.from_slurm(etcd_nats_dedicated_node=True)
 
+    def test_nodes_dedicated_frontend_only(self):
+        """frontend_dedicated_node alone puts head+bench on node0, client rides along."""
+        from unittest.mock import patch
+
+        from srtctl.core.runtime import Nodes
+
+        with patch("srtctl.core.runtime.get_slurm_nodelist", return_value=["node0", "node1", "node2"]):
+            nodes = Nodes.from_slurm(frontend_dedicated_node=True)
+
+        assert nodes.head == "node0"
+        assert nodes.bench == "node0"  # client defaults to colocating with the frontend
+        assert nodes.worker == ("node1", "node2")
+
+    def test_nodes_dedicated_client_only(self):
+        """client_dedicated_node reserves the LAST node (never the first/batch node,
+        since SLURM runs the do_sweep orchestrator there unsandboxed).
+        """
+        from unittest.mock import patch
+
+        from srtctl.core.runtime import Nodes
+
+        with patch("srtctl.core.runtime.get_slurm_nodelist", return_value=["node0", "node1", "node2"]):
+            nodes = Nodes.from_slurm(client_dedicated_node=True)
+
+        assert nodes.bench == "node2"
+        assert nodes.head == "node0"  # frontend still doubles as a worker
+        assert nodes.worker == ("node0", "node1")
+
+    def test_nodes_dedicated_frontend_and_client_colocated(self):
+        """Both dedicated + colocate=True (default) share the LAST node (client's
+        tail reservation takes precedence over frontend's front-of-list default).
+        """
+        from unittest.mock import patch
+
+        from srtctl.core.runtime import Nodes
+
+        with patch("srtctl.core.runtime.get_slurm_nodelist", return_value=["node0", "node1", "node2"]):
+            nodes = Nodes.from_slurm(frontend_dedicated_node=True, client_dedicated_node=True)
+
+        assert nodes.head == "node2"
+        assert nodes.bench == "node2"
+        assert nodes.worker == ("node0", "node1")
+
+    def test_nodes_dedicated_frontend_and_client_separate(self):
+        """Both dedicated + colocate=False: frontend from the front, client from the tail."""
+        from unittest.mock import patch
+
+        from srtctl.core.runtime import Nodes
+
+        with patch("srtctl.core.runtime.get_slurm_nodelist", return_value=["node0", "node1", "node2", "node3"]):
+            nodes = Nodes.from_slurm(
+                frontend_dedicated_node=True, client_dedicated_node=True, colocate_dedicated_nodes=False
+            )
+
+        assert nodes.head == "node0"
+        assert nodes.bench == "node3"
+        assert nodes.worker == ("node1", "node2")
+
+    def test_nodes_dedicated_frontend_requires_two_nodes(self):
+        from unittest.mock import patch
+
+        import pytest
+
+        from srtctl.core.runtime import Nodes
+
+        with (
+            patch("srtctl.core.runtime.get_slurm_nodelist", return_value=["node0"]),
+            pytest.raises(ValueError, match="at least 2 nodes"),
+        ):
+            Nodes.from_slurm(frontend_dedicated_node=True)
+
+    def test_nodes_dedicated_client_requires_two_nodes(self):
+        from unittest.mock import patch
+
+        import pytest
+
+        from srtctl.core.runtime import Nodes
+
+        with (
+            patch("srtctl.core.runtime.get_slurm_nodelist", return_value=["node0"]),
+            pytest.raises(ValueError, match="at least 2 nodes"),
+        ):
+            Nodes.from_slurm(client_dedicated_node=True)
+
+    def test_nodes_dedicated_separate_requires_three_nodes(self):
+        from unittest.mock import patch
+
+        import pytest
+
+        from srtctl.core.runtime import Nodes
+
+        with (
+            patch("srtctl.core.runtime.get_slurm_nodelist", return_value=["node0", "node1"]),
+            pytest.raises(ValueError, match="at least 3 nodes"),
+        ):
+            Nodes.from_slurm(frontend_dedicated_node=True, client_dedicated_node=True, colocate_dedicated_nodes=False)
+
 
 class TestSbatchNodeCount:
     """Tests for sbatch node count calculation with infra config."""
@@ -1411,6 +1508,117 @@ class TestSbatchNodeCount:
 
         # Should request 2 nodes: just the workers
         assert "#SBATCH --nodes=2" in script
+
+    def _dedicated_node_config(self, **overrides):
+        from srtctl.core.schema import (
+            BenchmarkConfig,
+            FrontendConfig,
+            InfraConfig,
+            ModelConfig,
+            ResourceConfig,
+            SrtConfig,
+        )
+
+        benchmark_kwargs = {}
+        if "client_dedicated_node" in overrides:
+            benchmark_kwargs["client_dedicated_node"] = overrides.pop("client_dedicated_node")
+        if "colocate_with_frontend" in overrides:
+            benchmark_kwargs["colocate_with_frontend"] = overrides.pop("colocate_with_frontend")
+        frontend_kwargs = {}
+        if "frontend_dedicated_node" in overrides:
+            frontend_kwargs["dedicated_node"] = overrides.pop("frontend_dedicated_node")
+        infra_kwargs = {}
+        if "etcd_nats_dedicated_node" in overrides:
+            infra_kwargs["etcd_nats_dedicated_node"] = overrides.pop("etcd_nats_dedicated_node")
+
+        return SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/container.sqsh", precision="fp8"),
+            resources=ResourceConfig(
+                gpu_type="h100",
+                gpus_per_node=8,
+                prefill_nodes=1,
+                decode_nodes=1,
+                prefill_workers=1,
+                decode_workers=1,
+            ),
+            benchmark=BenchmarkConfig(**benchmark_kwargs),
+            frontend=FrontendConfig(**frontend_kwargs),
+            infra=InfraConfig(**infra_kwargs),
+        )
+
+    def test_sbatch_adds_node_for_dedicated_frontend_only(self):
+        from pathlib import Path
+
+        from srtctl.cli.submit import generate_minimal_sbatch_script
+
+        config = self._dedicated_node_config(frontend_dedicated_node=True)
+        script = generate_minimal_sbatch_script(config, Path("/tmp/test.yaml"))
+
+        assert "#SBATCH --nodes=3" in script
+
+    def test_sbatch_adds_node_for_dedicated_client_only(self):
+        from pathlib import Path
+
+        from srtctl.cli.submit import generate_minimal_sbatch_script
+
+        config = self._dedicated_node_config(client_dedicated_node=True)
+        script = generate_minimal_sbatch_script(config, Path("/tmp/test.yaml"))
+
+        assert "#SBATCH --nodes=3" in script
+
+    def test_sbatch_adds_one_node_for_colocated_frontend_and_client(self):
+        from pathlib import Path
+
+        from srtctl.cli.submit import generate_minimal_sbatch_script
+
+        config = self._dedicated_node_config(frontend_dedicated_node=True, client_dedicated_node=True)
+        script = generate_minimal_sbatch_script(config, Path("/tmp/test.yaml"))
+
+        # 2 workers + 1 shared dedicated node
+        assert "#SBATCH --nodes=3" in script
+
+    def test_sbatch_adds_two_nodes_for_separate_frontend_and_client(self):
+        from pathlib import Path
+
+        from srtctl.cli.submit import generate_minimal_sbatch_script
+
+        config = self._dedicated_node_config(
+            frontend_dedicated_node=True, client_dedicated_node=True, colocate_with_frontend=False
+        )
+        script = generate_minimal_sbatch_script(config, Path("/tmp/test.yaml"))
+
+        # 2 workers + 2 separately dedicated nodes
+        assert "#SBATCH --nodes=4" in script
+
+    def test_sbatch_adds_one_node_for_all_three_colocated(self):
+        from pathlib import Path
+
+        from srtctl.cli.submit import generate_minimal_sbatch_script
+
+        config = self._dedicated_node_config(
+            frontend_dedicated_node=True, client_dedicated_node=True, etcd_nats_dedicated_node=True
+        )
+        script = generate_minimal_sbatch_script(config, Path("/tmp/test.yaml"))
+
+        # 2 workers + 1 shared dedicated node for infra+frontend+client
+        assert "#SBATCH --nodes=3" in script
+
+    def test_sbatch_adds_three_nodes_for_all_three_separate(self):
+        from pathlib import Path
+
+        from srtctl.cli.submit import generate_minimal_sbatch_script
+
+        config = self._dedicated_node_config(
+            frontend_dedicated_node=True,
+            client_dedicated_node=True,
+            etcd_nats_dedicated_node=True,
+            colocate_with_frontend=False,
+        )
+        script = generate_minimal_sbatch_script(config, Path("/tmp/test.yaml"))
+
+        # 2 workers + 3 separately dedicated nodes
+        assert "#SBATCH --nodes=5" in script
 
     def test_vllm_colocation_reduces_sbatch_to_one_node_when_fit(self):
         """Test vLLM P/D colocation requests one worker node when all workers fit."""
@@ -1718,6 +1926,194 @@ class TestHetJobsValidation:
         )
         assert cfg.resources.het_jobs is False
 
+    def test_het_jobs_rejected_with_frontend_dedicated_node(self):
+        import pytest
+        from marshmallow import ValidationError
+
+        from srtctl.core.schema import FrontendConfig
+
+        SrtConfig, kwargs = self._make()
+        kwargs["frontend"] = FrontendConfig(dedicated_node=True)
+        with pytest.raises(ValidationError, match="not supported together with het_jobs"):
+            SrtConfig(**kwargs)
+
+    def test_het_jobs_rejected_with_client_dedicated_node(self):
+        import pytest
+        from marshmallow import ValidationError
+
+        from srtctl.core.schema import BenchmarkConfig
+
+        SrtConfig, kwargs = self._make()
+        kwargs["benchmark"] = BenchmarkConfig(client_dedicated_node=True)
+        with pytest.raises(ValidationError, match="not supported together with het_jobs"):
+            SrtConfig(**kwargs)
+
+
+class TestDedicatedNodeValidation:
+    """SrtConfig.__post_init__ allows combining all dedicated-node flags."""
+
+    def test_allows_infra_and_frontend_dedicated_node_together(self):
+        from srtctl.core.schema import FrontendConfig, InfraConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        cfg = SrtConfig(
+            name="t",
+            model=ModelConfig(path="/m", container="/c.sqsh", precision="fp8"),
+            resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1),
+            infra=InfraConfig(etcd_nats_dedicated_node=True),
+            frontend=FrontendConfig(dedicated_node=True),
+        )
+        assert cfg.infra.etcd_nats_dedicated_node is True
+        assert cfg.frontend.dedicated_node is True
+
+    def test_allows_infra_and_client_dedicated_node_together(self):
+        from srtctl.core.schema import BenchmarkConfig, InfraConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        cfg = SrtConfig(
+            name="t",
+            model=ModelConfig(path="/m", container="/c.sqsh", precision="fp8"),
+            resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1),
+            infra=InfraConfig(etcd_nats_dedicated_node=True),
+            benchmark=BenchmarkConfig(client_dedicated_node=True),
+        )
+        assert cfg.infra.etcd_nats_dedicated_node is True
+        assert cfg.benchmark.client_dedicated_node is True
+
+    def test_allows_frontend_and_client_dedicated_node_together(self):
+        from srtctl.core.schema import BenchmarkConfig, FrontendConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        cfg = SrtConfig(
+            name="t",
+            model=ModelConfig(path="/m", container="/c.sqsh", precision="fp8"),
+            resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1),
+            frontend=FrontendConfig(dedicated_node=True),
+            benchmark=BenchmarkConfig(client_dedicated_node=True, colocate_with_frontend=False),
+        )
+        assert cfg.frontend.dedicated_node is True
+        assert cfg.benchmark.client_dedicated_node is True
+        assert cfg.benchmark.colocate_with_frontend is False
+
+
+class TestDedicatedNodePlacementValidation:
+    """A dedicated node is wasted if a placement override routes the
+    orchestrator/client elsewhere, so SrtConfig rejects that combination.
+    """
+
+    def test_rejects_frontend_dedicated_node_with_non_head_placement(self):
+        import pytest
+        from marshmallow import ValidationError
+
+        from srtctl.core.schema import FrontendConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        with pytest.raises(ValidationError, match="frontend.dedicated_node requires"):
+            SrtConfig(
+                name="t",
+                model=ModelConfig(path="/m", container="/c.sqsh", precision="fp8"),
+                resources=ResourceConfig(
+                    gpu_type="h100",
+                    gpus_per_node=8,
+                    prefill_nodes=1,
+                    decode_nodes=1,
+                    prefill_workers=1,
+                    decode_workers=1,
+                ),
+                frontend=FrontendConfig(dedicated_node=True, orchestrator_placement="first_decode"),
+            )
+
+    def test_rejects_client_dedicated_node_with_non_head_placement(self):
+        import pytest
+        from marshmallow import ValidationError
+
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        with pytest.raises(ValidationError, match="benchmark.client_dedicated_node requires"):
+            SrtConfig(
+                name="t",
+                model=ModelConfig(path="/m", container="/c.sqsh", precision="fp8"),
+                resources=ResourceConfig(
+                    gpu_type="h100",
+                    gpus_per_node=8,
+                    prefill_nodes=1,
+                    decode_nodes=1,
+                    prefill_workers=1,
+                    decode_workers=1,
+                ),
+                benchmark=BenchmarkConfig(client_dedicated_node=True, client_placement="last_decode"),
+            )
+
+    def test_allows_dedicated_node_with_default_head_placement(self):
+        from srtctl.core.schema import BenchmarkConfig, FrontendConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        cfg = SrtConfig(
+            name="t",
+            model=ModelConfig(path="/m", container="/c.sqsh", precision="fp8"),
+            resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1),
+            frontend=FrontendConfig(dedicated_node=True),
+            benchmark=BenchmarkConfig(client_dedicated_node=True),
+        )
+        assert cfg.frontend.orchestrator_placement == "head"
+        assert cfg.benchmark.client_placement == "head"
+
+
+class TestNodesAllThreeDedicated:
+    """Tests for combining etcd/nats + frontend + client dedicated-node flags."""
+
+    def test_all_three_colocate_on_one_node(self):
+        from unittest.mock import patch
+
+        from srtctl.core.runtime import Nodes
+
+        with patch("srtctl.core.runtime.get_slurm_nodelist", return_value=["node0", "node1", "node2"]):
+            nodes = Nodes.from_slurm(
+                frontend_dedicated_node=True,
+                client_dedicated_node=True,
+                etcd_nats_dedicated_node=True,
+                colocate_dedicated_nodes=True,
+            )
+
+        # All three share the LAST node — the client's tail reservation takes
+        # precedence, keeping the shared node off the SLURM batch/orchestrator node.
+        assert nodes.head == "node2"
+        assert nodes.bench == "node2"
+        assert nodes.infra == "node2"
+        assert nodes.worker == ("node0", "node1")
+
+    def test_all_three_get_separate_nodes_when_not_colocated(self):
+        from unittest.mock import patch
+
+        from srtctl.core.runtime import Nodes
+
+        with patch("srtctl.core.runtime.get_slurm_nodelist", return_value=["node0", "node1", "node2", "node3"]):
+            nodes = Nodes.from_slurm(
+                frontend_dedicated_node=True,
+                client_dedicated_node=True,
+                etcd_nats_dedicated_node=True,
+                colocate_dedicated_nodes=False,
+            )
+
+        # infra/frontend reserved from the front, client from the tail.
+        assert nodes.infra == "node0"
+        assert nodes.head == "node1"
+        assert nodes.bench == "node3"
+        assert nodes.worker == ("node2",)
+
+    def test_infra_and_frontend_colocate_client_not_requested(self):
+        """etcd/nats + frontend dedicated (colocated); client not dedicated still rides along."""
+        from unittest.mock import patch
+
+        from srtctl.core.runtime import Nodes
+
+        with patch("srtctl.core.runtime.get_slurm_nodelist", return_value=["node0", "node1", "node2"]):
+            nodes = Nodes.from_slurm(
+                frontend_dedicated_node=True,
+                etcd_nats_dedicated_node=True,
+                colocate_dedicated_nodes=True,
+            )
+
+        assert nodes.head == "node0"
+        assert nodes.infra == "node0"
+        assert nodes.bench == "node0"  # not requested, falls back to head
+        assert nodes.worker == ("node1", "node2")
+
 
 class TestHetComponents:
     """ResourceConfig.het_components() shape."""
@@ -1861,6 +2257,85 @@ class TestHetJobsSbatchScript:
         assert "#SBATCH hetjob" not in script
         # Single --nodes line (12 prefill + 10 decode = 22)
         assert "#SBATCH --nodes=22" in script
+
+
+class TestDedicatedNodeRejectedForClusterDefaultHet:
+    """A recipe with resources.het_jobs unset (None) passes SrtConfig validation
+
+    (which only checks the explicit `true` case), but should still be rejected
+    before submission if the cluster's use_het_jobs default resolves the job
+    to heterogeneous — otherwise it fails only after SLURM already granted a
+    heterogeneous allocation.
+    """
+
+    def _config(self, *, dedicated_frontend=False, dedicated_client=False):
+        from srtctl.core.schema import BenchmarkConfig, FrontendConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        return SrtConfig(
+            name="t",
+            model=ModelConfig(path="/m", container="/c.sqsh", precision="fp8"),
+            resources=ResourceConfig(
+                gpu_type="gb200",
+                gpus_per_node=4,
+                prefill_nodes=12,
+                decode_nodes=10,
+                prefill_workers=12,
+                decode_workers=10,
+                het_jobs=None,
+            ),
+            frontend=FrontendConfig(dedicated_node=dedicated_frontend),
+            benchmark=BenchmarkConfig(client_dedicated_node=dedicated_client),
+        )
+
+    def test_rejects_frontend_dedicated_node_when_cluster_default_is_het(self):
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import pytest
+
+        from srtctl.cli.submit import generate_minimal_sbatch_script
+
+        cfg = self._config(dedicated_frontend=True)
+        with (
+            patch(
+                "srtctl.cli.submit.get_srtslurm_setting",
+                side_effect=lambda key, default=None: True if key == "use_het_jobs" else default,
+            ),
+            pytest.raises(ValueError, match="not supported with heterogeneous"),
+        ):
+            generate_minimal_sbatch_script(cfg, Path("/tmp/test.yaml"))
+
+    def test_rejects_client_dedicated_node_when_cluster_default_is_het(self):
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import pytest
+
+        from srtctl.cli.submit import generate_minimal_sbatch_script
+
+        cfg = self._config(dedicated_client=True)
+        with (
+            patch(
+                "srtctl.cli.submit.get_srtslurm_setting",
+                side_effect=lambda key, default=None: True if key == "use_het_jobs" else default,
+            ),
+            pytest.raises(ValueError, match="not supported with heterogeneous"),
+        ):
+            generate_minimal_sbatch_script(cfg, Path("/tmp/test.yaml"))
+
+    def test_allows_dedicated_node_when_cluster_default_is_not_het(self):
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from srtctl.cli.submit import generate_minimal_sbatch_script
+
+        cfg = self._config(dedicated_frontend=True)
+        with patch(
+            "srtctl.cli.submit.get_srtslurm_setting",
+            side_effect=lambda key, default=None: False if key == "use_het_jobs" else default,
+        ):
+            script = generate_minimal_sbatch_script(cfg, Path("/tmp/test.yaml"))
+        assert "#SBATCH hetjob" not in script
 
 
 class TestNodesHetGroupParsing:
