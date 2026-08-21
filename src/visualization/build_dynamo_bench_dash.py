@@ -617,13 +617,49 @@ def _mdc_block_size():
     return None
 
 BLK=_mdc_block_size()
+
+def _block_size_mismatch():
+    """Router block size vs the engine's tokens-per-block, as a first-class check.
+
+    These are two different pools sized independently, and when they disagree the
+    router's KV events reference blocks the engine cannot match. The consequence is
+    not subtle -- on the reference run it produces a chain of 540 "Block contains N
+    tokens" errors, 2,835 "Failed to find block to remove", and 35,198 "Block not
+    found during remove", the last of which is 73% of the entire frontend log (94% at
+    higher concurrency).
+
+    It is invisible in the metrics: the counter built for exactly this failure,
+    `dynamo_component_kv_cache_events_applied{status="block_not_found"}`, reads a
+    constant 0. So the only way to surface it is to compare the two configured sizes
+    directly, which is what this does.
+
+    Returns (router_blk, engine_tpb) or None when either is unavailable -- "cannot
+    tell" rather than a guessed all-clear.
+    """
+    eng=None
+    for _,m in scr:
+        for e in (_entries(m,"trtllm_kv_cache_tokens_per_block") or []):
+            v=e.get("value")
+            if isinstance(v,(int,float)) and v>0: eng=int(v); break
+        if eng: break
+    return (BLK,eng) if (BLK and eng) else None
+
+_BLK_MISMATCH=_block_size_mismatch()
+if _BLK_MISMATCH and _BLK_MISMATCH[0]!=_BLK_MISMATCH[1]:
+    _log.warning(f"KV block-size mismatch: router indexes {_BLK_MISMATCH[0]}-token blocks "
+                 f"while the engine pools {_BLK_MISMATCH[1]}-token blocks; router KV events "
+                 f"will reference blocks the engine cannot match")
+elif _BLK_MISMATCH:
+    _log.info(f"KV block size agrees across router and engine: {_BLK_MISMATCH[0]} tokens")
 if BLK is None: _log.warning("no dynamo_frontend_model_kv_cache_block_size in the stream; "
                              "decode tokens-in-flight stays in BLOCKS")
 load={"tput":_rolling_tput(GPUS),
       "rif_pf":_in_flight(hp_ev["prefill"]),"rif_de":_in_flight(hp_ev["decode"]),
       "tif_pf":_worker_bins("dynamo_frontend_worker_active_prefill_tokens","prefill"),
       "tif_de":_worker_bins("dynamo_frontend_worker_active_decode_blocks","decode",scale=BLK or 1),
-      "gpus":GPUS,"blk":BLK,"win_s":TPUT_WIN_S,"bins":NBW}
+      "gpus":GPUS,"blk":BLK,"win_s":TPUT_WIN_S,"bins":NBW,
+      "blk_router":(_BLK_MISMATCH or [None,None])[0],
+      "blk_engine":(_BLK_MISMATCH or [None,None])[1]}
 _log.info(f"load rows: tput={len(load['tput'])}pts gpus={GPUS} "
           f"rif_pf={len(load['rif_pf'])} rif_de={len(load['rif_de'])} "
           f"tif_pf={len(load['tif_pf'])}series tif_de={len(load['tif_de'])}series block={BLK}")
@@ -1080,6 +1116,29 @@ if iter_series and 'iter_bins' in globals() and iter_bins:
                    "are excluded from the denominator; a quiet period is not a batching "
                    "failure.",
           "issues":["PERF-batch-starvation"],"series":_bf}
+    _st={}
+    for _w,_rows in iter_bins.get("bins",{}).items():
+        _pts=[]
+        for _r in _rows:
+            _v=_r.get("host_step_time_ms_max")
+            _t=relt(int(_r["t"])*10**9)
+            if _v is None or _t<0 or _t>run_dur+60: continue
+            _pts.append([round(_t,1),_v/1000.0])
+        if _pts: _st[_w]=_pts
+    if _st:
+        panels["en_step_stall"]={
+          "tab":"engine","title":"Worst engine step per second",
+          "unit":"s","kind":"derived","split_by":None,
+          "why":"The longest forward step in each second, from the per-iteration log. A "
+                "scraped gauge samples once a second and cannot see a stall it did not "
+                "land on, so this is the only view in which a multi-second engine stop "
+                "is visible at all.",
+          "source":["iter_bins.json"],
+          "caveat":"Rank 0 only, and a maximum rather than a typical value -- read it "
+                   "beside the median step time, not instead of it.",
+          "issues":["PERF-iteration-stall"],"series":_st}
+        _pk=max(v for s_ in _st.values() for _,v in s_)
+        _log.info(f"engine step stalls: worst single step {_pk:.1f}s across {len(_st)} worker(s)")
     if _mx:
         panels["en_sched_max"]={
           "tab":"engine","title":"Peak scheduled requests per step",

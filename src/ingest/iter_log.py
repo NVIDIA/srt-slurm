@@ -185,6 +185,14 @@ def process(out_path: str, log_paths: list[str], window_start_ns: int | None = N
             # median of 1 hides whether the engine ever batched at all.
             sched = [g["num_scheduled_requests"] for g in group]
             row["sched_max"] = max(sched)
+            # Step-time MAX as well as median. A 1 Hz Prometheus gauge samples the
+            # engine once a second and cannot see a stall it did not land on: on the
+            # reference run host_step_time reaches 230 s with 82 stalls over 1 s, while
+            # the scraped iteration-latency gauge tops out at 9.67 s. The median says
+            # what a step normally costs; only the max says the engine ever stopped.
+            for _f in ("host_step_time_ms", "device_step_time_ms"):
+                _v = [g.get(_f) for g in group if g.get(_f) is not None]
+                row[_f + "_max"] = max(_v) if _v else None
             row["sched_hist"] = {str(k): sched.count(k) for k in sorted(set(sched))}
             rows.append(row)
         bins_out[worker] = rows
