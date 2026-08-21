@@ -222,8 +222,7 @@ def test_local_lifecycle_can_run_inside_sglang_container(tmp_path) -> None:
     assert 'docker rm -f "${SRTCTL_CONTAINER_NAME}"' in script
     assert "SRTCTL_OUTPUT_DIR=${OUTPUT_DIR}" in script
     assert "SRTCTL_SGLANG_RUNTIME_DIR=${SRTCTL_SGLANG_RUNTIME_DIR}" in script
-    assert 'chown -R "${owner}" "${OUTPUT_DIR}"' in script
-    assert 'chown -R "${owner}" "${SRTCTL_SGLANG_RUNTIME_DIR}"' in script
+    assert 'sudo -n chown -R "${owner}" "${path}"' in script
     assert "--user" not in script
     assert "SRTCTL_HOST_CARGO_HOME" not in script
     assert 'mkdir -p "${OUTPUT_BASE}"' in script
@@ -232,6 +231,7 @@ def test_local_lifecycle_can_run_inside_sglang_container(tmp_path) -> None:
     assert 'if [[ ! -f "${runtime_dir}/.complete" ]]; then' in script
     assert 'touch "${runtime_dir}/.complete"' in script
     assert 'runtime_dir="${SRTCTL_SGLANG_RUNTIME_DIR:-${runtime_root}/sglang-${revision}}"' in script
+    assert 'git -c safe.directory="${SRTCTL_SGLANG_SOURCE}"' in script
     assert (
         'SRTCTL_DYNAMO_CACHE_ROOT="${SRTCTL_DYNAMO_CACHE_ROOT:-${OUTPUT_BASE}/.srtctl-cache/dynamo-wheels}"' in script
     )

@@ -75,7 +75,7 @@ if [[ -n "${SRTCTL_LOCAL_CONTAINER_IMAGE}" && "${SRTCTL_LOCAL_CONTAINERIZED:-}" 
     SRTCTL_SGLANG_RUNTIME_DIR=""
     if [[ -n "${SRTCTL_SGLANG_SOURCE}" ]]; then
         srt_container_mount "${SRTCTL_SGLANG_SOURCE}" readonly
-        SRTCTL_SGLANG_REVISION="$(git -C "${SRTCTL_SGLANG_SOURCE}" rev-parse --verify HEAD)" || {
+        SRTCTL_SGLANG_REVISION="$(git -c safe.directory="${SRTCTL_SGLANG_SOURCE}" -C "${SRTCTL_SGLANG_SOURCE}" rev-parse --verify HEAD)" || {
             echo "srtctl: unable to identify SGLang source revision: ${SRTCTL_SGLANG_SOURCE}" >&2
             exit 1
         }
@@ -101,14 +101,20 @@ if [[ -n "${SRTCTL_LOCAL_CONTAINER_IMAGE}" && "${SRTCTL_LOCAL_CONTAINERIZED:-}" 
         -lc 'trap "exit 0" TERM INT; while :; do sleep 3600; done'
     )
     SRTCTL_CONTAINER_NAME="srtctl-lifecycle-$$"
+    srt_restore_owner() {
+        local path="$1"
+        local owner="$2"
+        [[ -e "${path}" ]] || return 0
+        chown -R "${owner}" "${path}" 2>/dev/null || sudo -n chown -R "${owner}" "${path}"
+    }
     srt_container_cleanup() {
         local rc=$?
         trap - EXIT INT TERM
         docker rm -f "${SRTCTL_CONTAINER_NAME}" >/dev/null 2>&1 || true
         local owner
         owner="$(id -u):$(id -g)"
-        [[ ! -e "${OUTPUT_DIR}" ]] || chown -R "${owner}" "${OUTPUT_DIR}" || true
-        [[ -z "${SRTCTL_SGLANG_RUNTIME_DIR}" || ! -e "${SRTCTL_SGLANG_RUNTIME_DIR}" ]] || chown -R "${owner}" "${SRTCTL_SGLANG_RUNTIME_DIR}" || true
+        srt_restore_owner "${OUTPUT_DIR}" "${owner}" || echo "srtctl: failed to restore output ownership: ${OUTPUT_DIR}" >&2
+        [[ -z "${SRTCTL_SGLANG_RUNTIME_DIR}" ]] || srt_restore_owner "${SRTCTL_SGLANG_RUNTIME_DIR}" "${owner}" || echo "srtctl: failed to restore SGLang runtime ownership: ${SRTCTL_SGLANG_RUNTIME_DIR}" >&2
         exit "${rc}"
     }
     trap srt_container_cleanup EXIT
@@ -171,7 +177,7 @@ srt_install_sglang_from_source() {
     [[ -d "${SRTCTL_SGLANG_SOURCE}/python/sglang" ]] || srt_die "Invalid SGLang source: ${SRTCTL_SGLANG_SOURCE}"
     command -v git >/dev/null 2>&1 || srt_die "git is required to identify SGLang source"
     local revision runtime_root runtime_dir source_copy bootstrap_python installed_source
-    revision="$(git -C "${SRTCTL_SGLANG_SOURCE}" rev-parse --verify HEAD)"
+    revision="$(git -c safe.directory="${SRTCTL_SGLANG_SOURCE}" -C "${SRTCTL_SGLANG_SOURCE}" rev-parse --verify HEAD)"
     runtime_root="${SRTCTL_SGLANG_RUNTIME_ROOT:-${OUTPUT_BASE}/.srtctl-runtime}"
     runtime_dir="${SRTCTL_SGLANG_RUNTIME_DIR:-${runtime_root}/sglang-${revision}}"
     source_copy="${runtime_dir}/source"
