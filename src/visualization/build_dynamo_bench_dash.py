@@ -121,7 +121,9 @@ def _benchmark_status():
         if not d.get("exit_code") and not d.get("errors"):
             return None
         return {"exit_code": d.get("exit_code"),
-                "errors": (d.get("errors") or [])[:4]}
+                # 6, not 4: a check_env_vars failure is a header plus one line per
+                # missing variable, and truncating to 4 drops the variables.
+                "errors": (d.get("errors") or [])[:6]}
     return None
 
 

@@ -1750,3 +1750,40 @@ class TestBenchmarkStatus:
         (run_dir / "benchmark.out").write_text("+ aiperf profile ...\nall good\n")
         (run_dir / "sweep_999.log").write_text("[INFO] Benchmark completed\n")
         assert self._payload(run_dir, tmp_path)["meta"]["benchmark_status"] is None
+
+
+class TestBenchmarkStatusMessageQuality:
+    """The banner has to carry the actionable detail, not just the failure class.
+
+    Two shapes of noise defeat a naive capture, both seen on real runs:
+    `set -x` echoes every message once as `+ echo 'Error: ...'`, and
+    `check_env_vars` prints a header followed by one `  - NAME` line per missing
+    variable. Capturing only the header tells the reader that variables are missing
+    while withholding which ones.
+    """
+
+    def _errors(self, run_dir: Path, tmp_path: Path, body: str) -> list[str]:
+        (run_dir / "benchmark.out").write_text(body)
+        (run_dir / "sweep_9.log").write_text("[ERROR] Benchmark failed with exit code 1\n")
+        bundle = tmp_path / "bundle"
+        _run_ingest(run_dir, bundle)
+        out = tmp_path / "d.json"
+        _render(bundle, tmp_path / "d.html", "--d3-cdn", "--dump-json", str(out))
+        return (json.loads(out.read_text())["meta"]["benchmark_status"] or {}).get("errors", [])
+
+    def test_missing_variable_names_are_captured(self, run_dir: Path, tmp_path: Path):
+        errs = self._errors(run_dir, tmp_path,
+            "+ echo 'Error: The following required environment variables are not set:'\n"
+            "Error: The following required environment variables are not set:\n"
+            "+ for var in \"${missing_vars[@]}\"\n"
+            "  - FRAMEWORK\n  - PRECISION\n  - DURATION\n+ exit 1\n")
+        joined = " ".join(errs)
+        for var in ("FRAMEWORK", "PRECISION", "DURATION"):
+            assert var in joined, f"{var} must survive into the banner; got {errs}"
+
+    def test_set_x_trace_lines_are_not_reported_as_the_message(self, run_dir: Path, tmp_path: Path):
+        errs = self._errors(run_dir, tmp_path,
+            "+ echo 'Error: KV_OFFLOADING must be set'\nError: KV_OFFLOADING must be set\n")
+        assert errs, "the real message must be captured"
+        assert not any(e.lstrip().startswith("+") for e in errs), \
+            "a trace line shows the mechanism instead of the message"

@@ -526,12 +526,36 @@ def run_benchmark_status(run_dir: Path, bundle: Path) -> dict | None:
         status["tail"] = [ln.rstrip("\n")[:400] for ln in lines[-40:]]
         # Error-shaped lines anywhere, not just the tail: a script can fail early and
         # then print pages of cleanup noise after it.
+        #
+        # Two shapes of noise have to be handled or the captured message is useless:
+        #
+        #   * `set -x` echoes every command, so each message appears twice -- once as
+        #     `+ echo 'Error: ...'` and once as its own output. The trace line is
+        #     dropped, because a reader shown `+ echo 'Error: ...'` is being shown the
+        #     mechanism instead of the message.
+        #   * a message can be a HEADER whose payload is on the following lines.
+        #     `check_env_vars` prints "The following required environment variables are
+        #     not set:" and then one `  - NAME` line per variable. Capturing only the
+        #     header names the failure class and withholds the one detail that makes it
+        #     actionable -- which variable. Observed on v3 arm 2752146, where the
+        #     answer was FRAMEWORK / PRECISION / RESULT_FILENAME / DURATION.
+        collecting = False
         for ln in lines:
-            if any(m in ln for m in _BENCH_ERROR_MARKERS):
-                s = ln.strip()[:400]
+            raw = ln.rstrip("\n")
+            if raw.lstrip().startswith("+"):      # set -x trace, not output
+                continue
+            s = raw.strip()[:400]
+            if any(m in raw for m in _BENCH_ERROR_MARKERS):
+                if s and s not in status["errors"]:
+                    status["errors"].append(s)
+                collecting = True
+            elif collecting and s.startswith("-"):
+                # Continuation of the message above (a bullet list of names/reasons).
                 if s not in status["errors"]:
                     status["errors"].append(s)
-            if len(status["errors"]) >= 8:
+            elif s:
+                collecting = False
+            if len(status["errors"]) >= 12:
                 break
 
     with open(bundle / "benchmark_status.json", "w") as f:
