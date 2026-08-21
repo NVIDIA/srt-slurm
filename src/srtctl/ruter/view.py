@@ -11,6 +11,7 @@ import json
 import logging
 import re
 from bisect import bisect_right
+from collections import defaultdict
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -90,14 +91,22 @@ class ViewData:
     def timeline(self) -> dict[str, list[dict[str, Any]]]:
         if self.benchmark_start_ns is None:
             return {"traces": [], "aiperf": []}
-        decisions = {row["dynamo_request_id"]: row for row in self.decisions if row["dynamo_request_id"]}
+        decisions = {
+            (row["dynamo_request_id"], row["stage"]): row
+            for row in self.decisions
+            if row["dynamo_request_id"]
+        }
         traces: list[dict[str, Any]] = []
         for row in self.traces:
             timestamp = row["request_received_ns"] or row["event_time_ns"]
             if timestamp is None:
                 continue
-            decision = decisions.get(row["request_id"])
-            worker_id = row["prefill_worker_id"] or (decision or {}).get("worker_id")
+            prefill_decision = decisions.get((row["request_id"], "prefill")) or decisions.get(
+                (row["request_id"], "aggregate")
+            )
+            decode_decision = decisions.get((row["request_id"], "decode"))
+            prefill_worker_id = row["prefill_worker_id"] or (prefill_decision or {}).get("worker_id")
+            decode_worker_id = row["decode_worker_id"] or (decode_decision or {}).get("worker_id")
             traces.append(
                 {
                     "benchS": (timestamp - self.benchmark_start_ns) / 1_000_000_000,
@@ -110,8 +119,11 @@ class ViewData:
                     "e2eMs": row["total_time_ms"],
                     "queueDepth": row["queue_depth"],
                     "dpRank": row["prefill_dp_rank"],
-                    "prefillWorkerAlias": self.worker_aliases.get(worker_id) if worker_id else None,
-                    "lowerPrefixSelected": bool((decision or {}).get("lower_prefix_selected")),
+                    "prefillWorkerAlias": self.worker_aliases.get(prefill_worker_id) if prefill_worker_id else None,
+                    "decodeWorkerAlias": self.worker_aliases.get(decode_worker_id) if decode_worker_id else None,
+                    "prefillDecisionId": (prefill_decision or {}).get("decision_id"),
+                    "decodeDecisionId": (decode_decision or {}).get("decision_id"),
+                    "lowerPrefixSelected": bool((prefill_decision or {}).get("lower_prefix_selected")),
                 }
             )
         aiperf = [
@@ -136,11 +148,13 @@ class ViewData:
             timestamp = row["timestamp_ns"]
             if timestamp is None:
                 continue
-            selected = self._candidate(row["dynamo_request_id"], row["worker_id"])
+            selected = self._candidate(row["decision_id"], row["worker_id"])
             rows.append(
                 {
                     "benchS": (timestamp - self.benchmark_start_ns) / 1_000_000_000,
+                    "decisionId": row["decision_id"],
                     "dynamoRequestId": row["dynamo_request_id"],
+                    "stage": row["stage"],
                     "workerAlias": self.worker_aliases.get(row["worker_id"]),
                     "dpRank": row["dp_rank"],
                     "overlapBlocks": row["overlap_blocks"],
@@ -151,16 +165,25 @@ class ViewData:
             )
         return rows
 
-    def decision(self, request_id: str | None) -> dict[str, Any]:
-        if not request_id or self.benchmark_start_ns is None:
+    def decision(self, decision_id: str | None) -> dict[str, Any]:
+        if not decision_id or self.benchmark_start_ns is None:
             return {"found": False}
-        decision = next((row for row in self.decisions if row["dynamo_request_id"] == request_id), None)
+        decision = next((row for row in self.decisions if row["decision_id"] == decision_id), None)
+        if decision is None:
+            decision = next(
+                (
+                    row
+                    for row in self.decisions
+                    if row["dynamo_request_id"] == decision_id and row["stage"] in {"prefill", "aggregate"}
+                ),
+                None,
+            )
         if decision is None or decision["timestamp_ns"] is None:
             return {"found": False}
-        trace = next((row for row in self.traces if row["request_id"] == request_id), None)
+        trace = next((row for row in self.traces if row["request_id"] == decision["dynamo_request_id"]), None)
         candidates = []
         for candidate in sorted(
-            self.candidates.get(request_id, []),
+            self.candidates.get(decision["decision_id"], []),
             key=lambda row: (row.values.get("cost_blocks") is None, row.values.get("cost_blocks") or 0, row.worker_id),
         ):
             values = candidate.values
@@ -178,13 +201,23 @@ class ViewData:
                     "overlapCreditDecay": values.get("overlap_credit_decay"),
                     "decodeBlocks": values.get("decode_blocks"),
                     "activeRequestCostBlocks": values.get("active_request_cost_blocks"),
-                    **self.snapshots.get((request_id, candidate.worker_id), _empty_snapshot()),
+                    **self.snapshots.get((decision["decision_id"], candidate.worker_id), _empty_snapshot()),
                 }
             )
         return {
             "found": True,
             "benchS": (decision["timestamp_ns"] - self.benchmark_start_ns) / 1_000_000_000,
             "selectedWorkerAlias": self.worker_aliases.get(decision["worker_id"]),
+            "stage": decision["stage"],
+            "lowerPrefixSelected": decision["lower_prefix_selected"],
+            "requestPath": {
+                "prefillWorkerAlias": self.worker_aliases.get(trace["prefill_worker_id"])
+                if trace and trace["prefill_worker_id"]
+                else None,
+                "decodeWorkerAlias": self.worker_aliases.get(trace["decode_worker_id"])
+                if trace and trace["decode_worker_id"]
+                else None,
+            },
             "dpRank": decision["dp_rank"],
             "overlapBlocks": decision["overlap_blocks"],
             "totalBlocks": decision["total_blocks"],
@@ -196,10 +229,10 @@ class ViewData:
             "candidates": candidates,
         }
 
-    def _candidate(self, request_id: str | None, worker_id: str | None) -> _Candidate | None:
-        if request_id is None or worker_id is None:
+    def _candidate(self, decision_id: str | None, worker_id: str | None) -> _Candidate | None:
+        if decision_id is None or worker_id is None:
             return None
-        return next((row for row in self.candidates.get(request_id, []) if row.worker_id == worker_id), None)
+        return next((row for row in self.candidates.get(decision_id, []) if row.worker_id == worker_id), None)
 
 
 def load_view_data(root: Path, *, refresh: bool = False) -> ViewData:
@@ -211,10 +244,10 @@ def load_view_data(root: Path, *, refresh: bool = False) -> ViewData:
     worker_events = list(_jsonl(bundle_dir / "worker-events.jsonl"))
     traces = _request_traces(run_root)
     aiperf = _aiperf_requests(run_root)
-    decisions, candidates = _routing(router_events)
+    decisions, candidates = _routing(router_events, traces)
     workers = {row["worker_id"] for row in decisions if row["worker_id"]}
     workers.update(candidate.worker_id for options in candidates.values() for candidate in options)
-    aliases = {worker: _alphabetic_alias(index) for index, worker in enumerate(sorted(workers))}
+    aliases = _worker_aliases(workers, traces, decisions, candidates)
     metrics = _metric_series(run_root)
     snapshots = _snapshots(decisions, candidates, worker_events, metrics)
     start_candidates = [
@@ -340,6 +373,8 @@ def _request_traces(root: Path) -> list[dict[str, Any]]:
                     "queue_depth": _integer(request.get("queue_depth")),
                     "prefill_worker_id": _canonical_worker_id(_nested(request, "worker", "prefill_worker_id")),
                     "prefill_dp_rank": _integer(_nested(request, "worker", "prefill_dp_rank")),
+                    "decode_worker_id": _canonical_worker_id(_nested(request, "worker", "decode_worker_id")),
+                    "decode_dp_rank": _integer(_nested(request, "worker", "decode_dp_rank")),
                 }
             )
     return rows
@@ -365,36 +400,77 @@ def _aiperf_requests(root: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def _routing(events: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, list[_Candidate]]]:
+def _routing(
+    events: list[dict[str, Any]], traces: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], dict[str, list[_Candidate]]]:
+    """Split each request's sequential Dynamo score batches into route decisions.
+
+    In P/D mode Dynamo writes one formula batch plus ``[ROUTING] Best`` record
+    for prefill and then another pair for decode. The log event has no stage
+    label, so the completed request trace supplies the authoritative selected
+    prefill/decode worker identity.
+    """
     decisions: list[dict[str, Any]] = []
     candidates: dict[str, list[_Candidate]] = {}
+    pending: dict[str, list[_Candidate]] = defaultdict(list)
+    decision_counts: dict[str, int] = defaultdict(int)
+    dispatches: dict[str, list[tuple[int | None, str]]] = defaultdict(list)
     for event in events:
         fields = event.get("fields") or {}
         request_id = _string(fields.get("dynamo_request_id") or fields.get("request_id") or event.get("request_id"))
         worker_id = _canonical_worker_id(fields.get("worker_id"))
-        if event.get("kind") == "routing_decision" and request_id and worker_id:
+        if event.get("kind") == "routing_formula" and request_id and worker_id:
+            values = {name: _number(fields.get(name)) for name in _formula_fields()}
+            values["dp_rank"] = _integer(fields.get("dp_rank"))
+            pending[request_id].append(_Candidate(_integer(event.get("timestamp_ns")), worker_id, values))
+        elif event.get("kind") == "routing_decision" and request_id and worker_id:
+            ordinal = decision_counts[request_id]
+            decision_counts[request_id] += 1
+            decision_id = f"{request_id}:{ordinal}"
             decisions.append(
                 {
+                    "decision_id": decision_id,
                     "timestamp_ns": _integer(event.get("timestamp_ns")),
                     "dynamo_request_id": request_id,
                     "worker_id": worker_id,
                     "dp_rank": _integer(fields.get("dp_rank")),
                     "overlap_blocks": _integer(fields.get("overlap_blocks")),
                     "total_blocks": _integer(fields.get("total_blocks")),
+                    "stage": "aggregate",
                     "lower_prefix_selected": False,
                 }
             )
-        if event.get("kind") == "routing_formula" and request_id and worker_id:
-            values = {name: _number(fields.get(name)) for name in _formula_fields()}
-            values["dp_rank"] = _integer(fields.get("dp_rank"))
-            candidates.setdefault(request_id, []).append(
-                _Candidate(_integer(event.get("timestamp_ns")), worker_id, values)
-            )
+            candidates[decision_id] = pending.pop(request_id, [])
+        elif event.get("kind") == "routing_dispatch" and request_id:
+            phase = _string(fields.get("phase"))
+            if phase is not None:
+                dispatches[request_id].append((_integer(event.get("timestamp_ns")), phase.lower()))
     decisions.sort(key=lambda row: row["timestamp_ns"] or 0)
+    traces_by_request = {row["request_id"]: row for row in traces if row["request_id"]}
     for decision in decisions:
-        options = candidates.get(decision["dynamo_request_id"], [])
+        trace = traces_by_request.get(decision["dynamo_request_id"])
+        dispatch = next(
+            (
+                phase
+                for timestamp, phase in dispatches.get(decision["dynamo_request_id"], [])
+                if timestamp is not None
+                and decision["timestamp_ns"] is not None
+                and timestamp >= decision["timestamp_ns"]
+            ),
+            None,
+        )
+        if dispatch in {"prefill", "decode"}:
+            decision["stage"] = dispatch
+        elif trace and trace["decode_worker_id"]:
+            if decision["worker_id"] == trace["prefill_worker_id"]:
+                decision["stage"] = "prefill"
+            elif decision["worker_id"] == trace["decode_worker_id"]:
+                decision["stage"] = "decode"
+            else:
+                decision["stage"] = "unknown"
+        options = candidates.get(decision["decision_id"], [])
         selected = next((row for row in options if row.worker_id == decision["worker_id"]), None)
-        if selected is not None:
+        if selected is not None and decision["stage"] != "decode":
             selected_prefix = selected.values.get("effective_cached_blocks")
             decision["lower_prefix_selected"] = selected_prefix is not None and any(
                 (row.values.get("effective_cached_blocks") or 0) > selected_prefix for row in options
@@ -452,28 +528,24 @@ def _snapshots(
     worker_events: list[dict[str, Any]],
     series: dict[tuple[str, str], list[tuple[int, float]]],
 ) -> dict[tuple[str, str], dict[str, float | None]]:
-    worker_indices: dict[str, int] = {}
+    worker_endpoints: dict[str, str] = {}
     for event in worker_events:
         fields = event.get("fields") or {}
-        worker_id = _canonical_worker_id(fields.get("instance_id"))
+        worker_id = _canonical_worker_id(fields.get("lease_id") or fields.get("instance_id"))
         worker_index = _integer(event.get("worker_index"))
-        if worker_id is not None and worker_index is not None:
-            worker_indices.setdefault(worker_id, worker_index)
-    decision_times = {
-        row["dynamo_request_id"]: row["timestamp_ns"] for row in decisions if row["timestamp_ns"] is not None
-    }
+        worker_role = _string(event.get("worker_role"))
+        if worker_id is not None and worker_index is not None and worker_role is not None:
+            worker_endpoints.setdefault(worker_id, f"engine:worker_{worker_role}_{worker_index}_0")
     snapshots = {}
-    for request_id, options in candidates.items():
-        timestamp = decision_times.get(request_id)
+    for decision in decisions:
+        decision_id = decision["decision_id"]
+        timestamp = decision["timestamp_ns"]
         if timestamp is None:
             continue
+        options = candidates.get(decision_id, [])
         for candidate in options:
             router_subject = f"router:{candidate.worker_id}"
-            engine_subject = (
-                f"engine:worker_agg_{worker_indices[candidate.worker_id]}_0"
-                if candidate.worker_id in worker_indices
-                else None
-            )
+            engine_subject = worker_endpoints.get(candidate.worker_id)
             prefill = _sample_before(series.get((router_subject, _ROUTER_PREFILL)), timestamp)
             last_ttft = _sample_before(series.get((router_subject, _ROUTER_TTFT)), timestamp)
             last_itl = _sample_before(series.get((router_subject, _ROUTER_ITL)), timestamp)
@@ -484,7 +556,7 @@ def _snapshots(
             kv_used = _sample_before(
                 series.get((engine_subject, _ENGINE_KV_USED)) if engine_subject else None, timestamp
             )
-            snapshots[(request_id, candidate.worker_id)] = {
+            snapshots[(decision_id, candidate.worker_id)] = {
                 "routerSampleAgeMs": _max_age_ms(timestamp, prefill, last_ttft, last_itl),
                 "activePrefillTokens": prefill[1] if prefill else None,
                 "lastTtftMs": last_ttft[1] * 1_000 if last_ttft else None,
@@ -625,6 +697,35 @@ def _canonical_worker_id(value: Any) -> str | None:
     if worker_id is None:
         return None
     return worker_id.removeprefix("worker_")
+
+
+def _worker_aliases(
+    workers: set[str],
+    traces: list[dict[str, Any]],
+    decisions: list[dict[str, Any]],
+    candidates: dict[str, list[_Candidate]],
+) -> dict[str, str]:
+    """Give P/D workers short, role-safe aliases while preserving agg aliases."""
+    prefill = {row["prefill_worker_id"] for row in traces if row["prefill_worker_id"]}
+    decode = {row["decode_worker_id"] for row in traces if row["decode_worker_id"]}
+    for decision in decisions:
+        candidates_for_decision = candidates.get(decision["decision_id"], [])
+        if decision["stage"] == "prefill":
+            prefill.update(candidate.worker_id for candidate in candidates_for_decision)
+        elif decision["stage"] == "decode":
+            decode.update(candidate.worker_id for candidate in candidates_for_decision)
+    if not decode:
+        return {worker: _alphabetic_alias(index) for index, worker in enumerate(sorted(workers))}
+
+    aliases: dict[str, str] = {}
+    for index, worker in enumerate(sorted(prefill)):
+        aliases[worker] = f"P-{_alphabetic_alias(index)}"
+    for index, worker in enumerate(sorted(decode)):
+        aliases[worker] = f"D-{_alphabetic_alias(index)}"
+    unknown = sorted(workers - prefill - decode)
+    for index, worker in enumerate(unknown):
+        aliases[worker] = f"W-{_alphabetic_alias(index)}"
+    return aliases
 
 
 def _alphabetic_alias(index: int) -> str:

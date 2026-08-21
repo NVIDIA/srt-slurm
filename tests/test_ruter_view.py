@@ -205,6 +205,70 @@ def test_view_reads_extensionless_dynamo_request_trace(tmp_path: Path) -> None:
     assert load_view_data(run).summary()["requestTraces"] == 1
 
 
+def test_view_splits_prefill_and_decode_score_batches(tmp_path: Path) -> None:
+    run = _make_run(tmp_path / "run")
+    router_rows = [
+        {"time": "2026-08-20T00:00:02.000000Z", "message": _formula(42, 8, 12), "request_id": "internal-1"},
+        {"time": "2026-08-20T00:00:02.001000Z", "message": _formula(43, 12, 16), "request_id": "internal-1"},
+        {
+            "time": "2026-08-20T00:00:02.002000Z",
+            "message": "[ROUTING] Best: worker_42 dp_rank=0 with 8/16 blocks overlap",
+            "request_id": "internal-1",
+            "worker_id": 42,
+            "dp_rank": 0,
+            "overlap_blocks": 8,
+            "total_blocks": 16,
+        },
+        {"time": "2026-08-20T00:00:02.003000Z", "message": _formula(44, 0, 4), "request_id": "internal-1"},
+        {"time": "2026-08-20T00:00:02.004000Z", "message": _formula(45, 0, 8), "request_id": "internal-1"},
+        {
+            "time": "2026-08-20T00:00:02.005000Z",
+            "message": "[ROUTING] Best: worker_44 dp_rank=0 with 0/16 blocks overlap",
+            "request_id": "internal-1",
+            "worker_id": 44,
+            "dp_rank": 0,
+            "overlap_blocks": 0,
+            "total_blocks": 16,
+        },
+    ]
+    _write(run / "logs" / "router.log", "".join(_json_line(row) for row in router_rows))
+    trace = {
+        "event": {
+            "schema": "dynamo.request.trace.v1",
+            "event_type": "request_end",
+            "event_time_unix_ms": 1_787_068_803_000,
+            "request": {
+                "request_id": "internal-1",
+                "request_received_ms": 1_787_068_802_000,
+                "input_tokens": 256,
+                "cached_tokens": 128,
+                "kv_hit_rate": 0.5,
+                "worker": {
+                    "prefill_worker_id": 42,
+                    "prefill_dp_rank": 0,
+                    "decode_worker_id": 44,
+                    "decode_dp_rank": 0,
+                },
+            },
+        }
+    }
+    with gzip.open(run / "artifacts" / "dynamo-request-trace.000000.jsonl.gz", "wt", encoding="utf-8") as handle:
+        handle.write(_json_line(trace))
+
+    normalize_run(run)
+    view = load_view_data(run)
+
+    assert [(row["stage"], row["worker_id"]) for row in view.decisions] == [("prefill", "42"), ("decode", "44")]
+    assert view.summary()["workerAliases"] == ["P-A", "P-B", "D-A", "D-B"]
+    timeline = view.timeline()["traces"][0]
+    assert timeline["prefillWorkerAlias"] == "P-A"
+    assert timeline["decodeWorkerAlias"] == "D-A"
+    assert timeline["lowerPrefixSelected"] is True
+    assert [candidate["workerAlias"] for candidate in view.decision("internal-1:0")["candidates"]] == ["P-A", "P-B"]
+    assert [candidate["workerAlias"] for candidate in view.decision("internal-1:1")["candidates"]] == ["D-A", "D-B"]
+    assert view.decision("internal-1:1")["lowerPrefixSelected"] is False
+
+
 def test_view_serves_dashboard_and_preloaded_api(tmp_path: Path) -> None:
     run = _make_run(tmp_path / "run")
     normalize_run(run)

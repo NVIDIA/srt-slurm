@@ -309,7 +309,9 @@ request = urllib.request.Request(
 )
 with urllib.request.urlopen(request, timeout=120) as response:
     body = json.loads(response.read())
-assert body.get("choices"), body
+choices = body.get("choices") or []
+content = (choices[0].get("message") or {}).get("content") if choices else None
+assert isinstance(content, str) and content.strip(), body
 print(json.dumps(body))
 PY
 }

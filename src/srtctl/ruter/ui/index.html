@@ -57,6 +57,7 @@
       .contender-intro p { margin: 0; color: var(--muted); font: 10px var(--mono); }
       #candidate-rows { padding: 0 17px 15px; }
       .candidate-columns, .candidate { display: grid; grid-template-columns: 104px minmax(155px, .75fr) minmax(255px, 1.15fr) minmax(330px, 1.35fr); gap: 18px; }
+      .candidate-columns.decode, .candidate.decode { grid-template-columns: 104px minmax(255px, 1.15fr) minmax(330px, 1.35fr); }
       .candidate-columns { padding: 0 12px 8px; }
       .candidate-columns em { margin-left: 8px; color: #52677d; font-style: normal; letter-spacing: 0; text-transform: none; }
       .candidate { align-items: center; min-height: 79px; padding: 10px 12px; border-top: 1px solid var(--steel); }
@@ -114,7 +115,7 @@
 
       <section class="decision-log">
         <div class="decision-log-head"><h2>Route log</h2><span id="route-log-selection" class="eyebrow">select a row for the full scorecard</span></div>
-        <div class="table-wrap"><table><thead><tr><th>time</th><th>worker</th><th>matched blocks</th><th>match</th><th>score</th></tr></thead><tbody id="decision-rows"></tbody></table></div>
+        <div class="table-wrap"><table><thead><tr><th>time</th><th>stage</th><th>worker</th><th>matched blocks</th><th>match</th><th>score</th></tr></thead><tbody id="decision-rows"></tbody></table></div>
       </section>
 
       <section id="inspector" class="decision-sheet">
