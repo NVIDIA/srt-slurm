@@ -2,6 +2,7 @@
 members = [
     "src/tachometer/tachometer-writer",
     "src/tachometer/tachometer-scraper",
+    "ruter",
 ]
 resolver = "2"
 

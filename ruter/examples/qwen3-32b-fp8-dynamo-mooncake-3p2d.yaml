@@ -1,0 +1,101 @@
+# Direct-host 3-prefill / 2-decode Dynamo experiment for ruter.
+# Render and execute only through srt-slurm. Before rendering, export:
+#   RUTER_MODEL_PATH=/absolute/path/to/Qwen3-32B-FP8
+#   RUTER_MOONCAKE_TRACE=/absolute/path/to/mooncake_refined.jsonl
+name: qwen3-32b-fp8-dynamo-ruter-3p2d
+
+model:
+  path: $RUTER_MODEL_PATH
+  container: direct-host
+  precision: fp8
+
+resources:
+  gpu_type: h100
+  gpus_per_node: 8
+  prefill_nodes: 1
+  # Zero means decode workers share the direct-host prefill node.
+  decode_nodes: 0
+  prefill_workers: 3
+  decode_workers: 2
+  gpus_per_prefill: 1
+  gpus_per_decode: 1
+
+dynamo:
+  install: false
+
+# Avoid the host's shared NATS and etcd instances.
+environment:
+  SRTCTL_ETCD_PORT: "22379"
+  SRTCTL_ETCD_PEER_PORT: "22380"
+  SRTCTL_NATS_PORT: "24222"
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+  args:
+    router-mode: kv
+  env:
+    # observability.enabled owns DYN_REQUEST_TRACE, the JSONL sink and debug
+    # logs. Only redirect the trace prefix into this portable run bundle.
+    DYN_REQUEST_TRACE_FILE_PATH: "{artifact_dir}/dynamo-request-trace"
+
+backend:
+  type: sglang
+  kv_events_config:
+    prefill: true
+    decode: true
+  sglang_config:
+    prefill:
+      served-model-name: Qwen/Qwen3-32B-FP8
+      tensor-parallel-size: 1
+      page-size: 16
+      trust-remote-code: true
+      mem-fraction-static: 0.85
+      context-length: 40960
+      max-running-requests: 64
+      enable-metrics: true
+      disable-piecewise-cuda-graph: true
+      fp8-gemm-backend: triton
+      disaggregation-transfer-backend: nixl
+    decode:
+      served-model-name: Qwen/Qwen3-32B-FP8
+      tensor-parallel-size: 1
+      page-size: 16
+      trust-remote-code: true
+      mem-fraction-static: 0.85
+      context-length: 40960
+      max-running-requests: 64
+      enable-metrics: true
+      disable-piecewise-cuda-graph: true
+      fp8-gemm-backend: triton
+      disaggregation-transfer-backend: nixl
+
+observability:
+  enabled: true
+  # ruter consumes Tachometer's compact Parquet, not a duplicate raw scrape.
+  scrape_metrics: false
+  tachometer:
+    enabled: true
+
+benchmark:
+  type: custom
+  command: |
+    aiperf profile \
+      --model Qwen/Qwen3-32B-FP8 \
+      --tokenizer Qwen/Qwen3-32B-FP8 \
+      --tokenizer-trust-remote-code \
+      --url "$SRT_FRONTEND_URL" \
+      --endpoint-type chat \
+      --streaming \
+      --input-file "$RUTER_MOONCAKE_TRACE" \
+      --custom-dataset-type mooncake_trace \
+      --fixed-schedule \
+      --fixed-schedule-auto-offset \
+      --extra-inputs ignore_eos:true \
+      --use-legacy-max-tokens \
+      --request-timeout-seconds 900 \
+      --workers-max 128 \
+      --output-artifact-dir "$AIPERF_ARTIFACT_DIR" \
+      --profile-export-prefix trace \
+      --ui none \
+      --no-server-metrics

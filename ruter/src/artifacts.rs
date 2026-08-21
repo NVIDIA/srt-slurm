@@ -124,7 +124,10 @@ pub fn initialize(run_root: &Path, analysis_dir: &Path) -> Result<InitReport> {
             events.push(event);
         }
         for (worker_index, worker_log) in arm.worker_logs.iter().enumerate() {
-            for event in parse_file(worker_parser(arm.arm, worker_index as u32), worker_log)? {
+            for event in parse_file(
+                worker_parser(arm.arm, worker_index as u32, worker_log),
+                worker_log,
+            )? {
                 events.push(event);
             }
         }
@@ -401,9 +404,23 @@ fn router_parser(arm: Arm) -> ParserKind {
     }
 }
 
-fn worker_parser(arm: Arm, worker_index: u32) -> ParserKind {
+fn worker_parser(arm: Arm, worker_index: u32, worker_log: &Path) -> ParserKind {
+    let name = worker_log
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let worker_role = if name.starts_with("worker-prefill-") {
+        "prefill"
+    } else if name.starts_with("worker-decode-") {
+        "decode"
+    } else {
+        "agg"
+    };
     match arm {
-        Arm::Dynamo => ParserKind::DynamoWorker { worker_index },
+        Arm::Dynamo => ParserKind::DynamoWorker {
+            worker_index,
+            worker_role,
+        },
     }
 }
 

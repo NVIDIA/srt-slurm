@@ -87,7 +87,25 @@ pub(super) fn parse(
                 .entry("dynamo_request_id".to_owned())
                 .or_insert(request_id);
         }
+        // JSONL spans preserve the internal request ID as `request_id` and the
+        // client identity as `x_request_id`; no text-only regex is needed in
+        // that case. Keep both identities so request traces remain joinable.
+        if fields.contains_key("x_request_id") {
+            if let Some(request_id) = fields.get("request_id").cloned() {
+                fields
+                    .entry("dynamo_request_id".to_owned())
+                    .or_insert(request_id);
+            }
+        }
         let kind = if line.contains("[ROUTING] Best:") {
+            EventKind::RoutingDecision
+        } else if fields
+            .get("worker_type")
+            .is_some_and(|worker_type| worker_type.eq_ignore_ascii_case("decode"))
+        {
+            // In disaggregated Dynamo the decode scheduler's own final choice
+            // is logged as `Selected worker`; `[ROUTING] Best` is the prefill
+            // push-router record. Treat this as the second, load-only decision.
             EventKind::RoutingDecision
         } else {
             EventKind::RoutingCandidate

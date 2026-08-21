@@ -12,6 +12,8 @@ const APP: &str = include_str!("../ui/app.js");
 const BEAVER_BADGE: &[u8] = include_bytes!("../ui/assets/certified-beaver.png");
 const BEAVER_AUDIO: &[u8] = include_bytes!("../ui/assets/ruter.mp3");
 
+type WorkerAliases = BTreeMap<(String, String), String>;
+
 pub fn launch(analysis_dir: &Path, port: Option<u16>) -> Result<()> {
     for file in ["manifest.json", "ruter.db"] {
         if !analysis_dir.join(file).is_file() {
@@ -111,18 +113,40 @@ fn benchmark_start(connection: &Connection) -> Result<Option<i64>> {
         .context("read benchmark start")
 }
 
-/// Stable, compact display names for opaque Dynamo instance IDs. The raw ID is
-/// retained in every API row, so the presentation alias never loses evidence.
-fn worker_aliases(connection: &Connection) -> Result<BTreeMap<String, String>> {
+/// Opaque Dynamo instance IDs become role-specific compact display names.
+/// The phase is part of the identity: a 3P2D run shows P-A..P-C and D-A..D-B.
+fn worker_aliases(connection: &Connection) -> Result<WorkerAliases> {
     let mut statement = connection.prepare(
-        "SELECT DISTINCT worker_id FROM routing_decisions WHERE worker_id IS NOT NULL ORDER BY worker_id",
+        "SELECT DISTINCT phase, worker_id FROM routing_decisions WHERE worker_id IS NOT NULL ORDER BY phase, worker_id",
     )?;
-    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-    let mut aliases = BTreeMap::new();
-    for (index, worker_id) in rows.enumerate() {
-        aliases.insert(worker_id?, alphabetic_alias(index));
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut aliases = WorkerAliases::new();
+    let mut next_by_phase = BTreeMap::<String, usize>::new();
+    for row in rows {
+        let (phase, worker_id) = row?;
+        let index = next_by_phase.entry(phase.clone()).or_default();
+        let prefix = match phase.as_str() {
+            "prefill" => "P-",
+            "decode" => "D-",
+            _ => "",
+        };
+        aliases.insert(
+            (phase, worker_id),
+            format!("{prefix}{}", alphabetic_alias(*index)),
+        );
+        *index += 1;
     }
     Ok(aliases)
+}
+
+fn alias(aliases: &WorkerAliases, phase: &str, worker_id: Option<&str>) -> Option<String> {
+    worker_id.and_then(|worker_id| {
+        aliases
+            .get(&(phase.to_owned(), worker_id.to_owned()))
+            .cloned()
+    })
 }
 
 fn alphabetic_alias(mut index: usize) -> String {
@@ -138,7 +162,7 @@ fn alphabetic_alias(mut index: usize) -> String {
 
 fn summary(analysis_dir: &Path) -> Result<Value> {
     let connection = open(analysis_dir)?;
-    let worker_aliases = worker_aliases(&connection)?;
+    let aliases = worker_aliases(&connection)?;
     let traces: i64 =
         connection.query_row("SELECT COUNT(*) FROM request_traces", [], |row| row.get(0))?;
     let aiperf_requests: i64 =
@@ -147,11 +171,6 @@ fn summary(analysis_dir: &Path) -> Result<Value> {
         connection.query_row("SELECT COUNT(*) FROM routing_decisions", [], |row| {
             row.get(0)
         })?;
-    let workers: i64 = connection.query_row(
-        "SELECT COUNT(DISTINCT worker_id) FROM routing_decisions WHERE worker_id IS NOT NULL",
-        [],
-        |row| row.get(0),
-    )?;
     let avg_kv_hit_rate: Option<f64> =
         connection.query_row("SELECT AVG(kv_hit_rate) FROM request_traces", [], |row| {
             row.get(0)
@@ -160,207 +179,232 @@ fn summary(analysis_dir: &Path) -> Result<Value> {
         connection.query_row("SELECT AVG(ttft_ms) FROM request_traces", [], |row| {
             row.get(0)
         })?;
-    let router_settings = metadata(&connection, "dynamo.router_settings")?;
     Ok(json!({
         "requestTraces": traces,
         "aiperfRequests": aiperf_requests,
         "decisions": decisions,
-        "workers": workers,
-        "workerAliases": worker_aliases.values().collect::<Vec<_>>(),
+        "workerAliases": aliases.values().collect::<Vec<_>>(),
         "avgKvHitRate": avg_kv_hit_rate,
         "avgTtftMs": avg_ttft_ms,
-        "routerSettings": router_settings,
+        "routerSettings": metadata(&connection, "dynamo.router_settings")?,
     }))
 }
 
 fn timeline(analysis_dir: &Path) -> Result<Value> {
     let connection = open(analysis_dir)?;
-    let worker_aliases = worker_aliases(&connection)?;
+    let aliases = worker_aliases(&connection)?;
     let Some(start_ns) = benchmark_start(&connection)? else {
-        return Ok(json!({"traces": [], "aiperf": []}));
+        return Ok(json!({"traces": []}));
     };
+    let mut statement = connection.prepare(
+        "
+        SELECT (COALESCE(t.request_received_ns, t.event_time_ns) - ?1) / 1000000000.0,
+               COALESCE(t.x_request_id, t.request_id), t.request_id, t.kv_hit_rate,
+               p.phase, p.worker_id, COALESCE(p.lower_prefix_selected, 0)
+        FROM request_traces t
+        LEFT JOIN routing_decisions p ON p.decision_id = (
+            SELECT decision_id FROM routing_decisions d
+            WHERE d.dynamo_request_id = t.request_id AND d.phase IN ('prefill', 'aggregated')
+            ORDER BY CASE d.phase WHEN 'prefill' THEN 0 ELSE 1 END, d.timestamp_ns
+            LIMIT 1
+        )
+        WHERE COALESCE(t.request_received_ns, t.event_time_ns) IS NOT NULL
+        ORDER BY COALESCE(t.request_received_ns, t.event_time_ns)
+        ",
+    )?;
+    let rows = statement.query_map(params![start_ns], |row| {
+        Ok((
+            row.get::<_, f64>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, Option<f64>>(3)?,
+            row.get::<_, Option<String>>(4)?,
+            row.get::<_, Option<String>>(5)?,
+            row.get::<_, bool>(6)?,
+        ))
+    })?;
     let mut traces = Vec::new();
-    let mut statement = connection.prepare(
-        "
-        SELECT (COALESCE(request_traces.request_received_ns, request_traces.event_time_ns) - ?1) / 1000000000.0,
-               COALESCE(request_traces.x_request_id, request_traces.request_id), request_traces.request_id,
-               request_traces.input_tokens, request_traces.cached_tokens, request_traces.kv_hit_rate,
-               request_traces.ttft_ms, request_traces.total_time_ms, request_traces.queue_depth,
-               request_traces.prefill_worker_id, request_traces.prefill_dp_rank,
-               COALESCE(d.lower_prefix_selected, 0)
-        FROM request_traces
-        LEFT JOIN routing_decisions d ON d.dynamo_request_id = request_traces.request_id
-        WHERE COALESCE(request_traces.request_received_ns, request_traces.event_time_ns) IS NOT NULL
-        ORDER BY COALESCE(request_traces.request_received_ns, request_traces.event_time_ns)
-        ",
-    )?;
-    let rows = statement.query_map(params![start_ns], |row| {
-        Ok(json!({
-            "benchS": row.get::<_, f64>(0)?, "requestId": row.get::<_, Option<String>>(1)?,
-            "dynamoRequestId": row.get::<_, Option<String>>(2)?,
-            "inputTokens": row.get::<_, Option<i64>>(3)?, "cachedTokens": row.get::<_, Option<i64>>(4)?,
-            "kvHitRate": row.get::<_, Option<f64>>(5)?, "ttftMs": row.get::<_, Option<f64>>(6)?,
-            "e2eMs": row.get::<_, Option<f64>>(7)?, "queueDepth": row.get::<_, Option<i64>>(8)?,
-            "prefillWorkerId": row.get::<_, Option<String>>(9)?, "dpRank": row.get::<_, Option<i64>>(10)?,
-            "lowerPrefixSelected": row.get::<_, bool>(11)?,
-        }))
-    })?;
     for row in rows {
-        let mut row = row?;
-        let raw_worker_id = row
-            .get("prefillWorkerId")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned);
-        let worker_alias = raw_worker_id
-            .as_ref()
-            .and_then(|worker_id| worker_aliases.get(worker_id));
-        row["prefillWorkerAlias"] = json!(worker_alias);
-        row.as_object_mut()
-            .expect("timeline row is an object")
-            .remove("prefillWorkerId");
-        traces.push(row)
+        let (
+            bench_s,
+            request_id,
+            dynamo_request_id,
+            kv_hit_rate,
+            phase,
+            worker_id,
+            lower_prefix_selected,
+        ) = row?;
+        let phase = phase.unwrap_or_else(|| "prefill".to_owned());
+        traces.push(json!({
+            "benchS": bench_s,
+            "requestId": request_id,
+            "dynamoRequestId": dynamo_request_id,
+            "kvHitRate": kv_hit_rate,
+            "prefillWorkerAlias": alias(&aliases, &phase, worker_id.as_deref()),
+            "lowerPrefixSelected": lower_prefix_selected,
+        }));
     }
-
-    let mut aiperf = Vec::new();
-    let mut statement = connection.prepare(
-        "
-        SELECT (credit_issued_ns - ?1) / 1000000000.0, request_id, input_tokens, output_tokens, ttft_ms, e2e_ms
-        FROM aiperf_requests WHERE credit_issued_ns IS NOT NULL ORDER BY credit_issued_ns
-        ",
-    )?;
-    let rows = statement.query_map(params![start_ns], |row| {
-        Ok(json!({
-            "benchS": row.get::<_, f64>(0)?, "requestId": row.get::<_, Option<String>>(1)?,
-            "inputTokens": row.get::<_, Option<i64>>(2)?, "outputTokens": row.get::<_, Option<i64>>(3)?,
-            "ttftMs": row.get::<_, Option<f64>>(4)?, "e2eMs": row.get::<_, Option<f64>>(5)?,
-        }))
-    })?;
-    for row in rows {
-        aiperf.push(row?)
-    }
-    Ok(json!({"traces": traces, "aiperf": aiperf}))
+    Ok(json!({"traces": traces}))
 }
 
 fn decisions(analysis_dir: &Path) -> Result<Value> {
     let connection = open(analysis_dir)?;
-    let worker_aliases = worker_aliases(&connection)?;
+    let aliases = worker_aliases(&connection)?;
     let Some(start_ns) = benchmark_start(&connection)? else {
         return Ok(json!([]));
     };
     let mut statement = connection.prepare(
         "
-        SELECT (d.timestamp_ns - ?1) / 1000000000.0,
-               d.dynamo_request_id,
+        SELECT (d.timestamp_ns - ?1) / 1000000000.0, d.dynamo_request_id, d.phase,
                d.worker_id, d.dp_rank, d.overlap_blocks, d.total_blocks, c.cost_blocks,
                d.lower_prefix_selected
         FROM routing_decisions d
-        LEFT JOIN routing_candidates c
-          ON c.dynamo_request_id = d.dynamo_request_id AND c.worker_id = d.worker_id
+        LEFT JOIN routing_candidates c ON c.decision_id = d.decision_id AND c.worker_id = d.worker_id
         WHERE d.timestamp_ns IS NOT NULL
         ORDER BY d.timestamp_ns LIMIT 5000
         ",
     )?;
     let rows = statement.query_map(params![start_ns], |row| {
-        Ok(json!({
-            "benchS": row.get::<_, f64>(0)?, "dynamoRequestId": row.get::<_, Option<String>>(1)?,
-            "workerId": row.get::<_, Option<String>>(2)?, "dpRank": row.get::<_, Option<i64>>(3)?,
-            "overlapBlocks": row.get::<_, Option<i64>>(4)?, "totalBlocks": row.get::<_, Option<i64>>(5)?,
-            "costBlocks": row.get::<_, Option<f64>>(6)?,
-            "lowerPrefixSelected": row.get::<_, bool>(7)?,
-        }))
+        Ok((
+            row.get::<_, f64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, Option<String>>(3)?,
+            row.get::<_, Option<i64>>(4)?,
+            row.get::<_, Option<i64>>(5)?,
+            row.get::<_, Option<i64>>(6)?,
+            row.get::<_, Option<f64>>(7)?,
+            row.get::<_, bool>(8)?,
+        ))
     })?;
-    let mut decisions = Vec::new();
+    let mut output = Vec::new();
     for row in rows {
-        let mut row = row?;
-        let raw_worker_id = row
-            .get("workerId")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned);
-        let worker_alias = raw_worker_id
-            .as_ref()
-            .and_then(|worker_id| worker_aliases.get(worker_id));
-        row["workerAlias"] = json!(worker_alias);
-        row.as_object_mut()
-            .expect("decision row is an object")
-            .remove("workerId");
-        decisions.push(row);
+        let (
+            bench_s,
+            dynamo_request_id,
+            phase,
+            worker_id,
+            dp_rank,
+            overlap_blocks,
+            total_blocks,
+            cost_blocks,
+            lower_prefix_selected,
+        ) = row?;
+        output.push(json!({
+            "benchS": bench_s,
+            "dynamoRequestId": dynamo_request_id,
+            "phase": phase,
+            "workerAlias": alias(&aliases, &phase, worker_id.as_deref()),
+            "dpRank": dp_rank,
+            "overlapBlocks": overlap_blocks,
+            "totalBlocks": total_blocks,
+            "costBlocks": cost_blocks,
+            "lowerPrefixSelected": lower_prefix_selected,
+        }));
     }
-    Ok(Value::Array(decisions))
+    Ok(Value::Array(output))
 }
 
-/// One request's exact router formula and the last Tachometer observation from
-/// before it. The endpoint intentionally returns only the selected request so
-/// the browser never needs to sift through millions of raw metric rows.
+/// One request's exact P and D decision sheets. The browser receives only the
+/// selected request's small precomputed snapshots, never raw scrape series.
 fn decision(analysis_dir: &Path, dynamo_request_id: Option<&str>) -> Result<Value> {
     let Some(dynamo_request_id) = dynamo_request_id.filter(|value| !value.is_empty()) else {
         return Ok(json!({"found": false}));
     };
     let connection = open(analysis_dir)?;
-    let worker_aliases = worker_aliases(&connection)?;
+    let aliases = worker_aliases(&connection)?;
     let Some(start_ns) = benchmark_start(&connection)? else {
         return Ok(json!({"found": false}));
     };
-    let decision = connection
+    let request_facts = connection
         .query_row(
             "
-            SELECT (d.timestamp_ns - ?1) / 1000000000.0,
-                   d.worker_id, d.dp_rank, d.overlap_blocks, d.total_blocks,
-                   t.kv_hit_rate, t.ttft_ms, t.total_time_ms, t.input_tokens, t.cached_tokens
-            FROM routing_decisions d
-            LEFT JOIN request_traces t ON t.request_id = d.dynamo_request_id
-            WHERE d.dynamo_request_id = ?2
-            ORDER BY d.timestamp_ns
-            LIMIT 1
+            SELECT kv_hit_rate, ttft_ms, total_time_ms, input_tokens, cached_tokens
+            FROM request_traces WHERE request_id = ?1 LIMIT 1
             ",
-            params![start_ns, dynamo_request_id],
+            params![dynamo_request_id],
             |row| {
-                Ok((
-                    row.get::<_, f64>(0)?,
-                    row.get::<_, Option<String>>(1)?,
-                    row.get::<_, Option<i64>>(2)?,
-                    row.get::<_, Option<i64>>(3)?,
-                    row.get::<_, Option<i64>>(4)?,
-                    row.get::<_, Option<f64>>(5)?,
-                    row.get::<_, Option<f64>>(6)?,
-                    row.get::<_, Option<f64>>(7)?,
-                    row.get::<_, Option<i64>>(8)?,
-                    row.get::<_, Option<i64>>(9)?,
-                ))
+                Ok(json!({
+                    "kvHitRate": row.get::<_, Option<f64>>(0)?,
+                    "ttftMs": row.get::<_, Option<f64>>(1)?,
+                    "e2eMs": row.get::<_, Option<f64>>(2)?,
+                    "inputTokens": row.get::<_, Option<i64>>(3)?,
+                    "cachedTokens": row.get::<_, Option<i64>>(4)?,
+                }))
             },
         )
         .optional()?;
-    let Some((
-        bench_s,
-        selected_worker_id,
-        dp_rank,
-        overlap_blocks,
-        total_blocks,
-        kv_hit_rate,
-        ttft_ms,
-        e2e_ms,
-        input_tokens,
-        cached_tokens,
-    )) = decision
-    else {
+    let mut statement = connection.prepare(
+        "
+        SELECT decision_id, (timestamp_ns - ?1) / 1000000000.0, phase, worker_id, dp_rank,
+               overlap_blocks, total_blocks, lower_prefix_selected
+        FROM routing_decisions WHERE dynamo_request_id = ?2 ORDER BY timestamp_ns
+        ",
+    )?;
+    let rows = statement.query_map(params![start_ns, dynamo_request_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, f64>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, Option<String>>(3)?,
+            row.get::<_, Option<i64>>(4)?,
+            row.get::<_, Option<i64>>(5)?,
+            row.get::<_, Option<i64>>(6)?,
+            row.get::<_, bool>(7)?,
+        ))
+    })?;
+    let mut phases = Vec::new();
+    for row in rows {
+        let (
+            decision_id,
+            bench_s,
+            phase,
+            worker_id,
+            dp_rank,
+            overlap_blocks,
+            total_blocks,
+            lower_prefix_selected,
+        ) = row?;
+        phases.push(json!({
+            "phase": phase,
+            "benchS": bench_s,
+            "selectedWorkerAlias": alias(&aliases, &phase, worker_id.as_deref()),
+            "dpRank": dp_rank,
+            "overlapBlocks": overlap_blocks,
+            "totalBlocks": total_blocks,
+            "lowerPrefixSelected": lower_prefix_selected,
+            "candidates": candidates(&connection, &aliases, &decision_id, &phase, worker_id.as_deref())?,
+        }));
+    }
+    if phases.is_empty() {
         return Ok(json!({"found": false}));
-    };
+    }
+    Ok(json!({
+        "found": true,
+        "facts": request_facts.unwrap_or_else(|| json!({})),
+        "phases": phases,
+    }))
+}
 
+fn candidates(
+    connection: &Connection,
+    aliases: &WorkerAliases,
+    decision_id: &str,
+    phase: &str,
+    selected_worker_id: Option<&str>,
+) -> Result<Vec<Value>> {
     let mut statement = connection.prepare(
         "
         SELECT c.worker_id, c.dp_rank, c.cost_blocks, c.effective_cached_blocks,
-               c.prefill_load_scale, c.adjusted_prefill_blocks, c.raw_prefill_blocks,
-               c.overlap_credit_blocks, c.overlap_credit_decay, c.decode_blocks,
-               c.active_request_cost_blocks,
-               s.router_sample_age_ms, s.active_prefill_tokens, s.last_ttft_ms, s.last_itl_ms,
-               s.engine_sample_age_ms, s.running_reqs, s.queued_reqs, s.gpu_cache_usage_fraction
+               c.prefill_load_scale, c.adjusted_prefill_blocks, c.decode_blocks,
+               c.active_request_cost_blocks, s.running_reqs, s.queued_reqs,
+               s.gpu_cache_usage_fraction, s.router_sample_age_ms, s.engine_sample_age_ms
         FROM routing_candidates c
-        LEFT JOIN worker_state_snapshots s
-          ON s.dynamo_request_id = c.dynamo_request_id AND s.worker_id = c.worker_id
-        WHERE c.dynamo_request_id = ?1
-        ORDER BY c.cost_blocks, c.worker_id
+        LEFT JOIN worker_state_snapshots s ON s.decision_id = c.decision_id AND s.worker_id = c.worker_id
+        WHERE c.decision_id = ?1 ORDER BY c.cost_blocks, c.worker_id
         ",
     )?;
-    let rows = statement.query_map(params![dynamo_request_id], |row| {
+    let rows = statement.query_map(params![decision_id], |row| {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, Option<i64>>(1)?,
@@ -375,75 +419,43 @@ fn decision(analysis_dir: &Path, dynamo_request_id: Option<&str>) -> Result<Valu
             row.get::<_, Option<f64>>(10)?,
             row.get::<_, Option<f64>>(11)?,
             row.get::<_, Option<f64>>(12)?,
-            row.get::<_, Option<f64>>(13)?,
-            row.get::<_, Option<f64>>(14)?,
-            row.get::<_, Option<f64>>(15)?,
-            row.get::<_, Option<f64>>(16)?,
-            row.get::<_, Option<f64>>(17)?,
-            row.get::<_, Option<f64>>(18)?,
         ))
     })?;
-    let mut candidates = Vec::new();
+    let mut output = Vec::new();
     for row in rows {
         let (
             worker_id,
-            candidate_dp_rank,
+            dp_rank,
             cost_blocks,
             effective_cached_blocks,
             prefill_load_scale,
             adjusted_prefill_blocks,
-            raw_prefill_blocks,
-            overlap_credit_blocks,
-            overlap_credit_decay,
             decode_blocks,
             active_request_cost_blocks,
-            router_sample_age_ms,
-            active_prefill_tokens,
-            last_ttft_ms,
-            last_itl_ms,
-            engine_sample_age_ms,
             running_reqs,
             queued_reqs,
             gpu_cache_usage_fraction,
+            router_sample_age_ms,
+            engine_sample_age_ms,
         ) = row?;
-        let selected = selected_worker_id.as_deref() == Some(worker_id.as_str());
-        candidates.push(json!({
-            "workerAlias": worker_aliases.get(&worker_id),
-            "selected": selected,
-            "dpRank": candidate_dp_rank,
+        output.push(json!({
+            "workerAlias": alias(aliases, phase, Some(&worker_id)),
+            "selected": selected_worker_id == Some(worker_id.as_str()),
+            "dpRank": dp_rank,
             "costBlocks": cost_blocks,
             "effectiveCachedBlocks": effective_cached_blocks,
             "prefillLoadScale": prefill_load_scale,
             "adjustedPrefillBlocks": adjusted_prefill_blocks,
-            "rawPrefillBlocks": raw_prefill_blocks,
-            "overlapCreditBlocks": overlap_credit_blocks,
-            "overlapCreditDecay": overlap_credit_decay,
             "decodeBlocks": decode_blocks,
             "activeRequestCostBlocks": active_request_cost_blocks,
-            "routerSampleAgeMs": router_sample_age_ms,
-            "activePrefillTokens": active_prefill_tokens,
-            "lastTtftMs": last_ttft_ms,
-            "lastItlMs": last_itl_ms,
-            "engineSampleAgeMs": engine_sample_age_ms,
             "runningReqs": running_reqs,
             "queuedReqs": queued_reqs,
             "gpuCacheUsageFraction": gpu_cache_usage_fraction,
+            "routerSampleAgeMs": router_sample_age_ms,
+            "engineSampleAgeMs": engine_sample_age_ms,
         }));
     }
-    Ok(json!({
-        "found": true,
-        "benchS": bench_s,
-        "selectedWorkerAlias": selected_worker_id.as_ref().and_then(|id| worker_aliases.get(id)),
-        "dpRank": dp_rank,
-        "overlapBlocks": overlap_blocks,
-        "totalBlocks": total_blocks,
-        "kvHitRate": kv_hit_rate,
-        "ttftMs": ttft_ms,
-        "e2eMs": e2e_ms,
-        "inputTokens": input_tokens,
-        "cachedTokens": cached_tokens,
-        "candidates": candidates,
-    }))
+    Ok(output)
 }
 
 #[cfg(test)]

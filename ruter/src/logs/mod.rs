@@ -7,6 +7,7 @@ use crate::model::{Event, LogSource};
 use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use regex::Regex;
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -35,7 +36,13 @@ static RID: LazyLock<Regex> = LazyLock::new(|| {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParserKind {
     DynamoRouter,
-    DynamoWorker { worker_index: u32 },
+    DynamoWorker {
+        worker_index: u32,
+        /// The direct lifecycle renderer puts the role in the log filename.
+        /// Keep it with every normalized worker event so a Dynamo instance ID
+        /// can be joined to Tachometer's role-qualified endpoint later.
+        worker_role: &'static str,
+    },
 }
 
 impl ParserKind {
@@ -48,7 +55,7 @@ impl ParserKind {
 
     fn worker_index(self) -> Option<u32> {
         match self {
-            Self::DynamoWorker { worker_index } => Some(worker_index),
+            Self::DynamoWorker { worker_index, .. } => Some(worker_index),
             _ => None,
         }
     }
@@ -57,11 +64,14 @@ impl ParserKind {
 /// Parse one Dynamo router or Dynamo-hosted SGLang worker log line.
 pub fn parse_line(kind: ParserKind, raw: &str) -> Vec<Event> {
     let line = strip_ansi(raw);
-    let fields = parse_fields(&line);
+    let mut fields = parse_fields(&line);
     let timestamp_ns = parse_timestamp_ns(&line);
     match kind {
         ParserKind::DynamoRouter => dynamo_router::parse(&line, fields, timestamp_ns),
-        ParserKind::DynamoWorker { .. } => worker::parse(kind, &line, fields, timestamp_ns),
+        ParserKind::DynamoWorker { worker_role, .. } => {
+            fields.insert("worker_role".to_owned(), worker_role.to_owned());
+            worker::parse(kind, &line, fields, timestamp_ns)
+        }
     }
 }
 
@@ -130,6 +140,15 @@ fn strip_ansi(line: &str) -> String {
 
 fn parse_fields(line: &str) -> BTreeMap<String, String> {
     let mut fields = BTreeMap::new();
+    // `observability.enabled` uses Dynamo's JSONL logging. A tracing event
+    // normally stores its useful structured fields under `fields`; accepting
+    // those directly keeps the parser equally usable with JSONL and text logs.
+    if let Ok(Value::Object(record)) = serde_json::from_str::<Value>(line) {
+        insert_json_fields(&mut fields, &record);
+        if let Some(Value::Object(record_fields)) = record.get("fields") {
+            insert_json_fields(&mut fields, record_fields);
+        }
+    }
     for captures in LOGFMT.captures_iter(line) {
         let key = captures.name("key").unwrap().as_str().to_owned();
         let value = captures
@@ -148,6 +167,30 @@ fn parse_fields(line: &str) -> BTreeMap<String, String> {
         );
     }
     fields
+}
+
+fn insert_json_fields(
+    fields: &mut BTreeMap<String, String>,
+    record: &serde_json::Map<String, Value>,
+) {
+    for (key, value) in record {
+        match value {
+            Value::String(value) => {
+                fields.entry(key.clone()).or_insert_with(|| value.clone());
+            }
+            Value::Number(value) => {
+                fields
+                    .entry(key.clone())
+                    .or_insert_with(|| value.to_string());
+            }
+            Value::Bool(value) => {
+                fields
+                    .entry(key.clone())
+                    .or_insert_with(|| value.to_string());
+            }
+            _ => {}
+        }
+    }
 }
 
 fn parse_timestamp_ns(line: &str) -> Option<i64> {
@@ -222,7 +265,13 @@ mod tests {
     #[test]
     fn parses_dynamo_worker_batch_grammar() {
         let line = "[2026-08-20 04:40:20] Prefill batch, #new-seq: 1, #new-token: 8192, #cached-token: 0, token usage: 0.09, #running-req: 0, #queue-req: 0, #pending-token: 14906, cuda graph: False";
-        let events = parse_line(ParserKind::DynamoWorker { worker_index: 0 }, line);
+        let events = parse_line(
+            ParserKind::DynamoWorker {
+                worker_index: 0,
+                worker_role: "agg",
+            },
+            line,
+        );
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, EventKind::WorkerPrefillBatch);
         assert_eq!(events[0].fields["#new-token"], "8192");
@@ -232,9 +281,25 @@ mod tests {
     #[test]
     fn preserves_worker_id_from_payload_lifecycle() {
         let line = "[2026-08-20 04:40:20] INFO handle_payload: request received instance_id=2228894916226259721 request_id=internal-1";
-        let event = &parse_line(ParserKind::DynamoWorker { worker_index: 3 }, line)[0];
+        let event = &parse_line(
+            ParserKind::DynamoWorker {
+                worker_index: 3,
+                worker_role: "prefill",
+            },
+            line,
+        )[0];
         assert_eq!(event.kind, EventKind::WorkerRequest);
         assert_eq!(event.worker_index, Some(3));
+        assert_eq!(event.fields["worker_role"], "prefill");
         assert_eq!(event.fields["instance_id"], "2228894916226259721");
+    }
+
+    #[test]
+    fn parses_jsonl_structured_router_fields() {
+        let line = r#"{"timestamp":"2026-08-20T04:00:30.0Z","fields":{"message":"[ROUTING] Best: worker_42 dp_rank=0 with 8/12 blocks overlap","request_id":"internal-1","x_request_id":"client-1","worker_id":42,"dp_rank":0}}"#;
+        let event = &parse_line(ParserKind::DynamoRouter, line)[0];
+        assert_eq!(event.kind, EventKind::RoutingDecision);
+        assert_eq!(event.request_id.as_deref(), Some("client-1"));
+        assert_eq!(event.fields["dynamo_request_id"], "internal-1");
     }
 }

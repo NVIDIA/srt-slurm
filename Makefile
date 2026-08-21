@@ -1,4 +1,4 @@
-.PHONY: lint test test-cov ci check setup cleanup gb200-fp8 gb200-fp4 tachometer-scraper tachometer-scraper-download
+.PHONY: lint test test-cov ci check setup cleanup gb200-fp8 gb200-fp4 tachometer-scraper tachometer-scraper-download ruter
 
 NATS_VERSION ?= v2.10.28
 ETCD_VERSION ?= v3.5.21
@@ -28,6 +28,10 @@ check: lint test
 tachometer-scraper:
 	cargo build --release --locked --bin tachometer-scraper
 	install -Dm755 target/release/tachometer-scraper bin/tachometer-scraper
+
+ruter:
+	cargo build --release --locked --package ruter
+	install -Dm755 target/release/ruter bin/ruter
 
 tachometer-scraper-download:
 	@set -eu; \

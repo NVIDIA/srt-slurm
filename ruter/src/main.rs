@@ -41,6 +41,9 @@ enum Command {
         /// Required for a worker log.
         #[arg(long)]
         worker_index: Option<u32>,
+        /// Physical worker role, as encoded by srt-slurm's worker log name.
+        #[arg(long, value_enum, default_value_t = WorkerRole::Agg)]
+        worker_role: WorkerRole,
     },
 }
 
@@ -48,6 +51,23 @@ enum Command {
 enum LogKind {
     DynamoRouter,
     DynamoWorker,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum WorkerRole {
+    Prefill,
+    Decode,
+    Agg,
+}
+
+impl WorkerRole {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Prefill => "prefill",
+            Self::Decode => "decode",
+            Self::Agg => "agg",
+        }
+    }
 }
 
 fn main() -> Result<()> {
@@ -69,12 +89,14 @@ fn main() -> Result<()> {
             kind,
             input,
             worker_index,
+            worker_role,
         } => {
             let kind = match kind {
                 LogKind::DynamoRouter => ParserKind::DynamoRouter,
                 LogKind::DynamoWorker => ParserKind::DynamoWorker {
                     worker_index: worker_index
                         .context("--worker-index is required for a worker log")?,
+                    worker_role: worker_role.as_str(),
                 },
             };
             for event in parse_file(kind, &input)? {
