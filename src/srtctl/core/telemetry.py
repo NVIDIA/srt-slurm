@@ -88,7 +88,12 @@ def generate_tachometer_config(
         if frontend_type == "vllm" and process.endpoint_mode == "agg" and not process.is_leader:
             continue
         node_ip = get_hostname_ip(process.node, runtime.network_interface)
-        port = FRONTEND_PUBLIC_PORT if frontend_type == "vllm" and process.endpoint_mode == "agg" else process.sys_port
+        if frontend_type == "vllm" and process.endpoint_mode == "agg":
+            port = FRONTEND_PUBLIC_PORT
+        elif frontend_type in {"sglang", "sgl-router"}:
+            port = process.http_port
+        else:
+            port = process.sys_port
         node_metadata = {
             "hostname": process.node,
             "worker_index": str(process.endpoint_index),

@@ -175,10 +175,13 @@ srt_wait_router_ready() {
     local path="/health"
     if [[ "${FRONTEND_TYPE}" == "sglang" ]]; then
         path="/workers"
+    elif [[ "${FRONTEND_TYPE}" == "sgl-router" ]]; then
+        path="/metrics"
     fi
     SRT_WATCH_PIDS="${SRT_OWNED_PIDS[*]}" "${SRTCTL_PYTHON}" - "http://127.0.0.1:${FRONTEND_PORT}${path}" {{ context.expected_prefill }} {{ context.expected_decode }} "${FRONTEND_TYPE}" "${SRT_READY_TIMEOUT}" "${SRT_READY_INTERVAL}" <<'PY'
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -205,6 +208,12 @@ def sglang_counts(payload):
     stats = payload.get("stats", {})
     return int(stats.get("prefill_count", 0) or 0), int(stats.get("decode_count", 0) or 0) + int(stats.get("regular_count", 0) or 0)
 
+def sgl_router_counts(metrics):
+    match = re.search(r'^sgl_router_workers\{mode="plain"\}\s+(\d+(?:\.\d+)?)\s*$', metrics, re.MULTILINE)
+    if match is None:
+        return 0, 0
+    return 0, int(float(match.group(1)))
+
 while time.monotonic() < deadline:
     for raw_pid in os.environ.get("SRT_WATCH_PIDS", "").split():
         try:
@@ -213,8 +222,15 @@ while time.monotonic() < deadline:
             raise SystemExit(f"Owned process {raw_pid} exited before router readiness")
     try:
         with urllib.request.urlopen(url, timeout=5) as response:
-            payload = json.loads(response.read().decode())
-        prefill, decode = sglang_counts(payload) if frontend_type == "sglang" else dynamo_counts(payload)
+            body = response.read().decode()
+        if frontend_type == "sgl-router":
+            ready_url = url.rsplit("/", 1)[0] + "/readyz"
+            with urllib.request.urlopen(ready_url, timeout=5):
+                pass
+            prefill, decode = sgl_router_counts(body)
+        else:
+            payload = json.loads(body)
+            prefill, decode = sglang_counts(payload) if frontend_type == "sglang" else dynamo_counts(payload)
         if prefill >= expected_prefill and decode >= expected_decode:
             print(f"Router ready: prefill={prefill}/{expected_prefill} decode={decode}/{expected_decode}")
             raise SystemExit(0)
@@ -266,8 +282,20 @@ mkdir -p "${OUTPUT_DIR}/nats" "${OUTPUT_DIR}/etcd"
 srt_launch "nats" "${LOG_DIR}/nats.log" "${SRTCTL_NATS_BINARY}" -js -a "127.0.0.1" -p {{ context.nats_port }} -sd "${OUTPUT_DIR}/nats"
 srt_launch "etcd" "${LOG_DIR}/etcd.log" "${SRTCTL_ETCD_BINARY}" --data-dir "${OUTPUT_DIR}/etcd" --listen-client-urls "http://127.0.0.1:{{ context.etcd_client_port }}" --advertise-client-urls "http://127.0.0.1:{{ context.etcd_client_port }}" --listen-peer-urls "http://127.0.0.1:{{ context.etcd_peer_port }}" --initial-advertise-peer-urls "http://127.0.0.1:{{ context.etcd_peer_port }}" --initial-cluster "default=http://127.0.0.1:{{ context.etcd_peer_port }}"
 srt_wait_http_ready "http://127.0.0.1:{{ context.etcd_client_port }}/health" "etcd"
-{% else %}
+{% elif context.frontend_type == "sglang" %}
 "${SRTCTL_PYTHON}" -c 'import sglang_router' || srt_die "sglang-router (Model Gateway) is not installed for ${SRTCTL_PYTHON}"
+{% else %}
+SRTCTL_SGL_ROUTER_SOURCE={{ quote(context.sgl_router_source or '') }}
+SRTCTL_SGL_ROUTER_DEFAULT={{ quote(context.sgl_router_binary or '') }}
+SRTCTL_SGL_ROUTER="${SRTCTL_SGL_ROUTER:-${SRTCTL_SGL_ROUTER_DEFAULT}}"
+if [[ -z "${SRTCTL_SGL_ROUTER}" ]]; then
+    [[ -n "${SRTCTL_SGL_ROUTER_SOURCE}" ]] || srt_die "frontend.sgl_router.source is required to build experimental sgl-router"
+    srt_log "Building experimental sgl-router from ${SRTCTL_SGL_ROUTER_SOURCE}"
+    cargo build --manifest-path "${SRTCTL_SGL_ROUTER_SOURCE}/experimental/sgl-router/Cargo.toml" --release >"${LOG_DIR}/sgl-router-build.log" 2>&1 || srt_die "sgl-router build failed; inspect ${LOG_DIR}/sgl-router-build.log"
+    SRTCTL_SGL_ROUTER="${SRTCTL_SGL_ROUTER_SOURCE}/experimental/sgl-router/target/release/sgl-router"
+fi
+[[ -x "${SRTCTL_SGL_ROUTER}" ]] || srt_die "sgl-router binary is not executable: ${SRTCTL_SGL_ROUTER}"
+export SRTCTL_SGL_ROUTER
 {% endif %}
 
 {% for worker in context.worker_processes %}

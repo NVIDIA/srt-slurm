@@ -1547,11 +1547,27 @@ class DynamoConfig:
 
 
 @dataclass(frozen=True)
+class SGLRouterConfig:
+    """Configuration for the experimental Rust ``sgl-router`` frontend.
+
+    ``source`` is the path to an SGLang checkout as seen by the frontend
+    process.  srtctl builds ``experimental/sgl-router`` there on first use
+    unless ``binary`` names a prebuilt executable.
+    """
+
+    source: str
+    binary: str | None = None
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
 class FrontendConfig:
     """Frontend/router configuration.
 
     Attributes:
-        type: Frontend type - "dynamo" (default), "sglang", "trtllm_serve", or "vllm"
+        type: Frontend type - "dynamo" (default), "sglang", "sgl-router",
+            "trtllm_serve", or "vllm"
         enable_multiple_frontends: Scale with nginx + multiple routers.
             When ``True`` (default), srtctl stands up nginx and fans out
             to ``num_additional_frontends + 1`` router replicas. When
@@ -1589,6 +1605,8 @@ class FrontendConfig:
     nginx_keepalive_timeout: str = "600s"
     args: dict[str, Any] | None = None
     env: dict[str, str] | None = None
+    # Experimental Rust router options. Required when type is ``sgl-router``.
+    sgl_router: SGLRouterConfig | None = None
     # trtllm_serve orchestrator (ser.yaml) options; ignored by other frontends.
     ctx_router: dict[str, Any] | None = None  # context_servers.router, e.g. {type: conversation}
     gen_router: dict[str, Any] | None = None  # generation_servers.router
@@ -1708,6 +1726,7 @@ class SrtConfig:
         self._validate_dedicated_node_placement()
         self._validate_trtllm_serve()
         self._validate_vllm_frontend()
+        self._validate_sgl_router_frontend()
         self._warn_dp_launch_mode()
 
     def _warn_dp_launch_mode(self):
@@ -1780,6 +1799,64 @@ class SrtConfig:
                 "replicas, so extra workers would either idle or collide on the port. "
                 "Use frontend.type: dynamo to run multiple aggregate workers, or scale a single "
                 "worker across nodes with resources.agg_nodes."
+            )
+
+    def _validate_sgl_router_frontend(self):
+        """Validate the static-worker subset supported by experimental sgl-router.
+
+        The Rust router's P/D support uses Kubernetes EndpointSlice discovery.
+        srtctl has static Slurm worker endpoints, for which upstream exposes
+        only the aggregate ``--worker-urls`` API.
+        """
+        if self.frontend.type != "sgl-router":
+            return
+        if self.backend_type != "sglang":
+            raise ValidationError(f"frontend.type: sgl-router requires backend.type: sglang; got {self.backend_type!r}")
+        if self.frontend.enable_multiple_frontends:
+            raise ValidationError(
+                "frontend.type: sgl-router uses one public endpoint; set frontend.enable_multiple_frontends: false"
+            )
+        if self.resources.is_disaggregated:
+            raise ValidationError(
+                "frontend.type: sgl-router supports aggregate jobs only. The experimental router's P/D mode "
+                "requires Kubernetes EndpointSlice discovery, which static srt-slurm workers do not provide."
+            )
+        if self.resources.num_agg < 1:
+            raise ValidationError("frontend.type: sgl-router requires at least one aggregate worker")
+        if self.frontend.sgl_router is None:
+            raise ValidationError(
+                "frontend.type: sgl-router requires frontend.sgl_router.source (an SGLang checkout visible to the router)"
+            )
+        if not self.frontend.sgl_router.source.strip():
+            raise ValidationError("frontend.sgl_router.source must not be empty")
+
+        managed_args = {
+            "host",
+            "port",
+            "model-id",
+            "model_id",
+            "tokenizer-path",
+            "tokenizer_path",
+            "worker-urls",
+            "worker_urls",
+            "service-discovery",
+            "service_discovery",
+            "service-discovery-namespace",
+            "service_discovery_namespace",
+            "selector",
+            "prefill-selector",
+            "prefill_selector",
+            "decode-selector",
+            "decode_selector",
+        }
+        supplied_managed_args = sorted(managed_args.intersection(self.frontend.args or {}))
+        if supplied_managed_args:
+            raise ValidationError(
+                "frontend.type: sgl-router manages these arguments: " + ", ".join(supplied_managed_args)
+            )
+        if isinstance(self.backend, SGLangProtocol) and self.backend.is_grpc_mode("agg"):
+            raise ValidationError(
+                "frontend.type: sgl-router currently requires HTTP aggregate workers; disable grpc-mode"
             )
 
     def _validate_het_jobs(self):

@@ -363,6 +363,40 @@ class TestTachometerConfigGeneration:
         assert "dcgm_" not in config_text
         assert "node_exporter_" not in config_text
 
+    @patch("srtctl.core.telemetry.get_hostname_ip", return_value="10.0.0.1")
+    def test_sgl_router_targets_worker_http_metrics(self, _mock_get_hostname_ip):
+        tachometer = TachometerConfig(enabled=True)
+        runtime = MagicMock(job_id="12345", run_name="test_12345", network_interface="eth0")
+        runtime.log_dir = Path("/runs/12345/logs")
+        processes = [
+            Process(
+                node="node-a",
+                gpu_indices=frozenset({0}),
+                sys_port=8081,
+                http_port=30000,
+                endpoint_mode="agg",
+                endpoint_index=0,
+                node_rank=0,
+            )
+        ]
+        topology = FrontendTopology(
+            nginx_node=None,
+            frontend_nodes=["node-a"],
+            frontend_port=8000,
+            public_port=8000,
+        )
+
+        config_text = generate_tachometer_config(
+            processes=processes,
+            frontend_topology=topology,
+            runtime=runtime,
+            tachometer=tachometer,
+            frontend_type="sgl-router",
+        )
+
+        assert 'url = "http://10.0.0.1:30000/metrics"' in config_text
+        assert 'url = "http://10.0.0.1:8081/metrics"' not in config_text
+
     @patch("srtctl.core.telemetry.get_hostname_ip")
     def test_vllm_frontend_targets_only_agg_leader_metrics(self, mock_get_hostname_ip):
         mock_get_hostname_ip.side_effect = lambda host, interface=None: {

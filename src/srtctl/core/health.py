@@ -14,6 +14,7 @@ This module provides:
 """
 
 import logging
+import re
 import socket
 import threading
 import time
@@ -116,6 +117,45 @@ def check_sglang_router_health(
         prefill_ready=actual_prefill,
         prefill_expected=expected_prefill,
         decode_ready=effective_decode,
+        decode_expected=expected_decode,
+    )
+
+
+def check_sgl_router_health(
+    metrics: str,
+    expected_prefill: int,
+    expected_decode: int,
+) -> WorkerHealthResult:
+    """Check the experimental router's static aggregate worker count.
+
+    ``sgl-router`` exports one ``sgl_router_workers{mode=\"plain\"}`` gauge
+    for static ``--worker-urls`` registration.  Its prefill/decode modes are
+    Kubernetes discovery-only and are therefore rejected by schema validation.
+    """
+    match = re.search(r'^sgl_router_workers\{mode="plain"\}\s+(\d+(?:\.\d+)?)\s*$', metrics, re.MULTILINE)
+    if match is None:
+        return WorkerHealthResult(
+            ready=False,
+            message='Metric sgl_router_workers{mode="plain"} not found in /metrics response',
+            prefill_expected=expected_prefill,
+            decode_expected=expected_decode,
+        )
+
+    actual_decode = int(float(match.group(1)))
+    ready = expected_prefill == 0 and actual_decode >= expected_decode
+    if ready:
+        message = f"Model is ready. Have {actual_decode} aggregate workers."
+    else:
+        message = (
+            "Model is not ready, waiting for static aggregate workers. "
+            f"Have {actual_decode}/{expected_decode}; prefill expected={expected_prefill}."
+        )
+    return WorkerHealthResult(
+        ready=ready,
+        message=message,
+        prefill_ready=0,
+        prefill_expected=expected_prefill,
+        decode_ready=actual_decode,
         decode_expected=expected_decode,
     )
 
@@ -422,7 +462,8 @@ def wait_for_model(
         poll_interval: Seconds between health checks
         timeout: Maximum wait time in seconds
         report_every: Log progress every N seconds
-        frontend_type: Frontend type - "sglang" uses /workers, "dynamo" uses /health
+        frontend_type: Frontend type - "sglang" uses /workers, "sgl-router" uses /metrics,
+            "dynamo" uses /health
         stop_event: Optional threading.Event to abort waiting
 
     Returns:
@@ -435,6 +476,14 @@ def wait_for_model(
             health_url,
             poll_interval,
             n_prefill,
+            n_decode,
+        )
+    elif frontend_type == "sgl-router":
+        health_url = f"http://{host}:{port}/metrics"
+        logger.info(
+            "Polling %s every %.1fs for %d aggregate workers (experimental sgl-router)",
+            health_url,
+            poll_interval,
             n_decode,
         )
     else:
@@ -482,13 +531,15 @@ def wait_for_model(
                     time.sleep(poll_interval)
                     continue
 
-                response_json = response.json()
-
                 # Check worker counts based on frontend type
-                if frontend_type == "sglang":
-                    result = check_sglang_router_health(response_json, n_prefill, n_decode)
+                if frontend_type == "sgl-router":
+                    result = check_sgl_router_health(response.text, n_prefill, n_decode)
                 else:
-                    result = check_dynamo_health(response_json, n_prefill, n_decode)
+                    response_json = response.json()
+                    if frontend_type == "sglang":
+                        result = check_sglang_router_health(response_json, n_prefill, n_decode)
+                    else:
+                        result = check_dynamo_health(response_json, n_prefill, n_decode)
 
                 if result.ready:
                     logger.info(result.message)
