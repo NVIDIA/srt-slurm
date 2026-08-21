@@ -193,6 +193,18 @@ def test_view_preloads_route_decision_and_worker_state(tmp_path: Path) -> None:
     assert decision["candidates"][1]["gpuCacheUsageFraction"] == 0.8
 
 
+def test_view_reads_extensionless_dynamo_request_trace(tmp_path: Path) -> None:
+    run = _make_run(tmp_path / "run")
+    compressed_trace = run / "artifacts" / "dynamo-request-trace.000000.jsonl.gz"
+    with gzip.open(compressed_trace, "rt", encoding="utf-8") as handle:
+        _write(run / "artifacts" / "dynamo-request-trace", handle.read())
+    compressed_trace.unlink()
+
+    normalize_run(run)
+
+    assert load_view_data(run).summary()["requestTraces"] == 1
+
+
 def test_view_serves_dashboard_and_preloaded_api(tmp_path: Path) -> None:
     run = _make_run(tmp_path / "run")
     normalize_run(run)
