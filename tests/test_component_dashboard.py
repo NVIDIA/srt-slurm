@@ -1483,3 +1483,56 @@ class TestKpiProvenance:
 
         html = out.read_text()
         assert "not available in this run, so TTFT is a single opaque block" not in html
+
+
+class TestPhaseFilterProvenance:
+    """`meta.n` alone cannot say WHY the population is the size it is.
+
+    On the c32 reference run 2750618 all 118 client records are benchmark_phase=warmup
+    -- the job hit its 20-minute wall before profiling began -- so n is 0. A reader
+    seeing only that would conclude the stack served nothing, which is the opposite
+    diagnosis from "this run needed more wall clock". PERF-47.
+    """
+
+    @staticmethod
+    def _phase(run_dir: Path, phases: list[str]) -> None:
+        """Rewrite the client export, tagging record i with phases[i]."""
+        # The client export lives at the nested artifacts path srt-slurm's bench.sh
+        # writes, not at the bundle root -- reaching through that nesting is exactly
+        # what the ingest default glob exists to do.
+        path = next(run_dir.glob("artifacts/*/profile_export.jsonl"))
+        rows = [json.loads(x) for x in path.read_text().splitlines() if x.strip()]
+        for rec, ph in zip(rows, phases):
+            rec["metadata"]["benchmark_phase"] = ph
+        path.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+
+    def _payload(self, run_dir: Path, tmp_path: Path) -> dict:
+        bundle = tmp_path / "bundle"
+        _run_ingest(run_dir, bundle)
+        out = tmp_path / "dash.json"
+        proc = _render(bundle, tmp_path / "dash.html", "--d3-cdn", "--dump-json", str(out))
+        assert proc.returncode == 0, proc.stderr
+        return json.loads(out.read_text())
+
+    def test_warmup_only_run_is_declared_not_silently_empty(self, run_dir: Path, tmp_path: Path):
+        n = len(XIDS)
+        self._phase(run_dir, ["warmup"] * n)
+        pf = self._payload(run_dir, tmp_path)["meta"]["phase_filter"]
+        assert pf["kept"] == 0
+        assert pf["dropped"] == n
+        assert pf["phases"] == {"warmup": n}, "the reason for an empty population must be legible"
+
+    def test_mixed_phases_report_both_sides(self, run_dir: Path, tmp_path: Path):
+        n = len(XIDS)
+        self._phase(run_dir, ["warmup"] + ["profiling"] * (n - 1))
+        pf = self._payload(run_dir, tmp_path)["meta"]["phase_filter"]
+        assert pf["kept"] == n - 1
+        assert pf["dropped"] == 1
+        assert pf["phases"]["warmup"] == 1
+
+    def test_untagged_records_are_kept_and_named(self, run_dir: Path, tmp_path: Path):
+        """Plain non-AgentX AIPerf runs carry no benchmark_phase at all; dropping
+        those would empty the dashboard for every non-agentic benchmark."""
+        pf = self._payload(run_dir, tmp_path)["meta"]["phase_filter"]
+        assert pf["dropped"] == 0
+        assert pf["phases"] == {"(none)": len(XIDS)}
