@@ -176,7 +176,7 @@ srt_install_sglang_from_source() {
     [[ -n "${SRTCTL_SGLANG_SOURCE}" ]] || return 0
     [[ -d "${SRTCTL_SGLANG_SOURCE}/python/sglang" ]] || srt_die "Invalid SGLang source: ${SRTCTL_SGLANG_SOURCE}"
     command -v git >/dev/null 2>&1 || srt_die "git is required to identify SGLang source"
-    local revision runtime_root runtime_dir source_copy bootstrap_python installed_source
+    local revision runtime_root runtime_dir source_copy bootstrap_python installed_source rust_toolchain
     revision="$(git -c safe.directory="${SRTCTL_SGLANG_SOURCE}" -C "${SRTCTL_SGLANG_SOURCE}" rev-parse --verify HEAD)"
     runtime_root="${SRTCTL_SGLANG_RUNTIME_ROOT:-${OUTPUT_BASE}/.srtctl-runtime}"
     runtime_dir="${SRTCTL_SGLANG_RUNTIME_DIR:-${runtime_root}/sglang-${revision}}"
@@ -190,6 +190,13 @@ srt_install_sglang_from_source() {
         rm -rf "${source_copy}"
         mkdir -p "${source_copy}"
         tar --exclude='.git' --exclude='target' -C "${SRTCTL_SGLANG_SOURCE}" -cf - . | tar -C "${source_copy}" -xf -
+        rust_toolchain="$(sed -nE 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "${source_copy}/rust/rust-toolchain.toml" | head -n 1)"
+        if [[ -n "${rust_toolchain}" ]]; then
+            command -v rustup >/dev/null 2>&1 || srt_die "rustup is required for SGLang's source-pinned Rust toolchain"
+            srt_log "Installing source-pinned Rust ${rust_toolchain}"
+            rustup toolchain install "${rust_toolchain}" --profile minimal
+            export RUSTUP_TOOLCHAIN="${rust_toolchain}"
+        fi
         "${runtime_dir}/.venv/bin/python" -m pip install --quiet --upgrade pip
         "${runtime_dir}/.venv/bin/python" -m pip install --quiet --editable "${source_copy}/python"
         installed_source="$("${runtime_dir}/.venv/bin/python" -c 'import sglang; print(sglang.__file__)')"

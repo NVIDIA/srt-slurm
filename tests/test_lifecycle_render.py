@@ -232,6 +232,9 @@ def test_local_lifecycle_can_run_inside_sglang_container(tmp_path) -> None:
     assert 'touch "${runtime_dir}/.complete"' in script
     assert 'runtime_dir="${SRTCTL_SGLANG_RUNTIME_DIR:-${runtime_root}/sglang-${revision}}"' in script
     assert 'git -c safe.directory="${SRTCTL_SGLANG_SOURCE}"' in script
+    assert "Installing source-pinned Rust ${rust_toolchain}" in script
+    assert 'rustup toolchain install "${rust_toolchain}" --profile minimal' in script
+    assert 'export RUSTUP_TOOLCHAIN="${rust_toolchain}"' in script
     assert (
         'SRTCTL_DYNAMO_CACHE_ROOT="${SRTCTL_DYNAMO_CACHE_ROOT:-${OUTPUT_BASE}/.srtctl-cache/dynamo-wheels}"' in script
     )
