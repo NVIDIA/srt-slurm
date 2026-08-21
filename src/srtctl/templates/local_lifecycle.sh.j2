@@ -466,7 +466,9 @@ base_url, model = sys.argv[1:]
 payload = json.dumps({
     "model": model,
     "messages": [{"role": "user", "content": "Reply with one word: ready"}],
-    "max_tokens": 1,
+    # Reasoning-capable models can consume a one-token budget before emitting
+    # visible assistant text, so use a small but meaningful smoke budget.
+    "max_tokens": 16,
     "temperature": 0,
 }).encode()
 request = urllib.request.Request(
