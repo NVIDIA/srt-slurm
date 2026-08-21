@@ -101,6 +101,30 @@ def _cfg_max_batch(mode):
         except Exception:
             pass
     return None, None
+def _benchmark_status():
+    """Why the benchmark produced what it produced, from ``benchmark_status.json``.
+
+    An empty dashboard is not wrong, but it is mute: `client=False traces=False N=0`
+    leaves the reader to guess between a dead deployment, a workload that never
+    started, and a run cut short -- three different responses. Eight ablation arms in
+    one session hit exactly this, four failing before the benchmark script was even
+    reachable and four eleven seconds after the workers went healthy.
+    """
+    if not SRC:
+        return None
+    for cand in (os.path.join(SRC, "benchmark_status.json"),):
+        try:
+            with open(cand) as fh:
+                d = json.load(fh)
+        except Exception:
+            continue
+        if not d.get("exit_code") and not d.get("errors"):
+            return None
+        return {"exit_code": d.get("exit_code"),
+                "errors": (d.get("errors") or [])[:4]}
+    return None
+
+
 def _flat_config():
     """The run's resolved recipe, flattened to {dotted.path: scalar}.
 
@@ -260,6 +284,10 @@ def _cfg_tokens_per_block():
     return None
 CLIENT_SUMMARY = _client_summary()
 PROVENANCE = _provenance()
+BENCH_STATUS = _benchmark_status()
+if BENCH_STATUS:
+    _log.warning(f"benchmark reported failure: exit={BENCH_STATUS['exit_code']}; "
+                 f"{BENCH_STATUS['errors'][0] if BENCH_STATUS['errors'] else 'no error line captured'}")
 if PROVENANCE:
     _log.info(f"provenance: {PROVENANCE['n_workers']} worker fingerprint(s), frameworks="
               f"{PROVENANCE['frameworks']}")
@@ -1445,7 +1473,8 @@ DATA={
                    "kept":len(client),"dropped":_skipped_phase,
                    "phases":_phase_seen},
    "client_summary":CLIENT_SUMMARY,
-   "provenance":PROVENANCE},
+   "provenance":PROVENANCE,
+   "benchmark_status":BENCH_STATUS},
  "kpi":{"ttft_p50":round(pct(col("ttft"),50)/1000,1),"ttft_p99":round(pct(col("ttft"),99)/1000,1),
    "adm_p50":round(pct(col("adm"),50)/1000,1),"pf_p50":round(pct(col("pf"),50)/1000,1),
    "reqs":N,"adm_share":round(pct(col("adm"),50)/max(1,pct(col("ttft"),50))*100,0),
@@ -1550,6 +1579,16 @@ function hTip(){tip.style('display','none')}
   if(!M.n && (nReq||nSess)) head += `  —  no request completed the profiling phase;`
          + ` ${nReq} request(s) across ${nSess} session(s) are warmup and are shown on the`
          + ` Session tab, excluded from every percentile above`;
+  // A benchmark that failed outranks everything else the header could say. Without it
+  // an empty dashboard reads as a dead deployment, when the usual cause is an
+  // environment fault that never let the workload start -- and those call for opposite
+  // responses. Placed before the validity clause because it subsumes it: if the
+  // benchmark never ran, its own validity flags are moot.
+  const BS=M.benchmark_status;
+  if(BS){
+    head += `  —  BENCHMARK FAILED (exit ${BS.exit_code||'?'})`
+          + (BS.errors && BS.errors.length ? `: ${BS.errors[0]}` : '');
+  }
   // Run validity bounds every number on the page, so it belongs in the header rather
   // than on one tab. A cancelled run, a run with client errors, or an agentic run
   // whose child branches errored produced figures that must not be compared against a
