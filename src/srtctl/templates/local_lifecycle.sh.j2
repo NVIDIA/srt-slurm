@@ -58,6 +58,15 @@ if [[ -n "${SRTCTL_LOCAL_CONTAINER_IMAGE}" && "${SRTCTL_LOCAL_CONTAINERIZED:-}" 
     srt_container_mount "${SRTCTL_RENDERED_MODEL_PATH}" readonly
     if [[ -n "${SRTCTL_SGLANG_SOURCE}" ]]; then
         srt_container_mount "${SRTCTL_SGLANG_SOURCE}" readonly
+        SRTCTL_HOST_CARGO_HOME="${CARGO_HOME:-${HOME}/.cargo}"
+        SRTCTL_HOST_RUSTUP_HOME="${RUSTUP_HOME:-${HOME}/.rustup}"
+        srt_container_mount "${SRTCTL_HOST_CARGO_HOME}" readonly
+        srt_container_mount "${SRTCTL_HOST_RUSTUP_HOME}" readonly
+        SRT_CONTAINER_ARGS+=(
+            -e "CARGO_HOME=${SRTCTL_HOST_CARGO_HOME}"
+            -e "RUSTUP_HOME=${SRTCTL_HOST_RUSTUP_HOME}"
+            -e "PATH=${SRTCTL_HOST_CARGO_HOME}/bin:/opt/sglang/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        )
     fi
     if [[ -n "${RUTER_MOONCAKE_TRACE:-}" ]]; then
         srt_container_mount "${RUTER_MOONCAKE_TRACE}" readonly

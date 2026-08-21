@@ -218,6 +218,8 @@ def test_local_lifecycle_can_run_inside_sglang_container(tmp_path) -> None:
     assert 'mkdir -p "${OUTPUT_BASE}"' in script
     assert 'if [[ "${mode}" == "readonly" ]]; then' in script
     assert 'mount+=",readonly"' in script
+    assert 'SRTCTL_HOST_CARGO_HOME="${CARGO_HOME:-${HOME}/.cargo}"' in script
+    assert 'SRTCTL_HOST_RUSTUP_HOME="${RUSTUP_HOME:-${HOME}/.rustup}"' in script
     assert (
         'SRTCTL_DYNAMO_CACHE_ROOT="${SRTCTL_DYNAMO_CACHE_ROOT:-${OUTPUT_BASE}/.srtctl-cache/dynamo-wheels}"' in script
     )
