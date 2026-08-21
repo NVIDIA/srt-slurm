@@ -3,6 +3,7 @@
 # Required at render time:
 #   export RUTER_MODEL_PATH=/absolute/path/to/Qwen3-32B-FP8
 #   export RUTER_MOONCAKE_TRACE=/absolute/path/to/mooncake_refined.jsonl
+#   export RUTER_SGLANG_SOURCE=/absolute/path/to/sglang-main
 #
 # Render through srt-slurm only:
 #   srtctl apply -f recipes/qwen3-32b/ruter-3p2d-dynamo.yaml --bash > run.sh
@@ -11,7 +12,8 @@ name: qwen3-32b-fp8-dynamo-ruter-3p2d
 
 model:
   path: $RUTER_MODEL_PATH
-  container: direct-host
+  # Used directly by Slurm and by the single-node Docker lifecycle below.
+  container: lmsysorg/sglang:dev
   precision: fp8
 
 resources:
@@ -32,6 +34,11 @@ dynamo:
 
 # Avoid host-shared NATS and etcd. The direct lifecycle owns and cleans these.
 environment:
+  # The direct lifecycle runs inside the same SGLang OCI image selected above.
+  # It mounts this checkout read-only, creates a cached venv outside the
+  # container, installs SGLang main, then installs plain Dynamo from source.
+  SRTCTL_LOCAL_CONTAINER_IMAGE: lmsysorg/sglang:dev
+  SRTCTL_SGLANG_SOURCE: $RUTER_SGLANG_SOURCE
   SRTCTL_ETCD_PORT: "23379"
   SRTCTL_ETCD_PEER_PORT: "23380"
   SRTCTL_NATS_PORT: "25222"

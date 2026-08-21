@@ -185,6 +185,39 @@ def test_local_dynamo_lifecycle_caches_a_hash_pinned_source_build(tmp_path) -> N
     assert syntax.returncode == 0, syntax.stderr
 
 
+def test_local_lifecycle_can_run_inside_sglang_container(tmp_path) -> None:
+    source = tmp_path / "sglang"
+    source.mkdir()
+    context = build_local_lifecycle_render_context(
+        _config(
+            frontend_type="dynamo",
+            dynamo_hash="a6261680a974ca7c74dcf49592a7376d7de99380",
+            environment={
+                "SRTCTL_LOCAL_CONTAINER_IMAGE": "lmsysorg/sglang:dev",
+                "SRTCTL_SGLANG_SOURCE": str(source),
+            },
+        ),
+        source_dir=tmp_path / "srt-slurm",
+        output_base=tmp_path / "outputs",
+    )
+    script = render_local_lifecycle(context)
+
+    assert context.local_container_image == "lmsysorg/sglang:dev"
+    assert context.sglang_source == str(source)
+    assert "SRTCTL_LOCAL_CONTAINERIZED" in script
+    assert "--network host" in script
+    assert "--ipc host" in script
+    assert "--gpus all" in script
+    assert 'docker run "${SRT_CONTAINER_ARGS[@]}" "${SRTCTL_LOCAL_CONTAINER_IMAGE}"' in script
+    assert 'mkdir -p "${OUTPUT_BASE}"' in script
+    assert 'SRTCTL_DYNAMO_CACHE_ROOT="${SRTCTL_DYNAMO_CACHE_ROOT:-${OUTPUT_BASE}/.srtctl-cache/dynamo-wheels}"' in script
+    assert "srt_install_sglang_from_source" in script
+    assert 'pip install --quiet --editable "${source_copy}/python"' in script
+    assert 'pip install --quiet --force-reinstall --no-deps "${wheel}"' in script
+    syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
+    assert syntax.returncode == 0, syntax.stderr
+
+
 def test_local_dynamo_lifecycle_uses_slurm_cache_key_and_patches(tmp_path) -> None:
     patch = 'dynamo-tokenizers = { git = "https://github.com/ai-dynamo/frontend-crates", branch = "trace" }'
     context = build_local_lifecycle_render_context(

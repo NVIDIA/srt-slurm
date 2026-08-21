@@ -88,7 +88,7 @@ def test_apply_bash_outputs_standalone_script(monkeypatch, tmp_path: Path, capsy
     assert captured.err == ""
     assert output.startswith("#!/usr/bin/env bash\n")
     assert "DRY-RUN" not in output
-    assert "Direct single-node lifecycle" in output
+    assert "Single-node lifecycle" in output
     assert "srt_launch_shell" in output
     assert '"${LOG_DIR}/worker-0.log"' in output
     assert '"${LOG_DIR}/router.log"' in output

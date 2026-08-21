@@ -28,6 +28,7 @@ from srtctl.ports import (
 )
 
 _ARTIFACT_DIR_PLACEHOLDER = "__SRTCTL_ARTIFACT_DIR__"
+_LOCAL_LIFECYCLE_ONLY_ENV = frozenset({"SRTCTL_LOCAL_CONTAINER_IMAGE", "SRTCTL_SGLANG_SOURCE"})
 
 
 @dataclass(frozen=True)
@@ -42,12 +43,15 @@ class LocalProcess:
 
 @dataclass(frozen=True)
 class LocalLifecycleRenderContext:
-    """All values needed by the direct-host Bash template."""
+    """All values needed by the single-node Bash lifecycle template."""
 
     name: str
     source_dir: str
     output_base: str
     model_name: str
+    model_path: str
+    local_container_image: str | None
+    sglang_source: str | None
     frontend_type: str
     frontend_port: int
     etcd_client_port: int
@@ -160,6 +164,14 @@ def _validate_local_config(config: SrtConfig) -> None:
         raise ValueError("--bash requires benchmark.type: custom with benchmark.command")
     if config.telemetry.enabled:
         raise ValueError("--bash does not support DCGM power telemetry")
+    container_image = config.environment.get("SRTCTL_LOCAL_CONTAINER_IMAGE")
+    if container_image is not None and not str(container_image).strip():
+        raise ValueError("SRTCTL_LOCAL_CONTAINER_IMAGE must be non-empty when configured")
+    sglang_source = config.environment.get("SRTCTL_SGLANG_SOURCE")
+    if sglang_source is not None:
+        sglang_source = os.path.expandvars(str(sglang_source))
+    if sglang_source is not None and not str(sglang_source).startswith("/"):
+        raise ValueError("SRTCTL_SGLANG_SOURCE must be an absolute path")
 
 
 def _direct_port(config: SrtConfig, name: str, default: int) -> int:
@@ -247,7 +259,9 @@ def _build_local_processes(
         args.extend(_cli_args(worker_config))
 
         environment = _format_environment(backend.get_environment_for_mode(mode))
-        environment.update(config.environment)
+        environment.update(
+            {key: value for key, value in config.environment.items() if key not in _LOCAL_LIFECYCLE_ONLY_ENV}
+        )
         environment["CUDA_VISIBLE_DEVICES"] = process.cuda_visible_devices
         if config.frontend.type == "dynamo":
             environment.update(
@@ -385,11 +399,22 @@ def build_local_lifecycle_render_context(
     health_interval = max(1, int(config.health_check.interval_seconds))
     dynamo_source_hash = config.dynamo.hash if config.frontend.type == "dynamo" and config.dynamo.install else None
     cargo_patches = config.dynamo.cargo_patches if dynamo_source_hash else None
+    model_path = _local_model_path(config)
+    local_container_image = config.environment.get("SRTCTL_LOCAL_CONTAINER_IMAGE")
+    sglang_source = config.environment.get("SRTCTL_SGLANG_SOURCE")
+    if sglang_source is not None:
+        sglang_source = os.path.expandvars(str(sglang_source))
+    global_environment = dict(config.environment)
+    if sglang_source is not None:
+        global_environment["SRTCTL_SGLANG_SOURCE"] = sglang_source
     return LocalLifecycleRenderContext(
         name=config.name,
         source_dir=str(source_dir.resolve()),
         output_base=str(output_base.resolve()),
         model_name=config.served_model_name,
+        model_path=model_path,
+        local_container_image=str(local_container_image) if local_container_image else None,
+        sglang_source=str(sglang_source) if sglang_source else None,
         frontend_type=config.frontend.type,
         frontend_port=FRONTEND_PUBLIC_PORT,
         etcd_client_port=etcd_client_port,
@@ -407,7 +432,7 @@ def build_local_lifecycle_render_context(
         if dynamo_source_hash
         else None,
         dynamo_cargo_patch_commands=dynamo_cargo_patch_commands(cargo_patches),
-        global_environment=tuple(sorted((key, str(value)) for key, value in config.environment.items())),
+        global_environment=tuple(sorted((key, str(value)) for key, value in global_environment.items())),
         benchmark_environment=tuple(sorted((key, str(value)) for key, value in config.benchmark.env.items())),
         benchmark_command=config.benchmark.command,
         tachometer_enabled=tachometer_config is not None,
