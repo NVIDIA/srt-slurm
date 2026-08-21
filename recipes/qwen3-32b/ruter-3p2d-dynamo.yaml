@@ -6,6 +6,7 @@
 #   export RUTER_SGLANG_SOURCE=/absolute/path/to/sglang-main
 #
 # Render through srt-slurm only:
+#   make setup ARCH=x86_64
 #   srtctl apply -f recipes/qwen3-32b/ruter-3p2d-dynamo.yaml --bash > run.sh
 
 name: qwen3-32b-fp8-dynamo-ruter-3p2d

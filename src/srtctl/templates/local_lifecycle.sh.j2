@@ -506,6 +506,9 @@ srt_smoke_chat
 
 {% if context.tachometer_enabled %}
 SRTCTL_TACHOMETER_DEFAULT={{ quote(context.tachometer_binary or '') }}
+if [[ ( -z "${SRTCTL_TACHOMETER_DEFAULT}" || "${SRTCTL_TACHOMETER_DEFAULT}" == "tachometer-scraper" ) && -x "${SRTCTL_SOURCE}/bin/tachometer-scraper" ]]; then
+    SRTCTL_TACHOMETER_DEFAULT="${SRTCTL_SOURCE}/bin/tachometer-scraper"
+fi
 SRTCTL_TACHOMETER="${SRTCTL_TACHOMETER:-${SRTCTL_TACHOMETER_DEFAULT}}"
 # Tachometer owns its final storage directory and rejects a pre-existing leaf.
 # Keep it nested beneath the run artifact directory but create only its parent.
