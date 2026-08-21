@@ -92,9 +92,7 @@ class ViewData:
         if self.benchmark_start_ns is None:
             return {"traces": [], "aiperf": []}
         decisions = {
-            (row["dynamo_request_id"], row["stage"]): row
-            for row in self.decisions
-            if row["dynamo_request_id"]
+            (row["dynamo_request_id"], row["stage"]): row for row in self.decisions if row["dynamo_request_id"]
         }
         traces: list[dict[str, Any]] = []
         for row in self.traces:
@@ -143,27 +141,43 @@ class ViewData:
     def decision_rows(self) -> list[dict[str, Any]]:
         if self.benchmark_start_ns is None:
             return []
+        grouped: dict[str, dict[str, dict[str, Any]]] = {}
+        for decision in self.decisions:
+            request_id = decision["dynamo_request_id"] or decision["decision_id"]
+            if request_id is None:
+                continue
+            stage = "decode" if decision["stage"] == "decode" else "prefill"
+            grouped.setdefault(request_id, {}).setdefault(stage, decision)
+
         rows = []
-        for row in self.decisions[:5000]:
-            timestamp = row["timestamp_ns"]
+        for request_id, stages in grouped.items():
+            prefill = stages.get("prefill")
+            decode = stages.get("decode")
+            timestamp = (prefill or decode or {}).get("timestamp_ns")
             if timestamp is None:
                 continue
-            selected = self._candidate(row["decision_id"], row["worker_id"])
+            prefill_selected = (
+                self._candidate(prefill["decision_id"], prefill["worker_id"]) if prefill is not None else None
+            )
+            decode_selected = (
+                self._candidate(decode["decision_id"], decode["worker_id"]) if decode is not None else None
+            )
             rows.append(
                 {
                     "benchS": (timestamp - self.benchmark_start_ns) / 1_000_000_000,
-                    "decisionId": row["decision_id"],
-                    "dynamoRequestId": row["dynamo_request_id"],
-                    "stage": row["stage"],
-                    "workerAlias": self.worker_aliases.get(row["worker_id"]),
-                    "dpRank": row["dp_rank"],
-                    "overlapBlocks": row["overlap_blocks"],
-                    "totalBlocks": row["total_blocks"],
-                    "costBlocks": selected.values.get("cost_blocks") if selected else None,
-                    "lowerPrefixSelected": row["lower_prefix_selected"],
+                    "requestId": request_id,
+                    "prefillDecisionId": prefill["decision_id"] if prefill else None,
+                    "decodeDecisionId": decode["decision_id"] if decode else None,
+                    "prefillWorkerAlias": self.worker_aliases.get(prefill["worker_id"]) if prefill else None,
+                    "decodeWorkerAlias": self.worker_aliases.get(decode["worker_id"]) if decode else None,
+                    "overlapBlocks": prefill["overlap_blocks"] if prefill else None,
+                    "totalBlocks": prefill["total_blocks"] if prefill else None,
+                    "prefillScoreBlocks": prefill_selected.values.get("cost_blocks") if prefill_selected else None,
+                    "decodeScoreBlocks": decode_selected.values.get("cost_blocks") if decode_selected else None,
+                    "lowerPrefixSelected": bool(prefill and prefill["lower_prefix_selected"]),
                 }
             )
-        return rows
+        return sorted(rows, key=lambda row: row["benchS"])[:5000]
 
     def decision(self, decision_id: str | None) -> dict[str, Any]:
         if not decision_id or self.benchmark_start_ns is None:

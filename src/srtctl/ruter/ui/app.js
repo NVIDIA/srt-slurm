@@ -9,7 +9,7 @@ const fixed = (value, digits = 1) => value == null ? "—" : Number(value).toFix
 const percent = (value, digits = 0) => value == null ? "—" : `${(Number(value) * 100).toFixed(digits)}%`;
 const html = (value) => String(value ?? "—").replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[character]));
 
-let decisions = [];
+let routes = [];
 let selectedDecisionId = null;
 let selectionVersion = 0;
 
@@ -73,15 +73,18 @@ function renderChart(timeline) {
 }
 
 function renderTable() {
-  const selected = decisions.find((row) => row.decisionId === selectedDecisionId);
+  const selected = routes.find((row) => row.prefillDecisionId === selectedDecisionId || row.decodeDecisionId === selectedDecisionId);
   const selectionLabel = document.querySelector("#route-log-selection");
   if (selectionLabel) selectionLabel.textContent = selected ? `selected +${number(selected.benchS, 2)}s` : "select a row for the full scorecard";
-  document.querySelector("#decision-rows").innerHTML = decisions.map((row) => {
+  document.querySelector("#decision-rows").innerHTML = routes.map((row) => {
     const rate = row.overlapBlocks != null && row.totalBlocks ? row.overlapBlocks / row.totalBlocks : null;
-    const active = row.decisionId === selectedDecisionId ? " selected" : "";
+    const active = row.prefillDecisionId === selectedDecisionId || row.decodeDecisionId === selectedDecisionId ? " selected" : "";
     const marker = active ? '<span class="route-log-selected">selected</span>' : "";
-    const match = row.stage === "decode" ? "—" : `${number(row.overlapBlocks)} / ${number(row.totalBlocks)}`;
-    return `<tr class="decision-row${active}" data-decision-id="${html(row.decisionId)}"><td>+${number(row.benchS, 2)}s${marker}</td><td>${html(row.stage)}</td><td class="worker">${html(row.workerAlias)}</td><td>${match}</td><td>${row.stage === "decode" ? "—" : percent(rate, 0)}</td><td>${fixed(row.costBlocks)} blocks</td></tr>`;
+    const prefix = row.prefillDecisionId ? `${number(row.overlapBlocks)} / ${number(row.totalBlocks)} · ${percent(rate, 0)}` : "—";
+    const stageScore = (stage, decisionId, score) => decisionId ? `<button class="stage-link${decisionId === selectedDecisionId ? " selected" : ""}" type="button" data-decision-id="${html(decisionId)}"><span>${stage}</span>${fixed(score)}</button>` : "—";
+    const path = [row.prefillWorkerAlias, row.decodeWorkerAlias].filter(Boolean).join(" → ");
+    const defaultId = row.prefillDecisionId || row.decodeDecisionId;
+    return `<tr class="decision-row${active}" data-default-decision-id="${html(defaultId)}"><td>+${number(row.benchS, 2)}s${marker}</td><td class="worker">${html(path)}</td><td>${prefix}</td><td>${stageScore("P", row.prefillDecisionId, row.prefillScoreBlocks)}</td><td>${stageScore("D", row.decodeDecisionId, row.decodeScoreBlocks)}</td></tr>`;
   }).join("");
 }
 
@@ -157,20 +160,25 @@ async function selectDecision(decisionId) {
 }
 
 document.querySelector("#decision-rows").addEventListener("click", (event) => {
-  const row = event.target.closest("[data-decision-id]");
-  if (row) selectDecision(row.dataset.decisionId);
+  const decision = event.target.closest("[data-decision-id]");
+  if (decision) {
+    selectDecision(decision.dataset.decisionId);
+    return;
+  }
+  const row = event.target.closest("[data-default-decision-id]");
+  if (row) selectDecision(row.dataset.defaultDecisionId);
 });
 
 (async () => {
   try {
     setupBeaverAudio();
-    const [summary, timeline, loadedDecisions] = await Promise.all([get("/api/summary"), get("/api/timeline"), get("/api/decisions")]);
-    decisions = loadedDecisions;
+    const [summary, timeline, loadedRoutes] = await Promise.all([get("/api/summary"), get("/api/timeline"), get("/api/decisions")]);
+    routes = loadedRoutes;
     populateSummary(summary);
     renderChart(timeline);
     renderTable();
-    const first = decisions.find((row) => row.stage === "prefill" || row.stage === "aggregate") || decisions[0];
-    if (first) selectDecision(first.decisionId);
+    const first = routes.find((row) => row.prefillDecisionId || row.decodeDecisionId);
+    if (first) selectDecision(first.prefillDecisionId || first.decodeDecisionId);
   } catch (error) {
     const node = document.querySelector("#error"); node.textContent = error.message; node.style.display = "block";
   }

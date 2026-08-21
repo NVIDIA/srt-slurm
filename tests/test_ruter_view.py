@@ -285,6 +285,20 @@ def test_view_splits_prefill_and_decode_score_batches(tmp_path: Path) -> None:
     assert [candidate["workerAlias"] for candidate in view.decision("internal-1:0")["candidates"]] == ["P-A", "P-B"]
     assert [candidate["workerAlias"] for candidate in view.decision("internal-1:1")["candidates"]] == ["D-A", "D-B"]
     assert view.decision("internal-1:1")["lowerPrefixSelected"] is False
+    route_rows = view.decision_rows()
+    assert len(route_rows) == 1
+    assert {key: route_rows[0][key] for key in route_rows[0] if key != "benchS"} == {
+        "requestId": "internal-1",
+        "prefillDecisionId": "internal-1:0",
+        "decodeDecisionId": "internal-1:1",
+        "prefillWorkerAlias": "P-A",
+        "decodeWorkerAlias": "D-A",
+        "overlapBlocks": 8,
+        "totalBlocks": 16,
+        "prefillScoreBlocks": 12.0,
+        "decodeScoreBlocks": 4.0,
+        "lowerPrefixSelected": True,
+    }
 
 
 def test_view_serves_dashboard_and_preloaded_api(tmp_path: Path) -> None:
