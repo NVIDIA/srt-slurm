@@ -28,6 +28,7 @@
 - [Monitoring](monitoring.md)
 - [GPU Power Telemetry](power-telemetry.md)
 - [Analyzing Results](analyzing.md)
+- [Component Performance Dashboard](component-dashboard.md)
 - [SLURM FAQ](slurm-faq.md)
 
 ## Reference

@@ -23,6 +23,11 @@ dependencies = [
     "matplotlib>=3.7.0",
 ]
 
+[project.optional-dependencies]
+ruter = [
+    "pyarrow>=25.0.0",
+]
+
 [project.scripts]
 srtctl = "srtctl.cli.submit:main"
 srtctl-i = "srtctl.cli.interactive:main"
@@ -30,6 +35,7 @@ srtctl-sweep = "srtctl.cli.do_sweep:main"
 srtctl-setup-head = "srtctl.cli.setup_head:main"
 srtctl-mcp = "srtctl.mcp.server:main"
 srtctl-validate-power = "srtctl.cli.validate_power_artifacts:main"
+ruter = "srtctl.ruter.__main__:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/srtctl"]
@@ -55,8 +61,16 @@ dev = [
 [tool.ruff]
 line-length = 120
 target-version = "py310"
-# Exclude external benchmark scripts (from vLLM/other sources)
-exclude = ["src/srtctl/benchmarks/scripts/*"]
+# Exclude third-party / vendored sources kept byte-comparable with upstream:
+#   - external benchmark scripts (from vLLM/other sources)
+#   - the perf-dashboard ingest + renderer (see docs/component-dashboard.md).
+#     Reformatting them would rewrite ~100 lines of deliberately dense upstream
+#     style and destroy the diff against the repo they are re-synced from.
+exclude = [
+    "src/srtctl/benchmarks/scripts/*",
+    "src/ingest/*",
+    "src/visualization/*",
+]
 
 [tool.ruff.lint]
 extend-select = [
@@ -81,7 +95,10 @@ known-first-party = ["srtctl"]
 # =============================================================================
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["tests"]
+# "." puts the repo root on sys.path so the vendored `src.ingest` /
+# `src.visualization` packages are importable from tests (they are not part of
+# the installed `srtctl` wheel; see docs/component-dashboard.md).
+pythonpath = ["tests", "."]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short -m 'not integration'"
@@ -99,6 +116,8 @@ exclude = [
     "scripts/",
     "analysis/",
     "ignition/",
+    "src/ingest/",
+    "src/visualization/",
 ]
 
 [tool.ty.environment]

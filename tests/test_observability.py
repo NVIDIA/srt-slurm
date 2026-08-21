@@ -62,17 +62,16 @@ class TestExpandObservability:
             assert env["DYN_LOG"] == "debug"
 
     def test_enabled_expands_request_trace_env_on_the_frontend_only(self):
-        """The request-trace leg is frontend-only and needs all three vars.
+        """The request-trace leg is frontend-only and uses Dynamo defaults.
 
-        DYN_REQUEST_TRACE_SINKS on its own writes nothing: with no record kinds
-        selected the policy is disabled and load_sinks returns an empty sink
-        list. And the built-in file path is /tmp, which dies with the job, so
-        the override is what makes the capture survivable.
+        Dynamo's master switch keeps its default file sink and rotated jsonl_gz
+        format. The built-in file path is /tmp, which dies with the job, so the
+        override is what makes the capture survivable.
         """
         cfg = expand_observability(_trtllm_config(enabled=True))
         fe = cfg["frontend"]["env"]
         assert fe["DYN_REQUEST_TRACE"] == "1"
-        assert fe["DYN_REQUEST_TRACE_SINKS"] == "jsonl"
+        assert "DYN_REQUEST_TRACE_SINKS" not in fe
         assert fe["DYN_REQUEST_TRACE_FILE_PATH"].startswith("/logs/")
 
         # Workers have no RequestTracker; tracing them would write empty files.

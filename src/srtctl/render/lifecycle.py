@@ -16,6 +16,7 @@ from typing import Any
 from jinja2 import Environment, FileSystemLoader
 
 from srtctl.backends.sglang import SGLangProtocol
+from srtctl.core.power.contract import CONTAINER_LOG_DIR
 from srtctl.core.schema import SrtConfig
 from srtctl.core.topology import Process
 from srtctl.ports import (
@@ -65,6 +66,7 @@ class LocalLifecycleRenderContext:
     tachometer_enabled: bool
     tachometer_binary: str | None
     tachometer_config: str | None
+    ruter_enabled: bool
 
 
 def heredoc_marker(payload: str, *, prefix: str = "SRTCTL_RUNTIME_CONFIG") -> str:
@@ -274,6 +276,15 @@ def _build_local_processes(
 def _build_router_command(config: SrtConfig, processes: list[Process], *, etcd_client_port: int, nats_port: int) -> str:
     frontend_environment = _format_environment(dict(config.frontend.env or {}), artifact_dir=_ARTIFACT_DIR_PLACEHOLDER)
     if config.frontend.type == "dynamo":
+        # ``observability.enabled`` uses the container-stable ``/logs`` path
+        # for SLURM. A direct-host lifecycle has no such mount, so preserve the
+        # same relative trace name below this run's artifacts instead.
+        trace_path = frontend_environment.get("DYN_REQUEST_TRACE_FILE_PATH")
+        container_trace_prefix = f"{CONTAINER_LOG_DIR}/"
+        if trace_path and trace_path.startswith(container_trace_prefix):
+            frontend_environment["DYN_REQUEST_TRACE_FILE_PATH"] = (
+                f"{_ARTIFACT_DIR_PLACEHOLDER}/{trace_path.removeprefix(container_trace_prefix)}"
+            )
         frontend_environment.update(
             {
                 "ETCD_ENDPOINTS": f"http://127.0.0.1:{etcd_client_port}",
@@ -392,6 +403,7 @@ def build_local_lifecycle_render_context(
         tachometer_enabled=tachometer_config is not None,
         tachometer_binary=config.observability.tachometer.binary_path if tachometer_config is not None else None,
         tachometer_config=tachometer_config,
+        ruter_enabled=config.frontend.type == "dynamo" and config.observability.enabled,
     )
 
 

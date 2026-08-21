@@ -98,6 +98,7 @@ def test_local_dynamo_lifecycle_starts_owned_infrastructure(tmp_path) -> None:
     assert 'srt_launch "nats"' in script
     assert 'srt_launch "etcd"' in script
     assert "DYN_SYSTEM_PORT=7500" in context.worker_processes[0].command
+    assert 'DYN_REQUEST_TRACE_FILE_PATH="${ARTIFACT_DIR}"/dynamo-request-trace' in context.router_command
     assert all(
         f"--nccl-port {17_500 + index}" in worker.command
         for index, worker in enumerate(context.worker_processes)
@@ -105,6 +106,10 @@ def test_local_dynamo_lifecycle_starts_owned_infrastructure(tmp_path) -> None:
     assert 'srt_wait_http_ready "http://127.0.0.1:6100/health"' not in script
     assert "srt_wait_router_ready" in script
     assert 'TACHOMETER_STORAGE="${ARTIFACT_DIR}/tachometer/raw/scrape"' in script
+    assert context.ruter_enabled
+    assert 'SRTCTL_RUTER_PYTHON="${SRTCTL_RUTER_PYTHON:-${SRTCTL_SOURCE}/.venv/bin/python}"' in script
+    assert 'Observability enabled: Dynamo request tracing is on (DYN_REQUEST_TRACE=1; request-end gzip JSONL: ${ARTIFACT_DIR}/dynamo-request-trace.*.jsonl.gz)' in script
+    assert '"${SRTCTL_RUTER_PYTHON}" -m srtctl.ruter init "${OUTPUT_DIR}" --output "${LOG_DIR}/.ruter"' in script
     syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
     assert syntax.returncode == 0, syntax.stderr
 
