@@ -90,7 +90,7 @@ benchmark:
       --endpoint-type chat \
       --streaming \
       --input-file "$RUTER_MOONCAKE_TRACE" \
-      --custom-dataset-type mooncake_trace \
+      --custom-dataset-type mooncake-trace \
       --fixed-schedule \
       --fixed-schedule-auto-offset \
       --extra-inputs ignore_eos:true \
