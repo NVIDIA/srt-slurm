@@ -48,9 +48,6 @@ frontend:
   type: dynamo
   enable_multiple_frontends: false
   args:
-    # Current Dynamo uses the frontend model card to enable OpenAI chat routes.
-    model-name: Qwen/Qwen3-32B-FP8
-    model-path: $RUTER_MODEL_PATH
     router-mode: kv
 
 backend:

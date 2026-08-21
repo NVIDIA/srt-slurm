@@ -536,9 +536,12 @@ def _dynamo_frontend_call(*, dynamo_install: bool, event_plane: str | None = "zm
         container_image=Path("/container.sqsh"),
         container_mounts={},
         environment={},
+        model_path=Path("/host/model"),
+        is_hf_model=False,
     )
     config = SimpleNamespace(
         frontend=SimpleNamespace(args=None, env=None),
+        served_model_name="test-model",
         observability=ObservabilityConfig(),
         dynamo=SimpleNamespace(
             install=dynamo_install,
@@ -577,3 +580,11 @@ class TestDynamoFrontendEventPlane:
     def test_explicit_injected(self, event_plane):
         mock_srun = _dynamo_frontend_call(dynamo_install=False, event_plane=event_plane)
         assert mock_srun.call_args.kwargs["env_to_set"]["DYN_EVENT_PLANE"] == event_plane
+
+
+def test_dynamo_frontend_configures_default_model_card():
+    """Dynamo chat routing gets its model card even without explicit frontend args."""
+    mock_srun = _dynamo_frontend_call(dynamo_install=False)
+
+    command = mock_srun.call_args.kwargs["command"]
+    assert command[-4:] == ["--model-name", "test-model", "--model-path", "/model"]
