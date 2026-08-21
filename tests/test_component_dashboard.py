@@ -688,3 +688,77 @@ class TestClientLayouts:
         bundle = tmp_path / "bundle"
         assert main(["--run-dir", str(d), "--out", str(bundle), "--traces", "none"]) == 0
         assert (bundle / "profile_export.jsonl").read_text().count("xid0") == 1
+
+
+class TestRequestAndSessionEntities:
+    """The two non-time-series dashboard entities, both built from the request trace."""
+
+    @staticmethod
+    def _bundle_with_trace(run_dir: Path, tmp_path: Path) -> Path:
+        src = run_dir / "dynamo-request-trace"
+        recs = []
+        for i, xid in enumerate(XIDS):
+            recs.append(_trace_record(
+                xid, f"sess-{i % 2}", 1_787_174_000_000 + i * 1000,
+                prefill_wait=2.0, prefill=500.0 + i, kv_transfer=50.0,
+                total=1000.0 + i, avg_itl=20.0, osl=11,
+                hashes=list(range(10 + i)),
+            ))
+        src.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+        bundle = tmp_path / "bundle"
+        _run_ingest(run_dir, bundle)
+        return bundle
+
+    def test_request_bands_sum_to_total(self, run_dir: Path, tmp_path: Path):
+        """The waterfall must be gapless -- on the reference runs there are 0/560
+        negative residuals, and a band that silently absorbs a gap makes the card lie
+        about where the time went."""
+        bundle = self._bundle_with_trace(run_dir, tmp_path)
+        payload = tmp_path / "dash.json"
+        proc = _render(bundle, tmp_path / "dash.html", "--d3-cdn", "--dump-json", str(payload))
+        assert proc.returncode == 0, proc.stderr
+
+        rt = json.loads(payload.read_text())["rt"]
+        assert rt["requests"], "request cards should be populated"
+        for card in rt["requests"].values():
+            total = sum(v for _, _, v in card["bands"] if v is not None)
+            assert total == pytest.approx(card["attrs"]["total_ms"], abs=0.01)
+
+    def test_sessions_carry_turn_ordered_series(self, run_dir: Path, tmp_path: Path):
+        bundle = self._bundle_with_trace(run_dir, tmp_path)
+        payload = tmp_path / "dash.json"
+        proc = _render(bundle, tmp_path / "dash.html", "--d3-cdn", "--dump-json", str(payload))
+        assert proc.returncode == 0, proc.stderr
+
+        data = json.loads(payload.read_text())
+        assert data["tabs"]["session"] is True
+        sessions = data["rt"]["sessions"]
+        assert len(sessions) == 2, "XIDS split across two sessions"
+        for s in sessions:
+            assert s["turns"] == len(s["ttft_ms"]) == len(s["xids"])
+            # busy + idle must reconstruct the session's wall-clock span.
+            assert s["busy_ms"] + s["idle_ms"] == pytest.approx(s["span_ms"], abs=0.2)
+            assert s["idle_ms"] >= 0
+
+    def test_constant_fields_are_reported_not_hidden(self, run_dir: Path, tmp_path: Path):
+        """queue_depth reads a constant 0 on both reference runs. Reporting it as
+        constant is the finding ('this run never queued'); dropping it silently would
+        make that unaskable, and drawing it as a flat line looks like a broken chart."""
+        bundle = self._bundle_with_trace(run_dir, tmp_path)
+        payload = tmp_path / "dash.json"
+        _render(bundle, tmp_path / "dash.html", "--d3-cdn", "--dump-json", str(payload))
+
+        const = json.loads(payload.read_text())["rt"]["const"]
+        assert const["queue_depth"] == 0
+        assert const["decode_dp_rank"] == 0
+
+    def test_session_tab_absent_without_a_request_trace(self, run_dir: Path, tmp_path: Path):
+        """Tab gating is on source availability: no trace file, no session tab."""
+        bundle = tmp_path / "bundle"
+        _run_ingest(run_dir, bundle)  # run_dir fixture has no dynamo-request-trace
+        payload = tmp_path / "dash.json"
+        _render(bundle, tmp_path / "dash.html", "--d3-cdn", "--dump-json", str(payload))
+
+        data = json.loads(payload.read_text())
+        assert data["tabs"]["session"] is False
+        assert data["rt"]["sessions"] == []

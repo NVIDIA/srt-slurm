@@ -785,8 +785,102 @@ if logdrill is not None:
             _log.info(f"load balance [{_r}]: {len(_v['keys'])} workers via {_v['src']}"
                       f"{'' if _v['has_tokens'] else ' (counts only, no tokens)'}")
 
+# ============ 5. request-trace: per-request waterfall + per-session view =====
+# The frontend's own per-request record (schema 4, see src/ingest/request_trace.py).
+# This is the ONLY source for a gapless TTFT decomposition and the ONLY one carrying
+# session_id, so both of the non-time-series dashboard entities are built from it.
+#
+# One code path, no per-run branching: every request yields the same four bands and
+# every session the same row shape, whatever the topology. A field that is constant
+# across the whole run (queue_depth and decode_dp_rank both read 0 on the reference
+# runs) is reported as constant rather than special-cased away -- "this run never
+# queued" is a finding, and hiding the field would make it unaskable.
+
+# The waterfall is fixed and ordered. Each band is (key, label), and they sum to
+# total_ms by construction -- verified 0/560 negative residuals on the reference runs.
+RT_BANDS = [("prefill_wait_ms", "admission + routing"),
+            ("prefill_ms",      "prefill compute"),
+            ("kv_transfer_ms",  "KV transfer"),
+            ("steady_decode_ms","steady decode")]
+# Carried per request so a card can show what the request WAS, not just how long it took.
+RT_ATTRS = ["isl","osl","cached_tokens","kv_hit_rate","queue_depth","finish_reason",
+            "prefill_worker_id","prefill_dp_rank","decode_worker_id","decode_dp_rank",
+            "turn_index","prefix_reuse_ratio","client_ttft_ms","clean_itl_ms",
+            "avg_itl_ms","total_ms"]
+
+rt_rows=[]
+_rt_path=os.path.join(SRC,"request_trace.jsonl") if SRC else ""
+if _rt_path and os.path.exists(_rt_path):
+    for _l in open(_rt_path):
+        _l=_l.strip()
+        if _l: rt_rows.append(json.loads(_l))
+    # Same warmup exclusion as every other source, via the x_request_id pivot. `client`
+    # was already phase-filtered at load, so intersecting transfers that decision here.
+    # Only applied when the two artifacts are the same run -- a tiny overlap means they
+    # are not, and silently emptying the view is worse than leaving it whole.
+    if client:
+        _keep=[r for r in rt_rows if r.get("x_request_id") in client]
+        if len(_keep) >= .10*max(1,len(rt_rows)):
+            _log.info(f"request trace: phase-filtered via x_request_id ({len(_keep)} of {len(rt_rows)} kept)")
+            rt_rows=_keep
+        else:
+            _log.warning(f"request trace: only {len(_keep)}/{len(rt_rows)} rows match the client "
+                         f"export; leaving unfiltered (different run?)")
+
+rt_requests={}; rt_sessions=[]; rt_const={}
+if rt_rows:
+    _t0=min(r["received_ms"] for r in rt_rows if r.get("received_ms"))
+    for r in rt_rows:
+        _bands=[[k,l,r.get(k)] for k,l in RT_BANDS]
+        rt_requests[r["x_request_id"]]={
+            "t":round((r.get("received_ms") or _t0)-_t0,1),
+            "session_id":r.get("session_id"),
+            "bands":_bands,
+            "attrs":{k:r.get(k) for k in RT_ATTRS},
+        }
+    # A field that never varies carries no information for THIS run; report it once
+    # here rather than drawing a flat line per panel, so the reader learns it was
+    # constant instead of inferring it from a chart that looks broken.
+    for k in RT_ATTRS+[b[0] for b in RT_BANDS]:
+        _vals={json.dumps(r.get(k)) for r in rt_rows}
+        if len(_vals)==1: rt_const[k]=rt_rows[0].get(k)
+
+    _by_sess={}
+    for r in rt_rows:
+        if r.get("session_id"): _by_sess.setdefault(r["session_id"],[]).append(r)
+    for _sid,_rs in _by_sess.items():
+        _rs.sort(key=lambda r:(r.get("turn_index") if r.get("turn_index") is not None else 0,
+                               r.get("received_ms") or 0))
+        _span_ms=(max((r.get("received_ms") or 0)+(r.get("total_ms") or 0) for r in _rs)
+                  - min(r.get("received_ms") or 0 for r in _rs))
+        _busy=sum(r.get("total_ms") or 0 for r in _rs)
+        rt_sessions.append({
+            "session_id":_sid,
+            "t":round((min(r.get("received_ms") or _t0 for r in _rs))-_t0,1),
+            "turns":len(_rs),
+            "span_ms":round(_span_ms,1),
+            "busy_ms":round(_busy,1),
+            # Wall-clock the session existed but was not being served. On the reference
+            # run one session idled 562s of 661s: a session-level latency number that
+            # ignores this describes the harness's think time, not the server.
+            "idle_ms":round(max(0.0,_span_ms-_busy),1),
+            "ttft_ms":[r.get("client_ttft_ms") for r in _rs],
+            "kv_hit":[r.get("kv_hit_rate") for r in _rs],
+            "isl":[r.get("isl") for r in _rs],
+            "reuse":[r.get("prefix_reuse_ratio") for r in _rs],
+            "xids":[r.get("x_request_id") for r in _rs],
+            "decode_workers":sorted({r.get("decode_worker_id") for r in _rs if r.get("decode_worker_id") is not None}),
+            "prefill_ranks":sorted({r.get("prefill_dp_rank") for r in _rs if r.get("prefill_dp_rank") is not None}),
+        })
+    rt_sessions.sort(key=lambda s:s["t"])
+    _pin=sum(1 for s in rt_sessions if len(s["decode_workers"])==1)
+    _log.info(f"request trace: {len(rt_requests)} requests, {len(rt_sessions)} sessions, "
+              f"{_pin}/{len(rt_sessions)} pinned to a single decode worker, "
+              f"{len(rt_const)} constant field(s): {sorted(rt_const)}")
+
 DATA={
  "logdrill":logdrill,
+ "rt":{"requests":rt_requests,"sessions":rt_sessions,"bands":RT_BANDS,"const":rt_const},
  "iter":iter_series,
  "iter_cfg":{"pf_batch":CFG_PF_BATCH,"pf_tok":CFG_PF_TOK,"de_batch":CFG_DE_BATCH,"de_tok":CFG_DE_TOK},
  "drill":{"series":drill_series,"extrema":drill_extrema,"spans":drill_spans,
@@ -795,7 +889,8 @@ DATA={
  # an empty Router tab reads as "this run had no queueing" rather than "this run
  # was not instrumented", which is the more dangerous of the two misreadings.
  "tabs":{"overview":bool(rows),"frontend":bool(scr),"router":bool(scr),
-         "engine":bool(scr),"loganalysis":logdrill is not None},
+         "engine":bool(scr),"loganalysis":logdrill is not None,
+         "session":bool(rt_sessions)},
  "meta":{"n":N,"run_dur_s":round(run_dur,1),"scrapes":len(scr),
    "src":META_SRC,
    "topo":META_TOPO or f"max batch prefill {MAX_BATCH_PF} / decode {MAX_BATCH_DE}"},
