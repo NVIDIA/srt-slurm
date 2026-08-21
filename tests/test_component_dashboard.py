@@ -1222,3 +1222,79 @@ class TestHeaderProvenance:
         html = out.read_text()
         assert "profiling requests" in html, "the header must name which population it counts"
         assert "are warmup and are shown on the" in html, "and name the other one"
+
+
+class TestJsonlSelectorRecovery:
+    """On a DYN_LOGGING_JSONL=true run every record is JSON, and the parser used to
+    discard every non-SPAN_CLOSED JSON line. That silently threw away the entire
+    router family: 597 real selector records on the reference log counted as 0."""
+
+    @staticmethod
+    def _log(tmp_path: Path, msgs) -> Path:
+        p = tmp_path / "node_frontend_0.out"
+        p.write_text("\n".join(json.dumps({
+            "time": "2026-08-19T21:15:34.05374%dZ" % (i % 10),
+            "level": "DEBUG",
+            "target": "dynamo_kv_router::scheduling::selector",
+            "message": m,
+        }) for i, m in enumerate(msgs)) + "\n")
+        return p
+
+    def test_jsonl_selector_decisions_are_counted(self, tmp_path: Path):
+        from src.ingest.frontend_infolog_parser import parse_frontend_log
+
+        log = self._log(tmp_path, [
+            "Selected pinned worker: worker_type=prefill, worker_id=7587 dp_rank=1, logit=0.5",
+            "Selected pinned worker: worker_type=decode, worker_id=7588 dp_rank=0, logit=0.5",
+            "Selected worker",
+        ])
+        s = parse_frontend_log(str(log))["stats"]
+        assert s["selector_without_request_id"] == 3, "JSON selector records must be seen"
+        assert s["selector_decisions_pinned"] == 2
+
+    def test_candidate_scores_are_not_counted_as_decisions(self, tmp_path: Path):
+        """A per-candidate score is not a choice. Conflating them would inflate the
+        decision count by the number of workers considered."""
+        from src.ingest.frontend_infolog_parser import parse_frontend_log
+
+        log = self._log(tmp_path, [
+            "Formula for worker_id=7587 dp_rank=0 with 0.00 effective cached blocks: 8094.094 = a * b",
+            "Pinned formula for worker_id=7588 dp_rank=1 with 12.00 effective cached blocks: 42.0 = a * b",
+            "Selected pinned worker: worker_type=prefill, worker_id=7588 dp_rank=1, logit=0.5",
+        ])
+        s = parse_frontend_log(str(log))["stats"]
+        assert s["selector_candidate_scores"] == 2
+        assert s["selector_without_request_id"] == 1
+
+    def test_span_closed_records_still_parse(self, tmp_path: Path):
+        """The fix must not disturb the SPAN_CLOSED path it sits next to."""
+        from src.ingest.frontend_infolog_parser import parse_frontend_log
+
+        p = tmp_path / "node_frontend_0.out"
+        p.write_text(json.dumps({
+            "time": "2026-08-19T21:15:34.053746Z", "level": "DEBUG",
+            "target": "request_span", "message": "SPAN_CLOSED",
+            "request_id": "r1", "x_request_id": "xid0", "time.duration_us": 1_000_000,
+            "ttft_ms": 120.0, "input_tokens": 10, "output_tokens": 5,
+        }) + "\n")
+        parsed = parse_frontend_log(str(p))
+        assert "xid0" in parsed["requests"]
+
+
+class TestSpanBusyIdleRetained:
+    def test_busy_and_idle_survive_as_attributes(self, tmp_path: Path):
+        """time.busy_us / time.idle_us split a span's wall time into work vs waiting --
+        the difference between a span that is slow because it computed and one that is
+        slow because it blocked. They were being dropped as envelope metadata."""
+        from src.ingest.traces_spanlog import parse_line
+
+        span = parse_line(json.dumps({
+            "time": "2026-08-19T21:15:34.053746Z", "message": "SPAN_CLOSED",
+            "span_name": "handle_payload", "span_id": "a", "parent_id": "b",
+            "trace_id": "t", "request_id": "r", "x_request_id": "x",
+            "time.duration_us": 1000, "time.busy_us": 200, "time.idle_us": 800,
+            "component": "prefill",
+        }))
+        assert span["attrs"]["time.busy_us"] == 200
+        assert span["attrs"]["time.idle_us"] == 800
+        assert "time.duration_us" not in span["attrs"], "duration is the span length, not an attr"

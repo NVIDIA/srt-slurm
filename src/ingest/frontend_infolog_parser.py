@@ -66,6 +66,28 @@ _RE_SEL = re.compile(r"selector:\s*Selected (?:pinned )?worker")
 # hook fires for /health and /metrics: on run 2663744, 12,964 of 15,471 `http
 # response sent` lines are probe traffic. Counting them overstates requests 6.2x.
 _RE_INSPAN = re.compile(r"http-request:")
+# The router's cost formula, JSON flavour. On a DYN_LOGGING_JSONL=true run every
+# record is JSON, so the text-only _RE_SEL above never matches and the whole router
+# family counted as zero -- 597 real lines reported as 0 on the reference run. These
+# carry the scoring inputs (worker_id, dp_rank, effective cached blocks, the
+# prefill_load_scale/decode_blocks terms) but NO request_id, so they support
+# aggregate and per-worker analysis and cannot be joined to a request.
+_RE_SEL_JSON_TARGET = re.compile(r"scheduling::selector$")
+# Two record shapes share that target, and only one is a decision:
+#   "Selected [pinned] worker: worker_type=..., worker_id=N dp_rank=N, logit=..."
+#       -> the CHOICE. One per phase per request (prefill + decode).
+#   "[Pinned ]Formula for worker_id=N dp_rank=N with N effective cached blocks: ..."
+#       -> the per-CANDIDATE score that fed the choice.
+# On the reference log: 266 decisions against 329 candidate scores. The "pinned" vs
+# fresh split of the decisions is itself the finding -- 26 of 266 (9.8%) were real
+# KV-aware selections and the rest were session affinity resolving to an already
+# bound worker, which independently matches the span-derived 13/133.
+_RE_SEL_DECISION = re.compile(
+    r"Selected (?P<pinned>pinned )?worker(?::\s*worker_type=(?P<worker_type>\w+),\s*"
+    r"worker_id=(?P<worker_id>\d+)\s+dp_rank=(?P<dp_rank>\d+))?")
+_RE_SEL_FORMULA = re.compile(
+    r"worker_id=(?P<worker_id>\d+)\s+dp_rank=(?P<dp_rank>\d+)"
+    r".*?([\d.]+) effective cached blocks:\s*(?P<cost>[\d.]+)")
 
 
 def _kv(line):
@@ -157,6 +179,7 @@ def parse_frontend_log(path):
     sel = defaultdict(list)
     sel_all = []
     n_rec = n_sel_no_id = n_json = 0
+    n_sel_pinned = n_sel_scored = 0
 
     for line in _iter_records(path):
         n_rec += 1
@@ -186,6 +209,23 @@ def parse_frontend_log(path):
                 done[rid] = (t_end, d)
                 if dur_ms is not None and t_end is not None:
                     recv[rid] = (t_end - int(dur_ms * 1e6), d)
+                continue
+            # NOT a SPAN_CLOSED record. Previously every such line was discarded
+            # here, which on a JSONL run silently threw away the entire router
+            # family: the text matchers below can never see a JSON line, so the
+            # selector counters read 0 while the log held hundreds of records.
+            if _RE_SEL_JSON_TARGET.search(j.get("target") or ""):
+                msg = j.get("message") or ""
+                dec = _RE_SEL_DECISION.search(msg)
+                if dec:
+                    n_sel_no_id += 1     # decision records carry no request_id at all
+                    n_sel_pinned += 1 if dec.group("pinned") else 0
+                    sel_all.append((_ts_ns(j.get("time", "")),
+                                    dec.group("worker_type") or "",
+                                    dec.group("worker_id") or "",
+                                    dec.group("dp_rank") or ""))
+                elif _RE_SEL_FORMULA.search(msg):
+                    n_sel_scored += 1    # a per-candidate score, not a choice
             continue
 
         # ---- human-readable tracing flavour --------------------------------
@@ -278,6 +318,12 @@ def parse_frontend_log(path):
             "http_responses_in_span": len(resp),
             "selector_with_request_id": len(sel),
             "selector_without_request_id": n_sel_no_id,
+            # The pinned/fresh split of routing DECISIONS. A run where almost every
+            # decision is "pinned" is one where session affinity, not KV-aware
+            # scoring, is choosing the worker -- which makes router-tuning experiments
+            # mostly no-ops and is invisible from the hit rate alone.
+            "selector_decisions_pinned": n_sel_pinned,
+            "selector_candidate_scores": n_sel_scored,
             "routing_joinable": joinable,
             "with_x_request_id": sum(1 for k, r in requests.items() if k != r["rid"]),
             "success": sum(1 for r in requests.values() if r["status"] == "success"),
