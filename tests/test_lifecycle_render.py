@@ -75,7 +75,9 @@ def test_local_lifecycle_renders_eight_tp1_workers_with_separate_logs(tmp_path) 
 
     assert len(context.worker_processes) == 8
     assert {worker.log_name for worker in context.worker_processes} == {f"worker-{index}.log" for index in range(8)}
-    assert all(f"CUDA_VISIBLE_DEVICES={index}" in worker.command for index, worker in enumerate(context.worker_processes))
+    assert all(
+        f"CUDA_VISIBLE_DEVICES={index}" in worker.command for index, worker in enumerate(context.worker_processes)
+    )
     assert "-m sglang_router.launch_router" in context.router_command
     assert "--policy cache_aware" in context.router_command
     assert 'name = "router"' in context.tachometer_config
@@ -106,17 +108,21 @@ def test_local_dynamo_lifecycle_starts_owned_infrastructure(tmp_path) -> None:
     assert "DYN_SYSTEM_PORT=7500" in context.worker_processes[0].command
     assert 'DYN_REQUEST_TRACE_FILE_PATH="${ARTIFACT_DIR}"/dynamo-request-trace' in context.router_command
     assert all(
-        f"--nccl-port {17_500 + index}" in worker.command
-        for index, worker in enumerate(context.worker_processes)
+        f"--nccl-port {17_500 + index}" in worker.command for index, worker in enumerate(context.worker_processes)
     )
     assert 'srt_wait_http_ready "http://127.0.0.1:6100/health"' not in script
     assert "srt_wait_router_ready" in script
     assert 'TACHOMETER_STORAGE="${ARTIFACT_DIR}/tachometer/raw/scrape"' in script
-    assert 'export AIPERF_DATASET_MMAP_BASE_PATH="${AIPERF_DATASET_MMAP_BASE_PATH:-${ARTIFACT_DIR}/aiperf-mmap}"' in script
+    assert (
+        'export AIPERF_DATASET_MMAP_BASE_PATH="${AIPERF_DATASET_MMAP_BASE_PATH:-${ARTIFACT_DIR}/aiperf-mmap}"' in script
+    )
     assert 'mkdir -p "${LOG_DIR}" "${ARTIFACT_DIR}" "${AIPERF_DATASET_MMAP_BASE_PATH}"' in script
     assert context.ruter_enabled
     assert 'SRTCTL_RUTER_PYTHON="${SRTCTL_RUTER_PYTHON:-${SRTCTL_SOURCE}/.venv/bin/python}"' in script
-    assert 'Observability enabled: Dynamo request tracing is on (DYN_REQUEST_TRACE=1; request-end gzip JSONL: ${ARTIFACT_DIR}/dynamo-request-trace.*.jsonl.gz)' in script
+    assert (
+        "Observability enabled: Dynamo request tracing is on (DYN_REQUEST_TRACE=1; request-end gzip JSONL: ${ARTIFACT_DIR}/dynamo-request-trace.*.jsonl.gz)"
+        in script
+    )
     assert '"${SRTCTL_RUTER_PYTHON}" -m srtctl.ruter init "${OUTPUT_DIR}" --output "${LOG_DIR}/.ruter"' in script
     syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
     assert syntax.returncode == 0, syntax.stderr
@@ -134,8 +140,8 @@ def test_local_lifecycle_expands_artifact_dir_in_frontend_environment(tmp_path) 
     script = render_local_lifecycle(context)
 
     assert 'DYN_REQUEST_TRACE_FILE_PATH="${ARTIFACT_DIR}"/dynamo-request-trace.jsonl' in context.router_command
-    assert "DYN_REQUEST_TRACE_FILE_PATH=\"${ARTIFACT_DIR}\"/dynamo-request-trace.jsonl" in script
-    assert 'export OUTPUT_DIR LOG_DIR ARTIFACT_DIR' in script
+    assert 'DYN_REQUEST_TRACE_FILE_PATH="${ARTIFACT_DIR}"/dynamo-request-trace.jsonl' in script
+    assert "export OUTPUT_DIR LOG_DIR ARTIFACT_DIR" in script
     syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
     assert syntax.returncode == 0, syntax.stderr
 
@@ -160,7 +166,7 @@ def test_local_dynamo_lifecycle_accepts_isolated_infra_ports(tmp_path) -> None:
     assert "NATS_SERVER=nats://127.0.0.1:24222" in context.router_command
     assert '"${SRTCTL_NATS_BINARY}" -js -a "127.0.0.1" -p 24222' in script
     assert "http://127.0.0.1:22379/health" in script
-    assert "--listen-peer-urls \"http://127.0.0.1:22380\"" in script
+    assert '--listen-peer-urls "http://127.0.0.1:22380"' in script
 
 
 def test_local_dynamo_lifecycle_caches_a_hash_pinned_source_build(tmp_path) -> None:
@@ -210,7 +216,9 @@ def test_local_lifecycle_can_run_inside_sglang_container(tmp_path) -> None:
     assert "--gpus all" in script
     assert 'docker run "${SRT_CONTAINER_ARGS[@]}" "${SRTCTL_LOCAL_CONTAINER_IMAGE}"' in script
     assert 'mkdir -p "${OUTPUT_BASE}"' in script
-    assert 'SRTCTL_DYNAMO_CACHE_ROOT="${SRTCTL_DYNAMO_CACHE_ROOT:-${OUTPUT_BASE}/.srtctl-cache/dynamo-wheels}"' in script
+    assert (
+        'SRTCTL_DYNAMO_CACHE_ROOT="${SRTCTL_DYNAMO_CACHE_ROOT:-${OUTPUT_BASE}/.srtctl-cache/dynamo-wheels}"' in script
+    )
     assert "srt_install_sglang_from_source" in script
     assert 'pip install --quiet --editable "${source_copy}/python"' in script
     assert 'pip install --quiet --force-reinstall --no-deps "${wheel}"' in script
@@ -233,7 +241,7 @@ def test_local_dynamo_lifecycle_uses_slurm_cache_key_and_patches(tmp_path) -> No
 
     assert context.dynamo_source_cache_key == "a6261680a974ca7c74dcf49592a7376d7de99380-patch-52bdcd85"
     assert context.dynamo_cargo_patch_commands
-    assert f'SRTCTL_DYNAMO_SOURCE_CACHE_KEY={context.dynamo_source_cache_key}' in script
+    assert f"SRTCTL_DYNAMO_SOURCE_CACHE_KEY={context.dynamo_source_cache_key}" in script
     assert "find . -name Cargo.toml -exec sed -i -E" in script
     syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
     assert syntax.returncode == 0, syntax.stderr
