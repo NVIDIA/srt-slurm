@@ -1843,3 +1843,55 @@ class TestBenchmarkPhaseCensus:
         phases = self._status(run_dir, tmp_path).get("phases") or []
         assert len(phases) == 1, "profiling never ran, so it must not be reported"
         assert "cancelled=4" in phases[0]
+
+
+class TestLogOnlySignals:
+    """Signals whose ONLY evidence is a log line, with no metric family behind them.
+
+    A worker crash, a Dynamo recompilation storm, a KV-index desync: each is a
+    documented issue that was unreachable from a bundle -- not because the
+    instrumentation is missing, but because the bundle did not carry the logs, and the
+    logs are far too large to carry whole (43 MB frontend + 40 MB prefill on one run).
+    The bundle now carries the ANSWER instead of the evidence.
+    """
+
+    @staticmethod
+    def _worker_log(run_dir: Path, body: str) -> None:
+        (run_dir / "node9_decode_w0.out").write_text(body)
+
+    def _signals(self, run_dir: Path, tmp_path: Path) -> dict:
+        bundle = tmp_path / "bundle"
+        _run_ingest(run_dir, bundle)
+        out = tmp_path / "d.json"
+        proc = _render(bundle, tmp_path / "d.html", "--d3-cdn", "--dump-json", str(out))
+        assert proc.returncode == 0, proc.stderr
+        return json.loads(out.read_text())["meta"]["log_signals"] or {}
+
+    def test_crash_and_recompile_are_counted_with_timestamps(self, run_dir: Path, tmp_path: Path):
+        self._worker_log(run_dir,
+            "2026-08-21T01:00:00Z INFO starting\n"
+            "2026-08-21T01:00:05Z ERROR CUDA error: device-side assert triggered\n"
+            "2026-08-21T01:00:09Z WARN torch._dynamo hit config.cache_size_limit\n"
+            "2026-08-21T01:00:11Z WARN recompile_limit reached\n")
+        sig = self._signals(run_dir, tmp_path)
+        assert sig["worker_crash"]["count"] == 1
+        assert sig["worker_crash"]["first_ts"] == "2026-08-21T01:00:05Z"
+        assert sig["torch_recompile"]["count"] == 2
+        assert sig["worker_crash"]["samples"], "a verbatim line is what makes it actionable"
+
+    def test_zero_counts_are_kept_not_dropped(self, run_dir: Path, tmp_path: Path):
+        """'This run had no worker crashes' is a statement. The signal simply being
+        absent from the payload is not -- it is indistinguishable from 'not checked'."""
+        self._worker_log(run_dir, "2026-08-21T01:00:00Z INFO nothing interesting\n")
+        sig = self._signals(run_dir, tmp_path)
+        assert "worker_crash" in sig
+        assert sig["worker_crash"]["count"] == 0
+        assert sig["worker_crash"]["why"], "each signal must say why it matters"
+
+    def test_output_is_bounded_regardless_of_input_size(self, run_dir: Path, tmp_path: Path):
+        """The whole point: a multi-GB log must not become a multi-GB bundle entry."""
+        self._worker_log(run_dir,
+            "2026-08-21T01:00:00Z ERROR Block not found during remove; skipping\n" * 5000)
+        sig = self._signals(run_dir, tmp_path)
+        assert sig["kv_block_not_found"]["count"] == 5000
+        assert len(sig["kv_block_not_found"]["samples"]) <= 2, "samples must stay bounded"

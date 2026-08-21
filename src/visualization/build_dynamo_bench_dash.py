@@ -101,6 +101,21 @@ def _cfg_max_batch(mode):
         except Exception:
             pass
     return None, None
+def _log_signals():
+    """Log-only signals from ``log_signals.json``: the ones with no metric behind them.
+
+    Returned whole, including zero counts. "This run had no worker crashes" is a
+    statement; the signal simply being absent from the payload is not.
+    """
+    if not SRC:
+        return None
+    try:
+        with open(os.path.join(SRC, "log_signals.json")) as fh:
+            return (json.load(fh) or {}).get("signals") or None
+    except Exception:
+        return None
+
+
 def _benchmark_status():
     """Why the benchmark produced what it produced, from ``benchmark_status.json``.
 
@@ -298,6 +313,11 @@ def _cfg_tokens_per_block():
 CLIENT_SUMMARY = _client_summary()
 PROVENANCE = _provenance()
 BENCH_STATUS = _benchmark_status()
+LOG_SIGNALS = _log_signals()
+if LOG_SIGNALS:
+    _fired = {k: v["count"] for k, v in LOG_SIGNALS.items() if v.get("count")}
+    _log.info(f"log-only signals: {_fired}" if _fired
+              else "log-only signals: none fired (all counts zero)")
 if BENCH_STATUS:
     _log.warning(f"benchmark reported failure: exit={BENCH_STATUS['exit_code']}; "
                  f"{BENCH_STATUS['errors'][0] if BENCH_STATUS['errors'] else 'no error line captured'}")
@@ -1487,7 +1507,8 @@ DATA={
                    "phases":_phase_seen},
    "client_summary":CLIENT_SUMMARY,
    "provenance":PROVENANCE,
-   "benchmark_status":BENCH_STATUS},
+   "benchmark_status":BENCH_STATUS,
+   "log_signals":LOG_SIGNALS},
  "kpi":{"ttft_p50":round(pct(col("ttft"),50)/1000,1),"ttft_p99":round(pct(col("ttft"),99)/1000,1),
    "adm_p50":round(pct(col("adm"),50)/1000,1),"pf_p50":round(pct(col("pf"),50)/1000,1),
    "reqs":N,"adm_share":round(pct(col("adm"),50)/max(1,pct(col("ttft"),50))*100,0),
