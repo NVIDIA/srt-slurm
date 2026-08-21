@@ -605,6 +605,92 @@ def run_benchmark_status(run_dir: Path, bundle: Path) -> dict | None:
     return status
 
 
+# Log-only signals: patterns whose ONLY evidence is a worker or frontend log line, with
+# no metric family behind them. Each entry is (id, regex, why it matters).
+#
+# Kept as a fixed, named set rather than "whatever looked interesting", so the leg is a
+# standardised artifact that means the same thing on every run -- the same reason the
+# panel spec is declarative.
+_LOG_SIGNALS = [
+    ("worker_crash", r"CUDA error|device-side assert|Segmentation fault|core dumped|"
+                     r"terminate called|std::bad_alloc",
+     "a worker died; the crash line is the only artifact of it"),
+    ("torch_recompile", r"recompile_limit|torch\._dynamo hit config\.cache_size_limit|"
+                        r"falling back to eager",
+     "Dynamo recompilation storm: silently converts compiled steps to eager"),
+    ("oom", r"CUDA out of memory|OutOfMemoryError|Killed process|oom-kill",
+     "memory exhaustion, which no gauge survives to report"),
+    ("kv_block_not_found", r"Block not found during remove|Failed to find block to remove",
+     "router KV index desync; the counter for it reads a constant 0"),
+    ("kv_transfer_timeout", r"kv transfer.*timed out|KV_TRANSFER_TIMEOUT|transfer timeout",
+     "KV-transfer timeouts, whose counter family is declared but never sampled"),
+    ("nccl_error", r"NCCL WARN|NCCL error|ncclInternalError|ncclUnhandledCudaError",
+     "collective failure; no NCCL metric family exists at all"),
+    ("engine_stall", r"num_fitting_reqs=0|may not have enough kvCache",
+     "the engine could not fit a request, distinct from being merely busy"),
+    ("etcd_disconnect", r"etcd.*reconnect|lease.*lost|watch channel closed",
+     "control-plane instability that reads downstream as worker flapping"),
+    ("request_cancelled", r"request cancelled|client disconnected|connection reset",
+     "client-side aborts, which never appear as server errors"),
+]
+
+
+def run_log_signals(run_dir: Path, bundle: Path, max_samples: int = 2) -> dict:
+    """Distil log-only signals into ``log_signals.json`` (bounded).
+
+    Several documented issues have their ONLY evidence in a log line -- a worker crash, a
+    Dynamo recompilation storm, a KV-index desync -- with no metric family behind them.
+    Those were unreachable from a bundle not because the instrumentation is missing but
+    because the bundle did not carry the logs, and the logs are far too large to carry
+    whole (43 MB frontend + 40 MB prefill on one run, multi-GB at DYN_LOG=debug).
+
+    So this carries the ANSWER rather than the evidence: per named signal, a count, the
+    first and last timestamp, the per-file breakdown, and up to `max_samples` verbatim
+    lines. Bounded by construction -- the output is a few KB regardless of input size --
+    and enough to answer "did this happen, how often, when did it start".
+
+    A count of zero is kept, not dropped. "This run had no worker crashes" is a different
+    and more useful statement than the signal's absence from the file.
+    """
+    import re as _re
+    pats = [(sid, _re.compile(rx, _re.I), why) for sid, rx, why in _LOG_SIGNALS]
+    out: dict = {sid: {"count": 0, "why": why, "first_ts": None, "last_ts": None,
+                       "by_file": {}, "samples": []}
+                 for sid, _, why in pats}
+    # ISO-8601 or "YYYY-MM-DD HH:MM:SS"; whichever the emitting component uses.
+    ts_re = _re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[.\d]*Z?|\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)")
+
+    logs = sorted(Path(run_dir).glob("*.out"))
+    for path in logs:
+        name = path.name
+        try:
+            fh = open(path, errors="replace")
+        except OSError:
+            continue
+        with fh:
+            for line in fh:
+                for sid, rx, _why in pats:
+                    if rx.search(line):
+                        e = out[sid]
+                        e["count"] += 1
+                        e["by_file"][name] = e["by_file"].get(name, 0) + 1
+                        m = ts_re.search(line)
+                        if m:
+                            if e["first_ts"] is None:
+                                e["first_ts"] = m.group(1)
+                            e["last_ts"] = m.group(1)
+                        if len(e["samples"]) < max_samples:
+                            e["samples"].append(line.strip()[:300])
+                        break   # one signal per line; the first match wins
+
+    with open(bundle / "log_signals.json", "w") as f:
+        json.dump({"signals": out, "files_scanned": [p.name for p in logs]}, f)
+    fired = {k: v["count"] for k, v in out.items() if v["count"]}
+    _log("L2 log-signals", f"scanned {len(logs)} log(s); "
+                           + (f"fired: {fired}" if fired else "no log-only signal fired"))
+    return out
+
+
 def run_provenance(run_dir: Path, bundle: Path) -> list[str]:
     """Copy the run's provenance files into the bundle: what actually ran.
 
@@ -769,6 +855,7 @@ def main(argv=None) -> int:
     run_client_summary(run_dir, bundle)
     run_provenance(run_dir, bundle)
     run_benchmark_status(run_dir, bundle)
+    run_log_signals(run_dir, bundle)
 
     yaml_text = generate_dashboard_yaml(
         name=name,
