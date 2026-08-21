@@ -17,6 +17,7 @@ def _config(
     frontend_type: str = "sglang",
     frontend_env: dict[str, str] | None = None,
     environment: dict[str, str] | None = None,
+    dynamo_hash: str | None = None,
 ) -> SrtConfig:
     raw = {
         "name": "direct-render",
@@ -55,6 +56,8 @@ def _config(
             "tachometer": {"enabled": True},
         },
     }
+    if dynamo_hash:
+        raw["dynamo"] = {"hash": dynamo_hash}
     expand_observability(raw)
     return SrtConfig.Schema().load(yaml.safe_load(yaml.safe_dump(raw)))
 
@@ -106,6 +109,8 @@ def test_local_dynamo_lifecycle_starts_owned_infrastructure(tmp_path) -> None:
     assert 'srt_wait_http_ready "http://127.0.0.1:6100/health"' not in script
     assert "srt_wait_router_ready" in script
     assert 'TACHOMETER_STORAGE="${ARTIFACT_DIR}/tachometer/raw/scrape"' in script
+    assert 'export AIPERF_DATASET_MMAP_BASE_PATH="${AIPERF_DATASET_MMAP_BASE_PATH:-${ARTIFACT_DIR}/aiperf-mmap}"' in script
+    assert 'mkdir -p "${LOG_DIR}" "${ARTIFACT_DIR}" "${AIPERF_DATASET_MMAP_BASE_PATH}"' in script
     assert context.ruter_enabled
     assert 'SRTCTL_RUTER_PYTHON="${SRTCTL_RUTER_PYTHON:-${SRTCTL_SOURCE}/.venv/bin/python}"' in script
     assert 'Observability enabled: Dynamo request tracing is on (DYN_REQUEST_TRACE=1; request-end gzip JSONL: ${ARTIFACT_DIR}/dynamo-request-trace.*.jsonl.gz)' in script
@@ -153,3 +158,22 @@ def test_local_dynamo_lifecycle_accepts_isolated_infra_ports(tmp_path) -> None:
     assert '"${SRTCTL_NATS_BINARY}" -js -a "127.0.0.1" -p 24222' in script
     assert "http://127.0.0.1:22379/health" in script
     assert "--listen-peer-urls \"http://127.0.0.1:22380\"" in script
+
+
+def test_local_dynamo_lifecycle_caches_a_hash_pinned_source_build(tmp_path) -> None:
+    context = build_local_lifecycle_render_context(
+        _config(frontend_type="dynamo", dynamo_hash="a6261680a974ca7c74dcf49592a7376d7de99380"),
+        source_dir=tmp_path / "srt-slurm",
+        output_base=tmp_path / "outputs",
+    )
+    script = render_local_lifecycle(context)
+
+    assert context.dynamo_source_hash == "a6261680a974ca7c74dcf49592a7376d7de99380"
+    assert "srt_install_dynamo_from_source_cache" in script
+    assert "SRTCTL_DYNAMO_SOURCE_HASH=a6261680a974ca7c74dcf49592a7376d7de99380" in script
+    assert 'cache_root="${SRTCTL_DYNAMO_CACHE_ROOT:-${SRTCTL_SOURCE}/configs/dynamo-wheels}"' in script
+    assert "flock -x 201" in script
+    assert 'maturin build --release --out "${cache}"' in script
+    assert 'pip install --quiet --force-reinstall --no-deps "${wheel}"' in script
+    syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
+    assert syntax.returncode == 0, syntax.stderr

@@ -317,7 +317,9 @@ def _jsonl(path: Path) -> list[dict[str, Any]]:
 
 def _request_traces(root: Path) -> list[dict[str, Any]]:
     rows = []
-    for path in sorted(root.rglob("dynamo-request-trace*.jsonl*")):
+    paths = set(root.rglob("dynamo-request-trace*.jsonl*"))
+    paths.update(root.rglob("dynamo-request-trace"))
+    for path in sorted(paths):
         for record in _read_jsonl(path):
             event = record.get("event", record)
             if event.get("schema") != "dynamo.request.trace.v1" or event.get("event_type") != "request_end":

@@ -60,6 +60,7 @@ class LocalLifecycleRenderContext:
     health_timeout_seconds: int
     health_interval_seconds: int
     needs_dynamo_infra: bool
+    dynamo_source_hash: str | None
     global_environment: tuple[tuple[str, str], ...]
     benchmark_environment: tuple[tuple[str, str], ...]
     benchmark_command: str
@@ -397,6 +398,7 @@ def build_local_lifecycle_render_context(
         health_timeout_seconds=max(1, int(config.health_check.max_attempts) * health_interval),
         health_interval_seconds=health_interval,
         needs_dynamo_infra=config.frontend.type == "dynamo",
+        dynamo_source_hash=config.dynamo.hash if config.frontend.type == "dynamo" and config.dynamo.install else None,
         global_environment=tuple(sorted((key, str(value)) for key, value in config.environment.items())),
         benchmark_environment=tuple(sorted((key, str(value)) for key, value in config.benchmark.env.items())),
         benchmark_command=config.benchmark.command,

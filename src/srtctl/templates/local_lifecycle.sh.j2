@@ -38,10 +38,16 @@ export AIPERF_ARTIFACT_DIR="${ARTIFACT_DIR}/aiperf"
 {% for key, value in context.benchmark_environment %}
 export {{ key }}={{ quote(value) }}
 {% endfor %}
+# AIPerf otherwise reuses a system-temp mmap directory. A fresh run-scoped
+# base avoids cross-run dataset metadata races while retaining mmap throughput.
+export AIPERF_DATASET_MMAP_BASE_PATH="${AIPERF_DATASET_MMAP_BASE_PATH:-${ARTIFACT_DIR}/aiperf-mmap}"
 
 declare -a SRT_OWNED_PIDS=()
 SRT_TACHOMETER_PID=""
 TACHOMETER_LOCAL_DIR=""
+{% if context.dynamo_source_hash %}
+SRTCTL_DYNAMO_SOURCE_HASH={{ quote(context.dynamo_source_hash) }}
+{% endif %}
 
 srt_log() {
     printf '[srtctl:%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"
@@ -51,6 +57,51 @@ srt_die() {
     srt_log "ERROR: $*"
     exit 1
 }
+
+{% if context.dynamo_source_hash %}
+srt_install_dynamo_from_source_cache() {
+    local cache_root="${SRTCTL_DYNAMO_CACHE_ROOT:-${SRTCTL_SOURCE}/configs/dynamo-wheels}"
+    local cache="${cache_root}/${SRTCTL_DYNAMO_SOURCE_HASH}"
+    local lock="${cache_root}/.${SRTCTL_DYNAMO_SOURCE_HASH}.lock"
+    local build_dir source_dir wheel
+
+    mkdir -p "${cache_root}"
+    (
+        flock -x 201
+        if [[ ! -f "${cache}/.complete" ]]; then
+            command -v git >/dev/null 2>&1 || { echo "git is required for a Dynamo source build" >&2; exit 1; }
+            command -v cargo >/dev/null 2>&1 || { echo "cargo is required for a Dynamo source build" >&2; exit 1; }
+            command -v protoc >/dev/null 2>&1 || { echo "protoc is required for a Dynamo source build" >&2; exit 1; }
+            srt_log "Building Dynamo ${SRTCTL_DYNAMO_SOURCE_HASH} into ${cache}"
+            "${SRTCTL_PYTHON}" -m pip install --quiet --upgrade maturin
+            build_dir="$(mktemp -d)"
+            trap 'rm -rf "${build_dir}"' EXIT
+            git clone --no-checkout https://github.com/ai-dynamo/dynamo.git "${build_dir}/dynamo"
+            git -C "${build_dir}/dynamo" fetch --depth 1 origin "${SRTCTL_DYNAMO_SOURCE_HASH}"
+            git -C "${build_dir}/dynamo" checkout --detach FETCH_HEAD
+            mkdir -p "${cache}"
+            rm -f "${cache}"/ai_dynamo_runtime-*.whl "${cache}/dynamo-src.tar.gz" "${cache}/.complete"
+            (
+                cd "${build_dir}/dynamo/lib/bindings/python"
+                CARGO_TARGET_DIR="${build_dir}/target" \
+                    "${SRTCTL_PYTHON}" -m maturin build --release --out "${cache}"
+            )
+            tar --exclude='target' --exclude='.git' -czf "${cache}/dynamo-src.tar.gz" -C "${build_dir}" dynamo
+            touch "${cache}/.complete"
+        fi
+    ) 201>"${lock}"
+
+    wheel="$(compgen -G "${cache}/ai_dynamo_runtime-*.whl" | head -n 1 || true)"
+    [[ -n "${wheel}" ]] || srt_die "Dynamo cache is incomplete: ${cache}"
+    source_dir="${OUTPUT_DIR}/runtime/dynamo-src"
+    rm -rf "${source_dir}"
+    mkdir -p "${source_dir}"
+    tar -xzf "${cache}/dynamo-src.tar.gz" -C "${source_dir}"
+    "${SRTCTL_PYTHON}" -m pip install --quiet --force-reinstall --no-deps "${wheel}"
+    "${SRTCTL_PYTHON}" -m pip install --quiet --editable --no-deps "${source_dir}/dynamo"
+    srt_log "Installed Dynamo ${SRTCTL_DYNAMO_SOURCE_HASH} from ${cache}"
+}
+{% endif %}
 
 srt_launch_shell() {
     local label="$1"
@@ -250,13 +301,16 @@ print(json.dumps(body))
 PY
 }
 
-mkdir -p "${LOG_DIR}" "${ARTIFACT_DIR}"
+mkdir -p "${LOG_DIR}" "${ARTIFACT_DIR}" "${AIPERF_DATASET_MMAP_BASE_PATH}"
 srt_log "Run directory: ${OUTPUT_DIR}"
 {% if context.ruter_enabled %}
 srt_log "Observability enabled: Dynamo request tracing is on (DYN_REQUEST_TRACE=1; request-end gzip JSONL: ${ARTIFACT_DIR}/dynamo-request-trace.*.jsonl.gz)"
 {% endif %}
 "${SRTCTL_PYTHON}" -c 'import sglang' || srt_die "SGLang is not installed for ${SRTCTL_PYTHON}"
 {% if context.frontend_type == "dynamo" %}
+{% if context.dynamo_source_hash %}
+srt_install_dynamo_from_source_cache
+{% endif %}
 "${SRTCTL_PYTHON}" -c 'import dynamo' || srt_die "Dynamo is not installed for ${SRTCTL_PYTHON}"
 SRTCTL_NATS_BINARY="${SRTCTL_NATS_BINARY:-${SRTCTL_SOURCE}/configs/nats-server}"
 SRTCTL_ETCD_BINARY="${SRTCTL_ETCD_BINARY:-${SRTCTL_SOURCE}/configs/etcd}"
