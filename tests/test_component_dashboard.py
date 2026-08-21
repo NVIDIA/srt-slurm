@@ -16,6 +16,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -408,3 +409,101 @@ class TestRenderComponentDashboard:
         html = out.read_text()
         assert "d3js.org v7" in html, "vendored d3.v7.min.js should be inlined"
         assert "<script src=" not in html, "a self-contained page must not fetch anything"
+
+
+# ---------------------------------------------------------------------------
+# The single-run pipeline: srtctl.analysis.perf_dashboard
+# ---------------------------------------------------------------------------
+
+
+def _stub_config(*, enabled=True, build_dashboard=None, prefill=(1, 4), decode=(3, 8)):
+    """Minimal stand-in for SrtConfig carrying only what perf_dashboard reads."""
+    from srtctl.core.schema import ObservabilityConfig
+
+    obs = ObservabilityConfig.Schema().load(
+        {"enabled": enabled} if build_dashboard is None else {"enabled": enabled, "build_dashboard": build_dashboard}
+    )
+    return SimpleNamespace(
+        name="unit-test-run",
+        observability=obs,
+        resources=SimpleNamespace(
+            num_prefill=prefill[0],
+            gpus_per_prefill=prefill[1],
+            num_decode=decode[0],
+            gpus_per_decode=decode[1],
+            num_agg=0,
+            gpus_per_agg=0,
+        ),
+    )
+
+
+class TestPerfDashboardPipeline:
+    def test_repo_root_discovery_finds_the_vendored_tree(self):
+        from srtctl.analysis.perf_dashboard import find_repo_root
+
+        root = find_repo_root()
+        assert root is not None, "must locate the checkout under an editable install"
+        assert (root / "src" / "ingest" / "ingest.py").is_file()
+        assert (root / "src" / "visualization" / "build_dynamo_bench_dash.py").is_file()
+
+    def test_worker_specs_describe_the_topology(self):
+        """These become --worker args, which are what give the page its GPU count.
+        Getting them wrong silently rescales every per-GPU number on the page."""
+        from srtctl.analysis.perf_dashboard import _worker_specs
+
+        specs = _worker_specs(_stub_config(prefill=(2, 4), decode=(4, 8)))
+        assert specs == ["prefill=dep:4:2", "decode=tep:8:4"]
+        # 4*2 + 8*4 = 40 GPUs is what the renderer will divide by.
+
+    def test_agg_only_topology_emits_one_spec(self):
+        from srtctl.analysis.perf_dashboard import _worker_specs
+
+        cfg = _stub_config(prefill=(0, 0), decode=(0, 0))
+        cfg.resources.num_agg, cfg.resources.gpus_per_agg = 6, 4
+        assert _worker_specs(cfg) == ["agg=tep:4:6"]
+
+    def test_try_build_is_a_noop_when_not_opted_in(self, tmp_path: Path):
+        from srtctl.analysis.perf_dashboard import try_build
+
+        runtime = SimpleNamespace(log_dir=tmp_path, job_id="12345")
+        assert try_build(_stub_config(enabled=False), runtime) is None
+        assert not (tmp_path / "perf_dashboard.html").exists()
+
+    def test_build_dashboard_false_overrides_observability_enabled(self, tmp_path: Path):
+        from srtctl.analysis.perf_dashboard import try_build
+
+        runtime = SimpleNamespace(log_dir=tmp_path, job_id="12345")
+        assert try_build(_stub_config(enabled=True, build_dashboard=False), runtime) is None
+        assert not (tmp_path / "perf_dashboard.html").exists()
+
+    def test_end_to_end_one_run_produces_the_dashboard(self, run_dir: Path):
+        """The whole point of the wiring: a finished log dir in, artifacts out, with
+        no hand-driven step from a checkout."""
+        from srtctl.analysis.perf_dashboard import BUNDLE_DIRNAME, try_build
+
+        runtime = SimpleNamespace(log_dir=run_dir, job_id="2739690")
+        html = try_build(_stub_config(), runtime)
+
+        assert html is not None, "pipeline should have produced a dashboard"
+        assert html.is_file() and html.stat().st_size > 100_000, "D3 should be inlined"
+
+        payload = run_dir / "perf_dashboard.json"
+        assert payload.is_file(), "the no-browser payload must be written"
+        data = json.loads(payload.read_text())
+        # The JSON is the same object the HTML embeds, so it can be asserted on.
+        assert data["tabs"]["router"] and data["tabs"]["engine"] and data["tabs"]["frontend"]
+        assert data["tabs"]["loganalysis"], "frontend log in the run dir should be picked up"
+        assert data["meta"]["scrapes"] == 4
+
+        bundle = run_dir / BUNDLE_DIRNAME
+        assert (bundle / "server_metrics_export.jsonl").is_file()
+        assert (bundle / "trtllm_config_decode.yaml").is_file(), "engine ceilings must reach the bundle"
+
+    def test_missing_vendored_tree_is_survivable(self, run_dir: Path, monkeypatch):
+        """A wheel install with no checkout must degrade to a warning, not an exception
+        — this runs inside post-processing of a benchmark that already succeeded."""
+        import srtctl.analysis.perf_dashboard as pd
+
+        monkeypatch.setattr(pd, "find_repo_root", lambda: None)
+        runtime = SimpleNamespace(log_dir=run_dir, job_id="12345")
+        assert pd.try_build(_stub_config(), runtime) is None

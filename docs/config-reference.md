@@ -1054,6 +1054,7 @@ Set `scrape_metrics: false` beside `enabled` to use Tachometer without also writ
 | `scrape_metrics` | bool/null | `null` | Override raw capture; `null` follows `enabled` |
 | `scrape_interval_seconds` | float | `1.0` | Interval between raw Prometheus scrape sweeps |
 | `scrape_output` | string | `raw_prometheus.jsonl` | Raw capture filename below the run log directory |
+| `build_dashboard` | bool/null | `null` | Build the component perf dashboard in post-processing; `null` follows `enabled`. See [Component Performance Dashboard](component-dashboard.md) |
 | `enable_otel` | bool | `false` | Inject OTEL tracing environment variables |
 | `otel_endpoint` | string/null | `null` | OTEL collector endpoint |
 | `tachometer` | object | `enabled: false` | Native Tachometer collection settings |
