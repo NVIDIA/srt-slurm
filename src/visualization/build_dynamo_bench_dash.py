@@ -165,7 +165,13 @@ def _flat_config():
             else:
                 flat[prefix.rstrip(".")] = node
         _walk(doc)
-        flat.pop("name", None)
+        # Identity fields, dropped so a comparison reports TREATMENTS and not
+        # bookkeeping. Every arm of an ablation necessarily renames itself and writes to
+        # its own result file; leaving these in means a genuinely single-variable
+        # comparison always reports two differences, and the SINGLE-VARIABLE verdict can
+        # never fire -- which trains the reader to ignore the count.
+        for k in ("name", "benchmark.env.RESULT_FILENAME"):
+            flat.pop(k, None)
         return flat
     return None
 
