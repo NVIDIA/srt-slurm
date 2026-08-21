@@ -476,6 +476,74 @@ def run_engine_configs(run_dir: Path, bundle: Path) -> list[str]:
     return copied
 
 
+_BENCH_ERROR_MARKERS = ("Error:", "ERROR:", "Traceback", "command not found",
+                        "No such file or directory", "Permission denied")
+
+
+def run_benchmark_status(run_dir: Path, bundle: Path) -> dict | None:
+    """Why the benchmark produced what it produced -> ``benchmark_status.json``.
+
+    A dashboard built from a run whose benchmark never served anything is not wrong,
+    but it is mute: it reports ``client=False traces=False N=0`` and leaves the reader
+    to guess between a dead deployment, a workload that never started, and a run cut
+    short. Those have completely different responses, and the answer is sitting in
+    ``benchmark.out`` and the sweep log the whole time.
+
+    This is not hypothetical. Eight ablation arms in one session produced dashboards
+    that could not explain their own emptiness -- four with ``exit 127`` (the benchmark
+    script was not mounted) and four with ``exit 1`` eleven seconds after the workers
+    went healthy (``Error: KV_OFFLOADING must be set for agentic benchmarks``). Both
+    are environment faults, and neither is visible in any panel.
+
+    Captures the reported exit code, the first few error-shaped lines, and a bounded
+    tail. Bounded because ``benchmark.out`` is a ``set -x`` trace and can be large; the
+    diagnosis is always near the end.
+    """
+    src_dir = Path(run_dir)
+    bench = src_dir / "benchmark.out"
+    sweeps = sorted(src_dir.glob("sweep_*.log"))
+    if not bench.exists() and not sweeps:
+        return None
+
+    status: dict = {"exit_code": None, "errors": [], "tail": []}
+
+    # The sweep log is srtctl's own account and carries the exit code verbatim.
+    for sw in sweeps:
+        try:
+            with open(sw, errors="replace") as fh:
+                for line in fh:
+                    if "Benchmark failed with exit code" in line:
+                        status["exit_code"] = line.strip().split()[-1]
+        except OSError:
+            pass
+
+    if bench.exists():
+        try:
+            with open(bench, errors="replace") as fh:
+                lines = fh.readlines()
+        except OSError:
+            lines = []
+        status["tail"] = [ln.rstrip("\n")[:400] for ln in lines[-40:]]
+        # Error-shaped lines anywhere, not just the tail: a script can fail early and
+        # then print pages of cleanup noise after it.
+        for ln in lines:
+            if any(m in ln for m in _BENCH_ERROR_MARKERS):
+                s = ln.strip()[:400]
+                if s not in status["errors"]:
+                    status["errors"].append(s)
+            if len(status["errors"]) >= 8:
+                break
+
+    with open(bundle / "benchmark_status.json", "w") as f:
+        json.dump(status, f)
+    if status["exit_code"] or status["errors"]:
+        _log("L2 bench-status", f"benchmark exit={status['exit_code']} "
+                                f"first error: {(status['errors'] or ['-'])[0][:120]}")
+    else:
+        _log("L2 bench-status", "benchmark reported no error")
+    return status
+
+
 def run_provenance(run_dir: Path, bundle: Path) -> list[str]:
     """Copy the run's provenance files into the bundle: what actually ran.
 
@@ -639,6 +707,7 @@ def main(argv=None) -> int:
     run_engine_configs(run_dir, bundle)
     run_client_summary(run_dir, bundle)
     run_provenance(run_dir, bundle)
+    run_benchmark_status(run_dir, bundle)
 
     yaml_text = generate_dashboard_yaml(
         name=name,

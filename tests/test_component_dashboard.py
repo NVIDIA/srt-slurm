@@ -1702,3 +1702,51 @@ class TestConfigProvenance:
         arm = self._cfg(run_dir, tmp_path / "b")
         delta = {k for k in set(base) | set(arm) if base.get(k) != arm.get(k)}
         assert delta == {"frontend.env.DYN_TOKENIZER_CACHE"}
+
+
+class TestBenchmarkStatus:
+    """An empty dashboard must say WHY it is empty.
+
+    `client=False traces=False N=0` cannot distinguish a dead deployment from a
+    workload that never started from a run cut short -- three different responses.
+    Eight ablation arms in one session hit exactly this: four exited 127 before the
+    benchmark script was reachable, four exited 1 eleven seconds after the workers
+    went healthy on a missing env var.
+    """
+
+    @staticmethod
+    def _failed_benchmark(run_dir: Path, exit_code: str, err: str) -> None:
+        (run_dir / "benchmark.out").write_text(
+            "+ source /infmax-workspace/benchmarks/benchmark_lib.sh\n"
+            f"++ echo '{err}'\n{err}\n++ exit {exit_code}\n")
+        (run_dir / "sweep_999.log").write_text(
+            "2026-08-21 01:16:00 [INFO] Server is healthy - starting benchmark\n"
+            f"2026-08-21 01:16:17 [ERROR] Benchmark failed with exit code {exit_code}\n")
+
+    def _payload(self, run_dir: Path, tmp_path: Path) -> dict:
+        bundle = tmp_path / "bundle"
+        _run_ingest(run_dir, bundle)
+        out = tmp_path / "dash.json"
+        proc = _render(bundle, tmp_path / "dash.html", "--d3-cdn", "--dump-json", str(out))
+        assert proc.returncode == 0, proc.stderr
+        return json.loads(out.read_text())
+
+    def test_env_fault_is_reported_with_its_error_line(self, run_dir: Path, tmp_path: Path):
+        self._failed_benchmark(run_dir, "1", "Error: KV_OFFLOADING must be set for agentic benchmarks")
+        bs = self._payload(run_dir, tmp_path)["meta"]["benchmark_status"]
+        assert bs["exit_code"] == "1"
+        assert any("KV_OFFLOADING" in e for e in bs["errors"]), \
+            "the reader needs the variable name, not just 'it failed'"
+
+    def test_missing_script_is_reported(self, run_dir: Path, tmp_path: Path):
+        self._failed_benchmark(run_dir, "127", "bash: /infmax-workspace/x.sh: No such file or directory")
+        bs = self._payload(run_dir, tmp_path)["meta"]["benchmark_status"]
+        assert bs["exit_code"] == "127"
+        assert any("No such file" in e for e in bs["errors"])
+
+    def test_a_healthy_run_carries_no_failure_banner(self, run_dir: Path, tmp_path: Path):
+        """A false alarm here would be worse than silence: it would cast doubt on a
+        run whose numbers are fine."""
+        (run_dir / "benchmark.out").write_text("+ aiperf profile ...\nall good\n")
+        (run_dir / "sweep_999.log").write_text("[INFO] Benchmark completed\n")
+        assert self._payload(run_dir, tmp_path)["meta"]["benchmark_status"] is None
