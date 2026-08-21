@@ -1208,6 +1208,54 @@ class TestKvHitRateGating:
         assert "block 512" not in topo
 
 
+class TestBlockSizeMismatch:
+    """Router block size vs engine tokens-per-block.
+
+    The e2e self-build run 2751593 reported blk_router=None blk_engine=None -- "cannot
+    tell" -- on a run whose engine config plainly said 256. The gauge the check read
+    (`trtllm_kv_cache_tokens_per_block`) is only exported once the engine publishes its
+    KV-cache family, so a run without it lost a check whose whole purpose is a failure
+    mode that is invisible in the metrics.
+    """
+
+    def test_engine_block_size_falls_back_to_the_run_config(self, run_dir: Path, tmp_path: Path):
+        """No gauge in the scrape, but tokens_per_block in the config -> still decided."""
+        (run_dir / "trtllm_config_decode.yaml").write_text(
+            "max_batch_size: 1\nmax_num_tokens: 4\nkv_cache_config:\n  tokens_per_block: 256\n")
+        bundle = tmp_path / "bundle"
+        _run_ingest(run_dir, bundle)
+        payload = tmp_path / "dash.json"
+        proc = _render(bundle, tmp_path / "dash.html", "--d3-cdn", "--dump-json", str(payload))
+        assert proc.returncode == 0, proc.stderr
+        load = json.loads(payload.read_text())["load"]
+        assert load["blk_engine"] == 256, "engine size must come from the config when the gauge is absent"
+        assert load["blk_src"] == "engine config"
+
+    def test_a_mismatch_is_reported_not_averaged_away(self, run_dir: Path, tmp_path: Path):
+        """Router 32 vs engine 256 is the reference run's real configuration."""
+        (run_dir / "trtllm_config_decode.yaml").write_text(
+            "max_batch_size: 1\nkv_cache_config:\n  tokens_per_block: 256\n")
+        bundle = tmp_path / "bundle"
+        _run_ingest(run_dir, bundle)
+        payload = tmp_path / "dash.json"
+        _render(bundle, tmp_path / "dash.html", "--d3-cdn", "--dump-json", str(payload))
+        load = json.loads(payload.read_text())["load"]
+        if load["blk_router"] is not None:
+            assert load["blk_router"] != load["blk_engine"], "the fixture encodes a mismatch"
+
+    def test_no_config_and_no_gauge_stays_unknown(self, run_dir: Path, tmp_path: Path):
+        """A guessed all-clear is worse than an admitted unknown: the consequence of a
+        mismatch is a silent router index, so 'no mismatch' must never be inferred from
+        missing data."""
+        for f in run_dir.glob("trtllm_config_*.yaml"):
+            f.unlink()
+        bundle = tmp_path / "bundle"
+        _run_ingest(run_dir, bundle)
+        payload = tmp_path / "dash.json"
+        _render(bundle, tmp_path / "dash.html", "--d3-cdn", "--dump-json", str(payload))
+        assert json.loads(payload.read_text())["load"]["blk_engine"] is None
+
+
 class TestHeaderProvenance:
     def test_header_explains_an_empty_profiling_population(self, run_dir: Path, tmp_path: Path):
         """A run can end before the profiling phase, leaving every client record marked
