@@ -1536,3 +1536,71 @@ class TestPhaseFilterProvenance:
         pf = self._payload(run_dir, tmp_path)["meta"]["phase_filter"]
         assert pf["dropped"] == 0
         assert pf["phases"] == {"(none)": len(XIDS)}
+
+
+class TestClientSummaryLeg:
+    """AIPerf's run-level summary: the workload's cache ceiling, and run validity.
+
+    The engine's measured reuse is uninterpretable alone -- each reader scores it
+    against a private expectation. On run 2751593 the workload offered 94.7% and the
+    engine achieved 65.8%; the 29-point gap is the finding. PERF-46.
+    """
+
+    @staticmethod
+    def _write_summary(run_dir: Path, **over) -> Path:
+        art = next(run_dir.glob("artifacts/*"))
+        doc = {
+            "schema_version": "1.2",
+            "aiperf_version": "0.9.0",
+            "theoretical_prefix_cache_hit": {"unit": "%", "avg": 94.7, "count": 10, "sum": 9},
+            "effective_concurrency": {"avg": 31.4},
+            "request_count": {"unit": "requests", "avg": 61.0},
+            "was_cancelled": False,
+            "error_summary": [],
+            "branch_stats": {"children_spawned": 5, "children_errored": 0,
+                             "children_truncated": 0},
+        }
+        doc.update(over)
+        path = art / "profile_export_aiperf.json"
+        path.write_text(json.dumps(doc))
+        return path
+
+    def _payload(self, run_dir: Path, tmp_path: Path) -> dict:
+        bundle = tmp_path / "bundle"
+        _run_ingest(run_dir, bundle)
+        out = tmp_path / "dash.json"
+        proc = _render(bundle, tmp_path / "dash.html", "--d3-cdn", "--dump-json", str(out))
+        assert proc.returncode == 0, proc.stderr
+        return json.loads(out.read_text())
+
+    def test_summary_reaches_the_bundle_and_the_payload(self, run_dir: Path, tmp_path: Path):
+        self._write_summary(run_dir)
+        bundle = tmp_path / "bundle"
+        _run_ingest(run_dir, bundle)
+        assert (bundle / "profile_export_aiperf.json").is_file(), \
+            "the client summary must be copied like the engine configs"
+        out = tmp_path / "dash.json"
+        _render(bundle, tmp_path / "dash.html", "--d3-cdn", "--dump-json", str(out))
+        cs = json.loads(out.read_text())["meta"]["client_summary"]
+        assert cs["theoretical_prefix_cache_hit"] == 94.7
+        assert cs["effective_concurrency"] == 31.4
+        assert cs["n_errors"] == 0
+
+    def test_validity_flags_are_carried(self, run_dir: Path, tmp_path: Path):
+        """A cancelled or branch-errored run produced numbers that must not be
+        compared against a clean one."""
+        self._write_summary(run_dir, was_cancelled=True, error_summary=[{"e": "x"}],
+                            branch_stats={"children_spawned": 5, "children_errored": 2,
+                                          "children_truncated": 1})
+        cs = self._payload(run_dir, tmp_path)["meta"]["client_summary"]
+        assert cs["was_cancelled"] is True
+        assert cs["n_errors"] == 1
+        assert cs["branch_errored"] == 2
+        assert cs["branch_truncated"] == 1
+
+    def test_absent_summary_is_none_not_a_fabricated_ceiling(self, run_dir: Path, tmp_path: Path):
+        """AIPerf writes this at the END of a concurrency, so a run killed by its wall
+        clock has none -- reference run 2750618 is exactly that. A missing ceiling must
+        read as absent, never as 0%, which would imply the workload offered no reuse."""
+        payload = self._payload(run_dir, tmp_path)
+        assert payload["meta"]["client_summary"] is None

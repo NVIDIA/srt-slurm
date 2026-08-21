@@ -101,6 +101,48 @@ def _cfg_max_batch(mode):
         except Exception:
             pass
     return None, None
+def _client_summary():
+    """AIPerf's run-level summary: the workload's cache ceiling, and run validity.
+
+    Returns a compact dict, or None when AIPerf never wrote one -- which happens when
+    a run is killed before the concurrency finishes, and is itself worth reporting
+    rather than papering over.
+
+    `theoretical_prefix_cache_hit` is the number that makes the engine's measured
+    reuse interpretable. The engine hit rate alone is a bare figure that each reader
+    scores against a private expectation; against the ceiling the workload actually
+    offered, it becomes a gap with a size.
+    """
+    if not SRC:
+        return None
+    for cand in (os.path.join(SRC, "profile_export_aiperf.json"),
+                 os.path.join(SRC, "..", "..", "profile_export_aiperf.json")):
+        try:
+            with open(cand) as fh:
+                d = json.load(fh)
+        except Exception:
+            continue
+        bs = d.get("branch_stats") or {}
+        # `avg` is AIPerf's own aggregate for the whole concurrency; the nested shape
+        # ({unit, avg, count, sum}) is stable across the 1.x schema.
+        def _avg(key):
+            v = d.get(key)
+            return v.get("avg") if isinstance(v, dict) else v
+        return {
+            "schema": d.get("schema_version"),
+            "aiperf_version": d.get("aiperf_version"),
+            "theoretical_prefix_cache_hit": _avg("theoretical_prefix_cache_hit"),
+            "effective_concurrency": _avg("effective_concurrency"),
+            "request_count": _avg("request_count"),
+            "was_cancelled": d.get("was_cancelled"),
+            "n_errors": len(d.get("error_summary") or []),
+            "branch_errored": bs.get("children_errored"),
+            "branch_truncated": bs.get("children_truncated"),
+            "branch_spawned": bs.get("children_spawned"),
+        }
+    return None
+
+
 def _cfg_tokens_per_block():
     """Engine KV block size from the run's own config, prefill or decode.
 
@@ -123,6 +165,15 @@ def _cfg_tokens_per_block():
             except Exception:
                 pass
     return None
+CLIENT_SUMMARY = _client_summary()
+if CLIENT_SUMMARY:
+    _log.info(f"client summary: workload prefix-cache ceiling "
+              f"{CLIENT_SUMMARY['theoretical_prefix_cache_hit']}%, effective concurrency "
+              f"{CLIENT_SUMMARY['effective_concurrency']}, {CLIENT_SUMMARY['n_errors']} error(s), "
+              f"cancelled={CLIENT_SUMMARY['was_cancelled']}")
+else:
+    _log.info("client summary: no profile_export_aiperf.json in the bundle -- no workload "
+              "cache ceiling to compare the engine's measured reuse against")
 CFG_PF_BATCH, CFG_PF_TOK = _cfg_max_batch("prefill")
 CFG_DE_BATCH, CFG_DE_TOK = _cfg_max_batch("decode")
 MAX_BATCH_PF = CFG_PF_BATCH if CFG_PF_BATCH else _args.max_batch_prefill
@@ -1289,7 +1340,8 @@ DATA={
    # payload, which is what anything downstream of the HTML actually reads.
    "phase_filter":{"applied":not _args.include_warmup,
                    "kept":len(client),"dropped":_skipped_phase,
-                   "phases":_phase_seen}},
+                   "phases":_phase_seen},
+   "client_summary":CLIENT_SUMMARY},
  "kpi":{"ttft_p50":round(pct(col("ttft"),50)/1000,1),"ttft_p99":round(pct(col("ttft"),99)/1000,1),
    "adm_p50":round(pct(col("adm"),50)/1000,1),"pf_p50":round(pct(col("pf"),50)/1000,1),
    "reqs":N,"adm_share":round(pct(col("adm"),50)/max(1,pct(col("ttft"),50))*100,0),
@@ -1394,6 +1446,19 @@ function hTip(){tip.style('display','none')}
   if(!M.n && (nReq||nSess)) head += `  —  no request completed the profiling phase;`
          + ` ${nReq} request(s) across ${nSess} session(s) are warmup and are shown on the`
          + ` Session tab, excluded from every percentile above`;
+  // Run validity bounds every number on the page, so it belongs in the header rather
+  // than on one tab. A cancelled run, a run with client errors, or an agentic run
+  // whose child branches errored produced figures that must not be compared against a
+  // clean run -- and nothing in the per-request stream says so.
+  const CS=M.client_summary;
+  if(CS){
+    const bad=[];
+    if(CS.was_cancelled) bad.push('client reported the run CANCELLED');
+    if(CS.n_errors) bad.push(`${CS.n_errors} client error(s)`);
+    if(CS.branch_errored) bad.push(`${CS.branch_errored} agentic branch(es) errored`);
+    if(CS.branch_truncated) bad.push(`${CS.branch_truncated} branch(es) truncated`);
+    head += bad.length ? `  —  VALIDITY: ${bad.join('; ')}` : `  —  client reports no errors`;
+  }
   document.getElementById('sub').textContent=head;
 })();
 // 'Log analysis' only exists when --frontend-log was supplied; the tab is dropped
@@ -1804,7 +1869,26 @@ drillPanel('overview',DATA.drill,{
  lineChart(el,DATA.ro.queue_pending,{unit:'n',keys:[[1,C.adm]]});})();
 
 // ================= ENGINE =================
-note('engine',`Engine occupancy from Prometheus: <b>KV utilisation</b>, <b>in-flight batch vs configured max</b>, and the <b>true block cache-hit</b>. Read together — low KV utilisation with in-flight batch far below the max ceiling means the engines are starved (requests held upstream in admission — see Router), not compute-bound. Caveats (image-gated): no <code>llm_request</code> span (coarse gantt), no per-pool KV, no DCGM GPU-compute util.`,'hl');
+// The measured reuse rate is uninterpretable on its own -- every reader scores it
+// against a private expectation. AIPerf computes what the WORKLOAD offered, so the
+// two together turn a bare percentage into a gap with a size. Fixed sentence,
+// measured numbers, and omitted entirely when the client summary is absent.
+(function(){
+ let ceil='';
+ const CS=DATA.meta.client_summary, TH=CS&&CS.theoretical_prefix_cache_hit;
+ if(TH!=null){
+   const got=(DATA.kpi||{}).kv_hit_true;
+   ceil=`<br><br><b>Reuse against the workload's ceiling.</b> The client computes a theoretical
+     prefix-cache hit of <b>${TH.toFixed(1)}%</b> for this workload — the most any engine could
+     have reused given the prompts actually sent.`
+     + (got!=null ? ` The engine measured <b>${got.toFixed(1)}%</b>, a gap of
+     <b>${(TH-got).toFixed(1)} points</b>.` : '')
+     + ` Read the true-hit panel against that ceiling, not against an absolute
+     expectation: a workload with little shared prefix cannot be reused into a high rate,
+     and a low rate under a high ceiling is a routing or eviction problem.`;
+ }
+ note('engine',`Engine occupancy from Prometheus: <b>KV utilisation</b>, <b>in-flight batch vs configured max</b>, and the <b>true block cache-hit</b>. Read together — low KV utilisation with in-flight batch far below the max ceiling means the engines are starved (requests held upstream in admission — see Router), not compute-bound. Caveats (image-gated): no <code>llm_request</code> span (coarse gantt), no per-pool KV, no DCGM GPU-compute util.`+ceil,'hl');
+})();
 (function(){const el=panel('engine','KV cache utilisation over the run (% — peak worker)','dynamo_component_gpu_cache_usage_percent, max across dp-ranks per role (the busiest worker). Peaks &lt;4% ⇒ KV cache nearly empty: workers idle waiting on admission, not KV-bound.',true);
  lg(el,[[C.pf,'prefill (6 CTX)'],[C.de,'decode (1 GEN)']]);
  lineChart(el,DATA.en.kvutil_pf.map((d,i)=>[d[0],d[1],DATA.en.kvutil_de[i][1]]),{unit:'%',keys:[[1,C.pf],[2,C.de]]});})();

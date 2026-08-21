@@ -476,6 +476,47 @@ def run_engine_configs(run_dir: Path, bundle: Path) -> list[str]:
     return copied
 
 
+def run_client_summary(run_dir: Path, bundle: Path, patterns: list[str] | None = None) -> str | None:
+    """Copy AIPerf's run-level summary (``profile_export_aiperf.json``) into the bundle.
+
+    ``profile_export.jsonl`` is per-request and is what every panel is built from. This
+    is the sibling AIPerf writes ONCE per concurrency, and it carries three things the
+    per-request stream cannot express:
+
+    * ``theoretical_prefix_cache_hit`` -- the ceiling the WORKLOAD offered. Without it
+      the engine's measured reuse is a number with nothing to be measured against: on
+      run 2751593 the workload offered 94.7% and the engine achieved 65.8%, and the
+      29-point gap is the finding. Reported alone, 65.8% invites the reader to supply
+      their own expectation.
+    * validity -- ``error_summary``, ``was_cancelled``, ``branch_stats``. An agentic run
+      whose child branches errored or were truncated produced numbers that should not
+      be compared against a clean run, and nothing in the per-request stream says so.
+    * ``effective_concurrency`` -- what the client actually sustained, as against what
+      was offered. srt-slurm takes the offered value from the ``CONC`` environment
+      variable, which never reaches any artifact.
+
+    Its ABSENCE is itself a signal: AIPerf writes it at the end of a concurrency, so a
+    run killed by its wall clock has none. Reference run 2750618 is exactly that case.
+
+    Copied verbatim rather than parsed here, so the renderer reads one authority and
+    this layer cannot silently reinterpret a schema it does not own.
+    """
+    pats = patterns or ["agentic/*/aiperf_artifacts/profile_export_aiperf.json",
+                        "artifacts/*/profile_export_aiperf.json"]
+    found = sorted(p for pat in pats for p in Path(run_dir).glob(pat))
+    if not found:
+        _log("L2 client-summary", "no profile_export_aiperf.json (run may have been cut "
+                                  "short before AIPerf wrote its summary); no workload "
+                                  "cache ceiling or validity flags will be shown")
+        return None
+    # Last by sort order = highest concurrency shard, matching the per-request leg.
+    src = found[-1]
+    shutil.copyfile(src, bundle / "profile_export_aiperf.json")
+    _log("L2 client-summary", f"copied {src.name} from {src.parent.name}"
+                              + (f" ({len(found)} shards, took the last)" if len(found) > 1 else ""))
+    return str(src)
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -559,6 +600,7 @@ def main(argv=None) -> int:
     have_req_trace = run_request_trace(args, run_dir, bundle)
     run_iter_log(args, run_dir, bundle)
     run_engine_configs(run_dir, bundle)
+    run_client_summary(run_dir, bundle)
 
     yaml_text = generate_dashboard_yaml(
         name=name,
