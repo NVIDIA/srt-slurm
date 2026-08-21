@@ -98,7 +98,9 @@ srt_install_dynamo_from_source_cache() {
     mkdir -p "${source_dir}"
     tar -xzf "${cache}/dynamo-src.tar.gz" -C "${source_dir}"
     "${SRTCTL_PYTHON}" -m pip install --quiet --force-reinstall --no-deps "${wheel}"
-    "${SRTCTL_PYTHON}" -m pip install --quiet --editable --no-deps "${source_dir}/dynamo"
+    # Match the Slurm source-install path: install Dynamo's Python package with
+    # its declared dependencies after placing the locally built runtime wheel.
+    "${SRTCTL_PYTHON}" -m pip install --quiet --editable "${source_dir}/dynamo"
     srt_log "Installed Dynamo ${SRTCTL_DYNAMO_SOURCE_HASH} from ${cache}"
 }
 {% endif %}
