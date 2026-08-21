@@ -356,6 +356,7 @@ class BenchmarkStageMixin:
         # switch the scraper on for those callers.
         observability = getattr(self.config, "observability", None)
         raw_scraper = None
+        host_sampler = None
         if getattr(observability, "scraper_enabled", False) is True:
             self._warn_on_double_metric_polling()
             raw_scraper = try_start_raw_scraper(
@@ -364,6 +365,13 @@ class BenchmarkStageMixin:
                 observability,
                 stop_event,
             )
+            # Host/process telemetry alongside the endpoint scrape. The Prometheus
+            # families describe what Dynamo publishes; they say nothing about the
+            # machine underneath, where host CPU saturation, lock convoys and fd
+            # exhaustion live. Same opt-in, same best-effort contract.
+            from srtctl.analysis.host_sampler import try_start_host_sampler
+
+            host_sampler = try_start_host_sampler(self.runtime.log_dir, observability, stop_event)
 
         bench_node = self._benchmark_node()
         proc = start_srun_process(
@@ -409,6 +417,8 @@ class BenchmarkStageMixin:
                 snapshotter.stop()
             if raw_scraper is not None:
                 raw_scraper.stop()
+            if host_sampler is not None:
+                host_sampler.stop()
 
     def _get_benchmark_profiling_env(
         self,

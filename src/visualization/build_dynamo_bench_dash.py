@@ -101,6 +101,17 @@ def _cfg_max_batch(mode):
         except Exception:
             pass
     return None, None
+def _host_series():
+    """Host and per-process health from ``host_series.json`` (PERF-37/38/40)."""
+    if not SRC:
+        return None
+    try:
+        with open(os.path.join(SRC, "host_series.json")) as fh:
+            return json.load(fh) or None
+    except Exception:
+        return None
+
+
 def _lifecycle():
     """Time-to-ready and terminal cause from ``run_lifecycle.json`` (PERF-45)."""
     if not SRC:
@@ -326,6 +337,14 @@ PROVENANCE = _provenance()
 BENCH_STATUS = _benchmark_status()
 LOG_SIGNALS = _log_signals()
 LIFECYCLE = _lifecycle()
+HOST = _host_series()
+if HOST:
+    _pk = max((v for _, v in (HOST.get("host_cpu_pct") or [])), default=None)
+    _log.info(f"host telemetry: {HOST.get('samples')} samples on {HOST.get('host')}, "
+              f"peak CPU {_pk}%, fd headroom {HOST.get('fd_headroom_pct')}% of "
+              f"{HOST.get('fd_limit')}, {len(HOST.get('procs') or {})} process(es)")
+else:
+    _log.info("host telemetry: absent (host_series.json not in the bundle)")
 if LIFECYCLE:
     _d = LIFECYCLE.get("durations_s") or {}
     _log.info(f"lifecycle: time_to_ready={_d.get('time_to_ready')}s "
@@ -1525,7 +1544,8 @@ DATA={
    "provenance":PROVENANCE,
    "benchmark_status":BENCH_STATUS,
    "log_signals":LOG_SIGNALS,
-   "lifecycle":LIFECYCLE},
+   "lifecycle":LIFECYCLE,
+   "host":HOST},
  "kpi":{"ttft_p50":round(pct(col("ttft"),50)/1000,1),"ttft_p99":round(pct(col("ttft"),99)/1000,1),
    "adm_p50":round(pct(col("adm"),50)/1000,1),"pf_p50":round(pct(col("pf"),50)/1000,1),
    "reqs":N,"adm_share":round(pct(col("adm"),50)/max(1,pct(col("ttft"),50))*100,0),

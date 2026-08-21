@@ -1955,3 +1955,65 @@ class TestRunLifecycle:
             f.write("2026-08-21 04:00:00 [INFO] Model is ready. Have 1 prefills and 3 decodes.\n")
         lc = self._lc(run_dir, tmp_path)
         assert lc["milestones"]["model_ready"] == "2026-08-21 02:34:09"
+
+
+class TestHostTelemetry:
+    """Host and per-process health (PERF-37/38/40).
+
+    The Prometheus scrape describes what Dynamo publishes; it says nothing about the
+    machine underneath. A frontend pinned at 100% of one core is indistinguishable, in
+    every published metric, from an idle one -- both report low queue depth and low
+    in-flight. Host CPU plus INVOLUNTARY context switches is the discriminator, and
+    open-fd-vs-limit is the only warning an accept loop ever gets.
+    """
+
+    @staticmethod
+    def _samples(run_dir: Path, rows: list[dict]) -> None:
+        (run_dir / "host_samples.jsonl").write_text(
+            "\n".join(json.dumps(r) for r in rows) + "\n")
+
+    @staticmethod
+    def _row(t, busy, total, fds, ctx_invol, cpu_j):
+        return {"t": t, "host": "theia0163",
+                "cpu_busy_jiffies": busy, "cpu_total_jiffies": total,
+                "mem": {"MemTotal": 1000, "MemAvailable": 400},
+                "fd_limit": 1024, "established_conns": 12,
+                "procs": [{"pid": 7, "name": "dynamo-frontend", "rss_kb": 2048,
+                           "threads": 8, "ctx_invol": ctx_invol, "open_fds": fds,
+                           "cpu_jiffies": cpu_j}]}
+
+    def _host(self, run_dir: Path, tmp_path: Path) -> dict:
+        bundle = tmp_path / "bundle"
+        _run_ingest(run_dir, bundle)
+        out = tmp_path / "d.json"
+        proc = _render(bundle, tmp_path / "d.html", "--d3-cdn", "--dump-json", str(out))
+        assert proc.returncode == 0, proc.stderr
+        return json.loads(out.read_text())["meta"]["host"] or {}
+
+    def test_cpu_percent_is_derived_from_cumulative_counters(self, run_dir: Path, tmp_path: Path):
+        """The sampler stores jiffies, not percentages, so the capture interval never
+        gets baked into the stored number. 50 busy of 100 total = 50%."""
+        self._samples(run_dir, [self._row(100.0, 0, 0, 10, 0, 0),
+                                self._row(101.0, 50, 100, 10, 0, 0)])
+        h = self._host(run_dir, tmp_path)
+        assert h["host_cpu_pct"][0][1] == 50.0
+
+    def test_involuntary_ctx_switch_rate_is_exposed(self, run_dir: Path, tmp_path: Path):
+        """The lock-convoy signal: descheduled against its will, not yielding."""
+        self._samples(run_dir, [self._row(100.0, 0, 0, 10, 1000, 0),
+                                self._row(102.0, 10, 100, 10, 1400, 0)])
+        h = self._host(run_dir, tmp_path)
+        proc = next(iter(h["procs"].values()))
+        assert proc["ctx_invol_rate"][0][1] == 200.0, "(1400-1000)/2s"
+
+    def test_fd_headroom_against_the_limit(self, run_dir: Path, tmp_path: Path):
+        """Reported even when comfortable: 'we were at 2%' is the answer that RULES OUT
+        fd exhaustion, which is as useful as confirming it."""
+        self._samples(run_dir, [self._row(100.0, 0, 0, 20, 0, 0),
+                                self._row(101.0, 10, 100, 20, 0, 0)])
+        h = self._host(run_dir, tmp_path)
+        assert h["fd_limit"] == 1024
+        assert h["fd_headroom_pct"] == round(100.0 * 20 / 1024, 2)
+
+    def test_absent_sampler_yields_no_host_block(self, run_dir: Path, tmp_path: Path):
+        assert self._host(run_dir, tmp_path) == {}
