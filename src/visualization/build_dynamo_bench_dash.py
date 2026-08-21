@@ -1219,7 +1219,21 @@ const tip=d3.select('#tip'),RD=DATA.meta.run_dur_s;
 const fmtS=ms=>ms==null?'—':ms>=1000?(ms/1000).toFixed(1)+'s':ms.toFixed(ms<10?2:0)+'ms';
 function sTip(h,e){tip.style('display','block').html(h).style('left',(e.clientX+14)+'px').style('top',(e.clientY-10)+'px')}
 function hTip(){tip.style('display','none')}
-document.getElementById('sub').textContent=`${DATA.meta.n.toLocaleString()} requests · ${DATA.meta.scrapes} metric scrapes · run ${RD}s · ${DATA.meta.topo} · ${DATA.meta.src}`;
+// Header provenance. `meta.n` counts only PROFILING-phase requests joined across the
+// client and trace legs, and it is legitimately 0 on a run that never reached the
+// profiling phase -- every record still being warmup. Reporting a bare "0 requests"
+// next to a Session tab listing dozens of sessions reads as a broken page, so the
+// header says which population it is describing and names the other one.
+(function(){
+  const M=DATA.meta, RT=DATA.rt||{};
+  const nSess=(RT.sessions||[]).length, nReq=Object.keys(RT.requests||{}).length;
+  let head=`${M.n.toLocaleString()} profiling requests · ${M.scrapes} metric scrapes`
+         + ` · run ${RD}s · ${M.topo} · ${M.src}`;
+  if(!M.n && (nReq||nSess)) head += `  —  no request completed the profiling phase;`
+         + ` ${nReq} request(s) across ${nSess} session(s) are warmup and are shown on the`
+         + ` Session tab, excluded from every percentile above`;
+  document.getElementById('sub').textContent=head;
+})();
 // 'Log analysis' only exists when --frontend-log was supplied; the tab is dropped
 // entirely rather than rendered empty, so a bundle-only build looks unchanged.
 const ALL_TABS=[['overview','Overview'],['frontend','Frontend'],['router','Router'],

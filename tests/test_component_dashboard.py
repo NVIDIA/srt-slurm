@@ -1206,3 +1206,19 @@ class TestKvHitRateGating:
         topo = json.loads(payload.read_text())["meta"]["topo"]
         assert "__BLK__" not in topo
         assert "block 512" not in topo
+
+
+class TestHeaderProvenance:
+    def test_header_explains_an_empty_profiling_population(self, run_dir: Path, tmp_path: Path):
+        """A run can end before the profiling phase, leaving every client record marked
+        warmup. meta.n is then legitimately 0 -- but a bare "0 requests" beside a
+        Session tab listing dozens of sessions reads as a broken page. Observed for
+        real: 118 warmup records, 0 profiling, 65 sessions."""
+        bundle = tmp_path / "bundle"
+        _run_ingest(run_dir, bundle)
+        out = tmp_path / "dash.html"
+        assert _render(bundle, out, "--d3-cdn").returncode == 0
+
+        html = out.read_text()
+        assert "profiling requests" in html, "the header must name which population it counts"
+        assert "are warmup and are shown on the" in html, "and name the other one"
