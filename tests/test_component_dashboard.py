@@ -1895,3 +1895,63 @@ class TestLogOnlySignals:
         sig = self._signals(run_dir, tmp_path)
         assert sig["kv_block_not_found"]["count"] == 5000
         assert len(sig["kv_block_not_found"]["samples"]) <= 2, "samples must stay bounded"
+
+
+class TestRunLifecycle:
+    """Time-to-ready and terminal cause (PERF-45).
+
+    Two questions no panel answers, because both live in srtctl's sweep log rather than
+    in any metric or client artifact: how long the job held GPUs before it could serve,
+    and why it ended. On run 2752632 the gap between workers starting and the model
+    being ready is 650 s of 28 held GPUs serving nothing -- invisible on an x-axis that
+    begins at the first request.
+    """
+
+    @staticmethod
+    def _sweep(run_dir: Path, *, ready: bool = True, failed: bool = True) -> None:
+        lines = [
+            "2026-08-21 02:23:02 [INFO] Starting infrastructure services (NATS, etcd)",
+            "2026-08-21 02:23:19 [INFO] Starting backend workers",
+            "2026-08-21 02:23:19 [INFO] Starting frontend layer",
+        ]
+        if ready:
+            lines += [
+                "2026-08-21 02:34:09 [INFO] Model is ready. Have 1 prefills and 3 decodes.",
+                "2026-08-21 02:34:09 [INFO] Server is healthy - starting benchmark",
+                "2026-08-21 03:05:00 [ERROR] Benchmark failed with exit code 1",
+            ]
+        lines.append("✗ Sweep failed (exit code: 1)" if failed else "✓ Sweep complete")
+        (run_dir / "sweep_1.log").write_text("\n".join(lines) + "\n")
+
+    def _lc(self, run_dir: Path, tmp_path: Path) -> dict:
+        bundle = tmp_path / "bundle"
+        _run_ingest(run_dir, bundle)
+        out = tmp_path / "d.json"
+        proc = _render(bundle, tmp_path / "d.html", "--d3-cdn", "--dump-json", str(out))
+        assert proc.returncode == 0, proc.stderr
+        return json.loads(out.read_text())["meta"]["lifecycle"] or {}
+
+    def test_time_to_ready_and_terminal_cause(self, run_dir: Path, tmp_path: Path):
+        self._sweep(run_dir)
+        lc = self._lc(run_dir, tmp_path)
+        assert lc["durations_s"]["time_to_ready"] == 650.0, "02:23:19 -> 02:34:09"
+        assert lc["durations_s"]["readiness_gap"] == 650.0
+        assert "Sweep failed" in lc["terminal_cause"]
+
+    def test_a_run_that_never_became_ready_says_so(self, run_dir: Path, tmp_path: Path):
+        """The single most useful thing a failed run can report. A null milestone must
+        be kept, not omitted -- omission is indistinguishable from 'not parsed'."""
+        self._sweep(run_dir, ready=False)
+        lc = self._lc(run_dir, tmp_path)
+        assert "model_ready" in lc["milestones"]
+        assert lc["milestones"]["model_ready"] is None
+        assert lc["durations_s"]["time_to_ready"] is None
+
+    def test_milestones_take_the_first_occurrence(self, run_dir: Path, tmp_path: Path):
+        """Health checks retry; a later 'Model is ready' must not overwrite the first,
+        or time-to-ready silently reports the last retry instead of the real wait."""
+        self._sweep(run_dir)
+        with (run_dir / "sweep_1.log").open("a") as f:
+            f.write("2026-08-21 04:00:00 [INFO] Model is ready. Have 1 prefills and 3 decodes.\n")
+        lc = self._lc(run_dir, tmp_path)
+        assert lc["milestones"]["model_ready"] == "2026-08-21 02:34:09"
