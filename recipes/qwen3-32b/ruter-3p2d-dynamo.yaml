@@ -82,7 +82,7 @@ observability:
 benchmark:
   type: custom
   command: |
-    aiperf profile \
+    uvx aiperf profile \
       --model Qwen/Qwen3-32B-FP8 \
       --tokenizer Qwen/Qwen3-32B-FP8 \
       --tokenizer-trust-remote-code \
