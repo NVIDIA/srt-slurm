@@ -1192,6 +1192,7 @@ h1{margin:0;font-size:16px}.sub{color:var(--dim);font-size:12px;margin-top:3px}
 .panel{background:var(--panel);border:1px solid var(--edge);border-radius:10px;padding:12px 14px;min-width:0}
 .panel h2{margin:0 0 2px;font-size:13px}.panel .src{color:#6e7681;font-size:11px}
 .warn{color:#d29922;font-size:11px}
+.kpi .src{color:#6e7681;font-size:10px;margin-top:2px}
 .reqcard{border-top:1px solid #21262d;padding:8px 0}
 .reqhead{font-size:12px;color:#c9d1d9;margin-bottom:2px}
 .reqmeta{font-size:11px;color:#8b949e;margin-top:2px}
@@ -1273,8 +1274,14 @@ function vsel(id){const v=d3.select('#v-'+id);return v.empty()?d3.select('#sink'
 function grid(view){let g=vsel(view).select('.grid');return g.empty()?vsel(view).append('div').attr('class','grid'):g}
 function panel(view,title,cap,full){const el=grid(view).append('div').attr('class','panel'+(full?' full':''));
   el.append('h2').html(title);if(cap)el.append('div').attr('class','cap').html(cap);return el}
+// items are [value, label, source?]. The optional third element names WHERE the number
+// came from -- a KPI with no provenance is indistinguishable from one that was
+// computed off the wrong population, which has happened here more than once.
 function kpis(view,items){const k=vsel(view).insert('div',':first-child').attr('class','kpis');
-  items.forEach(it=>{const c=k.append('div').attr('class','kpi');c.append('div').attr('class','v').text(it[0]);c.append('div').attr('class','l').text(it[1])})}
+  items.forEach(it=>{const c=k.append('div').attr('class','kpi');
+    c.append('div').attr('class','v').text(it[0]);
+    c.append('div').attr('class','l').text(it[1]);
+    if(it[2]) c.append('div').attr('class','src').text(it[2]);})}
 function note(view,html,cls){vsel(view).append('div').attr('class','note '+(cls||'')).html(html)}
 function svg(el,w,h){return el.append('svg').attr('viewBox',`0 0 ${w} ${h}`)}
 function lg(el,items){el.append('div').attr('class','lg').html(items.map(([c,t])=>`<span><span class="sw" style="background:${c}"></span>${t}</span>`).join(''))}
@@ -1507,13 +1514,14 @@ drillPanel('overview',DATA.drill,{
 (function(){const L=DATA.logdrill; if(!L) return;
  const S=L.stats;
  kpis('loganalysis',[
-   [L.n.toLocaleString(),'requests charted'],
-   [(L.global.p50/1000).toFixed(2)+'s','TTFT p50 (log)'],
-   [(L.global.p99/1000).toFixed(2)+'s','TTFT p99 (log)'],
-   [S.records.toLocaleString(),'log records parsed'],
-   [S.completed.toLocaleString(),'lifecycle completions'],
-   [L.routing?'yes':'no','routing join available'],
-   [L.matched?'same run':'DIFFERENT','vs. bundle in other tabs']]);
+   [L.n.toLocaleString(),'requests charted','frontend log'],
+   [(L.global.p50/1000).toFixed(2)+'s','TTFT p50 (log)','request completed'],
+   [(L.global.p99/1000).toFixed(2)+'s','TTFT p99 (log)','request completed'],
+   [S.records.toLocaleString(),'log records parsed','frontend log'],
+   [S.completed.toLocaleString(),'lifecycle completions','request completed'],
+   [(S.selector_without_request_id||0).toLocaleString(),'routing decisions seen','selector'],
+   [L.routing?'yes':'no','routing joinable per request','selector request_id'],
+   [L.matched?'same run':'DIFFERENT','vs. bundle in other tabs','x_request_id overlap']]);
  note('loganalysis',
   `<b>Same panel, different back-end.</b> The Overview TTFT chart is built from Tempo spans; this one is built from
    <code>${L.src}</code> — the Dynamo frontend log at <b>default INFO level</b>. No tracing backend, no DEBUG, no
@@ -1522,9 +1530,9 @@ drillPanel('overview',DATA.drill,{
    <br><br>The breakdown here is <b>deliberately shallower</b>. <code>ttft_ms</code> on the INFO
    <code>request completed</code> line is a single number covering routing, scheduler queue, prefill compute and KV
    transfer; the log cannot separate them, so that interval is drawn as <b>one hatched row</b> rather than invented
-   sub-stages. Where the router's selector line carries a <code>request_id</code>
-   (Dynamo ≥ 2026-08-10) the admission+routing prefix <i>is</i> separable and is split out —
-   <b>${L.routing?'available in this run':'not available in this run, so TTFT is a single opaque block'}</b>.`);
+   sub-stages. The admission+routing prefix is separable only when the router's
+   selector line carries a <code>request_id</code> (Dynamo &ge; 2026-08-10); without it TTFT stays a
+   single opaque block. Whether this run has it is the <i>routing joinable per request</i> figure above.`);
  // Panel order on this tab is CALL order. TTFT leads: it is the primary question
  // the tab answers, and the load-balance panels below are read against it.
  drillPanel('loganalysis',L,{
