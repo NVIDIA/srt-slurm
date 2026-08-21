@@ -73,7 +73,35 @@ if _args.bundle_dir is None and not _args.frontend_log:
     _ap.error("nothing to render: give an ingest bundle, --frontend-log, or both")
 
 SRC, OUT = _args.bundle_dir, _args.out_html
-MAX_BATCH_PF, MAX_BATCH_DE = _args.max_batch_prefill, _args.max_batch_decode
+
+
+# Engine ceilings for the in-flight panels. The run's own resolved engine config is
+# authoritative; the --max-batch-* CLI flags are only a fallback for bundles that
+# have none. Resolved HERE, before anything consumes them, because the ceiling is
+# what the in-flight series is drawn against: on AgentX run 2739690 the real decode
+# max_batch_size is 1 against a CLI default of 256, so a decode engine pinned at its
+# limit rendered as 0.4% utilised. Prefill happening to match the default (128) is
+# what makes that error easy to miss.
+def _cfg_max_batch(mode):
+    if not SRC:
+        return None, None
+    for cand in (os.path.join(SRC, f"trtllm_config_{mode}.yaml"),
+                 os.path.join(SRC, "..", "..", f"trtllm_config_{mode}.yaml")):
+        try:
+            import yaml as _y
+            c = _y.safe_load(open(cand)) or {}
+            if c.get("max_batch_size") is not None:
+                return int(c["max_batch_size"]), int(c.get("max_num_tokens") or 0)
+        except Exception:
+            pass
+    return None, None
+CFG_PF_BATCH, CFG_PF_TOK = _cfg_max_batch("prefill")
+CFG_DE_BATCH, CFG_DE_TOK = _cfg_max_batch("decode")
+MAX_BATCH_PF = CFG_PF_BATCH if CFG_PF_BATCH else _args.max_batch_prefill
+MAX_BATCH_DE = CFG_DE_BATCH if CFG_DE_BATCH else _args.max_batch_decode
+_log.info(f"engine ceilings: prefill max_batch_size={MAX_BATCH_PF} max_num_tokens={CFG_PF_TOK} | "
+          f"decode max_batch_size={MAX_BATCH_DE} max_num_tokens={CFG_DE_TOK} "
+          f"(source: {'run config' if CFG_DE_BATCH else '--max-batch-* defaults'})")
 
 # Per-source availability. A tab is rendered only when its inputs exist -- an
 # empty tab is worse than an absent one, because it reads as "this run had no
@@ -586,27 +614,8 @@ def _ordered_spans(sp):
 
 # TRT-LLM per-iteration engine telemetry (print_iter_log: true), pre-binned to
 # 1s by parse_iterlog.py. Optional: absent unless that parser has been run.
-# Ceilings for the panel captions. Read from the run's resolved engine configs
-# when present -- the --max-batch-* CLI flags are only fallbacks and were wildly
-# wrong for this run (decode default 256 vs an actual max_batch_size of 1).
-def _cfg_max_batch(mode):
-    if not SRC:
-        return None, None
-    for cand in (os.path.join(SRC, f"trtllm_config_{mode}.yaml"),
-                 os.path.join(SRC, "..", "..", f"trtllm_config_{mode}.yaml")):
-        try:
-            import yaml as _y
-            c = _y.safe_load(open(cand)) or {}
-            if c.get("max_batch_size") is not None:
-                return int(c["max_batch_size"]), int(c.get("max_num_tokens") or 0)
-        except Exception:
-            pass
-    return None, None
-CFG_PF_BATCH, CFG_PF_TOK = _cfg_max_batch("prefill")
-CFG_DE_BATCH, CFG_DE_TOK = _cfg_max_batch("decode")
-_log.info(f"engine ceilings from config: prefill max_batch_size={CFG_PF_BATCH} "
-          f"max_num_tokens={CFG_PF_TOK} | decode max_batch_size={CFG_DE_BATCH} max_num_tokens={CFG_DE_TOK}")
-
+# The engine ceilings it captions against are resolved at the top of this file,
+# before any panel consumes them.
 _iter_path=os.path.join(SRC,"iter_bins.json") if SRC else ""
 iter_series={}
 if os.path.exists(_iter_path):
