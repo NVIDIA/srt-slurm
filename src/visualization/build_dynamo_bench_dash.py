@@ -101,6 +101,54 @@ def _cfg_max_batch(mode):
         except Exception:
             pass
     return None, None
+def _provenance():
+    """What actually ran: framework versions, GPU, and per-worker agreement.
+
+    Container tags routinely disagree with the wheels they bundle -- an image tagged
+    1.1.0-rc3 shipping tensorrt_llm 1.3.0rc11 is an observed case. The fingerprints
+    record the versions found INSIDE the running worker, which is the only trustworthy
+    answer, and they are per-worker, so a deployment whose prefill and decode landed on
+    different builds is visible here and nowhere else. That mismatch is silent in every
+    other panel: both halves run, and the numbers simply mean something different than
+    the reader assumes.
+
+    Returns None when no fingerprints reached the bundle, rather than a partial record
+    that would read as agreement.
+    """
+    if not SRC:
+        return None
+    fps = sorted(glob.glob(os.path.join(SRC, "fingerprint_*.json")))
+    if not fps:
+        return None
+    per_worker, frameworks = {}, {}
+    for path in fps:
+        try:
+            with open(path) as fh:
+                d = json.load(fh)
+        except Exception:
+            continue
+        worker = os.path.basename(path)[len("fingerprint_"):-len(".json")]
+        fw = d.get("frameworks") or {}
+        per_worker[worker] = {
+            "frameworks": fw,
+            "cuda": d.get("cuda_version"), "nccl": d.get("nccl_version"),
+            "python": d.get("python_version"), "gpu": d.get("gpu"),
+            "hostname": d.get("hostname"),
+        }
+        for k, v in fw.items():
+            frameworks.setdefault(k, set()).add(v)
+    if not per_worker:
+        return None
+    # A framework name mapping to more than one version means the workers are not
+    # running the same build. Reported as a first-class disagreement rather than
+    # collapsed to "the version", which would silently pick one arbitrarily.
+    disagree = {k: sorted(v) for k, v in frameworks.items() if len(v) > 1}
+    return {"workers": per_worker,
+            "frameworks": {k: sorted(v)[0] for k, v in frameworks.items()},
+            "framework_disagreement": disagree or None,
+            "n_workers": len(per_worker)}
+
+
 def _client_summary():
     """AIPerf's run-level summary: the workload's cache ceiling, and run validity.
 
@@ -166,6 +214,16 @@ def _cfg_tokens_per_block():
                 pass
     return None
 CLIENT_SUMMARY = _client_summary()
+PROVENANCE = _provenance()
+if PROVENANCE:
+    _log.info(f"provenance: {PROVENANCE['n_workers']} worker fingerprint(s), frameworks="
+              f"{PROVENANCE['frameworks']}")
+    if PROVENANCE["framework_disagreement"]:
+        _log.warning(f"workers are NOT running the same build: "
+                     f"{PROVENANCE['framework_disagreement']}")
+else:
+    _log.info("provenance: no fingerprint_*.json in the bundle; framework versions "
+              "unknown and two bundles cannot be compared for what differed")
 if CLIENT_SUMMARY:
     _log.info(f"client summary: workload prefix-cache ceiling "
               f"{CLIENT_SUMMARY['theoretical_prefix_cache_hit']}%, effective concurrency "
@@ -1341,7 +1399,8 @@ DATA={
    "phase_filter":{"applied":not _args.include_warmup,
                    "kept":len(client),"dropped":_skipped_phase,
                    "phases":_phase_seen},
-   "client_summary":CLIENT_SUMMARY},
+   "client_summary":CLIENT_SUMMARY,
+   "provenance":PROVENANCE},
  "kpi":{"ttft_p50":round(pct(col("ttft"),50)/1000,1),"ttft_p99":round(pct(col("ttft"),99)/1000,1),
    "adm_p50":round(pct(col("adm"),50)/1000,1),"pf_p50":round(pct(col("pf"),50)/1000,1),
    "reqs":N,"adm_share":round(pct(col("adm"),50)/max(1,pct(col("ttft"),50))*100,0),

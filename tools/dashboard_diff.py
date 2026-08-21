@@ -166,6 +166,31 @@ def diff(base: dict, new: dict, top: int, min_pct: float) -> int:
             a, b = len(brt.get(key) or []), len(nrt.get(key) or [])
         out.append(f"  {label:20s} {_num(a):>8s} -> {_num(b):>8s}")
 
+    # --- provenance ---------------------------------------------------------
+    # An A/B is only an A/B if the two runs differed in the one variable you think
+    # they did. Everything above reports what MOVED; this reports what CHANGED, which
+    # is the claim the reader is actually being asked to accept. A framework version
+    # differing between baseline and arm invalidates the comparison outright, and it
+    # is otherwise completely invisible -- both runs simply work.
+    bpv, npv = base.get("meta", {}).get("provenance"), new.get("meta", {}).get("provenance")
+    out.append("\nPROVENANCE")
+    if not bpv or not npv:
+        out.append("  unavailable on at least one side (no fingerprint_*.json in the bundle)")
+        out.append("  -> the single-variable claim of this comparison is UNVERIFIED")
+    else:
+        bf, nf = bpv.get("frameworks") or {}, npv.get("frameworks") or {}
+        drift = [(k, bf.get(k), nf.get(k)) for k in sorted(set(bf) | set(nf))
+                 if bf.get(k) != nf.get(k)]
+        if drift:
+            out.append("  FRAMEWORK DRIFT between the two runs -- this is not a clean A/B:")
+            for k, a, b in drift:
+                out.append(f"    {k}: {a} -> {b}")
+        else:
+            out.append(f"  frameworks identical across both runs: {bf}")
+        for tag, pv in (("baseline", bpv), ("compared", npv)):
+            if pv.get("framework_disagreement"):
+                out.append(f"  {tag}: WORKERS DISAGREE INTERNALLY {pv['framework_disagreement']}")
+
     bb, nb = brt.get("belief"), nrt.get("belief")
     if bb or nb:
         out.append("\nROUTER BELIEF vs ENGINE REALITY")
