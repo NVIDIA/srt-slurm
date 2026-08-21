@@ -177,6 +177,7 @@ def test_local_dynamo_lifecycle_caches_a_hash_pinned_source_build(tmp_path) -> N
     assert 'cache_root="${SRTCTL_DYNAMO_CACHE_ROOT:-${SRTCTL_SOURCE}/configs/dynamo-wheels}"' in script
     assert "flock -x 201" in script
     assert 'maturin build --release --out "${cache}"' in script
+    assert '"${SRTCTL_PYTHON}" -m ensurepip --upgrade' in script
     assert 'pip install --quiet --force-reinstall --no-deps "${wheel}"' in script
     syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
     assert syntax.returncode == 0, syntax.stderr
