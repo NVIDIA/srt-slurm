@@ -39,9 +39,14 @@ from datetime import datetime
 
 # Span-envelope keys that are metadata, not passthrough attributes. Everything
 # NOT in this set becomes a Tempo span attribute (the attr passthrough).
+# `time.busy_us` and `time.idle_us` are deliberately NOT skipped. They are the split
+# of a span's wall time into work and waiting, which is the difference between a span
+# that is slow because it computed and one that is slow because it blocked -- the
+# central question for host-side stalls. Only `time.duration_us` is dropped, because
+# it is consumed directly as the span's duration rather than passed through.
 _SKIP = {
     "time", "level", "file", "line", "target", "message", "span_id", "parent_id",
-    "span_name", "trace_id", "request_id", "time.busy_us", "time.duration_us", "time.idle_us",
+    "span_name", "trace_id", "request_id", "time.duration_us",
 }
 
 
