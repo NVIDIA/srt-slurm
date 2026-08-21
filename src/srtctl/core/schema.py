@@ -1707,8 +1707,28 @@ class SrtConfig:
         self._validate_het_jobs()
         self._validate_dedicated_node_placement()
         self._validate_trtllm_serve()
+        self._validate_trtllm_cpu_binding()
         self._validate_vllm_frontend()
         self._warn_dp_launch_mode()
+
+    def _validate_trtllm_cpu_binding(self):
+        """Reject CPU lists written for different hardware than this run targets.
+
+        ``backend.cpu_binding`` encodes a node's CPU/NUMA layout. Copied onto a
+        machine type with a different layout it still "works" — it just pins ranks to
+        the wrong socket, which reads as an unexplained perf loss rather than an
+        error. When a recipe names the ``gpu_types`` its lists were written for, catch
+        the mismatch here (at load time / dry-run) instead.
+        """
+        cpu_binding = getattr(self.backend, "cpu_binding", None)
+        if cpu_binding is None or cpu_binding.applies_to(self.resources.gpu_type):
+            return
+        raise ValidationError(
+            f"backend.cpu_binding is declared for gpu_type(s) {cpu_binding.gpu_types!r} "
+            f"but resources.gpu_type is {self.resources.gpu_type!r}. CPU lists are "
+            "node-layout specific: re-derive them for this GPU type, drop "
+            "backend.cpu_binding, or widen backend.cpu_binding.gpu_types."
+        )
 
     def _warn_dp_launch_mode(self):
         """Nudge vLLM DP recipes toward the per-node launch topology.

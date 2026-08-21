@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 import builtins
+import shlex
 import uuid
 from collections.abc import Sequence
 from dataclasses import field
@@ -8,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import yaml
-from marshmallow import Schema
+from marshmallow import Schema, ValidationError
 from marshmallow_dataclass import dataclass
 
 from srtctl.ports import DYN_SYSTEM_PORT_BASE
@@ -21,6 +22,109 @@ if TYPE_CHECKING:
 
 # Type alias for worker modes
 WorkerMode = Literal["prefill", "decode", "agg"]
+
+# Default memory binding applied on Grace-based nodes when `cpu_binding` is not
+# configured. Kept for backwards compatibility with recipes written before
+# `cpu_binding` existed.
+_LEGACY_MEMBIND_GPU_TYPES = ("gb200", "gb300")
+_LEGACY_MEMBIND = "0,1"
+
+# Bash array name used to select a per-task CPU list at launch time. Prefixed to
+# avoid colliding with anything the container's own entrypoint may define.
+_CPU_LIST_VAR = "__srt_cpu_list"
+
+
+@dataclass(frozen=True)
+class TRTLLMCpuBinding:
+    """Pin TRTLLM worker ranks to CPUs *before* the worker process starts.
+
+    TRTLLM has its own NUMA-aware affinity (``configure_cpu_affinity`` in
+    ``tensorrt_llm/llmapi/utils.py``), but it runs from inside the already-running
+    worker, so ``sched_setaffinity`` only re-pins the calling thread. Threads that
+    the process created earlier keep the unconstrained mask and stay free to run on
+    a remote socket. On a node with more than one CPU NUMA domain, a cross-domain
+    hop is expensive enough that those stray threads show up as decode-loop bubbles.
+
+    Applying the mask with ``taskset`` before ``exec`` fixes that: every thread the
+    worker will ever create inherits it. The companion
+    ``TLLM_NUMA_AWARE_WORKER_AFFINITY`` setting is required, because with that
+    variable unset TRTLLM treats an externally constrained mask as a mistake and
+    *removes* it again (``process.cpu_affinity(all_cpus)``).
+
+    Example YAML for a node with 4 GPUs and 2 CPU NUMA domains, where GPUs 0-1 are
+    local to CPUs 0-71 and GPUs 2-3 to CPUs 72-143::
+
+        backend:
+          type: trtllm
+          cpu_binding:
+            gpu_types: ["gb300"]
+            cpus_per_local_gpu: ["0-71", "0-71", "72-143", "72-143"]
+            membind: "0,1"
+
+    Attributes:
+        cpus: ``taskset -c`` list applied to every rank of the endpoint. Use when a
+            single CPU set is correct for all ranks on the node.
+        cpus_per_local_gpu: ``taskset -c`` list per node-local GPU index. Entry ``i``
+            is the CPU set for the GPU with node-local index ``i``, so it describes
+            the node's topology once and srtslurm maps it onto whichever GPUs an
+            endpoint was actually allocated. Mutually exclusive with ``cpus``.
+        gpu_types: ``resources.gpu_type`` values these CPU lists were written for.
+            CPU layout is a property of the node, so a stale list copied to different
+            hardware pins ranks to the wrong socket — a silent perf loss that looks
+            like nothing at all. Naming the machine types turns that into a config
+            error at load time (dry-run) instead. ``null`` (default) accepts any
+            ``gpu_type``.
+        membind: Value passed to ``numactl -m`` (memory-node binding, no CPU effect).
+            ``null`` disables the ``numactl`` wrapper entirely.
+        numa_aware_worker_affinity: Value exported as
+            ``TLLM_NUMA_AWARE_WORKER_AFFINITY``. Defaults to ``"0"`` so TRTLLM leaves
+            the externally applied mask alone; a per-mode ``*_environment`` entry
+            still wins over this.
+    """
+
+    cpus: str | None = None
+    cpus_per_local_gpu: list[str] | None = None
+    gpu_types: list[str] | None = None
+    membind: str | None = _LEGACY_MEMBIND
+    numa_aware_worker_affinity: str = "0"
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+    def __post_init__(self) -> None:
+        if self.cpus and self.cpus_per_local_gpu:
+            raise ValidationError(
+                "cpu_binding.cpus and cpu_binding.cpus_per_local_gpu are mutually exclusive; "
+                "use cpus for one CPU set shared by every rank, or cpus_per_local_gpu to "
+                "describe the node's per-GPU NUMA topology."
+            )
+        if self.cpus_per_local_gpu is not None and not self.cpus_per_local_gpu:
+            raise ValidationError("cpu_binding.cpus_per_local_gpu must not be empty")
+        if self.cpus_per_local_gpu and any(not entry.strip() for entry in self.cpus_per_local_gpu):
+            raise ValidationError("cpu_binding.cpus_per_local_gpu entries must be non-empty CPU lists")
+        if self.gpu_types is not None and not self.gpu_types:
+            raise ValidationError("cpu_binding.gpu_types must not be empty; omit it to apply to every GPU type")
+
+    @property
+    def pins_cpus(self) -> bool:
+        """Whether this config actually constrains CPU affinity (vs. memory only)."""
+        return bool(self.cpus or self.cpus_per_local_gpu)
+
+    def applies_to(self, gpu_type: str | None) -> bool:
+        """Whether this binding is in scope for a run's ``resources.gpu_type``."""
+        if self.gpu_types is None:
+            return True
+        return gpu_type in self.gpu_types
+
+    def cpu_list_for_gpus(self, local_gpu_indices: Sequence[int]) -> list[str] | None:
+        """Resolve the per-task CPU lists for the node-local GPUs of one endpoint.
+
+        Returns one entry per task in node-local task order (``SLURM_LOCALID``),
+        or ``None`` when no per-GPU mapping is configured.
+        """
+        if not self.cpus_per_local_gpu:
+            return None
+        table = self.cpus_per_local_gpu
+        return [table[index % len(table)] for index in sorted(local_gpu_indices)]
 
 
 @dataclass(frozen=True)
@@ -65,6 +169,11 @@ class TRTLLMProtocol:
     aggregated_environment: dict[str, str] = field(default_factory=dict)
 
     trtllm_config: TRTLLMServerConfig | None = None
+
+    # CPU/memory pinning for worker ranks. When unset, srtslurm keeps the historical
+    # behavior: `numactl -m 0,1` (memory only) on gb200/gb300 prefill/decode workers,
+    # and TRTLLM's own in-process NUMA-aware affinity decides CPU placement.
+    cpu_binding: TRTLLMCpuBinding | None = None
 
     # Whether dynamo.trtllm workers pass `--publish-events-and-metrics`.
     # Enables the worker to publish KV-cache events (add/evict) + metrics, which
@@ -121,7 +230,15 @@ class TRTLLMProtocol:
         base_env = env_by_mode.get(mode)
         if base_env is None:
             return {}
-        return {**base_env, "TRTLLM_EPLB_SHM_NAME": eplb_prefix}
+
+        # Emitted first so an explicit `*_environment` entry still wins: pinning with
+        # taskset is pointless unless TRTLLM is told to leave the mask alone, but the
+        # recipe author keeps the final say.
+        affinity_env: dict[str, str] = {}
+        if self.cpu_binding is not None and self.cpu_binding.pins_cpus:
+            affinity_env["TLLM_NUMA_AWARE_WORKER_AFFINITY"] = self.cpu_binding.numa_aware_worker_affinity
+
+        return {**affinity_env, **base_env, "TRTLLM_EPLB_SHM_NAME": eplb_prefix}
 
     def get_process_environment(self, process: "Process") -> dict[str, str]:
         """Get process-specific environment variables.
@@ -202,10 +319,14 @@ class TRTLLMProtocol:
         # For local models, model is mounted to /model in the container
         model_arg = runtime.worker_model_arg
 
-        numactl_prefix = (
-            ["numactl", "-m", "0,1"] if runtime.gpu_type in ("gb200", "gb300") and mode in ("prefill", "decode") else []
-        )
-        base_prefix = list(nsys_prefix or []) + numactl_prefix + ["trtllm-llmapi-launch"]
+        # CPU/memory binding. `leading` (nsys) stays outermost so profiling still wraps
+        # the whole worker; the taskset/numactl pair goes between it and the launcher so
+        # the mask is installed by the last exec before TRTLLM's own threads exist.
+        leading_prefix = list(nsys_prefix or [])
+        taskset_prefix, per_task_cpus = self._cpu_pin_prefix(process)
+        membind = self._membind_for(runtime, mode)
+        numactl_prefix = ["numactl", "-m", membind] if membind else []
+        base_prefix = leading_prefix + taskset_prefix + numactl_prefix + ["trtllm-llmapi-launch"]
 
         # trtllm-serve path: launch an OpenAI-compatible trtllm-serve worker. In
         # disaggregated mode the trtllm_serve frontend fronts these via a static
@@ -237,7 +358,7 @@ class TRTLLMProtocol:
             # ai-dynamo tensorrtllm-runtime 1.3.0-dev.1 container, which accept --config;
             # some trtllm-serve builds spell this --extra_llm_api_options.
             cmd.extend(["--config", str(container_config_path)])
-            return cmd
+            return _resolve_per_task_cpus(cmd, len(leading_prefix), per_task_cpus)
 
         # dynamo.trtllm path (default): workers register into etcd/NATS and the dynamo
         # frontend discovers them.
@@ -267,4 +388,56 @@ class TRTLLMProtocol:
         if self.publish_events_and_metrics:
             cmd.append("--publish-events-and-metrics")
 
+        return _resolve_per_task_cpus(cmd, len(leading_prefix), per_task_cpus)
+
+    # =========================================================================
+    # CPU / memory binding helpers
+    # =========================================================================
+
+    def _membind_for(self, runtime: "RuntimeContext", mode: WorkerMode) -> str | None:
+        """Value for ``numactl -m``, or None to skip the numactl wrapper."""
+        if self.cpu_binding is not None:
+            return self.cpu_binding.membind
+        # Legacy default, preserved for recipes written before `cpu_binding` existed:
+        # memory-only interleave across both Grace sockets on prefill/decode workers.
+        if runtime.gpu_type in _LEGACY_MEMBIND_GPU_TYPES and mode in ("prefill", "decode"):
+            return _LEGACY_MEMBIND
+        return None
+
+    def _cpu_pin_prefix(self, process: "Process") -> tuple[list[str], list[str] | None]:
+        """Resolve CPU pinning for one endpoint.
+
+        Returns ``(taskset_prefix, per_task_cpus)``. At most one is non-empty: a
+        single CPU set becomes a literal ``taskset -c`` prefix, while a per-GPU
+        topology map has to be selected by node-local task id at launch time and is
+        returned for :func:`_resolve_per_task_cpus` to render.
+        """
+        if self.cpu_binding is None:
+            return [], None
+        if self.cpu_binding.cpus:
+            return ["taskset", "-c", self.cpu_binding.cpus], None
+        return [], self.cpu_binding.cpu_list_for_gpus(sorted(process.gpu_indices))
+
+
+def _resolve_per_task_cpus(cmd: list[str], leading: int, per_task_cpus: list[str] | None) -> list[str]:
+    """Insert a per-task ``taskset -c`` that is resolved inside the srun task.
+
+    One srun launches every rank of a TRTLLM endpoint, so a per-GPU CPU map cannot be
+    baked into the argv — the rank is only known once the task is running. Wrap the
+    command in ``bash -c`` and index the CPU table by ``SLURM_LOCALID`` instead. The
+    table is already ordered by this endpoint's node-local GPUs, so entry ``i`` belongs
+    to node-local task ``i``. ``exec`` keeps the process tree the same depth as the
+    unwrapped command.
+
+    ``leading`` is the number of argv entries (the nsys prefix) that must stay outside
+    the taskset call.
+    """
+    if not per_task_cpus:
         return cmd
+
+    head, tail = cmd[:leading], cmd[leading:]
+    table = " ".join(shlex.quote(entry) for entry in per_task_cpus)
+    index = f"${{SLURM_LOCALID:-0}} % ${{#{_CPU_LIST_VAR}[@]}}"
+    pin = f'taskset -c "${{{_CPU_LIST_VAR}[{index}]}}"'
+    parts = [part for part in (shlex.join(head), pin, shlex.join(tail)) if part]
+    return ["bash", "-c", f"{_CPU_LIST_VAR}=({table}); exec {' '.join(parts)}"]

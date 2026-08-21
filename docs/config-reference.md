@@ -588,12 +588,81 @@ backend:
 | `prefill_environment` | dict   | {}      | Environment variables for prefill       |
 | `decode_environment`  | dict   | {}      | Environment variables for decode        |
 | `trtllm_config`       | object | null    | TRTLLM CLI configuration per mode       |
+| `cpu_binding`         | object | null    | CPU/memory pinning for worker ranks     |
 
 **Key differences from SGLang backend**:
 - No aggregated mode support (prefill/decode only)
 - Uses MPI-style launching (one srun per endpoint with all nodes)
 - Uses `trtllm-llmapi-launch` for distributed launching
 - Automatically sets `TRTLLM_EPLB_SHM_NAME` with unique UUID per endpoint
+
+#### CPU binding (`cpu_binding`)
+
+TRTLLM pins its own worker ranks: `configure_cpu_affinity()` asks NVML for the CPUs
+local to the rank's GPU and calls `sched_setaffinity`. That call happens *inside* the
+already-running worker, so it only re-pins the calling thread — threads the process
+created earlier keep the unconstrained mask and stay free to run on a remote socket.
+On a node with more than one CPU NUMA domain, a cross-domain hop is expensive enough
+that those stray threads show up as bubbles in the decode loop.
+
+`cpu_binding` moves the mask to launch time. `taskset` runs before `exec`, so every
+thread the worker will ever create inherits it:
+
+```yaml
+backend:
+  type: trtllm
+  cpu_binding:
+    # Node with 4 GPUs and 2 CPU NUMA domains:
+    # GPUs 0-1 are local to CPUs 0-71, GPUs 2-3 to CPUs 72-143.
+    gpu_types: ["gb300"]
+    cpus_per_local_gpu: ["0-71", "0-71", "72-143", "72-143"]
+    membind: "0,1"
+```
+
+renders as:
+
+```
+taskset -c 72-143 numactl -m 0,1 trtllm-llmapi-launch python3 -m dynamo.trtllm ...
+```
+
+| Field                        | Type      | Default | Description                                                                                   |
+| ---------------------------- | --------- | ------- | --------------------------------------------------------------------------------------------- |
+| `cpus`                       | string    | null    | `taskset -c` list shared by every rank of the endpoint                                          |
+| `cpus_per_local_gpu`         | list      | null    | `taskset -c` list per node-local GPU index; mutually exclusive with `cpus`                      |
+| `gpu_types`                  | list      | null    | `resources.gpu_type` values these CPU lists were written for; mismatch is a load-time error     |
+| `membind`                    | string    | `"0,1"` | Value for `numactl -m` (memory nodes only, no CPU effect). `null` drops the `numactl` wrapper   |
+| `numa_aware_worker_affinity` | string    | `"0"`   | Exported as `TLLM_NUMA_AWARE_WORKER_AFFINITY` when CPUs are pinned                              |
+
+Notes:
+
+- **Set `gpu_types` whenever you hand-write CPU lists.** They encode one node's
+  CPU/NUMA layout. Copied onto a machine type with a different layout they still
+  "work" — they just pin ranks to the wrong socket, which reads as an unexplained
+  perf loss rather than an error. Naming the GPU types the lists were derived for
+  turns that into a config error at `srtctl dry-run` time:
+
+  ```
+  backend.cpu_binding is declared for gpu_type(s) ['gb300'] but resources.gpu_type
+  is 'gb200'. CPU lists are node-layout specific: re-derive them for this GPU type,
+  drop backend.cpu_binding, or widen backend.cpu_binding.gpu_types.
+  ```
+
+- **`numa_aware_worker_affinity` is not optional in practice.** With
+  `TLLM_NUMA_AWARE_WORKER_AFFINITY` unset, TRTLLM treats an externally constrained
+  mask as a mistake and calls `process.cpu_affinity(all_cpus)` to undo it — `taskset`
+  alone silently does nothing. srtslurm exports `0` whenever `cpus` or
+  `cpus_per_local_gpu` is set; a `prefill_environment` / `decode_environment` /
+  `aggregated_environment` entry still overrides it.
+- **`cpus_per_local_gpu` describes the node, not the job.** Entry `i` is the CPU set
+  for the GPU with node-local index `i`, so the same block works whether an endpoint
+  owns the whole node or a subset of its GPUs. One srun launches every rank of an
+  endpoint, so the actual list is selected inside the task from `SLURM_LOCALID`;
+  srtslurm reorders the table for the GPUs the endpoint was allocated first. This
+  makes the worker command a `bash -c` wrapper — expected in the `Command:` log line.
+- **Leaving `cpu_binding` unset preserves the previous behavior**: `numactl -m 0,1`
+  (memory binding only) on `gb200`/`gb300` prefill and decode workers, with TRTLLM's
+  in-process affinity deciding CPU placement. Setting `cpu_binding` takes over
+  `membind` for every GPU type and every mode, including `agg`.
 
 ---
 

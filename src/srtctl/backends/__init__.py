@@ -12,7 +12,7 @@ Supported backends:
 from .base import BackendProtocol, BackendType, SrunConfig
 from .mocker import MockerProtocol, MockerServerConfig
 from .sglang import SGLangProtocol, SGLangServerConfig
-from .trtllm import TRTLLMProtocol, TRTLLMServerConfig
+from .trtllm import TRTLLMCpuBinding, TRTLLMProtocol, TRTLLMServerConfig
 from .vllm import VLLMProtocol, VLLMServerConfig
 
 # Union type for all backend configs
@@ -31,6 +31,7 @@ __all__ = [
     "SGLangServerConfig",
     "SrunConfig",
     # TRTLLM
+    "TRTLLMCpuBinding",
     "TRTLLMProtocol",
     "TRTLLMServerConfig",
     # vLLM
