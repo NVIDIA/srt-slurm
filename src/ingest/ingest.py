@@ -402,6 +402,51 @@ def run_request_trace(args, run_dir: Path, bundle: Path) -> bool:
     return n > 0
 
 
+def run_iter_log(args, run_dir: Path, bundle: Path) -> bool:
+    """L2 per-iteration axis -> iter_bins.json. Returns whether produced.
+
+    Parses TRT-LLM's ``print_iter_log`` lines out of the worker logs. This is the only
+    source for per-step batch COMPOSITION -- the Prometheus stream reports how busy the
+    engine was, not whether "busy" meant one request at a time or many.
+
+    The run window is passed through so the processor can derive the log's local->UTC
+    offset instead of hardcoding one; TRT-LLM stamps worker-local time while every
+    other source in the bundle is UTC.
+    """
+    if args.iter_log == "none":
+        _log("L2 iter-log", "skipped (--iter-log none)")
+        return False
+    patterns = args.iter_log_input or ["*_prefill_w*.out", "*_decode_w*.out", "*_agg_w*.out"]
+    logs: list[str] = []
+    for pat in patterns:
+        logs.extend(resolve_inputs(pat, run_dir))
+    logs = sorted(dict.fromkeys(logs))
+    if not logs:
+        _log("L2 iter-log", f"WARN no worker logs matched {patterns} under {run_dir}; skipping")
+        return False
+    start_ns = end_ns = None
+    sm = bundle / "server_metrics_export.jsonl"
+    if sm.exists():
+        # The metrics stream is the bundle's UTC anchor: its first and last scrape
+        # bracket the run, which is what the offset is derived against.
+        try:
+            with open(sm) as f:
+                first = f.readline()
+                start_ns = json.loads(first)["timestamp_ns"] if first.strip() else None
+            with open(sm) as f:
+                for line in f:
+                    if line.strip():
+                        end_ns = json.loads(line)["timestamp_ns"]
+        except Exception as e:  # noqa: BLE001 - anchoring is best-effort
+            _log("L2 iter-log", f"WARN could not read the run window: {e}")
+    out = bundle / "iter_bins.json"
+    _log("L1", f"iter-log raw: {len(logs)} worker log(s)")
+    proc = get_processor("iter_log", "trtllm")
+    n = proc(str(out), logs, start_ns, end_ns)
+    _log("L2 iter-log", f"trtllm -> {out.name}: {n} bins")
+    return n > 0
+
+
 def run_engine_configs(run_dir: Path, bundle: Path) -> list[str]:
     """Copy the run's resolved engine configs into the bundle, verbatim.
 
@@ -470,6 +515,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--request-trace-input", default=None,
                    help="dynamo-request-trace path/glob (default: dynamo-request-trace)")
 
+    # per-iteration axis
+    p.add_argument("--iter-log", choices=["trtllm", "none"], default="trtllm")
+    p.add_argument("--iter-log-input", action="append", default=[], metavar="GLOB",
+                   help="worker log path/glob carrying print_iter_log lines "
+                        "(default: *_prefill_w*.out, *_decode_w*.out, *_agg_w*.out)")
+
     # metrics axis
     p.add_argument("--metrics", choices=["prometheus", "none"], default="prometheus")
     p.add_argument("--raw-prometheus", default=None,
@@ -506,6 +557,7 @@ def main(argv=None) -> int:
     have_traces = run_traces(args, run_dir, bundle, profile_path)
     have_metrics = run_metrics(args, run_dir, bundle)
     have_req_trace = run_request_trace(args, run_dir, bundle)
+    run_iter_log(args, run_dir, bundle)
     run_engine_configs(run_dir, bundle)
 
     yaml_text = generate_dashboard_yaml(
