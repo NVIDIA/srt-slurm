@@ -81,6 +81,7 @@ observability:
 
 benchmark:
   type: custom
+  # Let AIPerf use its built-in 32-worker cap. This trace peaks at 17 arrivals/10s.
   command: |
     "$SRTCTL_RUTER_PYTHON" -m aiperf profile \
       --model Qwen/Qwen3-32B-FP8 \
@@ -96,7 +97,6 @@ benchmark:
       --extra-inputs ignore_eos:true \
       --use-legacy-max-tokens \
       --request-timeout-seconds 900 \
-      --workers-max 128 \
       --output-artifact-dir "$AIPERF_ARTIFACT_DIR" \
       --profile-export-prefix trace \
       --ui none \
