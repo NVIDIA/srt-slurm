@@ -40,6 +40,12 @@ from collections import Counter, defaultdict, deque
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _VENDORED_D3 = os.path.join(_HERE, "d3.v7.min.js")
 
+# Repo root, so `src.visualization` / `src.ingest` resolve whether this is run with
+# -m or as a bare script path.
+import sys as _sys  # noqa: E402
+_sys.path.insert(0, os.path.dirname(os.path.dirname(_HERE)))
+from src.visualization.panels import evaluate as _evaluate_panels  # noqa: E402
+
 _ap = argparse.ArgumentParser(description="Render the Dynamo benchmark component dashboard from an ingest bundle.")
 _ap.add_argument("bundle_dir", nargs="?", help="ingest bundle dir (profile_export.jsonl, tempo_traces/, server_metrics_export.jsonl). Optional: omit for a log-only build.")
 _ap.add_argument("out_html", nargs="?", help="output HTML path")
@@ -49,6 +55,11 @@ _ap.add_argument("--max-batch-prefill", type=int, default=128, help="prefill max
 _ap.add_argument("--max-batch-decode", type=int, default=256, help="decode max_batch_size ceiling for the in-flight panel")
 _ap.add_argument("--include-warmup", action="store_true", help="keep AgentX cache-warmup requests (default: profiling phase only)")
 _ap.add_argument("--gpus", type=int, default=None, help="total GPU count for tok/s/GPU (default: sum(rank x worker_count) from the bundle's dashboard.yaml)")
+_ap.add_argument("--dump-json", default=None, metavar="PATH",
+                 help="also write the page's underlying DATA payload as indented JSON. The HTML embeds "
+                      "this same object, so the dump is the machine-readable form of everything the "
+                      "dashboard shows -- for diffing two runs, for CI assertions, and for reading a "
+                      "result on a machine with no browser.")
 _ap.add_argument("--frontend-log", default=None, metavar="PATH",
                  help="Dynamo frontend log (INFO level) to populate the 'Log analysis' tab. "
                       "Accepts raw container stdout or sflow-wrapped. Tab is omitted if not given.")
@@ -68,7 +79,307 @@ if _args.bundle_dir is None and not _args.frontend_log:
     _ap.error("nothing to render: give an ingest bundle, --frontend-log, or both")
 
 SRC, OUT = _args.bundle_dir, _args.out_html
-MAX_BATCH_PF, MAX_BATCH_DE = _args.max_batch_prefill, _args.max_batch_decode
+
+
+# Engine ceilings for the in-flight panels. The run's own resolved engine config is
+# authoritative; the --max-batch-* CLI flags are only a fallback for bundles that
+# have none. Resolved HERE, before anything consumes them, because the ceiling is
+# what the in-flight series is drawn against: on AgentX run 2739690 the real decode
+# max_batch_size is 1 against a CLI default of 256, so a decode engine pinned at its
+# limit rendered as 0.4% utilised. Prefill happening to match the default (128) is
+# what makes that error easy to miss.
+def _cfg_max_batch(mode):
+    if not SRC:
+        return None, None
+    for cand in (os.path.join(SRC, f"trtllm_config_{mode}.yaml"),
+                 os.path.join(SRC, "..", "..", f"trtllm_config_{mode}.yaml")):
+        try:
+            import yaml as _y
+            c = _y.safe_load(open(cand)) or {}
+            if c.get("max_batch_size") is not None:
+                return int(c["max_batch_size"]), int(c.get("max_num_tokens") or 0)
+        except Exception:
+            pass
+    return None, None
+def _host_series():
+    """Host and per-process health from ``host_series.json`` (PERF-37/38/40)."""
+    if not SRC:
+        return None
+    try:
+        with open(os.path.join(SRC, "host_series.json")) as fh:
+            return json.load(fh) or None
+    except Exception:
+        return None
+
+
+def _lifecycle():
+    """Time-to-ready and terminal cause from ``run_lifecycle.json`` (PERF-45)."""
+    if not SRC:
+        return None
+    try:
+        with open(os.path.join(SRC, "run_lifecycle.json")) as fh:
+            return json.load(fh) or None
+    except Exception:
+        return None
+
+
+def _log_signals():
+    """Log-only signals from ``log_signals.json``: the ones with no metric behind them.
+
+    Returned whole, including zero counts. "This run had no worker crashes" is a
+    statement; the signal simply being absent from the payload is not.
+    """
+    if not SRC:
+        return None
+    try:
+        with open(os.path.join(SRC, "log_signals.json")) as fh:
+            return (json.load(fh) or {}).get("signals") or None
+    except Exception:
+        return None
+
+
+def _benchmark_status():
+    """Why the benchmark produced what it produced, from ``benchmark_status.json``.
+
+    An empty dashboard is not wrong, but it is mute: `client=False traces=False N=0`
+    leaves the reader to guess between a dead deployment, a workload that never
+    started, and a run cut short -- three different responses. Eight ablation arms in
+    one session hit exactly this, four failing before the benchmark script was even
+    reachable and four eleven seconds after the workers went healthy.
+    """
+    if not SRC:
+        return None
+    for cand in (os.path.join(SRC, "benchmark_status.json"),):
+        try:
+            with open(cand) as fh:
+                d = json.load(fh)
+        except Exception:
+            continue
+        if not d.get("exit_code") and not d.get("errors"):
+            return None
+        return {"exit_code": d.get("exit_code"),
+                # 6, not 4: a check_env_vars failure is a header plus one line per
+                # missing variable, and truncating to 4 drops the variables.
+                "errors": (d.get("errors") or [])[:6],
+                # AIPerf's own completed/cancelled census per phase. Frequently the ONLY
+                # account of what happened: arm 2752189 exited 1 with zero error-marker
+                # lines in benchmark.out, so without this the banner could say nothing
+                # beyond the exit code.
+                "phases": (d.get("phases") or [])[:4]}
+    return None
+
+
+def _flat_config():
+    """The run's resolved recipe, flattened to {dotted.path: scalar}.
+
+    Flattened rather than cherry-picked because the interesting key is whichever one
+    an experiment happened to move, and a hand-maintained list of "settings worth
+    recording" is guaranteed to omit exactly that one the first time it matters.
+
+    This is also the only record of the FRONTEND environment. The worker fingerprints
+    capture prefill and decode, but settings like DYN_TOKENIZER_CACHE live on the
+    frontend and appear in no fingerprint at all -- so without this, an ablation on a
+    frontend variable has no artifact proving what it changed.
+
+    `name` is dropped: every arm of an ablation renames itself, and leaving it in makes
+    a clean single-variable diff report two differences instead of one.
+    """
+    if not SRC:
+        return None
+    for cand in (os.path.join(SRC, "config.yaml"),
+                 os.path.join(SRC, "..", "..", "config.yaml")):
+        try:
+            import yaml as _y
+            with open(cand) as fh:
+                doc = _y.safe_load(fh) or {}
+        except Exception:
+            continue
+        flat = {}
+
+        def _walk(node, prefix=""):
+            if isinstance(node, dict):
+                for k, v in node.items():
+                    _walk(v, f"{prefix}{k}.")
+            elif isinstance(node, list):
+                # Joined rather than indexed: a reordered list is not a config change,
+                # and per-index keys would report one for every shifted element.
+                flat[prefix.rstrip(".")] = ",".join(str(x) for x in node)
+            else:
+                flat[prefix.rstrip(".")] = node
+        _walk(doc)
+        # Identity fields, dropped so a comparison reports TREATMENTS and not
+        # bookkeeping. Every arm of an ablation necessarily renames itself and writes to
+        # its own result file; leaving these in means a genuinely single-variable
+        # comparison always reports two differences, and the SINGLE-VARIABLE verdict can
+        # never fire -- which trains the reader to ignore the count.
+        for k in ("name", "benchmark.env.RESULT_FILENAME"):
+            flat.pop(k, None)
+        return flat
+    return None
+
+
+def _provenance():
+    """What actually ran: framework versions, GPU, and per-worker agreement.
+
+    Container tags routinely disagree with the wheels they bundle -- an image tagged
+    1.1.0-rc3 shipping tensorrt_llm 1.3.0rc11 is an observed case. The fingerprints
+    record the versions found INSIDE the running worker, which is the only trustworthy
+    answer, and they are per-worker, so a deployment whose prefill and decode landed on
+    different builds is visible here and nowhere else. That mismatch is silent in every
+    other panel: both halves run, and the numbers simply mean something different than
+    the reader assumes.
+
+    Returns None when no fingerprints reached the bundle, rather than a partial record
+    that would read as agreement.
+    """
+    if not SRC:
+        return None
+    fps = sorted(glob.glob(os.path.join(SRC, "fingerprint_*.json")))
+    if not fps:
+        return None
+    per_worker, frameworks = {}, {}
+    for path in fps:
+        try:
+            with open(path) as fh:
+                d = json.load(fh)
+        except Exception:
+            continue
+        worker = os.path.basename(path)[len("fingerprint_"):-len(".json")]
+        fw = d.get("frameworks") or {}
+        per_worker[worker] = {
+            "frameworks": fw,
+            "cuda": d.get("cuda_version"), "nccl": d.get("nccl_version"),
+            "python": d.get("python_version"), "gpu": d.get("gpu"),
+            "hostname": d.get("hostname"),
+        }
+        for k, v in fw.items():
+            frameworks.setdefault(k, set()).add(v)
+    if not per_worker:
+        return None
+    cfg = _flat_config()
+    # A framework name mapping to more than one version means the workers are not
+    # running the same build. Reported as a first-class disagreement rather than
+    # collapsed to "the version", which would silently pick one arbitrarily.
+    disagree = {k: sorted(v) for k, v in frameworks.items() if len(v) > 1}
+    return {"workers": per_worker,
+            "frameworks": {k: sorted(v)[0] for k, v in frameworks.items()},
+            "framework_disagreement": disagree or None,
+            "n_workers": len(per_worker),
+            "config": cfg}
+
+
+def _client_summary():
+    """AIPerf's run-level summary: the workload's cache ceiling, and run validity.
+
+    Returns a compact dict, or None when AIPerf never wrote one -- which happens when
+    a run is killed before the concurrency finishes, and is itself worth reporting
+    rather than papering over.
+
+    `theoretical_prefix_cache_hit` is the number that makes the engine's measured
+    reuse interpretable. The engine hit rate alone is a bare figure that each reader
+    scores against a private expectation; against the ceiling the workload actually
+    offered, it becomes a gap with a size.
+    """
+    if not SRC:
+        return None
+    for cand in (os.path.join(SRC, "profile_export_aiperf.json"),
+                 os.path.join(SRC, "..", "..", "profile_export_aiperf.json")):
+        try:
+            with open(cand) as fh:
+                d = json.load(fh)
+        except Exception:
+            continue
+        bs = d.get("branch_stats") or {}
+        # `avg` is AIPerf's own aggregate for the whole concurrency; the nested shape
+        # ({unit, avg, count, sum}) is stable across the 1.x schema.
+        def _avg(key):
+            v = d.get(key)
+            return v.get("avg") if isinstance(v, dict) else v
+        return {
+            "schema": d.get("schema_version"),
+            "aiperf_version": d.get("aiperf_version"),
+            "theoretical_prefix_cache_hit": _avg("theoretical_prefix_cache_hit"),
+            "effective_concurrency": _avg("effective_concurrency"),
+            "request_count": _avg("request_count"),
+            "was_cancelled": d.get("was_cancelled"),
+            "n_errors": len(d.get("error_summary") or []),
+            "branch_errored": bs.get("children_errored"),
+            "branch_truncated": bs.get("children_truncated"),
+            "branch_spawned": bs.get("children_spawned"),
+        }
+    return None
+
+
+def _cfg_tokens_per_block():
+    """Engine KV block size from the run's own config, prefill or decode.
+
+    Either mode answers: the two engines pool the same KV block size, and a run may
+    ship only one of the two configs. Nested under `kv_cache_config` in current
+    TRT-LLM configs, top-level in older ones, so both are accepted.
+    """
+    if not SRC:
+        return None
+    for mode in ("decode", "prefill"):
+        for cand in (os.path.join(SRC, f"trtllm_config_{mode}.yaml"),
+                     os.path.join(SRC, "..", "..", f"trtllm_config_{mode}.yaml")):
+            try:
+                import yaml as _y
+                c = _y.safe_load(open(cand)) or {}
+                v = (c.get("kv_cache_config") or {}).get("tokens_per_block",
+                                                         c.get("tokens_per_block"))
+                if v:
+                    return int(v)
+            except Exception:
+                pass
+    return None
+CLIENT_SUMMARY = _client_summary()
+PROVENANCE = _provenance()
+BENCH_STATUS = _benchmark_status()
+LOG_SIGNALS = _log_signals()
+LIFECYCLE = _lifecycle()
+HOST = _host_series()
+if HOST:
+    _pk = max((v for _, v in (HOST.get("host_cpu_pct") or [])), default=None)
+    _log.info(f"host telemetry: {HOST.get('samples')} samples on {HOST.get('host')}, "
+              f"peak CPU {_pk}%, fd headroom {HOST.get('fd_headroom_pct')}% of "
+              f"{HOST.get('fd_limit')}, {len(HOST.get('procs') or {})} process(es)")
+else:
+    _log.info("host telemetry: absent (host_series.json not in the bundle)")
+if LIFECYCLE:
+    _d = LIFECYCLE.get("durations_s") or {}
+    _log.info(f"lifecycle: time_to_ready={_d.get('time_to_ready')}s "
+              f"readiness_gap={_d.get('readiness_gap')}s | {LIFECYCLE.get('terminal_cause')}")
+if LOG_SIGNALS:
+    _fired = {k: v["count"] for k, v in LOG_SIGNALS.items() if v.get("count")}
+    _log.info(f"log-only signals: {_fired}" if _fired
+              else "log-only signals: none fired (all counts zero)")
+if BENCH_STATUS:
+    _log.warning(f"benchmark reported failure: exit={BENCH_STATUS['exit_code']}; "
+                 f"{BENCH_STATUS['errors'][0] if BENCH_STATUS['errors'] else 'no error line captured'}")
+if PROVENANCE:
+    _log.info(f"provenance: {PROVENANCE['n_workers']} worker fingerprint(s), frameworks="
+              f"{PROVENANCE['frameworks']}")
+    if PROVENANCE["framework_disagreement"]:
+        _log.warning(f"workers are NOT running the same build: "
+                     f"{PROVENANCE['framework_disagreement']}")
+else:
+    _log.info("provenance: no fingerprint_*.json in the bundle; framework versions "
+              "unknown and two bundles cannot be compared for what differed")
+if CLIENT_SUMMARY:
+    _log.info(f"client summary: workload prefix-cache ceiling "
+              f"{CLIENT_SUMMARY['theoretical_prefix_cache_hit']}%, effective concurrency "
+              f"{CLIENT_SUMMARY['effective_concurrency']}, {CLIENT_SUMMARY['n_errors']} error(s), "
+              f"cancelled={CLIENT_SUMMARY['was_cancelled']}")
+else:
+    _log.info("client summary: no profile_export_aiperf.json in the bundle -- no workload "
+              "cache ceiling to compare the engine's measured reuse against")
+CFG_PF_BATCH, CFG_PF_TOK = _cfg_max_batch("prefill")
+CFG_DE_BATCH, CFG_DE_TOK = _cfg_max_batch("decode")
+MAX_BATCH_PF = CFG_PF_BATCH if CFG_PF_BATCH else _args.max_batch_prefill
+MAX_BATCH_DE = CFG_DE_BATCH if CFG_DE_BATCH else _args.max_batch_decode
+_log.info(f"engine ceilings: prefill max_batch_size={MAX_BATCH_PF} max_num_tokens={CFG_PF_TOK} | "
+          f"decode max_batch_size={MAX_BATCH_DE} max_num_tokens={CFG_DE_TOK} "
+          f"(source: {'run config' if CFG_DE_BATCH else '--max-batch-* defaults'})")
 
 # Per-source availability. A tab is rendered only when its inputs exist -- an
 # empty tab is worse than an absent one, because it reads as "this run had no
@@ -78,8 +389,20 @@ def _have(*parts):
 HAS_CLIENT = _have("profile_export.jsonl")
 HAS_TRACES = bool(SRC) and bool(glob.glob(os.path.join(SRC, "tempo_traces", "*.json")))
 HAS_SM = _have("server_metrics_export.jsonl")
+HAS_RT = _have("request_trace.jsonl")
 _log.info(f"sources: client={HAS_CLIENT} traces={HAS_TRACES} server_metrics={HAS_SM} "
-          f"frontend_log={bool(_args.frontend_log)}")
+          f"request_trace={HAS_RT} frontend_log={bool(_args.frontend_log)}")
+
+# Loaded here, before any aggregate is computed, because the run-level waterfall needs
+# it: KV transfer is a phase no span reports and no Prometheus series samples, so
+# without this the waterfall has a silent hole between prefill and decode compute --
+# on the reference runs that hole is the median 79% of the decode span.
+rt_all=[]
+if HAS_RT:
+    for _l in open(os.path.join(SRC,"request_trace.jsonl")):
+        _l=_l.strip()
+        if _l: rt_all.append(json.loads(_l))
+RT_BY_XID={r["x_request_id"]:r for r in rt_all if r.get("x_request_id")}
 
 
 def _load_meta(bundle_dir):
@@ -100,8 +423,12 @@ def _load_meta(bundle_dir):
             t = cfg.get("topology") or {}
             parts = [f"{role} {w.get('worker_count','?')}×{w.get('parallelism','?')}{w.get('rank','')}"
                      for role, w in (t.get("workers") or {}).items()]
+            # block_size from the yaml is only ingest's --block-size fallback. The
+            # authoritative value comes from the metrics stream and is substituted
+            # later; emitting the fallback here would put a third, wrong number in the
+            # header while the panels use the right one.
             if t.get("block_size"):
-                parts.append(f"block {t['block_size']}")
+                parts.append("block __BLK__")
             topo = " · ".join(parts)
             gpus = sum(int(w.get("rank") or 0) * int(w.get("worker_count") or 0)
                        for w in (t.get("workers") or {}).values()) or None
@@ -126,12 +453,26 @@ def pct(v, p):
 # percentile: on run 2674375 warmup was 1180 requests at p99 43.5s vs profiling
 # 918 at p99 88.5s -- mixing them roughly halves the reported tail. Records with
 # no benchmark_phase (plain, non-AgentX AIPerf runs) are always kept.
+# The phase boundary is captured HERE rather than re-derived, because this loop is
+# already the only place that sees warmup records -- the filter below drops them.
+# Preferred boundary is the first PROFILING request's start; the last warmup end is
+# the fallback for a run whose profiling phase never began.
 client={}; _skipped_phase=0
+_phase_seen={}   # every phase value in the file, kept or dropped
+_prof_min_start=None; _warm_max_end=None
 for l in (open(os.path.join(SRC,"profile_export.jsonl")) if HAS_CLIENT else []):
     l=l.strip()
     if not l: continue
     r=json.loads(l); m=r["metadata"]; mt=r["metrics"]
-    if not _args.include_warmup and m.get("benchmark_phase") not in (None,"profiling"):
+    _ph=m.get("benchmark_phase")
+    _phase_seen[_ph or "(none)"]=_phase_seen.get(_ph or "(none)",0)+1
+    if _ph=="profiling":
+        _s=m.get("request_start_ns")
+        if _s: _prof_min_start=_s if _prof_min_start is None else min(_prof_min_start,_s)
+    elif _ph is not None:
+        _e=m.get("request_end_ns") or m.get("request_start_ns")
+        if _e: _warm_max_end=_e if _warm_max_end is None else max(_warm_max_end,_e)
+    if not _args.include_warmup and _ph not in (None,"profiling"):
         _skipped_phase+=1; continue
     g=lambda k:(mt.get(k) or {}).get("value")
     client[m["x_request_id"]]={"start_ns":m.get("request_start_ns") or 0,"ttft":g("time_to_first_token"),
@@ -169,7 +510,11 @@ for f in (glob.glob(os.path.join(SRC,"tempo_traces","*.json")) if HAS_TRACES els
         "osl":c["osl"] or 0,"adm":sched[0] if sched else 0,"pf":hp_pf[0] if hp_pf else 0,
         "de":hp_de[0] if hp_de else 0,"rhash":hashm,"rfind":findm,"rroute":routem,
         "ov":int(at(rr_pf[1],"overlap_blocks") or 0) if rr_pf else 0,
-        "wpf":at(rr_pf[1],"worker_id") if rr_pf else None})
+        "wpf":at(rr_pf[1],"worker_id") if rr_pf else None,
+        # dp_rank off the SAME span as overlap_blocks. The router's free-text selector
+        # line carries a richer cost breakdown but has no request_id on it, so it
+        # cannot be joined per request -- this span is the joinable substitute.
+        "rank":at(rr_pf[1],"dp_rank") if rr_pf else None})
     # Requests-in-flight occupancy window per worker role: min(start)..max(end) across
     # EVERY handle_payload on that component, not just the longest one (mx() above).
     # This matches gpu_occupancy.compute_requests_in_flight, which spans the envelope so
@@ -195,24 +540,103 @@ if HAS_SM:
 sm_start=scr[0][0] if scr else None
 sm_end=scr[-1][0] if scr else None
 
-# The run window is whichever of traces / scrapes actually exist. With neither
-# (log-only build) it collapses to a unit window; nothing that consumes it is
-# rendered in that mode.
-_starts=[t for t in (trace_start, sm_start) if t is not None]
-_ends=[t for t in (trace_end, sm_end) if t is not None]
+# The run window is whichever source actually exists. The iter log has to be in
+# here, not just traces/scrapes: it is the ONLY leg a trtllm-serve run produces (no
+# Dynamo frontend means no /metrics surface and no spans at all), and it is present
+# on any run whose recipe sets `print_iter_log` regardless of `observability.enabled`.
+# Left out, `run_dur` collapses to 1 ns, the `t > run_dur + 60` guard below discards
+# every bin, and a run with 175,800 real iterations renders as an empty page while
+# only logging "0pts" -- which is how it read before this was fixed.
+def _load_iter_bins(src):
+    p=os.path.join(src,"iter_bins.json") if src else ""
+    if not os.path.exists(p): return None
+    try: return json.load(open(p))
+    except Exception: return None
+
+# Loaded ONCE here, before the run window, because three separate consumers need it
+# and two of them run earlier than the panel section: the window itself, and the KV
+# fallbacks below.
+_IB=_load_iter_bins(SRC)
+
+def _iter_bins_window(ib):
+    if not ib: return None,None
+    ts=[r["t"] for rows in (ib.get("bins") or {}).values() for r in rows if r.get("t")]
+    if not ts: return None,None
+    return int(min(ts)*10**9), int(max(ts)*10**9)
+
+_it_start,_it_end=_iter_bins_window(_IB)
+_starts=[t for t in (trace_start, sm_start, _it_start) if t is not None]
+_ends=[t for t in (trace_end, sm_end, _it_end) if t is not None]
 run_start=min(_starts) if _starts else 0
 run_end=max(_ends) if _ends else run_start+1
 run_dur=(run_end-run_start)/1e9
 
 def relt(ns): return round((ns-run_start)/1e9,1)
 for r in rows: r["ts"]=relt(r["ts_ns"]);
+
+# ---- end of the load generator's warmup phase -----------------------------------
+# Optional, and deliberately so: many harnesses have no warmup phase at all, and a
+# marker invented for them would be a lie. Resolved once here, from the highest-
+# confidence source available, and carried as an OPTIONAL field -- absent means "no
+# warmup boundary is known", never "warmup ended at t=0".
+#
+# Precedence:
+#   1. the client export's own `benchmark_phase` (authoritative; the harness said so)
+#   2. `warmup_end_ns` recorded in dashboard.yaml by ingest, for bundles built
+#      without the client leg -- the export is routinely ~700 MB and is not copied
+#   3. nothing
+def _yaml_warmup_ns(bundle_dir):
+    if not bundle_dir: return None
+    ypath=os.path.join(bundle_dir,"dashboard.yaml")
+    if not os.path.exists(ypath): return None
+    try:
+        import yaml as _y
+        return ((_y.safe_load(open(ypath)) or {}).get("warmup") or {}).get("end_ns")
+    except Exception:
+        return None
+
+WARMUP_END_S=None; WARMUP_SRC=None
+_w_ns=_prof_min_start or _warm_max_end
+if _w_ns: WARMUP_SRC="profile_export.jsonl (benchmark_phase)"
+else:
+    _w_ns=_yaml_warmup_ns(SRC)
+    if _w_ns: WARMUP_SRC="dashboard.yaml (warmup.end_ns)"
+if _w_ns:
+    _v=relt(int(_w_ns))
+    # A boundary outside the rendered window is not plottable and would draw a line
+    # on the axis edge implying the whole run was one phase. Dropped, with a warning.
+    if 0 < _v < run_dur:
+        WARMUP_END_S=_v
+        _log.info(f"warmup ends at t+{_v:.1f}s of {run_dur:.0f}s "
+                  f"({_v/run_dur*100:.0f}% of the run) — source: {WARMUP_SRC}")
+    else:
+        _log.warning(f"warmup boundary t+{_v:.1f}s falls outside the run window "
+                     f"(0..{run_dur:.0f}s); no marker drawn")
+        WARMUP_SRC=None
 # ---- metric extractors ----
 def gsingle(m,name):
     a=m.get(name)
     return a[0]["value"] if a else None
+def _entries(m, name):
+    """Entries for a metric family in one scrape, tolerating the `_total` suffix.
+
+    Prometheus counters conventionally end in `_total`, and the ingest layer keeps the
+    scraped name verbatim -- so a lookup written without the suffix silently finds
+    nothing and the caller reads a hard zero. That is not hypothetical: five families
+    here (`dynamo_frontend_requests` and all four `dynamo_frontend_tokenizer_cache_*`)
+    were being read without it, which pinned the tokenizer-cache KPI to 0.0% on a run
+    whose real hit rate was ~99%.
+
+    Resolving centrally rather than fixing each call site, because the failure is
+    invisible at the call site: a missing family and an all-zero family look identical
+    downstream.
+    """
+    return m.get(name) or m.get(name + "_total")
+
+
 def ggroup(m,name,by="dynamo_component"):
     out=defaultdict(list)
-    for e in m.get(name,[]):
+    for e in (_entries(m,name) or []):
         out[e.get("labels",{}).get(by)].append(e["value"])
     return out
 def hsc(m,name):
@@ -256,7 +680,7 @@ def peak_with(m_name,key="count"):
     """
     best={}; bv=-1.0
     for _,m in scr:
-        ents=m.get(m_name)
+        ents=_entries(m,m_name)
         if not ents: continue
         tot=0.0
         for e in ents:
@@ -297,7 +721,7 @@ def hist_mean_series(name,by=None,group=None,scale_ms=1000.0):
 
 def _csum(m,name,label=None,val=None):
     """Total of a counter/gauge family in one scrape, or None if absent here."""
-    ents=m.get(name)
+    ents=_entries(m,name)
     if not ents: return None
     tot=0.0
     for e in ents:
@@ -364,7 +788,10 @@ fe = {
 }
 # Not plotted on this tab any more, but still feeds the shared KPI strip.
 def cval(name):
-    a=peak_with(name,key="value").get(name); return a[0]["value"] if a else 0
+    # Resolve through _entries on BOTH lookups: peak_with finds the right scrape, but
+    # indexing the returned scrape by the un-suffixed name misses it a second time.
+    a=_entries(peak_with(name,key="value"), name)
+    return a[0]["value"] if a else 0
 tk_h=cval("dynamo_frontend_tokenizer_cache_hits"); tk_m=cval("dynamo_frontend_tokenizer_cache_misses")
 fe["tok_cache_hit_pct"]=round(100*tk_h/max(1,tk_h+tk_m),1)
 
@@ -389,14 +816,125 @@ en = {
   "max_batch_de": MAX_BATCH_DE,   # decode max_batch_size ceiling (--max-batch-decode)
 }
 # true cache-hit (trtllm_kv_cache_hit_rate gauge, per ctx worker) — mean over scrapes where present
+def _reuse_enabled_components():
+    """Components whose engine config actually enables KV block reuse.
+
+    A worker with ``kv_cache_config.enable_block_reuse: false`` reports a hard 0 for
+    trtllm_kv_cache_hit_rate -- correctly, because it does no reuse. Averaging that 0
+    in with the components that DO reuse does not produce a run-level hit rate; it
+    produces a number that falls as the deployment adds decode workers. On the
+    reference 1P3D run the true prefill hit rate is ~0.65-0.76 while the naive mean
+    over four components reports ~0.16.
+
+    Returns None when no engine config is available, which means "cannot tell" -- the
+    caller then keeps every component rather than silently dropping data.
+    """
+    keep=set()
+    seen_cfg=False
+    for mode,comp in (("prefill","prefill"),("decode","backend"),("aggregated","backend")):
+        for cand in (os.path.join(SRC or "", f"trtllm_config_{mode}.yaml"),):
+            if not cand or not os.path.exists(cand): continue
+            try:
+                import yaml as _y
+                c=_y.safe_load(open(cand)) or {}
+            except Exception:
+                continue
+            seen_cfg=True
+            if ((c.get("kv_cache_config") or {}).get("enable_block_reuse")) is not False:
+                keep.add(comp)
+    return keep if seen_cfg else None
+
+_REUSE_COMPONENTS=_reuse_enabled_components()
+if _REUSE_COMPONENTS is not None:
+    _log.info(f"KV hit rate: averaging only components with block reuse enabled: "
+              f"{sorted(_REUSE_COMPONENTS) or 'NONE'}")
+else:
+    _log.warning("KV hit rate: no engine config in the bundle, so reuse-disabled "
+                 "components cannot be excluded; the series may understate the true rate")
+
+def _iter_reuse_series():
+    """Context-phase block reuse per 1 s bin, from the per-iteration log.
+
+    A fallback for ``trtllm_kv_cache_hit_rate``, which only exists if a WORKER
+    ``/metrics`` endpoint was scraped. It frequently was not -- AIPerf's own export
+    scrapes the frontend only, and a trtllm-serve run has no Dynamo endpoint at all --
+    and the panel then drew a full-length series of nulls, i.e. an empty chart that
+    reads as "reuse is zero" rather than "reuse was not captured".
+
+    ``cached_kv_tokens / (cached_kv_tokens + num_ctx_tokens)`` over context workers.
+    Validated against the client's own Prompt Cache Read % on three runs of the same
+    point: 95.88 / 95.76 / 94.27 % here vs 95.6-97.2 % reported. Close, but NOT the
+    same estimator -- this is token-weighted over prefill workers, so it is labelled
+    as the derived series it is rather than presented as the gauge.
+    """
+    if not _IB: return []
+    acc={}
+    for w,rows in (_IB.get("bins") or {}).items():
+        if "prefill" not in w and "ctx" not in w: continue
+        for r in rows:
+            c=r.get("cached_kv_tokens") or 0; t=r.get("num_ctx_tokens") or 0
+            if c+t<=0: continue
+            k=relt(int(r["t"])*10**9)
+            a=acc.setdefault(k,[0,0]); a[0]+=c; a[1]+=c+t
+    return [[k, round(v[0]/v[1]*100,2)] for k,v in sorted(acc.items())
+            if 0<=k<=run_dur+60 and v[1]]
+
+
 def kvhit_series():
     out=[]
     for ts,m in scr:
         g=ggroup(m,"trtllm_kv_cache_hit_rate",by="dynamo_component")
+        if _REUSE_COMPONENTS is not None:
+            g={k:v for k,v in g.items() if k in _REUSE_COMPONENTS}
         vals=[x for vs in g.values() for x in vs]
         out.append([relt(ts), round(sum(vals)/len(vals)*100,2) if vals else None])
     return out
+def _iter_kvutil_series(role):
+    """Peak-worker KV pool occupancy per 1 s bin, from the per-iteration log.
+
+    Fallback for ``dynamo_component_gpu_cache_usage_percent`` on the same grounds as
+    the reuse fallback: the gauge lives on the worker endpoint, which is frequently
+    not scraped. `max` across workers of that role, matching the gauge's own
+    peak-worker aggregation so the two are read the same way.
+    """
+    if not _IB: return []
+    acc={}
+    for w,rows in (_IB.get("bins") or {}).items():
+        if role not in w: continue
+        for r in rows:
+            v=r.get("kv_cache_util")
+            if v is None: continue
+            k=relt(int(r["t"])*10**9)
+            if not (0<=k<=run_dur+60): continue
+            acc[k]=max(acc.get(k,0.0), v*100)
+    return [[k,round(v,2)] for k,v in sorted(acc.items())]
+
+
+# The gauge is absent whenever no worker endpoint was scraped. Falling back keeps the
+# panel honest: before this it emitted a full-length series of Nones, which draws an
+# empty axis -- indistinguishable from "utilisation was zero".
+en["kvutil_src"]="dynamo_component_gpu_cache_usage_percent"
+if not [p for p in en["kvutil_pf"] if p[1] is not None] and \
+   not [p for p in en["kvutil_de"] if p[1] is not None]:
+    _pf,_de=_iter_kvutil_series("prefill"),_iter_kvutil_series("decode")
+    if _pf or _de:
+        _grid=sorted({k for s in (_pf,_de) for k,_ in s})
+        _pfm,_dem=dict(_pf),dict(_de)
+        en["kvutil_pf"]=[[k,_pfm.get(k)] for k in _grid]
+        en["kvutil_de"]=[[k,_dem.get(k)] for k in _grid]
+        en["kvutil_src"]="iter_bins.json (kv_cache_util)"
+        _log.info(f"KV utilisation: gauge absent, derived from the iteration log "
+                  f"({len(_grid)} bins)")
+
 en["true_hit_pct"]=kvhit_series()
+en["true_hit_src"]="trtllm_kv_cache_hit_rate"
+if not [p for p in en["true_hit_pct"] if p[1] is not None]:
+    _fb=_iter_reuse_series()
+    if _fb:
+        en["true_hit_pct"]=_fb; en["true_hit_src"]="iter_bins.json (cached_kv_tokens)"
+        _log.info(f"KV hit rate: gauge absent, derived from the iteration log "
+                  f"({len(_fb)} bins)")
+en["reuse_components"]=sorted(_REUSE_COMPONENTS) if _REUSE_COMPONENTS is not None else None
 _hitvals=[p[1] for p in en["true_hit_pct"] if p[1] is not None]
 en["true_hit_kpi"]=round(pct(_hitvals,50),1) if _hitvals else None
 
@@ -404,7 +942,13 @@ en["true_hit_kpi"]=round(pct(_hitvals,50),1) if _hitvals else None
 def col(k): return [r[k] for r in rows]
 def band(sortkey,p):
     v=sorted(rows,key=lambda r:r[sortkey]); lo=max(0,int(len(v)*(p-5)/100)); hi=max(lo+1,int(len(v)*min(100,p+5)/100)); sub=v[lo:hi]
+    # kvt comes from the request trace, not from spans: the decode `handle_payload`
+    # span starts AFTER the KV cache has transferred, so a spans-only waterfall places
+    # prefill compute directly against decode compute and silently omits the wait
+    # between them. 0.0 when the run is aggregated (no transfer) or the trace is absent.
+    _kvt=[(RT_BY_XID.get(r["xid"],{}) or {}).get("kv_transfer_ms") or 0 for r in sub]
     return {"adm":pct([r["adm"] for r in sub],50),"pf":pct([r["pf"] for r in sub],50),
+            "kvt":pct(_kvt,50),
             "de":pct([r["de"] for r in sub],50),"route":pct([r["rroute"]+r["rhash"]+r["rfind"] for r in sub],50),
             "ttft":pct([r["ttft"] for r in sub],50),"e2e":pct([r["e2e"] for r in sub],50)}
 waterfall={p:band("e2e",p) for p in (50,90,95,99)}
@@ -493,13 +1037,72 @@ def _mdc_block_size():
     return None
 
 BLK=_mdc_block_size()
+
+def _block_size_mismatch():
+    """Router block size vs the engine's tokens-per-block, as a first-class check.
+
+    These are two different pools sized independently, and when they disagree the
+    router's KV events reference blocks the engine cannot match. The consequence is
+    not subtle -- on the reference run it produces a chain of 540 "Block contains N
+    tokens" errors, 2,835 "Failed to find block to remove", and 35,198 "Block not
+    found during remove", the last of which is 73% of the entire frontend log (94% at
+    higher concurrency).
+
+    It is invisible in the metrics: the counter built for exactly this failure,
+    `dynamo_component_kv_cache_events_applied{status="block_not_found"}`, reads a
+    constant 0. So the only way to surface it is to compare the two configured sizes
+    directly, which is what this does.
+
+    TWO sources for the engine side, in this order:
+      1. the scrape's `trtllm_kv_cache_tokens_per_block` gauge
+      2. `tokens_per_block` in the run's own resolved `trtllm_config_<mode>.yaml`
+
+    The fallback is not decoration. The gauge is only exported when the engine
+    publishes its KV-cache family, so on a run whose workers are up but not yet
+    publishing -- exactly the e2e self-build run 2751593 -- source 1 is empty and the
+    check reported "cannot tell" for a value that was sitting in the bundle all along.
+    The config is the same authority `_cfg_max_batch` already trusts for the engine
+    ceilings, and it is present whenever the ingest ran at all.
+
+    Always returns (router_blk, engine_tpb, source), either side possibly None. The two
+    sides are reported INDEPENDENTLY on purpose: an earlier version returned nothing
+    unless both were known, which threw away a perfectly good engine value whenever the
+    router gauge was missing. "engine 256, router unknown" is a useful thing to show;
+    silence is not. The mismatch VERDICT is what requires both, and that is decided by
+    the caller.
+    """
+    eng=None
+    for _,m in scr:
+        for e in (_entries(m,"trtllm_kv_cache_tokens_per_block") or []):
+            v=e.get("value")
+            if isinstance(v,(int,float)) and v>0: eng=int(v); break
+        if eng: break
+    src="scrape" if eng else None
+    if not eng:
+        eng=_cfg_tokens_per_block()
+        src="engine config" if eng else None
+    return (BLK,eng,src)
+
+_BLK_ROUTER,_BLK_ENGINE,_BLK_SRC=_block_size_mismatch()
+if _BLK_ROUTER and _BLK_ENGINE and _BLK_ROUTER!=_BLK_ENGINE:
+    _log.warning(f"KV block-size mismatch: router indexes {_BLK_ROUTER}-token blocks "
+                 f"while the engine pools {_BLK_ENGINE}-token blocks (engine size via "
+                 f"{_BLK_SRC}); router KV events will reference blocks the engine "
+                 f"cannot match")
+elif _BLK_ROUTER and _BLK_ENGINE:
+    _log.info(f"KV block size agrees across router and engine: {_BLK_ROUTER} tokens "
+              f"(engine size via {_BLK_SRC})")
+else:
+    _log.warning(f"KV block-size agreement UNKNOWN (router={_BLK_ROUTER} "
+                 f"engine={_BLK_ENGINE}); reported as unknown rather than as agreement")
 if BLK is None: _log.warning("no dynamo_frontend_model_kv_cache_block_size in the stream; "
                              "decode tokens-in-flight stays in BLOCKS")
 load={"tput":_rolling_tput(GPUS),
       "rif_pf":_in_flight(hp_ev["prefill"]),"rif_de":_in_flight(hp_ev["decode"]),
       "tif_pf":_worker_bins("dynamo_frontend_worker_active_prefill_tokens","prefill"),
       "tif_de":_worker_bins("dynamo_frontend_worker_active_decode_blocks","decode",scale=BLK or 1),
-      "gpus":GPUS,"blk":BLK,"win_s":TPUT_WIN_S,"bins":NBW}
+      "gpus":GPUS,"blk":BLK,"win_s":TPUT_WIN_S,"bins":NBW,
+      "blk_router":_BLK_ROUTER,"blk_engine":_BLK_ENGINE,"blk_src":_BLK_SRC}
 _log.info(f"load rows: tput={len(load['tput'])}pts gpus={GPUS} "
           f"rif_pf={len(load['rif_pf'])} rif_de={len(load['rif_de'])} "
           f"tif_pf={len(load['tif_pf'])}series tif_de={len(load['tif_de'])}series block={BLK}")
@@ -581,31 +1184,11 @@ def _ordered_spans(sp):
 
 # TRT-LLM per-iteration engine telemetry (print_iter_log: true), pre-binned to
 # 1s by parse_iterlog.py. Optional: absent unless that parser has been run.
-# Ceilings for the panel captions. Read from the run's resolved engine configs
-# when present -- the --max-batch-* CLI flags are only fallbacks and were wildly
-# wrong for this run (decode default 256 vs an actual max_batch_size of 1).
-def _cfg_max_batch(mode):
-    if not SRC:
-        return None, None
-    for cand in (os.path.join(SRC, f"trtllm_config_{mode}.yaml"),
-                 os.path.join(SRC, "..", "..", f"trtllm_config_{mode}.yaml")):
-        try:
-            import yaml as _y
-            c = _y.safe_load(open(cand)) or {}
-            if c.get("max_batch_size") is not None:
-                return int(c["max_batch_size"]), int(c.get("max_num_tokens") or 0)
-        except Exception:
-            pass
-    return None, None
-CFG_PF_BATCH, CFG_PF_TOK = _cfg_max_batch("prefill")
-CFG_DE_BATCH, CFG_DE_TOK = _cfg_max_batch("decode")
-_log.info(f"engine ceilings from config: prefill max_batch_size={CFG_PF_BATCH} "
-          f"max_num_tokens={CFG_PF_TOK} | decode max_batch_size={CFG_DE_BATCH} max_num_tokens={CFG_DE_TOK}")
-
-_iter_path=os.path.join(SRC,"iter_bins.json") if SRC else ""
-iter_series={}
-if os.path.exists(_iter_path):
-    _ib=json.load(open(_iter_path))
+# The engine ceilings it captions against are resolved at the top of this file,
+# before any panel consumes them.
+iter_series={}; iter_bins=None
+if _IB:
+    _ib=_IB; iter_bins=_ib
     for _wkey,_rows in (_ib.get("bins") or {}).items():
         out={k:[] for k in ("kv_cache_util","num_scheduled_requests","num_ctx_requests","num_generation_tokens")}
         for r in _rows:
@@ -708,6 +1291,28 @@ if _args.frontend_log:
         _log.info(f"log analysis: {len(_lrows)} requests, "
                   f"p50={logdrill['global']['p50']}ms p99={logdrill['global']['p99']}ms, "
                   f"routing_join={'yes' if logdrill['routing'] else 'no'}")
+
+        # How much of the run's traffic the KV-routing panels actually describe.
+        #
+        # Computed HERE, into the payload, rather than formatted inside the page's JS.
+        # The HTML is frequently unreadable where it lands -- a headless node, a CI log,
+        # an S3 prefix -- so a caveat that exists only in rendered DOM is invisible to
+        # every consumer that reads the JSON, which is the primary artifact. It also
+        # makes the caveat testable: asserting on the HTML text cannot distinguish a
+        # rendered string from the template literal that would produce it.
+        #
+        # Session-affinity pins a request to the worker already holding its
+        # conversation, and a pinned request never reaches the KV scorer. On the e2e
+        # run 2751593 that was 248 of 274 decisions -- 90.5% -- so the KV-routing
+        # panels there describe under a tenth of the traffic.
+        _tot=_fst.get("selector_without_request_id") or 0
+        if _tot:
+            _pin=_fst.get("selector_decisions_pinned") or 0
+            ro["coverage"]={"decisions":_tot,"pinned":_pin,
+                            "pct_pinned":round(100.0*_pin/_tot,1)}
+            _log.info(f"router coverage: {_pin}/{_tot} decisions pinned by session affinity "
+                      f"({ro['coverage']['pct_pinned']}%); the KV-routing panels describe the "
+                      f"remaining {100-ro['coverage']['pct_pinned']:.1f}%")
     else:
         _log.warning("log analysis: no usable requests in the frontend log; tab omitted")
 
@@ -771,8 +1376,297 @@ if logdrill is not None:
             _log.info(f"load balance [{_r}]: {len(_v['keys'])} workers via {_v['src']}"
                       f"{'' if _v['has_tokens'] else ' (counts only, no tokens)'}")
 
+# ============ 5. request-trace: per-request waterfall + per-session view =====
+# The frontend's own per-request record (schema 4, see src/ingest/request_trace.py).
+# This is the ONLY source for a gapless TTFT decomposition and the ONLY one carrying
+# session_id, so both of the non-time-series dashboard entities are built from it.
+#
+# One code path, no per-run branching: every request yields the same four bands and
+# every session the same row shape, whatever the topology. A field that is constant
+# across the whole run (queue_depth and decode_dp_rank both read 0 on the reference
+# runs) is reported as constant rather than special-cased away -- "this run never
+# queued" is a finding, and hiding the field would make it unaskable.
+
+# The waterfall is fixed and ordered. Each band is (key, label), and they sum to
+# total_ms by construction -- verified 0/560 negative residuals on the reference runs.
+RT_BANDS = [("prefill_wait_ms", "admission + routing"),
+            ("prefill_ms",      "prefill compute"),
+            ("kv_transfer_ms",  "KV transfer"),
+            ("steady_decode_ms","steady decode")]
+# Carried per request so a card can show what the request WAS, not just how long it took.
+RT_ATTRS = ["isl","osl","cached_tokens","kv_hit_rate","queue_depth","finish_reason",
+            "prefill_worker_id","prefill_dp_rank","decode_worker_id","decode_dp_rank",
+            "turn_index","prefix_reuse_ratio","client_ttft_ms","clean_itl_ms",
+            "avg_itl_ms","total_ms"]
+
+rt_rows=list(rt_all)   # loaded at the top; see the HAS_RT block
+# Same warmup exclusion as every other source, via the x_request_id pivot. `client`
+# was already phase-filtered at load, so intersecting transfers that decision here.
+# Only applied when the two artifacts are the same run -- a tiny overlap means they
+# are not, and silently emptying the view is worse than leaving it whole.
+if rt_rows and client:
+    _keep=[r for r in rt_rows if r.get("x_request_id") in client]
+    if len(_keep) >= .10*max(1,len(rt_rows)):
+        _log.info(f"request trace: phase-filtered via x_request_id ({len(_keep)} of {len(rt_rows)} kept)")
+        rt_rows=_keep
+    else:
+        _log.warning(f"request trace: only {len(_keep)}/{len(rt_rows)} rows match the client "
+                     f"export; leaving unfiltered (different run?)")
+
+_SPAN_BY_XID={r["xid"]:r for r in rows}
+rt_requests={}; rt_sessions=[]; rt_const={}; rt_belief=None
+if rt_rows:
+    _t0=min(r["received_ms"] for r in rt_rows if r.get("received_ms"))
+    for r in rt_rows:
+        _bands=[[k,l,r.get(k)] for k,l in RT_BANDS]
+        # Routing OUTCOME, joined from the prefill kv_router.route_request span.
+        # Deliberately labelled an outcome and not a rationale: the router's own cost
+        # comparison lives on a free-text selector line that carries no request_id, so
+        # "which worker was chosen, with how much prefix overlap" is joinable per
+        # request while "why it beat the alternatives" is not. Claiming the latter
+        # would be inventing an explanation.
+        _sp=_SPAN_BY_XID.get(r["x_request_id"]) or {}
+        _routing={"overlap_blocks":_sp.get("ov"),"worker_id":_sp.get("wpf"),
+                  "dp_rank":_sp.get("rank"),
+                  "router_ms":round((_sp.get("rhash") or 0)+(_sp.get("rfind") or 0)
+                                    +(_sp.get("rroute") or 0),3) if _sp else None,
+                  "admission_ms":round(_sp["adm"],3) if _sp.get("adm") is not None else None}
+        # Router belief vs engine reality, per request. The router scores candidates on
+        # overlap_blocks; the engine reports what it actually reused as cached_tokens.
+        # In blocks-to-tokens terms they should be the same number, and a divergence is
+        # the signature of a router confidently routing on a prefix the engine does not
+        # have -- reported in the field as high advertised reuse on traffic with none.
+        # Computed every run rather than only when suspected, because the failure is
+        # silent: the routing still "works", it is just routing on fiction.
+        _ob=_sp.get("ov"); _ct=r.get("cached_tokens")
+        if _ob is not None and _ct is not None and BLK:
+            _pred=_ob*BLK
+            _routing["overlap_tokens"]=_pred
+            _routing["belief_error"]=0.0 if (_pred==0 and _ct==0) else round(abs(_pred-_ct)/max(1,_ct),4)
+        rt_requests[r["x_request_id"]]={
+            "t":round((r.get("received_ms") or _t0)-_t0,1),
+            "session_id":r.get("session_id"),
+            "bands":_bands,
+            "attrs":{k:r.get(k) for k in RT_ATTRS},
+            "routing":_routing if _sp else None,
+        }
+    # A field that never varies carries no information for THIS run; report it once
+    # here rather than drawing a flat line per panel, so the reader learns it was
+    # constant instead of inferring it from a chart that looks broken.
+    for k in RT_ATTRS+[b[0] for b in RT_BANDS]:
+        _vals={json.dumps(r.get(k)) for r in rt_rows}
+        if len(_vals)==1: rt_const[k]=rt_rows[0].get(k)
+
+    _by_sess={}
+    for r in rt_rows:
+        if r.get("session_id"): _by_sess.setdefault(r["session_id"],[]).append(r)
+    for _sid,_rs in _by_sess.items():
+        _rs.sort(key=lambda r:(r.get("turn_index") if r.get("turn_index") is not None else 0,
+                               r.get("received_ms") or 0))
+        _span_ms=(max((r.get("received_ms") or 0)+(r.get("total_ms") or 0) for r in _rs)
+                  - min(r.get("received_ms") or 0 for r in _rs))
+        _busy=sum(r.get("total_ms") or 0 for r in _rs)
+        rt_sessions.append({
+            "session_id":_sid,
+            "t":round((min(r.get("received_ms") or _t0 for r in _rs))-_t0,1),
+            "turns":len(_rs),
+            "span_ms":round(_span_ms,1),
+            "busy_ms":round(_busy,1),
+            # Wall-clock the session existed but was not being served. On the reference
+            # run one session idled 562s of 661s: a session-level latency number that
+            # ignores this describes the harness's think time, not the server.
+            "idle_ms":round(max(0.0,_span_ms-_busy),1),
+            "ttft_ms":[r.get("client_ttft_ms") for r in _rs],
+            "kv_hit":[r.get("kv_hit_rate") for r in _rs],
+            "isl":[r.get("isl") for r in _rs],
+            "reuse":[r.get("prefix_reuse_ratio") for r in _rs],
+            "xids":[r.get("x_request_id") for r in _rs],
+            "decode_workers":sorted({r.get("decode_worker_id") for r in _rs if r.get("decode_worker_id") is not None}),
+            "prefill_ranks":sorted({r.get("prefill_dp_rank") for r in _rs if r.get("prefill_dp_rank") is not None}),
+        })
+    rt_sessions.sort(key=lambda s:s["t"])
+    _pin=sum(1 for s in rt_sessions if len(s["decode_workers"])==1)
+    _log.info(f"request trace: {len(rt_requests)} requests, {len(rt_sessions)} sessions, "
+              f"{_pin}/{len(rt_sessions)} pinned to a single decode worker, "
+              f"{len(rt_const)} constant field(s): {sorted(rt_const)}")
+    _errs=[v["routing"]["belief_error"] for v in rt_requests.values()
+           if (v.get("routing") or {}).get("belief_error") is not None]
+    if _errs:
+        _bad=[e for e in _errs if e>0.02]
+        rt_belief={"n":len(_errs),"disagree":len(_bad),
+                   "worst":round(max(_errs),4),"threshold":0.02}
+        _log.info(f"router belief vs engine reality: {len(_errs)-len(_bad)}/{len(_errs)} agree "
+                  f"(overlap_blocks x {BLK} == cached_tokens within 2%), worst error {max(_errs):.1%}")
+    else:
+        rt_belief=None
+
+# ============ 6. declarative time-series panels ==============================
+# One generic evaluator over the panel table in panels.py. Every panel is a data row;
+# none of them has bespoke code, so none can drift into being run-specific.
+panels=_evaluate_panels(scr)
+
+# The warmup boundary rides on the PANEL ENTITY, not on a global the renderer reaches
+# for. A panel is then self-describing -- it carries its own series, its own units and
+# its own phase marker -- so any consumer that can draw one panel can draw the marker,
+# and a panel whose x-axis is not run-time simply never sets the field.
+# Applied just before the payload is assembled, NOT here: the derived panels
+# (batch composition, step stalls, rank balance) are appended to `panels` further
+# down, and marking at this point would silently skip every one of them.
+def _mark_warmup(ps):
+    if WARMUP_END_S is None: return ps
+    for _p in ps.values():
+        _p["warmup_end_s"]=WARMUP_END_S
+    return ps
+
+# ---- derived panels: in-flight balance across ranks and workers -------------
+# Emitted in the SAME shape as the spec panels so the generic renderer draws them
+# with no extra code -- a different SOURCE, not a different kind of panel.
+#
+# Why this cannot come from the metrics stream: engine-side per-rank series are a
+# replicated broadcast (identical across ranks in every sweep), so splitting an
+# engine gauge by rank renders a flat family of lines and reads as "balanced" on a
+# run that was not. The request trace carries the rank that actually served each
+# request, so occupancy per rank can be reconstructed from it instead.
+#
+# Why INSTANTANEOUS rather than a whole-run total, in the reporter's own words:
+#   "Over the whole benchmark phase, I don't see a large imbalance between DP ranks.
+#    However, there is a large instantaneously imbalance."
+# A run-total request count per rank is exactly the aggregate that hides this, which
+# is why the panel is max-minus-min occupancy over time and not a bar chart.
+#
+# The spread statistic follows the documented method -- "using running-request and
+# looking at min/max between DP ranks" -- with the normalised form alongside, since
+# max-min of 4 means something different at 5 in flight than at 500.
+def _inflight_spread(rows, field, nbins=240):
+    live=[r for r in rows if r.get(field) is not None and r.get("received_ms") and r.get("total_ms")]
+    if len({r[field] for r in live})<2: return None,None
+    t0=min(r["received_ms"] for r in live); t1=max(r["received_ms"]+r["total_ms"] for r in live)
+    if t1<=t0: return None,None
+    step=(t1-t0)/nbins
+    keys=sorted({r[field] for r in live})
+    spread=[]; norm=[]
+    for i in range(nbins):
+        t=t0+i*step
+        counts={k:0 for k in keys}
+        for r in live:
+            if r["received_ms"]<=t<r["received_ms"]+r["total_ms"]: counts[r[field]]+=1
+        hi,lo=max(counts.values()),min(counts.values())
+        mean=sum(counts.values())/len(counts)
+        spread.append([round(i*step/1000,1),hi-lo])
+        # Normalised only where there is load; (hi-lo)/0 is undefined, and reporting
+        # perfect balance for an idle window would dilute the very spikes being hunted.
+        if mean>0: norm.append([round(i*step/1000,1),round((hi-lo)/mean,3)])
+    return spread,norm
+
+# ---- derived panel: batch composition, from the per-iteration log ----------
+# The scrape stream says how BUSY the engine was; only the per-iteration log says
+# what "busy" consisted of. An engine scheduling one request per step at high
+# occupancy is saturated in a completely different way from one scheduling many, and
+# the two are indistinguishable in every aggregate gauge.
+if iter_series and 'iter_bins' in globals() and iter_bins:
+    _bf={}; _mx={}
+    for _w,_rows in iter_bins.get("bins",{}).items():
+        _fr=[];_m=[]
+        for _r in _rows:
+            _h={int(k):v for k,v in (_r.get("sched_hist") or {}).items()}
+            _active=sum(v for k,v in _h.items() if k>=1)
+            _batched=sum(v for k,v in _h.items() if k>=2)
+            _t=relt(int(_r["t"])*10**9)
+            if _t<0 or _t>run_dur+60: continue
+            # Fraction is over ACTIVE iterations only: an idle step did not decline to
+            # batch, it had nothing to batch, and counting it would read as a batching
+            # failure during a quiet period.
+            if _active: _fr.append([round(_t,1),round(_batched/_active,4)])
+            _m.append([round(_t,1),_r.get("sched_max") or 0])
+        if _fr: _bf[_w]=_fr
+        if _m: _mx[_w]=_m
+    if _bf:
+        panels["en_batched_fraction"]={
+          "tab":"engine","title":"Batched iterations, share of active steps",
+          "unit":"ratio","kind":"derived","split_by":None,
+          "why":"Of the steps that had work, the share that scheduled more than one "
+                "request. A value pinned near zero means the engine is stepping one "
+                "request at a time -- the same wall-clock occupancy as a healthy engine, "
+                "at a fraction of the throughput.",
+          "source":["iter_bins.json"],
+          "caveat":"From rank 0 only, so it cannot show per-rank divergence. Idle steps "
+                   "are excluded from the denominator; a quiet period is not a batching "
+                   "failure.",
+          "issues":["PERF-batch-starvation"],"series":_bf}
+    _st={}
+    for _w,_rows in iter_bins.get("bins",{}).items():
+        _pts=[]
+        for _r in _rows:
+            _v=_r.get("host_step_time_ms_max")
+            _t=relt(int(_r["t"])*10**9)
+            if _v is None or _t<0 or _t>run_dur+60: continue
+            _pts.append([round(_t,1),_v/1000.0])
+        if _pts: _st[_w]=_pts
+    if _st:
+        panels["en_step_stall"]={
+          "tab":"engine","title":"Worst engine step per second",
+          "unit":"s","kind":"derived","split_by":None,
+          "why":"The longest forward step in each second, from the per-iteration log. A "
+                "scraped gauge samples once a second and cannot see a stall it did not "
+                "land on, so this is the only view in which a multi-second engine stop "
+                "is visible at all.",
+          "source":["iter_bins.json"],
+          "caveat":"Rank 0 only, and a maximum rather than a typical value -- read it "
+                   "beside the median step time, not instead of it.",
+          "issues":["PERF-iteration-stall"],"series":_st}
+        _pk=max(v for s_ in _st.values() for _,v in s_)
+        _log.info(f"engine step stalls: worst single step {_pk:.1f}s across {len(_st)} worker(s)")
+    if _mx:
+        panels["en_sched_max"]={
+          "tab":"engine","title":"Peak scheduled requests per step",
+          "unit":"requests","kind":"derived","split_by":None,
+          "why":"The most the scheduler ever managed in a single step, against the "
+                "engine's configured batch ceiling. A peak far below the ceiling means "
+                "the limit is arrival or admission, not engine capacity.",
+          "source":["iter_bins.json"],
+          "caveat":"Rank 0 only.","issues":["PERF-batch-starvation"],"series":_mx}
+        _log.info("batch composition: "+", ".join(
+            f"{w}={sum(v for _,v in s)/max(1,len(s)):.2f} batched-share" for w,s in _bf.items()))
+
+for _field,_label,_tab in (("prefill_dp_rank","prefill DP rank","router"),
+                           ("decode_worker_id","decode worker","engine")):
+    _sp,_nm=_inflight_spread(rt_rows,_field)
+    if not _sp: continue
+    panels[f"bal_{_field}"]={
+      "tab":_tab,
+      "title":f"In-flight imbalance across {_label}s",
+      "unit":"requests","kind":"derived","split_by":None,
+      "why":"Concurrent requests on the busiest minus the least busy, sampled over the "
+            "run. A whole-run total per rank averages this away: balance over a phase "
+            "and balance at an instant are different properties, and it is the "
+            "instantaneous spread that stalls a synchronised step.",
+      "source":["request_trace.jsonl"],
+      "caveat":"Reconstructed from per-request attribution, not from an engine gauge -- "
+               "engine-side per-rank series are a replicated broadcast and cannot show "
+               "imbalance at all. Counts a request as occupying its rank for its whole "
+               "lifetime, so it measures occupancy, not instantaneous GPU work.",
+      "issues":["PERF-dp-imbalance"],
+      "series":{"max-min":_sp,**({"normalised (max-min)/mean":_nm} if _nm else {})},
+    }
+    _peak=max(v for _,v in _sp)
+    _log.info(f"balance [{_field}]: peak instantaneous spread {_peak} requests "
+              f"across {len({r[_field] for r in rt_rows if r.get(_field) is not None})} keys")
+if panels:
+    _by_tab={}
+    for _pid,_p in panels.items(): _by_tab.setdefault(_p["tab"],[]).append(_pid)
+    _log.info("panels: "+", ".join(f"{t}={len(v)}" for t,v in sorted(_by_tab.items()))
+              +f" ({sum(len(p['series']) for p in panels.values())} series total)")
+    _flat=[pid for pid,p in panels.items()
+           if all(len({round(v,9) for _,v in s})==1 for s in p["series"].values())]
+    if _flat:
+        # Named rather than dropped: a flat queue-depth panel says the run never
+        # queued, which is one of the more useful things a run can tell you.
+        _log.info(f"panels reading a single constant value: {sorted(_flat)}")
+
 DATA={
  "logdrill":logdrill,
+ "panels":_mark_warmup(panels),
+ "rt":{"requests":rt_requests,"sessions":rt_sessions,"bands":RT_BANDS,"const":rt_const,"belief":rt_belief},
  "iter":iter_series,
  "iter_cfg":{"pf_batch":CFG_PF_BATCH,"pf_tok":CFG_PF_TOK,"de_batch":CFG_DE_BATCH,"de_tok":CFG_DE_TOK},
  "drill":{"series":drill_series,"extrema":drill_extrema,"spans":drill_spans,
@@ -780,11 +1674,40 @@ DATA={
  # Which tabs have inputs. A tab with no data is DROPPED, not rendered empty:
  # an empty Router tab reads as "this run had no queueing" rather than "this run
  # was not instrumented", which is the more dangerous of the two misreadings.
+ # Engine is the one tab with two independent producers: the scrape stream and the
+ # per-iteration log. Gating it on scrapes alone drops it on a run that has full
+ # engine telemetry and no /metrics surface -- exactly the trtllm-serve control a
+ # Dynamo run has to be compared against.
  "tabs":{"overview":bool(rows),"frontend":bool(scr),"router":bool(scr),
-         "engine":bool(scr),"loganalysis":logdrill is not None},
+         "engine":bool(scr) or bool(iter_series),"loganalysis":logdrill is not None,
+         "session":bool(rt_sessions)},
  "meta":{"n":N,"run_dur_s":round(run_dur,1),"scrapes":len(scr),
+   "warmup_end_s":WARMUP_END_S,"warmup_src":WARMUP_SRC,
    "src":META_SRC,
-   "topo":META_TOPO or f"max batch prefill {MAX_BATCH_PF} / decode {MAX_BATCH_DE}"},
+   # Substitute the authoritative block size measured from the metrics stream. The
+   # yaml only ever carried ingest's --block-size fallback, and on the reference run
+   # that fallback (512) disagreed with both the measured value (32) and the engine
+   # config (256) -- three numbers, of which the header was showing the wrong one.
+   "topo":(META_TOPO or f"max batch prefill {MAX_BATCH_PF} / decode {MAX_BATCH_DE}")
+          .replace("__BLK__", str(BLK) if BLK else "unknown"),
+   # Why the population is the size it is. `n` alone cannot distinguish "this run
+   # served nothing" from "this run never left warmup", and those call for opposite
+   # responses: the first is a broken deployment, the second is a run that needed
+   # more wall clock. Verified on the c32 reference run 2750618, where all 118 client
+   # records are benchmark_phase=warmup because the job hit its 20-minute limit before
+   # profiling began -- a reader seeing only n=0 would conclude the stack was dead.
+   #
+   # The page says this in its header already; this is the same statement in the
+   # payload, which is what anything downstream of the HTML actually reads.
+   "phase_filter":{"applied":not _args.include_warmup,
+                   "kept":len(client),"dropped":_skipped_phase,
+                   "phases":_phase_seen},
+   "client_summary":CLIENT_SUMMARY,
+   "provenance":PROVENANCE,
+   "benchmark_status":BENCH_STATUS,
+   "log_signals":LOG_SIGNALS,
+   "lifecycle":LIFECYCLE,
+   "host":HOST},
  "kpi":{"ttft_p50":round(pct(col("ttft"),50)/1000,1),"ttft_p99":round(pct(col("ttft"),99)/1000,1),
    "adm_p50":round(pct(col("adm"),50)/1000,1),"pf_p50":round(pct(col("pf"),50)/1000,1),
    "reqs":N,"adm_share":round(pct(col("adm"),50)/max(1,pct(col("ttft"),50))*100,0),
@@ -826,7 +1749,16 @@ h1{margin:0;font-size:16px}.sub{color:var(--dim);font-size:12px;margin-top:3px}
 .view{display:none;padding:16px 20px 60px}.view.on{display:block}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(400px,1fr));gap:14px}
 .panel{background:var(--panel);border:1px solid var(--edge);border-radius:10px;padding:12px 14px;min-width:0}
-.panel h2{margin:0 0 2px;font-size:13px}.panel .cap{color:var(--dim);font-size:11px;margin-bottom:8px}
+.panel h2{margin:0 0 2px;font-size:13px}.panel .src{color:#6e7681;font-size:11px}
+.warn{color:#d29922;font-size:11px}
+.kpi .src{color:#6e7681;font-size:10px;margin-top:2px}
+.reqcard{border-top:1px solid #21262d;padding:8px 0}
+.reqhead{font-size:12px;color:#c9d1d9;margin-bottom:2px}
+.reqmeta{font-size:11px;color:#8b949e;margin-top:2px}
+.tbl{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}
+.tbl th{text-align:left;color:#8b949e;font-weight:600;border-bottom:1px solid #30363d;padding:4px 8px}
+.tbl td{padding:4px 8px;border-bottom:1px solid #21262d;color:#c9d1d9;font-variant-numeric:tabular-nums}
+.cap{color:var(--dim);font-size:11px;margin-bottom:8px}
 .kpis{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px}
 .kpi{background:var(--panel);border:1px solid var(--edge);border-radius:9px;padding:9px 14px;min-width:110px}
 .kpi .v{font-size:22px;font-weight:700;color:var(--grn)}.kpi .l{color:var(--dim);font-size:11px}
@@ -867,11 +1799,58 @@ const tip=d3.select('#tip'),RD=DATA.meta.run_dur_s;
 const fmtS=ms=>ms==null?'—':ms>=1000?(ms/1000).toFixed(1)+'s':ms.toFixed(ms<10?2:0)+'ms';
 function sTip(h,e){tip.style('display','block').html(h).style('left',(e.clientX+14)+'px').style('top',(e.clientY-10)+'px')}
 function hTip(){tip.style('display','none')}
-document.getElementById('sub').textContent=`${DATA.meta.n.toLocaleString()} requests · ${DATA.meta.scrapes} metric scrapes · run ${RD}s · ${DATA.meta.topo} · ${DATA.meta.src}`;
+// Header provenance. `meta.n` counts only PROFILING-phase requests joined across the
+// client and trace legs, and it is legitimately 0 on a run that never reached the
+// profiling phase -- every record still being warmup. Reporting a bare "0 requests"
+// next to a Session tab listing dozens of sessions reads as a broken page, so the
+// header says which population it is describing and names the other one.
+(function(){
+  const M=DATA.meta, RT=DATA.rt||{};
+  const nSess=(RT.sessions||[]).length, nReq=Object.keys(RT.requests||{}).length;
+  let head=`${M.n.toLocaleString()} profiling requests · ${M.scrapes} metric scrapes`
+         + ` · run ${RD}s · ${M.topo} · ${M.src}`;
+  if(!M.n && (nReq||nSess)) head += `  —  no request completed the profiling phase;`
+         + ` ${nReq} request(s) across ${nSess} session(s) are warmup and are shown on the`
+         + ` Session tab, excluded from every percentile above`;
+  // A benchmark that failed outranks everything else the header could say. Without it
+  // an empty dashboard reads as a dead deployment, when the usual cause is an
+  // environment fault that never let the workload start -- and those call for opposite
+  // responses. Placed before the validity clause because it subsumes it: if the
+  // benchmark never ran, its own validity flags are moot.
+  const BS=M.benchmark_status;
+  if(BS){
+    head += `  —  BENCHMARK FAILED (exit ${BS.exit_code||'?'})`
+          + (BS.errors && BS.errors.length ? `: ${BS.errors[0]}` : '')
+          // The phase census when there is no error line: it distinguishes "never
+          // started" from "ran and was cut short", which have opposite fixes.
+          + (!(BS.errors||[]).length && (BS.phases||[]).length
+               ? ` — ${BS.phases[BS.phases.length-1]}` : '');
+  }
+  // Run validity bounds every number on the page, so it belongs in the header rather
+  // than on one tab. A cancelled run, a run with client errors, or an agentic run
+  // whose child branches errored produced figures that must not be compared against a
+  // clean run -- and nothing in the per-request stream says so.
+  const LC=M.lifecycle;
+  if(LC && LC.durations_s && LC.durations_s.time_to_ready!=null){
+    head += `  —  ready in ${LC.durations_s.time_to_ready}s`
+          + (LC.durations_s.readiness_gap!=null
+               ? ` (frontend accepted ${LC.durations_s.readiness_gap}s before the router could place)` : '');
+  }
+  const CS=M.client_summary;
+  if(CS){
+    const bad=[];
+    if(CS.was_cancelled) bad.push('client reported the run CANCELLED');
+    if(CS.n_errors) bad.push(`${CS.n_errors} client error(s)`);
+    if(CS.branch_errored) bad.push(`${CS.branch_errored} agentic branch(es) errored`);
+    if(CS.branch_truncated) bad.push(`${CS.branch_truncated} branch(es) truncated`);
+    head += bad.length ? `  —  VALIDITY: ${bad.join('; ')}` : `  —  client reports no errors`;
+  }
+  document.getElementById('sub').textContent=head;
+})();
 // 'Log analysis' only exists when --frontend-log was supplied; the tab is dropped
 // entirely rather than rendered empty, so a bundle-only build looks unchanged.
 const ALL_TABS=[['overview','Overview'],['frontend','Frontend'],['router','Router'],
-                ['engine','Engine'],['loganalysis','Log analysis']];
+                ['engine','Engine'],['session','Session'],['loganalysis','Log analysis']];
 const OK=DATA.tabs||{};
 const TABS=ALL_TABS.filter(([id])=>OK[id]);
 const te=d3.select('#tabs'),ve=d3.select('#views');
@@ -887,13 +1866,38 @@ function vsel(id){const v=d3.select('#v-'+id);return v.empty()?d3.select('#sink'
 function grid(view){let g=vsel(view).select('.grid');return g.empty()?vsel(view).append('div').attr('class','grid'):g}
 function panel(view,title,cap,full){const el=grid(view).append('div').attr('class','panel'+(full?' full':''));
   el.append('h2').html(title);if(cap)el.append('div').attr('class','cap').html(cap);return el}
+// items are [value, label, source?]. The optional third element names WHERE the number
+// came from -- a KPI with no provenance is indistinguishable from one that was
+// computed off the wrong population, which has happened here more than once.
 function kpis(view,items){const k=vsel(view).insert('div',':first-child').attr('class','kpis');
-  items.forEach(it=>{const c=k.append('div').attr('class','kpi');c.append('div').attr('class','v').text(it[0]);c.append('div').attr('class','l').text(it[1])})}
+  items.forEach(it=>{const c=k.append('div').attr('class','kpi');
+    c.append('div').attr('class','v').text(it[0]);
+    c.append('div').attr('class','l').text(it[1]);
+    if(it[2]) c.append('div').attr('class','src').text(it[2]);})}
 function note(view,html,cls){vsel(view).append('div').attr('class','note '+(cls||'')).html(html)}
 function svg(el,w,h){return el.append('svg').attr('viewBox',`0 0 ${w} ${h}`)}
 function lg(el,items){el.append('div').attr('class','lg').html(items.map(([c,t])=>`<span><span class="sw" style="background:${c}"></span>${t}</span>`).join(''))}
 
-function lineChart(el,series,{unit='ms',w=VW,h=220,cols=null,keys=null,legend=null,ymax=null,hline=null,logy=false}={}){
+// ---- warmup phase marker ----------------------------------------------------
+// Drawn by every time-axis chart, from ONE helper, so the marker cannot be present
+// on some tabs and missing on others. The value is an OPTIONAL field on the panel
+// entity (`p.warmup_end_s`), falling back to the run-level `DATA.meta.warmup_end_s`
+// for the hand-written charts that have no panel entity. Absent => nothing drawn:
+// a harness with no warmup phase must not grow an invented boundary.
+function wmVal(p){
+  const v = (p && p.warmup_end_s!=null) ? p.warmup_end_s : (DATA.meta||{}).warmup_end_s;
+  return (v==null || !isFinite(v)) ? null : v;
+}
+function wmLine(s,x,hTop,hBot,p){
+  const v=wmVal(p); if(v==null) return;
+  const px=x(v); const [lo,hi]=x.range();
+  if(px<lo || px>hi) return;          // boundary outside this chart's window
+  s.append('line').attr('x1',px).attr('x2',px).attr('y1',hTop).attr('y2',hBot)
+   .attr('stroke','#8b949e').attr('stroke-width',1).attr('stroke-dasharray','3,3').attr('opacity',.75);
+  s.append('text').attr('x',px+3).attr('y',hTop+9).attr('fill','#8b949e')
+   .attr('font-size','9px').text('warmup ends');
+}
+function lineChart(el,series,{unit='ms',w=VW,h=220,cols=null,keys=null,legend=null,ymax=null,hline=null,logy=false,panelSpec=null}={}){
   if(legend)lg(el,legend);
   const s=svg(el,w,h),L=56,B=26,R=12;
   const x=d3.scaleLinear().domain([0,RD]).range([L,w-R]);
@@ -908,6 +1912,7 @@ function lineChart(el,series,{unit='ms',w=VW,h=220,cols=null,keys=null,legend=nu
     ? d3.scaleLog().domain([Math.max(1e-9,d3.min(series,d=>d3.min(lines.map(k=>d[Array.isArray(k)?k[0]:k]).filter(v=>v!=null&&v>0)))||1), mx*1.6]).range([h-B,8])
     : d3.scaleLinear().domain([0,mx*1.05]).range([h-B,8]);
   s.append('g').attr('class','axis').attr('transform',`translate(0,${h-B})`).call(d3.axisBottom(x).ticks(8).tickFormat(d=>d+'s'));
+  wmLine(s,x,8,h-B,panelSpec);
   s.append('g').attr('class','axis').attr('transform',`translate(${L},0)`).call((logy?d3.axisLeft(y).ticks(6,'~s'):d3.axisLeft(y).ticks(5).tickFormat(d=>unit==='ms'?fmtS(d):(unit==='%'?d+'%':d3.format('~s')(d)))));
   if(hline!=null){s.append('line').attr('x1',L).attr('x2',w-R).attr('y1',y(hline)).attr('y2',y(hline)).attr('stroke','#666').attr('stroke-dasharray','5 3');
     s.append('text').attr('x',w-R-3).attr('y',y(hline)-4).attr('text-anchor','end').attr('fill','#8b949e').attr('font-size',10).text('max '+hline);}
@@ -968,6 +1973,7 @@ function multiLine(el,series,{h=240,unitLabel='',area=false,xmax=null}={}){
   const mx=d3.max(labels,k=>d3.max(series[k],d=>d[1]))||1;
   const y=d3.scaleLinear().domain([0,mx*1.05]).range([h-B,8]);
   s.append('g').attr('class','axis').attr('transform',`translate(0,${h-B})`).call(d3.axisBottom(x).ticks(8).tickFormat(d=>d+'s'));
+  wmLine(s,x,8,h-B,null);
   s.append('g').attr('class','axis').attr('transform',`translate(${L},0)`).call(d3.axisLeft(y).ticks(5).tickFormat(fmtN));
   if(unitLabel)s.append('text').attr('x',6).attr('y',12).attr('font-size',11).attr('fill',C.dim).text(unitLabel);
   const ln=d3.line().defined(d=>d[1]!=null).x(d=>x(d[0])).y(d=>y(d[1])).curve(d3.curveStepAfter);
@@ -1121,13 +2127,14 @@ drillPanel('overview',DATA.drill,{
 (function(){const L=DATA.logdrill; if(!L) return;
  const S=L.stats;
  kpis('loganalysis',[
-   [L.n.toLocaleString(),'requests charted'],
-   [(L.global.p50/1000).toFixed(2)+'s','TTFT p50 (log)'],
-   [(L.global.p99/1000).toFixed(2)+'s','TTFT p99 (log)'],
-   [S.records.toLocaleString(),'log records parsed'],
-   [S.completed.toLocaleString(),'lifecycle completions'],
-   [L.routing?'yes':'no','routing join available'],
-   [L.matched?'same run':'DIFFERENT','vs. bundle in other tabs']]);
+   [L.n.toLocaleString(),'requests charted','frontend log'],
+   [(L.global.p50/1000).toFixed(2)+'s','TTFT p50 (log)','request completed'],
+   [(L.global.p99/1000).toFixed(2)+'s','TTFT p99 (log)','request completed'],
+   [S.records.toLocaleString(),'log records parsed','frontend log'],
+   [S.completed.toLocaleString(),'lifecycle completions','request completed'],
+   [(S.selector_without_request_id||0).toLocaleString(),'routing decisions seen','selector'],
+   [L.routing?'yes':'no','routing joinable per request','selector request_id'],
+   [L.matched?'same run':'DIFFERENT','vs. bundle in other tabs','x_request_id overlap']]);
  note('loganalysis',
   `<b>Same panel, different back-end.</b> The Overview TTFT chart is built from Tempo spans; this one is built from
    <code>${L.src}</code> — the Dynamo frontend log at <b>default INFO level</b>. No tracing backend, no DEBUG, no
@@ -1136,9 +2143,9 @@ drillPanel('overview',DATA.drill,{
    <br><br>The breakdown here is <b>deliberately shallower</b>. <code>ttft_ms</code> on the INFO
    <code>request completed</code> line is a single number covering routing, scheduler queue, prefill compute and KV
    transfer; the log cannot separate them, so that interval is drawn as <b>one hatched row</b> rather than invented
-   sub-stages. Where the router's selector line carries a <code>request_id</code>
-   (Dynamo ≥ 2026-08-10) the admission+routing prefix <i>is</i> separable and is split out —
-   <b>${L.routing?'available in this run':'not available in this run, so TTFT is a single opaque block'}</b>.`);
+   sub-stages. The admission+routing prefix is separable only when the router's
+   selector line carries a <code>request_id</code> (Dynamo &ge; 2026-08-10); without it TTFT stays a
+   single opaque block. Whether this run has it is the <i>routing joinable per request</i> figure above.`);
  // Panel order on this tab is CALL order. TTFT leads: it is the primary question
  // the tab answers, and the load-balance panels below are read against it.
  drillPanel('loganalysis',L,{
@@ -1240,7 +2247,25 @@ drillPanel('overview',DATA.drill,{
 })();
 
 // ================= ROUTER =================
-note('router',`Both panels come from the <b>frontend</b> endpoint (<code>:8000/metrics</code>). The KV router runs in-process in the frontend, so every router metric is published there — the prefill and decode endpoints expose none.`,'hl');
+// The coverage clause is appended only when the frontend-log leg is present, because
+// only that leg can count routing decisions. The SENTENCE is fixed; the numbers in it
+// are measured per run. Without it these panels read as "how the router chose", when
+// on a session-affinity deployment most requests never reach the KV scorer at all --
+// they are pinned to the worker that already holds the conversation. A reader drawing
+// conclusions about KV-aware routing from a run that barely used it is the failure
+// this sentence exists to prevent.
+(function(){
+ let cov='';
+ const CV=DATA.ro.coverage;
+ if(CV){
+   cov=`<br><br><b>Routing-decision coverage.</b> ${CV.decisions.toLocaleString()} routing decisions were
+     observed and <b>${CV.pinned.toLocaleString()} (${CV.pct_pinned.toFixed(1)}%)</b> were pinned by session
+     affinity, so they bypassed KV scoring entirely. These panels therefore describe the
+     <b>${(100-CV.pct_pinned).toFixed(1)}%</b> of decisions that actually reached the scorer. Read the KV-routing
+     panels as a description of that slice, not of the run's whole traffic.`;
+ }
+ note('router',`Both panels come from the <b>frontend</b> endpoint (<code>:8000/metrics</code>). The KV router runs in-process in the frontend, so every router metric is published there — the prefill and decode endpoints expose none.`+cov,'hl');
+})();
 (function(){const el=panel('router','Router overhead',
   '<code>dynamo_router_overhead_total_ms</code> — "Total routing overhead per request in milliseconds". A Prometheus histogram, plotted as the <b>interval mean</b> (Δsum/Δcount between consecutive scrapes), so each point is the average routing cost of the requests routed during that interval.',true);
  lg(el,[[C.grn,'router overhead (ms/request)']]);
@@ -1251,11 +2276,52 @@ note('router',`Both panels come from the <b>frontend</b> endpoint (<code>:8000/m
  lineChart(el,DATA.ro.queue_pending,{unit:'n',keys:[[1,C.adm]]});})();
 
 // ================= ENGINE =================
-note('engine',`Engine occupancy from Prometheus: <b>KV utilisation</b>, <b>in-flight batch vs configured max</b>, and the <b>true block cache-hit</b>. Read together — low KV utilisation with in-flight batch far below the max ceiling means the engines are starved (requests held upstream in admission — see Router), not compute-bound. Caveats (image-gated): no <code>llm_request</code> span (coarse gantt), no per-pool KV, no DCGM GPU-compute util.`,'hl');
-(function(){const el=panel('engine','KV cache utilisation over the run (% — peak worker)','dynamo_component_gpu_cache_usage_percent, max across dp-ranks per role (the busiest worker). Peaks &lt;4% ⇒ KV cache nearly empty: workers idle waiting on admission, not KV-bound.',true);
- lg(el,[[C.pf,'prefill (6 CTX)'],[C.de,'decode (1 GEN)']]);
- lineChart(el,DATA.en.kvutil_pf.map((d,i)=>[d[0],d[1],DATA.en.kvutil_de[i][1]]),{unit:'%',keys:[[1,C.pf],[2,C.de]]});})();
-(function(){const el=panel('engine','True block cache-hit over the run (%)','trtllm_kv_cache_hit_rate (engine, per CTX worker) — the REAL reuse. Perf-OFF client reports 0% as an artifact; the log-residency proxy inflates.',true);
+// The measured reuse rate is uninterpretable on its own -- every reader scores it
+// against a private expectation. AIPerf computes what the WORKLOAD offered, so the
+// two together turn a bare percentage into a gap with a size. Fixed sentence,
+// measured numbers, and omitted entirely when the client summary is absent.
+(function(){
+ let ceil='';
+ const CS=DATA.meta.client_summary, TH=CS&&CS.theoretical_prefix_cache_hit;
+ if(TH!=null){
+   const got=(DATA.kpi||{}).kv_hit_true;
+   ceil=`<br><br><b>Reuse against the workload's ceiling.</b> The client computes a theoretical
+     prefix-cache hit of <b>${TH.toFixed(1)}%</b> for this workload — the most any engine could
+     have reused given the prompts actually sent.`
+     + (got!=null ? ` The engine measured <b>${got.toFixed(1)}%</b>, a gap of
+     <b>${(TH-got).toFixed(1)} points</b>.` : '')
+     + ` Read the true-hit panel against that ceiling, not against an absolute
+     expectation: a workload with little shared prefix cannot be reused into a high rate,
+     and a low rate under a high ceiling is a routing or eviction problem.`;
+ }
+ note('engine',`Engine occupancy from Prometheus: <b>KV utilisation</b>, <b>in-flight batch vs configured max</b>, and the <b>true block cache-hit</b>. Read together — low KV utilisation with in-flight batch far below the max ceiling means the engines are starved (requests held upstream in admission — see Router), not compute-bound. Caveats (image-gated): no <code>llm_request</code> span (coarse gantt), no per-pool KV, no DCGM GPU-compute util.`+ceil,'hl');
+})();
+// A series of all-nulls is NOT the same as a series of zeros, and an empty axis
+// says the second. Every panel below states which source produced it and, when
+// neither the gauge nor the iteration-log fallback exists, says so in words.
+function notCaptured(el,what){
+  el.append('div').attr('class','cap')
+    .style('padding','14px 0').style('color','#d29922')
+    .html(`<b>Not captured in this run.</b> ${what} No worker <code>/metrics</code> endpoint `
+         +`was scraped and the per-iteration log carries no substitute, so this is absent `
+         +`data — not a measured zero.`);
+}
+function anyVal(s,i){return (s||[]).some(d=>d[i]!=null);}
+(function(){const src=DATA.en.kvutil_src||'';
+ const el=panel('engine','KV cache utilisation over the run (% — peak worker)',
+  `Source: <code>${src}</code>, max across workers per role (the busiest worker). `
+ +`Low peaks with in-flight batch far below the ceiling ⇒ the engines are starved, not KV-bound.`
+ +(src.startsWith('iter_bins')?' <b>Derived from the per-iteration log</b> because the Prometheus gauge was not scraped; same quantity, denser sampling.':''),true);
+ if(!anyVal(DATA.en.kvutil_pf,1)&&!anyVal(DATA.en.kvutil_de,1)){
+   notCaptured(el,'<code>dynamo_component_gpu_cache_usage_percent</code> is a worker-side gauge.');return;}
+ lg(el,[[C.pf,'prefill'],[C.de,'decode']]);
+ lineChart(el,DATA.en.kvutil_pf.map((d,i)=>[d[0],d[1],(DATA.en.kvutil_de[i]||[])[1]]),{unit:'%',keys:[[1,C.pf],[2,C.de]]});})();
+(function(){const src=DATA.en.true_hit_src||'';
+ const el=panel('engine','True block cache-hit over the run (%)',
+  `Source: <code>${src}</code> — the REAL reuse, measured at the engine rather than inferred from the client.`
+ +(src.startsWith('iter_bins')?' <b>Derived from the per-iteration log</b> as <code>cached_kv_tokens / (cached_kv_tokens + num_ctx_tokens)</code> over context workers, because <code>trtllm_kv_cache_hit_rate</code> was not scraped. Token-weighted and context-phase only, so it is close to but not identical to the gauge.':''),true);
+ if(!anyVal(DATA.en.true_hit_pct,1)){
+   notCaptured(el,'<code>trtllm_kv_cache_hit_rate</code> is a worker-side gauge.');return;}
  lineChart(el,DATA.en.true_hit_pct,{unit:'%',keys:[[1,C.grn]]});})();
 
 // ================= FRONTEND =================
@@ -1274,6 +2340,7 @@ note('engine',`Engine occupancy from Prometheus: <b>KV utilisation</b>, <b>in-fl
   const y=d3.scaleLinear().domain([0,d3.max(all,d=>d[1])*1.1||1]).nice().range([h-B,8]);
   s.append('g').attr('class','axis').attr('transform',`translate(0,${h-B})`).call(d3.axisBottom(x).ticks(8).tickFormat(v=>v+'s'));
   s.append('g').attr('class','axis').attr('transform',`translate(${L},0)`).call(d3.axisLeft(y).ticks(5).tickFormat(v=>(v*100).toFixed(0)+'%'));
+  wmLine(s,x,8,h-B,null);
   const ln=d3.line().x(d=>x(d[0])).y(d=>y(d[1]));
   ser.forEach((d,i)=>s.append('path').datum(d).attr('fill','none').attr('stroke',keys[i][1]).attr('stroke-width',1.2).attr('opacity',.9).attr('d',ln));
  })();
@@ -1284,24 +2351,53 @@ note('engine',`Engine occupancy from Prometheus: <b>KV utilisation</b>, <b>in-fl
  const WK=Object.keys(IT).sort();
  const PAL=[C.pf,C.de,C.grn,C.route,C.cy,C.adm];
  function batchPanel(role, ceil, tok){
-   const wk=WK.filter(w=>w.startsWith(role)); if(!wk.length) return;
-   const cap=`<code>num_scheduled_requests</code> from the TRT-LLM per-iteration log, one line per `
-     +`${role} worker, raw integer (max per 1s bin). <b>Configured ceiling: `
-     +`<code>max_batch_size = ${ceil==null?'?':ceil}</code>`+(tok?` , <code>max_num_tokens = ${tok}</code>`:'')
-     +`</b> from this run's <code>trtllm_config_${role}.yaml</code> — shown here as text, not as a line, since a `
-     +`ceiling far above the data squashes the series onto the axis.`;
-   const el=panel('engine',`${role==='prefill'?'Prefill':'Decode'} in-flight batch per worker`,cap,true);
-   lg(el,wk.map((w,i)=>[PAL[i%PAL.length],w]));
-   const L=54,B=28,h=230,s=svg(el,VW,h);
+   // Worker keys are the LOG FILE stem, `<node>_<role>_w<N>` (e.g.
+   // `hecate0176_decode_w0`) -- the role is in the middle, not at the front. A
+   // startsWith() here matched nothing on every srt-slurm run ever rendered, and
+   // because the function returns silently on an empty match, both batch panels
+   // were absent rather than broken. Substring match, anchored on the `_role_`
+   // separator so a node named e.g. `decode01` cannot be mistaken for a role.
+   const wk=WK.filter(w=>w.includes('_'+role+'_')||w.includes('_'+role));
+   if(!wk.length) return;
    const all=wk.flatMap(w=>IT[w].num_scheduled_requests);
    if(!all.length) return;
    const ymax=d3.max(all,d=>d[1]);
+   const vals=all.map(d=>d[1]).sort((a,b)=>a-b);
+   const med=vals[Math.floor(vals.length/2)];
+   // The ceiling is drawn whenever it is on a comparable scale to the data. When it
+   // is far above (prefill runs a batch of ~1-10 against max_batch_size 256) drawing
+   // it to scale squashes every series onto the axis and the panel says nothing, so
+   // the axis stays on the data and the ceiling is reported as a utilisation figure.
+   const onScale = ceil!=null && ceil>0 && ymax >= ceil*0.25;
+   const pctOf = ceil ? v=>` (${(v/ceil*100).toFixed(1)}% of ceiling)` : ()=>'';
+   const cap=`<code>num_scheduled_requests</code> from the TRT-LLM per-iteration log, one line per `
+     +`${role} worker, raw integer (max per 1s bin), plotted against this run's configured `
+     +`<b><code>max_batch_size = ${ceil==null?'?':ceil}</code></b>`+(tok?` (<code>max_num_tokens = ${tok}</code>)`:'')
+     +` from <code>trtllm_config_${role}.yaml</code>. `
+     +(onScale
+        ? `The ceiling is the dashed line — the gap between it and the series is unserved batch capacity.`
+        : `The ceiling is <b>off-scale</b> here and is not drawn, because plotting it would squash `
+          +`every series onto the axis. Peak batch <b>${ymax}</b>${pctOf(ymax)}, median <b>${med}</b>${pctOf(med)} `
+          +`— at this ratio the batch is bounded by something other than <code>max_batch_size</code>`
+          +(tok?`, most likely the <code>max_num_tokens = ${tok}</code> budget.`:'.'));
+   const el=panel('engine',`${role==='prefill'?'Prefill':'Decode'} in-flight batch size per worker`,cap,true);
+   lg(el,wk.map((w,i)=>[PAL[i%PAL.length],w])
+        .concat(onScale?[['#d29922',`max_batch_size = ${ceil}`]]:[]));
+   const L=54,B=28,h=230,s=svg(el,VW,h);
+   const ytop = onScale ? ceil*1.06 : ymax;
    const x=d3.scaleLinear().domain([0,RD]).range([L,VW-10]);
-   const y=d3.scaleLinear().domain([0,ymax]).range([h-B,10]);
+   const y=d3.scaleLinear().domain([0,ytop]).range([h-B,10]);
    s.append('g').attr('class','axis').attr('transform',`translate(0,${h-B})`)
     .call(d3.axisBottom(x).ticks(8).tickFormat(v=>v+'s'));
    s.append('g').attr('class','axis').attr('transform',`translate(${L},0)`)
-    .call(d3.axisLeft(y).ticks(Math.min(ymax,6)).tickFormat(d3.format('d')));
+    .call(d3.axisLeft(y).ticks(Math.min(Math.ceil(ytop),6)).tickFormat(d3.format('d')));
+   wmLine(s,x,10,h-B,null);
+   if(onScale){
+     s.append('line').attr('x1',L).attr('x2',VW-10).attr('y1',y(ceil)).attr('y2',y(ceil))
+      .attr('stroke','#d29922').attr('stroke-width',1.4).attr('stroke-dasharray','6,4').attr('opacity',.95);
+     s.append('text').attr('x',VW-14).attr('y',y(ceil)-5).attr('text-anchor','end')
+      .attr('fill','#d29922').attr('font-size','10px').text(`max_batch_size = ${ceil}`);
+   }
    const ln=d3.line().x(d=>x(d[0])).y(d=>y(d[1]));
    wk.forEach((w,i)=>s.append('path').datum(IT[w].num_scheduled_requests).attr('fill','none')
      .attr('stroke',PAL[i%PAL.length]).attr('stroke-width',1.2).attr('opacity',.85).attr('d',ln));
@@ -1326,6 +2422,172 @@ note('frontend',`Both panels come from the <b>frontend</b> endpoint (<code>:8000
   {unit:'n',keys:[[1,C.grn],[2,C.adm],[3,C.cy],[4,C.pf]],logy:true});})();
 
 // hash-based tab select (for headless screenshots) + default
+// ---- declarative spec panels (src/visualization/panels.py) ------------------
+// ONE renderer for every spec panel. It is handed {series,unit,split_by,...} and
+// knows nothing else about the signal, so no panel can acquire bespoke drawing
+// behaviour -- which is the property the spec table exists to guarantee. The
+// caption is assembled from fixed fields (why / source / caveat), never from the
+// run's values, so two runs produce byte-identical captions.
+(function(){
+ const P=DATA.panels; if(!P||!Object.keys(P).length) return;
+ const PAL=[C.pf,C.de,C.grn,C.route,C.cy,C.adm,'#d29922','#a371f7','#db6d28','#3fb950'];
+ const fmtU=(u)=>{
+   if(u==='ratio')  return v=>(v*100).toFixed(0)+'%';
+   if(u==='s')      return v=>v>=1?v.toFixed(1)+'s':(v*1000).toFixed(0)+'ms';
+   if(u==='ms')     return v=>v>=1000?(v/1000).toFixed(1)+'s':v.toFixed(0)+'ms';
+   return d3.format('~s');
+ };
+ Object.keys(P).sort().forEach(pid=>{
+  const p=P[pid], keys=Object.keys(p.series).sort();
+  if(!keys.length) return;
+  // Fixed-composition caption: purpose, then provenance, then the known trap.
+  let cap=p.why
+    +`<br><span class="src">source: <code>${p.source.join('</code> + <code>')}</code>`
+    +` &middot; ${p.kind}${p.split_by?' &middot; split by <code>'+p.split_by+'</code>':''}</span>`;
+  if(p.caveat) cap+=`<br><span class="warn">caveat: ${p.caveat}</span>`;
+  const el=panel(p.tab,p.title,cap,keys.length>3);
+  // A series that never moves is stated in words. Drawing a flat line invites the
+  // reader to conclude the panel is broken, when "it never moved" is the finding.
+  const flat=keys.every(k=>{const v=p.series[k].map(d=>d[1]);return Math.max(...v)===Math.min(...v)});
+  if(flat){
+    const v=p.series[keys[0]][0][1];
+    el.append('div').attr('class','note').html(
+      `Constant <b>${fmtU(p.unit)(v)}</b> for the whole run across `
+      +`${keys.length} series &mdash; this run never exercised this signal.`);
+    return;
+  }
+  // High-cardinality panels (a per-thread runtime gauge is ~144 series) draw the
+  // busiest few rather than everything. Drawing all of them is a point cloud and a
+  // legend nobody can read; drawing one merged series hides which thread saturated.
+  // Ranked by PEAK because saturation is a property of the busiest members, and the
+  // omitted count is always stated -- a silently truncated panel reads as complete.
+  const MAXS=12; let drawn=keys, omitted=0;
+  if(keys.length>MAXS){
+    drawn=keys.slice().sort((a,b)=>d3.max(p.series[b],d=>d[1])-d3.max(p.series[a],d=>d[1])).slice(0,MAXS);
+    omitted=keys.length-MAXS;
+  }
+  if(drawn.length>1) lg(el,drawn.map((k,i)=>[PAL[i%PAL.length],p.split_by?`${p.split_by}=${k}`:k]));
+  if(omitted) el.append('div').attr('class','note').html(
+    `Showing the <b>${MAXS}</b> highest-peak of <b>${keys.length}</b> series; `
+    +`<b>${omitted}</b> lower-peak series omitted from the chart.`);
+  const L=58,B=28,H=keys.length>3?250:200,s=svg(el,VW,H);
+  const all=drawn.flatMap(k=>p.series[k]);
+  const x=d3.scaleLinear().domain([0,d3.max(all,d=>d[0])||1]).range([L,VW-12]);
+  const y=d3.scaleLinear().domain([0,(d3.max(all,d=>d[1])||1)*1.08]).nice().range([H-B,8]);
+  s.append('g').attr('class','axis').attr('transform',`translate(0,${H-B})`)
+   .call(d3.axisBottom(x).ticks(8).tickFormat(v=>v.toFixed(0)+'s'));
+  s.append('g').attr('class','axis').attr('transform',`translate(${L},0)`)
+   .call(d3.axisLeft(y).ticks(5).tickFormat(fmtU(p.unit)));
+  wmLine(s,x,8,H-B,p);
+  const ln=d3.line().x(d=>x(d[0])).y(d=>y(d[1]));
+  drawn.forEach((k,i)=>s.append('path').datum(p.series[k]).attr('fill','none')
+    .attr('stroke',PAL[i%PAL.length]).attr('stroke-width',1.2).attr('opacity',.9).attr('d',ln));
+ });
+})();
+
+// ---- per-request decomposition cards (DATA.rt.requests) --------------------
+// Entity type 2. One card shape for every request in every run: the four bands that
+// sum to total_ms, what the request WAS, and where it was routed. Nothing here is
+// conditional on the run -- a field the run did not produce renders as an em dash
+// rather than changing the card's shape.
+(function(){
+ const RT=DATA.rt||{}, R=RT.requests||{}; const xids=Object.keys(R);
+ if(!xids.length) return;
+ const BANDC=[C.adm,C.pf,C.route,C.de];
+ const el=panel('session','Per-request decomposition',
+   'The slowest requests in the run, each broken into the four phases that sum to its '
+   +'total. <b>Routing is an outcome, not a rationale</b>: the router\'s cost comparison '
+   +'is logged without a request id and cannot be joined, so this shows which worker was '
+   +'chosen and with how much prefix overlap, not why it won.'
+   +'<br><span class="src">source: <code>request_trace.jsonl</code> + <code>tempo_traces/</code></span>',true);
+
+ if(RT.belief){
+   const b=RT.belief, bad=b.disagree;
+   el.append('div').attr('class','note'+(bad?' warn':'')).html(
+     `Router belief vs engine reality: <b>${b.n-bad}/${b.n}</b> requests agree within `
+     +`${(b.threshold*100).toFixed(0)}% (router <code>overlap_blocks</code> x block size `
+     +`vs engine <code>cached_tokens</code>), worst error <b>${(b.worst*100).toFixed(1)}%</b>. `
+     +(bad?'A disagreement means the router scored a candidate on a prefix the engine does not hold.'
+          :'The router scored candidates on a prefix the engine actually had.'));
+ }
+
+ const slowest=xids.map(x=>[x,R[x]])
+   .sort((a,b)=>(b[1].attrs.total_ms||0)-(a[1].attrs.total_ms||0)).slice(0,12);
+ const W=760,BH=26;
+ slowest.forEach(([xid,c])=>{
+   const tot=c.bands.reduce((a,[,,v])=>a+(v||0),0)||1;
+   const row=el.append('div').attr('class','reqcard');
+   const a=c.attrs, rt=c.routing;
+   row.append('div').attr('class','reqhead').html(
+     `<code>${xid.slice(0,8)}</code> &middot; <b>${fmtS(tot)}</b> total`
+     +` &middot; ISL ${d3.format('~s')(a.isl||0)} &rarr; OSL ${d3.format('~s')(a.osl||0)}`
+     +` &middot; cache hit ${a.kv_hit_rate==null?'&mdash;':(a.kv_hit_rate*100).toFixed(1)+'%'}`
+     +` &middot; turn ${a.turn_index==null?'&mdash;':a.turn_index}`);
+   const sv=svg(row,W,BH+6); let x0=0;
+   c.bands.forEach(([,label,v],i)=>{
+     const w=(v||0)/tot*W;
+     if(w>0){
+       sv.append('rect').attr('x',x0).attr('y',3).attr('width',w).attr('height',BH)
+         .attr('fill',BANDC[i%BANDC.length]).attr('opacity',.85)
+         .append('title').text(`${label}: ${fmtS(v)}`);
+       if(w>54) sv.append('text').attr('x',x0+4).attr('y',3+BH/2+4).attr('fill','#0d1117')
+         .attr('font-size',10).text(fmtS(v));
+     }
+     x0+=w;
+   });
+   row.append('div').attr('class','reqmeta').html(
+     rt ? `routed to worker <code>${String(rt.worker_id??'').slice(-6)||'&mdash;'}</code>`
+          +` rank <code>${rt.dp_rank??'&mdash;'}</code>`
+          +` &middot; overlap <b>${rt.overlap_blocks==null?'&mdash;':d3.format('~s')(rt.overlap_blocks)}</b> blocks`
+          +` &middot; router ${rt.router_ms==null?'&mdash;':rt.router_ms+'ms'}`
+          +` &middot; admission ${rt.admission_ms==null?'&mdash;':rt.admission_ms+'ms'}`
+        : 'routing not joinable for this run (no span data)');
+ });
+ lg(el,c_bandLegend());
+ function c_bandLegend(){return (RT.bands||[]).map((b,i)=>[BANDC[i%BANDC.length],b[1]])}
+ const cst=RT.const||{};
+ if(Object.keys(cst).length) el.append('div').attr('class','note').html(
+   'Constant for every request in this run: '
+   +Object.entries(cst).map(([k,v])=>`<code>${k}</code>=${v}`).join(', ')
+   +' &mdash; reported rather than charted.');
+})();
+
+// ---- session decomposition (DATA.rt) ---------------------------------------
+// One row per session, same columns for every session and every run.
+(function(){
+ const S=(DATA.rt||{}).sessions||[]; if(!S.length) return;
+ const el=panel('session','Sessions',
+   'One row per session, ordered by first request. <b>busy</b> is time the server was '
+   +'working on this session\'s turns; <b>idle</b> is wall-clock the session existed '
+   +'without work in flight &mdash; harness think time, which a session-level latency '
+   +'figure would otherwise absorb and attribute to the server.'
+   +'<br><span class="src">source: <code>request_trace.jsonl</code></span>',true);
+ const t=el.append('table').attr('class','tbl');
+ t.append('thead').append('tr').selectAll('th')
+  .data(['session','turns','span','busy','idle','TTFT p50','KV hit p50','decode workers','prefill ranks'])
+  .join('th').text(d=>d);
+ const med=a=>{const v=a.filter(x=>x!=null).sort((p,q)=>p-q);return v.length?v[Math.floor(v.length/2)]:null};
+ const tb=t.append('tbody');
+ S.forEach(s=>{
+   const ttft=med(s.ttft_ms), kv=med(s.kv_hit);
+   tb.append('tr').selectAll('td').data([
+     s.session_id.slice(0,8), s.turns,
+     (s.span_ms/1000).toFixed(1)+'s', (s.busy_ms/1000).toFixed(1)+'s',
+     (s.idle_ms/1000).toFixed(1)+'s',
+     ttft==null?'-':(ttft/1000).toFixed(2)+'s',
+     kv==null?'-':(kv*100).toFixed(1)+'%',
+     s.decode_workers.map(w=>String(w).slice(-6)).join(', ')||'-',
+     s.prefill_ranks.join(', ')||'-',
+   ]).join('td').text(d=>d);
+ });
+ const cst=(DATA.rt||{}).const||{};
+ if(Object.keys(cst).length) note('session',
+   'Constant for every request in this run: '
+   +Object.entries(cst).map(([k,v])=>`<code>${k}</code>=${v}`).join(', ')
+   +'. Reported rather than charted &mdash; a flat line reads as a broken panel, '
+   +'whereas "this never varied" is itself a result.');
+})();
+
 const h=(location.hash||'').replace('#','');
 if(TABS.some(t=>t[0]===h)) act(h); else if(TABS.length) act(TABS[0][0]);
 </script></body></html>"""
@@ -1333,3 +2595,12 @@ if(TABS.some(t=>t[0]===h)) act(h); else if(TABS.length) act(TABS[0][0]);
 html=HTML.replace("__D3__",D3_TAG).replace("__DATA__",json.dumps(DATA,separators=(",",":")))
 open(OUT,"w").write(html)
 _log.info(f"wrote {OUT} ({os.path.getsize(OUT)/1024/1024:.1f} MB)")
+
+# The HTML embeds DATA verbatim, so dumping it is not a second rendering path --
+# it is the same payload in a form that can be diffed between two runs, asserted
+# on in CI, or read at all on a machine with no browser.
+if _args.dump_json:
+    with open(_args.dump_json,"w") as _jf:
+        json.dump(DATA,_jf,indent=1,sort_keys=True)
+    _log.info(f"wrote {_args.dump_json} ({os.path.getsize(_args.dump_json)/1024/1024:.1f} MB) "
+              f"-- tabs={[k for k,v in DATA['tabs'].items() if v]}")

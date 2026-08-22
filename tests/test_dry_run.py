@@ -558,3 +558,47 @@ class TestDryRunVllmOrchestrationWarnings:
         output = capsys.readouterr().out
         assert "vllm_config.aggregated.master-addr" not in output
         assert "configured value is ignored" not in output
+
+
+class TestInfmaxWorkspaceMount:
+    """INFMAX_WORKSPACE comes from the environment, not the recipe.
+
+    That is precisely why dry-run has to show it: nothing in the config file mentions
+    it, so a reader comparing recipe against dry-run sees what looks like a complete
+    picture and is wrong. Recipes whose benchmark command lives under
+    /infmax-workspace fail with exit 127 after the workers have loaded when it is
+    missing -- observed on ablation arms 2751879-82, where diffing the working run's
+    --container-mounts against the failed arm's showed this single missing entry.
+    """
+
+    AGENTIC = {"benchmark": {"type": "custom",
+                             "command": "bash /infmax-workspace/benchmarks/multi_node/agentic_srt.sh"}}
+
+    def test_mount_is_shown_when_the_variable_is_set(self, capsys):
+        config = _make_config(self.AGENTIC)
+        with patch.dict(os.environ, {"INFMAX_WORKSPACE": "/lustre/checkouts/InferenceX-abc"}):
+            show_config_details(config)
+        output = capsys.readouterr().out
+        assert "/lustre/checkouts/InferenceX-abc" in output
+        assert "/infmax-workspace" in output
+
+    def test_absence_is_flagged_when_the_benchmark_needs_it(self, capsys):
+        """The failure this prevents is expensive and silent: the table listed every
+        other mount, so the missing row read as 'no such mount exists' rather than
+        'not set in this environment'."""
+        config = _make_config(self.AGENTIC)
+        env = {k: v for k, v in os.environ.items() if k != "INFMAX_WORKSPACE"}
+        with patch.dict(os.environ, env, clear=True):
+            show_config_details(config)
+        output = capsys.readouterr().out
+        assert "MISSING" in output
+        assert "127" in output, "the dry-run must name the failure mode, not just the gap"
+
+    def test_no_warning_when_the_benchmark_does_not_use_it(self, capsys):
+        """Most recipes never touch /infmax-workspace; they must not be nagged."""
+        config = _make_config()
+        env = {k: v for k, v in os.environ.items() if k != "INFMAX_WORKSPACE"}
+        with patch.dict(os.environ, env, clear=True):
+            show_config_details(config)
+        output = capsys.readouterr().out
+        assert "MISSING" not in output

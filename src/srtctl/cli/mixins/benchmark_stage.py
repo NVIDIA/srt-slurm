@@ -356,13 +356,22 @@ class BenchmarkStageMixin:
         # switch the scraper on for those callers.
         observability = getattr(self.config, "observability", None)
         raw_scraper = None
+        host_sampler = None
         if getattr(observability, "scraper_enabled", False) is True:
+            self._warn_on_double_metric_polling()
             raw_scraper = try_start_raw_scraper(
                 self.runtime.log_dir,
                 self._analytics_scrape_targets(),
                 observability,
                 stop_event,
             )
+            # Host/process telemetry alongside the endpoint scrape. The Prometheus
+            # families describe what Dynamo publishes; they say nothing about the
+            # machine underneath, where host CPU saturation, lock convoys and fd
+            # exhaustion live. Same opt-in, same best-effort contract.
+            from srtctl.analysis.host_sampler import try_start_host_sampler
+
+            host_sampler = try_start_host_sampler(self.runtime.log_dir, observability, stop_event)
 
         bench_node = self._benchmark_node()
         proc = start_srun_process(
@@ -408,6 +417,8 @@ class BenchmarkStageMixin:
                 snapshotter.stop()
             if raw_scraper is not None:
                 raw_scraper.stop()
+            if host_sampler is not None:
+                host_sampler.stop()
 
     def _get_benchmark_profiling_env(
         self,
@@ -590,6 +601,44 @@ class BenchmarkStageMixin:
         # runners retain their historical sorted physical-process list.
         urls = list(dict.fromkeys(urls)) if logical_workers_only else sorted(set(urls))
         return {"AIPERF_SERVER_METRICS_URLS": ",".join(urls)}
+
+    def _warn_on_double_metric_polling(self) -> None:
+        """Warn when the RAW scraper and an AIPerf client will poll /metrics together.
+
+        ``observability.scrape_metrics`` starts the in-job RAW scraper, and an
+        AIPerf-driven benchmark separately receives ``AIPERF_SERVER_METRICS_URLS`` and
+        polls the same endpoints on its own cadence. Nothing stops both, and the two
+        are wired independently, so a run can be double-polling every worker without
+        anything saying so.
+
+        That is not hypothetical: a benchmark submission was traced to exactly this
+        shape -- one poller from srt-slurm and a second from the harness's own
+        bench.sh -- and the extra load made the result irreproducible.
+
+        Warn rather than resolve it. Both captures are legitimate (the RAW stream
+        feeds offline analysis, AIPerf's feeds its own report), and silently
+        suppressing either would change what a submission measures. The operator
+        picks; this makes sure the choice is a choice.
+        """
+        from srtctl.benchmarks.base import AIPerfBenchmarkRunner, get_runner
+
+        try:
+            runner = get_runner(self.config.benchmark.type)
+        except Exception:  # noqa: BLE001 - an unknown type is not this check's problem
+            return
+        is_aiperf = isinstance(runner, AIPerfBenchmarkRunner) or self.config.benchmark.type == "custom"
+        if not is_aiperf:
+            return
+        logger.warning(
+            "Double /metrics polling: the observability RAW scraper AND the %s client "
+            "will both poll the worker endpoints for the duration of this run. Both "
+            "captures are valid, but the extra scrape load perturbs the measurement and "
+            "has previously made a submission irreproducible. Set "
+            "observability.scrape_metrics: false to keep only the client's polling, or "
+            "drop AIPERF_SERVER_METRICS_URLS from the benchmark to keep only the RAW "
+            "capture (which is what the perf dashboard reads).",
+            self.config.benchmark.type,
+        )
 
     def _analytics_scrape_targets(self) -> list:
         """Frontend + every worker leader, as RAW-scrape targets.
