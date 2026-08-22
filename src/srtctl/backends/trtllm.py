@@ -87,6 +87,32 @@ class TRTLLMProtocol:
     # gpu_type.
     numa_memory_bind: bool | None = None
 
+    # Decode-only fix for a TRT-LLM affinity bug: the previous post-hoc
+    # `taskset -pc <cpuset> $PPID` approach (see bind-b300-prefill-cpus.sh)
+    # only pins the leader PID *after* launch, so secondary threads spawned
+    # by Python/UCX/MPI/TRT-LLM can still land cross-socket and stall the
+    # decode phase. When true, srtctl instead:
+    #   1. sets TLLM_NUMA_AWARE_WORKER_AFFINITY=0 (disables TRT-LLM's own
+    #      internal NUMA thread-pinning, which fights with the OS-level mask)
+    #   2. wraps the decode worker command in `taskset -c <cpu_list>`,
+    #      selecting <cpu_list> per SLURM_LOCALID via numa_cpu_bind_ranges,
+    #      applied *before* exec so every spawned thread inherits the mask
+    # Has no effect on prefill/agg workers.
+    numa_cpu_bind: bool = False
+
+    # SLURM_LOCALID -> taskset CPU range, used only when numa_cpu_bind is
+    # true. Defaults match the GB200/GB300 4-GPU tray layout (2 GPUs per
+    # Grace CPU/NUMA node; ranges from `numactl --hardware` on that node
+    # type). Override for other node shapes/topologies.
+    numa_cpu_bind_ranges: dict[str, str] = field(
+        default_factory=lambda: {
+            "0": "0-87,176-263",
+            "1": "0-87,176-263",
+            "2": "88-175,264-351",
+            "3": "88-175,264-351",
+        }
+    )
+
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
     # =========================================================================
@@ -127,7 +153,11 @@ class TRTLLMProtocol:
         base_env = env_by_mode.get(mode)
         if base_env is None:
             return {}
-        return {**base_env, "TRTLLM_EPLB_SHM_NAME": eplb_prefix}
+        env = {**base_env, "TRTLLM_EPLB_SHM_NAME": eplb_prefix}
+        if self.numa_cpu_bind and mode == "decode":
+            env["TLLM_NUMA_AWARE_WORKER_AFFINITY"] = "0"
+            env["NUMA_CPU_BIND_RANGES"] = ";".join(f"{k}={v}" for k, v in self.numa_cpu_bind_ranges.items())
+        return env
 
     def get_process_environment(self, process: "Process") -> dict[str, str]:
         """Get process-specific environment variables.
@@ -179,6 +209,21 @@ class TRTLLMProtocol:
         from srtctl.core.topology import endpoints_to_processes
 
         return endpoints_to_processes(endpoints, base_sys_port=base_sys_port, port_allocator=port_allocator)
+
+    def _wrap_with_numa_cpu_bind(self, cmd: list[str], mode: WorkerMode) -> list[str]:
+        """Wrap ``cmd`` in configs/numa_cpu_bind.sh, which taskset-binds per SLURM_LOCALID.
+
+        Only applies to decode workers when numa_cpu_bind is enabled. The
+        CPU list depends on SLURM_LOCALID, which srun sets per-task at launch
+        time — since the same argv is replicated across all ranks of the
+        endpoint's srun (MPI-style launch), the lookup must happen in a
+        script at runtime rather than being baked into the static command
+        list. The CPU-range map itself is passed via NUMA_CPU_BIND_RANGES
+        (see get_environment_for_mode).
+        """
+        if not (self.numa_cpu_bind and mode == "decode"):
+            return cmd
+        return ["bash", "/configs/numa_cpu_bind.sh", *cmd]
 
     def build_worker_command(
         self,
@@ -245,7 +290,7 @@ class TRTLLMProtocol:
             # ai-dynamo tensorrtllm-runtime 1.3.0-dev.1 container, which accept --config;
             # some trtllm-serve builds spell this --extra_llm_api_options.
             cmd.extend(["--config", str(container_config_path)])
-            return cmd
+            return self._wrap_with_numa_cpu_bind(cmd, mode)
 
         # dynamo.trtllm path (default): workers register into etcd/NATS and the dynamo
         # frontend discovers them.
@@ -275,4 +320,4 @@ class TRTLLMProtocol:
         if self.publish_events_and_metrics:
             cmd.append("--publish-events-and-metrics")
 
-        return cmd
+        return self._wrap_with_numa_cpu_bind(cmd, mode)
