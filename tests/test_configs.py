@@ -1778,6 +1778,7 @@ class TestVLLMPrefillDecodeColocation:
 
         backend = VLLMProtocol(
             allow_prefill_decode_colocation=True,
+            dp_launch_mode="per_gpu",
             vllm_config=VLLMServerConfig(
                 prefill={"data-parallel-size": 4, "enable-expert-parallel": True},
                 decode={"data-parallel-size": 4, "enable-expert-parallel": True},
@@ -2433,15 +2434,16 @@ class TestVLLMDataParallelMode:
         assert backend_dp._is_dp_mode("decode") is True
         assert backend_dp._get_dp_size("prefill") == 16
 
-    def test_dp_mode_creates_per_gpu_processes(self):
-        """Test that DP mode creates one process per GPU instead of per node."""
+    def test_dp_per_gpu_mode_creates_per_gpu_processes(self):
+        """The deprecated compatibility mode still creates one process per GPU."""
         from srtctl.backends import VLLMProtocol, VLLMServerConfig
         from srtctl.core.topology import Endpoint
 
         backend = VLLMProtocol(
+            dp_launch_mode="per_gpu",
             vllm_config=VLLMServerConfig(
                 prefill={"data-parallel-size": 16, "enable-expert-parallel": True},
-            )
+            ),
         )
 
         # Create an endpoint spanning 2 nodes with 8 GPUs each = 16 GPUs total
@@ -2478,13 +2480,12 @@ class TestVLLMDataParallelMode:
         dp_ranks = [p.node_rank for p in processes]
         assert dp_ranks == list(range(16))
 
-    def test_dp_per_node_mode_creates_per_node_processes(self):
-        """Per-node DP owns all local GPUs and reserves rank-sized port blocks."""
+    def test_dp_mode_defaults_to_per_node_processes(self):
+        """DP defaults to one process per node with rank-sized port blocks."""
         from srtctl.backends import VLLMProtocol, VLLMServerConfig
         from srtctl.core.topology import Endpoint
 
         backend = VLLMProtocol(
-            dp_launch_mode="per_node",
             vllm_config=VLLMServerConfig(
                 prefill={"data-parallel-size": 8, "enable-expert-parallel": True},
             ),
@@ -2740,15 +2741,16 @@ class TestVLLMDataParallelMode:
         profiler_config = json.loads(cmd[cmd.index("--profiler-config") + 1])
         assert profiler_config == {"profiler": "cuda", "delay_iterations": 10, "max_iterations": 15}
 
-    def test_dp_mode_allocates_unique_ports_for_multiple_endpoints_per_node(self):
-        """Test DP endpoints sharing a node get non-colliding coordination ports."""
+    def test_dp_per_gpu_mode_allocates_unique_ports_for_multiple_endpoints_per_node(self):
+        """Legacy per-GPU endpoints sharing a node get distinct port ranges."""
         from srtctl.backends import VLLMProtocol, VLLMServerConfig
         from srtctl.core.topology import Endpoint
 
         backend = VLLMProtocol(
+            dp_launch_mode="per_gpu",
             vllm_config=VLLMServerConfig(
                 decode={"data-parallel-size": 4, "enable-expert-parallel": True},
-            )
+            ),
         )
 
         endpoints = [
@@ -2780,8 +2782,8 @@ class TestVLLMDataParallelMode:
         assert [p.node_rank for p in first_endpoint] == list(range(4))
         assert [p.node_rank for p in second_endpoint] == list(range(4))
 
-    def test_dp_mode_command_includes_dp_flags(self):
-        """Test that DP mode command includes correct DP flags instead of TP flags."""
+    def test_dp_per_gpu_mode_command_includes_dp_flags(self):
+        """Legacy per-GPU commands include per-rank DP flags instead of TP flags."""
         from pathlib import Path
         from unittest.mock import MagicMock, patch
 
@@ -2789,13 +2791,14 @@ class TestVLLMDataParallelMode:
         from srtctl.core.topology import Process
 
         backend = VLLMProtocol(
+            dp_launch_mode="per_gpu",
             vllm_config=VLLMServerConfig(
                 prefill={
                     "data-parallel-size": 16,
                     "data-parallel-rpc-port": 13345,
                     "enable-expert-parallel": True,
                 },
-            )
+            ),
         )
 
         # Create a process representing GPU 5 with dp_rank=5
@@ -4237,8 +4240,8 @@ class TestDirectVllmMultiNode:
 
         assert "dp_launch_mode" not in caplog.text
 
-    def test_dp_launch_mode_warning_still_fires_for_dynamo(self, caplog):
-        """The advisory is still useful where the setting picks the process layout."""
+    def test_deprecated_per_gpu_warning_fires_for_dynamo(self, caplog):
+        """Explicit per-GPU compatibility mode warns Dynamo users to migrate."""
         import logging
 
         from srtctl.backends import VLLMProtocol, VLLMServerConfig
@@ -4250,10 +4253,13 @@ class TestDirectVllmMultiNode:
                 model=ModelConfig(path="/m", container="/c.sqsh", precision="fp4"),
                 resources=ResourceConfig(gpu_type="b200", gpus_per_node=8, agg_nodes=2, agg_workers=1),
                 frontend=FrontendConfig(type="dynamo"),
-                backend=VLLMProtocol(vllm_config=VLLMServerConfig(aggregated={"data-parallel-size": 16})),
+                backend=VLLMProtocol(
+                    dp_launch_mode="per_gpu",
+                    vllm_config=VLLMServerConfig(aggregated={"data-parallel-size": 16}),
+                ),
             )
 
-        assert "dp_launch_mode=per_gpu" in caplog.text
+        assert "deprecated dp_launch_mode=per_gpu" in caplog.text
 
     def test_direct_vllm_keeps_api_server_count_on_leader_only(self):
         """vLLM rejects --api-server-count alongside --headless, so only rank 0 keeps it.

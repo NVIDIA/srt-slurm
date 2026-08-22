@@ -239,7 +239,6 @@ class VLLMProtocol:
           connector: nixl  # translated to --kv-transfer-config JSON
           allow_prefill_decode_colocation: true  # pack P/D on one node when all workers fit
           allow_prefill_decode_colocation_across_nodes: true  # continue packing on later nodes
-          dp_launch_mode: per_node  # one process manages all local DP ranks
           prefill_environment:
             PYTHONUNBUFFERED: "1"
           vllm_config:
@@ -293,12 +292,11 @@ class VLLMProtocol:
     # node pools. Defaults off to preserve the original one-node-only policy.
     allow_prefill_decode_colocation_across_nodes: bool = False
 
-    # DP process layout. Keep the existing per-GPU behavior by default;
-    # per-node lets vLLM manage the node-local portion of a DP x TP x PP
-    # topology in one CUDA namespace and derives cross-node TP/PP rendezvous
-    # when a replica is larger than the node-local GPU allocation.
-    # TODO: Change the default to per_node after the per_gpu migration window.
-    dp_launch_mode: DPLaunchMode = "per_gpu"
+    # DP process layout. Per-node lets vLLM manage the node-local portion of a
+    # DP x TP x PP topology in one CUDA namespace and derives cross-node TP/PP
+    # rendezvous when a replica is larger than the node-local GPU allocation.
+    # Per-GPU remains available as a deprecated compatibility layout.
+    dp_launch_mode: DPLaunchMode = "per_node"
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
 

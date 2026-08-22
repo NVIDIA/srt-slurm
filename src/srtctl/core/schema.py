@@ -1730,7 +1730,7 @@ class SrtConfig:
         self._warn_dp_launch_mode()
 
     def _warn_dp_launch_mode(self):
-        """Nudge vLLM DP recipes toward the per-node launch topology.
+        """Warn when a vLLM DP recipe selects the deprecated per-GPU layout.
 
         Skipped for frontend.type: vllm, where the setting has no effect —
         `vllm serve` owns the local DP ranks, so the layout is one process per
@@ -1746,8 +1746,8 @@ class SrtConfig:
             return
 
         logger.warning(
-            "vLLM DP mode(s) %s use dp_launch_mode=per_gpu. per_node is the recommended topology "
-            "and will become the default in a future release; set backend.dp_launch_mode: per_node now",
+            "vLLM DP mode(s) %s use deprecated dp_launch_mode=per_gpu; "
+            "use backend.dp_launch_mode: per_node instead. per_gpu will be removed in a future release",
             ", ".join(mode_name for mode_name, _ in dp_modes),
         )
 
