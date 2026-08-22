@@ -405,11 +405,11 @@ The following keys are owned by srtctl and are stripped at runtime if present in
 - `node-rank` / `node_rank`
 
 Existing recipes that still contain these keys generally continue to work
-because the values are ignored. One exception is `headless` combined with
-`dp_launch_mode: per_node` and `data-parallel-size`: backend validation rejects
-that combination before direct-vLLM command construction, so remove `headless`
-from such recipes. `srtctl dry-run` emits a **WARNING** for each accepted key so
-operators can clean up recipes over time.
+because the values are ignored. One exception is `headless` combined with the
+default `dp_launch_mode: per_node` and `data-parallel-size`: backend validation
+rejects that combination before direct-vLLM command construction, so remove
+`headless` from such recipes. `srtctl dry-run` emits a **WARNING** for each
+accepted key so operators can clean up recipes over time.
 
 Health checks, benchmark clients, and `SRT_FRONTEND_HOST` target the **aggregate
 endpoint leader** (the node running the public `vllm serve`), not necessarily the
@@ -523,14 +523,12 @@ Each worker leader gets a globally unique port starting at 5550:
 
 ### vLLM DP launch mode
 
-vLLM data-parallel endpoints use one process per GPU by default. Set
-`dp_launch_mode: per_node` to launch one process per node. srtslurm derives
-whether each TP/PP replica is node-local or spans multiple nodes:
+vLLM data-parallel endpoints use one process per node by default. srtslurm
+derives whether each TP/PP replica is node-local or spans multiple nodes:
 
 ```yaml
 backend:
   type: vllm
-  dp_launch_mode: per_node
   vllm_config:
     prefill:
       data-parallel-size: 8
@@ -540,13 +538,13 @@ backend:
 
 | Value      | Process layout                                                               |
 | ---------- | ---------------------------------------------------------------------------- |
-| `per_gpu`  | One process per DP rank/GPU (default)                                        |
-| `per_node` | One process per node; automatically supports node-local or distributed TP/PP |
+| `per_node` | One process per node (default); supports node-local or distributed TP/PP      |
+| `per_gpu`  | One process per DP rank/GPU (deprecated compatibility mode)                   |
 
-`per_gpu` remains the compatibility default for now, but srtslurm will switch
-the default to `per_node` in a future release. Existing vLLM DP configurations
-should set `backend.dp_launch_mode: per_node` now; srtslurm emits a
-configuration-time migration warning while they still use `per_gpu`.
+Set `backend.dp_launch_mode: per_gpu` only when temporarily preserving the
+legacy process layout. srtslurm emits a configuration-time deprecation warning
+for Dynamo-backed DP configurations that select it. `per_gpu` will be removed
+in a future release.
 
 When `TP x PP` fits on one node, srtslurm derives
 `--data-parallel-size-local` and `--data-parallel-start-rank`, then enables
