@@ -241,7 +241,6 @@ class VLLMProtocol:
           connector: nixl  # translated to --kv-transfer-config JSON
           allow_prefill_decode_colocation: true  # pack P/D on one node when all workers fit
           allow_prefill_decode_colocation_across_nodes: true  # continue packing on later nodes
-          dp_launch_mode: per_node  # one process manages all local DP ranks
           prefill_environment:
             PYTHONUNBUFFERED: "1"
           vllm_config:
@@ -295,10 +294,11 @@ class VLLMProtocol:
     # node pools. Defaults off to preserve the original one-node-only policy.
     allow_prefill_decode_colocation_across_nodes: bool = False
 
-    # DP process layout. Keep the existing per-GPU behavior by default;
-    # per-node lets vLLM manage local DP ranks in one CUDA namespace.
-    # TODO: Change the default to per_node after the per_gpu migration window.
-    dp_launch_mode: DPLaunchMode = "per_gpu"
+    # DP process layout. Per-node lets vLLM manage the node-local portion of a
+    # DP x TP x PP topology in one CUDA namespace and derives cross-node TP/PP
+    # rendezvous when a replica is larger than the node-local GPU allocation.
+    # Per-GPU remains available as a deprecated compatibility layout.
+    dp_launch_mode: DPLaunchMode = "per_node"
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
@@ -329,6 +329,9 @@ class VLLMProtocol:
         if not dp_mode_configs or self.dp_launch_mode == "per_gpu":
             return
 
+        if self.dp_launch_mode != "per_node":
+            return
+
         hybrid_lb_modes: list[str] = []
         headless_modes: list[str] = []
         for mode_name, mode_config in dp_mode_configs:
@@ -342,14 +345,14 @@ class VLLMProtocol:
             fields = ", ".join(f"vllm_config.{mode}.headless" for mode in headless_modes)
             raise ValidationError(
                 f"{fields} cannot be set when dp_launch_mode=per_node. "
-                "Every node-local process must register with the Dynamo frontend; remove headless."
+                "srtslurm derives headless ranks from the DP x TP x PP topology; remove headless."
             )
 
         if hybrid_lb_modes:
             fields = ", ".join(f"vllm_config.{mode}.data-parallel-hybrid-lb" for mode in hybrid_lb_modes)
             logger.warning(
                 "%s is unnecessary when dp_launch_mode=per_node; "
-                "srtslurm always enables --data-parallel-hybrid-lb and ignores the configured value",
+                "srtslurm derives --data-parallel-hybrid-lb from the topology and ignores the configured value",
                 fields,
             )
 
@@ -574,6 +577,16 @@ class VLLMProtocol:
         config = self.get_config_for_mode(mode)
         return config.get("data-parallel-size") or config.get("data_parallel_size")
 
+    def _get_tp_size(self, mode: WorkerMode) -> int:
+        """Get the tensor-parallel-size for a mode, defaulting to 1."""
+        config = self.get_config_for_mode(mode)
+        return config.get("tensor-parallel-size") or config.get("tensor_parallel_size") or 1
+
+    def _get_pp_size(self, mode: WorkerMode) -> int:
+        """Get the pipeline-parallel-size for a mode, defaulting to 1."""
+        config = self.get_config_for_mode(mode)
+        return config.get("pipeline-parallel-size") or config.get("pipeline_parallel_size") or 1
+
     def should_set_cuda_visible_devices(self, process: Process) -> bool:
         """Whether worker_stage should set CUDA_VISIBLE_DEVICES.
 
@@ -699,7 +712,7 @@ class VLLMProtocol:
         base_sys_port: int = DYN_SYSTEM_PORT_BASE,
         port_allocator: NodePortAllocator | None = None,
     ) -> list[Process]:
-        """Convert DP endpoints to one process per node."""
+        """Convert DP endpoints to one topology-aware process per node."""
         from srtctl.core.topology import NodePortAllocator, Process, endpoints_to_processes
 
         processes: list[Process] = []
@@ -718,14 +731,50 @@ class VLLMProtocol:
                 current_sys_port += len(non_dp)
                 continue
 
-            dp_size = self._get_dp_size(endpoint.mode) or endpoint.total_gpus
-            if dp_size != endpoint.total_gpus:
+            tp_size = self._get_tp_size(endpoint.mode)
+            pp_size = self._get_pp_size(endpoint.mode)
+            replica_size = tp_size * pp_size
+            dp_size = self._get_dp_size(endpoint.mode) or endpoint.total_gpus // replica_size
+            expected_gpus = dp_size * replica_size
+            if expected_gpus != endpoint.total_gpus:
                 raise ValueError(
-                    f"{endpoint.mode} data-parallel-size={dp_size} does not match "
-                    f"the endpoint's {endpoint.total_gpus} allocated GPUs"
+                    f"{endpoint.mode} data-parallel-size={dp_size}, tensor-parallel-size={tp_size}, "
+                    f"and pipeline-parallel-size={pp_size} require {expected_gpus} GPUs, but the endpoint "
+                    f"has {endpoint.total_gpus} allocated GPUs"
                 )
 
-            local_dp_size = len(endpoint.gpu_indices)
+            local_gpu_count = len(endpoint.gpu_indices)
+            spans_nodes = replica_size > local_gpu_count
+            if spans_nodes:
+                if len(endpoint.nodes) < 2:
+                    raise ValueError("cross-node per_node DP requires a multi-node endpoint")
+                if replica_size % local_gpu_count != 0:
+                    raise ValueError(
+                        f"{endpoint.mode} TP x PP replica size {replica_size} does not divide evenly across "
+                        f"nodes with {local_gpu_count} allocated GPUs each"
+                    )
+                nodes_per_dp_rank = replica_size // local_gpu_count
+                if len(endpoint.nodes) != dp_size * nodes_per_dp_rank:
+                    raise ValueError(
+                        f"{endpoint.mode} requires {nodes_per_dp_rank} nodes per DP rank and "
+                        f"{dp_size * nodes_per_dp_rank} nodes total, but the endpoint has {len(endpoint.nodes)}"
+                    )
+                multinode_processes = endpoints_to_processes(
+                    [endpoint],
+                    base_sys_port=current_sys_port,
+                    port_allocator=port_allocator,
+                )
+                processes.extend(multinode_processes)
+                current_sys_port += len(multinode_processes)
+                continue
+
+            if local_gpu_count % replica_size != 0:
+                raise ValueError(
+                    f"{endpoint.mode} TP x PP replica size {replica_size} does not divide the node's "
+                    f"{local_gpu_count} allocated GPUs"
+                )
+
+            local_dp_size = local_gpu_count // replica_size
             dp_rpc_port = port_allocator.next_dp_rpc_port(endpoint.leader_node)
             nixl_base_port = port_allocator.next_nixl_port_block(dp_size)
             dp_start_rank = 0
@@ -916,19 +965,46 @@ class VLLMProtocol:
             config.pop("data_parallel_hybrid_lb", None)
             config.pop("headless", None)
 
-            cmd.extend(
-                [
-                    "--data-parallel-size-local",
-                    str(len(process.gpu_indices)),
-                    "--data-parallel-start-rank",
-                    str(process.node_rank),
-                    "--data-parallel-address",
-                    leader_ip,
-                    "--data-parallel-rpc-port",
-                    str(dp_rpc_port),
-                    "--data-parallel-hybrid-lb",
-                ]
-            )
+            replica_size = self._get_tp_size(mode) * self._get_pp_size(mode)
+            local_gpu_count = len(process.gpu_indices)
+            spans_nodes = replica_size > local_gpu_count
+
+            if spans_nodes:
+                if not is_multi_node:
+                    raise ValueError("cross-node per_node DP requires a multi-node endpoint")
+                node_rank = endpoint_nodes.index(process.node)
+                cmd.extend(
+                    [
+                        "--master-addr",
+                        leader_ip,
+                        "--nnodes",
+                        str(len(endpoint_nodes)),
+                        "--node-rank",
+                        str(node_rank),
+                        "--data-parallel-address",
+                        leader_ip,
+                        "--data-parallel-rpc-port",
+                        str(dp_rpc_port),
+                    ]
+                )
+                # A single global API/DPLB leader owns the shared DP address.
+                if node_rank > 0:
+                    cmd.append("--headless")
+            else:
+                local_dp_size = local_gpu_count // replica_size
+                cmd.extend(
+                    [
+                        "--data-parallel-size-local",
+                        str(local_dp_size),
+                        "--data-parallel-start-rank",
+                        str(process.node_rank),
+                        "--data-parallel-address",
+                        leader_ip,
+                        "--data-parallel-rpc-port",
+                        str(dp_rpc_port),
+                        "--data-parallel-hybrid-lb",
+                    ]
+                )
         elif is_dp_mode:
             # DP+EP mode: each GPU runs its own process
             # process.node_rank is the dp_rank (set in endpoints_to_processes)

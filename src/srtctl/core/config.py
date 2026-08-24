@@ -96,7 +96,6 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
     """
     # Deep copy to avoid mutating original
     config = copy.deepcopy(user_config)
-
     if cluster_config is None:
         return config
 
@@ -190,18 +189,12 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
         config["benchmark"] = benchmark
         logger.debug(f"Resolved benchmark.container_image alias '{benchmark_container}' -> '{resolved_bench}'")
 
-    # Resolve telemetry container aliases (scraper + dcgm/node exporters). All
-    # three are nullable in the schema; only resolve fields that are set.
-    telemetry = config.get("telemetry")
-    if telemetry and containers:
-        scraper_image = telemetry.get("container_image")
-        if scraper_image and scraper_image in containers:
-            resolved_scraper = containers[scraper_image]
-            telemetry["container_image"] = resolved_scraper
-            logger.debug(f"Resolved telemetry.container_image alias '{scraper_image}' -> '{resolved_scraper}'")
-
+    # Resolve Tachometer exporter aliases from the observability block.
+    observability = config.get("observability")
+    tachometer = observability.get("tachometer") if isinstance(observability, dict) else None
+    if tachometer and containers:
         for exporter_key in ("dcgm_exporter", "node_exporter"):
-            exporter = telemetry.get(exporter_key)
+            exporter = tachometer.get(exporter_key)
             if not exporter:
                 continue
             exporter_image = exporter.get("container_image")
@@ -209,9 +202,21 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
                 resolved_exporter = containers[exporter_image]
                 exporter["container_image"] = resolved_exporter
                 logger.debug(
-                    f"Resolved telemetry.{exporter_key}.container_image alias "
+                    f"Resolved observability.tachometer.{exporter_key}.container_image alias "
                     f"'{exporter_image}' -> '{resolved_exporter}'"
                 )
+
+    # Telemetry is reserved for the DCGM power collector.
+    telemetry = config.get("telemetry")
+    if telemetry and containers:
+        exporter = telemetry.get("dcgm_exporter")
+        exporter_image = exporter.get("container_image") if isinstance(exporter, dict) else None
+        if exporter_image and exporter_image in containers:
+            resolved_exporter = containers[exporter_image]
+            exporter["container_image"] = resolved_exporter
+            logger.debug(
+                f"Resolved telemetry.dcgm_exporter.container_image alias '{exporter_image}' -> '{resolved_exporter}'"
+            )
 
     return config
 
@@ -571,6 +576,93 @@ def get_srtslurm_setting(key: str, default: Any = None) -> Any:
     return default
 
 
+def _setdefault_nested(parent: dict, key: str, values: dict) -> None:
+    """``parent[key]`` becomes a dict and gains ``values`` without clobbering."""
+    child = parent.get(key)
+    if not isinstance(child, dict):
+        child = {}
+        parent[key] = child
+    for k, v in values.items():
+        child.setdefault(k, v)
+
+
+def expand_observability(cfg: dict) -> dict:
+    """Expand ``observability.enabled`` into the individual launch flags.
+
+    One knob, six effects -- see :class:`~srtctl.core.schema.ObservabilityConfig`
+    for the rationale and the full list. Mutates ``cfg`` in place and returns it.
+
+    Every write is a ``setdefault``: an explicit value in the recipe always
+    wins. That makes it safe to flip ``observability.enabled`` on globally
+    without silently overriding a recipe that deliberately disabled something.
+
+    No-op unless ``observability.enabled`` is truthy.
+    """
+    from srtctl.core.schema import (
+        ANALYTICS_ENGINE_CONFIG,
+        ANALYTICS_REQUEST_TRACE_ENV,
+        ANALYTICS_SPAN_ENV,
+    )
+
+    observability = cfg.get("observability")
+    if not isinstance(observability, dict) or not observability.get("enabled"):
+        return cfg
+
+    # --- traces leg: SPAN_CLOSED lines on prefill, decode and frontend -------
+    backend = cfg.get("backend")
+    if not isinstance(backend, dict):
+        backend = {}
+        cfg["backend"] = backend
+
+    for mode in ("prefill", "decode", "aggregated"):
+        _setdefault_nested(backend, f"{mode}_environment", ANALYTICS_SPAN_ENV)
+
+    frontend = cfg.get("frontend")
+    if not isinstance(frontend, dict):
+        frontend = {}
+        cfg["frontend"] = frontend
+    _setdefault_nested(frontend, "env", ANALYTICS_SPAN_ENV)
+
+    # --- request-trace leg: per-request phase timings, frontend only ---------
+    # Complements the span leg rather than duplicating it. Spans decompose the
+    # router but stop at one opaque handle_payload per worker; these records
+    # carry prefill_wait / prefill / kv_transfer_estimated for the same request,
+    # keyed by x_request_id so all three legs join on one id.
+    _setdefault_nested(frontend, "env", ANALYTICS_REQUEST_TRACE_ENV)
+
+    # --- metrics leg: the /metrics surface and what appears on it ------------
+    # publish_events_and_metrics is what creates the endpoint; without it the
+    # engine-config keys below have nowhere to publish to.
+    if backend.get("type", "sglang") == "trtllm":
+        # An explicit False here defeats the whole metrics leg -- no /metrics
+        # surface means no KV-cache gauges for anyone, including the in-job
+        # scraper. setdefault still lets the recipe win (that contract matters),
+        # but say so loudly: a recipe written before this knob existed will
+        # otherwise silently produce a run with half the data missing.
+        if backend.get("publish_events_and_metrics") is False:
+            logger.warning(
+                "observability.enabled but backend.publish_events_and_metrics is "
+                "explicitly false — workers will NOT expose /metrics, so KV-cache "
+                "gauges and worker scrapes will be missing. Remove that line or "
+                "set it true to get the full analytics capture."
+            )
+        backend.setdefault("publish_events_and_metrics", True)
+
+        trtllm_config = backend.get("trtllm_config")
+        if not isinstance(trtllm_config, dict):
+            trtllm_config = {}
+            backend["trtllm_config"] = trtllm_config
+        for mode in ("prefill", "decode", "aggregated"):
+            if isinstance(trtllm_config.get(mode), dict):
+                _setdefault_nested(trtllm_config, mode, ANALYTICS_ENGINE_CONFIG)
+
+    logger.info(
+        "observability.enabled: expanded span-event env (prefill/decode/frontend), "
+        "publish_events_and_metrics and per-iteration engine stats"
+    )
+    return cfg
+
+
 def load_config(path: Path | str) -> SrtConfig:
     """
     Load and validate YAML config, applying cluster defaults.
@@ -614,6 +706,12 @@ def load_config(path: Path | str) -> SrtConfig:
 
     # Resolve with defaults (applies aliases and default values)
     resolved_config = resolve_config_with_defaults(user_config, cluster_config)
+
+    # Expand the single `observability.enabled` knob into the individual
+    # launch flags. Done on the raw dict (before schema.load) so every
+    # downstream consumer -- worker command builder, engine YAML writer,
+    # frontend env -- sees the expanded values with no extra plumbing.
+    expand_observability(resolved_config)
 
     # Parse with marshmallow schema to get typed SrtConfig
     try:

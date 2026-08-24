@@ -70,44 +70,98 @@ class Nodes:
     @classmethod
     def from_slurm(
         cls,
-        benchmark_on_separate_node: bool = False,
+        frontend_dedicated_node: bool = False,
+        client_dedicated_node: bool = False,
         etcd_nats_dedicated_node: bool = False,
+        colocate_dedicated_nodes: bool = True,
     ) -> "Nodes":
         """Create Nodes from SLURM environment.
 
         Args:
-            benchmark_on_separate_node: If True, first node is benchmark-only,
-                                        second is head, rest are workers.
-            etcd_nats_dedicated_node: If True, dedicate first node for etcd/nats,
-                                      second node is head, rest are workers.
+            frontend_dedicated_node: If True, reserve a node exclusively for the
+                                     frontend/orchestrator; it is excluded from
+                                     the worker pool.
+            client_dedicated_node: If True, reserve a node exclusively for the
+                                   benchmark client; it is excluded from the
+                                   worker pool. Reserved from the tail of the
+                                   nodelist (never the first node), since SLURM
+                                   runs the do_sweep batch script unsandboxed
+                                   on the first node and co-locating the
+                                   benchmark client there would undermine the
+                                   isolation this flag exists to provide.
+            etcd_nats_dedicated_node: If True, reserve a node exclusively for
+                                      etcd/nats.
+            colocate_dedicated_nodes: Governs how the dedicated-node flags above
+                                      combine when more than one is set. If True
+                                      (default), every requested role (infra,
+                                      frontend, client) shares a single reserved
+                                      node. If False, each requested role gets
+                                      its own reserved node. A role that is not
+                                      requested keeps its normal default
+                                      placement (frontend/client fall back to
+                                      colocating with whichever node ends up
+                                      being head; infra falls back to head).
         """
+        dedicated_roles = [
+            role
+            for role, wanted in (
+                ("infra", etcd_nats_dedicated_node),
+                ("frontend", frontend_dedicated_node),
+                ("client", client_dedicated_node),
+            )
+            if wanted
+        ]
+
         het_lists = get_slurm_het_nodelists()
         if het_lists is not None:
+            if frontend_dedicated_node or client_dedicated_node:
+                raise ValueError(
+                    "frontend_dedicated_node/client_dedicated_node are not supported for heterogeneous SLURM jobs"
+                )
             return cls._from_het_slurm(het_lists, etcd_nats_dedicated_node)
 
         nodelist = get_slurm_nodelist()
         if not nodelist:
             raise RuntimeError("SLURM_NODELIST not set - are we running in SLURM?")
 
-        if etcd_nats_dedicated_node:
-            if len(nodelist) < 2:
-                raise ValueError("etcd_nats_dedicated_node requires at least 2 nodes")
-            infra = nodelist[0]
-            head = nodelist[1]
-            bench = head
-            worker = tuple(nodelist[1:])
-        elif benchmark_on_separate_node:
-            if len(nodelist) < 2:
-                raise ValueError("benchmark_on_separate_node requires at least 2 nodes")
-            bench = nodelist[0]
-            head = nodelist[1]
-            infra = head
-            worker = tuple(nodelist[1:])
+        if not dedicated_roles:
+            head = bench = infra = nodelist[0]
+            worker = tuple(nodelist)
+            return cls(head=head, bench=bench, infra=infra, worker=worker)
+
+        num_reserved = 1 if colocate_dedicated_nodes else len(dedicated_roles)
+        if len(nodelist) <= num_reserved:
+            raise ValueError(
+                f"dedicated node(s) for {'+'.join(dedicated_roles)} require at least {num_reserved + 1} nodes"
+            )
+
+        # SLURM runs the batch script (the do_sweep orchestrator) on the first
+        # node of the allocation, unsandboxed. A dedicated *client* node exists
+        # to isolate benchmark measurements from noisy neighbors, so it must
+        # never land on that first node — reserve it from the tail instead.
+        # Non-client roles (infra, frontend) keep the original front-of-list
+        # reservation for backward compatibility.
+        has_client = "client" in dedicated_roles
+        if colocate_dedicated_nodes:
+            if has_client:
+                shared = nodelist[-1]
+                worker = tuple(nodelist[:-1])
+            else:
+                shared = nodelist[0]
+                worker = tuple(nodelist[1:])
+            reserved = {role: shared for role in dedicated_roles}
         else:
-            head = nodelist[0]
-            bench = head
-            infra = head
-            worker = tuple(nodelist[:])
+            front_roles = [role for role in dedicated_roles if role != "client"]
+            reserved = dict(zip(front_roles, nodelist, strict=False))
+            if has_client:
+                reserved["client"] = nodelist[-1]
+                worker = tuple(nodelist[len(front_roles) : -1])
+            else:
+                worker = tuple(nodelist[len(front_roles) :])
+
+        head = reserved.get("frontend", worker[0])
+        bench = reserved.get("client", head)
+        infra = reserved.get("infra", head)
 
         return cls(head=head, bench=bench, infra=infra, worker=worker)
 
@@ -221,8 +275,10 @@ class RuntimeContext:
         """
         # Get nodes from SLURM
         nodes = Nodes.from_slurm(
-            benchmark_on_separate_node=False,
+            frontend_dedicated_node=config.frontend.dedicated_node,
+            client_dedicated_node=config.benchmark.client_dedicated_node,
             etcd_nats_dedicated_node=config.infra.etcd_nats_dedicated_node,
+            colocate_dedicated_nodes=config.benchmark.colocate_with_frontend,
         )
 
         # Compute run_name

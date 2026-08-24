@@ -81,6 +81,12 @@ class TRTLLMProtocol:
     # For dynamo.trtllm: readiness is a TCP connection on the worker's sys_port.
     sequential_node_start: int = 0
 
+    # Whether to prefix the trtllm worker command with `numactl -m 0,1`.
+    # None (default) preserves the existing auto-detected behavior (enabled
+    # only for gb200/gb300). True/False forces numactl on/off regardless of
+    # gpu_type.
+    numa_memory_bind: bool | None = None
+
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
     # =========================================================================
@@ -202,23 +208,28 @@ class TRTLLMProtocol:
         # For local models, model is mounted to /model in the container
         model_arg = runtime.worker_model_arg
 
-        numactl_prefix = (
-            ["numactl", "-m", "0,1"] if runtime.gpu_type in ("gb200", "gb300") and mode in ("prefill", "decode") else []
-        )
+        if self.numa_memory_bind is None:
+            use_numactl = runtime.gpu_type in ("gb200", "gb300") and mode in ("prefill", "decode")
+        else:
+            use_numactl = self.numa_memory_bind and mode in ("prefill", "decode")
+        numactl_prefix = ["numactl", "-m", "0,1"] if use_numactl else []
         base_prefix = list(nsys_prefix or []) + numactl_prefix + ["trtllm-llmapi-launch"]
 
-        # trtllm-serve path: launch an OpenAI-compatible trtllm-serve worker. The
-        # trtllm_serve frontend fronts these via a static ser.yaml (context/generation
-        # server URLs), so there is no dynamo request plane and no --disaggregation-mode:
-        # a worker is prefill or decode purely by which list it appears in in ser.yaml.
+        # trtllm-serve path: launch an OpenAI-compatible trtllm-serve worker. In
+        # disaggregated mode the trtllm_serve frontend fronts these via a static
+        # ser.yaml (context/generation server URLs). In aggregated mode the one
+        # worker is also the public frontend, so it binds runtime.frontend_port.
+        # There is no Dynamo request plane and no --disaggregation-mode: a disagg
+        # worker is prefill or decode purely by which list it appears in in ser.yaml.
         if frontend_type == "trtllm_serve":
+            http_port = runtime.frontend_port if mode == "agg" else process.http_port
             cmd = base_prefix + [
                 "trtllm-serve",
                 model_arg,
                 "--host",
                 "0.0.0.0",
                 "--port",
-                str(process.http_port),
+                str(http_port),
             ]
             # Parallelism also lives in the engine yaml, but pass it explicitly to match
             # the trtllm-serve CLI contract (srun --ntasks == TP*PP is set by the worker stage).

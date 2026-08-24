@@ -212,6 +212,12 @@ class FrontendStageMixin:
             List of ManagedProcess instances for all frontend processes.
         """
         logger.info("Starting frontend layer")
+        if self.config.frontend.type == "dynamo" and self.config.observability.enabled:
+            trace_path = (self.config.frontend.env or {}).get("DYN_REQUEST_TRACE_FILE_PATH")
+            logger.info(
+                "Observability enabled: Dynamo request tracing is on (DYN_REQUEST_TRACE=1; request-end gzip JSONL: %s)",
+                trace_path or "configured trace path",
+            )
         topology = self._compute_frontend_topology()
         processes: list[ManagedProcess] = []
 

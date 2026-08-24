@@ -18,6 +18,7 @@ Complete reference for job configuration YAML files.
 - [output](#output)
 - [health_check](#health_check)
 - [infra](#infra)
+- [telemetry](#telemetry)
 - [sweep](#sweep)
 - [Config Overrides](#config-overrides)
 - [FormattablePath Template System](#formattablepath-template-system)
@@ -404,11 +405,11 @@ The following keys are owned by srtctl and are stripped at runtime if present in
 - `node-rank` / `node_rank`
 
 Existing recipes that still contain these keys generally continue to work
-because the values are ignored. One exception is `headless` combined with
-`dp_launch_mode: per_node` and `data-parallel-size`: backend validation rejects
-that combination before direct-vLLM command construction, so remove `headless`
-from such recipes. `srtctl dry-run` emits a **WARNING** for each accepted key so
-operators can clean up recipes over time.
+because the values are ignored. One exception is `headless` combined with the
+default `dp_launch_mode: per_node` and `data-parallel-size`: backend validation
+rejects that combination before direct-vLLM command construction, so remove
+`headless` from such recipes. `srtctl dry-run` emits a **WARNING** for each
+accepted key so operators can clean up recipes over time.
 
 Health checks, benchmark clients, and `SRT_FRONTEND_HOST` target the **aggregate
 endpoint leader** (the node running the public `vllm serve`), not necessarily the
@@ -523,14 +524,12 @@ Each worker leader gets a globally unique port starting at 5550:
 
 ### vLLM DP launch mode
 
-vLLM data-parallel endpoints use one process per GPU by default. Set
-`dp_launch_mode: per_node` to launch one process per node and let vLLM
-manage the local DP ranks in a shared CUDA namespace:
+vLLM data-parallel endpoints use one process per node by default. srtslurm
+derives whether each TP/PP replica is node-local or spans multiple nodes:
 
 ```yaml
 backend:
   type: vllm
-  dp_launch_mode: per_node
   vllm_config:
     prefill:
       data-parallel-size: 8
@@ -538,26 +537,28 @@ backend:
       data-parallel-size: 16
 ```
 
-| Value      | Process layout                                      |
-| ---------- | --------------------------------------------------- |
-| `per_gpu`  | One process per DP rank/GPU (default)               |
-| `per_node` | One process manages all DP ranks allocated per node |
+| Value      | Process layout                                                               |
+| ---------- | ---------------------------------------------------------------------------- |
+| `per_node` | One process per node (default); supports node-local or distributed TP/PP      |
+| `per_gpu`  | One process per DP rank/GPU (deprecated compatibility mode)                   |
 
-`per_gpu` remains the compatibility default for now, but srtslurm will switch
-the default to `per_node` in a future release. Existing vLLM DP configurations
-should set `backend.dp_launch_mode: per_node` now; srtslurm emits a
-configuration-time migration warning while they still use `per_gpu`.
+Set `backend.dp_launch_mode: per_gpu` only when temporarily preserving the
+legacy process layout. srtslurm emits a configuration-time deprecation warning
+for Dynamo-backed DP configurations that select it. `per_gpu` will be removed
+in a future release.
 
-In `per_node` mode, srtslurm derives `--data-parallel-size-local` and
-`--data-parallel-start-rank` from the allocated topology. Do not set those
-two flags manually. srtslurm also always enables `--data-parallel-hybrid-lb`
-so every node-local process registers with the Dynamo frontend. This is the
-recommended vLLM topology for Dynamo and ensures the frontend can route to
-each node-local DP engine. Do not set `data-parallel-hybrid-lb` manually;
-srtslurm enables it automatically, warns when it is configured, and ignores
-the configured value. `headless` is incompatible with `per_node` DP because a
-headless process does not register with Dynamo, so srtslurm rejects that
-combination during configuration loading.
+When `TP x PP` fits on one node, srtslurm derives
+`--data-parallel-size-local` and `--data-parallel-start-rank`, then enables
+`--data-parallel-hybrid-lb` so every node-local process registers with the
+Dynamo frontend. When `TP x PP` is larger than the node-local GPU allocation,
+srtslurm instead derives the multi-node rendezvous arguments and makes every
+process except the global leader headless. For example, both DP4 x TP4 and
+DP2 x TP8 are selected automatically on four-GPU nodes.
+
+Do not set `data-parallel-size-local`, `data-parallel-start-rank`,
+`data-parallel-hybrid-lb`, or `headless` manually; srtslurm owns those values.
+The allocation must be regular: `DP x TP x PP` must match the endpoint GPU
+count, and a TP/PP replica must divide evenly within or across nodes.
 
 ### TRTLLM Backend
 
@@ -1025,6 +1026,106 @@ infra:
 - When `etcd_nats_dedicated_node: true`, the first allocated node is reserved exclusively for etcd and nats services.
 - This can improve stability for large-scale deployments by isolating infrastructure services.
 - The reserved node is not used for worker processes.
+
+---
+
+## observability
+
+`observability.enabled` turns on the server metrics and trace surfaces and captures raw Prometheus responses during the benchmark window:
+
+```yaml
+observability:
+  enabled: true
+```
+
+The default Python scraper writes `<log_dir>/raw_prometheus.jsonl`. To additionally collect parsed Parquet with the native Tachometer scraper:
+
+```yaml
+observability:
+  enabled: true
+  tachometer:
+    enabled: true
+```
+
+Set `scrape_metrics: false` beside `enabled` to use Tachometer without also writing the raw JSONL capture. Otherwise the Python RAW scraper and Tachometer run together.
+
+| Field | Type | Default | Description |
+| ----- | ---- | ------- | ----------- |
+| `enabled` | bool | `false` | Enable server-side metrics/traces and the raw Python scraper |
+| `scrape_metrics` | bool/null | `null` | Override raw capture; `null` follows `enabled` |
+| `scrape_interval_seconds` | float | `1.0` | Interval between raw Prometheus scrape sweeps |
+| `scrape_output` | string | `raw_prometheus.jsonl` | Raw capture filename below the run log directory |
+| `build_dashboard` | bool/null | `null` | Build the component perf dashboard in post-processing; `null` follows `enabled`. See [Component Performance Dashboard](component-dashboard.md) |
+| `enable_otel` | bool | `false` | Inject OTEL tracing environment variables |
+| `otel_endpoint` | string/null | `null` | OTEL collector endpoint |
+| `tachometer` | object | `enabled: false` | Native Tachometer collection settings |
+
+Tachometer always collects worker and frontend metrics. DCGM and node exporters are optional additions:
+
+```yaml
+observability:
+  enabled: true
+  tachometer:
+    enabled: true
+    default_frequency: 5
+    sync_interval_secs: 120
+    compaction_threads: 4
+    storage_subdir: tachometer
+    extra_metadata:
+      cluster: production
+    dcgm_exporter:
+      container_image: /containers/dcgm-exporter.sqsh
+      port: 9400
+    node_exporter:
+      container_image: /containers/node-exporter.sqsh
+      port: 9100
+```
+
+| Tachometer field | Type | Default | Description |
+| ---------------- | ---- | ------- | ----------- |
+| `enabled` | bool | `false` | Enable native Tachometer collection |
+| `binary_path` | string | `tachometer-scraper` | Scraper command or path on the compute nodes |
+| `default_frequency` | float | `5.0` | Scrape frequency in Hz |
+| `sync_interval_secs` | int | `120` | Interval for intermediate Parquet compaction; `0` disables it |
+| `compaction_threads` | int | `4` | Value passed as `POLARS_MAX_THREADS` |
+| `storage_subdir` | string | `tachometer` | Output directory below the run log directory |
+| `extra_metadata` | dict | `{}` | Static string metadata added to every endpoint |
+| `dcgm_exporter` | object/null | `null` | Optional DCGM exporter image, port, and command |
+| `node_exporter` | object/null | `null` | Optional node exporter image, port, and command |
+
+`make setup ARCH=<compute_arch>` downloads and checksum-verifies the matching Tachometer binary from the latest srt-slurm release. The scraper runs as a native `srun` process on the head node; configured exporters remain containerized on worker nodes. Run `make tachometer-scraper` to build from source instead.
+
+Tachometer writes `<log_dir>/<storage_subdir>/final.parquet`. Intermediate files remain in `<log_dir>/<storage_subdir>/local` until shutdown compaction completes.
+
+---
+
+## telemetry
+
+`telemetry` is reserved for DCGM power measurement. It can run alongside `observability.tachometer`; it does not start Tachometer itself.
+
+When both are enabled, `telemetry.dcgm_exporter` is shared with Tachometer. Do not also configure `observability.tachometer.dcgm_exporter`; Tachometer can still launch an optional node exporter from its own block.
+
+```yaml
+telemetry:
+  enabled: true
+  default_frequency: 1.0
+  storage_subdir: power
+  required: true
+  dcgm_exporter:
+    container_image: /containers/dcgm-exporter.sqsh
+    port: 9400
+```
+
+| Field | Type | Default | Description |
+| ----- | ---- | ------- | ----------- |
+| `enabled` | bool | `false` | Enable DCGM power collection |
+| `dcgm_exporter` | object/null | `null` | DCGM exporter image, port, and optional command; required when enabled |
+| `default_frequency` | float | `1.0` | Power sample interval in seconds; must be at most `3.0` |
+| `storage_subdir` | string | `power` | Output directory below the run log directory |
+| `required` | bool | `false` | Fail the benchmark when publishable power artifacts cannot be produced |
+| `startup_timeout_seconds` | float | `30.0` | Exporter readiness timeout |
+| `request_timeout_seconds` | float | `2.0` | Per-request exporter timeout |
+| `collector_join_timeout_seconds` | float/null | `null` | Shutdown join timeout; defaults from `request_timeout_seconds` |
 
 ---
 

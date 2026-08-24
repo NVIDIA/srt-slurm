@@ -1,0 +1,16 @@
+# Pin the toolchain that the release build uses
+# (docker/Dockerfile.tachometer-scraper: FROM rust:1.90-slim-bookworm).
+#
+# Without this, `cargo build` on a newer stable fails deep in the dependency
+# tree with a confusing error that looks like a compiler bug rather than a
+# toolchain mismatch:
+#
+#   error[E0512]: cannot transmute between types of different sizes
+#     --> ethnum-1.5.2/src/error.rs:16:14
+#
+# ethnum is pulled in transitively by polars, so the failure surfaces ~200
+# crates into the build with no obvious link to the rustc version.
+[toolchain]
+channel = "1.90"
+profile = "minimal"
+components = ["rustfmt"]

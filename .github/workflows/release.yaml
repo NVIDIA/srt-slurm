@@ -1,36 +1,52 @@
 name: Release
 
-# pull_request_target (not pull_request): on a fork-PR merge, the plain
-# pull_request token is forced read-only and ignores `permissions:`, so
-# `gh release create` 403s. pull_request_target runs in the base-repo context
-# with a write-capable token. Safe here: we never check out or run PR code,
-# only call the GitHub API.
+# pull_request_target runs in the base repository context, which supplies the
+# write-capable token that creates the release. Build jobs check out only the
+# merged main-branch commit, after GitHub reports the pull request as merged.
 on:
   pull_request_target:
     types: [closed]
     branches: [main]
 
 permissions:
-  contents: write
+  contents: read
+  pull-requests: read
 
 concurrency:
   group: release
   cancel-in-progress: false
 
 jobs:
-  release:
+  version:
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.ver.outputs.tag }}
+      target: ${{ github.event.pull_request.merge_commit_sha }}
+      tachometer_changed: ${{ steps.tachometer.outputs.changed }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # need full tag history
+      - name: Detect Tachometer changes
+        id: tachometer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          files=$(gh api --paginate "repos/${GH_REPO}/pulls/${PR_NUMBER}/files?per_page=100" --jq '.[].filename')
+          if printf '%s\n' "$files" | grep -Eq '^(Cargo\.(toml|lock)|rust-toolchain\.toml|src/tachometer/|docker/Dockerfile\.tachometer-scraper$|\.dockerignore$)'; then
+            changed=true
+          else
+            changed=false
+          fi
+          echo "Tachometer changed: $changed"
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
 
       - name: Compute next version
         id: ver
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           # "true" when the merged PR carries the new-feature label -> minor bump.
           IS_FEATURE: ${{ contains(github.event.pull_request.labels.*.name, 'new-feature') }}
         run: |
@@ -56,11 +72,86 @@ jobs:
           echo "Latest release: ${latest:-none}  new-feature: $IS_FEATURE  Next: $next"
           echo "tag=$next" >> "$GITHUB_OUTPUT"
 
+  build-tachometer-scraper:
+    needs: version
+    if: needs.version.outputs.tachometer_changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            asset: tachometer-scraper-x86_64-unknown-linux-gnu
+          - platform: linux/arm64
+            asset: tachometer-scraper-aarch64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.target }}
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build scraper binary
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --platform "${{ matrix.platform }}" \
+            --file docker/Dockerfile.tachometer-scraper \
+            --target artifact \
+            --output type=local,dest=build/tachometer \
+            .
+          mkdir -p dist
+          mv build/tachometer/tachometer-scraper "dist/${{ matrix.asset }}"
+          chmod +x "dist/${{ matrix.asset }}"
+          (cd dist && sha256sum "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/
+          retention-days: 7
+
+  release:
+    needs: [version, build-tachometer-scraper]
+    if: >-
+      always() &&
+      needs.version.result == 'success' &&
+      (needs.build-tachometer-scraper.result == 'success' || needs.build-tachometer-scraper.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        if: needs.version.outputs.tachometer_changed == 'true'
+        with:
+          pattern: tachometer-scraper-*
+          path: dist
+          merge-multiple: true
+
+      - name: Reuse scraper binaries from the previous release
+        if: needs.version.outputs.tachometer_changed != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          previous=$(gh release list --limit 1000 --json tagName --jq '.[].tagName' | sort -V | tail -n1)
+          if [ -z "$previous" ]; then
+            echo "No previous release contains Tachometer scraper binaries"
+            exit 1
+          fi
+          mkdir -p dist
+          gh release download "$previous" --pattern 'tachometer-scraper-*' --dir dist
+
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          gh release create "${{ steps.ver.outputs.tag }}" \
-            --target "${{ github.event.pull_request.merge_commit_sha }}" \
-            --title "${{ steps.ver.outputs.tag }}" \
+          gh release create "${{ needs.version.outputs.tag }}" dist/* \
+            --target "${{ needs.version.outputs.target }}" \
+            --title "${{ needs.version.outputs.tag }}" \
             --generate-notes
