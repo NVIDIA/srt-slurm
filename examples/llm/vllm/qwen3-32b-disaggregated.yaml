@@ -1,0 +1,79 @@
+# Qwen3-32B Disaggregated KV-Aware Routing with vLLM
+# Curated vLLM disaggregated starting point.
+# Configuration: 6 prefill + 2 decode workers with TP2 on 16x H100 GPUs (2 nodes)
+
+name: "qwen3-32b-vllm-disagg-kv"
+
+slurm:
+  time_limit: "01:15:00"  # 1 hour 15 minutes
+
+model:
+  path: "qwen3-32b-fp8"
+  container: "nvcr.io/nvidia/ai-dynamo/vllm-runtime:0.8.0"
+  precision: "fp8"
+
+resources:
+  gpu_type: "h100"
+  gpus_per_node: 8
+  # Disaggregated mode: 6 prefill + 2 decode
+  # 6 prefill workers @ TP2 = 12 GPUs (1.5 nodes)
+  # 2 decode workers @ TP2 = 4 GPUs (0.5 nodes)
+  # Total: 16 GPUs across 2 nodes
+  prefill_nodes: 2
+  decode_nodes: 0
+  prefill_workers: 6
+  decode_workers: 2
+
+dynamo:
+  # Dynamo 0.8.0 was the default when this configuration was written; pin it explicitly.
+  # Use NATS for a configuration prior to Dynamo commit 39d2a68.
+  version: "0.8.0"
+  request_plane: "nats"
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+  args:
+    router-mode: "kv"
+    router-reset-states: true
+
+backend:
+  type: vllm
+  connector: nixl
+
+  prefill_environment:
+    DYN_HEALTH_CHECK_ENABLED: "false"
+    PYTHONUNBUFFERED: "1"
+
+  decode_environment:
+    DYN_HEALTH_CHECK_ENABLED: "false"
+    PYTHONUNBUFFERED: "1"
+
+  vllm_config:
+    prefill:
+      served-model-name: "Qwen/Qwen3-32B"
+      tensor-parallel-size: 2
+      gpu-memory-utilization: 0.90
+      async-scheduling: true
+      block-size: 64
+      disable-log-requests: true
+      no-enable-prefix-caching: true
+      hf-overrides: '{"rope_scaling":{"rope_type":"yarn","factor":4.0,"original_max_position_embeddings":32768},"max_position_embeddings":131072}'
+      max-model-len: 131072
+
+    decode:
+      served-model-name: "Qwen/Qwen3-32B"
+      tensor-parallel-size: 2
+      gpu-memory-utilization: 0.90
+      async-scheduling: true
+      block-size: 64
+      disable-log-requests: true
+      no-enable-prefix-caching: true
+      hf-overrides: '{"rope_scaling":{"rope_type":"yarn","factor":4.0,"original_max_position_embeddings":32768},"max_position_embeddings":131072}'
+      max-model-len: 131072
+
+benchmark:
+  type: "mooncake-router"
+  mooncake_workload: "conversation"
+  ttft_threshold_ms: 2000
+  itl_threshold_ms: 25

@@ -1,4 +1,4 @@
-.PHONY: lint test test-cov ci check setup cleanup gb200-fp8 gb200-fp4 tachometer-scraper tachometer-scraper-download
+.PHONY: lint test test-cov ci check setup cleanup examples tachometer-scraper tachometer-scraper-download
 
 NATS_VERSION ?= v2.10.28
 ETCD_VERSION ?= v3.5.21
@@ -54,21 +54,8 @@ tachometer-scraper-download:
 	install -Dm755 "$$tmp_dir/$$asset" bin/tachometer-scraper; \
 	echo "Installed Tachometer scraper at bin/tachometer-scraper"
 
-# Runners
-gb200-fp8:
-	srtctl apply -f recipes/gb200-fp8/1k1k/low-latency.yaml
-	srtctl apply -f recipes/gb200-fp8/1k1k/max-tpt-2p1d.yaml
-	srtctl apply -f recipes/gb200-fp8/1k1k/mid-curve-3p1d.yaml
-	srtctl apply -f recipes/gb200-fp8/8k1k/low-latency.yaml
-	srtctl apply -f recipes/gb200-fp8/8k1k/mid-curve-5p1d.yaml
-
-gb200-fp4:
-	srtctl apply -f recipes/gb200-fp4/1k1k/low-latency.yaml
-	srtctl apply -f recipes/gb200-fp4/1k1k/max-tpt.yaml
-	srtctl apply -f recipes/gb200-fp4/1k1k/mid-curve.yaml
-	srtctl apply -f recipes/gb200-fp4/8k1k/low-latency.yaml
-	srtctl apply -f recipes/gb200-fp4/8k1k/max-tpt.yaml
-	srtctl apply -f recipes/gb200-fp4/8k1k/mid-curve.yaml
+examples:
+	@find examples -type f -name '*.yaml' -print | sort
 
 setup: tachometer-scraper-download
 	@echo "📦 Setting up configs and logs directories..."

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Cluster-style e2e tests for recipe validation."""
+"""Cluster-style e2e tests for curated example validation."""
 
 import os
 import subprocess
@@ -10,11 +10,21 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from srtctl.cli.interactive import find_examples
 from srtctl.core.config import load_config
 from srtctl.core.topology import allocate_endpoints, endpoints_to_processes
 
-RECIPES_DIR = Path(__file__).parent.parent / "recipes"
+EXAMPLES_DIR = Path(__file__).parent.parent / "examples"
 CI_DIR = Path(__file__).parent.parent / "ci"
+QWEN_SGLANG_DISAGG = EXAMPLES_DIR / "llm" / "sglang" / "qwen3-32b-disaggregated.yaml"
+
+
+def test_interactive_discovers_curated_examples():
+    """Interactive mode exposes the curated examples, not a removed recipe tree."""
+    examples = find_examples(Path(__file__).parent.parent)
+
+    assert QWEN_SGLANG_DISAGG in examples
+    assert EXAMPLES_DIR / "mocker" / "aggregated.yaml" in examples
 
 
 # =============================================================================
@@ -153,51 +163,47 @@ class GB200HetRack:
 # =============================================================================
 
 
-class TestGB200FP4Cluster:
-    """GB200 FP4 1k1k configs on GB200 NVL rack (18 nodes × 4 GPUs)."""
+class TestGB200Example:
+    """Curated GB200 mocker example on a GB200 NVL rack."""
 
     RACK = GB200NVLRack
-    RECIPES = (
-        list((RECIPES_DIR / "gb200-fp4" / "1k1k").glob("*.yaml"))
-        if (RECIPES_DIR / "gb200-fp4" / "1k1k").exists()
-        else []
-    )
+    EXAMPLES = (EXAMPLES_DIR / "mocker" / "aggregated.yaml",)
 
-    @pytest.mark.parametrize("recipe_path", RECIPES, ids=lambda p: p.name)
-    def test_gpus_per_node_is_4(self, recipe_path):
-        """All GB200 FP4 1k1k configs use 4 GPUs per node."""
+    @pytest.mark.parametrize("example_path", EXAMPLES, ids=lambda p: p.name)
+    def test_gpus_per_node_is_4(self, example_path):
+        """The GB200 example uses four GPUs per node."""
         with (
             patch.dict(os.environ, self.RACK.slurm_env(), clear=False),
             patch("subprocess.run", side_effect=self.RACK.mock_scontrol()),
         ):
-            config = load_config(str(recipe_path))
+            config = load_config(str(example_path))
             assert config.resources.gpus_per_node == self.RACK.GPUS_PER_NODE, (
-                f"{recipe_path.name}: expected gpus_per_node={self.RACK.GPUS_PER_NODE}, "
+                f"{example_path.name}: expected gpus_per_node={self.RACK.GPUS_PER_NODE}, "
                 f"got {config.resources.gpus_per_node}"
             )
 
-    @pytest.mark.parametrize("recipe_path", RECIPES, ids=lambda p: p.name)
-    def test_fits_in_rack(self, recipe_path):
-        """Recipe fits within the GB200 NVL rack (18 nodes)."""
+    @pytest.mark.parametrize("example_path", EXAMPLES, ids=lambda p: p.name)
+    def test_fits_in_rack(self, example_path):
+        """Example fits within the GB200 NVL rack (18 nodes)."""
         with (
             patch.dict(os.environ, self.RACK.slurm_env(), clear=False),
             patch("subprocess.run", side_effect=self.RACK.mock_scontrol()),
         ):
-            config = load_config(str(recipe_path))
+            config = load_config(str(example_path))
             r = config.resources
             total_nodes_needed = (r.prefill_nodes or 0) + (r.decode_nodes or 0) + (r.agg_nodes or 0)
-            assert (
-                total_nodes_needed <= self.RACK.NUM_NODES
-            ), f"{recipe_path.name}: needs {total_nodes_needed} nodes, rack has {self.RACK.NUM_NODES}"
+            assert total_nodes_needed <= self.RACK.NUM_NODES, (
+                f"{example_path.name}: needs {total_nodes_needed} nodes, rack has {self.RACK.NUM_NODES}"
+            )
 
-    @pytest.mark.parametrize("recipe_path", RECIPES, ids=lambda p: p.name)
-    def test_endpoint_allocation(self, recipe_path):
+    @pytest.mark.parametrize("example_path", EXAMPLES, ids=lambda p: p.name)
+    def test_endpoint_allocation(self, example_path):
         """Endpoints are allocated correctly on GB200 NVL rack."""
         with (
             patch.dict(os.environ, self.RACK.slurm_env(), clear=False),
             patch("subprocess.run", side_effect=self.RACK.mock_scontrol()),
         ):
-            config = load_config(str(recipe_path))
+            config = load_config(str(example_path))
             r = config.resources
 
             endpoints = config.backend.allocate_endpoints(
@@ -213,48 +219,57 @@ class TestGB200FP4Cluster:
 
             prefill_eps = [e for e in endpoints if e.mode == "prefill"]
             decode_eps = [e for e in endpoints if e.mode == "decode"]
+            agg_eps = [e for e in endpoints if e.mode == "agg"]
 
             assert len(prefill_eps) == r.num_prefill
             assert len(decode_eps) == r.num_decode
+            assert len(agg_eps) == r.num_agg
 
             for ep in prefill_eps:
-                assert (
-                    ep.total_gpus == r.gpus_per_prefill
-                ), f"prefill endpoint {ep.index} has {ep.total_gpus} GPUs, expected {r.gpus_per_prefill}"
+                assert ep.total_gpus == r.gpus_per_prefill, (
+                    f"prefill endpoint {ep.index} has {ep.total_gpus} GPUs, expected {r.gpus_per_prefill}"
+                )
 
             for ep in decode_eps:
-                assert (
-                    ep.total_gpus == r.gpus_per_decode
-                ), f"decode endpoint {ep.index} has {ep.total_gpus} GPUs, expected {r.gpus_per_decode}"
+                assert ep.total_gpus == r.gpus_per_decode, (
+                    f"decode endpoint {ep.index} has {ep.total_gpus} GPUs, expected {r.gpus_per_decode}"
+                )
+            for ep in agg_eps:
+                assert ep.total_gpus == r.gpus_per_agg
 
 
-class TestH100Cluster:
-    """H100 configs on H100 rack (13 nodes × 8 GPUs = 104 total)."""
+class TestH100Examples:
+    """Curated H100 examples on an H100 rack (13 nodes × 8 GPUs)."""
 
     RACK = H100Rack
-    RECIPES = list((RECIPES_DIR / "h100").glob("*.yaml")) if (RECIPES_DIR / "h100").exists() else []
+    EXAMPLES = (
+        EXAMPLES_DIR / "llm" / "vllm" / "qwen3-32b-aggregated.yaml",
+        EXAMPLES_DIR / "llm" / "vllm" / "qwen3-32b-disaggregated.yaml",
+        EXAMPLES_DIR / "llm" / "sglang" / "qwen3-32b-aggregated.yaml",
+        QWEN_SGLANG_DISAGG,
+    )
 
-    @pytest.mark.parametrize("recipe_path", RECIPES, ids=lambda p: p.name)
-    def test_gpus_per_node_is_8(self, recipe_path):
-        """All H100 configs use 8 GPUs per node."""
+    @pytest.mark.parametrize("example_path", EXAMPLES, ids=lambda p: p.name)
+    def test_gpus_per_node_is_8(self, example_path):
+        """All curated H100 examples use eight GPUs per node."""
         with (
             patch.dict(os.environ, self.RACK.slurm_env(), clear=False),
             patch("subprocess.run", side_effect=self.RACK.mock_scontrol()),
         ):
-            config = load_config(str(recipe_path))
+            config = load_config(str(example_path))
             assert config.resources.gpus_per_node == self.RACK.GPUS_PER_NODE, (
-                f"{recipe_path.name}: expected gpus_per_node={self.RACK.GPUS_PER_NODE}, "
+                f"{example_path.name}: expected gpus_per_node={self.RACK.GPUS_PER_NODE}, "
                 f"got {config.resources.gpus_per_node}"
             )
 
-    @pytest.mark.parametrize("recipe_path", RECIPES, ids=lambda p: p.name)
-    def test_endpoint_allocation(self, recipe_path):
-        """Endpoints are allocated correctly on H100 rack."""
+    @pytest.mark.parametrize("example_path", EXAMPLES, ids=lambda p: p.name)
+    def test_endpoint_allocation(self, example_path):
+        """Endpoints are allocated correctly for each curated H100 example."""
         with (
             patch.dict(os.environ, self.RACK.slurm_env(), clear=False),
             patch("subprocess.run", side_effect=self.RACK.mock_scontrol()),
         ):
-            config = load_config(str(recipe_path))
+            config = load_config(str(example_path))
             r = config.resources
 
             endpoints = config.backend.allocate_endpoints(
@@ -270,43 +285,18 @@ class TestH100Cluster:
 
             prefill_eps = [e for e in endpoints if e.mode == "prefill"]
             decode_eps = [e for e in endpoints if e.mode == "decode"]
+            agg_eps = [e for e in endpoints if e.mode == "agg"]
 
             assert len(prefill_eps) == r.num_prefill
             assert len(decode_eps) == r.num_decode
+            assert len(agg_eps) == r.num_agg
 
             for ep in prefill_eps:
                 assert ep.total_gpus == r.gpus_per_prefill
             for ep in decode_eps:
                 assert ep.total_gpus == r.gpus_per_decode
-
-    @pytest.mark.parametrize("recipe_path", RECIPES, ids=lambda p: p.name)
-    def test_multi_node_tp(self, recipe_path):
-        """H100 configs with TP > 8 span multiple nodes correctly."""
-        with (
-            patch.dict(os.environ, self.RACK.slurm_env(), clear=False),
-            patch("subprocess.run", side_effect=self.RACK.mock_scontrol()),
-        ):
-            config = load_config(str(recipe_path))
-            r = config.resources
-
-            if r.gpus_per_prefill > self.RACK.GPUS_PER_NODE:
-                expected_nodes = r.gpus_per_prefill // self.RACK.GPUS_PER_NODE
-
-                endpoints = config.backend.allocate_endpoints(
-                    num_prefill=r.num_prefill,
-                    num_decode=r.num_decode,
-                    num_agg=r.num_agg,
-                    gpus_per_prefill=r.gpus_per_prefill,
-                    gpus_per_decode=r.gpus_per_decode,
-                    gpus_per_agg=r.gpus_per_agg,
-                    gpus_per_node=r.gpus_per_node,
-                    available_nodes=self.RACK.nodes(),
-                )
-
-                for ep in [e for e in endpoints if e.mode == "prefill"]:
-                    assert (
-                        ep.num_nodes == expected_nodes
-                    ), f"prefill endpoint should span {expected_nodes} nodes, got {ep.num_nodes}"
+            for ep in agg_eps:
+                assert ep.total_gpus == r.gpus_per_agg
 
 
 class TestCIConfigs:
@@ -379,34 +369,33 @@ class TestCIConfigs:
                 assert ep.total_gpus == r.gpus_per_decode
 
 
-class TestQwen32BCluster:
-    """Qwen3-32B configs with shared node allocation (decode_nodes=0)."""
+class TestQwen32BExamples:
+    """Qwen3-32B examples with shared-node allocation (decode_nodes=0)."""
 
     RACK = H100Rack
-    RECIPES = list((RECIPES_DIR / "qwen3-32b").glob("*.yaml")) if (RECIPES_DIR / "qwen3-32b").exists() else []
+    EXAMPLES = TestH100Examples.EXAMPLES
 
-    @pytest.mark.parametrize("recipe_path", RECIPES, ids=lambda p: p.name)
-    def test_config_loads(self, recipe_path):
-        """Qwen3-32B configs load correctly."""
+    @pytest.mark.parametrize("example_path", EXAMPLES, ids=lambda p: p.name)
+    def test_config_loads(self, example_path):
+        """Qwen3-32B examples load correctly."""
         with (
             patch.dict(os.environ, self.RACK.slurm_env(), clear=False),
             patch("subprocess.run", side_effect=self.RACK.mock_scontrol()),
         ):
-            config = load_config(str(recipe_path))
+            config = load_config(str(example_path))
             assert config.name is not None
             assert config.resources.gpus_per_node == 8
 
     def test_disagg_kv_router_shared_node_allocation(self):
         """disagg-kv-sglang.yaml: 6P+2D on 2 nodes with decode_nodes=0."""
-        recipe_path = RECIPES_DIR / "qwen3-32b" / "disagg-kv-sglang.yaml"
-        if not recipe_path.exists():
-            pytest.skip("disagg-kv-sglang.yaml not found")
+        example_path = QWEN_SGLANG_DISAGG
+        assert example_path.exists()
 
         with (
             patch.dict(os.environ, self.RACK.slurm_env(), clear=False),
             patch("subprocess.run", side_effect=self.RACK.mock_scontrol()),
         ):
-            config = load_config(str(recipe_path))
+            config = load_config(str(example_path))
             r = config.resources
 
             # Verify decode_nodes=0 triggers inheritance from prefill
@@ -453,21 +442,20 @@ class TestQwen32BCluster:
             for ep in decode_eps:
                 node1_decode_gpus.update(ep.gpu_indices)
 
-            assert node1_prefill_gpus.isdisjoint(
-                node1_decode_gpus
-            ), f"GPU overlap on node1! prefill uses {node1_prefill_gpus}, decode uses {node1_decode_gpus}"
+            assert node1_prefill_gpus.isdisjoint(node1_decode_gpus), (
+                f"GPU overlap on node1! prefill uses {node1_prefill_gpus}, decode uses {node1_decode_gpus}"
+            )
 
     def test_disagg_kv_router_cuda_visible_devices(self):
         """Processes on shared node have non-overlapping CUDA_VISIBLE_DEVICES."""
-        recipe_path = RECIPES_DIR / "qwen3-32b" / "disagg-kv-sglang.yaml"
-        if not recipe_path.exists():
-            pytest.skip("disagg-kv-sglang.yaml not found")
+        example_path = QWEN_SGLANG_DISAGG
+        assert example_path.exists()
 
         with (
             patch.dict(os.environ, self.RACK.slurm_env(), clear=False),
             patch("subprocess.run", side_effect=self.RACK.mock_scontrol()),
         ):
-            config = load_config(str(recipe_path))
+            config = load_config(str(example_path))
             r = config.resources
 
             nodes = self.RACK.nodes()[:2]
@@ -518,15 +506,14 @@ class TestQwen32BCluster:
 
     def test_disagg_kv_router_total_allocation_fits(self):
         """Total GPU allocation fits within declared nodes."""
-        recipe_path = RECIPES_DIR / "qwen3-32b" / "disagg-kv-sglang.yaml"
-        if not recipe_path.exists():
-            pytest.skip("disagg-kv-sglang.yaml not found")
+        example_path = QWEN_SGLANG_DISAGG
+        assert example_path.exists()
 
         with (
             patch.dict(os.environ, self.RACK.slurm_env(), clear=False),
             patch("subprocess.run", side_effect=self.RACK.mock_scontrol()),
         ):
-            config = load_config(str(recipe_path))
+            config = load_config(str(example_path))
             r = config.resources
 
             total_gpus_needed = r.num_prefill * r.gpus_per_prefill + r.num_decode * r.gpus_per_decode

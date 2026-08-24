@@ -6,7 +6,7 @@
 Interactive CLI for srtctl using Rich and Questionary.
 
 This provides a user-friendly interactive mode for:
-- Browsing and selecting recipe configs
+- Browsing and selecting example configs
 - Previewing sweep expansions
 - Modifying parameters before submission
 - Syntax-highlighted sbatch script preview
@@ -45,19 +45,17 @@ STYLE = Style(
 )
 
 
-def find_recipes(root: Path | None = None) -> list[Path]:
-    """Find all recipe YAML files in the recipes directory."""
+def find_examples(root: Path | None = None) -> list[Path]:
+    """Find all curated example YAML files in the examples directory."""
     if root is None:
         root = Path.cwd()
 
-    recipes_dir = root / "recipes"  # Note: typo in original dir name
-    if not recipes_dir.exists():
-        recipes_dir = root / "recipes"
+    examples_dir = root / "examples"
 
-    if not recipes_dir.exists():
+    if not examples_dir.exists():
         return []
 
-    return sorted(recipes_dir.rglob("*.yaml"))
+    return sorted(examples_dir.rglob("*.yaml"))
 
 
 def display_config_summary(config: dict[str, Any], title: str = "Configuration") -> None:
@@ -121,30 +119,30 @@ def display_sbatch_script(script: str, title: str = "Generated sbatch Script") -
     console.print(Panel(syntax, title=title, border_style="cyan"))
 
 
-def select_recipe() -> Path | None:
-    """Interactive recipe selection."""
-    recipes = find_recipes()
+def select_example() -> Path | None:
+    """Interactively select a curated example."""
+    examples = find_examples()
 
     choices = []
 
-    if recipes:
+    if examples:
         # Group by subdirectory
         by_dir: dict[str, list[Path]] = {}
-        for r in recipes:
-            rel = r.relative_to(Path.cwd())
+        for example in examples:
+            rel = example.relative_to(Path.cwd())
             parent = str(rel.parent)
             if parent not in by_dir:
                 by_dir[parent] = []
-            by_dir[parent].append(r)
+            by_dir[parent].append(example)
 
         for dir_name in sorted(by_dir.keys()):
             choices.append(questionary.Separator(f"── {dir_name} ──"))
-            for r in by_dir[dir_name]:
-                rel = r.relative_to(Path.cwd())
-                choices.append(questionary.Choice(str(rel.name), value=r))
+            for example in by_dir[dir_name]:
+                rel = example.relative_to(Path.cwd())
+                choices.append(questionary.Choice(str(rel.name), value=example))
 
     if not choices:
-        console.print("[yellow]No recipes found in recipes/[/]")
+        console.print("[yellow]No examples found in examples/[/]")
         custom = questionary.path(
             "Enter path to config file:",
             style=STYLE,
@@ -155,7 +153,7 @@ def select_recipe() -> Path | None:
     choices.append(questionary.Choice("📁 Browse for file...", value="browse"))
 
     selection = questionary.select(
-        "Select a recipe:",
+        "Select an example:",
         choices=choices,
         style=STYLE,
     ).ask()
@@ -270,7 +268,7 @@ def run_interactive() -> int:
     console.print()
 
     # Select config
-    selected_config_path = select_recipe()
+    selected_config_path = select_example()
     if not selected_config_path:
         console.print("[yellow]No config selected. Exiting.[/]")
         return 0
@@ -311,7 +309,7 @@ def run_interactive() -> int:
             return 0
 
         elif action == "reselect":
-            selected_config_path = select_recipe()
+            selected_config_path = select_example()
             if not selected_config_path:
                 continue
             config_path = selected_config_path
