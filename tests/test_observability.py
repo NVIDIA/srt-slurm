@@ -203,6 +203,16 @@ class TestExpandObservability:
         with pytest.raises(ValidationError, match="storage_subdir"):
             SrtConfig.Schema().load(cfg)
 
+    def test_retired_build_dashboard_knob_is_rejected(self):
+        """The perf dashboard is built on every run, so the knob that used to gate it
+        is gone. A recipe still carrying it must fail at submit time: silently
+        accepting `build_dashboard: false` would promise a capture-only run and then
+        render one anyway."""
+        cfg = _trtllm_config(enabled=True, build_dashboard=False)
+
+        with pytest.raises(ValidationError, match="build_dashboard"):
+            SrtConfig.Schema().load(cfg)
+
     def test_tachometer_requires_master_observability_knob(self):
         cfg = _trtllm_config(enabled=False, tachometer={"enabled": True})
 
