@@ -387,7 +387,9 @@ class SweepOrchestrator(
                     ),
                 }
                 preamble = (
-                    _render_named_placeholders(standalone.preamble, template_vars) if standalone.preamble else None
+                    _render_named_placeholders(standalone.preamble, template_vars).rstrip()
+                    if standalone.preamble
+                    else None
                 )
                 role_label = role.replace("+", "_")
                 service_log = self.runtime.log_dir / f"mooncake_store_{role_label}_{node}.out"

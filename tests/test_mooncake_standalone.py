@@ -98,6 +98,7 @@ STANDALONE_YAML = """    standalone:
         timeout_seconds: 90
 """
 
+
 def test_standalone_config_loads_from_yaml() -> None:
     config = _load_config(STANDALONE_YAML)
     standalone = config.backend.mooncake_kv_store.standalone
@@ -109,6 +110,36 @@ def test_standalone_config_loads_from_yaml() -> None:
     assert standalone.placements["decode"].env["MOONCAKE_GLOBAL_SEGMENT_SIZE"] == "400gb"
     assert standalone.health_check is not None
     assert standalone.health_check.port == 8800
+
+
+def test_standalone_strips_yaml_block_preamble_trailing_newline(tmp_path: Path) -> None:
+    config = _load_config(
+        """    standalone:
+      placements:
+        prefill:
+          env:
+            MOONCAKE_GLOBAL_SEGMENT_SIZE: 100gb
+      preamble: |
+        ulimit -n 1048576
+        ulimit -l unlimited
+      health_check: null
+"""
+    )
+    standalone = config.backend.mooncake_kv_store.standalone
+    assert standalone is not None
+    assert standalone.preamble == "ulimit -n 1048576\nulimit -l unlimited\n"
+
+    orchestrator = SweepOrchestrator(config=config, runtime=_runtime(tmp_path))
+    proc = MagicMock()
+    proc.poll.return_value = None
+    with (
+        patch("srtctl.cli.do_sweep.get_hostname_ip", return_value="10.0.0.11"),
+        patch("srtctl.cli.do_sweep.start_srun_process", return_value=proc) as mock_srun,
+    ):
+        orchestrator.start_mooncake_store_services()
+
+    assert mock_srun.call_count == 1
+    assert mock_srun.call_args.kwargs["bash_preamble"] == "ulimit -n 1048576\nulimit -l unlimited"
 
 
 def test_mooncake_master_uses_fixed_args_without_nof(tmp_path: Path) -> None:
