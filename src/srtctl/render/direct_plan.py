@@ -49,7 +49,7 @@ class DirectProcess:
 
 @dataclass(frozen=True)
 class DirectPlanContext:
-    """All values needed by the direct-container shim and execution plan."""
+    """All values needed by the direct host runner and in-container plan."""
 
     name: str
     source_dir: str
@@ -89,6 +89,7 @@ class DirectPlanContext:
     tachometer_compaction_threads: int
     ruter_enabled: bool
     direct_plan_json: str
+    direct_host_plan_json: str
 
 
 def heredoc_marker(payload: str, *, prefix: str = "SRTCTL_RUNTIME_CONFIG") -> str:
@@ -455,6 +456,29 @@ def _build_direct_plan_json(context: DirectPlanContext) -> str:
     return json.dumps(plan, sort_keys=True, separators=(",", ":"))
 
 
+def _build_direct_host_plan_json(context: DirectPlanContext) -> str:
+    """Serialize the host/container boundary consumed by ``direct_host_runner``.
+
+    The host runner needs only Docker-facing facts plus the already-normalized
+    container plan. Keeping this separate means the rendered Bash is a generic
+    Python bootstrap rather than a second lifecycle implementation.
+    """
+    plan = {
+        "name": context.name,
+        "source_dir": context.source_dir,
+        "output_base": context.output_base,
+        "model_path": context.model_path,
+        "local_container_image": context.local_container_image,
+        "sglang_source": context.sglang_source,
+        "sglang_runtime_key": context.sglang_runtime_key,
+        "mooncake_master_command": list(context.mooncake_master_command or ()),
+        "mooncake_container": context.mooncake_container,
+        "mooncake_environment": list(context.mooncake_environment),
+        "direct_plan": json.loads(context.direct_plan_json),
+    }
+    return json.dumps(plan, sort_keys=True, separators=(",", ":"))
+
+
 def build_direct_plan_context(
     config: SrtConfig,
     *,
@@ -463,6 +487,7 @@ def build_direct_plan_context(
 ) -> DirectPlanContext:
     """Build the direct execution plan for ``srtctl apply --bash``."""
     _validate_direct_config(config)
+    assert isinstance(config.backend, SGLangProtocol)
     assert config.benchmark.command is not None
     etcd_client_port = _direct_port(config, "SRTCTL_ETCD_PORT", ETCD_CLIENT_PORT)
     etcd_peer_port = _direct_port(config, "SRTCTL_ETCD_PEER_PORT", etcd_client_port + 1)
@@ -533,8 +558,10 @@ def build_direct_plan_context(
         tachometer_compaction_threads=config.observability.tachometer.compaction_threads,
         ruter_enabled=config.observability.enabled,
         direct_plan_json="",
+        direct_host_plan_json="",
     )
-    return replace(context, direct_plan_json=_build_direct_plan_json(context))
+    context = replace(context, direct_plan_json=_build_direct_plan_json(context))
+    return replace(context, direct_host_plan_json=_build_direct_host_plan_json(context))
 
 
 def render_direct_container_shim(context: DirectPlanContext) -> str:
@@ -544,5 +571,5 @@ def render_direct_container_shim(context: DirectPlanContext) -> str:
     return environment.get_template("direct_container.sh.j2").render(
         context=context,
         quote=shlex.quote,
-        direct_plan_marker=heredoc_marker(context.direct_plan_json, prefix="SRTCTL_DIRECT_PLAN"),
+        direct_host_plan_marker=heredoc_marker(context.direct_host_plan_json, prefix="SRTCTL_DIRECT_HOST_PLAN"),
     )
