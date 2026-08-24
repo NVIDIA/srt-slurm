@@ -1083,6 +1083,13 @@ class ObservabilityConfig:
     directly. It never reaches into the benchmark client to ask it to re-export
     what the servers already publish.
 
+    It does **not** decide whether the component perf dashboard is built. That
+    happens on every run (see :mod:`srtctl.analysis.perf_dashboard`); ``enabled``
+    only decides which capture legs exist and therefore which tabs the page
+    carries. Keeping the two separate is deliberate: a run that captured nothing
+    server-side still renders from the client export and the per-iteration log,
+    and that is the shape most runs have.
+
     Attributes:
         enabled: Master analytics knob. Default: False.
         enable_otel: If True, inject OTEL environment variables into all workers
@@ -1096,11 +1103,6 @@ class ObservabilityConfig:
             back-to-back rather than queueing (see the drift-free pacing in
             ``RawMetricsScraper``).
         scrape_output: Filename (under the run's log dir) for the RAW capture.
-        build_dashboard: Build the component perf dashboard during post-processing
-            (``<log_dir>/perf_dashboard.html`` plus a ``.json`` payload and the
-            intermediate bundle). Defaults to the value of ``enabled`` -- a run
-            instrumented for offline analysis should produce the artifact that
-            analysis is done with. Set False to capture without rendering.
         tachometer: Optional native Tachometer capture configuration. It runs
             alongside RAW capture when both are enabled.
     """
@@ -1112,7 +1114,6 @@ class ObservabilityConfig:
     scrape_metrics: bool | None = None
     scrape_interval_seconds: float = 1.0
     scrape_output: str = "raw_prometheus.jsonl"
-    build_dashboard: bool | None = None
     tachometer: TachometerConfig = field(default_factory=TachometerConfig)
 
     Schema: ClassVar[type[Schema]] = Schema
@@ -1121,11 +1122,6 @@ class ObservabilityConfig:
     def scraper_enabled(self) -> bool:
         """Whether the in-job RAW Prometheus scraper should run."""
         return self.enabled if self.scrape_metrics is None else self.scrape_metrics
-
-    @property
-    def dashboard_enabled(self) -> bool:
-        """Whether to build the component perf dashboard during post-processing."""
-        return self.enabled if self.build_dashboard is None else self.build_dashboard
 
 
 @dataclass(frozen=True)
