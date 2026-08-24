@@ -53,6 +53,7 @@ from backend_request_func import (
     RequestFuncOutput,
     create_dynamo_session,
     get_tokenizer as get_sa_bench_tokenizer,
+    is_chat_completions_url,
 )
 from datasets import load_dataset
 from PIL.Image import Image
@@ -420,22 +421,39 @@ def _process_random_no_chat(args):
     return (prompt, int(prefix_len + input_len), int(output_len), None)
 
 
-def _process_random_chat(args):
-    """Per-prompt body for the chat-template path — verbatim from the
-    existing serial loop in ``sample_random_requests``."""
-    i, offset, input_len, output_len, chat_template_len, vocab_size = args
+def _random_chat_prompt_text(i, offset, input_len, vocab_size):
+    """Prompt body shared by both chat paths: exactly ``input_len`` tokens."""
     tokenizer = _worker_tokenizer
     origin_text = tokenizer.decode(
         [(offset + i + j) % vocab_size for j in range(int(input_len * 1.5))]
     )
     re_encoded_sequence = tokenizer.encode(origin_text, add_special_tokens=False)[: input_len]
-    prompt_text = tokenizer.decode(re_encoded_sequence)
-    prompt = tokenizer.apply_chat_template(
+    return tokenizer.decode(re_encoded_sequence)
+
+
+def _process_random_chat(args):
+    """Per-prompt body for the chat-template path — verbatim from the
+    existing serial loop in ``sample_random_requests``."""
+    i, offset, input_len, output_len, chat_template_len, vocab_size = args
+    prompt_text = _random_chat_prompt_text(i, offset, input_len, vocab_size)
+    prompt = _worker_tokenizer.apply_chat_template(
         [{"role": "user", "content": prompt_text}],
         add_generation_prompt=True,
         tokenize=False,
     )
     return (prompt, int(input_len + chat_template_len), int(output_len), None)
+
+
+def _process_random_chat_server_side(args):
+    """Per-prompt body for chat-API endpoints.
+
+    Reserves the template's tokens in the ISL budget but ships the bare text:
+    the server renders the template itself when it reads ``messages``, so
+    wrapping here would apply it twice.
+    """
+    i, offset, input_len, output_len, chat_template_len, vocab_size = args
+    prompt_text = _random_chat_prompt_text(i, offset, input_len, vocab_size)
+    return (prompt_text, int(input_len + chat_template_len), int(output_len), None)
 
 
 def sample_random_requests(
@@ -446,6 +464,7 @@ def sample_random_requests(
     range_ratio: float,
     tokenizer: PreTrainedTokenizerBase,
     use_chat_template: bool = False,
+    wrap_chat_template: bool = True,
     num_workers: int = 0,
     tokenizer_id: str | None = None,
     tokenizer_mode: str = "auto",
@@ -484,7 +503,7 @@ def sample_random_requests(
              chat_template_len, vocab_size)
             for i in range(num_prompts)
         ]
-        worker_fn = _process_random_chat
+        worker_fn = _process_random_chat if wrap_chat_template else _process_random_chat_server_side
     else:
         prefix_token_ids = np.random.randint(0, vocab_size, size=prefix_len).tolist()
         args_list = [
@@ -736,9 +755,9 @@ async def benchmark(
 
     print("Starting initial single prompt test run...")
     test_prompt, test_prompt_len, test_output_len, test_mm_content = input_requests[0]
-    if backend != "openai-chat" and test_mm_content is not None:
-        # multi-modal benchmark is only available on OpenAI Chat backend.
-        raise ValueError("Multi-modal content is only supported on 'openai-chat' backend.")
+    if test_mm_content is not None and not (backend == "openai-chat" or is_chat_completions_url(api_url)):
+        # Attachments can only ride along in a chat message.
+        raise ValueError("Multi-modal content is only supported on the chat completions API.")
     test_input = RequestFuncInput(
         model=model_id,
         model_name=model_name,
@@ -1092,6 +1111,10 @@ def main(args: argparse.Namespace):
         api_url = f"http://{args.host}:{args.port}{args.endpoint}"
         base_url = f"http://{args.host}:{args.port}"
 
+    # On the chat API the prompt travels as a message and the server renders the
+    # chat template, so sa-bench must not render it a second time.
+    server_applies_chat_template = is_chat_completions_url(api_url)
+
     tokenizer = load_tokenizer(
         tokenizer_id,
         tokenizer_mode=tokenizer_mode,
@@ -1131,6 +1154,13 @@ def main(args: argparse.Namespace):
                 "  benchmark:\n"
                 "    use_chat_template: false\n"
             )
+    elif server_applies_chat_template and args.dataset_name == "random":
+        print(
+            f"Warning: {args.endpoint} makes the server wrap every prompt in the chat "
+            "template, so the served input length is random_input_len plus the template's "
+            "tokens and the reported input length undercounts it. Set "
+            "benchmark.use_chat_template: true to reserve room for the template instead."
+        )
 
     if args.dataset_name == "custom":
         from benchmark_dataset import sample_custom_requests
@@ -1223,6 +1253,7 @@ def main(args: argparse.Namespace):
                 range_ratio=args.random_range_ratio,
                 tokenizer=tokenizer,
                 use_chat_template=args.use_chat_template,
+                wrap_chat_template=not server_applies_chat_template,
                 num_workers=args.random_num_workers,
                 tokenizer_id=tokenizer_id,
                 tokenizer_mode=args.tokenizer_mode,

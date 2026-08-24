@@ -67,6 +67,10 @@ USE_CHAT_TEMPLATE=${16:-true}
 DATASET_NAME=${17:-random}
 DATASET_PATH=${18:-}
 REUSE_HTTP_CONNECTIONS=${19:-false}
+SA_BENCH_BACKEND=${20:-dynamo}
+SA_BENCH_API_ENDPOINT=${21:-/v1/completions}
+
+BENCHMARK_HTTP_ARGS=(--backend "$SA_BENCH_BACKEND" --endpoint "$SA_BENCH_API_ENDPOINT")
 
 # Build optional custom tokenizer args
 CUSTOM_TOKENIZER_ARGS=()
@@ -148,7 +152,7 @@ PORT=$(echo "$ENDPOINT" | sed 's|http://||' | cut -d: -f2 | cut -d/ -f1)
 
 WORK_DIR="$(dirname "$0")"
 
-echo "SA-Bench Config: endpoint=${ENDPOINT}; isl=${ISL}; osl=${OSL}; concurrencies=${CONCURRENCIES}; req_rate=${REQ_RATE}; model=${MODEL_NAME}; dataset=${DATASET_NAME}; dataset_path=${DATASET_PATH}; http_connection_mode=${HTTP_CONNECTION_MODE}"
+echo "SA-Bench Config: endpoint=${ENDPOINT}; isl=${ISL}; osl=${OSL}; concurrencies=${CONCURRENCIES}; req_rate=${REQ_RATE}; model=${MODEL_NAME}; dataset=${DATASET_NAME}; dataset_path=${DATASET_PATH}; http_connection_mode=${HTTP_CONNECTION_MODE}; backend=${SA_BENCH_BACKEND}; api_path=${SA_BENCH_API_ENDPOINT}"
 
 # Profiling shared helpers
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -163,15 +167,26 @@ trap cleanup EXIT
 IFS='x' read -r -a CONCURRENCY_LIST <<< "$CONCURRENCIES"
 
 # Quick curl to verify endpoint is working
-echo "Verifying endpoint..."
-curl -s "${ENDPOINT}/v1/chat/completions" \
-    -H "Content-Type: application/json" \
-    -d "{
-        \"model\": \"${MODEL_NAME}\",
-        \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}],
-        \"stream\": false,
-        \"max_tokens\": 10
-    }" | head -c 200
+echo "Verifying endpoint (${SA_BENCH_API_ENDPOINT})..."
+if [[ "$SA_BENCH_API_ENDPOINT" == *"chat/completions"* ]]; then
+    curl -s "${ENDPOINT}${SA_BENCH_API_ENDPOINT}" \
+        -H "Content-Type: application/json" \
+        -d "{
+            \"model\": \"${MODEL_NAME}\",
+            \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}],
+            \"stream\": false,
+            \"max_completion_tokens\": 10
+        }" | head -c 200
+else
+    curl -s "${ENDPOINT}${SA_BENCH_API_ENDPOINT}" \
+        -H "Content-Type: application/json" \
+        -d "{
+            \"model\": \"${MODEL_NAME}\",
+            \"prompt\": \"Hello\",
+            \"stream\": false,
+            \"max_tokens\": 10
+        }" | head -c 200
+fi
 echo ""
 
 ulimit -n 65536 2>/dev/null || true  # May fail in containers without CAP_SYS_RESOURCE
@@ -195,7 +210,7 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
         python3 -u "${WORK_DIR}/benchmark_serving.py" \
             --model "${MODEL_NAME}" --tokenizer "${MODEL_PATH}" \
             --host "$HOST" --port "$PORT" \
-            --backend "dynamo" --endpoint /v1/completions \
+            "${BENCHMARK_HTTP_ARGS[@]}" \
             --disable-tqdm \
             "${DATASET_ARGS[@]}" \
             --num-prompts "$num_warmup_prompts" \
@@ -226,7 +241,7 @@ for concurrency in "${CONCURRENCY_LIST[@]}"; do
     python3 -u "${WORK_DIR}/benchmark_serving.py" \
         --model "${MODEL_NAME}" --tokenizer "${MODEL_PATH}" \
         --host "$HOST" --port "$PORT" \
-        --backend "dynamo" --endpoint /v1/completions \
+        "${BENCHMARK_HTTP_ARGS[@]}" \
         --disable-tqdm \
         "${DATASET_ARGS[@]}" \
         --num-prompts "$num_prompts" \
