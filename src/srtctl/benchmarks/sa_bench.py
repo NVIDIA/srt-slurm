@@ -89,9 +89,7 @@ class SABenchRunner(BenchmarkRunner):
         backend = b.backend or DEFAULT_SA_BENCH_BACKEND
         api_endpoint = b.endpoint or DEFAULT_SA_BENCH_API_ENDPOINT
         if backend not in SA_BENCH_BACKENDS:
-            errors.append(
-                f"benchmark.backend must be one of {sorted(SA_BENCH_BACKENDS)}; got {backend!r}"
-            )
+            errors.append(f"benchmark.backend must be one of {sorted(SA_BENCH_BACKENDS)}; got {backend!r}")
         if not api_endpoint.startswith("/"):
             errors.append(f"benchmark.endpoint must be an absolute path starting with '/'; got {api_endpoint!r}")
 
@@ -102,9 +100,7 @@ class SABenchRunner(BenchmarkRunner):
                 f"({sorted(CHAT_CAPABLE_SA_BENCH_BACKENDS)}); {backend!r} only sends a completions body"
             )
         if backend == "openai-chat" and not is_chat_endpoint:
-            errors.append(
-                f"benchmark.backend openai-chat requires benchmark.endpoint: {CHAT_SA_BENCH_API_ENDPOINT}"
-            )
+            errors.append(f"benchmark.backend openai-chat requires benchmark.endpoint: {CHAT_SA_BENCH_API_ENDPOINT}")
         if b.reuse_http_connections and backend != "dynamo":
             errors.append("benchmark.reuse_http_connections is supported only with benchmark.backend: dynamo")
 
