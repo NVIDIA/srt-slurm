@@ -91,7 +91,7 @@ class TestStatusLifecycleHappyPath:
             job_id="99999",
             job_name="test-benchmark",
             cluster="ptyche",
-            recipe="recipes/qwen3-32b/disagg-kv-sglang.yaml",
+            recipe="examples/llm/sglang/qwen3-32b-disaggregated.yaml",
             metadata={"tags": ["nightly", "disagg"]},
         )
         assert created is True
@@ -131,7 +131,7 @@ class TestStatusLifecycleHappyPath:
         assert events[0]["job_id"] == "99999"
         assert events[0]["job_name"] == "test-benchmark"
         assert events[0]["cluster"] == "ptyche"
-        assert events[0]["recipe"] == "recipes/qwen3-32b/disagg-kv-sglang.yaml"
+        assert events[0]["recipe"] == "examples/llm/sglang/qwen3-32b-disaggregated.yaml"
         assert events[0]["metadata"]["tags"] == ["nightly", "disagg"]
 
         # Verify status progression
@@ -214,7 +214,7 @@ class TestContractValidation:
             job_id="11111",
             job_name="full-payload-test",
             cluster="lyris",
-            recipe="recipes/llama/agg.yaml",
+            recipe="examples/llm/sglang/qwen3-32b-aggregated.yaml",
             metadata={
                 "tags": ["ci", "smoke"],
                 "commit_sha": "abc123",

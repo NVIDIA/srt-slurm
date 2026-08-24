@@ -53,7 +53,7 @@ class TestMockerConfigLoading:
     """Tests for mocker backend YAML deserialization."""
 
     def test_minimal_mocker_config(self):
-        """Minimal mocker recipe loads correctly."""
+        """Minimal mocker configuration loads correctly."""
         data = {
             "name": "test-mocker",
             "model": {"path": "hf:Qwen/Qwen3-0.6B", "container": "test", "precision": "fp16"},
@@ -153,14 +153,14 @@ class TestMockerConfigLoading:
         assert backend.get_environment_for_mode("decode") == {"BAZ": "qux"}
         assert backend.get_environment_for_mode("agg") == {}
 
-    def test_smoke_test_recipes_load(self):
-        """Mocker recipes in recipes/mocker/ load successfully."""
-        recipe_dir = Path("recipes/mocker")
-        if not recipe_dir.exists():
-            pytest.skip("recipes/mocker/ not found")
+    def test_smoke_test_example_loads(self):
+        """The curated mocker example loads successfully."""
+        example_dir = Path("examples/mocker")
+        if not example_dir.exists():
+            pytest.fail("examples/mocker/ not found")
 
-        for recipe in recipe_dir.glob("*.yaml"):
-            config = SrtConfig.from_yaml(recipe)
+        for example in example_dir.glob("*.yaml"):
+            config = SrtConfig.from_yaml(example)
             assert config.backend_type == "mocker"
             assert isinstance(config.backend, MockerProtocol)
 
