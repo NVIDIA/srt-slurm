@@ -316,9 +316,9 @@ OpenAI servers rather than `dynamo.trtllm`.
 
 Because the orchestrator is a single process, set
 `enable_multiple_frontends: false` (the nginx + multi-router path is not
-supported). A recipe can be switched between the two TRT-LLM serving stacks by
-changing only `frontend.type` between `dynamo` and `trtllm_serve`. See the sample
-recipe `recipes/trtllm/b200-fp8/1k1k/stp/ctx1_gen3_tp8_batch1024_eplb0_mtp0_4_trtllm_serve.yaml`.
+supported). A configuration can be switched between the two TRT-LLM serving stacks by
+changing only `frontend.type` between `dynamo` and `trtllm_serve`; start from the
+curated `examples/llm/trtllm/deepseek-r1-disaggregated-b200-fp4.yaml` configuration.
 
 ### vllm frontend
 

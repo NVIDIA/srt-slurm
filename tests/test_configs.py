@@ -3,7 +3,6 @@
 
 """Tests for configuration loading and validation."""
 
-import glob
 import json
 from pathlib import Path
 
@@ -26,12 +25,16 @@ class TestConfigLoading:
     """Tests for config file loading."""
 
     def test_config_loading_from_yaml(self):
-        """Test that config files in recipes/ can be loaded."""
-        # Find all yaml files in recipes/
-        config_files = glob.glob("recipes/**/*.yaml", recursive=True)
+        """Test that every runnable curated example can be loaded."""
+        config_files = sorted(
+            path
+            for example_dir in (Path("examples/llm"), Path("examples/mocker"))
+            if example_dir.exists()
+            for path in example_dir.rglob("*.yaml")
+        )
 
         if not config_files:
-            pytest.skip("No config files found in recipes/")
+            pytest.fail("No runnable curated examples found in examples/llm or examples/mocker")
 
         errors = []
         loaded = 0
@@ -51,9 +54,7 @@ class TestConfigLoading:
 
         print(f"\nLoaded {loaded}/{len(config_files)} configs")
         if errors:
-            print(f"Errors ({len(errors)}):")
-            for err in errors[:5]:  # Show first 5 errors
-                print(f"  - {err}")
+            pytest.fail("Failed to load runnable curated examples:\n" + "\n".join(errors))
 
 
 class TestSrtConfigStructure:

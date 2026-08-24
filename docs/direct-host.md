@@ -1,17 +1,17 @@
 # Direct host lifecycle
 
-Use the direct lifecycle to run one Dynamo + SGLang benchmark on the GPU host you are already logged into. It consumes the same recipe as SLURM; only the execution owner changes.
+Use the direct lifecycle to run one Dynamo + SGLang benchmark on the GPU host you are already logged into. It consumes the same configuration as SLURM; only the execution owner changes.
 
 | Target | Command | Owner |
 | --- | --- | --- |
-| SLURM cluster | `srtctl apply -f recipe.yaml` | Scheduler, `srun`, and the job container |
-| One GPU host | `srtctl apply -f recipe.yaml --bash` | Docker host runner and one serving container |
+| SLURM cluster | `srtctl apply -f config.yaml` | Scheduler, `srun`, and the job container |
+| One GPU host | `srtctl apply -f config.yaml --bash` | Docker host runner and one serving container |
 
 The direct path is intentionally single-host. It supports the SGLang backend behind the Dynamo frontend, one concrete custom benchmark, optional Mooncake, Tachometer, and ruter. Use the SLURM lifecycle for multi-node runs, sweeps, profiling, or DCGM power telemetry.
 
 ```mermaid
 flowchart LR
-    Y["same recipe.yaml"] --> R["srtctl apply --bash"]
+    Y["same config.yaml"] --> R["srtctl apply --bash"]
     R --> H["host runner: Docker, mounts, cleanup"]
     H --> C["serving container"]
     C --> S["SGLang source + Dynamo source"]
@@ -31,9 +31,9 @@ flowchart LR
 
 The direct runner creates a cached SGLang environment under `<output-base>/.srtctl-runtime/` and Dynamo wheels under `<output-base>/.srtctl-cache/dynamo-wheels/`. Delete those only when you deliberately want a cold rebuild.
 
-## Run the included 3P2D route-observability recipe
+## Run the included 3P2D route-observability example
 
-This recipe uses three TP1 prefills and two TP1 decodes on one eight-GPU host. It runs a Mooncake trace, scrapes Tachometer, and normalizes the ruter bundle.
+This example uses three TP1 prefills and two TP1 decodes on one eight-GPU host. It runs a Mooncake trace, scrapes Tachometer, and normalizes the ruter bundle.
 
 ```bash
 cd /path/to/srt-slurm
@@ -44,14 +44,14 @@ export RUTER_MODEL_PATH=/absolute/path/to/Qwen3-32B-FP8
 export RUTER_SGLANG_SOURCE=/absolute/path/to/sglang
 export RUTER_MOONCAKE_TRACE=/absolute/path/to/mooncake_refined.jsonl
 
-uv run srtctl apply -f recipes/qwen3-32b/ruter-3p2d-dynamo.yaml -o /absolute/path/to/runs --bash > run.sh
+uv run srtctl apply -f examples/llm/sglang/qwen3-32b-ruter-3p2d-direct-host.yaml -o /absolute/path/to/runs --bash > run.sh
 bash -n run.sh
 bash run.sh
 ```
 
 `--bash` renders a small host launcher. When it runs, the launcher starts a labeled Docker container, installs the selected SGLang source before plain Dynamo, starts the infrastructure and workers, waits for a smoke request, then runs Tachometer, AIPerf, and ruter. `Ctrl-C` and `SIGTERM` stop only processes and containers owned by this run.
 
-The recipe keeps both `model.container` and `SRTCTL_LOCAL_CONTAINER_IMAGE` so it is also valid for the SLURM lifecycle. The direct lifecycle uses `SRTCTL_LOCAL_CONTAINER_IMAGE`; SLURM uses the normal container setting.
+The example keeps both `model.container` and `SRTCTL_LOCAL_CONTAINER_IMAGE` so it is also valid for the SLURM lifecycle. The direct lifecycle uses `SRTCTL_LOCAL_CONTAINER_IMAGE`; SLURM uses the normal container setting.
 
 ## Inspect the result
 
@@ -74,7 +74,7 @@ Each direct run creates its own timestamped directory below `-o` (or `outputs/` 
 └── tachometer.toml
 ```
 
-Names vary slightly with the recipe, but workers, router, Tachometer, benchmark, and post-processing never share a log file. Raw logs and Parquet remain unchanged; ruter writes normalized records in `logs/.ruter/`.
+Names vary slightly with the configuration, but workers, router, Tachometer, benchmark, and post-processing never share a log file. Raw logs and Parquet remain unchanged; ruter writes normalized records in `logs/.ruter/`.
 
 Open the route view after the run:
 
