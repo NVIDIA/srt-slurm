@@ -4,12 +4,23 @@
 from __future__ import annotations
 
 import signal
+import subprocess
 import sys
 import tarfile
+from pathlib import Path
 
 import pytest
 
+from srtctl.render import direct_runner
 from srtctl.render.direct_runner import DirectRunInterrupted, DirectRunner, _router_counts
+from srtctl.render.direct_stages import (
+    BenchmarkStageMixin,
+    InfrastructureStageMixin,
+    PostProcessStageMixin,
+    RuntimeSetupStageMixin,
+    ServingStageMixin,
+    TelemetryStageMixin,
+)
 
 
 def _plan(tmp_path) -> dict[str, object]:
@@ -50,6 +61,29 @@ def test_router_counts_accepts_dynamo_health_shape() -> None:
             ]
         },
     ) == (1, 2)
+
+
+def test_runner_composes_direct_only_stages() -> None:
+    assert DirectRunner.__bases__ == (
+        RuntimeSetupStageMixin,
+        InfrastructureStageMixin,
+        ServingStageMixin,
+        TelemetryStageMixin,
+        BenchmarkStageMixin,
+        PostProcessStageMixin,
+    )
+
+
+def test_runner_executes_as_a_direct_file() -> None:
+    result = subprocess.run(
+        [sys.executable, str(Path(direct_runner.__file__)), "--help"],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Rendered direct execution plan" in result.stdout
 
 
 def test_runner_tracks_subprocess_groups_and_separate_logs(tmp_path, monkeypatch) -> None:
