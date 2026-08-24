@@ -64,6 +64,27 @@ class TRTLLMProtocol:
     decode_environment: dict[str, str] = field(default_factory=dict)
     aggregated_environment: dict[str, str] = field(default_factory=dict)
 
+    # Extra `trtllm-serve` CLI flags per mode, appended verbatim to the worker
+    # command (frontend.type: trtllm_serve only -- dynamo.trtllm takes a
+    # different CLI).
+    #
+    # `trtllm_config` already covers everything that belongs in the engine YAML,
+    # which is nearly everything: trtllm-serve merges that file into LlmArgs. But
+    # a few of its options configure the OpenAI SERVER layer rather than the
+    # engine and have no LlmArgs field, so no YAML key can reach them. The one
+    # that matters in practice is `--tool_parser` (a click.Choice consumed
+    # directly by the server constructor); note that its sibling
+    # `--reasoning_parser` IS forwarded into get_llm_args() and so remains
+    # settable from `trtllm_config`.
+    #
+    #     backend:
+    #       type: trtllm
+    #       prefill_extra_args: ["--tool_parser", "glm47"]
+    #       decode_extra_args:  ["--tool_parser", "glm47"]
+    prefill_extra_args: list[str] = field(default_factory=list)
+    decode_extra_args: list[str] = field(default_factory=list)
+    aggregated_extra_args: list[str] = field(default_factory=list)
+
     trtllm_config: TRTLLMServerConfig | None = None
 
     # Whether dynamo.trtllm workers pass `--publish-events-and-metrics`.
@@ -132,6 +153,15 @@ class TRTLLMProtocol:
         elif mode == "agg":
             return dict(self.trtllm_config.aggregated or {})
         return {}
+
+    def get_extra_args_for_mode(self, mode: WorkerMode) -> list[str]:
+        """Extra trtllm-serve CLI flags for this mode (see the field docs)."""
+        by_mode: dict[WorkerMode, list[str]] = {
+            "prefill": self.prefill_extra_args,
+            "decode": self.decode_extra_args,
+            "agg": self.aggregated_extra_args,
+        }
+        return list(by_mode.get(mode) or [])
 
     def get_environment_for_mode(self, mode: WorkerMode) -> dict[str, str]:
         eplb_prefix = f"moe_shared_{uuid.uuid4().hex}"
@@ -280,6 +310,7 @@ class TRTLLMProtocol:
             # ai-dynamo tensorrtllm-runtime 1.3.0-dev.1 container, which accept --config;
             # some trtllm-serve builds spell this --extra_llm_api_options.
             cmd.extend(["--config", str(container_config_path)])
+            cmd.extend(self.get_extra_args_for_mode(mode))
             return self._wrap_with_numa_cpu_bind(cmd)
 
         # dynamo.trtllm path (default): workers register into etcd/NATS and the dynamo
