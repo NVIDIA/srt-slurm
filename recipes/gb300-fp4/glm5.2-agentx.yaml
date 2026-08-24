@@ -186,7 +186,6 @@ base:
     nats_max_payload_mb: 64
   sbatch_directives:
     mem: '0'
-    cpus-per-task: '144'
   srun_options:
     mem: '0'
     container-remap-root: ''
