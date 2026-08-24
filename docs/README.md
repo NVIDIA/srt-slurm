@@ -1,6 +1,6 @@
 # Introduction
 
-`srtctl` is a command-line tool for running distributed LLM inference benchmarks on SLURM clusters. It replaces complex shell scripts and 50+ CLI flags with clean, declarative YAML configuration files.
+`srtctl` is a command-line tool for running distributed LLM inference benchmarks on SLURM clusters or a single direct GPU host. It replaces complex shell scripts and 50+ CLI flags with clean, declarative YAML configuration files.
 
 ## Table of Contents
 
@@ -30,6 +30,8 @@ When you run `srtctl apply -f config.yaml`, the tool:
 3. Generates a SLURM batch script and SGLang configuration files
 4. Submits to SLURM
 
+For a single GPU host, render the same recipe with `srtctl apply -f config.yaml --bash`. The resulting launcher owns a Docker serving container on the current host instead of submitting to SLURM. It uses the same topology and lifecycle plan, including worker/router readiness, Tachometer, benchmark execution, and ruter post-processing where configured. See [Direct Host Lifecycle](direct-host.md) for requirements and a complete example.
+
 The `srtctl-mcp` server is different from `srtctl apply`: it is a schema and
 recipe-authoring helper. It does not use host-side `srtslurm.yaml` for cluster
 defaults, aliases, containers, model paths, filesystem checks, or dry-run
@@ -46,11 +48,13 @@ Once allocated, workers launch inside containers, discover each other through ET
 | `srtctl apply -f <config> --setup-script <script>` | Submit with custom setup script         |
 | `srtctl apply -f <config> --tags tag1,tag2`        | Submit with tags for filtering          |
 | `srtctl dry-run -f <config>`                       | Validate and preview without submitting |
+| `srtctl apply -f <config> --bash`                  | Render a one-host Docker lifecycle       |
 | `srtctl validate -f <config>`                      | Alias for dry-run                       |
 
 ## Next Steps
 
 - [Installation](installation.md) - Set up `srtctl` and submit your first job
+- [Direct Host Lifecycle](direct-host.md) - Run a single-node recipe through Docker
 - [Monitoring](monitoring.md) - Understanding job logs and debugging
 - [Parameter Sweeps](sweeps.md) - Run grid searches across configurations
 - [Config Overrides](overrides.md) - Multi-variant jobs from a single file
