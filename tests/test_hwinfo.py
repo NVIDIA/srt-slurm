@@ -16,12 +16,15 @@ import pytest
 
 from srtctl.core.hwinfo import COLLECT_SCRIPT, record_hwinfo_snapshot
 
-# Diagnostics that must stay in the snapshot: link health, the MNNVL wiring and
-# the driver's own account of what went wrong.
+# Diagnostics that must stay in the snapshot: link health, the MNNVL wiring, who
+# was already holding device memory and the driver's own account of what went
+# wrong.
 REQUIRED_COMMANDS = (
     "nvidia-smi nvlink -s",
     "nvidia-smi nvlink -e",
     "nvidia-smi topo -m",
+    "nvidia-smi --query-gpu=index,memory.total,memory.used,memory.free --format=csv",
+    "nvidia-smi --query-compute-apps=pid,process_name,used_memory,gpu_uuid --format=csv",
     "ls -al /dev/nvidia-caps-imex-channels/",
     "cat /etc/nvidia-imex/nodes_config.cfg",
     "nvidia-imex-ctl -c /tmp/imex_hwinfo_config.cfg -N -H",

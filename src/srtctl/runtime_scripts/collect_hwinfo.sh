@@ -62,6 +62,19 @@ section "GPU inventory"
 record 'nvidia-smi --query-gpu=index,name,serial,uuid,pci.bus_id --format=csv'
 record 'nvidia-smi --version'
 
+# Who is holding device memory before the job starts. vLLM refuses to start when
+# free memory is below gpu_memory_utilization x total, and the error it raises
+# names no culprit. Compute apps caught here are usually a previous job that has
+# not finished dying; memory.reserved accounts for the driver's own share, which
+# no process list can explain. fuser sees file handles NVML does not report,
+# e.g. a process in another container that still has the device open.
+section "GPU memory and processes"
+record 'nvidia-smi --query-gpu=index,memory.total,memory.used,memory.free --format=csv'
+record 'nvidia-smi --query-gpu=index,memory.reserved --format=csv'
+record 'nvidia-smi --query-compute-apps=pid,process_name,used_memory,gpu_uuid --format=csv'
+record 'fuser -v /dev/nvidia* 2>&1 | head -40'
+record 'ps -eo pid,ppid,user,rss,etime,args --sort=-rss | head -15'
+
 # Link state and, more importantly, the error counters. Comparing before.out
 # against after.out shows which link degraded and by how much.
 section "NVLink"
