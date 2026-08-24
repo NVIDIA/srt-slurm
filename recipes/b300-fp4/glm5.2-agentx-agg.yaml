@@ -146,7 +146,6 @@ base:
       router-session-affinity-ttl-secs: 3600
   sbatch_directives:
     mem: '0'
-    cpus-per-task: '192'
   srun_options:
     mem: '0'
     container-remap-root: ''
