@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 set -euo pipefail
 
-# Decode-only NUMA CPU affinity fix (see backends/trtllm.py numa_cpu_bind).
-# Binds via `taskset -c` *before* exec so secondary threads spawned by
-# Python/UCX/MPI/TRT-LLM inherit the mask too — TRT-LLM's own internal
-# affinity logic only pins the leader thread, leaving the rest to land
-# cross-socket and stall the decode phase.
+# Optional stricter NUMA CPU affinity for TRT-LLM workers (see
+# backends/trtllm.py numa_cpu_bind). Binds via `taskset -c` *before* exec so
+# secondary threads spawned by Python/UCX/MPI/TRT-LLM inherit the mask too —
+# TRT-LLM's own internal affinity logic only pins the leader thread, leaving
+# the rest to land cross-socket.
 #
 # CPU range is discovered at runtime from the physical GPU this task owns,
 # rather than a static SLURM_LOCALID -> cpu_range table. A static table
