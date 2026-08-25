@@ -11,7 +11,10 @@ identity:
   frameworks:
     tensorrt_llm: 1.3.0rc24
 extra_mount:
+  - /data/home/rihuo/dynamo_wheels:/dynamo_wheels
   - /data/home/rihuo:/data/home/rihuo
+
+setup_script: "install_dynamo_wheel.sh"
 
 dynamo:
   install: false
@@ -191,20 +194,19 @@ backend:
       tensor_parallel_size: 4
       trust_remote_code: true
 frontend:
-  type: trtllm_serve
+  type: dynamo
   enable_multiple_frontends: false
-  ctx_router:
-    type: conversation
-  server_config_extra:
-    gen_strip_message_history: true
-    gen_tokids_ctxbytes: true
-    num_workers: 4
-    return_perf_metrics: false
-    server_keep_alive_timeout: 3600
-  orchestrator_placement: first_decode
+  env:
+    ETCD_LEASE_TTL: "120"
+    DYN_TOKENIZER_CACHE: "1"
+    DYN_TOKENIZER_CACHE_BYTES: "8000000000"
+    DYN_TOKENIZER: "fastokens"
   args:
-    server_start_timeout: 7200
-    request_timeout: 7200
+    router-mode: kv
+    router-session-affinity-ttl-secs: '14400'
+    active-decode-blocks-threshold: None
+    active-prefill-tokens-threshold: None
+    active-prefill-tokens-threshold-frac: None
 environment:
   TRTLLM_SERVER_DISABLE_GC: '1'
 benchmark:
