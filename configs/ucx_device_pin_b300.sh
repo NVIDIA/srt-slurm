@@ -107,6 +107,19 @@ if [ -z "${_srt_candidates}" ]; then
     return 0 2>/dev/null || true
 fi
 
+# A depth <=3 means the "winning" prefix was only "/sys/devices" itself (path
+# components 0-2) -- i.e. NOT ONE device shares this GPU's own PCI root
+# complex (component 3, e.g. "pci0000:70"). On boards where a GPU's root
+# complex hosts no NIC at all (confirmed on b300-007: GPU0's root pci0000:00
+# has zero attached mlx5 devices, unlike every other GPU on that node), every
+# device ties at that same trivial floor, and the tie-break above would treat
+# "nobody is local" as "everybody is equally local" -- pinning to literally
+# every live rail, which is worse than not pinning at all. Refuse instead.
+if [ "${_srt_best_depth}" -le 3 ]; then
+    echo "UCX_DEVICE_PIN localid=${SLURM_LOCALID:-0} phys_gpu=${_srt_phys}: no NIC shares this GPU's PCI root complex (best_depth=${_srt_best_depth}, ${_srt_candidates}), leaving UCX_NET_DEVICES unset"
+    return 0 2>/dev/null || true
+fi
+
 # Every pinned rank still needs a universally-reachable fallback lane: two
 # same-node prefill ranks pinned to disjoint NICs otherwise have no shared
 # transport that supports UCX's peer error handling (self/sysv only), and
