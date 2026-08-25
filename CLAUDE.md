@@ -84,7 +84,7 @@ Two patterns for checking worker readiness:
 check_dynamo_health(response_json, expected_prefill=2, expected_decode=4)
 
 # SGLang router
-check_sglang_router_health(response_json, expected_prefill=2, expected_decode=4)
+check_static_router_health(response_json, expected_prefill=2, expected_decode=4)
 ```
 
 For aggregated mode, pass `expected_prefill=0, expected_decode=num_agg`.
@@ -279,4 +279,3 @@ tail -f outputs/<job_id>/logs/sweep_<job_id>.log | grep "srun command"
 ```
 
 Per-worker env vars and commands are also logged individually (search for `Env:` and `Command:` lines).
-

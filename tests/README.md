@@ -47,7 +47,7 @@ Tests the core `allocate_endpoints` and `endpoints_to_processes` functions:
 Tests health check response parsing for different backends:
 
 - `check_dynamo_health` - Dynamo `/metrics` response parsing
-- `check_sglang_router_health` - SGLang `/workers` response parsing
+- `check_static_router_health` - SGLang/vLLM Router `/workers` response parsing
 - Error handling for malformed responses
 - Aggregated mode (workers count as decode)
 

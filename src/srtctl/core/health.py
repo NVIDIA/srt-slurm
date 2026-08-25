@@ -11,7 +11,7 @@ This module provides:
 - wait_for_model(): Wait for model with worker count validation (replaces bash version)
 - wait_for_http_endpoints(): Wait until every adapter-provided HTTP endpoint is ready
 - check_dynamo_health(): Parse dynamo /health response for worker counts
-- check_sglang_router_health(): Parse sglang /workers response for worker counts
+- check_static_router_health(): Parse static-router /workers response for worker counts
 """
 
 import logging
@@ -47,12 +47,14 @@ class WorkerHealthResult:
 # ============================================================================
 
 
-def check_sglang_router_health(
+# "Static router" means SGLang Router or vLLM Router; both expose worker
+# counts through the same /workers stats.
+def check_static_router_health(
     response_json: dict,
     expected_prefill: int,
     expected_decode: int,
 ) -> WorkerHealthResult:
-    """Check health using sglang router /workers endpoint response.
+    """Check health using the shared static-router /workers response.
 
     Expected response format:
     {
@@ -119,6 +121,15 @@ def check_sglang_router_health(
         decode_ready=effective_decode,
         decode_expected=expected_decode,
     )
+
+
+def check_sglang_router_health(
+    response_json: dict,
+    expected_prefill: int,
+    expected_decode: int,
+) -> WorkerHealthResult:
+    """Backward-compatible alias for check_static_router_health."""
+    return check_static_router_health(response_json, expected_prefill, expected_decode)
 
 
 def check_dynamo_health(

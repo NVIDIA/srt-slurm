@@ -11,7 +11,7 @@ import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from srtctl.core.health import WorkerHealthResult, check_sglang_router_health
+from srtctl.core.health import WorkerHealthResult, check_static_router_health
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
 from srtctl.frontends.base import build_setup_script_preamble
 
@@ -51,7 +51,7 @@ class StaticRouterFrontend:
         expected_prefill: int,
         expected_decode: int,
     ) -> WorkerHealthResult:
-        return check_sglang_router_health(response_json, expected_prefill, expected_decode)
+        return check_static_router_health(response_json, expected_prefill, expected_decode)
 
     def get_frontend_args_list(self, args: dict[str, Any] | None) -> list[str]:
         """Convert config values to CLI arguments, preserving repeated values."""
