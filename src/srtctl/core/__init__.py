@@ -34,7 +34,6 @@ from .formatting import FormattablePath, FormattableString
 from .health import (
     WorkerHealthResult,
     check_dynamo_health,
-    check_sglang_router_health,
     check_static_router_health,
     wait_for_etcd,
     wait_for_health,
@@ -121,7 +120,6 @@ __all__ = [
     "WorkerHealthResult",
     "allocate_endpoints",
     "check_dynamo_health",
-    "check_sglang_router_health",
     "check_static_router_health",
     "endpoints_to_processes",
     "find_cluster_config_path",
