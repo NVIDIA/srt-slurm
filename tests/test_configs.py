@@ -3794,8 +3794,8 @@ class TestHuggingFaceModelSupport:
         env = backend.get_environment_for_mode("decode")
         assert env["TLLM_NUMA_AWARE_WORKER_AFFINITY"] == "0"
 
-    def test_trtllm_numa_cpu_bind_does_not_affect_prefill(self):
-        """numa_cpu_bind is a decode-only fix; prefill/agg commands stay unwrapped."""
+    def test_trtllm_numa_cpu_bind_wraps_prefill_command_with_taskset(self):
+        """numa_cpu_bind=True wraps prefill commands with configs/numa_cpu_bind.sh too."""
         from pathlib import Path
         from unittest.mock import patch
 
@@ -3813,10 +3813,34 @@ class TestHuggingFaceModelSupport:
         ):
             cmd = backend.build_worker_command(process=process, endpoint_processes=[process], runtime=runtime)
 
-        assert "bash" not in cmd
+        assert cmd[:2] == ["bash", "/configs/numa_cpu_bind.sh"]
+
         prefill_env = backend.get_environment_for_mode("prefill")
-        assert "TLLM_NUMA_AWARE_WORKER_AFFINITY" not in prefill_env
-        assert "NUMA_CPU_BIND_RANGES" not in prefill_env
+        assert prefill_env["TLLM_NUMA_AWARE_WORKER_AFFINITY"] == "0"
+
+    def test_trtllm_numa_cpu_bind_wraps_agg_command_with_taskset(self):
+        """numa_cpu_bind=True wraps aggregated-mode commands too."""
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from srtctl.backends import TRTLLMProtocol
+
+        backend = TRTLLMProtocol(numa_cpu_bind=True)
+        process = self._make_process(mode="agg")
+        runtime = self._make_runtime(is_hf=False)
+        runtime.log_dir = Path("/tmp/test-logs")
+        runtime.gpu_type = "gb200"
+
+        with (
+            patch("pathlib.Path.write_text"),
+            patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
+        ):
+            cmd = backend.build_worker_command(process=process, endpoint_processes=[process], runtime=runtime)
+
+        assert cmd[:2] == ["bash", "/configs/numa_cpu_bind.sh"]
+
+        agg_env = backend.get_environment_for_mode("agg")
+        assert agg_env["TLLM_NUMA_AWARE_WORKER_AFFINITY"] == "0"
 
     def test_trtllm_numa_cpu_bind_false_leaves_decode_command_unwrapped(self):
         """numa_cpu_bind=False (default) does not wrap the decode command."""
