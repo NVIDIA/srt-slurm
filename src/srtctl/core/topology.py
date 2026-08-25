@@ -408,6 +408,12 @@ def allocate_endpoints(
         for i in range(count):
             if nodes_per_worker >= 1 and gpus_per_worker >= gpus_per_node:
                 # Multi-node or full-node worker
+                if node_idx + nodes_per_worker > len(available_nodes):
+                    raise ValueError(
+                        f"Not enough nodes for {mode} worker {i}: need nodes "
+                        f"{node_idx}..{node_idx + nodes_per_worker - 1}, but only "
+                        f"{len(available_nodes)} available"
+                    )
                 worker_nodes = tuple(available_nodes[node_idx + j] for j in range(nodes_per_worker))
                 node_idx += nodes_per_worker
 
@@ -426,6 +432,11 @@ def allocate_endpoints(
                     node_idx += 1
                     gpu_offset = 0
 
+                if node_idx >= len(available_nodes):
+                    raise ValueError(
+                        f"Not enough nodes for {mode} worker {i}: need node {node_idx}, "
+                        f"but only {len(available_nodes)} available"
+                    )
                 worker_node = available_nodes[node_idx]
                 gpu_indices = frozenset(range(gpu_offset, gpu_offset + gpus_per_worker))
                 gpu_offset += gpus_per_worker

@@ -29,7 +29,7 @@ resources:
   prefill_nodes: 3
   prefill_workers: 3
   gpus_per_prefill: 4
-  decode_nodes: 1
+  decode_nodes: 2
   decode_workers: 2
   gpus_per_decode: 4
   spread_workers: true
