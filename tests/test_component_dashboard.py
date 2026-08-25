@@ -440,13 +440,11 @@ class TestRenderComponentDashboard:
 # ---------------------------------------------------------------------------
 
 
-def _stub_config(*, enabled=True, build_dashboard=None, prefill=(1, 4), decode=(3, 8)):
+def _stub_config(*, enabled=True, prefill=(1, 4), decode=(3, 8)):
     """Minimal stand-in for SrtConfig carrying only what perf_dashboard reads."""
     from srtctl.core.schema import ObservabilityConfig
 
-    obs = ObservabilityConfig.Schema().load(
-        {"enabled": enabled} if build_dashboard is None else {"enabled": enabled, "build_dashboard": build_dashboard}
-    )
+    obs = ObservabilityConfig.Schema().load({"enabled": enabled})
     return SimpleNamespace(
         name="unit-test-run",
         observability=obs,
@@ -486,18 +484,40 @@ class TestPerfDashboardPipeline:
         cfg.resources.num_agg, cfg.resources.gpus_per_agg = 6, 4
         assert _worker_specs(cfg) == ["agg=tep:4:6"]
 
-    def test_try_build_is_a_noop_when_not_opted_in(self, tmp_path: Path):
-        from srtctl.analysis.perf_dashboard import try_build
+    def test_build_is_not_gated_on_observability(self, tmp_path: Path, monkeypatch):
+        """The page is built for every run. `observability.enabled` selects which
+        capture legs exist -- which tabs appear -- never whether there is a page:
+        a run with no server-side capture still has a client export and an
+        iteration log to render, and it is the run you cannot re-instrument."""
+        import srtctl.analysis.perf_dashboard as pd
 
+        sentinel = tmp_path / "perf_dashboard.html"
+        seen: list[bool] = []
+
+        def _record(config, runtime):
+            seen.append(config.observability.enabled)
+            return sentinel
+
+        monkeypatch.setattr(pd, "build", _record)
         runtime = SimpleNamespace(log_dir=tmp_path, job_id="12345")
-        assert try_build(_stub_config(enabled=False), runtime) is None
-        assert not (tmp_path / "perf_dashboard.html").exists()
 
-    def test_build_dashboard_false_overrides_observability_enabled(self, tmp_path: Path):
-        from srtctl.analysis.perf_dashboard import try_build
+        assert pd.try_build(_stub_config(enabled=False), runtime) is sentinel
+        assert pd.try_build(_stub_config(enabled=True), runtime) is sentinel
+        assert seen == [False, True], "both arms must reach build()"
 
+    def test_try_build_swallows_a_rendering_failure(self, tmp_path: Path, monkeypatch):
+        """With no opt-in gate left, this guard is the only thing between a bug in
+        third-party rendering code and the post-processing of a benchmark that has
+        already produced its results."""
+        import srtctl.analysis.perf_dashboard as pd
+
+        def _boom(config, runtime):
+            raise RuntimeError("renderer exploded")
+
+        monkeypatch.setattr(pd, "build", _boom)
         runtime = SimpleNamespace(log_dir=tmp_path, job_id="12345")
-        assert try_build(_stub_config(enabled=True, build_dashboard=False), runtime) is None
+
+        assert pd.try_build(_stub_config(), runtime) is None
         assert not (tmp_path / "perf_dashboard.html").exists()
 
     def test_end_to_end_one_run_produces_the_dashboard(self, run_dir: Path):
