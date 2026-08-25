@@ -20,6 +20,8 @@ dynamo:
   install: false
 slurm:
   time_limit: 04:00:00
+sbatch_directives:
+  exclude: b300-007,b300-017
 health_check:
   max_attempts: 540
   interval_seconds: 10
