@@ -49,7 +49,7 @@ base:
         mem-fraction-static: 0.8
         enable-hierarchical-cache: true
         hicache-write-policy: write_back
-        hicache-size: 270
+        hicache-size: 204
         hicache-io-backend: direct
         enable-metrics: true
         enable-cache-report: true

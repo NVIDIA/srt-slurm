@@ -99,7 +99,7 @@ base:
         context-length: 1048576
         enable-hierarchical-cache: true
         hicache-write-policy: write_back
-        hicache-size: 270
+        hicache-size: 204
         hicache-io-backend: direct
         speculative-algorithm: EAGLE
         speculative-num-steps: 1
@@ -210,10 +210,10 @@ base:
     container-remap-root: ''
 # ################# agentx #################
 zip_override_mtp_agentx_lowlat:
-  name: [agentx-1p2d_dtp8-c113]
+  name: [agentx-1p2d_dtp8-c110]
   benchmark:
     env:
-      CONCURRENCY: ['113']
+      CONCURRENCY: ['110']
   frontend:
     enable_multiple_frontends: true
   resources:
