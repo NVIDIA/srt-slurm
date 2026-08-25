@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from srtctl.core.fingerprint import format_identity_verification, verify_identity
-from srtctl.core.health import wait_for_model
 from srtctl.core.lockfile import collect_worker_fingerprints
 from srtctl.core.power.contract import (
     CONTAINER_LOG_DIR,
@@ -98,8 +97,8 @@ def _get_health_expectations(
 
     Dynamo's /health endpoint reports registered generate instances. For vLLM
     DP workers, per-GPU launch registers one entry per DP rank, while per-node
-    launch registers one entry per node-local process. Other frontends keep
-    using logical worker counts.
+    launch registers one entry per node-local process. vLLM Router expands
+    each advertised base URL into its node-local DP ranks.
     """
     r = config.resources
 
@@ -121,6 +120,22 @@ def _get_health_expectations(
             n_decode = _vllm_health_entries(config, "decode", logical_decode, backend_processes)
 
         count_desc = f"{n_prefill}P + {n_decode}D Dynamo generate instances; logical workers: {worker_desc}"
+        return n_prefill, n_decode, count_desc, n_prefill + n_decode
+
+    if config.frontend.type == "vllm-router" and backend_processes is not None:
+        from srtctl.frontends.vllm_router import routed_process_dp_size
+
+        n_prefill = sum(
+            routed_process_dp_size(config.backend, process)
+            for process in backend_processes
+            if process.endpoint_mode == "prefill" and process.http_port > 0
+        )
+        n_decode = sum(
+            routed_process_dp_size(config.backend, process)
+            for process in backend_processes
+            if process.endpoint_mode in {"decode", "agg"} and process.http_port > 0
+        )
+        count_desc = f"{n_prefill}P + {n_decode}D Router workers; logical workers: {worker_desc}"
         return n_prefill, n_decode, count_desc, n_prefill + n_decode
 
     count_desc = worker_desc
@@ -192,11 +207,10 @@ class BenchmarkStageMixin:
         )
 
     def _logical_worker_endpoints(self) -> list[tuple[str, str, int]]:
-        """Return ``(mode, IP, port)`` for every logical worker leader.
+        """Return ``(mode, IP, port)`` for every routable worker endpoint.
 
-        ``backend_processes`` contains one process per physical node for
-        multi-node workers. Only rank zero owns the logical worker endpoint,
-        so follower ranks must not be advertised to benchmark clients.
+        Positive HTTP ports identify Router-facing node-local vLLM pools;
+        follower processes in a cross-node model-parallel replica retain zero.
 
         Dynamo exposes worker metrics on each leader's system port. Direct
         vLLM exposes aggregate metrics on the public frontend port, while
@@ -204,7 +218,7 @@ class BenchmarkStageMixin:
         """
         endpoints: list[tuple[str, str, int]] = []
         for process in self.backend_processes:
-            if not process.is_leader:
+            if self.config.frontend.type != "vllm-router" and not process.is_leader:
                 continue
             if self.config.frontend.type == "dynamo":
                 port = process.sys_port
@@ -217,6 +231,50 @@ class BenchmarkStageMixin:
             host = get_hostname_ip(process.node, self.runtime.network_interface)
             endpoints.append((process.endpoint_mode, host, port))
         return endpoints
+
+    def _wait_for_service_ready(self, stop_event: threading.Event) -> bool:
+        """Wait for frontend counts and any adapter-specific backend barrier."""
+        from srtctl.core import health as health_utils
+
+        n_prefill, n_decode, count_desc, num_workers = _get_health_expectations(self.config, self.backend_processes)
+        logger.info("Waiting for server health (expecting %d health entries: %s)...", num_workers, count_desc)
+
+        hc = self.config.health_check
+        if not health_utils.wait_for_model(
+            host=self._public_api_node(),
+            port=FRONTEND_PUBLIC_PORT,
+            n_prefill=n_prefill,
+            n_decode=n_decode,
+            poll_interval=float(hc.interval_seconds),
+            timeout=float(hc.max_attempts * hc.interval_seconds),
+            report_every=60.0,
+            frontend_type=self.config.frontend.type,
+            stop_event=stop_event,
+        ):
+            return False
+
+        from srtctl.frontends import get_frontend
+
+        frontend = get_frontend(self.config.frontend.type)
+        backend_health_urls = frontend.get_backend_health_urls(
+            self.config.backend,
+            self.backend_processes,
+            self.runtime.network_interface,
+        )
+        if not backend_health_urls:
+            return True
+
+        logger.info(
+            "Frontend requires direct readiness from %d advertised backend URLs",
+            len(backend_health_urls),
+        )
+        return health_utils.wait_for_http_endpoints(
+            backend_health_urls,
+            poll_interval=float(hc.interval_seconds),
+            timeout=float(hc.max_attempts * hc.interval_seconds),
+            report_every=60.0,
+            stop_event=stop_event,
+        )
 
     @staticmethod
     def _get_worker_endpoint_env(endpoints: list[tuple[str, str, int]]) -> dict[str, str]:
@@ -239,21 +297,7 @@ class BenchmarkStageMixin:
         """Run the benchmark."""
         logger.info("Waiting for workers to be ready...")
 
-        n_prefill, n_decode, count_desc, num_workers = _get_health_expectations(self.config, self.backend_processes)
-        logger.info("Waiting for server health (expecting %d health entries: %s)...", num_workers, count_desc)
-
-        hc = self.config.health_check
-        if not wait_for_model(
-            host=self._public_api_node(),
-            port=FRONTEND_PUBLIC_PORT,
-            n_prefill=n_prefill,
-            n_decode=n_decode,
-            poll_interval=float(hc.interval_seconds),
-            timeout=float(hc.max_attempts * hc.interval_seconds),
-            report_every=60.0,
-            frontend_type=self.config.frontend.type,
-            stop_event=stop_event,
-        ):
+        if not self._wait_for_service_ready(stop_event):
             logger.error("Server did not become healthy")
             if reporter:
                 reporter.report(JobStatus.FAILED, JobStage.BENCHMARK, "Workers failed health check")
@@ -591,11 +635,14 @@ class BenchmarkStageMixin:
                 logical_endpoints = self._logical_worker_endpoints()
             urls = [f"http://{host}:{port}/metrics" for _, host, port in logical_endpoints]
         else:
-            if self.config.frontend.type == "vllm":
+            if self.config.frontend.type in {"vllm", "vllm-router"}:
                 for process in self.backend_processes:
-                    if process.endpoint_mode == "agg" and process.is_leader:
+                    if self.config.frontend.type == "vllm" and process.endpoint_mode == "agg" and process.is_leader:
                         host = get_hostname_ip(process.node, self.runtime.network_interface)
                         urls.append(f"http://{host}:{FRONTEND_PUBLIC_PORT}/metrics")
+                    elif self.config.frontend.type == "vllm-router" and process.http_port > 0:
+                        host = get_hostname_ip(process.node, self.runtime.network_interface)
+                        urls.append(f"http://{host}:{process.http_port}/metrics")
                 if urls:
                     return {"AIPERF_SERVER_METRICS_URLS": ",".join(sorted(set(urls)))}
 

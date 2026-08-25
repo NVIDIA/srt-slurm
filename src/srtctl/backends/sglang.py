@@ -362,6 +362,11 @@ class SGLangProtocol:
         # Add disaggregation mode for prefill/decode workers (both dynamo and sglang frontend)
         if mode != "agg":
             cmd.extend(["--disaggregation-mode", mode])
+            if use_sglang:
+                # The native router and benchmark warmup exercise the real P/D
+                # path. SGLang's local synthetic warmup uses a placeholder peer
+                # and can block readiness until its long timeout.
+                cmd.append("--skip-server-warmup")
             # Always pass bootstrap port for prefill workers regardless of frontend type.
             # Dynamo does NOT handle this internally — SGLang's CommonKVBootstrapServer
             # still runs on every prefill node for KV transfer coordination, and workers

@@ -1566,7 +1566,8 @@ class FrontendConfig:
     """Frontend/router configuration.
 
     Attributes:
-        type: Frontend type - "dynamo" (default), "sglang", "trtllm_serve", or "vllm"
+        type: Frontend type - "dynamo" (default), "sglang", "vllm-router",
+            "trtllm_serve", or direct "vllm"
         enable_multiple_frontends: Scale with nginx + multiple routers.
             When ``True`` (default), srtctl stands up nginx and fans out
             to ``num_additional_frontends + 1`` router replicas. When
@@ -1592,6 +1593,8 @@ class FrontendConfig:
             carry the session id in that header instead.
         args: CLI arguments passed to the frontend/router process
         env: Environment variables for frontend processes
+        container_image: Optional router-specific image. Static routers use the
+            model/backend image when omitted.
     """
 
     type: str = "dynamo"
@@ -1604,6 +1607,7 @@ class FrontendConfig:
     nginx_keepalive_timeout: str = "600s"
     args: dict[str, Any] | None = None
     env: dict[str, str] | None = None
+    container_image: str | None = None
     # trtllm_serve orchestrator (ser.yaml) options; ignored by other frontends.
     ctx_router: dict[str, Any] | None = None  # context_servers.router, e.g. {type: conversation}
     gen_router: dict[str, Any] | None = None  # generation_servers.router
@@ -1723,6 +1727,7 @@ class SrtConfig:
         self._validate_dedicated_node_placement()
         self._validate_trtllm_serve()
         self._validate_vllm_frontend()
+        self._validate_static_router_frontend()
         self._warn_dp_launch_mode()
 
     def _warn_dp_launch_mode(self):
@@ -1795,6 +1800,95 @@ class SrtConfig:
                 "replicas, so extra workers would either idle or collide on the port. "
                 "Use frontend.type: dynamo to run multiple aggregate workers, or scale a single "
                 "worker across nodes with resources.agg_nodes."
+            )
+
+    def _validate_static_router_frontend(self):
+        """Validate static-router/backend pairings and vLLM DP ownership."""
+        required_backend = {"sglang": "sglang", "vllm-router": "vllm"}.get(self.frontend.type)
+        if required_backend is None:
+            return
+        if self.backend_type != required_backend:
+            raise ValidationError(
+                f"frontend.type: {self.frontend.type} requires backend.type: {required_backend}; "
+                f"got {self.backend_type!r}"
+            )
+
+        if self.frontend.type != "vllm-router":
+            return
+        if not isinstance(self.backend, VLLMProtocol):
+            raise ValidationError(f"frontend.type: vllm-router requires backend.type: vllm; got {self.backend_type!r}")
+        backend = self.backend
+
+        endpoint_gpu_counts: dict[Literal["prefill", "decode", "agg"], int] = {
+            "prefill": self.resources.gpus_per_prefill if self.resources.num_prefill else 0,
+            "decode": self.resources.gpus_per_decode if self.resources.num_decode else 0,
+            "agg": self.resources.gpus_per_agg if self.resources.num_agg else 0,
+        }
+        if backend.find_dp_modes() and backend.dp_launch_mode != "per_node":
+            raise ValidationError(
+                "frontend.type: vllm-router with data-parallel-size requires "
+                "backend.dp_launch_mode: per_node; deprecated per_gpu processes are "
+                "Dynamo registrations, not independently routable vLLM API servers"
+            )
+
+        expansion_by_mode: dict[str, int] = {}
+        for mode, gpu_count in endpoint_gpu_counts.items():
+            if gpu_count <= 0:
+                continue
+            if not backend._is_dp_mode(mode):
+                expansion_by_mode[mode] = 1
+                continue
+            try:
+                configured_dp_size = backend._get_dp_size(mode)
+                dp_size = int(configured_dp_size) if configured_dp_size is not None else 1
+                if dp_size < 1:
+                    raise ValueError(
+                        f"vLLM {mode} data-parallel-size must be a positive integer; got {configured_dp_size!r}"
+                    )
+                replica_size = backend._get_model_parallel_size(mode)
+            except (TypeError, ValueError) as exc:
+                raise ValidationError(str(exc)) from exc
+
+            required_gpus = dp_size * replica_size
+            if required_gpus != gpu_count:
+                raise ValidationError(
+                    f"vLLM Router {mode} parallelism requires DP*TP*PP*PCP="
+                    f"{dp_size}*{replica_size}={required_gpus} GPUs, "
+                    f"but resources allocate {gpu_count} GPUs per worker"
+                )
+
+            local_gpu_count = min(gpu_count, self.resources.gpus_per_node)
+            if replica_size > local_gpu_count:
+                expansion_by_mode[mode] = 1
+            else:
+                try:
+                    expansion_by_mode[mode] = backend._get_local_dp_size(mode, local_gpu_count)
+                except ValueError as exc:
+                    raise ValidationError(str(exc)) from exc
+
+        expansions = set(expansion_by_mode.values())
+        if len(expansions) > 1:
+            detail = ", ".join(f"{mode}={size}" for mode, size in expansion_by_mode.items())
+            raise ValidationError(
+                "vLLM Router has one --intra-node-data-parallel-size for all worker pools, "
+                f"but the allocated topology derives different expansion factors: {detail}"
+            )
+
+        configured_expansion = (self.frontend.args or {}).get(
+            "intra-node-data-parallel-size",
+            (self.frontend.args or {}).get("intra_node_data_parallel_size"),
+        )
+        derived_expansion = next(iter(expansions), 1)
+        try:
+            configured_expansion_value = int(configured_expansion) if configured_expansion is not None else None
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(
+                f"frontend.args.intra-node-data-parallel-size must be an integer; got {configured_expansion!r}"
+            ) from exc
+        if configured_expansion_value is not None and configured_expansion_value != derived_expansion:
+            raise ValidationError(
+                "frontend.args.intra-node-data-parallel-size conflicts with the allocated vLLM topology: "
+                f"configured {configured_expansion}, derived {derived_expansion}"
             )
 
     def _validate_het_jobs(self):
