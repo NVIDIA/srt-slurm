@@ -1127,6 +1127,158 @@ class TestLMEvalRunner:
         ]
 
 
+class TestAgentXRunner:
+    """Test the AgentX runner.
+
+    The point of this runner is that the InferenceX harness aborts on
+    ``check_env_vars`` for seven variables which, under ``benchmark.type: custom``,
+    were either restated in every recipe or exported by whichever launcher
+    submitted the job. A recipe could therefore be complete on its own terms and
+    still fail after the workers had loaded. These tests pin the derivation and
+    the up-front validation that replace that arrangement.
+    """
+
+    def _config(self, backend=None, **benchmark_kwargs):
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        kwargs = {"type": "agentx", "model_prefix": "dsv4", "concurrency": 8}
+        kwargs.update(benchmark_kwargs)
+        config_kwargs = {
+            "name": "agg-b200-fp4-tp8-hicache-mtp-agentic",
+            "model": ModelConfig(path="/models/DeepSeek-V4-Pro", container="/image", precision="fp4"),
+            "resources": ResourceConfig(gpu_type="b200", gpus_per_node=8, agg_nodes=1, agg_workers=1),
+            "benchmark": BenchmarkConfig(**kwargs),
+        }
+        if backend is not None:
+            config_kwargs["backend"] = backend
+        return SrtConfig(**config_kwargs)
+
+    def _runtime(self, port=8000):
+        from unittest.mock import MagicMock
+
+        runtime = MagicMock()
+        runtime.frontend_port = port
+        return runtime
+
+    def test_registry_includes_agentx(self):
+        assert "agentx" in list_benchmarks()
+
+    def test_get_runner(self):
+        assert get_runner("agentx").name == "AgentX"
+
+    def test_script_path(self):
+        assert "agentx/bench.sh" in get_runner("agentx").script_path
+
+    def test_local_script_dir(self):
+        assert get_runner("agentx").local_script_dir.endswith("agentx")
+
+    def test_build_command_targets_the_frontend_and_the_mount(self):
+        runner = get_runner("agentx")
+        cmd = runner.build_command(self._config(), self._runtime())
+        assert cmd == [
+            "bash",
+            "/srtctl-benchmarks/agentx/bench.sh",
+            "http://localhost:8000",
+            "/infmax-workspace",
+        ]
+
+    def test_required_harness_variables_are_derived(self):
+        """The seven check_env_vars names must all be present without the recipe
+        restating any of them."""
+        runner = get_runner("agentx")
+        env = runner.get_environment(self._config(), self._runtime())
+        for key in ("MODEL", "MODEL_PREFIX", "FRAMEWORK", "PRECISION", "CONC", "RESULT_FILENAME", "DURATION"):
+            assert env[key], f"{key} is required by the harness but was not derived"
+        assert env["MODEL"] == "DeepSeek-V4-Pro"
+        assert env["FRAMEWORK"] == "sglang"
+        assert env["PRECISION"] == "fp4"
+        assert env["CONC"] == "8"
+        assert env["DURATION"] == "3600"
+        assert env["RESULT_FILENAME"] == "agg-b200-fp4-tp8-hicache-mtp-agentic"
+
+    def test_workspace_and_port_come_from_the_runtime(self):
+        runner = get_runner("agentx")
+        env = runner.get_environment(self._config(), self._runtime(port=8123))
+        assert env["INFMAX_CONTAINER_WORKSPACE"] == "/infmax-workspace"
+        assert env["PORT"] == "8123"
+        assert env["RESULT_DIR"] == "/logs/agentic"
+
+    def test_single_node_deployment_is_reported_as_such(self):
+        """The harness stamps IS_MULTINODE on every result row, so a wrong value
+        mislabels published data rather than failing anything."""
+        runner = get_runner("agentx")
+        env = runner.get_environment(self._config(), self._runtime())
+        assert env["IS_MULTINODE"] == "false"
+
+    def test_multi_node_deployment_is_reported_as_such(self):
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        config = SrtConfig(
+            name="agg-gb200-tp8-mtp-agentic",
+            model=ModelConfig(path="/models/DeepSeek-V4-Pro", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="gb200", gpus_per_node=4, agg_nodes=2, agg_workers=1),
+            benchmark=BenchmarkConfig(type="agentx", model_prefix="dsv4", concurrency=8),
+        )
+        env = get_runner("agentx").get_environment(config, self._runtime())
+        assert env["IS_MULTINODE"] == "true"
+
+    def test_single_concurrency_sets_conc_only(self):
+        env = get_runner("agentx").get_environment(self._config(), self._runtime())
+        assert env["CONC"] == "8"
+        assert "CONC_LIST" not in env
+
+    def test_several_concurrencies_become_a_list(self):
+        config = self._config(concurrency=None, concurrencies=[8, 10, 16])
+        env = get_runner("agentx").get_environment(config, self._runtime())
+        assert env["CONC"] == "8"
+        assert env["CONC_LIST"] == "8 10 16"
+
+    @pytest.mark.parametrize(
+        ("backend_type", "prefix"),
+        [("sglang", "sglang:"), ("vllm", "vllm:"), ("trtllm", "tensorrt_llm:")],
+    )
+    def test_server_metric_prefix_follows_the_backend(self, backend_type, prefix):
+        """The harness will not accept a point whose server counters it cannot
+        read, and the counter names differ per engine."""
+        backend = None
+        if backend_type == "vllm":
+            from srtctl.backends.vllm import VLLMProtocol
+
+            backend = VLLMProtocol()
+        elif backend_type == "trtllm":
+            from srtctl.backends.trtllm import TRTLLMProtocol
+
+            backend = TRTLLMProtocol()
+        config = self._config(backend=backend)
+        env = get_runner("agentx").get_environment(config, self._runtime())
+        assert env["AIPERF_REQUIRED_SERVER_METRIC_PREFIX"] == prefix
+
+    def test_benchmark_env_wins(self):
+        """Recipes pin AIPerf tuning knobs and occasionally a derived value; the
+        explicit setting has to survive."""
+        config = self._config(env={"DURATION": "1200", "AIPERF_TRACE_IDLE_GAP_CAP_SECONDS": "300"})
+        env = get_runner("agentx").get_environment(config, self._runtime())
+        assert env["DURATION"] == "1200"
+        assert env["AIPERF_TRACE_IDLE_GAP_CAP_SECONDS"] == "300"
+
+    def test_valid_config_has_no_errors(self):
+        assert get_runner("agentx").validate_config(self._config()) == []
+
+    def test_missing_model_prefix_is_an_error(self):
+        errors = get_runner("agentx").validate_config(self._config(model_prefix=None))
+        assert any("model_prefix" in error for error in errors)
+
+    def test_missing_concurrency_is_an_error(self):
+        errors = get_runner("agentx").validate_config(self._config(concurrency=None))
+        assert any("concurrency" in error for error in errors)
+
+    def test_env_can_satisfy_validation_directly(self):
+        """Recipes ported straight from the InferenceX launcher pass these in
+        benchmark.env; that must not be reported as missing."""
+        config = self._config(model_prefix=None, concurrency=None, env={"MODEL_PREFIX": "dsv4", "CONC": "8"})
+        assert get_runner("agentx").validate_config(config) == []
+
+
 class TestGSM8KRunner:
     """Test the unified GSM8K runner (backend auto-detect)."""
 
@@ -1247,6 +1399,28 @@ class TestScriptsExist:
         """SA-Bench script exists."""
         script = SCRIPTS_DIR / "sa-bench" / "bench.sh"
         assert script.exists()
+
+    def test_agentx_script_exists(self):
+        """AgentX script exists."""
+        script = SCRIPTS_DIR / "agentx" / "bench.sh"
+        assert script.exists()
+
+    def test_agentx_script_explains_a_missing_workspace(self):
+        """Without the mount this is the first thing to fail, and it fails only
+        after the workers have loaded, so the message has to name the cause."""
+        import subprocess
+
+        script = SCRIPTS_DIR / "agentx" / "bench.sh"
+        result = subprocess.run(
+            ["bash", str(script), "http://localhost:8000", "/nonexistent-workspace"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 1
+        assert "not found" in result.stderr
+        assert "INFMAX_WORKSPACE" in result.stderr
+        assert "recurse-submodules" in result.stderr, "the clone needs submodules; say so here"
 
     @pytest.mark.parametrize(
         ("mode", "expected"),

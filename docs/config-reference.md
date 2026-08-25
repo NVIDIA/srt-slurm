@@ -652,6 +652,7 @@ benchmark:
 | `router`          | Router performance with prefix caching         |
 | `mooncake-router` | KV-aware routing with Mooncake trace           |
 | `agentperf`       | AgentPerf trajectory replay (agentperf-client) |
+| `agentx`          | Agentic-coding trace replay (InferenceX harness) |
 
 ### manual
 
@@ -712,6 +713,60 @@ Two caveats for `AIPERF_SERVER_METRICS_URLS`:
 
 Values in `benchmark.env` are applied last and can explicitly override any automatically injected
 variable.
+
+### agentx (Agentic Coding)
+
+Replays agentic-coding sessions from the `cc-traces` corpus through AIPerf's
+`inferencex-agentx-mvp` scenario. srt-slurm owns the deployment; the replay client is
+InferenceX's `agentic_srt.sh`.
+
+**Requires an InferenceX checkout.** The client stack is not bundled with srt-slurm. Clone it
+with submodules — `utils/aiperf` is one, and the harness installs from it — and export
+`INFMAX_WORKSPACE`, which srt-slurm mounts at `/infmax-workspace`:
+
+```bash
+git clone --recurse-submodules https://github.com/SemiAnalysisAI/InferenceX.git
+export INFMAX_WORKSPACE=/shared/path/to/InferenceX
+```
+
+The path is bind-mounted into the container, so it must resolve on the compute nodes rather than
+only on the login node. `srtctl dry-run` reports the mount, and flags it when the variable is
+unset; without it the job fails with exit 127 once the workers have loaded.
+
+```yaml
+benchmark:
+  type: agentx
+  model_prefix: "dsv4"        # Required: selects the trace corpus
+  concurrency: 8              # Required: one published point
+  duration_seconds: 3600      # Optional (default: 3600)
+  result_filename: "dsv4_tp8_conc8"  # Optional (default: the recipe name)
+  env:
+    KV_OFFLOADING: dram       # Harness metadata and AIPerf tuning knobs
+```
+
+| Field              | Type | Required | Default       | Description                                        |
+| ------------------ | ---- | -------- | ------------- | -------------------------------------------------- |
+| `model_prefix`     | str  | Yes      | -             | Trace-corpus selector, e.g. `dsv4`, `qwen3.5`, `kimik3` |
+| `concurrency`      | int  | Yes\*    | -             | Concurrency for a single point                      |
+| `concurrencies`    | list | Yes\*    | -             | Several points against one engine configuration     |
+| `duration_seconds` | int  | No       | `3600`        | Replay duration per point                           |
+| `result_filename`  | str  | No       | recipe `name` | Result basename                                     |
+
+\* Provide one of `concurrency` or `concurrencies`. Use `concurrencies` only when no engine
+parameter varies with concurrency; otherwise write one recipe per point (or a
+`zip_override_conc` variant) so each point gets its own engine configuration.
+
+srtctl derives the rest of the harness contract from the recipe — `MODEL`, `FRAMEWORK`,
+`PRECISION`, `PORT`, `IS_MULTINODE`, `RESULT_DIR`, and the backend's
+`AIPERF_REQUIRED_SERVER_METRIC_PREFIX` — and validates the required inputs before submission
+rather than letting the harness abort in the container. Like a custom command, this benchmark
+also receives `AIPERF_SERVER_METRICS_URLS` and the `SRT_*` worker endpoints, which the harness
+polls to confirm the deployment has drained between concurrencies.
+
+Values in `benchmark.env` are applied last and override anything derived above. Optional harness
+metadata such as `TP`, `EP`, `DP_ATTENTION`, `KV_OFFLOADING`, `KV_OFFLOAD_BACKEND`,
+`TOTAL_CPU_DRAM_GB`, and `WEKA_LOADER_OVERRIDE`, along with the `AIPERF_*` tuning knobs, are
+passed through there.
 
 ### sa-bench (Serving Accuracy)
 
