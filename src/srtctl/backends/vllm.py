@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import builtins
 import json
-import logging
 from collections.abc import Sequence
 from dataclasses import field
 from pathlib import Path
@@ -44,8 +43,6 @@ if TYPE_CHECKING:
 # Type alias for worker modes
 WorkerMode = Literal["prefill", "decode", "agg"]
 DPLaunchMode = Literal["per_gpu", "per_node"]
-
-logger = logging.getLogger(__name__)
 
 # Filename for the mooncake-store JSON config srtslurm writes to log_dir at job
 # start. log_dir is mounted into every worker at /logs, so workers read the JSON
@@ -198,9 +195,10 @@ class VLLMProtocol:
     # node pools. Defaults off to preserve the original one-node-only policy.
     allow_prefill_decode_colocation_across_nodes: bool = False
 
-    # DP process layout. Keep the existing per-GPU behavior by default;
-    # per-node lets vLLM manage local DP ranks in one CUDA namespace.
-    # TODO: Change the default to per_node after the per_gpu migration window.
+    # DP process layout for orchestrated multi-process deployments. Direct vLLM
+    # and single-node vLLM Router preserve native one-command vLLM behavior.
+    # Keep per_gpu as the Dynamo compatibility default; per_node lets vLLM
+    # manage complete node-local DP replicas in one CUDA namespace.
     dp_launch_mode: DPLaunchMode = "per_gpu"
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
@@ -210,53 +208,64 @@ class VLLMProtocol:
         if self.vllm_config is None:
             return
 
+        configured_dp_mode_configs: list[tuple[str, dict[str, Any]]] = []
         dp_mode_configs: list[tuple[str, dict[str, Any]]] = []
         for mode_name, mode_config in (
             ("prefill", self.vllm_config.prefill),
             ("decode", self.vllm_config.decode),
             ("aggregated", self.vllm_config.aggregated),
         ):
-            if mode_config and any(
-                str(key).replace("_", "-") == "data-parallel-size" and value is not None
-                for key, value in mode_config.items()
-            ):
+            configured_dp_size = next(
+                (
+                    value
+                    for key, value in (mode_config or {}).items()
+                    if str(key).replace("_", "-") == "data-parallel-size"
+                ),
+                None,
+            )
+            if configured_dp_size is None:
+                continue
+            try:
+                normalized_dp_size = int(configured_dp_size)
+            except (TypeError, ValueError) as exc:
+                raise ValidationError(
+                    f"vllm_config.{mode_name}.data-parallel-size must be a positive integer; got {configured_dp_size!r}"
+                ) from exc
+            if normalized_dp_size < 1:
+                raise ValidationError(
+                    f"vllm_config.{mode_name}.data-parallel-size must be a positive integer; got {configured_dp_size!r}"
+                )
+            configured_dp_mode_configs.append((mode_name, mode_config))
+            if normalized_dp_size > 1:
                 dp_mode_configs.append((mode_name, mode_config))
+
+        if self.dp_launch_mode == "per_node":
+            managed_topology_fields: list[str] = []
+            for mode_name, mode_config in configured_dp_mode_configs:
+                normalized_keys = {str(key).replace("_", "-") for key in mode_config}
+                for field_name in (
+                    "data-parallel-size-local",
+                    "data-parallel-start-rank",
+                    "data-parallel-address",
+                    "data-parallel-rpc-port",
+                    "data-parallel-hybrid-lb",
+                    "headless",
+                ):
+                    if field_name in normalized_keys:
+                        managed_topology_fields.append(f"vllm_config.{mode_name}.{field_name}")
+
+            if managed_topology_fields:
+                fields = ", ".join(managed_topology_fields)
+                raise ValidationError(
+                    f"{fields} cannot be set when dp_launch_mode=per_node; "
+                    "srt-slurm derives the node-local DP topology from the Slurm allocation"
+                )
 
         if not dp_mode_configs:
             return
 
         if self.dp_launch_mode == "per_gpu":
-            modes = ", ".join(mode_name for mode_name, _ in dp_mode_configs)
-            logger.warning(
-                "vLLM DP mode(s) %s use dp_launch_mode=per_gpu. per_node is the recommended topology "
-                "and will become the default in a future release; set backend.dp_launch_mode: per_node now",
-                modes,
-            )
             return
-
-        hybrid_lb_modes: list[str] = []
-        headless_modes: list[str] = []
-        for mode_name, mode_config in dp_mode_configs:
-            normalized_keys = {str(key).replace("_", "-") for key in mode_config}
-            if "headless" in normalized_keys:
-                headless_modes.append(mode_name)
-            if "data-parallel-hybrid-lb" in normalized_keys:
-                hybrid_lb_modes.append(mode_name)
-
-        if headless_modes:
-            fields = ", ".join(f"vllm_config.{mode}.headless" for mode in headless_modes)
-            raise ValidationError(
-                f"{fields} cannot be set when dp_launch_mode=per_node. "
-                "Every node-local process must register with the Dynamo frontend; remove headless."
-            )
-
-        if hybrid_lb_modes:
-            fields = ", ".join(f"vllm_config.{mode}.data-parallel-hybrid-lb" for mode in hybrid_lb_modes)
-            logger.warning(
-                "%s is unnecessary when dp_launch_mode=per_node; "
-                "srtslurm always enables --data-parallel-hybrid-lb and ignores the configured value",
-                fields,
-            )
 
     # =========================================================================
     # BackendProtocol Implementation
@@ -471,13 +480,67 @@ class VLLMProtocol:
         DP+EP mode is detected when data-parallel-size is set in the mode's config.
         ``dp_launch_mode`` controls whether a process owns one rank or all local ranks.
         """
-        config = self.get_config_for_mode(mode)
-        return config.get("data-parallel-size") is not None or config.get("data_parallel_size") is not None
+        dp_size = self._get_dp_size(mode)
+        return dp_size is not None and int(dp_size) > 1
 
     def _get_dp_size(self, mode: WorkerMode) -> int | None:
         """Get the data-parallel-size for a mode, or None if not in DP mode."""
         config = self.get_config_for_mode(mode)
-        return config.get("data-parallel-size") or config.get("data_parallel_size")
+        if "data-parallel-size" in config:
+            return config["data-parallel-size"]
+        return config.get("data_parallel_size")
+
+    def _get_parallel_size(self, mode: WorkerMode, name: str) -> int:
+        """Return a normalized vLLM parallel dimension, defaulting to one."""
+        config = self.get_config_for_mode(mode)
+        value = config.get(name, config.get(name.replace("-", "_"), 1))
+        try:
+            size = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"vLLM {mode} {name} must be a positive integer; got {value!r}") from exc
+        if size < 1:
+            raise ValueError(f"vLLM {mode} {name} must be a positive integer; got {value!r}")
+        return size
+
+    def _get_model_parallel_size(self, mode: WorkerMode) -> int:
+        """Return GPUs consumed by one DP replica using vLLM's world-size dimensions."""
+        return (
+            self._get_parallel_size(mode, "tensor-parallel-size")
+            * self._get_parallel_size(mode, "pipeline-parallel-size")
+            * self._get_parallel_size(mode, "prefill-context-parallel-size")
+        )
+
+    def _get_local_dp_size(self, mode: WorkerMode, local_gpu_count: int) -> int:
+        """Derive how many complete DP replicas fit in a node-local GPU allocation."""
+        model_parallel_size = self._get_model_parallel_size(mode)
+        if local_gpu_count % model_parallel_size != 0:
+            raise ValueError(
+                f"vLLM {mode} node-local allocation has {local_gpu_count} GPUs, which is not divisible by "
+                f"TP*PP*PCP={model_parallel_size}"
+            )
+        return local_gpu_count // model_parallel_size
+
+    def _validate_endpoint_parallelism(self, endpoint: Endpoint) -> tuple[int, int]:
+        """Validate vLLM's DP x TP x PP x PCP world against an endpoint allocation."""
+        dp_size = self._get_dp_size(endpoint.mode) or 1
+        try:
+            dp_size = int(dp_size)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"vLLM {endpoint.mode} data-parallel-size must be a positive integer; got {dp_size!r}"
+            ) from exc
+        if dp_size < 1:
+            raise ValueError(f"vLLM {endpoint.mode} data-parallel-size must be a positive integer; got {dp_size!r}")
+
+        model_parallel_size = self._get_model_parallel_size(endpoint.mode)
+        required_gpus = dp_size * model_parallel_size
+        if required_gpus != endpoint.total_gpus:
+            raise ValueError(
+                f"vLLM {endpoint.mode} parallelism requires DP*TP*PP*PCP="
+                f"{dp_size}*{model_parallel_size}={required_gpus} GPUs, but the endpoint allocates "
+                f"{endpoint.total_gpus} GPUs"
+            )
+        return dp_size, model_parallel_size
 
     def should_set_cuda_visible_devices(self, process: Process) -> bool:
         """Whether worker_stage should set CUDA_VISIBLE_DEVICES.
@@ -506,6 +569,8 @@ class VLLMProtocol:
         from srtctl.core.topology import NodePortAllocator, Process, endpoints_to_processes
 
         if frontend_type == "vllm":
+            for endpoint in endpoints:
+                self._validate_endpoint_parallelism(endpoint)
             return endpoints_to_processes(endpoints, base_sys_port=base_sys_port, port_allocator=port_allocator)
 
         # Check if any endpoint uses DP mode
@@ -516,7 +581,11 @@ class VLLMProtocol:
             return endpoints_to_processes(endpoints, base_sys_port=base_sys_port, port_allocator=port_allocator)
 
         if frontend_type == "vllm-router" and all(not endpoint.is_multi_node for endpoint in endpoints):
-            # Router expands each single-node backend URL into node-local DP ranks.
+            # Preserve vLLM's native single-command topology. The server owns TP/PP/DP
+            # and its internal load balancer; Router expands the advertised URL into
+            # the configured node-local DP ranks.
+            for endpoint in endpoints:
+                self._validate_endpoint_parallelism(endpoint)
             return endpoints_to_processes(endpoints, base_sys_port=base_sys_port, port_allocator=port_allocator)
 
         if frontend_type == "vllm-router" and self.dp_launch_mode != "per_node":
@@ -528,6 +597,16 @@ class VLLMProtocol:
                 base_sys_port=base_sys_port,
                 port_allocator=port_allocator,
             )
+
+        for endpoint in endpoints:
+            if not self._is_dp_mode(endpoint.mode):
+                continue
+            _dp_size, model_parallel_size = self._validate_endpoint_parallelism(endpoint)
+            if model_parallel_size != 1:
+                raise ValueError(
+                    f"vLLM {endpoint.mode} dp_launch_mode=per_gpu supports only TP=PP=PCP=1; "
+                    "use dp_launch_mode=per_node for combined DP and model parallelism"
+                )
 
         # DP+EP mode: one process per GPU
         processes: list[Process] = []
@@ -631,14 +710,8 @@ class VLLMProtocol:
                 current_sys_port += len(non_dp)
                 continue
 
-            dp_size = self._get_dp_size(endpoint.mode) or endpoint.total_gpus
-            if dp_size != endpoint.total_gpus:
-                raise ValueError(
-                    f"{endpoint.mode} data-parallel-size={dp_size} does not match "
-                    f"the endpoint's {endpoint.total_gpus} allocated GPUs"
-                )
-
-            local_dp_size = len(endpoint.gpu_indices)
+            dp_size, _model_parallel_size = self._validate_endpoint_parallelism(endpoint)
+            local_dp_size = self._get_local_dp_size(endpoint.mode, len(endpoint.gpu_indices))
             dp_rpc_port = port_allocator.next_dp_rpc_port(endpoint.leader_node)
             nixl_base_port = port_allocator.next_nixl_port_block(dp_size)
             dp_start_rank = 0
@@ -726,7 +799,10 @@ class VLLMProtocol:
             if frontend_type == "vllm" and mode != "agg":
                 raise ValueError("frontend.type: vllm supports aggregate vLLM jobs only")
             is_router_hybrid_dp = (
-                frontend_type == "vllm-router" and self._is_dp_mode(mode) and self.dp_launch_mode == "per_node"
+                frontend_type == "vllm-router"
+                and is_multi_node
+                and self._is_dp_mode(mode)
+                and self.dp_launch_mode == "per_node"
             )
             if is_multi_node and not is_router_hybrid_dp:
                 raise ValueError(f"frontend.type: {frontend_type} requires each vLLM endpoint to fit on one node")
@@ -757,7 +833,7 @@ class VLLMProtocol:
                     config.pop("data-parallel-hybrid-lb", None)
                     config.pop("data_parallel_hybrid_lb", None)
                     config.pop("headless", None)
-                    config["data-parallel-size-local"] = len(process.gpu_indices)
+                    config["data-parallel-size-local"] = self._get_local_dp_size(mode, len(process.gpu_indices))
                     config["data-parallel-start-rank"] = process.node_rank
                     config["data-parallel-address"] = leader_ip
                     config["data-parallel-rpc-port"] = dp_rpc_port
@@ -834,7 +910,7 @@ class VLLMProtocol:
             cmd.extend(
                 [
                     "--data-parallel-size-local",
-                    str(len(process.gpu_indices)),
+                    str(self._get_local_dp_size(mode, len(process.gpu_indices))),
                     "--data-parallel-start-rank",
                     str(process.node_rank),
                     "--data-parallel-address",

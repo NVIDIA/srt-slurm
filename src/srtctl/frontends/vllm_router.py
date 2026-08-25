@@ -23,13 +23,30 @@ def node_local_data_parallel_size(backend: Any, backend_processes: list[Process]
 
     local_dp_sizes: set[int] = set()
     for (mode, _endpoint_index), processes in grouped_processes.items():
-        global_dp_size = backend._get_dp_size(mode) or 1
-        if global_dp_size % len(processes) != 0:
+        global_dp_size = int(backend._get_dp_size(mode) or 1)
+        derive_local_dp_size = getattr(type(backend), "_get_local_dp_size", None)
+        if derive_local_dp_size is None:
+            # Keep lightweight protocol doubles usable while production vLLMProtocol
+            # derives this from TP*PP*PCP and the actual local GPU allocation.
+            if global_dp_size % len(processes) != 0:
+                raise ValueError(
+                    f"vLLM Router {mode} data-parallel-size={global_dp_size} cannot be evenly split "
+                    f"across {len(processes)} routed servers"
+                )
+            process_local_dp_sizes = {global_dp_size // len(processes)}
+        else:
+            process_local_dp_sizes = {
+                derive_local_dp_size(backend, mode, len(process.gpu_indices)) for process in processes
+            }
+        if len(process_local_dp_sizes) != 1:
+            raise ValueError(f"vLLM Router {mode} endpoint has non-uniform node-local DP sizes")
+        local_dp_size = next(iter(process_local_dp_sizes))
+        if global_dp_size != local_dp_size * len(processes):
             raise ValueError(
-                f"vLLM Router {mode} data-parallel-size={global_dp_size} cannot be evenly split "
-                f"across {len(processes)} routed node-local servers"
+                f"vLLM Router {mode} data-parallel-size={global_dp_size} does not match "
+                f"{len(processes)} routed servers * local DP {local_dp_size}"
             )
-        local_dp_sizes.add(global_dp_size // len(processes))
+        local_dp_sizes.add(local_dp_size)
 
     if len(local_dp_sizes) > 1:
         raise ValueError("vLLM Router requires the same node-local data-parallel size for every routed backend")

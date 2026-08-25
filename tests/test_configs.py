@@ -1953,6 +1953,11 @@ class TestVLLMDataParallelMode:
         assert backend._is_dp_mode("prefill") is False
         assert backend._is_dp_mode("decode") is False
 
+        backend_dp_one = VLLMProtocol(
+            vllm_config=VLLMServerConfig(prefill={"tensor-parallel-size": 4, "data-parallel-size": 1})
+        )
+        assert backend_dp_one._is_dp_mode("prefill") is False
+
         # DP mode detected when data-parallel-size is set
         backend_dp = VLLMProtocol(
             vllm_config=VLLMServerConfig(
@@ -1963,6 +1968,15 @@ class TestVLLMDataParallelMode:
         assert backend_dp._is_dp_mode("prefill") is True
         assert backend_dp._is_dp_mode("decode") is True
         assert backend_dp._get_dp_size("prefill") == 16
+
+    def test_dp_size_must_be_positive(self):
+        """A zero DP size must not silently fall back to vLLM's default."""
+        from marshmallow import ValidationError
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+
+        with pytest.raises(ValidationError, match="must be a positive integer"):
+            VLLMProtocol(vllm_config=VLLMServerConfig(aggregated={"data-parallel-size": 0}))
 
     def test_dp_mode_creates_per_gpu_processes(self):
         """Test that DP mode creates one process per GPU instead of per node."""
@@ -2096,19 +2110,30 @@ class TestVLLMDataParallelMode:
             gpus_per_node=4,
         )
 
-        with pytest.raises(ValueError, match="data-parallel-size=7"):
+        with pytest.raises(ValueError, match=r"DP\*TP\*PP\*PCP=7\*1=7 GPUs"):
             backend.endpoints_to_processes([endpoint])
 
-    def test_dp_per_node_mode_rejects_headless(self):
-        """Headless node processes cannot satisfy per-node Dynamo health expectations."""
+    @pytest.mark.parametrize(
+        "managed_field",
+        [
+            "data-parallel-size-local",
+            "data-parallel-start-rank",
+            "data-parallel-address",
+            "data-parallel-rpc-port",
+            "data-parallel-hybrid-lb",
+            "headless",
+        ],
+    )
+    def test_dp_per_node_mode_rejects_manually_managed_topology(self, managed_field):
+        """Slurm-derived DP topology cannot be contradicted by raw vLLM flags."""
         from marshmallow import ValidationError
 
         from srtctl.backends import VLLMProtocol, VLLMServerConfig
 
-        with pytest.raises(ValidationError, match="remove headless"):
+        with pytest.raises(ValidationError, match="srt-slurm derives the node-local DP topology"):
             VLLMProtocol(
                 dp_launch_mode="per_node",
-                vllm_config=VLLMServerConfig(decode={"data-parallel-size": 8, "headless": True}),
+                vllm_config=VLLMServerConfig(decode={"data-parallel-size": 8, managed_field: True}),
             )
 
     def test_direct_vllm_dp_mode_keeps_single_process(self):
@@ -2227,6 +2252,42 @@ class TestVLLMDataParallelMode:
         assert processes[0].gpu_indices == frozenset(range(4))
         assert processes[0].http_port > 0
 
+    def test_vllm_router_single_node_tp2_dp2_preserves_native_vllm_args(self):
+        """Explicit per_node does not inject hybrid flags into a native one-node server."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Endpoint
+
+        backend = VLLMProtocol(
+            dp_launch_mode="per_node",
+            vllm_config=VLLMServerConfig(aggregated={"tensor-parallel-size": 2, "data-parallel-size": 2}),
+        )
+        endpoint = Endpoint(
+            mode="agg",
+            index=0,
+            nodes=("node0",),
+            gpu_indices=frozenset(range(4)),
+            gpus_per_node=4,
+        )
+        processes = backend.endpoints_to_processes([endpoint], frontend_type="vllm-router")
+        runtime = MagicMock(model_path=Path("/model"), is_hf_model=False, frontend_port=8000)
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            command = backend.build_worker_command(
+                process=processes[0],
+                endpoint_processes=processes,
+                runtime=runtime,
+                frontend_type="vllm-router",
+            )
+
+        assert command[command.index("--tensor-parallel-size") + 1] == "2"
+        assert command[command.index("--data-parallel-size") + 1] == "2"
+        assert "--data-parallel-size-local" not in command
+        assert "--data-parallel-start-rank" not in command
+        assert "--data-parallel-hybrid-lb" not in command
+
     def test_vllm_router_multinode_dep8_uses_hybrid_node_local_pools(self):
         """Two DEP8 nodes expose two DP4 HTTP pools sharing one global coordinator."""
         from pathlib import Path
@@ -2278,6 +2339,43 @@ class TestVLLMDataParallelMode:
             assert command[command.index("--data-parallel-start-rank") + 1] == str(start_rank)
             assert command[command.index("--data-parallel-address") + 1] == "10.0.0.1"
             assert "--data-parallel-hybrid-lb" in command
+
+    def test_vllm_router_multinode_tp2_dp4_derives_local_dp2(self):
+        """Hybrid flags count DP replicas rather than raw GPUs on each node."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Endpoint
+
+        backend = VLLMProtocol(
+            dp_launch_mode="per_node",
+            vllm_config=VLLMServerConfig(aggregated={"tensor-parallel-size": 2, "data-parallel-size": 4}),
+        )
+        endpoint = Endpoint(
+            mode="agg",
+            index=0,
+            nodes=("node0", "node1"),
+            gpu_indices=frozenset(range(4)),
+            gpus_per_node=4,
+        )
+        processes = backend.endpoints_to_processes([endpoint], frontend_type="vllm-router")
+        runtime = MagicMock(model_path=Path("/model"), is_hf_model=False, frontend_port=8000)
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            commands = [
+                backend.build_worker_command(
+                    process=process,
+                    endpoint_processes=processes,
+                    runtime=runtime,
+                    frontend_type="vllm-router",
+                )
+                for process in processes
+            ]
+
+        assert [process.node_rank for process in processes] == [0, 2]
+        assert [command[command.index("--data-parallel-size-local") + 1] for command in commands] == ["2", "2"]
+        assert [command[command.index("--data-parallel-start-rank") + 1] for command in commands] == ["0", "2"]
 
     def test_vllm_router_worker_uses_private_port_and_pd_connector(self):
         """Disaggregated vLLM Router workers are direct servers with KV transfer."""
@@ -2535,10 +2633,6 @@ class TestVLLMDataParallelMode:
             vllm_config=VLLMServerConfig(
                 decode={
                     "data-parallel-size": 8,
-                    "data-parallel-size-local": 99,
-                    "data-parallel-start-rank": 99,
-                    "data-parallel-rpc-port": 13345,
-                    "data-parallel-hybrid-lb": True,
                     "enable-expert-parallel": True,
                 },
             ),
@@ -2589,7 +2683,7 @@ class TestVLLMDataParallelMode:
 
         backend = VLLMProtocol(
             dp_launch_mode="per_node",
-            vllm_config=VLLMServerConfig(decode={"data-parallel-size": 8, "data_parallel_hybrid_lb": False}),
+            vllm_config=VLLMServerConfig(decode={"data-parallel-size": 8}),
         )
         leader = Process(
             node="node0",

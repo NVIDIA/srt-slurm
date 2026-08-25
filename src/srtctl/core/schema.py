@@ -1640,6 +1640,19 @@ class SrtConfig:
             raise ValidationError("frontend.type: vllm requires resources.agg_workers >= 1")
         if (self.resources.agg_nodes or 1) != 1:
             raise ValidationError("frontend.type: vllm currently supports single-node aggregate jobs only")
+        try:
+            dp_size = int(self.backend._get_dp_size("agg") or 1)
+            if dp_size < 1:
+                raise ValueError(f"vLLM agg data-parallel-size must be a positive integer; got {dp_size!r}")
+            model_parallel_size = self.backend._get_model_parallel_size("agg")
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(str(exc)) from exc
+        required_gpus = dp_size * model_parallel_size
+        if required_gpus != self.resources.gpus_per_agg:
+            raise ValidationError(
+                f"direct vLLM parallelism requires DP*TP*PP*PCP={dp_size}*{model_parallel_size}="
+                f"{required_gpus} GPUs, but resources allocate {self.resources.gpus_per_agg} GPUs per worker"
+            )
 
     def _validate_static_router_frontend(self):
         """Validate native static-router/backend pairings and endpoint shape."""
@@ -1667,12 +1680,42 @@ class SrtConfig:
             if multi_node_modes and self.backend.dp_launch_mode != "per_node":
                 raise ValidationError("multi-node vLLM Router DP endpoints require backend.dp_launch_mode: per_node")
             for mode in multi_node_modes:
-                gpu_count = endpoint_gpu_counts[mode]
-                if not self.backend._is_dp_mode(mode) or self.backend._get_dp_size(mode) != gpu_count:
+                if not self.backend._is_dp_mode(mode):
                     raise ValidationError(
-                        f"multi-node vLLM Router {mode} endpoints require data-parallel-size={gpu_count}; "
+                        f"multi-node vLLM Router {mode} endpoints require data-parallel-size; "
                         "multi-node TP-only direct serving is not supported"
                     )
+
+            local_dp_sizes: dict[str, int] = {}
+            for mode, gpu_count in endpoint_gpu_counts.items():
+                if gpu_count == 0:
+                    continue
+                try:
+                    dp_size = int(self.backend._get_dp_size(mode) or 1)
+                    if dp_size < 1:
+                        raise ValueError(f"vLLM {mode} data-parallel-size must be a positive integer; got {dp_size!r}")
+                    model_parallel_size = self.backend._get_model_parallel_size(mode)
+                except (TypeError, ValueError) as exc:
+                    raise ValidationError(str(exc)) from exc
+                required_gpus = int(dp_size) * model_parallel_size
+                if required_gpus != gpu_count:
+                    raise ValidationError(
+                        f"vLLM Router {mode} parallelism requires DP*TP*PP*PCP="
+                        f"{int(dp_size)}*{model_parallel_size}={required_gpus} GPUs, "
+                        f"but resources allocate {gpu_count} GPUs per worker"
+                    )
+                local_gpu_count = min(gpu_count, self.resources.gpus_per_node)
+                try:
+                    local_dp_sizes[mode] = self.backend._get_local_dp_size(mode, local_gpu_count)
+                except ValueError as exc:
+                    raise ValidationError(str(exc)) from exc
+
+            if len(set(local_dp_sizes.values())) > 1:
+                sizes = ", ".join(f"{mode}={size}" for mode, size in local_dp_sizes.items())
+                raise ValidationError(
+                    "vLLM Router requires the same node-local data-parallel size for every routed backend; "
+                    f"derived {sizes}"
+                )
 
     def _validate_sglang_data_parallelism(self):
         """Reject SGLang TP/DP combinations that the server cannot initialize.

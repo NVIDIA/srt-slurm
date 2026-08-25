@@ -291,7 +291,7 @@ def test_schema_rejects_router_backend_mismatch() -> None:
 
 
 def test_vllm_router_accepts_many_single_node_endpoints() -> None:
-    from srtctl.backends import VLLMProtocol
+    from srtctl.backends import VLLMProtocol, VLLMServerConfig
     from srtctl.core.schema import FrontendConfig, ResourceConfig, SrtConfig
 
     config = SrtConfig(
@@ -304,7 +304,7 @@ def test_vllm_router_accepts_many_single_node_endpoints() -> None:
             agg_workers=4,
         ),
         frontend=FrontendConfig(type="vllm-router", enable_multiple_frontends=False),
-        backend=VLLMProtocol(),
+        backend=VLLMProtocol(vllm_config=VLLMServerConfig(aggregated={"tensor-parallel-size": 8})),
     )
 
     assert config.resources.gpus_per_agg == 8
@@ -356,6 +356,149 @@ def test_vllm_router_accepts_multinode_dep8_endpoint() -> None:
     )
 
     assert config.resources.gpus_per_agg == 8
+
+
+def test_vllm_router_accepts_native_single_node_tp2_dp2() -> None:
+    """A single vllm serve owns its complete native TP x DP topology."""
+    from srtctl.backends import VLLMProtocol, VLLMServerConfig
+    from srtctl.core.schema import FrontendConfig, ResourceConfig, SrtConfig
+
+    config = SrtConfig(
+        name="native-tp2-dp2",
+        model={"path": "model", "container": "image", "precision": "fp8"},
+        resources=ResourceConfig(
+            gpu_type="gb200",
+            gpus_per_node=4,
+            agg_nodes=1,
+            agg_workers=1,
+        ),
+        frontend=FrontendConfig(type="vllm-router", enable_multiple_frontends=False),
+        backend=VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                aggregated={
+                    "tensor-parallel-size": 2,
+                    "data-parallel-size": 2,
+                    "enable-expert-parallel": True,
+                }
+            ),
+        ),
+    )
+
+    assert config.backend._get_model_parallel_size("agg") == 2
+    assert config.backend._get_local_dp_size("agg", 4) == 2
+
+
+def test_vllm_router_rejects_parallelism_allocation_mismatch() -> None:
+    """Reject a recipe before Slurm when vLLM cannot consume its GPU allocation."""
+    from marshmallow import ValidationError
+
+    from srtctl.backends import VLLMProtocol, VLLMServerConfig
+    from srtctl.core.schema import FrontendConfig, ResourceConfig, SrtConfig
+
+    with pytest.raises(ValidationError, match=r"DP\*TP\*PP\*PCP=2\*2=4 GPUs.*allocate 8 GPUs"):
+        SrtConfig(
+            name="invalid-native-world",
+            model={"path": "model", "container": "image", "precision": "fp8"},
+            resources=ResourceConfig(
+                gpu_type="h100",
+                gpus_per_node=8,
+                agg_nodes=1,
+                agg_workers=1,
+            ),
+            frontend=FrontendConfig(type="vllm-router", enable_multiple_frontends=False),
+            backend=VLLMProtocol(
+                vllm_config=VLLMServerConfig(aggregated={"tensor-parallel-size": 2, "data-parallel-size": 2})
+            ),
+        )
+
+
+def test_direct_vllm_validates_native_parallelism_allocation() -> None:
+    """Direct vLLM uses the same native world-size invariant as Router workers."""
+    from marshmallow import ValidationError
+
+    from srtctl.backends import VLLMProtocol, VLLMServerConfig
+    from srtctl.core.schema import FrontendConfig, ResourceConfig, SrtConfig
+
+    valid = SrtConfig(
+        name="direct-native-tp2-dp2",
+        model={"path": "model", "container": "image", "precision": "fp8"},
+        resources=ResourceConfig(gpu_type="gb200", gpus_per_node=4, agg_nodes=1, agg_workers=1),
+        frontend=FrontendConfig(type="vllm", enable_multiple_frontends=False),
+        backend=VLLMProtocol(
+            vllm_config=VLLMServerConfig(aggregated={"tensor-parallel-size": 2, "data-parallel-size": 2})
+        ),
+    )
+    assert valid.resources.gpus_per_agg == 4
+
+    with pytest.raises(ValidationError, match=r"direct vLLM parallelism requires.*4 GPUs.*allocate 8 GPUs"):
+        SrtConfig(
+            name="invalid-direct-native-world",
+            model={"path": "model", "container": "image", "precision": "fp8"},
+            resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1, agg_workers=1),
+            frontend=FrontendConfig(type="vllm", enable_multiple_frontends=False),
+            backend=VLLMProtocol(
+                vllm_config=VLLMServerConfig(aggregated={"tensor-parallel-size": 2, "data-parallel-size": 2})
+            ),
+        )
+
+
+def test_vllm_router_accepts_multinode_tp2_dp4_endpoint() -> None:
+    """Hybrid mode derives two local DP replicas per four-GPU node."""
+    from srtctl.backends import VLLMProtocol, VLLMServerConfig
+    from srtctl.core.schema import FrontendConfig, ResourceConfig, SrtConfig
+
+    config = SrtConfig(
+        name="multi-node-tp2-dp4",
+        model={"path": "model", "container": "image", "precision": "fp8"},
+        resources=ResourceConfig(
+            gpu_type="gb200",
+            gpus_per_node=4,
+            agg_nodes=2,
+            agg_workers=1,
+        ),
+        frontend=FrontendConfig(type="vllm-router", enable_multiple_frontends=False),
+        backend=VLLMProtocol(
+            dp_launch_mode="per_node",
+            vllm_config=VLLMServerConfig(
+                aggregated={
+                    "tensor-parallel-size": 2,
+                    "data-parallel-size": 4,
+                    "enable-expert-parallel": True,
+                }
+            ),
+        ),
+    )
+
+    assert config.backend._get_local_dp_size("agg", 4) == 2
+
+
+def test_vllm_router_rejects_different_local_dp_sizes_across_pd_pools() -> None:
+    """Router has one DP expansion factor, so every advertised pool must agree."""
+    from marshmallow import ValidationError
+
+    from srtctl.backends import VLLMProtocol, VLLMServerConfig
+    from srtctl.core.schema import FrontendConfig, ResourceConfig, SrtConfig
+
+    with pytest.raises(ValidationError, match="same node-local data-parallel size.*prefill=4, decode=2"):
+        SrtConfig(
+            name="mismatched-pd-local-dp",
+            model={"path": "model", "container": "image", "precision": "fp8"},
+            resources=ResourceConfig(
+                gpu_type="gb200",
+                gpus_per_node=4,
+                prefill_nodes=1,
+                prefill_workers=1,
+                decode_nodes=1,
+                decode_workers=1,
+            ),
+            frontend=FrontendConfig(type="vllm-router", enable_multiple_frontends=False),
+            backend=VLLMProtocol(
+                vllm_config=VLLMServerConfig(
+                    prefill={"tensor-parallel-size": 1, "data-parallel-size": 4},
+                    decode={"tensor-parallel-size": 2, "data-parallel-size": 2},
+                )
+            ),
+        )
 
 
 def test_sgl_router_rejects_non_divisible_tp_dp_layout() -> None:
