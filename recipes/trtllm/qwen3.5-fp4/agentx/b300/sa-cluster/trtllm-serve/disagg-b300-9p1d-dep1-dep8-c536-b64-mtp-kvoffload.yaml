@@ -47,7 +47,6 @@ backend:
     MKL_NUM_THREADS: '1'
     OPENBLAS_NUM_THREADS: '1'
     NUMEXPR_NUM_THREADS: '1'
-    LD_PRELOAD: /usr/local/lib/libagentx_srand_port.so
     CUDA_SCALE_LAUNCH_QUEUES: 4x
     MIMALLOC_ARENA_RESERVE: '0'
     MIMALLOC_PURGE_DELAY: ''
