@@ -33,8 +33,9 @@ from srtctl.cli.mixins import (
     TelemetryStageMixin,
     WorkerStageMixin,
 )
-from srtctl.core.config import load_config
+from srtctl.core.config import get_srtslurm_setting, load_config
 from srtctl.core.health import wait_for_port
+from srtctl.core.launch_plan import configure_launch_plan
 from srtctl.core.lockfile import write_lockfile
 from srtctl.core.processes import (
     ManagedProcess,
@@ -648,6 +649,12 @@ class SweepOrchestrator(
 
     def run(self) -> int:
         """Run the complete sweep."""
+        record_launch_plan = self.config.output.record_launch_plan or bool(
+            get_srtslurm_setting("record_launch_plan", False)
+        )
+        launch_plan_dir = self.runtime.log_dir / "launch-plan" if record_launch_plan else None
+        configure_launch_plan(launch_plan_dir, job_id=self.runtime.job_id)
+
         logger.info("Sweep Orchestrator")
         logger.info("Job ID: %s", self.runtime.job_id)
         logger.info("Run name: %s", self.runtime.run_name)
@@ -657,6 +664,10 @@ class SweepOrchestrator(
         logger.info("Worker nodes: %s", ", ".join(self.runtime.nodes.worker))
         if self.config.profiling.enabled:
             logger.info("Profiling: %s", self.config.profiling.type)
+        if launch_plan_dir is not None:
+            logger.info("Recording realized Slurm launch plan: %s", launch_plan_dir)
+            # Preserve submission provenance before any runtime stage can fail.
+            self._copy_config_to_logs()
 
         resource_snapshot = record_resource_snapshot(self.config, self.runtime)
 

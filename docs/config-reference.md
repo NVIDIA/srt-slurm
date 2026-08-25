@@ -72,6 +72,7 @@ profiling:                     # Optional: profiling config
 
 output:                        # Optional: output paths
   log_dir: "./outputs/{job_id}/logs"
+  record_launch_plan: false    # Save exact realized srun scripts and a manifest
 
 health_check:                  # Optional: health check settings
   max_attempts: 180
@@ -875,13 +876,26 @@ Output configuration with formattable paths.
 ```yaml
 output:
   log_dir: "./outputs/{job_id}/logs"
+  record_launch_plan: false
 ```
 
-| Field     | Type            | Default                      | Description              |
-| --------- | --------------- | ---------------------------- | ------------------------ |
-| `log_dir` | FormattablePath | "./outputs/{job_id}/logs"    | Directory for log files  |
+| Field                | Type            | Default                   | Description                                      |
+| -------------------- | --------------- | ------------------------- | ------------------------------------------------ |
+| `log_dir`            | FormattablePath | "./outputs/{job_id}/logs" | Directory for log files                          |
+| `record_launch_plan` | bool            | `false`                   | Save realized `srun` scripts and a JSON manifest |
 
 The `log_dir` supports FormattablePath templating. See [FormattablePath Template System](#formattablepath-template-system).
+
+When `record_launch_plan` is enabled, srtctl creates `logs/launch-plan/manifest.json` and one executable shell
+script for every realized `srun` invocation. Recording happens after Slurm assigns nodes, ports, heterogeneous
+groups, mounts, and container paths, so the scripts describe what was actually launched rather than a pre-submit
+estimate. Secret-like environment values are never persisted; the scripts name the environment variables that
+must be supplied for replay. The resolved recipe, outer `sbatch_script.sh`, lockfile, and resource snapshot remain
+alongside this directory and are referenced by the manifest.
+
+Set `record_launch_plan: true` at the top level of `srtslurm.yaml` to enable this artifact for every recipe on a
+cluster. Because the launch plan lives under the normal log directory, existing S3 postprocessing and external
+collectors that archive the complete log directory include it without a separate upload path.
 
 ---
 

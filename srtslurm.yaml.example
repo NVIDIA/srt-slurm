@@ -26,6 +26,13 @@ use_gpus_per_node_directive: true  # Default: true
 use_segment_sbatch_directive: true  # Default: true
 # Set to true if your cluster requires --exclusive to be set.
 use_exclusive_sbatch_directive: false # Default: false
+
+# Reproducibility artifacts (optional)
+# Record every realized srun invocation as an executable, secret-redacted script
+# under outputs/<job_id>/logs/launch-plan/. Individual recipes can also enable
+# this with output.record_launch_plan: true.
+record_launch_plan: false
+
 # Container registry
 default_container: "/shared/containers/sglang-latest.sqsh"
 containers:

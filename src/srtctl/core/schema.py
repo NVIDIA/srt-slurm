@@ -197,6 +197,9 @@ class ClusterConfig:
     default_health_check: dict[str, int] | None = None
     srtctl_root: str | None = None
     output_dir: str | None = None  # Custom output directory for job logs
+    # Cluster-wide default for recording exact realized srun commands. Recipes
+    # can opt in independently with output.record_launch_plan.
+    record_launch_plan: bool = False
     model_paths: dict[str, str] | None = None
     containers: dict[str, str] | None = None
     cloud: dict[str, str] | None = None
@@ -1489,11 +1492,12 @@ class FrontendConfig:
 
 @dataclass(frozen=True)
 class OutputConfig:
-    """Output configuration with formattable paths."""
+    """Output paths and optional reproducibility artifacts."""
 
     log_dir: Annotated[FormattablePath, FormattablePathField()] = field(
         default_factory=lambda: FormattablePath(template="./outputs/{job_id}/logs")
     )
+    record_launch_plan: bool = False
 
     Schema: ClassVar[type[Schema]] = Schema
 
