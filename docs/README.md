@@ -32,6 +32,11 @@ When you run `srtctl apply -f config.yaml`, the tool:
 
 For a single GPU host, render the same recipe with `srtctl apply -f config.yaml --bash`. The resulting launcher owns a Docker serving container on the current host instead of submitting to SLURM. It uses the same topology and lifecycle plan, including worker/router readiness, Tachometer, benchmark execution, and ruter post-processing where configured. See [Direct Host Lifecycle](direct-host.md) for requirements and a complete example.
 
+To inspect or replay the Slurm serving lifecycle without recording a particular job, use
+`srtctl render-launch -f config.yaml > launch.sh`. Run the generated script inside a compatible allocation; it
+discovers the current nodes and IPs, launches NATS/etcd, Dynamo workers, and the frontend, waits for readiness,
+and cleans up the services it owns. Allocation IDs, hostnames, and endpoints are resolved only when the script runs.
+
 The `srtctl-mcp` server is different from `srtctl apply`: it is a schema and
 recipe-authoring helper. It does not use host-side `srtslurm.yaml` for cluster
 defaults, aliases, containers, model paths, filesystem checks, or dry-run
@@ -48,6 +53,7 @@ Once allocated, workers launch inside containers, discover each other through ET
 | `srtctl apply -f <config> --setup-script <script>` | Submit with custom setup script         |
 | `srtctl apply -f <config> --tags tag1,tag2`        | Submit with tags for filtering          |
 | `srtctl dry-run -f <config>`                       | Validate and preview without submitting |
+| `srtctl render-launch -f <config>`                  | Render a portable Slurm serving script  |
 | `srtctl apply -f <config> --bash`                  | Render a one-host Docker lifecycle       |
 | `srtctl validate -f <config>`                      | Alias for dry-run                       |
 

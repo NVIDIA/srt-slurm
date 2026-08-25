@@ -41,6 +41,9 @@ srtctl apply -f config.yaml --tags experiment,baseline
 # Dry-run (validate without submitting)
 srtctl dry-run -f config.yaml
 
+# Render a portable serving lifecycle for a future Slurm allocation
+srtctl render-launch -f config.yaml > launch.sh
+
 # Render and run one single-node recipe through Docker
 srtctl apply -f config.yaml -o /absolute/path/to/runs --bash > job.sh
 chmod +x job.sh

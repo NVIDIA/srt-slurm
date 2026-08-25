@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from srtctl.core.health import WorkerHealthResult, check_dynamo_health
 from srtctl.core.schema import build_otel_env
-from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, start_srun_process
+from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, SrunSpec, start_srun_process, start_srun_spec
 from srtctl.ports import ETCD_CLIENT_PORT, NATS_PORT
 
 if TYPE_CHECKING:
@@ -74,10 +74,27 @@ class DynamoFrontend:
         from srtctl.core.processes import ManagedProcess
 
         processes: list[ManagedProcess] = []
-
-        for idx, node in enumerate(topology.frontend_nodes):
+        for idx, spec in enumerate(self.build_frontend_sruns(topology=topology, runtime=runtime, config=config)):
+            node = (spec.nodelist or (runtime.nodes.head,))[0]
             logger.info("Starting dynamo frontend %d on %s", idx, node)
+            frontend_log = runtime.log_dir / f"{node}_frontend_{idx}.out"
+            proc = start_srun_spec(spec, launcher=start_srun_process)
+            processes.append(
+                ManagedProcess(
+                    name=f"frontend_{idx}",
+                    popen=proc,
+                    log_file=frontend_log,
+                    node=node,
+                    critical=True,
+                )
+            )
 
+        return processes
+
+    def build_frontend_sruns(self, *, topology: Any, runtime: "RuntimeContext", config: Any) -> list[SrunSpec]:
+        """Build all Dynamo frontend launches without starting them."""
+        specs: list[SrunSpec] = []
+        for idx, node in enumerate(topology.frontend_nodes):
             frontend_log = runtime.log_dir / f"{node}_frontend_{idx}.out"
             cmd = ["python3", "-m", "dynamo.frontend", f"--http-port={topology.frontend_port}"]
             cmd.extend(self.get_frontend_args_list(config.frontend.args))
@@ -105,34 +122,25 @@ class DynamoFrontend:
             # Build bash preamble (setup script + dynamo install)
             bash_preamble = self._build_preamble(config)
 
-            proc = start_srun_process(
-                command=cmd,
-                nodelist=[node],
-                output=str(frontend_log),
-                container_image=str(runtime.container_image),
-                container_mounts=runtime.container_mounts,
-                env_to_set=env_to_set,
-                bash_preamble=bash_preamble,
-                # Frontend container runs the dynamo install (see _build_preamble), whose
-                # cold build needs root inside the container. Remap via enroot env var.
-                srun_export_env=CONTAINER_REMAP_ROOT_EXPORT if config.dynamo.install else None,
-                # TODO(jthomson): I don't have the faintest clue of
-                # why this is needed in later versions of Dynamo, but it is.
-                mpi="pmix",
-                het_group=runtime.nodes.het_group_for(node),
-            )
-
-            processes.append(
-                ManagedProcess(
-                    name=f"frontend_{idx}",
-                    popen=proc,
-                    log_file=frontend_log,
-                    node=node,
-                    critical=True,
+            specs.append(
+                SrunSpec(
+                    command=tuple(cmd),
+                    nodelist=(node,),
+                    output=str(frontend_log),
+                    container_image=str(runtime.container_image),
+                    container_mounts=runtime.container_mounts,
+                    env_to_set=env_to_set,
+                    bash_preamble=bash_preamble,
+                    # Frontend container runs the dynamo install (see _build_preamble), whose
+                    # cold build needs root inside the container. Remap via enroot env var.
+                    srun_export_env=CONTAINER_REMAP_ROOT_EXPORT if config.dynamo.install else None,
+                    # TODO(jthomson): I don't have the faintest clue of
+                    # why this is needed in later versions of Dynamo, but it is.
+                    mpi="pmix",
+                    het_group=runtime.nodes.het_group_for(node),
                 )
             )
-
-        return processes
+        return specs
 
     def _build_preamble(self, config: Any) -> str | None:
         """Build bash preamble for dynamo frontend processes."""

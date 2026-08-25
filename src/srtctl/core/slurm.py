@@ -16,7 +16,8 @@ import os
 import shlex
 import socket
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from .ip_utils import get_node_ip
@@ -181,9 +182,97 @@ def get_node_ips(
 CONTAINER_REMAP_ROOT_EXPORT = {"ENROOT_REMAP_ROOT": "yes"}
 
 
-def start_srun_process(
+@dataclass(frozen=True)
+class SrunSpec:
+    """Declarative inputs for one ``srun`` launch.
+
+    Stage builders return this object so normal execution and launch-script
+    rendering consume the same command definition.
+    """
+
+    command: tuple[str, ...]
+    nodes: int = 1
+    ntasks: int = 1
+    cpus_per_task: int | None = None
+    nodelist: tuple[str, ...] | None = None
+    output: str | None = None
+    container_image: str | None = None
+    container_mounts: dict[Path, Path] | None = None
+    env_to_pass_through: tuple[str, ...] | None = None
+    env_to_set: dict[str, str] | None = None
+    env_to_unset: tuple[str, ...] | None = None
+    bash_preamble: str | None = None
+    srun_options: dict[str, str] | None = None
+    srun_export_env: dict[str, str] | None = None
+    overlap: bool = True
+    use_bash_wrapper: bool = True
+    mpi: str | None = None
+    oversubscribe: bool = False
+    cpu_bind: str | None = None
+    het_group: int | None = None
+
+    def argv(self, *, job_id: str | None = None) -> list[str]:
+        """Render this launch for a specific allocation or portable replay."""
+        return build_srun_command(
+            list(self.command),
+            job_id=job_id,
+            nodes=self.nodes,
+            ntasks=self.ntasks,
+            cpus_per_task=self.cpus_per_task,
+            nodelist=self.nodelist,
+            output=self.output,
+            container_image=self.container_image,
+            container_mounts=self.container_mounts,
+            env_to_pass_through=list(self.env_to_pass_through) if self.env_to_pass_through else None,
+            env_to_set=self.env_to_set,
+            env_to_unset=list(self.env_to_unset) if self.env_to_unset else None,
+            bash_preamble=self.bash_preamble,
+            srun_options=self.srun_options,
+            srun_export_env=self.srun_export_env,
+            overlap=self.overlap,
+            use_bash_wrapper=self.use_bash_wrapper,
+            mpi=self.mpi,
+            oversubscribe=self.oversubscribe,
+            cpu_bind=self.cpu_bind,
+            het_group=self.het_group,
+        )
+
+
+def start_srun_spec(
+    spec: SrunSpec,
+    *,
+    launcher: Callable[..., subprocess.Popen] | None = None,
+) -> subprocess.Popen:
+    """Launch a stage-built spec in the current allocation."""
+    launch = launcher or start_srun_process
+    return launch(
+        list(spec.command),
+        nodes=spec.nodes,
+        ntasks=spec.ntasks,
+        cpus_per_task=spec.cpus_per_task,
+        nodelist=spec.nodelist,
+        output=spec.output,
+        container_image=spec.container_image,
+        container_mounts=spec.container_mounts,
+        env_to_pass_through=list(spec.env_to_pass_through) if spec.env_to_pass_through else None,
+        env_to_set=spec.env_to_set,
+        env_to_unset=list(spec.env_to_unset) if spec.env_to_unset else None,
+        bash_preamble=spec.bash_preamble,
+        srun_options=spec.srun_options,
+        srun_export_env=spec.srun_export_env,
+        overlap=spec.overlap,
+        use_bash_wrapper=spec.use_bash_wrapper,
+        mpi=spec.mpi,
+        oversubscribe=spec.oversubscribe,
+        cpu_bind=spec.cpu_bind,
+        het_group=spec.het_group,
+    )
+
+
+def build_srun_command(
     command: list[str],
     *,
+    job_id: str | None = None,
     nodes: int = 1,
     ntasks: int = 1,
     cpus_per_task: int | None = None,
@@ -203,14 +292,17 @@ def start_srun_process(
     oversubscribe: bool = False,
     cpu_bind: str | None = None,
     het_group: int | None = None,
-) -> subprocess.Popen:
-    """Start a process via srun with container support.
+) -> list[str]:
+    """Build an ``srun`` argv without launching it.
 
-    This is the central function for launching all srun processes.
-    It handles container mounts, environment variables, and output redirection.
+    Keeping construction pure lets runtime execution and portable launch-script
+    rendering share the exact same command path. ``job_id`` is explicit: pass
+    the current allocation ID for normal execution, or ``None`` for a command
+    that inherits whichever allocation is active when it is run.
 
     Args:
         command: Command to run as list of strings
+        job_id: Optional allocation ID to pass via ``--jobid``.
         nodes: Number of nodes (default: 1)
         ntasks: Number of tasks (default: 1)
         cpus_per_task: CPUs per task (optional)
@@ -234,11 +326,12 @@ def start_srun_process(
         cpu_bind: CPU binding mode (e.g., "verbose,none" for TRTLLM)
 
     Returns:
-        subprocess.Popen object for the srun process
+        Fully constructed ``srun`` argv.
 
     Example:
-        proc = start_srun_process(
+        command = build_srun_command(
             command=["python3", "-m", "dynamo.sglang", "--model-path", "/model"],
+            job_id=None,
             nodelist=["node1"],
             container_image="/containers/sglang.sqsh",
             container_mounts={Path("/models/llama"): Path("/model")},
@@ -248,9 +341,8 @@ def start_srun_process(
     srun_cmd = ["srun"]
 
     # ensures srun runs in the same job context
-    slurm_job_id = get_slurm_job_id()
-    if slurm_job_id:
-        srun_cmd.extend(["--jobid", slurm_job_id])
+    if job_id:
+        srun_cmd.extend(["--jobid", job_id])
 
     # Basic options
     if overlap:
@@ -348,13 +440,59 @@ def start_srun_process(
             )
         srun_cmd.extend(command)
 
-    # Demoted to debug — every worker srun line is multi-KB once the
-    # fingerprint heredoc is inlined (see core/fingerprint.generate_capture_script),
-    # which dominates the orchestrator log. Re-enable with `--verbose` / by setting
-    # the srtctl logger to DEBUG when troubleshooting srun arg construction.
-    logger.debug("srun command: %s", shlex.join(srun_cmd))
+    return srun_cmd
 
-    # Start the process
+
+def start_srun_process(
+    command: list[str],
+    *,
+    nodes: int = 1,
+    ntasks: int = 1,
+    cpus_per_task: int | None = None,
+    nodelist: Sequence[str] | None = None,
+    output: str | None = None,
+    container_image: str | None = None,
+    container_mounts: dict[Path, Path] | None = None,
+    env_to_pass_through: list[str] | None = None,
+    env_to_set: dict[str, str] | None = None,
+    env_to_unset: list[str] | None = None,
+    bash_preamble: str | None = None,
+    srun_options: dict[str, str] | None = None,
+    srun_export_env: dict[str, str] | None = None,
+    overlap: bool = True,
+    use_bash_wrapper: bool = True,
+    mpi: str | None = None,
+    oversubscribe: bool = False,
+    cpu_bind: str | None = None,
+    het_group: int | None = None,
+) -> subprocess.Popen:
+    """Build and start an ``srun`` child in the current allocation."""
+    srun_cmd = build_srun_command(
+        command,
+        job_id=get_slurm_job_id(),
+        nodes=nodes,
+        ntasks=ntasks,
+        cpus_per_task=cpus_per_task,
+        nodelist=nodelist,
+        output=output,
+        container_image=container_image,
+        container_mounts=container_mounts,
+        env_to_pass_through=env_to_pass_through,
+        env_to_set=env_to_set,
+        env_to_unset=env_to_unset,
+        bash_preamble=bash_preamble,
+        srun_options=srun_options,
+        srun_export_env=srun_export_env,
+        overlap=overlap,
+        use_bash_wrapper=use_bash_wrapper,
+        mpi=mpi,
+        oversubscribe=oversubscribe,
+        cpu_bind=cpu_bind,
+        het_group=het_group,
+    )
+
+    # Every worker srun line is multi-KB once fingerprint capture is inlined.
+    logger.debug("srun command: %s", shlex.join(srun_cmd))
     proc = subprocess.Popen(
         srun_cmd,
         stdout=subprocess.PIPE if not output else None,

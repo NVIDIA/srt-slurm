@@ -45,7 +45,7 @@ from srtctl.core.processes import (
 from srtctl.core.resource_snapshot import record_resource_snapshot
 from srtctl.core.runtime import RuntimeContext
 from srtctl.core.schema import SrtConfig
-from srtctl.core.slurm import get_slurm_job_id, start_srun_process
+from srtctl.core.slurm import SrunSpec, get_slurm_job_id, start_srun_process, start_srun_spec
 from srtctl.core.status import JobStage, JobStatus, StatusReporter
 from srtctl.core.topology import Endpoint, NodePortAllocator, Process, allocate_endpoints_het
 from srtctl.logging_utils import setup_logging
@@ -149,16 +149,9 @@ class SweepOrchestrator(
             frontend_type=self.config.frontend.type,
         )
 
-    def start_head_infrastructure(self, registry: ProcessRegistry) -> ManagedProcess:
-        """Start NATS and etcd on the infra node.
-
-        When etcd_nats_dedicated_node is enabled, services run on a dedicated node.
-        Otherwise, they run on the head node (default behavior).
-        """
+    def build_head_infrastructure_srun(self) -> SrunSpec:
+        """Build the NATS/etcd launch without starting it."""
         infra_node = self.runtime.nodes.infra
-        logger.info("Starting infrastructure services (NATS, etcd)")
-        logger.info("Infra node: %s", infra_node)
-
         setup_script = Path(__file__).parent / "setup_head.py"
         if not setup_script.exists():
             raise RuntimeError(f"setup_head.py not found at {setup_script}")
@@ -183,14 +176,23 @@ class SweepOrchestrator(
         # This ensures etcd WAL writes go to fast local disk, not network storage
         mounts[Path("/tmp")] = Path("/host-tmp")
 
-        proc = start_srun_process(
-            command=cmd,
-            nodelist=[infra_node],
+        return SrunSpec(
+            command=tuple(cmd),
+            nodelist=(infra_node,),
             output=str(infra_log),
             container_image=str(self.runtime.container_image),
             container_mounts=mounts,
             het_group=self.runtime.nodes.het_group_for(infra_node),
         )
+
+    def start_head_infrastructure(self, registry: ProcessRegistry) -> ManagedProcess:
+        """Start NATS and etcd on the infra node."""
+        infra_node = self.runtime.nodes.infra
+        logger.info("Starting infrastructure services (NATS, etcd)")
+        logger.info("Infra node: %s", infra_node)
+        spec = self.build_head_infrastructure_srun()
+        proc = start_srun_spec(spec, launcher=start_srun_process)
+        infra_log = Path(spec.output or self.runtime.log_dir / "infra.out")
 
         managed = ManagedProcess(
             name="infra_services",
@@ -212,6 +214,24 @@ class SweepOrchestrator(
         logger.info("etcd is ready")
 
         return managed
+
+    def build_mooncake_master_srun(self) -> SrunSpec | None:
+        """Build the optional Mooncake master launch without starting it."""
+        backend = self.config.backend
+        if not isinstance(backend, (SGLangProtocol, VLLMProtocol)):
+            return None
+        mooncake_cfg = backend.mooncake_kv_store
+        if mooncake_cfg is None:
+            return None
+        infra_node = self.runtime.nodes.infra
+        return SrunSpec(
+            command=tuple(_build_mooncake_master_command(mooncake_cfg)),
+            nodelist=(infra_node,),
+            output=str(self.runtime.log_dir / "mooncake_master.out"),
+            container_image=mooncake_cfg.container or str(self.runtime.container_image),
+            container_mounts=self.runtime.container_mounts,
+            het_group=self.runtime.nodes.het_group_for(infra_node),
+        )
 
     def start_mooncake_master(self, registry: ProcessRegistry) -> ManagedProcess | None:
         """Launch mooncake_master on the infra node if mooncake_kv_store is configured.
@@ -239,7 +259,6 @@ class SweepOrchestrator(
             return None
 
         infra_node = self.runtime.nodes.infra
-        container = mooncake_cfg.container or str(self.runtime.container_image)
         mooncake_log = self.runtime.log_dir / "mooncake_master.out"
 
         # vLLM's MooncakeStoreConnector reads its config from a JSON file
@@ -259,14 +278,9 @@ class SweepOrchestrator(
             MOONCAKE_METRICS_PORT,
         )
 
-        proc = start_srun_process(
-            command=_build_mooncake_master_command(mooncake_cfg),
-            nodelist=[infra_node],
-            output=str(mooncake_log),
-            container_image=container,
-            container_mounts=self.runtime.container_mounts,
-            het_group=self.runtime.nodes.het_group_for(infra_node),
-        )
+        spec = self.build_mooncake_master_srun()
+        assert spec is not None
+        proc = start_srun_spec(spec, launcher=start_srun_process)
 
         managed = ManagedProcess(
             name="mooncake_master",
@@ -657,7 +671,6 @@ class SweepOrchestrator(
         logger.info("Worker nodes: %s", ", ".join(self.runtime.nodes.worker))
         if self.config.profiling.enabled:
             logger.info("Profiling: %s", self.config.profiling.type)
-
         resource_snapshot = record_resource_snapshot(self.config, self.runtime)
 
         # Create status reporter (fire-and-forget, no-op if not configured)
