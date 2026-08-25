@@ -42,7 +42,10 @@ if TYPE_CHECKING:
 
 # Type alias for worker modes
 WorkerMode = Literal["prefill", "decode", "agg"]
-DPLaunchMode = Literal["per_gpu", "per_node"]
+# ``per_gpu`` is retained as a compatibility alias for existing recipes. A
+# process owns one DP rank, which is only equivalent to one GPU while the
+# per-rank layout is restricted to TP=PP=PCP=1.
+DPLaunchMode = Literal["per_rank", "per_node", "per_gpu"]
 
 # Filename for the mooncake-store JSON config srtslurm writes to log_dir at job
 # start. log_dir is mounted into every worker at /logs, so workers read the JSON
@@ -197,9 +200,10 @@ class VLLMProtocol:
 
     # DP process layout for orchestrated multi-process deployments. Direct vLLM
     # and single-node vLLM Router preserve native one-command vLLM behavior.
-    # Keep per_gpu as the Dynamo compatibility default; per_node lets vLLM
-    # manage complete node-local DP replicas in one CUDA namespace.
-    dp_launch_mode: DPLaunchMode = "per_gpu"
+    # Keep the per-rank layout as the Dynamo compatibility default; per_node
+    # lets vLLM manage complete node-local DP replicas in one CUDA namespace.
+    # ``per_gpu`` is a deprecated compatibility spelling for ``per_rank``.
+    dp_launch_mode: DPLaunchMode = "per_rank"
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
@@ -264,7 +268,7 @@ class VLLMProtocol:
         if not dp_mode_configs:
             return
 
-        if self.dp_launch_mode == "per_gpu":
+        if self.dp_launch_mode in {"per_rank", "per_gpu"}:
             return
 
     # =========================================================================
@@ -560,7 +564,7 @@ class VLLMProtocol:
     ) -> list[Process]:
         """Convert endpoints to processes.
 
-        Dynamo DP+EP mode uses the configured per-GPU or per-node process layout.
+        Dynamo DP+EP mode uses the configured per-rank or per-node process layout.
         For direct vLLM and single-node vLLM Router jobs, `vllm serve` manages
         local DP ranks from one process. Multi-node vLLM Router DP jobs use one
         hybrid-LB process per node so Router can address each node-local DP pool.
@@ -604,11 +608,12 @@ class VLLMProtocol:
             _dp_size, model_parallel_size = self._validate_endpoint_parallelism(endpoint)
             if model_parallel_size != 1:
                 raise ValueError(
-                    f"vLLM {endpoint.mode} dp_launch_mode=per_gpu supports only TP=PP=PCP=1; "
+                    f"vLLM {endpoint.mode} dp_launch_mode=per_rank supports only TP=PP=PCP=1; "
                     "use dp_launch_mode=per_node for combined DP and model parallelism"
                 )
 
-        # DP+EP mode: one process per GPU
+        # DP+EP mode: one process per DP rank. The supported TP=PP=PCP=1
+        # topology means each rank currently owns one GPU.
         processes: list[Process] = []
         current_sys_port = base_sys_port
         if port_allocator is None:
@@ -643,8 +648,8 @@ class VLLMProtocol:
                     )
                     current_sys_port += 1
             else:
-                # DP+EP mode: one process per GPU
-                # Each process gets a single GPU and a unique dp_rank
+                # DP+EP mode: one process per DP rank. Each process gets a
+                # single GPU under the required TP=PP=PCP=1 topology.
                 dp_rank = 0
                 # Allocate a unique DP RPC port for this endpoint's leader node
                 dp_rpc_port = port_allocator.next_dp_rpc_port(endpoint.leader_node)

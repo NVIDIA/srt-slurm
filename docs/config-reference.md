@@ -472,8 +472,12 @@ backend:
 
 | Value      | Process layout                                                        |
 | ---------- | --------------------------------------------------------------------- |
-| `per_gpu`  | Legacy Dynamo layout: one process per DP rank; requires TP=PP=PCP=1   |
+| `per_rank` | Legacy Dynamo layout: one process per DP rank; requires TP=PP=PCP=1   |
 | `per_node` | One process manages all complete node-local DP replicas               |
+
+`per_gpu` remains accepted as a deprecated compatibility alias for `per_rank`.
+The process boundary is the DP rank; it corresponds to one GPU only under the
+required TP=PP=PCP=1 topology.
 
 For `frontend.type: vllm-router`, Router-native DP expansion keeps one backend
 URL per node and sends `X-Data-Parallel-Rank` to select a node-local engine. A

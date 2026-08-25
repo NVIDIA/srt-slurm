@@ -16,7 +16,7 @@ def _config(
     num_decode=0,
     num_agg=0,
     vllm_config=None,
-    dp_launch_mode="per_gpu",
+    dp_launch_mode="per_rank",
 ):
     """Build a duck-typed stand-in for SrtConfig with only the fields the helpers read."""
 

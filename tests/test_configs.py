@@ -1978,8 +1978,8 @@ class TestVLLMDataParallelMode:
         with pytest.raises(ValidationError, match="must be a positive integer"):
             VLLMProtocol(vllm_config=VLLMServerConfig(aggregated={"data-parallel-size": 0}))
 
-    def test_dp_mode_creates_per_gpu_processes(self):
-        """Test that DP mode creates one process per GPU instead of per node."""
+    def test_dp_mode_creates_per_rank_processes(self):
+        """Test that DP mode creates one process per DP rank instead of per node."""
         from srtctl.backends import VLLMProtocol, VLLMServerConfig
         from srtctl.core.topology import Endpoint
 
@@ -2000,7 +2000,7 @@ class TestVLLMDataParallelMode:
 
         processes = backend.endpoints_to_processes([endpoint])
 
-        # Should create 16 processes (1 per GPU), not 2 (1 per node)
+        # Should create 16 processes (1 per DP rank), not 2 (1 per node)
         assert len(processes) == 16
 
         # Each process should have exactly 1 GPU
@@ -2022,6 +2022,29 @@ class TestVLLMDataParallelMode:
         # dp_rank (stored in node_rank) should go from 0 to 15
         dp_ranks = [p.node_rank for p in processes]
         assert dp_ranks == list(range(16))
+
+    def test_per_gpu_remains_a_compatibility_alias_for_per_rank(self):
+        """Existing recipes retain the original one-process-per-rank behavior."""
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Endpoint
+
+        config = VLLMServerConfig(aggregated={"data-parallel-size": 2})
+        endpoint = Endpoint(
+            mode="agg",
+            index=0,
+            nodes=("node0",),
+            gpu_indices=frozenset(range(2)),
+            gpus_per_node=2,
+        )
+
+        canonical = VLLMProtocol(dp_launch_mode="per_rank", vllm_config=config)
+        compatibility = VLLMProtocol(dp_launch_mode="per_gpu", vllm_config=config)
+
+        canonical_processes = canonical.endpoints_to_processes([endpoint])
+        compatibility_processes = compatibility.endpoints_to_processes([endpoint])
+
+        assert [process.node_rank for process in compatibility_processes] == [0, 1]
+        assert compatibility_processes == canonical_processes
 
     def test_dp_per_node_mode_creates_per_node_processes(self):
         """Per-node DP owns all local GPUs and reserves rank-sized port blocks."""
@@ -2739,7 +2762,7 @@ class TestVLLMDataParallelMode:
 
         processes = backend.endpoints_to_processes([endpoint])
 
-        # Should create 2 processes (1 per node), not 16 (1 per GPU)
+        # Should create 2 processes (1 per node), not 16 (1 per DP rank)
         assert len(processes) == 2
         assert processes[0].node == "node0"
         assert processes[1].node == "node1"

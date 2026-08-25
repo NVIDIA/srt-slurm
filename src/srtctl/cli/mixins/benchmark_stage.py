@@ -54,7 +54,7 @@ def _vllm_health_entries(
 ) -> int:
     """Return expected Dynamo generate registrations for a vLLM worker mode."""
     dp_size = _vllm_data_parallel_size(config, mode)
-    if dp_size > 1 and getattr(config.backend, "dp_launch_mode", "per_gpu") == "per_node":
+    if dp_size > 1 and getattr(config.backend, "dp_launch_mode", "per_rank") == "per_node":
         if backend_processes is None:
             raise ValueError("backend_processes are required for per-node DP health expectations")
         endpoint_mode = "agg" if mode == "aggregated" else mode
