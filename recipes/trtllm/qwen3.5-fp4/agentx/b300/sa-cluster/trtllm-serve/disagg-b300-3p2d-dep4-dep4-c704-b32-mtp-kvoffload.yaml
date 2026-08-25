@@ -53,6 +53,7 @@ backend:
     TRTLLM_KV_TRANSFER_NUM_THREADS: '8'
     TLLM_AUTOTUNER_CACHE_PATH: /data/home/rihuo/agentx-cache-root/disagg-b300-3p2d-dep4-dep4-c704-b32-mtp-kvoffload/autotuner_prefill.json
     DYN_ENGINE_CONV_AFFINITY: "1"
+    TRTLLM_CTX_LOCAL_HCA_PIN: "1"
   decode_environment:
     MIMALLOC_ARENA_RESERVE: '0'
     MIMALLOC_PURGE_DELAY: ''
