@@ -128,7 +128,7 @@ def check_sglang_router_health(
     expected_prefill: int,
     expected_decode: int,
 ) -> WorkerHealthResult:
-    """Backward-compatible alias for check_static_router_health."""
+    """Deprecated compatibility alias; use check_static_router_health."""
     return check_static_router_health(response_json, expected_prefill, expected_decode)
 
 
