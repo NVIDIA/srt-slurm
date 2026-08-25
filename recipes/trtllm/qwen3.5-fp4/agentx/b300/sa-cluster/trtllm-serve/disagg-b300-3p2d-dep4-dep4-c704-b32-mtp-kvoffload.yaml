@@ -13,8 +13,6 @@ identity:
 extra_mount:
   - /data/home/rihuo:/data/home/rihuo
 
-setup_script: ucx_device_pin_b300.sh
-
 dynamo:
   install: false
 slurm:

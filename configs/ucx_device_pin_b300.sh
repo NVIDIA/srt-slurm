@@ -22,10 +22,15 @@
 # instead. SLURM_LOCALID *is* a genuine SLURM-injected var and is already
 # set at this point.
 #
-# Only prefill workers are pinned (matches trtllm.py's config filename
-# convention: trtllm_config_prefill.yaml / trtllm_config_decode.yaml).
+# Only prefill workers are pinned. Role comes from SRT_ENDPOINT_MODE, which
+# srtctl always sets in env_to_set (worker_stage.py) regardless of backend or
+# frontend -- unlike matching a backend-specific artifact (e.g. TRT-LLM's
+# trtllm_config_prefill.yaml filename), this doesn't break if the command
+# line changes shape. It's still read off BASH_EXECUTION_STRING rather than
+# the environment for the same reason CUDA_VISIBLE_DEVICES is below: this
+# preamble runs before that export takes effect.
 case "${BASH_EXECUTION_STRING:-}" in
-    *trtllm_config_prefill*) ;;
+    *SRT_ENDPOINT_MODE=prefill*) ;;
     *)
         echo "UCX_DEVICE_PIN localid=${SLURM_LOCALID:-0} role=non-prefill: leaving UCX_NET_DEVICES unset"
         return 0 2>/dev/null || true

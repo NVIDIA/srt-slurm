@@ -165,6 +165,11 @@ class WorkerStageMixin:
             "DYN_SYSTEM_PORT": str(process.sys_port),
             "DYN_REQUEST_PLANE": self.config.dynamo.request_plane,
             "DYN_SKIP_SGLANG_LOG_FORMATTING": "1",
+            # Backend/frontend-agnostic worker role, for bash preambles that need
+            # to branch on it (e.g. a cluster-level default_bash_preamble, which
+            # runs before this dict's other exports and before the main command's
+            # own CLI flags exist, so it can't infer role any other way).
+            "SRT_ENDPOINT_MODE": mode,
         }
         if self.config.dynamo.event_plane:
             env_to_set["DYN_EVENT_PLANE"] = self.config.dynamo.event_plane
@@ -317,6 +322,11 @@ class WorkerStageMixin:
             "NATS_SERVER": f"nats://{self.runtime.nodes.infra}:{NATS_PORT}",
             "DYN_SYSTEM_PORT": str(leader.sys_port),
             "DYN_SKIP_SGLANG_LOG_FORMATTING": "1",
+            # Backend/frontend-agnostic worker role, for bash preambles that need
+            # to branch on it (e.g. a cluster-level default_bash_preamble, which
+            # runs before this dict's other exports and before the main command's
+            # own CLI flags exist, so it can't infer role any other way).
+            "SRT_ENDPOINT_MODE": mode,
         }
         if self.config.dynamo.event_plane:
             env_to_set["DYN_EVENT_PLANE"] = self.config.dynamo.event_plane
