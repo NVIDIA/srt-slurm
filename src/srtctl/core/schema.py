@@ -1080,8 +1080,11 @@ class ObservabilityConfig:
 
     Scope is deliberately server-side. The knob configures what the workers and
     frontend *emit*, and captures that surface by scraping the endpoints
-    directly. It never reaches into the benchmark client to ask it to re-export
-    what the servers already publish.
+    directly. It never asks the benchmark client to re-export what the servers
+    already publish. (One indirect exception: on TRT-LLM the client's
+    ``AIPERF_SERVER_METRICS_URLS`` worker list exists only when
+    ``publish_events_and_metrics`` gives those endpoints content, and this knob
+    is one way that flag gets set — see ``BenchmarkStageMixin``.)
 
     It does **not** decide whether the component perf dashboard is built. That
     happens on every run (see :mod:`srtctl.analysis.perf_dashboard`); ``enabled``
