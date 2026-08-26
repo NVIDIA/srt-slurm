@@ -9,12 +9,14 @@ import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 import yaml
 
 from srtctl.cli.submit import submit_single
 from srtctl.core.git_state import (
     GIT_STATE_FILENAME,
     GitCommandOutcome,
+    GitCommandResult,
     GitSnapshotSource,
     _format_git_failure,
     _format_repo_snapshot,
@@ -128,6 +130,45 @@ def test_execution_error_is_distinct_and_redacted(tmp_path: Path) -> None:
     assert "could not execute" in marker
     assert "secret" not in marker
     assert "https://user:<redacted>@github.com/example/repo.git" in marker
+
+
+def test_slow_command_log_uses_redacted_command(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    completed = subprocess.CompletedProcess([], 0, stdout="ok\n", stderr="")
+    with (
+        patch("srtctl.core.git_state.subprocess.run", return_value=completed),
+        patch("srtctl.core.git_state.time.monotonic", side_effect=[100.0, 106.0]),
+        caplog.at_level("INFO", logger="srtctl.core.git_state"),
+    ):
+        result = _run_git(
+            tmp_path,
+            ["remote", "get-url", "https://user:secret@github.com/example/repo.git"],
+        )
+
+    assert result.outcome == GitCommandOutcome.SUCCESS
+    assert "Slow git command" in caplog.text
+    assert "secret" not in caplog.text
+    assert "https://user:<redacted>@github.com/example/repo.git" in caplog.text
+
+
+def test_timeout_decodes_and_redacts_byte_streams(tmp_path: Path) -> None:
+    timeout = subprocess.TimeoutExpired(
+        ["git", "status"],
+        60,
+        output=b"partial output",
+        stderr=b"https://user:secret@github.com/example/repo.git",
+    )
+    with patch("srtctl.core.git_state.subprocess.run", side_effect=timeout):
+        result = _run_git(tmp_path, ["status"], timeout_seconds=60)
+
+    assert result.stdout == "partial output"
+    assert result.stderr == "https://user:<redacted>@github.com/example/repo.git"
+
+
+def test_success_result_cannot_be_formatted_as_failure() -> None:
+    result = GitCommandResult(command=("git", "status"), outcome=GitCommandOutcome.SUCCESS)
+
+    with pytest.raises(ValueError, match="Cannot format successful git command"):
+        _format_git_failure(result)
 
 
 def test_untracked_timeout_is_not_rendered_as_clean(tmp_path: Path) -> None:
