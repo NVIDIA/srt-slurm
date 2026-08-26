@@ -402,6 +402,12 @@ class RuntimeContext:
         # These need to be expanded with the runtime context, so we create a
         # temporary context first and then update
         environment = config.dynamo.get_wheel_environment()
+        # Cluster-level overrides (srtslurm.yaml) apply after backend env but
+        # before the recipe's own top-level environment: block, which still
+        # wins on conflict -- see ClusterConfig.environment in schema.py.
+        cluster_environment = get_srtslurm_setting("environment")
+        if cluster_environment:
+            environment.update(cluster_environment)
         environment.update(config.environment)
 
         temp_context = cls(

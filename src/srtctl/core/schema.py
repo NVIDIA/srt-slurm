@@ -224,6 +224,13 @@ class ClusterConfig:
     # Cluster-level container mounts (host_path -> container_path)
     # Applied to all jobs on this cluster, useful for cluster-specific paths
     default_mounts: dict[str, str] | None = None
+    # Cluster-level environment variable overrides. Applied to every job on
+    # this cluster, after backend.{prefill,decode,aggregated}_environment but
+    # before the recipe's own top-level ``environment:`` block (which still
+    # wins on conflict). Useful for values that are correct on some clusters
+    # sharing a recipe but wrong on others -- e.g. NCCL_SOCKET_IFNAME /
+    # UCX_NET_DEVICES pinned to a NIC name that doesn't exist on this cluster.
+    environment: dict[str, str] | None = None
     # Shell snippet prepended to every container srun (after env exports, before
     # the main command). Useful for cluster-wide ulimits, e.g.
     # ``"ulimit -n 1048576 -s unlimited -u 1048576"``. Silently dropped for
