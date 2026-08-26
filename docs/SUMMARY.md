@@ -5,6 +5,7 @@
 - [Introduction](README.md)
 - [Installation](installation.md)
 - [CLI Reference](cli.md)
+- [Direct Host Lifecycle](direct-host.md)
 
 ## Configuration
 

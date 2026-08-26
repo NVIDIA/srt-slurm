@@ -2576,9 +2576,7 @@ class TestVLLMDataParallelMode:
 
         backend = VLLMProtocol(
             dp_launch_mode="per_node",
-            vllm_config=VLLMServerConfig(
-                prefill={"data-parallel-size": 2, "tensor-parallel-size": 8}
-            ),
+            vllm_config=VLLMServerConfig(prefill={"data-parallel-size": 2, "tensor-parallel-size": 8}),
         )
         endpoint = Endpoint(
             mode="prefill",
@@ -2601,9 +2599,7 @@ class TestVLLMDataParallelMode:
 
         backend = VLLMProtocol(
             dp_launch_mode="per_node",
-            vllm_config=VLLMServerConfig(
-                prefill={"data-parallel-size": 3, "tensor-parallel-size": 8}
-            ),
+            vllm_config=VLLMServerConfig(prefill={"data-parallel-size": 3, "tensor-parallel-size": 8}),
         )
         endpoint = Endpoint(
             mode="prefill",
@@ -3772,6 +3768,104 @@ class TestHuggingFaceModelSupport:
 
         assert "numactl" not in cmd
 
+    def test_trtllm_numa_cpu_bind_wraps_decode_command_with_taskset(self):
+        """numa_cpu_bind=True wraps decode commands with configs/numa_cpu_bind.sh."""
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from srtctl.backends import TRTLLMProtocol
+
+        backend = TRTLLMProtocol(numa_cpu_bind=True)
+        process = self._make_process(mode="decode")
+        runtime = self._make_runtime(is_hf=False)
+        runtime.log_dir = Path("/tmp/test-logs")
+        runtime.gpu_type = "gb200"
+
+        with (
+            patch("pathlib.Path.write_text"),
+            patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
+        ):
+            cmd = backend.build_worker_command(process=process, endpoint_processes=[process], runtime=runtime)
+
+        # the wrapped command follows the script invocation, unmodified
+        assert cmd[:2] == ["bash", "/configs/numa_cpu_bind.sh"]
+        assert cmd[2:6] == ["numactl", "-m", "0,1", "trtllm-llmapi-launch"]
+
+        env = backend.get_environment_for_mode("decode")
+        assert env["TLLM_NUMA_AWARE_WORKER_AFFINITY"] == "0"
+
+    def test_trtllm_numa_cpu_bind_wraps_prefill_command_with_taskset(self):
+        """numa_cpu_bind=True wraps prefill commands with configs/numa_cpu_bind.sh too."""
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from srtctl.backends import TRTLLMProtocol
+
+        backend = TRTLLMProtocol(numa_cpu_bind=True)
+        process = self._make_process(mode="prefill")
+        runtime = self._make_runtime(is_hf=False)
+        runtime.log_dir = Path("/tmp/test-logs")
+        runtime.gpu_type = "gb200"
+
+        with (
+            patch("pathlib.Path.write_text"),
+            patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
+        ):
+            cmd = backend.build_worker_command(process=process, endpoint_processes=[process], runtime=runtime)
+
+        assert cmd[:2] == ["bash", "/configs/numa_cpu_bind.sh"]
+
+        prefill_env = backend.get_environment_for_mode("prefill")
+        assert prefill_env["TLLM_NUMA_AWARE_WORKER_AFFINITY"] == "0"
+
+    def test_trtllm_numa_cpu_bind_wraps_agg_command_with_taskset(self):
+        """numa_cpu_bind=True wraps aggregated-mode commands too."""
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from srtctl.backends import TRTLLMProtocol
+
+        backend = TRTLLMProtocol(numa_cpu_bind=True)
+        process = self._make_process(mode="agg")
+        runtime = self._make_runtime(is_hf=False)
+        runtime.log_dir = Path("/tmp/test-logs")
+        runtime.gpu_type = "gb200"
+
+        with (
+            patch("pathlib.Path.write_text"),
+            patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
+        ):
+            cmd = backend.build_worker_command(process=process, endpoint_processes=[process], runtime=runtime)
+
+        assert cmd[:2] == ["bash", "/configs/numa_cpu_bind.sh"]
+
+        agg_env = backend.get_environment_for_mode("agg")
+        assert agg_env["TLLM_NUMA_AWARE_WORKER_AFFINITY"] == "0"
+
+    def test_trtllm_numa_cpu_bind_false_leaves_decode_command_unwrapped(self):
+        """numa_cpu_bind=False (default) does not wrap the decode command."""
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from srtctl.backends import TRTLLMProtocol
+
+        backend = TRTLLMProtocol()
+        process = self._make_process(mode="decode")
+        runtime = self._make_runtime(is_hf=False)
+        runtime.log_dir = Path("/tmp/test-logs")
+        runtime.gpu_type = "gb200"
+
+        with (
+            patch("pathlib.Path.write_text"),
+            patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
+        ):
+            cmd = backend.build_worker_command(process=process, endpoint_processes=[process], runtime=runtime)
+
+        assert "bash" not in cmd
+        decode_env = backend.get_environment_for_mode("decode")
+        assert "TLLM_NUMA_AWARE_WORKER_AFFINITY" not in decode_env
+        assert "NUMA_CPU_BIND_RANGES" not in decode_env
+
 
 class TestInfmaxWorkspaceMount:
     """Test that INFMAX_WORKSPACE env var creates a container mount."""
@@ -3968,9 +4062,7 @@ class TestDirectVllmMultiNode:
             model=ModelConfig(path="/m", container="/c.sqsh", precision="fp4"),
             resources=ResourceConfig(**resources_kwargs),
             frontend=FrontendConfig(type="vllm", enable_multiple_frontends=False),
-            backend=VLLMProtocol(
-                vllm_config=VLLMServerConfig(aggregated={"tensor-parallel-size": 8})
-            ),
+            backend=VLLMProtocol(vllm_config=VLLMServerConfig(aggregated={"tensor-parallel-size": 8})),
         )
 
     def _make_processes(self, nodes):
@@ -3996,9 +4088,7 @@ class TestDirectVllmMultiNode:
         from srtctl.backends import VLLMProtocol, VLLMServerConfig
 
         backend = VLLMProtocol(
-            vllm_config=VLLMServerConfig(
-                aggregated={"tensor-parallel-size": 8, "pipeline-parallel-size": 2}
-            )
+            vllm_config=VLLMServerConfig(aggregated={"tensor-parallel-size": 8, "pipeline-parallel-size": 2})
         )
         runtime = MagicMock()
         runtime.model_path = Path("/model")
@@ -4142,9 +4232,7 @@ class TestDirectVllmMultiNode:
 
         leader, worker = self._make_processes(["node0", "node1"])
         backend = VLLMProtocol(
-            vllm_config=VLLMServerConfig(
-                aggregated={"headless": True, "master-addr": "10.9.9.9", "nnodes": 8}
-            )
+            vllm_config=VLLMServerConfig(aggregated={"headless": True, "master-addr": "10.9.9.9", "nnodes": 8})
         )
         runtime = MagicMock()
         runtime.model_path = Path("/model")

@@ -3,12 +3,19 @@
 
 """Post-run bridge: a finished run's log dir -> component perf dashboard.
 
-Closes the loop that ``observability.enabled`` opens. That knob makes a run *emit*
-every signal the offline tooling wants -- ``raw_prometheus.jsonl``, ``SPAN_CLOSED``
-lines on the worker/frontend logs, the frontend's own request-trace records -- but
-nothing consumed them, so reading a run still meant hand-driving two scripts from a
-checkout. This module runs them at the end of the job instead, so one submission
-produces the page.
+Runs on **every** job, with no opt-in. Reading a run used to mean hand-driving two
+scripts from a checkout against a log dir; this module runs them at the end of the
+job instead, so one submission produces the page.
+
+Unconditional because the page is not a special-occasion artifact: the question it
+answers -- where did the time go, which component was the ceiling -- is the one
+asked of every run, and it is asked *after* the run, when opting in is no longer
+possible. A knob would only ever be discovered by the person who already knew.
+
+``observability.enabled`` decides which capture legs exist and therefore which tabs
+the page carries; it never decides whether the page exists. A run with no
+server-side capture at all still renders from the client's own metrics export, the
+per-iteration log and the frontend log -- which is the shape most runs have.
 
 It drives the two vendored layers as SUBPROCESSES:
 
@@ -226,20 +233,21 @@ def build(config: SrtConfig, runtime: RuntimeContext) -> Path | None:
 
 
 def try_build(config: SrtConfig, runtime: RuntimeContext) -> Path | None:
-    """Build the dashboard if the run opted in, else return None.
+    """Build the dashboard for a finished run. Returns the HTML path, or None.
 
     Single entry point for :class:`PostProcessStageMixin`, so the mixin stays free of
     analysis-package internals -- the same contract as
     :func:`srtctl.analysis.metrics_scraper.try_start_raw_scraper`.
 
-    Gated on ``observability.build_dashboard``, which defaults to following
-    ``observability.enabled``: a run instrumented for offline analysis should produce
-    the artifact that analysis is done with, without a second knob to remember.
+    Unconditional: there is no opt-in to check. What differs between runs is which
+    legs :func:`build` finds, and that is the ingest's decision to make from the log
+    dir rather than a recipe's to declare in advance.
+
+    With no gate left, this ``except`` is the only thing standing between a bug in
+    third-party rendering code and the post-processing of a benchmark that has
+    already produced its results -- so it stays broad on purpose.
     """
     try:
-        observability = getattr(config, "observability", None)
-        if observability is None or not getattr(observability, "dashboard_enabled", False):
-            return None
         return build(config, runtime)
     except Exception as e:  # noqa: BLE001 - visualisation is never fatal
         logger.warning("perf dashboard: skipped after error: %s", e)

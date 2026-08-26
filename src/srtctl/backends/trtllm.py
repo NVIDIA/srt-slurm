@@ -87,6 +87,23 @@ class TRTLLMProtocol:
     # gpu_type.
     numa_memory_bind: bool | None = None
 
+    # Optional stricter NUMA CPU affinity for the worker process, in addition
+    # to numa_memory_bind. A previous post-hoc `taskset -pc <cpuset> $PPID`
+    # approach (see bind-b300-prefill-cpus.sh) only pins the leader PID
+    # *after* launch, so secondary threads spawned by Python/UCX/MPI/TRT-LLM
+    # can still land cross-socket. When true, srtctl instead:
+    #   1. sets TLLM_NUMA_AWARE_WORKER_AFFINITY=0 (disables TRT-LLM's own
+    #      internal NUMA thread-pinning, which fights with the OS-level mask)
+    #   2. wraps the worker command (prefill/decode/agg) in `taskset -c
+    #      <cpu_list>`, applied *before* exec so every spawned thread
+    #      inherits the mask. The CPU list is discovered at runtime
+    #      (configs/numa_cpu_bind.sh) from the physical GPU this task owns,
+    #      not a static SLURM_LOCALID table — a static table assumes
+    #      SLURM_LOCALID is a node-wide GPU ordinal, which breaks when two
+    #      endpoints share a node (each gets its own srun step, so LOCALID
+    #      restarts at 0 for both).
+    numa_cpu_bind: bool = False
+
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
     # =========================================================================
@@ -127,7 +144,10 @@ class TRTLLMProtocol:
         base_env = env_by_mode.get(mode)
         if base_env is None:
             return {}
-        return {**base_env, "TRTLLM_EPLB_SHM_NAME": eplb_prefix}
+        env = {**base_env, "TRTLLM_EPLB_SHM_NAME": eplb_prefix}
+        if self.numa_cpu_bind:
+            env["TLLM_NUMA_AWARE_WORKER_AFFINITY"] = "0"
+        return env
 
     def get_process_environment(self, process: "Process") -> dict[str, str]:
         """Get process-specific environment variables.
@@ -179,6 +199,21 @@ class TRTLLMProtocol:
         from srtctl.core.topology import endpoints_to_processes
 
         return endpoints_to_processes(endpoints, base_sys_port=base_sys_port, port_allocator=port_allocator)
+
+    def _wrap_with_numa_cpu_bind(self, cmd: list[str]) -> list[str]:
+        """Wrap ``cmd`` in configs/numa_cpu_bind.sh, which taskset-binds per task.
+
+        Applies to all worker modes (prefill/decode/agg) when numa_cpu_bind
+        is enabled. The CPU list depends on which physical GPU the task owns
+        (resolved from CUDA_VISIBLE_DEVICES and SLURM_LOCALID) and srun sets
+        SLURM_LOCALID per-task at launch time — since the same argv is
+        replicated across all ranks of the endpoint's srun (MPI-style
+        launch), the lookup must happen in a script at runtime rather than
+        being baked into the static command list.
+        """
+        if not self.numa_cpu_bind:
+            return cmd
+        return ["bash", "/configs/numa_cpu_bind.sh", *cmd]
 
     def build_worker_command(
         self,
@@ -245,7 +280,7 @@ class TRTLLMProtocol:
             # ai-dynamo tensorrtllm-runtime 1.3.0-dev.1 container, which accept --config;
             # some trtllm-serve builds spell this --extra_llm_api_options.
             cmd.extend(["--config", str(container_config_path)])
-            return cmd
+            return self._wrap_with_numa_cpu_bind(cmd)
 
         # dynamo.trtllm path (default): workers register into etcd/NATS and the dynamo
         # frontend discovers them.
@@ -275,4 +310,4 @@ class TRTLLMProtocol:
         if self.publish_events_and_metrics:
             cmd.append("--publish-events-and-metrics")
 
-        return cmd
+        return self._wrap_with_numa_cpu_bind(cmd)
