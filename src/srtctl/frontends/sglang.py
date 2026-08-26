@@ -101,7 +101,7 @@ class SGLangFrontend:
         for process in backend_processes:
             if not process.is_leader:
                 continue
-            leader_ip = get_hostname_ip(process.node)
+            leader_ip = get_hostname_ip(process.node, runtime.network_interface)
             if process.endpoint_mode == "agg":
                 agg_workers.append((leader_ip, process.http_port))
             elif process.endpoint_mode == "prefill":

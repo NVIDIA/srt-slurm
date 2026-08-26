@@ -330,7 +330,7 @@ class TestSGLangGrpcScheme:
     @patch("srtctl.frontends.sglang.get_hostname_ip")
     def test_disaggregated_mode_command(self, mock_get_ip, mock_srun):
         """Disaggregated mode uses --pd-disaggregation with --prefill and --decode."""
-        mock_get_ip.side_effect = lambda node: f"10.0.0.{node[-1]}"
+        mock_get_ip.side_effect = lambda node, *_a: f"10.0.0.{node[-1]}"
         mock_srun.return_value = MagicMock()
 
         frontend = SGLangFrontend()
@@ -371,7 +371,7 @@ class TestSGLangGrpcScheme:
     @patch("srtctl.frontends.sglang.get_hostname_ip")
     def test_aggregated_mode_command(self, mock_get_ip, mock_srun):
         """Aggregated mode uses --worker-urls."""
-        mock_get_ip.side_effect = lambda node: f"10.0.0.{node[-1]}"
+        mock_get_ip.side_effect = lambda node, *_a: f"10.0.0.{node[-1]}"
         mock_srun.return_value = MagicMock()
 
         frontend = SGLangFrontend()

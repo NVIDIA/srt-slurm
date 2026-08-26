@@ -285,8 +285,9 @@ class RuntimeContext:
         run_name = f"{config.name}_{job_id}"
 
         # Resolve node IPs
-        head_node_ip = get_hostname_ip(nodes.head)
-        infra_node_ip = get_hostname_ip(nodes.infra)
+        network_interface = get_srtslurm_setting("network_interface", "eth0")
+        head_node_ip = get_hostname_ip(nodes.head, network_interface)
+        infra_node_ip = get_hostname_ip(nodes.infra, network_interface)
 
         # Compute log directory using FormattablePath or default logic
         # Check for SRTCTL_OUTPUT_DIR from sbatch script first (ensures consistency)
@@ -421,7 +422,7 @@ class RuntimeContext:
             container_image=container_image,
             gpus_per_node=config.resources.gpus_per_node,
             gpu_type=config.resources.gpu_type,
-            network_interface=get_srtslurm_setting("network_interface", "eth0"),
+            network_interface=network_interface,
             container_mounts={},
             srun_options=dict(config.srun_options),
             environment=environment,
@@ -446,7 +447,7 @@ class RuntimeContext:
             container_image=container_image,
             gpus_per_node=config.resources.gpus_per_node,
             gpu_type=config.resources.gpu_type,
-            network_interface=get_srtslurm_setting("network_interface", "eth0"),
+            network_interface=network_interface,
             container_mounts=container_mounts,
             srun_options=dict(config.srun_options),
             environment=environment,

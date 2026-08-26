@@ -194,7 +194,7 @@ class TestNginxConfigGeneration:
         )
 
         with patch.object(orchestrator, "runtime", runtime):
-            with patch("srtctl.cli.mixins.frontend_stage.get_hostname_ip", side_effect=lambda x: f"10.0.0.{x[-1]}"):
+            with patch("srtctl.cli.mixins.frontend_stage.get_hostname_ip", side_effect=lambda x, *_a: f"10.0.0.{x[-1]}"):
                 nginx_config = orchestrator._generate_nginx_config(topology)
 
         assert "server 10.0.0.1:8180" in nginx_config
@@ -235,7 +235,7 @@ class TestNginxConfigGeneration:
         )
 
         with patch.object(orchestrator, "runtime", runtime):
-            with patch("srtctl.cli.mixins.frontend_stage.get_hostname_ip", side_effect=lambda x: f"10.0.0.{x[-1]}"):
+            with patch("srtctl.cli.mixins.frontend_stage.get_hostname_ip", side_effect=lambda x, *_a: f"10.0.0.{x[-1]}"):
                 nginx_config = orchestrator._generate_nginx_config(topology)
 
         assert "worker_rlimit_nofile 1048576" in nginx_config
@@ -253,7 +253,7 @@ class TestNginxConfigGeneration:
             public_port=8000,
         )
 
-        with patch("srtctl.cli.mixins.frontend_stage.get_hostname_ip", side_effect=lambda x: f"10.0.0.{x[-1]}"):
+        with patch("srtctl.cli.mixins.frontend_stage.get_hostname_ip", side_effect=lambda x, *_a: f"10.0.0.{x[-1]}"):
             nginx_config = orchestrator._generate_nginx_config(topology)
 
         # All three frontends should be in the upstream

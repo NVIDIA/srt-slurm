@@ -139,7 +139,7 @@ class TRTLLMServeFrontend:
         for process in backend_processes:
             if not process.is_leader:
                 continue
-            url = f"{get_hostname_ip(process.node)}:{process.http_port}"
+            url = f"{get_hostname_ip(process.node, runtime.network_interface)}:{process.http_port}"
             if process.endpoint_mode == "prefill":
                 prefill_urls.append(url)
             elif process.endpoint_mode == "decode":

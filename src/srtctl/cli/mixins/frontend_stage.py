@@ -186,7 +186,7 @@ class FrontendStageMixin:
         template = env.get_template("nginx.conf.j2")
 
         # Get IPs for frontend nodes
-        frontend_hosts = [get_hostname_ip(node) for node in topology.frontend_nodes]
+        frontend_hosts = [get_hostname_ip(node, self.runtime.network_interface) for node in topology.frontend_nodes]
 
         return template.render(
             frontend_hosts=frontend_hosts,

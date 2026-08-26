@@ -323,7 +323,7 @@ class SGLangProtocol:
         is_multi_node = len(endpoint_nodes) > 1
 
         # Get leader IP for distributed init
-        leader_ip = get_hostname_ip(endpoint_nodes[0])
+        leader_ip = get_hostname_ip(endpoint_nodes[0], runtime.network_interface)
         dist_init_port = SGLANG_DIST_INIT_PORT_BASE
 
         # Choose Python module based on frontend type

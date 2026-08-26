@@ -432,6 +432,7 @@ class VLLMProtocol:
           process so co-located workers don't race for the same rendezvous port
           (see the notes on VLLM_PORT_BASE in srtctl.ports)
         """
+        from srtctl.core.config import get_srtslurm_setting
         from srtctl.core.slurm import get_hostname_ip
 
         env: dict[str, str] = {}
@@ -439,7 +440,9 @@ class VLLMProtocol:
             env["DYN_VLLM_KV_EVENT_PORT"] = str(process.kv_events_port)
         if process.nixl_port is not None:
             env["VLLM_NIXL_SIDE_CHANNEL_PORT"] = str(process.nixl_port)
-            env["VLLM_NIXL_SIDE_CHANNEL_HOST"] = get_hostname_ip(process.node)
+            env["VLLM_NIXL_SIDE_CHANNEL_HOST"] = get_hostname_ip(
+                process.node, get_srtslurm_setting("network_interface", "eth0")
+            )
         # Unique per-process VLLM_PORT base to avoid EADDRINUSE rendezvous races
         # when endpoints are co-located on a node. E.g. PD 4xDEP2+1xDEP8 on
         # 4xGB200 nodes: each prefill endpoint is DEP2 (uses 2 of the 4 GPUs), so
