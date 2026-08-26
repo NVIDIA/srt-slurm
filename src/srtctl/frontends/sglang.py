@@ -12,6 +12,7 @@ import shlex
 import threading
 from typing import TYPE_CHECKING, Any
 
+from srtctl.core.config import get_srtslurm_setting
 from srtctl.core.health import WorkerHealthResult, check_sglang_router_health
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
 
@@ -139,8 +140,11 @@ class SGLangFrontend:
 
             # Build env vars
             env_to_set: dict[str, str] = {}
+            env_to_set.update(runtime.environment)
             if config.frontend.env:
                 env_to_set.update(config.frontend.env)
+            for key in get_srtslurm_setting("unset_environment") or []:
+                env_to_set.pop(key, None)
 
             proc = start_srun_process(
                 command=cmd,

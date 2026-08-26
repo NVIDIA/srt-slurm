@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
+from srtctl.core.config import get_srtslurm_setting
 from srtctl.core.health import WorkerHealthResult, check_trtllm_serve_health, wait_for_health
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
 
@@ -175,8 +176,15 @@ class TRTLLMServeFrontend:
         logger.info("Orchestrator command: %s", shlex.join(cmd))
 
         env_to_set: dict[str, str] = {}
+        # Cluster-level environment (srtslurm.yaml), same as worker_stage.py
+        # applies to backend workers -- this process previously only saw
+        # config.frontend.env, silently missing cluster overrides like a
+        # writable HOME/TMPDIR.
+        env_to_set.update(runtime.environment)
         if config.frontend.env:
             env_to_set.update(config.frontend.env)
+        for key in get_srtslurm_setting("unset_environment") or []:
+            env_to_set.pop(key, None)
 
         orch_log = runtime.log_dir / f"{frontend_node}_trtllm_serve_orchestrator.out"
         proc = start_srun_process(

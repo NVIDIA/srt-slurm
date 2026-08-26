@@ -12,6 +12,7 @@ import shlex
 import threading
 from typing import TYPE_CHECKING, Any
 
+from srtctl.core.config import get_srtslurm_setting
 from srtctl.core.health import WorkerHealthResult, check_dynamo_health
 from srtctl.core.schema import build_otel_env
 from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, start_srun_process
@@ -101,6 +102,9 @@ class DynamoFrontend:
             # Add frontend env from config
             if config.frontend.env:
                 env_to_set.update(config.frontend.env)
+
+            for key in get_srtslurm_setting("unset_environment") or []:
+                env_to_set.pop(key, None)
 
             # Build bash preamble (setup script + dynamo install)
             bash_preamble = self._build_preamble(config)
