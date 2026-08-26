@@ -204,6 +204,12 @@ class ClusterConfig:
     default_partition: str | None = None
     default_time_limit: str | None = None
     gpus_per_node: int | None = None
+    # Interface(s) used to resolve each node's own advertised IP (head/etcd/
+    # frontend rendezvous). Accepts a comma-separated, preference-ordered list
+    # (e.g. "eth13,eth7,eth4") so one setting can cover a fleet where the same
+    # physical NIC has different names on different nodes -- each candidate is
+    # tried in order per node, first one that exists there wins. See
+    # get_node_ip.sh's Method 1 for the resolution logic.
     network_interface: str | None = None
     use_gpus_per_node_directive: bool = True
     use_segment_sbatch_directive: bool = True

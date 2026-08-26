@@ -50,16 +50,26 @@ _resolve_ip() {
         return 1
     }
 
-    # Method 1: Use specific interface if provided
+    # Method 1: Use specific interface if provided. Accepts a comma-separated,
+    # preference-ordered list (e.g. "eth13,eth7,eth4") so a single setting can
+    # cover a fleet where the same physical NIC has different names on
+    # different nodes -- each candidate is tried in order, first match wins.
     if [ -n "$network_interface" ]; then
-        ips=$(ip addr show "$network_interface" 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1)
-        if [ -n "$ips" ]; then
-            ip=$(_select_best_ip $ips)
-            if [ -n "$ip" ]; then
-                echo "$ip"
-                return 0
+        local iface
+        local IFS_SAVE=$IFS
+        IFS=','
+        for iface in $network_interface; do
+            IFS=$IFS_SAVE
+            ips=$(ip addr show "$iface" 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1)
+            if [ -n "$ips" ]; then
+                ip=$(_select_best_ip $ips)
+                if [ -n "$ip" ]; then
+                    echo "$ip"
+                    return 0
+                fi
             fi
-        fi
+        done
+        IFS=$IFS_SAVE
     fi
 
     # Method 2: Use ip route to find default source IP
@@ -144,16 +154,31 @@ get_node_ip() {
             return 1
         }
 
-        # Method 1: Use specific interface if provided
-        if [ -n \"$network_interface\" ]; then
-            ips=\$(ip addr show $network_interface 2>/dev/null | grep 'inet ' | awk '{print \$2}' | cut -d'/' -f1)
-            if [ -n \"\$ips\" ]; then
-                ip=\$(_select_best_ip \$ips)
-                if [ -n \"\$ip\" ]; then
-                    echo \"\$ip\"
-                    exit 0
+        # Method 1: Use specific interface if provided. Accepts a comma-separated,
+        # preference-ordered list (e.g. \"eth13,eth7,eth4\") so a single setting
+        # can cover a fleet where the same physical NIC has different names on
+        # different nodes -- each candidate is tried in order, first match wins.
+        # NETWORK_INTERFACE is assigned here (rather than looping over
+        # \$network_interface directly) so the comma-splitting for loop below
+        # performs a real remote-side variable expansion under IFS=',' --
+        # looping over the interpolated literal text would never split at all,
+        # since word-splitting only applies to variable/command-sub expansion.
+        NETWORK_INTERFACE=\"$network_interface\"
+        if [ -n \"\$NETWORK_INTERFACE\" ]; then
+            IFS_SAVE=\$IFS
+            IFS=','
+            for iface in \$NETWORK_INTERFACE; do
+                IFS=\$IFS_SAVE
+                ips=\$(ip addr show \"\$iface\" 2>/dev/null | grep 'inet ' | awk '{print \$2}' | cut -d'/' -f1)
+                if [ -n \"\$ips\" ]; then
+                    ip=\$(_select_best_ip \$ips)
+                    if [ -n \"\$ip\" ]; then
+                        echo \"\$ip\"
+                        exit 0
+                    fi
                 fi
-            fi
+            done
+            IFS=\$IFS_SAVE
         fi
 
         # Method 2: Use ip route to find default source IP
