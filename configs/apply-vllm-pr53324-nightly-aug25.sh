@@ -10,8 +10,10 @@ readonly VLLM_ROOT="${SITE_PACKAGES}/vllm"
 readonly VERSION_FILE="${VLLM_ROOT}/_version.py"
 readonly PR53324_PATCH_FILE="${VLLM_PR53324_PATCH_FILE:-/configs/patches/vllm-pr53324-runtime-574d2e4-on-a9a17e7.patch}"
 readonly K3_AGENT_PATCH_FILE="${VLLM_K3_AGENT_PATCH_FILE:-/configs/patches/vllm-k3-agent-all-missing-on-a9a17e7.patch}"
+readonly PR53682_PATCH_FILE="${VLLM_PR53682_PATCH_FILE:-/configs/patches/vllm-pr53682-cudagraph-profiling-pool-on-a9a17e7.patch}"
 readonly PR53324_MARKER_FILE="${VLLM_ROOT}/.pr53324_574d2e4_on_a9a17e709"
 readonly K3_AGENT_MARKER_FILE="${VLLM_ROOT}/.k3_agent_all_728d3ad_on_a9a17e709"
+readonly PR53682_MARKER_FILE="${VLLM_ROOT}/.pr53682_e6cc089_on_a9a17e709"
 
 if [[ ! -r "${VERSION_FILE}" ]] || ! grep -q "a9a17e709" "${VERSION_FILE}"; then
   echo "Refusing to patch: expected vLLM nightly commit a9a17e709." >&2
@@ -60,6 +62,10 @@ apply_patch_once \
   "xinli-sw/vllm:k3-agent-all supplemental changes" \
   "${K3_AGENT_PATCH_FILE}" \
   "${K3_AGENT_MARKER_FILE}"
+apply_patch_once \
+  "vLLM PR #53682 merged commit e6cc089" \
+  "${PR53682_PATCH_FILE}" \
+  "${PR53682_MARKER_FILE}"
 
 python3 -m compileall -q \
   "${VLLM_ROOT}/config/speculative.py" \
@@ -70,6 +76,7 @@ python3 -m compileall -q \
   "${VLLM_ROOT}/v1/core/kv_cache_utils.py" \
   "${VLLM_ROOT}/v1/core/sched/scheduler.py" \
   "${VLLM_ROOT}/v1/simple_kv_offload/manager.py" \
+  "${VLLM_ROOT}/v1/worker/gpu/cudagraph_utils.py" \
   "${VLLM_ROOT}/v1/worker/gpu/model_runner.py" \
   "${VLLM_ROOT}/v1/worker/gpu/pp_utils.py" \
   "${VLLM_ROOT}/v1/worker/gpu/spec_decode"
