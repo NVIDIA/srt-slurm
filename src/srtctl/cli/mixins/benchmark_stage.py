@@ -237,6 +237,7 @@ class BenchmarkStageMixin:
         self, registry: "ProcessRegistry", stop_event: threading.Event, reporter: StatusReporter | None = None
     ) -> int:
         """Run the benchmark."""
+        serve_only = bool(getattr(self, "serve_only", False))
         logger.info("Waiting for workers to be ready...")
 
         n_prefill, n_decode, count_desc, num_workers = _get_health_expectations(self.config, self.backend_processes)
@@ -256,10 +257,11 @@ class BenchmarkStageMixin:
         ):
             logger.error("Server did not become healthy")
             if reporter:
-                reporter.report(JobStatus.FAILED, JobStage.BENCHMARK, "Workers failed health check")
+                stage = JobStage.FRONTEND if serve_only else JobStage.BENCHMARK
+                reporter.report(JobStatus.FAILED, stage, "Workers failed health check")
             return 1
 
-        logger.info("Server is healthy - starting benchmark")
+        logger.info("Server is healthy")
 
         # Identity verification: compare recipe identity against runtime fingerprints
         # Store results on self so postprocess can include them in the lockfile
@@ -282,28 +284,34 @@ class BenchmarkStageMixin:
         except Exception as e:  # noqa: BLE001
             logger.debug("Identity verification skipped: %s", e)
 
-        if reporter:
-            reporter.report(JobStatus.BENCHMARK, JobStage.BENCHMARK, "Running benchmark")
-
         benchmark_type = self.config.benchmark.type
-        if self.config.profiling.enabled:
+        if self.config.profiling.enabled and not serve_only:
             logger.info(
                 "Profiling enabled (type=%s) with benchmark type '%s'",
                 self.config.profiling.type,
                 benchmark_type,
             )
 
-        if benchmark_type == "manual":
-            logger.info("Benchmark type is 'manual' - server is ready for testing")
+        if serve_only or benchmark_type == "manual":
+            if reporter:
+                reporter.report(JobStatus.FRONTEND, JobStage.FRONTEND, "Inference endpoint ready")
+            if serve_only:
+                logger.info("Serve-only mode - no benchmark will be run")
+            else:
+                logger.info("Benchmark type is 'manual' - server is ready for testing")
             logger.info("Frontend URL: http://%s:%d", self._public_api_node(), FRONTEND_PUBLIC_PORT)
             logger.info("Press Ctrl+C to stop the job")
 
             while not stop_event.is_set():
                 if registry.check_failures():
-                    logger.error("Worker failure detected during manual mode")
+                    logger.error("Worker failure detected while serving")
                     return 1
                 time.sleep(5)
             return 0
+
+        logger.info("Starting benchmark")
+        if reporter:
+            reporter.report(JobStatus.BENCHMARK, JobStage.BENCHMARK, "Running benchmark")
 
         # Get the appropriate benchmark runner
         from srtctl.benchmarks import get_runner

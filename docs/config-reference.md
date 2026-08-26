@@ -640,6 +640,9 @@ benchmark:
 
 No benchmark is run. Use for manual testing and debugging.
 
+For a one-off serving run, `srtctl apply -f config.yaml --serve-only` provides the same behavior without changing
+the recipe's configured benchmark.
+
 ```yaml
 benchmark:
   type: "manual"
