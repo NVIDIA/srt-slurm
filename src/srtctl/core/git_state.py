@@ -8,9 +8,12 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shlex
 import subprocess
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -22,7 +25,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 GIT_STATE_FILENAME = "git_state.txt"
-_GIT_TIMEOUT_S = 10
+_METADATA_TIMEOUT_S = 10
+_CONTENT_TIMEOUT_S = 60
+_REPO_TIMEOUT_S = 120
+_SLOW_COMMAND_LOG_THRESHOLD_S = 5
 _MAX_UNTRACKED_BYTES = 200_000
 _URL_USERINFO_RE = re.compile(r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.-]*://)(?P<userinfo>[^/@\s]+)@")
 
@@ -35,31 +41,101 @@ class GitSnapshotSource:
     path: Path
 
 
+class GitCommandOutcome(str, Enum):
+    """Possible outcomes from a best-effort git command."""
+
+    SUCCESS = "success"
+    NONZERO = "nonzero"
+    TIMEOUT = "timeout"
+    EXECUTION_ERROR = "execution_error"
+    BUDGET_EXHAUSTED = "budget_exhausted"
+
+
+@dataclass(frozen=True)
+class GitCommandResult:
+    """Structured result for a git command used in a snapshot."""
+
+    command: tuple[str, ...]
+    outcome: GitCommandOutcome
+    stdout: str = ""
+    stderr: str = ""
+    returncode: int | None = None
+    timeout_seconds: float | None = None
+    elapsed_seconds: float = 0
+    error: str = ""
+
+
 def _expand_path(path: str | Path) -> Path:
     return Path(os.path.expandvars(str(path))).expanduser()
 
 
-def _run_git(repo: Path, args: list[str], *, check: bool = False) -> subprocess.CompletedProcess[str] | None:
+def _run_git(
+    repo: Path,
+    args: list[str],
+    *,
+    timeout_seconds: float = _METADATA_TIMEOUT_S,
+    deadline: float | None = None,
+) -> GitCommandResult:
+    command = ("git", *(_redact_url_credentials(arg) for arg in args))
+    started_at = time.monotonic()
+    effective_timeout = timeout_seconds
+    if deadline is not None:
+        remaining = deadline - started_at
+        if remaining <= 0:
+            return GitCommandResult(command=command, outcome=GitCommandOutcome.BUDGET_EXHAUSTED)
+        effective_timeout = min(timeout_seconds, remaining)
+
     try:
         result = subprocess.run(
             ["git", "-C", str(repo), *args],
             capture_output=True,
             text=True,
-            timeout=_GIT_TIMEOUT_S,
+            timeout=effective_timeout,
             check=False,
         )
+    except subprocess.TimeoutExpired as e:
+        elapsed = time.monotonic() - started_at
+        return GitCommandResult(
+            command=command,
+            outcome=GitCommandOutcome.TIMEOUT,
+            stdout=_redact_url_credentials(_subprocess_text(e.stdout)),
+            stderr=_redact_url_credentials(_subprocess_text(e.stderr)),
+            timeout_seconds=effective_timeout,
+            elapsed_seconds=elapsed,
+        )
     except Exception as e:  # noqa: BLE001
-        logger.debug("git command failed in %s: %s", repo, e)
-        return None
-    if check and result.returncode != 0:
-        return None
-    return result
+        elapsed = time.monotonic() - started_at
+        logger.debug("git command could not execute in %s: %s", repo, _redact_url_credentials(str(e)))
+        return GitCommandResult(
+            command=command,
+            outcome=GitCommandOutcome.EXECUTION_ERROR,
+            elapsed_seconds=elapsed,
+            error=_redact_url_credentials(str(e)),
+        )
+
+    elapsed = time.monotonic() - started_at
+    if elapsed >= _SLOW_COMMAND_LOG_THRESHOLD_S:
+        logger.info("Slow git command in %s completed in %.1fs: %s", repo, elapsed, shlex.join(command))
+    return GitCommandResult(
+        command=command,
+        outcome=GitCommandOutcome.SUCCESS if result.returncode == 0 else GitCommandOutcome.NONZERO,
+        stdout=result.stdout,
+        stderr=_redact_url_credentials(result.stderr),
+        returncode=result.returncode,
+        elapsed_seconds=elapsed,
+    )
+
+
+def _subprocess_text(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    return value.decode(errors="replace") if isinstance(value, bytes) else value
 
 
 def _find_git_root(path: Path) -> Path | None:
     candidate = path if path.is_dir() else path.parent
-    result = _run_git(candidate, ["rev-parse", "--show-toplevel"], check=True)
-    if result is None:
+    result = _run_git(candidate, ["rev-parse", "--show-toplevel"])
+    if result.outcome != GitCommandOutcome.SUCCESS:
         return None
     root = result.stdout.strip()
     return Path(root).resolve() if root else None
@@ -70,8 +146,8 @@ def head_commit(path: Path) -> tuple[Path, str] | None:
     root = _find_git_root(path)
     if root is None:
         return None
-    result = _run_git(root, ["rev-parse", "HEAD"], check=True)
-    commit = result.stdout.strip() if result else ""
+    result = _run_git(root, ["rev-parse", "HEAD"])
+    commit = result.stdout.strip() if result.outcome == GitCommandOutcome.SUCCESS else ""
     return (root, commit) if commit else None
 
 
@@ -96,14 +172,33 @@ def git_snapshot_sources_from_extra_mounts(config: SrtConfig) -> list[GitSnapsho
     return sources
 
 
-def _git_stdout(repo: Path, args: list[str]) -> str:
-    result = _run_git(repo, args)
-    if result is None:
-        return "<git command failed>\n"
-    if result.returncode != 0:
-        stderr = _redact_url_credentials(result.stderr.strip())
-        return f"<git command failed: {stderr or result.returncode}>\n"
+def _git_stdout(repo: Path, args: list[str], *, timeout_seconds: float, deadline: float) -> str:
+    result = _run_git(repo, args, timeout_seconds=timeout_seconds, deadline=deadline)
+    if result.outcome != GitCommandOutcome.SUCCESS:
+        return _format_git_failure(result)
     return _redact_url_credentials(result.stdout) if result.stdout else "<none>\n"
+
+
+def _format_git_failure(result: GitCommandResult) -> str:
+    command = shlex.join(result.command)
+    stderr = _redact_url_credentials(result.stderr.strip())
+    error = _redact_url_credentials(result.error.strip())
+    if result.outcome == GitCommandOutcome.TIMEOUT:
+        timeout = _format_seconds(result.timeout_seconds or 0)
+        return f"<git command timed out after {timeout}: {command}>\n"
+    if result.outcome == GitCommandOutcome.NONZERO:
+        detail = f": {stderr}" if stderr else ""
+        return f"<git command failed with exit {result.returncode}: {command}{detail}>\n"
+    if result.outcome == GitCommandOutcome.EXECUTION_ERROR:
+        detail = f": {error}" if error else ""
+        return f"<git command could not execute: {command}{detail}>\n"
+    if result.outcome == GitCommandOutcome.BUDGET_EXHAUSTED:
+        return f"<git command skipped because repository budget was exhausted: {command}>\n"
+    raise ValueError(f"Cannot format successful git command as a failure: {result.command}")
+
+
+def _format_seconds(seconds: float) -> str:
+    return f"{seconds:.0f}s" if float(seconds).is_integer() else f"{seconds:.1f}s"
 
 
 def _redact_url_credentials(text: str) -> str:
@@ -120,11 +215,16 @@ def _redact_url_credentials(text: str) -> str:
     return _URL_USERINFO_RE.sub(replace, text)
 
 
-def _untracked_files(repo: Path) -> list[str]:
-    result = _run_git(repo, ["ls-files", "--others", "--exclude-standard", "-z"])
-    if result is None or result.returncode != 0 or not result.stdout:
-        return []
-    return [p for p in result.stdout.split("\0") if p]
+def _untracked_files(repo: Path, *, deadline: float) -> tuple[list[str] | None, str | None]:
+    result = _run_git(
+        repo,
+        ["ls-files", "--others", "--exclude-standard", "-z"],
+        timeout_seconds=_CONTENT_TIMEOUT_S,
+        deadline=deadline,
+    )
+    if result.outcome != GitCommandOutcome.SUCCESS:
+        return None, _format_git_failure(result)
+    return [p for p in result.stdout.split("\0") if p], None
 
 
 def _format_untracked_file(repo: Path, rel_path: str) -> list[str]:
@@ -150,6 +250,7 @@ def _format_untracked_file(repo: Path, rel_path: str) -> list[str]:
 
 
 def _format_repo_snapshot(repo: Path, labels: list[str], source_paths: list[Path]) -> list[str]:
+    deadline = time.monotonic() + _REPO_TIMEOUT_S
     lines = [
         "\n",
         "=" * 80 + "\n",
@@ -159,20 +260,28 @@ def _format_repo_snapshot(repo: Path, labels: list[str], source_paths: list[Path
     ]
     lines.extend(f"  - {p}\n" for p in source_paths)
 
-    for title, args in [
-        ("Remote URLs", ["remote", "-v"]),
-        ("Branch", ["branch", "--show-current"]),
-        ("HEAD", ["rev-parse", "HEAD"]),
-        ("Status", ["status", "--short", "--branch"]),
-        ("Last 10 commits", ["log", "--decorate", "--oneline", "-n", "10"]),
-        ("Staged diff", ["diff", "--cached", "--no-ext-diff"]),
-        ("Unstaged diff", ["diff", "--no-ext-diff"]),
+    for title, args, timeout_seconds in [
+        ("Remote URLs", ["remote", "-v"], _METADATA_TIMEOUT_S),
+        ("Branch", ["branch", "--show-current"], _METADATA_TIMEOUT_S),
+        ("HEAD", ["rev-parse", "HEAD"], _METADATA_TIMEOUT_S),
+        (
+            "Status",
+            ["status", "--short", "--branch", "--untracked-files=no", "--ignore-submodules=all"],
+            _CONTENT_TIMEOUT_S,
+        ),
+        ("Last 10 commits", ["log", "--decorate", "--oneline", "-n", "10"], _CONTENT_TIMEOUT_S),
+        ("Staged diff", ["diff", "--cached", "--no-ext-diff"], _CONTENT_TIMEOUT_S),
+        ("Unstaged diff", ["diff", "--no-ext-diff"], _CONTENT_TIMEOUT_S),
     ]:
-        lines.extend(["\n", f"## {title}\n", _git_stdout(repo, args)])
+        lines.extend(
+            ["\n", f"## {title}\n", _git_stdout(repo, args, timeout_seconds=timeout_seconds, deadline=deadline)]
+        )
 
-    untracked = _untracked_files(repo)
+    untracked, untracked_error = _untracked_files(repo, deadline=deadline)
     lines.extend(["\n", "## Untracked files\n"])
-    if not untracked:
+    if untracked_error:
+        lines.append(untracked_error)
+    elif not untracked:
         lines.append("<none>\n")
     else:
         lines.extend(f"  - {path}\n" for path in untracked)

@@ -12,7 +12,15 @@ from unittest.mock import MagicMock, patch
 import yaml
 
 from srtctl.cli.submit import submit_single
-from srtctl.core.git_state import GIT_STATE_FILENAME, GitSnapshotSource, write_git_state_snapshot
+from srtctl.core.git_state import (
+    GIT_STATE_FILENAME,
+    GitCommandOutcome,
+    GitSnapshotSource,
+    _format_git_failure,
+    _format_repo_snapshot,
+    _run_git,
+    write_git_state_snapshot,
+)
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -67,6 +75,88 @@ def test_write_git_state_snapshot_redacts_remote_credentials(tmp_path: Path) -> 
     text = output.read_text()
     assert "ghp_secret_token" not in text
     assert "https://YAMY1234:<redacted>@github.com/YAMY1234/repo.git" in text
+
+
+def test_status_skips_untracked_files_and_submodules(tmp_path: Path) -> None:
+    completed = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+    with patch("srtctl.core.git_state.subprocess.run", return_value=completed) as run:
+        _format_repo_snapshot(tmp_path, ["repo"], [tmp_path])
+
+    commands = [call.args[0] for call in run.call_args_list]
+    status_command = next(command for command in commands if "status" in command)
+    assert "--untracked-files=no" in status_command
+    assert "--ignore-submodules=all" in status_command
+
+
+def test_timeout_marker_includes_command_and_duration(tmp_path: Path) -> None:
+    with patch(
+        "srtctl.core.git_state.subprocess.run",
+        side_effect=subprocess.TimeoutExpired(["git", "status"], 60),
+    ):
+        result = _run_git(tmp_path, ["status", "--short"], timeout_seconds=60)
+
+    assert result.outcome == GitCommandOutcome.TIMEOUT
+    assert _format_git_failure(result) == "<git command timed out after 60s: git status --short>\n"
+
+
+def test_nonzero_marker_includes_exit_code_and_redacts_stderr(tmp_path: Path) -> None:
+    completed = subprocess.CompletedProcess(
+        [],
+        128,
+        stdout="",
+        stderr="fatal: https://user:secret@github.com/example/repo.git unavailable",
+    )
+    with patch("srtctl.core.git_state.subprocess.run", return_value=completed):
+        result = _run_git(tmp_path, ["remote", "-v"])
+
+    marker = _format_git_failure(result)
+    assert result.outcome == GitCommandOutcome.NONZERO
+    assert "secret" not in result.stderr
+    assert "exit 128" in marker
+    assert "secret" not in marker
+    assert "https://user:<redacted>@github.com/example/repo.git" in marker
+
+
+def test_execution_error_is_distinct_and_redacted(tmp_path: Path) -> None:
+    error = OSError("cannot use https://user:secret@github.com/example/repo.git")
+    with patch("srtctl.core.git_state.subprocess.run", side_effect=error):
+        result = _run_git(tmp_path, ["rev-parse", "HEAD"])
+
+    marker = _format_git_failure(result)
+    assert result.outcome == GitCommandOutcome.EXECUTION_ERROR
+    assert "secret" not in result.error
+    assert "could not execute" in marker
+    assert "secret" not in marker
+    assert "https://user:<redacted>@github.com/example/repo.git" in marker
+
+
+def test_untracked_timeout_is_not_rendered_as_clean(tmp_path: Path) -> None:
+    completed = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+    def run_git(command, **_kwargs):
+        if "ls-files" in command:
+            raise subprocess.TimeoutExpired(command, 60)
+        return completed
+
+    with patch("srtctl.core.git_state.subprocess.run", side_effect=run_git):
+        text = "".join(_format_repo_snapshot(tmp_path, ["repo"], [tmp_path]))
+
+    untracked_section = text.split("## Untracked files\n", 1)[1]
+    assert "timed out after 60s" in untracked_section
+    assert not untracked_section.startswith("<none>")
+
+
+def test_repository_budget_skips_remaining_commands(tmp_path: Path) -> None:
+    with (
+        patch("srtctl.core.git_state._REPO_TIMEOUT_S", 0),
+        patch("srtctl.core.git_state.time.monotonic", return_value=100.0),
+        patch("srtctl.core.git_state.subprocess.run") as run,
+    ):
+        text = "".join(_format_repo_snapshot(tmp_path, ["repo"], [tmp_path]))
+
+    run.assert_not_called()
+    assert text.count("repository budget was exhausted") == 8
+    assert "## Untracked files\n<git command skipped" in text
 
 
 def test_submit_writes_git_state_for_extra_mount(tmp_path: Path) -> None:
