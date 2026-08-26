@@ -238,6 +238,15 @@ class ClusterConfig:
     # device name from another cluster's topology, where the correct fix is
     # to omit the variable entirely and let UCX/NCCL auto-select.
     unset_environment: list[str] | None = None
+    # Bind address for frontend.type: trtllm_serve's disaggregated orchestrator
+    # (ser.yaml "hostname"). Hardcoded to "0.0.0.0" (IPv4-any) otherwise, which
+    # is unreachable from other nodes on an IPv6-only cluster -- confirmed
+    # live: the orchestrator itself answers GET /health with 200 on
+    # localhost, but is unreachable via the node's hostname from any other
+    # node in the job (curl exit 7, connection failed), hanging srtctl's own
+    # health poll indefinitely even though the stack is fully healthy. Set to
+    # "::" on IPv6-only clusters.
+    trtllm_serve_hostname: str | None = None
     # Shell snippet prepended to every container srun (after env exports, before
     # the main command). Useful for cluster-wide ulimits, e.g.
     # ``"ulimit -n 1048576 -s unlimited -u 1048576"``. Silently dropped for

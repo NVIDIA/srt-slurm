@@ -76,7 +76,9 @@ class TRTLLMServeFrontend:
         ser: dict[str, Any] = {
             "context_servers": context_servers,
             "generation_servers": generation_servers,
-            "hostname": "0.0.0.0",
+            # See ClusterConfig.trtllm_serve_hostname -- "0.0.0.0" is
+            # unreachable from other nodes on an IPv6-only cluster.
+            "hostname": get_srtslurm_setting("trtllm_serve_hostname") or "0.0.0.0",
             "port": port,
         }
         fe = config.frontend
