@@ -1,0 +1,13 @@
+diff --git a/vllm/v1/worker/gpu/cudagraph_utils.py b/vllm/v1/worker/gpu/cudagraph_utils.py
+index 725ac4ecbc..b460d50b41 100644
+--- a/vllm/v1/worker/gpu/cudagraph_utils.py
++++ b/vllm/v1/worker/gpu/cudagraph_utils.py
+@@ -852,6 +852,8 @@ def _teardown_profiling_state(runner: "GPUModelRunner") -> None:
+     """Release the profiling KV cache and captured graphs while keeping model
+     weights, so the real ``initialize_kv_cache`` starts from a clean slate."""
+     torch.accelerator.synchronize()
++    if hasattr(runner.model_state, "_mamba_ctx"):
++        runner.model_state._mamba_ctx = None
+     if hasattr(runner, "kv_caches"):
+         runner.kv_caches.clear()
+     if hasattr(runner, "attn_groups"):
