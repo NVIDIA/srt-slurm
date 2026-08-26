@@ -23,6 +23,15 @@ case "${CUDA_VISIBLE_DEVICES:-}" in
         ;;
 esac
 
-taskset -pc "${cpuset}" "${PPID}" >/dev/null
+# Best-effort: a bad cpuset (e.g. this node's actual CPU count/layout not
+# matching the assumed 192-CPU table above, or a SLURM cgroup already
+# restricting this task to a narrower set) makes taskset fail with EINVAL.
+# That must not take the whole worker down over an affinity tweak, so
+# report and continue unbound rather than letting `set -e` abort the
+# preamble chain this script is sourced/run from.
+if ! taskset -pc "${cpuset}" "${PPID}" >/dev/null 2>&1; then
+    echo "CPU_BIND_DIAGNOSTIC WARNING: taskset failed for CVD=${CUDA_VISIBLE_DEVICES} parent_pid=${PPID} requested=${cpuset}, continuing unbound"
+    exit 0
+fi
 echo "CPU_BIND_DIAGNOSTIC CVD=${CUDA_VISIBLE_DEVICES} parent_pid=${PPID} requested=${cpuset}"
 taskset -pc "${PPID}"
