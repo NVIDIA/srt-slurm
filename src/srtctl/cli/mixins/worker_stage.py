@@ -13,6 +13,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Any
 
+from srtctl.core.config import get_srtslurm_setting
 from srtctl.core.fingerprint import generate_capture_script
 from srtctl.core.health import wait_for_health
 from srtctl.core.processes import ManagedProcess, NamedProcesses
@@ -214,6 +215,11 @@ class WorkerStageMixin:
 
         self._apply_kvbm_endpoint_env(env_to_set, endpoint_processes)
 
+        # Cluster-level env-var removals (srtslurm.yaml), applied last so they
+        # win over every source above -- see ClusterConfig.unset_environment.
+        for key in get_srtslurm_setting("unset_environment") or []:
+            env_to_set.pop(key, None)
+
         # Log env vars in the format: VAR=value VAR2=value2
         env_str = " ".join(f"{k}={v}" for k, v in sorted(env_to_set.items()))
         logger.info("Env: %s", env_str)
@@ -350,6 +356,11 @@ class WorkerStageMixin:
             env_to_set.update(self.backend.get_mooncake_worker_env(self.runtime.infra_node_ip, local_hostname))
 
         self._apply_kvbm_endpoint_env(env_to_set, endpoint_processes)
+
+        # Cluster-level env-var removals (srtslurm.yaml), applied last so they
+        # win over every source above -- see ClusterConfig.unset_environment.
+        for key in get_srtslurm_setting("unset_environment") or []:
+            env_to_set.pop(key, None)
 
         # Log env vars in the format: VAR=value VAR2=value2
         env_str = " ".join(f"{k}={v}" for k, v in sorted(env_to_set.items()))

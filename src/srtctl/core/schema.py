@@ -231,6 +231,13 @@ class ClusterConfig:
     # sharing a recipe but wrong on others -- e.g. NCCL_SOCKET_IFNAME /
     # UCX_NET_DEVICES pinned to a NIC name that doesn't exist on this cluster.
     environment: dict[str, str] | None = None
+    # Cluster-level environment variable removals. Applied last, after every
+    # other environment source (backend, environment: above, profiling,
+    # process/mooncake env), for keys that are simply wrong on this cluster
+    # with no replacement value -- e.g. a UCX_NET_DEVICES/NCCL_SOCKET_IFNAME
+    # device name from another cluster's topology, where the correct fix is
+    # to omit the variable entirely and let UCX/NCCL auto-select.
+    unset_environment: list[str] | None = None
     # Shell snippet prepended to every container srun (after env exports, before
     # the main command). Useful for cluster-wide ulimits, e.g.
     # ``"ulimit -n 1048576 -s unlimited -u 1048576"``. Silently dropped for
