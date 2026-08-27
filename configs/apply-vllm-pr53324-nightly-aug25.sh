@@ -15,6 +15,7 @@ readonly PR53773_PATCH_FILE="${VLLM_PR53773_PATCH_FILE:-/configs/patches/vllm-pr
 readonly K3_TAIL_GATE_PATCH_FILE="${VLLM_K3_TAIL_GATE_PATCH_FILE:-/configs/patches/vllm-k3-latent-tail-env-gate-on-a9a17e7.patch}"
 readonly K3_DEFERRED_FINALIZE_GATE_PATCH_FILE="${VLLM_K3_DEFERRED_FINALIZE_GATE_PATCH_FILE:-/configs/patches/vllm-k3-deferred-moe-finalize-env-gate-on-a9a17e7.patch}"
 readonly K3_CHECKPOINT_BOUNDS_PATCH_FILE="${VLLM_K3_CHECKPOINT_BOUNDS_PATCH_FILE:-/configs/patches/vllm-k3-prefill-checkpoint-bounds-on-a9a17e7.patch}"
+readonly K3_INTERNAL_CHECKPOINT_GATE_PATCH_FILE="${VLLM_K3_INTERNAL_CHECKPOINT_GATE_PATCH_FILE:-/configs/patches/vllm-k3-internal-prefill-checkpoints-env-gate-on-a9a17e7.patch}"
 readonly PR53324_MARKER_FILE="${VLLM_ROOT}/.pr53324_574d2e4_on_a9a17e709"
 readonly K3_AGENT_MARKER_FILE="${VLLM_ROOT}/.k3_agent_all_728d3ad_on_a9a17e709"
 readonly PR53682_MARKER_FILE="${VLLM_ROOT}/.pr53682_e6cc089_on_a9a17e709"
@@ -22,6 +23,7 @@ readonly PR53773_MARKER_FILE="${VLLM_ROOT}/.pr53773_a447955_on_a9a17e709"
 readonly K3_TAIL_GATE_MARKER_FILE="${VLLM_ROOT}/.k3_latent_tail_env_gate_on_a9a17e709"
 readonly K3_DEFERRED_FINALIZE_GATE_MARKER_FILE="${VLLM_ROOT}/.k3_deferred_moe_finalize_env_gate_on_a9a17e709"
 readonly K3_CHECKPOINT_BOUNDS_MARKER_FILE="${VLLM_ROOT}/.k3_prefill_checkpoint_bounds_on_a9a17e709"
+readonly K3_INTERNAL_CHECKPOINT_GATE_MARKER_FILE="${VLLM_ROOT}/.k3_internal_prefill_checkpoints_env_gate_on_a9a17e709"
 
 if [[ ! -r "${VERSION_FILE}" ]] || ! grep -q "a9a17e709" "${VERSION_FILE}"; then
   echo "Refusing to patch: expected vLLM nightly commit a9a17e709." >&2
@@ -90,6 +92,10 @@ apply_patch_once \
   "Kimi-K3 prefill checkpoint bounds" \
   "${K3_CHECKPOINT_BOUNDS_PATCH_FILE}" \
   "${K3_CHECKPOINT_BOUNDS_MARKER_FILE}"
+apply_patch_once \
+  "Kimi-K3 internal prefill-checkpoint environment gate" \
+  "${K3_INTERNAL_CHECKPOINT_GATE_PATCH_FILE}" \
+  "${K3_INTERNAL_CHECKPOINT_GATE_MARKER_FILE}"
 
 python3 -m compileall -q \
   "${VLLM_ROOT}/config/speculative.py" \

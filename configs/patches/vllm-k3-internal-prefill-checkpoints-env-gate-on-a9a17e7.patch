@@ -1,0 +1,44 @@
+diff --git a/vllm/envs.py b/vllm/envs.py
+--- a/vllm/envs.py
++++ b/vllm/envs.py
+@@ -212,6 +212,7 @@ if TYPE_CHECKING:
+     VLLM_KIMI_K3_AUX_ATTN_RES_STREAM: bool = False
+     VLLM_ENABLE_K3_LATENT_MOE_TAIL_FUSION: bool = True
+     VLLM_KIMI_K3_DEFERRED_MOE_FINALIZE: bool = True
++    VLLM_KIMI_K3_INTERNAL_PREFILL_CHECKPOINTS: bool = True
+     VLLM_KIMI_K3_GEMM_AR: bool = True
+     VLLM_KIMI_K3_GEMM_RS: bool = False
+     VLLM_BLOCKSCALE_FP8_GEMM_FLASHINFER: bool = True
+@@ -1616,6 +1617,9 @@ environment_variables: dict[str, Callable[[], Any]] = {
+     "VLLM_KIMI_K3_DEFERRED_MOE_FINALIZE": lambda: bool(
+         int(os.getenv("VLLM_KIMI_K3_DEFERRED_MOE_FINALIZE", "1"))
+     ),
++    "VLLM_KIMI_K3_INTERNAL_PREFILL_CHECKPOINTS": lambda: bool(
++        int(os.getenv("VLLM_KIMI_K3_INTERNAL_PREFILL_CHECKPOINTS", "1"))
++    ),
+     # Use the SM100 BF16 GEMM-AR kernel for eligible Kimi-K3 row-parallel
+     # attention projections. All TP ranks must belong to one NVLink domain.
+     "VLLM_KIMI_K3_GEMM_AR": lambda: bool(int(os.getenv("VLLM_KIMI_K3_GEMM_AR", "1"))),
+diff --git a/vllm/models/kimi_k3/nvidia/kda.py b/vllm/models/kimi_k3/nvidia/kda.py
+--- a/vllm/models/kimi_k3/nvidia/kda.py
++++ b/vllm/models/kimi_k3/nvidia/kda.py
+@@ -9,6 +9,7 @@ from torch import nn
+ from torch.nn.parameter import Parameter
+ 
+ from vllm import _custom_ops as ops
++from vllm import envs
+ from vllm.compilation.breakable_cudagraph import eager_break_during_capture
+ from vllm.config import VllmConfig
+ from vllm.distributed import divide, get_tensor_model_parallel_rank
+@@ -595,7 +596,10 @@ class KimiK3DeltaAttention(GatedDeltaNetAttention):
+         assert isinstance(spec, MambaSpec)
+         return replace(
+             spec,
+-            num_prefill_checkpoint_blocks=int(self.kda_prefill_backend == "flashkda"),
++            num_prefill_checkpoint_blocks=int(
++                self.kda_prefill_backend == "flashkda"
++                and envs.VLLM_KIMI_K3_INTERNAL_PREFILL_CHECKPOINTS
++            ),
+         )
+ 
+     def forward(
