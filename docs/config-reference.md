@@ -934,6 +934,7 @@ Dynamo installation configuration.
 ```yaml
 dynamo:
   version: "0.8.0"            # Install from PyPI
+  engine_mode: in_process      # Or sidecar for native SGLang + Rust Dynamo worker
   # OR
   hash: "abc123"              # Install from git commit
   # OR
@@ -946,6 +947,7 @@ dynamo:
 | `version`     | string | "0.8.0" | PyPI version                                           |
 | `hash`        | string | null    | Git commit hash (source install)                       |
 | `top_of_tree` | bool   | false   | Install from main branch                               |
+| `engine_mode` | string | `in_process` | `in_process` uses Dynamo Python engines; `sidecar` runs stock SGLang with a Rust Dynamo sidecar |
 
 **Notes**:
 
@@ -954,6 +956,7 @@ dynamo:
 - `hash` and `top_of_tree` are mutually exclusive.
 - When `hash` or `top_of_tree` is set, `version` is automatically cleared.
 - Source installs (`hash` or `top_of_tree`) clone the repo and build with maturin.
+- `engine_mode: sidecar` supports `frontend.type: dynamo` with `backend.type: sglang` on Slurm and the single-node `--bash` lifecycle. It requires SGLang v0.5.16+ and rejects `dynamo.wheel`; direct Bash retains its existing `dynamo.hash` or `dynamo.top_of_tree: true` requirement. See [Dynamo Sidecar Engines](dynamo-sidecar.md).
 
 ---
 

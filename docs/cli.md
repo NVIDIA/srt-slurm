@@ -295,7 +295,7 @@ service; srtctl then cleans up the processes it started.
 container and runs the serving lifecycle inside the selected SGLang image. It currently supports a one-node
 SGLang backend with the Dynamo frontend, `frontend.enable_multiple_frontends: false`, and one
 `benchmark.type: custom` command. It requires Docker with GPU support, an absolute `SRTCTL_SGLANG_SOURCE`,
-`SRTCTL_LOCAL_CONTAINER_IMAGE`, and either `dynamo.hash` or `dynamo.top_of_tree: true`. The run creates
+`SRTCTL_LOCAL_CONTAINER_IMAGE`, and either `dynamo.hash` or `dynamo.top_of_tree: true`. `dynamo.engine_mode: sidecar` runs stock SGLang plus a cached Rust Dynamo connector. The run creates
 separate worker, router, Tachometer, and benchmark logs, gates load on worker/router readiness and a
 chat-completions smoke request, then cleans up only containers and process groups it owns. See
 [Direct Host Lifecycle](direct-host.md) for the complete setup and the included 3P2D Dynamo recipe.
