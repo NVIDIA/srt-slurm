@@ -1070,6 +1070,53 @@ class TestAgentPerfRunner:
         env = runner.get_environment(config, MagicMock())
         assert env["AGENTPERF_EXTRA_ARGS"] == "--seed 100 --no-eval"
 
+    @staticmethod
+    def _stage(processes):
+        return TestCustomBenchmarkRunner._benchmark_stage(
+            "dynamo",
+            processes,
+            benchmark_type="agentperf",
+            backend_type="trtllm",
+            publish_events_and_metrics=True,
+        )
+
+    @staticmethod
+    def _disagg_processes():
+        from srtctl.core.topology import Process
+
+        return [
+            Process("node-a", frozenset(range(4)), 7500, 6100, "prefill", 0, node_rank=0),
+            Process("node-b", frozenset(range(4)), 7501, 6100, "decode", 0, node_rank=0),
+        ]
+
+    def test_client_polls_no_metrics_urls_so_tachometer_covers_everything(self):
+        """agentperf's client never polls /metrics, so the client-polled set is
+        empty and Tachometer's complement (see
+        ``TelemetryStageMixin.start_tachometer``) is the FULL endpoint set.
+
+        Pinned explicitly: today the behavior falls out of AgentPerfRunner not
+        inheriting AIPerfBenchmarkRunner. If someone reparents the runner or
+        starts injecting AIPERF_SERVER_METRICS_URLS for it, worker endpoints
+        would silently vanish from an observability-enabled capture with no
+        client actually polling them.
+        """
+        stage = self._stage(self._disagg_processes())
+        assert stage._client_polled_metric_urls() == frozenset()
+
+    def test_no_aiperf_server_metrics_urls_injected(self):
+        """The agentperf client does not consume AIPERF_SERVER_METRICS_URLS;
+        injecting it would also shrink Tachometer's complement (previous test),
+        losing worker metrics that nothing else captures."""
+        from unittest.mock import patch
+
+        stage = self._stage(self._disagg_processes())
+        with patch(
+            "srtctl.cli.mixins.benchmark_stage.get_hostname_ip",
+            side_effect=lambda node, interface: f"ip-{node}",
+        ):
+            env = stage._get_benchmark_env(get_runner("agentperf"))
+        assert "AIPERF_SERVER_METRICS_URLS" not in env
+
 
 class TestLMEvalRunner:
     """Test LM-Eval runner."""
