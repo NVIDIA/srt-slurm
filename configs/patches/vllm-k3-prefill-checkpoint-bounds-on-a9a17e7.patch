@@ -1,0 +1,50 @@
+diff --git a/vllm/models/kimi_k3/nvidia/kda.py b/vllm/models/kimi_k3/nvidia/kda.py
+index 9347751a25..ad74f0d0a5 100644
+--- a/vllm/models/kimi_k3/nvidia/kda.py
++++ b/vllm/models/kimi_k3/nvidia/kda.py
+@@ -250,6 +250,8 @@ def _store_cache_checkpoints_kernel(
+     checkpoint_stride_0: tl.constexpr,
+     recurrent_state_stride_0: tl.constexpr,
+     checkpoint_offset_stride: tl.constexpr,
++    NUM_TOKENS: tl.constexpr,
++    NUM_STATES: tl.constexpr,
+     STATE_LEN: tl.constexpr,
+     WIDTH: tl.constexpr,
+     RECURRENT_ROW_SIZE: tl.constexpr,
+@@ -263,13 +265,25 @@ def _store_cache_checkpoints_kernel(
+     checkpoint_offset = tl.load(
+         checkpoint_offsets_ptr + seq_idx * checkpoint_offset_stride
+     )
+-    valid_checkpoint = (state_idx != NULL_STATE_IDX) & (checkpoint_offset > 0)
++    query_start = tl.load(query_start_loc_ptr + seq_idx)
++    query_end = tl.load(query_start_loc_ptr + seq_idx + 1)
++    checkpoint_end = query_start + checkpoint_offset
++    valid_state = (
++        (state_idx != NULL_STATE_IDX)
++        & (state_idx >= 0)
++        & (state_idx < NUM_STATES)
++    )
++    valid_checkpoint = (
++        valid_state
++        & (checkpoint_offset > 0)
++        & (checkpoint_end <= query_end)
++        & (checkpoint_end <= NUM_TOKENS)
++    )
+     valid_conv = (
+         (cols < WIDTH * STATE_LEN) & valid_checkpoint & (checkpoint_offset >= STATE_LEN)
+     )
+     width_idx = cols // STATE_LEN
+     history_idx = cols % STATE_LEN
+-    checkpoint_end = tl.load(query_start_loc_ptr + seq_idx) + checkpoint_offset
+     token_idx = checkpoint_end - STATE_LEN + history_idx
+     values = tl.load(
+         x_ptr + token_idx * x_stride_0 + width_idx * x_stride_1,
+@@ -925,6 +939,8 @@ class KimiK3DeltaAttention(GatedDeltaNetAttention):
+                             checkpoint_state.stride(0),
+                             recurrent_state.stride(0),
+                             checkpoint_offsets.stride(0),
++                            mixed_qkv_ns.shape[0],
++                            recurrent_state.shape[0],
+                             state_len,
+                             width,
+                             recurrent_row_size,
