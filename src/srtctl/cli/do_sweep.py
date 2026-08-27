@@ -813,9 +813,17 @@ class SweepOrchestrator(
                     self.start_cpu_power_host_telemetry(registry)
                     self.start_incremental_power_report()
 
-            tachometer_procs = self.start_tachometer()
-            for proc in tachometer_procs:
-                registry.add_process(proc)
+            # Tachometer capture aligns with the load window: benchmark runs
+            # start it inside run_benchmark once the server is healthy and
+            # stop it gracefully when the client exits (see
+            # BenchmarkStageMixin.run_benchmark). Only runs WITHOUT a discrete
+            # load window — serve-only, manual, eval-only — keep the
+            # whole-session capture, started here.
+            eval_only = os.environ.get("EVAL_ONLY", "false").lower() == "true"
+            if self.serve_only or eval_only or self.config.benchmark.type == "manual":
+                tachometer_procs = self.start_tachometer()
+                for proc in tachometer_procs:
+                    registry.add_process(proc)
 
             self._print_connection_info()
 
