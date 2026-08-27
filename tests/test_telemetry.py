@@ -622,6 +622,13 @@ class TestTachometerStageMixin:
         # tear down the benchmark via the critical-process check.
         assert procs[-1].name == "tachometer"
         assert procs[-1].critical is False
+        # Exporter sidecars share the contract: shell-less launch (distroless
+        # images have no bash) and non-critical (a dead sidecar never kills
+        # the run — regression guard for the 7-node startup teardown).
+        for call in mock_srun.call_args_list[:-1]:
+            assert call.kwargs["use_bash_wrapper"] is False
+        for proc in procs[:-1]:
+            assert proc.critical is False
 
     def test_resolve_tachometer_binary(self, tmp_path, monkeypatch):
         """Explicit paths are respected verbatim; the default bare name

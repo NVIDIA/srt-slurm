@@ -331,6 +331,11 @@ class TelemetryStageMixin:
 
         worker_nodes = sorted({process.node for process in self.backend_processes})
         processes: list[ManagedProcess] = []
+        # Exporters run shell-less (distroless images have no bash — the same
+        # rule the power path follows) and non-critical: telemetry sidecars
+        # must never tear down the benchmark. Verified the hard way: a
+        # bash-wrapped node-exporter (FROM scratch) died with execve() ENOENT
+        # and, as a critical process, killed a 7-node run at startup.
         if not power_telemetry.enabled and tachometer.dcgm_exporter is not None:
             processes.extend(
                 self._start_exporter_container(
@@ -339,6 +344,8 @@ class TelemetryStageMixin:
                     nodelist=worker_nodes,
                     log_file=self.runtime.log_dir / "tachometer_dcgm_exporter.out",
                     default_command_template=DCGM_EXPORTER_COMMAND_TEMPLATE,
+                    use_bash_wrapper=False,
+                    critical=False,
                 )
             )
         if tachometer.node_exporter is not None:
@@ -352,6 +359,8 @@ class TelemetryStageMixin:
                         "/bin/node_exporter --web.listen-address=:{port} "
                         "--collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo"
                     ),
+                    use_bash_wrapper=False,
+                    critical=False,
                 )
             )
 
