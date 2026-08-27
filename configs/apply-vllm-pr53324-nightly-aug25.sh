@@ -12,10 +12,12 @@ readonly PR53324_PATCH_FILE="${VLLM_PR53324_PATCH_FILE:-/configs/patches/vllm-pr
 readonly K3_AGENT_PATCH_FILE="${VLLM_K3_AGENT_PATCH_FILE:-/configs/patches/vllm-k3-agent-all-missing-on-a9a17e7.patch}"
 readonly PR53682_PATCH_FILE="${VLLM_PR53682_PATCH_FILE:-/configs/patches/vllm-pr53682-cudagraph-profiling-pool-on-a9a17e7.patch}"
 readonly PR53773_PATCH_FILE="${VLLM_PR53773_PATCH_FILE:-/configs/patches/vllm-pr53773-kimi-mamba-profiling-state-on-a9a17e7.patch}"
+readonly K3_TAIL_GATE_PATCH_FILE="${VLLM_K3_TAIL_GATE_PATCH_FILE:-/configs/patches/vllm-k3-latent-tail-env-gate-on-a9a17e7.patch}"
 readonly PR53324_MARKER_FILE="${VLLM_ROOT}/.pr53324_574d2e4_on_a9a17e709"
 readonly K3_AGENT_MARKER_FILE="${VLLM_ROOT}/.k3_agent_all_728d3ad_on_a9a17e709"
 readonly PR53682_MARKER_FILE="${VLLM_ROOT}/.pr53682_e6cc089_on_a9a17e709"
 readonly PR53773_MARKER_FILE="${VLLM_ROOT}/.pr53773_a447955_on_a9a17e709"
+readonly K3_TAIL_GATE_MARKER_FILE="${VLLM_ROOT}/.k3_latent_tail_env_gate_on_a9a17e709"
 
 if [[ ! -r "${VERSION_FILE}" ]] || ! grep -q "a9a17e709" "${VERSION_FILE}"; then
   echo "Refusing to patch: expected vLLM nightly commit a9a17e709." >&2
@@ -72,6 +74,10 @@ apply_patch_once \
   "vLLM PR #53773 merged commit a447955" \
   "${PR53773_PATCH_FILE}" \
   "${PR53773_MARKER_FILE}"
+apply_patch_once \
+  "Kimi-K3 latent-MoE tail environment gate" \
+  "${K3_TAIL_GATE_PATCH_FILE}" \
+  "${K3_TAIL_GATE_MARKER_FILE}"
 
 python3 -m compileall -q \
   "${VLLM_ROOT}/config/speculative.py" \
