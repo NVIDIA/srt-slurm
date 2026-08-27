@@ -148,7 +148,7 @@ echo "[agentperf] endpoint=$ENDPOINT model=$MODEL_NAME concurrencies=$CONCURRENC
 read -r -a EXTRA_ARGS <<< "${AGENTPERF_EXTRA_ARGS:-}" || true
 uv run --no-sync python agentperf/run.py \
   --config "$RUNTIME/benchmark_config.yaml" \
-  --base-url "$ENDPOINT" \
+  --base-url "${ENDPOINT}${AGENTPERF_BASE_PATH:-/v1}" \
   --model "$MODEL_NAME" \
   --concurrencies "$CONCURRENCIES" \
   --request-log-path "$RESULTS_DIR/requests.jsonl" \
