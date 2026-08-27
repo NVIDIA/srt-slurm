@@ -107,8 +107,15 @@ def generate_tachometer_config(
         # exactly what the physical-process client list provides for vLLM DP.
         if frontend_type == "vllm" and process.endpoint_mode == "agg" and not process.is_leader:
             continue
+        if frontend_type == "vllm-router" and process.http_port <= 0:
+            continue
         node_ip = get_hostname_ip(process.node, runtime.network_interface)
-        port = FRONTEND_PUBLIC_PORT if frontend_type == "vllm" and process.endpoint_mode == "agg" else process.sys_port
+        if frontend_type == "vllm" and process.endpoint_mode == "agg":
+            port = FRONTEND_PUBLIC_PORT
+        elif frontend_type == "vllm-router":
+            port = process.http_port
+        else:
+            port = process.sys_port
         url = f"http://{node_ip}:{port}/metrics"
         if url in exclude_urls:
             # The benchmark client already polls this endpoint on its own

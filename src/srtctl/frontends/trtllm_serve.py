@@ -54,6 +54,15 @@ class TRTLLMServeFrontend:
         """Parse trtllm-serve /health response (200 => ready)."""
         return check_trtllm_serve_health(response_json, expected_prefill, expected_decode)
 
+    def get_backend_health_urls(
+        self,
+        backend: Any,
+        backend_processes: list["Process"],
+        network_interface: str | None = None,
+    ) -> list[str]:
+        del backend, backend_processes, network_interface
+        return []
+
     def get_frontend_args_list(self, args: dict[str, Any] | None) -> list[str]:
         """Convert frontend args dict to CLI arguments."""
         if not args:

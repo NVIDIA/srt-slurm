@@ -271,7 +271,7 @@ Frontend/router configuration.
 
 ```yaml
 frontend:
-  # Frontend type: "dynamo" (default), "sglang", "trtllm_serve", or "vllm"
+  # Frontend type: "dynamo" (default), "sglang", "vllm-router", "trtllm_serve", or "vllm"
   type: dynamo
 
   # Scaling
@@ -291,17 +291,21 @@ frontend:
   # Environment variables for frontend processes
   env:
     MY_VAR: "value"
+
+  # Optional static-router image; defaults to model.container
+  # container_image: vllm-router
 ```
 
 | Field                       | Type | Default       | Description                         |
 | --------------------------- | ---- | ------------- | ----------------------------------- |
-| `type`                      | str  | dynamo        | Frontend type: "dynamo", "sglang", "trtllm_serve", or "vllm" |
+| `type`                      | str  | dynamo        | Frontend type: "dynamo", "sglang", "vllm-router", "trtllm_serve", or "vllm" |
 | `enable_multiple_frontends` | bool | true          | Scale with nginx + multiple routers |
 | `num_additional_frontends`  | int  | 9             | Additional routers beyond master    |
 | `nginx_container`           | str  | nginx:1.27.4  | Custom nginx container image        |
 | `nginx_raise_ulimit`      | bool | false         | When true with nginx in use, run `ulimit -n 1048576` before nginx and emit `worker_rlimit_nofile 1048576` in generated `nginx.conf`. Off by default so restrictive clusters do not fail. Cluster `srtslurm.yaml` may set `nginx_raise_ulimit` for jobs that omit this field. |
 | `args`                      | dict | null          | CLI args for the frontend           |
 | `env`                       | dict | null          | Env vars for frontend processes     |
+| `container_image`           | str  | null          | Static-router image; falls back to `model.container` |
 
 See [SGLang Router](sglang-router.md) for detailed architecture.
 
@@ -417,6 +421,14 @@ Slurm head node.
 
 Compare with `frontend.type: dynamo` + `backend.type: vllm`, which keeps Dynamo as
 the request router and uses `python3 -m dynamo.vllm` workers with NATS/etcd.
+
+### vllm-router frontend
+
+`type: vllm-router` launches the official vLLM Router in front of direct
+`vllm serve` workers. It supports aggregate replicas and disaggregated P/D
+topologies without Dynamo or NATS/etcd. See [vLLM Router](vllm-router.md) for
+complete topology examples and the division of responsibility between the
+upstream vLLM backend topology and Router adapter.
 
 ---
 
