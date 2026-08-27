@@ -31,22 +31,6 @@ class RouterWorker:
     bootstrap_port: int | None = None
 
 
-def build_setup_script_preamble(setup_script: str | None) -> str | None:
-    """Build the standard in-container recipe setup-script invocation."""
-    if not setup_script:
-        return None
-    script_name = shlex.quote(setup_script)
-    return (
-        f"setup_script={script_name} && "
-        'script_path="/configs/${setup_script}" && '
-        'patch_script_path="/configs/patches/${setup_script}" && '
-        'echo "Running setup script: ${script_path} (fallback ${patch_script_path})" && '
-        'if [ -f "${script_path}" ]; then bash "${script_path}"; '
-        'elif [ -f "${patch_script_path}" ]; then bash "${patch_script_path}"; '
-        'else echo "WARNING: ${script_path} or ${patch_script_path} not found"; fi'
-    )
-
-
 class StaticRouterFrontend:
     """Base class for routers whose worker topology is supplied on the CLI."""
 
@@ -115,6 +99,11 @@ class StaticRouterFrontend:
     def start_process(self, **kwargs: Any) -> Any:
         """Launch one router process; split out for adapter-specific tests."""
         return start_srun_process(**kwargs)
+
+    def build_bash_preamble(self, config: Any) -> str | None:
+        """Return adapter-specific shell setup to run before the router."""
+        del config
+        return None
 
     def collect_workers(
         self,
@@ -221,7 +210,7 @@ class StaticRouterFrontend:
                 container_image=container_image,
                 container_mounts=runtime.container_mounts,
                 env_to_set=router_env or None,
-                bash_preamble=build_setup_script_preamble(getattr(config, "setup_script", None)),
+                bash_preamble=self.build_bash_preamble(config),
                 het_group=runtime.nodes.het_group_for(node),
             )
             processes.append(

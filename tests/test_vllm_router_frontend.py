@@ -180,6 +180,16 @@ def test_router_launch_uses_router_image_env_setup_and_captured_log() -> None:
     assert managed[0].log_file == Path("/logs/router0_vllm-router_0.out")
 
 
+def test_vllm_router_setup_preamble_is_adapter_specific() -> None:
+    frontend = VLLMRouterFrontend()
+
+    assert frontend.build_bash_preamble(SimpleNamespace()) is None
+    assert frontend.build_bash_preamble(SimpleNamespace(setup_script="router deps.sh")).startswith(
+        "setup_script='router deps.sh'"
+    )
+    assert get_frontend("sglang").build_bash_preamble(SimpleNamespace(setup_script="router-deps.sh")) is None
+
+
 def test_schema_rejects_backend_mismatch_and_deprecated_per_gpu_dp() -> None:
     from srtctl.backends import SGLangProtocol
 
