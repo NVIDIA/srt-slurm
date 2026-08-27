@@ -272,6 +272,11 @@ class TestDryRunExecutionExtensions:
         assert "tachometer" in output
         assert "enabled" in output
         assert "storage_subdir" in output
+        # Built-in exporters are part of the default and must be visible.
+        assert "dcgm_exporter" in output
+        assert "node_exporter" in output
+        assert ":9401" in output
+        assert ":9101" in output
 
     def test_dcgm_power_telemetry_details_shown(self, capsys):
         config = _make_config(
