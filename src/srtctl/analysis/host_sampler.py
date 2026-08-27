@@ -244,11 +244,13 @@ def try_start_host_sampler(log_dir: Path, observability, stop_event: threading.E
     :func:`srtctl.analysis.metrics_scraper.try_start_raw_scraper`. All failures are
     logged and swallowed -- host telemetry never blocks a benchmark.
 
-    Gated on the same ``scraper_enabled`` knob rather than a new one: it answers the
+    Gated on ``observability.enabled`` rather than a new knob: it answers the
     same question (is this run capturing observability?) and a second switch would let a
-    run be half-instrumented in a way nobody intends.
+    run be half-instrumented in a way nobody intends. (It used to share the RAW
+    scraper's ``scraper_enabled``; that scraper is now opt-in only, while host
+    telemetry belongs to every observability run.)
     """
-    if getattr(observability, "scraper_enabled", False) is not True:
+    if getattr(observability, "enabled", False) is not True:
         return None
     try:
         s = HostSampler(log_dir)

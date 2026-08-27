@@ -387,7 +387,7 @@ def show_config_details(config: SrtConfig) -> None:
         if config.observability.enabled:
             details.add_row("observability", "raw_metrics", str(config.observability.scraper_enabled))
         tachometer = config.observability.tachometer
-        if tachometer.enabled:
+        if config.observability.tachometer_enabled:
             details.add_row("observability", "tachometer", "enabled")
             details.add_row("observability", "storage_subdir", tachometer.storage_subdir)
             details.add_row("observability", "frequency", str(tachometer.default_frequency))

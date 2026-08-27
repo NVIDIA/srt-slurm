@@ -265,6 +265,15 @@ class TestDryRunExecutionExtensions:
         assert "tachometer-scraper" in output
         assert "storage_subdir" in output
 
+    def test_tachometer_details_shown_without_explicit_block(self, capsys):
+        """observability.enabled alone implies Tachometer; dry-run must say so."""
+        config = _make_config({"observability": {"enabled": True}})
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "tachometer" in output
+        assert "enabled" in output
+        assert "storage_subdir" in output
+
     def test_dcgm_power_telemetry_details_shown(self, capsys):
         config = _make_config(
             {

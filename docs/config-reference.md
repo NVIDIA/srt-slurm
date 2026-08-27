@@ -1042,37 +1042,30 @@ infra:
 
 ## observability
 
-`observability.enabled` turns on the server metrics and trace surfaces and captures raw Prometheus responses during the benchmark window:
+`observability.enabled` turns on the server metrics and trace surfaces and collects them with the native Tachometer scraper for the whole run:
 
 ```yaml
 observability:
   enabled: true
 ```
 
-The default Python scraper writes `<log_dir>/raw_prometheus.jsonl`. To additionally collect parsed Parquet with the native Tachometer scraper:
+Tachometer scrapes the **complement** of what the benchmark client polls: worker endpoints that appear in `AIPERF_SERVER_METRICS_URLS` are left to the client (a worker endpoint is never double-polled — the extra scrape load has previously made a submission irreproducible), while the frontend, DCGM, and node-exporter endpoints are always Tachometer's. On runs whose benchmark has no aiperf client (sa-bench, lm-eval, serve-only, manual), the complement expands to every endpoint.
 
-```yaml
-observability:
-  enabled: true
-  tachometer:
-    enabled: true
-```
-
-Set `scrape_metrics: false` beside `enabled` to use Tachometer without also writing the raw JSONL capture. Otherwise the Python RAW scraper and Tachometer run together.
+The legacy Python RAW scraper (`<log_dir>/raw_prometheus.jsonl`) no longer follows `enabled`; opt in with `scrape_metrics: true` if you need the verbatim exposition capture — it then runs **in addition to** Tachometer and the client, and srtctl warns about the double-polling.
 
 | Field | Type | Default | Description |
 | ----- | ---- | ------- | ----------- |
-| `enabled` | bool | `false` | Enable server-side metrics/traces and the raw Python scraper |
-| `scrape_metrics` | bool/null | `null` | Override raw capture; `null` follows `enabled` |
-| `scrape_interval_seconds` | float | `1.0` | Interval between raw Prometheus scrape sweeps |
-| `scrape_output` | string | `raw_prometheus.jsonl` | Raw capture filename below the run log directory |
+| `enabled` | bool | `false` | Enable server-side metrics/traces, Tachometer collection, and host sampling |
+| `scrape_metrics` | bool/null | `null` | Legacy RAW scraper opt-in; `null`/`false` means off |
+| `scrape_interval_seconds` | float | `1.0` | Interval between RAW scrape sweeps (opt-in only) |
+| `scrape_output` | string | `raw_prometheus.jsonl` | RAW capture filename below the run log directory |
 | `enable_otel` | bool | `false` | Inject OTEL tracing environment variables |
 | `otel_endpoint` | string/null | `null` | OTEL collector endpoint |
-| `tachometer` | object | `enabled: false` | Native Tachometer collection settings |
+| `tachometer` | object | `enabled: null` | Native Tachometer collection settings; `enabled: null` follows `observability.enabled`, explicit `false` opts out |
 
 The component perf dashboard is **not** configured here. It is built in post-processing on every run; `enabled` decides which capture legs exist and therefore which tabs the page carries. See [Component Performance Dashboard](component-dashboard.md).
 
-Tachometer always collects worker and frontend metrics. DCGM and node exporters are optional additions:
+Tachometer collects every worker rank and frontend metrics by default (minus the client-polled complement described above). DCGM and node exporters are optional additions:
 
 ```yaml
 observability:
@@ -1095,7 +1088,7 @@ observability:
 
 | Tachometer field | Type | Default | Description |
 | ---------------- | ---- | ------- | ----------- |
-| `enabled` | bool | `false` | Enable native Tachometer collection |
+| `enabled` | bool/null | `null` | `null` follows `observability.enabled`; explicit `false` opts out; explicit `true` without `observability.enabled` is a validation error |
 | `binary_path` | string | `tachometer-scraper` | Scraper command or path on the compute nodes |
 | `default_frequency` | float | `5.0` | Scrape frequency in Hz |
 | `sync_interval_secs` | int | `120` | Interval for intermediate Parquet compaction; `0` disables it |
@@ -1107,7 +1100,9 @@ observability:
 
 `make setup ARCH=<compute_arch>` downloads and checksum-verifies the matching Tachometer binary from the latest srt-slurm release. The scraper runs as a native `srun` process on the head node; configured exporters remain containerized on worker nodes. Run `make tachometer-scraper` to build from source instead.
 
-Tachometer writes `<log_dir>/<storage_subdir>/final.parquet`. Intermediate files remain in `<log_dir>/<storage_subdir>/local` until shutdown compaction completes.
+Tachometer writes its Parquet stream under `<log_dir>/<storage_subdir>/raw/scrape/` (the leaf is created by the scraper itself — srtctl pre-creates only the parent, because the scraper refuses a pre-existing storage directory), compacting to `final.parquet` there on shutdown. Intermediate files remain in `<log_dir>/<storage_subdir>/local` until shutdown compaction completes. Rows carry an epoch `timestamp_ns` column, so they join directly with AIPerf records and Dynamo spans; the post-processing ingest converts the Parquet into the dashboard's `server_metrics_export.jsonl`.
+
+The scraper runs as a best-effort process: if it dies (or the binary is missing at runtime), the benchmark continues and the loss is visible in `tachometer.out` and the sweep log. `srtctl validate-setup` still fails fast at submit time when `bin/tachometer-scraper` is absent.
 
 ---
 

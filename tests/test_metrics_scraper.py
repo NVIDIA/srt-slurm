@@ -55,8 +55,15 @@ def metrics_server():
 
 
 class TestScraperConfig:
-    def test_scraper_follows_enabled(self):
+    def test_scraper_no_longer_follows_enabled(self):
+        """Tachometer is the default capture; RAW is strictly opt-in now."""
         cfg = SrtConfig.Schema().load({**BASE_CONFIG, "observability": {"enabled": True}})
+        assert cfg.observability.scraper_enabled is False
+        assert cfg.observability.tachometer_enabled is True
+
+    def test_scraper_can_be_opted_in_explicitly(self):
+        cfg = SrtConfig.Schema().load({**BASE_CONFIG, "observability": {"enabled": True, "scrape_metrics": True}})
+        assert cfg.observability.enabled is True
         assert cfg.observability.scraper_enabled is True
 
     def test_scraper_can_be_opted_out_independently(self):
