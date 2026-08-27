@@ -1112,7 +1112,7 @@ infra:
 
 ## observability
 
-`observability.enabled` turns on the server metrics and trace surfaces and collects them with the native Tachometer scraper for the whole run:
+Tachometer collection is **on by default for every run** (no configuration needed; `observability.tachometer.enabled: false` opts out). `observability.enabled` turns on the server metrics *content* (the TRT-LLM publish flag and engine statistics) and the trace surfaces:
 
 ```yaml
 observability:
@@ -1155,7 +1155,7 @@ observability:
 
 | Tachometer field | Type | Default | Description |
 | ---------------- | ---- | ------- | ----------- |
-| `enabled` | bool/null | `null` | `null` follows `observability.enabled`; explicit `false` opts out; explicit `true` without `observability.enabled` is a validation error |
+| `enabled` | bool/null | `null` | `null` means ON for every run (decoupled from `observability.enabled`); explicit `false` opts out |
 | `binary_path` | string | `tachometer-scraper` | Scraper command or path on the compute nodes |
 | `default_frequency` | float | `1.0` | Scrape frequency in Hz |
 | `sync_interval_secs` | int | `120` | Interval for intermediate Parquet compaction; `0` disables it |

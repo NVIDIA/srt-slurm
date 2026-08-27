@@ -1037,12 +1037,12 @@ class TelemetryExporterConfig:
 class TachometerConfig:
     """Native Tachometer collection for an observability-enabled run.
 
-    ``enabled`` is tri-state: ``None`` (the default) follows
-    ``observability.enabled``, so an observability run collects Tachometer
-    data with no ``tachometer:`` block at all; an explicit ``false`` opts
-    out; an explicit ``true`` under ``observability.enabled: false`` is a
-    validation error (Tachometer's targets only have content when the
-    observability expansion ran).
+    ``enabled`` is tri-state: ``None`` (the default) means ON — every run
+    collects Tachometer data with no ``tachometer:`` block at all; an
+    explicit ``false`` opts out. Note that without ``observability.enabled``
+    the TRT-LLM worker endpoints may have no engine metrics to serve (the
+    observability expansion is what turns their content on); the frontend
+    and any configured exporters are always worth capturing.
     """
 
     enabled: bool | None = None
@@ -1133,8 +1133,14 @@ class ObservabilityConfig:
 
     @property
     def tachometer_enabled(self) -> bool:
-        """Resolved Tachometer enablement (tri-state ``tachometer.enabled``)."""
-        return self.enabled if self.tachometer.enabled is None else self.tachometer.enabled
+        """Resolved Tachometer enablement (tri-state ``tachometer.enabled``).
+
+        Tachometer is on by default for every run — server-side capture is
+        not an opt-in special occasion, and its cost is bounded (1 Hz,
+        best-effort, complement of the client's polling). ``enabled: false``
+        opts out; ``observability.enabled`` no longer gates it.
+        """
+        return True if self.tachometer.enabled is None else self.tachometer.enabled
 
 
 @dataclass(frozen=True)
@@ -2299,8 +2305,6 @@ class SrtConfig:
         """Validate Tachometer collection under observability."""
         observability = self.observability
         tachometer = observability.tachometer
-        if tachometer.enabled is True and not observability.enabled:
-            raise ValidationError("observability.tachometer requires observability.enabled: true")
         if not observability.tachometer_enabled:
             return
         if self.telemetry.enabled and tachometer.dcgm_exporter is not None:

@@ -225,11 +225,22 @@ class TestExpandObservability:
         with pytest.raises(ValidationError, match="scrape_metrics"):
             SrtConfig.Schema().load(cfg)
 
-    def test_tachometer_requires_master_observability_knob(self):
+    def test_tachometer_no_longer_requires_master_observability_knob(self):
+        """Tachometer is decoupled from observability.enabled: explicit true
+        without the master knob is valid, and the default is on for every run."""
         cfg = _trtllm_config(enabled=False, tachometer={"enabled": True})
+        loaded = SrtConfig.Schema().load(cfg)
+        assert loaded.observability.tachometer_enabled is True
 
-        with pytest.raises(ValidationError, match="requires observability.enabled"):
-            SrtConfig.Schema().load(cfg)
+    def test_tachometer_is_on_by_default_without_observability(self):
+        cfg = _trtllm_config(enabled=False)
+        loaded = SrtConfig.Schema().load(cfg)
+        assert loaded.observability.tachometer_enabled is True
+
+    def test_tachometer_explicit_false_still_opts_out(self):
+        cfg = _trtllm_config(enabled=False, tachometer={"enabled": False})
+        loaded = SrtConfig.Schema().load(cfg)
+        assert loaded.observability.tachometer_enabled is False
 
     def test_telemetry_rejects_tachometer_fields(self):
         cfg = {
