@@ -415,9 +415,9 @@ class TestTachometerConfigGeneration:
         assert 'url = "http://10.0.0.1:8000/metrics"' in config_text
 
     @patch("srtctl.core.telemetry.get_hostname_ip", return_value="10.0.0.1")
-    def test_backend_targets_are_leaders_only(self, _mock_get_hostname_ip):
-        """Only rank zero serves the logical worker's /metrics; follower
-        sys-ports would produce duplicate or empty rows."""
+    def test_backend_targets_cover_every_rank(self, _mock_get_hostname_ip):
+        """Every worker rank is a scrape target (vLLM agg followers excepted);
+        follower metadata keeps rows distinguishable."""
         tachometer = TachometerConfig(enabled=True)
         runtime = MagicMock(job_id="12345", run_name="test_12345", network_interface="eth0")
         runtime.log_dir = Path("/runs/12345/logs")
@@ -448,7 +448,7 @@ class TestTachometerConfigGeneration:
         )
 
         assert 'name = "backend_prefill0_rank0"' in config_text
-        assert "rank1" not in config_text
+        assert 'name = "backend_prefill0_rank1"' in config_text
 
     @patch("srtctl.core.telemetry.get_hostname_ip", return_value="10.0.0.1")
     def test_generate_config_without_exporters_targets_servers_only(self, _mock_get_hostname_ip):

@@ -102,9 +102,10 @@ def generate_tachometer_config(
             )
 
     for process in sorted(processes, key=lambda p: (p.endpoint_mode, p.endpoint_index, p.node_rank, p.node)):
-        # Leaders only: rank zero serves the logical worker's /metrics, so
-        # follower sys-ports would only add duplicate or empty rows.
-        if not process.is_leader:
+        # Every rank is a target (vLLM agg followers excepted below): follower
+        # metadata columns keep rows distinguishable, and rank coverage is
+        # exactly what the physical-process client list provides for vLLM DP.
+        if frontend_type == "vllm" and process.endpoint_mode == "agg" and not process.is_leader:
             continue
         node_ip = get_hostname_ip(process.node, runtime.network_interface)
         port = FRONTEND_PUBLIC_PORT if frontend_type == "vllm" and process.endpoint_mode == "agg" else process.sys_port

@@ -1065,7 +1065,7 @@ The legacy Python RAW scraper (`<log_dir>/raw_prometheus.jsonl`) no longer follo
 
 The component perf dashboard is **not** configured here. It is built in post-processing on every run; `enabled` decides which capture legs exist and therefore which tabs the page carries. See [Component Performance Dashboard](component-dashboard.md).
 
-Tachometer collects worker-leader and frontend metrics by default (minus the client-polled complement described above). DCGM and node exporters are optional additions:
+Tachometer collects every worker rank and frontend metrics by default (minus the client-polled complement described above). DCGM and node exporters are optional additions:
 
 ```yaml
 observability:
