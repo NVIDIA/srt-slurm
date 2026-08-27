@@ -5,7 +5,7 @@ diff --git a/vllm/envs.py b/vllm/envs.py
      VLLM_KIMI_K3_AUX_ATTN_RES_STREAM: bool = False
      VLLM_ENABLE_K3_LATENT_MOE_TAIL_FUSION: bool = True
      VLLM_KIMI_K3_DEFERRED_MOE_FINALIZE: bool = True
-+    VLLM_KIMI_K3_INTERNAL_PREFILL_CHECKPOINTS: bool = True
++    VLLM_KIMI_K3_INTERNAL_PREFILL_CHECKPOINTS: bool = False
      VLLM_KIMI_K3_GEMM_AR: bool = True
      VLLM_KIMI_K3_GEMM_RS: bool = False
      VLLM_BLOCKSCALE_FP8_GEMM_FLASHINFER: bool = True
@@ -14,7 +14,7 @@ diff --git a/vllm/envs.py b/vllm/envs.py
          int(os.getenv("VLLM_KIMI_K3_DEFERRED_MOE_FINALIZE", "1"))
      ),
 +    "VLLM_KIMI_K3_INTERNAL_PREFILL_CHECKPOINTS": lambda: bool(
-+        int(os.getenv("VLLM_KIMI_K3_INTERNAL_PREFILL_CHECKPOINTS", "1"))
++        int(os.getenv("VLLM_KIMI_K3_INTERNAL_PREFILL_CHECKPOINTS", "0"))
 +    ),
      # Use the SM100 BF16 GEMM-AR kernel for eligible Kimi-K3 row-parallel
      # attention projections. All TP ranks must belong to one NVLink domain.
