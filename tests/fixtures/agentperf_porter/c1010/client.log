@@ -1,0 +1,28 @@
+0: warning: `VIRTUAL_ENV=/opt/dynamo/venv` does not match the project environment path `/tmp/agentperf-570849/venv` and will be ignored; use `--active` to target the active environment instead
+0: ============================================================
+0: AA-AGENTPERF: Deterministic Load Test
+0: ============================================================
+0:   Base URL: http://nvl72d102-T10:8333/v1
+0:   Model: /lustre/fsw/portfolios/coreai/projects/model-ci/artifacts/model/nvidia_deepseek-v4-pro-nvfp4-dspark/hf/hf-318bf60_orig
+0:   Server type: trtllm
+0:   Concurrencies: [1010]
+0:   Max workers: 8
+0:   Connection pool: 8192 (auto-sized, keepalive expiry disabled)
+0:   Phase Timeout: 2400.0s
+0:   Max ISL offset: 10
+0:   User assignments: /tmp/agentperf-570849/data/500-sample-user-trajectory-assignments-20k.json
+0:   Max tokens: 2000
+0:   Reasoning effort: high
+0:   Tool-call delays: enabled
+0:   Conversation routing headers: enabled
+0:   Dynamo conv-aware routing (X-Dynamo-Session-ID): enabled
+0:   Power sampling: disabled
+0:   Results dir: /lustre/fsw/portfolios/coreai/projects/team/users/bench-user/disagg-runs/results/bm_agentperf_c1010/agentperf
+0:   Request log: /lustre/fsw/portfolios/coreai/projects/team/users/bench-user/disagg-runs/results/bm_agentperf_c1010/agentperf/requests.jsonl
+0:   Seed: 42
+0: ============================================================
+0: Loading trajectories from /tmp/agentperf-570849/data/aa-rwlt_coding-agent-scenario_tuning_v2_500traj.jsonl...
+0: Loaded 500 trajectories
+0: Total requests across all trajectories: 18997
+0: Loaded user assignments from /tmp/agentperf-570849/data/500-sample-user-trajectory-assignments-20k.json: 20000 users, 3 trajectories each
+0: Running 1 phase(s): concurrencies=[1010]
