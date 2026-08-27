@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import shlex
 from collections.abc import Callable
 from pathlib import Path
@@ -19,7 +20,7 @@ from srtctl.core.power.topology import build_expected_devices
 from srtctl.core.processes import ManagedProcess, ProcessRegistry
 from srtctl.core.schema import TelemetryExporterConfig
 from srtctl.core.slurm import start_srun_process
-from srtctl.core.telemetry import generate_tachometer_config
+from srtctl.core.telemetry import TACHOMETER_STORAGE_PARENT, generate_tachometer_config
 
 if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
@@ -264,14 +265,46 @@ class TelemetryStageMixin:
             return 1
         return exit_code
 
+    def _resolve_tachometer_binary(self, binary_path: str) -> str:
+        """Resolve the default bare binary name against the checkout's bin/.
+
+        An explicit ``binary_path`` is always respected verbatim. The default
+        bare name used to rely on ``$PATH`` inside the srun step, while
+        ``make setup`` installs the binary to ``<srtctl_root>/bin/`` — the
+        same place ``validate_setup`` checks and the --bash lifecycle uses.
+        """
+        if binary_path != "tachometer-scraper":
+            return binary_path
+        candidates = []
+        source_dir = os.environ.get("SRTCTL_SOURCE_DIR")
+        if source_dir:
+            candidates.append(Path(source_dir) / "bin" / binary_path)
+        candidates.append(Path(__file__).resolve().parents[4] / "bin" / binary_path)
+        for candidate in candidates:
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
+        return binary_path
+
     def start_tachometer(self) -> list[ManagedProcess]:
-        """Start optional Tachometer collection from observability."""
-        tachometer = self.config.observability.tachometer
-        if tachometer.enabled is not True:
+        """Start Tachometer collection (follows ``observability.enabled``)."""
+        observability = self.config.observability
+        tachometer = observability.tachometer
+        if not observability.tachometer_enabled:
             logger.info("Tachometer disabled")
             return []
 
         logger.info("Starting Tachometer")
+
+        # Scrape the complement of what the benchmark client already polls;
+        # the helper lives on BenchmarkStageMixin (same orchestrator object).
+        client_urls_fn = getattr(self, "_client_polled_metric_urls", None)
+        exclude_urls = client_urls_fn() if client_urls_fn is not None else frozenset()
+        if exclude_urls:
+            logger.info(
+                "Tachometer excludes %d endpoint(s) the benchmark client polls: %s",
+                len(exclude_urls),
+                ",".join(sorted(exclude_urls)),
+            )
 
         power_telemetry = self.config.telemetry
         dcgm_exporter = power_telemetry.dcgm_exporter if power_telemetry.enabled else tachometer.dcgm_exporter
@@ -285,11 +318,14 @@ class TelemetryStageMixin:
                 tachometer=tachometer,
                 dcgm_exporter=dcgm_exporter,
                 frontend_type=self.config.frontend.type,
+                exclude_urls=exclude_urls,
             )
         )
 
         tachometer_dir = self.runtime.log_dir / tachometer.storage_subdir
-        tachometer_dir.mkdir(parents=True, exist_ok=True)
+        # Create only the PARENT of the storage path: tachometer-scraper aborts if the
+        # storage leaf already exists. Same rule the --bash lifecycle already follows.
+        (tachometer_dir / TACHOMETER_STORAGE_PARENT).mkdir(parents=True, exist_ok=True)
         local_dir = tachometer_dir / "local"
         local_dir.mkdir(parents=True, exist_ok=True)
 
@@ -320,7 +356,7 @@ class TelemetryStageMixin:
             )
 
         cmd = [
-            tachometer.binary_path,
+            self._resolve_tachometer_binary(tachometer.binary_path),
             "--config",
             str(config_path),
             "--local-dir",
@@ -346,6 +382,10 @@ class TelemetryStageMixin:
                 ),
                 log_file=self.runtime.log_dir / "tachometer.out",
                 node=self.runtime.nodes.head,
+                # Best-effort by contract: telemetry must never kill a
+                # benchmark. A dead scraper costs the capture, not the run;
+                # the loss is visible in tachometer.out and the sweep log.
+                critical=False,
             )
         )
         logger.info("Tachometer started with artifacts under %s", tachometer_dir)

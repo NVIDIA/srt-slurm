@@ -366,9 +366,10 @@ class BenchmarkStageMixin:
         # opted in via reporting.live_metrics in the cluster config.
         snapshotter = try_start_snapshotter(self.runtime.log_dir, stop_event)
 
-        # RAW /metrics capture for the benchmark window — no-op unless opted in.
-        # These endpoints die with the job, so this is the only chance to record
-        # them; it runs alongside the client rather than after it.
+        # Legacy RAW /metrics capture — strictly opt-in via scrape_metrics: true
+        # (Tachometer is the default server-side capture and runs from the
+        # telemetry stage). Opting in double-polls the endpoints; the warning
+        # below spells out the cost.
         #
         # The opt-in is re-checked here rather than left to try_start_raw_scraper
         # alone: Python evaluates arguments before the call, so building the
@@ -383,7 +384,6 @@ class BenchmarkStageMixin:
         # switch the scraper on for those callers.
         observability = getattr(self.config, "observability", None)
         raw_scraper = None
-        host_sampler = None
         if getattr(observability, "scraper_enabled", False) is True:
             self._warn_on_double_metric_polling()
             raw_scraper = try_start_raw_scraper(
@@ -392,10 +392,14 @@ class BenchmarkStageMixin:
                 observability,
                 stop_event,
             )
-            # Host/process telemetry alongside the endpoint scrape. The Prometheus
-            # families describe what Dynamo publishes; they say nothing about the
-            # machine underneath, where host CPU saturation, lock convoys and fd
-            # exhaustion live. Same opt-in, same best-effort contract.
+
+        # Host/process telemetry for the benchmark window. The Prometheus
+        # families describe what Dynamo publishes; they say nothing about the
+        # machine underneath, where host CPU saturation, lock convoys and fd
+        # exhaustion live. Follows observability.enabled (it used to share the
+        # RAW scraper's knob); same best-effort contract.
+        host_sampler = None
+        if getattr(observability, "enabled", False) is True:
             from srtctl.analysis.host_sampler import try_start_host_sampler
 
             host_sampler = try_start_host_sampler(self.runtime.log_dir, observability, stop_event)
@@ -638,6 +642,38 @@ class BenchmarkStageMixin:
         urls = list(dict.fromkeys(urls)) if logical_workers_only else sorted(set(urls))
         return {"AIPERF_SERVER_METRICS_URLS": ",".join(urls)}
 
+    def _client_polled_metric_urls(self) -> frozenset[str]:
+        """The ``/metrics`` URLs the benchmark client will poll on its own.
+
+        Tachometer scrapes the complement of this set (see
+        ``TelemetryStageMixin.start_tachometer``), so it is derived from the
+        same logic that injects ``AIPERF_SERVER_METRICS_URLS`` — including the
+        dead-TRT-LLM-worker omission and the explicit recipe override. It is
+        deliberately NOT a second endpoint list to maintain: when the injected
+        set changes, the complement moves with it. A serve-only or manual run
+        has no client, so nothing is polled and Tachometer covers everything.
+        """
+        if bool(getattr(self, "serve_only", False)):
+            return frozenset()
+        explicit = self.runtime.environment.get("AIPERF_SERVER_METRICS_URLS")
+        if explicit is not None:
+            return frozenset(url for url in explicit.split(",") if url)
+        from srtctl.benchmarks.base import AIPerfBenchmarkRunner, get_runner
+
+        benchmark_type = self.config.benchmark.type
+        if benchmark_type == "custom":
+            env = self._get_aiperf_server_metrics_env(logical_workers_only=True)
+        else:
+            try:
+                runner = get_runner(benchmark_type)
+            except ValueError:
+                return frozenset()
+            if not isinstance(runner, AIPerfBenchmarkRunner):
+                return frozenset()
+            env = self._get_aiperf_server_metrics_env()
+        urls = env.get("AIPERF_SERVER_METRICS_URLS", "")
+        return frozenset(url for url in urls.split(",") if url)
+
     def _warn_on_double_metric_polling(self) -> None:
         """Warn when the RAW scraper and an AIPerf client will poll /metrics together.
 
@@ -666,13 +702,12 @@ class BenchmarkStageMixin:
         if not is_aiperf:
             return
         logger.warning(
-            "Double /metrics polling: the observability RAW scraper AND the %s client "
-            "will both poll the worker endpoints for the duration of this run. Both "
-            "captures are valid, but the extra scrape load perturbs the measurement and "
-            "has previously made a submission irreproducible. Set "
-            "observability.scrape_metrics: false to keep only the client's polling, or "
-            "drop AIPERF_SERVER_METRICS_URLS from the benchmark to keep only the RAW "
-            "capture (which is what the perf dashboard reads).",
+            "Double /metrics polling: the legacy RAW scraper (scrape_metrics: true) AND "
+            "the %s client will both poll the worker endpoints for the duration of this "
+            "run — and Tachometer's complement only accounts for the client, not the RAW "
+            "scraper. The extra scrape load perturbs the measurement and has previously "
+            "made a submission irreproducible. Remove scrape_metrics: true to keep the "
+            "default capture (client + Tachometer complement).",
             self.config.benchmark.type,
         )
 

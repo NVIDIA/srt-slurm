@@ -264,6 +264,8 @@ class TestObservabilitySchema:
 
         cfg = SrtConfig.from_yaml(config_path)
 
-        assert cfg.observability.scraper_enabled is True
+        # RAW is opt-in only now; Tachometer is the default capture.
+        assert cfg.observability.scraper_enabled is False
         assert cfg.observability.tachometer.enabled is True
+        assert cfg.observability.tachometer_enabled is True
         assert cfg.observability.tachometer.default_frequency == 2.0
