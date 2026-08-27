@@ -1082,8 +1082,7 @@ class ObservabilityConfig:
 
     * native Tachometer collection of every ``/metrics`` endpoint the benchmark
       client does not already poll (see ``TelemetryStageMixin.start_tachometer``
-      and ``tachometer`` below). The legacy in-job RAW Prometheus scraper is now
-      opt-in only via ``scrape_metrics: true`` (see ``scrape_*`` below).
+      and ``tachometer`` below).
 
     Every expansion uses setdefault semantics: an explicit value in the recipe
     always wins, so ``observability.enabled`` is safe to switch on globally.
@@ -1109,38 +1108,23 @@ class ObservabilityConfig:
             and frontends. Requires otel_endpoint to be set. Default: False.
         otel_endpoint: OTEL collector endpoint (e.g. "http://10.0.0.1:4317").
             Required when enable_otel is True.
-        scrape_metrics: Run the legacy in-job RAW Prometheus scraper. Off by
-            default (Tachometer is the default capture); set True to opt in —
-            it then runs alongside Tachometer, double-polling the endpoints.
-        scrape_interval_seconds: Seconds between scrape sweeps. Default: 1.0.
-            The floor is 0.5; a sweep slower than the interval simply runs
-            back-to-back rather than queueing (see the drift-free pacing in
-            ``RawMetricsScraper``).
-        scrape_output: Filename (under the run's log dir) for the RAW capture.
         tachometer: Native Tachometer capture configuration. Follows ``enabled``
             unless ``tachometer.enabled`` is set explicitly (see
             :class:`TachometerConfig`).
+
+    The retired ``scrape_metrics`` / ``scrape_interval_seconds`` /
+    ``scrape_output`` knobs (the in-job RAW Prometheus scraper) are rejected
+    at load like any unknown key; the ingest still reads historical
+    ``raw_prometheus.jsonl`` artifacts.
     """
 
     enabled: bool = False
     enable_otel: bool = False
     otel_endpoint: str | None = None
 
-    scrape_metrics: bool | None = None
-    scrape_interval_seconds: float = 1.0
-    scrape_output: str = "raw_prometheus.jsonl"
     tachometer: TachometerConfig = field(default_factory=TachometerConfig)
 
     Schema: ClassVar[type[Schema]] = Schema
-
-    @property
-    def scraper_enabled(self) -> bool:
-        """Whether the legacy in-job RAW Prometheus scraper should run.
-
-        No longer follows ``enabled``: Tachometer is the default server-side
-        capture, so the RAW scraper is strictly opt-in.
-        """
-        return bool(self.scrape_metrics)
 
     @property
     def tachometer_enabled(self) -> bool:

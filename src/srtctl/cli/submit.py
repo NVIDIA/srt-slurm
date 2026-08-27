@@ -384,8 +384,6 @@ def show_config_details(config: SrtConfig) -> None:
         if config.benchmark.container_image:
             details.add_row("benchmark", "container_image", config.benchmark.container_image)
 
-        if config.observability.enabled:
-            details.add_row("observability", "raw_metrics", str(config.observability.scraper_enabled))
         tachometer = config.observability.tachometer
         if config.observability.tachometer_enabled:
             details.add_row("observability", "tachometer", "enabled")

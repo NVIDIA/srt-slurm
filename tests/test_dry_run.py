@@ -259,7 +259,6 @@ class TestDryRunExecutionExtensions:
         show_config_details(config)
         output = capsys.readouterr().out
         assert "observability" in output
-        assert "raw_metrics" in output
         assert "tachometer" in output
         assert "binary_path" in output
         assert "tachometer-scraper" in output
