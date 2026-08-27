@@ -1590,7 +1590,10 @@ class TestRunPostEval:
         mock_proc.returncode = 0
 
         with patch.dict(os.environ, {"EVAL_ONLY": "true"}, clear=False):
-            with patch("srtctl.core.health.wait_for_model", return_value=True):
+            # _run_post_eval waits via _wait_for_service_ready (benchmark_stage),
+            # which binds wait_for_model at import time — patch that reference,
+            # not the source module.
+            with patch("srtctl.cli.mixins.benchmark_stage.wait_for_model", return_value=True):
                 with patch("srtctl.cli.do_sweep.start_srun_process", return_value=mock_proc):
                     result = orch._run_post_eval(stop)
         assert result == 0

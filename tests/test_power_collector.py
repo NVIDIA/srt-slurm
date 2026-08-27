@@ -768,7 +768,10 @@ class TestRequiredReadinessGate:
             exit_code = orchestrator.run()
 
         run_benchmark.assert_not_called()
-        start_tachometer.assert_called_once()
+        # Tachometer aligns with the load window (started inside
+        # run_benchmark); a run whose benchmark was skipped has no window,
+        # so nothing starts the capture.
+        start_tachometer.assert_not_called()
         assert exit_code == 1
 
     def test_eval_only_run_never_starts_power_telemetry(self, tmp_path):

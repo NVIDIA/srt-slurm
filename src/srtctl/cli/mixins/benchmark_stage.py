@@ -376,9 +376,27 @@ class BenchmarkStageMixin:
 
         logger.info("Running %s benchmark", runner.name)
 
+        # Tachometer scrapes the load window only, the same window the
+        # benchmark client's own AIPERF polling covers. Starting it with the
+        # other telemetry (before the health gate) recorded minutes of
+        # dead-endpoint noise while workers loaded; stopping it with the
+        # registry's hard teardown SIGKILLed the scraper mid-write and
+        # stranded the whole capture in the arrow WAL (hecate job 487539).
+        # The stop is in a finally so a failed or interrupted benchmark still
+        # flushes whatever was captured. Both hooks live on
+        # TelemetryStageMixin (same orchestrator object).
+        start_tachometer = getattr(self, "start_tachometer", None)
+        tachometer_procs = start_tachometer() if start_tachometer is not None else []
+        for proc in tachometer_procs:
+            registry.add_process(proc)
+
         # Run the benchmark script
         benchmark_log = self.runtime.log_dir / "benchmark.out"
-        exit_code = self._run_benchmark_script(runner, benchmark_log, stop_event)
+        try:
+            exit_code = self._run_benchmark_script(runner, benchmark_log, stop_event)
+        finally:
+            if tachometer_procs:
+                self.stop_tachometer(tachometer_procs)
 
         if exit_code != 0:
             logger.error("Benchmark failed with exit code %d", exit_code)

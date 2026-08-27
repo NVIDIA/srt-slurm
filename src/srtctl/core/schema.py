@@ -1049,6 +1049,10 @@ class TachometerConfig:
     binary_path: str = "tachometer-scraper"
     default_frequency: float = 1.0
     sync_interval_secs: int = 120
+    # How long the scraper gets after SIGTERM to flush + compact final.parquet
+    # before the SIGKILL escalation. Compaction time scales with the arrow WAL
+    # accumulated since the last periodic sync.
+    shutdown_grace_secs: float = 120.0
     compaction_threads: int = 4
     storage_subdir: str = "tachometer"
     extra_metadata: dict[str, str] = field(default_factory=dict)

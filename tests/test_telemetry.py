@@ -626,6 +626,14 @@ class TestTachometerStageMixin:
         ]
         assert "container_image" not in scraper_call.kwargs
         assert "container_mounts" not in scraper_call.kwargs
+        # Shell-less launch is load-bearing for graceful shutdown: srun
+        # forwards SIGTERM to the task it launched, and the scraper only
+        # compacts final.parquet if IT is that task. Under the bash wrapper
+        # the signal dies with bash and the capture is lost to step SIGKILL
+        # (hecate job 487539). Env must ride --export, not a bash `export`.
+        assert scraper_call.kwargs["use_bash_wrapper"] is False
+        assert scraper_call.kwargs["srun_export_env"] == {"POLARS_MAX_THREADS": "4"}
+        assert "env_to_set" not in scraper_call.kwargs
         # Telemetry is best-effort by contract: a dead scraper must never
         # tear down the benchmark via the critical-process check.
         assert procs[-1].name == "tachometer"
@@ -827,6 +835,97 @@ class TestTachometerStageMixin:
         for call in exporter_calls:
             assert call.kwargs["nodes"] == 2
             assert call.kwargs["ntasks"] == 2
+
+
+class TestStopTachometer:
+    """Graceful shutdown: SIGTERM first, with the scraper's compaction grace."""
+
+    @staticmethod
+    def _stage(grace: float = 120.0) -> TelemetryStageMixin:
+        stage = TelemetryStageMixin()
+        stage.config = _make_config(tachometer=TachometerConfig(enabled=True, shutdown_grace_secs=grace))
+        return stage
+
+    @patch("srtctl.cli.mixins.telemetry_stage.terminate_and_reap")
+    def test_scraper_gets_the_shutdown_grace_and_exporters_do_not(self, mock_reap):
+        from srtctl.core.processes import ManagedProcess, TerminationOutcome
+
+        mock_reap.return_value = TerminationOutcome(reaped=True, force_killed=False)
+        exporter = ManagedProcess(name="tachometer_node_exporter", popen=_running_exporter(), critical=False)
+        scraper = ManagedProcess(name="tachometer", popen=_running_exporter(), critical=False)
+
+        self._stage(grace=45.0).stop_tachometer([exporter, scraper])
+
+        # The scraper compacts final.parquet after SIGTERM and needs the
+        # configured grace; the exporter sidecars are plain daemons.
+        assert mock_reap.call_args_list[0].kwargs["terminate_timeout"] == 10.0
+        assert mock_reap.call_args_list[1].kwargs["terminate_timeout"] == 45.0
+
+    @patch("srtctl.cli.mixins.telemetry_stage.terminate_and_reap")
+    def test_already_exited_processes_are_skipped(self, mock_reap):
+        from srtctl.core.processes import ManagedProcess
+
+        popen = MagicMock()
+        popen.poll.return_value = 0
+        self._stage().stop_tachometer([ManagedProcess(name="tachometer", popen=popen, critical=False)])
+
+        mock_reap.assert_not_called()
+
+
+class TestBenchmarkWindowTachometerLifecycle:
+    """run_benchmark brackets the load with the Tachometer capture.
+
+    Starting with the other telemetry (before the health gate) records only
+    dead-endpoint noise while workers load; leaving the stop to the registry's
+    hard teardown SIGKILLs the scraper mid-write and strands the capture in
+    the arrow WAL (hecate job 487539). The window contract mirrors the
+    client's own AIPERF polling: scrape while the load runs.
+    """
+
+    @staticmethod
+    def _harness(tmp_path, calls):
+        from srtctl.cli.mixins.benchmark_stage import BenchmarkStageMixin
+        from srtctl.core.processes import ManagedProcess
+
+        class Stage(BenchmarkStageMixin):
+            pass
+
+        stage = Stage()
+        stage.config = _make_config(benchmark=BenchmarkConfig(type="custom", command="echo load", concurrencies=[1]))
+        stage.runtime = MagicMock()
+        stage.runtime.log_dir = tmp_path
+        stage._wait_for_service_ready = lambda stop_event: True
+        scraper = ManagedProcess(name="tachometer", popen=_running_exporter(), critical=False)
+        stage.start_tachometer = MagicMock(side_effect=lambda: (calls.append("start"), [scraper])[1])
+        stage.stop_tachometer = MagicMock(side_effect=lambda procs: calls.append("stop"))
+        return stage, scraper
+
+    def test_capture_brackets_the_benchmark_script(self, tmp_path):
+        import threading
+
+        calls: list[str] = []
+        stage, scraper = self._harness(tmp_path, calls)
+        stage._run_benchmark_script = MagicMock(side_effect=lambda *a, **k: (calls.append("script"), 0)[1])
+        registry = MagicMock()
+
+        exit_code = stage.run_benchmark(registry, threading.Event(), reporter=None)
+
+        assert exit_code == 0
+        assert calls == ["start", "script", "stop"]
+        registry.add_process.assert_called_once_with(scraper)
+        stage.stop_tachometer.assert_called_once_with([scraper])
+
+    def test_capture_stops_even_when_the_script_raises(self, tmp_path):
+        import threading
+
+        calls: list[str] = []
+        stage, _ = self._harness(tmp_path, calls)
+        stage._run_benchmark_script = MagicMock(side_effect=RuntimeError("client crashed"))
+
+        with pytest.raises(RuntimeError, match="client crashed"):
+            stage.run_benchmark(MagicMock(), threading.Event(), reporter=None)
+
+        assert calls == ["start", "stop"]
 
 
 def _running_exporter():
