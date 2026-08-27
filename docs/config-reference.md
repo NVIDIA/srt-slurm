@@ -635,6 +635,7 @@ benchmark:
 | `longbenchv2`     | Long-context evaluation benchmark              |
 | `router`          | Router performance with prefix caching         |
 | `mooncake-router` | KV-aware routing with Mooncake trace           |
+| `agentperf`       | AgentPerf trajectory replay (agentperf-client) |
 
 ### manual
 
@@ -857,6 +858,60 @@ Dataset characteristics (conversation trace):
 - 12,031 requests over ~59 minutes (3.4 req/s)
 - Avg input: 12,035 tokens, Avg output: 343 tokens
 - 36.64% cache efficiency potential
+
+### agentperf
+
+Trajectory-replay benchmark using the standalone
+[agentperf-client](https://github.com/ArtificialAnalysis-External/agentperf-client) — a deterministic
+agentic load generator with a Rust streaming core. The client checkout is mounted into the container
+(pin the commit for comparable runs); the workload definition (trajectory dataset, user-assignments
+file, `settling_time_seconds`, `phase_timeout_seconds`, stop criteria) lives in the client's own
+config YAML. srtctl injects the endpoint, model and concurrency at run time via the client's
+`--base-url` / `--model` / `--concurrencies` flags. Note the client validates the workload YAML
+*before* merging CLI overrides, so the YAML must still carry syntactically valid placeholder
+`base_url`, `model` and `concurrencies` values — and `phase_timeout_seconds` must satisfy the
+client's ramp-up bound for the *injected* concurrency
+(`phase_timeout_seconds >= (concurrency - 1) / user_spawn_rate + settling_time_seconds +
+min_measurement_seconds`).
+
+```yaml
+benchmark:
+  type: "agentperf"
+  agentperf_client_dir: "/agentperf-client"       # Container path to the client checkout
+  agentperf_config: "/workloads/agentperf.yaml"   # Container path to the client's workload YAML
+  concurrencies: [1010]                           # One benchmark phase per level
+  env:
+    AGENTPERF_EXTRA_ARGS: "--seed 100"            # Optional: appended to agentperf/run.py verbatim
+
+extra_mount:
+  - "/path/on/host/agentperf-client:/agentperf-client"
+  - "/path/on/host/workloads:/workloads"
+```
+
+| Field                  | Type        | Required | Default | Description                                            |
+| ---------------------- | ----------- | -------- | ------- | ------------------------------------------------------ |
+| `agentperf_client_dir` | string      | Yes      | —       | Container path to an agentperf-client checkout         |
+| `agentperf_config`     | string      | Yes      | —       | Container path to the client's workload YAML           |
+| `concurrencies`        | list/string | Yes*     | —       | Levels, one client phase each; string form is x-separated (`"64x1010"`), matching other benchmark types |
+| `concurrency`          | int         | Yes*     | —       | Single level (alternative to `concurrencies`)          |
+
+*One of `concurrency` / `concurrencies` is required.
+
+Notes:
+- The first run of a job builds an isolated client runtime under `/tmp/agentperf-<jobid>`
+  (uv env, pinned Rust toolchain, `rustcore` extension, tokenizer cache) and stages the trajectory
+  and user-assignments datasets from shared storage to node-local `/tmp` — this preflight needs
+  network egress from the benchmark node and adds several minutes before the first phase.
+- The user-assignments file referenced by the workload YAML must cover the highest concurrency
+  level (`assign_trajectories` fails loudly otherwise).
+- Results land under `<log_dir>/agentperf/` (per-phase `*__traj*.{jsonl,txt,json}`,
+  `requests.jsonl`, `phase_manifest.jsonl`); `rollup.py` normalizes them into
+  `benchmark-rollup.json`.
+- Two runs must not share a results dir concurrently (the client resets `phase_manifest.jsonl`
+  at start).
+- `telemetry:` (DCGM power measurement windows) is not supported with agentperf — the schema
+  rejects non-sa-bench benchmark types at config load. Tachometer
+  (`observability.enabled`) works normally.
 
 ---
 

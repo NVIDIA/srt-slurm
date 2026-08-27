@@ -729,6 +729,11 @@ class BenchmarkConfig:
     # Custom dataset fields (sa-bench)
     dataset_name: str | None = None  # "random" (default) or "custom"
     dataset_path: str | None = None  # Container path to dataset file (mount via extra_mount)
+    # AgentPerf benchmark fields (agentperf-client trajectory replay)
+    agentperf_client_dir: str | None = None  # Container path to an agentperf-client checkout (mount via extra_mount)
+    agentperf_config: str | None = (
+        None  # Container path to the client's workload YAML (endpoint/model/concurrency injected)
+    )
     # Trace replay benchmark fields (uses aiperf with mooncake_trace dataset type)
     trace_file: str | None = None  # Path to trace JSONL file (container path, e.g., /traces/dataset.jsonl)
     custom_tokenizer: str | None = None  # Custom tokenizer class (e.g., "module.path.ClassName")
