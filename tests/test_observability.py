@@ -213,6 +213,18 @@ class TestExpandObservability:
         with pytest.raises(ValidationError, match="build_dashboard"):
             SrtConfig.Schema().load(cfg)
 
+    def test_retired_raw_scraper_knobs_are_rejected(self):
+        """The in-job RAW Prometheus scraper is gone; Tachometer is the capture.
+
+        A recipe still carrying `scrape_metrics` (or the other scrape_* knobs)
+        must fail loudly at submit time rather than silently promising a
+        raw_prometheus.jsonl that will never be written. The ingest keeps
+        reading historical raw_prometheus.jsonl artifacts regardless."""
+        cfg = _trtllm_config(enabled=True, scrape_metrics=True)
+
+        with pytest.raises(ValidationError, match="scrape_metrics"):
+            SrtConfig.Schema().load(cfg)
+
     def test_tachometer_requires_master_observability_knob(self):
         cfg = _trtllm_config(enabled=False, tachometer={"enabled": True})
 
@@ -264,6 +276,6 @@ class TestObservabilitySchema:
 
         cfg = SrtConfig.from_yaml(config_path)
 
-        assert cfg.observability.scraper_enabled is True
         assert cfg.observability.tachometer.enabled is True
+        assert cfg.observability.tachometer_enabled is True
         assert cfg.observability.tachometer.default_frequency == 2.0

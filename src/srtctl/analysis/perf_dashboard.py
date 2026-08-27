@@ -28,7 +28,7 @@ deliberately excluded from lint/typecheck and is not part of the ``srtctl`` whee
 and a crash in third-party rendering code must not be able to take down the job's
 post-processing.
 
-Best-effort by construction, matching ``srtctl.analysis.metrics_scraper``: every
+Best-effort by construction, matching the rest of the capture stack: every
 failure path is logged and swallowed. Visualisation is never a hard dependency of a
 benchmark that has already produced its results.
 
@@ -237,7 +237,7 @@ def try_build(config: SrtConfig, runtime: RuntimeContext) -> Path | None:
 
     Single entry point for :class:`PostProcessStageMixin`, so the mixin stays free of
     analysis-package internals -- the same contract as
-    :func:`srtctl.analysis.metrics_scraper.try_start_raw_scraper`.
+    :func:`srtctl.analysis.host_sampler.try_start_host_sampler`.
 
     Unconditional: there is no opt-in to check. What differs between runs is which
     legs :func:`build` finds, and that is the ingest's decision to make from the log

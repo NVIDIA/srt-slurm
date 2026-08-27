@@ -97,6 +97,7 @@ class SweepOrchestrator(
 
     config: SrtConfig
     runtime: RuntimeContext
+    serve_only: bool = False
 
     @property
     def backend(self):
@@ -712,7 +713,9 @@ class SweepOrchestrator(
 
             self._print_connection_info()
 
-            if os.environ.get("EVAL_ONLY", "false").lower() == "true":
+            if self.serve_only:
+                exit_code = self.run_benchmark(registry, stop_event, reporter)
+            elif os.environ.get("EVAL_ONLY", "false").lower() == "true":
                 reporter.report(JobStatus.BENCHMARK, JobStage.BENCHMARK, "Running eval-only evaluation")
                 logger.info("EVAL_ONLY=true: Skipping benchmark stage and running lm-eval evaluation...")
                 exit_code = self._run_post_eval(stop_event)
@@ -769,6 +772,11 @@ def main():
 
     parser = argparse.ArgumentParser(description="Run benchmark sweep")
     parser.add_argument("config", type=str, help="Path to YAML configuration file")
+    parser.add_argument(
+        "--serve-only",
+        action="store_true",
+        help="Keep the inference endpoint running without launching a benchmark.",
+    )
     args = parser.parse_args()
 
     setup_logging()
@@ -795,7 +803,7 @@ def main():
         # Type narrowing: job_id is str after the check above
         assert job_id is not None
         runtime = RuntimeContext.from_config(config, job_id)
-        orchestrator = SweepOrchestrator(config=config, runtime=runtime)
+        orchestrator = SweepOrchestrator(config=config, runtime=runtime, serve_only=args.serve_only)
         exit_code = orchestrator.run()
 
         sys.exit(exit_code)

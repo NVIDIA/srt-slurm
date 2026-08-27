@@ -647,10 +647,14 @@ benchmark:
 | `longbenchv2`     | Long-context evaluation benchmark              |
 | `router`          | Router performance with prefix caching         |
 | `mooncake-router` | KV-aware routing with Mooncake trace           |
+| `agentperf`       | AgentPerf trajectory replay (agentperf-client) |
 
 ### manual
 
 No benchmark is run. Use for manual testing and debugging.
+
+For a one-off serving run, `srtctl apply -f config.yaml --serve-only` provides the same behavior without changing
+the recipe's configured benchmark.
 
 ```yaml
 benchmark:
@@ -692,6 +696,15 @@ they do not own separate engines; co-located logical workers retain repeated IPs
 so list positions remain aligned. With a Dynamo frontend, endpoint and metrics URLs use each
 leader's `DYN_SYSTEM_PORT`; other frontends use the worker HTTP port. If KVBM metrics are configured,
 their URLs are appended to `AIPERF_SERVER_METRICS_URLS` after the logical worker URLs.
+
+Two caveats for `AIPERF_SERVER_METRICS_URLS`:
+
+- **TRT-LLM worker URLs are omitted when the workers publish no metrics.** A TRT-LLM worker
+  launched without `--publish-events-and-metrics` (the default; `observability.enabled` turns it
+  on) serves nothing on its sys-port `/metrics`, so those URLs are not advertised. KVBM URLs are
+  unaffected — KVBM serves its own endpoint regardless of the flag.
+- **An explicit `AIPERF_SERVER_METRICS_URLS` in the recipe `environment:` wins.** Injection is
+  skipped when the variable is already set, so a curated endpoint list is never clobbered.
 
 Values in `benchmark.env` are applied last and can explicitly override any automatically injected
 variable.
@@ -857,6 +870,60 @@ Dataset characteristics (conversation trace):
 - 12,031 requests over ~59 minutes (3.4 req/s)
 - Avg input: 12,035 tokens, Avg output: 343 tokens
 - 36.64% cache efficiency potential
+
+### agentperf
+
+Trajectory-replay benchmark using the standalone
+[agentperf-client](https://github.com/ArtificialAnalysis-External/agentperf-client) — a deterministic
+agentic load generator with a Rust streaming core. The client checkout is mounted into the container
+(pin the commit for comparable runs); the workload definition (trajectory dataset, user-assignments
+file, `settling_time_seconds`, `phase_timeout_seconds`, stop criteria) lives in the client's own
+config YAML. srtctl injects the endpoint, model and concurrency at run time via the client's
+`--base-url` / `--model` / `--concurrencies` flags. Note the client validates the workload YAML
+*before* merging CLI overrides, so the YAML must still carry syntactically valid placeholder
+`base_url`, `model` and `concurrencies` values — and `phase_timeout_seconds` must satisfy the
+client's ramp-up bound for the *injected* concurrency
+(`phase_timeout_seconds >= (concurrency - 1) / user_spawn_rate + settling_time_seconds +
+min_measurement_seconds`).
+
+```yaml
+benchmark:
+  type: "agentperf"
+  agentperf_client_dir: "/agentperf-client"       # Container path to the client checkout
+  agentperf_config: "/workloads/agentperf.yaml"   # Container path to the client's workload YAML
+  concurrencies: [1010]                           # One benchmark phase per level
+  env:
+    AGENTPERF_EXTRA_ARGS: "--seed 100"            # Optional: appended to agentperf/run.py verbatim
+
+extra_mount:
+  - "/path/on/host/agentperf-client:/agentperf-client"
+  - "/path/on/host/workloads:/workloads"
+```
+
+| Field                  | Type        | Required | Default | Description                                            |
+| ---------------------- | ----------- | -------- | ------- | ------------------------------------------------------ |
+| `agentperf_client_dir` | string      | Yes      | —       | Container path to an agentperf-client checkout         |
+| `agentperf_config`     | string      | Yes      | —       | Container path to the client's workload YAML           |
+| `concurrencies`        | list/string | Yes*     | —       | Levels, one client phase each; string form is x-separated (`"64x1010"`), matching other benchmark types |
+| `concurrency`          | int         | Yes*     | —       | Single level (alternative to `concurrencies`)          |
+
+*One of `concurrency` / `concurrencies` is required.
+
+Notes:
+- The first run of a job builds an isolated client runtime under `/tmp/agentperf-<jobid>`
+  (uv env, pinned Rust toolchain, `rustcore` extension, tokenizer cache) and stages the trajectory
+  and user-assignments datasets from shared storage to node-local `/tmp` — this preflight needs
+  network egress from the benchmark node and adds several minutes before the first phase.
+- The user-assignments file referenced by the workload YAML must cover the highest concurrency
+  level (`assign_trajectories` fails loudly otherwise).
+- Results land under `<log_dir>/agentperf/` (per-phase `*__traj*.{jsonl,txt,json}`,
+  `requests.jsonl`, `phase_manifest.jsonl`); `rollup.py` normalizes them into
+  `benchmark-rollup.json`.
+- Two runs must not share a results dir concurrently (the client resets `phase_manifest.jsonl`
+  at start).
+- `telemetry:` (DCGM power measurement windows) is not supported with agentperf — the schema
+  rejects non-sa-bench benchmark types at config load. Tachometer
+  (`observability.enabled`) works normally.
 
 ---
 
@@ -1042,44 +1109,34 @@ infra:
 
 ## observability
 
-`observability.enabled` turns on the server metrics and trace surfaces and captures raw Prometheus responses during the benchmark window:
+`observability.enabled` turns on the server metrics and trace surfaces and collects them with the native Tachometer scraper for the whole run:
 
 ```yaml
 observability:
   enabled: true
 ```
 
-The default Python scraper writes `<log_dir>/raw_prometheus.jsonl`. To additionally collect parsed Parquet with the native Tachometer scraper:
+Tachometer scrapes the **complement** of what the benchmark client polls: worker endpoints that appear in `AIPERF_SERVER_METRICS_URLS` are left to the client (a worker endpoint is never double-polled — the extra scrape load has previously made a submission irreproducible), while the frontend, DCGM, and node-exporter endpoints are always Tachometer's. On runs whose benchmark has no aiperf client (sa-bench, lm-eval, serve-only, manual), the complement expands to every endpoint.
 
-```yaml
-observability:
-  enabled: true
-  tachometer:
-    enabled: true
-```
-
-Set `scrape_metrics: false` beside `enabled` to use Tachometer without also writing the raw JSONL capture. Otherwise the Python RAW scraper and Tachometer run together.
+The legacy in-job Python RAW scraper is retired: a recipe still carrying `scrape_metrics`, `scrape_interval_seconds`, or `scrape_output` fails validation at submit time. Historical `raw_prometheus.jsonl` artifacts remain readable by the post-processing ingest.
 
 | Field | Type | Default | Description |
 | ----- | ---- | ------- | ----------- |
-| `enabled` | bool | `false` | Enable server-side metrics/traces and the raw Python scraper |
-| `scrape_metrics` | bool/null | `null` | Override raw capture; `null` follows `enabled` |
-| `scrape_interval_seconds` | float | `1.0` | Interval between raw Prometheus scrape sweeps |
-| `scrape_output` | string | `raw_prometheus.jsonl` | Raw capture filename below the run log directory |
+| `enabled` | bool | `false` | Enable server-side metrics/traces, Tachometer collection, and host sampling |
 | `enable_otel` | bool | `false` | Inject OTEL tracing environment variables |
 | `otel_endpoint` | string/null | `null` | OTEL collector endpoint |
-| `tachometer` | object | `enabled: false` | Native Tachometer collection settings |
+| `tachometer` | object | `enabled: null` | Native Tachometer collection settings; `enabled: null` follows `observability.enabled`, explicit `false` opts out |
 
 The component perf dashboard is **not** configured here. It is built in post-processing on every run; `enabled` decides which capture legs exist and therefore which tabs the page carries. See [Component Performance Dashboard](component-dashboard.md).
 
-Tachometer always collects worker and frontend metrics. DCGM and node exporters are optional additions:
+Tachometer collects every worker rank and frontend metrics by default (minus the client-polled complement described above). DCGM and node exporters are optional additions:
 
 ```yaml
 observability:
   enabled: true
   tachometer:
     enabled: true
-    default_frequency: 5
+    default_frequency: 1
     sync_interval_secs: 120
     compaction_threads: 4
     storage_subdir: tachometer
@@ -1095,9 +1152,9 @@ observability:
 
 | Tachometer field | Type | Default | Description |
 | ---------------- | ---- | ------- | ----------- |
-| `enabled` | bool | `false` | Enable native Tachometer collection |
+| `enabled` | bool/null | `null` | `null` follows `observability.enabled`; explicit `false` opts out; explicit `true` without `observability.enabled` is a validation error |
 | `binary_path` | string | `tachometer-scraper` | Scraper command or path on the compute nodes |
-| `default_frequency` | float | `5.0` | Scrape frequency in Hz |
+| `default_frequency` | float | `1.0` | Scrape frequency in Hz |
 | `sync_interval_secs` | int | `120` | Interval for intermediate Parquet compaction; `0` disables it |
 | `compaction_threads` | int | `4` | Value passed as `POLARS_MAX_THREADS` |
 | `storage_subdir` | string | `tachometer` | Output directory below the run log directory |
@@ -1107,7 +1164,9 @@ observability:
 
 `make setup ARCH=<compute_arch>` downloads and checksum-verifies the matching Tachometer binary from the latest srt-slurm release. The scraper runs as a native `srun` process on the head node; configured exporters remain containerized on worker nodes. Run `make tachometer-scraper` to build from source instead.
 
-Tachometer writes `<log_dir>/<storage_subdir>/final.parquet`. Intermediate files remain in `<log_dir>/<storage_subdir>/local` until shutdown compaction completes.
+Tachometer writes its Parquet stream under `<log_dir>/<storage_subdir>/raw/scrape/` (the leaf is created by the scraper itself — srtctl pre-creates only the parent, because the scraper refuses a pre-existing storage directory), compacting to `final.parquet` there on shutdown. Intermediate files remain in `<log_dir>/<storage_subdir>/local` until shutdown compaction completes. Rows carry an epoch `timestamp_ns` column, so they join directly with AIPerf records and Dynamo spans; the post-processing ingest converts the Parquet into the dashboard's `server_metrics_export.jsonl`.
+
+The scraper runs as a best-effort process: if it dies (or the binary is missing at runtime), the benchmark continues and the loss is visible in `tachometer.out` and the sweep log. `srtctl validate-setup` still fails fast at submit time when `bin/tachometer-scraper` is absent.
 
 ---
 

@@ -24,7 +24,7 @@ processes. It deliberately does NOT try to reach the worker nodes: that would ne
 srun round-trip per sample, which is exactly the cost the scraper's opt-in exists to
 avoid.
 
-Best-effort by construction, matching ``metrics_scraper``: every failure is logged and
+Best-effort by construction: every failure is logged and
 swallowed. Host telemetry is observability, never a dependency of the benchmark path.
 """
 
@@ -240,15 +240,14 @@ class HostSampler:
 def try_start_host_sampler(log_dir: Path, observability, stop_event: threading.Event) -> HostSampler | None:
     """Start the sampler if ``observability`` opts in, else return ``None``.
 
-    Single entry point for :class:`BenchmarkStageMixin`, matching
-    :func:`srtctl.analysis.metrics_scraper.try_start_raw_scraper`. All failures are
+    Single entry point for :class:`BenchmarkStageMixin`. All failures are
     logged and swallowed -- host telemetry never blocks a benchmark.
 
-    Gated on the same ``scraper_enabled`` knob rather than a new one: it answers the
+    Gated on ``observability.enabled`` rather than a new knob: it answers the
     same question (is this run capturing observability?) and a second switch would let a
     run be half-instrumented in a way nobody intends.
     """
-    if getattr(observability, "scraper_enabled", False) is not True:
+    if getattr(observability, "enabled", False) is not True:
         return None
     try:
         s = HostSampler(log_dir)

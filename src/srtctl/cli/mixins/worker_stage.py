@@ -384,6 +384,11 @@ class WorkerStageMixin:
             mpi=srun_config.mpi,
             oversubscribe=srun_config.oversubscribe,
             cpu_bind=srun_config.cpu_bind,
+            # Endpoint (MPI) workers were the only srun path that dropped the
+            # recipe-level srun_options; the per-process worker, benchmark and
+            # telemetry paths all forward it. Needed so a cluster can express
+            # per-rank CPU/NUMA binding, which srun_config.cpu_bind cannot.
+            srun_options=self.runtime.srun_options,
             het_group=leader.het_group,
         )
 

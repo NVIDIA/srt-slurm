@@ -729,6 +729,11 @@ class BenchmarkConfig:
     # Custom dataset fields (sa-bench)
     dataset_name: str | None = None  # "random" (default) or "custom"
     dataset_path: str | None = None  # Container path to dataset file (mount via extra_mount)
+    # AgentPerf benchmark fields (agentperf-client trajectory replay)
+    agentperf_client_dir: str | None = None  # Container path to an agentperf-client checkout (mount via extra_mount)
+    agentperf_config: str | None = (
+        None  # Container path to the client's workload YAML (endpoint/model/concurrency injected)
+    )
     # Trace replay benchmark fields (uses aiperf with mooncake_trace dataset type)
     trace_file: str | None = None  # Path to trace JSONL file (container path, e.g., /traces/dataset.jsonl)
     custom_tokenizer: str | None = None  # Custom tokenizer class (e.g., "module.path.ClassName")
@@ -1030,11 +1035,19 @@ class TelemetryExporterConfig:
 
 @dataclass(frozen=True)
 class TachometerConfig:
-    """Native Tachometer collection for an observability-enabled run."""
+    """Native Tachometer collection for an observability-enabled run.
 
-    enabled: bool = False
+    ``enabled`` is tri-state: ``None`` (the default) follows
+    ``observability.enabled``, so an observability run collects Tachometer
+    data with no ``tachometer:`` block at all; an explicit ``false`` opts
+    out; an explicit ``true`` under ``observability.enabled: false`` is a
+    validation error (Tachometer's targets only have content when the
+    observability expansion ran).
+    """
+
+    enabled: bool | None = None
     binary_path: str = "tachometer-scraper"
-    default_frequency: float = 5.0
+    default_frequency: float = 1.0
     sync_interval_secs: int = 120
     compaction_threads: int = 4
     storage_subdir: str = "tachometer"
@@ -1070,18 +1083,22 @@ class ObservabilityConfig:
     * ``DYN_LOGGING_SPAN_EVENTS`` / ``DYN_LOGGING_JSONL`` / ``DYN_LOG=debug`` on
       prefill, decode and frontend -- per-request ``SPAN_CLOSED`` trace lines.
 
-    and, at benchmark time (see ``BenchmarkStageMixin``):
+    and, for the run's server-side capture:
 
-    * an in-job Prometheus scraper writing ``raw_prometheus.jsonl`` for the whole
-      benchmark window (see ``scrape_*`` below).
+    * native Tachometer collection of every ``/metrics`` endpoint the benchmark
+      client does not already poll (see ``TelemetryStageMixin.start_tachometer``
+      and ``tachometer`` below).
 
     Every expansion uses setdefault semantics: an explicit value in the recipe
     always wins, so ``observability.enabled`` is safe to switch on globally.
 
     Scope is deliberately server-side. The knob configures what the workers and
     frontend *emit*, and captures that surface by scraping the endpoints
-    directly. It never reaches into the benchmark client to ask it to re-export
-    what the servers already publish.
+    directly. It never asks the benchmark client to re-export what the servers
+    already publish. (One indirect exception: on TRT-LLM the client's
+    ``AIPERF_SERVER_METRICS_URLS`` worker list exists only when
+    ``publish_events_and_metrics`` gives those endpoints content, and this knob
+    is one way that flag gets set — see ``BenchmarkStageMixin``.)
 
     It does **not** decide whether the component perf dashboard is built. That
     happens on every run (see :mod:`srtctl.analysis.perf_dashboard`); ``enabled``
@@ -1096,32 +1113,28 @@ class ObservabilityConfig:
             and frontends. Requires otel_endpoint to be set. Default: False.
         otel_endpoint: OTEL collector endpoint (e.g. "http://10.0.0.1:4317").
             Required when enable_otel is True.
-        scrape_metrics: Run the in-job RAW Prometheus scraper. Defaults to the
-            value of ``enabled``; set False to opt out while keeping the rest.
-        scrape_interval_seconds: Seconds between scrape sweeps. Default: 1.0.
-            The floor is 0.5; a sweep slower than the interval simply runs
-            back-to-back rather than queueing (see the drift-free pacing in
-            ``RawMetricsScraper``).
-        scrape_output: Filename (under the run's log dir) for the RAW capture.
-        tachometer: Optional native Tachometer capture configuration. It runs
-            alongside RAW capture when both are enabled.
+        tachometer: Native Tachometer capture configuration. Follows ``enabled``
+            unless ``tachometer.enabled`` is set explicitly (see
+            :class:`TachometerConfig`).
+
+    The retired ``scrape_metrics`` / ``scrape_interval_seconds`` /
+    ``scrape_output`` knobs (the in-job RAW Prometheus scraper) are rejected
+    at load like any unknown key; the ingest still reads historical
+    ``raw_prometheus.jsonl`` artifacts.
     """
 
     enabled: bool = False
     enable_otel: bool = False
     otel_endpoint: str | None = None
 
-    scrape_metrics: bool | None = None
-    scrape_interval_seconds: float = 1.0
-    scrape_output: str = "raw_prometheus.jsonl"
     tachometer: TachometerConfig = field(default_factory=TachometerConfig)
 
     Schema: ClassVar[type[Schema]] = Schema
 
     @property
-    def scraper_enabled(self) -> bool:
-        """Whether the in-job RAW Prometheus scraper should run."""
-        return self.enabled if self.scrape_metrics is None else self.scrape_metrics
+    def tachometer_enabled(self) -> bool:
+        """Resolved Tachometer enablement (tri-state ``tachometer.enabled``)."""
+        return self.enabled if self.tachometer.enabled is None else self.tachometer.enabled
 
 
 @dataclass(frozen=True)
@@ -2153,13 +2166,13 @@ class SrtConfig:
             raise ValidationError("telemetry requires a non-empty list of unique positive benchmark.concurrencies")
 
     def _validate_observability(self):
-        """Validate optional Tachometer collection under observability."""
+        """Validate Tachometer collection under observability."""
         observability = self.observability
         tachometer = observability.tachometer
-        if not tachometer.enabled:
-            return
-        if not observability.enabled:
+        if tachometer.enabled is True and not observability.enabled:
             raise ValidationError("observability.tachometer requires observability.enabled: true")
+        if not observability.tachometer_enabled:
+            return
         if self.telemetry.enabled and tachometer.dcgm_exporter is not None:
             raise ValidationError(
                 "configure the shared DCGM exporter under telemetry, not observability.tachometer, "
