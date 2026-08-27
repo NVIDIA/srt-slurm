@@ -256,9 +256,6 @@ class RuntimeContext:
     staged_model_path: Path | None = None
     # Request plane for dynamo workers
     request_plane: str = "tcp"
-    # Immutable Dynamo source revision shared by frontend and standalone sidecars.
-    # Set only when dynamo.engine_mode is sidecar.
-    dynamo_source_revision: str | None = None
 
     @classmethod
     def from_config(
@@ -401,11 +398,6 @@ class RuntimeContext:
         if infmax_ws:
             container_mounts[Path(infmax_ws)] = Path("/infmax-workspace")
 
-        # Resolve a moving Dynamo selection exactly once for sidecar mode. Every
-        # container later receives this SHA, so frontend and sidecar cannot race a
-        # newly advanced main branch or release tag.
-        dynamo_source_revision = config.dynamo.resolve_sidecar_source_revision() if config.dynamo.uses_sidecar else None
-
         # Add FormattablePath mounts from config.container_mounts
         # These need to be expanded with the runtime context, so we create a
         # temporary context first and then update
@@ -429,7 +421,6 @@ class RuntimeContext:
             environment=environment,
             is_hf_model=is_hf_model,
             request_plane=config.dynamo.request_plane,
-            dynamo_source_revision=dynamo_source_revision,
         )
 
         # Expand FormattablePath mounts
@@ -457,7 +448,6 @@ class RuntimeContext:
             stage_dir=stage_dir,
             staged_model_path=staged_model_path,
             request_plane=config.dynamo.request_plane,
-            dynamo_source_revision=dynamo_source_revision,
         )
 
     @property

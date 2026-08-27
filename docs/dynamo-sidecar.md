@@ -18,13 +18,13 @@ The first worker that needs a revision builds `dynamo-sglang-sidecar` with Cargo
 
 ## Dynamo source selection
 
-Sidecar mode resolves one immutable source commit during job setup and supplies it to every frontend and worker launch.
+The Dynamo frontend keeps its existing installation behavior. Worker-side builds use the configured source directly; mutable refs are resolved inside the sidecar build and cached by the resulting commit.
 
 | YAML selection | Frontend install | Sidecar source |
 | --- | --- | --- |
 | `dynamo.hash` | source-built runtime wheel | the supplied commit |
-| `dynamo.version` | `ai-dynamo` and `ai-dynamo-runtime` from PyPI | the verified `v<version>` Dynamo tag |
-| `dynamo.top_of_tree: true` | source-built runtime wheel | the SHA resolved from `main` once at job setup |
+| `dynamo.version` | `ai-dynamo` and `ai-dynamo-runtime` from PyPI | the matching `v<version>` Dynamo tag |
+| `dynamo.top_of_tree: true` | source-built runtime wheel | `main`, resolved in the worker build |
 
 `dynamo.wheel` is intentionally rejected in sidecar mode because a staged wheel has no trustworthy source-revision mapping. Use `version`, `hash`, or `top_of_tree` instead.
 

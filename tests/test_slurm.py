@@ -238,7 +238,7 @@ def _remap_worker_mixin(tmp_path: Path, *, frontend_type: str, dynamo_install: b
         frontend=SimpleNamespace(type=frontend_type),
         dynamo=SimpleNamespace(
             install=dynamo_install,
-            get_install_commands=lambda _revision=None: "echo install-dynamo",
+            get_install_commands=lambda: "echo install-dynamo",
             request_plane="nats",
             event_plane="zmq",
         ),

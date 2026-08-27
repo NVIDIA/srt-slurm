@@ -103,7 +103,7 @@ class DynamoFrontend:
                 env_to_set.update(config.frontend.env)
 
             # Build bash preamble (setup script + dynamo install)
-            bash_preamble = self._build_preamble(config, runtime)
+            bash_preamble = self._build_preamble(config)
 
             proc = start_srun_process(
                 command=cmd,
@@ -134,7 +134,7 @@ class DynamoFrontend:
 
         return processes
 
-    def _build_preamble(self, config: Any, runtime: "RuntimeContext") -> str | None:
+    def _build_preamble(self, config: Any) -> str | None:
         """Build bash preamble for dynamo frontend processes."""
         parts = []
 
@@ -155,7 +155,7 @@ class DynamoFrontend:
         # Dynamo installation (required for dynamo frontend)
         # Skip if dynamo.install is False (container already has dynamo installed)
         if config.dynamo.install:
-            parts.append(config.dynamo.get_install_commands(runtime.dynamo_source_revision))
+            parts.append(config.dynamo.get_install_commands())
 
         if not parts:
             return None

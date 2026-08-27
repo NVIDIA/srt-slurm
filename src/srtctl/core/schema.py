@@ -18,7 +18,6 @@ import logging
 import math
 import os
 import shlex
-import subprocess
 from collections.abc import Iterator, Mapping
 from dataclasses import field
 from enum import Enum
@@ -1252,49 +1251,77 @@ def dynamo_cargo_patch_commands(cargo_patches: list[str] | None = None) -> tuple
 
 
 def _cached_sidecar_build(
-    source_revision: str,
+    source_revision: str | None,
+    source_ref: str | None,
     binary: str,
     cargo_patches: list[str] | None = None,
 ) -> str:
-    """Build and export one architecture-specific Rust sidecar from a pinned revision.
+    """Build and export one architecture-specific Rust sidecar.
 
     The output is deliberately separate from the runtime wheel cache. A wheel cache
     completion only proves that maturin succeeded; it must not imply that a native
     sidecar binary is present for this host architecture.
     """
-    source_cache_key = dynamo_source_cache_key(source_revision, cargo_patches)
-    cache_key = hashlib.sha256(f"sidecar-v1\n{source_cache_key}\n{binary}".encode()).hexdigest()[:20]
-    cache = f"{_DYNAMO_CACHE_ROOT}/sidecars/{cache_key}/$(uname -m)"
-    lock = f"{_DYNAMO_CACHE_ROOT}/.sidecar-{cache_key}.lock"
+    if (source_revision is None) == (source_ref is None):
+        raise ValueError("sidecar build requires exactly one of source_revision or source_ref")
+
     override_cmd = " && ".join(dynamo_cargo_patch_commands(cargo_patches))
     if override_cmd:
         override_cmd += " && "
     cargo_lock_arg = "--locked " if not cargo_patches else ""
+
+    if source_revision is not None:
+        source_description = source_revision
+        resolve_source = f"DYN_SIDECAR_REVISION={shlex.quote(source_revision)} && "
+    else:
+        assert source_ref is not None
+        source_description = source_ref
+        source_ref_quoted = shlex.quote(source_ref)
+        peeled_ref_quoted = shlex.quote(f"{source_ref}^{{}}")
+        resolve_source = (
+            "if ! command -v git >/dev/null 2>&1; then "
+            "apt-get update -qq && apt-get install -y -qq git > /dev/null 2>&1; fi && "
+            f'DYN_SIDECAR_REVISION="$(git ls-remote {_DYNAMO_GIT_URL} {source_ref_quoted} {peeled_ref_quoted} | '
+            "awk '$2 ~ /\\^\\{\\}$/ { print $1; found=1; exit } { revision=$1 } END { if (!found && revision) print revision }')\" && "
+            'test -n "$DYN_SIDECAR_REVISION" && '
+        )
+
+    patch_cache_key = hashlib.sha1("\n".join(cargo_patches or []).encode()).hexdigest()[:8]
+    build_message = shlex.quote(f"Building Dynamo sidecar {binary} from {source_description}...")
+    cache_key_command = (
+        "DYN_SIDECAR_CACHE_KEY=\"$(printf '%s\\n' "
+        f'sidecar-v2 "$DYN_SIDECAR_REVISION" {shlex.quote(binary)} {patch_cache_key} '
+        '| sha256sum | cut -c1-20)" && '
+    )
     return (
-        f"echo 'Building Dynamo sidecar {binary} from {source_revision}...' && "
+        f"echo {build_message} && "
         f"mkdir -p {_DYNAMO_CACHE_ROOT} && "
+        f"{resolve_source}"
+        f"{cache_key_command}"
+        f'DYN_SIDECAR_CACHE="{_DYNAMO_CACHE_ROOT}/sidecars/$DYN_SIDECAR_CACHE_KEY/$(uname -m)" && '
+        f'DYN_SIDECAR_LOCK="{_DYNAMO_CACHE_ROOT}/.sidecar-$DYN_SIDECAR_CACHE_KEY.lock" && '
         f"( flock -x 202; "
-        f"if [ ! -f {cache}/.complete ] || [ ! -x {cache}/{binary} ]; then "
+        f'if [ ! -f "$DYN_SIDECAR_CACHE/.complete" ] || [ ! -x "$DYN_SIDECAR_CACHE/{binary}" ]; then '
         f"apt-get update -qq && apt-get install -y -qq libclang-dev curl git protobuf-compiler > /dev/null 2>&1 && "
         f"if ! command -v cargo &>/dev/null; then "
         f"curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable -q && "
         f". $HOME/.cargo/env; fi && "
         f"DYN_SIDECAR_BUILD_DIR=$(mktemp -d) && "
         f"git clone {_DYNAMO_GIT_URL} $DYN_SIDECAR_BUILD_DIR/dynamo && "
-        f"cd $DYN_SIDECAR_BUILD_DIR/dynamo && git checkout {shlex.quote(source_revision)} && "
+        f'cd $DYN_SIDECAR_BUILD_DIR/dynamo && git checkout "$DYN_SIDECAR_REVISION" && '
         f"{override_cmd}"
         f'export RUSTFLAGS="${{RUSTFLAGS:-}} -C target-cpu=native --cfg tokio_unstable" && '
         f"cargo build --release {cargo_lock_arg}-p {binary} && "
-        f"mkdir -p {cache} && "
-        f"install -m 0755 target/release/{binary} {cache}/{binary}.tmp && "
-        f"mv {cache}/{binary}.tmp {cache}/{binary} && "
-        f"git rev-parse HEAD > {cache}/source-revision && "
-        f"touch {cache}/.complete && "
+        f'mkdir -p "$DYN_SIDECAR_CACHE" && '
+        f'install -m 0755 target/release/{binary} "$DYN_SIDECAR_CACHE/{binary}.tmp" && '
+        f'mv "$DYN_SIDECAR_CACHE/{binary}.tmp" "$DYN_SIDECAR_CACHE/{binary}" && '
+        f'git rev-parse HEAD > "$DYN_SIDECAR_CACHE/source-revision" && '
+        f'touch "$DYN_SIDECAR_CACHE/.complete" && '
         f"cd / && rm -rf $DYN_SIDECAR_BUILD_DIR; "
         f"fi "
-        f") 202>{lock} && "
-        f"test -x {cache}/{binary} && "
-        f'export DYNAMO_SIDECAR_BINARY="{cache}/{binary}" && '
+        f') 202>"$DYN_SIDECAR_LOCK" && '
+        f'test -x "$DYN_SIDECAR_CACHE/{binary}" && '
+        f'export DYNAMO_SIDECAR_BINARY="$DYN_SIDECAR_CACHE/{binary}" && '
         f'echo "Dynamo sidecar ready: $DYNAMO_SIDECAR_BINARY"'
     )
 
@@ -1588,7 +1615,7 @@ class DynamoConfig:
             env["DYNAMO_VERSION"] = version
         return env
 
-    def get_install_commands(self, resolved_source_revision: str | None = None) -> str:
+    def get_install_commands(self) -> str:
         """Get the bash commands to install dynamo.
 
         The returned command is wrapped in a node-local flock + sentinel so
@@ -1596,9 +1623,9 @@ class DynamoConfig:
         install once per node instead of racing concurrent pip installs into
         the shared container site-packages. See ``_serialize_node_install``.
         """
-        return _serialize_node_install(self._build_install_commands(resolved_source_revision))
+        return _serialize_node_install(self._build_install_commands())
 
-    def _build_install_commands(self, resolved_source_revision: str | None = None) -> str:
+    def _build_install_commands(self) -> str:
         """Build the raw (unserialized) dynamo install command."""
         if self.wheel is not None:
             wheel_name = self.wheel_name or Path(self.wheel).name
@@ -1634,66 +1661,27 @@ class DynamoConfig:
         if self.hash is not None:
             return _hash_cached_source_install(self.hash, self.cargo_patches)
 
-        # Sidecar mode resolves top-of-tree once in RuntimeContext. Reuse that
-        # immutable SHA for the frontend wheel rather than cloning a moving HEAD.
-        if resolved_source_revision is not None:
-            return _hash_cached_source_install(resolved_source_revision)
-
         return _live_source_install_for_top_of_tree()
 
-    def resolve_sidecar_source_revision(self) -> str:
-        """Resolve the exact Dynamo commit used by both frontend and sidecar.
-
-        Hash-pinned recipes already supply an immutable source revision. Release
-        recipes resolve their matching ``v<version>`` tag, and top-of-tree recipes
-        resolve ``main`` once when the runtime context is created. The resulting SHA
-        is passed to every container launch, preventing a moving ref from splitting
-        frontend and sidecar versions during a job.
-        """
-        if not self.uses_sidecar:
-            raise ValueError("resolve_sidecar_source_revision requires dynamo.engine_mode: sidecar")
-        if self.hash is not None:
-            return self.hash
-
-        if self.version is not None:
-            ref = f"refs/tags/v{self.version.removeprefix('v')}"
-            refs = [ref, f"{ref}^{{}}"]
-        else:
-            ref = "refs/heads/main"
-            refs = [ref]
-
-        result = subprocess.run(
-            ["git", "ls-remote", _DYNAMO_GIT_URL, *refs],
-            capture_output=True,
-            check=False,
-            text=True,
-        )
-        if result.returncode != 0:
-            detail = result.stderr.strip() or "git ls-remote failed"
-            raise RuntimeError(f"Could not resolve Dynamo source ref {ref}: {detail}")
-
-        matches = [line.split(maxsplit=1) for line in result.stdout.splitlines() if line.strip()]
-        peeled_ref = f"{ref}^{{}}"
-        for revision, found_ref in matches:
-            if found_ref == peeled_ref:
-                return revision
-        for revision, found_ref in matches:
-            if found_ref == ref:
-                return revision
-        raise RuntimeError(f"Could not resolve Dynamo source ref {ref}; the matching release tag is required")
-
-    def get_sidecar_build_commands(self, backend_type: str, resolved_source_revision: str | None) -> str:
+    def get_sidecar_build_commands(self, backend_type: str) -> str:
         """Build and cache the standalone sidecar needed by one worker backend."""
         if not self.uses_sidecar:
             raise ValueError("get_sidecar_build_commands requires dynamo.engine_mode: sidecar")
-        if resolved_source_revision is None:
-            raise ValueError("sidecar mode requires an already-resolved Dynamo source revision")
         binaries = {"sglang": "dynamo-sglang-sidecar"}
         try:
             binary = binaries[backend_type]
         except KeyError as exc:
             raise ValueError(f"Dynamo sidecar is not implemented for backend.type: {backend_type}") from exc
-        return _cached_sidecar_build(resolved_source_revision, binary, self.cargo_patches)
+        if self.hash is not None:
+            return _cached_sidecar_build(self.hash, None, binary, self.cargo_patches)
+        if self.version is not None:
+            return _cached_sidecar_build(
+                None,
+                f"refs/tags/v{self.version.removeprefix('v')}",
+                binary,
+                self.cargo_patches,
+            )
+        return _cached_sidecar_build(None, "refs/heads/main", binary, self.cargo_patches)
 
     Schema: ClassVar[type[Schema]] = Schema
 

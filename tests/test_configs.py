@@ -177,46 +177,44 @@ class TestDynamoConfig:
         assert "ai-dynamo-runtime==0.8.0" in cmd
         assert "ai-dynamo==0.8.0" in cmd
 
-    def test_sidecar_version_resolves_matching_release_tag_and_builds_cached_binary(self, monkeypatch):
-        """A pip version and Rust sidecar share the exact tag-derived commit."""
-        import subprocess
-
-        from srtctl.core import schema
+    def test_sidecar_version_builds_cached_binary_from_matching_release_tag(self):
+        """A pip version maps the Rust sidecar build to its Dynamo release tag."""
         from srtctl.core.schema import DynamoConfig
 
-        revision = "a" * 40
-        monkeypatch.setattr(
-            schema.subprocess,
-            "run",
-            lambda *_args, **_kwargs: subprocess.CompletedProcess(
-                args=[], returncode=0, stdout=f"{revision}\trefs/tags/v1.3.0^{{}}\n", stderr=""
-            ),
-        )
-
         config = DynamoConfig(version="1.3.0", engine_mode="sidecar")
-        assert config.resolve_sidecar_source_revision() == revision
-        install = config.get_install_commands(revision)
-        sidecar = config.get_sidecar_build_commands("sglang", revision)
+        install = config.get_install_commands()
+        sidecar = config.get_sidecar_build_commands("sglang")
 
         assert "ai-dynamo-runtime==1.3.0" in install
         assert "dynamo-sglang-sidecar" in sidecar
-        assert f"git checkout {revision}" in sidecar
+        assert "refs/tags/v1.3.0" in sidecar
+        assert "git ls-remote" in sidecar
+        assert 'git checkout "$DYN_SIDECAR_REVISION"' in sidecar
         assert "cargo build --release --locked -p dynamo-sglang-sidecar" in sidecar
         assert "source-revision" in sidecar
         assert "$(uname -m)" in sidecar
 
-    def test_sidecar_top_of_tree_reuses_one_resolved_sha_for_frontend_install(self):
-        """Top-of-tree sidecars turn the moving branch into a cached immutable source build."""
+    def test_sidecar_hash_builds_supplied_commit(self):
+        """An explicit hash is used directly without a separate resolution step."""
         from srtctl.core.schema import DynamoConfig
 
-        revision = "b" * 40
-        config = DynamoConfig(top_of_tree=True, engine_mode="sidecar")
-        install = config.get_install_commands(revision)
-        sidecar = config.get_sidecar_build_commands("sglang", revision)
+        revision = "a" * 40
+        sidecar = DynamoConfig(hash=revision, engine_mode="sidecar").get_sidecar_build_commands("sglang")
 
-        assert f"/configs/dynamo-wheels/{revision}" in install
-        assert f"git checkout {revision}" in install
-        assert f"git checkout {revision}" in sidecar
+        assert f"DYN_SIDECAR_REVISION={revision}" in sidecar
+        assert "git ls-remote" not in sidecar
+
+    def test_sidecar_top_of_tree_resolves_main_in_the_worker_build(self):
+        """Top-of-tree keeps the existing frontend install and snapshots main for the sidecar cache."""
+        from srtctl.core.schema import DynamoConfig
+
+        config = DynamoConfig(top_of_tree=True, engine_mode="sidecar")
+        install = config.get_install_commands()
+        sidecar = config.get_sidecar_build_commands("sglang")
+
+        assert "Installing dynamo from source (HEAD)" in install
+        assert "refs/heads/main" in sidecar
+        assert "git ls-remote" in sidecar
 
     def test_sidecar_rejects_unproven_staged_wheel_and_disabled_install(self):
         """The initial sidecar mode only accepts Dynamo selections with source provenance."""
