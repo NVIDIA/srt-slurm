@@ -14,6 +14,7 @@ from srtctl.core.schema import SrtConfig
 from srtctl.ports import (
     KV_EVENTS_PORT_BASE,
     SGLANG_BOOTSTRAP_PORT_BASE,
+    SGLANG_GRPC_PORT_BASE,
     SGLANG_HTTP_PORT_BASE,
     SGLANG_HTTP_PORT_STRIDE,
     SGLANG_NCCL_PORT_BASE,
@@ -175,6 +176,54 @@ class TestDynamoConfig:
         assert "pip install" in cmd
         assert "ai-dynamo-runtime==0.8.0" in cmd
         assert "ai-dynamo==0.8.0" in cmd
+
+    def test_sidecar_version_builds_cached_binary_from_matching_release_tag(self):
+        """A pip version maps the Rust sidecar build to its Dynamo release tag."""
+        from srtctl.core.schema import DynamoConfig
+
+        config = DynamoConfig(version="1.3.0", engine_mode="sidecar")
+        install = config.get_install_commands()
+        sidecar = config.get_sidecar_build_commands("sglang")
+
+        assert "ai-dynamo-runtime==1.3.0" in install
+        assert "dynamo-sglang-sidecar" in sidecar
+        assert "refs/tags/v1.3.0" in sidecar
+        assert "git ls-remote" in sidecar
+        assert 'git checkout "$DYN_SIDECAR_REVISION"' in sidecar
+        assert "cargo build --release --locked -p dynamo-sglang-sidecar" in sidecar
+        assert "source-revision" in sidecar
+        assert "$(uname -m)" in sidecar
+
+    def test_sidecar_hash_builds_supplied_commit(self):
+        """An explicit hash is used directly without a separate resolution step."""
+        from srtctl.core.schema import DynamoConfig
+
+        revision = "a" * 40
+        sidecar = DynamoConfig(hash=revision, engine_mode="sidecar").get_sidecar_build_commands("sglang")
+
+        assert f"DYN_SIDECAR_REVISION={revision}" in sidecar
+        assert "git ls-remote" not in sidecar
+
+    def test_sidecar_top_of_tree_resolves_main_in_the_worker_build(self):
+        """Top-of-tree keeps the existing frontend install and snapshots main for the sidecar cache."""
+        from srtctl.core.schema import DynamoConfig
+
+        config = DynamoConfig(top_of_tree=True, engine_mode="sidecar")
+        install = config.get_install_commands()
+        sidecar = config.get_sidecar_build_commands("sglang")
+
+        assert "Installing dynamo from source (HEAD)" in install
+        assert "refs/heads/main" in sidecar
+        assert "git ls-remote" in sidecar
+
+    def test_sidecar_rejects_unproven_staged_wheel_and_disabled_install(self):
+        """The initial sidecar mode only accepts Dynamo selections with source provenance."""
+        from srtctl.core.schema import DynamoConfig
+
+        with pytest.raises(ValueError, match="does not support dynamo.wheel"):
+            DynamoConfig(wheel="1.3.0", engine_mode="sidecar")
+        with pytest.raises(ValueError, match="requires dynamo.install"):
+            DynamoConfig(install=False, engine_mode="sidecar")
 
     def test_wheel_install_command(self):
         """Wheel config installs ai-dynamo plus runtime without source build."""
@@ -565,6 +614,52 @@ class TestSGLangProtocol:
             command = SGLangProtocol().build_worker_command(process, [process], runtime)
 
         assert command[command.index("--nccl-port") + 1] == str(SGLANG_NCCL_PORT_BASE + 5)
+
+    def test_sidecar_launches_native_sglang_grpc_once(self, monkeypatch):
+        """Sidecar mode uses stock SGLang and owns the native gRPC port."""
+        from types import SimpleNamespace
+
+        from srtctl.core.topology import Process
+
+        backend = SGLangProtocol(sglang_config=SGLangServerConfig(aggregated={"grpc-port": 9999}))
+        process = Process(
+            node="node0",
+            gpu_indices=frozenset(range(8)),
+            sys_port=7500,
+            http_port=6100,
+            grpc_port=SGLANG_GRPC_PORT_BASE,
+            endpoint_mode="agg",
+            endpoint_index=0,
+        )
+        runtime = SimpleNamespace(model_path=Path("/model"), is_hf_model=False, request_plane="tcp")
+        monkeypatch.setattr("srtctl.core.slurm.get_hostname_ip", lambda _node: "10.0.0.1")
+
+        command = backend.build_worker_command(process, [process], runtime, frontend_type="sidecar")
+
+        assert command[:3] == ["python3", "-m", "sglang.launch_server"]
+        assert command[command.index("--grpc-port") + 1] == str(SGLANG_GRPC_PORT_BASE)
+        assert command.count("--grpc-port") == 1
+        assert "--request-plane" not in command
+
+
+class TestDynamoSidecarSupervisor:
+    """Standalone sidecar process supervision."""
+
+    def test_supervisor_runs_engine_and_sidecar_then_reaps_peer(self):
+        from srtctl.cli.mixins.worker_stage import _wrap_sglang_sidecar
+
+        command = _wrap_sglang_sidecar(
+            ["python3", "-m", "sglang.launch_server", "--grpc-port", "6500"],
+            grpc_port=6500,
+            bootstrap_host="10.0.0.1",
+        )
+
+        assert command[:2] == ["bash", "-c"]
+        script = command[2]
+        assert "sglang.launch_server" in script
+        assert '"$DYNAMO_SIDECAR_BINARY" --sglang-endpoint http://127.0.0.1:6500 --bootstrap-host 10.0.0.1' in script
+        assert 'wait -n "$engine_pid" "$sidecar_pid"' in script
+        assert 'kill "$engine_pid" "$sidecar_pid"' in script
 
 
 class TestServedModelName:

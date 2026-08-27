@@ -16,6 +16,7 @@
 ## Architecture & Frontends
 
 - [Architecture](architecture.md)
+- [Dynamo Sidecar Engines](dynamo-sidecar.md)
 - [SGLang Router](sglang-router.md)
 - [Mooncake KV Store](mooncake-kv-store.md)
 
