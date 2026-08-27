@@ -1042,7 +1042,7 @@ class TachometerConfig:
 
     enabled: bool | None = None
     binary_path: str = "tachometer-scraper"
-    default_frequency: float = 5.0
+    default_frequency: float = 1.0
     sync_interval_secs: int = 120
     compaction_threads: int = 4
     storage_subdir: str = "tachometer"

@@ -84,6 +84,14 @@ class TestTachometerConfig:
         assert config.observability.tachometer.dcgm_exporter is None
         assert config.observability.tachometer.node_exporter is None
 
+    def test_default_frequency_is_one_hz(self):
+        """1 Hz matches the retired RAW scraper's cadence; 5 Hz produced ~9M
+        rows in a 25-minute run with no analysis consuming the extra
+        resolution, and scrape load on worker endpoints is not free."""
+        config = _make_config(tachometer=TachometerConfig(enabled=True))
+
+        assert config.observability.tachometer.default_frequency == 1.0
+
     def test_scraper_requires_nonempty_binary_path(self):
         with pytest.raises(ValidationError, match="observability.tachometer.binary_path"):
             _make_config(

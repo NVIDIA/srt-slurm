@@ -1069,7 +1069,7 @@ observability:
   enabled: true
   tachometer:
     enabled: true
-    default_frequency: 5
+    default_frequency: 1
     sync_interval_secs: 120
     compaction_threads: 4
     storage_subdir: tachometer
@@ -1087,7 +1087,7 @@ observability:
 | ---------------- | ---- | ------- | ----------- |
 | `enabled` | bool/null | `null` | `null` follows `observability.enabled`; explicit `false` opts out; explicit `true` without `observability.enabled` is a validation error |
 | `binary_path` | string | `tachometer-scraper` | Scraper command or path on the compute nodes |
-| `default_frequency` | float | `5.0` | Scrape frequency in Hz |
+| `default_frequency` | float | `1.0` | Scrape frequency in Hz |
 | `sync_interval_secs` | int | `120` | Interval for intermediate Parquet compaction; `0` disables it |
 | `compaction_threads` | int | `4` | Value passed as `POLARS_MAX_THREADS` |
 | `storage_subdir` | string | `tachometer` | Output directory below the run log directory |
