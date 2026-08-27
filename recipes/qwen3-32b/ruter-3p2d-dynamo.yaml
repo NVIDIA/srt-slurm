@@ -81,9 +81,8 @@ backend:
       fp8-gemm-backend: triton
       disaggregation-transfer-backend: nixl
 
-# enabled: true now implies Tachometer collection (no RAW scraper) — the
-# explicit scrape_metrics/tachometer knobs this recipe used to carry are
-# the defaults.
+# enabled: true implies Tachometer collection; the explicit tachometer
+# knobs this recipe used to carry are the defaults.
 observability:
   enabled: true
 

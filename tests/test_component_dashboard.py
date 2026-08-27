@@ -914,43 +914,6 @@ class TestGeneratedPageStructure:
         assert html.count("<script") == html.count("</script>")
 
 
-class TestDoubleMetricPollingWarning:
-    """A run can poll /metrics twice without saying so, which has previously made a
-    benchmark submission irreproducible."""
-
-    @staticmethod
-    def _mixin(benchmark_type: str, scraper_enabled: bool):
-        from srtctl.cli.mixins.benchmark_stage import BenchmarkStageMixin
-
-        obj = BenchmarkStageMixin()
-        obj.config = SimpleNamespace(
-            benchmark=SimpleNamespace(type=benchmark_type),
-            observability=SimpleNamespace(scraper_enabled=scraper_enabled),
-        )
-        return obj
-
-    def test_warns_for_an_aiperf_benchmark(self, caplog):
-        import logging
-
-        with caplog.at_level(logging.WARNING):
-            self._mixin("mooncake-router", True)._warn_on_double_metric_polling()
-        assert any("Double /metrics polling" in r.message for r in caplog.records)
-
-    def test_silent_for_a_non_aiperf_benchmark(self, caplog):
-        """sa-bench drives no client-side polling, so there is nothing to warn about."""
-        import logging
-
-        with caplog.at_level(logging.WARNING):
-            self._mixin("sa-bench", True)._warn_on_double_metric_polling()
-        assert not any("Double /metrics polling" in r.message for r in caplog.records)
-
-    def test_unknown_benchmark_type_is_not_an_error(self, caplog):
-        import logging
-
-        with caplog.at_level(logging.WARNING):
-            self._mixin("no-such-benchmark", True)._warn_on_double_metric_polling()
-
-
 class TestWaterfallKvTransferBand:
     def test_run_level_waterfall_has_the_kv_transfer_band(self, run_dir: Path, tmp_path: Path):
         """The decode `handle_payload` span starts AFTER the KV cache has transferred,
