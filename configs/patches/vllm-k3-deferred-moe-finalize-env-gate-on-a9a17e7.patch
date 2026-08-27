@@ -1,0 +1,43 @@
+diff --git a/vllm/envs.py b/vllm/envs.py
+--- a/vllm/envs.py
++++ b/vllm/envs.py
+@@ -212,5 +212,6 @@ if TYPE_CHECKING:
+     VLLM_KIMI_K3_AUX_ATTN_RES_STREAM: bool = False
+     VLLM_ENABLE_K3_LATENT_MOE_TAIL_FUSION: bool = True
++    VLLM_KIMI_K3_DEFERRED_MOE_FINALIZE: bool = True
+     VLLM_KIMI_K3_GEMM_AR: bool = True
+     VLLM_KIMI_K3_GEMM_RS: bool = False
+     VLLM_BLOCKSCALE_FP8_GEMM_FLASHINFER: bool = True
+@@ -1610,6 +1611,11 @@ environment_variables: dict[str, Callable[[], Any]] = {
+     "VLLM_ENABLE_K3_LATENT_MOE_TAIL_FUSION": lambda: bool(
+         int(os.getenv("VLLM_ENABLE_K3_LATENT_MOE_TAIL_FUSION", "1"))
+     ),
++    # Keep the deferred top-k finalization independently switchable so its
++    # CUDA-graph safety can be isolated without disabling the latent tail.
++    "VLLM_KIMI_K3_DEFERRED_MOE_FINALIZE": lambda: bool(
++        int(os.getenv("VLLM_KIMI_K3_DEFERRED_MOE_FINALIZE", "1"))
++    ),
+     # Use the SM100 BF16 GEMM-AR kernel for eligible Kimi-K3 row-parallel
+     # attention projections. All TP ranks must belong to one NVLink domain.
+     "VLLM_KIMI_K3_GEMM_AR": lambda: bool(int(os.getenv("VLLM_KIMI_K3_GEMM_AR", "1"))),
+diff --git a/vllm/models/kimi_k3/nvidia/latent_moe_runner.py b/vllm/models/kimi_k3/nvidia/latent_moe_runner.py
+--- a/vllm/models/kimi_k3/nvidia/latent_moe_runner.py
++++ b/vllm/models/kimi_k3/nvidia/latent_moe_runner.py
+@@ -116,10 +116,14 @@ class LatentMoERunner(MoERunner):
+             experts_cls = getattr(self._quant_method, "experts_cls", None)
+             # The kernel instance is built after weight loading, while the tail
+             # must register its CuTeDSL warmup units during runner construction.
+             self.moe_config.defer_moe_finalize = (
+-                experts_cls is TrtLlmMxfp4ExpertsMonolithic
+-                or experts_cls is TrtLlmNvFp4ExpertsMonolithic
+-            ) and self.moe_config.hidden_dim == self.moe_config.hidden_dim_unpadded
++                envs.VLLM_KIMI_K3_DEFERRED_MOE_FINALIZE
++                and (
++                    experts_cls is TrtLlmMxfp4ExpertsMonolithic
++                    or experts_cls is TrtLlmNvFp4ExpertsMonolithic
++                )
++                and self.moe_config.hidden_dim == self.moe_config.hidden_dim_unpadded
++            )
+             from vllm.models.kimi_k3.nvidia.ops.latent_moe_tail import (
+                 KimiK3LatentMoETailOp,
+             )
