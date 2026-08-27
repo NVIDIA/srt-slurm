@@ -17,7 +17,7 @@ from srtctl.core.power.contract import Reason
 from srtctl.core.power.manifest import ExpectedWindow
 from srtctl.core.power.session import PowerSessionSettings, PowerTelemetrySession
 from srtctl.core.power.topology import build_expected_devices
-from srtctl.core.processes import ManagedProcess, ProcessRegistry
+from srtctl.core.processes import ManagedProcess, ProcessRegistry, terminate_and_reap
 from srtctl.core.schema import TelemetryExporterConfig
 from srtctl.core.slurm import start_srun_process
 from srtctl.core.telemetry import TACHOMETER_STORAGE_PARENT, generate_tachometer_config
@@ -374,9 +374,9 @@ class TelemetryStageMixin:
         if tachometer.sync_interval_secs > 0:
             cmd.extend(["--sync-interval", str(tachometer.sync_interval_secs)])
 
-        env_to_set: dict[str, str] = {}
+        srun_export_env: dict[str, str] = {}
         if tachometer.compaction_threads > 0:
-            env_to_set["POLARS_MAX_THREADS"] = str(tachometer.compaction_threads)
+            srun_export_env["POLARS_MAX_THREADS"] = str(tachometer.compaction_threads)
 
         processes.append(
             ManagedProcess(
@@ -385,7 +385,14 @@ class TelemetryStageMixin:
                     command=cmd,
                     nodelist=[self.runtime.nodes.head],
                     output=str(self.runtime.log_dir / "tachometer.out"),
-                    env_to_set=env_to_set,
+                    # Shell-less on purpose: the scraper compacts final.parquet
+                    # on SIGTERM, and srun forwards signals to the task it
+                    # launched. Under the bash wrapper the task is bash, which
+                    # exits without signaling its child — the scraper then dies
+                    # by step SIGKILL with the capture stranded in the arrow
+                    # WAL (hecate job 487539). Env goes via --export instead.
+                    use_bash_wrapper=False,
+                    srun_export_env=srun_export_env,
                     srun_options=self.runtime.srun_options,
                     het_group=self.runtime.nodes.het_group_for(self.runtime.nodes.head),
                 ),
@@ -399,3 +406,28 @@ class TelemetryStageMixin:
         )
         logger.info("Tachometer started with artifacts under %s", tachometer_dir)
         return processes
+
+    def stop_tachometer(self, processes: list[ManagedProcess]) -> None:
+        """Stop Tachometer gracefully so the scraper compacts final.parquet.
+
+        SIGTERM starts the scraper's flush + compact + upload path; anything
+        harder loses everything since the last periodic sync. The scraper gets
+        ``tachometer.shutdown_grace_secs`` to finish compacting before the
+        SIGKILL escalation; the exporter sidecars are plain daemons and keep
+        the registry's default budget. Already-exited processes are skipped,
+        so the registry's later cleanup pass stays a no-op for these.
+        """
+        grace = self.config.observability.tachometer.shutdown_grace_secs
+        for process in processes:
+            if not process.is_running:
+                continue
+            timeout = grace if process.name == "tachometer" else 10.0
+            outcome = terminate_and_reap(process.popen, terminate_timeout=timeout, kill_timeout=10.0)
+            if outcome.force_killed:
+                logger.warning(
+                    "%s did not exit within %.0fs of SIGTERM and was killed; the capture may be partial",
+                    process.name,
+                    timeout,
+                )
+            else:
+                logger.info("%s stopped gracefully", process.name)
