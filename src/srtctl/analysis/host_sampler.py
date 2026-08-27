@@ -34,11 +34,14 @@ import contextlib
 import json
 import logging
 import os
+import re
 import threading
 import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+_NR_MIGRATIONS_RE = re.compile(r"se\.nr_migrations\s*:\s*(\d+)")
 
 # Process names worth sampling individually. Matched as substrings against the
 # process's own cmdline, so a wrapper script does not hide the real one.
@@ -71,6 +74,25 @@ def _cpu_totals() -> tuple[int, int] | None:
             idle = f[3] + (f[4] if len(f) > 4 else 0)  # idle + iowait
             return sum(f) - idle, sum(f)
     return None
+
+
+def _procs_running_blocked() -> tuple[int | None, int | None]:
+    """(procs_running, procs_blocked) from ``/proc/stat``.
+
+    Instantaneous run-queue pressure for the whole host: sustained
+    procs_running above the core count is contention no per-process
+    counter can localize.
+    """
+    txt = _read("/proc/stat") or ""
+    running = blocked = None
+    for line in txt.splitlines():
+        if line.startswith("procs_running"):
+            with contextlib.suppress(IndexError, ValueError):
+                running = int(line.split()[1])
+        elif line.startswith("procs_blocked"):
+            with contextlib.suppress(IndexError, ValueError):
+                blocked = int(line.split()[1])
+    return running, blocked
 
 
 def _meminfo() -> dict:
@@ -107,8 +129,11 @@ def _interesting_pids(limit: int = 32) -> list[int]:
         entries = os.listdir("/proc")
     except OSError:
         return []
+    own_pid = os.getpid()
     for e in entries:
-        if not e.isdigit():
+        if not e.isdigit() or int(e) == own_pid:
+            # Never sample self: the standalone sampler's own cmdline carries the
+            # log-dir path, which routinely contains a pattern word ("dynamo").
             continue
         cmd = _read(f"/proc/{e}/cmdline")
         if not cmd or not any(p in cmd for p in _PROC_PATTERNS):
@@ -143,6 +168,28 @@ def _proc_sample(pid: int) -> dict | None:
         # utime+stime, fields 14/15 after the (possibly space-containing) comm field.
         tail = stat[stat.rfind(")") + 2 :].split()
         d["cpu_jiffies"] = int(tail[11]) + int(tail[12])
+    schedstat = _read(f"/proc/{pid}/schedstat")
+    if schedstat:
+        with contextlib.suppress(IndexError, ValueError):
+            parts = schedstat.split()
+            # Field 2 is cumulative RUN-QUEUE WAIT: time the task was runnable but
+            # not running. THE scheduler-contention signal — a rising rate here with
+            # idle CPUs elsewhere means this task is losing its core to neighbors,
+            # which is exactly what CPU pinning remedies.
+            d["cpu_ns"] = int(parts[0])
+            d["run_delay_ns"] = int(parts[1])
+    sched = _read(f"/proc/{pid}/sched")
+    if sched:
+        m = _NR_MIGRATIONS_RE.search(sched)
+        if m:
+            # Cross-core migrations: near-zero when pinned, so this doubles as a
+            # direct observable of whether pinning is in effect AND of scheduler
+            # churn when it is not.
+            d["nr_migrations"] = int(m.group(1))
+    with contextlib.suppress(OSError):
+        # Allowed-CPU count: 144 = free-floating on GB200/GB300, 36 = taskset-pinned
+        # rank. Reads the pinning CONFIG state directly, no inference needed.
+        d["affinity_ncpus"] = len(os.sched_getaffinity(pid))
     try:
         d["open_fds"] = len(os.listdir(f"/proc/{pid}/fd"))
     except OSError:
@@ -216,11 +263,18 @@ class HostSampler:
                 while not stop_event.is_set() and not self._own_stop.is_set():
                     try:
                         cpu = _cpu_totals()
+                        running, blocked = _procs_running_blocked()
                         row = {
                             "t": time.time(),
+                            # Monotonic companion: cross-node wall clocks can disagree by
+                            # seconds (observed 2.1s NVL72 skew); pairs of (t, t_mono) let
+                            # the consumer estimate per-node offsets post-hoc.
+                            "t_mono": time.monotonic(),
                             "host": os.uname().nodename,
                             "cpu_busy_jiffies": cpu[0] if cpu else None,
                             "cpu_total_jiffies": cpu[1] if cpu else None,
+                            "procs_running": running,
+                            "procs_blocked": blocked,
                             "loadavg": (_read("/proc/loadavg") or "").split()[:3],
                             "mem": _meminfo(),
                             "fd_limit": fd_limit,
@@ -256,3 +310,69 @@ def try_start_host_sampler(log_dir: Path, observability, stop_event: threading.E
     except Exception as exc:  # noqa: BLE001 - best effort
         logger.warning("Host sampler failed to start (continuing without it): %s", exc)
         return None
+
+
+def plan_remote_sampler_nodes(all_nodes: list[str], local_host: str) -> list[str]:
+    """Nodes that need a standalone sampler: every allocated node except the one
+    already covered by the in-process sampler. Pure so it is unit-testable.
+
+    ``local_host`` may be a short hostname while the nodelist carries FQDNs (or
+    vice versa); match on the first dot-separated label to be safe.
+    """
+    local_label = local_host.split(".")[0]
+    seen: set[str] = set()
+    out: list[str] = []
+    for node in all_nodes:
+        if not node or node in seen:
+            continue
+        seen.add(node)
+        if node.split(".")[0] != local_label:
+            out.append(node)
+    return out
+
+
+def _main() -> int:
+    """Standalone per-node entry point (``python3 host_sampler.py --log-dir D``).
+
+    Runs on bare compute nodes with nothing but a system python3: this module
+    deliberately imports only the standard library. Writes
+    ``host_samples_<hostname>.jsonl`` so per-node files never collide on the
+    shared log dir, and exits cleanly on SIGTERM/SIGINT (srun teardown).
+    """
+    import argparse
+    import signal
+
+    ap = argparse.ArgumentParser(description="Standalone /proc sampler for one node")
+    ap.add_argument("--log-dir", required=True)
+    ap.add_argument("--interval", type=float, default=2.0, help="seconds between samples (floored to 1.0)")
+    ap.add_argument("--max-samples", type=int, default=0, help="stop after N samples (0 = until signaled)")
+    args = ap.parse_args()
+
+    logging.basicConfig(level=logging.INFO, format="[host_sampler %(levelname)s] %(message)s")
+    stop = threading.Event()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, lambda *_: stop.set())
+
+    sampler = HostSampler(
+        Path(args.log_dir),
+        interval_seconds=args.interval,
+        output_name=f"host_samples_{os.uname().nodename}.jsonl",
+    )
+    sampler.start(stop)
+    while not stop.is_set():
+        if args.max_samples and sampler.samples >= args.max_samples:
+            stop.set()
+            break
+        if sampler._thread is not None and not sampler._thread.is_alive():
+            # Sampler thread died (e.g. unwritable log dir): exit nonzero so the
+            # failure is visible in the srun step output instead of idling forever.
+            logger.error("sampler thread exited after %d samples; aborting", sampler.samples)
+            sampler.stop()
+            return 1
+        stop.wait(0.5)
+    sampler.stop()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())

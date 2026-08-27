@@ -8,7 +8,9 @@ Handles benchmark execution and profiling.
 """
 
 import logging
+import os
 import shlex
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -375,28 +377,34 @@ class BenchmarkStageMixin:
         # truthy, and plain truthiness would silently switch it on there.
         observability = getattr(self.config, "observability", None)
         host_sampler = None
+        remote_samplers: list[subprocess.Popen] = []
         if getattr(observability, "enabled", False) is True:
             from srtctl.analysis.host_sampler import try_start_host_sampler
 
             host_sampler = try_start_host_sampler(self.runtime.log_dir, observability, stop_event)
-
-        bench_node = self._benchmark_node()
-        proc = start_srun_process(
-            command=cmd,
-            nodelist=[bench_node],
-            output=str(log_file),
-            container_image=str(container_image),
-            container_mounts=container_mounts,
-            env_to_set=env_to_set,
-            srun_options=self.runtime.srun_options,
-            het_group=self.runtime.nodes.het_group_for(bench_node),
-        )
+            if getattr(observability, "host_sampler_all_nodes", False) is True:
+                remote_samplers = self._start_remote_host_samplers()
 
         # The signal handler raises SystemExit, so only finally can establish
         # how the local srun client stopped before telemetry finalizes.
+        # proc is created INSIDE the try: _benchmark_node()/start_srun_process can
+        # raise (bad client_placement, fork failure), and the finally must still
+        # tear down the remote samplers launched above.
         self.benchmark_child_reaped = False
         self.benchmark_child_allows_window_mutation = False
+        proc: subprocess.Popen | None = None
         try:
+            bench_node = self._benchmark_node()
+            proc = start_srun_process(
+                command=cmd,
+                nodelist=[bench_node],
+                output=str(log_file),
+                container_image=str(container_image),
+                container_mounts=container_mounts,
+                env_to_set=env_to_set,
+                srun_options=self.runtime.srun_options,
+                het_group=self.runtime.nodes.het_group_for(bench_node),
+            )
             while proc.poll() is None:
                 if stop_event.is_set():
                     logger.info("Stop requested, terminating benchmark")
@@ -406,7 +414,7 @@ class BenchmarkStageMixin:
             self.benchmark_child_allows_window_mutation = True
             return proc.returncode or 0
         finally:
-            if proc.poll() is None:
+            if proc is not None and proc.poll() is None:
                 outcome = terminate_and_reap(
                     proc,
                     terminate_timeout=_BENCHMARK_TERMINATE_TIMEOUT,
@@ -416,7 +424,7 @@ class BenchmarkStageMixin:
                 # Reaping a force-killed local srun client does not prove that
                 # its remote Slurm step can no longer write the window.
                 self.benchmark_child_allows_window_mutation = outcome.reaped and not outcome.force_killed
-            elif self.benchmark_child_reaped is False:
+            elif proc is not None and self.benchmark_child_reaped is False:
                 proc.wait()
                 self.benchmark_child_reaped = True
                 self.benchmark_child_allows_window_mutation = True
@@ -424,6 +432,70 @@ class BenchmarkStageMixin:
                 snapshotter.stop()
             if host_sampler is not None:
                 host_sampler.stop()
+            for sampler_proc in remote_samplers:
+                if sampler_proc.poll() is not None:
+                    if sampler_proc.returncode != 0:
+                        # e.g. a bare node without python3: contained, but say so
+                        # instead of letting the gap surface as missing files later.
+                        logger.warning(
+                            "A remote host sampler exited early (rc=%s); see host_sampler_remote*.out",
+                            sampler_proc.returncode,
+                        )
+                    continue
+                # SIGTERM lets the remote sampler flush its final JSONL row;
+                # terminate_and_reap escalates to SIGKILL and logs if it wedges,
+                # so a hung srun can't keep appending rows past the window.
+                terminate_and_reap(sampler_proc, terminate_timeout=10, kill_timeout=5)
+
+    def _start_remote_host_samplers(self) -> list[subprocess.Popen]:
+        """Launch the standalone /proc sampler on every allocated node except this one.
+
+        One persistent srun per het group (not per sample), no container: the
+        sampler is stdlib-only and reads the HOST /proc either way, and the
+        srtctl checkout lives on a shared filesystem the compute nodes see.
+        Best-effort like all host telemetry — a node without python3 logs a
+        failure into host_sampler_remote.out and the benchmark proceeds.
+        """
+        from srtctl.analysis import host_sampler as host_sampler_module
+        from srtctl.analysis.host_sampler import plan_remote_sampler_nodes
+
+        nodes = self.runtime.nodes
+        all_nodes = list(dict.fromkeys([nodes.head, nodes.bench, nodes.infra, *nodes.worker]))
+        targets = plan_remote_sampler_nodes(all_nodes, os.uname().nodename)
+        if not targets:
+            return []
+
+        script = Path(host_sampler_module.__file__).resolve()
+        groups: dict[int | None, list[str]] = {}
+        for node in targets:
+            groups.setdefault(nodes.het_group_for(node), []).append(node)
+
+        procs: list[subprocess.Popen] = []
+        launched_nodes = 0
+        for het_group, group_nodes in sorted(groups.items(), key=lambda kv: (kv[0] is not None, kv[0])):
+            suffix = "" if het_group is None else f".g{het_group}"
+            try:
+                proc = start_srun_process(
+                    command=["python3", str(script), "--log-dir", str(self.runtime.log_dir), "--interval", "2"],
+                    nodes=len(group_nodes),
+                    ntasks=len(group_nodes),
+                    nodelist=group_nodes,
+                    output=str(self.runtime.log_dir / f"host_sampler_remote{suffix}.out"),
+                    srun_options=self.runtime.srun_options,
+                    het_group=het_group,
+                    use_bash_wrapper=False,
+                )
+            except Exception as exc:  # noqa: BLE001 - best effort, never blocks the benchmark
+                logger.warning("Remote host samplers failed to start on %s: %s", group_nodes, exc)
+                continue
+            procs.append(proc)
+            launched_nodes += len(group_nodes)
+        if procs:
+            logger.info(
+                "Remote host samplers started on %d node(s) -> host_samples_<node>.jsonl",
+                launched_nodes,
+            )
+        return procs
 
     def _get_benchmark_profiling_env(
         self,

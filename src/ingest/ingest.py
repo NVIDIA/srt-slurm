@@ -1007,13 +1007,43 @@ def run_host_samples(run_dir: Path, bundle: Path) -> dict:
     single core, so >100 means the process is genuinely using more than one.
     """
     src = Path(run_dir) / "host_samples.jsonl"
-    if not src.exists():
-        _log("L2 host", "no host_samples.jsonl; host CPU / fd / client-bottleneck "
+    per_node = sorted(Path(run_dir).glob("host_samples_*.jsonl"))
+    if not src.exists() and not per_node:
+        _log("L2 host", "no host_samples*.jsonl; host CPU / fd / client-bottleneck "
                         "signals unavailable for this run")
         return {}
 
+    out: dict = {}
+    if src.exists():
+        out = _host_series_from_rows(_read_host_rows(src)) or {}
+
+    # Per-node samplers (observability.host_sampler_all_nodes) write one file per
+    # node; keyed by hostname so worker nodes and a dedicated frontend node are
+    # separable downstream. The orchestrator-node series stays at the top level
+    # for backward compatibility with existing consumers.
+    hosts: dict[str, dict] = {}
+    for path in per_node:
+        series = _host_series_from_rows(_read_host_rows(path))
+        if series:
+            hosts[series["host"] or path.stem.removeprefix("host_samples_")] = series
+    if hosts:
+        out.setdefault("hosts", {}).update(hosts)
+    if not out:
+        _log("L2 host", "host sample files present but none had >= 2 rows")
+        return {}
+
+    with open(bundle / "host_series.json", "w") as f:
+        json.dump(out, f)
+    peak_cpu = max((v for _, v in out.get("host_cpu_pct", [])), default=None)
+    _log("L2 host", f"{out.get('samples', 0)} samples on {out.get('host')} (+{len(hosts)} remote node(s)): "
+                    f"peak host CPU {peak_cpu}%, "
+                    f"{len(out.get('procs', {}))} process(es) tracked")
+    return out
+
+
+def _read_host_rows(path: Path) -> list[dict]:
     rows = []
-    with open(src, errors="replace") as fh:
+    with open(path, errors="replace") as fh:
         for line in fh:
             line = line.strip()
             if not line:
@@ -1022,14 +1052,24 @@ def run_host_samples(run_dir: Path, bundle: Path) -> dict:
                 rows.append(json.loads(line))
             except Exception:
                 continue
-    if len(rows) < 2:
-        _log("L2 host", f"only {len(rows)} host sample(s); a rate needs two")
-        return {}
+    return rows
 
-    host_cpu, fds, conns, mem = [], [], [], []
+
+def _host_series_from_rows(rows: list[dict]) -> dict | None:
+    """Difference cumulative counters into rate series for one node's samples."""
+    if len(rows) < 2:
+        return None
+
+    host_cpu, fds, conns, mem, runq, blocked_series = [], [], [], [], [], []
     procs: dict = {}
     for prev, cur in zip(rows, rows[1:]):
-        dt = (cur.get("t") or 0) - (prev.get("t") or 0)
+        # Rate denominators prefer the monotonic clock: NTP steps can make
+        # wall-clock dt negative (pair dropped) or inflated (rates deflated).
+        # Wall-clock t stays as the series x-axis for cross-source alignment.
+        if cur.get("t_mono") is not None and prev.get("t_mono") is not None:
+            dt = cur["t_mono"] - prev["t_mono"]
+        else:
+            dt = (cur.get("t") or 0) - (prev.get("t") or 0)
         if dt <= 0:
             continue
         t = cur["t"]
@@ -1042,19 +1082,35 @@ def run_host_samples(run_dir: Path, bundle: Path) -> dict:
             mem.append([t, round(100.0 * (1 - m["MemAvailable"] / m["MemTotal"]), 2)])
         if cur.get("established_conns") is not None:
             conns.append([t, cur["established_conns"]])
+        if cur.get("procs_running") is not None:
+            runq.append([t, cur["procs_running"]])
+        if cur.get("procs_blocked") is not None:
+            blocked_series.append([t, cur["procs_blocked"]])
 
         prev_by_pid = {p["pid"]: p for p in (prev.get("procs") or [])}
         for p in cur.get("procs") or []:
             q = prev_by_pid.get(p["pid"])
             key = f"{p.get('name', 'proc')}:{p['pid']}"
             e = procs.setdefault(key, {"cpu_pct": [], "rss_kb": [], "ctx_invol_rate": [],
-                                       "open_fds": [], "threads": []})
+                                       "open_fds": [], "threads": [],
+                                       "run_delay_ms_per_s": [], "migrations_rate": [],
+                                       "affinity_ncpus": []})
             if q and p.get("cpu_jiffies") is not None and q.get("cpu_jiffies") is not None:
                 # Jiffies are 1/100 s on Linux; /dt gives percent of ONE core.
                 e["cpu_pct"].append([t, round((p["cpu_jiffies"] - q["cpu_jiffies"]) / dt, 1)])
             if q and p.get("ctx_invol") is not None and q.get("ctx_invol") is not None:
                 e["ctx_invol_rate"].append(
                     [t, round((p["ctx_invol"] - q["ctx_invol"]) / dt, 1)])
+            if q and p.get("run_delay_ns") is not None and q.get("run_delay_ns") is not None:
+                # ms of run-queue wait accumulated per wall second: the direct
+                # scheduler-contention rate that CPU pinning is the remedy for.
+                e["run_delay_ms_per_s"].append(
+                    [t, round((p["run_delay_ns"] - q["run_delay_ns"]) / 1e6 / dt, 2)])
+            if q and p.get("nr_migrations") is not None and q.get("nr_migrations") is not None:
+                e["migrations_rate"].append(
+                    [t, round((p["nr_migrations"] - q["nr_migrations"]) / dt, 1)])
+            if p.get("affinity_ncpus") is not None:
+                e["affinity_ncpus"].append([t, p["affinity_ncpus"]])
             if p.get("rss_kb") is not None:
                 e["rss_kb"].append([t, p["rss_kb"]])
             if p.get("open_fds") is not None:
@@ -1067,10 +1123,12 @@ def run_host_samples(run_dir: Path, bundle: Path) -> dict:
 
     fd_limit = rows[-1].get("fd_limit")
     peak_fds = max((v for _, v in fds), default=0)
-    out = {
+    return {
         "host_cpu_pct": host_cpu,
         "host_mem_used_pct": mem,
         "established_conns": conns,
+        "procs_runnable": runq,
+        "procs_blocked": blocked_series,
         "open_fds_total": fds,
         "fd_limit": fd_limit,
         # The number that matters for PERF-40: how close the run came to the ceiling.
@@ -1082,14 +1140,6 @@ def run_host_samples(run_dir: Path, bundle: Path) -> dict:
         "samples": len(rows),
         "host": rows[-1].get("host"),
     }
-    with open(bundle / "host_series.json", "w") as f:
-        json.dump(out, f)
-    peak_cpu = max((v for _, v in host_cpu), default=None)
-    _log("L2 host", f"{len(rows)} samples on {out['host']}: peak host CPU {peak_cpu}%, "
-                    f"peak open fds {peak_fds}/{fd_limit} "
-                    f"({out['fd_headroom_pct']}% of limit), "
-                    f"{len(procs)} process(es) tracked")
-    return out
 
 
 def run_provenance(run_dir: Path, bundle: Path) -> list[str]:

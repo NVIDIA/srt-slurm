@@ -1126,6 +1126,11 @@ class ObservabilityConfig:
     enabled: bool = False
     enable_otel: bool = False
     otel_endpoint: str | None = None
+    # Run the /proc host sampler on EVERY allocated node (one persistent srun per
+    # node group, files host_samples_<node>.jsonl), not just the orchestrator
+    # node. Closes the gap where worker nodes — and a dedicated frontend node —
+    # had no per-process host-CPU/scheduler telemetry at all. Follows ``enabled``.
+    host_sampler_all_nodes: bool = True
 
     tachometer: TachometerConfig = field(default_factory=TachometerConfig)
 
