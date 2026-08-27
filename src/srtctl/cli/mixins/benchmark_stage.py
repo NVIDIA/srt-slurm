@@ -607,10 +607,19 @@ class BenchmarkStageMixin:
                 if urls:
                     return {"AIPERF_SERVER_METRICS_URLS": ",".join(sorted(set(urls)))}
 
-            for process in self.backend_processes:
-                if process.sys_port > 0:
-                    host = get_hostname_ip(process.node, self.runtime.network_interface)
-                    urls.append(f"http://{host}:{process.sys_port}/metrics")
+            # TRT-LLM workers only publish engine metrics when launched with
+            # --publish-events-and-metrics (pre-v1.3.0 Dynamo gates the whole
+            # worker /metrics surface on it; observability.enabled sets it at
+            # config load). Without the flag the sys-port endpoints serve
+            # nothing, so advertising them would only create the impression
+            # that worker metrics are being captured.
+            if self.config.backend_type != "trtllm" or getattr(
+                self.config.backend, "publish_events_and_metrics", False
+            ):
+                for process in self.backend_processes:
+                    if process.sys_port > 0:
+                        host = get_hostname_ip(process.node, self.runtime.network_interface)
+                        urls.append(f"http://{host}:{process.sys_port}/metrics")
 
         # Add KVBM metrics endpoints for prefill processes with DYN_KVBM_METRICS_PORT
         prefill_env = getattr(self.config.backend, "prefill_environment", {})
@@ -769,11 +778,15 @@ class BenchmarkStageMixin:
         # Built-in AIPerf runners retain physical-process metrics for vLLM DP.
         # Custom commands commonly wrap AIPerf but do not inherit from its base
         # class, so give them the logical-worker view needed by SGLang TP.
-        if isinstance(runner, AIPerfBenchmarkRunner):
-            env.update(self._get_aiperf_server_metrics_env())
-        elif is_custom:
-            assert logical_endpoints is not None
-            env.update(self._get_aiperf_server_metrics_env(logical_endpoints, logical_workers_only=True))
+        # An explicit AIPERF_SERVER_METRICS_URLS in the recipe environment wins:
+        # the operator may be pointing the client at a curated endpoint list,
+        # and injection used to clobber it here silently.
+        if "AIPERF_SERVER_METRICS_URLS" not in env:
+            if isinstance(runner, AIPerfBenchmarkRunner):
+                env.update(self._get_aiperf_server_metrics_env())
+            elif is_custom:
+                assert logical_endpoints is not None
+                env.update(self._get_aiperf_server_metrics_env(logical_endpoints, logical_workers_only=True))
         if isinstance(runner, AIPerfBenchmarkRunner) and self.config.benchmark.aiperf_package:
             env["AIPERF_PACKAGE"] = self.config.benchmark.aiperf_package
 

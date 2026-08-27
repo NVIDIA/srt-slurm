@@ -684,6 +684,15 @@ so list positions remain aligned. With a Dynamo frontend, endpoint and metrics U
 leader's `DYN_SYSTEM_PORT`; other frontends use the worker HTTP port. If KVBM metrics are configured,
 their URLs are appended to `AIPERF_SERVER_METRICS_URLS` after the logical worker URLs.
 
+Two caveats for `AIPERF_SERVER_METRICS_URLS`:
+
+- **TRT-LLM worker URLs are omitted when the workers publish no metrics.** A TRT-LLM worker
+  launched without `--publish-events-and-metrics` (the default; `observability.enabled` turns it
+  on) serves nothing on its sys-port `/metrics`, so those URLs are not advertised. KVBM URLs are
+  unaffected — KVBM serves its own endpoint regardless of the flag.
+- **An explicit `AIPERF_SERVER_METRICS_URLS` in the recipe `environment:` wins.** Injection is
+  skipped when the variable is already set, so a curated endpoint list is never clobbered.
+
 Values in `benchmark.env` are applied last and can explicitly override any automatically injected
 variable.
 
