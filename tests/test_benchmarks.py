@@ -930,6 +930,147 @@ class TestTraceReplayRunner:
         assert config.benchmark.itl_threshold_ms == 7
 
 
+class TestAgentPerfRunner:
+    """Test AgentPerf benchmark runner."""
+
+    def _config(self, **benchmark_kwargs):
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        return SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model/dsv4", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="gb300"),
+            benchmark=BenchmarkConfig(type="agentperf", **benchmark_kwargs),
+        )
+
+    def test_in_registry(self):
+        """agentperf is registered in benchmark list."""
+        assert "agentperf" in list_benchmarks()
+
+    def test_get_runner(self):
+        """Can get runner for agentperf."""
+        runner = get_runner("agentperf")
+        assert runner.name == "AgentPerf"
+        assert "agentperf" in runner.script_path
+
+    def test_validate_missing_client_dir(self):
+        """Validates that agentperf_client_dir is required."""
+        runner = get_runner("agentperf")
+        errors = runner.validate_config(
+            self._config(agentperf_config="/workload/agentperf.yaml", concurrency=1010)
+        )
+        assert any("agentperf_client_dir" in e for e in errors)
+
+    def test_validate_missing_config(self):
+        """Validates that agentperf_config is required."""
+        runner = get_runner("agentperf")
+        errors = runner.validate_config(
+            self._config(agentperf_client_dir="/agentperf-client", concurrency=1010)
+        )
+        assert any("agentperf_config" in e for e in errors)
+
+    def test_validate_missing_concurrency(self):
+        """Validates that a concurrency is required."""
+        runner = get_runner("agentperf")
+        errors = runner.validate_config(
+            self._config(agentperf_client_dir="/agentperf-client", agentperf_config="/workload/agentperf.yaml")
+        )
+        assert any("concurrency" in e for e in errors)
+
+    def test_validate_rejects_empty_concurrencies(self):
+        """An empty concurrencies list must not silently defer to the workload YAML."""
+        runner = get_runner("agentperf")
+        errors = runner.validate_config(
+            self._config(
+                agentperf_client_dir="/agentperf-client",
+                agentperf_config="/workload/agentperf.yaml",
+                concurrencies=[],
+            )
+        )
+        assert any("at least one concurrency" in e for e in errors)
+
+    def test_validate_rejects_nonpositive_concurrency(self):
+        """Zero or negative concurrencies are rejected."""
+        runner = get_runner("agentperf")
+        errors = runner.validate_config(
+            self._config(
+                agentperf_client_dir="/agentperf-client",
+                agentperf_config="/workload/agentperf.yaml",
+                concurrencies=[0, 8],
+            )
+        )
+        assert any("positive" in e for e in errors)
+
+    def test_validate_valid(self):
+        """Valid config passes validation."""
+        runner = get_runner("agentperf")
+        errors = runner.validate_config(
+            self._config(
+                agentperf_client_dir="/agentperf-client",
+                agentperf_config="/workload/agentperf.yaml",
+                concurrencies=[64, 1010],
+            )
+        )
+        assert errors == []
+
+    def test_build_command(self):
+        """Build command carries endpoint, model, client dir, config and concurrencies."""
+        from unittest.mock import MagicMock
+
+        runner = get_runner("agentperf")
+        runtime = MagicMock()
+        runtime.frontend_port = 8000
+        config = self._config(
+            agentperf_client_dir="/agentperf-client",
+            agentperf_config="/workload/agentperf.yaml",
+            concurrencies=[64, 1010],
+        )
+        cmd = runner.build_command(config, runtime)
+        assert cmd[0] == "bash"
+        assert cmd[1] == "/srtctl-benchmarks/agentperf/bench.sh"
+        assert cmd[2] == "http://localhost:8000"
+        # served_model_name derives the basename; the client must use the name
+        # the frontend actually serves.
+        assert cmd[3] == "dsv4"
+        assert cmd[4] == "/agentperf-client"
+        assert cmd[5] == "/workload/agentperf.yaml"
+        assert cmd[6] == "64,1010"
+
+    def test_build_command_single_concurrency(self):
+        """benchmark.concurrency (singular) wins over concurrencies."""
+        from unittest.mock import MagicMock
+
+        runner = get_runner("agentperf")
+        runtime = MagicMock()
+        runtime.frontend_port = 8000
+        config = self._config(
+            agentperf_client_dir="/agentperf-client",
+            agentperf_config="/workload/agentperf.yaml",
+            concurrency=1010,
+        )
+        cmd = runner.build_command(config, runtime)
+        assert cmd[6] == "1010"
+
+    def test_script_exists(self):
+        """agentperf bench.sh and rollup.py ship with the package."""
+        assert (SCRIPTS_DIR / "agentperf" / "bench.sh").exists()
+        assert (SCRIPTS_DIR / "agentperf" / "rollup.py").exists()
+
+    def test_environment_passthrough(self):
+        """benchmark.env reaches the client environment."""
+        from unittest.mock import MagicMock
+
+        runner = get_runner("agentperf")
+        config = self._config(
+            agentperf_client_dir="/agentperf-client",
+            agentperf_config="/workload/agentperf.yaml",
+            concurrency=8,
+            env={"AGENTPERF_EXTRA_ARGS": "--seed 100 --no-eval"},
+        )
+        env = runner.get_environment(config, MagicMock())
+        assert env["AGENTPERF_EXTRA_ARGS"] == "--seed 100 --no-eval"
+
+
 class TestLMEvalRunner:
     """Test LM-Eval runner."""
 
