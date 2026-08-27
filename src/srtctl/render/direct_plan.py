@@ -72,6 +72,7 @@ class DirectPlanContext:
     dynamo_source_cache_key: str | None
     dynamo_cargo_patch_commands: tuple[str, ...]
     dynamo_top_of_tree: bool
+    dynamo_sidecar: bool
     sglang_runtime_key: str
     setup_script: str | None
     mooncake_master_command: tuple[str, ...] | None
@@ -101,8 +102,8 @@ def heredoc_marker(payload: str, *, prefix: str = "SRTCTL_RUNTIME_CONFIG") -> st
     return marker
 
 
-def _shell_command(args: list[str], environment: dict[str, str] | None = None) -> str:
-    """Return a shell-safe command that uses the script-selected Python."""
+def _shell_assignments(environment: dict[str, str] | None = None) -> list[str]:
+    """Return shell-safe environment assignments for a worker command."""
     parts = []
     for key, value in sorted((environment or {}).items()):
         if not key.replace("_", "").isalnum() or key[0].isdigit():
@@ -113,9 +114,38 @@ def _shell_command(args: list[str], environment: dict[str, str] | None = None) -
         # expand in the child process that owns the frontend.
         quoted_value = quoted_value.replace(_ARTIFACT_DIR_PLACEHOLDER, '"${ARTIFACT_DIR}"')
         parts.append(f"{key}={quoted_value}")
+    return parts
+
+
+def _shell_command(args: list[str], environment: dict[str, str] | None = None) -> str:
+    """Return a shell-safe command that uses the script-selected Python."""
+    parts = _shell_assignments(environment)
     parts.append("$SRTCTL_PYTHON")
     parts.extend(shlex.quote(str(arg)) for arg in args)
     return " ".join(parts)
+
+
+def _sidecar_worker_command(
+    engine_args: list[str], environment: dict[str, str], *, grpc_port: int, bootstrap_host: str | None
+) -> str:
+    """Run a native SGLang worker and its Dynamo sidecar as one direct-run service."""
+    sidecar_args = ["--sglang-endpoint", f"http://127.0.0.1:{grpc_port}"]
+    if bootstrap_host is not None:
+        sidecar_args.extend(("--bootstrap-host", bootstrap_host))
+    engine_command = _shell_command(engine_args)
+    sidecar_command = f'"$DYNAMO_SIDECAR_BINARY" {shlex.join(sidecar_args)}'
+    exports = _shell_assignments(environment)
+    export_command = f"export {' '.join(exports)}; " if exports else ""
+    return (
+        f"set -e; {export_command}"
+        f"{engine_command} & engine_pid=$!; "
+        f"{sidecar_command} & sidecar_pid=$!; "
+        'cleanup() { kill "$engine_pid" "$sidecar_pid" 2>/dev/null || true; '
+        'wait "$engine_pid" "$sidecar_pid" 2>/dev/null || true; }; '
+        "trap 'cleanup; exit 143' INT TERM; "
+        'set +e; wait -n "$engine_pid" "$sidecar_pid"; status=$?; set -e; '
+        'cleanup; exit "$status"'
+    )
 
 
 def _cli_args(values: dict[str, Any] | None) -> list[str]:
@@ -260,9 +290,10 @@ def _build_direct_processes(
         if nccl_port > 65_535:
             raise ValueError(f"Direct-host NCCL port exceeds range: {nccl_port}")
 
+        sidecar_mode = config.dynamo.uses_sidecar
         args = [
             "-m",
-            "dynamo.sglang",
+            "sglang.launch_server" if sidecar_mode else "dynamo.sglang",
             "--model-path",
             model_path,
             "--served-model-name",
@@ -274,6 +305,10 @@ def _build_direct_processes(
             "--nccl-port",
             str(nccl_port),
         ]
+        if sidecar_mode:
+            if process.grpc_port is None:
+                raise ValueError(f"--bash sidecar worker has no native gRPC port: {process}")
+            args.extend(("--grpc-port", str(process.grpc_port)))
         if mode != "agg":
             args.extend(("--disaggregation-mode", mode))
             if mode == "prefill" and process.bootstrap_port is not None:
@@ -284,7 +319,8 @@ def _build_direct_processes(
             kv_events = dict(kv_events)
             kv_events["endpoint"] = f"tcp://*:{process.kv_events_port}"
             args.extend(("--kv-events-config", json.dumps(kv_events, separators=(",", ":"))))
-        args.extend(("--request-plane", config.dynamo.request_plane))
+        if not sidecar_mode:
+            args.extend(("--request-plane", config.dynamo.request_plane))
         args.extend(_cli_args(worker_config))
 
         environment = _format_environment(backend.get_environment_for_mode(mode))
@@ -307,11 +343,20 @@ def _build_direct_processes(
         log_name = (
             f"worker-{process.endpoint_index}.log" if mode == "agg" else f"worker-{mode}-{process.endpoint_index}.log"
         )
+        command = _shell_command(args, environment)
+        if sidecar_mode:
+            assert process.grpc_port is not None
+            command = _sidecar_worker_command(
+                args,
+                environment,
+                grpc_port=process.grpc_port,
+                bootstrap_host="127.0.0.1" if mode == "prefill" else None,
+            )
         rendered.append(
             DirectProcess(
                 label=f"{mode}-{process.endpoint_index}",
                 log_name=log_name,
-                command=_shell_command(args, environment),
+                command=command,
                 http_port=process.http_port,
             )
         )
@@ -437,6 +482,7 @@ def _build_direct_plan_json(context: DirectPlanContext) -> str:
         "dynamo_source_cache_key": context.dynamo_source_cache_key,
         "dynamo_cargo_patch_commands": list(context.dynamo_cargo_patch_commands),
         "dynamo_top_of_tree": context.dynamo_top_of_tree,
+        "dynamo_sidecar": context.dynamo_sidecar,
         "sglang_source": context.sglang_source,
         "sglang_runtime_key": context.sglang_runtime_key,
         "setup_script": context.setup_script,
@@ -501,6 +547,7 @@ def build_direct_plan_context(
     dynamo_source_hash = config.dynamo.hash if config.dynamo.install else None
     cargo_patches = config.dynamo.cargo_patches if dynamo_source_hash else None
     dynamo_top_of_tree = config.dynamo.install and config.dynamo.top_of_tree
+    dynamo_sidecar = config.dynamo.uses_sidecar
     model_path = _direct_model_path(config)
     local_container_image = str(config.environment["SRTCTL_LOCAL_CONTAINER_IMAGE"])
     sglang_source = os.path.expandvars(str(config.environment["SRTCTL_SGLANG_SOURCE"]))
@@ -511,6 +558,7 @@ def build_direct_plan_context(
             if dynamo_source_hash
             else None,
             "dynamo_top_of_tree": dynamo_top_of_tree,
+            "dynamo_sidecar": dynamo_sidecar,
             "container_image": local_container_image,
         },
         sort_keys=True,
@@ -541,6 +589,7 @@ def build_direct_plan_context(
         else None,
         dynamo_cargo_patch_commands=dynamo_cargo_patch_commands(cargo_patches),
         dynamo_top_of_tree=dynamo_top_of_tree,
+        dynamo_sidecar=dynamo_sidecar,
         sglang_runtime_key=hashlib.sha256(runtime_identity.encode("utf-8")).hexdigest()[:16],
         setup_script=config.setup_script,
         mooncake_master_command=_build_direct_mooncake_master_command(config),

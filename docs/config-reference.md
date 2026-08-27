@@ -889,7 +889,7 @@ dynamo:
 - `hash` and `top_of_tree` are mutually exclusive.
 - When `hash` or `top_of_tree` is set, `version` is automatically cleared.
 - Source installs (`hash` or `top_of_tree`) clone the repo and build with maturin.
-- `engine_mode: sidecar` currently supports `frontend.type: dynamo` with `backend.type: sglang` on Slurm. It requires SGLang v0.5.16+ and rejects `dynamo.wheel`; see [Dynamo Sidecar Engines](dynamo-sidecar.md).
+- `engine_mode: sidecar` supports `frontend.type: dynamo` with `backend.type: sglang` on Slurm and the single-node `--bash` lifecycle. It requires SGLang v0.5.16+ and rejects `dynamo.wheel`; direct Bash retains its existing `dynamo.hash` or `dynamo.top_of_tree: true` requirement. See [Dynamo Sidecar Engines](dynamo-sidecar.md).
 
 ---
 
