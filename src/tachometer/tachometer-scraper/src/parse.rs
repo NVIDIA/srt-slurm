@@ -157,16 +157,16 @@ pub fn samples_to_rows_with_filter(
     processed_samples.extend(cpu_aggregated);
 
     // First pass: collect histogram sum and count values
-    let mut histogram_stats: HashMap<String, (Option<f32>, Option<f32>)> = HashMap::new();
+    let mut histogram_stats: HashMap<String, (Option<f64>, Option<f64>)> = HashMap::new();
 
     for sample in &processed_samples {
         let key = make_histogram_key(&sample.metric_name, &sample.labels);
         match sample.metric_type {
             MetricType::HistogramSum => {
-                histogram_stats.entry(key).or_insert((None, None)).0 = Some(sample.value as f32);
+                histogram_stats.entry(key).or_insert((None, None)).0 = Some(sample.value);
             }
             MetricType::HistogramCount => {
-                histogram_stats.entry(key).or_insert((None, None)).1 = Some(sample.value as f32);
+                histogram_stats.entry(key).or_insert((None, None)).1 = Some(sample.value);
             }
             _ => {}
         }
@@ -185,13 +185,13 @@ pub fn samples_to_rows_with_filter(
                 let upper_bound = if le_str == "+Inf" {
                     None // +Inf is represented as None
                 } else {
-                    le_str.parse::<f32>().ok()
+                    le_str.parse::<f64>().ok()
                 };
 
                 rows.push(Row {
                     scraper_endpoint: scraper_endpoint.to_string(),
                     metric_name: filtered_name,
-                    metric_value: sample.value as f32,
+                    metric_value: sample.value,
                     histogram_bucket_lower: None, // Will be calculated later
                     histogram_bucket_upper: upper_bound,
                     histogram_sum: None,   // Will be set later for all buckets
@@ -207,7 +207,7 @@ pub fn samples_to_rows_with_filter(
                 rows.push(Row {
                     scraper_endpoint: scraper_endpoint.to_string(),
                     metric_name: filtered_name,
-                    metric_value: sample.value as f32,
+                    metric_value: sample.value,
                     histogram_bucket_lower: None,
                     histogram_bucket_upper: None,
                     histogram_sum: None,
@@ -231,16 +231,16 @@ pub fn samples_to_rows(samples: Vec<ParsedSample>, scraper_endpoint: &str) -> Ve
     let mut rows = Vec::new();
 
     // First pass: collect histogram sum and count values
-    let mut histogram_stats: HashMap<String, (Option<f32>, Option<f32>)> = HashMap::new();
+    let mut histogram_stats: HashMap<String, (Option<f64>, Option<f64>)> = HashMap::new();
 
     for sample in &samples {
         let key = make_histogram_key(&sample.metric_name, &sample.labels);
         match sample.metric_type {
             MetricType::HistogramSum => {
-                histogram_stats.entry(key).or_insert((None, None)).0 = Some(sample.value as f32);
+                histogram_stats.entry(key).or_insert((None, None)).0 = Some(sample.value);
             }
             MetricType::HistogramCount => {
-                histogram_stats.entry(key).or_insert((None, None)).1 = Some(sample.value as f32);
+                histogram_stats.entry(key).or_insert((None, None)).1 = Some(sample.value);
             }
             _ => {}
         }
@@ -257,13 +257,13 @@ pub fn samples_to_rows(samples: Vec<ParsedSample>, scraper_endpoint: &str) -> Ve
                 let upper_bound = if le_str == "+Inf" {
                     None
                 } else {
-                    le_str.parse::<f32>().ok()
+                    le_str.parse::<f64>().ok()
                 };
 
                 rows.push(Row {
                     scraper_endpoint: scraper_endpoint.to_string(),
                     metric_name,
-                    metric_value: sample.value as f32,
+                    metric_value: sample.value,
                     histogram_bucket_lower: None,
                     histogram_bucket_upper: upper_bound,
                     histogram_sum: None,   // Will be set later for all buckets
@@ -278,7 +278,7 @@ pub fn samples_to_rows(samples: Vec<ParsedSample>, scraper_endpoint: &str) -> Ve
                 rows.push(Row {
                     scraper_endpoint: scraper_endpoint.to_string(),
                     metric_name,
-                    metric_value: sample.value as f32,
+                    metric_value: sample.value,
                     histogram_bucket_lower: None,
                     histogram_bucket_upper: None,
                     histogram_sum: None,
@@ -522,7 +522,7 @@ fn make_histogram_key(metric_name: &str, labels: &HashMap<String, String>) -> St
 
 fn fix_histogram_bucket_bounds_and_stats(
     rows: &mut [Row],
-    histogram_stats: HashMap<String, (Option<f32>, Option<f32>)>,
+    histogram_stats: HashMap<String, (Option<f64>, Option<f64>)>,
 ) {
     // Group histogram buckets by metric name and set lower bounds
     use std::collections::BTreeMap;
@@ -549,10 +549,10 @@ fn fix_histogram_bucket_bounds_and_stats(
     // Set lower bounds for each group and attach sum/count to all buckets
     for (base_name, indices) in bucket_groups.iter_mut() {
         indices.sort_by(|&i, &j| {
-            let upper_i = rows[i].histogram_bucket_upper.unwrap_or(f32::INFINITY);
-            let upper_j = rows[j].histogram_bucket_upper.unwrap_or(f32::INFINITY);
+            let upper_i = rows[i].histogram_bucket_upper.unwrap_or(f64::INFINITY);
+            let upper_j = rows[j].histogram_bucket_upper.unwrap_or(f64::INFINITY);
             // Sort: +Inf comes last, then by value
-            match (upper_i == f32::INFINITY, upper_j == f32::INFINITY) {
+            match (upper_i == f64::INFINITY, upper_j == f64::INFINITY) {
                 (true, true) => std::cmp::Ordering::Equal,
                 (true, false) => std::cmp::Ordering::Greater,
                 (false, true) => std::cmp::Ordering::Less,
