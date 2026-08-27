@@ -115,8 +115,9 @@ class WorkerStageMixin:
 
         # 2. Dynamo installation (required for the Dynamo frontend)
         # Skip if dynamo.install is False (container already has dynamo installed)
+        dynamo_source_revision = getattr(self.runtime, "dynamo_source_revision", None)
         if installs_dynamo(self.config):
-            parts.append(self.config.dynamo.get_install_commands(self.runtime.dynamo_source_revision))
+            parts.append(self.config.dynamo.get_install_commands(dynamo_source_revision))
 
         # 3. Standalone sidecars are Rust executables, not Python modules. Build
         # the selected connector from the exact source SHA already chosen for the
@@ -125,7 +126,7 @@ class WorkerStageMixin:
             parts.append(
                 self.config.dynamo.get_sidecar_build_commands(
                     self.config.backend_type,
-                    self.runtime.dynamo_source_revision,
+                    dynamo_source_revision,
                 )
             )
 
