@@ -14,7 +14,6 @@ from srtctl.core.schema import SrtConfig
 from srtctl.ports import (
     KV_EVENTS_PORT_BASE,
     SGLANG_BOOTSTRAP_PORT_BASE,
-    SGLANG_GRPC_PORT_BASE,
     SGLANG_HTTP_PORT_BASE,
     SGLANG_HTTP_PORT_STRIDE,
     SGLANG_NCCL_PORT_BASE,
@@ -59,27 +58,6 @@ class TestConfigLoading:
 
 class TestSrtConfigStructure:
     """Tests for SrtConfig dataclass structure."""
-
-    @pytest.mark.parametrize("backend_type", ["sglang", "vllm", "trtllm"])
-    def test_sidecar_accepts_supported_backends(self, backend_type):
-        from srtctl.backends import SGLangProtocol, TRTLLMProtocol, VLLMProtocol
-        from srtctl.core.schema import DynamoConfig, ModelConfig, ResourceConfig
-
-        backends = {
-            "sglang": SGLangProtocol(),
-            "vllm": VLLMProtocol(),
-            "trtllm": TRTLLMProtocol(),
-        }
-        config = SrtConfig(
-            name="sidecar",
-            model=ModelConfig(path="/model", container="/container.sqsh", precision="bf16"),
-            resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1),
-            backend=backends[backend_type],
-            dynamo=DynamoConfig(wheel="1.5.0.dev20260828", engine_mode="sidecar"),
-        )
-
-        assert config.backend_type == backend_type
-        assert config.dynamo.uses_sidecar
 
     def test_resource_config_disaggregated(self):
         """Test resource config disaggregation detection."""
@@ -197,17 +175,6 @@ class TestDynamoConfig:
         assert "pip install" in cmd
         assert "ai-dynamo-runtime==0.8.0" in cmd
         assert "ai-dynamo==0.8.0" in cmd
-
-    def test_sidecar_uses_the_selected_dynamo_package(self):
-        """Sidecar mode accepts wheel installs and preinstalled Dynamo packages."""
-        from srtctl.core.schema import DynamoConfig
-
-        wheel = DynamoConfig(wheel="1.5.0.dev20260828", engine_mode="sidecar")
-        preinstalled = DynamoConfig(install=False, engine_mode="sidecar")
-
-        assert wheel.uses_sidecar
-        assert "dynamo_wheels.py install" in wheel.get_install_commands()
-        assert preinstalled.uses_sidecar
 
     def test_wheel_install_command(self):
         """Wheel config installs ai-dynamo plus runtime without source build."""
@@ -460,6 +427,35 @@ class TestDynamoConfig:
             DynamoConfig(event_plane="kafka")
 
 
+class TestSidecarValidation:
+    """Configuration contract for wheel-provided backend sidecars."""
+
+    @staticmethod
+    def _config(*, frontend_type: str = "dynamo"):
+        from srtctl.core.schema import DynamoConfig, FrontendConfig, ModelConfig, ResourceConfig
+
+        return SrtConfig(
+            name="sidecar",
+            model=ModelConfig(path="/model", container="/container.sqsh", precision="fp16"),
+            resources=ResourceConfig(gpu_type="h100", gpus_per_node=1, agg_nodes=1, agg_workers=1),
+            frontend=FrontendConfig(type=frontend_type),
+            backend=SGLangProtocol(sidecar=True),
+            dynamo=DynamoConfig(wheel="1.5.0.dev20260828"),
+        )
+
+    def test_wheel_backed_sidecar_is_valid(self) -> None:
+        config = self._config()
+
+        assert config.backend.sidecar is True
+        assert config.dynamo.wheel == "1.5.0.dev20260828"
+
+    def test_sidecar_requires_dynamo_frontend(self) -> None:
+        from marshmallow import ValidationError
+
+        with pytest.raises(ValidationError, match="requires frontend.type: dynamo"):
+            self._config(frontend_type="sglang")
+
+
 class TestSGLangProtocol:
     """Tests for SGLangProtocol."""
 
@@ -598,165 +594,6 @@ class TestSGLangProtocol:
             command = SGLangProtocol().build_worker_command(process, [process], runtime)
 
         assert command[command.index("--nccl-port") + 1] == str(SGLANG_NCCL_PORT_BASE + 5)
-
-    def test_sidecar_launches_native_sglang_grpc_once(self, monkeypatch):
-        """Sidecar mode uses stock SGLang and owns the native gRPC port."""
-        from types import SimpleNamespace
-
-        from srtctl.core.topology import Process
-
-        backend = SGLangProtocol(sglang_config=SGLangServerConfig(aggregated={"grpc-port": 9999}))
-        process = Process(
-            node="node0",
-            gpu_indices=frozenset(range(8)),
-            sys_port=7500,
-            http_port=6100,
-            grpc_port=SGLANG_GRPC_PORT_BASE,
-            endpoint_mode="agg",
-            endpoint_index=0,
-        )
-        runtime = SimpleNamespace(model_path=Path("/model"), is_hf_model=False, request_plane="tcp")
-        monkeypatch.setattr("srtctl.core.slurm.get_hostname_ip", lambda _node: "10.0.0.1")
-
-        command = backend.build_worker_command(process, [process], runtime, frontend_type="sidecar")
-
-        assert command[:3] == ["python3", "-m", "sglang.launch_server"]
-        assert command[command.index("--grpc-port") + 1] == str(SGLANG_GRPC_PORT_BASE)
-        assert command.count("--grpc-port") == 1
-        assert "--request-plane" not in command
-
-
-class TestDynamoSidecarSupervisor:
-    """Standalone sidecar process supervision."""
-
-    def test_supervisor_runs_engine_and_sidecar_then_reaps_peer(self):
-        from srtctl.cli.mixins.worker_stage import _wrap_sidecar
-
-        command = _wrap_sidecar(
-            ["python3", "-m", "sglang.launch_server", "--grpc-port", "6500"],
-            ["python3", "-m", "dynamo.sglang.sidecar", "--grpc-endpoint", "127.0.0.1:6500"],
-            grpc_port=6500,
-            engine_name="SGLang",
-        )
-
-        assert command[:2] == ["bash", "-lc"]
-        script = command[2]
-        assert "sglang.launch_server" in script
-        assert "python3 -m dynamo.sglang.sidecar --grpc-endpoint 127.0.0.1:6500" in script
-        assert 'wait -n "${ENGINE_PID}" "${SIDECAR_PID}"' in script
-        assert 'request_stop "${ENGINE_PID}"' in script
-
-
-class TestNativeSidecarCommands:
-    """Native engine and wheel-provided sidecar CLI contracts."""
-
-    def test_vllm_sidecar_uses_vllm_rs_native_grpc(self, monkeypatch):
-        from types import SimpleNamespace
-
-        from srtctl.backends import VLLMProtocol, VLLMServerConfig
-        from srtctl.core.topology import Process
-
-        backend = VLLMProtocol(
-            connector=None,
-            vllm_config=VLLMServerConfig(aggregated={"tensor-parallel-size": 2, "max-model-len": 4096}),
-        )
-        process = Process(
-            node="node0",
-            gpu_indices=frozenset({0, 1}),
-            sys_port=7500,
-            http_port=6100,
-            grpc_port=6500,
-            endpoint_mode="agg",
-            endpoint_index=0,
-        )
-        runtime = SimpleNamespace(model_path=Path("/model"), is_hf_model=False, network_interface="eth0")
-        monkeypatch.setattr("srtctl.core.slurm.get_hostname_ip", lambda *_args: "10.0.0.1")
-
-        command = backend.build_worker_command(process, [process], runtime, frontend_type="sidecar")
-
-        assert command[:3] == ["vllm-rs", "serve", "/model"]
-        assert command[command.index("--grpc-port") + 1] == "6500"
-        assert command[command.index("--max-model-len") + 1] == "4096"
-
-    def test_vllm_sidecar_exposes_one_complete_multi_node_dp_group(self, monkeypatch):
-        from types import SimpleNamespace
-
-        from srtctl.backends import VLLMProtocol, VLLMServerConfig
-        from srtctl.core.topology import Endpoint
-
-        backend = VLLMProtocol(
-            connector=None,
-            vllm_config=VLLMServerConfig(aggregated={"data-parallel-size": 4}),
-        )
-        endpoint = Endpoint(
-            mode="agg",
-            index=0,
-            nodes=("node0", "node1"),
-            gpu_indices=frozenset({0, 1}),
-            gpus_per_node=2,
-        )
-        processes = backend.endpoints_to_processes([endpoint], frontend_type="sidecar")
-        runtime = SimpleNamespace(model_path=Path("/model"), is_hf_model=False, network_interface="eth0")
-        monkeypatch.setattr("srtctl.core.slurm.get_hostname_ip", lambda node, *_args: f"10.0.0.{node[-1]}")
-
-        commands = [
-            backend.build_worker_command(process, processes, runtime, frontend_type="sidecar") for process in processes
-        ]
-
-        assert [process.node_rank for process in processes] == [0, 2]
-        assert all(process.grpc_port is not None for process in processes)
-        assert "--headless" not in commands[0]
-        assert "--headless" in commands[1]
-        assert commands[1][commands[1].index("--data-parallel-start-rank") + 1] == "2"
-
-    def test_trtllm_sidecar_uses_native_grpc_server(self, tmp_path):
-        from types import SimpleNamespace
-
-        from srtctl.backends import TRTLLMProtocol, TRTLLMServerConfig
-        from srtctl.core.topology import Process
-
-        backend = TRTLLMProtocol(trtllm_config=TRTLLMServerConfig(aggregated={"max_seq_len": 4096}))
-        process = Process(
-            node="node0",
-            gpu_indices=frozenset({0, 1}),
-            sys_port=7500,
-            http_port=6100,
-            grpc_port=6500,
-            endpoint_mode="agg",
-            endpoint_index=0,
-        )
-        runtime = SimpleNamespace(log_dir=tmp_path, worker_model_arg="/model", gpu_type="h100")
-
-        command = backend.build_worker_command(process, [process], runtime, frontend_type="sidecar")
-
-        assert command[:4] == ["trtllm-llmapi-launch", "python3", "-m", "tensorrt_llm.commands.serve"]
-        assert command[command.index("--port") + 1] == "6500"
-        assert "--grpc" in command
-
-    @pytest.mark.parametrize(
-        ("backend_type", "mode", "expected"),
-        [
-            ("sglang", "prefill", ["dynamo.sglang.sidecar", "--bootstrap-host", "10.0.0.1"]),
-            ("vllm", "decode", ["dynamo.vllm.sidecar", "--disaggregation-mode", "decode"]),
-            ("trtllm", "agg", ["dynamo.trtllm.sidecar", "--model-path", "/model"]),
-        ],
-    )
-    def test_sidecar_module_contract(self, backend_type, mode, expected):
-        from srtctl.cli.mixins.worker_stage import _build_sidecar_command
-
-        command = _build_sidecar_command(
-            backend_type,
-            grpc_port=6500,
-            mode=mode,
-            model_path="/model",
-            bootstrap_host="10.0.0.1" if backend_type == "sglang" else None,
-            context_length=4096 if backend_type == "trtllm" else None,
-        )
-        joined = " ".join(command)
-
-        assert "--grpc-endpoint 127.0.0.1:6500" in joined
-        for token in expected:
-            assert token in command
 
 
 class TestServedModelName:

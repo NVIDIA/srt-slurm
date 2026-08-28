@@ -1436,8 +1436,6 @@ class DynamoConfig:
         top_of_tree: Clone repo at HEAD (latest)
         wheel: ai-dynamo package version to install via staged wheels. The
                matching ai-dynamo-runtime wheel is installed automatically.
-        engine_mode: ``in_process`` uses Dynamo's Python engine modules. ``sidecar``
-            runs the engine natively with the matching connector from ``ai-dynamo``.
         request_plane: Request plane to use (default: "tcp"). Valid values: "nats", "tcp", "http"
         event_plane: Event plane override, sets DYN_EVENT_PLANE (default: None — follow
                      the Dynamo image's own default). Valid values: "nats", "zmq"
@@ -1447,14 +1445,12 @@ class DynamoConfig:
 
     _VALID_REQUEST_PLANES: ClassVar[tuple[str, ...]] = ("nats", "tcp", "http")
     _VALID_EVENT_PLANES: ClassVar[tuple[str, ...]] = ("nats", "zmq")
-    _VALID_ENGINE_MODES: ClassVar[tuple[str, ...]] = ("in_process", "sidecar")
 
     install: bool = True
     version: str | None = "0.8.0"
     hash: str | None = None
     top_of_tree: bool = False
     wheel: str | None = None
-    engine_mode: Literal["in_process", "sidecar"] = "in_process"
     request_plane: str = "tcp"
     event_plane: str | None = None
     # Optional dependency-declaration overrides applied to the dynamo Cargo.toml tree before a
@@ -1489,10 +1485,6 @@ class DynamoConfig:
         if self.cargo_patches and self.hash is None:
             raise ValueError("dynamo.cargo_patches requires a source build — set dynamo.hash to a commit")
 
-        if self.engine_mode not in self._VALID_ENGINE_MODES:
-            raise ValueError(
-                f"Invalid dynamo.engine_mode '{self.engine_mode}', must be one of: {', '.join(self._VALID_ENGINE_MODES)}"
-            )
         if self.request_plane not in self._VALID_REQUEST_PLANES:
             raise ValueError(
                 f"Invalid request_plane '{self.request_plane}', must be one of: {', '.join(self._VALID_REQUEST_PLANES)}"
@@ -1507,11 +1499,6 @@ class DynamoConfig:
     def needs_source_install(self) -> bool:
         """Whether this config requires a source install (git clone + maturin)."""
         return self.wheel is None and (self.hash is not None or self.top_of_tree)
-
-    @property
-    def uses_sidecar(self) -> bool:
-        """Whether workers run a native engine with a wheel-provided Dynamo sidecar."""
-        return self.engine_mode == "sidecar"
 
     @property
     def wheel_version(self) -> str | None:
@@ -1757,6 +1744,17 @@ class SrtConfig:
         self._validate_dynamo_sidecar()
         self._warn_dp_launch_mode()
 
+    def _validate_dynamo_sidecar(self) -> None:
+        """Validate native sidecar configuration before job submission."""
+        if getattr(self.backend, "sidecar", False) is not True:
+            return
+        if self.frontend.type != "dynamo":
+            raise ValidationError("backend.sidecar: true requires frontend.type: dynamo")
+
+        sidecar_binary = getattr(self.backend, "sidecar_binary", None)
+        if sidecar_binary is not None and not sidecar_binary.strip():
+            raise ValidationError("backend.sidecar_binary must be a non-empty executable path")
+
     def _warn_dp_launch_mode(self):
         """Warn when a vLLM DP recipe selects the deprecated per-GPU layout.
 
@@ -1764,7 +1762,7 @@ class SrtConfig:
         `vllm serve` owns the local DP ranks, so the layout is one process per
         node whatever dp_launch_mode says.
         """
-        if not isinstance(self.backend, VLLMProtocol) or self.frontend.type == "vllm":
+        if not isinstance(self.backend, VLLMProtocol) or self.frontend.type == "vllm" or self.backend.sidecar:
             return
         if self.backend.dp_launch_mode != "per_gpu":
             return
@@ -1778,17 +1776,6 @@ class SrtConfig:
             "use backend.dp_launch_mode: per_node instead. per_gpu will be removed in a future release",
             ", ".join(mode_name for mode_name, _ in dp_modes),
         )
-
-    def _validate_dynamo_sidecar(self) -> None:
-        """Reject sidecar shapes that would otherwise launch an incompatible engine."""
-        if not self.dynamo.uses_sidecar:
-            return
-        if self.frontend.type != "dynamo":
-            raise ValidationError("dynamo.engine_mode: sidecar requires frontend.type: dynamo")
-        if self.backend_type not in {"sglang", "vllm", "trtllm"}:
-            raise ValidationError("dynamo.engine_mode: sidecar supports backend.type: sglang, vllm, or trtllm")
-        if self.backend_type == "trtllm" and self.resources.is_disaggregated:
-            raise ValidationError("TensorRT-LLM sidecar mode currently supports aggregated workers only")
 
     def _validate_trtllm_serve(self):
         """Catch trtllm_serve misconfigurations at load time (dry-run) instead of

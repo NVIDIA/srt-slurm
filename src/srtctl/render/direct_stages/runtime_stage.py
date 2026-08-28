@@ -18,8 +18,6 @@ from typing import Any
 
 from .common import run_capture, rust_toolchain
 
-_DYNAMO_SOURCE_REVISION = ".srtctl-source-revision"
-
 
 class RuntimeSetupStageMixin:
     """Install SGLang and Dynamo into the per-run serving environment."""
@@ -153,7 +151,6 @@ class RuntimeSetupStageMixin:
 
     def _install_dynamo_from_source_cache(self) -> None:
         source_hash = str(self.plan["dynamo_source_hash"])
-        source_revision = source_hash
         root = Path(os.environ.get("SRTCTL_DYNAMO_CACHE_ROOT", str(self.source_dir / "configs" / "dynamo-wheels")))
         key = self._dynamo_source_cache_key()
         cache = root / key
@@ -177,14 +174,12 @@ class RuntimeSetupStageMixin:
                     self._run_logged(
                         ["git", "-C", str(repo), "checkout", "--detach", "FETCH_HEAD"], log_name="install-dynamo.log"
                     )
-                    source_revision = run_capture(["git", "-C", str(repo), "rev-parse", "HEAD"])
                     for command in self.plan["dynamo_cargo_patch_commands"]:
                         self._run_logged(["bash", "-lc", str(command)], log_name="install-dynamo.log", cwd=repo)
                     cache.mkdir(parents=True, exist_ok=True)
                     for stale in [
                         *cache.glob("ai_dynamo_runtime-*.whl"),
                         cache / "dynamo-src.tar.gz",
-                        cache / "source-revision",
                         cache / ".complete",
                     ]:
                         stale.unlink(missing_ok=True)
@@ -200,11 +195,7 @@ class RuntimeSetupStageMixin:
                         env=environment,
                     )
                     self._write_archive(build, "dynamo", cache / "dynamo-src.tar.gz")
-                    (cache / "source-revision").write_text(f"{source_revision}\n", encoding="utf-8")
                     (cache / ".complete").touch()
-            cached_revision = cache / "source-revision"
-            if cached_revision.is_file():
-                source_revision = cached_revision.read_text(encoding="utf-8").strip() or source_revision
         wheel = next(cache.glob("ai_dynamo_runtime-*.whl"), None)
         if wheel is None:
             self._die(f"Dynamo cache is incomplete: {cache}")
@@ -213,7 +204,6 @@ class RuntimeSetupStageMixin:
         source.mkdir(parents=True, exist_ok=True)
         with tarfile.open(cache / "dynamo-src.tar.gz", "r:gz") as archive:
             archive.extractall(source, filter="data")
-        (source / _DYNAMO_SOURCE_REVISION).write_text(f"{source_revision}\n", encoding="utf-8")
         self._run_logged(
             [self.python, "-m", "pip", "install", "--quiet", "--force-reinstall", "--no-deps", str(wheel)],
             log_name="install-dynamo.log",
@@ -234,7 +224,6 @@ class RuntimeSetupStageMixin:
                 ["git", "clone", "--depth", "1", "https://github.com/ai-dynamo/dynamo.git", str(repo)],
                 log_name="install-dynamo.log",
             )
-            source_revision = run_capture(["git", "-C", str(repo), "rev-parse", "HEAD"])
             environment = dict(os.environ)
             environment["RUSTFLAGS"] = f"{environment.get('RUSTFLAGS', '')} -C target-cpu=native --cfg tokio_unstable"
             environment["CARGO_TARGET_DIR"] = str(build / "target")
@@ -251,7 +240,6 @@ class RuntimeSetupStageMixin:
             source = self.output_dir / "runtime" / "dynamo-src"
             shutil.rmtree(source, ignore_errors=True)
             shutil.copytree(repo, source, ignore=shutil.ignore_patterns(".git", "target", "__pycache__"))
-            (source / _DYNAMO_SOURCE_REVISION).write_text(f"{source_revision}\n", encoding="utf-8")
             self._run_logged(
                 [self.python, "-m", "pip", "install", "--quiet", "--force-reinstall", "--no-deps", str(wheel)],
                 log_name="install-dynamo.log",

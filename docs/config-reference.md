@@ -439,6 +439,7 @@ Worker configuration and SGLang settings.
 ```yaml
 backend:
   type: sglang                        # Backend type (currently only sglang)
+  sidecar: true                       # Use the native engine + Dynamo sidecar
 
   # Per-mode environment variables
   prefill_environment:
@@ -478,6 +479,11 @@ backend:
 | `aggregated_environment`  | dict        | {}      | Environment variables for aggregated    |
 | `sglang_config`           | object      | null    | SGLang CLI configuration per mode       |
 | `kv_events_config`        | bool/dict   | null    | KV events configuration                 |
+| `sidecar`                 | bool        | false   | Replace the legacy Python Dynamo worker with the framework's native engine and Dynamo sidecar |
+| `sidecar_port`            | int         | 50051   | Base loopback gRPC port; co-located workers receive deterministic offsets |
+| `sidecar_binary`          | string/null | null    | Optional standalone sidecar executable; null uses `python3 -m dynamo.<framework>.sidecar` |
+| `sidecar_args`            | list[string] | []      | Extra arguments passed to the sidecar launcher |
+| `sidecar_startup_timeout` | int         | 1200    | Seconds to wait for the native gRPC endpoint |
 
 ### sglang_config
 
@@ -532,6 +538,36 @@ Each worker leader gets a globally unique port starting at 5550:
 | prefill_1 | 5551 |
 | decode_0  | 5552 |
 | decode_1  | 5553 |
+
+### Native sidecar mode
+
+Set `backend.sidecar: true` to run the framework's native engine process beside a CPU-only Dynamo sidecar instead of launching `python3 -m dynamo.<framework>`. The engine and sidecar share one Slurm step and have a coupled lifecycle: if either exits, srtctl terminates the other and marks the worker failed.
+
+By default, srtctl launches `python3 -m dynamo.<framework>.sidecar`. The `ai-dynamo` package supplies this module and pins the matching `ai-dynamo-runtime` wheel, which embeds the native Rust sidecar. The configured Dynamo version, wheel, source hash, or preinstalled container runtime must include the selected framework's launcher. No separate Cargo build is performed at job startup.
+
+Nightly deployments should select an exact `dynamo.wheel` version so srtctl stages and installs the matching `ai-dynamo` and `ai-dynamo-runtime` artifacts on every worker. Set `backend.sidecar_binary` only to launch a compatible standalone executable already present in the container or a bind mount.
+
+```yaml
+frontend:
+  type: dynamo
+
+backend:
+  type: vllm  # sglang, vllm, or trtllm
+  sidecar: true
+  sidecar_port: 50051
+  sidecar_args:
+    - --grpc-connections
+    - "4"
+
+dynamo:
+  wheel: "<nightly-with-sidecars>"
+```
+
+The default sidecar commands are `python3 -m dynamo.sglang.sidecar`, `python3 -m dynamo.vllm.sidecar`, and `python3 -m dynamo.trtllm.sidecar`. All three use the shared `--grpc-endpoint` flag.
+
+SGLang exposes gRPC and starts the sidecar only on an endpoint leader; distributed followers are engine-only. vLLM automatically uses one managed process per node for data-parallel endpoints and exposes the complete DP group through the leader's sidecar. Multi-node tensor-parallel vLLM endpoints remain rejected until their `vllm-rs` launch path is validated. TensorRT-LLM supports sidecars for aggregated workers only and runs the sidecar on MPI rank zero. `backend.sidecar_context_length` can override the TRT-LLM context length inferred from `trtllm_config.aggregated.max_seq_len`.
+
+vLLM sidecar mode sets `VLLM_PLUGINS` to an empty value by default. This prevents image-installed plugins from replacing native engine output types that must match the fixed `vllm-rs` MessagePack contract. A recipe can explicitly set `VLLM_PLUGINS` in `prefill_environment`, `decode_environment`, or `aggregated_environment` when every selected plugin is compatible with the sidecar protocol.
 
 ### vLLM DP launch mode
 
@@ -933,10 +969,7 @@ Dynamo installation configuration.
 
 ```yaml
 dynamo:
-  engine_mode: in_process      # Or sidecar for a native engine + Dynamo connector
   version: "0.8.0"            # Install from PyPI
-  # OR
-  wheel: "1.5.0.dev20260828"  # Install staged ai-dynamo wheels
   # OR
   hash: "abc123"              # Install from git commit
   # OR
@@ -947,18 +980,16 @@ dynamo:
 | ------------- | ------ | ------- | ------------------------------------------------------ |
 | `install`     | bool   | true    | Whether to install dynamo (set false if pre-installed) |
 | `version`     | string | "0.8.0" | PyPI version                                           |
-| `wheel`       | string | null    | Exact staged `ai-dynamo` package version               |
 | `hash`        | string | null    | Git commit hash (source install)                       |
 | `top_of_tree` | bool   | false   | Install from main branch                               |
-| `engine_mode` | string | `in_process` | `in_process` uses legacy Dynamo Python workers; `sidecar` runs the native backend with its wheel-provided Dynamo connector |
 
 **Notes**:
 
 - Set `install: false` if your container already has dynamo pre-installed.
-- Only one of `version`, `wheel`, `hash`, or `top_of_tree` should be specified.
-- When `wheel`, `hash`, or `top_of_tree` is set, `version` is automatically cleared.
+- Only one of `version`, `hash`, or `top_of_tree` should be specified.
+- `hash` and `top_of_tree` are mutually exclusive.
+- When `hash` or `top_of_tree` is set, `version` is automatically cleared.
 - Source installs (`hash` or `top_of_tree`) clone the repo and build with maturin.
-- `engine_mode: sidecar` supports `frontend.type: dynamo` with SGLang, vLLM, and aggregated TensorRT-LLM workers on Slurm. The selected `ai-dynamo` build must include the matching `dynamo.<backend>.sidecar` module. Direct Bash remains SGLang-only and retains its existing `dynamo.hash` or `dynamo.top_of_tree: true` requirement. See [Dynamo Sidecar Engines](dynamo-sidecar.md).
 
 ---
 
