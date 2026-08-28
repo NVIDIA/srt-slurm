@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Iterable, Iterator
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TextIO
@@ -43,6 +43,7 @@ _ROUTING_FORMULA = re.compile(
 )
 _WORKER_LOG = re.compile(r"(?:^worker-.*\.log$|.*_(?:prefill|decode|agg)_w\d+\.out$)")
 _WORKER_INDEX = re.compile(r"(?:worker-(?:prefill-|decode-|agg-)?|_(?:prefill|decode|agg)_w)(?P<index>\d+)")
+_WORKER_ROLE = re.compile(r"(?:worker-|_)(?P<role>prefill|decode|agg)(?:-|_)")
 
 
 @dataclass(frozen=True)
@@ -53,6 +54,7 @@ class NormalizedEvent:
     kind: str
     timestamp_ns: int | None
     worker_index: int | None
+    worker_role: str | None
     request_id: str | None
     fields: dict[str, str]
     raw: str
@@ -114,7 +116,8 @@ def normalize_run(root: Path, *, output_dir: Path | None = None) -> Normalizatio
     with _atomic_text_file(output_dir / "worker-events.jsonl") as handle:
         for ordinal, worker_log in enumerate(inputs.worker_logs):
             worker_index = _worker_log_index(worker_log, fallback=ordinal)
-            for event in parse_worker_file(worker_log, worker_index=worker_index):
+            worker_role = _worker_log_role(worker_log)
+            for event in parse_worker_file(worker_log, worker_index=worker_index, worker_role=worker_role):
                 json.dump(event.to_dict(), handle, separators=(",", ":"), sort_keys=True)
                 handle.write("\n")
                 worker_count += 1
@@ -171,13 +174,13 @@ def parse_router_file(path: Path) -> Iterator[NormalizedEvent]:
                 yield event
 
 
-def parse_worker_file(path: Path, *, worker_index: int) -> Iterator[NormalizedEvent]:
+def parse_worker_file(path: Path, *, worker_index: int, worker_role: str | None = None) -> Iterator[NormalizedEvent]:
     """Yield Dynamo-hosted SGLang engine events from one worker log."""
     with path.open(encoding="utf-8", errors="replace") as handle:
         for raw in handle:
             event = parse_worker_line(raw.rstrip("\n"), worker_index=worker_index)
             if event is not None:
-                yield event
+                yield replace(event, worker_role=worker_role)
 
 
 def parse_router_line(raw: str) -> NormalizedEvent | None:
@@ -220,6 +223,9 @@ def parse_router_line(raw: str) -> NormalizedEvent | None:
             fields.setdefault("dynamo_request_id", fields["request_id"])
         return _event("dynamo_router", kind, timestamp_ns, None, fields, raw)
 
+    if fields.get("phase") and fields.get("span_name") == "kv_router.route_request":
+        return _event("dynamo_router", "routing_dispatch", timestamp_ns, None, fields, raw)
+
     if "request received" in line:
         return _event("dynamo_router", "router_admission", timestamp_ns, None, fields, raw)
     return None
@@ -239,7 +245,7 @@ def parse_worker_line(raw: str, *, worker_index: int) -> NormalizedEvent | None:
         return _event("dynamo_worker", "worker_request", timestamp_ns, worker_index, fields, raw)
     if "instance_id" in fields and ("request received" in line or "request completed" in line):
         return _event("dynamo_worker", "worker_request", timestamp_ns, worker_index, fields, raw)
-    if "Model registration succeeded" in line or "server ready" in line:
+    if "Model registration succeeded" in line or "server ready" in line or "Established keep-alive stream" in line:
         return _event("dynamo_worker", "worker_lifecycle", timestamp_ns, worker_index, fields, raw)
     return None
 
@@ -257,6 +263,7 @@ def _event(
         kind=kind,
         timestamp_ns=timestamp_ns,
         worker_index=worker_index,
+        worker_role=None,
         request_id=fields.get("x_request_id") or fields.get("rid") or fields.get("request_id"),
         fields=fields,
         raw=raw,
@@ -309,6 +316,11 @@ def _prefer_log(root: Path, paths: list[Path]) -> Path | None:
 def _worker_log_index(path: Path, *, fallback: int) -> int:
     match = _WORKER_INDEX.search(path.name)
     return int(match["index"]) if match is not None else fallback
+
+
+def _worker_log_role(path: Path) -> str:
+    match = _WORKER_ROLE.search(path.name)
+    return match["role"] if match is not None else "agg"
 
 
 def _relative_path(root: Path, path: Path | None) -> str | None:

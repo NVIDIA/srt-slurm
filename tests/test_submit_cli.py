@@ -35,6 +35,25 @@ MINIMAL_DRY_RUN_CONFIG = {
 }
 
 
+DIRECT_BASH_CONFIG = {
+    **MINIMAL_DRY_RUN_CONFIG,
+    "backend": {
+        "type": "sglang",
+        "sglang_config": {"aggregated": {"served-model-name": "fake/mock-model", "tp": 1}},
+    },
+    "frontend": {
+        "type": "dynamo",
+        "enable_multiple_frontends": False,
+        "args": {"router-mode": "kv"},
+    },
+    "environment": {
+        "SRTCTL_LOCAL_CONTAINER_IMAGE": "lmsysorg/sglang:dev",
+        "SRTCTL_SGLANG_SOURCE": "/tmp/sglang-source",
+    },
+    "dynamo": {"top_of_tree": True},
+}
+
+
 def test_dry_run_accepts_dash_stdin(monkeypatch, capsys) -> None:
     monkeypatch.setattr(
         sys,
@@ -67,9 +86,9 @@ def test_dry_run_empty_stdin_fails_cleanly(monkeypatch, capsys) -> None:
     assert "NoneType" not in error
 
 
-def test_apply_bash_outputs_standalone_script(monkeypatch, tmp_path: Path, capsys) -> None:
+def test_apply_bash_outputs_direct_container_script(monkeypatch, tmp_path: Path, capsys) -> None:
     config_path = tmp_path / "config.yaml"
-    config_path.write_text(yaml.safe_dump(MINIMAL_DRY_RUN_CONFIG))
+    config_path.write_text(yaml.safe_dump(DIRECT_BASH_CONFIG))
 
     def fail_subprocess_run(*_args, **_kwargs):
         raise AssertionError("--bash must not submit through sbatch")
@@ -88,12 +107,10 @@ def test_apply_bash_outputs_standalone_script(monkeypatch, tmp_path: Path, capsy
     assert captured.err == ""
     assert output.startswith("#!/usr/bin/env bash\n")
     assert "DRY-RUN" not in output
-    assert "Direct single-node lifecycle" in output
-    assert "srt_launch_shell" in output
-    assert '"${LOG_DIR}/worker-0.log"' in output
-    assert '"${LOG_DIR}/router.log"' in output
-    assert "srt_wait_router_ready" in output
-    assert "srt_smoke_chat" in output
+    assert "Direct Docker bootstrap" in output
+    assert "direct_host_runner.py" in output
+    assert "SRTCTL_DIRECT_HOST_PLAN_" in output
+    assert "worker-0.log" in output
     assert "#SBATCH" not in output
     assert "SLURM_" not in output
     assert "srtctl.cli.do_sweep" not in output

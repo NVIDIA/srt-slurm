@@ -206,6 +206,11 @@ class PostProcessStageMixin:
         # Keep the prepared bundle inside logs/ so the existing S3 sync below
         # transfers it with the raw benchmark artifacts.
         self._normalize_ruter()
+        # Build the component perf dashboard. Deliberately ordered BEFORE the S3 sync
+        # below: the sync ships the whole log dir, so building here is what gets
+        # perf_dashboard.{html,json} and its bundle off the cluster. Building after
+        # would leave them behind on a node whose /lustre scratch is transient.
+        self._build_perf_dashboard()
 
         # Run srtlog + S3 upload in single container (if S3 configured)
         _parquet_path, s3_url = self._run_postprocess_container()
@@ -245,6 +250,27 @@ class PostProcessStageMixin:
                 logger.warning("ruter: %s", warning)
         except Exception as error:  # noqa: BLE001
             logger.warning("ruter normalization failed: %s", error)
+
+    def _build_perf_dashboard(self) -> None:
+        """Render the component perf dashboard from this run's own artifacts.
+
+        Turns whatever the run captured — `raw_prometheus.jsonl` or the client's own
+        metrics export, SPAN_CLOSED lines, the request trace, the per-iteration log —
+        into `<log_dir>/perf_dashboard.{html,json}` plus the intermediate bundle, so
+        one submission yields the page with no second hand-driven step from a
+        checkout.
+
+        Runs on every job; `observability.enabled` changes which tabs the page carries,
+        not whether it is built. Best-effort: `try_build` swallows its own failures,
+        and the extra guard here means even an import error cannot fail a benchmark
+        that has already produced results.
+        """
+        try:
+            from srtctl.analysis.perf_dashboard import try_build
+
+            try_build(self.config, self.runtime)
+        except Exception as e:  # noqa: BLE001 - visualisation is never fatal
+            logger.warning("Perf dashboard build skipped: %s", e)
 
     def _generate_rollup(self) -> None:
         """Run benchmark-specific rollup script to generate benchmark-rollup.json.

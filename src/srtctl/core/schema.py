@@ -729,6 +729,11 @@ class BenchmarkConfig:
     # Custom dataset fields (sa-bench)
     dataset_name: str | None = None  # "random" (default) or "custom"
     dataset_path: str | None = None  # Container path to dataset file (mount via extra_mount)
+    # AgentPerf benchmark fields (agentperf-client trajectory replay)
+    agentperf_client_dir: str | None = None  # Container path to an agentperf-client checkout (mount via extra_mount)
+    agentperf_config: str | None = (
+        None  # Container path to the client's workload YAML (endpoint/model/concurrency injected)
+    )
     # Trace replay benchmark fields (uses aiperf with mooncake_trace dataset type)
     trace_file: str | None = None  # Path to trace JSONL file (container path, e.g., /traces/dataset.jsonl)
     custom_tokenizer: str | None = None  # Custom tokenizer class (e.g., "module.path.ClassName")
@@ -1030,11 +1035,19 @@ class TelemetryExporterConfig:
 
 @dataclass(frozen=True)
 class TachometerConfig:
-    """Native Tachometer collection for an observability-enabled run."""
+    """Native Tachometer collection for an observability-enabled run.
 
-    enabled: bool = False
+    ``enabled`` is tri-state: ``None`` (the default) follows
+    ``observability.enabled``, so an observability run collects Tachometer
+    data with no ``tachometer:`` block at all; an explicit ``false`` opts
+    out; an explicit ``true`` under ``observability.enabled: false`` is a
+    validation error (Tachometer's targets only have content when the
+    observability expansion ran).
+    """
+
+    enabled: bool | None = None
     binary_path: str = "tachometer-scraper"
-    default_frequency: float = 5.0
+    default_frequency: float = 1.0
     sync_interval_secs: int = 120
     compaction_threads: int = 4
     storage_subdir: str = "tachometer"
@@ -1070,18 +1083,29 @@ class ObservabilityConfig:
     * ``DYN_LOGGING_SPAN_EVENTS`` / ``DYN_LOGGING_JSONL`` / ``DYN_LOG=debug`` on
       prefill, decode and frontend -- per-request ``SPAN_CLOSED`` trace lines.
 
-    and, at benchmark time (see ``BenchmarkStageMixin``):
+    and, for the run's server-side capture:
 
-    * an in-job Prometheus scraper writing ``raw_prometheus.jsonl`` for the whole
-      benchmark window (see ``scrape_*`` below).
+    * native Tachometer collection of every ``/metrics`` endpoint the benchmark
+      client does not already poll (see ``TelemetryStageMixin.start_tachometer``
+      and ``tachometer`` below).
 
     Every expansion uses setdefault semantics: an explicit value in the recipe
     always wins, so ``observability.enabled`` is safe to switch on globally.
 
     Scope is deliberately server-side. The knob configures what the workers and
     frontend *emit*, and captures that surface by scraping the endpoints
-    directly. It never reaches into the benchmark client to ask it to re-export
-    what the servers already publish.
+    directly. It never asks the benchmark client to re-export what the servers
+    already publish. (One indirect exception: on TRT-LLM the client's
+    ``AIPERF_SERVER_METRICS_URLS`` worker list exists only when
+    ``publish_events_and_metrics`` gives those endpoints content, and this knob
+    is one way that flag gets set — see ``BenchmarkStageMixin``.)
+
+    It does **not** decide whether the component perf dashboard is built. That
+    happens on every run (see :mod:`srtctl.analysis.perf_dashboard`); ``enabled``
+    only decides which capture legs exist and therefore which tabs the page
+    carries. Keeping the two separate is deliberate: a run that captured nothing
+    server-side still renders from the client export and the per-iteration log,
+    and that is the shape most runs have.
 
     Attributes:
         enabled: Master analytics knob. Default: False.
@@ -1089,32 +1113,28 @@ class ObservabilityConfig:
             and frontends. Requires otel_endpoint to be set. Default: False.
         otel_endpoint: OTEL collector endpoint (e.g. "http://10.0.0.1:4317").
             Required when enable_otel is True.
-        scrape_metrics: Run the in-job RAW Prometheus scraper. Defaults to the
-            value of ``enabled``; set False to opt out while keeping the rest.
-        scrape_interval_seconds: Seconds between scrape sweeps. Default: 1.0.
-            The floor is 0.5; a sweep slower than the interval simply runs
-            back-to-back rather than queueing (see the drift-free pacing in
-            ``RawMetricsScraper``).
-        scrape_output: Filename (under the run's log dir) for the RAW capture.
-        tachometer: Optional native Tachometer capture configuration. It runs
-            alongside RAW capture when both are enabled.
+        tachometer: Native Tachometer capture configuration. Follows ``enabled``
+            unless ``tachometer.enabled`` is set explicitly (see
+            :class:`TachometerConfig`).
+
+    The retired ``scrape_metrics`` / ``scrape_interval_seconds`` /
+    ``scrape_output`` knobs (the in-job RAW Prometheus scraper) are rejected
+    at load like any unknown key; the ingest still reads historical
+    ``raw_prometheus.jsonl`` artifacts.
     """
 
     enabled: bool = False
     enable_otel: bool = False
     otel_endpoint: str | None = None
 
-    scrape_metrics: bool | None = None
-    scrape_interval_seconds: float = 1.0
-    scrape_output: str = "raw_prometheus.jsonl"
     tachometer: TachometerConfig = field(default_factory=TachometerConfig)
 
     Schema: ClassVar[type[Schema]] = Schema
 
     @property
-    def scraper_enabled(self) -> bool:
-        """Whether the in-job RAW Prometheus scraper should run."""
-        return self.enabled if self.scrape_metrics is None else self.scrape_metrics
+    def tachometer_enabled(self) -> bool:
+        """Resolved Tachometer enablement (tri-state ``tachometer.enabled``)."""
+        return self.enabled if self.tachometer.enabled is None else self.tachometer.enabled
 
 
 @dataclass(frozen=True)
@@ -1209,6 +1229,31 @@ ANALYTICS_ENGINE_CONFIG: dict[str, bool] = {
 _DYNAMO_CACHE_ROOT = "/configs/dynamo-wheels"
 
 
+def dynamo_source_cache_key(dynamo_hash: str, cargo_patches: list[str] | None = None) -> str:
+    """Return the cache key shared by Slurm and direct source builds."""
+    if not cargo_patches:
+        return dynamo_hash
+    # Version the build recipe so a patching change invalidates old artifacts
+    # even when the dependency declarations themselves do not change.
+    digest = hashlib.sha1(("dep-override-v3\n" + "\n".join(cargo_patches)).encode()).hexdigest()[:8]
+    return f"{dynamo_hash}-patch-{digest}"
+
+
+def dynamo_cargo_patch_commands(cargo_patches: list[str] | None = None) -> tuple[str, ...]:
+    """Return shell-safe Cargo.toml replacement commands for a source build."""
+    if not cargo_patches:
+        return ()
+    commands = []
+    for entry in cargo_patches:
+        crate = entry.split("=", 1)[0].strip()
+        if not crate:
+            continue
+        repl = entry.replace("&", r"\&")  # '&' is the sed replacement metachar
+        script = f"s|^{crate}[[:space:]]*=.*|{repl}|"
+        commands.append(f"find . -name Cargo.toml -exec sed -i -E {shlex.quote(script)} {{}} +")
+    return tuple(commands)
+
+
 def _hash_cached_source_install(dynamo_hash: str, cargo_patches: list[str] | None = None) -> str:
     """Bash for hash-pinned source install with a /configs/dynamo-wheels cache.
 
@@ -1227,31 +1272,14 @@ def _hash_cached_source_install(dynamo_hash: str, cargo_patches: list[str] | Non
     Uses FD 201 (not 200) so it nests cleanly inside the node-local
     ``flock -x 200`` from ``_serialize_node_install``.
     """
-    cache_key = dynamo_hash
-    override_cmd = ""
-    if cargo_patches:
-        # The marker prefix versions the override build-recipe so a recipe fix busts the
-        # cache even when the override strings are unchanged.
-        digest = hashlib.sha1(("dep-override-v3\n" + "\n".join(cargo_patches)).encode()).hexdigest()[:8]
-        cache_key = f"{dynamo_hash}-patch-{digest}"
-        # Replace each crate's dependency DECLARATION (a full `<crate> = <spec>` line) across
-        # every Cargo.toml in the tree — retargeting the workspace dependency (and any direct
-        # decls, incl. `{ workspace = true }` members) at, typically, a git branch.
-        # Why source-replacement and not [patch.crates-io]: a patch is silently dropped when
-        # the branch version doesn't satisfy dynamo's exact pin (e.g. dynamo pins "=1.5.0" but
-        # the branch is 1.5.3 -> "patch ... was not used in the crate graph"), and relaxing the
-        # pin alone loses to the committed Cargo.lock. Changing the dependency SOURCE needs no
-        # version match and forces Cargo to re-resolve, so the branch is actually built.
-        seds = []
-        for entry in cargo_patches:
-            crate = entry.split("=", 1)[0].strip()
-            if not crate:
-                continue
-            repl = entry.replace("&", r"\&")  # '&' is the sed replacement metachar
-            script = f"s|^{crate}[[:space:]]*=.*|{repl}|"
-            seds.append(f"find . -name Cargo.toml -exec sed -i -E {shlex.quote(script)} {{}} +")
-        if seds:
-            override_cmd = " && ".join(seds) + " && "
+    cache_key = dynamo_source_cache_key(dynamo_hash, cargo_patches)
+    # Replace each crate's dependency declaration tree-wide. Source replacement
+    # (rather than [patch.crates-io]) forces Cargo to resolve the requested source
+    # even when its version would not satisfy Dynamo's exact existing pin.
+    patch_commands = dynamo_cargo_patch_commands(cargo_patches)
+    override_cmd = " && ".join(patch_commands)
+    if override_cmd:
+        override_cmd += " && "
     cache = f"{_DYNAMO_CACHE_ROOT}/{cache_key}"
     lock = f"{_DYNAMO_CACHE_ROOT}/.{cache_key}.lock"
     return (
@@ -1411,6 +1439,7 @@ class DynamoConfig:
         request_plane: Request plane to use (default: "tcp"). Valid values: "nats", "tcp", "http"
         event_plane: Event plane override, sets DYN_EVENT_PLANE (default: None — follow
                      the Dynamo image's own default). Valid values: "nats", "zmq"
+        sidecar: Replace legacy Python workers with native engines and Dynamo sidecars.
 
     If top_of_tree, hash, or wheel is set, version is automatically cleared.
     """
@@ -1425,6 +1454,12 @@ class DynamoConfig:
     wheel: str | None = None
     request_plane: str = "tcp"
     event_plane: str | None = None
+    sidecar: bool = False
+    sidecar_port: int = 50051
+    sidecar_binary: str | None = None
+    sidecar_startup_timeout: int = 1200
+    sidecar_context_length: int | None = None
+    sidecar_args: list[str] = field(default_factory=list)
     # Optional dependency-declaration overrides applied to the dynamo Cargo.toml tree before a
     # source build (requires `hash`). Each entry is a full `<crate> = <spec>` TOML line, e.g.
     #   'dynamo-tokenizers = { git = "https://github.com/ai-dynamo/frontend-crates", branch = "..." }'
@@ -1466,6 +1501,15 @@ class DynamoConfig:
             raise ValueError(
                 f"Invalid event_plane '{self.event_plane}', must be one of: {', '.join(self._VALID_EVENT_PLANES)}"
             )
+
+        if not 1 <= self.sidecar_port <= 65535:
+            raise ValueError(f"dynamo.sidecar_port must be between 1 and 65535, got {self.sidecar_port}")
+        if self.sidecar_startup_timeout < 1:
+            raise ValueError("dynamo.sidecar_startup_timeout must be at least 1")
+        if self.sidecar_binary is not None and not self.sidecar_binary.strip():
+            raise ValueError("dynamo.sidecar_binary must be a non-empty executable path")
+        if self.sidecar_context_length is not None and self.sidecar_context_length < 1:
+            raise ValueError("dynamo.sidecar_context_length must be at least 1")
 
     @property
     def needs_source_install(self) -> bool:
@@ -1551,7 +1595,8 @@ class FrontendConfig:
     """Frontend/router configuration.
 
     Attributes:
-        type: Frontend type - "dynamo" (default), "sglang", "trtllm_serve", or "vllm"
+        type: Frontend type - "dynamo" (default), "sglang", "vllm-router",
+            "trtllm_serve", or direct "vllm"
         enable_multiple_frontends: Scale with nginx + multiple routers.
             When ``True`` (default), srtctl stands up nginx and fans out
             to ``num_additional_frontends + 1`` router replicas. When
@@ -1577,6 +1622,8 @@ class FrontendConfig:
             carry the session id in that header instead.
         args: CLI arguments passed to the frontend/router process
         env: Environment variables for frontend processes
+        container_image: Optional router-specific image. Static routers use the
+            model/backend image when omitted.
     """
 
     type: str = "dynamo"
@@ -1589,6 +1636,7 @@ class FrontendConfig:
     nginx_keepalive_timeout: str = "600s"
     args: dict[str, Any] | None = None
     env: dict[str, str] | None = None
+    container_image: str | None = None
     # trtllm_serve orchestrator (ser.yaml) options; ignored by other frontends.
     ctx_router: dict[str, Any] | None = None  # context_servers.router, e.g. {type: conversation}
     gen_router: dict[str, Any] | None = None  # generation_servers.router
@@ -1708,16 +1756,29 @@ class SrtConfig:
         self._validate_dedicated_node_placement()
         self._validate_trtllm_serve()
         self._validate_vllm_frontend()
+        self._validate_static_router_frontend()
+        self._validate_dynamo_sidecar()
         self._warn_dp_launch_mode()
 
+    def _validate_dynamo_sidecar(self) -> None:
+        """Validate native sidecar configuration before job submission."""
+        if not self.dynamo.sidecar:
+            return
+        if self.frontend.type != "dynamo":
+            raise ValidationError("dynamo.sidecar: true requires frontend.type: dynamo")
+        if not isinstance(self.backend, (SGLangProtocol, VLLMProtocol, TRTLLMProtocol)):
+            raise ValidationError("dynamo.sidecar: true supports sglang, vllm, and trtllm backends only")
+        if isinstance(self.backend, VLLMProtocol):
+            self.backend.validate_sidecar_dp_config()
+
     def _warn_dp_launch_mode(self):
-        """Nudge vLLM DP recipes toward the per-node launch topology.
+        """Warn when a vLLM DP recipe selects the deprecated per-GPU layout.
 
         Skipped for frontend.type: vllm, where the setting has no effect —
         `vllm serve` owns the local DP ranks, so the layout is one process per
         node whatever dp_launch_mode says.
         """
-        if not isinstance(self.backend, VLLMProtocol) or self.frontend.type == "vllm":
+        if not isinstance(self.backend, VLLMProtocol) or self.frontend.type == "vllm" or self.dynamo.sidecar:
             return
         if self.backend.dp_launch_mode != "per_gpu":
             return
@@ -1727,8 +1788,8 @@ class SrtConfig:
             return
 
         logger.warning(
-            "vLLM DP mode(s) %s use dp_launch_mode=per_gpu. per_node is the recommended topology "
-            "and will become the default in a future release; set backend.dp_launch_mode: per_node now",
+            "vLLM DP mode(s) %s use deprecated dp_launch_mode=per_gpu; "
+            "use backend.dp_launch_mode: per_node instead. per_gpu will be removed in a future release",
             ", ".join(mode_name for mode_name, _ in dp_modes),
         )
 
@@ -1780,6 +1841,95 @@ class SrtConfig:
                 "replicas, so extra workers would either idle or collide on the port. "
                 "Use frontend.type: dynamo to run multiple aggregate workers, or scale a single "
                 "worker across nodes with resources.agg_nodes."
+            )
+
+    def _validate_static_router_frontend(self):
+        """Validate static-router/backend pairings and vLLM DP ownership."""
+        required_backend = {"sglang": "sglang", "vllm-router": "vllm"}.get(self.frontend.type)
+        if required_backend is None:
+            return
+        if self.backend_type != required_backend:
+            raise ValidationError(
+                f"frontend.type: {self.frontend.type} requires backend.type: {required_backend}; "
+                f"got {self.backend_type!r}"
+            )
+
+        if self.frontend.type != "vllm-router":
+            return
+        if not isinstance(self.backend, VLLMProtocol):
+            raise ValidationError(f"frontend.type: vllm-router requires backend.type: vllm; got {self.backend_type!r}")
+        backend = self.backend
+
+        endpoint_gpu_counts: dict[Literal["prefill", "decode", "agg"], int] = {
+            "prefill": self.resources.gpus_per_prefill if self.resources.num_prefill else 0,
+            "decode": self.resources.gpus_per_decode if self.resources.num_decode else 0,
+            "agg": self.resources.gpus_per_agg if self.resources.num_agg else 0,
+        }
+        if backend.find_dp_modes() and backend.dp_launch_mode != "per_node":
+            raise ValidationError(
+                "frontend.type: vllm-router with data-parallel-size requires "
+                "backend.dp_launch_mode: per_node; deprecated per_gpu processes are "
+                "Dynamo registrations, not independently routable vLLM API servers"
+            )
+
+        expansion_by_mode: dict[str, int] = {}
+        for mode, gpu_count in endpoint_gpu_counts.items():
+            if gpu_count <= 0:
+                continue
+            if not backend._is_dp_mode(mode):
+                expansion_by_mode[mode] = 1
+                continue
+            try:
+                configured_dp_size = backend._get_dp_size(mode)
+                dp_size = int(configured_dp_size) if configured_dp_size is not None else 1
+                if dp_size < 1:
+                    raise ValueError(
+                        f"vLLM {mode} data-parallel-size must be a positive integer; got {configured_dp_size!r}"
+                    )
+                replica_size = backend._get_model_parallel_size(mode)
+            except (TypeError, ValueError) as exc:
+                raise ValidationError(str(exc)) from exc
+
+            required_gpus = dp_size * replica_size
+            if required_gpus != gpu_count:
+                raise ValidationError(
+                    f"vLLM Router {mode} parallelism requires DP*TP*PP*PCP="
+                    f"{dp_size}*{replica_size}={required_gpus} GPUs, "
+                    f"but resources allocate {gpu_count} GPUs per worker"
+                )
+
+            local_gpu_count = min(gpu_count, self.resources.gpus_per_node)
+            if replica_size > local_gpu_count:
+                expansion_by_mode[mode] = 1
+            else:
+                try:
+                    expansion_by_mode[mode] = backend._get_local_dp_size(mode, local_gpu_count)
+                except ValueError as exc:
+                    raise ValidationError(str(exc)) from exc
+
+        expansions = set(expansion_by_mode.values())
+        if len(expansions) > 1:
+            detail = ", ".join(f"{mode}={size}" for mode, size in expansion_by_mode.items())
+            raise ValidationError(
+                "vLLM Router has one --intra-node-data-parallel-size for all worker pools, "
+                f"but the allocated topology derives different expansion factors: {detail}"
+            )
+
+        configured_expansion = (self.frontend.args or {}).get(
+            "intra-node-data-parallel-size",
+            (self.frontend.args or {}).get("intra_node_data_parallel_size"),
+        )
+        derived_expansion = next(iter(expansions), 1)
+        try:
+            configured_expansion_value = int(configured_expansion) if configured_expansion is not None else None
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(
+                f"frontend.args.intra-node-data-parallel-size must be an integer; got {configured_expansion!r}"
+            ) from exc
+        if configured_expansion_value is not None and configured_expansion_value != derived_expansion:
+            raise ValidationError(
+                "frontend.args.intra-node-data-parallel-size conflicts with the allocated vLLM topology: "
+                f"configured {configured_expansion}, derived {derived_expansion}"
             )
 
     def _validate_het_jobs(self):
@@ -2044,13 +2194,13 @@ class SrtConfig:
             raise ValidationError("telemetry requires a non-empty list of unique positive benchmark.concurrencies")
 
     def _validate_observability(self):
-        """Validate optional Tachometer collection under observability."""
+        """Validate Tachometer collection under observability."""
         observability = self.observability
         tachometer = observability.tachometer
-        if not tachometer.enabled:
-            return
-        if not observability.enabled:
+        if tachometer.enabled is True and not observability.enabled:
             raise ValidationError("observability.tachometer requires observability.enabled: true")
+        if not observability.tachometer_enabled:
+            return
         if self.telemetry.enabled and tachometer.dcgm_exporter is not None:
             raise ValidationError(
                 "configure the shared DCGM exporter under telemetry, not observability.tachometer, "

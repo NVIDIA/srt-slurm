@@ -77,6 +77,18 @@ def test_router_parser_preserves_json_debug_request_and_worker_ids() -> None:
     assert event.fields["overlap_blocks"] == "8"
 
 
+def test_router_parser_records_disaggregation_dispatch_phase() -> None:
+    event = parse_router_line(
+        '{"time":"2026-08-20T19:15:32.905245Z","message":"TCP client sending request",'
+        '"request_id":"internal-1","span_name":"kv_router.route_request","phase":"Decode"}'
+    )
+
+    assert event is not None
+    assert event.kind == "routing_dispatch"
+    assert event.request_id == "internal-1"
+    assert event.fields["phase"] == "Decode"
+
+
 def test_slurm_postprocess_normalizes_before_artifact_upload(tmp_path: Path) -> None:
     log_dir = tmp_path / "logs"
     _write(

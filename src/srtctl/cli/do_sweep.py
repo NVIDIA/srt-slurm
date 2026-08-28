@@ -97,6 +97,7 @@ class SweepOrchestrator(
 
     config: SrtConfig
     runtime: RuntimeContext
+    serve_only: bool = False
 
     @property
     def backend(self):
@@ -147,6 +148,7 @@ class SweepOrchestrator(
             self.endpoints,
             port_allocator=allocator,
             frontend_type=self.config.frontend.type,
+            dynamo_sidecar=self.config.dynamo.sidecar,
         )
 
     def start_head_infrastructure(self, registry: ProcessRegistry) -> ManagedProcess:
@@ -536,28 +538,13 @@ class SweepOrchestrator(
     def _run_post_eval(self, stop_event: threading.Event) -> int:
         """Run lm-eval after the main benchmark completes (or directly in eval-only mode)."""
         from srtctl.benchmarks import get_runner
-        from srtctl.core.health import wait_for_model
 
         # In eval-only mode the benchmark health check was skipped, so do the
         # full model-ready wait here.  In post-benchmark mode a quick port
         # check is sufficient since the server already served traffic.
         if os.environ.get("EVAL_ONLY", "false").lower() == "true":
-            r = self.config.resources
-            n_prefill = 0 if r.num_agg > 0 else r.num_prefill
-            n_decode = r.num_agg if r.num_agg > 0 else r.num_decode
-            hc = self.config.health_check
             logger.info("EVAL_ONLY: Waiting for server health before eval...")
-            if not wait_for_model(
-                host=self._public_api_node(),
-                port=FRONTEND_PUBLIC_PORT,
-                n_prefill=n_prefill,
-                n_decode=n_decode,
-                poll_interval=float(hc.interval_seconds),
-                timeout=float(hc.max_attempts * hc.interval_seconds),
-                report_every=60.0,
-                frontend_type=self.config.frontend.type,
-                stop_event=stop_event,
-            ):
+            if not self._wait_for_service_ready(stop_event):
                 logger.error("Server did not become healthy for eval")
                 return 1
         else:
@@ -677,7 +664,7 @@ class SweepOrchestrator(
         try:
             # Stage 1: Head infrastructure (NATS, etcd). Only the dynamo request
             # plane uses it; static/direct frontends skip it.
-            if self.config.frontend.type in {"trtllm_serve", "vllm"}:
+            if self.config.frontend.type in {"sglang", "trtllm_serve", "vllm", "vllm-router"}:
                 logger.info("Skipping NATS/etcd infrastructure (frontend.type=%s)", self.config.frontend.type)
             else:
                 reporter.report(JobStatus.STARTING, JobStage.HEAD_INFRASTRUCTURE, "Starting head infrastructure")
@@ -727,7 +714,9 @@ class SweepOrchestrator(
 
             self._print_connection_info()
 
-            if os.environ.get("EVAL_ONLY", "false").lower() == "true":
+            if self.serve_only:
+                exit_code = self.run_benchmark(registry, stop_event, reporter)
+            elif os.environ.get("EVAL_ONLY", "false").lower() == "true":
                 reporter.report(JobStatus.BENCHMARK, JobStage.BENCHMARK, "Running eval-only evaluation")
                 logger.info("EVAL_ONLY=true: Skipping benchmark stage and running lm-eval evaluation...")
                 exit_code = self._run_post_eval(stop_event)
@@ -784,6 +773,11 @@ def main():
 
     parser = argparse.ArgumentParser(description="Run benchmark sweep")
     parser.add_argument("config", type=str, help="Path to YAML configuration file")
+    parser.add_argument(
+        "--serve-only",
+        action="store_true",
+        help="Keep the inference endpoint running without launching a benchmark.",
+    )
     args = parser.parse_args()
 
     setup_logging()
@@ -810,7 +804,7 @@ def main():
         # Type narrowing: job_id is str after the check above
         assert job_id is not None
         runtime = RuntimeContext.from_config(config, job_id)
-        orchestrator = SweepOrchestrator(config=config, runtime=runtime)
+        orchestrator = SweepOrchestrator(config=config, runtime=runtime, serve_only=args.serve_only)
         exit_code = orchestrator.run()
 
         sys.exit(exit_code)

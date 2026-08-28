@@ -69,6 +69,19 @@ Processor registry
       "spanlog" Dynamo SPAN_CLOSED logs -> schema 3.         (traces_spanlog.process)
     metrics -> server_metrics_export.jsonl
       "prometheus" raw_prometheus.jsonl -> schema 2.         (metrics_prometheus.process)
+      "aiperf-json" AIPerf server_metrics_export.json -> schema 2.
+                                                          (metrics_aiperf_json.process)
+                   The only server-metrics source on runs predating
+                   `observability.enabled`, which is where the before/after
+                   pairs for already-landed fixes live.
+      "aiperf-jsonl" AIPerf per-scrape server_metrics_export.jsonl -> schema 2.
+                                                         (metrics_aiperf_jsonl.process)
+      "tachometer" Tachometer parquet -> schema 2.        (metrics_tachometer.process)
+                   Needs pyarrow (the one non-stdlib processor in this package).
+    request_trace -> request_trace.jsonl
+      "dynamo"  dynamo-request-trace -> schema 4.            (request_trace.process)
+    iter_log -> iter_bins.json
+      "trtllm"  print_iter_log worker lines -> schema 5.     (iter_log.process)
 
 The upstream repo also registers an ``agentperf`` client processor and a live
 ``tempo`` trace scraper. Neither is reachable from an srt-slurm run -- srt-slurm's
@@ -155,6 +168,15 @@ PROCESSORS: dict[str, dict[str, Callable]] = {
     },
     "metrics": {
         "prometheus": _lazy("metrics_prometheus"),
+        "aiperf-json": _lazy("metrics_aiperf_json"),
+        "aiperf-jsonl": _lazy("metrics_aiperf_jsonl"),
+        "tachometer": _lazy("metrics_tachometer"),
+    },
+    "request_trace": {
+        "dynamo": _lazy("request_trace"),
+    },
+    "iter_log": {
+        "trtllm": _lazy("iter_log"),
     },
 }
 

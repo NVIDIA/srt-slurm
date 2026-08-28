@@ -35,13 +35,13 @@ def _make_config(
     telemetry: TelemetryConfig | None = None,
     benchmark: BenchmarkConfig | None = None,
 ) -> SrtConfig:
-    tachometer = tachometer or TachometerConfig()
+    tachometer = tachometer or TachometerConfig(enabled=False)
     return SrtConfig(
         name="test",
         model=ModelConfig(path="/model", container="/image", precision="fp4"),
         resources=ResourceConfig(gpu_type="h100"),
         benchmark=benchmark or BenchmarkConfig(type="manual"),
-        observability=ObservabilityConfig(enabled=tachometer.enabled, tachometer=tachometer),
+        observability=ObservabilityConfig(enabled=bool(tachometer.enabled), tachometer=tachometer),
         telemetry=telemetry or TelemetryConfig(),
     )
 
@@ -83,6 +83,14 @@ class TestTachometerConfig:
 
         assert config.observability.tachometer.dcgm_exporter is None
         assert config.observability.tachometer.node_exporter is None
+
+    def test_default_frequency_is_one_hz(self):
+        """1 Hz matches the retired RAW scraper's cadence; 5 Hz produced ~9M
+        rows in a 25-minute run with no analysis consuming the extra
+        resolution, and scrape load on worker endpoints is not free."""
+        config = _make_config(tachometer=TachometerConfig(enabled=True))
+
+        assert config.observability.tachometer.default_frequency == 1.0
 
     def test_scraper_requires_nonempty_binary_path(self):
         with pytest.raises(ValidationError, match="observability.tachometer.binary_path"):
@@ -322,11 +330,133 @@ class TestTachometerConfigGeneration:
             tachometer=tachometer,
         )
 
-        assert 'storage = "/runs/12345/logs/tachometer"' in config_text
+        # The storage leaf must NOT be a directory srtctl has already created --
+        # tachometer-scraper aborts on a pre-existing storage dir.
+        assert 'storage = "/runs/12345/logs/tachometer/raw/scrape"' in config_text
         assert 'name = "dcgm_node-a"' in config_text
         assert 'url = "http://10.0.0.1:8081/metrics"' in config_text
         assert '"cluster" = "pdx"' in config_text
         assert 'name = "frontend0"' in config_text
+
+    @patch("srtctl.core.telemetry.get_hostname_ip", return_value="10.0.0.1")
+    def test_storage_leaf_is_never_pre_created(self, _mock_get_hostname_ip, tmp_path):
+        """Regression guard for the pre-existing-storage-dir abort.
+
+        tachometer-scraper refuses to start when its storage path already exists
+        as a directory (main.rs ``parse_storage``). srtctl must create only the
+        PARENT of the storage path. Before the fix, telemetry_stage.py mkdir'd
+        the leaf itself and the scraper exited 1 on every sweep-mode run.
+        """
+        from srtctl.core.telemetry import TACHOMETER_STORAGE_PARENT
+
+        tachometer = TachometerConfig(enabled=True)
+        runtime = MagicMock(job_id="12345", run_name="test_12345", network_interface="eth0")
+        runtime.log_dir = tmp_path
+        processes = [
+            Process(
+                node="node-a",
+                gpu_indices=frozenset({0}),
+                sys_port=8081,
+                http_port=30000,
+                endpoint_mode="agg",
+                endpoint_index=0,
+                node_rank=0,
+            )
+        ]
+        topology = FrontendTopology(nginx_node=None, frontend_nodes=["node-a"], frontend_port=8000, public_port=8000)
+
+        config_text = generate_tachometer_config(
+            processes=processes, frontend_topology=topology, runtime=runtime, tachometer=tachometer
+        )
+
+        # Recreate exactly the directories the stage pre-creates.
+        tachometer_dir = tmp_path / tachometer.storage_subdir
+        (tachometer_dir / TACHOMETER_STORAGE_PARENT).mkdir(parents=True, exist_ok=True)
+        (tachometer_dir / "local").mkdir(parents=True, exist_ok=True)
+
+        storage_line = next(line for line in config_text.splitlines() if line.startswith("storage = "))
+        storage_path = Path(json.loads(storage_line.removeprefix("storage = ")))
+        assert not storage_path.exists(), "the storage leaf must be left for tachometer-scraper to create"
+        # local/ must stay a SIBLING of the storage tree, never nested inside it.
+        local_dir = (tachometer_dir / "local").resolve()
+        assert not local_dir.is_relative_to(storage_path)
+
+    @patch("srtctl.core.telemetry.get_hostname_ip", return_value="10.0.0.1")
+    def test_client_polled_urls_are_excluded_from_backend_targets(self, _mock_get_hostname_ip):
+        """Tachometer scrapes the complement of the client's URL list."""
+        tachometer = TachometerConfig(enabled=True)
+        runtime = MagicMock(job_id="12345", run_name="test_12345", network_interface="eth0")
+        runtime.log_dir = Path("/runs/12345/logs")
+        processes = [
+            Process(
+                node="node-a",
+                gpu_indices=frozenset({0}),
+                sys_port=8081,
+                http_port=30000,
+                endpoint_mode="prefill",
+                endpoint_index=0,
+                node_rank=0,
+            ),
+            Process(
+                node="node-a",
+                gpu_indices=frozenset({1}),
+                sys_port=8082,
+                http_port=30000,
+                endpoint_mode="decode",
+                endpoint_index=0,
+                node_rank=0,
+            ),
+        ]
+        topology = FrontendTopology(nginx_node=None, frontend_nodes=["node-a"], frontend_port=8000, public_port=8000)
+
+        config_text = generate_tachometer_config(
+            processes=processes,
+            frontend_topology=topology,
+            runtime=runtime,
+            tachometer=tachometer,
+            exclude_urls={"http://10.0.0.1:8081/metrics"},
+        )
+
+        assert 'url = "http://10.0.0.1:8081/metrics"' not in config_text
+        assert 'url = "http://10.0.0.1:8082/metrics"' in config_text
+        # The frontend endpoint is never excluded (whole-window coverage).
+        assert 'url = "http://10.0.0.1:8000/metrics"' in config_text
+
+    @patch("srtctl.core.telemetry.get_hostname_ip", return_value="10.0.0.1")
+    def test_backend_targets_cover_every_rank(self, _mock_get_hostname_ip):
+        """Every worker rank is a scrape target (vLLM agg followers excepted);
+        follower metadata keeps rows distinguishable."""
+        tachometer = TachometerConfig(enabled=True)
+        runtime = MagicMock(job_id="12345", run_name="test_12345", network_interface="eth0")
+        runtime.log_dir = Path("/runs/12345/logs")
+        processes = [
+            Process(
+                node="node-a",
+                gpu_indices=frozenset({0}),
+                sys_port=8081,
+                http_port=30000,
+                endpoint_mode="prefill",
+                endpoint_index=0,
+                node_rank=0,
+            ),
+            Process(
+                node="node-b",
+                gpu_indices=frozenset({0}),
+                sys_port=8082,
+                http_port=0,
+                endpoint_mode="prefill",
+                endpoint_index=0,
+                node_rank=1,
+            ),
+        ]
+        topology = FrontendTopology(nginx_node=None, frontend_nodes=["node-a"], frontend_port=8000, public_port=8000)
+
+        config_text = generate_tachometer_config(
+            processes=processes, frontend_topology=topology, runtime=runtime, tachometer=tachometer
+        )
+
+        assert 'name = "backend_prefill0_rank0"' in config_text
+        assert 'name = "backend_prefill0_rank1"' in config_text
 
     @patch("srtctl.core.telemetry.get_hostname_ip", return_value="10.0.0.1")
     def test_generate_config_without_exporters_targets_servers_only(self, _mock_get_hostname_ip):
@@ -474,6 +604,9 @@ class TestTachometerStageMixin:
 
         mock_srun.return_value = _running_exporter()
         harness = Harness()
+        # Pin the default-name PATH fallback so the assertion below does not
+        # depend on whether the developer's checkout has bin/tachometer-scraper.
+        harness._resolve_tachometer_binary = lambda binary_path: binary_path
 
         procs = harness.start_tachometer()
 
@@ -493,6 +626,99 @@ class TestTachometerStageMixin:
         ]
         assert "container_image" not in scraper_call.kwargs
         assert "container_mounts" not in scraper_call.kwargs
+        # Telemetry is best-effort by contract: a dead scraper must never
+        # tear down the benchmark via the critical-process check.
+        assert procs[-1].name == "tachometer"
+        assert procs[-1].critical is False
+        # Exporter sidecars share the contract: shell-less launch (distroless
+        # images have no bash) and non-critical (a dead sidecar never kills
+        # the run — regression guard for the 7-node startup teardown).
+        for call in mock_srun.call_args_list[:-1]:
+            assert call.kwargs["use_bash_wrapper"] is False
+        for proc in procs[:-1]:
+            assert proc.critical is False
+
+    def test_resolve_tachometer_binary(self, tmp_path, monkeypatch):
+        """Explicit paths are respected verbatim; the default bare name
+        prefers the checkout's bin/ (where make setup installs it)."""
+        stage = TelemetryStageMixin()
+
+        assert stage._resolve_tachometer_binary("/opt/custom/tachometer-scraper") == "/opt/custom/tachometer-scraper"
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        binary = bin_dir / "tachometer-scraper"
+        binary.write_text("#!/bin/sh\n")
+        binary.chmod(0o755)
+        monkeypatch.setenv("SRTCTL_SOURCE_DIR", str(tmp_path))
+        assert stage._resolve_tachometer_binary("tachometer-scraper") == str(binary)
+
+    @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
+    def test_tachometer_auto_starts_under_observability_enabled(self, mock_srun, tmp_path):
+        """observability.enabled alone starts Tachometer — no tachometer: block needed."""
+        import dataclasses
+
+        class Harness(TelemetryStageMixin):
+            def __init__(self):
+                base = _make_config()
+                self.config = dataclasses.replace(base, observability=ObservabilityConfig(enabled=True))
+                self.runtime = MagicMock()
+                self.runtime.log_dir = tmp_path
+                self.runtime.job_id = "12345"
+                self.runtime.run_name = "test_12345"
+                self.runtime.network_interface = "eth0"
+                self.runtime.nodes.head = "node-a"
+                self._backend_processes = [
+                    Process(
+                        node="node-a",
+                        gpu_indices=frozenset({0}),
+                        sys_port=8081,
+                        http_port=30000,
+                        endpoint_mode="agg",
+                        endpoint_index=0,
+                        node_rank=0,
+                    )
+                ]
+
+            @property
+            def backend_processes(self):
+                return self._backend_processes
+
+            def _compute_frontend_topology(self):
+                return FrontendTopology(
+                    nginx_node=None,
+                    frontend_nodes=["node-a"],
+                    frontend_port=8000,
+                    public_port=8000,
+                )
+
+        mock_srun.return_value = _running_exporter()
+        harness = Harness()
+        harness._resolve_tachometer_binary = lambda binary_path: binary_path
+
+        procs = harness.start_tachometer()
+
+        assert [proc.name for proc in procs] == ["tachometer"]
+        assert (tmp_path / "tachometer_config.toml").exists()
+
+    @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
+    def test_tachometer_explicit_false_opts_out(self, mock_srun, tmp_path):
+        """An explicit tachometer.enabled: false wins over observability.enabled."""
+        import dataclasses
+
+        class Harness(TelemetryStageMixin):
+            def __init__(self):
+                base = _make_config()
+                self.config = dataclasses.replace(
+                    base,
+                    observability=ObservabilityConfig(enabled=True, tachometer=TachometerConfig(enabled=False)),
+                )
+                self.runtime = MagicMock()
+
+        procs = Harness().start_tachometer()
+
+        assert procs == []
+        assert mock_srun.call_count == 0
 
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
     def test_start_tachometer_reuses_the_power_dcgm_exporter(self, mock_srun, tmp_path):

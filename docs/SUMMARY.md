@@ -5,6 +5,7 @@
 - [Introduction](README.md)
 - [Installation](installation.md)
 - [CLI Reference](cli.md)
+- [Direct Host Lifecycle](direct-host.md)
 
 ## Configuration
 
@@ -16,6 +17,7 @@
 
 - [Architecture](architecture.md)
 - [SGLang Router](sglang-router.md)
+- [vLLM Router](vllm-router.md)
 - [Mooncake KV Store](mooncake-kv-store.md)
 
 ## Benchmarking
