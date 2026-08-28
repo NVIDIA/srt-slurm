@@ -33,7 +33,7 @@ from srtctl.cli.mixins import (
     TelemetryStageMixin,
     WorkerStageMixin,
 )
-from srtctl.core.config import get_srtslurm_setting, load_config
+from srtctl.core.config import get_container_cache_config, load_config
 from srtctl.core.container_image import prepare_container_image
 from srtctl.core.health import wait_for_port
 from srtctl.core.lockfile import write_lockfile
@@ -106,23 +106,42 @@ class SweepOrchestrator(
         return self.config.backend
 
     def _prepare_container_image(self) -> None:
-        """Replace the registry reference with one shared SquashFS path."""
-        cache_root = get_srtslurm_setting("container_cache_path")
-        if not isinstance(cache_root, str) or not cache_root:
-            return
-        image = self.config.model.container
-        if image.startswith(("/", "./")):
-            return
-        if "@sha256:" not in image:
-            logger.warning("Container cache skipped because model.container is not digest-pinned")
-            return
-        image_path = prepare_container_image(
-            image,
-            cache_root,
+        """Apply the cluster's native or reusable-image policy."""
+        groups: tuple[tuple[int | None, tuple[str, ...]], ...]
+        if self.runtime.nodes.het:
+            group0 = tuple(
+                dict.fromkeys((self.runtime.nodes.infra, self.runtime.nodes.head, *self.runtime.nodes.prefill_group))
+            )
+            groups = ((0, group0), (1, self.runtime.nodes.decode_group))
+        else:
+            nodes = tuple(
+                dict.fromkeys(
+                    (
+                        self.runtime.nodes.infra,
+                        self.runtime.nodes.head,
+                        self.runtime.nodes.bench,
+                        *self.runtime.nodes.worker,
+                    )
+                )
+            )
+            groups = ((None, nodes),)
+
+        prepared = prepare_container_image(
+            self.config.model.container,
+            get_container_cache_config(),
             job_id=self.runtime.job_id,
             node=self.runtime.nodes.head,
+            output_dir=self.runtime.log_dir.parent.parent,
+            visibility_groups=groups,
         )
-        self.runtime = replace(self.runtime, container_image=image_path)
+        effective_image: Path | str = prepared.effective_image
+        if effective_image.startswith("/"):
+            effective_image = Path(effective_image)
+        self.runtime = replace(
+            self.runtime,
+            container_image=effective_image,
+            prepared_container=prepared,
+        )
 
     @functools.cached_property
     def endpoints(self) -> list[Endpoint]:
@@ -684,6 +703,12 @@ class SweepOrchestrator(
         try:
             # Import once before infrastructure, workers, and frontends fan out.
             self._prepare_container_image()
+            write_lockfile(
+                self.runtime.log_dir.parent,
+                self.config,
+                self.runtime.log_dir,
+                prepared_container=self.runtime.prepared_container,
+            )
 
             # Stage 1: Head infrastructure (NATS, etcd). Only the dynamo request
             # plane uses it; static/direct frontends skip it.

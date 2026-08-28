@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from srtctl.backends import SGLangProtocol, SGLangServerConfig
-from srtctl.core.schema import ClusterConfig, SrtConfig
+from srtctl.core.schema import ClusterConfig, ContainerCacheMode, SrtConfig
 from srtctl.ports import (
     KV_EVENTS_PORT_BASE,
     SGLANG_BOOTSTRAP_PORT_BASE,
@@ -28,6 +28,36 @@ class TestConfigLoading:
     def test_container_cache_path(self):
         config = ClusterConfig.Schema().load({"container_cache_path": "$HOME/.cache/containers"})
         assert config.container_cache_path == "$HOME/.cache/containers"
+
+    def test_container_cache_policy(self):
+        config = ClusterConfig.Schema().load(
+            {"container_cache": {"mode": "required", "path": "/cache", "lock_timeout_seconds": 30}}
+        )
+        assert config.container_cache.mode == ContainerCacheMode.REQUIRED
+        assert config.container_cache.path == "/cache"
+        assert config.container_cache.lock_timeout_seconds == 30
+
+    def test_container_cache_timeout_must_be_positive(self):
+        with pytest.raises(Exception, match="lock_timeout_seconds must be positive"):
+            ClusterConfig.Schema().load({"container_cache": {"lock_timeout_seconds": 0}})
+
+    @pytest.mark.parametrize(
+        ("cluster", "mode", "path"),
+        [
+            (None, ContainerCacheMode.AUTO, None),
+            ({"container_cache_path": "/legacy"}, ContainerCacheMode.REQUIRED, "/legacy"),
+            ({"container_cache": {"mode": "native"}}, ContainerCacheMode.NATIVE, None),
+        ],
+    )
+    def test_effective_container_cache_policy(self, cluster, mode, path):
+        from unittest.mock import patch
+
+        from srtctl.core.config import get_container_cache_config
+
+        with patch("srtctl.core.config.load_cluster_config", return_value=cluster):
+            config = get_container_cache_config()
+        assert config.mode == mode
+        assert config.path == path
 
     def test_config_loading_from_yaml(self):
         """Test that config files in recipes/ can be loaded."""

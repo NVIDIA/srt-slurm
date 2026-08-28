@@ -19,6 +19,7 @@ from .config import get_srtslurm_setting
 from .slurm import get_hostname_ip, get_slurm_het_nodelists, get_slurm_nodelist
 
 if TYPE_CHECKING:
+    from srtctl.core.container_image import PreparedContainer
     from srtctl.core.schema import DynamoConfig, SrtConfig
 
 
@@ -225,10 +226,10 @@ class RuntimeContext:
     head_node_ip: str
     infra_node_ip: str
 
-    # Computed paths (all absolute)
+    # Computed paths (all absolute, except registry image references)
     log_dir: Path
     model_path: Path  # For HF models (hf:prefix), this is the HF model ID as a Path
-    container_image: Path
+    container_image: Path | str
 
     # Resource configuration
     gpus_per_node: int
@@ -258,6 +259,8 @@ class RuntimeContext:
     request_plane: str = "tcp"
     # Full Dynamo configuration for native sidecar launch settings.
     dynamo: "DynamoConfig | None" = None
+    # Registry identity and cache outcome, populated before job steps launch.
+    prepared_container: "PreparedContainer | None" = None
 
     @classmethod
     def from_config(
@@ -334,8 +337,8 @@ class RuntimeContext:
             if not container_image.is_file():
                 raise ValueError(f"Container image path is not a file: {container_image}")
         else:
-            # Image name (e.g., nvcr.io/nvidia/pytorch:23.12) - keep as string, convert to Path for type compatibility
-            container_image = Path(container_image_str)
+            # Preserve URI prefixes (for example docker://) on registry references.
+            container_image = container_image_str
 
         # Build container mounts
         container_mounts: dict[Path, Path] = {

@@ -37,12 +37,13 @@ from srtctl.core.fingerprint import load_fingerprint
 from srtctl.core.resource_snapshot import load_resource_snapshot
 
 if TYPE_CHECKING:
+    from srtctl.core.container_image import PreparedContainer
     from srtctl.core.schema import SrtConfig
 
 logger = logging.getLogger(__name__)
 
 # Lockfile format version — bump when the structure changes
-_LOCKFILE_VERSION = 2
+_LOCKFILE_VERSION = 3
 
 # Comment inserted above the lock section
 _LOCK_COMMENT = """\
@@ -141,6 +142,7 @@ def build_lock_section(
     resolved_log_dir: Path | None = None,
     verification: list[Any] | None = None,
     results: dict[str, Any] | None = None,
+    prepared_container: PreparedContainer | None = None,
 ) -> dict[str, Any]:
     """Build the lock: section dict.
 
@@ -186,6 +188,8 @@ def build_lock_section(
     }
     if resolved_log_dir:
         resolved["log_dir"] = str(resolved_log_dir)
+    if prepared_container:
+        resolved["container"] = prepared_container.as_lock_data()
 
     lock: dict[str, Any] = {
         "version": _LOCKFILE_VERSION,
@@ -212,6 +216,7 @@ def write_lockfile(
     log_dir: Path | None = None,
     verification: list[Any] | None = None,
     results: dict[str, Any] | None = None,
+    prepared_container: PreparedContainer | None = None,
 ) -> bool:
     """Write recipe.lock.yaml — the original recipe with a lock: section appended.
 
@@ -244,6 +249,7 @@ def write_lockfile(
             resolved_log_dir=log_dir,
             verification=verification,
             results=results,
+            prepared_container=prepared_container,
         )
 
         # Compute integrity hash over the lock content (before adding the hash itself)

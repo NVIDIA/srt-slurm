@@ -37,6 +37,7 @@ from rich.table import Table
 
 from srtctl.core.config import (
     generate_override_configs,
+    get_container_cache_config,
     get_srtslurm_setting,
     load_cluster_config,
     load_config,
@@ -322,7 +323,7 @@ def show_config_details(config: SrtConfig) -> None:
         mode_envs.append(("benchmark", dict(config.benchmark.env)))
 
     mooncake_cfg = getattr(backend, "mooncake_kv_store", None)
-    container_cache_path = get_srtslurm_setting("container_cache_path")
+    container_cache = get_container_cache_config()
     if mooncake_cfg is not None and mooncake_cfg.env:
         has_env = True
         mode_envs.append(("mooncake", dict(mooncake_cfg.env)))
@@ -366,7 +367,7 @@ def show_config_details(config: SrtConfig) -> None:
         or config.observability.tachometer.enabled
         or config.telemetry.enabled
         or mooncake_cfg is not None
-        or container_cache_path
+        or container_cache
     )
     if show_extensions:
         details = Table(title="Execution Extensions", show_lines=False, pad_edge=False)
@@ -374,8 +375,13 @@ def show_config_details(config: SrtConfig) -> None:
         details.add_column("Setting", style="yellow")
         details.add_column("Value", style="white")
 
-        if container_cache_path:
-            details.add_row("container cache", "path", str(container_cache_path))
+        details.add_row("container cache", "mode", container_cache.mode.value)
+        details.add_row(
+            "container cache",
+            "path",
+            container_cache.path or "<automatic under output directory>",
+        )
+        details.add_row("container cache", "lock timeout", f"{container_cache.lock_timeout_seconds}s")
 
         if config.benchmark.type == "custom":
             details.add_row("benchmark", "type", config.benchmark.type)
