@@ -297,8 +297,7 @@ class SGLangProtocol:
             process: The process to start
             endpoint_processes: All processes for this endpoint (for multi-node)
             runtime: Runtime context with paths and settings
-            frontend_type: Frontend type - "sglang" and "sidecar" use
-                sglang.launch_server; "dynamo" uses dynamo.sglang
+            frontend_type: Frontend type - "sglang" uses sglang.launch_server, "dynamo" uses dynamo.sglang
             nsys_prefix: Optional nsys profiling command prefix
             dump_config_path: Path to dump config JSON
         """
@@ -318,8 +317,6 @@ class SGLangProtocol:
         config.pop("nccl-port", None)
         config.pop("nccl_port", None)
         nccl_port = SGLANG_NCCL_PORT_BASE + process.sys_port - DYN_SYSTEM_PORT_BASE
-        config.pop("grpc-port", None)
-        config.pop("grpc_port", None)
 
         # Determine if multi-node
         endpoint_nodes = list(dict.fromkeys(p.node for p in endpoint_processes))
@@ -330,8 +327,7 @@ class SGLangProtocol:
         dist_init_port = SGLANG_DIST_INIT_PORT_BASE
 
         # Choose Python module based on frontend type
-        sidecar_mode = frontend_type == "sidecar"
-        use_sglang = frontend_type in ("sglang", "sidecar")
+        use_sglang = frontend_type == "sglang"
         python_module = "sglang.launch_server" if use_sglang else "dynamo.sglang"
 
         # Get served model name from config
@@ -362,10 +358,6 @@ class SGLangProtocol:
         # Always pass --port when using sglang.launch_server or dynamo.sglang
         cmd.extend(["--port", str(process.http_port)])
         cmd.extend(["--nccl-port", str(nccl_port)])
-        if sidecar_mode:
-            if process.grpc_port is None:
-                raise ValueError(f"No native gRPC port allocated for sidecar worker on {process.node}")
-            cmd.extend(["--grpc-port", str(process.grpc_port)])
 
         # Add disaggregation mode for prefill/decode workers (both dynamo and sglang frontend)
         if mode != "agg":

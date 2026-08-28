@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import os
 import signal
 import subprocess
 import sys
@@ -142,37 +141,3 @@ def test_dynamo_source_archive_excludes_build_artifacts(tmp_path) -> None:
         names = handle.getnames()
     assert "dynamo/src/main.py" in names
     assert not any("target" in name or ".git" in name for name in names)
-
-
-def test_sidecar_build_is_cached_and_exported_to_direct_workers(tmp_path, monkeypatch) -> None:
-    runner = _runner(tmp_path, monkeypatch)
-    source = runner.output_dir / "runtime" / "dynamo-src"
-    source.mkdir(parents=True)
-    (source / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
-    (source / ".srtctl-source-revision").write_text("a" * 40 + "\n", encoding="utf-8")
-    runner.plan.update(
-        {
-            "dynamo_source_cache_key": "a" * 40,
-            "dynamo_cargo_patch_commands": [],
-        }
-    )
-    cache_root = tmp_path / "dynamo-cache"
-    monkeypatch.setenv("SRTCTL_DYNAMO_CACHE_ROOT", str(cache_root))
-    monkeypatch.setattr(runner, "_prepare_dynamo_source_build", lambda: None)
-    cargo_calls = []
-
-    def fake_run(args, *, log_name, cwd=None, env=None):
-        cargo_calls.append((args, log_name, cwd, env))
-        target = Path(env["CARGO_TARGET_DIR"]) / "release" / "dynamo-sglang-sidecar"
-        target.parent.mkdir(parents=True)
-        target.write_text("binary", encoding="utf-8")
-
-    monkeypatch.setattr(runner, "_run_logged", fake_run)
-    runner._build_dynamo_sglang_sidecar()
-    binary = Path(os.environ["DYNAMO_SIDECAR_BINARY"])
-
-    assert binary.is_file()
-    assert binary.stat().st_mode & 0o111
-    assert cargo_calls[0][0] == ["cargo", "build", "--release", "--locked", "-p", "dynamo-sglang-sidecar"]
-    runner._build_dynamo_sglang_sidecar()
-    assert len(cargo_calls) == 1
