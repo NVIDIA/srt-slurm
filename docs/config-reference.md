@@ -938,14 +938,22 @@ dynamo:
   hash: "abc123"              # Install from git commit
   # OR
   top_of_tree: true           # Install from main branch
+  sidecar: false               # Use native engines with Dynamo sidecars
 ```
 
-| Field         | Type   | Default | Description                                            |
-| ------------- | ------ | ------- | ------------------------------------------------------ |
-| `install`     | bool   | true    | Whether to install dynamo (set false if pre-installed) |
-| `version`     | string | "0.8.0" | PyPI version                                           |
-| `hash`        | string | null    | Git commit hash (source install)                       |
-| `top_of_tree` | bool   | false   | Install from main branch                               |
+| Field                    | Type         | Default | Description                                            |
+| ------------------------ | ------------ | ------- | ------------------------------------------------------ |
+| `install`                | bool         | true    | Whether to install dynamo (set false if pre-installed) |
+| `version`                | string       | "0.8.0" | PyPI version                                           |
+| `hash`                   | string       | null    | Git commit hash (source install)                       |
+| `top_of_tree`            | bool         | false   | Install from main branch                               |
+| `wheel`                  | string       | null    | Exact `ai-dynamo` nightly version                      |
+| `sidecar`                | bool         | false   | Replace legacy Python workers with native engines and Dynamo sidecars |
+| `sidecar_port`           | int          | 50051   | Base loopback gRPC port; co-located workers receive deterministic offsets |
+| `sidecar_binary`         | string/null  | null    | Optional standalone executable; null uses `python3 -m dynamo.<framework>.sidecar` |
+| `sidecar_args`           | list[string] | []      | Extra arguments passed to the sidecar launcher         |
+| `sidecar_startup_timeout` | int         | 1200    | Seconds to wait for the native gRPC endpoint            |
+| `sidecar_context_length` | int/null     | null    | TRT-LLM context length override                         |
 
 **Notes**:
 
@@ -954,6 +962,36 @@ dynamo:
 - `hash` and `top_of_tree` are mutually exclusive.
 - When `hash` or `top_of_tree` is set, `version` is automatically cleared.
 - Source installs (`hash` or `top_of_tree`) clone the repo and build with maturin.
+
+### Native sidecar mode
+
+Set `dynamo.sidecar: true` to run the framework's native engine process beside a CPU-only Dynamo sidecar instead of launching `python3 -m dynamo.<framework>`. The engine and sidecar share one Slurm step and have a coupled lifecycle: if either exits, srtctl terminates the other and marks the worker failed.
+
+By default, srtctl launches `python3 -m dynamo.<framework>.sidecar`. The `ai-dynamo` package supplies this module and pins the matching `ai-dynamo-runtime` wheel, which embeds the native Rust sidecar. The configured Dynamo version, wheel, source hash, or preinstalled container runtime must include the selected framework's launcher. No separate Cargo build is performed at job startup.
+
+Nightly deployments should select an exact `dynamo.wheel` version so srtctl stages and installs the matching `ai-dynamo` and `ai-dynamo-runtime` artifacts on every worker. Set `dynamo.sidecar_binary` only to launch a compatible standalone executable already present in the container or a bind mount.
+
+```yaml
+frontend:
+  type: dynamo
+
+backend:
+  type: vllm  # sglang, vllm, or trtllm
+
+dynamo:
+  wheel: "<nightly-with-sidecars>"
+  sidecar: true
+  sidecar_port: 50051
+  sidecar_args:
+    - --grpc-connections
+    - "4"
+```
+
+The default sidecar commands are `python3 -m dynamo.sglang.sidecar`, `python3 -m dynamo.vllm.sidecar`, and `python3 -m dynamo.trtllm.sidecar`. All three use the shared `--grpc-endpoint` flag.
+
+SGLang exposes gRPC and starts the sidecar only on an endpoint leader; distributed followers are engine-only. vLLM automatically uses one managed process per node for data-parallel endpoints and exposes the complete DP group through the leader's sidecar. Multi-node tensor-parallel vLLM endpoints remain rejected until their `vllm-rs` launch path is validated. TensorRT-LLM supports sidecars for aggregated workers only and runs the sidecar on MPI rank zero. `dynamo.sidecar_context_length` can override the TRT-LLM context length inferred from `trtllm_config.aggregated.max_seq_len`.
+
+vLLM sidecar mode sets `VLLM_PLUGINS` to an empty value by default. This prevents image-installed plugins from replacing native engine output types that must match the fixed `vllm-rs` MessagePack contract. A recipe can explicitly set `VLLM_PLUGINS` in `prefill_environment`, `decode_environment`, or `aggregated_environment` when every selected plugin is compatible with the sidecar protocol.
 
 ---
 

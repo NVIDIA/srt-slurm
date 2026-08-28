@@ -1439,6 +1439,7 @@ class DynamoConfig:
         request_plane: Request plane to use (default: "tcp"). Valid values: "nats", "tcp", "http"
         event_plane: Event plane override, sets DYN_EVENT_PLANE (default: None — follow
                      the Dynamo image's own default). Valid values: "nats", "zmq"
+        sidecar: Replace legacy Python workers with native engines and Dynamo sidecars.
 
     If top_of_tree, hash, or wheel is set, version is automatically cleared.
     """
@@ -1453,6 +1454,12 @@ class DynamoConfig:
     wheel: str | None = None
     request_plane: str = "tcp"
     event_plane: str | None = None
+    sidecar: bool = False
+    sidecar_port: int = 50051
+    sidecar_binary: str | None = None
+    sidecar_startup_timeout: int = 1200
+    sidecar_context_length: int | None = None
+    sidecar_args: list[str] = field(default_factory=list)
     # Optional dependency-declaration overrides applied to the dynamo Cargo.toml tree before a
     # source build (requires `hash`). Each entry is a full `<crate> = <spec>` TOML line, e.g.
     #   'dynamo-tokenizers = { git = "https://github.com/ai-dynamo/frontend-crates", branch = "..." }'
@@ -1494,6 +1501,15 @@ class DynamoConfig:
             raise ValueError(
                 f"Invalid event_plane '{self.event_plane}', must be one of: {', '.join(self._VALID_EVENT_PLANES)}"
             )
+
+        if not 1 <= self.sidecar_port <= 65535:
+            raise ValueError(f"dynamo.sidecar_port must be between 1 and 65535, got {self.sidecar_port}")
+        if self.sidecar_startup_timeout < 1:
+            raise ValueError("dynamo.sidecar_startup_timeout must be at least 1")
+        if self.sidecar_binary is not None and not self.sidecar_binary.strip():
+            raise ValueError("dynamo.sidecar_binary must be a non-empty executable path")
+        if self.sidecar_context_length is not None and self.sidecar_context_length < 1:
+            raise ValueError("dynamo.sidecar_context_length must be at least 1")
 
     @property
     def needs_source_install(self) -> bool:
@@ -1741,7 +1757,19 @@ class SrtConfig:
         self._validate_trtllm_serve()
         self._validate_vllm_frontend()
         self._validate_static_router_frontend()
+        self._validate_dynamo_sidecar()
         self._warn_dp_launch_mode()
+
+    def _validate_dynamo_sidecar(self) -> None:
+        """Validate native sidecar configuration before job submission."""
+        if not self.dynamo.sidecar:
+            return
+        if self.frontend.type != "dynamo":
+            raise ValidationError("dynamo.sidecar: true requires frontend.type: dynamo")
+        if not isinstance(self.backend, (SGLangProtocol, VLLMProtocol, TRTLLMProtocol)):
+            raise ValidationError("dynamo.sidecar: true supports sglang, vllm, and trtllm backends only")
+        if isinstance(self.backend, VLLMProtocol):
+            self.backend.validate_sidecar_dp_config()
 
     def _warn_dp_launch_mode(self):
         """Warn when a vLLM DP recipe selects the deprecated per-GPU layout.
@@ -1750,7 +1778,7 @@ class SrtConfig:
         `vllm serve` owns the local DP ranks, so the layout is one process per
         node whatever dp_launch_mode says.
         """
-        if not isinstance(self.backend, VLLMProtocol) or self.frontend.type == "vllm":
+        if not isinstance(self.backend, VLLMProtocol) or self.frontend.type == "vllm" or self.dynamo.sidecar:
             return
         if self.backend.dp_launch_mode != "per_gpu":
             return

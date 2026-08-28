@@ -19,7 +19,7 @@ from .config import get_srtslurm_setting
 from .slurm import get_hostname_ip, get_slurm_het_nodelists, get_slurm_nodelist
 
 if TYPE_CHECKING:
-    from srtctl.core.schema import SrtConfig
+    from srtctl.core.schema import DynamoConfig, SrtConfig
 
 
 @dataclass(frozen=True)
@@ -256,6 +256,8 @@ class RuntimeContext:
     staged_model_path: Path | None = None
     # Request plane for dynamo workers
     request_plane: str = "tcp"
+    # Full Dynamo configuration for native sidecar launch settings.
+    dynamo: "DynamoConfig | None" = None
 
     @classmethod
     def from_config(
@@ -421,6 +423,7 @@ class RuntimeContext:
             environment=environment,
             is_hf_model=is_hf_model,
             request_plane=config.dynamo.request_plane,
+            dynamo=config.dynamo,
         )
 
         # Expand FormattablePath mounts
@@ -448,6 +451,7 @@ class RuntimeContext:
             stage_dir=stage_dir,
             staged_model_path=staged_model_path,
             request_plane=config.dynamo.request_plane,
+            dynamo=config.dynamo,
         )
 
     @property

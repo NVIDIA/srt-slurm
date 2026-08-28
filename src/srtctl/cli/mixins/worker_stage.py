@@ -123,6 +123,15 @@ class WorkerStageMixin:
             env_to_set.setdefault("DYN_KVBM_LEADER_ZMQ_PUB_PORT", str(pub_port))
             env_to_set.setdefault("DYN_KVBM_LEADER_ZMQ_ACK_PORT", str(ack_port))
 
+    def _get_worker_environment_for_mode(self, mode: str) -> dict[str, str]:
+        """Return mode environment with Dynamo sidecar-specific defaults."""
+        environment = self.backend.get_environment_for_mode(mode)
+        if getattr(self.config.dynamo, "sidecar", False) is True and self.backend.type == "vllm":
+            # Installed plugins may replace native engine output types and
+            # break the fixed Rust/Python MessagePack contract used by vllm-rs.
+            environment.setdefault("VLLM_PLUGINS", "")
+        return environment
+
     def start_worker(self, process: "Process", endpoint_processes: list["Process"]) -> ManagedProcess:
         """Start a single worker process (one srun per node, used by SGLang)."""
         mode = process.endpoint_mode
@@ -184,7 +193,7 @@ class WorkerStageMixin:
             def __missing__(self, key: str) -> str:
                 return "{" + key + "}"  # Leave unknown placeholders unchanged
 
-        for key, value in self.backend.get_environment_for_mode(mode).items():
+        for key, value in self._get_worker_environment_for_mode(mode).items():
             formatted_value = value.format_map(SafeDict(template_vars))
             env_to_set[key] = formatted_value
 
@@ -199,7 +208,8 @@ class WorkerStageMixin:
             env_to_set.update(profiling.get_env_vars(mode, profile_dir))
 
         should_set_cvd = getattr(self.backend, "should_set_cuda_visible_devices", lambda _process: True)
-        if should_set_cvd(process) and len(process.gpu_indices) < self.runtime.gpus_per_node:
+        force_cvd = getattr(self.config.dynamo, "sidecar", False) is True and self.backend.type == "vllm"
+        if (force_cvd or should_set_cvd(process)) and len(process.gpu_indices) < self.runtime.gpus_per_node:
             env_to_set["CUDA_VISIBLE_DEVICES"] = process.cuda_visible_devices
 
         # Add backend-specific process environment variables (e.g., unique ports)
@@ -316,6 +326,7 @@ class WorkerStageMixin:
             "ETCD_ENDPOINTS": f"http://{self.runtime.nodes.infra}:{ETCD_CLIENT_PORT}",
             "NATS_SERVER": f"nats://{self.runtime.nodes.infra}:{NATS_PORT}",
             "DYN_SYSTEM_PORT": str(leader.sys_port),
+            "DYN_REQUEST_PLANE": self.config.dynamo.request_plane,
             "DYN_SKIP_SGLANG_LOG_FORMATTING": "1",
         }
         if self.config.dynamo.event_plane:
@@ -327,7 +338,7 @@ class WorkerStageMixin:
         env_to_set.setdefault("DYN_LOG", _DEFAULT_WORKER_DYN_LOG)
 
         # Add mode-specific environment variables from backend
-        env_to_set.update(self.backend.get_environment_for_mode(mode))
+        env_to_set.update(self._get_worker_environment_for_mode(mode))
 
         # Add config environment variables
         env_to_set.update(self.runtime.environment)
@@ -338,7 +349,8 @@ class WorkerStageMixin:
             env_to_set.update(profiling.get_env_vars(mode, profile_dir))
 
         should_set_cvd = getattr(self.backend, "should_set_cuda_visible_devices", lambda _process: True)
-        if should_set_cvd(leader) and len(leader.gpu_indices) < self.runtime.gpus_per_node:
+        force_cvd = getattr(self.config.dynamo, "sidecar", False) is True and self.backend.type == "vllm"
+        if (force_cvd or should_set_cvd(leader)) and len(leader.gpu_indices) < self.runtime.gpus_per_node:
             env_to_set["CUDA_VISIBLE_DEVICES"] = leader.cuda_visible_devices
 
         # Add mooncake worker env vars if configured (SGLang only). For MPI-style
@@ -369,6 +381,11 @@ class WorkerStageMixin:
 
         # Get srun config from backend
         srun_config = self.backend.get_srun_config()
+        srun_options = dict(self.runtime.srun_options)
+        if self.backend.type == "trtllm" and getattr(self.config.dynamo, "sidecar", False) is True:
+            # The sidecar runs only on rank zero. Make any follower-rank exit
+            # terminate the full endpoint step instead of leaving rank zero up.
+            srun_options["kill-on-bad-exit"] = "1"
 
         proc = start_srun_process(
             command=cmd,
@@ -388,7 +405,7 @@ class WorkerStageMixin:
             # recipe-level srun_options; the per-process worker, benchmark and
             # telemetry paths all forward it. Needed so a cluster can express
             # per-rank CPU/NUMA binding, which srun_config.cpu_bind cannot.
-            srun_options=self.runtime.srun_options,
+            srun_options=srun_options,
             het_group=leader.het_group,
         )
 

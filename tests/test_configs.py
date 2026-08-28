@@ -427,6 +427,43 @@ class TestDynamoConfig:
             DynamoConfig(event_plane="kafka")
 
 
+class TestSidecarValidation:
+    """Configuration contract for wheel-provided backend sidecars."""
+
+    @staticmethod
+    def _config(*, frontend_type: str = "dynamo", backend=None):
+        from srtctl.core.schema import DynamoConfig, FrontendConfig, ModelConfig, ResourceConfig
+
+        return SrtConfig(
+            name="sidecar",
+            model=ModelConfig(path="/model", container="/container.sqsh", precision="fp16"),
+            resources=ResourceConfig(gpu_type="h100", gpus_per_node=1, agg_nodes=1, agg_workers=1),
+            frontend=FrontendConfig(type=frontend_type),
+            backend=backend or SGLangProtocol(),
+            dynamo=DynamoConfig(wheel="1.5.0.dev20260828", sidecar=True),
+        )
+
+    def test_wheel_backed_sidecar_is_valid(self) -> None:
+        config = self._config()
+
+        assert config.dynamo.sidecar is True
+        assert config.dynamo.wheel == "1.5.0.dev20260828"
+
+    def test_sidecar_requires_dynamo_frontend(self) -> None:
+        from marshmallow import ValidationError
+
+        with pytest.raises(ValidationError, match="dynamo.sidecar: true requires frontend.type: dynamo"):
+            self._config(frontend_type="sglang")
+
+    def test_sidecar_rejects_unsupported_backend(self) -> None:
+        from marshmallow import ValidationError
+
+        from srtctl.backends import MockerProtocol
+
+        with pytest.raises(ValidationError, match="supports sglang, vllm, and trtllm backends only"):
+            self._config(backend=MockerProtocol())
+
+
 class TestSGLangProtocol:
     """Tests for SGLangProtocol."""
 
