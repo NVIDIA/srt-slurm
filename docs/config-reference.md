@@ -1124,7 +1124,7 @@ telemetry:
 | `storage_subdir` | string | `power` | Output directory below the run log directory |
 | `required` | bool | `false` | Fail the benchmark when publishable power artifacts cannot be produced |
 | `startup_timeout_seconds` | float | `30.0` | Exporter readiness timeout |
-| `request_timeout_seconds` | float | `2.0` | Per-request exporter timeout |
+| `request_timeout_seconds` | float | `5.0` | Per-request exporter timeout |
 | `collector_join_timeout_seconds` | float/null | `null` | Shutdown join timeout; defaults from `request_timeout_seconds` |
 
 ---

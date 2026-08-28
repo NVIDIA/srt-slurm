@@ -331,6 +331,126 @@ def test_session_is_closed_before_metrics(monkeypatch):
     assert request_sessions == [sessions[0], sessions[0], sessions[0]]
 
 
+def test_benchmark_writes_completed_measurement_window(monkeypatch, tmp_path):
+    _import_sa_bench_module("backend_request_func")
+    module = _import_sa_bench_module("benchmark_serving")
+    windows_dir = tmp_path / "power" / "windows"
+    result_dir = tmp_path / "results"
+    windows_dir.mkdir(parents=True)
+    result_dir.mkdir()
+    window = module.MeasurementWindow.create(
+        save_result=True,
+        result_dir=str(result_dir),
+        result_filename="results_concurrency_2_gpus_2.json",
+        concurrency=2,
+        window_dir=str(windows_dir),
+        log_root=str(tmp_path),
+    )
+    assert window is not None
+
+    async def fake_request(request_func_input, pbar=None):
+        return module.RequestFuncOutput(
+            success=True,
+            output_tokens=1,
+            prompt_len=request_func_input.prompt_len,
+            start_time=1.0,
+            ttft=0.01,
+            latency=0.02,
+        )
+
+    monkeypatch.setitem(module.ASYNC_REQUEST_FUNCS, "dynamo", fake_request)
+
+    result = asyncio.run(
+        module.benchmark(
+            backend="dynamo",
+            api_url="http://localhost:8000/v1/completions",
+            base_url="http://localhost:8000",
+            model_id="model",
+            model_name="model",
+            tokenizer=object(),
+            input_requests=[("prompt", 1, 1, None), ("prompt", 1, 1, None)],
+            logprobs=None,
+            best_of=1,
+            request_rate=float("inf"),
+            burstiness=1.0,
+            disable_tqdm=True,
+            profile=False,
+            selected_percentile_metrics=[],
+            selected_percentiles=[50.0],
+            ignore_eos=True,
+            goodput_config_dict={},
+            max_concurrency=2,
+            lora_modules=None,
+            measurement_window=window,
+        )
+    )
+
+    payload = module.json.loads((windows_dir / "results_concurrency_2_gpus_2.json").read_text())
+    assert payload["status"] == "completed"
+    assert payload["benchmark_start_time_unix"] == result["benchmark_start_time_unix"]
+    assert payload["benchmark_end_time_unix"] == result["benchmark_end_time_unix"]
+    assert payload["duration"] == result["duration"]
+
+
+def test_benchmark_writes_failed_measurement_window(monkeypatch, tmp_path):
+    _import_sa_bench_module("backend_request_func")
+    module = _import_sa_bench_module("benchmark_serving")
+    windows_dir = tmp_path / "power" / "windows"
+    result_dir = tmp_path / "results"
+    windows_dir.mkdir(parents=True)
+    result_dir.mkdir()
+    window = module.MeasurementWindow.create(
+        save_result=True,
+        result_dir=str(result_dir),
+        result_filename="results_concurrency_1_gpus_1.json",
+        concurrency=1,
+        window_dir=str(windows_dir),
+        log_root=str(tmp_path),
+    )
+    assert window is not None
+    calls = 0
+
+    async def fail_after_probe(request_func_input, pbar=None):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return module.RequestFuncOutput(success=True, output_tokens=1, prompt_len=1)
+        raise RuntimeError("request failed")
+
+    monkeypatch.setitem(module.ASYNC_REQUEST_FUNCS, "dynamo", fail_after_probe)
+
+    with pytest.raises(RuntimeError, match="request failed"):
+        asyncio.run(
+            module.benchmark(
+                backend="dynamo",
+                api_url="http://localhost:8000/v1/completions",
+                base_url="http://localhost:8000",
+                model_id="model",
+                model_name="model",
+                tokenizer=object(),
+                input_requests=[("prompt", 1, 1, None)],
+                logprobs=None,
+                best_of=1,
+                request_rate=float("inf"),
+                burstiness=1.0,
+                disable_tqdm=True,
+                profile=False,
+                selected_percentile_metrics=[],
+                selected_percentiles=[50.0],
+                ignore_eos=True,
+                goodput_config_dict={},
+                max_concurrency=1,
+                lora_modules=None,
+                measurement_window=window,
+            )
+        )
+
+    payload = module.json.loads((windows_dir / "results_concurrency_1_gpus_1.json").read_text())
+    assert payload["status"] == "failed"
+    assert payload["benchmark_end_time_unix"] >= payload["benchmark_start_time_unix"]
+    assert payload["reason"] == "RuntimeError: request failed"
+
+
 @pytest.mark.parametrize("failure", [RuntimeError("probe failed"), asyncio.CancelledError()])
 def test_benchmark_wrapper_closes_session_on_failure(monkeypatch, failure):
     _import_sa_bench_module("backend_request_func")

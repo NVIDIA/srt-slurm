@@ -55,6 +55,7 @@ from backend_request_func import (
     get_tokenizer as get_sa_bench_tokenizer,
 )
 from datasets import load_dataset
+from measurement_window import MeasurementWindow
 from PIL.Image import Image
 from tqdm.asyncio import tqdm
 from transformers import PreTrainedTokenizerBase
@@ -726,6 +727,7 @@ async def benchmark(
     slow_down_sleep_time: float = 1.0,
     slow_down_wait_time: float = 60.0,
     request_session: aiohttp.ClientSession | None = None,
+    measurement_window: MeasurementWindow | None = None,
 ):
     if backend in ASYNC_REQUEST_FUNCS:
         request_func = ASYNC_REQUEST_FUNCS[backend]
@@ -834,6 +836,9 @@ async def benchmark(
             return await request_func(request_func_input=request_func_input, pbar=pbar)
 
     benchmark_start_time = time.perf_counter()
+    benchmark_start_time_unix = time.time()
+    if measurement_window is not None:
+        measurement_window.mark_running(benchmark_start_time_unix)
     tasks: list[asyncio.Task] = []
     try:
         async for request in get_request(input_requests, request_rate, burstiness):
@@ -857,7 +862,16 @@ async def benchmark(
             )
             tasks.append(asyncio.create_task(limited_request_func(request_func_input=request_func_input, pbar=pbar)))
         outputs: list[RequestFuncOutput] = await asyncio.gather(*tasks)
-    except BaseException:
+    except BaseException as error:
+        benchmark_end_time_unix = time.time()
+        benchmark_duration = time.perf_counter() - benchmark_start_time
+        if measurement_window is not None:
+            measurement_window.mark_failed(
+                start_unix=benchmark_start_time_unix,
+                end_unix=benchmark_end_time_unix,
+                duration=benchmark_duration,
+                reason=f"{type(error).__name__}: {error}",
+            )
         if backend == "dynamo" and request_session is not None:
             # A shared pool must outlive every request using it. Preserve the
             # historical task behavior when connection reuse is disabled.
@@ -894,6 +908,13 @@ async def benchmark(
         pbar.close()
 
     benchmark_duration = time.perf_counter() - benchmark_start_time
+    benchmark_end_time_unix = time.time()
+    if measurement_window is not None:
+        measurement_window.record_boundary(
+            start_unix=benchmark_start_time_unix,
+            end_unix=benchmark_end_time_unix,
+            duration=benchmark_duration,
+        )
     if backend == "dynamo" and request_session is not None and not request_session.closed:
         await request_session.close()
         # Allow asyncio to finish closing pooled transports before CPU-heavy metrics.
@@ -923,6 +944,8 @@ async def benchmark(
 
     result = {
         "duration": benchmark_duration,
+        "benchmark_start_time_unix": benchmark_start_time_unix,
+        "benchmark_end_time_unix": benchmark_end_time_unix,
         "completed": metrics.completed,
         "total_input_tokens": metrics.total_input,
         "total_output_tokens": metrics.total_output,
@@ -978,6 +1001,13 @@ async def benchmark(
     process_one_metric("e2el", "E2EL", "End-to-end Latency")
 
     print("=" * 50)
+
+    if measurement_window is not None:
+        measurement_window.mark_completed(
+            start_unix=benchmark_start_time_unix,
+            end_unix=benchmark_end_time_unix,
+            duration=benchmark_duration,
+        )
 
     return result
 
@@ -1239,6 +1269,13 @@ def main(args: argparse.Namespace):
     gc.collect()
     gc.freeze()
 
+    measurement_window = MeasurementWindow.create(
+        save_result=args.save_result,
+        result_dir=args.result_dir,
+        result_filename=args.result_filename,
+        concurrency=args.max_concurrency,
+    )
+
     benchmark_result = asyncio.run(
         run_benchmark_with_cleanup(
             reuse_http_connections=args.reuse_http_connections,
@@ -1264,6 +1301,7 @@ def main(args: argparse.Namespace):
             slow_down_servers=args.slow_down_servers,
             slow_down_sleep_time=args.slow_down_sleep_time,
             slow_down_wait_time=args.slow_down_wait_time,
+            measurement_window=measurement_window,
         )
     )
 

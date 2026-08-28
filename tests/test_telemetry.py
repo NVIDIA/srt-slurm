@@ -110,9 +110,9 @@ class TestDcgmPowerConfig:
         assert defaults.default_frequency == 1.0
         assert defaults.required is False
         assert defaults.startup_timeout_seconds == 30.0
-        assert defaults.request_timeout_seconds == 2.0
+        assert defaults.request_timeout_seconds == 5.0
         assert defaults.collector_join_timeout_seconds is None
-        assert defaults.resolved_collector_join_timeout_seconds == 12.0
+        assert defaults.resolved_collector_join_timeout_seconds == 24.0
 
     def test_join_timeout_default_tracks_request_timeout(self):
         config = _make_config(

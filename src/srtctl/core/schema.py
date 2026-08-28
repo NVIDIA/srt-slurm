@@ -1134,7 +1134,7 @@ class TelemetryConfig:
     storage_subdir: str = "power"
     required: bool = False
     startup_timeout_seconds: float = 30.0
-    request_timeout_seconds: float = 2.0
+    request_timeout_seconds: float = 5.0
     # None derives a safe shutdown budget from request_timeout_seconds.
     collector_join_timeout_seconds: float | None = None
 
