@@ -32,35 +32,6 @@ logger = logging.getLogger(__name__)
 _DEFAULT_WORKER_DYN_LOG = "info,dynamo_runtime::pipeline::network::ingress::push_handler=warn"
 
 
-def _wrap_sglang_sidecar(
-    engine_command: list[str],
-    *,
-    grpc_port: int,
-    bootstrap_host: str | None,
-) -> list[str]:
-    """Run the native SGLang engine and its Dynamo sidecar under one supervisor.
-
-    Slurm owns one task per logical worker. Keeping both processes in that task
-    makes their loopback gRPC endpoint private and ensures either exit tears down
-    its peer instead of leaving a GPU process behind.
-    """
-    sidecar_args = ["--sglang-endpoint", f"http://127.0.0.1:{grpc_port}"]
-    if bootstrap_host is not None:
-        sidecar_args.extend(["--bootstrap-host", bootstrap_host])
-    sidecar_command = f'"$DYNAMO_SIDECAR_BINARY" {shlex.join(sidecar_args)}'
-    script = (
-        "set -e; "
-        f"{shlex.join(engine_command)} & engine_pid=$!; "
-        f"{sidecar_command} & sidecar_pid=$!; "
-        'cleanup() { kill "$engine_pid" "$sidecar_pid" 2>/dev/null || true; '
-        'wait "$engine_pid" "$sidecar_pid" 2>/dev/null || true; }; '
-        "trap 'cleanup; exit 143' INT TERM; "
-        'set +e; wait -n "$engine_pid" "$sidecar_pid"; status=$?; set -e; '
-        'cleanup; exit "$status"'
-    )
-    return ["bash", "-c", script]
-
-
 class WorkerStageMixin:
     """Mixin for worker process startup stage.
 
@@ -113,20 +84,10 @@ class WorkerStageMixin:
                 'else echo "WARNING: ${script_path} or ${patch_script_path} not found"; fi'
             )
 
-        # 2. Dynamo installation (required for the Dynamo frontend)
+        # 2. Dynamo installation (required for dynamo.sglang when using dynamo frontend)
         # Skip if dynamo.install is False (container already has dynamo installed)
         if installs_dynamo(self.config):
             parts.append(self.config.dynamo.get_install_commands())
-
-        # 3. Standalone sidecars are Rust executables, not Python modules. Build
-        # the selected connector from the configured Dynamo source and export
-        # DYNAMO_SIDECAR_BINARY for the supervisor command.
-        if getattr(self.config.dynamo, "uses_sidecar", False) is True:
-            parts.append(
-                self.config.dynamo.get_sidecar_build_commands(
-                    self.config.backend_type,
-                )
-            )
 
         if not parts:
             return None
@@ -186,25 +147,15 @@ class WorkerStageMixin:
             )
 
         # Build command using backend's method
-        sidecar_mode = getattr(self.config.dynamo, "uses_sidecar", False) is True
         cmd = self.backend.build_worker_command(
             process=process,
             endpoint_processes=endpoint_processes,
             runtime=self.runtime,
-            frontend_type="sidecar" if sidecar_mode else self.config.frontend.type,
+            frontend_type=self.config.frontend.type,
             nsys_prefix=nsys_prefix,
             dump_config_path=config_dump,
             profiling=profiling,
         )
-        if sidecar_mode:
-            if process.grpc_port is None:
-                raise RuntimeError(f"No native gRPC port allocated for sidecar worker on {process.node}")
-            bootstrap_host = (
-                get_hostname_ip(process.node, self.runtime.network_interface)
-                if process.endpoint_mode == "prefill"
-                else None
-            )
-            cmd = _wrap_sglang_sidecar(cmd, grpc_port=process.grpc_port, bootstrap_host=bootstrap_host)
 
         # Environment variables
         env_to_set = {

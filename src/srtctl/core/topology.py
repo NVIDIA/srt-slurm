@@ -26,7 +26,6 @@ from srtctl.ports import (
     DYN_SYSTEM_PORT_BASE,
     KV_EVENTS_PORT_BASE,
     SGLANG_BOOTSTRAP_PORT_BASE,
-    SGLANG_GRPC_PORT_BASE,
     SGLANG_HTTP_PORT_BASE,
     SGLANG_HTTP_PORT_STRIDE,
     VLLM_DATA_PARALLEL_RPC_PORT,
@@ -50,7 +49,6 @@ class NodePortAllocator:
         - nixl_port:      5400+ (global) - NIXL side channel for KV transfers (vLLM)
         - dp_rpc_port:    8400+ (per node) - DP coordination port (vLLM data-parallel)
         - http_port:      6100+ (per node) - HTTP serving port
-        - grpc_port:      6500+ (per node) - SGLang native gRPC sidecar port
         - bootstrap_port: 7200+ (per node) - P/D coordination port (prefill only)
 
     Example:
@@ -65,14 +63,12 @@ class NodePortAllocator:
     """
 
     base_http_port: int = SGLANG_HTTP_PORT_BASE
-    base_grpc_port: int = SGLANG_GRPC_PORT_BASE
     base_bootstrap_port: int = SGLANG_BOOTSTRAP_PORT_BASE
     base_kv_events_port: int = KV_EVENTS_PORT_BASE
     base_nixl_port: int = VLLM_NIXL_PORT_BASE
     base_dp_rpc_port: int = VLLM_DATA_PARALLEL_RPC_PORT
 
     _http_ports: dict[str, int] = field(default_factory=dict, repr=False)
-    _grpc_ports: dict[str, int] = field(default_factory=dict, repr=False)
     _bootstrap_ports: dict[str, int] = field(default_factory=dict, repr=False)
     _dp_rpc_ports: dict[str, int] = field(default_factory=dict, repr=False)
     _next_kv_events_port: int = field(default=0, repr=False)  # Global counter
@@ -84,14 +80,6 @@ class NodePortAllocator:
             self._http_ports[node] = self.base_http_port
         port = self._http_ports[node]
         self._http_ports[node] += SGLANG_HTTP_PORT_STRIDE
-        return port
-
-    def next_grpc_port(self, node: str) -> int:
-        """Get the next native SGLang gRPC port for a node."""
-        if node not in self._grpc_ports:
-            self._grpc_ports[node] = self.base_grpc_port
-        port = self._grpc_ports[node]
-        self._grpc_ports[node] += SGLANG_HTTP_PORT_STRIDE
         return port
 
     def next_bootstrap_port(self, node: str) -> int:
@@ -218,7 +206,6 @@ class Process:
         gpu_indices: GPU indices visible to this process
         sys_port: DYN_SYSTEM_PORT for this process
         http_port: HTTP serving port for this process (avoids conflicts on same node)
-        grpc_port: Native SGLang gRPC port for an out-of-process Dynamo sidecar
         bootstrap_port: P/D coordination port (only for prefill leaders)
         kv_events_port: ZMQ port for kv-events publishing (all worker leaders)
         nixl_port: NIXL side channel port for KV transfers (vLLM only)
@@ -238,7 +225,6 @@ class Process:
     kv_events_port: int | None = None
     nixl_port: int | None = None
     dp_rpc_port: int | None = None
-    grpc_port: int | None = None
     # Inherited from the parent Endpoint when the job is heterogeneous.
     het_group: int | None = None
 
@@ -589,7 +575,6 @@ def endpoints_to_processes(
 
             # Only leaders need http_port (for router to connect to)
             http_port = port_allocator.next_http_port(node) if is_leader else 0
-            grpc_port = port_allocator.next_grpc_port(node)
 
             # Allocate kv_events port for each node in the endpoint (globally unique)
             # Each node publishes KV events independently
@@ -610,7 +595,6 @@ def endpoints_to_processes(
                     bootstrap_port=endpoint_bootstrap_port,
                     kv_events_port=node_kv_events_port,
                     nixl_port=node_nixl_port,
-                    grpc_port=grpc_port,
                     het_group=endpoint.het_group,
                 )
             )

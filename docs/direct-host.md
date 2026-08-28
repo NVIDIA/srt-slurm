@@ -26,7 +26,7 @@ flowchart LR
 - An absolute model path readable by Docker. A Hugging Face snapshot is supported; its repository root is mounted so its `blobs/` symlinks resolve.
 - An absolute checkout of the SGLang source to install inside the serving image.
 - A serving image configured as `environment.SRTCTL_LOCAL_CONTAINER_IMAGE`.
-- `dynamo.hash` or `dynamo.top_of_tree: true`. The first run builds a hash-keyed Dynamo wheel outside the container; later runs reuse it. With `dynamo.engine_mode: sidecar`, it also builds and caches `dynamo-sglang-sidecar` beside the wheel cache, then runs it alongside stock SGLang.
+- `dynamo.hash` or `dynamo.top_of_tree: true`. The first run builds a hash-keyed Dynamo wheel outside the container; later runs reuse it.
 - `make setup ARCH=$(uname -m)` for the bundled Tachometer scraper and infrastructure binaries. For ruter, install its optional dependency with `uv sync --extra ruter`.
 
 The direct runner creates a cached SGLang environment under `<output-base>/.srtctl-runtime/` and Dynamo wheels under `<output-base>/.srtctl-cache/dynamo-wheels/`. Delete those only when you deliberately want a cold rebuild.
@@ -49,7 +49,7 @@ bash -n run.sh
 bash run.sh
 ```
 
-`--bash` renders a small host launcher. When it runs, the launcher starts a labeled Docker container, installs the selected SGLang source before Dynamo, starts the infrastructure and workers, waits for a smoke request, then runs Tachometer, AIPerf, and ruter. In `dynamo.engine_mode: sidecar`, every worker supervises stock SGLang and the cached Rust connector together. `Ctrl-C` and `SIGTERM` stop only processes and containers owned by this run.
+`--bash` renders a small host launcher. When it runs, the launcher starts a labeled Docker container, installs the selected SGLang source before plain Dynamo, starts the infrastructure and workers, waits for a smoke request, then runs Tachometer, AIPerf, and ruter. `Ctrl-C` and `SIGTERM` stop only processes and containers owned by this run.
 
 The recipe keeps both `model.container` and `SRTCTL_LOCAL_CONTAINER_IMAGE` so it is also valid for the SLURM lifecycle. The direct lifecycle uses `SRTCTL_LOCAL_CONTAINER_IMAGE`; SLURM uses the normal container setting.
 
