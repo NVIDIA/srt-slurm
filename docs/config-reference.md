@@ -117,6 +117,7 @@ The `srtslurm.yaml` file can contain the following fields:
 | `output_dir`                    | string | Custom output directory (overrides srtctl_root/outputs) |
 | `model_paths`                   | dict   | Model path aliases                                    |
 | `containers`                    | dict   | Container image aliases                               |
+| `container_cache_path`          | string | Shared cache for digest-pinned model containers       |
 | `default_mounts`                | dict   | Cluster-wide container mounts                         |
 | `default_bash_preamble`         | string | Shell snippet prepended to every container srun       |
 | `default_host_setup`            | object | Commands run on every node's bare host, outside the container |
@@ -129,6 +130,13 @@ The `srtslurm.yaml` file can contain the following fields:
 **default_host_setup**: A [`host_setup`](#host_setup) block applied to every job on the cluster — for node state that has to be set outside the container, such as locking GPU clocks. A recipe that sets its own `host_setup:` block replaces it entirely; `host_setup: {commands: []}` opts a single run out.
 
 **nginx_raise_ulimit**: When set to `true` or `false`, this value is applied to jobs that omit `frontend.nginx_raise_ulimit` in the recipe. Use `true` on clusters where raising the nginx container’s open-file limit is allowed; leave unset if each job should rely on the frontend default (`false`). A recipe that sets `frontend.nginx_raise_ulimit` always wins.
+
+**container_cache_path**: When set, a digest-pinned registry image in
+`model.container` is imported once with Enroot before the job starts any Slurm
+steps. Infrastructure, workers, and frontends then reuse the resulting SquashFS
+file. The directory must be visible to every allocated node and writable only
+by the user or a trusted administrator. Local SquashFS paths and mutable tags
+continue to use native Pyxis behavior.
 
 ### Running without `srtslurm.yaml`
 

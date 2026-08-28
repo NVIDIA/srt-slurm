@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from srtctl.backends import SGLangProtocol, SGLangServerConfig
-from srtctl.core.schema import SrtConfig
+from srtctl.core.schema import ClusterConfig, SrtConfig
 from srtctl.ports import (
     KV_EVENTS_PORT_BASE,
     SGLANG_BOOTSTRAP_PORT_BASE,
@@ -24,6 +24,10 @@ from srtctl.ports import (
 
 class TestConfigLoading:
     """Tests for config file loading."""
+
+    def test_container_cache_path(self):
+        config = ClusterConfig.Schema().load({"container_cache_path": "$HOME/.cache/containers"})
+        assert config.container_cache_path == "$HOME/.cache/containers"
 
     def test_config_loading_from_yaml(self):
         """Test that config files in recipes/ can be loaded."""
