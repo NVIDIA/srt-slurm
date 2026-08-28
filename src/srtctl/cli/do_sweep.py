@@ -116,7 +116,12 @@ class SweepOrchestrator(
         if "@sha256:" not in image:
             logger.warning("Container cache skipped because model.container is not digest-pinned")
             return
-        image_path = prepare_container_image(image, cache_root)
+        image_path = prepare_container_image(
+            image,
+            cache_root,
+            job_id=self.runtime.job_id,
+            node=self.runtime.nodes.head,
+        )
         self.runtime = replace(self.runtime, container_image=image_path)
 
     @functools.cached_property

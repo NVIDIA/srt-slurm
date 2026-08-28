@@ -28,7 +28,8 @@ def _importer(calls: list[list[str]], *, returncode: int = 0):
     def run(command: list[str], **_kwargs) -> subprocess.CompletedProcess:
         calls.append(command)
         if returncode == 0:
-            _write_squashfs(Path(command[command.index("--output") + 1]))
+            save_option = next(arg for arg in command if arg.startswith("--container-save="))
+            _write_squashfs(Path(save_option.split("=", 1)[1]))
         return subprocess.CompletedProcess(command, returncode)
 
     return run
@@ -40,16 +41,19 @@ def test_cold_import_is_published_and_reused(tmp_path: Path) -> None:
     with (
         patch("srtctl.core.container_image.platform.system", return_value="Linux"),
         patch("srtctl.core.container_image.platform.machine", return_value="aarch64"),
-        patch("srtctl.core.container_image.shutil.which", return_value="/usr/bin/enroot"),
+        patch("srtctl.core.container_image.shutil.which", return_value="/usr/bin/srun"),
         patch("srtctl.core.container_image.subprocess.run", side_effect=_importer(calls)),
     ):
-        cold = prepare_container_image(_IMAGE, str(cache_root))
-        warm = prepare_container_image(_IMAGE, str(cache_root))
+        cold = prepare_container_image(_IMAGE, str(cache_root), job_id="123", node="node0")
+        warm = prepare_container_image(_IMAGE, str(cache_root), job_id="123", node="node0")
 
     assert cold == warm == cache_root / "v1" / "linux-arm64" / f"{_DIGEST}.sqsh"
     assert cold.read_bytes().startswith(b"hsqs")
     assert len(calls) == 1
-    assert calls[0][-1] == f"docker://{_IMAGE}"
+    assert calls[0][0] == "/usr/bin/srun"
+    assert calls[0][1:3] == ["--jobid", "123"]
+    assert calls[0][calls[0].index("--nodelist") + 1] == "node0"
+    assert calls[0][calls[0].index("--container-image") + 1] == _IMAGE
 
 
 def test_concurrent_callers_import_once(tmp_path: Path) -> None:
@@ -58,18 +62,23 @@ def test_concurrent_callers_import_once(tmp_path: Path) -> None:
     def run(command: list[str], **_kwargs) -> subprocess.CompletedProcess:
         calls.append(command)
         time.sleep(0.05)
-        _write_squashfs(Path(command[command.index("--output") + 1]))
+        save_option = next(arg for arg in command if arg.startswith("--container-save="))
+        _write_squashfs(Path(save_option.split("=", 1)[1]))
         return subprocess.CompletedProcess(command, 0)
 
     results: list[Path] = []
     with (
         patch("srtctl.core.container_image.platform.system", return_value="Linux"),
         patch("srtctl.core.container_image.platform.machine", return_value="x86_64"),
-        patch("srtctl.core.container_image.shutil.which", return_value="/usr/bin/enroot"),
+        patch("srtctl.core.container_image.shutil.which", return_value="/usr/bin/srun"),
         patch("srtctl.core.container_image.subprocess.run", side_effect=run),
     ):
         threads = [
-            threading.Thread(target=lambda: results.append(prepare_container_image(_IMAGE, str(tmp_path))))
+            threading.Thread(
+                target=lambda: results.append(
+                    prepare_container_image(_IMAGE, str(tmp_path), job_id="123", node="node0")
+                )
+            )
             for _ in range(2)
         ]
         for thread in threads:
@@ -86,35 +95,36 @@ def test_failed_import_leaves_no_cache_entry(tmp_path: Path) -> None:
     with (
         patch("srtctl.core.container_image.platform.system", return_value="Linux"),
         patch("srtctl.core.container_image.platform.machine", return_value="aarch64"),
-        patch("srtctl.core.container_image.shutil.which", return_value="/usr/bin/enroot"),
+        patch("srtctl.core.container_image.shutil.which", return_value="/usr/bin/srun"),
         patch("srtctl.core.container_image.subprocess.run", side_effect=_importer([], returncode=17)),
         pytest.raises(RuntimeError, match="exit code 17"),
     ):
-        prepare_container_image(_IMAGE, str(tmp_path))
+        prepare_container_image(_IMAGE, str(tmp_path), job_id="123", node="node0")
 
     assert not list(tmp_path.rglob("*.sqsh"))
     assert not [path for path in tmp_path.rglob("*") if path.is_dir() and path.name.startswith(f".{_DIGEST}")]
 
 
-def test_missing_enroot_is_actionable(tmp_path: Path) -> None:
+def test_missing_srun_is_actionable(tmp_path: Path) -> None:
     with (
         patch("srtctl.core.container_image.shutil.which", return_value=None),
-        pytest.raises(RuntimeError, match="requires enroot"),
+        pytest.raises(RuntimeError, match="requires srun"),
     ):
-        prepare_container_image(_IMAGE, str(tmp_path))
+        prepare_container_image(_IMAGE, str(tmp_path), job_id="123", node="node0")
 
 
 def test_invalid_squashfs_output_is_not_published(tmp_path: Path) -> None:
     def run(command: list[str], **_kwargs) -> subprocess.CompletedProcess:
-        Path(command[command.index("--output") + 1]).write_bytes(b"not-a-squashfs")
+        save_option = next(arg for arg in command if arg.startswith("--container-save="))
+        Path(save_option.split("=", 1)[1]).write_bytes(b"not-a-squashfs")
         return subprocess.CompletedProcess(command, 0)
 
     with (
-        patch("srtctl.core.container_image.shutil.which", return_value="/usr/bin/enroot"),
+        patch("srtctl.core.container_image.shutil.which", return_value="/usr/bin/srun"),
         patch("srtctl.core.container_image.subprocess.run", side_effect=run),
         pytest.raises(RuntimeError, match="not a SquashFS"),
     ):
-        prepare_container_image(_IMAGE, str(tmp_path))
+        prepare_container_image(_IMAGE, str(tmp_path), job_id="123", node="node0")
 
     assert not list(tmp_path.rglob("*.sqsh"))
 
@@ -122,7 +132,7 @@ def test_invalid_squashfs_output_is_not_published(tmp_path: Path) -> None:
 @pytest.mark.parametrize("image", ["example/server:latest", "example/server@sha256:short"])
 def test_mutable_or_invalid_digest_is_rejected(image: str, tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="@sha256"):
-        prepare_container_image(image, str(tmp_path))
+        prepare_container_image(image, str(tmp_path), job_id="123", node="node0")
 
 
 def test_invalid_or_symlinked_cache_entry_is_rejected(tmp_path: Path) -> None:
@@ -137,7 +147,7 @@ def test_invalid_or_symlinked_cache_entry_is_rejected(tmp_path: Path) -> None:
         patch("srtctl.core.container_image.platform.machine", return_value="aarch64"),
         pytest.raises(RuntimeError, match="regular SquashFS"),
     ):
-        prepare_container_image(_IMAGE, str(tmp_path))
+        prepare_container_image(_IMAGE, str(tmp_path), job_id="123", node="node0")
 
 
 def test_orchestrator_replaces_runtime_image() -> None:
@@ -159,10 +169,11 @@ def test_orchestrator_replaces_runtime_image() -> None:
 
     with (
         patch("srtctl.cli.do_sweep.get_srtslurm_setting", return_value="/shared/cache"),
-        patch("srtctl.cli.do_sweep.prepare_container_image", return_value=Path("/shared/cache/image.sqsh")),
+        patch("srtctl.cli.do_sweep.prepare_container_image", return_value=Path("/shared/cache/image.sqsh")) as prepare,
     ):
         orchestrator._prepare_container_image()
 
+    prepare.assert_called_once_with(_IMAGE, "/shared/cache", job_id="123", node="node0")
     assert runtime.container_image == Path(_IMAGE)
     assert orchestrator.runtime.container_image == Path("/shared/cache/image.sqsh")
 

@@ -19,8 +19,8 @@ _DIGEST_RE = re.compile(r"@sha256:([0-9a-fA-F]{64})$")
 _SQUASHFS_MAGICS = {b"hsqs", b"sqsh"}
 
 
-def prepare_container_image(image: str, cache_root: str) -> Path:
-    """Import a digest-pinned registry image once and return its shared path."""
+def prepare_container_image(image: str, cache_root: str, *, job_id: str, node: str) -> Path:
+    """Materialize a digest-pinned registry image once and return its shared path."""
     match = _DIGEST_RE.search(image)
     if match is None:
         raise ValueError("container caching requires model.container to end with @sha256:<digest>")
@@ -40,17 +40,36 @@ def prepare_container_image(image: str, cache_root: str) -> Path:
             logger.info("Container cache hit: %s", image_path)
             return image_path
 
-        enroot = shutil.which("enroot")
-        if enroot is None:
-            raise RuntimeError("container caching requires enroot on the orchestration node")
+        srun = shutil.which("srun")
+        if srun is None:
+            raise RuntimeError("container caching requires srun on the orchestration node")
 
         logger.info("Container cache miss: importing sha256:%s", digest)
         with tempfile.TemporaryDirectory(prefix=f".{digest}.", dir=cache_dir) as temporary_dir:
             temporary_path = Path(temporary_dir) / "image.sqsh"
-            source = image if "://" in image else f"docker://{image}"
-            result = subprocess.run([enroot, "import", "--output", str(temporary_path), source], check=False)
+            result = subprocess.run(
+                [
+                    srun,
+                    "--jobid",
+                    job_id,
+                    "--overlap",
+                    "--nodes",
+                    "1",
+                    "--ntasks",
+                    "1",
+                    "--nodelist",
+                    node,
+                    "--container-image",
+                    image,
+                    "--no-container-entrypoint",
+                    "--no-container-mount-home",
+                    f"--container-save={temporary_path}",
+                    "/bin/true",
+                ],
+                check=False,
+            )
             if result.returncode != 0:
-                raise RuntimeError(f"enroot import failed with exit code {result.returncode}")
+                raise RuntimeError(f"Pyxis container import failed with exit code {result.returncode}")
             _validate_squashfs(temporary_path)
             temporary_path.replace(image_path)
 

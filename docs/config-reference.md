@@ -128,11 +128,11 @@ The `srtslurm.yaml` file can contain the following fields:
 **nginx_raise_ulimit**: When set to `true` or `false`, this value is applied to jobs that omit `frontend.nginx_raise_ulimit` in the recipe. Use `true` on clusters where raising the nginx container’s open-file limit is allowed; leave unset if each job should rely on the frontend default (`false`). A recipe that sets `frontend.nginx_raise_ulimit` always wins.
 
 **container_cache_path**: When set, a digest-pinned registry image in
-`model.container` is imported once with Enroot before the job starts any Slurm
-steps. Infrastructure, workers, and frontends then reuse the resulting SquashFS
-file. The directory must be visible to every allocated node and writable only
-by the user or a trusted administrator. Local SquashFS paths and mutable tags
-continue to use native Pyxis behavior.
+`model.container` is materialized once through Pyxis before the job starts any
+service steps. Infrastructure, workers, and frontends then reuse the resulting
+SquashFS file. The directory must be visible to every allocated node and
+writable only by the user or a trusted administrator. Local SquashFS paths and
+mutable tags continue to use native Pyxis behavior.
 
 ### Running without `srtslurm.yaml`
 
