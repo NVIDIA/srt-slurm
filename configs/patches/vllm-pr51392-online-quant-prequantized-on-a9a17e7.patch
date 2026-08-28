@@ -1,0 +1,855 @@
+diff --git a/vllm/config/quantization.py b/vllm/config/quantization.py
+index 93ea6736b7..ca16aad92b 100644
+--- a/vllm/config/quantization.py
++++ b/vllm/config/quantization.py
+@@ -154,6 +154,10 @@ ONLINE_QUANT_SHORTHAND_NAMES: tuple[str, ...] = (
+     "online",
+ )
+ 
++# These names are also checkpoint quantization methods. Their online configs
++# are resolved only when checkpoint quantization metadata is absent.
++_DEFERRED_ONLINE_SHORTHANDS = frozenset(("mxfp4", "mxfp8"))
++
+ 
+ def resolve_quantization_config(
+     quantization: str | None,
+@@ -168,17 +172,25 @@ def resolve_quantization_config(
+     take precedence over the shorthand.
+     """
+     if quantization is not None and quantization not in ONLINE_QUANT_SHORTHAND_NAMES:
+-        if quantization_config is not None:
+-            raise ValueError(
+-                f"quantization_config is only supported when quantization is "
+-                f"one of {sorted(ONLINE_QUANT_SHORTHAND_NAMES)}, "
+-                f"got quantization={quantization!r}"
+-            )
+-        return None
++        # Pre-quantized checkpoints can be composed with online quantization
++        # for layers that the base quant_method leaves unquantized. The
++        # checkpoint quant_method remains the primary quantization method; composition
++        # is performed after its config has been loaded.
++        if quantization_config is None:
++            return None
++
++        # `quantization_config` may hold both:
++        # 1. Base quantization method activation key override,
++        # 2. online quantization config to apply on top of the base quant_method.
++        if isinstance(quantization_config, dict):
++            return QuantizationConfigArgs(**quantization_config)
++        return quantization_config
+ 
+     base = _ONLINE_SHORTHANDS.get(quantization) if quantization else None
+ 
+     if quantization_config is None:
++        if quantization in _DEFERRED_ONLINE_SHORTHANDS:
++            return None
+         return base
+ 
+     if isinstance(quantization_config, dict):
+diff --git a/vllm/model_executor/layers/attention/attention.py b/vllm/model_executor/layers/attention/attention.py
+index ff0c7a33af..dfeeb3df06 100644
+--- a/vllm/model_executor/layers/attention/attention.py
++++ b/vllm/model_executor/layers/attention/attention.py
+@@ -183,7 +183,9 @@ def _init_kv_cache_quant(
+     layer._o_scale_float = None
+ 
+     quant_method = (
+-        quant_config.get_quant_method(layer, prefix=prefix) if quant_config else None
++        quant_config.get_effective_quant_method(layer, prefix=prefix)
++        if quant_config
++        else None
+     )
+ 
+     # See [Note: Register q/k/v/prob scales in state dict]
+@@ -584,7 +586,7 @@ class Attention(nn.Module, AttentionLayerBase):
+         # as the default value. See [Note: Register q/k/v/prob scales in state dict]
+         # for more details.
+         quant_method = (
+-            self.quant_config.get_quant_method(self, prefix=self.layer_name)
++            self.quant_config.get_effective_quant_method(self, prefix=self.layer_name)
+             if self.quant_config
+             else None
+         )
+diff --git a/vllm/model_executor/layers/attention/mla_attention.py b/vllm/model_executor/layers/attention/mla_attention.py
+index 6e2902a3c1..2f1a200751 100644
+--- a/vllm/model_executor/layers/attention/mla_attention.py
++++ b/vllm/model_executor/layers/attention/mla_attention.py
+@@ -1187,7 +1187,7 @@ class MLAAttention(nn.Module, AttentionLayerBase):
+         # as the default value. See [Note: Register q/k/v/prob scales in state dict]
+         # for more details.
+         quant_method = (
+-            self.quant_config.get_quant_method(self, prefix=self.layer_name)
++            self.quant_config.get_effective_quant_method(self, prefix=self.layer_name)
+             if self.quant_config
+             else None
+         )
+diff --git a/vllm/model_executor/layers/fused_moe/routed_experts.py b/vllm/model_executor/layers/fused_moe/routed_experts.py
+index 574d165ef7..a9fbfb9a23 100644
+--- a/vllm/model_executor/layers/fused_moe/routed_experts.py
++++ b/vllm/model_executor/layers/fused_moe/routed_experts.py
+@@ -199,7 +199,7 @@ class RoutedExperts(PluggableLayer):
+         """
+         quant_method = None
+         if quant_config is not None:
+-            quant_method = quant_config.get_quant_method(self, prefix)
++            quant_method = quant_config.get_effective_quant_method(self, prefix)
+         if quant_method is None:
+             quant_method = UnquantizedFusedMoEMethod(moe_config)
+         assert isinstance(quant_method, FusedMoEMethodBase)
+diff --git a/vllm/model_executor/layers/linear.py b/vllm/model_executor/layers/linear.py
+index e723d6fee4..0cd4c5a788 100644
+--- a/vllm/model_executor/layers/linear.py
++++ b/vllm/model_executor/layers/linear.py
+@@ -263,7 +263,9 @@ class LinearBase(PluggableLayer):
+         self.quant_method: QuantizeMethodBase
+         if quant_config is None:
+             self.quant_method = UnquantizedLinearMethod()
+-        elif quant_method := quant_config.get_quant_method(self, prefix=prefix):
++        elif quant_method := quant_config.get_effective_quant_method(
++            self, prefix=prefix
++        ):
+             self.quant_method = quant_method
+         else:
+             raise ValueError("All linear layers should support quant method.")
+diff --git a/vllm/model_executor/layers/quantization/base_config.py b/vllm/model_executor/layers/quantization/base_config.py
+index c76259616c..f1ca70c502 100644
+--- a/vllm/model_executor/layers/quantization/base_config.py
++++ b/vllm/model_executor/layers/quantization/base_config.py
+@@ -12,6 +12,9 @@ from transformers import PretrainedConfig
+ 
+ if TYPE_CHECKING:
+     from vllm.model_executor.layers.quantization import QuantizationMethods
++    from vllm.model_executor.layers.quantization.online.base import (
++        OnlineQuantizationConfig,
++    )
+     from vllm.model_executor.models.utils import WeightsMapper
+ else:
+     QuantizationMethods = str
+@@ -103,6 +106,7 @@ class QuantizationConfig(ABC):
+         super().__init__()
+         # mapping is updated by models as they initialize
+         self.packed_modules_mapping: dict[str, list[str]] = dict()
++        self.online_quantization_config: OnlineQuantizationConfig | None = None
+ 
+     @abstractmethod
+     def get_name(self) -> QuantizationMethods:
+@@ -180,7 +184,8 @@ class QuantizationConfig(ABC):
+     def get_quant_method(
+         self, layer: torch.nn.Module, prefix: str
+     ) -> QuantizeMethodBase | None:
+-        """Get the quantize method to use for the quantized layer.
++        """Get the quantize method to use for the quantized layer, from the
++        pre-quantized checkpoint quant_method.
+ 
+         Args:
+             layer: The layer for the quant method.
+@@ -191,6 +196,48 @@ class QuantizationConfig(ABC):
+         """
+         raise NotImplementedError
+ 
++    def get_effective_quant_method(
++        self, layer: torch.nn.Module, prefix: str
++    ) -> QuantizeMethodBase | None:
++        """Return the checkpoint method with configured online quantization."""
++        from vllm.model_executor.layers.fused_moe import RoutedExperts
++        from vllm.model_executor.layers.fused_moe.unquantized_fused_moe_method import (
++            UnquantizedFusedMoEMethod,
++        )
++        from vllm.model_executor.layers.linear import (
++            LinearBase,
++            UnquantizedLinearMethod,
++        )
++
++        base_quant_method = self.get_quant_method(layer, prefix)
++        if self.online_quantization_config is None:
++            return base_quant_method
++        # Online quantization currently supports only LinearBase and RoutedExperts.
++        # Embeddings and ParallelLMHead retain their checkpoint quantization method.
++        if not isinstance(layer, (LinearBase, RoutedExperts)):
++            return base_quant_method
++
++        self.online_quantization_config.packed_modules_mapping = (
++            self.packed_modules_mapping
++        )
++        checkpoint_is_quantized = base_quant_method is not None and not isinstance(
++            base_quant_method, (UnquantizedLinearMethod, UnquantizedFusedMoEMethod)
++        )
++        online_target = self.online_quantization_config.get_quantization_target(
++            layer, prefix
++        )
++        if checkpoint_is_quantized:
++            if online_target is not None:
++                raise ValueError(
++                    f"Cannot apply requested online quantization {online_target[1]} to "
++                    f"pre-quantized layer {prefix}: {base_quant_method} was already "
++                    "selected by the checkpoint quantization config."
++                )
++            return base_quant_method
++        if online_target is None:
++            return base_quant_method
++        return self.online_quantization_config.get_quant_method(layer, prefix)
++
+     @staticmethod
+     def get_cache_scale_mapper() -> "WeightsMapper":
+         """Mapping from checkpoint KV-cache scale names to vLLM scale names.
+diff --git a/vllm/model_executor/layers/quantization/experts_int8.py b/vllm/model_executor/layers/quantization/experts_int8.py
+index 3db2916055..cbde4d9603 100644
+--- a/vllm/model_executor/layers/quantization/experts_int8.py
++++ b/vllm/model_executor/layers/quantization/experts_int8.py
+@@ -56,5 +56,5 @@ class ExpertsInt8Config(QuantizationConfig):
+         if isinstance(layer, LinearBase):
+             return UnquantizedLinearMethod()
+         elif isinstance(layer, RoutedExperts):
+-            return Int8OnlineMoEMethod(layer=layer)
++            return Int8OnlineMoEMethod(moe=layer.moe_config)
+         return None
+diff --git a/vllm/model_executor/layers/quantization/fp8.py b/vllm/model_executor/layers/quantization/fp8.py
+index 9c69ff93d3..12f8b46cd5 100644
+--- a/vllm/model_executor/layers/quantization/fp8.py
++++ b/vllm/model_executor/layers/quantization/fp8.py
+@@ -216,7 +216,7 @@ class Fp8Config(QuantizationConfig):
+                     Fp8PerTensorOnlineMoEMethod,
+                 )
+ 
+-                return Fp8PerTensorOnlineMoEMethod(layer=layer)
++                return Fp8PerTensorOnlineMoEMethod(moe=layer.moe_config)
+         elif isinstance(layer, Attention):
+             return Fp8KVCacheMethod(self)
+         return None
+diff --git a/vllm/model_executor/layers/quantization/online/base.py b/vllm/model_executor/layers/quantization/online/base.py
+index c9e7a43e3e..18025e4572 100644
+--- a/vllm/model_executor/layers/quantization/online/base.py
++++ b/vllm/model_executor/layers/quantization/online/base.py
+@@ -1,13 +1,14 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ 
+-from typing import Any
++from typing import Any, cast
+ 
+ import torch
+ 
+ from vllm.config.quantization import QuantizationConfigArgs, QuantSpec
+ from vllm.logger import init_logger
+ from vllm.model_executor.layers.fused_moe import (
++    FusedMoEMethodBase,
+     RoutedExperts,
+ )
+ from vllm.model_executor.layers.fused_moe.unquantized_fused_moe_method import (
+@@ -32,6 +33,7 @@ from vllm.model_executor.layers.quantization.online.fp8 import (
+     Fp8PerTensorOnlineMoEMethod,
+     Fp8PtpcOnlineLinearMethod,
+     Fp8PtpcOnlineMoEMethod,
++    OnlineLinearBase,
+ )
+ from vllm.model_executor.layers.quantization.online.int8 import (
+     Int8OnlineMoEMethod,
+@@ -47,6 +49,9 @@ from vllm.model_executor.layers.quantization.online.mxfp8 import (
+ from vllm.model_executor.layers.quantization.online.nvfp4 import (
+     Nvfp4OnlineMoEMethod,
+ )
++from vllm.model_executor.layers.quantization.utils.config_utils import (
++    get_layer_name_after_index,
++)
+ from vllm.model_executor.layers.quantization.utils.quant_utils import (
+     QuantKey,
+     kFp8Static128BlockSym,
+@@ -92,14 +97,38 @@ class OnlineQuantizationConfig(QuantizationConfig):
+         args: QuantizationConfigArgs,
+     ) -> None:
+         super().__init__()
+-        if args.linear is None and args.moe is None:
+-            raise ValueError(
+-                "OnlineQuantizationConfig requires at least one of "
+-                "quantization_config.linear or quantization_config.moe "
+-                "to be set."
+-            )
+         self.args = args
+         self.ignored_layers: list[str] = args.ignore
++        self.quantized_layers: dict[str, tuple[str, str, str | None]] = {}
++
++    @property
++    def quantized_layer_summaries(self) -> list[str]:
++        counts: dict[tuple[str, str, str | None, str], int] = {}
++        for layer_name, (
++            source,
++            quant_key_str,
++            target_pattern,
++        ) in self.quantized_layers.items():
++            key = (
++                get_layer_name_after_index(layer_name),
++                source,
++                target_pattern,
++                quant_key_str,
++            )
++            counts[key] = counts.get(key, 0) + 1
++
++        summaries = []
++        # Build summary entries as
++        # `self_attn.o_proj: 24 (from targets: re:.*self_attn\.o_proj, mxfp4`
++        for (layer_type, source, target_pattern, quant_key_str), count in sorted(
++            counts.items()
++        ):
++            pattern_prefix = f"{target_pattern}, " if target_pattern else ""
++            summaries.append(
++                f"{layer_type}: {count} "
++                f"(from {source}: {pattern_prefix}{quant_key_str})"
++            )
++        return summaries
+ 
+     @classmethod
+     def get_name(cls) -> QuantizationMethods:
+@@ -127,12 +156,12 @@ class OnlineQuantizationConfig(QuantizationConfig):
+             "quantization='fp8_per_tensor'/'fp8_per_block' instead."
+         )
+ 
+-    def _dispatch(
++    def _get_method_cls(
+         self,
+         spec: QuantSpec | None,
+         table: dict[QuantKey, type],
+         layer: torch.nn.Module,
+-    ) -> "QuantizeMethodBase | None":
++    ) -> type | None:
+         if spec is None or spec.weight is None:
+             return None
+         cls = table.get(spec.weight)
+@@ -150,33 +179,54 @@ class OnlineQuantizationConfig(QuantizationConfig):
+                 f"activation override (activation={spec.activation}) is not "
+                 f"yet supported for online {cls.__name__}"
+             )
+-        if isinstance(layer, RoutedExperts):
+-            return cls(layer=layer)
+-        return cls()
++        return cls
++
++    def get_quantization_target(
++        self, layer: torch.nn.Module, prefix: str
++    ) -> tuple[str, QuantSpec, type] | None:
++        """Return the QuantizeMethodBase subclass target
++        without instantiating it."""
++        if isinstance(layer, LinearBase):
++            source = "linear"
++            spec = self.args.linear
++            table = _ONLINE_LINEAR_METHODS
++        elif isinstance(layer, RoutedExperts):
++            source = "moe"
++            spec = self.args.moe
++            table = _ONLINE_MOE_METHODS
++        else:
++            return None
++
++        if should_ignore_layer(
++            prefix,
++            ignore=self.ignored_layers,
++            fused_mapping=self.packed_modules_mapping,
++        ):
++            return None
++
++        cls = self._get_method_cls(spec, table, layer)
++        if cls is None:
++            return None
++        assert spec is not None
++        return source, spec, cls
+ 
+     def get_quant_method(
+         self, layer: torch.nn.Module, prefix: str
+     ) -> "QuantizeMethodBase | None":
++        target = self.get_quantization_target(layer, prefix)
++        if target is not None:
++            source, spec, _ = target
++            self.quantized_layers[prefix] = (source, str(spec), None)
++            cls = target[2]
++            if isinstance(layer, RoutedExperts):
++                assert issubclass(cls, FusedMoEMethodBase)
++                return cls(moe=layer.moe_config)
++            assert issubclass(cls, OnlineLinearBase)
++            linear_method_cls = cast(type[OnlineLinearBase], cls)
++            return linear_method_cls()
++
+         if isinstance(layer, LinearBase):
+-            if should_ignore_layer(
+-                prefix,
+-                ignore=self.ignored_layers,
+-                fused_mapping=self.packed_modules_mapping,
+-            ):
+-                return UnquantizedLinearMethod()
+-            method = self._dispatch(self.args.linear, _ONLINE_LINEAR_METHODS, layer)
+-            return method if method is not None else UnquantizedLinearMethod()
+-        elif isinstance(layer, RoutedExperts):
+-            if should_ignore_layer(
+-                prefix,
+-                ignore=self.ignored_layers,
+-                fused_mapping=self.packed_modules_mapping,
+-            ):
+-                return UnquantizedFusedMoEMethod(layer.moe_config)
+-            method = self._dispatch(self.args.moe, _ONLINE_MOE_METHODS, layer)
+-            return (
+-                method
+-                if method is not None
+-                else UnquantizedFusedMoEMethod(layer.moe_config)
+-            )
++            return UnquantizedLinearMethod()
++        if isinstance(layer, RoutedExperts):
++            return UnquantizedFusedMoEMethod(layer.moe_config)
+         return None
+diff --git a/vllm/model_executor/layers/quantization/online/fp8.py b/vllm/model_executor/layers/quantization/online/fp8.py
+index a8720b2d23..0234702c8b 100644
+--- a/vllm/model_executor/layers/quantization/online/fp8.py
++++ b/vllm/model_executor/layers/quantization/online/fp8.py
+@@ -23,6 +23,7 @@ from vllm.model_executor.kernels.linear.scaled_mm import (
+     MarlinFP8ScaledMMLinearKernel,
+ )
+ from vllm.model_executor.layers.fused_moe import RoutedExperts
++from vllm.model_executor.layers.fused_moe.config import FusedMoEConfig
+ from vllm.model_executor.layers.fused_moe.oracle.fp8 import (
+     select_fp8_moe_backend,
+ )
+@@ -111,7 +112,7 @@ def _is_tp_sharded(layer: Module, *, reduces_output_dim: bool = True) -> bool:
+     return is_row_parallel or (reduces_output_dim and is_column_parallel)
+ 
+ 
+-class _Fp8OnlineLinearBase(LinearMethodBase):
++class OnlineLinearBase(LinearMethodBase):
+     """Shared base for online FP8 linear methods. Loads fp16/bf16 checkpoint
+     weights onto meta device and materializes them just-in-time."""
+ 
+@@ -155,7 +156,7 @@ class _Fp8OnlineLinearBase(LinearMethodBase):
+         initialize_online_processing(layer)
+ 
+ 
+-class Fp8PerTensorOnlineLinearMethod(_Fp8OnlineLinearBase):
++class Fp8PerTensorOnlineLinearMethod(OnlineLinearBase):
+     """Online tensorwise FP8 linear quantization.
+     Loads fp16/bf16 weights and quantizes them per-tensor during loading."""
+ 
+@@ -256,7 +257,7 @@ class Fp8PerTensorOnlineLinearMethod(_Fp8OnlineLinearBase):
+         return self.fp8_linear.apply_weights(layer, x, bias)
+ 
+ 
+-class Fp8PerBlockOnlineLinearMethod(_Fp8OnlineLinearBase):
++class Fp8PerBlockOnlineLinearMethod(OnlineLinearBase):
+     """Online blockwise FP8 linear quantization.
+     Loads fp16/bf16 weights and quantizes them per-block during loading."""
+ 
+@@ -336,7 +337,7 @@ class Fp8PerBlockOnlineLinearMethod(_Fp8OnlineLinearBase):
+         )
+ 
+ 
+-class Fp8PtpcOnlineLinearMethod(_Fp8OnlineLinearBase):
++class Fp8PtpcOnlineLinearMethod(OnlineLinearBase):
+     """Online PTPC FP8 linear quantization.
+ 
+     Per-output-channel weight scale + dynamic per-token activation scale. The
+@@ -443,12 +444,12 @@ class _Fp8OnlineMoEBase(OnlineMoEMethodBase):
+         self,
+         *,
+         weight_block_size: list[int] | None,
+-        layer: torch.nn.Module,
++        moe: FusedMoEConfig,
+         weight_key: "QuantKey | None" = None,
+         activation_key: "QuantKey | None" = None,
+         allow_vllm_cutlass: bool = False,
+     ):
+-        super().__init__(layer.moe_config)
++        super().__init__(moe)
+         self.weight_block_size = weight_block_size
+         self.block_quant: bool = self.weight_block_size is not None
+         self.weight_scale_name = (
+@@ -555,11 +556,11 @@ class Fp8PerTensorOnlineMoEMethod(_Fp8OnlineMoEBase):
+     def __init__(
+         self,
+         *,
+-        layer: torch.nn.Module,
++        moe: FusedMoEConfig,
+     ):
+         super().__init__(
+             weight_block_size=None,
+-            layer=layer,
++            moe=moe,
+         )
+ 
+     def process_weights_after_loading(self, layer: Module) -> None:
+@@ -612,11 +613,11 @@ class Fp8PerBlockOnlineMoEMethod(_Fp8OnlineMoEBase):
+     def __init__(
+         self,
+         *,
+-        layer: torch.nn.Module,
++        moe: FusedMoEConfig,
+     ):
+         super().__init__(
+             weight_block_size=[128, 128],
+-            layer=layer,
++            moe=moe,
+         )
+ 
+     def maybe_roundup_sizes(
+@@ -716,13 +717,13 @@ class Fp8PtpcOnlineMoEMethod(_Fp8OnlineMoEBase):
+     def __init__(
+         self,
+         *,
+-        layer: torch.nn.Module,
++        moe: FusedMoEConfig,
+     ):
+         from vllm.model_executor.layers.fused_moe.oracle.fp8 import Fp8MoeBackend
+ 
+         super().__init__(
+             weight_block_size=None,
+-            layer=layer,
++            moe=moe,
+             weight_key=kFp8StaticChannelSym,
+             activation_key=kFp8DynamicTokenSym,
+             allow_vllm_cutlass=True,
+diff --git a/vllm/model_executor/layers/quantization/online/int8.py b/vllm/model_executor/layers/quantization/online/int8.py
+index 952229eced..268345ca09 100644
+--- a/vllm/model_executor/layers/quantization/online/int8.py
++++ b/vllm/model_executor/layers/quantization/online/int8.py
+@@ -12,6 +12,7 @@ if TYPE_CHECKING:
+     )
+ 
+ from vllm.model_executor.layers.fused_moe import RoutedExperts
++from vllm.model_executor.layers.fused_moe.config import FusedMoEConfig
+ from vllm.model_executor.layers.fused_moe.oracle.int8 import (
+     convert_to_int8_moe_kernel_format,
+     make_int8_moe_kernel,
+@@ -38,9 +39,9 @@ class Int8OnlineMoEMethod(OnlineMoEMethodBase):
+     def __init__(
+         self,
+         *,
+-        layer: torch.nn.Module,
++        moe: FusedMoEConfig,
+     ):
+-        super().__init__(layer.moe_config)
++        super().__init__(moe)
+         self.int8_backend, self.experts_cls = select_int8_moe_backend(
+             config=self.moe,
+             weight_key=kInt8StaticChannelSym,
+diff --git a/vllm/model_executor/layers/quantization/online/mxfp4.py b/vllm/model_executor/layers/quantization/online/mxfp4.py
+index d09e9ceb6b..0115988e92 100644
+--- a/vllm/model_executor/layers/quantization/online/mxfp4.py
++++ b/vllm/model_executor/layers/quantization/online/mxfp4.py
+@@ -17,6 +17,7 @@ if TYPE_CHECKING:
+     )
+ 
+ from vllm.model_executor.kernels.linear import init_mxfp4_linear_kernel
++from vllm.model_executor.layers.fused_moe.config import FusedMoEConfig
+ from vllm.model_executor.layers.fused_moe.oracle.mxfp4 import (
+     TRITON_BACKENDS,
+     Mxfp4MoeBackend,
+@@ -27,7 +28,7 @@ from vllm.model_executor.layers.fused_moe.oracle.mxfp4 import (
+     select_mxfp4_moe_backend,
+ )
+ from vllm.model_executor.layers.quantization.online.fp8 import (
+-    _Fp8OnlineLinearBase,
++    OnlineLinearBase,
+ )
+ from vllm.model_executor.layers.quantization.online.moe_base import (
+     OnlineMoEMethodBase,
+@@ -73,7 +74,7 @@ def _quantize_mxfp4_moe_weight(
+     return w_quant, w_scales
+ 
+ 
+-class Mxfp4OnlineLinearMethod(_Fp8OnlineLinearBase):
++class Mxfp4OnlineLinearMethod(OnlineLinearBase):
+     """Online MXFP4 linear method.
+     Loads bf16/fp16 checkpoints and quantizes weights to MXFP4 (microscaling
+     FP4 with block-32 scales) during weight loading.
+@@ -144,8 +145,8 @@ class Mxfp4OnlineMoEMethod(OnlineMoEMethodBase):
+     experts_cls: "type[mk.FusedMoEExperts] | None"
+     activation_quant_key = kMxfp4Dynamic
+ 
+-    def __init__(self, *, layer: torch.nn.Module):
+-        super().__init__(layer.moe_config)
++    def __init__(self, *, moe: FusedMoEConfig):
++        super().__init__(moe)
+         self.weight_block_size: list[int] = [1, MXFP4_BLOCK_SIZE]
+         self.weight_scale_name = "weight_scale"
+ 
+diff --git a/vllm/model_executor/layers/quantization/online/mxfp8.py b/vllm/model_executor/layers/quantization/online/mxfp8.py
+index 5eb54f9a09..5165762d5b 100644
+--- a/vllm/model_executor/layers/quantization/online/mxfp8.py
++++ b/vllm/model_executor/layers/quantization/online/mxfp8.py
+@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
+ import torch
+ from torch.nn import Module
+ 
++from vllm.model_executor.layers.fused_moe.config import FusedMoEConfig
++
+ if TYPE_CHECKING:
+     import vllm.model_executor.layers.fused_moe.modular_kernel as mk
+     from vllm.model_executor.layers.fused_moe import (
+@@ -21,7 +23,7 @@ from vllm.model_executor.layers.fused_moe.oracle.mxfp8 import (
+     select_mxfp8_moe_backend,
+ )
+ from vllm.model_executor.layers.quantization.online.fp8 import (
+-    _Fp8OnlineLinearBase,
++    OnlineLinearBase,
+ )
+ from vllm.model_executor.layers.quantization.online.moe_base import (
+     OnlineMoEMethodBase,
+@@ -34,7 +36,7 @@ from vllm.model_executor.utils import replace_parameter
+ from vllm.platforms import current_platform
+ 
+ 
+-class Mxfp8OnlineLinearMethod(_Fp8OnlineLinearBase):
++class Mxfp8OnlineLinearMethod(OnlineLinearBase):
+     """Online MXFP8 linear method.
+     Loads bf16/fp16 checkpoints and quantizes weights to MXFP8 (microscaling
+     FP8 with block-32 scales) during weight loading.
+@@ -100,8 +102,8 @@ class Mxfp8OnlineMoEMethod(OnlineMoEMethodBase):
+     fp8_backend: "Fp8MoeBackend"
+     experts_cls: "type[mk.FusedMoEExperts] | None"
+ 
+-    def __init__(self, *, layer: torch.nn.Module):
+-        super().__init__(layer.moe_config)
++    def __init__(self, *, moe: FusedMoEConfig):
++        super().__init__(moe)
+         self.weight_block_size: list[int] = [1, MXFP8_BLOCK_SIZE]
+         self.weight_scale_name = "weight_scale"
+ 
+diff --git a/vllm/model_executor/layers/quantization/online/nvfp4.py b/vllm/model_executor/layers/quantization/online/nvfp4.py
+index de920db901..7abefce257 100644
+--- a/vllm/model_executor/layers/quantization/online/nvfp4.py
++++ b/vllm/model_executor/layers/quantization/online/nvfp4.py
+@@ -6,7 +6,10 @@ from torch.nn import Module
+ 
+ from vllm._custom_ops import scaled_fp4_quant
+ from vllm.model_executor.layers.fused_moe import RoutedExperts
+-from vllm.model_executor.layers.fused_moe.config import FusedMoEQuantConfig
++from vllm.model_executor.layers.fused_moe.config import (
++    FusedMoEConfig,
++    FusedMoEQuantConfig,
++)
+ from vllm.model_executor.layers.fused_moe.oracle.nvfp4 import (
+     convert_to_nvfp4_moe_kernel_format,
+     make_nvfp4_moe_kernel,
+@@ -87,13 +90,13 @@ class Nvfp4OnlineMoEMethod(OnlineMoEMethodBase):
+     def __init__(
+         self,
+         *,
+-        layer: torch.nn.Module,
++        moe: FusedMoEConfig,
+     ):
+         if not current_platform.is_device_capability_family(100):
+             raise ValueError(
+                 "nvfp4_per_token online quantization requires a Blackwell (SM100) GPU."
+             )
+-        super().__init__(layer.moe_config)
++        super().__init__(moe)
+         self.nvfp4_backend, self.experts_cls = select_nvfp4_moe_backend(
+             config=self.moe,
+             weight_key=kNvfp4Static,
+diff --git a/vllm/model_executor/layers/quantization/utils/config_utils.py b/vllm/model_executor/layers/quantization/utils/config_utils.py
+index 00cdd0c87d..d7eadbb361 100644
+--- a/vllm/model_executor/layers/quantization/utils/config_utils.py
++++ b/vllm/model_executor/layers/quantization/utils/config_utils.py
+@@ -153,3 +153,12 @@ def is_shared_expert_quant_fse_compatible(
+         "shared-expert FSE quantization compatibility is not implemented for "
+         f"{type(quant_config).__name__}",
+     )
++
++
++def get_layer_name_after_index(layer_name: str) -> str:
++    """Return the suffix following the final numeric component of a layer name."""
++    parts = layer_name.split(".")
++    for index in range(len(parts) - 1, -1, -1):
++        if parts[index].isdigit():
++            return ".".join(parts[index + 1 :])
++    return layer_name
+diff --git a/vllm/model_executor/layers/vocab_parallel_embedding.py b/vllm/model_executor/layers/vocab_parallel_embedding.py
+index 3057270c62..fe83838a00 100644
+--- a/vllm/model_executor/layers/vocab_parallel_embedding.py
++++ b/vllm/model_executor/layers/vocab_parallel_embedding.py
+@@ -283,7 +283,7 @@ class VocabParallelEmbedding(PluggableLayer):
+ 
+         quant_method = None
+         if quant_config is not None:
+-            quant_method = quant_config.get_quant_method(self, prefix=prefix)
++            quant_method = quant_config.get_effective_quant_method(self, prefix=prefix)
+         if quant_method is None:
+             quant_method = UnquantizedEmbeddingMethod()
+ 
+diff --git a/vllm/model_executor/model_loader/base_loader.py b/vllm/model_executor/model_loader/base_loader.py
+index d1f44666c5..618f874fd0 100644
+--- a/vllm/model_executor/model_loader/base_loader.py
++++ b/vllm/model_executor/model_loader/base_loader.py
+@@ -58,6 +58,7 @@ class BaseModelLoader(ABC):
+                     prefix=prefix,
+                 )
+ 
++            log_online_quantization(vllm_config)
+             log_model_inspection(model)
+ 
+             logger.debug("Loading weights on %s ...", load_device)
+@@ -92,6 +93,28 @@ def log_model_inspection(model: nn.Module) -> None:
+     logger.info("vLLM model structure:\n%s", format_model_inspection(model))
+ 
+ 
++def log_online_quantization(vllm_config: VllmConfig) -> None:
++    """Log the online-quantized layer count and types, when applicable."""
++    from vllm.model_executor.layers.quantization.online.base import (
++        OnlineQuantizationConfig,
++    )
++
++    quant_config = vllm_config.quant_config
++    online_quantization_config = getattr(
++        quant_config, "online_quantization_config", None
++    )
++    if isinstance(online_quantization_config, OnlineQuantizationConfig):
++        quant_config = online_quantization_config
++    if not isinstance(quant_config, OnlineQuantizationConfig):
++        return
++
++    logger.info(
++        "Quantized %d layers of types: %s",
++        len(quant_config.quantized_layers),
++        "; ".join(quant_config.quantized_layer_summaries),
++    )
++
++
+ def _has_online_quant(model: nn.Module):
+     for module in model.modules():
+         quant_method = getattr(module, "quant_method", None)
+diff --git a/vllm/model_executor/model_loader/weight_utils.py b/vllm/model_executor/model_loader/weight_utils.py
+index 772835c9f1..9c2d42972c 100644
+--- a/vllm/model_executor/model_loader/weight_utils.py
++++ b/vllm/model_executor/model_loader/weight_utils.py
+@@ -243,6 +243,26 @@ def get_quant_config(
+     if model_config.quantization is None:
+         raise ValueError("Model quantization method is not specified in the config.")
+     quant_cls = get_quantization_config(model_config.quantization)
++    from vllm.config.quantization import _ONLINE_SHORTHANDS, QuantizationConfigArgs
++    from vllm.model_executor.layers.quantization.online.base import (
++        OnlineQuantizationConfig,
++    )
++
++    # resolve_quantization_config does not resolve `quantization_config` from
++    # ambiguous shorthands as `"mxfp4"`, `"mxfp8"`.
++    online_args = model_config.quantization_config
++
++    def maybe_compose_online_quantization(
++        checkpoint_config: QuantizationConfig,
++    ) -> QuantizationConfig:
++        if online_args is None:
++            return checkpoint_config
++        assert isinstance(online_args, QuantizationConfigArgs)
++
++        checkpoint_config.online_quantization_config = OnlineQuantizationConfig(
++            online_args
++        )
++        return checkpoint_config
+ 
+     # Read the quantization config from the HF model config, if available.
+     hf_quant_config = getattr(model_config.hf_config, "quantization_config", None)
+@@ -284,7 +304,9 @@ def get_quant_config(
+         ):
+             pass  # fall through to file-based loading below
+         else:
+-            return quant_cls.from_config(hf_quant_config)
++            return maybe_compose_online_quantization(
++                quant_cls.from_config(hf_quant_config)
++            )
+ 
+     # if hf_quant_config is None, we will try to get config from
+     # hf_overrides
+@@ -297,7 +319,9 @@ def get_quant_config(
+     quantization_config_file = hf_overrides.get("quantization_config_file", None)
+     if quantization_config_file is not None:
+         if hasattr(quant_cls, "from_config_file"):
+-            return quant_cls.from_config_file(quantization_config_file)
++            return maybe_compose_online_quantization(
++                quant_cls.from_config_file(quantization_config_file)
++            )
+         else:
+             raise NotImplementedError(
+                 "from_config_file is specified in hf_override config, "
+@@ -307,7 +331,9 @@ def get_quant_config(
+     quantization_config_json = hf_overrides.get("quantization_config_dict_json", None)
+     if quantization_config_json is not None:
+         if hasattr(quant_cls, "from_config_dict_json"):
+-            return quant_cls.from_config_dict_json(quantization_config_json)
++            return maybe_compose_online_quantization(
++                quant_cls.from_config_dict_json(quantization_config_json)
++            )
+         else:
+             raise NotImplementedError(
+                 "from_config_dict_json is specified in hf_override config, "
+@@ -315,16 +341,14 @@ def get_quant_config(
+                 f"{quant_cls}"
+             )
+ 
+-    # Online quantization doesn't read from checkpoint configs - it quantizes
+-    # fp16/bf16 weights on the fly during loading.
+-    if model_config.quantization_config is not None:
+-        from vllm.config.quantization import QuantizationConfigArgs
+-        from vllm.model_executor.layers.quantization.online.base import (
+-            OnlineQuantizationConfig,
+-        )
+-
+-        assert isinstance(model_config.quantization_config, QuantizationConfigArgs)
+-        return OnlineQuantizationConfig(args=model_config.quantization_config)
++    # Raw unambiguous online quantization doesn't read from checkpoint configs
++    # We must continue to load/read the config below in two cases:
++    # 1. composed online quantization, before `maybe_compose_online_quantization`,
++    # 2. Ambiguous online shorthands as `"mxpf4"`, `"mxfp8"`, for which `online_args`
++    # is not set yet.
++    if quant_cls is OnlineQuantizationConfig and online_args is not None:
++        assert isinstance(online_args, QuantizationConfigArgs)
++        return OnlineQuantizationConfig(args=online_args)
+ 
+     model_name_or_path = (
+         maybe_download_from_modelscope(
+@@ -354,7 +378,11 @@ def get_quant_config(
+ 
+     # If the quantization config is not found, use the default config.
+     if not possible_config_filenames:
+-        return quant_cls()
++        if model_config.quantization in _ONLINE_SHORTHANDS:
++            args = online_args or _ONLINE_SHORTHANDS[model_config.quantization]
++            assert isinstance(args, QuantizationConfigArgs)
++            return OnlineQuantizationConfig(args=args)
++        return maybe_compose_online_quantization(quant_cls())
+ 
+     config_files = glob.glob(os.path.join(hf_folder, "*.json"))
+ 
+@@ -362,6 +390,10 @@ def get_quant_config(
+         f for f in config_files if any(f.endswith(x) for x in possible_config_filenames)
+     ]
+     if len(quant_config_files) == 0:
++        if model_config.quantization in _ONLINE_SHORTHANDS:
++            args = online_args or _ONLINE_SHORTHANDS[model_config.quantization]
++            assert isinstance(args, QuantizationConfigArgs)
++            return OnlineQuantizationConfig(args=args)
+         raise ValueError(f"Cannot find the config file for {model_config.quantization}")
+     if len(quant_config_files) > 1:
+         raise ValueError(
+@@ -375,14 +407,14 @@ def get_quant_config(
+ 
+         if model_config.quantization in ("modelopt", "modelopt_mixed"):
+             if config.get("producer", {}).get("name") == "modelopt":
+-                return quant_cls.from_config(config)
++                return maybe_compose_online_quantization(quant_cls.from_config(config))
+             else:
+                 raise ValueError(
+                     f"Unsupported quantization config"
+                     f" found for {model_config.quantization} in {f}."
+                 )
+ 
+-    return quant_cls.from_config(config)
++    return maybe_compose_online_quantization(quant_cls.from_config(config))
+ 
+ 
+ def get_sparse_attention_config(
+diff --git a/vllm/models/kimi_k3/nvidia/mla.py b/vllm/models/kimi_k3/nvidia/mla.py
+index 21be0c398f..32015dd19c 100644
+--- a/vllm/models/kimi_k3/nvidia/mla.py
++++ b/vllm/models/kimi_k3/nvidia/mla.py
+@@ -437,7 +437,7 @@ class MultiHeadLatentAttention(nn.Module, AttentionLayerBase):
+         replace_parameter(self, "W_UK_T", W_UK.permute(1, 2, 0), prefer_copy=True)
+ 
+         quant_method = (
+-            self.quant_config.get_quant_method(self, prefix=self.layer_name)
++            self.quant_config.get_effective_quant_method(self, prefix=self.layer_name)
+             if self.quant_config
+             else None
+         )
