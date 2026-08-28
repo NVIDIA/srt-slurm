@@ -35,6 +35,9 @@ srtctl apply -f config.yaml
 # Deploy an inference endpoint without running a benchmark
 srtctl apply -f config.yaml --serve-only
 
+# Run a single recipe in the current SLURM allocation
+srtctl apply -f config.yaml --current-allocation
+
 # Submit with custom setup script
 srtctl apply -f config.yaml --setup-script custom-setup.sh
 

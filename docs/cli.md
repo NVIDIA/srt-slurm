@@ -254,6 +254,7 @@ srtctl apply -f <config.yaml> [options]
 | `--tags` | Comma-separated tags for the run |
 | `--serve-only` | Deploy the endpoint without running a benchmark; serve until cancellation |
 | `--bash` | Print a direct single-node lifecycle script to stdout without submitting |
+| `--current-allocation` | Run a single-job recipe in the current Slurm allocation without submitting another job |
 | `-y, --yes` | Skip confirmation prompts |
 
 **Examples:**
@@ -264,6 +265,9 @@ srtctl apply -f recipes/gb200-fp8/sglang-1p4d.yaml
 
 # Serve the same recipe without running its configured benchmark
 srtctl apply -f recipes/gb200-fp8/sglang-1p4d.yaml --serve-only
+
+# Run in an allocation obtained with salloc or sbatch
+srtctl apply -f recipes/gb200-fp8/sglang-1p4d.yaml --current-allocation
 
 # Submit sweep (auto-detected from sweep: section)
 srtctl apply -f configs/my-sweep.yaml
@@ -290,6 +294,12 @@ srtctl apply -f config.yaml --tags "experiment-1,baseline"
 the frontend URL in the sweep log, and keeps the service running until the job is cancelled or reaches its Slurm
 time limit. It ignores the recipe's configured benchmark for that submission. Use `scancel <job-id>` to stop the
 service; srtctl then cleans up the processes it started.
+
+`--current-allocation` requires `SLURM_JOB_ID` in the environment. It skips `sbatch` and runs the normal
+orchestrator in the foreground, so its `srun` commands become job steps in that allocation. The initial implementation
+accepts one regular recipe at a time; directories, sweeps, override configs, `--bash`, `--mock`, `--json`, and `--tags`
+are not supported. Allocation settings such as account, partition, and time limit have no effect because the allocation
+already exists.
 
 `--bash` renders a small direct-host launcher; it is not an sbatch script. The launcher owns a Docker serving
 container and runs the serving lifecycle inside the selected SGLang image. It currently supports a one-node

@@ -9,6 +9,7 @@ This is the main entrypoint for submitting benchmarks via YAML configs.
 
 Usage:
     srtctl apply -f config.yaml                     # Submit job
+    srtctl apply -f config.yaml --current-allocation # Run in the current allocation
     srtctl apply -f config.yaml -o /path/to/logs   # Submit with custom output dir
     srtctl dry-run -f sweep.yaml --sweep            # Dry run sweep
 """
@@ -56,6 +57,7 @@ from srtctl.core.git_state import (
 )
 from srtctl.core.lockfile import load_lockfile_fingerprints
 from srtctl.core.schema import SrtConfig, installs_dynamo
+from srtctl.core.slurm import get_slurm_job_id
 from srtctl.core.status import create_job_record
 from srtctl.core.validation import preflight_config_variants
 from srtctl.ports import MOONCAKE_MASTER_PORT
@@ -926,6 +928,72 @@ def submit_single(
     )
 
 
+def run_in_current_allocation(
+    config_path: Path,
+    *,
+    setup_script: str | None = None,
+    output_dir: Path | None = None,
+    enforce_preflight: bool = True,
+    serve_only: bool = False,
+) -> int:
+    """Run one config as job steps in the current SLURM allocation."""
+    job_id = get_slurm_job_id()
+    if not job_id:
+        raise ValueError("--current-allocation requires SLURM_JOB_ID to be set")
+
+    config = load_config(config_path)
+    if enforce_preflight:
+        with open(config_path) as f:
+            raw_config = yaml.safe_load(f)
+        _assert_preflight_passed(raw_config, label=str(config_path))
+
+    configured_source = os.environ.get("SRTCTL_SOURCE_DIR") or get_srtslurm_setting("srtctl_root")
+    srtctl_source = (
+        Path(configured_source).resolve() if configured_source else Path(__file__).parent.parent.parent.parent.resolve()
+    )
+    validate_setup(srtctl_source)
+
+    if output_dir:
+        output_base = output_dir.resolve()
+    else:
+        configured_output = get_srtslurm_setting("output_dir")
+        output_base = (
+            Path(os.path.expandvars(configured_output)).resolve() if configured_output else srtctl_source / "outputs"
+        )
+
+    job_output_dir = output_base / job_id
+    job_output_dir.mkdir(parents=True, exist_ok=True)
+    runtime_config_path = job_output_dir / "config.yaml"
+    if config_path.resolve() != runtime_config_path.resolve():
+        shutil.copy2(config_path, runtime_config_path)
+
+    env = os.environ.copy()
+    env["SRTCTL_OUTPUT_DIR"] = str(job_output_dir)
+    env["SRTCTL_SOURCE_DIR"] = str(srtctl_source)
+    dynamo_environment = config.dynamo.get_wheel_environment()
+    env.update(dynamo_environment)
+    env.update({key: str(value) for key, value in config.environment.items()})
+    if setup_script:
+        env["SRTCTL_SETUP_SCRIPT"] = setup_script
+
+    if dynamo_environment or env.get("SRTCTL_PREFETCH_AI_DYNAMO") == "1":
+        prefetch_script = srtctl_source / "src" / "srtctl" / "runtime_scripts" / "dynamo_wheels.py"
+        if not prefetch_script.exists():
+            raise FileNotFoundError(f"Dynamo wheel prefetch script not found: {prefetch_script}")
+        subprocess.run([sys.executable, str(prefetch_script), "prefetch"], env=env, check=True)
+
+    command = [sys.executable, "-m", "srtctl.cli.do_sweep", str(runtime_config_path)]
+    if serve_only:
+        command.append("--serve-only")
+
+    console.print(f"[bold cyan]Running in SLURM allocation {job_id}:[/] {config.name}")
+    console.print(f"[dim]Outputs:[/] {job_output_dir}")
+    _print_running_summary(config, console, serve_only=serve_only)
+
+    result = subprocess.run(command, env=env, check=False)
+    return result.returncode
+
+
 def is_sweep_config(config_path: Path) -> bool:
     """Check if config file is a sweep config by looking for 'sweep' section."""
     try:
@@ -1456,6 +1524,7 @@ def main():
         epilog="""Examples:
   srtctl                                         # Interactive mode
   srtctl apply -f config.yaml                    # Submit job
+  srtctl apply -f config.yaml --current-allocation # Run in the current SLURM allocation
   srtctl apply -f config.yaml --serve-only       # Serve until cancelled; do not benchmark
   srtctl apply -f config.yaml --bash             # Print a direct single-node Bash lifecycle script
   srtctl apply -f ./configs/                     # Submit all YAMLs in directory
@@ -1500,6 +1569,11 @@ def main():
         action="store_true",
         dest="bash_output",
         help="Print a direct single-node Bash lifecycle script to stdout and exit without submitting.",
+    )
+    apply_parser.add_argument(
+        "--current-allocation",
+        action="store_true",
+        help="Run as job steps in the current SLURM allocation instead of submitting with sbatch.",
     )
     apply_parser.add_argument(
         "--json",
@@ -1597,6 +1671,7 @@ def main():
     json_mode = bool(getattr(args, "json_output", False))
     mock_mode = bool(getattr(args, "mock_mode", False))
     bash_mode = bool(getattr(args, "bash_output", False))
+    current_allocation = bool(getattr(args, "current_allocation", False))
     serve_only = bool(getattr(args, "serve_only", False))
     if bash_mode and json_mode:
         parser.error("--bash cannot be combined with --json")
@@ -1610,6 +1685,16 @@ def main():
         parser.error("--serve-only cannot be combined with --mock")
     if serve_only and getattr(args, "sweep", False):
         parser.error("--serve-only does not support sweeps")
+    if current_allocation and bash_mode:
+        parser.error("--current-allocation cannot be combined with --bash")
+    if current_allocation and mock_mode:
+        parser.error("--current-allocation cannot be combined with --mock")
+    if current_allocation and json_mode:
+        parser.error("--current-allocation cannot be combined with --json")
+    if current_allocation and getattr(args, "sweep", False):
+        parser.error("--current-allocation supports single-job configs only")
+    if current_allocation and getattr(args, "tags", None):
+        parser.error("--current-allocation cannot be combined with --tags")
 
     # Always rebind the module console on each invocation so json-mode prose
     # goes to stderr and non-json prose returns to stdout. Save the original
@@ -1777,6 +1862,24 @@ def main():
             # enforcement via the is_dry_run branch below.
             no_preflight = getattr(args, "no_preflight", False)
             enforce_preflight = not (mock_mode or is_dry_run or no_preflight)
+
+            if current_allocation:
+                if effective_config_path.is_dir():
+                    raise ValueError("--current-allocation expects a single config file, not a directory")
+                if selector or is_override_config(effective_config_path):
+                    raise ValueError("--current-allocation does not support override configs")
+                if is_sweep_config(effective_config_path):
+                    raise ValueError("--current-allocation supports single-job configs only")
+
+                exit_code = run_in_current_allocation(
+                    effective_config_path,
+                    setup_script=setup_script,
+                    output_dir=output_dir,
+                    enforce_preflight=enforce_preflight,
+                    serve_only=serve_only,
+                )
+                restore_console()
+                sys.exit(exit_code)
 
             # Handle directory input
             if effective_config_path.is_dir():
