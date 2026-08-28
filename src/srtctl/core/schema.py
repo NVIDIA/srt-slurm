@@ -780,6 +780,14 @@ class BenchmarkConfig:
     agentperf_config: str | None = (
         None  # Container path to the client's workload YAML (endpoint/model/concurrency injected)
     )
+    # MLPerf Inference benchmark fields (mlcommons/inference LoadGen harness)
+    mlperf_harness_dir: str | None = None  # Container path to an mlcommons/inference checkout (mount via extra_mount)
+    mlperf_benchmark: str | None = None  # Benchmark dir under language/ (e.g. "gpt-oss-120b")
+    mlperf_dataset: str | None = None  # Container path to the tokenized dataset (parquet/pickle)
+    mlperf_user_conf: str | None = None  # Container path to a LoadGen user.conf (harness default if unset)
+    mlperf_scenario: str = "offline"  # LoadGen scenario: "offline" or "server"
+    mlperf_mode: str = "performance"  # "performance", "accuracy", or "both"
+    mlperf_backend: str = "sglang"  # Harness backend that talks to the already-running server
     # Trace replay benchmark fields (uses aiperf with mooncake_trace dataset type)
     trace_file: str | None = None  # Path to trace JSONL file (container path, e.g., /traces/dataset.jsonl)
     custom_tokenizer: str | None = None  # Custom tokenizer class (e.g., "module.path.ClassName")

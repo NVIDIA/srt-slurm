@@ -652,6 +652,7 @@ benchmark:
 | `router`          | Router performance with prefix caching         |
 | `mooncake-router` | KV-aware routing with Mooncake trace           |
 | `agentperf`       | AgentPerf trajectory replay (agentperf-client) |
+| `mlperf`          | MLPerf Inference LoadGen (mlcommons/inference)  |
 
 ### manual
 
@@ -928,6 +929,87 @@ Notes:
 - `telemetry:` (DCGM power measurement windows) is not supported with agentperf — the schema
   rejects non-sa-bench benchmark types at config load. Tachometer
   (`observability.enabled`) works normally.
+
+### mlperf
+
+MLPerf Inference benchmark driven by the MLCommons reference harness
+([mlcommons/inference](https://github.com/mlcommons/inference)). LoadGen — not AIPerf — is what
+produces the submission-shaped `mlperf_log_summary.txt` / `mlperf_log_detail.txt` /
+`mlperf_log_accuracy.json` triple and the VALID/INVALID verdict, so this benchmark type exists to
+get those artifacts out of a topology srt-slurm already knows how to stand up.
+
+Only the **server-url shape** of the reference harness works here. Most MLPerf LLM reference
+implementations build the engine in-process (`SUT_VLLM`) or launch their own server (the
+DeepSeek-R1 backends do), which collides with srt-slurm owning the deployment. The
+`gpt-oss-120b` harness instead takes `--server-url` and speaks HTTP to a server someone else
+started — that is exactly srt-slurm's contract, and it is the supported layout in this first
+iteration. Its backend posts token IDs to the server's native `/generate` route, so
+**`frontend.type: sglang` is required**; the config check rejects other frontends up front rather
+than letting LoadGen fail its connection preflight after the workers have loaded weights.
+
+The harness checkout is not vendored: mount it into the container and pin the commit. LoadGen
+decides VALID vs INVALID, so it is compiled from that same checkout — results are only comparable
+within one pin.
+
+```yaml
+frontend:
+  type: sglang
+
+benchmark:
+  type: "mlperf"
+  mlperf_harness_dir: "/mlperf-inference"                 # Container path to an mlcommons/inference checkout
+  mlperf_benchmark: "gpt-oss-120b"                        # Directory under language/
+  mlperf_dataset: "/datasets/gpt-oss-tokenized.parquet"   # Harness --input-file
+  mlperf_user_conf: "/configs/user.conf"                  # LoadGen target_qps / min_duration
+  mlperf_scenario: "server"                               # offline (default) or server
+  mlperf_mode: "both"                                     # performance (default), accuracy, or both
+  concurrency: 256                                        # Harness --max-concurrency
+  env:
+    MLPERF_EXTRA_ARGS: "--max-samples 500"                # Optional: appended to run_mlperf.py verbatim
+    MLPERF_EVAL_ACCURACY: "1"                             # Optional: score the accuracy log after the run
+
+extra_mount:
+  - "/path/on/host/mlperf-inference:/mlperf-inference"
+  - "/path/on/host/datasets:/datasets"
+  - "/path/on/host/configs:/configs"
+```
+
+| Field                | Type   | Required | Default       | Description                                                     |
+| -------------------- | ------ | -------- | ------------- | --------------------------------------------------------------- |
+| `mlperf_harness_dir` | string | Yes      | —             | Container path to a pinned mlcommons/inference checkout          |
+| `mlperf_benchmark`   | string | Yes      | —             | Benchmark directory under `language/` (e.g. `gpt-oss-120b`)      |
+| `mlperf_dataset`     | string | Yes      | —             | Container path to the tokenized dataset (`--input-file`)         |
+| `mlperf_user_conf`   | string | No       | harness default | Container path to a LoadGen `user.conf`                        |
+| `mlperf_scenario`    | string | No       | `offline`     | `offline` or `server`                                            |
+| `mlperf_mode`        | string | No       | `performance` | `performance`, `accuracy`, or `both`                             |
+| `mlperf_backend`     | string | No       | `sglang`      | Harness backend that talks to the already-running server         |
+| `concurrency`        | int    | No       | harness default | Passed as `--max-concurrency`                                  |
+
+Notes:
+
+- **Set `mlperf_user_conf`.** The scenario constraint (`target_qps`, `min_duration`) lives there.
+  Without it the harness falls back to its checked-in placeholder — `target_qps = 1` for
+  gpt-oss-120b — which runs to completion and reports VALID without being a submission-shaped run.
+- `--mlperf-conf` is pointed at the checkout's own `mlperf.conf`. The harness defaults it to a
+  relative `inference/mlperf.conf` that never resolves from `language/<benchmark>/`, and then only
+  *warns* before running on without the official per-benchmark constraints.
+- The first run of a job builds an isolated LoadGen runtime under `/tmp/mlperf-<jobid>`: a venv
+  created with `--system-site-packages` (so the container's torch/transformers are reused, and the
+  reference `requirements.txt` pins are never dragged over the serving stack the workers are
+  running on), `mlperf_loadgen` compiled from the checkout, and the dataset staged to node-local
+  `/tmp`. Budget several minutes before the first query.
+- `mlperf_mode: both` runs performance first, then accuracy. Scoring the accuracy log is opt-in via
+  `MLPERF_EVAL_ACCURACY: "1"` — it detokenizes every response and, for gpt-oss, runs the
+  LiveCodeBench evaluators, which is minutes to hours of benchmark-node CPU while the allocation is
+  still held. The scorer uses `model.path` as its tokenizer instead of pulling one from HuggingFace;
+  override with `MLPERF_ACCURACY_TOKENIZER`.
+- Results land under `<log_dir>/mlperf/<scenario>/<performance|accuracy>/`; `rollup.py` normalizes
+  every `mlperf_log_summary.txt` into `benchmark-rollup.json` (verdict, constraints, throughput,
+  TTFT/TPOT p99, plus each LoadGen section verbatim).
+- This runs the benchmark, not a submission. Compliance tests (TEST01/TEST06/…) and submission
+  packaging are still the MLPerf repo's workflow.
+- `telemetry:` (DCGM power measurement windows) is not supported with mlperf — the schema rejects
+  non-sa-bench benchmark types at config load. Tachometer (`observability.enabled`) works normally.
 
 ---
 
