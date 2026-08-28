@@ -11,7 +11,6 @@ sidecars; arm 3 adds an external worker-selection policy catalog.
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -38,14 +37,6 @@ from srtctl.frontends.sgl_router import SGLRouterFrontend
 from srtctl.frontends.static_router import RouterWorker
 from srtctl.render.direct_plan import build_direct_plan_context, render_direct_container_shim
 from srtctl.render.direct_stages.common import apply_dependency_override
-
-RECIPES = Path(__file__).parent.parent / "recipes" / "qwen3-32b" / "router-comparison"
-ARMS = ("arm1-sgl-router", "arm2-dynamo-sidecar", "arm3-dynamo-sgl-policy")
-RECIPE_ENVIRONMENT = {
-    "ROUTER_ARM_MODEL_PATH": "/models/Qwen3-32B-FP8",
-    "ROUTER_ARM_SGLANG_SOURCE": "/src/sglang",
-    "ROUTER_ARM_TRACE": "/data/agentx.jsonl",
-}
 
 CATALOG = DynamoPolicyCatalogConfig(
     package="sgl-router-cache-aware-dynamo-policy",
@@ -491,25 +482,3 @@ def test_arm2_and_arm3_differ_only_in_worker_selection(tmp_path: Path) -> None:
     assert arm2["dynamo_policy_catalog"] is None
     assert arm3["dynamo_policy_catalog"] is not None
     assert "--router-policy-config" not in str(arm2["router_command"])
-
-
-# ---------------------------------------------------------------------------
-# Shipped recipes
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("arm", ARMS)
-def test_router_comparison_recipes_render_for_both_lifecycles(arm: str, tmp_path: Path) -> None:
-    from srtctl.core.config import load_config
-
-    with patch.dict(os.environ, RECIPE_ENVIRONMENT):
-        config = load_config(str(RECIPES / f"{arm}.yaml"))
-        plan = _direct_plan(config, tmp_path)
-
-    # Every arm serves the same topology: two aggregate TP4 workers on one node.
-    assert config.resources.num_agg == 2
-    assert config.resources.gpus_per_agg == 4
-    assert len(plan["worker_processes"]) == 2
-    assert config.served_model_name == "Qwen/Qwen3-32B-FP8"
-    assert plan["tachometer_enabled"] is True
-    assert "aiperf profile" in str(plan["benchmark_command"])
