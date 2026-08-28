@@ -2324,8 +2324,10 @@ class SrtConfig:
                 if not _is_finite_positive(getattr(cpu_power, name)):
                     raise ValidationError(f"telemetry.cpu_power.{name} must be finite and positive")
 
-        if self.benchmark.type != _BENCHMARK_TYPE_SA_BENCH:
-            raise ValidationError(f"telemetry requires benchmark.type: {_BENCHMARK_TYPE_SA_BENCH}")
+        supported_benchmarks = {_BENCHMARK_TYPE_SA_BENCH, "agentic", "agentx"}
+        if self.benchmark.type not in supported_benchmarks:
+            supported = ", ".join(sorted(supported_benchmarks))
+            raise ValidationError(f"telemetry requires benchmark.type to be one of: {supported}")
         if self.benchmark.client_placement != "head":
             raise ValidationError("telemetry requires benchmark.client_placement: head")
 

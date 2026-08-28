@@ -1492,6 +1492,34 @@ class TestAgenticRunner:
         assert 'FRONTEND_METRICS_URL="http://localhost:${PORT}/metrics"' in text
         assert 'export AIPERF_SERVER_METRICS_URLS="$FRONTEND_METRICS_URL"' in text
 
+    def test_agentic_bench_publishes_formal_power_window(self):
+        """The post-run publisher leaves the pinned replay harness unchanged."""
+        script = (SCRIPTS_DIR / "agentic" / "bench.sh").read_text()
+
+        assert 'if [[ -n "${SRT_MEASUREMENT_WINDOW_DIR:-}" ]]' in script
+        assert 'python3 "$SCRIPT_DIR/measurement_window.py"' in script
+        assert (
+            '--result-file "$AGENTIC_OUTPUT_DIR/${RESULT_FILENAME_ARG}_conc${concurrency}.json"'
+            in script
+        )
+
+    def test_agentic_environment_identifies_the_window_alias(self):
+        """Power audit keys must match the configured agentic/agentx alias."""
+        from unittest.mock import MagicMock
+
+        from srtctl.benchmarks.agentic import AgenticRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        config = SrtConfig(
+            name="agentx-power",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="b300"),
+            benchmark=BenchmarkConfig(type="agentx", concurrency=160),
+        )
+
+        env = AgenticRunner().get_environment(config, MagicMock())
+        assert env["SRT_BENCHMARK_TYPE"] == "agentx"
+
     def test_agentic_replay_command_matches_final_submission_contract(self):
         """Keep the fixed Slack-published AgentX client flags together."""
         script = SCRIPTS_DIR / "agentic" / "inferencex" / "benchmarks" / "benchmark_lib.sh"

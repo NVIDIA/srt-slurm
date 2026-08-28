@@ -209,4 +209,5 @@ class AgenticRunner(AIPerfBenchmarkRunner):
         environment = dict(config.benchmark.env)
         for name, value in AGENTX_METHODOLOGY_DEFAULTS.items():
             environment.setdefault(name, value)
+        environment["SRT_BENCHMARK_TYPE"] = config.benchmark.type
         return environment

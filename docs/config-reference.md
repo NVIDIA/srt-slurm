@@ -922,7 +922,7 @@ Notes:
 - Two runs must not share a results dir concurrently (the client resets `phase_manifest.jsonl`
   at start).
 - `telemetry:` (DCGM power measurement windows) is not supported with agentperf — the schema
-  rejects non-sa-bench benchmark types at config load. Tachometer
+  accepts only SA-Bench and AgentX benchmark types. Tachometer
   (`observability.enabled`) works normally.
 
 ---
@@ -1176,6 +1176,11 @@ The scraper runs as a best-effort process: if it dies (or the binary is missing 
 ## telemetry
 
 `telemetry` is reserved for DCGM power measurement. It can run alongside `observability.tachometer`; it does not start Tachometer itself.
+
+Formal GPU-power measurement windows are supported for `sa-bench`, `agentic`,
+and its `agentx` alias. AgentX derives the window from AIPerf's successful
+profiling request timestamps and stamps the same boundaries into its aggregate
+result, excluding warmup and failed requests.
 
 When both are enabled, `telemetry.dcgm_exporter` is shared with Tachometer. Do not also configure `observability.tachometer.dcgm_exporter`; Tachometer can still launch an optional node exporter from its own block.
 

@@ -113,6 +113,15 @@ class TestDcgmPowerConfig:
 
         assert config.telemetry.dcgm_exporter is not None
 
+    @pytest.mark.parametrize("benchmark_type", ["agentic", "agentx"])
+    def test_accepts_agentx_measurement_windows(self, benchmark_type):
+        config = _make_config(
+            telemetry=_dcgm_power(),
+            benchmark=BenchmarkConfig(type=benchmark_type, concurrencies=[160], client_placement="head"),
+        )
+
+        assert config.benchmark.type == benchmark_type
+
     def test_defaults_are_stable(self):
         defaults = TelemetryConfig()
 

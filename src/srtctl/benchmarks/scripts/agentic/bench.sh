@@ -274,3 +274,16 @@ echo "Aggregate output dir: ${AGENTIC_OUTPUT_DIR}"
 echo "=============================================="
 
 bash "$WORKSPACE_ROOT/benchmarks/multi_node/agentic_srt.sh"
+
+# The pinned harness writes one aggregate per concurrency. When srtctl enabled
+# formal power telemetry, publish the exact successful profiling-request extent
+# recorded by AIPerf. This post-run step does not modify replay methodology.
+if [[ -n "${SRT_MEASUREMENT_WINDOW_DIR:-}" ]]; then
+  for concurrency in $CONC_LIST; do
+    python3 "$SCRIPT_DIR/measurement_window.py" \
+      --result-dir "$RESULT_DIR/conc_${concurrency}" \
+      --result-file "$AGENTIC_OUTPUT_DIR/${RESULT_FILENAME_ARG}_conc${concurrency}.json" \
+      --concurrency "$concurrency" \
+      --benchmark-type "${SRT_BENCHMARK_TYPE:-agentic}"
+  done
+fi
