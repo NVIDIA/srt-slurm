@@ -10,9 +10,11 @@ Handles starting backend worker processes (prefill/decode/agg).
 import logging
 import shlex
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Any
 
 from srtctl.core.fingerprint import generate_capture_script
+from srtctl.core.health import wait_for_health
 from srtctl.core.processes import ManagedProcess, NamedProcesses
 from srtctl.core.schema import build_otel_env, installs_dynamo
 from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, get_hostname_ip, start_srun_process
@@ -28,6 +30,35 @@ logger = logging.getLogger(__name__)
 # Dynamo runtime (Rust) log filter for worker containers; YAML prefill_environment /
 # decode_environment / aggregated_environment override via the merge below.
 _DEFAULT_WORKER_DYN_LOG = "info,dynamo_runtime::pipeline::network::ingress::push_handler=warn"
+
+
+def _wrap_sglang_sidecar(
+    engine_command: list[str],
+    *,
+    grpc_port: int,
+    bootstrap_host: str | None,
+) -> list[str]:
+    """Run the native SGLang engine and its Dynamo sidecar under one supervisor.
+
+    Slurm owns one task per logical worker. Keeping both processes in that task
+    makes their loopback gRPC endpoint private and ensures either exit tears down
+    its peer instead of leaving a GPU process behind.
+    """
+    sidecar_args = ["--sglang-endpoint", f"http://127.0.0.1:{grpc_port}"]
+    if bootstrap_host is not None:
+        sidecar_args.extend(["--bootstrap-host", bootstrap_host])
+    sidecar_command = f'"$DYNAMO_SIDECAR_BINARY" {shlex.join(sidecar_args)}'
+    script = (
+        "set -e; "
+        f"{shlex.join(engine_command)} & engine_pid=$!; "
+        f"{sidecar_command} & sidecar_pid=$!; "
+        'cleanup() { kill "$engine_pid" "$sidecar_pid" 2>/dev/null || true; '
+        'wait "$engine_pid" "$sidecar_pid" 2>/dev/null || true; }; '
+        "trap 'cleanup; exit 143' INT TERM; "
+        'set +e; wait -n "$engine_pid" "$sidecar_pid"; status=$?; set -e; '
+        'cleanup; exit "$status"'
+    )
+    return ["bash", "-c", script]
 
 
 class WorkerStageMixin:
@@ -82,10 +113,20 @@ class WorkerStageMixin:
                 'else echo "ERROR: ${script_path} or ${patch_script_path} not found" >&2; exit 1; fi'
             )
 
-        # 2. Dynamo installation (required for dynamo.sglang when using dynamo frontend)
+        # 2. Dynamo installation (required for the Dynamo frontend)
         # Skip if dynamo.install is False (container already has dynamo installed)
         if installs_dynamo(self.config):
             parts.append(self.config.dynamo.get_install_commands())
+
+        # 3. Standalone sidecars are Rust executables, not Python modules. Build
+        # the selected connector from the configured Dynamo source and export
+        # DYNAMO_SIDECAR_BINARY for the supervisor command.
+        if getattr(self.config.dynamo, "uses_sidecar", False) is True:
+            parts.append(
+                self.config.dynamo.get_sidecar_build_commands(
+                    self.config.backend_type,
+                )
+            )
 
         if not parts:
             return None
@@ -145,15 +186,25 @@ class WorkerStageMixin:
             )
 
         # Build command using backend's method
+        sidecar_mode = getattr(self.config.dynamo, "uses_sidecar", False) is True
         cmd = self.backend.build_worker_command(
             process=process,
             endpoint_processes=endpoint_processes,
             runtime=self.runtime,
-            frontend_type=self.config.frontend.type,
+            frontend_type="sidecar" if sidecar_mode else self.config.frontend.type,
             nsys_prefix=nsys_prefix,
             dump_config_path=config_dump,
             profiling=profiling,
         )
+        if sidecar_mode:
+            if process.grpc_port is None:
+                raise RuntimeError(f"No native gRPC port allocated for sidecar worker on {process.node}")
+            bootstrap_host = (
+                get_hostname_ip(process.node, self.runtime.network_interface)
+                if process.endpoint_mode == "prefill"
+                else None
+            )
+            cmd = _wrap_sglang_sidecar(cmd, grpc_port=process.grpc_port, bootstrap_host=bootstrap_host)
 
         # Environment variables
         env_to_set = {
@@ -382,6 +433,11 @@ class WorkerStageMixin:
             mpi=srun_config.mpi,
             oversubscribe=srun_config.oversubscribe,
             cpu_bind=srun_config.cpu_bind,
+            # Endpoint (MPI) workers were the only srun path that dropped the
+            # recipe-level srun_options; the per-process worker, benchmark and
+            # telemetry paths all forward it. Needed so a cluster can express
+            # per-rank CPU/NUMA binding, which srun_config.cpu_bind cannot.
+            srun_options=self.runtime.srun_options,
             het_group=leader.het_group,
         )
 
@@ -392,6 +448,35 @@ class WorkerStageMixin:
             node=leader.node,
             critical=True,
         )
+
+    def _wait_for_worker_ready(self, leader: "Process") -> None:
+        """Wait for a single endpoint worker to become ready before starting the next.
+
+        For trtllm_serve: polls the worker's per-process HTTP health endpoint (http_port).
+        For dynamo.trtllm: polls the dynamo system status server on sys_port. The dynamo
+        runtime starts an axum HTTP server on DYN_SYSTEM_PORT (which we set to sys_port)
+        and exposes GET /health → 200 {"status":"ready"} once the model is loaded and the
+        NATS/TCP request endpoint is registered.
+        """
+        health_cfg = self.config.health_check
+        frontend_type = self.config.frontend.type
+
+        # dynamo.trtllm: DYN_SYSTEM_PORT is set to sys_port in start_endpoint_worker,
+        # which enables the per-worker axum HTTP server on that same port.
+        port = leader.http_port if frontend_type == "trtllm_serve" else leader.sys_port
+
+        logger.info(
+            "Sequential node start: waiting for worker %s:%d to be ready",
+            leader.node,
+            port,
+        )
+        if not wait_for_health(
+            leader.node,
+            port,
+            max_attempts=health_cfg.max_attempts,
+            interval=health_cfg.interval_seconds,
+        ):
+            raise RuntimeError(f"Sequential node start: worker on {leader.node}:{port} did not become healthy")
 
     def start_all_workers(self) -> NamedProcesses:
         """Start all backend workers."""
@@ -410,9 +495,46 @@ class WorkerStageMixin:
 
         if launch_per_endpoint:
             # MPI-style: one srun per endpoint (TRTLLM)
-            for endpoint_processes in grouped.values():
-                managed = self.start_endpoint_worker(endpoint_processes)
-                result[managed.name] = managed
+            concurrency = int(getattr(self.backend, "sequential_node_start", 0))
+            if concurrency:
+                # Group endpoints by leader node; start in batches within each node
+                # so that model loading on a shared node doesn't cause resource contention.
+                # Different nodes start in parallel.
+                by_node: dict[str, list[list[Process]]] = defaultdict(list)
+                for ep_procs in grouped.values():
+                    by_node[ep_procs[0].node].append(ep_procs)
+
+                def start_node_workers(node: str, node_groups: list) -> list:
+                    if len(node_groups) == 1:
+                        return [self.start_endpoint_worker(node_groups[0])]
+                    logger.info(
+                        "Sequential node start: %d workers share node %s, starting %d at a time",
+                        len(node_groups),
+                        node,
+                        concurrency,
+                    )
+                    managed_list = []
+                    for batch_start in range(0, len(node_groups), concurrency):
+                        batch = node_groups[batch_start : batch_start + concurrency]
+                        batch_managed = [self.start_endpoint_worker(ep_procs) for ep_procs in batch]
+                        managed_list.extend(batch_managed)
+                        if batch_start + concurrency < len(node_groups):
+                            for ep_procs in batch:
+                                self._wait_for_worker_ready(ep_procs[0])
+                    return managed_list
+
+                with ThreadPoolExecutor(max_workers=len(by_node)) as executor:
+                    futures = {
+                        executor.submit(start_node_workers, node, node_groups): node
+                        for node, node_groups in by_node.items()
+                    }
+                    for future in as_completed(futures):
+                        for managed in future.result():
+                            result[managed.name] = managed
+            else:
+                for endpoint_processes in grouped.values():
+                    managed = self.start_endpoint_worker(endpoint_processes)
+                    result[managed.name] = managed
         else:
             # Per-process: one srun per node (SGLang)
             for endpoint_processes in grouped.values():

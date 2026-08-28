@@ -20,8 +20,12 @@ KV_EVENTS_PORT_BASE = 5200
 # SGLang backend ports.
 SGLANG_HTTP_PORT_BASE = 6100
 SGLANG_HTTP_PORT_STRIDE = 32
+SGLANG_GRPC_PORT_BASE = 6500
 SGLANG_BOOTSTRAP_PORT_BASE = 7200
 SGLANG_DIST_INIT_PORT_BASE = 8300
+# One per physical SGLang server process. This is used for SGLang's local TP
+# rendezvous; a deterministic assignment avoids concurrent free-port races.
+SGLANG_NCCL_PORT_BASE = 17500
 
 # Mooncake transfer-engine ports (shared by SGLang and vLLM backends).
 MOONCAKE_MASTER_PORT = 8700

@@ -173,6 +173,7 @@ class SweepOrchestrator(
 
     config: SrtConfig
     runtime: RuntimeContext
+    serve_only: bool = False
 
     @property
     def backend(self):
@@ -409,7 +410,7 @@ class SweepOrchestrator(
         logger.info("=" * 60)
         logger.info("Connection Commands")
         logger.info("=" * 60)
-        logger.info("Frontend URL: http://%s:%d", self.runtime.nodes.head, FRONTEND_PUBLIC_PORT)
+        logger.info("Frontend URL: http://%s:%d", self._public_api_node(), FRONTEND_PUBLIC_PORT)
         logger.info("")
         logger.info("To connect to head node (%s):", self.runtime.nodes.head)
         logger.info(
@@ -637,32 +638,17 @@ class SweepOrchestrator(
     def _run_post_eval(self, stop_event: threading.Event) -> int:
         """Run lm-eval after the main benchmark completes (or directly in eval-only mode)."""
         from srtctl.benchmarks import get_runner
-        from srtctl.core.health import wait_for_model
 
         # In eval-only mode the benchmark health check was skipped, so do the
         # full model-ready wait here.  In post-benchmark mode a quick port
         # check is sufficient since the server already served traffic.
         if os.environ.get("EVAL_ONLY", "false").lower() == "true":
-            r = self.config.resources
-            n_prefill = 0 if r.num_agg > 0 else r.num_prefill
-            n_decode = r.num_agg if r.num_agg > 0 else r.num_decode
-            hc = self.config.health_check
             logger.info("EVAL_ONLY: Waiting for server health before eval...")
-            if not wait_for_model(
-                host=self.runtime.nodes.head,
-                port=FRONTEND_PUBLIC_PORT,
-                n_prefill=n_prefill,
-                n_decode=n_decode,
-                poll_interval=float(hc.interval_seconds),
-                timeout=float(hc.max_attempts * hc.interval_seconds),
-                report_every=60.0,
-                frontend_type=self.config.frontend.type,
-                stop_event=stop_event,
-            ):
+            if not self._wait_for_service_ready(stop_event):
                 logger.error("Server did not become healthy for eval")
                 return 1
         else:
-            if not wait_for_port(self.runtime.nodes.head, FRONTEND_PUBLIC_PORT, timeout=30):
+            if not wait_for_port(self._public_api_node(), FRONTEND_PUBLIC_PORT, timeout=30):
                 logger.error("Server health check failed before eval - skipping")
                 return 1
 
@@ -778,7 +764,7 @@ class SweepOrchestrator(
         try:
             # Stage 1: Head infrastructure (NATS, etcd). Only the dynamo request
             # plane uses it; static/direct frontends skip it.
-            if self.config.frontend.type in {"trtllm_serve", "vllm"}:
+            if self.config.frontend.type in {"sglang", "trtllm_serve", "vllm", "vllm-router"}:
                 logger.info("Skipping NATS/etcd infrastructure (frontend.type=%s)", self.config.frontend.type)
             else:
                 reporter.report(JobStatus.STARTING, JobStage.HEAD_INFRASTRUCTURE, "Starting head infrastructure")
@@ -819,13 +805,25 @@ class SweepOrchestrator(
             for proc in frontend_procs:
                 registry.add_process(proc)
 
-            telemetry_procs = self.start_telemetry()
-            for proc in telemetry_procs:
+            if self.config.telemetry.enabled:
+                if os.environ.get("EVAL_ONLY", "false").lower() == "true":
+                    # Eval-only runs skip the benchmark stage, so every expected
+                    # measurement window would be missing and required telemetry
+                    # would fail an otherwise successful evaluation.
+                    logger.info("EVAL_ONLY=true: skipping dcgm-power telemetry (no benchmark to measure)")
+                else:
+                    self.start_power_telemetry(registry)
+                    self.start_cpu_power_telemetry(registry)
+
+            tachometer_procs = self.start_tachometer()
+            for proc in tachometer_procs:
                 registry.add_process(proc)
 
             self._print_connection_info()
 
-            if os.environ.get("EVAL_ONLY", "false").lower() == "true":
+            if self.serve_only:
+                exit_code = self.run_benchmark(registry, stop_event, reporter)
+            elif os.environ.get("EVAL_ONLY", "false").lower() == "true":
                 reporter.report(JobStatus.BENCHMARK, JobStage.BENCHMARK, "Running eval-only evaluation")
                 logger.info("EVAL_ONLY=true: Skipping benchmark stage and running lm-eval evaluation...")
                 exit_code = self._run_post_eval(stop_event)
@@ -833,6 +831,10 @@ class SweepOrchestrator(
                     logger.error("Eval-only evaluation failed with exit code %d", exit_code)
                 else:
                     logger.info("Eval-only evaluation completed successfully")
+            elif self.power_telemetry_blocks_benchmark():
+                logger.error("Required power telemetry failed startup - skipping the formal benchmark")
+                reporter.report(JobStatus.FAILED, JobStage.BENCHMARK, "Required power telemetry failed startup")
+                exit_code = 1
             else:
                 # Stage 4: Benchmark (status reported AFTER health check passes)
                 exit_code = self.run_benchmark(registry, stop_event, reporter)
@@ -854,6 +856,9 @@ class SweepOrchestrator(
 
         finally:
             logger.info("Cleanup")
+            # NOTE: finalize before registry.cleanup() so samples and manifest are durable.
+            exit_code = self.finalize_power_telemetry(exit_code, interrupted=stop_event.is_set())
+            exit_code = self.finalize_cpu_power_telemetry(exit_code, interrupted=stop_event.is_set())
             stop_event.set()
             registry.cleanup()
             if exit_code != 0:
@@ -876,6 +881,11 @@ def main():
 
     parser = argparse.ArgumentParser(description="Run benchmark sweep")
     parser.add_argument("config", type=str, help="Path to YAML configuration file")
+    parser.add_argument(
+        "--serve-only",
+        action="store_true",
+        help="Keep the inference endpoint running without launching a benchmark.",
+    )
     args = parser.parse_args()
 
     setup_logging()
@@ -902,7 +912,7 @@ def main():
         # Type narrowing: job_id is str after the check above
         assert job_id is not None
         runtime = RuntimeContext.from_config(config, job_id)
-        orchestrator = SweepOrchestrator(config=config, runtime=runtime)
+        orchestrator = SweepOrchestrator(config=config, runtime=runtime, serve_only=args.serve_only)
         exit_code = orchestrator.run()
 
         sys.exit(exit_code)

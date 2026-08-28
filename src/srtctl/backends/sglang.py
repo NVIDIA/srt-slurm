@@ -27,6 +27,7 @@ from srtctl.ports import (
     MOONCAKE_HTTP_METADATA_PORT,
     MOONCAKE_MASTER_PORT,
     SGLANG_DIST_INIT_PORT_BASE,
+    SGLANG_NCCL_PORT_BASE,
 )
 
 if TYPE_CHECKING:
@@ -172,7 +173,12 @@ class SGLangProtocol:
         """
         return {}
 
-    def get_mooncake_worker_env(self, infra_node_ip: str, local_hostname: str) -> dict[str, str]:
+    def get_mooncake_worker_env(
+        self,
+        infra_node_ip: str,
+        local_hostname: str,
+        mode: WorkerMode | None = None,
+    ) -> dict[str, str]:
         """Get mooncake env vars to inject on a specific worker.
 
         Returns empty dict if mooncake_kv_store is not configured. Otherwise:
@@ -187,7 +193,10 @@ class SGLangProtocol:
             infra_node_ip: Resolved IP of the infra node where mooncake_master runs.
             local_hostname: Resolved IP of the worker's own node, for peer-to-peer
                 transfers. Defaults to the worker's primary network interface IP.
+            mode: Worker role supplied by the shared worker launcher. SGLang has
+                one store configuration, so the role is intentionally unused.
         """
+        del mode
         if self.mooncake_kv_store is None:
             return {}
         return {
@@ -296,7 +305,8 @@ class SGLangProtocol:
             process: The process to start
             endpoint_processes: All processes for this endpoint (for multi-node)
             runtime: Runtime context with paths and settings
-            frontend_type: Frontend type - "sglang" uses sglang.launch_server, "dynamo" uses dynamo.sglang
+            frontend_type: Frontend type - "sglang" and "sidecar" use
+                sglang.launch_server; "dynamo" uses dynamo.sglang
             nsys_prefix: Optional nsys profiling command prefix
             dump_config_path: Path to dump config JSON
         """
@@ -310,6 +320,14 @@ class SGLangProtocol:
         config.pop("model_path", None)
         config.pop("served-model-name", None)
         config.pop("served_model_name", None)
+        # SGLang's dynamic default probes a free TCP port. On a node that
+        # launches several workers concurrently, those probes can race. Use a
+        # unique port derived from the topology-assigned system-status port.
+        config.pop("nccl-port", None)
+        config.pop("nccl_port", None)
+        nccl_port = SGLANG_NCCL_PORT_BASE + process.sys_port - DYN_SYSTEM_PORT_BASE
+        config.pop("grpc-port", None)
+        config.pop("grpc_port", None)
 
         # Determine if multi-node
         endpoint_nodes = list(dict.fromkeys(p.node for p in endpoint_processes))
@@ -320,7 +338,8 @@ class SGLangProtocol:
         dist_init_port = SGLANG_DIST_INIT_PORT_BASE
 
         # Choose Python module based on frontend type
-        use_sglang = frontend_type == "sglang"
+        sidecar_mode = frontend_type == "sidecar"
+        use_sglang = frontend_type in ("sglang", "sidecar")
         python_module = "sglang.launch_server" if use_sglang else "dynamo.sglang"
 
         # Get served model name from config
@@ -350,10 +369,20 @@ class SGLangProtocol:
 
         # Always pass --port when using sglang.launch_server or dynamo.sglang
         cmd.extend(["--port", str(process.http_port)])
+        cmd.extend(["--nccl-port", str(nccl_port)])
+        if sidecar_mode:
+            if process.grpc_port is None:
+                raise ValueError(f"No native gRPC port allocated for sidecar worker on {process.node}")
+            cmd.extend(["--grpc-port", str(process.grpc_port)])
 
         # Add disaggregation mode for prefill/decode workers (both dynamo and sglang frontend)
         if mode != "agg":
             cmd.extend(["--disaggregation-mode", mode])
+            if use_sglang:
+                # The native router and benchmark warmup exercise the real P/D
+                # path. SGLang's local synthetic warmup uses a placeholder peer
+                # and can block readiness until its long timeout.
+                cmd.append("--skip-server-warmup")
             # Always pass bootstrap port for prefill workers regardless of frontend type.
             # Dynamo does NOT handle this internally — SGLang's CommonKVBootstrapServer
             # still runs on every prefill node for KV transfer coordination, and workers

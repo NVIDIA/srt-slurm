@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Direct Docker bootstrap rendered by `srtctl apply --bash`.
+# The host Python runner owns Docker and starts the stdlib-only in-container
+# runner, which owns serving, telemetry, benchmarking, and ruter.
+
+set -Eeuo pipefail
+
+SRTCTL_PYTHON="${SRTCTL_PYTHON:-python3}"
+exec "${SRTCTL_PYTHON}" {{ quote(context.source_dir + "/src/srtctl/render/direct_host_runner.py") }} --plan - <<'{{ direct_host_plan_marker }}'
+{{ context.direct_host_plan_json }}
+{{ direct_host_plan_marker }}

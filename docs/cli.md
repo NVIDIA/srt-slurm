@@ -34,6 +34,9 @@ srtctl
 # Submit a job directly
 srtctl apply -f recipes/gb200-fp8/sglang-1p4d.yaml
 
+# Deploy the recipe and keep its inference endpoint available until cancellation
+srtctl apply -f recipes/gb200-fp8/sglang-1p4d.yaml --serve-only
+
 # Preview without submitting
 srtctl dry-run -f config.yaml
 
@@ -249,6 +252,8 @@ srtctl apply -f <config.yaml> [options]
 | `--sweep` | Force sweep mode (usually auto-detected) |
 | `--setup-script` | Custom setup script from `configs/` |
 | `--tags` | Comma-separated tags for the run |
+| `--serve-only` | Deploy the endpoint without running a benchmark; serve until cancellation |
+| `--bash` | Print a direct single-node lifecycle script to stdout without submitting |
 | `-y, --yes` | Skip confirmation prompts |
 
 **Examples:**
@@ -256,6 +261,9 @@ srtctl apply -f <config.yaml> [options]
 ```bash
 # Submit single job
 srtctl apply -f recipes/gb200-fp8/sglang-1p4d.yaml
+
+# Serve the same recipe without running its configured benchmark
+srtctl apply -f recipes/gb200-fp8/sglang-1p4d.yaml --serve-only
 
 # Submit sweep (auto-detected from sweep: section)
 srtctl apply -f configs/my-sweep.yaml
@@ -269,9 +277,28 @@ srtctl apply -f config.yaml:override_tp64
 # Submit only the base config (ignore overrides)
 srtctl apply -f config.yaml:base
 
+# Render and run one single-node recipe through Docker
+srtctl apply -f config.yaml -o /absolute/path/to/runs --bash > job.sh
+chmod +x job.sh
+./job.sh
+
 # With tags
 srtctl apply -f config.yaml --tags "experiment-1,baseline"
 ```
+
+`--serve-only` submits the recipe normally, waits until the configured workers and frontend are healthy, prints
+the frontend URL in the sweep log, and keeps the service running until the job is cancelled or reaches its Slurm
+time limit. It ignores the recipe's configured benchmark for that submission. Use `scancel <job-id>` to stop the
+service; srtctl then cleans up the processes it started.
+
+`--bash` renders a small direct-host launcher; it is not an sbatch script. The launcher owns a Docker serving
+container and runs the serving lifecycle inside the selected SGLang image. It currently supports a one-node
+SGLang backend with the Dynamo frontend, `frontend.enable_multiple_frontends: false`, and one
+`benchmark.type: custom` command. It requires Docker with GPU support, an absolute `SRTCTL_SGLANG_SOURCE`,
+`SRTCTL_LOCAL_CONTAINER_IMAGE`, and either `dynamo.hash` or `dynamo.top_of_tree: true`. `dynamo.engine_mode: sidecar` runs stock SGLang plus a cached Rust Dynamo connector. The run creates
+separate worker, router, Tachometer, and benchmark logs, gates load on worker/router readiness and a
+chat-completions smoke request, then cleans up only containers and process groups it owns. See
+[Direct Host Lifecycle](direct-host.md) for the complete setup and the included 3P2D Dynamo recipe.
 
 ### `srtctl dry-run`
 
@@ -427,4 +454,3 @@ grep -E "Env:|Command:" outputs/<job_id>/logs/sweep_<job_id>.log
 - Use `srtctl apply -f` for scripting and CI pipelines
 - Always `dry-run` first for sweeps to check job count
 - Check `outputs/<job_id>/` for submitted configs and metadata
-

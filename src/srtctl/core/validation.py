@@ -77,6 +77,14 @@ class PreflightResult:
         }
 
 
+def _is_registry_uri(value: str) -> bool:
+    # Mirrors the runtime classification in runtime.py (RuntimeContext.from_config):
+    # anything not starting with "/" or "./" is forwarded to ``srun --container-image``,
+    # which Pyxis/enroot pulls on first use. The ":" guard distinguishes a URI
+    # (registry/...:tag or scheme://...) from a typo'd local relative path.
+    return not value.startswith(("/", "./")) and ":" in value
+
+
 def _expand_path(value: str) -> str:
     return os.path.expanduser(os.path.expandvars(value))
 
@@ -210,13 +218,8 @@ def _preflight_container(
         )
 
     # Container image URIs (e.g. "nvcr.io/nvidia/sglang-runtime:0.8.1",
-    # "vllm/vllm-openai:latest", "docker://...").  Mirrors the runtime
-    # classification in runtime.py (RuntimeContext.from_config): anything
-    # not starting with "/" or "./" is forwarded to ``srun
-    # --container-image``, which Pyxis/enroot pulls on first use.  The
-    # ":" guard distinguishes a URI (registry/...:tag or scheme://...)
-    # from a typo'd local relative path.
-    if isinstance(raw, str) and not raw.startswith(("/", "./")) and ":" in raw:
+    # "vllm/vllm-openai:latest", "docker://...").
+    if isinstance(raw, str) and _is_registry_uri(raw):
         return (
             PreflightResolution(
                 field="model.container",
@@ -271,10 +274,12 @@ def _preflight_container(
     )
 
 
-_TELEMETRY_IMAGE_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("telemetry.container_image", ("container_image",)),
+_TACHOMETER_IMAGE_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("observability.tachometer.dcgm_exporter.container_image", ("dcgm_exporter", "container_image")),
+    ("observability.tachometer.node_exporter.container_image", ("node_exporter", "container_image")),
+)
+_POWER_IMAGE_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("telemetry.dcgm_exporter.container_image", ("dcgm_exporter", "container_image")),
-    ("telemetry.node_exporter.container_image", ("node_exporter", "container_image")),
 )
 
 
@@ -283,38 +288,56 @@ def _preflight_telemetry(
     resolved_config: dict[str, Any],
     cluster_config: dict[str, Any] | None,
 ) -> list[PreflightIssue]:
-    telemetry = resolved_config.get("telemetry") or {}
-    if not telemetry.get("enabled"):
-        return []
-
     aliases = (cluster_config or {}).get("containers") or {}
-    raw_telemetry = raw_config.get("telemetry") or {}
     issues: list[PreflightIssue] = []
 
-    for field, path in _TELEMETRY_IMAGE_FIELDS:
-        resolved_value: Any = telemetry
-        raw_value: Any = raw_telemetry
-        for key in path:
-            resolved_value = (resolved_value or {}).get(key) if isinstance(resolved_value, dict) else None
-            raw_value = (raw_value or {}).get(key) if isinstance(raw_value, dict) else None
-        if not resolved_value:
-            continue  # schema-level validator handles required-when-enabled
+    raw_observability = raw_config.get("observability") or {}
+    resolved_observability = resolved_config.get("observability") or {}
+    sources = (
+        (
+            "Tachometer",
+            raw_observability.get("tachometer") if isinstance(raw_observability, dict) else None,
+            resolved_observability.get("tachometer") if isinstance(resolved_observability, dict) else None,
+            _TACHOMETER_IMAGE_FIELDS,
+            "tachometer-container-not-available",
+        ),
+        (
+            "Telemetry",
+            raw_config.get("telemetry"),
+            resolved_config.get("telemetry"),
+            _POWER_IMAGE_FIELDS,
+            "telemetry-container-not-available",
+        ),
+    )
 
-        ok, _ = _check_path(_expand_path(resolved_value), expect="file")
-        if ok:
+    for label, raw_block, resolved_block, fields, code in sources:
+        if not isinstance(resolved_block, dict) or not resolved_block.get("enabled"):
             continue
+        raw_block = raw_block if isinstance(raw_block, dict) else {}
+        for field, path in fields:
+            resolved_value: Any = resolved_block
+            raw_value: Any = raw_block
+            for key in path:
+                resolved_value = (resolved_value or {}).get(key) if isinstance(resolved_value, dict) else None
+                raw_value = (raw_value or {}).get(key) if isinstance(raw_value, dict) else None
+            if not resolved_value or _is_registry_uri(str(resolved_value)):
+                continue
 
-        if raw_value in aliases:
-            message = (
-                f"Telemetry alias '{raw_value}' resolved to '{resolved_value}', but that file is unavailable. "
-                "Provide or register the container yourself before submitting."
-            )
-        else:
-            message = (
-                f"Telemetry container '{resolved_value}' is not a local container path and is not defined "
-                "in srtslurm.yaml containers. Provide or register the container yourself before submitting."
-            )
-        issues.append(PreflightIssue(code="telemetry-container-not-available", field=field, message=message))
+            ok, _ = _check_path(_expand_path(resolved_value), expect="file")
+            if ok:
+                continue
+
+            if raw_value in aliases:
+                message = (
+                    f"{label} alias '{raw_value}' resolved to '{resolved_value}', but that file is unavailable. "
+                    "Provide or register the container yourself before submitting."
+                )
+            else:
+                message = (
+                    f"{label} container '{resolved_value}' is not a local container path and is not defined "
+                    "in srtslurm.yaml containers. Provide or register the container yourself before submitting."
+                )
+            issues.append(PreflightIssue(code=code, field=field, message=message))
 
     return issues
 

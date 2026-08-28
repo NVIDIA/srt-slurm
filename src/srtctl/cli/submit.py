@@ -60,6 +60,10 @@ from srtctl.core.schema import SrtConfig, installs_dynamo
 from srtctl.core.status import create_job_record
 from srtctl.core.validation import preflight_config_variants
 from srtctl.ports import MOONCAKE_MASTER_PORT
+from srtctl.render.direct_plan import (
+    build_direct_plan_context,
+    render_direct_container_shim,
+)
 
 console = Console()
 _SLURM_JOB_NAME_MAX_LEN = 128
@@ -223,6 +227,20 @@ def show_config_details(config: SrtConfig) -> None:
     environment variables (global and backend per-mode) so users can verify their
     config is correct before submitting.
     """
+    if config.frontend.type == "vllm":
+        from srtctl.backends.vllm import VLLMProtocol, find_vllm_orchestration_recipe_flags
+
+        if isinstance(config.backend, VLLMProtocol):
+            orchestration_flags = find_vllm_orchestration_recipe_flags(config.backend)
+            if orchestration_flags:
+                for mode_name, flag_name in orchestration_flags:
+                    console.print(
+                        "[yellow]WARNING:[/] "
+                        f"vllm_config.{mode_name}.{flag_name} is set in the recipe but srtslurm "
+                        "derives this from the job topology at runtime; remove it from the recipe "
+                        "to avoid confusion (the configured value is ignored)."
+                    )
+
     # --- Container Mounts ---
     mounts_table = Table(title="Container Mounts", show_lines=False, pad_edge=False)
     mounts_table.add_column("Source", style="dim", width=14)
@@ -257,7 +275,35 @@ def show_config_details(config: SrtConfig) -> None:
         for host_template, container_template in config.container_mounts.items():
             mounts_table.add_row("recipe", str(host_template), str(container_template))
 
+    # InferenceX workspace, mounted by RuntimeContext.from_config when
+    # INFMAX_WORKSPACE is set in the submitting environment (core/runtime.py).
+    #
+    # It comes from the environment rather than the recipe, which is exactly why it has
+    # to be shown: nothing in the config file mentions it, so a reader comparing recipe
+    # to dry-run sees a complete picture and is wrong. Recipes whose benchmark command
+    # lives under /infmax-workspace (the agentic suites) fail with exit 127 twelve
+    # minutes in when it is missing, and the dry-run gave no hint either way -- the
+    # table listed every other mount, which made its absence read as "no such mount
+    # exists" rather than "not set".
+    infmax_ws = os.environ.get("INFMAX_WORKSPACE")
+    if infmax_ws:
+        mounts_table.add_row("INFMAX_WORKSPACE", infmax_ws, "/infmax-workspace")
+    elif "/infmax-workspace" in str(config.benchmark.command or ""):
+        mounts_table.add_row(
+            "[red]MISSING[/]",
+            "[red]INFMAX_WORKSPACE is not set in this environment[/]",
+            "[red]/infmax-workspace[/]",
+        )
+
     console.print(Panel(mounts_table, border_style="green"))
+
+    if not infmax_ws and "/infmax-workspace" in str(config.benchmark.command or ""):
+        console.print(
+            "[red bold]ERROR:[/] this recipe runs its benchmark from /infmax-workspace, "
+            "but INFMAX_WORKSPACE is not set, so that mount will be absent and the "
+            "benchmark command will fail with exit 127 after the workers have loaded. "
+            "Export INFMAX_WORKSPACE=<path to the InferenceX checkout> before submitting."
+        )
 
     # --- SLURM heterogeneous job structure ---
     het_components = config.resources.het_components(
@@ -342,6 +388,8 @@ def show_config_details(config: SrtConfig) -> None:
     show_extensions = (
         config.benchmark.type == "custom"
         or config.benchmark.container_image
+        or config.observability.enabled
+        or config.observability.tachometer.enabled
         or config.telemetry.enabled
         or mooncake_cfg is not None
     )
@@ -363,11 +411,20 @@ def show_config_details(config: SrtConfig) -> None:
         if config.benchmark.container_image:
             details.add_row("benchmark", "container_image", config.benchmark.container_image)
 
+        tachometer = config.observability.tachometer
+        if config.observability.tachometer_enabled:
+            details.add_row("observability", "tachometer", "enabled")
+            details.add_row("observability", "storage_subdir", tachometer.storage_subdir)
+            details.add_row("observability", "frequency", str(tachometer.default_frequency))
+            details.add_row("observability", "binary_path", tachometer.binary_path)
+
         if config.telemetry.enabled:
-            details.add_row("telemetry", "provider", config.telemetry.provider.value)
-            details.add_row("telemetry", "container_image", config.telemetry.container_image or "<unset>")
-            details.add_row("telemetry", "storage_subdir", config.telemetry.storage_subdir)
-            details.add_row("telemetry", "frequency", str(config.telemetry.default_frequency))
+            exporter = config.telemetry.dcgm_exporter
+            details.add_row("telemetry", "provider", "dcgm-power")
+            details.add_row("telemetry", "required", str(config.telemetry.required))
+            details.add_row("telemetry", "artifacts", f"<log_dir>/{config.telemetry.storage_subdir}")
+            if exporter is not None:
+                details.add_row("telemetry", "dcgm_exporter", f"{exporter.container_image} (port {exporter.port})")
 
         if mooncake_cfg is not None:
             details.add_row("mooncake", "container", mooncake_cfg.container or "<job container>")
@@ -398,7 +455,7 @@ def show_config_details(config: SrtConfig) -> None:
 def validate_setup(srtctl_source: Path) -> None:
     """Validate that make setup has been run and required binaries exist.
 
-    Checks for NATS, etcd, and compute-arch uv binaries. Raises SystemExit
+    Checks for NATS, etcd, Tachometer, and compute-arch uv binaries. Raises SystemExit
     with a clear error message if anything is missing.
     """
     missing = []
@@ -410,6 +467,8 @@ def validate_setup(srtctl_source: Path) -> None:
         missing.append("configs/etcd")
     if not (srtctl_source / "bin" / "uv").exists():
         missing.append("bin/uv (compute-arch uv)")
+    if not (srtctl_source / "bin" / "tachometer-scraper").exists():
+        missing.append("bin/tachometer-scraper (compute-arch Tachometer scraper)")
 
     if missing:
         console.print(f"\n[red bold]ERROR:[/] Required binaries not found in {srtctl_source}:")
@@ -428,6 +487,7 @@ def generate_minimal_sbatch_script(
     setup_script: str | None = None,
     output_dir: Path | None = None,
     runtime_config_filename: str = "config.yaml",
+    serve_only: bool = False,
 ) -> str:
     """Generate minimal sbatch script that calls the Python orchestrator.
 
@@ -440,6 +500,7 @@ def generate_minimal_sbatch_script(
         setup_script: Optional setup script override (passed via env var)
         output_dir: Custom output directory (CLI flag, highest priority)
         runtime_config_filename: Config file name under OUTPUT_DIR used by do_sweep
+        serve_only: Keep the inference endpoint running without launching a benchmark
 
     Returns:
         Rendered sbatch script as string
@@ -472,11 +533,31 @@ def generate_minimal_sbatch_script(
         infra_dedicated=config.infra.etcd_nats_dedicated_node,
         cluster_default=get_srtslurm_setting("use_het_jobs", False),
     )
+    if het_components is not None and (config.frontend.dedicated_node or config.benchmark.client_dedicated_node):
+        # SrtConfig validation only catches resources.het_jobs: true explicitly
+        # set in the recipe — it can't see a cluster-level use_het_jobs default,
+        # which is only resolved here via het_components(). Catch the combo now,
+        # before sbatch submits a heterogeneous allocation that Nodes.from_slurm
+        # will then reject at job startup after the nodes are already granted.
+        raise ValueError(
+            "frontend.dedicated_node/benchmark.client_dedicated_node are not supported with heterogeneous "
+            "SLURM jobs, and this job resolved to heterogeneous (either resources.het_jobs: true or the "
+            "cluster's use_het_jobs default)"
+        )
     if het_components is None:
         total_nodes = config.total_nodes
-        # Add extra node for dedicated etcd/nats infrastructure
-        if config.infra.etcd_nats_dedicated_node:
-            total_nodes += 1
+        # Add extra node(s) for any dedicated-node role requested (etcd/nats,
+        # frontend, benchmark client). Colocated roles share one reserved node;
+        # otherwise each gets its own.
+        num_dedicated_roles = sum(
+            (
+                config.infra.etcd_nats_dedicated_node,
+                config.frontend.dedicated_node,
+                config.benchmark.client_dedicated_node,
+            )
+        )
+        if num_dedicated_roles > 0:
+            total_nodes += 1 if config.benchmark.colocate_with_frontend else num_dedicated_roles
     else:
         # Sum is informational only — the template iterates het_components and
         # ignores total_nodes when het_components is set.
@@ -512,20 +593,24 @@ def generate_minimal_sbatch_script(
         srtctl_source=str(srtctl_source.resolve()),
         output_base=output_base,
         setup_script=setup_script,
+        serve_only=serve_only,
         config_environment={key: shlex.quote(str(value)) for key, value in config_environment.items()},
     )
 
     return rendered
 
 
-def _print_running_summary(config: SrtConfig, console: Console) -> None:
+def _print_running_summary(config: SrtConfig, console: Console, *, serve_only: bool = False) -> None:
     """Print what's being run and identity verification status."""
     console.print()
     console.print("[bold]Running:[/]")
     console.print(f"  Model:     {config.model.path}")
     console.print(f"  Container: {config.model.container}")
     console.print(f"  Backend:   {config.backend_type}")
-    console.print(f"  Benchmark: {config.benchmark.type}")
+    if serve_only:
+        console.print("  Mode:      Serve only (no benchmark)")
+    else:
+        console.print(f"  Benchmark: {config.benchmark.type}")
 
     has_identity = config.identity and (
         (config.identity.model and (config.identity.model.repo or config.identity.model.revision))
@@ -581,6 +666,7 @@ def submit_with_orchestrator(
     variant_suffix: str | None = None,
     source_config_path: Path | None = None,
     runtime_config_text: str | None = None,
+    serve_only: bool = False,
 ) -> str | None:
     """Submit job using the new Python orchestrator.
 
@@ -599,6 +685,7 @@ def submit_with_orchestrator(
                             while the job executes a resolved variant config.
         runtime_config_text: Resolved runtime YAML written under OUTPUT_DIR when
                              source_config_path is set.
+        serve_only: Keep the inference endpoint running without launching a benchmark.
 
     Returns:
         job_id string on success, None for dry_run.
@@ -621,6 +708,7 @@ def submit_with_orchestrator(
         setup_script=setup_script,
         output_dir=output_dir,
         runtime_config_filename=runtime_config_filename,
+        serve_only=serve_only,
     )
 
     # Identity validation (inline, <1s) — runs for both dry-run and submit
@@ -649,7 +737,7 @@ def submit_with_orchestrator(
         show_config_details(config)
 
         # Show running summary + identity in dry-run too
-        _print_running_summary(config, console)
+        _print_running_summary(config, console, serve_only=serve_only)
         return
 
     # Validate setup before submitting (not during dry-run)
@@ -740,6 +828,8 @@ def submit_with_orchestrator(
                 "osl": config.benchmark.osl,
             },
         }
+        if serve_only:
+            metadata["serve_only"] = True
         if tags:
             metadata["tags"] = tags
         if config.setup_script:
@@ -784,7 +874,7 @@ def submit_with_orchestrator(
         console.print(f"[dim]📋 Monitor:[/] tail -f {log}")
         console.print(f"[dim]📊 Queue:[/] squeue --job {job_id}")
 
-        _print_running_summary(config, console)
+        _print_running_summary(config, console, serve_only=serve_only)
 
         return job_id
 
@@ -810,6 +900,7 @@ def submit_single(
     source_config_path: Path | None = None,
     runtime_config_text: str | None = None,
     enforce_preflight: bool = True,
+    serve_only: bool = False,
 ) -> str | None:
     """Submit a single job from YAML config.
 
@@ -827,6 +918,7 @@ def submit_single(
                             resolved variant config.
         runtime_config_text: Resolved runtime YAML written under OUTPUT_DIR for
                              override submissions.
+        serve_only: Keep the inference endpoint running without launching a benchmark.
 
     Returns:
         job_id string on success, None for dry_run.
@@ -859,6 +951,7 @@ def submit_single(
         variant_suffix=variant_suffix,
         source_config_path=source_config_path,
         runtime_config_text=runtime_config_text,
+        serve_only=serve_only,
     )
 
 
@@ -1172,6 +1265,69 @@ def materialize_config_path(config_path: Path):
             os.remove(temp_path)
 
 
+def render_bash_script(
+    config_path: Path,
+    selector: str | None = None,
+    setup_script: str | None = None,
+    output_dir: Path | None = None,
+) -> str:
+    """Render a directly executable, single-node lifecycle script.
+
+    ``--bash`` deliberately bypasses the SLURM orchestration path. The emitted
+    file starts only processes it owns on the current host, writes separate
+    logs, gates load on readiness, and cleans up those process groups on exit.
+    """
+    if config_path.is_dir():
+        raise ValueError("--bash expects a single config file, not a directory")
+
+    srtctl_root = get_srtslurm_setting("srtctl_root")
+    source_dir = Path(srtctl_root) if srtctl_root else Path(__file__).parent.parent.parent.parent
+    if output_dir:
+        output_base = output_dir.resolve()
+    else:
+        configured_output_dir = get_srtslurm_setting("output_dir")
+        output_base = (
+            Path(os.path.expandvars(configured_output_dir)).resolve()
+            if configured_output_dir
+            else (source_dir / "outputs").resolve()
+        )
+
+    def render(config: SrtConfig) -> str:
+        context = build_direct_plan_context(
+            config,
+            source_dir=source_dir,
+            output_base=output_base,
+        )
+        return render_direct_container_shim(context)
+
+    if is_override_config(config_path):
+        from srtctl.core.config import resolve_override_yaml
+
+        resolved_variants = resolve_override_yaml(config_path, selector=selector)
+        if len(resolved_variants) != 1:
+            raise ValueError(
+                "--bash for override configs requires a selector that resolves to exactly one variant "
+                "(for example: -f config.yaml:base or -f config.yaml:override_name)"
+            )
+
+        _suffix, config_cm = resolved_variants[0]
+        if "sweep" in config_cm:
+            raise ValueError("--bash does not support override variants that contain a sweep")
+
+        resolved_config = resolve_config_with_defaults(config_cm, load_cluster_config())
+        config = SrtConfig.Schema().load(resolved_config)
+        return render(config)
+
+    if selector:
+        logger.warning(f"Selector ':{selector}' ignored — config is not an override file")
+
+    if is_sweep_config(config_path):
+        raise ValueError("--bash currently supports single-job configs only; sweeps expand to multiple direct runs")
+
+    config = load_config(config_path)
+    return render(config)
+
+
 def submit_override(
     config_path: Path,
     selector: str | None = None,
@@ -1180,6 +1336,7 @@ def submit_override(
     tags: list[str] | None = None,
     output_dir: Path | None = None,
     enforce_preflight: bool = True,
+    serve_only: bool = False,
 ) -> None:
     """Expand an override config file and submit each variant.
 
@@ -1196,6 +1353,7 @@ def submit_override(
         enforce_preflight: When False, skip the pre-submit model/container/telemetry
             FS checks for every expanded variant (propagated to submit_single /
             submit_sweep).
+        serve_only: Keep the inference endpoint running without launching a benchmark.
     """
     with open(config_path) as f:
         raw_config = yaml.safe_load(f)
@@ -1218,6 +1376,8 @@ def submit_override(
     from srtctl.core.yaml_utils import dump_yaml_with_comments
 
     resolved_variants = resolve_override_yaml(config_path, selector=selector)
+    if serve_only and len(resolved_variants) != 1:
+        raise ValueError("--serve-only requires an override selector that resolves to exactly one job")
 
     for i, (suffix, config_cm) in enumerate(resolved_variants, 1):
         variant_label = "base" if suffix == "base" else f"override_{suffix}"
@@ -1235,6 +1395,8 @@ def submit_override(
         config = SrtConfig.Schema().load(resolved_config)
 
         if "sweep" in config_cm:
+            if serve_only:
+                raise ValueError("--serve-only does not support sweep configs")
             fd, temp_config_path = tempfile.mkstemp(suffix=".yaml", prefix="srtctl_override_", text=True)
             try:
                 with os.fdopen(fd, "w") as f:
@@ -1262,6 +1424,7 @@ def submit_override(
                 source_config_path=config_path,
                 runtime_config_text=runtime_config_text,
                 enforce_preflight=enforce_preflight,
+                serve_only=serve_only,
             )
 
 
@@ -1322,6 +1485,8 @@ def main():
         epilog="""Examples:
   srtctl                                         # Interactive mode
   srtctl apply -f config.yaml                    # Submit job
+  srtctl apply -f config.yaml --serve-only       # Serve until cancelled; do not benchmark
+  srtctl apply -f config.yaml --bash             # Print a direct single-node Bash lifecycle script
   srtctl apply -f ./configs/                     # Submit all YAMLs in directory
   srtctl apply -f config.yaml --sweep            # Submit sweep
   srtctl preflight -f config.yaml                # Check model/container availability
@@ -1330,6 +1495,7 @@ def main():
   srtctl resolve-override -f config.yaml --stdout  # Print to stdout
   srtctl monitor                                 # Live job dashboard
   srtctl monitor --outputs /path/to/outputs      # Dashboard with custom outputs dir
+  srtctl view /path/to/run-output                # Local ruter route-decision viewer
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1353,6 +1519,17 @@ def main():
     add_common_args(apply_parser)
     apply_parser.add_argument("--setup-script", type=str, help="Custom setup script in configs/")
     apply_parser.add_argument("--tags", type=str, help="Comma-separated tags")
+    apply_parser.add_argument(
+        "--serve-only",
+        action="store_true",
+        help="Deploy the inference endpoint without running a benchmark; keep serving until the job is cancelled.",
+    )
+    apply_parser.add_argument(
+        "--bash",
+        action="store_true",
+        dest="bash_output",
+        help="Print a direct single-node Bash lifecycle script to stdout and exit without submitting.",
+    )
     apply_parser.add_argument(
         "--json",
         action="store_true",
@@ -1408,6 +1585,13 @@ def main():
     monitor_parser = subparsers.add_parser("monitor", help="Live dashboard for srt-slurm jobs", add_help=False)
     monitor_parser.add_argument("args", nargs=argparse.REMAINDER)
 
+    view_parser = subparsers.add_parser("view", help="Serve the local ruter route-decision viewer")
+    view_parser.add_argument(
+        "root", nargs="?", type=Path, default=Path("."), help="srt-slurm run directory or logs/.ruter"
+    )
+    view_parser.add_argument("--port", type=int, default=8877, help="Loopback port (default: 8877)")
+    view_parser.add_argument("--refresh", action="store_true", help="Reparse logs before loading the viewer")
+
     resolve_parser = subparsers.add_parser(
         "resolve-override",
         help="Resolve override YAML into specialised files without submitting",
@@ -1441,13 +1625,28 @@ def main():
 
     json_mode = bool(getattr(args, "json_output", False))
     mock_mode = bool(getattr(args, "mock_mode", False))
+    bash_mode = bool(getattr(args, "bash_output", False))
+    serve_only = bool(getattr(args, "serve_only", False))
+    if bash_mode and json_mode:
+        parser.error("--bash cannot be combined with --json")
+    if bash_mode and mock_mode:
+        parser.error("--bash cannot be combined with --mock")
+    if bash_mode and getattr(args, "sweep", False):
+        parser.error("--bash currently supports single-job configs only; sweeps expand to multiple sbatch jobs")
+    if serve_only and bash_mode:
+        parser.error("--serve-only cannot be combined with --bash")
+    if serve_only and mock_mode:
+        parser.error("--serve-only cannot be combined with --mock")
+    if serve_only and getattr(args, "sweep", False):
+        parser.error("--serve-only does not support sweeps")
+
     # Always rebind the module console on each invocation so json-mode prose
     # goes to stderr and non-json prose returns to stdout. Save the original
     # so we can restore it on exit — direct library callers of submit_single /
     # submit_override (tests, etc.) must not see a leaked stderr binding.
     global console
     _original_console = console
-    console = Console(file=sys.stderr) if json_mode else Console()
+    console = Console(file=sys.stderr) if json_mode or bash_mode else Console()
 
     def restore_console() -> None:
         global console
@@ -1525,6 +1724,15 @@ def main():
         _monitor_main()
         return
 
+    if args.command == "view":
+        from srtctl.ruter.view import main as _view_main
+
+        view_args = [str(args.root), "--port", str(args.port)]
+        if args.refresh:
+            view_args.append("--refresh")
+        _view_main(view_args)
+        return
+
     # Parse config arg: supports path:selector format for overrides
     config_path, selector = parse_config_arg(args.config)
 
@@ -1578,6 +1786,20 @@ def main():
             setup_script = getattr(args, "setup_script", None)
             output_dir = getattr(args, "output_dir", None)
 
+            if bash_mode:
+                script_content = render_bash_script(
+                    effective_config_path,
+                    selector=selector,
+                    setup_script=setup_script,
+                    output_dir=output_dir,
+                )
+                sys.stdout.write(script_content)
+                if not script_content.endswith("\n"):
+                    sys.stdout.write("\n")
+                sys.stdout.flush()
+                restore_console()
+                return
+
             # --no-preflight is only registered on the apply parser, so
             # dry-run / preflight / resolve-override won't carry it. Default
             # to False on those subcommands; dry-run already implies no
@@ -1587,6 +1809,8 @@ def main():
 
             # Handle directory input
             if effective_config_path.is_dir():
+                if serve_only:
+                    raise ValueError("--serve-only expects a single config file, not a directory")
                 if selector:
                     logger.warning(f"Selector ':{selector}' ignored for directory input")
                 submit_directory(
@@ -1607,12 +1831,15 @@ def main():
                     tags=tags,
                     output_dir=output_dir,
                     enforce_preflight=enforce_preflight,
+                    serve_only=serve_only,
                 )
             else:
                 if selector:
                     logger.warning(f"Selector ':{selector}' ignored — config is not an override file")
                 is_sweep = args.sweep or is_sweep_config(effective_config_path)
                 if is_sweep:
+                    if serve_only:
+                        raise ValueError("--serve-only does not support sweep configs")
                     submit_sweep(
                         effective_config_path,
                         dry_run=is_dry_run,
@@ -1629,6 +1856,7 @@ def main():
                         tags=tags,
                         output_dir=output_dir,
                         enforce_preflight=enforce_preflight,
+                        serve_only=serve_only,
                     )
     except Exception as e:
         # Restore subprocess.run etc. before we exit so in-process test

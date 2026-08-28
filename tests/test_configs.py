@@ -14,8 +14,10 @@ from srtctl.core.schema import SrtConfig
 from srtctl.ports import (
     KV_EVENTS_PORT_BASE,
     SGLANG_BOOTSTRAP_PORT_BASE,
+    SGLANG_GRPC_PORT_BASE,
     SGLANG_HTTP_PORT_BASE,
     SGLANG_HTTP_PORT_STRIDE,
+    SGLANG_NCCL_PORT_BASE,
     VLLM_DATA_PARALLEL_RPC_PORT,
     VLLM_NIXL_PORT_BASE,
 )
@@ -174,6 +176,54 @@ class TestDynamoConfig:
         assert "pip install" in cmd
         assert "ai-dynamo-runtime==0.8.0" in cmd
         assert "ai-dynamo==0.8.0" in cmd
+
+    def test_sidecar_version_builds_cached_binary_from_matching_release_tag(self):
+        """A pip version maps the Rust sidecar build to its Dynamo release tag."""
+        from srtctl.core.schema import DynamoConfig
+
+        config = DynamoConfig(version="1.3.0", engine_mode="sidecar")
+        install = config.get_install_commands()
+        sidecar = config.get_sidecar_build_commands("sglang")
+
+        assert "ai-dynamo-runtime==1.3.0" in install
+        assert "dynamo-sglang-sidecar" in sidecar
+        assert "refs/tags/v1.3.0" in sidecar
+        assert "git ls-remote" in sidecar
+        assert 'git checkout "$DYN_SIDECAR_REVISION"' in sidecar
+        assert "cargo build --release --locked -p dynamo-sglang-sidecar" in sidecar
+        assert "source-revision" in sidecar
+        assert "$(uname -m)" in sidecar
+
+    def test_sidecar_hash_builds_supplied_commit(self):
+        """An explicit hash is used directly without a separate resolution step."""
+        from srtctl.core.schema import DynamoConfig
+
+        revision = "a" * 40
+        sidecar = DynamoConfig(hash=revision, engine_mode="sidecar").get_sidecar_build_commands("sglang")
+
+        assert f"DYN_SIDECAR_REVISION={revision}" in sidecar
+        assert "git ls-remote" not in sidecar
+
+    def test_sidecar_top_of_tree_resolves_main_in_the_worker_build(self):
+        """Top-of-tree keeps the existing frontend install and snapshots main for the sidecar cache."""
+        from srtctl.core.schema import DynamoConfig
+
+        config = DynamoConfig(top_of_tree=True, engine_mode="sidecar")
+        install = config.get_install_commands()
+        sidecar = config.get_sidecar_build_commands("sglang")
+
+        assert "Installing dynamo from source (HEAD)" in install
+        assert "refs/heads/main" in sidecar
+        assert "git ls-remote" in sidecar
+
+    def test_sidecar_rejects_unproven_staged_wheel_and_disabled_install(self):
+        """The initial sidecar mode only accepts Dynamo selections with source provenance."""
+        from srtctl.core.schema import DynamoConfig
+
+        with pytest.raises(ValueError, match="does not support dynamo.wheel"):
+            DynamoConfig(wheel="1.3.0", engine_mode="sidecar")
+        with pytest.raises(ValueError, match="requires dynamo.install"):
+            DynamoConfig(install=False, engine_mode="sidecar")
 
     def test_wheel_install_command(self):
         """Wheel config installs ai-dynamo plus runtime without source build."""
@@ -561,6 +611,76 @@ class TestSGLangProtocol:
         assert config.is_grpc_mode("decode") is True
         assert config.is_grpc_mode("agg") is False
 
+    def test_worker_command_assigns_deterministic_nccl_port(self):
+        """Each SGLang server gets a unique rendezvous port from its sys port."""
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.core.topology import Process
+
+        process = Process(
+            node="node0",
+            gpu_indices=frozenset({5}),
+            sys_port=7505,
+            http_port=6105,
+            endpoint_mode="agg",
+            endpoint_index=5,
+            node_rank=5,
+        )
+        runtime = MagicMock()
+        runtime.model_path = Path("/model")
+        runtime.is_hf_model = False
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            command = SGLangProtocol().build_worker_command(process, [process], runtime)
+
+        assert command[command.index("--nccl-port") + 1] == str(SGLANG_NCCL_PORT_BASE + 5)
+
+    def test_sidecar_launches_native_sglang_grpc_once(self, monkeypatch):
+        """Sidecar mode uses stock SGLang and owns the native gRPC port."""
+        from types import SimpleNamespace
+
+        from srtctl.core.topology import Process
+
+        backend = SGLangProtocol(sglang_config=SGLangServerConfig(aggregated={"grpc-port": 9999}))
+        process = Process(
+            node="node0",
+            gpu_indices=frozenset(range(8)),
+            sys_port=7500,
+            http_port=6100,
+            grpc_port=SGLANG_GRPC_PORT_BASE,
+            endpoint_mode="agg",
+            endpoint_index=0,
+        )
+        runtime = SimpleNamespace(model_path=Path("/model"), is_hf_model=False, request_plane="tcp")
+        monkeypatch.setattr("srtctl.core.slurm.get_hostname_ip", lambda _node: "10.0.0.1")
+
+        command = backend.build_worker_command(process, [process], runtime, frontend_type="sidecar")
+
+        assert command[:3] == ["python3", "-m", "sglang.launch_server"]
+        assert command[command.index("--grpc-port") + 1] == str(SGLANG_GRPC_PORT_BASE)
+        assert command.count("--grpc-port") == 1
+        assert "--request-plane" not in command
+
+
+class TestDynamoSidecarSupervisor:
+    """Standalone sidecar process supervision."""
+
+    def test_supervisor_runs_engine_and_sidecar_then_reaps_peer(self):
+        from srtctl.cli.mixins.worker_stage import _wrap_sglang_sidecar
+
+        command = _wrap_sglang_sidecar(
+            ["python3", "-m", "sglang.launch_server", "--grpc-port", "6500"],
+            grpc_port=6500,
+            bootstrap_host="10.0.0.1",
+        )
+
+        assert command[:2] == ["bash", "-c"]
+        script = command[2]
+        assert "sglang.launch_server" in script
+        assert '"$DYNAMO_SIDECAR_BINARY" --sglang-endpoint http://127.0.0.1:6500 --bootstrap-host 10.0.0.1' in script
+        assert 'wait -n "$engine_pid" "$sidecar_pid"' in script
+        assert 'kill "$engine_pid" "$sidecar_pid"' in script
+
 
 class TestServedModelName:
     """Tests for served_model_name property extraction from backend configs."""
@@ -806,7 +926,7 @@ class TestFrontendConfig:
 
         assert "sbatch_directives" not in resolved
 
-    def test_telemetry_container_aliases_resolve(self):
+    def test_power_telemetry_container_alias_resolves(self):
         from srtctl.core.config import resolve_config_with_defaults
 
         user_config = {
@@ -815,15 +935,39 @@ class TestFrontendConfig:
             "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
             "telemetry": {
                 "enabled": True,
-                "container_image": "telemetry-scraper",
                 "dcgm_exporter": {"container_image": "dcgm-exporter", "port": 9401},
-                "node_exporter": {"container_image": "node-exporter", "port": 9101},
             },
         }
         cluster_config = {
             "containers": {
                 "sglang": "/path/to/sglang.sqsh",
-                "telemetry-scraper": "/path/to/scraper.sqsh",
+                "dcgm-exporter": "/path/to/dcgm.sqsh",
+            }
+        }
+
+        resolved = resolve_config_with_defaults(user_config, cluster_config)
+
+        assert resolved["telemetry"]["dcgm_exporter"]["container_image"] == "/path/to/dcgm.sqsh"
+
+    def test_observability_tachometer_aliases_resolve(self):
+        from srtctl.core.config import resolve_config_with_defaults
+
+        user_config = {
+            "name": "test",
+            "model": {"path": "/model", "container": "sglang", "precision": "fp8"},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
+            "observability": {
+                "enabled": True,
+                "tachometer": {
+                    "enabled": True,
+                    "dcgm_exporter": {"container_image": "dcgm-exporter", "port": 9401},
+                    "node_exporter": {"container_image": "node-exporter", "port": 9101},
+                },
+            },
+        }
+        cluster_config = {
+            "containers": {
+                "sglang": "/path/to/sglang.sqsh",
                 "dcgm-exporter": "/path/to/dcgm.sqsh",
                 "node-exporter": "/path/to/node.sqsh",
             }
@@ -831,31 +975,38 @@ class TestFrontendConfig:
 
         resolved = resolve_config_with_defaults(user_config, cluster_config)
 
-        assert resolved["telemetry"]["container_image"] == "/path/to/scraper.sqsh"
-        assert resolved["telemetry"]["dcgm_exporter"]["container_image"] == "/path/to/dcgm.sqsh"
-        assert resolved["telemetry"]["node_exporter"]["container_image"] == "/path/to/node.sqsh"
+        assert resolved["observability"] == {
+            "enabled": True,
+            "tachometer": {
+                "enabled": True,
+                "dcgm_exporter": {"container_image": "/path/to/dcgm.sqsh", "port": 9401},
+                "node_exporter": {"container_image": "/path/to/node.sqsh", "port": 9101},
+            },
+        }
 
-    def test_telemetry_literal_paths_pass_through(self):
+    def test_tachometer_literal_paths_pass_through(self):
         from srtctl.core.config import resolve_config_with_defaults
 
         user_config = {
             "name": "test",
             "model": {"path": "/model", "container": "/container.sqsh", "precision": "fp8"},
             "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1},
-            "telemetry": {
+            "observability": {
                 "enabled": True,
-                "container_image": "/abs/scraper.sqsh",
-                "dcgm_exporter": {"container_image": "/abs/dcgm.sqsh", "port": 9401},
-                "node_exporter": {"container_image": "/abs/node.sqsh", "port": 9101},
+                "tachometer": {
+                    "enabled": True,
+                    "dcgm_exporter": {"container_image": "/abs/dcgm.sqsh", "port": 9401},
+                    "node_exporter": {"container_image": "/abs/node.sqsh", "port": 9101},
+                },
             },
         }
         cluster_config = {"containers": {"dcgm-exporter": "/aliased/dcgm.sqsh"}}
 
         resolved = resolve_config_with_defaults(user_config, cluster_config)
 
-        assert resolved["telemetry"]["container_image"] == "/abs/scraper.sqsh"
-        assert resolved["telemetry"]["dcgm_exporter"]["container_image"] == "/abs/dcgm.sqsh"
-        assert resolved["telemetry"]["node_exporter"]["container_image"] == "/abs/node.sqsh"
+        tachometer = resolved["observability"]["tachometer"]
+        assert tachometer["dcgm_exporter"]["container_image"] == "/abs/dcgm.sqsh"
+        assert tachometer["node_exporter"]["container_image"] == "/abs/node.sqsh"
 
 
 class TestSetupScript:
@@ -1318,6 +1469,103 @@ class TestNodesInfraAllocation:
         ):
             Nodes.from_slurm(etcd_nats_dedicated_node=True)
 
+    def test_nodes_dedicated_frontend_only(self):
+        """frontend_dedicated_node alone puts head+bench on node0, client rides along."""
+        from unittest.mock import patch
+
+        from srtctl.core.runtime import Nodes
+
+        with patch("srtctl.core.runtime.get_slurm_nodelist", return_value=["node0", "node1", "node2"]):
+            nodes = Nodes.from_slurm(frontend_dedicated_node=True)
+
+        assert nodes.head == "node0"
+        assert nodes.bench == "node0"  # client defaults to colocating with the frontend
+        assert nodes.worker == ("node1", "node2")
+
+    def test_nodes_dedicated_client_only(self):
+        """client_dedicated_node reserves the LAST node (never the first/batch node,
+        since SLURM runs the do_sweep orchestrator there unsandboxed).
+        """
+        from unittest.mock import patch
+
+        from srtctl.core.runtime import Nodes
+
+        with patch("srtctl.core.runtime.get_slurm_nodelist", return_value=["node0", "node1", "node2"]):
+            nodes = Nodes.from_slurm(client_dedicated_node=True)
+
+        assert nodes.bench == "node2"
+        assert nodes.head == "node0"  # frontend still doubles as a worker
+        assert nodes.worker == ("node0", "node1")
+
+    def test_nodes_dedicated_frontend_and_client_colocated(self):
+        """Both dedicated + colocate=True (default) share the LAST node (client's
+        tail reservation takes precedence over frontend's front-of-list default).
+        """
+        from unittest.mock import patch
+
+        from srtctl.core.runtime import Nodes
+
+        with patch("srtctl.core.runtime.get_slurm_nodelist", return_value=["node0", "node1", "node2"]):
+            nodes = Nodes.from_slurm(frontend_dedicated_node=True, client_dedicated_node=True)
+
+        assert nodes.head == "node2"
+        assert nodes.bench == "node2"
+        assert nodes.worker == ("node0", "node1")
+
+    def test_nodes_dedicated_frontend_and_client_separate(self):
+        """Both dedicated + colocate=False: frontend from the front, client from the tail."""
+        from unittest.mock import patch
+
+        from srtctl.core.runtime import Nodes
+
+        with patch("srtctl.core.runtime.get_slurm_nodelist", return_value=["node0", "node1", "node2", "node3"]):
+            nodes = Nodes.from_slurm(
+                frontend_dedicated_node=True, client_dedicated_node=True, colocate_dedicated_nodes=False
+            )
+
+        assert nodes.head == "node0"
+        assert nodes.bench == "node3"
+        assert nodes.worker == ("node1", "node2")
+
+    def test_nodes_dedicated_frontend_requires_two_nodes(self):
+        from unittest.mock import patch
+
+        import pytest
+
+        from srtctl.core.runtime import Nodes
+
+        with (
+            patch("srtctl.core.runtime.get_slurm_nodelist", return_value=["node0"]),
+            pytest.raises(ValueError, match="at least 2 nodes"),
+        ):
+            Nodes.from_slurm(frontend_dedicated_node=True)
+
+    def test_nodes_dedicated_client_requires_two_nodes(self):
+        from unittest.mock import patch
+
+        import pytest
+
+        from srtctl.core.runtime import Nodes
+
+        with (
+            patch("srtctl.core.runtime.get_slurm_nodelist", return_value=["node0"]),
+            pytest.raises(ValueError, match="at least 2 nodes"),
+        ):
+            Nodes.from_slurm(client_dedicated_node=True)
+
+    def test_nodes_dedicated_separate_requires_three_nodes(self):
+        from unittest.mock import patch
+
+        import pytest
+
+        from srtctl.core.runtime import Nodes
+
+        with (
+            patch("srtctl.core.runtime.get_slurm_nodelist", return_value=["node0", "node1"]),
+            pytest.raises(ValueError, match="at least 3 nodes"),
+        ):
+            Nodes.from_slurm(frontend_dedicated_node=True, client_dedicated_node=True, colocate_dedicated_nodes=False)
+
 
 class TestSbatchNodeCount:
     """Tests for sbatch node count calculation with infra config."""
@@ -1375,6 +1623,117 @@ class TestSbatchNodeCount:
 
         # Should request 2 nodes: just the workers
         assert "#SBATCH --nodes=2" in script
+
+    def _dedicated_node_config(self, **overrides):
+        from srtctl.core.schema import (
+            BenchmarkConfig,
+            FrontendConfig,
+            InfraConfig,
+            ModelConfig,
+            ResourceConfig,
+            SrtConfig,
+        )
+
+        benchmark_kwargs = {}
+        if "client_dedicated_node" in overrides:
+            benchmark_kwargs["client_dedicated_node"] = overrides.pop("client_dedicated_node")
+        if "colocate_with_frontend" in overrides:
+            benchmark_kwargs["colocate_with_frontend"] = overrides.pop("colocate_with_frontend")
+        frontend_kwargs = {}
+        if "frontend_dedicated_node" in overrides:
+            frontend_kwargs["dedicated_node"] = overrides.pop("frontend_dedicated_node")
+        infra_kwargs = {}
+        if "etcd_nats_dedicated_node" in overrides:
+            infra_kwargs["etcd_nats_dedicated_node"] = overrides.pop("etcd_nats_dedicated_node")
+
+        return SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/container.sqsh", precision="fp8"),
+            resources=ResourceConfig(
+                gpu_type="h100",
+                gpus_per_node=8,
+                prefill_nodes=1,
+                decode_nodes=1,
+                prefill_workers=1,
+                decode_workers=1,
+            ),
+            benchmark=BenchmarkConfig(**benchmark_kwargs),
+            frontend=FrontendConfig(**frontend_kwargs),
+            infra=InfraConfig(**infra_kwargs),
+        )
+
+    def test_sbatch_adds_node_for_dedicated_frontend_only(self):
+        from pathlib import Path
+
+        from srtctl.cli.submit import generate_minimal_sbatch_script
+
+        config = self._dedicated_node_config(frontend_dedicated_node=True)
+        script = generate_minimal_sbatch_script(config, Path("/tmp/test.yaml"))
+
+        assert "#SBATCH --nodes=3" in script
+
+    def test_sbatch_adds_node_for_dedicated_client_only(self):
+        from pathlib import Path
+
+        from srtctl.cli.submit import generate_minimal_sbatch_script
+
+        config = self._dedicated_node_config(client_dedicated_node=True)
+        script = generate_minimal_sbatch_script(config, Path("/tmp/test.yaml"))
+
+        assert "#SBATCH --nodes=3" in script
+
+    def test_sbatch_adds_one_node_for_colocated_frontend_and_client(self):
+        from pathlib import Path
+
+        from srtctl.cli.submit import generate_minimal_sbatch_script
+
+        config = self._dedicated_node_config(frontend_dedicated_node=True, client_dedicated_node=True)
+        script = generate_minimal_sbatch_script(config, Path("/tmp/test.yaml"))
+
+        # 2 workers + 1 shared dedicated node
+        assert "#SBATCH --nodes=3" in script
+
+    def test_sbatch_adds_two_nodes_for_separate_frontend_and_client(self):
+        from pathlib import Path
+
+        from srtctl.cli.submit import generate_minimal_sbatch_script
+
+        config = self._dedicated_node_config(
+            frontend_dedicated_node=True, client_dedicated_node=True, colocate_with_frontend=False
+        )
+        script = generate_minimal_sbatch_script(config, Path("/tmp/test.yaml"))
+
+        # 2 workers + 2 separately dedicated nodes
+        assert "#SBATCH --nodes=4" in script
+
+    def test_sbatch_adds_one_node_for_all_three_colocated(self):
+        from pathlib import Path
+
+        from srtctl.cli.submit import generate_minimal_sbatch_script
+
+        config = self._dedicated_node_config(
+            frontend_dedicated_node=True, client_dedicated_node=True, etcd_nats_dedicated_node=True
+        )
+        script = generate_minimal_sbatch_script(config, Path("/tmp/test.yaml"))
+
+        # 2 workers + 1 shared dedicated node for infra+frontend+client
+        assert "#SBATCH --nodes=3" in script
+
+    def test_sbatch_adds_three_nodes_for_all_three_separate(self):
+        from pathlib import Path
+
+        from srtctl.cli.submit import generate_minimal_sbatch_script
+
+        config = self._dedicated_node_config(
+            frontend_dedicated_node=True,
+            client_dedicated_node=True,
+            etcd_nats_dedicated_node=True,
+            colocate_with_frontend=False,
+        )
+        script = generate_minimal_sbatch_script(config, Path("/tmp/test.yaml"))
+
+        # 2 workers + 3 separately dedicated nodes
+        assert "#SBATCH --nodes=5" in script
 
     def test_vllm_colocation_reduces_sbatch_to_one_node_when_fit(self):
         """Test vLLM P/D colocation requests one worker node when all workers fit."""
@@ -1534,6 +1893,7 @@ class TestVLLMPrefillDecodeColocation:
 
         backend = VLLMProtocol(
             allow_prefill_decode_colocation=True,
+            dp_launch_mode="per_gpu",
             vllm_config=VLLMServerConfig(
                 prefill={"data-parallel-size": 4, "enable-expert-parallel": True},
                 decode={"data-parallel-size": 4, "enable-expert-parallel": True},
@@ -1682,6 +2042,194 @@ class TestHetJobsValidation:
         )
         assert cfg.resources.het_jobs is False
 
+    def test_het_jobs_rejected_with_frontend_dedicated_node(self):
+        import pytest
+        from marshmallow import ValidationError
+
+        from srtctl.core.schema import FrontendConfig
+
+        SrtConfig, kwargs = self._make()
+        kwargs["frontend"] = FrontendConfig(dedicated_node=True)
+        with pytest.raises(ValidationError, match="not supported together with het_jobs"):
+            SrtConfig(**kwargs)
+
+    def test_het_jobs_rejected_with_client_dedicated_node(self):
+        import pytest
+        from marshmallow import ValidationError
+
+        from srtctl.core.schema import BenchmarkConfig
+
+        SrtConfig, kwargs = self._make()
+        kwargs["benchmark"] = BenchmarkConfig(client_dedicated_node=True)
+        with pytest.raises(ValidationError, match="not supported together with het_jobs"):
+            SrtConfig(**kwargs)
+
+
+class TestDedicatedNodeValidation:
+    """SrtConfig.__post_init__ allows combining all dedicated-node flags."""
+
+    def test_allows_infra_and_frontend_dedicated_node_together(self):
+        from srtctl.core.schema import FrontendConfig, InfraConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        cfg = SrtConfig(
+            name="t",
+            model=ModelConfig(path="/m", container="/c.sqsh", precision="fp8"),
+            resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1),
+            infra=InfraConfig(etcd_nats_dedicated_node=True),
+            frontend=FrontendConfig(dedicated_node=True),
+        )
+        assert cfg.infra.etcd_nats_dedicated_node is True
+        assert cfg.frontend.dedicated_node is True
+
+    def test_allows_infra_and_client_dedicated_node_together(self):
+        from srtctl.core.schema import BenchmarkConfig, InfraConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        cfg = SrtConfig(
+            name="t",
+            model=ModelConfig(path="/m", container="/c.sqsh", precision="fp8"),
+            resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1),
+            infra=InfraConfig(etcd_nats_dedicated_node=True),
+            benchmark=BenchmarkConfig(client_dedicated_node=True),
+        )
+        assert cfg.infra.etcd_nats_dedicated_node is True
+        assert cfg.benchmark.client_dedicated_node is True
+
+    def test_allows_frontend_and_client_dedicated_node_together(self):
+        from srtctl.core.schema import BenchmarkConfig, FrontendConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        cfg = SrtConfig(
+            name="t",
+            model=ModelConfig(path="/m", container="/c.sqsh", precision="fp8"),
+            resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1),
+            frontend=FrontendConfig(dedicated_node=True),
+            benchmark=BenchmarkConfig(client_dedicated_node=True, colocate_with_frontend=False),
+        )
+        assert cfg.frontend.dedicated_node is True
+        assert cfg.benchmark.client_dedicated_node is True
+        assert cfg.benchmark.colocate_with_frontend is False
+
+
+class TestDedicatedNodePlacementValidation:
+    """A dedicated node is wasted if a placement override routes the
+    orchestrator/client elsewhere, so SrtConfig rejects that combination.
+    """
+
+    def test_rejects_frontend_dedicated_node_with_non_head_placement(self):
+        import pytest
+        from marshmallow import ValidationError
+
+        from srtctl.core.schema import FrontendConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        with pytest.raises(ValidationError, match="frontend.dedicated_node requires"):
+            SrtConfig(
+                name="t",
+                model=ModelConfig(path="/m", container="/c.sqsh", precision="fp8"),
+                resources=ResourceConfig(
+                    gpu_type="h100",
+                    gpus_per_node=8,
+                    prefill_nodes=1,
+                    decode_nodes=1,
+                    prefill_workers=1,
+                    decode_workers=1,
+                ),
+                frontend=FrontendConfig(dedicated_node=True, orchestrator_placement="first_decode"),
+            )
+
+    def test_rejects_client_dedicated_node_with_non_head_placement(self):
+        import pytest
+        from marshmallow import ValidationError
+
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        with pytest.raises(ValidationError, match="benchmark.client_dedicated_node requires"):
+            SrtConfig(
+                name="t",
+                model=ModelConfig(path="/m", container="/c.sqsh", precision="fp8"),
+                resources=ResourceConfig(
+                    gpu_type="h100",
+                    gpus_per_node=8,
+                    prefill_nodes=1,
+                    decode_nodes=1,
+                    prefill_workers=1,
+                    decode_workers=1,
+                ),
+                benchmark=BenchmarkConfig(client_dedicated_node=True, client_placement="last_decode"),
+            )
+
+    def test_allows_dedicated_node_with_default_head_placement(self):
+        from srtctl.core.schema import BenchmarkConfig, FrontendConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        cfg = SrtConfig(
+            name="t",
+            model=ModelConfig(path="/m", container="/c.sqsh", precision="fp8"),
+            resources=ResourceConfig(gpu_type="h100", gpus_per_node=8, agg_nodes=1),
+            frontend=FrontendConfig(dedicated_node=True),
+            benchmark=BenchmarkConfig(client_dedicated_node=True),
+        )
+        assert cfg.frontend.orchestrator_placement == "head"
+        assert cfg.benchmark.client_placement == "head"
+
+
+class TestNodesAllThreeDedicated:
+    """Tests for combining etcd/nats + frontend + client dedicated-node flags."""
+
+    def test_all_three_colocate_on_one_node(self):
+        from unittest.mock import patch
+
+        from srtctl.core.runtime import Nodes
+
+        with patch("srtctl.core.runtime.get_slurm_nodelist", return_value=["node0", "node1", "node2"]):
+            nodes = Nodes.from_slurm(
+                frontend_dedicated_node=True,
+                client_dedicated_node=True,
+                etcd_nats_dedicated_node=True,
+                colocate_dedicated_nodes=True,
+            )
+
+        # All three share the LAST node — the client's tail reservation takes
+        # precedence, keeping the shared node off the SLURM batch/orchestrator node.
+        assert nodes.head == "node2"
+        assert nodes.bench == "node2"
+        assert nodes.infra == "node2"
+        assert nodes.worker == ("node0", "node1")
+
+    def test_all_three_get_separate_nodes_when_not_colocated(self):
+        from unittest.mock import patch
+
+        from srtctl.core.runtime import Nodes
+
+        with patch("srtctl.core.runtime.get_slurm_nodelist", return_value=["node0", "node1", "node2", "node3"]):
+            nodes = Nodes.from_slurm(
+                frontend_dedicated_node=True,
+                client_dedicated_node=True,
+                etcd_nats_dedicated_node=True,
+                colocate_dedicated_nodes=False,
+            )
+
+        # infra/frontend reserved from the front, client from the tail.
+        assert nodes.infra == "node0"
+        assert nodes.head == "node1"
+        assert nodes.bench == "node3"
+        assert nodes.worker == ("node2",)
+
+    def test_infra_and_frontend_colocate_client_not_requested(self):
+        """etcd/nats + frontend dedicated (colocated); client not dedicated still rides along."""
+        from unittest.mock import patch
+
+        from srtctl.core.runtime import Nodes
+
+        with patch("srtctl.core.runtime.get_slurm_nodelist", return_value=["node0", "node1", "node2"]):
+            nodes = Nodes.from_slurm(
+                frontend_dedicated_node=True,
+                etcd_nats_dedicated_node=True,
+                colocate_dedicated_nodes=True,
+            )
+
+        assert nodes.head == "node0"
+        assert nodes.infra == "node0"
+        assert nodes.bench == "node0"  # not requested, falls back to head
+        assert nodes.worker == ("node1", "node2")
+
 
 class TestHetComponents:
     """ResourceConfig.het_components() shape."""
@@ -1827,6 +2375,85 @@ class TestHetJobsSbatchScript:
         assert "#SBATCH --nodes=22" in script
 
 
+class TestDedicatedNodeRejectedForClusterDefaultHet:
+    """A recipe with resources.het_jobs unset (None) passes SrtConfig validation
+
+    (which only checks the explicit `true` case), but should still be rejected
+    before submission if the cluster's use_het_jobs default resolves the job
+    to heterogeneous — otherwise it fails only after SLURM already granted a
+    heterogeneous allocation.
+    """
+
+    def _config(self, *, dedicated_frontend=False, dedicated_client=False):
+        from srtctl.core.schema import BenchmarkConfig, FrontendConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        return SrtConfig(
+            name="t",
+            model=ModelConfig(path="/m", container="/c.sqsh", precision="fp8"),
+            resources=ResourceConfig(
+                gpu_type="gb200",
+                gpus_per_node=4,
+                prefill_nodes=12,
+                decode_nodes=10,
+                prefill_workers=12,
+                decode_workers=10,
+                het_jobs=None,
+            ),
+            frontend=FrontendConfig(dedicated_node=dedicated_frontend),
+            benchmark=BenchmarkConfig(client_dedicated_node=dedicated_client),
+        )
+
+    def test_rejects_frontend_dedicated_node_when_cluster_default_is_het(self):
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import pytest
+
+        from srtctl.cli.submit import generate_minimal_sbatch_script
+
+        cfg = self._config(dedicated_frontend=True)
+        with (
+            patch(
+                "srtctl.cli.submit.get_srtslurm_setting",
+                side_effect=lambda key, default=None: True if key == "use_het_jobs" else default,
+            ),
+            pytest.raises(ValueError, match="not supported with heterogeneous"),
+        ):
+            generate_minimal_sbatch_script(cfg, Path("/tmp/test.yaml"))
+
+    def test_rejects_client_dedicated_node_when_cluster_default_is_het(self):
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import pytest
+
+        from srtctl.cli.submit import generate_minimal_sbatch_script
+
+        cfg = self._config(dedicated_client=True)
+        with (
+            patch(
+                "srtctl.cli.submit.get_srtslurm_setting",
+                side_effect=lambda key, default=None: True if key == "use_het_jobs" else default,
+            ),
+            pytest.raises(ValueError, match="not supported with heterogeneous"),
+        ):
+            generate_minimal_sbatch_script(cfg, Path("/tmp/test.yaml"))
+
+    def test_allows_dedicated_node_when_cluster_default_is_not_het(self):
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from srtctl.cli.submit import generate_minimal_sbatch_script
+
+        cfg = self._config(dedicated_frontend=True)
+        with patch(
+            "srtctl.cli.submit.get_srtslurm_setting",
+            side_effect=lambda key, default=None: False if key == "use_het_jobs" else default,
+        ):
+            script = generate_minimal_sbatch_script(cfg, Path("/tmp/test.yaml"))
+        assert "#SBATCH hetjob" not in script
+
+
 class TestNodesHetGroupParsing:
     """Nodes.from_slurm reads SLURM_HET_SIZE/SLURM_JOB_NODELIST_HET_GROUP_*."""
 
@@ -1903,6 +2530,7 @@ class TestVLLMDataParallelMode:
 
         # No DP mode when data-parallel-size is not set
         backend = VLLMProtocol(
+            dp_launch_mode="per_gpu",
             vllm_config=VLLMServerConfig(
                 prefill={"tensor-parallel-size": 8},
                 decode={"tensor-parallel-size": 4},
@@ -1922,15 +2550,16 @@ class TestVLLMDataParallelMode:
         assert backend_dp._is_dp_mode("decode") is True
         assert backend_dp._get_dp_size("prefill") == 16
 
-    def test_dp_mode_creates_per_gpu_processes(self):
-        """Test that DP mode creates one process per GPU instead of per node."""
+    def test_dp_per_gpu_mode_creates_per_gpu_processes(self):
+        """The deprecated compatibility mode still creates one process per GPU."""
         from srtctl.backends import VLLMProtocol, VLLMServerConfig
         from srtctl.core.topology import Endpoint
 
         backend = VLLMProtocol(
+            dp_launch_mode="per_gpu",
             vllm_config=VLLMServerConfig(
                 prefill={"data-parallel-size": 16, "enable-expert-parallel": True},
-            )
+            ),
         )
 
         # Create an endpoint spanning 2 nodes with 8 GPUs each = 16 GPUs total
@@ -1967,13 +2596,12 @@ class TestVLLMDataParallelMode:
         dp_ranks = [p.node_rank for p in processes]
         assert dp_ranks == list(range(16))
 
-    def test_dp_per_node_mode_creates_per_node_processes(self):
-        """Per-node DP owns all local GPUs and reserves rank-sized port blocks."""
+    def test_dp_mode_defaults_to_per_node_processes(self):
+        """DP defaults to one process per node with rank-sized port blocks."""
         from srtctl.backends import VLLMProtocol, VLLMServerConfig
         from srtctl.core.topology import Endpoint
 
         backend = VLLMProtocol(
-            dp_launch_mode="per_node",
             vllm_config=VLLMServerConfig(
                 prefill={"data-parallel-size": 8, "enable-expert-parallel": True},
             ),
@@ -2057,6 +2685,49 @@ class TestVLLMDataParallelMode:
         with pytest.raises(ValueError, match="data-parallel-size=7"):
             backend.endpoints_to_processes([endpoint])
 
+    def test_dp_per_node_mode_allows_tensor_parallel_ranks(self):
+        """A DP rank may span several GPUs; size ranks by tensor-parallel-size."""
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Endpoint
+
+        backend = VLLMProtocol(
+            dp_launch_mode="per_node",
+            vllm_config=VLLMServerConfig(prefill={"data-parallel-size": 2, "tensor-parallel-size": 8}),
+        )
+        endpoint = Endpoint(
+            mode="prefill",
+            index=0,
+            nodes=("node0", "node1"),
+            gpu_indices=frozenset(range(8)),
+            gpus_per_node=8,
+        )
+
+        processes = backend.endpoints_to_processes([endpoint])
+
+        # One process per node, each owning a single TP8 data-parallel rank.
+        assert len(processes) == 2
+        assert [p.node_rank for p in processes] == [0, 1]
+
+    def test_dp_per_node_mode_rejects_tensor_parallel_mismatch(self):
+        """dp_size x tp_size must still account for every allocated GPU."""
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Endpoint
+
+        backend = VLLMProtocol(
+            dp_launch_mode="per_node",
+            vllm_config=VLLMServerConfig(prefill={"data-parallel-size": 3, "tensor-parallel-size": 8}),
+        )
+        endpoint = Endpoint(
+            mode="prefill",
+            index=0,
+            nodes=("node0", "node1"),
+            gpu_indices=frozenset(range(8)),
+            gpus_per_node=8,
+        )
+
+        with pytest.raises(ValueError, match="tensor-parallel-size=8"):
+            backend.endpoints_to_processes([endpoint])
+
     def test_dp_per_node_mode_rejects_headless(self):
         """Headless node processes cannot satisfy per-node Dynamo health expectations."""
         from marshmallow import ValidationError
@@ -2123,6 +2794,7 @@ class TestVLLMDataParallelMode:
         runtime.model_path = Path("/model")
         runtime.is_hf_model = False
         runtime.frontend_port = 9000
+        runtime.network_interface = "eth0"
 
         with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
             cmd = backend.build_worker_command(
@@ -2181,15 +2853,16 @@ class TestVLLMDataParallelMode:
         profiler_config = json.loads(cmd[cmd.index("--profiler-config") + 1])
         assert profiler_config == {"profiler": "cuda", "delay_iterations": 10, "max_iterations": 15}
 
-    def test_dp_mode_allocates_unique_ports_for_multiple_endpoints_per_node(self):
-        """Test DP endpoints sharing a node get non-colliding coordination ports."""
+    def test_dp_per_gpu_mode_allocates_unique_ports_for_multiple_endpoints_per_node(self):
+        """Legacy per-GPU endpoints sharing a node get distinct port ranges."""
         from srtctl.backends import VLLMProtocol, VLLMServerConfig
         from srtctl.core.topology import Endpoint
 
         backend = VLLMProtocol(
+            dp_launch_mode="per_gpu",
             vllm_config=VLLMServerConfig(
                 decode={"data-parallel-size": 4, "enable-expert-parallel": True},
-            )
+            ),
         )
 
         endpoints = [
@@ -2221,8 +2894,8 @@ class TestVLLMDataParallelMode:
         assert [p.node_rank for p in first_endpoint] == list(range(4))
         assert [p.node_rank for p in second_endpoint] == list(range(4))
 
-    def test_dp_mode_command_includes_dp_flags(self):
-        """Test that DP mode command includes correct DP flags instead of TP flags."""
+    def test_dp_per_gpu_mode_command_includes_dp_flags(self):
+        """Legacy per-GPU commands include per-rank DP flags instead of TP flags."""
         from pathlib import Path
         from unittest.mock import MagicMock, patch
 
@@ -2230,13 +2903,14 @@ class TestVLLMDataParallelMode:
         from srtctl.core.topology import Process
 
         backend = VLLMProtocol(
+            dp_launch_mode="per_gpu",
             vllm_config=VLLMServerConfig(
                 prefill={
                     "data-parallel-size": 16,
                     "data-parallel-rpc-port": 13345,
                     "enable-expert-parallel": True,
                 },
-            )
+            ),
         )
 
         # Create a process representing GPU 5 with dp_rank=5
@@ -2401,6 +3075,143 @@ class TestVLLMDataParallelMode:
         assert "--data-parallel-start-rank" in cmd
         assert cmd.count("--data-parallel-hybrid-lb") == 1
         assert "--headless" not in cmd
+
+    def test_dp_per_node_uses_local_dp_rank_for_dp4_tp4(self):
+        """DP4 x TP4 on four-GPU nodes launches one local DP rank per process."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Endpoint
+
+        backend = VLLMProtocol(
+            dp_launch_mode="per_node",
+            vllm_config=VLLMServerConfig(
+                aggregated={"data-parallel-size": 4, "tensor-parallel-size": 4},
+            ),
+        )
+        endpoint = Endpoint(
+            mode="agg",
+            index=0,
+            nodes=("node0", "node1", "node2", "node3"),
+            gpu_indices=frozenset(range(4)),
+            gpus_per_node=4,
+        )
+        processes = backend.endpoints_to_processes([endpoint])
+        runtime = MagicMock(model_path=Path("/model"), is_hf_model=False, request_plane="tcp")
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            commands = [backend.build_worker_command(process, processes, runtime) for process in processes]
+
+        assert [process.node_rank for process in processes] == [0, 1, 2, 3]
+        assert [cmd[cmd.index("--data-parallel-size-local") + 1] for cmd in commands] == ["1"] * 4
+        assert [cmd[cmd.index("--data-parallel-start-rank") + 1] for cmd in commands] == ["0", "1", "2", "3"]
+        assert all("--data-parallel-hybrid-lb" in cmd for cmd in commands)
+        assert all("--nnodes" not in cmd and "--headless" not in cmd for cmd in commands)
+
+    def test_dp_per_node_uses_multinode_rendezvous_for_dp2_tp8(self):
+        """DP2 x TP8 on four-GPU nodes automatically selects cross-node TP."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Endpoint
+
+        backend = VLLMProtocol(
+            dp_launch_mode="per_node",
+            vllm_config=VLLMServerConfig(
+                aggregated={"data-parallel-size": 2, "tensor-parallel-size": 8},
+            ),
+        )
+        endpoint = Endpoint(
+            mode="agg",
+            index=0,
+            nodes=("node0", "node1", "node2", "node3"),
+            gpu_indices=frozenset(range(4)),
+            gpus_per_node=4,
+        )
+        processes = backend.endpoints_to_processes([endpoint])
+        runtime = MagicMock(model_path=Path("/model"), is_hf_model=False, request_plane="tcp")
+
+        with patch("srtctl.core.slurm.get_hostname_ip", side_effect=lambda node: f"10.0.0.{int(node[-1]) + 1}"):
+            commands = [backend.build_worker_command(process, processes, runtime) for process in processes]
+
+        assert [process.node_rank for process in processes] == [0, 1, 2, 3]
+        assert [cmd[cmd.index("--master-addr") + 1] for cmd in commands] == ["10.0.0.1"] * 4
+        assert [cmd[cmd.index("--nnodes") + 1] for cmd in commands] == ["4"] * 4
+        assert ["--headless" in cmd for cmd in commands] == [False, True, True, True]
+        assert all("--data-parallel-size-local" not in cmd for cmd in commands)
+
+    @pytest.mark.parametrize(
+        ("dp_size", "tp_size", "pp_size", "node_count"),
+        [
+            (8, 8, 1, 16),
+            (2, 8, 1, 4),
+            (4, 16, 1, 16),
+            (2, 4, 2, 4),
+        ],
+    )
+    def test_dp_per_node_supports_regular_cross_node_topologies(self, dp_size, tp_size, pp_size, node_count):
+        """Topology-aware per_node accepts regular DP x TP x PP layouts."""
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Endpoint
+
+        backend = VLLMProtocol(
+            dp_launch_mode="per_node",
+            vllm_config=VLLMServerConfig(
+                aggregated={
+                    "data-parallel-size": dp_size,
+                    "tensor-parallel-size": tp_size,
+                    "pipeline-parallel-size": pp_size,
+                },
+            ),
+        )
+        endpoint = Endpoint(
+            mode="agg",
+            index=0,
+            nodes=tuple(f"node{rank}" for rank in range(node_count)),
+            gpu_indices=frozenset(range(4)),
+            gpus_per_node=4,
+        )
+
+        processes = backend.endpoints_to_processes([endpoint])
+
+        assert len(processes) == node_count
+        assert [process.node_rank for process in processes] == list(range(node_count))
+
+    def test_dp_per_node_accounts_for_pipeline_parallel_size(self):
+        """The local DP-rank count divides node GPUs by TP x PP."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Endpoint
+
+        backend = VLLMProtocol(
+            dp_launch_mode="per_node",
+            vllm_config=VLLMServerConfig(
+                aggregated={
+                    "data-parallel-size": 2,
+                    "tensor-parallel-size": 2,
+                    "pipeline-parallel-size": 2,
+                },
+            ),
+        )
+        endpoint = Endpoint(
+            mode="agg",
+            index=0,
+            nodes=("node0", "node1"),
+            gpu_indices=frozenset(range(4)),
+            gpus_per_node=4,
+        )
+        processes = backend.endpoints_to_processes([endpoint])
+        runtime = MagicMock(model_path=Path("/model"), is_hf_model=False, request_plane="tcp")
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            commands = [backend.build_worker_command(process, processes, runtime) for process in processes]
+
+        assert [process.node_rank for process in processes] == [0, 1]
+        assert [cmd[cmd.index("--data-parallel-size-local") + 1] for cmd in commands] == ["1", "1"]
 
     def test_standard_tp_mode_still_works(self):
         """Test that standard TP mode (no DP) still creates per-node processes."""
@@ -2648,6 +3459,7 @@ class TestVLLMDataParallelMode:
         from srtctl.core.topology import Process
 
         backend = VLLMProtocol(
+            dp_launch_mode="per_gpu",
             vllm_config=VLLMServerConfig(
                 prefill={
                     "data-parallel-size": 16,
@@ -3069,6 +3881,176 @@ class TestHuggingFaceModelSupport:
         idx = cmd.index("--model-path")
         assert cmd[idx + 1] == "/model"
 
+    def test_trtllm_numa_memory_bind_none_follows_gpu_type_default(self):
+        """numa_memory_bind=None (default) auto-enables numactl only for gb200/gb300."""
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from srtctl.backends import TRTLLMProtocol
+
+        backend = TRTLLMProtocol()
+        process = self._make_process(mode="prefill")
+        runtime = self._make_runtime(is_hf=False)
+        runtime.log_dir = Path("/tmp/test-logs")
+        runtime.gpu_type = "h100"
+
+        with (
+            patch("pathlib.Path.write_text"),
+            patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
+        ):
+            cmd = backend.build_worker_command(process=process, endpoint_processes=[process], runtime=runtime)
+
+        assert "numactl" not in cmd
+
+        runtime.gpu_type = "gb200"
+        with (
+            patch("pathlib.Path.write_text"),
+            patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
+        ):
+            cmd = backend.build_worker_command(process=process, endpoint_processes=[process], runtime=runtime)
+
+        assert cmd[:3] == ["numactl", "-m", "0,1"]
+
+    def test_trtllm_numa_memory_bind_true_forces_numactl(self):
+        """numa_memory_bind=True forces numactl even on non-gb200/gb300 GPUs."""
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from srtctl.backends import TRTLLMProtocol
+
+        backend = TRTLLMProtocol(numa_memory_bind=True)
+        process = self._make_process(mode="prefill")
+        runtime = self._make_runtime(is_hf=False)
+        runtime.log_dir = Path("/tmp/test-logs")
+        runtime.gpu_type = "h100"
+
+        with (
+            patch("pathlib.Path.write_text"),
+            patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
+        ):
+            cmd = backend.build_worker_command(process=process, endpoint_processes=[process], runtime=runtime)
+
+        assert cmd[:3] == ["numactl", "-m", "0,1"]
+
+    def test_trtllm_numa_memory_bind_false_disables_numactl(self):
+        """numa_memory_bind=False disables numactl even on gb200/gb300."""
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from srtctl.backends import TRTLLMProtocol
+
+        backend = TRTLLMProtocol(numa_memory_bind=False)
+        process = self._make_process(mode="prefill")
+        runtime = self._make_runtime(is_hf=False)
+        runtime.log_dir = Path("/tmp/test-logs")
+        runtime.gpu_type = "gb300"
+
+        with (
+            patch("pathlib.Path.write_text"),
+            patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
+        ):
+            cmd = backend.build_worker_command(process=process, endpoint_processes=[process], runtime=runtime)
+
+        assert "numactl" not in cmd
+
+    def test_trtllm_numa_cpu_bind_wraps_decode_command_with_taskset(self):
+        """numa_cpu_bind=True wraps decode commands with configs/numa_cpu_bind.sh."""
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from srtctl.backends import TRTLLMProtocol
+
+        backend = TRTLLMProtocol(numa_cpu_bind=True)
+        process = self._make_process(mode="decode")
+        runtime = self._make_runtime(is_hf=False)
+        runtime.log_dir = Path("/tmp/test-logs")
+        runtime.gpu_type = "gb200"
+
+        with (
+            patch("pathlib.Path.write_text"),
+            patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
+        ):
+            cmd = backend.build_worker_command(process=process, endpoint_processes=[process], runtime=runtime)
+
+        # the wrapped command follows the script invocation, unmodified
+        assert cmd[:2] == ["bash", "/configs/numa_cpu_bind.sh"]
+        assert cmd[2:6] == ["numactl", "-m", "0,1", "trtllm-llmapi-launch"]
+
+        env = backend.get_environment_for_mode("decode")
+        assert env["TLLM_NUMA_AWARE_WORKER_AFFINITY"] == "0"
+
+    def test_trtllm_numa_cpu_bind_wraps_prefill_command_with_taskset(self):
+        """numa_cpu_bind=True wraps prefill commands with configs/numa_cpu_bind.sh too."""
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from srtctl.backends import TRTLLMProtocol
+
+        backend = TRTLLMProtocol(numa_cpu_bind=True)
+        process = self._make_process(mode="prefill")
+        runtime = self._make_runtime(is_hf=False)
+        runtime.log_dir = Path("/tmp/test-logs")
+        runtime.gpu_type = "gb200"
+
+        with (
+            patch("pathlib.Path.write_text"),
+            patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
+        ):
+            cmd = backend.build_worker_command(process=process, endpoint_processes=[process], runtime=runtime)
+
+        assert cmd[:2] == ["bash", "/configs/numa_cpu_bind.sh"]
+
+        prefill_env = backend.get_environment_for_mode("prefill")
+        assert prefill_env["TLLM_NUMA_AWARE_WORKER_AFFINITY"] == "0"
+
+    def test_trtllm_numa_cpu_bind_wraps_agg_command_with_taskset(self):
+        """numa_cpu_bind=True wraps aggregated-mode commands too."""
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from srtctl.backends import TRTLLMProtocol
+
+        backend = TRTLLMProtocol(numa_cpu_bind=True)
+        process = self._make_process(mode="agg")
+        runtime = self._make_runtime(is_hf=False)
+        runtime.log_dir = Path("/tmp/test-logs")
+        runtime.gpu_type = "gb200"
+
+        with (
+            patch("pathlib.Path.write_text"),
+            patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
+        ):
+            cmd = backend.build_worker_command(process=process, endpoint_processes=[process], runtime=runtime)
+
+        assert cmd[:2] == ["bash", "/configs/numa_cpu_bind.sh"]
+
+        agg_env = backend.get_environment_for_mode("agg")
+        assert agg_env["TLLM_NUMA_AWARE_WORKER_AFFINITY"] == "0"
+
+    def test_trtllm_numa_cpu_bind_false_leaves_decode_command_unwrapped(self):
+        """numa_cpu_bind=False (default) does not wrap the decode command."""
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from srtctl.backends import TRTLLMProtocol
+
+        backend = TRTLLMProtocol()
+        process = self._make_process(mode="decode")
+        runtime = self._make_runtime(is_hf=False)
+        runtime.log_dir = Path("/tmp/test-logs")
+        runtime.gpu_type = "gb200"
+
+        with (
+            patch("pathlib.Path.write_text"),
+            patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
+        ):
+            cmd = backend.build_worker_command(process=process, endpoint_processes=[process], runtime=runtime)
+
+        assert "bash" not in cmd
+        decode_env = backend.get_environment_for_mode("decode")
+        assert "TLLM_NUMA_AWARE_WORKER_AFFINITY" not in decode_env
+        assert "NUMA_CPU_BIND_RANGES" not in decode_env
+
 
 class TestInfmaxWorkspaceMount:
     """Test that INFMAX_WORKSPACE env var creates a container mount."""
@@ -3287,3 +4269,726 @@ class TestSlurmJobName:
         assert job_name_line.startswith("#SBATCH --job-name=coreai_comparch_infbench-aib.")
         assert slurm_name != raw_name
         assert len(slurm_name) <= 128
+
+
+class TestDirectVllmMultiNode:
+    """Multi-node aggregate support for the direct vllm frontend."""
+
+    def _make_config(self, **resource_overrides):
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.schema import FrontendConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        resources_kwargs = {
+            "gpu_type": "b200",
+            "gpus_per_node": 8,
+            "agg_nodes": 2,
+            "agg_workers": 1,
+        }
+        resources_kwargs.update(resource_overrides)
+        return SrtConfig(
+            name="t",
+            model=ModelConfig(path="/m", container="/c.sqsh", precision="fp4"),
+            resources=ResourceConfig(**resources_kwargs),
+            frontend=FrontendConfig(type="vllm", enable_multiple_frontends=False),
+            backend=VLLMProtocol(vllm_config=VLLMServerConfig(aggregated={"tensor-parallel-size": 8})),
+        )
+
+    def _make_processes(self, nodes):
+        from srtctl.core.topology import Process
+
+        return [
+            Process(
+                node=node,
+                gpu_indices=frozenset(range(8)),
+                sys_port=8081,
+                http_port=0,
+                endpoint_mode="agg",
+                endpoint_index=0,
+                node_rank=rank,
+            )
+            for rank, node in enumerate(nodes)
+        ]
+
+    def _build_command(self, process, endpoint_processes):
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+
+        backend = VLLMProtocol(
+            vllm_config=VLLMServerConfig(aggregated={"tensor-parallel-size": 8, "pipeline-parallel-size": 2})
+        )
+        runtime = MagicMock()
+        runtime.model_path = Path("/model")
+        runtime.is_hf_model = False
+        runtime.frontend_port = 9000
+        runtime.network_interface = "eth0"
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            return backend.build_worker_command(
+                process=process,
+                endpoint_processes=endpoint_processes,
+                runtime=runtime,
+                frontend_type="vllm",
+            )
+
+    def test_schema_accepts_multi_node_aggregate(self):
+        """agg_nodes > 1 no longer trips the vllm-frontend load-time validation."""
+        cfg = self._make_config()
+        assert cfg.resources.agg_nodes == 2
+        assert cfg.frontend.type == "vllm"
+
+    def test_schema_still_rejects_disaggregated(self):
+        import pytest
+        from marshmallow import ValidationError
+
+        with pytest.raises(ValidationError, match="aggregate jobs only"):
+            self._make_config(
+                agg_nodes=None,
+                agg_workers=None,
+                prefill_nodes=1,
+                decode_nodes=1,
+                prefill_workers=1,
+                decode_workers=1,
+            )
+
+    def test_schema_rejects_multiple_agg_workers(self):
+        """Extra replicas have no router, so point the user at the dynamo frontend."""
+        import pytest
+        from marshmallow import ValidationError
+
+        with pytest.raises(ValidationError, match="frontend.type: dynamo"):
+            self._make_config(agg_workers=2)
+
+    def test_multi_node_leader_owns_port_and_coordination(self):
+        """Rank 0 keeps the OpenAI port and gets the torchrun-style flags."""
+        leader, worker = self._make_processes(["node0", "node1"])
+
+        cmd = self._build_command(leader, [leader, worker])
+
+        assert cmd[:3] == ["vllm", "serve", "/model"]
+        assert cmd[cmd.index("--host") + 1] == "0.0.0.0"
+        assert cmd[cmd.index("--port") + 1] == "9000"
+        assert cmd[cmd.index("--master-addr") + 1] == "10.0.0.1"
+        assert cmd[cmd.index("--nnodes") + 1] == "2"
+        assert cmd[cmd.index("--node-rank") + 1] == "0"
+        assert "--headless" not in cmd
+        assert "dynamo.vllm" not in cmd
+        assert "--request-plane" not in cmd
+
+    def test_multi_node_nonleader_runs_headless_without_port(self):
+        """Ranks > 0 are headless engine workers and must not bind the API port."""
+        leader, worker = self._make_processes(["node0", "node1"])
+
+        cmd = self._build_command(worker, [leader, worker])
+
+        assert cmd[:3] == ["vllm", "serve", "/model"]
+        assert "--headless" in cmd
+        assert cmd[cmd.index("--node-rank") + 1] == "1"
+        assert cmd[cmd.index("--nnodes") + 1] == "2"
+        assert cmd[cmd.index("--master-addr") + 1] == "10.0.0.1"
+        assert "--host" not in cmd
+        assert "--port" not in cmd
+
+    def test_single_node_command_has_no_multinode_flags(self):
+        """The original single-node command shape is unchanged."""
+        (leader,) = self._make_processes(["node0"])
+
+        cmd = self._build_command(leader, [leader])
+
+        assert cmd[:3] == ["vllm", "serve", "/model"]
+        assert cmd[cmd.index("--port") + 1] == "9000"
+        assert "--nnodes" not in cmd
+        assert "--node-rank" not in cmd
+        assert "--master-addr" not in cmd
+        assert "--headless" not in cmd
+
+    def test_direct_vllm_strips_derived_flags_but_keeps_master_port(self):
+        """Topology flags are ignored, while the rendezvous-port override reaches every rank."""
+        leader, worker = self._make_processes(["node0", "node1"])
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+
+        backend = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                aggregated={
+                    "tensor-parallel-size": 8,
+                    "pipeline-parallel-size": 2,
+                    "headless": True,
+                    "master-addr": "10.9.9.9",
+                    "master-port": 26300,
+                }
+            )
+        )
+        from pathlib import Path
+        from unittest.mock import MagicMock, call, patch
+
+        runtime = MagicMock()
+        runtime.model_path = Path("/model")
+        runtime.is_hf_model = False
+        runtime.frontend_port = 9000
+        runtime.network_interface = "ib0"
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1") as mock_get_hostname_ip:
+            leader_cmd = backend.build_worker_command(
+                process=leader,
+                endpoint_processes=[leader, worker],
+                runtime=runtime,
+                frontend_type="vllm",
+            )
+            worker_cmd = backend.build_worker_command(
+                process=worker,
+                endpoint_processes=[leader, worker],
+                runtime=runtime,
+                frontend_type="vllm",
+            )
+
+        assert leader_cmd.count("--headless") == 0
+        assert worker_cmd.count("--headless") == 1
+        assert leader_cmd[leader_cmd.index("--master-addr") + 1] == "10.0.0.1"
+        assert "10.9.9.9" not in leader_cmd
+        assert leader_cmd[leader_cmd.index("--master-port") + 1] == "26300"
+        assert worker_cmd[worker_cmd.index("--master-port") + 1] == "26300"
+        assert mock_get_hostname_ip.call_args_list == [call("node0", "ib0"), call("node0", "ib0")]
+
+    def test_direct_vllm_logs_overridden_recipe_flags(self, caplog):
+        """A flag that silently vanishes is undebuggable, so report recipe -> effective."""
+        import logging
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+
+        leader, worker = self._make_processes(["node0", "node1"])
+        backend = VLLMProtocol(
+            vllm_config=VLLMServerConfig(aggregated={"headless": True, "master-addr": "10.9.9.9", "nnodes": 8})
+        )
+        runtime = MagicMock()
+        runtime.model_path = Path("/model")
+        runtime.is_hf_model = False
+        runtime.frontend_port = 9000
+        runtime.network_interface = "ib0"
+
+        with (
+            patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
+            caplog.at_level(logging.WARNING, logger="srtctl.backends.vllm"),
+        ):
+            backend.build_worker_command(
+                process=leader,
+                endpoint_processes=[leader, worker],
+                runtime=runtime,
+                frontend_type="vllm",
+            )
+
+        assert "--master-addr=10.9.9.9 -> 10.0.0.1" in caplog.text
+        assert "--nnodes=8 -> 2" in caplog.text
+        # The leader owns the API server, so the recipe's headless maps to nothing.
+        assert "--headless=True -> not passed" in caplog.text
+
+    def test_direct_vllm_override_report_is_quiet_without_recipe_flags(self, caplog):
+        """No report when the recipe leaves the topology flags alone."""
+        import logging
+
+        leader, worker = self._make_processes(["node0", "node1"])
+
+        with caplog.at_level(logging.WARNING, logger="srtctl.backends.vllm"):
+            self._build_command(leader, [leader, worker])
+
+        assert "Overriding topology-managed" not in caplog.text
+
+    def test_dynamo_keeps_recipe_orchestration_flags_and_default_resolution(self):
+        """Direct-vLLM topology ownership must not change existing Dynamo commands."""
+        leader, worker = self._make_processes(["node0", "node1"])
+        from pathlib import Path
+        from unittest.mock import MagicMock, call, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+
+        backend = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                aggregated={
+                    "tensor-parallel-size": 8,
+                    "headless": True,
+                    "host": "10.9.9.8",
+                    "port": 9001,
+                    "master-addr": "10.9.9.9",
+                    "nnodes": 99,
+                    "node-rank": 42,
+                }
+            )
+        )
+        runtime = MagicMock()
+        runtime.model_path = Path("/model")
+        runtime.is_hf_model = False
+        runtime.network_interface = "ib0"
+        runtime.request_plane = "nats"
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1") as mock_get_hostname_ip:
+            cmd = backend.build_worker_command(
+                process=leader,
+                endpoint_processes=[leader, worker],
+                runtime=runtime,
+                frontend_type="dynamo",
+            )
+
+        assert mock_get_hostname_ip.call_args_list == [call("node0")]
+        assert cmd[cmd.index("--host") + 1] == "10.9.9.8"
+        assert cmd[cmd.index("--port") + 1] == "9001"
+        assert "10.9.9.9" in cmd
+        assert "99" in cmd
+        assert "42" in cmd
+        assert "--headless" in cmd
+
+    def test_no_dp_launch_mode_warning_for_direct_vllm(self, caplog):
+        """dp_launch_mode does not apply here: vllm serve owns the local DP ranks."""
+        import logging
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.schema import FrontendConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        with caplog.at_level(logging.WARNING, logger="srtctl.core.schema"):
+            SrtConfig(
+                name="t",
+                model=ModelConfig(path="/m", container="/c.sqsh", precision="fp4"),
+                resources=ResourceConfig(gpu_type="b200", gpus_per_node=8, agg_nodes=2, agg_workers=1),
+                frontend=FrontendConfig(type="vllm", enable_multiple_frontends=False),
+                backend=VLLMProtocol(vllm_config=VLLMServerConfig(aggregated={"data-parallel-size": 16})),
+            )
+
+        assert "dp_launch_mode" not in caplog.text
+
+    def test_deprecated_per_gpu_warning_fires_for_dynamo(self, caplog):
+        """Explicit per-GPU compatibility mode warns Dynamo users to migrate."""
+        import logging
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.schema import FrontendConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        with caplog.at_level(logging.WARNING, logger="srtctl.core.schema"):
+            SrtConfig(
+                name="t",
+                model=ModelConfig(path="/m", container="/c.sqsh", precision="fp4"),
+                resources=ResourceConfig(gpu_type="b200", gpus_per_node=8, agg_nodes=2, agg_workers=1),
+                frontend=FrontendConfig(type="dynamo"),
+                backend=VLLMProtocol(
+                    dp_launch_mode="per_gpu",
+                    vllm_config=VLLMServerConfig(aggregated={"data-parallel-size": 16}),
+                ),
+            )
+
+        assert "deprecated dp_launch_mode=per_gpu" in caplog.text
+
+    def test_direct_vllm_keeps_api_server_count_on_leader_only(self):
+        """vLLM rejects --api-server-count alongside --headless, so only rank 0 keeps it.
+
+        The flag matters under DP: without it vLLM defaults to one API server per
+        DP rank and then disables throughput/KV-cache stat logging.
+        """
+        leader, worker = self._make_processes(["node0", "node1"])
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+
+        backend = VLLMProtocol(
+            vllm_config=VLLMServerConfig(
+                aggregated={
+                    "data-parallel-size": 16,
+                    "tensor-parallel-size": 1,
+                    "api-server-count": 1,
+                }
+            )
+        )
+        runtime = MagicMock()
+        runtime.model_path = Path("/model")
+        runtime.is_hf_model = False
+        runtime.frontend_port = 9000
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            leader_cmd = backend.build_worker_command(
+                process=leader,
+                endpoint_processes=[leader, worker],
+                runtime=runtime,
+                frontend_type="vllm",
+            )
+            worker_cmd = backend.build_worker_command(
+                process=worker,
+                endpoint_processes=[leader, worker],
+                runtime=runtime,
+                frontend_type="vllm",
+            )
+
+        assert leader_cmd[leader_cmd.index("--api-server-count") + 1] == "1"
+        assert "--api-server-count" not in worker_cmd
+        assert worker_cmd[worker_cmd.index("--data-parallel-size") + 1] == "16"
+
+    def test_direct_vllm_single_node_keeps_api_server_count(self):
+        """Single-node jobs have no headless rank, so the recipe value is untouched."""
+        (leader,) = self._make_processes(["node0"])
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+
+        backend = VLLMProtocol(vllm_config=VLLMServerConfig(aggregated={"api-server-count": 1}))
+        runtime = MagicMock()
+        runtime.model_path = Path("/model")
+        runtime.is_hf_model = False
+        runtime.frontend_port = 9000
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            cmd = backend.build_worker_command(
+                process=leader,
+                endpoint_processes=[leader],
+                runtime=runtime,
+                frontend_type="vllm",
+            )
+
+        assert cmd[cmd.index("--api-server-count") + 1] == "1"
+
+
+class TestSequentialNodeStart:
+    """Tests for TRTLLMProtocol.sequential_node_start feature."""
+
+    def test_sequential_node_start_defaults_to_false(self):
+        from srtctl.backends.trtllm import TRTLLMProtocol
+
+        backend = TRTLLMProtocol()
+        assert not backend.sequential_node_start
+
+    def test_sequential_node_start_can_be_enabled(self):
+        from srtctl.backends.trtllm import TRTLLMProtocol
+
+        backend = TRTLLMProtocol(sequential_node_start=True)
+        assert backend.sequential_node_start
+
+    def test_sequential_node_start_batch_size(self):
+        from srtctl.backends.trtllm import TRTLLMProtocol
+
+        backend = TRTLLMProtocol(sequential_node_start=2)
+        assert backend.sequential_node_start == 2
+
+    def test_start_all_workers_sequential_same_node(self, tmp_path):
+        """Workers on the same node are started one-by-one when sequential_node_start=True."""
+        import os
+        import subprocess
+        from pathlib import Path
+        from unittest.mock import MagicMock, call, patch
+
+        from srtctl.backends.trtllm import TRTLLMProtocol
+        from srtctl.cli.mixins.worker_stage import WorkerStageMixin
+        from srtctl.core.processes import ManagedProcess
+        from srtctl.core.runtime import RuntimeContext
+        from srtctl.core.schema import ModelConfig, ResourceConfig, SrtConfig
+        from srtctl.core.topology import Process
+
+        model_path = tmp_path / "model"
+        model_path.mkdir()
+        container_path = tmp_path / "container.sqsh"
+        container_path.touch()
+
+        slurm_env = {
+            "SLURM_JOB_ID": "12345",
+            "SLURM_JOBID": "12345",
+            "SLURM_NODELIST": "gpu-01",
+            "SLURM_JOB_NUM_NODES": "1",
+            "SRTCTL_SOURCE_DIR": str(Path(__file__).parent.parent),
+        }
+
+        def mock_scontrol(cmd, **kwargs):
+            if cmd[0] == "scontrol" and "hostnames" in cmd:
+                result = MagicMock()
+                result.stdout = "gpu-01"
+                result.returncode = 0
+                return result
+            raise subprocess.CalledProcessError(1, cmd)
+
+        with (
+            patch.dict(os.environ, slurm_env),
+            patch("subprocess.run", mock_scontrol),
+            patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
+        ):
+            config = SrtConfig(
+                name="test",
+                model=ModelConfig(
+                    path=str(model_path),
+                    container=str(container_path),
+                    precision="fp8",
+                ),
+                resources=ResourceConfig(
+                    gpu_type="h100",
+                    gpus_per_node=8,
+                    decode_nodes=1,
+                    decode_workers=2,
+                ),
+                backend=TRTLLMProtocol(sequential_node_start=True),
+            )
+            runtime = RuntimeContext.from_config(config, job_id="12345", log_dir_base=tmp_path)
+
+            # Two decode workers on the same node (gpu-01), each using 4 GPUs
+            proc_a = Process(
+                node="gpu-01",
+                gpu_indices=frozenset([0, 1, 2, 3]),
+                sys_port=8081,
+                http_port=30000,
+                endpoint_mode="decode",
+                endpoint_index=0,
+                node_rank=0,
+            )
+            proc_b = Process(
+                node="gpu-01",
+                gpu_indices=frozenset([4, 5, 6, 7]),
+                sys_port=8082,
+                http_port=30001,
+                endpoint_mode="decode",
+                endpoint_index=1,
+                node_rank=0,
+            )
+
+            class MockWorkerStage(WorkerStageMixin):
+                def __init__(self, cfg, rt):
+                    self.config = cfg
+                    self.runtime = rt
+
+                @property
+                def backend_processes(self):
+                    return [proc_a, proc_b]
+
+            worker_stage = MockWorkerStage(config, runtime)
+
+            call_order = []
+
+            def fake_start_endpoint(ep_procs):
+                leader = ep_procs[0]
+                call_order.append(("start", leader.endpoint_index))
+                mp = MagicMock(spec=ManagedProcess)
+                mp.name = f"decode_{leader.endpoint_index}_gpu-01"
+                return mp
+
+            def fake_wait_ready(leader):
+                call_order.append(("wait", leader.endpoint_index))
+
+            with (
+                patch.object(worker_stage, "start_endpoint_worker", side_effect=fake_start_endpoint),
+                patch.object(worker_stage, "_wait_for_worker_ready", side_effect=fake_wait_ready),
+            ):
+                worker_stage.start_all_workers()
+
+            # start(0) → wait(0) → start(1)  (no wait after last)
+            assert ("start", 0) in call_order
+            assert ("start", 1) in call_order
+            assert ("wait", 0) in call_order
+            # wait must happen between the two starts
+            assert call_order.index(("wait", 0)) > call_order.index(("start", 0))
+            assert call_order.index(("start", 1)) > call_order.index(("wait", 0))
+            # no wait after the last worker
+            assert ("wait", 1) not in call_order
+
+    def test_start_all_workers_no_wait_when_disabled(self, tmp_path):
+        """Workers are all started without intermediate waits when sequential_node_start=False."""
+        import os
+        import subprocess
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends.trtllm import TRTLLMProtocol
+        from srtctl.cli.mixins.worker_stage import WorkerStageMixin
+        from srtctl.core.processes import ManagedProcess
+        from srtctl.core.runtime import RuntimeContext
+        from srtctl.core.schema import ModelConfig, ResourceConfig, SrtConfig
+        from srtctl.core.topology import Process
+
+        model_path = tmp_path / "model"
+        model_path.mkdir()
+        container_path = tmp_path / "container.sqsh"
+        container_path.touch()
+
+        slurm_env = {
+            "SLURM_JOB_ID": "12345",
+            "SLURM_JOBID": "12345",
+            "SLURM_NODELIST": "gpu-01",
+            "SLURM_JOB_NUM_NODES": "1",
+            "SRTCTL_SOURCE_DIR": str(Path(__file__).parent.parent),
+        }
+
+        def mock_scontrol(cmd, **kwargs):
+            if cmd[0] == "scontrol" and "hostnames" in cmd:
+                result = MagicMock()
+                result.stdout = "gpu-01"
+                result.returncode = 0
+                return result
+            raise subprocess.CalledProcessError(1, cmd)
+
+        with (
+            patch.dict(os.environ, slurm_env),
+            patch("subprocess.run", mock_scontrol),
+            patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
+        ):
+            config = SrtConfig(
+                name="test",
+                model=ModelConfig(
+                    path=str(model_path),
+                    container=str(container_path),
+                    precision="fp8",
+                ),
+                resources=ResourceConfig(
+                    gpu_type="h100",
+                    gpus_per_node=8,
+                    decode_nodes=1,
+                    decode_workers=2,
+                ),
+                backend=TRTLLMProtocol(sequential_node_start=False),
+            )
+            runtime = RuntimeContext.from_config(config, job_id="12345", log_dir_base=tmp_path)
+
+            proc_a = Process(
+                node="gpu-01",
+                gpu_indices=frozenset([0, 1, 2, 3]),
+                sys_port=8081,
+                http_port=30000,
+                endpoint_mode="decode",
+                endpoint_index=0,
+                node_rank=0,
+            )
+            proc_b = Process(
+                node="gpu-01",
+                gpu_indices=frozenset([4, 5, 6, 7]),
+                sys_port=8082,
+                http_port=30001,
+                endpoint_mode="decode",
+                endpoint_index=1,
+                node_rank=0,
+            )
+
+            class MockWorkerStage(WorkerStageMixin):
+                def __init__(self, cfg, rt):
+                    self.config = cfg
+                    self.runtime = rt
+
+                @property
+                def backend_processes(self):
+                    return [proc_a, proc_b]
+
+            worker_stage = MockWorkerStage(config, runtime)
+
+            wait_called = []
+
+            def fake_start_endpoint(ep_procs):
+                mp = MagicMock(spec=ManagedProcess)
+                mp.name = f"decode_{ep_procs[0].endpoint_index}_gpu-01"
+                return mp
+
+            def fake_wait_ready(leader):
+                wait_called.append(leader.endpoint_index)
+
+            with (
+                patch.object(worker_stage, "start_endpoint_worker", side_effect=fake_start_endpoint),
+                patch.object(worker_stage, "_wait_for_worker_ready", side_effect=fake_wait_ready),
+            ):
+                worker_stage.start_all_workers()
+
+            # No readiness waits should have been called
+            assert wait_called == []
+
+    def test_sequential_node_start_no_wait_when_only_one_worker_per_node(self, tmp_path):
+        """When sequential_node_start=True but each node has only one worker, no wait occurs."""
+        import os
+        import subprocess
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends.trtllm import TRTLLMProtocol
+        from srtctl.cli.mixins.worker_stage import WorkerStageMixin
+        from srtctl.core.processes import ManagedProcess
+        from srtctl.core.runtime import RuntimeContext
+        from srtctl.core.schema import ModelConfig, ResourceConfig, SrtConfig
+        from srtctl.core.topology import Process
+
+        model_path = tmp_path / "model"
+        model_path.mkdir()
+        container_path = tmp_path / "container.sqsh"
+        container_path.touch()
+
+        slurm_env = {
+            "SLURM_JOB_ID": "12345",
+            "SLURM_JOBID": "12345",
+            "SLURM_NODELIST": "gpu-[01-02]",
+            "SLURM_JOB_NUM_NODES": "2",
+            "SRTCTL_SOURCE_DIR": str(Path(__file__).parent.parent),
+        }
+
+        def mock_scontrol(cmd, **kwargs):
+            if cmd[0] == "scontrol" and "hostnames" in cmd:
+                result = MagicMock()
+                result.stdout = "gpu-01\ngpu-02"
+                result.returncode = 0
+                return result
+            raise subprocess.CalledProcessError(1, cmd)
+
+        with (
+            patch.dict(os.environ, slurm_env),
+            patch("subprocess.run", mock_scontrol),
+            patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
+        ):
+            config = SrtConfig(
+                name="test",
+                model=ModelConfig(
+                    path=str(model_path),
+                    container=str(container_path),
+                    precision="fp8",
+                ),
+                resources=ResourceConfig(
+                    gpu_type="h100",
+                    gpus_per_node=8,
+                    decode_nodes=2,
+                    decode_workers=2,
+                ),
+                backend=TRTLLMProtocol(sequential_node_start=True),
+            )
+            runtime = RuntimeContext.from_config(config, job_id="12345", log_dir_base=tmp_path)
+
+            # One decode worker per node — different leader nodes
+            proc_a = Process(
+                node="gpu-01",
+                gpu_indices=frozenset(range(8)),
+                sys_port=8081,
+                http_port=30000,
+                endpoint_mode="decode",
+                endpoint_index=0,
+                node_rank=0,
+            )
+            proc_b = Process(
+                node="gpu-02",
+                gpu_indices=frozenset(range(8)),
+                sys_port=8082,
+                http_port=30001,
+                endpoint_mode="decode",
+                endpoint_index=1,
+                node_rank=0,
+            )
+
+            class MockWorkerStage(WorkerStageMixin):
+                def __init__(self, cfg, rt):
+                    self.config = cfg
+                    self.runtime = rt
+
+                @property
+                def backend_processes(self):
+                    return [proc_a, proc_b]
+
+            worker_stage = MockWorkerStage(config, runtime)
+
+            wait_called = []
+
+            def fake_start_endpoint(ep_procs):
+                mp = MagicMock(spec=ManagedProcess)
+                mp.name = f"decode_{ep_procs[0].endpoint_index}_{ep_procs[0].node}"
+                return mp
+
+            with (
+                patch.object(worker_stage, "start_endpoint_worker", side_effect=fake_start_endpoint),
+                patch.object(worker_stage, "_wait_for_worker_ready", side_effect=lambda p: wait_called.append(p)),
+            ):
+                worker_stage.start_all_workers()
+
+            # Each node has only 1 worker — no wait should be triggered
+            assert wait_called == []

@@ -64,6 +64,27 @@ class TRTLLMProtocol:
     decode_environment: dict[str, str] = field(default_factory=dict)
     aggregated_environment: dict[str, str] = field(default_factory=dict)
 
+    # Extra `trtllm-serve` CLI flags per mode, appended verbatim to the worker
+    # command (frontend.type: trtllm_serve only -- dynamo.trtllm takes a
+    # different CLI).
+    #
+    # `trtllm_config` already covers everything that belongs in the engine YAML,
+    # which is nearly everything: trtllm-serve merges that file into LlmArgs. But
+    # a few of its options configure the OpenAI SERVER layer rather than the
+    # engine and have no LlmArgs field, so no YAML key can reach them. The one
+    # that matters in practice is `--tool_parser` (a click.Choice consumed
+    # directly by the server constructor); note that its sibling
+    # `--reasoning_parser` IS forwarded into get_llm_args() and so remains
+    # settable from `trtllm_config`.
+    #
+    #     backend:
+    #       type: trtllm
+    #       prefill_extra_args: ["--tool_parser", "glm47"]
+    #       decode_extra_args:  ["--tool_parser", "glm47"]
+    prefill_extra_args: list[str] = field(default_factory=list)
+    decode_extra_args: list[str] = field(default_factory=list)
+    aggregated_extra_args: list[str] = field(default_factory=list)
+
     trtllm_config: TRTLLMServerConfig | None = None
 
     # Whether dynamo.trtllm workers pass `--publish-events-and-metrics`.
@@ -72,6 +93,37 @@ class TRTLLMProtocol:
     # This may impact performance so should be disabled if exact KV aware routing
     # is not needed.
     publish_events_and_metrics: bool = False
+
+    # Controls batched startup of workers that share the same node.
+    # 0 = start all workers in parallel (no constraint).
+    # 1 = fully sequential: one worker at a time, each must be ready before the next.
+    # N > 1 = start N workers simultaneously per batch, wait for all to be ready, then next batch.
+    # For trtllm_serve: readiness is an HTTP 200 on the worker's http_port.
+    # For dynamo.trtllm: readiness is a TCP connection on the worker's sys_port.
+    sequential_node_start: int = 0
+
+    # Whether to prefix the trtllm worker command with `numactl -m 0,1`.
+    # None (default) preserves the existing auto-detected behavior (enabled
+    # only for gb200/gb300). True/False forces numactl on/off regardless of
+    # gpu_type.
+    numa_memory_bind: bool | None = None
+
+    # Optional stricter NUMA CPU affinity for the worker process, in addition
+    # to numa_memory_bind. A previous post-hoc `taskset -pc <cpuset> $PPID`
+    # approach (see bind-b300-prefill-cpus.sh) only pins the leader PID
+    # *after* launch, so secondary threads spawned by Python/UCX/MPI/TRT-LLM
+    # can still land cross-socket. When true, srtctl instead:
+    #   1. sets TLLM_NUMA_AWARE_WORKER_AFFINITY=0 (disables TRT-LLM's own
+    #      internal NUMA thread-pinning, which fights with the OS-level mask)
+    #   2. wraps the worker command (prefill/decode/agg) in `taskset -c
+    #      <cpu_list>`, applied *before* exec so every spawned thread
+    #      inherits the mask. The CPU list is discovered at runtime
+    #      (configs/numa_cpu_bind.sh) from the physical GPU this task owns,
+    #      not a static SLURM_LOCALID table — a static table assumes
+    #      SLURM_LOCALID is a node-wide GPU ordinal, which breaks when two
+    #      endpoints share a node (each gets its own srun step, so LOCALID
+    #      restarts at 0 for both).
+    numa_cpu_bind: bool = False
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
@@ -102,6 +154,15 @@ class TRTLLMProtocol:
             return dict(self.trtllm_config.aggregated or {})
         return {}
 
+    def get_extra_args_for_mode(self, mode: WorkerMode) -> list[str]:
+        """Extra trtllm-serve CLI flags for this mode (see the field docs)."""
+        by_mode: dict[WorkerMode, list[str]] = {
+            "prefill": self.prefill_extra_args,
+            "decode": self.decode_extra_args,
+            "agg": self.aggregated_extra_args,
+        }
+        return list(by_mode.get(mode) or [])
+
     def get_environment_for_mode(self, mode: WorkerMode) -> dict[str, str]:
         eplb_prefix = f"moe_shared_{uuid.uuid4().hex}"
 
@@ -113,7 +174,10 @@ class TRTLLMProtocol:
         base_env = env_by_mode.get(mode)
         if base_env is None:
             return {}
-        return {**base_env, "TRTLLM_EPLB_SHM_NAME": eplb_prefix}
+        env = {**base_env, "TRTLLM_EPLB_SHM_NAME": eplb_prefix}
+        if self.numa_cpu_bind:
+            env["TLLM_NUMA_AWARE_WORKER_AFFINITY"] = "0"
+        return env
 
     def get_process_environment(self, process: "Process") -> dict[str, str]:
         """Get process-specific environment variables.
@@ -166,6 +230,21 @@ class TRTLLMProtocol:
 
         return endpoints_to_processes(endpoints, base_sys_port=base_sys_port, port_allocator=port_allocator)
 
+    def _wrap_with_numa_cpu_bind(self, cmd: list[str]) -> list[str]:
+        """Wrap ``cmd`` in configs/numa_cpu_bind.sh, which taskset-binds per task.
+
+        Applies to all worker modes (prefill/decode/agg) when numa_cpu_bind
+        is enabled. The CPU list depends on which physical GPU the task owns
+        (resolved from CUDA_VISIBLE_DEVICES and SLURM_LOCALID) and srun sets
+        SLURM_LOCALID per-task at launch time — since the same argv is
+        replicated across all ranks of the endpoint's srun (MPI-style
+        launch), the lookup must happen in a script at runtime rather than
+        being baked into the static command list.
+        """
+        if not self.numa_cpu_bind:
+            return cmd
+        return ["bash", "/configs/numa_cpu_bind.sh", *cmd]
+
     def build_worker_command(
         self,
         process: "Process",
@@ -194,23 +273,28 @@ class TRTLLMProtocol:
         # For local models, model is mounted to /model in the container
         model_arg = runtime.worker_model_arg
 
-        numactl_prefix = (
-            ["numactl", "-m", "0,1"] if runtime.gpu_type in ("gb200", "gb300") and mode in ("prefill", "decode") else []
-        )
+        if self.numa_memory_bind is None:
+            use_numactl = runtime.gpu_type in ("gb200", "gb300") and mode in ("prefill", "decode")
+        else:
+            use_numactl = self.numa_memory_bind and mode in ("prefill", "decode")
+        numactl_prefix = ["numactl", "-m", "0,1"] if use_numactl else []
         base_prefix = list(nsys_prefix or []) + numactl_prefix + ["trtllm-llmapi-launch"]
 
-        # trtllm-serve path: launch an OpenAI-compatible trtllm-serve worker. The
-        # trtllm_serve frontend fronts these via a static ser.yaml (context/generation
-        # server URLs), so there is no dynamo request plane and no --disaggregation-mode:
-        # a worker is prefill or decode purely by which list it appears in in ser.yaml.
+        # trtllm-serve path: launch an OpenAI-compatible trtllm-serve worker. In
+        # disaggregated mode the trtllm_serve frontend fronts these via a static
+        # ser.yaml (context/generation server URLs). In aggregated mode the one
+        # worker is also the public frontend, so it binds runtime.frontend_port.
+        # There is no Dynamo request plane and no --disaggregation-mode: a disagg
+        # worker is prefill or decode purely by which list it appears in in ser.yaml.
         if frontend_type == "trtllm_serve":
+            http_port = runtime.frontend_port if mode == "agg" else process.http_port
             cmd = base_prefix + [
                 "trtllm-serve",
                 model_arg,
                 "--host",
                 "0.0.0.0",
                 "--port",
-                str(process.http_port),
+                str(http_port),
             ]
             # Parallelism also lives in the engine yaml, but pass it explicitly to match
             # the trtllm-serve CLI contract (srun --ntasks == TP*PP is set by the worker stage).
@@ -226,7 +310,8 @@ class TRTLLMProtocol:
             # ai-dynamo tensorrtllm-runtime 1.3.0-dev.1 container, which accept --config;
             # some trtllm-serve builds spell this --extra_llm_api_options.
             cmd.extend(["--config", str(container_config_path)])
-            return cmd
+            cmd.extend(self.get_extra_args_for_mode(mode))
+            return self._wrap_with_numa_cpu_bind(cmd)
 
         # dynamo.trtllm path (default): workers register into etcd/NATS and the dynamo
         # frontend discovers them.
@@ -256,4 +341,4 @@ class TRTLLMProtocol:
         if self.publish_events_and_metrics:
             cmd.append("--publish-events-and-metrics")
 
-        return cmd
+        return self._wrap_with_numa_cpu_bind(cmd)

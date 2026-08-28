@@ -15,6 +15,7 @@ from srtctl.ports import (
     DYN_SYSTEM_PORT_BASE,
     KV_EVENTS_PORT_BASE,
     SGLANG_BOOTSTRAP_PORT_BASE,
+    SGLANG_GRPC_PORT_BASE,
     SGLANG_HTTP_PORT_BASE,
     SGLANG_HTTP_PORT_STRIDE,
     VLLM_NIXL_PORT_BASE,
@@ -438,6 +439,7 @@ class TestDefaultPorts:
     def test_allocator_uses_centralized_defaults(self):
         allocator = NodePortAllocator()
         assert allocator.base_http_port == SGLANG_HTTP_PORT_BASE
+        assert allocator.base_grpc_port == SGLANG_GRPC_PORT_BASE
         assert allocator.base_bootstrap_port == SGLANG_BOOTSTRAP_PORT_BASE
         assert allocator.base_kv_events_port == KV_EVENTS_PORT_BASE
         assert allocator.base_nixl_port == VLLM_NIXL_PORT_BASE
@@ -447,6 +449,12 @@ class TestDefaultPorts:
         assert allocator.next_http_port("node0") == SGLANG_HTTP_PORT_BASE
         assert allocator.next_http_port("node0") == SGLANG_HTTP_PORT_BASE + SGLANG_HTTP_PORT_STRIDE
         assert allocator.next_http_port("node1") == SGLANG_HTTP_PORT_BASE
+
+    def test_grpc_ports_use_centralized_stride(self):
+        allocator = NodePortAllocator()
+        assert allocator.next_grpc_port("node0") == SGLANG_GRPC_PORT_BASE
+        assert allocator.next_grpc_port("node0") == SGLANG_GRPC_PORT_BASE + SGLANG_HTTP_PORT_STRIDE
+        assert allocator.next_grpc_port("node1") == SGLANG_GRPC_PORT_BASE
 
     def test_endpoints_to_processes_uses_default_sys_port(self):
         endpoints = allocate_endpoints(

@@ -5,7 +5,7 @@
 """
 Plot prefill/decode batch metrics over time from SGLang worker logs.
 
-This CLI uses the same parser and 7x2 per-worker renderer as the live
+This CLI uses the same parser and per-worker renderer as the live
 batch-metrics snapshotter, so post-mortem plots match the in-flight
 ``batch_metrics.png`` view.
 
@@ -42,6 +42,8 @@ def process_single_run(
     downsample_factor: int = 1,
     output_path: str | None = None,
     smooth_input_window: int = 8,
+    show_median: bool = True,
+    clip_percentile: float | None = 99.0,
 ) -> bool:
     """Process a single logs directory. Returns ``True`` when a plot was generated."""
     log_path = Path(log_dir)
@@ -57,6 +59,8 @@ def process_single_run(
         title=default_batch_plot_title(log_path),
         downsample=downsample_factor,
         smooth_input_window=smooth_input_window,
+        show_median=show_median,
+        clip_percentile=clip_percentile,
     )
 
 
@@ -124,7 +128,10 @@ def main() -> None:
         "--smooth",
         type=int,
         default=8,
-        help="Centered moving-average window for derived prefill input throughput (default: 8; 1 disables)",
+        help=(
+            "Centered smoothing window for token-derived prefill metrics, including total input throughput "
+            "and cache hit (default: 8; 1 disables)"
+        ),
     )
     args = parser.parse_args()
 

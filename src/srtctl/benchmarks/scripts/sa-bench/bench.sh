@@ -150,8 +150,11 @@ WORK_DIR="$(dirname "$0")"
 
 echo "SA-Bench Config: endpoint=${ENDPOINT}; isl=${ISL}; osl=${OSL}; concurrencies=${CONCURRENCIES}; req_rate=${REQ_RATE}; model=${MODEL_NAME}; dataset=${DATASET_NAME}; dataset_path=${DATASET_PATH}; http_connection_mode=${HTTP_CONNECTION_MODE}"
 
-# Profiling shared helpers
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Profiling shared helpers. Capture BASH_SOURCE before entering command
+# substitution: Bash can clear the array inside that subshell when this file is
+# sourced by a wrapper (the unit-test harness and some user launchers do this).
+SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
+SCRIPT_DIR="${SRTCTL_BENCH_SCRIPT_DIR:-$(cd "$(dirname "${SCRIPT_PATH}")" && pwd)}"
 # shellcheck source=../lib/profiling.sh
 source "${SCRIPT_DIR}/../lib/profiling.sh"
 profiling_init_from_env
