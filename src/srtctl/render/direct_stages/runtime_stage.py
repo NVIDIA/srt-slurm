@@ -16,7 +16,16 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from .common import run_capture, rust_toolchain
+from .common import (
+    KV_ROUTER_DEPENDENCY,
+    POLICY_CATALOG_DEPENDENCY,
+    POLICY_CATALOG_DIRNAME,
+    apply_dependency_override,
+    kv_router_dependency_line,
+    policy_catalog_dependency_line,
+    run_capture,
+    rust_toolchain,
+)
 
 
 class RuntimeSetupStageMixin:
@@ -105,6 +114,51 @@ class RuntimeSetupStageMixin:
         os.environ["SRTCTL_PYTHON"] = self.python
         self._run_logged([self.python, "-c", "import sglang, nixl, blake3"], log_name="install-sglang.log")
 
+    def _build_sgl_router(self) -> None:
+        """Build the experimental Rust router from the installed SGLang source.
+
+        The router is a first-class part of the arm under test, so it is built
+        from the same checkout the workers run, not taken from a prebuilt image.
+        """
+        subdir = self.plan.get("sgl_router_source_subdir")
+        if not subdir:
+            return
+        runtime_dir = Path(os.environ["SRTCTL_SGLANG_RUNTIME_DIR"])
+        manifest_dir = runtime_dir / "source" / str(subdir)
+        if not (manifest_dir / "Cargo.toml").is_file():
+            self._die(f"Experimental SGL router source is missing: {manifest_dir}")
+        binary_name = str(self.plan["sgl_router_binary"])
+        target_dir = runtime_dir / "router-target"
+        binary = target_dir / "release" / binary_name
+        sentinel = runtime_dir / f".{binary_name}.complete"
+        lock = runtime_dir.parent / f".{runtime_dir.name}-{binary_name}.lock"
+        with lock.open("w", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            if not sentinel.is_file() or not os.access(binary, os.X_OK):
+                self.log(f"Building {binary_name} from {manifest_dir}")
+                if shutil.which("cargo") is None:
+                    self._die("cargo is required to build the experimental SGL router")
+                environment = dict(os.environ)
+                environment["CARGO_TARGET_DIR"] = str(target_dir)
+                self._run_logged(
+                    [
+                        "cargo",
+                        "build",
+                        "--release",
+                        "--manifest-path",
+                        str(manifest_dir / "Cargo.toml"),
+                        "--bin",
+                        binary_name,
+                    ],
+                    log_name="install-sgl-router.log",
+                    env=environment,
+                )
+                sentinel.touch()
+        if not os.access(binary, os.X_OK):
+            self._die(f"Experimental SGL router build produced no binary: {binary}")
+        os.environ["SRTCTL_SGL_ROUTER_BIN"] = str(binary)
+        self.log(f"Using {binary_name}: {binary}")
+
     def _ensure_import(self, python: str, module: str, package: str, log_name: str) -> None:
         if (
             subprocess.run(
@@ -136,6 +190,78 @@ class RuntimeSetupStageMixin:
         self._run_logged(
             [self.python, "-m", "pip", "install", "--quiet", "--upgrade", "maturin"], log_name="install-dynamo.log"
         )
+
+    def _link_policy_catalog(self, repo: Path, build: Path) -> list[str]:
+        """Link the configured external policy catalog into *repo*'s build.
+
+        Returns the extra cargo features maturin must enable. The catalog's
+        ``dynamo-kv-router`` dependency is repointed at this checkout so the
+        plugin and the bindings share one copy of the router types.
+        """
+        catalog = self.plan.get("dynamo_policy_catalog")
+        if not catalog:
+            return []
+        catalog_root = build / POLICY_CATALOG_DIRNAME
+        shutil.rmtree(catalog_root, ignore_errors=True)
+        if catalog.get("git"):
+            self._run_logged(
+                ["git", "clone", "--no-checkout", str(catalog["git"]), str(catalog_root)],
+                log_name="install-dynamo.log",
+            )
+            self._run_logged(
+                ["git", "-C", str(catalog_root), "fetch", "--depth", "1", "origin", str(catalog["rev"])],
+                log_name="install-dynamo.log",
+            )
+            self._run_logged(
+                ["git", "-C", str(catalog_root), "checkout", "--detach", "FETCH_HEAD"],
+                log_name="install-dynamo.log",
+            )
+        else:
+            shutil.copytree(Path(str(catalog["path"])), catalog_root, ignore=shutil.ignore_patterns("target", ".git"))
+        crate_dir = catalog_root / str(catalog["crate_subdir"])
+        crate_manifest = crate_dir / "Cargo.toml"
+        if not crate_manifest.is_file():
+            self._die(f"Policy catalog crate has no Cargo.toml: {crate_manifest}")
+        self._override_dependency(
+            crate_manifest, KV_ROUTER_DEPENDENCY, kv_router_dependency_line(str(repo / "lib" / "kv-router"))
+        )
+        bindings_manifest = repo / "lib" / "bindings" / "python" / "Cargo.toml"
+        self._override_dependency(
+            bindings_manifest,
+            POLICY_CATALOG_DEPENDENCY,
+            policy_catalog_dependency_line(str(catalog["package"]), str(crate_dir)),
+        )
+        if str(catalog["package"]) not in bindings_manifest.read_text(encoding="utf-8"):
+            self._die(f"Failed to link policy catalog {catalog['package']} into {bindings_manifest}")
+        self.log(f"Linked policy catalog {catalog['package']} from {crate_dir}")
+        return ["--features", ",".join(str(feature) for feature in catalog["features"])]
+
+    def _override_dependency(self, manifest: Path, crate: str, replacement: str) -> None:
+        original = manifest.read_text(encoding="utf-8")
+        patched = apply_dependency_override(original, crate, replacement)
+        if patched == original:
+            self._die(f"No {crate} declaration to override in {manifest}")
+        manifest.write_text(patched, encoding="utf-8")
+
+    def _publish_policy_config(self, build: Path, cache: Path) -> None:
+        """Copy the catalog's router policy YAML next to the built wheel."""
+        catalog = self.plan.get("dynamo_policy_catalog")
+        if not catalog:
+            return
+        source = build / POLICY_CATALOG_DIRNAME / str(catalog["crate_subdir"]) / str(catalog["config"])
+        if not source.is_file():
+            self._die(f"Policy catalog config is missing: {source}")
+        shutil.copyfile(source, cache / str(self.plan["dynamo_policy_config_name"]))
+
+    def _export_policy_config(self, cache: Path) -> None:
+        """Publish the resolved --router-policy-config path to the router."""
+        if not self.plan.get("dynamo_policy_catalog"):
+            return
+        config = cache / str(self.plan["dynamo_policy_config_name"])
+        if not config.is_file():
+            self._die(f"Policy catalog config was not published: {config}")
+        os.environ["SRTCTL_POLICY_CONFIG"] = str(config)
+        self.log(f"Router policy configuration: {config}")
 
     def _dynamo_source_cache_key(self) -> str:
         base = str(self.plan["dynamo_source_cache_key"])
@@ -176,6 +302,7 @@ class RuntimeSetupStageMixin:
                     )
                     for command in self.plan["dynamo_cargo_patch_commands"]:
                         self._run_logged(["bash", "-lc", str(command)], log_name="install-dynamo.log", cwd=repo)
+                    catalog_features = self._link_policy_catalog(repo, build)
                     cache.mkdir(parents=True, exist_ok=True)
                     for stale in [
                         *cache.glob("ai_dynamo_runtime-*.whl"),
@@ -189,12 +316,13 @@ class RuntimeSetupStageMixin:
                     )
                     environment["CARGO_TARGET_DIR"] = str(build / "target")
                     self._run_logged(
-                        [self.python, "-m", "maturin", "build", "--release", "--out", str(cache)],
+                        [self.python, "-m", "maturin", "build", "--release", *catalog_features, "--out", str(cache)],
                         log_name="install-dynamo.log",
                         cwd=repo / "lib" / "bindings" / "python",
                         env=environment,
                     )
                     self._write_archive(build, "dynamo", cache / "dynamo-src.tar.gz")
+                    self._publish_policy_config(build, cache)
                     (cache / ".complete").touch()
         wheel = next(cache.glob("ai_dynamo_runtime-*.whl"), None)
         if wheel is None:
@@ -212,6 +340,7 @@ class RuntimeSetupStageMixin:
             [self.python, "-m", "pip", "install", "--quiet", "--editable", str(source / "dynamo")],
             log_name="install-dynamo.log",
         )
+        self._export_policy_config(cache)
         self.log(f"Installed Dynamo {source_hash} from {cache}")
 
     def _install_dynamo_from_top_of_tree(self) -> None:

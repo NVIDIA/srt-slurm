@@ -1,0 +1,96 @@
+# Arm 3: arm 2 with the experimental SGL Router selection policy.
+#
+# Identical to arm 2 except that Dynamo's worker selection is replaced by the
+# external `sgl-router-cache-aware` policy. srtctl builds that catalog crate
+# against this same Dynamo revision -- its `dynamo-kv-router` dependency is
+# repointed at the checkout being built, so exactly one copy of the router
+# types exists -- links it through Dynamo's `custom-policy` cargo feature, and
+# passes the crate's own configuration to `--router-policy-config`.
+#
+#   export ROUTER_ARM_MODEL_PATH=/absolute/path/to/Qwen3-32B-FP8
+#   export ROUTER_ARM_SGLANG_SOURCE=/absolute/path/to/sglang
+#   export ROUTER_ARM_TRACE=/absolute/path/to/agentx_trace.jsonl
+
+name: router-arm3-dynamo-sgl-policy
+
+model:
+  path: $ROUTER_ARM_MODEL_PATH
+  container: lmsysorg/sglang:dev
+  precision: fp8
+
+resources:
+  gpu_type: h100
+  gpus_per_node: 8
+  agg_nodes: 1
+  agg_workers: 2
+  gpus_per_agg: 4
+
+environment:
+  SRTCTL_LOCAL_CONTAINER_IMAGE: lmsysorg/sglang:dev
+  SRTCTL_SGLANG_SOURCE: $ROUTER_ARM_SGLANG_SOURCE
+  SRTCTL_ETCD_PORT: "23379"
+  SRTCTL_ETCD_PEER_PORT: "23380"
+  SRTCTL_NATS_PORT: "25222"
+
+dynamo:
+  # Pin one immutable revision so Slurm and `apply --bash` build the same tree.
+  hash: 4dca1626b2708383514fcd65ac816ba7429c05a4
+  event_plane: zmq
+  # Native SGLang engines with Dynamo sidecars instead of legacy Python workers.
+  sidecar: true
+  policy_catalog:
+    git: https://github.com/ishandhanani/router-sandbox
+    rev: 411b4648e7fd50c776f0c787f1abb2592eeef41b
+    crate_subdir: crates/sgl-router-cache-aware
+    package: sgl-router-cache-aware-dynamo-policy
+    config: worker-selection.yaml
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+  args:
+    router-mode: kv
+
+backend:
+  type: sglang
+  kv_events_config:
+    aggregated: true
+  sglang_config:
+    aggregated:
+      served-model-name: Qwen/Qwen3-32B-FP8
+      tensor-parallel-size: 4
+      page-size: 64
+      trust-remote-code: true
+      mem-fraction-static: 0.85
+      context-length: 40960
+      max-running-requests: 64
+      enable-metrics: true
+      disable-piecewise-cuda-graph: true
+      fp8-gemm-backend: triton
+
+observability:
+  enabled: true
+  tachometer:
+    enabled: true
+
+benchmark:
+  type: custom
+  command: |
+    "$SRTCTL_RUTER_PYTHON" -m aiperf profile \
+      --model Qwen/Qwen3-32B-FP8 \
+      --tokenizer Qwen/Qwen3-32B-FP8 \
+      --tokenizer-trust-remote-code \
+      --url "$SRT_FRONTEND_URL" \
+      --endpoint-type chat \
+      --streaming \
+      --input-file "$ROUTER_ARM_TRACE" \
+      --custom-dataset-type mooncake_trace \
+      --fixed-schedule \
+      --fixed-schedule-auto-offset \
+      --extra-inputs ignore_eos:true \
+      --use-legacy-max-tokens \
+      --request-timeout-seconds 900 \
+      --output-artifact-dir "$AIPERF_ARTIFACT_DIR" \
+      --profile-export-prefix agentx \
+      --ui none \
+      --no-server-metrics

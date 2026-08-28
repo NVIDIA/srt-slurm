@@ -40,6 +40,36 @@ def build_sidecar_launch_command(
     rank_zero_only: bool = False,
 ) -> list[str]:
     """Run an engine and its sidecar together, stopping both when either exits."""
+    return [
+        "bash",
+        "-lc",
+        build_sidecar_launch_script(
+            engine=shlex.join(engine),
+            sidecar=shlex.join(sidecar),
+            grpc_port=grpc_port,
+            engine_name=engine_name,
+            startup_timeout=startup_timeout,
+            rank_zero_only=rank_zero_only,
+        ),
+    ]
+
+
+def build_sidecar_launch_script(
+    *,
+    engine: str,
+    sidecar: str,
+    grpc_port: int,
+    engine_name: str,
+    startup_timeout: int,
+    rank_zero_only: bool = False,
+) -> str:
+    """Return the coupled engine/sidecar supervisor script.
+
+    ``engine`` and ``sidecar`` are complete shell commands. Callers that hold
+    argument lists should use :func:`build_sidecar_launch_command`; the direct
+    host renderer already carries per-process environment prefixes in its
+    command strings and calls this directly.
+    """
     if startup_timeout < 1:
         raise ValueError(f"sidecar_startup_timeout must be at least 1, got {startup_timeout}")
 
@@ -86,7 +116,7 @@ cleanup() {{
     exit "${{status}}"
 }}
 trap cleanup EXIT INT TERM
-{shlex.join(engine)} &
+{engine} &
 ENGINE_PID=$!
 {rank_guard}port_ready=0
 for _ in $(seq 1 {startup_timeout}); do
@@ -105,7 +135,7 @@ if [[ "${{port_ready}}" != 1 ]]; then
     echo "Timed out waiting for {engine_name} native gRPC on port {grpc_port}" >&2
     exit 1
 fi
-{shlex.join(sidecar)} &
+{sidecar} &
 SIDECAR_PID=$!
 set +e
 wait -n "${{ENGINE_PID}}" "${{SIDECAR_PID}}"
@@ -114,4 +144,4 @@ set -e
 if [[ "${{status}}" == 0 ]]; then status=1; fi
 exit "${{status}}"
 """
-    return ["bash", "-lc", compound]
+    return compound

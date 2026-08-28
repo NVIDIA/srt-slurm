@@ -16,8 +16,14 @@ from typing import Any
 from jinja2 import Environment, FileSystemLoader
 
 from srtctl.backends.sglang import SGLangProtocol
+from srtctl.backends.sidecar import build_sidecar_launch_script, sidecar_grpc_port
 from srtctl.core.power.contract import CONTAINER_LOG_DIR
-from srtctl.core.schema import SrtConfig, dynamo_cargo_patch_commands, dynamo_source_cache_key
+from srtctl.core.schema import (
+    POLICY_CATALOG_CONFIG_NAME,
+    SrtConfig,
+    dynamo_cargo_patch_commands,
+    dynamo_source_cache_key,
+)
 from srtctl.core.topology import Process
 from srtctl.ports import (
     DYN_SYSTEM_PORT_BASE,
@@ -31,6 +37,16 @@ from srtctl.ports import (
 )
 
 _ARTIFACT_DIR_PLACEHOLDER = "__SRTCTL_ARTIFACT_DIR__"
+# Runtime-resolved paths the direct runner exports before it launches the router.
+_POLICY_CONFIG_PLACEHOLDER = "__SRTCTL_POLICY_CONFIG__"
+_SGL_ROUTER_BIN_PLACEHOLDER = "__SRTCTL_SGL_ROUTER_BIN__"
+_RUNTIME_PLACEHOLDERS = {
+    _POLICY_CONFIG_PLACEHOLDER: '"${SRTCTL_POLICY_CONFIG}"',
+    _SGL_ROUTER_BIN_PLACEHOLDER: '"${SRTCTL_SGL_ROUTER_BIN}"',
+}
+# Router source path inside the SGLang checkout the direct runner installs.
+SGL_ROUTER_SOURCE_SUBDIR = "experimental/sgl-router"
+SGL_ROUTER_BINARY = "sgl-router"
 _DIRECT_RUNTIME_ENV = frozenset({"SRTCTL_LOCAL_CONTAINER_IMAGE", "SRTCTL_SGLANG_SOURCE"})
 _REMOVED_DIRECT_ENV = frozenset(
     {"SRTCTL_ETCD_BINARY", "SRTCTL_NATS_BINARY", "SRTCTL_RUTER_PYTHON", "SRTCTL_TACHOMETER"}
@@ -64,6 +80,14 @@ class DirectPlanContext:
     nats_port: int
     worker_processes: tuple[DirectProcess, ...]
     router_command: str
+    frontend_kind: str
+    router_health_path: str
+    worker_health_urls: tuple[str, ...]
+    dynamo_enabled: bool
+    sgl_router_source_subdir: str | None
+    sgl_router_binary: str | None
+    dynamo_policy_catalog: dict[str, Any] | None
+    dynamo_policy_config_name: str
     expected_prefill: int
     expected_decode: int
     health_timeout_seconds: int
@@ -101,8 +125,12 @@ def heredoc_marker(payload: str, *, prefix: str = "SRTCTL_RUNTIME_CONFIG") -> st
     return marker
 
 
-def _shell_command(args: list[str], environment: dict[str, str] | None = None) -> str:
-    """Return a shell-safe command that uses the script-selected Python."""
+def _shell_command(
+    args: list[str],
+    environment: dict[str, str] | None = None,
+    executable: str = "$SRTCTL_PYTHON",
+) -> str:
+    """Return a shell-safe command that uses the script-selected executable."""
     parts = []
     for key, value in sorted((environment or {}).items()):
         if not key.replace("_", "").isalnum() or key[0].isdigit():
@@ -113,9 +141,16 @@ def _shell_command(args: list[str], environment: dict[str, str] | None = None) -
         # expand in the child process that owns the frontend.
         quoted_value = quoted_value.replace(_ARTIFACT_DIR_PLACEHOLDER, '"${ARTIFACT_DIR}"')
         parts.append(f"{key}={quoted_value}")
-    parts.append("$SRTCTL_PYTHON")
+    parts.append(executable)
     parts.extend(shlex.quote(str(arg)) for arg in args)
-    return " ".join(parts)
+    return _expand_runtime_placeholders(" ".join(parts))
+
+
+def _expand_runtime_placeholders(command: str) -> str:
+    """Let the direct runner's exported paths expand inside a rendered command."""
+    for placeholder, expansion in _RUNTIME_PLACEHOLDERS.items():
+        command = command.replace(placeholder, expansion)
+    return command
 
 
 def _cli_args(values: dict[str, Any] | None) -> list[str]:
@@ -170,8 +205,16 @@ def _validate_direct_config(config: SrtConfig) -> None:
         raise ValueError("--bash requires a single-node resource topology")
     if config.infra.etcd_nats_dedicated_node:
         raise ValueError("--bash does not support infra.etcd_nats_dedicated_node on a single host")
-    if config.frontend.type != "dynamo":
-        raise ValueError("--bash supports frontend.type: dynamo only")
+    if config.frontend.type not in ("dynamo", "sgl-router"):
+        raise ValueError("--bash supports frontend.type: dynamo or sgl-router only")
+    if config.frontend.type == "sgl-router":
+        # The direct lifecycle always builds the router from the SGLang checkout
+        # it installs, so a recipe that declares a source must name that path.
+        if config.frontend.binary:
+            raise ValueError("--bash builds the experimental router from source; drop frontend.binary")
+        source = config.frontend.source
+        if source and not str(source).rstrip("/").endswith(SGL_ROUTER_SOURCE_SUBDIR):
+            raise ValueError(f"--bash requires frontend.source to end with {SGL_ROUTER_SOURCE_SUBDIR}")
     if config.frontend.enable_multiple_frontends:
         raise ValueError("--bash requires frontend.enable_multiple_frontends: false")
     if config.benchmark.type != "custom" or not config.benchmark.command:
@@ -198,7 +241,9 @@ def _validate_direct_config(config: SrtConfig) -> None:
         raise ValueError("--bash requires environment.SRTCTL_SGLANG_SOURCE")
     if not os.path.expandvars(str(sglang_source)).startswith("/"):
         raise ValueError("SRTCTL_SGLANG_SOURCE must be an absolute path")
-    if not config.dynamo.install or not (config.dynamo.hash or config.dynamo.top_of_tree):
+    if config.frontend.type == "dynamo" and (
+        not config.dynamo.install or not (config.dynamo.hash or config.dynamo.top_of_tree)
+    ):
         raise ValueError("--bash requires dynamo.hash or dynamo.top_of_tree")
     mooncake_cfg = config.backend.mooncake_kv_store
     if mooncake_cfg is not None and not mooncake_cfg.container:
@@ -217,8 +262,156 @@ def _direct_port(config: SrtConfig, name: str, default: int) -> int:
     return port
 
 
+def _worker_environment(
+    config: SrtConfig,
+    process: Process,
+    *,
+    etcd_client_port: int,
+    nats_port: int,
+    dynamo_enabled: bool,
+) -> dict[str, str]:
+    """Build one direct worker's environment from the shared YAML sources."""
+    backend = config.backend
+    assert isinstance(backend, SGLangProtocol)
+    environment = _format_environment(backend.get_environment_for_mode(process.endpoint_mode))
+    environment.update({key: value for key, value in config.environment.items() if key not in _DIRECT_RUNTIME_ENV})
+    environment["CUDA_VISIBLE_DEVICES"] = process.cuda_visible_devices
+    if dynamo_enabled:
+        environment.update(
+            {
+                "DYN_SYSTEM_PORT": str(process.sys_port),
+                "DYN_REQUEST_PLANE": config.dynamo.request_plane,
+                "DYN_SKIP_SGLANG_LOG_FORMATTING": "1",
+                "ETCD_ENDPOINTS": f"http://127.0.0.1:{etcd_client_port}",
+                "NATS_SERVER": f"nats://127.0.0.1:{nats_port}",
+            }
+        )
+        if config.dynamo.event_plane:
+            environment["DYN_EVENT_PLANE"] = config.dynamo.event_plane
+    if backend.mooncake_kv_store is not None:
+        environment.update(backend.get_mooncake_worker_env("127.0.0.1", "127.0.0.1"))
+    return environment
+
+
+def _engine_base_args(config: SrtConfig, process: Process, module: str) -> tuple[list[str], dict[str, Any]]:
+    """Return the shared SGLang launch arguments and the remaining CLI config."""
+    backend = config.backend
+    assert isinstance(backend, SGLangProtocol)
+    worker_config = backend.get_config_for_mode(process.endpoint_mode)
+    for key in ("model-path", "model_path", "served-model-name", "served_model_name"):
+        worker_config.pop(key, None)
+    # Match the normal Slurm worker command: SGLang otherwise probes a
+    # random free TCP port for its TP rendezvous, which races when direct
+    # workers start concurrently on one host.
+    worker_config.pop("nccl-port", None)
+    worker_config.pop("nccl_port", None)
+    nccl_port = SGLANG_NCCL_PORT_BASE + process.sys_port - DYN_SYSTEM_PORT_BASE
+    if nccl_port > 65_535:
+        raise ValueError(f"Direct-host NCCL port exceeds range: {nccl_port}")
+    args = [
+        "-m",
+        module,
+        "--model-path",
+        _direct_model_path(config),
+        "--served-model-name",
+        config.served_model_name,
+        "--host",
+        "0.0.0.0",
+        "--port",
+        str(process.http_port),
+        "--nccl-port",
+        str(nccl_port),
+    ]
+    return args, worker_config
+
+
+def _kv_events_args(backend: SGLangProtocol, process: Process) -> list[str]:
+    """Return `--kv-events-config` for a worker with an allocated ZMQ port."""
+    kv_events = backend.get_kv_events_config_for_mode(process.endpoint_mode)
+    if not kv_events or process.kv_events_port is None:
+        return []
+    kv_events = dict(kv_events)
+    kv_events["endpoint"] = f"tcp://*:{process.kv_events_port}"
+    return ["--kv-events-config", json.dumps(kv_events, separators=(",", ":"))]
+
+
+def _direct_worker_command(
+    config: SrtConfig,
+    process: Process,
+    *,
+    frontend_kind: str,
+    etcd_client_port: int,
+    nats_port: int,
+) -> str:
+    """Render one worker's launch command for the selected serving shape."""
+    backend = config.backend
+    assert isinstance(backend, SGLangProtocol)
+    mode = process.endpoint_mode
+    dynamo_enabled = frontend_kind == "dynamo"
+    environment = _worker_environment(
+        config,
+        process,
+        etcd_client_port=etcd_client_port,
+        nats_port=nats_port,
+        dynamo_enabled=dynamo_enabled,
+    )
+
+    if not dynamo_enabled:
+        # Raw SGLang workers behind a native router: no Dynamo runtime at all.
+        args, worker_config = _engine_base_args(config, process, "sglang.launch_server")
+        args.extend(_kv_events_args(backend, process))
+        args.extend(_cli_args(worker_config))
+        return _shell_command(args, environment)
+
+    if not config.dynamo.sidecar:
+        args, worker_config = _engine_base_args(config, process, "dynamo.sglang")
+        if mode != "agg":
+            args.extend(("--disaggregation-mode", mode))
+            if mode == "prefill" and process.bootstrap_port is not None:
+                args.extend(("--disaggregation-bootstrap-port", str(process.bootstrap_port)))
+        args.extend(_kv_events_args(backend, process))
+        args.extend(("--request-plane", config.dynamo.request_plane))
+        args.extend(_cli_args(worker_config))
+        return _shell_command(args, environment)
+
+    # Native engine plus Dynamo sidecar, coupled exactly as the Slurm lifecycle
+    # couples them: the sidecar starts only after the engine's gRPC port binds,
+    # and either exiting takes down the other.
+    engine_args, worker_config = _engine_base_args(config, process, "sglang.launch_server")
+    for key in (
+        "grpc-port",
+        "grpc_port",
+        "disaggregation-mode",
+        "disaggregation_mode",
+        "disaggregation-bootstrap-port",
+        "disaggregation_bootstrap_port",
+    ):
+        worker_config.pop(key, None)
+    grpc_port = sidecar_grpc_port(config.dynamo.sidecar_port, process)
+    if mode != "agg":
+        engine_args.extend(("--disaggregation-mode", mode, "--skip-server-warmup"))
+        if mode == "prefill" and process.bootstrap_port is not None:
+            engine_args.extend(("--disaggregation-bootstrap-port", str(process.bootstrap_port)))
+    engine_args.extend(("--grpc-port", str(grpc_port)))
+    engine_args.extend(_kv_events_args(backend, process))
+    engine_args.extend(_cli_args(worker_config))
+
+    sidecar_args = ["-m", "dynamo.sglang.sidecar", "--grpc-endpoint", f"127.0.0.1:{grpc_port}"]
+    if mode == "prefill":
+        sidecar_args.extend(("--bootstrap-host", "127.0.0.1"))
+    sidecar_args.extend(config.dynamo.sidecar_args)
+
+    return build_sidecar_launch_script(
+        engine=_shell_command(engine_args, environment),
+        sidecar=_shell_command(sidecar_args, environment),
+        grpc_port=grpc_port,
+        engine_name="SGLang",
+        startup_timeout=config.dynamo.sidecar_startup_timeout,
+    )
+
+
 def _build_direct_processes(
-    config: SrtConfig, *, etcd_client_port: int, nats_port: int
+    config: SrtConfig, *, frontend_kind: str, etcd_client_port: int, nats_port: int
 ) -> tuple[list[Process], tuple[DirectProcess, ...]]:
     """Use the normal topology allocation, constrained to a single loopback host."""
     resources = config.resources
@@ -238,72 +431,14 @@ def _build_direct_processes(
     if any(endpoint.num_nodes != 1 for endpoint in endpoints):
         raise ValueError("--bash cannot place a tensor-parallel worker across multiple hosts")
 
-    processes = backend.endpoints_to_processes(endpoints, frontend_type="dynamo")
+    processes = backend.endpoints_to_processes(endpoints, frontend_type=frontend_kind)
     used_gpus = {gpu for process in processes for gpu in process.gpu_indices}
     if len(used_gpus) > resources.gpus_per_node:
         raise ValueError("--bash worker GPU allocations exceed resources.gpus_per_node")
 
-    model_path = _direct_model_path(config)
-    served_model_name = config.served_model_name
     rendered: list[DirectProcess] = []
     for process in processes:
         mode = process.endpoint_mode
-        worker_config = backend.get_config_for_mode(mode)
-        for key in ("model-path", "model_path", "served-model-name", "served_model_name"):
-            worker_config.pop(key, None)
-        # Match the normal Slurm worker command: SGLang otherwise probes a
-        # random free TCP port for its TP rendezvous, which races when direct
-        # workers start concurrently on one host.
-        worker_config.pop("nccl-port", None)
-        worker_config.pop("nccl_port", None)
-        nccl_port = SGLANG_NCCL_PORT_BASE + process.sys_port - DYN_SYSTEM_PORT_BASE
-        if nccl_port > 65_535:
-            raise ValueError(f"Direct-host NCCL port exceeds range: {nccl_port}")
-
-        args = [
-            "-m",
-            "dynamo.sglang",
-            "--model-path",
-            model_path,
-            "--served-model-name",
-            served_model_name,
-            "--host",
-            "0.0.0.0",
-            "--port",
-            str(process.http_port),
-            "--nccl-port",
-            str(nccl_port),
-        ]
-        if mode != "agg":
-            args.extend(("--disaggregation-mode", mode))
-            if mode == "prefill" and process.bootstrap_port is not None:
-                args.extend(("--disaggregation-bootstrap-port", str(process.bootstrap_port)))
-
-        kv_events = backend.get_kv_events_config_for_mode(mode)
-        if kv_events and process.kv_events_port is not None:
-            kv_events = dict(kv_events)
-            kv_events["endpoint"] = f"tcp://*:{process.kv_events_port}"
-            args.extend(("--kv-events-config", json.dumps(kv_events, separators=(",", ":"))))
-        args.extend(("--request-plane", config.dynamo.request_plane))
-        args.extend(_cli_args(worker_config))
-
-        environment = _format_environment(backend.get_environment_for_mode(mode))
-        environment.update({key: value for key, value in config.environment.items() if key not in _DIRECT_RUNTIME_ENV})
-        environment["CUDA_VISIBLE_DEVICES"] = process.cuda_visible_devices
-        environment.update(
-            {
-                "DYN_SYSTEM_PORT": str(process.sys_port),
-                "DYN_REQUEST_PLANE": config.dynamo.request_plane,
-                "DYN_SKIP_SGLANG_LOG_FORMATTING": "1",
-                "ETCD_ENDPOINTS": f"http://127.0.0.1:{etcd_client_port}",
-                "NATS_SERVER": f"nats://127.0.0.1:{nats_port}",
-            }
-        )
-        if config.dynamo.event_plane:
-            environment["DYN_EVENT_PLANE"] = config.dynamo.event_plane
-        if backend.mooncake_kv_store is not None:
-            environment.update(backend.get_mooncake_worker_env("127.0.0.1", "127.0.0.1"))
-
         log_name = (
             f"worker-{process.endpoint_index}.log" if mode == "agg" else f"worker-{mode}-{process.endpoint_index}.log"
         )
@@ -311,16 +446,54 @@ def _build_direct_processes(
             DirectProcess(
                 label=f"{mode}-{process.endpoint_index}",
                 log_name=log_name,
-                command=_shell_command(args, environment),
+                command=_direct_worker_command(
+                    config,
+                    process,
+                    frontend_kind=frontend_kind,
+                    etcd_client_port=etcd_client_port,
+                    nats_port=nats_port,
+                ),
                 http_port=process.http_port,
             )
         )
     return processes, tuple(rendered)
 
 
-def _build_router_command(config: SrtConfig, *, etcd_client_port: int, nats_port: int) -> str:
+def _build_router_command(config: SrtConfig, processes: list[Process], *, etcd_client_port: int, nats_port: int) -> str:
+    """Render the frontend command for the selected router."""
+    if config.frontend.type == "sgl-router":
+        return _build_sgl_router_command(config, processes)
+    return _build_dynamo_frontend_command(config, etcd_client_port=etcd_client_port, nats_port=nats_port)
+
+
+def _build_sgl_router_command(config: SrtConfig, processes: list[Process]) -> str:
+    """Render the experimental Rust SGL router over the aggregate worker pool.
+
+    The router discovers each worker's ZMQ KV-event publisher from that
+    worker's ``/server_info``, so the static URL list plus the workers' own
+    ``--kv-events-config`` is the whole wiring.
+    """
+    from srtctl.frontends.sgl_router import SGLRouterFrontend
+
+    frontend = SGLRouterFrontend()
+    worker_urls = [f"http://127.0.0.1:{process.http_port}" for process in processes if process.http_port > 0]
+    if not worker_urls:
+        raise ValueError("frontend.type: sgl-router has no routable aggregate workers")
+    args = ["--worker-urls", *worker_urls, "--host", "0.0.0.0", "--port", str(FRONTEND_PUBLIC_PORT)]
+    args.extend(frontend.managed_model_args(config, _direct_model_path(config)))
+    args.extend(_cli_args(config.frontend.args))
+    environment = _format_environment(dict(config.frontend.env or {}), artifact_dir=_ARTIFACT_DIR_PLACEHOLDER)
+    return _shell_command(args, environment, executable=_SGL_ROUTER_BIN_PLACEHOLDER)
+
+
+def _build_dynamo_frontend_command(config: SrtConfig, *, etcd_client_port: int, nats_port: int) -> str:
     frontend_environment = _format_environment(dict(config.frontend.env or {}), artifact_dir=_ARTIFACT_DIR_PLACEHOLDER)
     frontend_args = dict(config.frontend.args or {})
+    if config.dynamo.policy_catalog is not None and "router-policy-config" not in {
+        str(key).replace("_", "-") for key in frontend_args
+    }:
+        # Resolved by the direct runner once the catalog build publishes it.
+        frontend_args["router-policy-config"] = _POLICY_CONFIG_PLACEHOLDER
     trace_path = frontend_environment.get("DYN_REQUEST_TRACE_FILE_PATH")
     container_trace_prefix = f"{CONTAINER_LOG_DIR}/"
     if trace_path and trace_path.startswith(container_trace_prefix):
@@ -375,10 +548,14 @@ def _build_tachometer_config(config: SrtConfig, processes: list[Process]) -> str
         "frontend",
         {"router": config.frontend.type, **common_metadata},
     )
+    # Dynamo workers expose Prometheus on their system port; raw SGLang workers
+    # expose it on the serving port they already advertise to the router.
+    dynamo_metrics = config.frontend.type == "dynamo"
     for process in sorted(processes, key=lambda item: (item.endpoint_mode, item.endpoint_index, item.node_rank)):
+        metrics_port = process.sys_port if dynamo_metrics else process.http_port
         append_endpoint(
             f"worker_{process.endpoint_mode}_{process.endpoint_index}_{process.node_rank}",
-            f"http://127.0.0.1:{process.sys_port}/metrics",
+            f"http://127.0.0.1:{metrics_port}/metrics",
             "backend",
             {
                 "worker_role": process.endpoint_mode,
@@ -411,6 +588,21 @@ def _build_direct_mooncake_master_command(config: SrtConfig) -> tuple[str, ...] 
     )
 
 
+def _policy_catalog_plan(catalog: Any) -> dict[str, Any] | None:
+    """Serialize the catalog fields the in-container build needs."""
+    if catalog is None:
+        return None
+    return {
+        "package": catalog.package,
+        "git": catalog.git,
+        "rev": catalog.rev,
+        "path": catalog.path,
+        "crate_subdir": catalog.crate_subdir,
+        "config": catalog.config,
+        "features": list(catalog.features),
+    }
+
+
 def _build_direct_plan_json(context: DirectPlanContext) -> str:
     """Serialize the direct-only execution plan consumed inside the container.
 
@@ -429,6 +621,14 @@ def _build_direct_plan_json(context: DirectPlanContext) -> str:
         "nats_port": context.nats_port,
         "worker_processes": [asdict(process) for process in context.worker_processes],
         "router_command": context.router_command,
+        "frontend_kind": context.frontend_kind,
+        "router_health_path": context.router_health_path,
+        "worker_health_urls": list(context.worker_health_urls),
+        "dynamo_enabled": context.dynamo_enabled,
+        "sgl_router_source_subdir": context.sgl_router_source_subdir,
+        "sgl_router_binary": context.sgl_router_binary,
+        "dynamo_policy_catalog": context.dynamo_policy_catalog,
+        "dynamo_policy_config_name": context.dynamo_policy_config_name,
         "expected_prefill": context.expected_prefill,
         "expected_decode": context.expected_decode,
         "health_timeout_seconds": context.health_timeout_seconds,
@@ -492,26 +692,33 @@ def build_direct_plan_context(
     etcd_client_port = _direct_port(config, "SRTCTL_ETCD_PORT", ETCD_CLIENT_PORT)
     etcd_peer_port = _direct_port(config, "SRTCTL_ETCD_PEER_PORT", etcd_client_port + 1)
     nats_port = _direct_port(config, "SRTCTL_NATS_PORT", NATS_PORT)
-    processes, workers = _build_direct_processes(config, etcd_client_port=etcd_client_port, nats_port=nats_port)
+    frontend_kind = config.frontend.type
+    dynamo_enabled = frontend_kind == "dynamo"
+    processes, workers = _build_direct_processes(
+        config, frontend_kind=frontend_kind, etcd_client_port=etcd_client_port, nats_port=nats_port
+    )
     tachometer_config = _build_tachometer_config(config, processes)
     resources = config.resources
     expected_prefill = resources.num_prefill
     expected_decode = resources.num_agg if resources.num_agg else resources.num_decode
     health_interval = max(1, int(config.health_check.interval_seconds))
-    dynamo_source_hash = config.dynamo.hash if config.dynamo.install else None
+    dynamo_source_hash = config.dynamo.hash if dynamo_enabled and config.dynamo.install else None
     cargo_patches = config.dynamo.cargo_patches if dynamo_source_hash else None
-    dynamo_top_of_tree = config.dynamo.install and config.dynamo.top_of_tree
+    policy_catalog = config.dynamo.policy_catalog if dynamo_source_hash else None
+    dynamo_top_of_tree = dynamo_enabled and config.dynamo.install and config.dynamo.top_of_tree
     model_path = _direct_model_path(config)
     local_container_image = str(config.environment["SRTCTL_LOCAL_CONTAINER_IMAGE"])
     sglang_source = os.path.expandvars(str(config.environment["SRTCTL_SGLANG_SOURCE"]))
     global_environment = {key: value for key, value in config.environment.items() if key not in _DIRECT_RUNTIME_ENV}
+    source_cache_key = (
+        dynamo_source_cache_key(dynamo_source_hash, cargo_patches, policy_catalog) if dynamo_source_hash else None
+    )
     runtime_identity = json.dumps(
         {
-            "dynamo_source_cache_key": dynamo_source_cache_key(dynamo_source_hash, cargo_patches)
-            if dynamo_source_hash
-            else None,
+            "dynamo_source_cache_key": source_cache_key,
             "dynamo_top_of_tree": dynamo_top_of_tree,
             "container_image": local_container_image,
+            "frontend_kind": frontend_kind,
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -530,15 +737,23 @@ def build_direct_plan_context(
         etcd_peer_port=etcd_peer_port,
         nats_port=nats_port,
         worker_processes=workers,
-        router_command=_build_router_command(config, etcd_client_port=etcd_client_port, nats_port=nats_port),
+        router_command=_build_router_command(config, processes, etcd_client_port=etcd_client_port, nats_port=nats_port),
+        frontend_kind=frontend_kind,
+        router_health_path="/health" if dynamo_enabled else "/readyz",
+        worker_health_urls=tuple(
+            f"http://127.0.0.1:{process.http_port}/health" for process in processes if process.http_port > 0
+        ),
+        dynamo_enabled=dynamo_enabled,
+        sgl_router_source_subdir=None if dynamo_enabled else SGL_ROUTER_SOURCE_SUBDIR,
+        sgl_router_binary=None if dynamo_enabled else SGL_ROUTER_BINARY,
+        dynamo_policy_catalog=_policy_catalog_plan(policy_catalog),
+        dynamo_policy_config_name=POLICY_CATALOG_CONFIG_NAME,
         expected_prefill=expected_prefill,
         expected_decode=expected_decode,
         health_timeout_seconds=max(1, int(config.health_check.max_attempts) * health_interval),
         health_interval_seconds=health_interval,
         dynamo_source_hash=dynamo_source_hash,
-        dynamo_source_cache_key=dynamo_source_cache_key(dynamo_source_hash, cargo_patches)
-        if dynamo_source_hash
-        else None,
+        dynamo_source_cache_key=source_cache_key,
         dynamo_cargo_patch_commands=dynamo_cargo_patch_commands(cargo_patches),
         dynamo_top_of_tree=dynamo_top_of_tree,
         sglang_runtime_key=hashlib.sha256(runtime_identity.encode("utf-8")).hexdigest()[:16],

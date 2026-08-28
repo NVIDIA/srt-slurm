@@ -1,0 +1,87 @@
+# Arm 2: stock Dynamo over the same two aggregate SGLang workers.
+#
+# Each worker is a native `sglang.launch_server` engine plus a Dynamo sidecar,
+# coupled so either process exiting stops the other. Dynamo's own KV router
+# consumes the same SGLang ZMQ KV events over its ZMQ event plane.
+#
+#   export ROUTER_ARM_MODEL_PATH=/absolute/path/to/Qwen3-32B-FP8
+#   export ROUTER_ARM_SGLANG_SOURCE=/absolute/path/to/sglang
+#   export ROUTER_ARM_TRACE=/absolute/path/to/agentx_trace.jsonl
+
+name: router-arm2-dynamo-sidecar
+
+model:
+  path: $ROUTER_ARM_MODEL_PATH
+  container: lmsysorg/sglang:dev
+  precision: fp8
+
+resources:
+  gpu_type: h100
+  gpus_per_node: 8
+  agg_nodes: 1
+  agg_workers: 2
+  gpus_per_agg: 4
+
+environment:
+  SRTCTL_LOCAL_CONTAINER_IMAGE: lmsysorg/sglang:dev
+  SRTCTL_SGLANG_SOURCE: $ROUTER_ARM_SGLANG_SOURCE
+  SRTCTL_ETCD_PORT: "23379"
+  SRTCTL_ETCD_PEER_PORT: "23380"
+  SRTCTL_NATS_PORT: "25222"
+
+dynamo:
+  # Pin one immutable revision so Slurm and `apply --bash` build the same tree.
+  hash: 4dca1626b2708383514fcd65ac816ba7429c05a4
+  event_plane: zmq
+  # Native SGLang engines with Dynamo sidecars instead of legacy Python workers.
+  sidecar: true
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+  args:
+    router-mode: kv
+
+backend:
+  type: sglang
+  kv_events_config:
+    aggregated: true
+  sglang_config:
+    aggregated:
+      served-model-name: Qwen/Qwen3-32B-FP8
+      tensor-parallel-size: 4
+      page-size: 64
+      trust-remote-code: true
+      mem-fraction-static: 0.85
+      context-length: 40960
+      max-running-requests: 64
+      enable-metrics: true
+      disable-piecewise-cuda-graph: true
+      fp8-gemm-backend: triton
+
+observability:
+  enabled: true
+  tachometer:
+    enabled: true
+
+benchmark:
+  type: custom
+  command: |
+    "$SRTCTL_RUTER_PYTHON" -m aiperf profile \
+      --model Qwen/Qwen3-32B-FP8 \
+      --tokenizer Qwen/Qwen3-32B-FP8 \
+      --tokenizer-trust-remote-code \
+      --url "$SRT_FRONTEND_URL" \
+      --endpoint-type chat \
+      --streaming \
+      --input-file "$ROUTER_ARM_TRACE" \
+      --custom-dataset-type mooncake_trace \
+      --fixed-schedule \
+      --fixed-schedule-auto-offset \
+      --extra-inputs ignore_eos:true \
+      --use-legacy-max-tokens \
+      --request-timeout-seconds 900 \
+      --output-artifact-dir "$AIPERF_ARTIFACT_DIR" \
+      --profile-export-prefix agentx \
+      --ui none \
+      --no-server-metrics

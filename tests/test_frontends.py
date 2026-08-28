@@ -545,6 +545,7 @@ def _dynamo_frontend_call(*, dynamo_install: bool, event_plane: str | None = "zm
             get_install_commands=lambda: "echo install-dynamo",
             request_plane="nats",
             event_plane=event_plane,
+            policy_config_path=None,
         ),
         setup_script=None,
     )
