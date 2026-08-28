@@ -13,11 +13,13 @@ readonly K3_AGENT_PATCH_FILE="${VLLM_K3_AGENT_PATCH_FILE:-/configs/patches/vllm-
 readonly K3_TAIL_GATE_PATCH_FILE="${VLLM_K3_TAIL_GATE_PATCH_FILE:-/configs/patches/vllm-k3-latent-tail-env-gate-on-6f7df92a8.patch}"
 readonly K3_DEFERRED_FINALIZE_GATE_PATCH_FILE="${VLLM_K3_DEFERRED_FINALIZE_GATE_PATCH_FILE:-/configs/patches/vllm-k3-deferred-moe-finalize-env-gate-on-6f7df92a8.patch}"
 readonly K3_CHECKPOINT_INDEX_INT64_PATCH_FILE="${VLLM_K3_CHECKPOINT_INDEX_INT64_PATCH_FILE:-/configs/patches/vllm-k3-prefill-checkpoint-index-int64-on-6f7df92a8.patch}"
+readonly PR54167_PATCH_FILE="${VLLM_PR54167_PATCH_FILE:-/configs/patches/vllm-pr54167-kimi-low-latency-gemm-init-on-6f7df92a8.patch}"
 readonly PR53324_MARKER_FILE="${VLLM_ROOT}/.pr53324_574d2e4_on_6f7df92a8"
 readonly K3_AGENT_MARKER_FILE="${VLLM_ROOT}/.k3_agent_all_728d3ad_on_6f7df92a8"
 readonly K3_TAIL_GATE_MARKER_FILE="${VLLM_ROOT}/.k3_latent_tail_env_gate_on_6f7df92a8"
 readonly K3_DEFERRED_FINALIZE_GATE_MARKER_FILE="${VLLM_ROOT}/.k3_deferred_moe_finalize_env_gate_on_6f7df92a8"
 readonly K3_CHECKPOINT_INDEX_INT64_MARKER_FILE="${VLLM_ROOT}/.k3_prefill_checkpoint_index_int64_on_6f7df92a8"
+readonly PR54167_MARKER_FILE="${VLLM_ROOT}/.pr54167_kimi_low_latency_gemm_init_on_6f7df92a8"
 
 if [[ ! -r "${VERSION_FILE}" ]] || ! grep -q "6f7df92a8" "${VERSION_FILE}"; then
   echo "Refusing to patch: expected vLLM nightly commit 6f7df92a8." >&2
@@ -80,6 +82,10 @@ apply_patch_once \
   "Kimi-K3 prefill checkpoint 64-bit cache index" \
   "${K3_CHECKPOINT_INDEX_INT64_PATCH_FILE}" \
   "${K3_CHECKPOINT_INDEX_INT64_MARKER_FILE}"
+apply_patch_once \
+  "vLLM PR #54167 Kimi-K3 low-latency GEMM fallback initialization" \
+  "${PR54167_PATCH_FILE}" \
+  "${PR54167_MARKER_FILE}"
 python3 -m compileall -q \
   "${VLLM_ROOT}/config/speculative.py" \
   "${VLLM_ROOT}/distributed/kv_transfer/kv_connector/v1/mooncake/store" \

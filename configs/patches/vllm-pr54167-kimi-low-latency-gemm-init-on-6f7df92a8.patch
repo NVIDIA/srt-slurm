@@ -1,0 +1,12 @@
+diff --git a/vllm/models/kimi_k3/nvidia/low_latency_gemm.py b/vllm/models/kimi_k3/nvidia/low_latency_gemm.py
+index ecab56dbe4..52e6aa0475 100644
+--- a/vllm/models/kimi_k3/nvidia/low_latency_gemm.py
++++ b/vllm/models/kimi_k3/nvidia/low_latency_gemm.py
+@@ -725,6 +725,7 @@ class _KimiK3LowLatencyApply:
+     """Mixin: try the precomputed plan, else defer to the base method."""
+ 
+     def __init__(self, plan: dict[int, ResolvedCall]) -> None:
++        super().__init__()
+         self._plan = plan
+ 
+     def apply(
