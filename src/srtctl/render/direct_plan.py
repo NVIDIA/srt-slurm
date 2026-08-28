@@ -126,10 +126,20 @@ def _shell_command(args: list[str], environment: dict[str, str] | None = None) -
 
 
 def _sidecar_worker_command(
-    engine_args: list[str], environment: dict[str, str], *, grpc_port: int, bootstrap_host: str | None
+    engine_args: list[str],
+    environment: dict[str, str],
+    *,
+    grpc_port: int,
+    bootstrap_host: str | None,
+    health_deadline_secs: int,
 ) -> str:
     """Run a native SGLang worker and its Dynamo sidecar as one direct-run service."""
-    sidecar_args = ["--sglang-endpoint", f"http://127.0.0.1:{grpc_port}"]
+    sidecar_args = [
+        "--sglang-endpoint",
+        f"http://127.0.0.1:{grpc_port}",
+        "--health-deadline-secs",
+        str(health_deadline_secs),
+    ]
     if bootstrap_host is not None:
         sidecar_args.extend(("--bootstrap-host", bootstrap_host))
     engine_command = _shell_command(engine_args)
@@ -351,6 +361,7 @@ def _build_direct_processes(
                 environment,
                 grpc_port=process.grpc_port,
                 bootstrap_host="127.0.0.1" if mode == "prefill" else None,
+                health_deadline_secs=config.health_check.timeout_seconds,
             )
         rendered.append(
             DirectProcess(
@@ -581,7 +592,7 @@ def build_direct_plan_context(
         router_command=_build_router_command(config, etcd_client_port=etcd_client_port, nats_port=nats_port),
         expected_prefill=expected_prefill,
         expected_decode=expected_decode,
-        health_timeout_seconds=max(1, int(config.health_check.max_attempts) * health_interval),
+        health_timeout_seconds=config.health_check.timeout_seconds,
         health_interval_seconds=health_interval,
         dynamo_source_hash=dynamo_source_hash,
         dynamo_source_cache_key=dynamo_source_cache_key(dynamo_source_hash, cargo_patches)

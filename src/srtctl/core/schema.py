@@ -1772,6 +1772,11 @@ class HealthCheckConfig:
     max_attempts: int = 180  # 30 minutes default (large models take time to load)
     interval_seconds: int = 10
 
+    @property
+    def timeout_seconds(self) -> int:
+        """Total readiness timeout shared by launchers and sidecars."""
+        return max(1, int(self.max_attempts) * max(1, int(self.interval_seconds)))
+
     Schema: ClassVar[type[Schema]] = Schema
 
 

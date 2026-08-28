@@ -659,12 +659,16 @@ class TestDynamoSidecarSupervisor:
             ["python3", "-m", "sglang.launch_server", "--grpc-port", "6500"],
             grpc_port=6500,
             bootstrap_host="10.0.0.1",
+            health_deadline_secs=7200,
         )
 
         assert command[:2] == ["bash", "-c"]
         script = command[2]
         assert "sglang.launch_server" in script
-        assert '"$DYNAMO_SIDECAR_BINARY" --sglang-endpoint http://127.0.0.1:6500 --bootstrap-host 10.0.0.1' in script
+        assert (
+            '"$DYNAMO_SIDECAR_BINARY" --sglang-endpoint http://127.0.0.1:6500 '
+            "--health-deadline-secs 7200 --bootstrap-host 10.0.0.1" in script
+        )
         assert 'wait -n "$engine_pid" "$sidecar_pid"' in script
         assert 'kill "$engine_pid" "$sidecar_pid"' in script
 

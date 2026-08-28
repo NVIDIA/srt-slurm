@@ -37,6 +37,7 @@ def _wrap_sglang_sidecar(
     *,
     grpc_port: int,
     bootstrap_host: str | None,
+    health_deadline_secs: int,
 ) -> list[str]:
     """Run the native SGLang engine and its Dynamo sidecar under one supervisor.
 
@@ -44,7 +45,12 @@ def _wrap_sglang_sidecar(
     makes their loopback gRPC endpoint private and ensures either exit tears down
     its peer instead of leaving a GPU process behind.
     """
-    sidecar_args = ["--sglang-endpoint", f"http://127.0.0.1:{grpc_port}"]
+    sidecar_args = [
+        "--sglang-endpoint",
+        f"http://127.0.0.1:{grpc_port}",
+        "--health-deadline-secs",
+        str(health_deadline_secs),
+    ]
     if bootstrap_host is not None:
         sidecar_args.extend(["--bootstrap-host", bootstrap_host])
     sidecar_command = f'"$DYNAMO_SIDECAR_BINARY" {shlex.join(sidecar_args)}'
@@ -204,7 +210,12 @@ class WorkerStageMixin:
                 if process.endpoint_mode == "prefill"
                 else None
             )
-            cmd = _wrap_sglang_sidecar(cmd, grpc_port=process.grpc_port, bootstrap_host=bootstrap_host)
+            cmd = _wrap_sglang_sidecar(
+                cmd,
+                grpc_port=process.grpc_port,
+                bootstrap_host=bootstrap_host,
+                health_deadline_secs=self.config.health_check.timeout_seconds,
+            )
 
         # Environment variables
         env_to_set = {
