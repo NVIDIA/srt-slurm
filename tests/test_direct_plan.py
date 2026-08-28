@@ -181,9 +181,9 @@ def test_direct_plan_sidecar_uses_native_sglang_and_supervises_the_connector(tmp
     assert context.dynamo_sidecar
     assert plan["dynamo_sidecar"] is True
     assert "-m sglang.launch_server" in command
-    assert "-m dynamo.sglang" not in command
+    assert "-m dynamo.sglang --" not in command
     assert "--grpc-port 6500" in command
-    assert '"$DYNAMO_SIDECAR_BINARY" --sglang-endpoint http://127.0.0.1:6500' in command
+    assert "$SRTCTL_PYTHON -m dynamo.sglang.sidecar --grpc-endpoint 127.0.0.1:6500" in command
     assert 'wait -n "$engine_pid" "$sidecar_pid"' in command
     assert "DYN_SYSTEM_PORT=7500" in command
 

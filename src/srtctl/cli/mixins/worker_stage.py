@@ -32,33 +32,115 @@ logger = logging.getLogger(__name__)
 _DEFAULT_WORKER_DYN_LOG = "info,dynamo_runtime::pipeline::network::ingress::push_handler=warn"
 
 
-def _wrap_sglang_sidecar(
-    engine_command: list[str],
+def _build_sidecar_command(
+    backend_type: str,
     *,
     grpc_port: int,
-    bootstrap_host: str | None,
+    mode: str,
+    model_path: str,
+    bootstrap_host: str | None = None,
+    context_length: int | None = None,
 ) -> list[str]:
-    """Run the native SGLang engine and its Dynamo sidecar under one supervisor.
+    """Build the wheel-provided sidecar command for one native engine."""
+    command = ["python3", "-m", f"dynamo.{backend_type}.sidecar", "--grpc-endpoint", f"127.0.0.1:{grpc_port}"]
+    if backend_type == "sglang" and bootstrap_host is not None:
+        command.extend(["--bootstrap-host", bootstrap_host])
+    elif backend_type == "vllm" and mode in {"prefill", "decode"}:
+        command.extend(["--disaggregation-mode", mode])
+        if mode == "prefill":
+            command.extend(["--component", "prefill"])
+    elif backend_type == "trtllm":
+        command.extend(["--model-path", model_path])
+        if context_length is not None:
+            command.extend(["--context-length", str(context_length)])
+    return command
+
+
+def _wrap_sidecar(
+    engine_command: list[str],
+    sidecar_command: list[str],
+    *,
+    grpc_port: int,
+    engine_name: str,
+    rank_zero_only: bool = False,
+) -> list[str]:
+    """Run a native engine and its Dynamo sidecar under one supervisor.
 
     Slurm owns one task per logical worker. Keeping both processes in that task
     makes their loopback gRPC endpoint private and ensures either exit tears down
     its peer instead of leaving a GPU process behind.
     """
-    sidecar_args = ["--sglang-endpoint", f"http://127.0.0.1:{grpc_port}"]
-    if bootstrap_host is not None:
-        sidecar_args.extend(["--bootstrap-host", bootstrap_host])
-    sidecar_command = f'"$DYNAMO_SIDECAR_BINARY" {shlex.join(sidecar_args)}'
-    script = (
-        "set -e; "
-        f"{shlex.join(engine_command)} & engine_pid=$!; "
-        f"{sidecar_command} & sidecar_pid=$!; "
-        'cleanup() { kill "$engine_pid" "$sidecar_pid" 2>/dev/null || true; '
-        'wait "$engine_pid" "$sidecar_pid" 2>/dev/null || true; }; '
-        "trap 'cleanup; exit 143' INT TERM; "
-        'set +e; wait -n "$engine_pid" "$sidecar_pid"; status=$?; set -e; '
-        'cleanup; exit "$status"'
-    )
-    return ["bash", "-c", script]
+    rank_guard = ""
+    if rank_zero_only:
+        rank_guard = """if [[ "${SLURM_PROCID:-0}" != "0" ]]; then
+    set +e
+    wait "${ENGINE_PID}"
+    status=$?
+    set -e
+    if [[ "${status}" == 0 ]]; then status=1; fi
+    exit "${status}"
+fi
+"""
+    script = f"""set -euo pipefail
+ENGINE_PID=
+SIDECAR_PID=
+request_stop() {{
+    local pid="${{1:-}}"
+    if [[ -n "${{pid}}" ]] && kill -0 "${{pid}}" 2>/dev/null; then
+        kill "${{pid}}" 2>/dev/null || true
+    fi
+}}
+reap_with_timeout() {{
+    local pid="${{1:-}}"
+    if [[ -z "${{pid}}" ]]; then return; fi
+    for _ in $(seq 1 10); do
+        if ! kill -0 "${{pid}}" 2>/dev/null; then break; fi
+        sleep 1
+    done
+    if kill -0 "${{pid}}" 2>/dev/null; then
+        kill -KILL "${{pid}}" 2>/dev/null || true
+    fi
+    wait "${{pid}}" 2>/dev/null || true
+}}
+cleanup() {{
+    status=$?
+    trap - EXIT INT TERM
+    request_stop "${{SIDECAR_PID}}"
+    request_stop "${{ENGINE_PID}}"
+    reap_with_timeout "${{SIDECAR_PID}}"
+    reap_with_timeout "${{ENGINE_PID}}"
+    exit "${{status}}"
+}}
+trap cleanup EXIT INT TERM
+{shlex.join(engine_command)} &
+ENGINE_PID=$!
+{rank_guard}port_ready=0
+for _ in $(seq 1 1200); do
+    if ! kill -0 "${{ENGINE_PID}}" 2>/dev/null; then
+        echo "{engine_name} exited before native gRPC became ready" >&2
+        exit 1
+    fi
+    if (exec 3<>/dev/tcp/127.0.0.1/{grpc_port}) 2>/dev/null; then
+        exec 3>&-
+        port_ready=1
+        break
+    fi
+    sleep 1
+done
+if [[ "${{port_ready}}" != 1 ]]; then
+    echo "Timed out waiting for {engine_name} native gRPC on port {grpc_port}" >&2
+    exit 1
+fi
+{shlex.join(sidecar_command)} &
+SIDECAR_PID=$!
+set +e
+wait -n "${{ENGINE_PID}}" "${{SIDECAR_PID}}"
+status=$?
+set -e
+if [[ "${{status}}" == 0 ]]; then status=1; fi
+exit "${{status}}"
+"""
+    return ["bash", "-lc", script]
 
 
 class WorkerStageMixin:
@@ -117,16 +199,6 @@ class WorkerStageMixin:
         # Skip if dynamo.install is False (container already has dynamo installed)
         if installs_dynamo(self.config):
             parts.append(self.config.dynamo.get_install_commands())
-
-        # 3. Standalone sidecars are Rust executables, not Python modules. Build
-        # the selected connector from the configured Dynamo source and export
-        # DYNAMO_SIDECAR_BINARY for the supervisor command.
-        if getattr(self.config.dynamo, "uses_sidecar", False) is True:
-            parts.append(
-                self.config.dynamo.get_sidecar_build_commands(
-                    self.config.backend_type,
-                )
-            )
 
         if not parts:
             return None
@@ -199,12 +271,26 @@ class WorkerStageMixin:
         if sidecar_mode:
             if process.grpc_port is None:
                 raise RuntimeError(f"No native gRPC port allocated for sidecar worker on {process.node}")
-            bootstrap_host = (
-                get_hostname_ip(process.node, self.runtime.network_interface)
-                if process.endpoint_mode == "prefill"
-                else None
-            )
-            cmd = _wrap_sglang_sidecar(cmd, grpc_port=process.grpc_port, bootstrap_host=bootstrap_host)
+            launch_sidecar = self.config.backend_type != "vllm" or process.is_leader
+            if launch_sidecar:
+                bootstrap_host = (
+                    get_hostname_ip(process.node, self.runtime.network_interface)
+                    if self.config.backend_type == "sglang" and process.endpoint_mode == "prefill"
+                    else None
+                )
+                sidecar_command = _build_sidecar_command(
+                    self.config.backend_type,
+                    grpc_port=process.grpc_port,
+                    mode=process.endpoint_mode,
+                    model_path=self.runtime.worker_model_arg,
+                    bootstrap_host=bootstrap_host,
+                )
+                cmd = _wrap_sidecar(
+                    cmd,
+                    sidecar_command,
+                    grpc_port=process.grpc_port,
+                    engine_name=self.config.backend_type,
+                )
 
         # Environment variables
         env_to_set = {
@@ -242,13 +328,19 @@ class WorkerStageMixin:
             formatted_value = value.format_map(SafeDict(template_vars))
             env_to_set[key] = formatted_value
 
+        if sidecar_mode and self.config.backend_type == "vllm":
+            # Third-party vLLM plugins can replace native output types and
+            # violate vllm-rs's fixed MessagePack contract.
+            env_to_set.setdefault("VLLM_PLUGINS", "")
+
         # Add profiling environment variables
         if profiling.enabled:
             profile_dir = str(self.runtime.log_dir / "profiles")
             env_to_set.update(profiling.get_env_vars(mode, profile_dir))
 
         should_set_cvd = getattr(self.backend, "should_set_cuda_visible_devices", lambda _process: True)
-        if should_set_cvd(process) and len(process.gpu_indices) < self.runtime.gpus_per_node:
+        force_sidecar_cvd = sidecar_mode and self.config.backend_type == "vllm"
+        if (force_sidecar_cvd or should_set_cvd(process)) and len(process.gpu_indices) < self.runtime.gpus_per_node:
             env_to_set["CUDA_VISIBLE_DEVICES"] = process.cuda_visible_devices
 
         # Add backend-specific process environment variables (e.g., unique ports)
@@ -349,15 +441,35 @@ class WorkerStageMixin:
             )
 
         # Build command using backend's method
+        sidecar_mode = getattr(self.config.dynamo, "uses_sidecar", False) is True
         cmd = self.backend.build_worker_command(
             process=leader,
             endpoint_processes=endpoint_processes,
             runtime=self.runtime,
-            frontend_type=self.config.frontend.type,
+            frontend_type="sidecar" if sidecar_mode else self.config.frontend.type,
             nsys_prefix=nsys_prefix,
             dump_config_path=config_dump,
             profiling=profiling,
         )
+        if sidecar_mode:
+            if leader.grpc_port is None:
+                raise RuntimeError(f"No native gRPC port allocated for sidecar worker on {leader.node}")
+            mode_config = self.backend.get_config_for_mode(mode)
+            context_length = mode_config.get("max_seq_len") or mode_config.get("max-seq-len")
+            sidecar_command = _build_sidecar_command(
+                self.config.backend_type,
+                grpc_port=leader.grpc_port,
+                mode=mode,
+                model_path=self.runtime.worker_model_arg,
+                context_length=context_length,
+            )
+            cmd = _wrap_sidecar(
+                cmd,
+                sidecar_command,
+                grpc_port=leader.grpc_port,
+                engine_name=self.config.backend_type,
+                rank_zero_only=True,
+            )
 
         # Environment variables
         env_to_set = {
@@ -365,6 +477,7 @@ class WorkerStageMixin:
             "ETCD_ENDPOINTS": f"http://{self.runtime.nodes.infra}:{ETCD_CLIENT_PORT}",
             "NATS_SERVER": f"nats://{self.runtime.nodes.infra}:{NATS_PORT}",
             "DYN_SYSTEM_PORT": str(leader.sys_port),
+            "DYN_REQUEST_PLANE": self.config.dynamo.request_plane,
             "DYN_SKIP_SGLANG_LOG_FORMATTING": "1",
         }
         if self.config.dynamo.event_plane:

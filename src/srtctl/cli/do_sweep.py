@@ -144,10 +144,11 @@ class SweepOrchestrator(
         deterministically within a job.
         """
         allocator = NodePortAllocator()
+        frontend_type = "sidecar" if self.config.dynamo.uses_sidecar else self.config.frontend.type
         return self.backend.endpoints_to_processes(
             self.endpoints,
             port_allocator=allocator,
-            frontend_type=self.config.frontend.type,
+            frontend_type=frontend_type,
         )
 
     def start_head_infrastructure(self, registry: ProcessRegistry) -> ManagedProcess:

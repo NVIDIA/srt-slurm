@@ -129,11 +129,11 @@ def _sidecar_worker_command(
     engine_args: list[str], environment: dict[str, str], *, grpc_port: int, bootstrap_host: str | None
 ) -> str:
     """Run a native SGLang worker and its Dynamo sidecar as one direct-run service."""
-    sidecar_args = ["--sglang-endpoint", f"http://127.0.0.1:{grpc_port}"]
+    sidecar_args = ["-m", "dynamo.sglang.sidecar", "--grpc-endpoint", f"127.0.0.1:{grpc_port}"]
     if bootstrap_host is not None:
         sidecar_args.extend(("--bootstrap-host", bootstrap_host))
     engine_command = _shell_command(engine_args)
-    sidecar_command = f'"$DYNAMO_SIDECAR_BINARY" {shlex.join(sidecar_args)}'
+    sidecar_command = f"$SRTCTL_PYTHON {shlex.join(sidecar_args)}"
     exports = _shell_assignments(environment)
     export_command = f"export {' '.join(exports)}; " if exports else ""
     return (

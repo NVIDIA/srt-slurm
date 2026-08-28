@@ -691,7 +691,7 @@ class VLLMProtocol:
             # Standard TP mode: one process per node
             return endpoints_to_processes(endpoints, base_sys_port=base_sys_port, port_allocator=port_allocator)
 
-        if self.dp_launch_mode == "per_node":
+        if frontend_type == "sidecar" or self.dp_launch_mode == "per_node":
             return self._dp_per_node_endpoints_to_processes(
                 endpoints,
                 base_sys_port=base_sys_port,
@@ -864,6 +864,7 @@ class VLLMProtocol:
                         kv_events_port=port_allocator.next_kv_events_port_block(local_dp_size),
                         nixl_port=nixl_base_port,
                         dp_rpc_port=dp_rpc_port,
+                        grpc_port=port_allocator.next_grpc_port(node),
                         het_group=endpoint.het_group,
                     )
                 )
@@ -931,6 +932,19 @@ class VLLMProtocol:
                         "max_iterations": phase.vllm_nsys_max_iterations,
                     }
                 )
+
+        if frontend_type == "sidecar":
+            process_ip = get_hostname_ip(process.node, getattr(runtime, "network_interface", None))
+            return self._build_sidecar_engine_command(
+                process=process,
+                endpoint_processes=endpoint_processes,
+                config=config,
+                model_arg=model_arg,
+                served_model_name=served_model_name,
+                leader_ip=leader_ip,
+                process_ip=process_ip,
+                nsys_prefix=nsys_prefix,
+            )
 
         if frontend_type in {"vllm", "vllm-router"}:
             if frontend_type == "vllm" and mode != "agg":
@@ -1199,6 +1213,111 @@ class VLLMProtocol:
         cmd.extend(_config_to_cli_args(config))
 
         return cmd
+
+    def _build_sidecar_engine_command(
+        self,
+        *,
+        process: Process,
+        endpoint_processes: list[Process],
+        config: dict[str, Any],
+        model_arg: str,
+        served_model_name: str,
+        leader_ip: str,
+        process_ip: str,
+        nsys_prefix: list[str] | None,
+    ) -> list[str]:
+        """Build a native vllm-rs engine command for a co-located sidecar."""
+        mode = process.endpoint_mode
+        is_dp_mode = self._is_dp_mode(mode)
+        is_multi_node = len({candidate.node for candidate in endpoint_processes}) > 1
+        if is_multi_node and not is_dp_mode:
+            raise ValueError("vLLM sidecar mode does not support multi-node tensor-parallel endpoints; use DP")
+        if process.grpc_port is None:
+            raise ValueError(f"No native gRPC port allocated for sidecar worker on {process.node}")
+
+        for key in (
+            "model",
+            "served-model-name",
+            "served_model_name",
+            "grpc-port",
+            "grpc_port",
+            "headless",
+            "data-parallel-size-local",
+            "data_parallel_size_local",
+            "data-parallel-start-rank",
+            "data_parallel_start_rank",
+            "data-parallel-address",
+            "data_parallel_address",
+            "data-parallel-hybrid-lb",
+            "data_parallel_hybrid_lb",
+            "data-parallel-rank",
+            "data_parallel_rank",
+        ):
+            config.pop(key, None)
+
+        command: list[str] = list(nsys_prefix or [])
+        command.extend(
+            [
+                "vllm-rs",
+                "serve",
+                model_arg,
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(process.http_port or process.grpc_port + 1),
+                "--grpc-port",
+                str(process.grpc_port),
+                "--served-model-name",
+                served_model_name,
+            ]
+        )
+
+        max_model_len = config.pop("max-model-len", None)
+        if max_model_len is None:
+            max_model_len = config.pop("max_model_len", None)
+        if max_model_len is not None:
+            command.extend(["--max-model-len", str(max_model_len)])
+
+        if is_dp_mode:
+            dp_size = config.pop("data-parallel-size", None)
+            if dp_size is None:
+                dp_size = config.pop("data_parallel_size", None)
+            if dp_size is None:
+                raise ValueError("vLLM sidecar DP mode requires data-parallel-size")
+            config_dp_rpc_port = config.pop("data-parallel-rpc-port", None)
+            if config_dp_rpc_port is None:
+                config_dp_rpc_port = config.pop("data_parallel_rpc_port", None)
+            dp_rpc_port = process.dp_rpc_port or config_dp_rpc_port or VLLM_DATA_PARALLEL_RPC_PORT
+            command.extend(
+                [
+                    "--data-parallel-size",
+                    str(dp_size),
+                    "--data-parallel-size-local",
+                    str(self._get_local_dp_size(mode, len(process.gpu_indices))),
+                    "--data-parallel-address",
+                    leader_ip,
+                    "--data-parallel-rpc-port",
+                    str(dp_rpc_port),
+                ]
+            )
+            if not process.is_leader:
+                command.append("--headless")
+
+        mode_connector = config.pop("connector", None)
+        connector = mode_connector if mode_connector is not None else self.connector
+        has_explicit_kv = "kv-transfer-config" in config or "kv_transfer_config" in config
+        if connector and connector not in ("null", "none", None) and not has_explicit_kv:
+            command.extend(["--kv-transfer-config", _connector_to_kv_transfer_config(connector)])
+
+        kv_cfg = self.get_kv_events_config_for_mode(mode)
+        if kv_cfg and process.kv_events_port is not None:
+            kv_cfg["endpoint"] = f"tcp://{process_ip}:{process.kv_events_port}"
+            command.extend(["--kv-events-config", json.dumps(kv_cfg)])
+
+        command.extend(_config_to_cli_args(config))
+        if is_dp_mode and not process.is_leader:
+            command.extend(["--data-parallel-start-rank", str(process.node_rank)])
+        return command
 
 
 _CONNECTOR_MAP: dict[str, dict[str, str]] = {

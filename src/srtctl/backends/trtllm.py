@@ -280,6 +280,26 @@ class TRTLLMProtocol:
         numactl_prefix = ["numactl", "-m", "0,1"] if use_numactl else []
         base_prefix = list(nsys_prefix or []) + numactl_prefix + ["trtllm-llmapi-launch"]
 
+        if frontend_type == "sidecar":
+            if mode != "agg":
+                raise ValueError("TensorRT-LLM sidecar mode currently supports aggregated workers only")
+            if process.grpc_port is None:
+                raise ValueError(f"No native gRPC port allocated for sidecar worker on {process.node}")
+            cmd = base_prefix + [
+                "python3",
+                "-m",
+                "tensorrt_llm.commands.serve",
+                model_arg,
+                "--grpc",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(process.grpc_port),
+                "--extra_llm_api_options",
+                str(container_config_path),
+            ]
+            return self._wrap_with_numa_cpu_bind(cmd)
+
         # trtllm-serve path: launch an OpenAI-compatible trtllm-serve worker. In
         # disaggregated mode the trtllm_serve frontend fronts these via a static
         # ser.yaml (context/generation server URLs). In aggregated mode the one
