@@ -63,6 +63,7 @@ from srtctl.render.direct_plan import (
     build_direct_plan_context,
     render_direct_container_shim,
 )
+from srtctl.render.slurm_plan import render_slurm_launch_script
 
 console = Console()
 logger = logging.getLogger(__name__)
@@ -1299,6 +1300,51 @@ def render_bash_script(
     return render(config)
 
 
+def render_launch_script(
+    config_path: Path,
+    selector: str | None = None,
+    output_dir: Path | None = None,
+) -> str:
+    """Render a portable serving lifecycle for a future Slurm allocation."""
+    if config_path.is_dir():
+        raise ValueError("render-launch expects a single config file, not a directory")
+
+    srtctl_root = get_srtslurm_setting("srtctl_root")
+    source_dir = Path(srtctl_root) if srtctl_root else Path(__file__).parent.parent.parent.parent
+    if output_dir:
+        output_base = output_dir.resolve()
+    else:
+        configured_output_dir = get_srtslurm_setting("output_dir")
+        output_base = (
+            Path(os.path.expandvars(configured_output_dir)).resolve()
+            if configured_output_dir
+            else (source_dir / "outputs").resolve()
+        )
+
+    def render(config: SrtConfig) -> str:
+        return render_slurm_launch_script(config, source_dir=source_dir, output_base=output_base)
+
+    if is_override_config(config_path):
+        from srtctl.core.config import resolve_override_yaml
+
+        resolved_variants = resolve_override_yaml(config_path, selector=selector)
+        if len(resolved_variants) != 1:
+            raise ValueError(
+                "render-launch for override configs requires a selector that resolves to exactly one variant"
+            )
+        _suffix, config_cm = resolved_variants[0]
+        if "sweep" in config_cm:
+            raise ValueError("render-launch does not support override variants that contain a sweep")
+        resolved_config = resolve_config_with_defaults(config_cm, load_cluster_config())
+        return render(SrtConfig.Schema().load(resolved_config))
+
+    if selector:
+        logger.warning(f"Selector ':{selector}' ignored — config is not an override file")
+    if is_sweep_config(config_path):
+        raise ValueError("render-launch currently supports single-job configs only")
+    return render(load_config(config_path))
+
+
 def submit_override(
     config_path: Path,
     selector: str | None = None,
@@ -1458,6 +1504,7 @@ def main():
   srtctl apply -f config.yaml                    # Submit job
   srtctl apply -f config.yaml --serve-only       # Serve until cancelled; do not benchmark
   srtctl apply -f config.yaml --bash             # Print a direct single-node Bash lifecycle script
+  srtctl render-launch -f config.yaml             # Print a portable Slurm serving lifecycle
   srtctl apply -f ./configs/                     # Submit all YAMLs in directory
   srtctl apply -f config.yaml --sweep            # Submit sweep
   srtctl preflight -f config.yaml                # Check model/container availability
@@ -1539,6 +1586,12 @@ def main():
 
     dry_run_parser = subparsers.add_parser("dry-run", help="Validate without submitting")
     add_common_args(dry_run_parser)
+
+    render_launch_parser = subparsers.add_parser(
+        "render-launch",
+        help="Render a portable serving script for an active Slurm allocation",
+    )
+    add_common_args(render_launch_parser)
 
     preflight_parser = subparsers.add_parser(
         "preflight",
@@ -1756,6 +1809,19 @@ def main():
 
             setup_script = getattr(args, "setup_script", None)
             output_dir = getattr(args, "output_dir", None)
+
+            if args.command == "render-launch":
+                script_content = render_launch_script(
+                    effective_config_path,
+                    selector=selector,
+                    output_dir=output_dir,
+                )
+                sys.stdout.write(script_content)
+                if not script_content.endswith("\n"):
+                    sys.stdout.write("\n")
+                sys.stdout.flush()
+                restore_console()
+                return
 
             if bash_mode:
                 script_content = render_bash_script(

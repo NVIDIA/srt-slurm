@@ -10,6 +10,7 @@ Handles starting backend worker processes (prefill/decode/agg).
 import logging
 import shlex
 from collections import defaultdict
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Any
 
@@ -17,7 +18,13 @@ from srtctl.core.fingerprint import generate_capture_script
 from srtctl.core.health import wait_for_health
 from srtctl.core.processes import ManagedProcess, NamedProcesses
 from srtctl.core.schema import build_otel_env, installs_dynamo
-from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, get_hostname_ip, start_srun_process
+from srtctl.core.slurm import (
+    CONTAINER_REMAP_ROOT_EXPORT,
+    SrunSpec,
+    get_hostname_ip,
+    start_srun_process,
+    start_srun_spec,
+)
 from srtctl.ports import ETCD_CLIENT_PORT, KV_EVENTS_PORT_BASE, KVBM_ZMQ_PORT_BASE, NATS_PORT
 
 if TYPE_CHECKING:
@@ -133,7 +140,12 @@ class WorkerStageMixin:
 
         return " && ".join(parts)
 
-    def _apply_kvbm_endpoint_env(self, env_to_set: dict[str, str], endpoint_processes: list["Process"]) -> None:
+    def _apply_kvbm_endpoint_env(
+        self,
+        env_to_set: dict[str, str],
+        endpoint_processes: list["Process"],
+        resolve_node_ip: Callable[[str, str | None], str] = get_hostname_ip,
+    ) -> None:
         """Fill KVBM leader ZMQ settings for an endpoint.
 
         KVBM defaults its leader control sockets to 127.0.0.1. That works for
@@ -149,7 +161,7 @@ class WorkerStageMixin:
         endpoint_nodes = list(dict.fromkeys(p.node for p in endpoint_processes))
 
         if len(endpoint_nodes) > 1:
-            leader_host = get_hostname_ip(leader.node, self.runtime.network_interface)
+            leader_host = resolve_node_ip(leader.node, self.runtime.network_interface)
             env_to_set.setdefault("DYN_KVBM_LEADER_ZMQ_HOST", leader_host)
 
         if leader.kv_events_port is None:
@@ -162,12 +174,17 @@ class WorkerStageMixin:
             env_to_set.setdefault("DYN_KVBM_LEADER_ZMQ_PUB_PORT", str(pub_port))
             env_to_set.setdefault("DYN_KVBM_LEADER_ZMQ_ACK_PORT", str(ack_port))
 
-    def start_worker(self, process: "Process", endpoint_processes: list["Process"]) -> ManagedProcess:
-        """Start a single worker process (one srun per node, used by SGLang)."""
+    def build_worker_srun(
+        self,
+        process: "Process",
+        endpoint_processes: list["Process"],
+        *,
+        resolve_node_ip: Callable[[str, str | None], str] = get_hostname_ip,
+        include_fingerprint: bool = True,
+    ) -> SrunSpec:
+        """Build one per-process worker launch without starting it."""
         mode = process.endpoint_mode
         index = process.endpoint_index
-
-        logger.info("Starting %s worker %d on %s", mode, index, process.node)
 
         # Log and config files
         worker_log = self.runtime.log_dir / f"{process.node}_{mode}_w{index}.out"
@@ -176,8 +193,6 @@ class WorkerStageMixin:
         # Profiling setup
         profiling = self.config.profiling
         nsys_prefix = None
-        if profiling.enabled:
-            (self.runtime.log_dir / "profiles" / mode).mkdir(parents=True, exist_ok=True)
         if profiling.is_nsys:
             gpu_label = process.cuda_visible_devices.replace(",", "-")
             nsys_output = f"/logs/profiles/{mode}/{process.node}_{mode}_w{index}_profile_gpu{gpu_label}"
@@ -258,26 +273,19 @@ class WorkerStageMixin:
         # worker's own IP so MOONCAKE_LOCAL_HOSTNAME is correct for multi-node
         # peer-to-peer transfers (defaulting to "localhost" silently breaks them).
         if hasattr(self.backend, "get_mooncake_worker_env"):
-            local_hostname = get_hostname_ip(process.node, self.runtime.network_interface)
+            local_hostname = resolve_node_ip(process.node, self.runtime.network_interface)
             env_to_set.update(self.backend.get_mooncake_worker_env(self.runtime.infra_node_ip, local_hostname))
 
-        self._apply_kvbm_endpoint_env(env_to_set, endpoint_processes)
-
-        # Log env vars in the format: VAR=value VAR2=value2
-        env_str = " ".join(f"{k}={v}" for k, v in sorted(env_to_set.items()))
-        logger.info("Env: %s", env_str)
-        logger.info("Command: %s", shlex.join(cmd))
-        logger.info("Log: %s", worker_log)
-        if profiling.enabled:
-            logger.info("Profiling: %s mode", profiling.type)
+        self._apply_kvbm_endpoint_env(env_to_set, endpoint_processes, resolve_node_ip)
 
         # Build bash preamble (setup script + dynamo install + fingerprint)
         bash_preamble = self._build_worker_preamble()
-        fp_cmd = generate_capture_script(f"/logs/fingerprint_{mode}_w{index}.json")
-        # Keep fingerprint failures non-fatal, but do not let its `|| true`
-        # mask failures from setup/dynamo install commands before it.
-        fp_cmd = f"( {fp_cmd} )"
-        bash_preamble = f"{bash_preamble} && {fp_cmd}" if bash_preamble else fp_cmd
+        if include_fingerprint:
+            fp_cmd = generate_capture_script(f"/logs/fingerprint_{mode}_w{index}.json")
+            # Keep fingerprint failures non-fatal, but do not let its `|| true`
+            # mask failures from setup/dynamo install commands before it.
+            fp_cmd = f"( {fp_cmd} )"
+            bash_preamble = f"{bash_preamble} && {fp_cmd}" if bash_preamble else fp_cmd
 
         # vLLM uses VLLM_PORT as the initial port for its internal message
         # queues. In a multi-node endpoint, concurrent TP ranks inherit the
@@ -286,19 +294,39 @@ class WorkerStageMixin:
         endpoint_nodes = {endpoint_process.node for endpoint_process in endpoint_processes}
         env_to_unset = ["VLLM_PORT"] if self.backend.type == "vllm" and len(endpoint_nodes) > 1 else None
 
-        proc = start_srun_process(
-            command=cmd,
-            nodelist=[process.node],
+        return SrunSpec(
+            command=tuple(cmd),
+            nodelist=(process.node,),
             output=str(worker_log),
             container_image=str(self.runtime.container_image),
             container_mounts=self.runtime.container_mounts,
             env_to_set=env_to_set,
-            env_to_unset=env_to_unset,
+            env_to_unset=tuple(env_to_unset) if env_to_unset else None,
             bash_preamble=bash_preamble,
             srun_options=self.runtime.srun_options,
             srun_export_env=CONTAINER_REMAP_ROOT_EXPORT if installs_dynamo(self.config) else None,
             het_group=process.het_group,
         )
+
+    def start_worker(self, process: "Process", endpoint_processes: list["Process"]) -> ManagedProcess:
+        """Start a single worker process (one srun per node, used by SGLang)."""
+        mode = process.endpoint_mode
+        index = process.endpoint_index
+        logger.info("Starting %s worker %d on %s", mode, index, process.node)
+
+        if self.config.profiling.enabled:
+            (self.runtime.log_dir / "profiles" / mode).mkdir(parents=True, exist_ok=True)
+
+        spec = self.build_worker_srun(process, endpoint_processes)
+        env_str = " ".join(f"{k}={v}" for k, v in sorted((spec.env_to_set or {}).items()))
+        logger.info("Env: %s", env_str)
+        logger.info("Command: %s", shlex.join(spec.command))
+        logger.info("Log: %s", spec.output)
+        if self.config.profiling.enabled:
+            logger.info("Profiling: %s mode", self.config.profiling.type)
+
+        proc = start_srun_spec(spec, launcher=start_srun_process)
+        worker_log = self.runtime.log_dir / f"{process.node}_{mode}_w{index}.out"
 
         return ManagedProcess(
             name=f"{mode}_{index}_{process.node}",

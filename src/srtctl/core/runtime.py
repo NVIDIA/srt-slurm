@@ -9,6 +9,7 @@ replacing scattered bash variables and Jinja templating with typed Python.
 """
 
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -102,16 +103,6 @@ class Nodes:
                                       colocating with whichever node ends up
                                       being head; infra falls back to head).
         """
-        dedicated_roles = [
-            role
-            for role, wanted in (
-                ("infra", etcd_nats_dedicated_node),
-                ("frontend", frontend_dedicated_node),
-                ("client", client_dedicated_node),
-            )
-            if wanted
-        ]
-
         het_lists = get_slurm_het_nodelists()
         if het_lists is not None:
             if frontend_dedicated_node or client_dedicated_node:
@@ -123,6 +114,37 @@ class Nodes:
         nodelist = get_slurm_nodelist()
         if not nodelist:
             raise RuntimeError("SLURM_NODELIST not set - are we running in SLURM?")
+
+        return cls.from_nodelist(
+            nodelist,
+            frontend_dedicated_node=frontend_dedicated_node,
+            client_dedicated_node=client_dedicated_node,
+            etcd_nats_dedicated_node=etcd_nats_dedicated_node,
+            colocate_dedicated_nodes=colocate_dedicated_nodes,
+        )
+
+    @classmethod
+    def from_nodelist(
+        cls,
+        nodelist: list[str],
+        *,
+        frontend_dedicated_node: bool = False,
+        client_dedicated_node: bool = False,
+        etcd_nats_dedicated_node: bool = False,
+        colocate_dedicated_nodes: bool = True,
+    ) -> "Nodes":
+        """Assign logical roles from an already expanded homogeneous nodelist."""
+        if not nodelist:
+            raise ValueError("nodelist must contain at least one node")
+        dedicated_roles = [
+            role
+            for role, wanted in (
+                ("infra", etcd_nats_dedicated_node),
+                ("frontend", frontend_dedicated_node),
+                ("client", client_dedicated_node),
+            )
+            if wanted
+        ]
 
         if not dedicated_roles:
             head = bench = infra = nodelist[0]
@@ -263,6 +285,12 @@ class RuntimeContext:
         config: "SrtConfig",
         job_id: str,
         log_dir_base: Path | None = None,
+        *,
+        nodes: Nodes | None = None,
+        node_ip_resolver: Callable[[str], str] = get_hostname_ip,
+        validate_paths: bool = True,
+        create_log_dir: bool = True,
+        prefer_output_env: bool = True,
     ) -> "RuntimeContext":
         """Create RuntimeContext from config and job_id.
 
@@ -273,24 +301,26 @@ class RuntimeContext:
             job_id: SLURM job ID
             log_dir_base: Base directory for logs (default: ./outputs)
         """
-        # Get nodes from SLURM
-        nodes = Nodes.from_slurm(
-            frontend_dedicated_node=config.frontend.dedicated_node,
-            client_dedicated_node=config.benchmark.client_dedicated_node,
-            etcd_nats_dedicated_node=config.infra.etcd_nats_dedicated_node,
-            colocate_dedicated_nodes=config.benchmark.colocate_with_frontend,
-        )
+        # Runtime execution discovers nodes from Slurm. Renderers can provide a
+        # symbolic topology while reusing every other path/env calculation.
+        if nodes is None:
+            nodes = Nodes.from_slurm(
+                frontend_dedicated_node=config.frontend.dedicated_node,
+                client_dedicated_node=config.benchmark.client_dedicated_node,
+                etcd_nats_dedicated_node=config.infra.etcd_nats_dedicated_node,
+                colocate_dedicated_nodes=config.benchmark.colocate_with_frontend,
+            )
 
         # Compute run_name
         run_name = f"{config.name}_{job_id}"
 
         # Resolve node IPs
-        head_node_ip = get_hostname_ip(nodes.head)
-        infra_node_ip = get_hostname_ip(nodes.infra)
+        head_node_ip = node_ip_resolver(nodes.head)
+        infra_node_ip = node_ip_resolver(nodes.infra)
 
         # Compute log directory using FormattablePath or default logic
         # Check for SRTCTL_OUTPUT_DIR from sbatch script first (ensures consistency)
-        output_dir_env = os.environ.get("SRTCTL_OUTPUT_DIR")
+        output_dir_env = os.environ.get("SRTCTL_OUTPUT_DIR") if prefer_output_env else None
         if output_dir_env:
             log_dir = Path(output_dir_env) / "logs"
         elif log_dir_base is None:
@@ -298,7 +328,8 @@ class RuntimeContext:
             log_dir = log_dir_base / job_id / "logs"
         else:
             log_dir = log_dir_base / job_id / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
+        if create_log_dir:
+            log_dir.mkdir(parents=True, exist_ok=True)
 
         # Resolve model path (expand env vars)
         # Support HuggingFace model IDs with "hf:" prefix (e.g., "hf:facebook/opt-125m")
@@ -312,9 +343,9 @@ class RuntimeContext:
         else:
             # Local path - validate exists
             model_path = Path(model_path_str).resolve()
-            if not model_path.exists():
+            if validate_paths and not model_path.exists():
                 raise FileNotFoundError(f"Model path does not exist: {model_path}")
-            if not model_path.is_dir():
+            if validate_paths and not model_path.is_dir():
                 raise ValueError(f"Model path is not a directory: {model_path}")
 
         # Resolve container image (expand env vars)
@@ -327,9 +358,9 @@ class RuntimeContext:
         # Image names are typically registry paths without leading / or ./
         if container_image_str.startswith(("/", "./")):
             container_image = Path(container_image_str).resolve()
-            if not container_image.exists():
+            if validate_paths and not container_image.exists():
                 raise FileNotFoundError(f"Container image path does not exist: {container_image}")
-            if not container_image.is_file():
+            if validate_paths and not container_image.is_file():
                 raise ValueError(f"Container image path is not a file: {container_image}")
         else:
             # Image name (e.g., nvcr.io/nvidia/pytorch:23.12) - keep as string, convert to Path for type compatibility

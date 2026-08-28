@@ -300,6 +300,25 @@ separate worker, router, Tachometer, and benchmark logs, gates load on worker/ro
 chat-completions smoke request, then cleans up only containers and process groups it owns. See
 [Direct Host Lifecycle](direct-host.md) for the complete setup and the included 3P2D Dynamo recipe.
 
+### `srtctl render-launch`
+
+Render the recipe's serving lifecycle as a Bash script without submitting or tracing a job.
+
+```bash
+srtctl render-launch -f config.yaml > launch.sh
+chmod +x launch.sh
+salloc <matching resource options>
+./launch.sh
+```
+
+The script must run inside a compatible active Slurm allocation. It discovers the allocation's nodes and IPs at
+runtime, then starts NATS/etcd, optional Mooncake infrastructure, SGLang workers, and the Dynamo frontend using the
+same command builders as normal execution. It contains readiness gates, process monitoring, and cleanup, but does
+not embed the original job ID, hostnames, IP addresses, secrets, benchmark, telemetry, or post-processing stages.
+
+Current support is homogeneous Slurm allocations using the SGLang backend, the Dynamo frontend, and a single
+frontend without nginx. Secret-like environment values are named as required runtime inputs and never rendered.
+
 ### `srtctl dry-run`
 
 Preview what would be submitted without actually submitting.
