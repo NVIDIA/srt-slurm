@@ -22,7 +22,7 @@ from typing import (
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
-from srtctl.backends.sidecar import build_sidecar_launch_command, sidecar_grpc_port
+from srtctl.backends.sidecar import build_sidecar_launch_command, get_dynamo_sidecar_config, sidecar_grpc_port
 from srtctl.ports import (
     DYN_SYSTEM_PORT_BASE,
     MOONCAKE_HTTP_METADATA_PORT,
@@ -34,7 +34,7 @@ from srtctl.ports import (
 if TYPE_CHECKING:
     from srtctl.backends.base import SrunConfig
     from srtctl.core.runtime import RuntimeContext
-    from srtctl.core.schema import ProfilingConfig
+    from srtctl.core.schema import DynamoConfig, ProfilingConfig
     from srtctl.core.topology import Endpoint, NodePortAllocator, Process
 
 # Type alias for worker modes
@@ -130,14 +130,6 @@ class SGLangProtocol:
     # Mooncake KV store - launches mooncake_master on infra node and injects
     # MOONCAKE_MASTER env var on all workers automatically
     mooncake_kv_store: MooncakeKVStoreConfig | None = None
-
-    # Native gRPC sidecar architecture. Endpoint leaders launch the sidecar;
-    # distributed followers run only the stock SGLang engine process.
-    sidecar: bool = False
-    sidecar_port: int = 50051
-    sidecar_binary: str | None = None
-    sidecar_startup_timeout: int = 1200
-    sidecar_args: list[str] = field(default_factory=list)
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
@@ -284,6 +276,7 @@ class SGLangProtocol:
         base_sys_port: int = DYN_SYSTEM_PORT_BASE,
         port_allocator: "NodePortAllocator | None" = None,
         frontend_type: str = "dynamo",
+        dynamo_sidecar: bool = False,
     ) -> list["Process"]:
         """Convert endpoints to processes."""
         from srtctl.core.topology import endpoints_to_processes
@@ -314,13 +307,15 @@ class SGLangProtocol:
 
         mode = process.endpoint_mode
 
-        if self.sidecar:
+        sidecar_config = get_dynamo_sidecar_config(runtime)
+        if sidecar_config is not None:
             if frontend_type != "dynamo":
                 raise ValueError("SGLang sidecar mode requires frontend.type: dynamo")
             return self._build_sidecar_command(
                 process=process,
                 endpoint_processes=endpoint_processes,
                 runtime=runtime,
+                sidecar_config=sidecar_config,
                 nsys_prefix=nsys_prefix,
             )
 
@@ -434,6 +429,7 @@ class SGLangProtocol:
         process: "Process",
         endpoint_processes: list["Process"],
         runtime: "RuntimeContext",
+        sidecar_config: "DynamoConfig",
         nsys_prefix: list[str] | None = None,
     ) -> list[str]:
         """Build a lifecycle-coupled SGLang native-gRPC and sidecar launch."""
@@ -461,7 +457,7 @@ class SGLangProtocol:
         node_rank = endpoint_nodes.index(process.node)
         is_leader = node_rank == 0
         leader_ip = get_hostname_ip(endpoint_nodes[0])
-        grpc_port = sidecar_grpc_port(self.sidecar_port, process)
+        grpc_port = sidecar_grpc_port(sidecar_config.sidecar_port, process)
         nccl_port = SGLANG_NCCL_PORT_BASE + process.sys_port - DYN_SYSTEM_PORT_BASE
 
         served_model_name = self.get_served_model_name(runtime.model_path.name)
@@ -515,19 +511,21 @@ class SGLangProtocol:
             return engine
 
         sidecar = (
-            [self.sidecar_binary] if self.sidecar_binary is not None else ["python3", "-m", "dynamo.sglang.sidecar"]
+            [sidecar_config.sidecar_binary]
+            if sidecar_config.sidecar_binary is not None
+            else ["python3", "-m", "dynamo.sglang.sidecar"]
         )
         sidecar.extend(["--grpc-endpoint", f"127.0.0.1:{grpc_port}"])
         if mode == "prefill":
             sidecar.extend(["--bootstrap-host", leader_ip])
-        sidecar.extend(self.sidecar_args)
+        sidecar.extend(sidecar_config.sidecar_args)
 
         return build_sidecar_launch_command(
             engine=engine,
             sidecar=sidecar,
             grpc_port=grpc_port,
             engine_name="SGLang",
-            startup_timeout=self.sidecar_startup_timeout,
+            startup_timeout=sidecar_config.sidecar_startup_timeout,
         )
 
 

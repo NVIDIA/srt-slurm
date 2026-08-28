@@ -17,6 +17,7 @@ from srtctl.backends import (
     VLLMProtocol,
     VLLMServerConfig,
 )
+from srtctl.core.schema import DynamoConfig
 from srtctl.core.topology import Endpoint, Process
 
 
@@ -49,16 +50,14 @@ def _runtime(tmp_path: Path | None = None) -> MagicMock:
     runtime.gpu_type = "h100"
     runtime.log_dir = tmp_path or Path("/tmp")
     runtime.network_interface = None
+    runtime.dynamo = DynamoConfig(sidecar=True)
     return runtime
 
 
 def test_sglang_sidecar_owns_leader_and_couples_lifecycle() -> None:
     leader = _process(mode="prefill")
     follower = _process(node="node1", node_rank=1, mode="prefill", sys_port=7501)
-    backend = SGLangProtocol(
-        sidecar=True,
-        sglang_config=SGLangServerConfig(prefill={"tensor-parallel-size": 8}),
-    )
+    backend = SGLangProtocol(sglang_config=SGLangServerConfig(prefill={"tensor-parallel-size": 8}))
 
     with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
         leader_command = backend.build_worker_command(leader, [leader, follower], _runtime())
@@ -76,7 +75,6 @@ def test_sglang_sidecar_owns_leader_and_couples_lifecycle() -> None:
 
 def test_vllm_sidecar_exposes_one_complete_multi_node_dp_group() -> None:
     backend = VLLMProtocol(
-        sidecar=True,
         connector=None,
         kv_events_config={"decode": True},
         vllm_config=VLLMServerConfig(decode={"data-parallel-size": 8, "enable-expert-parallel": True}),
@@ -88,7 +86,7 @@ def test_vllm_sidecar_exposes_one_complete_multi_node_dp_group() -> None:
         gpu_indices=frozenset(range(4)),
         gpus_per_node=4,
     )
-    processes = backend.endpoints_to_processes([endpoint])
+    processes = backend.endpoints_to_processes([endpoint], dynamo_sidecar=True)
     node_ips = {"node0": "10.0.0.1", "node1": "10.0.0.2"}
 
     with patch("srtctl.core.slurm.get_hostname_ip", side_effect=lambda node, _interface=None: node_ips[node]):
@@ -105,13 +103,12 @@ def test_vllm_sidecar_exposes_one_complete_multi_node_dp_group() -> None:
     assert follower_kv_config["endpoint"] == "tcp://10.0.0.2:5204"
     assert follower_command[-2:] == ["--data-parallel-start-rank", "4"]
     assert "dynamo.vllm.sidecar" not in follower_command
-    assert backend.get_environment_for_mode("decode")["VLLM_PLUGINS"] == ""
 
 
 def test_vllm_sidecar_rejects_unimplemented_multi_node_tp() -> None:
     leader = _process(node="node0")
     follower = _process(node="node1", node_rank=1, sys_port=7501)
-    backend = VLLMProtocol(sidecar=True, connector=None)
+    backend = VLLMProtocol(connector=None)
 
     with (
         patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
@@ -123,7 +120,6 @@ def test_vllm_sidecar_rejects_unimplemented_multi_node_tp() -> None:
 def test_trtllm_sidecar_uses_native_grpc_on_rank_zero(tmp_path: Path) -> None:
     process = _process()
     backend = TRTLLMProtocol(
-        sidecar=True,
         trtllm_config=TRTLLMServerConfig(aggregated={"tensor_parallel_size": 4, "max_seq_len": 4096}),
     )
 
@@ -138,7 +134,7 @@ def test_trtllm_sidecar_uses_native_grpc_on_rank_zero(tmp_path: Path) -> None:
 
 
 def test_trtllm_sidecar_rejects_disaggregated_workers(tmp_path: Path) -> None:
-    backend = TRTLLMProtocol(sidecar=True)
+    backend = TRTLLMProtocol()
 
     with pytest.raises(ValueError, match="supports aggregated workers only"):
         backend.build_worker_command(_process(mode="prefill"), [], _runtime(tmp_path))

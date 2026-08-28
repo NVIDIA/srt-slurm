@@ -148,6 +148,7 @@ class SweepOrchestrator(
             self.endpoints,
             port_allocator=allocator,
             frontend_type=self.config.frontend.type,
+            dynamo_sidecar=self.config.dynamo.sidecar,
         )
 
     def start_head_infrastructure(self, registry: ProcessRegistry) -> ManagedProcess:

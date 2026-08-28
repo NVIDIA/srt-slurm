@@ -359,7 +359,7 @@ def test_start_endpoint_worker_request_plane_injected(tmp_path: Path) -> None:
 def test_trtllm_sidecar_endpoint_kills_step_on_rank_failure(tmp_path: Path) -> None:
     mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
     mixin.config.backend.type = "trtllm"
-    mixin.config.backend.sidecar = True
+    mixin.config.dynamo.sidecar = True
     mixin.runtime.srun_options = {"exclusive": "", "kill-on-bad-exit": "0"}
 
     with (
@@ -373,6 +373,21 @@ def test_trtllm_sidecar_endpoint_kills_step_on_rank_failure(tmp_path: Path) -> N
         "exclusive": "",
         "kill-on-bad-exit": "1",
     }
+
+
+def test_vllm_sidecar_disables_plugins_by_default(tmp_path: Path) -> None:
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
+    mixin.config.backend.type = "vllm"
+    mixin.config.dynamo.sidecar = True
+
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
+    ):
+        mock_srun.return_value = MagicMock()
+        mixin.start_worker(process, [process])
+
+    assert mock_srun.call_args.kwargs["env_to_set"]["VLLM_PLUGINS"] == ""
 
 
 @pytest.mark.parametrize("event_plane", ["zmq", "nats"])

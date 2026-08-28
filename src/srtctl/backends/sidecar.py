@@ -9,7 +9,17 @@ from typing import TYPE_CHECKING
 from srtctl.ports import DYN_SYSTEM_PORT_BASE
 
 if TYPE_CHECKING:
+    from srtctl.core.runtime import RuntimeContext
+    from srtctl.core.schema import DynamoConfig
     from srtctl.core.topology import Process
+
+
+def get_dynamo_sidecar_config(runtime: "RuntimeContext") -> "DynamoConfig | None":
+    """Return enabled Dynamo sidecar settings from a runtime context."""
+    dynamo = getattr(runtime, "dynamo", None)
+    if getattr(dynamo, "sidecar", False) is not True:
+        return None
+    return dynamo
 
 
 def sidecar_grpc_port(base_port: int, process: "Process") -> int:
