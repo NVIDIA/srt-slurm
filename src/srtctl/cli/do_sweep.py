@@ -202,14 +202,19 @@ class SweepOrchestrator(
             critical=True,
         )
 
-        # 300s timeout to handle slow container imports on first run
+        # The wait budget must absorb the container import on the infra node:
+        # the srun above triggers the Pyxis/enroot import before setup_head.py
+        # runs, so on a cold enroot cache the first import of a multi-GB image
+        # counts against this timeout and can exceed the 300s default on its
+        # own. Configurable via infra.startup_timeout.
+        startup_timeout = self.config.infra.startup_timeout
         logger.info("Waiting for NATS (port %d) on %s...", NATS_PORT, infra_node)
-        if not wait_for_port(infra_node, NATS_PORT, timeout=300):
+        if not wait_for_port(infra_node, NATS_PORT, timeout=startup_timeout):
             raise RuntimeError("NATS failed to start")
         logger.info("NATS is ready")
 
         logger.info("Waiting for etcd (port %d) on %s...", ETCD_CLIENT_PORT, infra_node)
-        if not wait_for_port(infra_node, ETCD_CLIENT_PORT, timeout=300):
+        if not wait_for_port(infra_node, ETCD_CLIENT_PORT, timeout=startup_timeout):
             raise RuntimeError("etcd failed to start")
         logger.info("etcd is ready")
 

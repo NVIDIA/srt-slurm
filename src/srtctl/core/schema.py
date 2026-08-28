@@ -1731,10 +1731,18 @@ class InfraConfig:
         nats_max_payload_mb: Maximum NATS message payload in MB. Default: None (uses
             NATS default of 1MB). Set to 24+ for disaggregated serving with long ISL
             (e.g. 65K+ tokens where prompt data exceeds 1MB in NATS messages).
+        startup_timeout: Seconds to wait for NATS and etcd to accept connections
+            after the infra srun is launched. Default: 300. The wait starts before
+            the container is imported, so on a node with a cold enroot cache the
+            first Pyxis import of a multi-GB image counts against this budget and
+            can exceed 300s on its own (observed: 156-161s warm-ish, >300s cold).
+            Raise this when using registry-URI containers that are not pre-imported
+            as local .sqsh files.
     """
 
     etcd_nats_dedicated_node: bool = False
     nats_max_payload_mb: int | None = None
+    startup_timeout: int = 300
 
     Schema: ClassVar[type[Schema]] = Schema
 
