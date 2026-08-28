@@ -6,6 +6,7 @@ from __future__ import annotations
 import sys
 from io import StringIO
 from pathlib import Path
+from subprocess import CompletedProcess
 
 import pytest
 import yaml
@@ -115,6 +116,191 @@ def test_apply_bash_outputs_direct_container_script(monkeypatch, tmp_path: Path,
     assert "SLURM_" not in output
     assert "srtctl.cli.do_sweep" not in output
     assert "srtctl.cli.run_benchmark" not in output
+
+
+def test_apply_current_allocation_runs_existing_orchestrator(monkeypatch, tmp_path: Path, capsys) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(MINIMAL_DRY_RUN_CONFIG))
+    output_dir = tmp_path / "outputs"
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return CompletedProcess(command, 0)
+
+    monkeypatch.setenv("SLURM_JOB_ID", "12345")
+    monkeypatch.setenv("SLURM_NODELIST", "gpu-01")
+    monkeypatch.setattr(submit_cli, "validate_setup", lambda _source: None)
+    monkeypatch.setattr(submit_cli, "_assert_preflight_passed", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(submit_cli.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "srtctl",
+            "apply",
+            "-f",
+            str(config_path),
+            "-o",
+            str(output_dir),
+            "--current-allocation",
+            "--setup-script",
+            "custom.sh",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        submit_cli.main()
+
+    assert exc_info.value.code == 0
+    assert len(calls) == 1
+    command, kwargs = calls[0]
+    runtime_config = output_dir / "12345" / "config.yaml"
+    assert command == [sys.executable, "-m", "srtctl.cli.do_sweep", str(runtime_config)]
+    assert kwargs["check"] is False
+    assert kwargs["env"]["SLURM_JOB_ID"] == "12345"
+    assert kwargs["env"]["SRTCTL_OUTPUT_DIR"] == str(output_dir / "12345")
+    assert kwargs["env"]["SRTCTL_SETUP_SCRIPT"] == "custom.sh"
+    assert yaml.safe_load(runtime_config.read_text()) == MINIMAL_DRY_RUN_CONFIG
+    assert "Running in SLURM allocation 12345" in capsys.readouterr().out
+
+
+def test_apply_current_allocation_requires_slurm_job(monkeypatch, tmp_path: Path, capsys) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(MINIMAL_DRY_RUN_CONFIG))
+    monkeypatch.delenv("SLURM_JOB_ID", raising=False)
+    monkeypatch.delenv("SLURM_JOBID", raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["srtctl", "apply", "-f", str(config_path), "--current-allocation"],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        submit_cli.main()
+
+    assert exc_info.value.code == 1
+    assert "--current-allocation requires SLURM_JOB_ID to be set" in capsys.readouterr().out
+
+
+def test_current_allocation_uses_configured_output_prefetch_and_serve_only(monkeypatch, tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(MINIMAL_DRY_RUN_CONFIG))
+    source_dir = tmp_path / "source"
+    prefetch_script = source_dir / "src" / "srtctl" / "runtime_scripts" / "dynamo_wheels.py"
+    prefetch_script.parent.mkdir(parents=True)
+    prefetch_script.write_text("")
+    output_dir = tmp_path / "configured-outputs"
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return CompletedProcess(command, 0)
+
+    monkeypatch.setenv("SLURM_JOB_ID", "23456")
+    monkeypatch.setenv("SRTCTL_SOURCE_DIR", str(source_dir))
+    monkeypatch.setenv("SRTCTL_PREFETCH_AI_DYNAMO", "1")
+    monkeypatch.setattr(submit_cli, "validate_setup", lambda _source: None)
+    monkeypatch.setattr(
+        submit_cli,
+        "get_srtslurm_setting",
+        lambda key: str(output_dir) if key == "output_dir" else None,
+    )
+    monkeypatch.setattr(submit_cli.subprocess, "run", fake_run)
+
+    result = submit_cli.run_in_current_allocation(config_path, enforce_preflight=False, serve_only=True)
+
+    runtime_config = output_dir / "23456" / "config.yaml"
+    assert result == 0
+    assert calls[0][0] == [sys.executable, str(prefetch_script), "prefetch"]
+    assert calls[0][1]["check"] is True
+    assert calls[1][0] == [
+        sys.executable,
+        "-m",
+        "srtctl.cli.do_sweep",
+        str(runtime_config),
+        "--serve-only",
+    ]
+    assert calls[1][1]["env"]["SRTCTL_SOURCE_DIR"] == str(source_dir)
+
+
+def test_current_allocation_prefetch_requires_helper(monkeypatch, tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(MINIMAL_DRY_RUN_CONFIG))
+    source_dir = tmp_path / "source"
+
+    monkeypatch.setenv("SLURM_JOB_ID", "34567")
+    monkeypatch.setenv("SRTCTL_SOURCE_DIR", str(source_dir))
+    monkeypatch.setenv("SRTCTL_PREFETCH_AI_DYNAMO", "1")
+    monkeypatch.setattr(submit_cli, "validate_setup", lambda _source: None)
+
+    with pytest.raises(FileNotFoundError, match="Dynamo wheel prefetch script not found"):
+        submit_cli.run_in_current_allocation(
+            config_path,
+            output_dir=tmp_path / "outputs",
+            enforce_preflight=False,
+        )
+
+
+@pytest.mark.parametrize(
+    ("extra_args", "message"),
+    [
+        (["--bash"], "cannot be combined with --bash"),
+        (["--mock"], "cannot be combined with --mock"),
+        (["--json"], "cannot be combined with --json"),
+        (["--sweep"], "supports single-job configs only"),
+        (["--tags", "smoke"], "cannot be combined with --tags"),
+    ],
+)
+def test_current_allocation_rejects_alternate_execution_modes(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+    extra_args: list[str],
+    message: str,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(MINIMAL_DRY_RUN_CONFIG))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["srtctl", "apply", "-f", str(config_path), "--current-allocation", *extra_args],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        submit_cli.main()
+
+    assert exc_info.value.code == 2
+    assert message in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("input_kind", ["directory", "selector", "sweep"])
+def test_current_allocation_rejects_multi_config_inputs(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+    input_kind: str,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config = dict(MINIMAL_DRY_RUN_CONFIG)
+    if input_kind == "sweep":
+        config["sweep"] = {"parameters": {}}
+    config_path.write_text(yaml.safe_dump(config))
+    config_arg = str(tmp_path) if input_kind == "directory" else str(config_path)
+    if input_kind == "selector":
+        config_arg += ":base"
+    monkeypatch.setenv("SLURM_JOB_ID", "45678")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["srtctl", "apply", "-f", config_arg, "--current-allocation"],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        submit_cli.main()
+
+    assert exc_info.value.code == 1
+    assert "--current-allocation" in capsys.readouterr().out
 
 
 def test_load_config_rejects_empty_yaml(tmp_path: Path) -> None:
