@@ -21,7 +21,7 @@ import subprocess
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from srtctl.backends.sglang import SGLangProtocol
@@ -33,7 +33,8 @@ from srtctl.cli.mixins import (
     TelemetryStageMixin,
     WorkerStageMixin,
 )
-from srtctl.core.config import load_config
+from srtctl.core.config import get_srtslurm_setting, load_config
+from srtctl.core.container_image import prepare_container_image
 from srtctl.core.health import wait_for_port
 from srtctl.core.lockfile import write_lockfile
 from srtctl.core.processes import (
@@ -103,6 +104,20 @@ class SweepOrchestrator(
     def backend(self):
         """Access the backend config (implements BackendProtocol)."""
         return self.config.backend
+
+    def _prepare_container_image(self) -> None:
+        """Replace the registry reference with one shared SquashFS path."""
+        cache_root = get_srtslurm_setting("container_cache_path")
+        if not isinstance(cache_root, str) or not cache_root:
+            return
+        image = self.config.model.container
+        if image.startswith(("/", "./")):
+            return
+        if "@sha256:" not in image:
+            logger.warning("Container cache skipped because model.container is not digest-pinned")
+            return
+        image_path = prepare_container_image(image, cache_root)
+        self.runtime = replace(self.runtime, container_image=image_path)
 
     @functools.cached_property
     def endpoints(self) -> list[Endpoint]:
@@ -662,6 +677,9 @@ class SweepOrchestrator(
         exit_code = 1
 
         try:
+            # Import once before infrastructure, workers, and frontends fan out.
+            self._prepare_container_image()
+
             # Stage 1: Head infrastructure (NATS, etcd). Only the dynamo request
             # plane uses it; static/direct frontends skip it.
             if self.config.frontend.type in {"sglang", "trtllm_serve", "vllm", "vllm-router"}:

@@ -116,6 +116,7 @@ The `srtslurm.yaml` file can contain the following fields:
 | `output_dir`                    | string | Custom output directory (overrides srtctl_root/outputs) |
 | `model_paths`                   | dict   | Model path aliases                                    |
 | `containers`                    | dict   | Container image aliases                               |
+| `container_cache_path`          | string | Shared cache for digest-pinned model containers       |
 | `default_mounts`                | dict   | Cluster-wide container mounts                         |
 | `default_bash_preamble`         | string | Shell snippet prepended to every container srun       |
 | `nginx_raise_ulimit`          | bool   | Optional default for `frontend.nginx_raise_ulimit`  |
@@ -125,6 +126,13 @@ The `srtslurm.yaml` file can contain the following fields:
 **default_bash_preamble**: A shell snippet (e.g. `"ulimit -n 1048576 -s unlimited -u 1048576"`) prepended to every container srun launched by srtctl — workers, frontends, telemetry, benchmark, postprocess. Runs before per-call `bash_preamble` and the main command, so cluster-wide ulimits apply to everything downstream. Silently dropped for distroless containers (e.g. `prom/node-exporter`) that bypass the bash wrapper; a WARNING log is emitted in that case.
 
 **nginx_raise_ulimit**: When set to `true` or `false`, this value is applied to jobs that omit `frontend.nginx_raise_ulimit` in the recipe. Use `true` on clusters where raising the nginx container’s open-file limit is allowed; leave unset if each job should rely on the frontend default (`false`). A recipe that sets `frontend.nginx_raise_ulimit` always wins.
+
+**container_cache_path**: When set, a digest-pinned registry image in
+`model.container` is imported once with Enroot before the job starts any Slurm
+steps. Infrastructure, workers, and frontends then reuse the resulting SquashFS
+file. The directory must be visible to every allocated node and writable only
+by the user or a trusted administrator. Local SquashFS paths and mutable tags
+continue to use native Pyxis behavior.
 
 ### Running without `srtslurm.yaml`
 

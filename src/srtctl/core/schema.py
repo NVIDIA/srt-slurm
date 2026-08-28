@@ -220,6 +220,8 @@ class ClusterConfig:
     output_dir: str | None = None  # Custom output directory for job logs
     model_paths: dict[str, str] | None = None
     containers: dict[str, str] | None = None
+    # Shared directory for one-time materialization of digest-pinned model containers.
+    container_cache_path: str | None = None
     cloud: dict[str, str] | None = None
     # Cluster-level container mounts (host_path -> container_path)
     # Applied to all jobs on this cluster, useful for cluster-specific paths

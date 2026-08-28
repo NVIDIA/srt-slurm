@@ -322,6 +322,7 @@ def show_config_details(config: SrtConfig) -> None:
         mode_envs.append(("benchmark", dict(config.benchmark.env)))
 
     mooncake_cfg = getattr(backend, "mooncake_kv_store", None)
+    container_cache_path = get_srtslurm_setting("container_cache_path")
     if mooncake_cfg is not None and mooncake_cfg.env:
         has_env = True
         mode_envs.append(("mooncake", dict(mooncake_cfg.env)))
@@ -365,12 +366,16 @@ def show_config_details(config: SrtConfig) -> None:
         or config.observability.tachometer.enabled
         or config.telemetry.enabled
         or mooncake_cfg is not None
+        or container_cache_path
     )
     if show_extensions:
         details = Table(title="Execution Extensions", show_lines=False, pad_edge=False)
         details.add_column("Area", style="dim", width=14)
         details.add_column("Setting", style="yellow")
         details.add_column("Value", style="white")
+
+        if container_cache_path:
+            details.add_row("container cache", "path", str(container_cache_path))
 
         if config.benchmark.type == "custom":
             details.add_row("benchmark", "type", config.benchmark.type)
