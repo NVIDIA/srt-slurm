@@ -74,7 +74,8 @@ ulimit -n "$(ulimit -Hn)" 2>/dev/null || true
 # it was built for, so a relocated MLPERF_RUNTIME reused across jobs (or a
 # different pin) rebuilds instead of silently reporting numbers from the wrong
 # LoadGen.
-FINGERPRINT="$(uname -m):$(git -C "$HARNESS_DIR" rev-parse HEAD 2>/dev/null || echo unknown):$BENCHMARK"
+HARNESS_COMMIT="$(git -C "$HARNESS_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
+FINGERPRINT="$(uname -m):$HARNESS_COMMIT:$BENCHMARK"
 ready() { [[ "$(cat "$RUNTIME/READY" 2>/dev/null)" == "$FINGERPRINT" ]]; }
 HOLDING_LOCK=0
 if ! ready; then
@@ -186,6 +187,40 @@ run_loadgen() {
   shift
   echo "[mlperf] $mode run: endpoint=$ENDPOINT benchmark=$BENCHMARK scenario=$SCENARIO backend=$BACKEND dataset=$STAGED"
   "$VENV/bin/python" run_mlperf.py "${COMMON_ARGS[@]}" "$@" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
+
+  # LoadGen's summary records the test it ran, not the knobs srtctl chose for
+  # it — --max-concurrency is never echoed anywhere in its output. rollup.py
+  # merges this sidecar in as srt_args, which is where `srtctl monitor` gets
+  # the per-run concurrency it renders.
+  SRT_RUN_DIR="$RESULTS_DIR/$SCENARIO/$mode" \
+  SRT_ENDPOINT="$ENDPOINT" SRT_BENCHMARK="$BENCHMARK" SRT_SCENARIO="$SCENARIO" \
+  SRT_MODE="$mode" SRT_BACKEND="$BACKEND" SRT_DATASET="$DATASET" \
+  SRT_USER_CONF="$USER_CONF" SRT_CONCURRENCY="$MAX_CONCURRENCY" \
+  SRT_MAX_NEW_TOKENS="$MAX_NEW_TOKENS" SRT_HARNESS_COMMIT="$HARNESS_COMMIT" \
+  "$VENV/bin/python" - <<'PY'
+import json
+import os
+from pathlib import Path
+
+FIELDS = {
+    "endpoint": "SRT_ENDPOINT",
+    "benchmark": "SRT_BENCHMARK",
+    "scenario": "SRT_SCENARIO",
+    "mode": "SRT_MODE",
+    "backend": "SRT_BACKEND",
+    "dataset": "SRT_DATASET",
+    "user_conf": "SRT_USER_CONF",
+    "concurrency": "SRT_CONCURRENCY",
+    "max_new_tokens": "SRT_MAX_NEW_TOKENS",
+    "harness_commit": "SRT_HARNESS_COMMIT",
+}
+# Unset optional knobs are empty strings; omit them rather than record "".
+record = {name: os.environ[var] for name, var in FIELDS.items() if os.environ.get(var)}
+out = Path(os.environ["SRT_RUN_DIR"]) / "srt_run.json"
+out.parent.mkdir(parents=True, exist_ok=True)
+out.write_text(json.dumps(record, indent=1))
+print(f"[mlperf] wrote {out}")
+PY
 }
 
 if [[ "$MODE" == "performance" ]]; then

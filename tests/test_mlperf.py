@@ -336,6 +336,23 @@ class TestBuildRun:
 
         assert "accuracy" not in run
 
+    def test_srt_run_sidecar_supplies_concurrency(self, tmp_path):
+        """LoadGen never echoes --max-concurrency; monitor keys its column on it."""
+        run_dir = _write_run(tmp_path, "offline", "performance", OFFLINE_SUMMARY)
+        (run_dir / "srt_run.json").write_text(json.dumps({"concurrency": "32", "backend": "sglang"}))
+        run = rollup.build_run(run_dir / "mlperf_log_summary.txt", tmp_path / "mlperf")
+
+        # Coerced, because monitor does int(concurrency).
+        assert run["concurrency"] == 32
+        assert run["srt_args"]["backend"] == "sglang"
+
+    def test_missing_srt_run_sidecar_is_not_an_error(self, tmp_path):
+        run_dir = _write_run(tmp_path, "offline", "performance", OFFLINE_SUMMARY)
+        run = rollup.build_run(run_dir / "mlperf_log_summary.txt", tmp_path / "mlperf")
+
+        assert run["concurrency"] is None
+        assert run["srt_args"] == {}
+
     def test_accuracy_only_stub_still_identifies_the_run(self, tmp_path):
         """AccuracyOnly writes no sections, so scenario/mode come from the layout."""
         run_dir = _write_run(tmp_path, "offline", "accuracy", ACCURACY_SUMMARY)

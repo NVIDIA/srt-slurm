@@ -13,8 +13,13 @@ The section parser is deliberately generic (``key : value`` inside
 ``===``-delimited sections) and the whole section is carried through verbatim.
 LoadGen renames and adds metrics between submission rounds, so anything that
 hardcoded the full metric list would quietly start dropping fields on the next
-round. Only the handful of fields ``srtctl monitor`` renders are normalized on
-top, and each is looked up by pattern rather than exact name.
+round. A handful of headline fields are normalized on top of that, each looked
+up by pattern rather than exact name; ``concurrency`` and ``throughput_toks``
+among them are what ``srtctl monitor`` renders per run.
+
+LoadGen's summary describes the test it ran, not the knobs srtctl chose for it,
+so ``bench.sh`` drops a ``srt_run.json`` beside each summary and its contents
+are merged in as ``srt_args``.
 """
 
 from __future__ import annotations
@@ -47,10 +52,17 @@ def _incidents(text: str, kind: str) -> int | None:
     These two lines are the only content an AccuracyOnly summary has — LoadGen
     writes no sections at all in that mode — so they are what makes an accuracy
     run's record more than a row of nulls.
+
+    LoadGen writes three different spellings per kind (``logging.cc``): "No
+    warnings encountered during test.", "1 warning encountered." and "3
+    warnings encountered.", and it upper-cases the error noun ("1 ERROR", "2
+    ERRORS"). Matching case-insensitively with an optional plural covers all
+    six; a stricter pattern silently reports None for a run that did have
+    errors, which is the case that matters most.
     """
-    if re.search(rf"^No {kind} encountered during test\.$", text, re.MULTILINE):
+    if re.search(rf"^No {kind}s? encountered during test\.$", text, re.MULTILINE | re.IGNORECASE):
         return 0
-    match = re.search(rf"^(\d+) {kind} encountered", text, re.MULTILINE)
+    match = re.search(rf"^(\d+) {kind}s? encountered", text, re.MULTILINE | re.IGNORECASE)
     return int(match.group(1)) if match else None
 
 
@@ -132,12 +144,26 @@ def _ns_to_ms(value: float | None) -> float | None:
     return value / 1e6 if value is not None else None
 
 
+def _srt_args(run_dir: Path) -> dict[str, Any]:
+    """The knobs srtctl injected, which LoadGen's own summary does not record."""
+    path = run_dir / "srt_run.json"
+    if not path.is_file():
+        return {}
+    try:
+        recorded = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"skipping unreadable {path.name}: {exc}", file=sys.stderr)
+        return {}
+    return {key: _coerce(value) if isinstance(value, str) else value for key, value in recorded.items()}
+
+
 def build_run(summary_path: Path, results_dir: Path) -> dict[str, Any]:
     text = summary_path.read_text()
     sections = parse_summary(text)
     summary = sections["summary"]
     stats = sections["additional_stats"]
     run_dir = summary_path.parent
+    srt_args = _srt_args(run_dir)
 
     run: dict[str, Any] = {
         "path": str(run_dir.relative_to(results_dir)),
@@ -146,8 +172,8 @@ def build_run(summary_path: Path, results_dir: Path) -> dict[str, Any]:
         "scenario": summary.get("Scenario") or run_dir.parent.name,
         "mode": run_dir.name,
         "loadgen_mode": summary.get("Mode"),
-        "loadgen_warnings": _incidents(text, "warnings"),
-        "loadgen_errors": _incidents(text, "errors"),
+        "loadgen_warnings": _incidents(text, "warning"),
+        "loadgen_errors": _incidents(text, "error"),
         "result": summary.get("Result is"),
         # LoadGen prints no "Result is" line in AccuracyOnly mode, so absence
         # is not failure — only an explicit non-VALID verdict is.
@@ -157,6 +183,10 @@ def build_run(summary_path: Path, results_dir: Path) -> dict[str, Any]:
         "ttft_p99_ms": _ns_to_ms(_find(stats, TTFT_P99_RE)),
         "tpot_p99_ms": _ns_to_ms(_find(stats, TPOT_P99_RE)),
         "target_qps": sections["test_parameters"].get("target_qps"),
+        # LoadGen never echoes --max-concurrency; srtctl monitor keys its
+        # per-run column on this, so it comes from the sidecar.
+        "concurrency": srt_args.get("concurrency"),
+        "srt_args": srt_args,
         "constraints": sections["constraints"],
         "summary": summary,
         "additional_stats": stats,
