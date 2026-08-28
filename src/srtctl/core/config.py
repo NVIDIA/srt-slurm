@@ -22,7 +22,7 @@ import yaml
 from ruamel.yaml.comments import CommentedMap
 
 from .lockfile import verify_lock_integrity
-from .schema import ClusterConfig, SrtConfig
+from .schema import ClusterConfig, ContainerCacheConfig, ContainerCacheMode, SrtConfig
 
 logger = logging.getLogger(__name__)
 
@@ -606,6 +606,18 @@ def git_clone_command_prefix() -> list[str]:
     if not version:
         return ["git"]
     return ["git", "-c", f"http.version={version}"]
+
+
+def get_container_cache_config() -> ContainerCacheConfig:
+    """Return the cache policy, including the legacy explicit-path shorthand."""
+    cluster_config = load_cluster_config() or {}
+    raw = cluster_config.get("container_cache")
+    if isinstance(raw, dict):
+        return ContainerCacheConfig.Schema().load(raw)
+    legacy_path = cluster_config.get("container_cache_path")
+    if legacy_path:
+        return ContainerCacheConfig(mode=ContainerCacheMode.REQUIRED, path=str(legacy_path))
+    return ContainerCacheConfig()
 
 
 def _setdefault_nested(parent: dict, key: str, values: dict) -> None:
