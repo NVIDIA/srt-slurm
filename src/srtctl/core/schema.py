@@ -48,6 +48,17 @@ from srtctl.core.formatting import (
 # Leaf module (stdlib-only imports), so this cannot cycle back into schema.
 from srtctl.core.power.contract import CONTAINER_LOG_DIR
 
+# Stdlib-only module shared with the in-container direct runner, which cannot
+# import srtctl itself. Keeps one definition of the catalog linking contract.
+from srtctl.render.direct_stages.common import (
+    KV_ROUTER_DEPENDENCY,
+    POLICY_CATALOG_CONFIG_NAME,
+    POLICY_CATALOG_DEPENDENCY,
+    POLICY_CATALOG_DIRNAME,
+    kv_router_dependency_line,
+    policy_catalog_dependency_line,
+)
+
 logger = logging.getLogger(__name__)
 
 # Local copies of srtctl.core.power.contract values so that loading a config
@@ -1229,14 +1240,91 @@ ANALYTICS_ENGINE_CONFIG: dict[str, bool] = {
 _DYNAMO_CACHE_ROOT = "/configs/dynamo-wheels"
 
 
-def dynamo_source_cache_key(dynamo_hash: str, cargo_patches: list[str] | None = None) -> str:
+@dataclass(frozen=True)
+class DynamoPolicyCatalogConfig:
+    """An external Dynamo worker-selection policy catalog crate.
+
+    srtctl materializes the crate, repoints its ``dynamo-kv-router`` dependency
+    at the Dynamo revision being built, links it as Dynamo's catalog dependency,
+    and builds the runtime wheel with ``--features custom-policy``. The crate's
+    policy configuration is published next to the wheel so the frontend can pass
+    it to Dynamo's normal ``--router-policy-config``.
+
+    Example YAML:
+        dynamo:
+          hash: "341f9ac96a9e8b736e1d08576eaca9e0cf32786a"
+          policy_catalog:
+            git: "https://github.com/ishandhanani/router-sandbox"
+            rev: "0f2c1d..."
+            crate_subdir: "crates/sgl-router-cache-aware"
+            package: "sgl-router-cache-aware-dynamo-policy"
+            config: "worker-selection.yaml"
+    """
+
+    package: str
+    git: str | None = None
+    rev: str | None = None
+    path: str | None = None
+    crate_subdir: str = "."
+    config: str = "worker-selection.yaml"
+    features: list[str] = field(default_factory=lambda: ["custom-policy"])
+
+    Schema: ClassVar[builtins.type[Schema]] = Schema
+
+    def __post_init__(self) -> None:
+        if not self.package.strip():
+            raise ValueError("dynamo.policy_catalog.package must be a cargo package name")
+        if bool(self.git) == bool(self.path):
+            raise ValueError("dynamo.policy_catalog requires exactly one of git or path")
+        if self.git and not self.rev:
+            raise ValueError("dynamo.policy_catalog.git requires an immutable rev")
+        if self.path and not self.path.startswith("/"):
+            raise ValueError("dynamo.policy_catalog.path must be an absolute path")
+        if self.crate_subdir.startswith("/") or ".." in Path(self.crate_subdir).parts:
+            raise ValueError("dynamo.policy_catalog.crate_subdir must be a relative path inside the catalog source")
+        if not self.config.strip():
+            raise ValueError("dynamo.policy_catalog.config must name a router policy YAML file")
+        if not self.features:
+            raise ValueError("dynamo.policy_catalog.features must enable at least one cargo feature")
+
+    @property
+    def digest(self) -> str:
+        """Stable identity of this catalog build, used in the wheel cache key."""
+        material = "\n".join(
+            [
+                "policy-catalog-v1",
+                self.package,
+                self.git or "",
+                self.rev or "",
+                self.path or "",
+                self.crate_subdir,
+                self.config,
+                ",".join(self.features),
+            ]
+        )
+        return hashlib.sha1(material.encode()).hexdigest()[:8]
+
+    @property
+    def cargo_features(self) -> str:
+        """Comma-joined cargo features enabling the linked catalog."""
+        return ",".join(self.features)
+
+
+def dynamo_source_cache_key(
+    dynamo_hash: str,
+    cargo_patches: list[str] | None = None,
+    policy_catalog: "DynamoPolicyCatalogConfig | None" = None,
+) -> str:
     """Return the cache key shared by Slurm and direct source builds."""
-    if not cargo_patches:
-        return dynamo_hash
-    # Version the build recipe so a patching change invalidates old artifacts
-    # even when the dependency declarations themselves do not change.
-    digest = hashlib.sha1(("dep-override-v3\n" + "\n".join(cargo_patches)).encode()).hexdigest()[:8]
-    return f"{dynamo_hash}-patch-{digest}"
+    key = dynamo_hash
+    if cargo_patches:
+        # Version the build recipe so a patching change invalidates old artifacts
+        # even when the dependency declarations themselves do not change.
+        digest = hashlib.sha1(("dep-override-v3\n" + "\n".join(cargo_patches)).encode()).hexdigest()[:8]
+        key = f"{key}-patch-{digest}"
+    if policy_catalog is not None:
+        key = f"{key}-policy-{policy_catalog.digest}"
+    return key
 
 
 def dynamo_cargo_patch_commands(cargo_patches: list[str] | None = None) -> tuple[str, ...]:
@@ -1254,7 +1342,65 @@ def dynamo_cargo_patch_commands(cargo_patches: list[str] | None = None) -> tuple
     return tuple(commands)
 
 
-def _hash_cached_source_install(dynamo_hash: str, cargo_patches: list[str] | None = None) -> str:
+def _shell_dquote(text: str) -> str:
+    """Quote *text* for the shell while still allowing variable expansion."""
+    escaped = text.replace("\\", "\\\\").replace('"', '\\"').replace("`", "\\`")
+    return f'"{escaped}"'
+
+
+def policy_catalog_shell_commands(
+    catalog: "DynamoPolicyCatalogConfig",
+    *,
+    repo_var: str,
+    workdir_var: str,
+) -> tuple[str, ...]:
+    """Return the shell steps that link *catalog* into a Dynamo source tree.
+
+    ``repo_var`` and ``workdir_var`` are shell variable names (without ``$``)
+    holding the Dynamo checkout and a writable scratch directory. The same
+    sequence is mirrored in the direct runner's Python build.
+    """
+    repo = f'"${repo_var}"'
+    catalog_root = f'"${workdir_var}/{POLICY_CATALOG_DIRNAME}"'
+    crate_dir = f'"${workdir_var}/{POLICY_CATALOG_DIRNAME}/{catalog.crate_subdir}"'
+    commands: list[str] = [f"rm -rf {catalog_root}"]
+    if catalog.git:
+        commands.extend(
+            [
+                f"git clone --no-checkout {shlex.quote(catalog.git)} {catalog_root}",
+                f"git -C {catalog_root} fetch --depth 1 origin {shlex.quote(str(catalog.rev))}",
+                f"git -C {catalog_root} checkout --detach FETCH_HEAD",
+            ]
+        )
+    else:
+        commands.append(f"cp -a {shlex.quote(str(catalog.path))} {catalog_root}")
+    kv_router_line = kv_router_dependency_line(f"${workdir_var}/dynamo/lib/kv-router")
+    catalog_line = policy_catalog_dependency_line(
+        catalog.package, f"${workdir_var}/{POLICY_CATALOG_DIRNAME}/{catalog.crate_subdir}"
+    )
+    commands.extend(
+        [
+            # Double-quoted so the shell expands the build-sandbox variables into
+            # real absolute paths before sed writes them into Cargo.toml.
+            (
+                f"sed -i -E {_shell_dquote(f's|^{KV_ROUTER_DEPENDENCY}[[:space:]]*=.*|{kv_router_line}|')} "
+                f"{crate_dir}/Cargo.toml"
+            ),
+            (
+                f"sed -i -E {_shell_dquote(f's|^{POLICY_CATALOG_DEPENDENCY}[[:space:]]*=.*|{catalog_line}|')} "
+                f"{repo}/lib/bindings/python/Cargo.toml"
+            ),
+            f"grep -q {shlex.quote(catalog.package)} {repo}/lib/bindings/python/Cargo.toml",
+        ]
+    )
+    return tuple(commands)
+
+
+def _hash_cached_source_install(
+    dynamo_hash: str,
+    cargo_patches: list[str] | None = None,
+    policy_catalog: "DynamoPolicyCatalogConfig | None" = None,
+) -> str:
     """Bash for hash-pinned source install with a /configs/dynamo-wheels cache.
 
     Cache layout: ``{root}/<key>/`` contains the maturin wheel
@@ -1272,7 +1418,7 @@ def _hash_cached_source_install(dynamo_hash: str, cargo_patches: list[str] | Non
     Uses FD 201 (not 200) so it nests cleanly inside the node-local
     ``flock -x 200`` from ``_serialize_node_install``.
     """
-    cache_key = dynamo_source_cache_key(dynamo_hash, cargo_patches)
+    cache_key = dynamo_source_cache_key(dynamo_hash, cargo_patches, policy_catalog)
     # Replace each crate's dependency declaration tree-wide. Source replacement
     # (rather than [patch.crates-io]) forces Cargo to resolve the requested source
     # even when its version would not satisfy Dynamo's exact existing pin.
@@ -1282,6 +1428,21 @@ def _hash_cached_source_install(dynamo_hash: str, cargo_patches: list[str] | Non
         override_cmd += " && "
     cache = f"{_DYNAMO_CACHE_ROOT}/{cache_key}"
     lock = f"{_DYNAMO_CACHE_ROOT}/.{cache_key}.lock"
+    maturin_features = ""
+    catalog_cmd = ""
+    catalog_publish_cmd = ""
+    if policy_catalog is not None:
+        # DYN_BUILD_DIR holds both the dynamo clone and the catalog checkout, so
+        # the linked path stays inside the same build sandbox.
+        catalog_cmd = (
+            " && ".join(policy_catalog_shell_commands(policy_catalog, repo_var="PWD", workdir_var="DYN_BUILD_DIR"))
+            + " && "
+        )
+        maturin_features = f" --features {shlex.quote(policy_catalog.cargo_features)}"
+        catalog_publish_cmd = (
+            f"cp $DYN_BUILD_DIR/{POLICY_CATALOG_DIRNAME}/{policy_catalog.crate_subdir}/{policy_catalog.config} "
+            f"{cache}/{POLICY_CATALOG_CONFIG_NAME} && "
+        )
     return (
         f"echo 'Installing dynamo from source ({dynamo_hash}, /configs cache)...' && "
         f"mkdir -p {_DYNAMO_CACHE_ROOT} && "
@@ -1304,13 +1465,15 @@ def _hash_cached_source_install(dynamo_hash: str, cargo_patches: list[str] | Non
         f"git clone https://github.com/ai-dynamo/dynamo.git && "
         f"cd dynamo && git checkout {dynamo_hash} && "
         f"{override_cmd}"
+        f"{catalog_cmd}"
         f"cd lib/bindings/python/ && "
         f'export RUSTFLAGS="${{RUSTFLAGS:-}} -C target-cpu=native --cfg tokio_unstable" && '
         f"rm -f /tmp/ai_dynamo_runtime*.whl && "
-        f"maturin build --release -o /tmp && "
+        f"maturin build --release{maturin_features} -o /tmp && "
         # Populate cache atomically: copy artifacts first, touch .complete last.
         f"mkdir -p {cache} && "
         f"cp /tmp/ai_dynamo_runtime*.whl {cache}/ && "
+        f"{catalog_publish_cmd}"
         f"cd $DYN_BUILD_DIR && "
         # Exclude cargo's target/ (~2 GB of compiled artifacts; not needed at
         # install time) and .git/ (~300 MB of pack files). Drops the tarball
@@ -1460,6 +1623,9 @@ class DynamoConfig:
     sidecar_startup_timeout: int = 1200
     sidecar_context_length: int | None = None
     sidecar_args: list[str] = field(default_factory=list)
+    # Optional external worker-selection policy catalog compiled into this source build.
+    # Requires `hash` so the catalog and Dynamo share one immutable revision.
+    policy_catalog: DynamoPolicyCatalogConfig | None = None
     # Optional dependency-declaration overrides applied to the dynamo Cargo.toml tree before a
     # source build (requires `hash`). Each entry is a full `<crate> = <spec>` TOML line, e.g.
     #   'dynamo-tokenizers = { git = "https://github.com/ai-dynamo/frontend-crates", branch = "..." }'
@@ -1492,6 +1658,15 @@ class DynamoConfig:
         if self.cargo_patches and self.hash is None:
             raise ValueError("dynamo.cargo_patches requires a source build — set dynamo.hash to a commit")
 
+        if self.policy_catalog is not None:
+            if not self.install:
+                raise ValueError("dynamo.policy_catalog requires dynamo.install: true")
+            if self.hash is None:
+                raise ValueError(
+                    "dynamo.policy_catalog requires a pinned source build — set dynamo.hash to a commit so the "
+                    "catalog links against the same dynamo-kv-router revision"
+                )
+
         if self.request_plane not in self._VALID_REQUEST_PLANES:
             raise ValueError(
                 f"Invalid request_plane '{self.request_plane}', must be one of: {', '.join(self._VALID_REQUEST_PLANES)}"
@@ -1510,6 +1685,21 @@ class DynamoConfig:
             raise ValueError("dynamo.sidecar_binary must be a non-empty executable path")
         if self.sidecar_context_length is not None and self.sidecar_context_length < 1:
             raise ValueError("dynamo.sidecar_context_length must be at least 1")
+
+    @property
+    def source_cache_key(self) -> str | None:
+        """Cache key of this config's hash-pinned source build, when it has one."""
+        if self.hash is None or not self.install:
+            return None
+        return dynamo_source_cache_key(self.hash, self.cargo_patches, self.policy_catalog)
+
+    @property
+    def policy_config_path(self) -> str | None:
+        """Container path of the published policy configuration, when linked."""
+        key = self.source_cache_key
+        if key is None or self.policy_catalog is None:
+            return None
+        return f"{_DYNAMO_CACHE_ROOT}/{key}/{POLICY_CATALOG_CONFIG_NAME}"
 
     @property
     def needs_source_install(self) -> bool:
@@ -1583,7 +1773,7 @@ class DynamoConfig:
         # to ~10 sec lustre access for repeat hashes. top_of_tree skips the
         # cache (no stable key) and always live-builds.
         if self.hash is not None:
-            return _hash_cached_source_install(self.hash, self.cargo_patches)
+            return _hash_cached_source_install(self.hash, self.cargo_patches, self.policy_catalog)
 
         return _live_source_install_for_top_of_tree()
 
@@ -1637,6 +1827,13 @@ class FrontendConfig:
     args: dict[str, Any] | None = None
     env: dict[str, str] | None = None
     container_image: str | None = None
+    # Router executable override. Static routers launch this instead of their
+    # default command name; ignored by frontends that run a Python module.
+    binary: str | None = None
+    # Router source checkout built with `cargo build --release` before launch.
+    # When `binary` is unset, the router resolves to
+    # `<source>/target/release/<default executable>`.
+    source: str | None = None
     # trtllm_serve orchestrator (ser.yaml) options; ignored by other frontends.
     ctx_router: dict[str, Any] | None = None  # context_servers.router, e.g. {type: conversation}
     gen_router: dict[str, Any] | None = None  # generation_servers.router
@@ -1758,7 +1955,32 @@ class SrtConfig:
         self._validate_vllm_frontend()
         self._validate_static_router_frontend()
         self._validate_dynamo_sidecar()
+        self._validate_policy_catalog()
         self._warn_dp_launch_mode()
+
+    def _validate_experimental_sgl_router(self) -> None:
+        """Validate the experimental Rust SGL router's supported topology.
+
+        Its static discovery backend serves one aggregate worker pool; the
+        prefill/decode split is only reachable through Kubernetes selectors,
+        which srtctl does not drive.
+        """
+        if self.resources.num_prefill or self.resources.num_decode:
+            raise ValidationError(
+                "frontend.type: sgl-router routes a static aggregate worker pool; "
+                "use agg_nodes/agg_workers instead of prefill/decode workers"
+            )
+        if not self.resources.num_agg:
+            raise ValidationError("frontend.type: sgl-router requires aggregated workers")
+        if self.frontend.binary and self.frontend.source:
+            raise ValidationError("frontend.binary and frontend.source are mutually exclusive")
+
+    def _validate_policy_catalog(self) -> None:
+        """Validate an external worker-selection policy catalog."""
+        if self.dynamo.policy_catalog is None:
+            return
+        if self.frontend.type != "dynamo":
+            raise ValidationError("dynamo.policy_catalog requires frontend.type: dynamo")
 
     def _validate_dynamo_sidecar(self) -> None:
         """Validate native sidecar configuration before job submission."""
@@ -1845,7 +2067,7 @@ class SrtConfig:
 
     def _validate_static_router_frontend(self):
         """Validate static-router/backend pairings and vLLM DP ownership."""
-        required_backend = {"sglang": "sglang", "vllm-router": "vllm"}.get(self.frontend.type)
+        required_backend = {"sglang": "sglang", "sgl-router": "sglang", "vllm-router": "vllm"}.get(self.frontend.type)
         if required_backend is None:
             return
         if self.backend_type != required_backend:
@@ -1853,6 +2075,10 @@ class SrtConfig:
                 f"frontend.type: {self.frontend.type} requires backend.type: {required_backend}; "
                 f"got {self.backend_type!r}"
             )
+
+        if self.frontend.type == "sgl-router":
+            self._validate_experimental_sgl_router()
+            return
 
         if self.frontend.type != "vllm-router":
             return

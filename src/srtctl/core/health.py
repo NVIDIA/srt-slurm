@@ -529,6 +529,11 @@ def wait_for_model(
                 if frontend_type == "trtllm_serve":
                     logger.info("trtllm-serve frontend healthy at %s", health_url)
                     return True
+                # Some routers answer readiness with a bare status code. Their
+                # per-worker barrier is enforced by get_backend_health_urls().
+                if getattr(frontend, "health_status_only", False):
+                    logger.info("%s frontend healthy at %s", frontend_type, health_url)
+                    return True
                 if frontend_type == "vllm":
                     result = check_vllm_health(host, port, health_url)
                     if result.ready:

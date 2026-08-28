@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,3 +50,44 @@ def shell_quote(value: str) -> str:
     if value and all(character.isalnum() or character in "@%_+=:,./-" for character in value):
         return value
     return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
+# ---------------------------------------------------------------------------
+# Dynamo worker-selection policy catalog linking
+#
+# Canonical home for these values: this module is stdlib-only, so both the
+# control-plane schema and the in-container direct runner can share them.
+# ---------------------------------------------------------------------------
+
+# Dynamo links exactly one worker-selection policy catalog through this optional
+# dependency alias in ``lib/bindings/python/Cargo.toml``, behind the
+# ``custom-policy`` cargo feature.
+POLICY_CATALOG_DEPENDENCY = "dynamo-worker-selection-policy-catalog"
+KV_ROUTER_DEPENDENCY = "dynamo-kv-router"
+# Filename the resolved policy configuration is published under, in the same
+# build-cache directory as the wheel, so Slurm and direct runs agree on it.
+POLICY_CATALOG_CONFIG_NAME = "worker-selection.yaml"
+# Directory the catalog crate is materialized into inside a build sandbox.
+POLICY_CATALOG_DIRNAME = "policy-catalog"
+
+
+def policy_catalog_dependency_line(package: str, crate_dir: str) -> str:
+    """Return the Cargo declaration that links *package* as Dynamo's catalog."""
+    return f'{POLICY_CATALOG_DEPENDENCY} = {{ package = "{package}", path = "{crate_dir}", optional = true }}'
+
+
+def kv_router_dependency_line(kv_router_dir: str) -> str:
+    """Return the Cargo declaration pinning a catalog to this Dynamo checkout.
+
+    The published catalog crates depend on ``dynamo-kv-router`` from git. Left
+    alone, cargo resolves that as a second source of the same crate and the
+    plugin's ``WorkerSelectionPolicy`` types no longer unify with the ones the
+    bindings were compiled against. Repointing it at the checkout being built
+    keeps exactly one ``dynamo-kv-router`` in the graph.
+    """
+    return f'{KV_ROUTER_DEPENDENCY} = {{ path = "{kv_router_dir}", features = ["standalone-selection"] }}'
+
+
+def apply_dependency_override(text: str, crate: str, replacement: str) -> str:
+    """Replace *crate*'s declaration line in one Cargo.toml body."""
+    return re.sub(rf"(?m)^{re.escape(crate)}[ \t]*=.*$", lambda _match: replacement, text)

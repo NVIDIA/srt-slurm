@@ -330,7 +330,7 @@ def test_direct_plan_rejects_package_wheel_installs(tmp_path, dynamo) -> None:
 @pytest.mark.parametrize(
     ("config", "message"),
     [
-        (_config(frontend_type="sglang"), "frontend.type: dynamo only"),
+        (_config(frontend_type="sglang"), "frontend.type: dynamo or sgl-router only"),
         (_config(environment={"SRTCTL_LOCAL_CONTAINER_IMAGE": ""}), "SRTCTL_LOCAL_CONTAINER_IMAGE"),
         (_config(environment={"SRTCTL_SGLANG_SOURCE": ""}), "SRTCTL_SGLANG_SOURCE"),
     ],

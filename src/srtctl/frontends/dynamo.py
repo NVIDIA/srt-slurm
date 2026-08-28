@@ -70,6 +70,21 @@ class DynamoFrontend:
                 result.extend([f"--{key}", str(value)])
         return result
 
+    def get_managed_frontend_args(self, config: Any) -> list[str]:
+        """Return frontend arguments srtctl derives rather than copies from YAML.
+
+        An external worker-selection policy catalog publishes its configuration
+        next to the cached Dynamo wheel, so the path is only knowable after the
+        build. A recipe may still pin ``router-policy-config`` explicitly.
+        """
+        policy_config = config.dynamo.policy_config_path
+        if policy_config is None:
+            return []
+        configured = {str(key).replace("_", "-") for key in (config.frontend.args or {})}
+        if "router-policy-config" in configured:
+            return []
+        return ["--router-policy-config", policy_config]
+
     def start_frontends(
         self,
         topology: Any,  # FrontendTopology
@@ -89,6 +104,7 @@ class DynamoFrontend:
 
             frontend_log = runtime.log_dir / f"{node}_frontend_{idx}.out"
             cmd = ["python3", "-m", "dynamo.frontend", f"--http-port={topology.frontend_port}"]
+            cmd.extend(self.get_managed_frontend_args(config))
             cmd.extend(self.get_frontend_args_list(config.frontend.args))
 
             env_to_set = {

@@ -621,21 +621,25 @@ def expand_observability(cfg: dict) -> dict:
         backend = {}
         cfg["backend"] = backend
 
-    for mode in ("prefill", "decode", "aggregated"):
-        _setdefault_nested(backend, f"{mode}_environment", ANALYTICS_SPAN_ENV)
-
     frontend = cfg.get("frontend")
     if not isinstance(frontend, dict):
         frontend = {}
         cfg["frontend"] = frontend
-    _setdefault_nested(frontend, "env", ANALYTICS_SPAN_ENV)
 
-    # --- request-trace leg: per-request phase timings, frontend only ---------
-    # Complements the span leg rather than duplicating it. Spans decompose the
-    # router but stop at one opaque handle_payload per worker; these records
-    # carry prefill_wait / prefill / kv_transfer_estimated for the same request,
-    # keyed by x_request_id so all three legs join on one id.
-    _setdefault_nested(frontend, "env", ANALYTICS_REQUEST_TRACE_ENV)
+    # Both trace legs are Dynamo-emitted. A native router (sglang, sgl-router,
+    # vllm-router, ...) and its raw engines have no such source, so injecting
+    # DYN_* there would advertise artifacts that are never written.
+    if frontend.get("type", "dynamo") == "dynamo":
+        for mode in ("prefill", "decode", "aggregated"):
+            _setdefault_nested(backend, f"{mode}_environment", ANALYTICS_SPAN_ENV)
+        _setdefault_nested(frontend, "env", ANALYTICS_SPAN_ENV)
+
+        # --- request-trace leg: per-request phase timings, frontend only -----
+        # Complements the span leg rather than duplicating it. Spans decompose
+        # the router but stop at one opaque handle_payload per worker; these
+        # records carry prefill_wait / prefill / kv_transfer_estimated for the
+        # same request, keyed by x_request_id so all three legs join on one id.
+        _setdefault_nested(frontend, "env", ANALYTICS_REQUEST_TRACE_ENV)
 
     # --- metrics leg: the /metrics surface and what appears on it ------------
     # publish_events_and_metrics is what creates the endpoint; without it the

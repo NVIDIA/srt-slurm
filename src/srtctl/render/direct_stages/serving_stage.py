@@ -32,13 +32,31 @@ class ServingStageMixin:
     def _assert_services_alive(self) -> None:
         raise NotImplementedError
 
+    def _wait_http_ready(self, url: str, label: str) -> None:
+        raise NotImplementedError
+
     def _start_workers_and_router(self) -> None:
         for worker in self.plan["worker_processes"]:
             self._launch_shell(
                 str(worker["label"]), str(worker["log_name"]), str(worker["command"]), env=dict(os.environ)
             )
         self._launch_shell("router", "router.log", str(self.plan["router_command"]), env=dict(os.environ))
-        self._wait_router_ready()
+        if str(self.plan.get("frontend_kind", "dynamo")) == "dynamo":
+            self._wait_router_ready()
+        else:
+            self._wait_static_router_ready()
+
+    def _wait_static_router_ready(self) -> None:
+        """Gate on every advertised worker, then on the router's own readiness.
+
+        A native router flips ready as soon as one worker registers, so the
+        per-worker barrier is what actually means the configured topology is
+        serving.
+        """
+        for url in self.plan["worker_health_urls"]:
+            self._wait_http_ready(str(url), f"worker {url}")
+        path = str(self.plan["router_health_path"])
+        self._wait_http_ready(f"http://127.0.0.1:{self.plan['frontend_port']}{path}", "router")
 
     def _wait_router_ready(self) -> None:
         url = f"http://127.0.0.1:{self.plan['frontend_port']}/health"

@@ -271,7 +271,8 @@ Frontend/router configuration.
 
 ```yaml
 frontend:
-  # Frontend type: "dynamo" (default), "sglang", "vllm-router", "trtllm_serve", or "vllm"
+  # Frontend type: "dynamo" (default), "sglang", "sgl-router", "vllm-router",
+  # "trtllm_serve", or "vllm"
   type: dynamo
 
   # Scaling
@@ -294,11 +295,15 @@ frontend:
 
   # Optional static-router image; defaults to model.container
   # container_image: vllm-router
+
+  # Router executable overrides (static routers only)
+  # binary: /opt/bin/sgl-router                              # use this executable
+  # source: /sgl-workspace/sglang/experimental/sgl-router    # cargo build --release, then use it
 ```
 
 | Field                       | Type | Default       | Description                         |
 | --------------------------- | ---- | ------------- | ----------------------------------- |
-| `type`                      | str  | dynamo        | Frontend type: "dynamo", "sglang", "vllm-router", "trtllm_serve", or "vllm" |
+| `type`                      | str  | dynamo        | Frontend type: "dynamo", "sglang", "sgl-router", "vllm-router", "trtllm_serve", or "vllm" |
 | `enable_multiple_frontends` | bool | true          | Scale with nginx + multiple routers |
 | `num_additional_frontends`  | int  | 9             | Additional routers beyond master    |
 | `nginx_container`           | str  | nginx:1.27.4  | Custom nginx container image        |
@@ -306,8 +311,50 @@ frontend:
 | `args`                      | dict | null          | CLI args for the frontend           |
 | `env`                       | dict | null          | Env vars for frontend processes     |
 | `container_image`           | str  | null          | Static-router image; falls back to `model.container` |
+| `binary`                    | str  | null          | Router executable to launch instead of the adapter default |
+| `source`                    | str  | null          | Router source checkout; `cargo build --release` runs first and `<source>/target/release/<default>` is launched |
+
+`binary` and `source` are mutually exclusive.
 
 See [SGLang Router](sglang-router.md) for detailed architecture.
+
+### sgl-router frontend
+
+`type: sgl-router` runs SGLang's experimental Rust router
+(`experimental/sgl-router`) in front of a static pool of **aggregate**
+`sglang.launch_server` workers. Its static discovery backend has no
+prefill/decode split — that mode is Kubernetes-selector driven — so the recipe
+must use `agg_nodes`/`agg_workers`.
+
+```yaml
+frontend:
+  type: sgl-router
+  enable_multiple_frontends: false
+  source: /sgl-workspace/sglang/experimental/sgl-router
+  args:
+    policy: cache_aware_zmq
+
+backend:
+  type: sglang
+  kv_events_config:
+    aggregated: true          # the router's only KV-event wiring
+```
+
+The router owns tokenization, its own radix cache, and the routing policy. It
+learns each worker's ZMQ KV-event publisher from that worker's `/server_info`,
+so enabling `backend.kv_events_config` on the aggregate workers is the whole
+event plane; no NATS, etcd, or Dynamo runtime is involved.
+
+srtctl supplies `--model-id` (from the served model name) and
+`--tokenizer-path` (the model's `tokenizer.json`) unless the recipe sets them in
+`args`. Readiness gates on every advertised worker's `/health` before the
+router's own `/readyz`, because `/readyz` turns green after a single worker
+registers.
+
+Both lifecycles support this frontend. `srtctl apply --bash` always builds the
+router from the checkout named by `SRTCTL_SGLANG_SOURCE`; it rejects
+`frontend.binary` and requires `frontend.source` to end with
+`experimental/sgl-router`.
 
 ### trtllm_serve frontend
 
@@ -954,6 +1001,7 @@ dynamo:
 | `sidecar_args`           | list[string] | []      | Extra arguments passed to the sidecar launcher         |
 | `sidecar_startup_timeout` | int         | 1200    | Seconds to wait for the native gRPC endpoint            |
 | `sidecar_context_length` | int/null     | null    | TRT-LLM context length override                         |
+| `policy_catalog`         | object/null  | null    | External worker-selection policy catalog compiled into the source build |
 
 **Notes**:
 
@@ -990,6 +1038,54 @@ dynamo:
 The default sidecar commands are `python3 -m dynamo.sglang.sidecar`, `python3 -m dynamo.vllm.sidecar`, and `python3 -m dynamo.trtllm.sidecar`. All three use the shared `--grpc-endpoint` flag.
 
 SGLang exposes gRPC and starts the sidecar only on an endpoint leader; distributed followers are engine-only. vLLM automatically uses one managed process per node for data-parallel endpoints and exposes the complete DP group through the leader's sidecar. Multi-node tensor-parallel vLLM endpoints remain rejected until their `vllm-rs` launch path is validated. TensorRT-LLM supports sidecars for aggregated workers only and runs the sidecar on MPI rank zero. `dynamo.sidecar_context_length` can override the TRT-LLM context length inferred from `trtllm_config.aggregated.max_seq_len`.
+
+### External worker-selection policy catalog
+
+Dynamo links exactly one worker-selection policy catalog through the optional
+`dynamo-worker-selection-policy-catalog` dependency in
+`lib/bindings/python/Cargo.toml`, behind the `custom-policy` cargo feature.
+`dynamo.policy_catalog` makes that link declarative:
+
+```yaml
+dynamo:
+  hash: 4dca1626b2708383514fcd65ac816ba7429c05a4   # required: one immutable revision
+  policy_catalog:
+    git: https://github.com/ishandhanani/router-sandbox
+    rev: 411b4648e7fd50c776f0c787f1abb2592eeef41b
+    crate_subdir: crates/sgl-router-cache-aware
+    package: sgl-router-cache-aware-dynamo-policy
+    config: worker-selection.yaml
+```
+
+| Field          | Type         | Default                 | Description                                            |
+| -------------- | ------------ | ----------------------- | ------------------------------------------------------ |
+| `package`      | string       | (required)              | Cargo package name of the catalog crate                |
+| `git`          | string       | null                    | Catalog repository; requires `rev`                     |
+| `rev`          | string       | null                    | Immutable commit of `git`                              |
+| `path`         | string       | null                    | Absolute local catalog checkout (alternative to `git`) |
+| `crate_subdir` | string       | "."                     | Crate directory inside the catalog source              |
+| `config`       | string       | "worker-selection.yaml" | Router policy YAML inside the crate directory          |
+| `features`     | list[string] | ["custom-policy"]       | Cargo features enabling the linked catalog             |
+
+Exactly one of `git` or `path` is allowed, and `git` requires `rev`. The build:
+
+1. materializes the crate at the requested revision;
+2. repoints its `dynamo-kv-router` dependency at `lib/kv-router` in the Dynamo
+   checkout being built — without this, cargo resolves a second copy of that
+   crate and the plugin's `WorkerSelectionPolicy` types no longer unify with the
+   ones the bindings compiled against;
+3. replaces Dynamo's catalog dependency alias with the crate;
+4. builds the runtime wheel with `--features custom-policy`; and
+5. publishes the crate's `config` next to the wheel as `worker-selection.yaml`.
+
+srtctl then passes that published path to Dynamo's normal
+`--router-policy-config` unless the recipe sets `frontend.args.router-policy-config`
+itself. Because the catalog changes the built artifact, its identity is folded
+into the wheel cache key, so patched and unpatched builds of the same Dynamo
+commit never collide.
+
+`policy_catalog` requires `frontend.type: dynamo` and `dynamo.hash`;
+`top_of_tree` has no stable revision to build the catalog against.
 
 vLLM sidecar mode sets `VLLM_PLUGINS` to an empty value by default. This prevents image-installed plugins from replacing native engine output types that must match the fixed `vllm-rs` MessagePack contract. A recipe can explicitly set `VLLM_PLUGINS` in `prefill_environment`, `decode_environment`, or `aggregated_environment` when every selected plugin is compatible with the sidecar protocol.
 

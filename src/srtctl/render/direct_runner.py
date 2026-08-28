@@ -210,8 +210,10 @@ class DirectRunner(
             self._die(f"ruter control Python is not executable: {self.ruter_python}")
         self._install_sglang_from_source()
         self._run_logged([self.python, "-c", "import sglang"], log_name="install-sglang.log")
-        self._install_dynamo()
-        self._start_infrastructure()
+        self._build_sgl_router()
+        if self.plan["dynamo_enabled"]:
+            self._install_dynamo()
+            self._start_infrastructure()
         self._start_mooncake()
         self._start_workers_and_router()
         self._smoke_chat()
