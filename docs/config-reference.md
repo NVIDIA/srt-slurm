@@ -962,7 +962,8 @@ benchmark:
   mlperf_dataset: "/datasets/gpt-oss-tokenized.parquet"   # Harness --input-file
   mlperf_user_conf: "/configs/user.conf"                  # LoadGen target_qps / min_duration
   mlperf_scenario: "server"                               # offline (default) or server
-  mlperf_mode: "both"                                     # performance (default), accuracy, or both
+  mlperf_mode: "performance"                              # performance (default) or accuracy
+  mlperf_max_new_tokens: 10240                            # Harness --max-new-tokens (mode-specific)
   concurrency: 256                                        # Harness --max-concurrency
   env:
     MLPERF_EXTRA_ARGS: "--max-samples 500"                # Optional: appended to run_mlperf.py verbatim
@@ -974,35 +975,49 @@ extra_mount:
   - "/path/on/host/configs:/configs"
 ```
 
-| Field                | Type   | Required | Default       | Description                                                     |
-| -------------------- | ------ | -------- | ------------- | --------------------------------------------------------------- |
-| `mlperf_harness_dir` | string | Yes      | —             | Container path to a pinned mlcommons/inference checkout          |
-| `mlperf_benchmark`   | string | Yes      | —             | Benchmark directory under `language/` (e.g. `gpt-oss-120b`)      |
-| `mlperf_dataset`     | string | Yes      | —             | Container path to the tokenized dataset (`--input-file`)         |
-| `mlperf_user_conf`   | string | No       | harness default | Container path to a LoadGen `user.conf`                        |
-| `mlperf_scenario`    | string | No       | `offline`     | `offline` or `server`                                            |
-| `mlperf_mode`        | string | No       | `performance` | `performance`, `accuracy`, or `both`                             |
-| `mlperf_backend`     | string | No       | `sglang`      | Harness backend that talks to the already-running server         |
-| `concurrency`        | int    | No       | harness default | Passed as `--max-concurrency`                                  |
+| Field                   | Type   | Required   | Default         | Description                                                 |
+| ----------------------- | ------ | ---------- | --------------- | ----------------------------------------------------------- |
+| `mlperf_harness_dir`    | string | Yes        | —               | Container path to a pinned mlcommons/inference checkout      |
+| `mlperf_benchmark`      | string | Yes        | —               | Benchmark directory under `language/` (e.g. `gpt-oss-120b`)  |
+| `mlperf_dataset`        | string | Yes        | —               | Container path to the tokenized dataset (`--input-file`)     |
+| `mlperf_user_conf`      | string | For server | harness default | Container path to a LoadGen `user.conf`                      |
+| `mlperf_scenario`       | string | No         | `offline`       | `offline` or `server`                                        |
+| `mlperf_mode`           | string | No         | `performance`   | `performance` or `accuracy`                                  |
+| `mlperf_backend`        | string | No         | `sglang`        | Harness backend that talks to the already-running server     |
+| `mlperf_max_new_tokens` | int    | No         | harness default | Passed as `--max-new-tokens`                                 |
+| `mlperf_reference_data` | string | No         | `mlperf_dataset` | Reference dataset for the accuracy scorer (ground truth)    |
+| `concurrency`           | int    | No         | harness default | Passed as `--max-concurrency`                                |
 
 Notes:
 
-- **Set `mlperf_user_conf`.** The scenario constraint (`target_qps`, `min_duration`) lives there.
-  Without it the harness falls back to its checked-in placeholder — `target_qps = 1` for
-  gpt-oss-120b — which runs to completion and reports VALID without being a submission-shaped run.
+- **`mlperf_user_conf` is required for `mlperf_scenario: server`.** In the server scenario
+  `target_qps` *is* the measurement, and it only comes from `user.conf`; the harness placeholder
+  (`target_qps = 1`) passes its latency bound trivially and means nothing. Offline is still
+  measurable off `mlperf.conf` alone, so it stays optional there.
+- **One LoadGen mode per job.** There is no combined mode: the two modes do not share a token
+  budget (gpt-oss-120b uses 10240 for performance and 32768 for accuracy), so a single job running
+  both would have to generate one of them against the wrong limit. A submission-shaped pair is two
+  recipes. For the same reason, set `mlperf_max_new_tokens` explicitly — the harness's checked-in
+  `generation_config.json` carries only one value (32768 for gpt-oss-120b, the accuracy budget),
+  and the bench step logs a warning when the field is left unset.
 - `--mlperf-conf` is pointed at the checkout's own `mlperf.conf`. The harness defaults it to a
   relative `inference/mlperf.conf` that never resolves from `language/<benchmark>/`, and then only
   *warns* before running on without the official per-benchmark constraints.
 - The first run of a job builds an isolated LoadGen runtime under `/tmp/mlperf-<jobid>`: a venv
-  created with `--system-site-packages` (so the container's torch/transformers are reused, and the
-  reference `requirements.txt` pins are never dragged over the serving stack the workers are
-  running on), `mlperf_loadgen` compiled from the checkout, and the dataset staged to node-local
-  `/tmp`. Budget several minutes before the first query.
-- `mlperf_mode: both` runs performance first, then accuracy. Scoring the accuracy log is opt-in via
+  created with `--system-site-packages` (so the container's torch/transformers/pandas are reused
+  and nothing is dragged over the serving stack the workers are running on), `mlperf_loadgen`
+  compiled from the checkout, and the dataset staged to node-local `/tmp`. On an SGLang container
+  this takes about a minute.
+- The harness assumes its runtime imports (pandas, transformers, pyarrow, requests, aiohttp, tqdm)
+  are already in the container — they are not in its `requirements.txt`, which is the accuracy
+  scorer's dependency set. That set is installed lazily, only when scoring runs. If the container
+  is missing a runtime import, the bench step fails up front with the harness's own import error.
+- With `mlperf_mode: accuracy`, scoring the accuracy log is opt-in via
   `MLPERF_EVAL_ACCURACY: "1"` — it detokenizes every response and, for gpt-oss, runs the
   LiveCodeBench evaluators, which is minutes to hours of benchmark-node CPU while the allocation is
-  still held. The scorer uses `model.path` as its tokenizer instead of pulling one from HuggingFace;
-  override with `MLPERF_ACCURACY_TOKENIZER`.
+  still held. The scorer uses `model.path` as its tokenizer instead of pulling one from HuggingFace
+  (override with `MLPERF_ACCURACY_TOKENIZER`) and joins against `mlperf_reference_data`, falling
+  back to the run dataset.
 - Results land under `<log_dir>/mlperf/<scenario>/<performance|accuracy>/`; `rollup.py` normalizes
   every `mlperf_log_summary.txt` into `benchmark-rollup.json` (verdict, constraints, throughput,
   TTFT/TPOT p99, plus each LoadGen section verbatim).

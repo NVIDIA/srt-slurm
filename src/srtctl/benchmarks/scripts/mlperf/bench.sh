@@ -32,7 +32,9 @@ BACKEND=$6
 DATASET=$7
 USER_CONF=${8:-}
 MAX_CONCURRENCY=${9:-}
-TOKENIZER=${10:-}
+MAX_NEW_TOKENS=${10:-}
+REFERENCE_DATA=${11:-}
+TOKENIZER=${12:-}
 
 # When the client runs on a different node than the frontend, localhost is
 # wrong; benchmark_stage injects the frontend's real host/port.
@@ -49,6 +51,10 @@ BENCH_DIR="$HARNESS_DIR/language/$BENCHMARK"
 [[ -f "$DATASET" ]] || { echo "ERROR: mlperf_dataset $DATASET not found in container" >&2; exit 1; }
 if [[ -n "$USER_CONF" && ! -f "$USER_CONF" ]]; then
   echo "ERROR: mlperf_user_conf $USER_CONF not found in container" >&2
+  exit 1
+fi
+if [[ -n "$REFERENCE_DATA" && ! -f "$REFERENCE_DATA" ]]; then
+  echo "ERROR: mlperf_reference_data $REFERENCE_DATA not found in container" >&2
   exit 1
 fi
 
@@ -88,18 +94,33 @@ fi
 if ! ready; then
   echo "[mlperf] preflight: building LoadGen runtime in $RUNTIME (fingerprint $FINGERPRINT)"
 
-  # --system-site-packages so the container's torch/transformers are reused;
-  # a from-scratch install of those would dwarf the benchmark itself.
+  # --system-site-packages so the container's torch/transformers/pandas are
+  # reused; a from-scratch install of those would dwarf the benchmark itself.
+  # Only pip is upgraded: upgrading setuptools here shadows the container's
+  # copy for every process using this venv, and the serving stacks pin it
+  # (TRT-LLM's torch build wants setuptools<82).
   [[ -x "$VENV/bin/python" ]] || python3 -m venv --system-site-packages "$VENV"
-  "$VENV/bin/python" -m pip install --disable-pip-version-check --upgrade pip setuptools wheel
+  "$VENV/bin/python" -m pip install --disable-pip-version-check --upgrade pip
 
-  if [[ -f "$BENCH_DIR/requirements.txt" ]]; then
-    "$VENV/bin/python" -m pip install --disable-pip-version-check -r "$BENCH_DIR/requirements.txt"
-  fi
+  # requirements.txt is deliberately NOT installed here. For gpt-oss-120b it is
+  # the accuracy-scorer's dependency set (datasets, numba, scikit-learn,
+  # soxr...), not the harness's runtime set — a performance run needs none of
+  # it, and installing it costs a couple of minutes plus a 55 MB llvmlite
+  # download on every fresh runtime. It is installed lazily below, only when
+  # scoring actually runs.
+
   # Built from the checkout, not PyPI: the wheel on PyPI tracks its own release
   # cadence and would decouple the pass/fail verdict from the pinned harness.
   "$VENV/bin/python" -m pip install --disable-pip-version-check "$HARNESS_DIR/loadgen"
-  "$VENV/bin/python" -c 'import mlperf_loadgen; print("mlperf_loadgen", getattr(mlperf_loadgen, "__version__", "unknown"))'
+  "$VENV/bin/python" - <<'PY'
+from importlib.metadata import PackageNotFoundError, version
+import mlperf_loadgen  # noqa: F401  - fail here if the build did not import
+
+try:
+    print("[mlperf] mlperf_loadgen", version("mlcommons_loadgen"))
+except PackageNotFoundError:
+    print("[mlperf] mlperf_loadgen (version unavailable)")
+PY
 
   # Stage the dataset from shared storage to node-local /tmp.
   STAGED="$RUNTIME/data/$(basename "$DATASET")"
@@ -120,9 +141,17 @@ mkdir -p "$RESULTS_DIR"
 
 cd "$BENCH_DIR"
 
-# Fail with the reason rather than an argparse dump: only the server-url shape
-# of the reference harness can measure a server srt-slurm already started.
-if ! "$VENV/bin/python" run_mlperf.py --help 2>&1 | grep -q -- "--server-url"; then
+# Fail with the reason rather than an argparse dump. Two distinct failures hide
+# behind an unusable harness, so they are reported separately: the container is
+# missing what the harness imports (pandas/transformers/... are assumed present,
+# they are not in requirements.txt), or the benchmark is simply not one that can
+# measure a server someone else started.
+if ! HELP_OUT=$("$VENV/bin/python" run_mlperf.py --help 2>&1); then
+  echo "ERROR: '$BENCH_DIR/run_mlperf.py --help' failed — the harness's runtime imports are not satisfied by this container:" >&2
+  echo "$HELP_OUT" >&2
+  exit 1
+fi
+if [[ "$HELP_OUT" != *--server-url* ]]; then
   echo "ERROR: $BENCH_DIR/run_mlperf.py does not accept --server-url — this benchmark builds its own engine or launches its own server, which srt-slurm already owns" >&2
   exit 1
 fi
@@ -141,6 +170,14 @@ COMMON_ARGS=(
 [[ -f "$HARNESS_DIR/mlperf.conf" ]] && COMMON_ARGS+=(--mlperf-conf "$HARNESS_DIR/mlperf.conf")
 [[ -n "$USER_CONF" ]] && COMMON_ARGS+=(--user-conf "$USER_CONF")
 [[ -n "$MAX_CONCURRENCY" ]] && COMMON_ARGS+=(--max-concurrency "$MAX_CONCURRENCY")
+if [[ -n "$MAX_NEW_TOKENS" ]]; then
+  COMMON_ARGS+=(--max-new-tokens "$MAX_NEW_TOKENS")
+else
+  # The harness reads its checked-in generation_config.json, which carries one
+  # budget for both modes (gpt-oss-120b ships the accuracy budget, 32768). Say
+  # so rather than let a performance run quietly use the wrong limit.
+  echo "[mlperf] benchmark.mlperf_max_new_tokens unset — the harness will use generation_config.json's budget, which is not mode-specific"
+fi
 # Simple space-separated tokens only — values are word-split, never shell-parsed.
 read -r -a EXTRA_ARGS <<< "${MLPERF_EXTRA_ARGS:-}" || true
 
@@ -151,11 +188,11 @@ run_loadgen() {
   "$VENV/bin/python" run_mlperf.py "${COMMON_ARGS[@]}" "$@" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
 }
 
-if [[ "$MODE" == "performance" || "$MODE" == "both" ]]; then
+if [[ "$MODE" == "performance" ]]; then
   run_loadgen performance
 fi
 
-if [[ "$MODE" == "accuracy" || "$MODE" == "both" ]]; then
+if [[ "$MODE" == "accuracy" ]]; then
   run_loadgen accuracy --accuracy
 
   # Scoring is opt-in: it detokenizes every response and, for gpt-oss, runs the
@@ -166,8 +203,16 @@ if [[ "$MODE" == "accuracy" || "$MODE" == "both" ]]; then
     ACC_DIR="$RESULTS_DIR/$SCENARIO/accuracy"
     ACC_LOG="$ACC_DIR/mlperf_log_accuracy.json"
     if [[ -f "$BENCH_DIR/eval_mlperf_accuracy.py" && -f "$ACC_LOG" ]]; then
-      echo "[mlperf] scoring accuracy log $ACC_LOG"
-      EVAL_ARGS=(--mlperf-log "$ACC_LOG" --reference-data "$STAGED" --output-file "$ACC_DIR/accuracy.json")
+      # The scorer, not the harness, is what requirements.txt is for.
+      if [[ -f "$BENCH_DIR/requirements.txt" ]]; then
+        "$VENV/bin/python" -m pip install --disable-pip-version-check -r "$BENCH_DIR/requirements.txt"
+      fi
+      # The scorer joins on ground-truth columns, which need not live in the
+      # file LoadGen replayed (gpt-oss ships a filtered reference alongside the
+      # tokenized input). Default to the run dataset when none is configured.
+      REFERENCE=${REFERENCE_DATA:-$STAGED}
+      echo "[mlperf] scoring accuracy log $ACC_LOG against $REFERENCE"
+      EVAL_ARGS=(--mlperf-log "$ACC_LOG" --reference-data "$REFERENCE" --output-file "$ACC_DIR/accuracy.json")
       [[ -n "$TOKENIZER" ]] && EVAL_ARGS+=(--tokenizer "${MLPERF_ACCURACY_TOKENIZER:-$TOKENIZER}")
       "$VENV/bin/python" eval_mlperf_accuracy.py "${EVAL_ARGS[@]}"
     else

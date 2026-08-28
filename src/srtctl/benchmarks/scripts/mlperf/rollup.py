@@ -41,6 +41,19 @@ TTFT_P99_RE = re.compile(r"99\.00 percentile first token latency", re.IGNORECASE
 TPOT_P99_RE = re.compile(r"99\.00 percentile time to output token", re.IGNORECASE)
 
 
+def _incidents(text: str, kind: str) -> int | None:
+    """How many warnings/errors LoadGen closed the summary with.
+
+    These two lines are the only content an AccuracyOnly summary has — LoadGen
+    writes no sections at all in that mode — so they are what makes an accuracy
+    run's record more than a row of nulls.
+    """
+    if re.search(rf"^No {kind} encountered during test\.$", text, re.MULTILINE):
+        return 0
+    match = re.search(rf"^(\d+) {kind} encountered", text, re.MULTILINE)
+    return int(match.group(1)) if match else None
+
+
 def _coerce(value: str) -> Any:
     """Numbers become numbers; everything else stays the string LoadGen wrote."""
     try:
@@ -120,15 +133,21 @@ def _ns_to_ms(value: float | None) -> float | None:
 
 
 def build_run(summary_path: Path, results_dir: Path) -> dict[str, Any]:
-    sections = parse_summary(summary_path.read_text())
+    text = summary_path.read_text()
+    sections = parse_summary(text)
     summary = sections["summary"]
     stats = sections["additional_stats"]
     run_dir = summary_path.parent
 
     run: dict[str, Any] = {
         "path": str(run_dir.relative_to(results_dir)),
-        "scenario": summary.get("Scenario"),
+        # An AccuracyOnly summary carries no sections, so fall back to the
+        # <scenario>/<mode> layout the harness itself writes.
+        "scenario": summary.get("Scenario") or run_dir.parent.name,
+        "mode": run_dir.name,
         "loadgen_mode": summary.get("Mode"),
+        "loadgen_warnings": _incidents(text, "warnings"),
+        "loadgen_errors": _incidents(text, "errors"),
         "result": summary.get("Result is"),
         # LoadGen prints no "Result is" line in AccuracyOnly mode, so absence
         # is not failure — only an explicit non-VALID verdict is.

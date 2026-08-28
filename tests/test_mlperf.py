@@ -145,9 +145,29 @@ class TestMLPerfRunner:
         assert any("mlperf_scenario" in e for e in errors)
 
     def test_validate_rejects_unknown_mode(self):
-        """Modes are performance/accuracy/both."""
+        """Modes are performance/accuracy."""
         errors = get_runner("mlperf").validate_config(_config(**_valid_kwargs(mlperf_mode="compliance")))
         assert any("mlperf_mode" in e for e in errors)
+
+    def test_validate_rejects_combined_mode(self):
+        """One LoadGen mode per job: the two modes do not share a token budget."""
+        errors = get_runner("mlperf").validate_config(_config(**_valid_kwargs(mlperf_mode="both")))
+        assert any("mlperf_mode" in e for e in errors)
+
+    def test_validate_server_requires_user_conf(self):
+        """Server target_qps only comes from user.conf; the harness default is a placeholder."""
+        errors = get_runner("mlperf").validate_config(_config(**_valid_kwargs(mlperf_scenario="server")))
+        assert any("mlperf_user_conf" in e for e in errors)
+
+    def test_validate_offline_does_not_require_user_conf(self):
+        """Offline is still measurable off mlperf.conf alone."""
+        errors = get_runner("mlperf").validate_config(_config(**_valid_kwargs(mlperf_scenario="offline")))
+        assert errors == []
+
+    def test_validate_rejects_nonpositive_max_new_tokens(self):
+        """A zero token budget would make every response empty."""
+        errors = get_runner("mlperf").validate_config(_config(**_valid_kwargs(mlperf_max_new_tokens=0)))
+        assert any("mlperf_max_new_tokens" in e for e in errors)
 
     def test_validate_rejects_incompatible_frontend(self):
         """The sglang backend posts to /generate, which a Dynamo frontend does not serve."""
@@ -162,7 +182,15 @@ class TestMLPerfRunner:
     def test_validate_valid(self):
         """A fully specified config passes validation."""
         errors = get_runner("mlperf").validate_config(
-            _config(**_valid_kwargs(mlperf_scenario="server", mlperf_mode="both", concurrency=256))
+            _config(
+                **_valid_kwargs(
+                    mlperf_scenario="server",
+                    mlperf_mode="accuracy",
+                    mlperf_user_conf="/configs/user.conf",
+                    mlperf_max_new_tokens=32768,
+                    concurrency=256,
+                )
+            )
         )
         assert errors == []
 
@@ -173,8 +201,10 @@ class TestMLPerfRunner:
         config = _config(
             **_valid_kwargs(
                 mlperf_scenario="server",
-                mlperf_mode="both",
+                mlperf_mode="accuracy",
                 mlperf_user_conf="/configs/user.conf",
+                mlperf_max_new_tokens=32768,
+                mlperf_reference_data="/datasets/gpt-oss-reference.parquet",
                 concurrency=256,
             )
         )
@@ -185,13 +215,15 @@ class TestMLPerfRunner:
         assert cmd[3] == "/mlperf-inference"
         assert cmd[4] == "gpt-oss-120b"
         assert cmd[5] == "server"
-        assert cmd[6] == "both"
+        assert cmd[6] == "accuracy"
         assert cmd[7] == "sglang"
         assert cmd[8] == "/datasets/gpt-oss.parquet"
         assert cmd[9] == "/configs/user.conf"
         assert cmd[10] == "256"
+        assert cmd[11] == "32768"
+        assert cmd[12] == "/datasets/gpt-oss-reference.parquet"
         # The accuracy scorer would otherwise pull a tokenizer from HuggingFace.
-        assert cmd[11] == "/model/gpt-oss-120b"
+        assert cmd[13] == "/model/gpt-oss-120b"
 
     def test_build_command_defaults(self):
         """Optional inputs become empty positionals, not missing arguments."""
@@ -202,6 +234,8 @@ class TestMLPerfRunner:
         assert cmd[6] == "performance"
         assert cmd[9] == ""
         assert cmd[10] == ""
+        assert cmd[11] == ""
+        assert cmd[12] == ""
 
     def test_script_exists(self):
         """mlperf bench.sh and rollup.py ship with the package."""
@@ -213,6 +247,15 @@ class TestMLPerfRunner:
         config = _config(**_valid_kwargs(env={"MLPERF_EXTRA_ARGS": "--max-samples 500"}))
         env = get_runner("mlperf").get_environment(config, MagicMock())
         assert env["MLPERF_EXTRA_ARGS"] == "--max-samples 500"
+
+
+# Verbatim from an AccuracyOnly run: LoadGen writes no sections at all in this
+# mode, only the closing warnings/errors lines.
+ACCURACY_SUMMARY = """
+No warnings encountered during test.
+
+No errors encountered during test.
+"""
 
 
 def _write_run(log_dir: Path, scenario: str, mode: str, summary: str) -> Path:
@@ -292,6 +335,37 @@ class TestBuildRun:
         run = rollup.build_run(run_dir / "mlperf_log_summary.txt", tmp_path / "mlperf")
 
         assert "accuracy" not in run
+
+    def test_accuracy_only_stub_still_identifies_the_run(self, tmp_path):
+        """AccuracyOnly writes no sections, so scenario/mode come from the layout."""
+        run_dir = _write_run(tmp_path, "offline", "accuracy", ACCURACY_SUMMARY)
+        run = rollup.build_run(run_dir / "mlperf_log_summary.txt", tmp_path / "mlperf")
+
+        assert run["scenario"] == "offline"
+        assert run["mode"] == "accuracy"
+        assert run["loadgen_errors"] == 0
+        assert run["loadgen_warnings"] == 0
+        # No verdict is reported in AccuracyOnly mode; that is not a failure.
+        assert run["valid"] is None
+        assert run["result"] is None
+
+    def test_incidents_are_counted_when_loadgen_reports_them(self, tmp_path):
+        summary = OFFLINE_SUMMARY.replace(
+            "No warnings encountered during test.", "3 warnings encountered. See detailed log."
+        ).replace("No errors encountered during test.", "2 errors encountered. See detailed log.")
+        run_dir = _write_run(tmp_path, "offline", "performance", summary)
+        run = rollup.build_run(run_dir / "mlperf_log_summary.txt", tmp_path / "mlperf")
+
+        assert run["loadgen_warnings"] == 3
+        assert run["loadgen_errors"] == 2
+
+    def test_performance_run_keeps_its_reported_scenario(self, tmp_path):
+        """The summary's own Scenario wins over the directory name."""
+        run_dir = _write_run(tmp_path, "offline", "performance", OFFLINE_SUMMARY)
+        run = rollup.build_run(run_dir / "mlperf_log_summary.txt", tmp_path / "mlperf")
+
+        assert run["scenario"] == "Offline"
+        assert run["mode"] == "performance"
 
 
 class TestMain:

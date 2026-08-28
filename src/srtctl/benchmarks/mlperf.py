@@ -36,7 +36,12 @@ if TYPE_CHECKING:
     from srtctl.core.schema import SrtConfig
 
 SCENARIOS = ("offline", "server")
-MODES = ("performance", "accuracy", "both")
+# One LoadGen mode per job. A combined "both" would have to run two LoadGen
+# tests under a single mlperf_max_new_tokens, and the two modes do not share a
+# token budget (gpt-oss-120b: 10240 for performance, 32768 for accuracy), so
+# one of the two would silently generate against the wrong limit. MLPerf wants
+# the performance and accuracy runs kept separate anyway.
+MODES = ("performance", "accuracy")
 BACKENDS = ("sglang",)
 
 # The reference backend posts token IDs to the server's native ``/generate``
@@ -58,13 +63,15 @@ class MLPerfRunner(BenchmarkRunner):
 
     Optional config fields:
         - benchmark.mlperf_scenario: ``offline`` (default) or ``server``
-        - benchmark.mlperf_mode: ``performance`` (default), ``accuracy``, or
-          ``both`` (a performance run followed by an accuracy run)
+        - benchmark.mlperf_mode: ``performance`` (default) or ``accuracy``
         - benchmark.mlperf_backend: harness backend, ``sglang`` (default)
         - benchmark.mlperf_user_conf: container path to a LoadGen ``user.conf``.
           This is where the scenario constraint lives (``target_qps``,
-          ``min_duration``); without it the harness falls back to its own
-          checked-in placeholder, which is not a submission-shaped run.
+          ``min_duration``); required for the server scenario, where
+          ``target_qps`` *is* the measurement.
+        - benchmark.mlperf_max_new_tokens: harness ``--max-new-tokens``
+        - benchmark.mlperf_reference_data: container path to the accuracy
+          scorer's reference dataset; defaults to ``mlperf_dataset``
         - benchmark.concurrency: mapped to the harness ``--max-concurrency``
         - benchmark.env: extra environment for the harness, notably
           MLPERF_EXTRA_ARGS (appended verbatim to run_mlperf.py) and
@@ -115,8 +122,20 @@ class MLPerfRunner(BenchmarkRunner):
                     f"which requires frontend.type in {sorted(expected)}, got: {config.frontend.type}"
                 )
 
+        # In the server scenario the target QPS *is* the measurement, and it
+        # only comes from user.conf. Falling back to the harness placeholder
+        # (target_qps = 1.0) produces a run that passes its latency bound
+        # trivially and means nothing.
+        if b.mlperf_scenario == "server" and not b.mlperf_user_conf:
+            errors.append(
+                "benchmark.mlperf_user_conf is required for the server scenario "
+                "(it carries target_qps; the harness default of 1.0 is a placeholder)"
+            )
+
         if b.concurrency is not None and b.concurrency <= 0:
             errors.append(f"mlperf concurrency must be positive, got: {b.concurrency}")
+        if b.mlperf_max_new_tokens is not None and b.mlperf_max_new_tokens <= 0:
+            errors.append(f"benchmark.mlperf_max_new_tokens must be positive, got: {b.mlperf_max_new_tokens}")
 
         return errors
 
@@ -140,6 +159,10 @@ class MLPerfRunner(BenchmarkRunner):
             b.mlperf_dataset or "",
             b.mlperf_user_conf or "",
             str(b.concurrency) if b.concurrency is not None else "",
+            str(b.mlperf_max_new_tokens) if b.mlperf_max_new_tokens is not None else "",
+            # The scorer wants ground-truth columns, which need not live in the
+            # file LoadGen replays; empty means "reuse the run dataset".
+            b.mlperf_reference_data or "",
             # The accuracy scorer defaults to pulling a tokenizer from
             # HuggingFace. The model is already on shared storage for the
             # workers, so hand the harness that path instead of requiring
