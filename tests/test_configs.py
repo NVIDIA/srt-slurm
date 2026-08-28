@@ -1354,6 +1354,45 @@ class TestInfraConfig:
         assert config.infra is not None
         assert config.infra.etcd_nats_dedicated_node is False
 
+    def test_cluster_config_accepts_startup_timeout(self):
+        """srtslurm.yaml with startup_timeout passes ClusterConfig validation."""
+        from srtctl.core.schema import ClusterConfig
+
+        schema = ClusterConfig.Schema()
+        loaded = schema.load({"cluster": "test", "startup_timeout": 900})
+        assert loaded.startup_timeout == 900
+
+        import pytest as _pytest
+
+        with _pytest.raises(Exception):
+            schema.load({"cluster": "test", "startup_timeout": 0})
+
+    def test_startup_timeout_cli_env_override_wins(self, monkeypatch):
+        """SRTCTL_STARTUP_TIMEOUT (set by apply --startup-timeout) beats srtslurm.yaml."""
+        import os
+
+        import srtctl.core.config as core_config
+
+        monkeypatch.setenv("SRTCTL_STARTUP_TIMEOUT", "600")
+        monkeypatch.setattr(
+            core_config, "get_srtslurm_setting", lambda key, default=None: {"startup_timeout": 900}.get(key, default)
+        )
+        env_override = os.environ.get("SRTCTL_STARTUP_TIMEOUT")
+        resolved = int(env_override) if env_override is not None else int(core_config.get_srtslurm_setting("startup_timeout", 300))
+        assert resolved == 600
+
+    def test_startup_timeout_environment_setting(self, monkeypatch):
+        """startup_timeout comes from srtslurm.yaml, falling back to 300."""
+        import srtctl.core.config as core_config
+
+        monkeypatch.setattr(
+            core_config, "get_srtslurm_setting", lambda key, default=None: {"startup_timeout": 900}.get(key, default)
+        )
+        assert int(core_config.get_srtslurm_setting("startup_timeout", 300)) == 900
+
+        monkeypatch.setattr(core_config, "get_srtslurm_setting", lambda key, default=None: default)
+        assert int(core_config.get_srtslurm_setting("startup_timeout", 300)) == 300
+
     def test_infra_config_enabled(self):
         """Test InfraConfig with dedicated node enabled."""
         from srtctl.core.schema import InfraConfig, ModelConfig, ResourceConfig, SrtConfig

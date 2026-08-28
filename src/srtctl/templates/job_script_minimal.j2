@@ -112,6 +112,10 @@ echo "Runtime config: ${OUTPUT_DIR}/{{ runtime_config_filename }}"
 
 # Set source directory for container mounts (/configs)
 export SRTCTL_SOURCE_DIR="${SRTCTL_SOURCE}"
+{% if startup_timeout_override %}
+# Per-submission override of the NATS/etcd startup wait (srtctl apply --startup-timeout)
+export SRTCTL_STARTUP_TIMEOUT="{{ startup_timeout_override }}"
+{% endif %}
 
 {% for key, value in config_environment.items() %}
 export {{ key }}={{ value }}

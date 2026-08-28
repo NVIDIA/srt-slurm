@@ -612,6 +612,7 @@ def generate_minimal_sbatch_script(
         output_base=output_base,
         setup_script=setup_script,
         serve_only=serve_only,
+        startup_timeout_override=os.environ.get("SRTCTL_STARTUP_TIMEOUT"),
         config_environment={key: shlex.quote(str(value)) for key, value in config_environment.items()},
     )
 
@@ -1536,6 +1537,16 @@ def main():
     apply_parser = subparsers.add_parser("apply", help="Submit job(s) to SLURM")
     add_common_args(apply_parser)
     apply_parser.add_argument("--setup-script", type=str, help="Custom setup script in configs/")
+    apply_parser.add_argument(
+        "--startup-timeout",
+        type=int,
+        dest="startup_timeout",
+        help=(
+            "Seconds to wait for NATS/etcd after the infra srun launches, for this "
+            "submission only. Overrides the srtslurm.yaml startup_timeout setting "
+            "(default 300). The budget includes the container import on the infra node."
+        ),
+    )
     apply_parser.add_argument("--tags", type=str, help="Comma-separated tags")
     apply_parser.add_argument(
         "--serve-only",
@@ -1802,6 +1813,14 @@ def main():
                 return
 
             setup_script = getattr(args, "setup_script", None)
+            # Per-submission startup_timeout override: carried to the job via an
+            # explicit export in the sbatch template (see generate_sbatch_script),
+            # never via sbatch's implicit environment propagation.
+            startup_timeout_arg = getattr(args, "startup_timeout", None)
+            if startup_timeout_arg is not None:
+                if startup_timeout_arg < 1:
+                    parser.error("--startup-timeout must be at least 1 second")
+                os.environ["SRTCTL_STARTUP_TIMEOUT"] = str(startup_timeout_arg)
             output_dir = getattr(args, "output_dir", None)
 
             if bash_mode:

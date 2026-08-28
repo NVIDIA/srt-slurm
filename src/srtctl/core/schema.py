@@ -285,8 +285,19 @@ class ClusterConfig:
     # Username" auth-prompt failures). See git_clone_command_prefix() in
     # core/config.py -- applied to every git clone/fetch srtctl performs.
     git_http_version: str | None = None
+    # Seconds to wait for NATS and etcd to accept connections after the head
+    # infrastructure srun is launched. Default: 300. The wait starts before the
+    # workload container is imported on the infra node, so on a cold enroot
+    # cache the first Pyxis import of a multi-GB registry image counts against
+    # this budget and can exceed 300s on its own. Raise on clusters that pull
+    # registry-URI containers instead of pre-imported local .sqsh files.
+    startup_timeout: int | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
+
+    def __post_init__(self) -> None:
+        if self.startup_timeout is not None and self.startup_timeout < 1:
+            raise ValueError("startup_timeout must be at least 1 second")
 
 
 # ============================================================================
