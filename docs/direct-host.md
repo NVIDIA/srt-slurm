@@ -7,7 +7,7 @@ Use the direct lifecycle to run one Dynamo + SGLang benchmark on the GPU host yo
 | SLURM cluster | `srtctl apply -f recipe.yaml` | Scheduler, `srun`, and the job container |
 | One GPU host | `srtctl apply -f recipe.yaml --bash` | Docker host runner and one serving container |
 
-The direct path is intentionally single-host. It supports the SGLang backend behind the Dynamo frontend, one concrete custom benchmark, optional Mooncake, Tachometer, and ruter. Use the SLURM lifecycle for multi-node runs, sweeps, profiling, or DCGM power telemetry.
+The direct path is intentionally single-host. It supports the SGLang backend behind either the Dynamo frontend (with or without [native sidecars](config-reference.md#native-sidecar-mode)) or the [experimental Rust SGL router](config-reference.md#sgl-router-frontend), one concrete custom benchmark, optional Mooncake, Tachometer, and ruter. Use the SLURM lifecycle for multi-node runs, sweeps, profiling, or DCGM power telemetry.
 
 ```mermaid
 flowchart LR
@@ -26,7 +26,7 @@ flowchart LR
 - An absolute model path readable by Docker. A Hugging Face snapshot is supported; its repository root is mounted so its `blobs/` symlinks resolve.
 - An absolute checkout of the SGLang source to install inside the serving image.
 - A serving image configured as `environment.SRTCTL_LOCAL_CONTAINER_IMAGE`.
-- `dynamo.hash` or `dynamo.top_of_tree: true`. The first run builds a hash-keyed Dynamo wheel outside the container; later runs reuse it.
+- `dynamo.hash` or `dynamo.top_of_tree: true` for the Dynamo frontend. The first run builds a hash-keyed Dynamo wheel outside the container; later runs reuse it. `frontend.type: sgl-router` needs neither, and instead builds `experimental/sgl-router` from the SGLang checkout into the cached runtime directory.
 - `make setup ARCH=$(uname -m)` for the bundled Tachometer scraper and infrastructure binaries. For ruter, install its optional dependency with `uv sync --extra ruter`.
 
 The direct runner creates a cached SGLang environment under `<output-base>/.srtctl-runtime/` and Dynamo wheels under `<output-base>/.srtctl-cache/dynamo-wheels/`. Delete those only when you deliberately want a cold rebuild.
