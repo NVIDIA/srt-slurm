@@ -37,22 +37,44 @@ Per sampled process (workers, frontend, benchmark client — matched by cmdline)
 | host `procs_running/blocked` (`/proc/stat`) | `procs_runnable` | Whole-node run-queue pressure vs core count | either (localizes with the per-process rows) |
 | `t` + `t_mono` | — | Per-node clock-offset estimation; cross-node wall clocks have been observed seconds apart | metric hygiene |
 
-## Attribution logic (draft rubric, thresholds pending validation runs)
+## Decision rubric (thresholds from the c1010 validation matrix, GB300/oci-aga)
 
-Comparing the node hosting frontend+etcd against its clean peers **within one
-baseline run** (same model, same traffic mix, cache-aware normalization):
+You are looking at `host_series.json` from ONE run. You do not need to know what
+"taskset" or "frontend placement" are — the rubric names the config change.
 
-- **Placement signal**: the co-located node's worker ranks show elevated
-  `run_delay_ms_per_s` / `ctx_invol_rate` correlated with `cpu_pct` bursts of
-  the frontend/etcd processes, and its GPUs run ~2–3 pp lower utilization than
-  peer nodes → move the frontend (`frontend.dedicated_node: true`).
-- **Pinning signal**: elevated `migrations_rate` and `run_delay_ms_per_s`
-  across **all** worker nodes (not just the shared one) with `affinity_ncpus`
-  at the full core count → pin the ranks (`backend.numa_cpu_bind: true`).
-- **Double dissociation** (how a metric earns its place): a pinning metric
-  must go green when `numa_cpu_bind` flips on and stay unchanged when only the
-  frontend moves; a placement metric the reverse.
+**Step 1 — is the bottleneck host-CPU-side at all?**
+Look at the per-node `procs` map for the busiest process per worker node
+(highest `cpu_pct`). If every worker node shows `run_delay_ms_per_s` p50
+< 0.1 and `migrations_rate` ≈ 0, host-CPU scheduling is NOT the problem —
+stop here. (Validated: clean nodes sit at 0.00–0.01 ms/s.)
+
+**Step 2 — check the pinning state directly.**
+`affinity_ncpus` of the worker ranks equals the node's full logical-CPU count
+(e.g. 144 or 288) → the ranks are NOT pinned. Remedy:
+`backend.numa_cpu_bind: true`. Validated effect at c1010: +4.0% output
+throughput on 288-CPU GB300 nodes (+1.1% on 144-CPU nodes in the reference
+campaign — the gain grows with core count). If `affinity_ncpus` equals
+(CPUs ÷ GPUs per node), the ranks are already pinned.
+
+**Step 3 — look for the single-node asymmetry.**
+Compare each worker rank's `run_delay_ms_per_s` p50 against the median of its
+peers on other nodes. Threshold: **>10× the peer median AND >0.5 ms/s absolute,
+on exactly the node(s) that also host a non-worker process with
+`affinity_ncpus` = full width and `cpu_pct` > 1000** (the frontend: measured
+~4,100–5,000% of one core at c1010). That is co-location interference.
+Remedy: `frontend.dedicated_node: true`. Validated effect: +0.5% throughput
+(+0.85% in the reference campaign) — and the asymmetry itself is huge even
+when the throughput cost is small: measured 140–350× on the shared node,
+collapsing to 1× in all three dedicated-frontend runs.
+Note the dissociation, confirmed both ways across 7 runs: this asymmetry is
+UNCHANGED by pinning (190× with ranks pinned), and `affinity_ncpus` is
+UNCHANGED by moving the frontend. Each signal names exactly one remedy.
+
+**Expected-gain estimate**: single-node asymmetry affecting 1 of N prefill
+groups → small-percent gain (≈ its share of prefill capacity); full-width
+affinity on all ranks → the pinning gain for your node's core count.
 
 Cross-node timing comparisons must estimate per-node clock offsets first
 (pair `t` with `t_mono`, or use a constant frontend→worker dispatch offset);
-raw cross-node wall-clock deltas are unreliable at millisecond scale.
+raw cross-node wall-clock deltas are unreliable at millisecond scale —
+observed inter-node skew up to 2.1 s.
