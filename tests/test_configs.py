@@ -634,12 +634,19 @@ class TestSGLangProtocol:
         runtime = SimpleNamespace(model_path=Path("/model"), is_hf_model=False, request_plane="tcp")
         monkeypatch.setattr("srtctl.core.slurm.get_hostname_ip", lambda _node: "10.0.0.1")
 
-        command = backend.build_worker_command(process, [process], runtime, frontend_type="sidecar")
+        command = backend.build_worker_command(
+            process,
+            [process],
+            runtime,
+            frontend_type="sidecar",
+            dump_config_path=Path("/logs/worker-config.json"),
+        )
 
         assert command[:3] == ["python3", "-m", "sglang.launch_server"]
         assert command[command.index("--grpc-port") + 1] == str(SGLANG_GRPC_PORT_BASE)
         assert command.count("--grpc-port") == 1
         assert "--request-plane" not in command
+        assert "--dump-config-to" not in command
 
 
 class TestDynamoSidecarSupervisor:

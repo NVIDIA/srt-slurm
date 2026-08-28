@@ -397,8 +397,9 @@ class SGLangProtocol:
                 ]
             )
 
-        # Add config dump path (not when using sglang frontend)
-        if dump_config_path and frontend_type != "sglang":
+        # Native SGLang does not accept Dynamo's --dump-config-to flag. Both
+        # the direct SGLang frontend and the Dynamo sidecar launch it natively.
+        if dump_config_path and not use_sglang:
             cmd.extend(["--dump-config-to", str(dump_config_path)])
 
         # Add kv-events-config if enabled for this mode and we have an allocated port
