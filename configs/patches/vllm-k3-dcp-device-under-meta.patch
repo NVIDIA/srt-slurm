@@ -1,0 +1,22 @@
+diff --git a/vllm/models/kimi_k3/nvidia/mla.py b/vllm/models/kimi_k3/nvidia/mla.py
+index c13f6f0770..f39deece80 100644
+--- a/vllm/models/kimi_k3/nvidia/mla.py
++++ b/vllm/models/kimi_k3/nvidia/mla.py
+@@ -349,9 +349,16 @@ class MultiHeadLatentAttention(nn.Module, AttentionLayerBase):
+                 and self.kv_cache_dtype != "fp8_ds_mla"
+                 else dtype
+             )
++            # kv_b_proj is staged on meta under online quantization, and the
++            # DCP workspace is symmetric memory, which meta cannot back.
++            kv_b_proj_device = next(self.kv_b_proj.parameters()).device
+             self.dcp_manager = MLADCPManager(
+                 vllm_config=vllm_config,
+-                device=next(self.kv_b_proj.parameters()).device,
++                device=(
++                    kv_b_proj_device
++                    if kv_b_proj_device.type != "meta"
++                    else torch.get_default_device()
++                ),
+                 num_heads=self.num_local_heads,
+                 query_head_dim=self.head_size,
+                 output_head_dim=self.kv_lora_rank,
