@@ -2,85 +2,58 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# MLPerf Inference (LoadGen) benchmark.
-# srt-slurm owns server startup; this script prepares an isolated LoadGen
-# runtime under /tmp and points the mounted mlcommons/inference harness at the
-# ready frontend.
+# MLPerf Inference (LoadGen) benchmark, driven by NVIDIA's nv_mlpinf harness.
+# srt-slurm owns the deployment; this script installs the harness into an
+# isolated job-scoped runtime and points it at the ready frontend.
 #
-# Two things this preflight is deliberately careful about:
-#   * The harness is installed into a job-scoped venv created with
-#     --system-site-packages, never into the container's site-packages. The
-#     reference requirements pin datasets/scikit-learn/numba versions that
-#     would otherwise be dragged over the serving stack the workers are
-#     running on, and the checkout can be mounted read-only.
-#   * mlperf_loadgen is compiled from the pinned checkout. LoadGen is the
-#     component that decides VALID vs INVALID, so it must come from the same
-#     commit the results are reported against — never from a stray wheel.
-#
-# The dataset is staged from shared storage to node-local /tmp before
-# measurement: LoadGen loads the whole QSL up front, and paying Lustre for it
-# mid-run is a perf artifact of its own.
+# The invocation mirrors the submission repo's own sflow task
+# (closed/NVIDIA/scaleout/sflow/templates/dynamo_disagg_loadgen.yaml), so a run
+# here and a run there differ in who deployed the cluster, not in how it is
+# measured.
 
 set -euo pipefail
 
-ENDPOINT=$1
-HARNESS_DIR=$2
+ENDPOINT=$1          # host:port of the frontend (no scheme — nv_mlpinf adds it)
+HARNESS_DIR=$2       # mlperf-inference/closed/NVIDIA
 BENCHMARK=$3
 SCENARIO=$4
-MODE=$5
-BACKEND=$6
-DATASET=$7
-USER_CONF=${8:-}
-MAX_CONCURRENCY=${9:-}
-MAX_NEW_TOKENS=${10:-}
-REFERENCE_DATA=${11:-}
-TOKENIZER=${12:-}
+TEST_MODE=$5
+CORE_TYPE=$6
+SYSTEM_NAME=${7:-${SYSTEM_NAME:-}}
+SCRATCH_PATH=${8:-}
 
 # When the client runs on a different node than the frontend, localhost is
 # wrong; benchmark_stage injects the frontend's real host/port.
 if [[ -n "${SRT_FRONTEND_HOST:-}" ]]; then
-  PORT_FROM_ENDPOINT=$(echo "$ENDPOINT" | sed -E 's|.*:([0-9]+).*|\1|')
-  ENDPOINT="http://${SRT_FRONTEND_HOST}:${SRT_FRONTEND_PORT:-$PORT_FROM_ENDPOINT}"
+  PORT_FROM_ENDPOINT=${ENDPOINT##*:}
+  ENDPOINT="${SRT_FRONTEND_HOST}:${SRT_FRONTEND_PORT:-$PORT_FROM_ENDPOINT}"
 fi
 
-BENCH_DIR="$HARNESS_DIR/language/$BENCHMARK"
 [[ -d "$HARNESS_DIR" ]] || { echo "ERROR: mlperf_harness_dir $HARNESS_DIR not found in container (mount via extra_mount)" >&2; exit 1; }
-[[ -d "$BENCH_DIR" ]] || { echo "ERROR: mlperf_benchmark '$BENCHMARK' not found at $BENCH_DIR" >&2; exit 1; }
-[[ -f "$BENCH_DIR/run_mlperf.py" ]] || { echo "ERROR: $BENCH_DIR has no run_mlperf.py — this benchmark does not use the server-url harness shape" >&2; exit 1; }
-[[ -d "$HARNESS_DIR/loadgen" ]] || { echo "ERROR: $HARNESS_DIR/loadgen missing — mlperf_harness_dir must be an mlcommons/inference checkout" >&2; exit 1; }
-[[ -f "$DATASET" ]] || { echo "ERROR: mlperf_dataset $DATASET not found in container" >&2; exit 1; }
-if [[ -n "$USER_CONF" && ! -f "$USER_CONF" ]]; then
-  echo "ERROR: mlperf_user_conf $USER_CONF not found in container" >&2
-  exit 1
-fi
-if [[ -n "$REFERENCE_DATA" && ! -f "$REFERENCE_DATA" ]]; then
-  echo "ERROR: mlperf_reference_data $REFERENCE_DATA not found in container" >&2
-  exit 1
-fi
+[[ -d "$HARNESS_DIR/src/nv_mlpinf" ]] || { echo "ERROR: $HARNESS_DIR has no src/nv_mlpinf — mlperf_harness_dir must point at mlperf-inference/closed/NVIDIA" >&2; exit 1; }
+[[ -f "$HARNESS_DIR/pyproject.toml" ]] || { echo "ERROR: $HARNESS_DIR/pyproject.toml missing — cannot install the harness" >&2; exit 1; }
 
 RUNTIME="${MLPERF_RUNTIME:-/tmp/mlperf-${SLURM_JOB_ID:-$$}}"
 export HOME="$RUNTIME/home"
 export PIP_CACHE_DIR="$RUNTIME/pip-cache"
 export VENV="$RUNTIME/venv"
-export HF_HOME="$RUNTIME/hf"
-mkdir -p "$HOME" "$PIP_CACHE_DIR" "$RUNTIME/data" "$HF_HOME"
+mkdir -p "$HOME" "$PIP_CACHE_DIR"
 
-# LoadGen's server scenario holds one in-flight request per scheduled query;
-# lift the soft fd limit to the hard limit so high-QPS runs don't starve.
+# LoadGen holds one in-flight request per scheduled query; lift the soft fd
+# limit to the hard limit so high-QPS scenarios don't starve.
 ulimit -n "$(ulimit -Hn)" 2>/dev/null || true
 
-# ---- preflight: build the LoadGen runtime once per job ---------------------
-# READY is self-validating: it records the arch, harness commit and benchmark
-# it was built for, so a relocated MLPERF_RUNTIME reused across jobs (or a
-# different pin) rebuilds instead of silently reporting numbers from the wrong
-# LoadGen.
+# ---- preflight: install the harness once per job -----------------------------
+# READY is self-validating: it records the arch and harness commit it was built
+# for, so a relocated MLPERF_RUNTIME reused across jobs (or a different pin)
+# reinstalls instead of silently measuring with the wrong harness.
 HARNESS_COMMIT="$(git -C "$HARNESS_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
-FINGERPRINT="$(uname -m):$HARNESS_COMMIT:$BENCHMARK"
+FINGERPRINT="$(uname -m):$HARNESS_COMMIT"
 ready() { [[ "$(cat "$RUNTIME/READY" 2>/dev/null)" == "$FINGERPRINT" ]]; }
 HOLDING_LOCK=0
 if ! ready; then
   # Atomic mkdir as a mutex: a concurrent job sharing this runtime waits for
-  # the builder instead of double-building into the same venv.
+  # the installer instead of double-installing into the same venv.
   if mkdir "$RUNTIME/.build-lock" 2>/dev/null; then
     HOLDING_LOCK=1
   else
@@ -93,29 +66,23 @@ if ! ready; then
   fi
 fi
 if ! ready; then
-  echo "[mlperf] preflight: building LoadGen runtime in $RUNTIME (fingerprint $FINGERPRINT)"
+  echo "[mlperf] preflight: installing nv_mlpinf in $RUNTIME (fingerprint $FINGERPRINT)"
 
-  # --system-site-packages so the container's torch/transformers/pandas are
-  # reused; a from-scratch install of those would dwarf the benchmark itself.
-  # Only pip is upgraded: upgrading setuptools here shadows the container's
-  # copy for every process using this venv, and the serving stacks pin it
-  # (TRT-LLM's torch build wants setuptools<82).
+  # --system-site-packages so the container's torch/tensorrt_llm are reused; a
+  # from-scratch install of those would dwarf the benchmark itself. Only pip is
+  # upgraded: upgrading setuptools here shadows the container's copy for every
+  # process using this venv, and TRT-LLM's torch build pins it (<82).
   [[ -x "$VENV/bin/python" ]] || python3 -m venv --system-site-packages "$VENV"
   "$VENV/bin/python" -m pip install --disable-pip-version-check --upgrade pip
 
-  # requirements.txt is deliberately NOT installed here. For gpt-oss-120b it is
-  # the accuracy-scorer's dependency set (datasets, numba, scikit-learn,
-  # soxr...), not the harness's runtime set — a performance run needs none of
-  # it, and installing it costs a couple of minutes plus a 55 MB llvmlite
-  # download on every fresh runtime. It is installed lazily below, only when
-  # scoring actually runs.
-
-  # Built from the checkout, not PyPI: the wheel on PyPI tracks its own release
-  # cadence and would decouple the pass/fail verdict from the pinned harness.
-  "$VENV/bin/python" -m pip install --disable-pip-version-check "$HARNESS_DIR/loadgen"
+  # --no-build-isolation matches the submission repo's own harness task: the
+  # build deps are already in the image, and an isolated build would refetch
+  # (and can fail without egress).
+  (cd "$HARNESS_DIR" && "$VENV/bin/python" -m pip install -e ".[llm]" -q --no-build-isolation)
   "$VENV/bin/python" - <<'PY'
 from importlib.metadata import PackageNotFoundError, version
-import mlperf_loadgen  # noqa: F401  - fail here if the build did not import
+
+import mlperf_loadgen  # noqa: F401  - fail here if LoadGen did not come along
 
 try:
     print("[mlperf] mlperf_loadgen", version("mlcommons_loadgen"))
@@ -123,81 +90,108 @@ except PackageNotFoundError:
     print("[mlperf] mlperf_loadgen (version unavailable)")
 PY
 
-  # Stage the dataset from shared storage to node-local /tmp.
-  STAGED="$RUNTIME/data/$(basename "$DATASET")"
-  cp "$DATASET" "$STAGED"
-  [[ -s "$STAGED" ]] || { echo "ERROR: empty staged MLPerf dataset: $STAGED" >&2; exit 1; }
-
   echo "$FINGERPRINT" > "$RUNTIME/READY"
   echo "[mlperf] preflight complete"
 fi
 [[ "$HOLDING_LOCK" == 1 ]] && rmdir "$RUNTIME/.build-lock" 2>/dev/null || true
 
-STAGED="$RUNTIME/data/$(basename "$DATASET")"
-[[ -s "$STAGED" ]] || { echo "ERROR: staged dataset $STAGED missing after preflight" >&2; exit 1; }
-
 # ---- run --------------------------------------------------------------------
 RESULTS_DIR=/logs/mlperf
-mkdir -p "$RESULTS_DIR"
+# nv_mlpinf appends <system>/<benchmark>/<scenario> to LOG_DIR, so keeping the
+# mode in the path here is what separates a performance run from an accuracy
+# one in the rollup.
+LOG_DIR="$RESULTS_DIR/$TEST_MODE"
+mkdir -p "$LOG_DIR"
 
-cd "$BENCH_DIR"
+# The checkout is authoritative over any copy baked into the image.
+export PYTHONPATH="$HARNESS_DIR/src:${PYTHONPATH:-}"
+export PYTHONUNBUFFERED=1
+export LOG_DIR
 
-# Fail with the reason rather than an argparse dump. Two distinct failures hide
-# behind an unusable harness, so they are reported separately: the container is
-# missing what the harness imports (pandas/transformers/... are assumed present,
-# they are not in requirements.txt), or the benchmark is simply not one that can
-# measure a server someone else started.
-if ! HELP_OUT=$("$VENV/bin/python" run_mlperf.py --help 2>&1); then
-  echo "ERROR: '$BENCH_DIR/run_mlperf.py --help' failed — the harness's runtime imports are not satisfied by this container:" >&2
-  echo "$HELP_OUT" >&2
+# nv_mlpinf resolves every runtime path from project_base_dir, which defaults to
+# the /work mount its own sflow tasks use. Without this it writes a paths.yml of
+# non-existent defaults and then dies importing the submission checker:
+#   nv_mlpinf/common/mlcommons/loadgen.py imports `constants` out of
+#   mlcommons_inf_repo (= <project_base_dir>/3rdparty/mlc-inference, vendored in
+#   the checkout), so a wrong base is a ModuleNotFoundError at CLI import time,
+#   long before anything reaches the endpoint.
+export PROJECT_BASE_DIR="${PROJECT_BASE_DIR:-$HARNESS_DIR}"
+export MLCOMMONS_INF_REPO="${MLCOMMONS_INF_REPO:-$PROJECT_BASE_DIR/3rdparty/mlc-inference}"
+[[ -d "$MLCOMMONS_INF_REPO" ]] || {
+  echo "ERROR: MLCOMMONS_INF_REPO $MLCOMMONS_INF_REPO missing — the harness imports the submission checker from there. Mount the checkout's 3rdparty/ or set MLCOMMONS_INF_REPO in benchmark.env" >&2
   exit 1
-fi
-if [[ "$HELP_OUT" != *--server-url* ]]; then
-  echo "ERROR: $BENCH_DIR/run_mlperf.py does not accept --server-url — this benchmark builds its own engine or launches its own server, which srt-slurm already owns" >&2
-  exit 1
+}
+
+export CONFIG_DIR="${CONFIG_DIR:-$PROJECT_BASE_DIR/configs}"
+
+# nv_mlpinf resolves a per-(benchmark, system, scenario) config module before it
+# ever looks at core_type, so an unregistered system is fatal even though
+# dynamo_endpoint needs nothing out of that module: main.py builds
+# <config_dir>/<benchmark>/<system_id>/<serving_framework>/<scenario>/harness.py
+# and raises FileNotFoundError if it is missing. Without SYSTEM_NAME the id is
+# auto-detected, and any machine outside the built-in list (every Vera Rubin
+# bring-up node today) detects as UNREGISTERED_<arch>_<gpu>xN, which has no
+# configs. Check it here so the failure names the fix.
+BENCH_UNDERSCORE=${BENCHMARK//-/_}
+CONFIG_BASE="$CONFIG_DIR/$BENCH_UNDERSCORE"
+if [[ -n "$SYSTEM_NAME" ]]; then
+  export SYSTEM_NAME
+  if [[ -d "$CONFIG_BASE" && ! -d "$CONFIG_BASE/$SYSTEM_NAME" ]]; then
+    echo "ERROR: no nv_mlpinf config for system '$SYSTEM_NAME' under $CONFIG_BASE." >&2
+    echo "       Systems with a config for $BENCHMARK:" >&2
+    for d in "$CONFIG_BASE"/*/; do [[ -d "$d" ]] && echo "         $(basename "$d")" >&2; done
+    echo "       Set benchmark.mlperf_system_name to one of these, or point" >&2
+    echo "       benchmark.env CONFIG_DIR at a tree that has your system." >&2
+    exit 1
+  fi
+elif [[ -d "$CONFIG_BASE" ]]; then
+  echo "[mlperf] WARNING: benchmark.mlperf_system_name is unset; nv_mlpinf will auto-detect and" >&2
+  echo "         needs a config under $CONFIG_BASE/<system>/. Available systems:" >&2
+  for d in "$CONFIG_BASE"/*/; do [[ -d "$d" ]] && echo "           $(basename "$d")" >&2; done
 fi
 
-COMMON_ARGS=(
-  --scenario "$SCENARIO"
-  --backend "$BACKEND"
-  --server-url "$ENDPOINT"
-  --input-file "$STAGED"
-  --output-dir "$RESULTS_DIR"
+# MLPINF_HTTP_USE_COMPLETIONS=1 selects /v1/completions over the chat route.
+# MLPINF_USE_DYNAMO defaults to 0 even against Dynamo: at 1 it sets
+# NOSKIP_FINAL_CHUNK, which keeps the client reading past finish_reason waiting
+# for [DONE]; if the frontend half-closes, the read blocks forever and wedges
+# LoadGen's no-timeout drain (submission-repo job 372979108 sat silent for 233
+# minutes with 7,501 samples outstanding and produced no summary).
+# MLPINF_FIRST_TOKEN_ALWAYS=1 because LoadGen requires a first-token latency
+# before a sample latency in any non-Offline scenario, and a completion shorter
+# than the engine's stream_interval arrives as one chunk that is both first and
+# final — without this such a sample invalidates the run.
+export MLPINF_HTTP_USE_COMPLETIONS="${MLPINF_HTTP_USE_COMPLETIONS:-1}"
+export MLPINF_USE_DYNAMO="${MLPINF_USE_DYNAMO:-0}"
+export MLPINF_FIRST_TOKEN_ALWAYS="${MLPINF_FIRST_TOKEN_ALWAYS:-1}"
+# nv_mlpinf defaults this to /home/mlperf_inference_storage, which is an ASE
+# cluster path and rarely mounted elsewhere.
+[[ -n "$SCRATCH_PATH" ]] && export MLPERF_SCRATCH_PATH="$SCRATCH_PATH"
+
+RUN_ARGS=(
+  --benchmarks="$BENCHMARK"
+  --scenarios="$SCENARIO"
+  --core_type="$CORE_TYPE"
+  --trtllm_server_urls="$ENDPOINT"
+  --test_mode="$TEST_MODE"
 )
-# The harness defaults --mlperf-conf to a relative "inference/mlperf.conf",
-# which never resolves from language/<benchmark>/. It then only *warns* and
-# runs on without the official per-benchmark constraints, so point it at the
-# checkout's real copy. MLPERF_EXTRA_ARGS is appended last and can override it.
-[[ -f "$HARNESS_DIR/mlperf.conf" ]] && COMMON_ARGS+=(--mlperf-conf "$HARNESS_DIR/mlperf.conf")
-[[ -n "$USER_CONF" ]] && COMMON_ARGS+=(--user-conf "$USER_CONF")
-[[ -n "$MAX_CONCURRENCY" ]] && COMMON_ARGS+=(--max-concurrency "$MAX_CONCURRENCY")
-if [[ -n "$MAX_NEW_TOKENS" ]]; then
-  COMMON_ARGS+=(--max-new-tokens "$MAX_NEW_TOKENS")
-else
-  # The harness reads its checked-in generation_config.json, which carries one
-  # budget for both modes (gpt-oss-120b ships the accuracy budget, 32768). Say
-  # so rather than let a performance run quietly use the wrong limit.
-  echo "[mlperf] benchmark.mlperf_max_new_tokens unset — the harness will use generation_config.json's budget, which is not mode-specific"
-fi
+[[ -n "$SYSTEM_NAME" ]] && RUN_ARGS+=(--system_name="$SYSTEM_NAME")
 # Simple space-separated tokens only — values are word-split, never shell-parsed.
 read -r -a EXTRA_ARGS <<< "${MLPERF_EXTRA_ARGS:-}" || true
 
-run_loadgen() {
-  local mode=$1
-  shift
-  echo "[mlperf] $mode run: endpoint=$ENDPOINT benchmark=$BENCHMARK scenario=$SCENARIO backend=$BACKEND dataset=$STAGED"
-  "$VENV/bin/python" run_mlperf.py "${COMMON_ARGS[@]}" "$@" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
+echo "[mlperf] $TEST_MODE run: endpoint=$ENDPOINT benchmark=$BENCHMARK scenario=$SCENARIO core=$CORE_TYPE log_dir=$LOG_DIR"
+set +e
+"$VENV/bin/nv-mlpinf" run_harness "${RUN_ARGS[@]}" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
+HARNESS_RC=$?
+set -e
+echo "[mlperf] run_harness exited with $HARNESS_RC"
 
-  # LoadGen's summary records the test it ran, not the knobs srtctl chose for
-  # it — --max-concurrency is never echoed anywhere in its output. rollup.py
-  # merges this sidecar in as srt_args, which is where `srtctl monitor` gets
-  # the per-run concurrency it renders.
-  SRT_RUN_DIR="$RESULTS_DIR/$SCENARIO/$mode" \
-  SRT_ENDPOINT="$ENDPOINT" SRT_BENCHMARK="$BENCHMARK" SRT_SCENARIO="$SCENARIO" \
-  SRT_MODE="$mode" SRT_BACKEND="$BACKEND" SRT_DATASET="$DATASET" \
-  SRT_USER_CONF="$USER_CONF" SRT_CONCURRENCY="$MAX_CONCURRENCY" \
-  SRT_MAX_NEW_TOKENS="$MAX_NEW_TOKENS" SRT_HARNESS_COMMIT="$HARNESS_COMMIT" \
-  "$VENV/bin/python" - <<'PY'
+# LoadGen's summary records the test it ran, not the knobs srtctl chose for it.
+# rollup.py merges this sidecar in as srt_args.
+SRT_RUN_DIR="$LOG_DIR" \
+SRT_ENDPOINT="$ENDPOINT" SRT_BENCHMARK="$BENCHMARK" SRT_SCENARIO="$SCENARIO" \
+SRT_MODE="$TEST_MODE" SRT_CORE_TYPE="$CORE_TYPE" SRT_SYSTEM_NAME="$SYSTEM_NAME" \
+SRT_HARNESS_COMMIT="$HARNESS_COMMIT" SRT_EXTRA_ARGS="${MLPERF_EXTRA_ARGS:-}" \
+"$VENV/bin/python" - <<'PY'
 import json
 import os
 from pathlib import Path
@@ -207,12 +201,10 @@ FIELDS = {
     "benchmark": "SRT_BENCHMARK",
     "scenario": "SRT_SCENARIO",
     "mode": "SRT_MODE",
-    "backend": "SRT_BACKEND",
-    "dataset": "SRT_DATASET",
-    "user_conf": "SRT_USER_CONF",
-    "concurrency": "SRT_CONCURRENCY",
-    "max_new_tokens": "SRT_MAX_NEW_TOKENS",
+    "core_type": "SRT_CORE_TYPE",
+    "system_name": "SRT_SYSTEM_NAME",
     "harness_commit": "SRT_HARNESS_COMMIT",
+    "extra_args": "SRT_EXTRA_ARGS",
 }
 # Unset optional knobs are empty strings; omit them rather than record "".
 record = {name: os.environ[var] for name, var in FIELDS.items() if os.environ.get(var)}
@@ -221,37 +213,5 @@ out.parent.mkdir(parents=True, exist_ok=True)
 out.write_text(json.dumps(record, indent=1))
 print(f"[mlperf] wrote {out}")
 PY
-}
 
-if [[ "$MODE" == "performance" ]]; then
-  run_loadgen performance
-fi
-
-if [[ "$MODE" == "accuracy" ]]; then
-  run_loadgen accuracy --accuracy
-
-  # Scoring is opt-in: it detokenizes every response and, for gpt-oss, runs the
-  # LiveCodeBench evaluators — minutes to hours of CPU on the benchmark node,
-  # which is not something to spend by default while the cluster allocation is
-  # still held.
-  if [[ "${MLPERF_EVAL_ACCURACY:-0}" == "1" ]]; then
-    ACC_DIR="$RESULTS_DIR/$SCENARIO/accuracy"
-    ACC_LOG="$ACC_DIR/mlperf_log_accuracy.json"
-    if [[ -f "$BENCH_DIR/eval_mlperf_accuracy.py" && -f "$ACC_LOG" ]]; then
-      # The scorer, not the harness, is what requirements.txt is for.
-      if [[ -f "$BENCH_DIR/requirements.txt" ]]; then
-        "$VENV/bin/python" -m pip install --disable-pip-version-check -r "$BENCH_DIR/requirements.txt"
-      fi
-      # The scorer joins on ground-truth columns, which need not live in the
-      # file LoadGen replayed (gpt-oss ships a filtered reference alongside the
-      # tokenized input). Default to the run dataset when none is configured.
-      REFERENCE=${REFERENCE_DATA:-$STAGED}
-      echo "[mlperf] scoring accuracy log $ACC_LOG against $REFERENCE"
-      EVAL_ARGS=(--mlperf-log "$ACC_LOG" --reference-data "$REFERENCE" --output-file "$ACC_DIR/accuracy.json")
-      [[ -n "$TOKENIZER" ]] && EVAL_ARGS+=(--tokenizer "${MLPERF_ACCURACY_TOKENIZER:-$TOKENIZER}")
-      "$VENV/bin/python" eval_mlperf_accuracy.py "${EVAL_ARGS[@]}"
-    else
-      echo "[mlperf] MLPERF_EVAL_ACCURACY=1 but no eval_mlperf_accuracy.py or accuracy log; skipping scoring" >&2
-    fi
-  fi
-fi
+exit $HARNESS_RC

@@ -144,10 +144,60 @@ def _ns_to_ms(value: float | None) -> float | None:
     return value / 1e6 if value is not None else None
 
 
-def _srt_args(run_dir: Path) -> dict[str, Any]:
-    """The knobs srtctl injected, which LoadGen's own summary does not record."""
-    path = run_dir / "srt_run.json"
-    if not path.is_file():
+MODE_ALIASES = {
+    "performanceonly": "performance",
+    "performance": "performance",
+    "accuracyonly": "accuracy",
+    "accuracy": "accuracy",
+}
+
+
+def _mode(loadgen_mode: str | None, run_dir: Path, results_dir: Path) -> str | None:
+    """Normalize the LoadGen test mode.
+
+    Harnesses disagree on where the mode lives. The mlcommons reference writes
+    ``<scenario>/<mode>/``; nv_mlpinf writes ``<mode>/<system>/<benchmark>/<scenario>/``
+    and puts the mode only in the summary. Prefer what LoadGen itself reported,
+    and fall back to whichever path component names a mode — an AccuracyOnly
+    summary has no Mode line at all.
+    """
+    if loadgen_mode and loadgen_mode.lower() in MODE_ALIASES:
+        return MODE_ALIASES[loadgen_mode.lower()]
+    for part in run_dir.relative_to(results_dir).parts:
+        if part.lower() in MODE_ALIASES:
+            return MODE_ALIASES[part.lower()]
+    return None
+
+
+def _scenario(run_dir: Path, results_dir: Path) -> str | None:
+    """Deepest path component that names something other than a test mode.
+
+    Only needed for AccuracyOnly, whose summary has no Scenario line. It has to
+    work for both layouts: ``<scenario>/<mode>`` (mlcommons reference) and
+    ``<mode>/<system>/<benchmark>/<scenario>`` (nv_mlpinf). Skipping mode-named
+    components lands on the scenario in both.
+    """
+    for part in reversed(run_dir.relative_to(results_dir).parts):
+        if part.lower() not in MODE_ALIASES:
+            return part
+    return None
+
+
+def _srt_args(run_dir: Path, results_dir: Path) -> dict[str, Any]:
+    """The knobs srtctl injected, which LoadGen's own summary does not record.
+
+    The sidecar is written at the LOG_DIR root, but nv_mlpinf nests the actual
+    logs under <system>/<benchmark>/<scenario>, so walk up to find it.
+    """
+    path = next(
+        (
+            candidate / "srt_run.json"
+            for candidate in [run_dir, *run_dir.parents]
+            if (candidate / "srt_run.json").is_file() and candidate.is_relative_to(results_dir)
+        ),
+        None,
+    )
+    if path is None:
         return {}
     try:
         recorded = json.loads(path.read_text())
@@ -163,14 +213,15 @@ def build_run(summary_path: Path, results_dir: Path) -> dict[str, Any]:
     summary = sections["summary"]
     stats = sections["additional_stats"]
     run_dir = summary_path.parent
-    srt_args = _srt_args(run_dir)
+    srt_args = _srt_args(run_dir, results_dir)
+    loadgen_mode = summary.get("Mode")
 
     run: dict[str, Any] = {
         "path": str(run_dir.relative_to(results_dir)),
-        # An AccuracyOnly summary carries no sections, so fall back to the
-        # <scenario>/<mode> layout the harness itself writes.
-        "scenario": summary.get("Scenario") or run_dir.parent.name,
-        "mode": run_dir.name,
+        # An AccuracyOnly summary carries no sections at all, so fall back to
+        # the directory the harness wrote the logs into.
+        "scenario": summary.get("Scenario") or _scenario(run_dir, results_dir),
+        "mode": _mode(loadgen_mode, run_dir, results_dir),
         "loadgen_mode": summary.get("Mode"),
         "loadgen_warnings": _incidents(text, "warning"),
         "loadgen_errors": _incidents(text, "error"),
@@ -212,7 +263,9 @@ def main(log_dir: str) -> int:
         return 0
 
     runs = []
-    for summary_path in sorted(results_dir.glob("*/*/mlperf_log_summary.txt")):
+    # Recursive: nv_mlpinf nests logs under <mode>/<system>/<benchmark>/<scenario>,
+    # the mlcommons reference under <scenario>/<mode>. Depth is not a contract.
+    for summary_path in sorted(results_dir.rglob("mlperf_log_summary.txt")):
         try:
             runs.append(build_run(summary_path, results_dir))
         except OSError as exc:

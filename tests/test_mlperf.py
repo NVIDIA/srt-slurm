@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from srtctl.benchmarks import get_runner, list_benchmarks
+from srtctl.benchmarks import mlperf as mlperf_runner
 from srtctl.benchmarks.base import SCRIPTS_DIR
 from srtctl.core.schema import (
     BenchmarkConfig,
@@ -91,10 +92,10 @@ target_qps : 10
 """
 
 
-def _config(frontend_type="sglang", **benchmark_kwargs):
+def _config(frontend_type="dynamo", **benchmark_kwargs):
     return SrtConfig(
         name="test",
-        model=ModelConfig(path="/model/gpt-oss-120b", container="/image", precision="fp4"),
+        model=ModelConfig(path="/model/deepseek-r1", container="/image", precision="fp4"),
         resources=ResourceConfig(gpu_type="gb300"),
         frontend=FrontendConfig(type=frontend_type),
         benchmark=BenchmarkConfig(type="mlperf", **benchmark_kwargs),
@@ -103,9 +104,8 @@ def _config(frontend_type="sglang", **benchmark_kwargs):
 
 def _valid_kwargs(**overrides):
     kwargs = {
-        "mlperf_harness_dir": "/mlperf-inference",
-        "mlperf_benchmark": "gpt-oss-120b",
-        "mlperf_dataset": "/datasets/gpt-oss.parquet",
+        "mlperf_harness_dir": "/mlperf-inference/closed/NVIDIA",
+        "mlperf_benchmark": "deepseek-r1",
     }
     kwargs.update(overrides)
     return kwargs
@@ -134,61 +134,48 @@ class TestMLPerfRunner:
         errors = get_runner("mlperf").validate_config(_config(**_valid_kwargs(mlperf_benchmark=None)))
         assert any("mlperf_benchmark" in e for e in errors)
 
-    def test_validate_missing_dataset(self):
-        """Validates that mlperf_dataset is required."""
-        errors = get_runner("mlperf").validate_config(_config(**_valid_kwargs(mlperf_dataset=None)))
-        assert any("mlperf_dataset" in e for e in errors)
-
     def test_validate_rejects_unknown_scenario(self):
-        """LoadGen only knows the scenarios the harness implements."""
-        errors = get_runner("mlperf").validate_config(_config(**_valid_kwargs(mlperf_scenario="interactive")))
+        """Scenario names are LoadGen's, capitalized."""
+        errors = get_runner("mlperf").validate_config(_config(**_valid_kwargs(mlperf_scenario="offline")))
         assert any("mlperf_scenario" in e for e in errors)
 
     def test_validate_rejects_unknown_mode(self):
-        """Modes are performance/accuracy."""
-        errors = get_runner("mlperf").validate_config(_config(**_valid_kwargs(mlperf_mode="compliance")))
+        """Test modes are LoadGen's PerformanceOnly / AccuracyOnly."""
+        errors = get_runner("mlperf").validate_config(_config(**_valid_kwargs(mlperf_mode="performance")))
         assert any("mlperf_mode" in e for e in errors)
 
-    def test_validate_rejects_combined_mode(self):
-        """One LoadGen mode per job: the two modes do not share a token budget."""
-        errors = get_runner("mlperf").validate_config(_config(**_valid_kwargs(mlperf_mode="both")))
-        assert any("mlperf_mode" in e for e in errors)
+    def test_validate_rejects_unknown_core_type(self):
+        """Only the two endpoint cores can drive an already-deployed cluster."""
+        errors = get_runner("mlperf").validate_config(_config(**_valid_kwargs(mlperf_core_type="trtllm_executor")))
+        assert any("mlperf_core_type" in e for e in errors)
 
-    def test_validate_server_requires_user_conf(self):
-        """Server target_qps only comes from user.conf; the harness default is a placeholder."""
-        errors = get_runner("mlperf").validate_config(_config(**_valid_kwargs(mlperf_scenario="server")))
-        assert any("mlperf_user_conf" in e for e in errors)
+    def test_validate_accepts_openai_frontends(self):
+        """Both cores issue /v1/completions, so any OpenAI frontend works.
 
-    def test_validate_offline_does_not_require_user_conf(self):
-        """Offline is still measurable off mlperf.conf alone."""
-        errors = get_runner("mlperf").validate_config(_config(**_valid_kwargs(mlperf_scenario="offline")))
-        assert errors == []
+        Only the frontends that pair with the default backend are constructed
+        here; trtllm_serve and vllm carry their own backend requirements that
+        SrtConfig enforces before this runner ever sees the config.
+        """
+        for frontend in ("dynamo", "sglang"):
+            errors = get_runner("mlperf").validate_config(_config(frontend_type=frontend, **_valid_kwargs()))
+            assert errors == [], f"{frontend} should be accepted: {errors}"
+        assert {"trtllm_serve", "vllm", "vllm-router"} <= mlperf_runner._OPENAI_FRONTENDS
 
-    def test_validate_rejects_nonpositive_max_new_tokens(self):
-        """A zero token budget would make every response empty."""
-        errors = get_runner("mlperf").validate_config(_config(**_valid_kwargs(mlperf_max_new_tokens=0)))
-        assert any("mlperf_max_new_tokens" in e for e in errors)
-
-    def test_validate_rejects_incompatible_frontend(self):
-        """The sglang backend posts to /generate, which a Dynamo frontend does not serve."""
-        errors = get_runner("mlperf").validate_config(_config(frontend_type="dynamo", **_valid_kwargs()))
+    def test_validate_rejects_non_openai_frontend(self):
+        """A frontend that does not serve /v1/completions fails at config load."""
+        errors = get_runner("mlperf").validate_config(_config(frontend_type="mystery", **_valid_kwargs()))
         assert any("frontend.type" in e for e in errors)
-
-    def test_validate_rejects_nonpositive_concurrency(self):
-        """Zero or negative concurrency is rejected."""
-        errors = get_runner("mlperf").validate_config(_config(**_valid_kwargs(concurrency=0)))
-        assert any("positive" in e for e in errors)
 
     def test_validate_valid(self):
         """A fully specified config passes validation."""
         errors = get_runner("mlperf").validate_config(
             _config(
                 **_valid_kwargs(
-                    mlperf_scenario="server",
-                    mlperf_mode="accuracy",
-                    mlperf_user_conf="/configs/user.conf",
-                    mlperf_max_new_tokens=32768,
-                    concurrency=256,
+                    mlperf_scenario="Server",
+                    mlperf_mode="AccuracyOnly",
+                    mlperf_core_type="trtllm_endpoint",
+                    mlperf_system_name="GB300-NVL72",
+                    mlperf_scratch_path="/scratch/mlperf",
                 )
             )
         )
@@ -200,42 +187,36 @@ class TestMLPerfRunner:
         runtime.frontend_port = 8000
         config = _config(
             **_valid_kwargs(
-                mlperf_scenario="server",
-                mlperf_mode="accuracy",
-                mlperf_user_conf="/configs/user.conf",
-                mlperf_max_new_tokens=32768,
-                mlperf_reference_data="/datasets/gpt-oss-reference.parquet",
-                concurrency=256,
+                mlperf_scenario="Server",
+                mlperf_mode="AccuracyOnly",
+                mlperf_core_type="trtllm_endpoint",
+                mlperf_system_name="GB300-NVL72",
+                mlperf_scratch_path="/scratch/mlperf",
             )
         )
         cmd = get_runner("mlperf").build_command(config, runtime)
         assert cmd[0] == "bash"
         assert cmd[1] == "/srtctl-benchmarks/mlperf/bench.sh"
-        assert cmd[2] == "http://localhost:8000"
-        assert cmd[3] == "/mlperf-inference"
-        assert cmd[4] == "gpt-oss-120b"
-        assert cmd[5] == "server"
-        assert cmd[6] == "accuracy"
-        assert cmd[7] == "sglang"
-        assert cmd[8] == "/datasets/gpt-oss.parquet"
-        assert cmd[9] == "/configs/user.conf"
-        assert cmd[10] == "256"
-        assert cmd[11] == "32768"
-        assert cmd[12] == "/datasets/gpt-oss-reference.parquet"
-        # The accuracy scorer would otherwise pull a tokenizer from HuggingFace.
-        assert cmd[13] == "/model/gpt-oss-120b"
+        # host:port, not a URL — nv_mlpinf builds the base URL itself.
+        assert cmd[2] == "localhost:8000"
+        assert cmd[3] == "/mlperf-inference/closed/NVIDIA"
+        assert cmd[4] == "deepseek-r1"
+        assert cmd[5] == "Server"
+        assert cmd[6] == "AccuracyOnly"
+        assert cmd[7] == "trtllm_endpoint"
+        assert cmd[8] == "GB300-NVL72"
+        assert cmd[9] == "/scratch/mlperf"
 
     def test_build_command_defaults(self):
         """Optional inputs become empty positionals, not missing arguments."""
         runtime = MagicMock()
         runtime.frontend_port = 8000
         cmd = get_runner("mlperf").build_command(_config(**_valid_kwargs()), runtime)
-        assert cmd[5] == "offline"
-        assert cmd[6] == "performance"
+        assert cmd[5] == "Offline"
+        assert cmd[6] == "PerformanceOnly"
+        assert cmd[7] == "dynamo_endpoint"
+        assert cmd[8] == ""
         assert cmd[9] == ""
-        assert cmd[10] == ""
-        assert cmd[11] == ""
-        assert cmd[12] == ""
 
     def test_script_exists(self):
         """mlperf bench.sh and rollup.py ship with the package."""
@@ -244,9 +225,16 @@ class TestMLPerfRunner:
 
     def test_environment_passthrough(self):
         """benchmark.env reaches the harness environment."""
-        config = _config(**_valid_kwargs(env={"MLPERF_EXTRA_ARGS": "--max-samples 500"}))
+        config = _config(**_valid_kwargs(env={"MLPERF_EXTRA_ARGS": "--server_target_qps=40"}))
         env = get_runner("mlperf").get_environment(config, MagicMock())
-        assert env["MLPERF_EXTRA_ARGS"] == "--max-samples 500"
+        assert env["MLPERF_EXTRA_ARGS"] == "--server_target_qps=40"
+
+
+def _write_run(log_dir: Path, scenario: str, mode: str, summary: str) -> Path:
+    run_dir = log_dir / "mlperf" / scenario / mode
+    run_dir.mkdir(parents=True)
+    (run_dir / "mlperf_log_summary.txt").write_text(summary)
+    return run_dir
 
 
 # Verbatim from an AccuracyOnly run: LoadGen writes no sections at all in this
@@ -256,13 +244,6 @@ No warnings encountered during test.
 
 No errors encountered during test.
 """
-
-
-def _write_run(log_dir: Path, scenario: str, mode: str, summary: str) -> Path:
-    run_dir = log_dir / "mlperf" / scenario / mode
-    run_dir.mkdir(parents=True)
-    (run_dir / "mlperf_log_summary.txt").write_text(summary)
-    return run_dir
 
 
 class TestParseSummary:

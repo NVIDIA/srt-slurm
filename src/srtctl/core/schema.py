@@ -780,19 +780,17 @@ class BenchmarkConfig:
     agentperf_config: str | None = (
         None  # Container path to the client's workload YAML (endpoint/model/concurrency injected)
     )
-    # MLPerf Inference benchmark fields (mlcommons/inference LoadGen harness)
-    mlperf_harness_dir: str | None = None  # Container path to an mlcommons/inference checkout (mount via extra_mount)
-    mlperf_benchmark: str | None = None  # Benchmark dir under language/ (e.g. "gpt-oss-120b")
-    mlperf_dataset: str | None = None  # Container path to the tokenized dataset (parquet/pickle)
-    mlperf_user_conf: str | None = None  # Container path to a LoadGen user.conf (required for the server scenario)
-    mlperf_reference_data: str | None = None  # Container path to the scorer's reference dataset (ground_truth columns)
-    mlperf_scenario: str = "offline"  # LoadGen scenario: "offline" or "server"
-    mlperf_mode: str = "performance"  # "performance" or "accuracy" (one LoadGen mode per job)
-    mlperf_backend: str = "sglang"  # Harness backend that talks to the already-running server
-    # Harness --max-new-tokens. The checked-in generation_config.json carries the
-    # accuracy token budget, so a performance run that leaves this unset
-    # generates against the wrong limit.
-    mlperf_max_new_tokens: int | None = None
+    # MLPerf Inference benchmark fields (NVIDIA nv_mlpinf submission harness)
+    mlperf_harness_dir: str | None = None  # Container path to mlperf-inference/closed/NVIDIA (mount via extra_mount)
+    mlperf_benchmark: str | None = None  # nv_mlpinf benchmark name (e.g. "deepseek-r1", "gpt-oss-120b")
+    mlperf_scenario: str = "Offline"  # LoadGen scenario: "Offline", "Server", or "Interactive"
+    mlperf_mode: str = "PerformanceOnly"  # LoadGen test mode: "PerformanceOnly" or "AccuracyOnly"
+    # Which llmlib core issues the requests. Both speak OpenAI over HTTP;
+    # dynamo_endpoint additionally skips nv_mlpinf's system-config lookup, which
+    # is what makes it usable against a cluster srt-slurm (not sflow) deployed.
+    mlperf_core_type: str = "dynamo_endpoint"
+    mlperf_system_name: str | None = None  # --system_name; nv_mlpinf derives one when unset
+    mlperf_scratch_path: str | None = None  # MLPERF_SCRATCH_PATH: dataset/model root the harness reads
     # Trace replay benchmark fields (uses aiperf with mooncake_trace dataset type)
     trace_file: str | None = None  # Path to trace JSONL file (container path, e.g., /traces/dataset.jsonl)
     custom_tokenizer: str | None = None  # Custom tokenizer class (e.g., "module.path.ClassName")
