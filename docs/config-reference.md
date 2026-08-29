@@ -1008,6 +1008,12 @@ Notes:
   submission repo records a job that sat silent for 233 minutes this way and produced no summary.
   `MLPINF_FIRST_TOKEN_ALWAYS` defaults to 1 because LoadGen requires a first-token latency before a
   sample latency in any non-Offline scenario.
+- **`mlperf_scratch_path` must contain `preprocessed_data/<benchmark>/` with that benchmark's
+  tensors**, not the raw dataset. nv_mlpinf builds the QSL from pre-tokenized `.npy` files
+  (DeepSeek-R1 wants `input_ids_padded.npy` + `input_lens.npy`), and a missing directory fails an
+  assertion inside QSL construction — after the config module has loaded and the pipeline has
+  started, so it surfaces later than the other path errors and looks unrelated to path setup. The
+  parquet the endpoints client uses is a different artifact and is not a substitute.
 - The first run of a job installs the harness into an isolated venv under `/tmp/mlperf-<jobid>`
   (`--system-site-packages`, so the container's torch/tensorrt_llm are reused), guarded by the same
   self-validating READY marker and atomic build lock as agentperf.
