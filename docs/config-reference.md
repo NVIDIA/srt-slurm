@@ -994,8 +994,10 @@ Notes:
   `<config_dir>/<benchmark>/<system_id>/<serving_framework>/<scenario>/harness.py` and raises
   `FileNotFoundError` if it is missing. Left unset, the id is auto-detected, and any machine outside
   the built-in list (every Vera Rubin bring-up node today) detects as `UNREGISTERED_<arch>_<gpu>xN`,
-  which has no configs. Set it to a system the checkout has configs for; the bench step lists the
-  available ones when the name does not resolve. To run an unregistered system, point `CONFIG_DIR`
+  which has no configs. The pair matters, not just the system: a scenario directory may hold only
+  `server.py` (for the separate `RunLLMServer` action) and no `harness.py`, which `run_harness` will
+  not accept. The bench step checks for `harness.py` specifically and lists the valid
+  system/scenario pairs the checkout provides. To run an unregistered system, point `CONFIG_DIR`
   (via `benchmark.env`) at a tree that provides the module.
   Note the `<serving_framework>` segment is a hardcoded per-benchmark constant (`TRTLLM` for every
   LLM benchmark) with no CLI override — the `DYNAMO/` directories next to it hold *sflow* configs,

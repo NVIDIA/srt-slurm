@@ -134,20 +134,37 @@ export CONFIG_DIR="${CONFIG_DIR:-$PROJECT_BASE_DIR/configs}"
 # configs. Check it here so the failure names the fix.
 BENCH_UNDERSCORE=${BENCHMARK//-/_}
 CONFIG_BASE="$CONFIG_DIR/$BENCH_UNDERSCORE"
-if [[ -n "$SYSTEM_NAME" ]]; then
-  export SYSTEM_NAME
-  if [[ -d "$CONFIG_BASE" && ! -d "$CONFIG_BASE/$SYSTEM_NAME" ]]; then
-    echo "ERROR: no nv_mlpinf config for system '$SYSTEM_NAME' under $CONFIG_BASE." >&2
-    echo "       Systems with a config for $BENCHMARK:" >&2
-    for d in "$CONFIG_BASE"/*/; do [[ -d "$d" ]] && echo "         $(basename "$d")" >&2; done
-    echo "       Set benchmark.mlperf_system_name to one of these, or point" >&2
-    echo "       benchmark.env CONFIG_DIR at a tree that has your system." >&2
+# The <serving_framework> segment is a per-benchmark constant with no CLI
+# override, so glob it rather than hardcoding TRTLLM. It is harness.py
+# specifically that must exist: a scenario directory can hold only server.py
+# (the RunLLMServer action), which run_harness will not accept.
+list_valid_points() {
+  local found=0 path
+  for path in "$CONFIG_BASE"/*/*/*/harness.py; do
+    [[ -f "$path" ]] || continue
+    found=1
+    local scen system
+    scen=$(basename "$(dirname "$path")")
+    system=$(basename "$(dirname "$(dirname "$(dirname "$path")")")")
+    echo "         $system  $scen" >&2
+  done
+  [[ "$found" == 1 ]] || echo "         (none under $CONFIG_BASE)" >&2
+}
+[[ -n "$SYSTEM_NAME" ]] && export SYSTEM_NAME
+if [[ -d "$CONFIG_BASE" && -n "$SYSTEM_NAME" ]]; then
+  if ! compgen -G "$CONFIG_BASE/$SYSTEM_NAME/*/$SCENARIO/harness.py" >/dev/null; then
+    echo "ERROR: nv_mlpinf has no harness config for benchmark=$BENCHMARK system=$SYSTEM_NAME scenario=$SCENARIO." >&2
+    echo "       run_harness resolves this module before it looks at core_type, so it is required" >&2
+    echo "       even though $CORE_TYPE needs nothing from it. Valid system/scenario pairs here:" >&2
+    list_valid_points
+    echo "       Set benchmark.mlperf_system_name / mlperf_scenario to a pair above, or point" >&2
+    echo "       benchmark.env CONFIG_DIR at a tree that provides your system." >&2
     exit 1
   fi
 elif [[ -d "$CONFIG_BASE" ]]; then
-  echo "[mlperf] WARNING: benchmark.mlperf_system_name is unset; nv_mlpinf will auto-detect and" >&2
-  echo "         needs a config under $CONFIG_BASE/<system>/. Available systems:" >&2
-  for d in "$CONFIG_BASE"/*/; do [[ -d "$d" ]] && echo "           $(basename "$d")" >&2; done
+  echo "[mlperf] WARNING: benchmark.mlperf_system_name is unset; nv_mlpinf will auto-detect, and an" >&2
+  echo "         unregistered machine has no config. Valid system/scenario pairs here:" >&2
+  list_valid_points
 fi
 
 # MLPINF_HTTP_USE_COMPLETIONS=1 selects /v1/completions over the chat route.
