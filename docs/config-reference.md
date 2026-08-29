@@ -1008,8 +1008,16 @@ Notes:
   submission repo records a job that sat silent for 233 minutes this way and produced no summary.
   `MLPINF_FIRST_TOKEN_ALWAYS` defaults to 1 because LoadGen requires a first-token latency before a
   sample latency in any non-Offline scenario.
-- **`mlperf_scratch_path` must contain `preprocessed_data/<benchmark>/` with that benchmark's
-  tensors**, not the raw dataset. nv_mlpinf builds the QSL from pre-tokenized `.npy` files
+- **`mlperf_scratch_path` feeds two directories, and only one of them fails loudly.**
+  `models/<benchmark>/` holds the checkpoint the harness loads its tokenizer from —
+  `harness_use_hf_tokenizer` is `False` by default, so the tokenizer is expected on disk, not on the
+  Hub (`Loaded tokenizer from local path: .../models/deepseek-r1/...`). Without it the harness can
+  fall back to treating the configured name as a Hub repo id, which needs egress and raises
+  `HFValidationError` on a path-shaped name; the submission repo has three 7-node runs that finished
+  their performance phase and then died in scoring exactly this way. There is deliberately no
+  separate tokenizer-path field: the checkpoint location is derived from this one, and a second knob
+  would be a second source of truth. The bench step warns when either directory is absent.
+- **`preprocessed_data/<benchmark>/` must hold that benchmark's tensors**, not the raw dataset. nv_mlpinf builds the QSL from pre-tokenized `.npy` files
   (DeepSeek-R1 wants `input_ids_padded.npy` + `input_lens.npy`), and a missing directory fails an
   assertion inside QSL construction — after the config module has loaded and the pipeline has
   started, so it surfaces later than the other path errors and looks unrelated to path setup. The

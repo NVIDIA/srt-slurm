@@ -90,12 +90,30 @@ if ! ready; then
   # --no-build-isolation matches the submission repo's own harness task: the
   # build deps are already in the image, and an isolated build would refetch
   # (and can fail without egress).
+  #
+  # Expect pip to report four unsatisfied constraints here, e.g.
+  #   tensorrt-llm requires numpy>=2.0.0, but you have 1.26.4
+  #   transformers requires huggingface-hub>=1.5.0, but you have 0.34.0
+  #   torchtitan requires datasets>=3.6.0 / diffusers requires safetensors>=0.8.0
+  # They come from layering this venv over the container: pip resolves the
+  # harness's own pins and installs older copies that shadow the image's, while
+  # the packages doing the complaining are the image's and are not what the
+  # endpoint cores import. Measured harmless for the endpoint path — a
+  # PerformanceOnly Interactive run completes and LoadGen writes a summary — but
+  # not audited for the executor cores, which do import tensorrt_llm. The check
+  # below asserts the shadowed copies are at least usable.
   (cd "$HARNESS_DIR" && "$VENV/bin/python" -m pip install -e ".[llm]" -q --no-build-isolation)
   "$VENV/bin/python" - <<'PY'
 from importlib.metadata import PackageNotFoundError, version
 
 import mlperf_loadgen  # noqa: F401  - fail here if LoadGen did not come along
 
+# numpy is the one the install actively downgrades, and the harness reads its
+# QSL tensors through it. A shadowed-but-broken copy would otherwise surface as
+# an opaque failure during QSL construction, well after preflight "passed".
+import numpy
+
+print("[mlperf] numpy", numpy.__version__)
 try:
     print("[mlperf] mlperf_loadgen", version("mlcommons_loadgen"))
 except PackageNotFoundError:
@@ -195,6 +213,29 @@ export MLPINF_FIRST_TOKEN_ALWAYS="${MLPINF_FIRST_TOKEN_ALWAYS:-1}"
 # nv_mlpinf defaults this to /home/mlperf_inference_storage, which is an ASE
 # cluster path and rarely mounted elsewhere.
 [[ -n "$SCRATCH_PATH" ]] && export MLPERF_SCRATCH_PATH="$SCRATCH_PATH"
+
+# The scratch tree feeds two different things, and only one of them fails early.
+#   preprocessed_data/<benchmark>/  the QSL tensors — asserted during QSL
+#                                   construction, so a miss is at least loud
+#   models/<benchmark>/             the checkpoint the harness loads its
+#                                   tokenizer from ("Loaded tokenizer from local
+#                                   path: .../models/<benchmark>/...")
+# harness_use_hf_tokenizer is False by default, so the tokenizer is expected on
+# disk, not on the Hub. When the checkpoint is absent the harness can fall back
+# to treating the configured name as a Hub repo id, which needs egress and — for
+# a path-shaped name — raises HFValidationError. The submission repo hit exactly
+# that: three 7-node runs finished their performance phase and then died in
+# scoring. Check both here, while the message can still name the directory.
+if [[ -n "${MLPERF_SCRATCH_PATH:-}" ]]; then
+  for sub in "preprocessed_data/$BENCHMARK" "models/$BENCHMARK"; do
+    [[ -d "$MLPERF_SCRATCH_PATH/$sub" ]] || {
+      echo "[mlperf] WARNING: $MLPERF_SCRATCH_PATH/$sub is missing." >&2
+      echo "         preprocessed_data/<benchmark> holds the QSL tensors; models/<benchmark> holds" >&2
+      echo "         the checkpoint the harness loads its tokenizer from. Without the latter it may" >&2
+      echo "         fall back to a Hub lookup, which needs egress and fails on a path-shaped name." >&2
+    }
+  done
+fi
 
 # Resolve the core the same way the harness will. CoreType.DYNAMO_ENDPOINT is a
 # dangling registry entry in some checkouts — it names dynamo_endpoint_core,
