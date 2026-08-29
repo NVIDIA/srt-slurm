@@ -233,6 +233,36 @@ class BenchmarkStageMixin:
             endpoints.append((process.endpoint_mode, host, port))
         return endpoints
 
+    def _uses_native_sglang_sidecar_metrics(self) -> bool:
+        """Whether workers expose metrics on native SGLang HTTP endpoints."""
+        dynamo = getattr(self.config, "dynamo", None)
+        return (
+            self.config.frontend.type == "dynamo"
+            and self.config.backend_type == "sglang"
+            and bool(getattr(dynamo, "sidecar", False))
+        )
+
+    def _logical_worker_metrics_endpoints(
+        self,
+        logical_endpoints: list[tuple[str, str, int]] | None = None,
+    ) -> list[tuple[str, str, int]]:
+        """Return logical endpoints that serve engine metrics.
+
+        Standalone SGLang sidecar deployments keep Dynamo routing on each
+        leader's system port, but native ``sglang.launch_server`` metrics are
+        served by the leader's HTTP port.
+        """
+        if not self._uses_native_sglang_sidecar_metrics():
+            return logical_endpoints if logical_endpoints is not None else self._logical_worker_endpoints()
+
+        endpoints: list[tuple[str, str, int]] = []
+        for process in self.backend_processes:
+            if not process.is_leader or process.http_port <= 0:
+                continue
+            host = get_hostname_ip(process.node, self.runtime.network_interface)
+            endpoints.append((process.endpoint_mode, host, process.http_port))
+        return endpoints
+
     def _wait_for_service_ready(self, stop_event: threading.Event) -> bool:
         """Wait for frontend counts and any adapter-specific backend barrier."""
         from srtctl.core import health as health_utils
@@ -617,7 +647,10 @@ class BenchmarkStageMixin:
         ranks are not advertised as separate engines.
         """
         urls: list[str] = []
-        if logical_workers_only:
+        if self._uses_native_sglang_sidecar_metrics():
+            metrics_endpoints = self._logical_worker_metrics_endpoints(logical_endpoints)
+            urls = [f"http://{host}:{port}/metrics" for _, host, port in metrics_endpoints]
+        elif logical_workers_only:
             if logical_endpoints is None:
                 logical_endpoints = self._logical_worker_endpoints()
             urls = [f"http://{host}:{port}/metrics" for _, host, port in logical_endpoints]
