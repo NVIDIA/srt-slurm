@@ -197,6 +197,13 @@ read -r -a EXTRA_ARGS <<< "${MLPERF_EXTRA_ARGS:-}" || true
 
 echo "[mlperf] $TEST_MODE run: endpoint=$ENDPOINT benchmark=$BENCHMARK scenario=$SCENARIO core=$CORE_TYPE log_dir=$LOG_DIR"
 set +e
+# Run from the checkout: some harness defaults are paths relative to the working
+# directory, not to project_base_dir — llm_gen_config_path resolves as
+# src/nv_mlpinf/benchmarks/<benchmark>/generation_config.json, so anywhere else
+# dies with "Generation config file not found" once the QSL is already built.
+# The sflow tasks get this for free by running from WORK_DIR. LOG_DIR is
+# absolute, so the results still land where the rollup expects.
+cd "$HARNESS_DIR"
 "$VENV/bin/nv-mlpinf" run_harness "${RUN_ARGS[@]}" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
 HARNESS_RC=$?
 set -e
