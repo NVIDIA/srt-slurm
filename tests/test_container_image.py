@@ -5,14 +5,17 @@
 
 import fcntl
 import os
+import stat
 import subprocess
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+import srtctl.core.container_image as container_image_module
 from srtctl.cli.do_sweep import SweepOrchestrator
 from srtctl.core.container_image import ContainerPreparationError, PreparedContainer, prepare_container_image
 from srtctl.core.runtime import Nodes, RuntimeContext
@@ -150,6 +153,19 @@ def test_local_squashfs_is_validated_and_preserved(tmp_path: Path) -> None:
     assert result.cache_hit is None
 
 
+def test_auto_falls_back_for_invalid_local_image(tmp_path: Path) -> None:
+    image = tmp_path / "invalid.sqsh"
+    image.write_bytes(b"not-squashfs")
+
+    result = _prepare(str(image), _config(None, mode=ContainerCacheMode.AUTO), tmp_path)
+
+    assert result.effective_image == str(image)
+    assert "SquashFS" in (result.fallback_reason or "")
+
+    with pytest.raises(ContainerPreparationError, match="SquashFS"):
+        _prepare(str(image), _config(None), tmp_path)
+
+
 def test_symlinked_or_unsafe_cache_content_is_rejected(tmp_path: Path) -> None:
     cache_root = tmp_path / "cache"
     entry = cache_root / "v1" / "linux-amd64" / f"{_DIGEST}.sqsh"
@@ -208,6 +224,84 @@ def test_unsafe_lock_file_is_rejected(tmp_path: Path) -> None:
         _prepare(_IMAGE, _config(tmp_path), tmp_path)
 
 
+def test_relative_explicit_cache_path_is_resolved(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.chdir(tmp_path)
+    with (
+        patch("srtctl.core.container_image.shutil.which", return_value="/usr/bin/srun"),
+        patch("srtctl.core.container_image.subprocess.run", side_effect=_importer(calls)),
+    ):
+        result = _prepare(_IMAGE, _config(Path("cache")), tmp_path)
+
+    assert Path(result.effective_image).is_relative_to(tmp_path / "cache")
+
+
+def test_unexpected_import_error_is_redacted_and_wrapped(tmp_path: Path) -> None:
+    with (
+        patch("srtctl.core.container_image.shutil.which", return_value="/usr/bin/srun"),
+        patch(
+            "srtctl.core.container_image.subprocess.run",
+            side_effect=RuntimeError("docker://user:secret@registry.example.com failed"),
+        ),
+        pytest.raises(ContainerPreparationError, match=r"user:<redacted>"),
+    ):
+        _prepare(_IMAGE, _config(tmp_path), tmp_path)
+
+
+def test_cache_directory_operating_system_errors_are_actionable(tmp_path: Path) -> None:
+    with (
+        patch.object(Path, "mkdir", side_effect=OSError("denied")),
+        pytest.raises(ContainerPreparationError, match="cannot prepare"),
+    ):
+        _prepare(_IMAGE, _config(tmp_path / "cache"), tmp_path)
+
+    with (
+        patch.object(Path, "lstat", side_effect=OSError("denied")),
+        pytest.raises(ContainerPreparationError, match="cannot inspect"),
+    ):
+        container_image_module._validate_cache_directory(tmp_path)
+
+
+def test_cache_directory_rejects_non_directory_and_foreign_owner(tmp_path: Path) -> None:
+    regular_file = tmp_path / "cache"
+    regular_file.touch()
+    with pytest.raises(ContainerPreparationError, match="not a real directory"):
+        container_image_module._validate_cache_directory(regular_file)
+
+    foreign_directory = SimpleNamespace(st_mode=stat.S_IFDIR | 0o700, st_uid=os.geteuid() + 1)
+    with (
+        patch.object(Path, "lstat", return_value=foreign_directory),
+        pytest.raises(ContainerPreparationError, match="unexpected owner"),
+    ):
+        container_image_module._validate_cache_directory(tmp_path)
+
+
+def test_lock_and_visibility_operating_system_errors_are_actionable(tmp_path: Path) -> None:
+    with (
+        patch("srtctl.core.container_image.os.open", side_effect=OSError("denied")),
+        pytest.raises(ContainerPreparationError, match="cannot open"),
+        container_image_module._entry_lock(tmp_path / "image.lock", 1),
+    ):
+        pass
+
+    groups = ((None, ("n0", "n1")),)
+    with (
+        patch("srtctl.core.container_image.shutil.which", return_value=None),
+        pytest.raises(ContainerPreparationError, match="shared-cache validation"),
+    ):
+        container_image_module._verify_shared_visibility(tmp_path / "image.sqsh", "123", groups)
+
+    with (
+        patch("srtctl.core.container_image.shutil.which", return_value="/usr/bin/srun"),
+        patch("srtctl.core.container_image.subprocess.run", side_effect=subprocess.TimeoutExpired("srun", 60)),
+        pytest.raises(ContainerPreparationError, match="cannot validate shared"),
+    ):
+        container_image_module._verify_shared_visibility(tmp_path / "image.sqsh", "123", groups)
+
+    with patch("srtctl.core.container_image.os.open", side_effect=OSError("denied")):
+        container_image_module._fsync_directory(tmp_path)
+
+
 def test_lock_wait_is_bounded(tmp_path: Path) -> None:
     cache_dir = tmp_path / "v1" / "linux-amd64"
     cache_dir.mkdir(parents=True)
@@ -236,7 +330,7 @@ def test_automatic_path_is_derived_from_output_directory(tmp_path: Path) -> None
 
 def test_multi_node_visibility_is_checked_for_each_het_group(tmp_path: Path) -> None:
     calls: list[list[str]] = []
-    groups = ((0, ("n0", "n1")), (1, ("n2",)))
+    groups = ((2, ()), (0, ("n0", "n1")), (1, ("n2",)))
     with (
         patch("srtctl.core.container_image.shutil.which", return_value="/usr/bin/srun"),
         patch("srtctl.core.container_image.subprocess.run", side_effect=_importer(calls)),
@@ -314,3 +408,39 @@ def test_orchestrator_replaces_runtime_image_and_records_provenance() -> None:
     assert prepare.call_args.kwargs["output_dir"] == Path("/output")
     assert orchestrator.runtime.container_image == Path("/cache/image.sqsh")
     assert orchestrator.runtime.prepared_container is prepared
+
+
+def test_orchestrator_preserves_heterogeneous_visibility_groups() -> None:
+    nodes = Nodes(
+        head="p0",
+        bench="p0",
+        infra="infra",
+        worker=("p0", "p1", "d0"),
+        het=True,
+        prefill_group=("p0", "p1"),
+        decode_group=("d0",),
+    )
+    runtime = RuntimeContext(
+        job_id="123",
+        run_name="test-123",
+        nodes=nodes,
+        head_node_ip="10.0.0.1",
+        infra_node_ip="10.0.0.2",
+        log_dir=Path("/output/123/logs"),
+        model_path=Path("/model"),
+        container_image=_IMAGE,
+        gpus_per_node=8,
+        network_interface=None,
+    )
+    config = MagicMock()
+    config.model.container = _IMAGE
+    orchestrator = SweepOrchestrator(config=config, runtime=runtime)
+    prepared = PreparedContainer(_IMAGE, _IMAGE, _IMAGE, "linux/amd64", f"sha256:{_DIGEST}", "auto", "output_dir", True)
+
+    with (
+        patch("srtctl.cli.do_sweep.get_container_cache_config", return_value=_config(None)),
+        patch("srtctl.cli.do_sweep.prepare_container_image", return_value=prepared) as prepare,
+    ):
+        orchestrator._prepare_container_image()
+
+    assert prepare.call_args.kwargs["visibility_groups"] == ((0, ("infra", "p0", "p1")), (1, ("d0",)))
