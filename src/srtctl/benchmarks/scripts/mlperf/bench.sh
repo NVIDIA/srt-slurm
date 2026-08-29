@@ -184,6 +184,28 @@ export MLPINF_FIRST_TOKEN_ALWAYS="${MLPINF_FIRST_TOKEN_ALWAYS:-1}"
 # cluster path and rarely mounted elsewhere.
 [[ -n "$SCRATCH_PATH" ]] && export MLPERF_SCRATCH_PATH="$SCRATCH_PATH"
 
+# Resolve the core the same way the harness will. CoreType.DYNAMO_ENDPOINT is a
+# dangling registry entry in some checkouts — it names dynamo_endpoint_core,
+# which does not exist there (newer trees alias it to TrtllmEndpointCore) — and
+# the harness only discovers that deep inside wrap_lg_test, after the QSL is
+# built and the dataset read. Fail here instead, while the message is still
+# about the core.
+if ! "$VENV/bin/python" -c "
+import sys
+from nv_mlpinf.llmlib.cores import BackendRegistry
+try:
+    BackendRegistry.get('$CORE_TYPE')
+except Exception as exc:
+    print(f'{type(exc).__name__}: {exc}', file=sys.stderr)
+    sys.exit(1)
+" 2>/tmp/core-probe.err; then
+  echo "ERROR: nv_mlpinf cannot load core '$CORE_TYPE' from this harness checkout:" >&2
+  sed 's/^/         /' /tmp/core-probe.err >&2
+  echo "       Set benchmark.mlperf_core_type to a core this checkout implements" >&2
+  echo "       (trtllm_endpoint is what the submission repo's own Dynamo task uses)." >&2
+  exit 1
+fi
+
 RUN_ARGS=(
   --benchmarks="$BENCHMARK"
   --scenarios="$SCENARIO"

@@ -785,10 +785,11 @@ class BenchmarkConfig:
     mlperf_benchmark: str | None = None  # nv_mlpinf benchmark name (e.g. "deepseek-r1", "gpt-oss-120b")
     mlperf_scenario: str = "Offline"  # LoadGen scenario: "Offline", "Server", or "Interactive"
     mlperf_mode: str = "PerformanceOnly"  # LoadGen test mode: "PerformanceOnly" or "AccuracyOnly"
-    # Which llmlib core issues the requests. Both speak OpenAI over HTTP;
-    # dynamo_endpoint additionally skips nv_mlpinf's system-config lookup, which
-    # is what makes it usable against a cluster srt-slurm (not sflow) deployed.
-    mlperf_core_type: str = "dynamo_endpoint"
+    # Which llmlib core issues the requests. Both speak OpenAI over HTTP.
+    # trtllm_endpoint is the default because it is what the submission repo's
+    # own Dynamo sflow task runs, and because dynamo_endpoint is a dangling
+    # registry entry in some checkouts (see the mlperf docs section).
+    mlperf_core_type: str = "trtllm_endpoint"
     mlperf_system_name: str | None = None  # --system_name; nv_mlpinf derives one when unset
     mlperf_scratch_path: str | None = None  # MLPERF_SCRATCH_PATH: dataset/model root the harness reads
     # Trace replay benchmark fields (uses aiperf with mooncake_trace dataset type)

@@ -173,7 +173,7 @@ class TestMLPerfRunner:
                 **_valid_kwargs(
                     mlperf_scenario="Server",
                     mlperf_mode="AccuracyOnly",
-                    mlperf_core_type="trtllm_endpoint",
+                    mlperf_core_type="dynamo_endpoint",
                     mlperf_system_name="GB300-NVL72",
                     mlperf_scratch_path="/scratch/mlperf",
                 )
@@ -189,7 +189,7 @@ class TestMLPerfRunner:
             **_valid_kwargs(
                 mlperf_scenario="Server",
                 mlperf_mode="AccuracyOnly",
-                mlperf_core_type="trtllm_endpoint",
+                mlperf_core_type="dynamo_endpoint",
                 mlperf_system_name="GB300-NVL72",
                 mlperf_scratch_path="/scratch/mlperf",
             )
@@ -203,7 +203,7 @@ class TestMLPerfRunner:
         assert cmd[4] == "deepseek-r1"
         assert cmd[5] == "Server"
         assert cmd[6] == "AccuracyOnly"
-        assert cmd[7] == "trtllm_endpoint"
+        assert cmd[7] == "dynamo_endpoint"
         assert cmd[8] == "GB300-NVL72"
         assert cmd[9] == "/scratch/mlperf"
 
@@ -214,7 +214,7 @@ class TestMLPerfRunner:
         cmd = get_runner("mlperf").build_command(_config(**_valid_kwargs()), runtime)
         assert cmd[5] == "Offline"
         assert cmd[6] == "PerformanceOnly"
-        assert cmd[7] == "dynamo_endpoint"
+        assert cmd[7] == "trtllm_endpoint"
         assert cmd[8] == ""
         assert cmd[9] == ""
 

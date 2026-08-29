@@ -977,7 +977,7 @@ extra_mount:
 | `mlperf_benchmark`    | string | Yes      | —                 | nv_mlpinf benchmark name (`deepseek-r1`, `gpt-oss-120b`) |
 | `mlperf_scenario`     | string | No       | `Offline`         | `Offline`, `Server`, or `Interactive`                  |
 | `mlperf_mode`         | string | No       | `PerformanceOnly` | `PerformanceOnly` or `AccuracyOnly`                    |
-| `mlperf_core_type`    | string | No       | `dynamo_endpoint` | `dynamo_endpoint` or `trtllm_endpoint`                 |
+| `mlperf_core_type`    | string | No       | `trtllm_endpoint` | `trtllm_endpoint` or `dynamo_endpoint`                 |
 | `mlperf_system_name`  | string | No       | derived           | Passed as `--system_name` and `SYSTEM_NAME`            |
 | `mlperf_scratch_path` | string | No       | harness default   | `MLPERF_SCRATCH_PATH` — dataset/model root             |
 
@@ -1014,6 +1014,13 @@ Notes:
   assertion inside QSL construction — after the config module has loaded and the pipeline has
   started, so it surfaces later than the other path errors and looks unrelated to path setup. The
   parquet the endpoints client uses is a different artifact and is not a substitute.
+- **`trtllm_endpoint` is the default core, not `dynamo_endpoint`** — even against a Dynamo
+  frontend, which is also what the submission repo's own Dynamo sflow task runs. Both cores issue
+  OpenAI `/v1/completions`; the difference is that `CoreType.DYNAMO_ENDPOINT` is a dangling registry
+  entry in some checkouts, naming a `dynamo_endpoint_core` module that does not exist there (newer
+  trees alias it to `TrtllmEndpointCore`). The harness only discovers this deep inside
+  `wrap_lg_test`, after the QSL is built and the dataset read, so the bench step resolves the core
+  through the same registry up front and fails while the message is still about the core.
 - The first run of a job installs the harness into an isolated venv under `/tmp/mlperf-<jobid>`
   (`--system-site-packages`, so the container's torch/tensorrt_llm are reused), guarded by the same
   self-validating READY marker and atomic build lock as agentperf.
