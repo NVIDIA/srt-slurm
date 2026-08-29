@@ -35,6 +35,8 @@ from srtctl.cli.mixins import (
 )
 from srtctl.core.config import load_config
 from srtctl.core.health import wait_for_port
+from srtctl.core.hwinfo import record_hwinfo_snapshot
+from srtctl.core.preflight import check_snapshot, format_findings
 from srtctl.core.lockfile import write_lockfile
 from srtctl.core.processes import (
     ManagedProcess,
@@ -388,6 +390,47 @@ class SweepOrchestrator(
         if removed > 0:
             logger.info("Cleaned %d stale .lock files from HF cache: %s", removed, hf_home)
 
+    def _check_preflight(self, snapshot: Path | None) -> None:
+        """Stop the run when the baseline snapshot already predicts a failure.
+
+        Without this the job spends its startup time loading weights before a
+        worker dies on free memory, or hangs on an MNNVL peer that was never in
+        the domain, and the reason is only recoverable by reading the snapshot by
+        hand afterwards.
+        """
+        if snapshot is None:
+            return
+
+        util = self.config.preflight.gpu_memory_utilization
+        if util is None:
+            util = self._configured_gpu_memory_utilization()
+
+        findings = check_snapshot(snapshot, gpu_memory_utilization=util)
+        if not findings:
+            logger.info("Preflight: hardware baseline is clean")
+            return
+
+        message = format_findings(findings, snapshot)
+        if not self.config.preflight.enabled:
+            logger.warning("Preflight disabled, continuing anyway:\n%s", message)
+            return
+        raise RuntimeError(message)
+
+    def _configured_gpu_memory_utilization(self) -> float | None:
+        """Largest gpu-memory-utilization any worker mode asks for, if set."""
+        engine_config = getattr(self.config.backend, "vllm_config", None) or getattr(
+            self.config.backend, "sglang_config", None
+        )
+        if engine_config is None:
+            return None
+        values = []
+        for mode in ("prefill", "decode", "aggregated"):
+            mode_config = getattr(engine_config, mode, None) or {}
+            for key in ("gpu-memory-utilization", "gpu_memory_utilization", "mem-fraction-static"):
+                if (value := mode_config.get(key)) is not None:
+                    values.append(float(value))
+        return max(values) if values else None
+
     def _stage_model(self) -> None:
         """Copy the model from shared storage to node-local storage on every
         worker node before workers start (model.stage_dir). One srun per node,
@@ -647,6 +690,11 @@ class SweepOrchestrator(
 
         resource_snapshot = record_resource_snapshot(self.config, self.runtime)
 
+        # Baseline the fabric before any load, so the snapshot taken when the run
+        # ends can be diffed against known-good NVLink error counters.
+        snapshot = record_hwinfo_snapshot(self.runtime, "before")
+        self._check_preflight(snapshot)
+
         # Create status reporter (fire-and-forget, no-op if not configured)
         reporter = StatusReporter.from_config(self.config.reporting, self.runtime.job_id)
         reporter.report_started(self.config, self.runtime, resource_snapshot=resource_snapshot)
@@ -751,6 +799,10 @@ class SweepOrchestrator(
             logger.info("Cleanup")
             # NOTE: finalize before registry.cleanup() so samples and manifest are durable.
             exit_code = self.finalize_power_telemetry(exit_code, interrupted=stop_event.is_set())
+            # Snapshot the fabric while the allocation is still ours. Taken on
+            # success too: counters that grew during a run that happened to pass
+            # are the earliest warning of a link about to take a job down.
+            record_hwinfo_snapshot(self.runtime, "after")
             stop_event.set()
             registry.cleanup()
             if exit_code != 0:

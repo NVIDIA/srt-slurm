@@ -1675,6 +1675,30 @@ class HealthCheckConfig:
 
 
 @dataclass(frozen=True)
+class PreflightConfig:
+    """Abort a run when the ``before`` hardware snapshot already looks fatal.
+
+    The snapshot is taken anyway; this only decides whether its findings stop the
+    job at startup instead of letting it fail twenty minutes later with a message
+    that names no culprit. Checked: processes still holding device memory, cards
+    with less free memory than the engine will request, nodes that are not READY
+    in the IMEX domain (including nodes outside this allocation, since MNNVL
+    spans the whole domain), and GPUs that did not join the fabric clique.
+
+    Attributes:
+        enabled: If False, findings are logged as warnings and the run proceeds.
+        gpu_memory_utilization: Fraction of each card the engine will request, used
+            to turn "free memory" into a pass/fail. Defaults to the vLLM/SGLang
+            default of 0.9 when the recipe does not set one.
+    """
+
+    enabled: bool = True
+    gpu_memory_utilization: float | None = None
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
 class InfraConfig:
     """Infrastructure configuration for etcd/nats placement.
 
@@ -1721,6 +1745,7 @@ class SrtConfig:
     output: OutputConfig = field(default_factory=OutputConfig)
     health_check: HealthCheckConfig = field(default_factory=HealthCheckConfig)
     infra: InfraConfig = field(default_factory=InfraConfig)
+    preflight: PreflightConfig = field(default_factory=PreflightConfig)
     observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
     telemetry: TelemetryConfig = field(default_factory=TelemetryConfig)
 

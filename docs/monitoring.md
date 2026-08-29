@@ -127,6 +127,10 @@ logs/4459_4P_1D_20251122_041341/
 ├── {node}_nginx.err                         # Nginx stderr
 ├── {node}_config.json                       # Per-node SGLang config dump
 │
+├── hwinfo/                                  # NVLink/MNNVL snapshots
+│   ├── before.out                           # Fabric state before the run
+│   └── after.out                            # Fabric state when the run ended
+│
 ├── cached_assets/                           # Cached model assets
 └── sa-bench_isl_1024_osl_1024/              # Benchmark results
     ├── isl_1024_osl_1024_concurrency_128_req_rate_inf.json
@@ -184,6 +188,121 @@ P99 TPOT (ms):                           22.36
 ### Worker Logs ({node}\_prefill_w0.err, {node}\_decode_w0.err)
 
 SGLang worker logs showing model loading, memory allocation, and runtime info. Check these for debugging CUDA errors, OOM issues, or NCCL failures.
+
+### hwinfo/before.out, hwinfo/after.out
+
+NVLink, MNNVL and GPU memory state on every worker node, captured before any load
+and again when the run ends (on success as well as failure). Each command is
+recorded with its output and, when it failed, its exit code:
+
+```
+===== theia0245 | before | 2026-08-13T07:53:30Z =====
+
+# ---------- NVLink ----------
+
+$ nvidia-smi nvlink -e
+GPU 0: NVIDIA GB300
+	 Link 0: Replay Errors: 0
+	 Link 0: Recovery Errors: 0
+	 Link 0: CRC Errors: 0
+```
+
+The commands run per node in the order below, grouped into the sections that
+appear in the file.
+
+**GPU inventory** — which card is which.
+
+| Command | What it answers |
+| --- | --- |
+| `nvidia-smi --query-gpu=index,name,serial,uuid,pci.bus_id --format=csv` | Which physical GPU a rank in a crash log refers to. Serials are what a hardware ticket needs. |
+| `nvidia-smi --version` | Whether one node in the domain runs a different driver than the rest. |
+
+**GPU memory and processes** — what was already on the cards before the job.
+
+| Command | What it answers |
+| --- | --- |
+| `nvidia-smi --query-gpu=index,memory.total,memory.used,memory.free --format=csv` | Whether the GPUs were clean at startup. A worker that dies with `Free memory on device ... is less than desired GPU memory utilization` names no culprit; this shows how much was missing and on which cards. |
+| `nvidia-smi --query-gpu=index,memory.reserved --format=csv` | How much the driver itself holds. Explains memory that is used while no process owns it. |
+| `nvidia-smi --query-compute-apps=pid,process_name,used_memory,gpu_uuid --format=csv` | Which processes hold device memory. Usually a previous job that has not finished dying. |
+| `fuser -v /dev/nvidia*` | Processes holding the device open that NVML does not report, for example one in another container. |
+| `ps -eo pid,ppid,user,rss,etime,args --sort=-rss \| head -15` | Identifies a leftover worker by its command line and how long it has been running. |
+
+**NVLink** — the links themselves.
+
+| Command | What it answers |
+| --- | --- |
+| `nvidia-smi nvlink -s` | Link state and negotiated speed. A link that is down or trained low shows up here. |
+| `nvidia-smi nvlink -e` | Replay, recovery and CRC counters. The before/after diff of this command is what identifies a degrading link. |
+| `nvidia-smi topo -m` | Which GPU pairs are actually NVLink-connected rather than falling back to PCIe. |
+
+**MNNVL / IMEX** — whether remote peers are reachable at all.
+
+| Command | What it answers |
+| --- | --- |
+| `ls -al /dev/nvidia-caps-imex-channels/` | Whether the kernel side of MNNVL is wired up on this node. |
+| `cat /etc/nvidia-imex/nodes_config.cfg` | Whether the node list matches the allocation. A mismatch is a classic cause of remote NVLink faults. |
+| `cat /etc/nvidia-imex/config.cfg` | The daemon's own settings, including the ports it expects. |
+| `systemctl is-active nvidia-imex`, `systemctl status nvidia-imex` | Whether the daemon is running, and what it said if it is not. |
+| `nvidia-imex-ctl -c <copy> -N -H` | Domain state and the hosts in it, as the daemon sees them. Run against a copy of the config with log and stats paths redirected to `/tmp`, because the shipped paths are root-only and an unprivileged run otherwise reports a misleading parse error. |
+| `nvidia-smi -q \| grep -A8 -i "^ *Fabric"` | Per-GPU fabric State, Status and CliqueId. A GPU outside the clique cannot reach remote peers even though its local links look healthy. |
+
+**Driver and GPU faults** — what the machine logged on its own.
+
+| Command | What it answers |
+| --- | --- |
+| `dmesg -T \| grep -iE "xid\|nvlink\|nvswitch\|imex" \| tail -60` | Xid codes and driver-level link events, with timestamps to correlate against the crash. |
+| `nvidia-smi -q -d ROW_REMAPPER` | Whether the GPU was already degrading before the run started. |
+
+The point is the difference between the two files:
+
+```bash
+diff hwinfo/before.out hwinfo/after.out
+```
+
+A job that died with `CUDA error: uncorrectable NVLink error` reports nothing
+about which link failed. Error counters that moved between the snapshots do, and
+the GPU serials in the same file are what a hardware ticket needs. Counters that
+grow during a run that still passed are the earliest warning that a link is
+about to take the next job down.
+
+Everything here is best effort: a missing tool or a read the job user is not
+allowed to make is recorded and skipped, and a hung driver call is cut off after
+20 seconds (`HWINFO_CMD_TIMEOUT`). Collection never fails a job.
+
+#### Preflight
+
+The `before` snapshot is also read back at startup, and a run whose hardware
+already looks fatal is stopped there instead of failing twenty minutes later:
+
+```
+RuntimeError: Preflight found 1 problem(s) that would break this run:
+  - theia0282.lyris.clusters.nvidia.com: IMEX domain node #11 is UNAVAILABLE
+Full snapshot: /.../logs/hwinfo/before.out
+Set preflight.enabled: false to run anyway.
+```
+
+Four conditions are treated as fatal:
+
+| Finding | Why it stops the run |
+| --- | --- |
+| A process still holds device memory | A worker will die on the memory check with a message that names no owner. The pid and its size come from `--query-compute-apps`. |
+| A card has less free memory than `gpu_memory_utilization x total` | Exactly the arithmetic the engine does in `init_device`, so this card is already known to fail. |
+| A node in the IMEX domain is not `READY` | MNNVL spans every node in `nodes_config.cfg`, so a broken peer breaks an MNNVL all2all backend even when that node is outside this allocation. |
+| A GPU did not join the fabric clique | `State`, `Status` or health other than Completed/Success/Healthy means remote peers are unreachable while local links still look fine. |
+
+A finding about the shared domain is reported once for the offending peer, not
+once per node that observed it. A command that was missing or timed out yields no
+finding, so an older snapshot or a node without `nvidia-smi` still passes.
+
+The utilization threshold is taken from the recipe — the largest
+`gpu-memory-utilization` (or SGLang's `mem-fraction-static`) across
+`prefill`, `decode` and `aggregated` — and can be overridden:
+
+```yaml
+preflight:
+  enabled: true                  # false: log the findings and run anyway
+  gpu_memory_utilization: 0.92   # default: whatever the recipe asks for
+```
 
 ### config.yaml
 
