@@ -47,7 +47,19 @@ ulimit -n "$(ulimit -Hn)" 2>/dev/null || true
 # READY is self-validating: it records the arch and harness commit it was built
 # for, so a relocated MLPERF_RUNTIME reused across jobs (or a different pin)
 # reinstalls instead of silently measuring with the wrong harness.
-HARNESS_COMMIT="$(git -C "$HARNESS_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
+# safe.directory: the checkout is normally a bind-mount owned by whoever staged
+# it, and git refuses to read a repo owned by another user ("dubious
+# ownership"). Without this the commit silently degrades to "unknown", which
+# makes the fingerprint constant and defeats the whole point of the marker —
+# two different harness checkouts would share one installed runtime.
+HARNESS_COMMIT="$(git -c safe.directory="$HARNESS_DIR" -C "$HARNESS_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
+if [[ "$HARNESS_COMMIT" == "unknown" ]]; then
+  # Not fatal — a tarball or export is a legitimate way to ship the harness —
+  # but say so, because a reused MLPERF_RUNTIME can no longer detect a change.
+  echo "[mlperf] WARNING: cannot read a commit from $HARNESS_DIR; the runtime fingerprint cannot" >&2
+  echo "         detect a harness change. Use a job-scoped MLPERF_RUNTIME (the default) rather" >&2
+  echo "         than a shared one." >&2
+fi
 FINGERPRINT="$(uname -m):$HARNESS_COMMIT"
 ready() { [[ "$(cat "$RUNTIME/READY" 2>/dev/null)" == "$FINGERPRINT" ]]; }
 HOLDING_LOCK=0
