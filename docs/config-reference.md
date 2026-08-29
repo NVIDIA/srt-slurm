@@ -116,6 +116,8 @@ The `srtslurm.yaml` file can contain the following fields:
 | `output_dir`                    | string | Custom output directory (overrides srtctl_root/outputs) |
 | `model_paths`                   | dict   | Model path aliases                                    |
 | `containers`                    | dict   | Container image aliases                               |
+| `container_cache`               | dict   | Reusable container cache policy                       |
+| `container_cache_path`          | string | Legacy shorthand for a required explicit cache        |
 | `default_mounts`                | dict   | Cluster-wide container mounts                         |
 | `default_bash_preamble`         | string | Shell snippet prepended to every container srun       |
 | `nginx_raise_ulimit`          | bool   | Optional default for `frontend.nginx_raise_ulimit`  |
@@ -125,6 +127,26 @@ The `srtslurm.yaml` file can contain the following fields:
 **default_bash_preamble**: A shell snippet (e.g. `"ulimit -n 1048576 -s unlimited -u 1048576"`) prepended to every container srun launched by srtctl — workers, frontends, telemetry, benchmark, postprocess. Runs before per-call `bash_preamble` and the main command, so cluster-wide ulimits apply to everything downstream. Silently dropped for distroless containers (e.g. `prom/node-exporter`) that bypass the bash wrapper; a WARNING log is emitted in that case.
 
 **nginx_raise_ulimit**: When set to `true` or `false`, this value is applied to jobs that omit `frontend.nginx_raise_ulimit` in the recipe. Use `true` on clusters where raising the nginx container’s open-file limit is allowed; leave unset if each job should rely on the frontend default (`false`). A recipe that sets `frontend.nginx_raise_ulimit` always wins.
+
+**container_cache**: Digest-pinned registry images are materialized once through
+Pyxis before service steps start, then reused by infrastructure, workers, and
+frontends. By default, `mode: auto` discovers a per-user cache at
+`<output_dir>/.srtctl/container-cache/<uid>`. It verifies that the path is safe
+and visible on every allocated node; if not, native Pyxis handling is used.
+
+```yaml
+container_cache:
+  mode: auto                 # auto, required, or native
+  # path: /shared/cache      # omit to discover it from the output directory
+  lock_timeout_seconds: 600
+```
+
+`required` fails the job instead of falling back, and `native` disables reusable
+materialization. Explicit cache directories must be visible to every allocated
+node and writable only by the user or a trusted administrator. Mutable tags use
+native handling in `auto` mode and fail in `required` mode. The legacy
+`container_cache_path` field remains a shorthand for `required` with an explicit
+path.
 
 ### Running without `srtslurm.yaml`
 

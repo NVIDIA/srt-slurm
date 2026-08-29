@@ -195,6 +195,7 @@ class PostProcessStageMixin:
             self.config,
             self.runtime.log_dir,
             verification=verification,
+            prepared_container=self.runtime.prepared_container,
         )
 
         # Compare against previous lockfile if this was a lockfile re-run

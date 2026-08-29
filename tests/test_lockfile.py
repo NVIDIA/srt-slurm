@@ -164,7 +164,7 @@ class TestBuildLockSection:
         config = _make_minimal_config()
         lock = build_lock_section(config)
 
-        assert lock["version"] == 2
+        assert lock["version"] == 3
         assert "generated_at" in lock
         assert "slurm" in lock
         assert "resolved" in lock
@@ -224,6 +224,25 @@ class TestBuildLockSection:
         assert lock["resource_snapshot"]["cpus"]["allocated_total"] == 2
         assert lock["resource_snapshot"]["cpu_check"]["status"] == "warning"
 
+    def test_prepared_container_provenance(self):
+        from srtctl.core.container_image import PreparedContainer
+
+        config = _make_minimal_config()
+        prepared = PreparedContainer(
+            declared_image="registry/image@sha256:" + "a" * 64,
+            resolved_image="registry/image@sha256:" + "a" * 64,
+            effective_image="/cache/image.sqsh",
+            platform="linux/amd64",
+            digest="sha256:" + "a" * 64,
+            cache_mode="auto",
+            cache_path_source="output_dir",
+            cache_hit=True,
+        )
+        lock = build_lock_section(config, prepared_container=prepared)
+
+        assert lock["resolved"]["container"]["cache_hit"] is True
+        assert lock["resolved"]["container"]["effective_image"] == "/cache/image.sqsh"
+
 
 # ============================================================================
 # Write lockfile (recipe + lock section)
@@ -251,7 +270,7 @@ class TestWriteLockfile:
 
         data = yaml.safe_load((tmp_path / "recipe.lock.yaml").read_text())
         assert "lock" in data
-        assert data["lock"]["version"] == 2
+        assert data["lock"]["version"] == 3
         assert "slurm" in data["lock"]
         assert "resolved" in data["lock"]
 
@@ -309,7 +328,7 @@ class TestWriteLockfile:
         data = yaml.safe_load((tmp_path / "recipe.lock.yaml").read_text())
         # Should have both recipe fields and lock section
         assert data["name"] == "test-job"
-        assert data["lock"]["version"] == 2
+        assert data["lock"]["version"] == 3
 
 
 # ============================================================================

@@ -45,6 +45,13 @@ containers:
   # Or pass the URI directly in the recipe to let Pyxis auto-pull on first run.
   nemo-skills: "/shared/containers/nvidia+eval-factory+nemo-skills+26.03.sqsh"
 
+# Digest-pinned model containers are cached automatically under the output
+# directory. Override the policy or path when needed:
+# container_cache:
+#   mode: auto  # auto, required, or native
+#   # path: "$HOME/.cache/srt-slurm/containers"
+#   lock_timeout_seconds: 600
+
 # Model path aliases
 model_paths:
   deepseek-r1: "/shared/models/deepseek/DeepSeek-R1"

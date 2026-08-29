@@ -195,6 +195,32 @@ class S3Config:
     Schema: ClassVar[type[Schema]] = Schema
 
 
+class ContainerCacheMode(str, Enum):
+    """Policy for reusable materialization of registry-backed containers."""
+
+    AUTO = "auto"
+    REQUIRED = "required"
+    NATIVE = "native"
+
+
+@dataclass(frozen=True)
+class ContainerCacheConfig:
+    """Cluster policy for the shared container cache."""
+
+    mode: ContainerCacheMode = field(
+        default=ContainerCacheMode.AUTO,
+        metadata={"marshmallow_field": fields.Enum(ContainerCacheMode, by_value=True)},
+    )
+    path: str | None = None
+    lock_timeout_seconds: int = 600
+
+    def __post_init__(self) -> None:
+        if self.lock_timeout_seconds <= 0:
+            raise ValidationError("container_cache.lock_timeout_seconds must be positive")
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
 @dataclass
 class ClusterConfig:
     """Cluster configuration from srtslurm.yaml."""
@@ -220,6 +246,9 @@ class ClusterConfig:
     output_dir: str | None = None  # Custom output directory for job logs
     model_paths: dict[str, str] | None = None
     containers: dict[str, str] | None = None
+    container_cache: ContainerCacheConfig | None = None
+    # Backward-compatible shorthand for a required cache at an explicit path.
+    container_cache_path: str | None = None
     cloud: dict[str, str] | None = None
     # Cluster-level container mounts (host_path -> container_path)
     # Applied to all jobs on this cluster, useful for cluster-specific paths

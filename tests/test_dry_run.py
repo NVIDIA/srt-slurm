@@ -231,6 +231,27 @@ class TestDryRunSrunOptions:
 class TestDryRunExecutionExtensions:
     """Test custom benchmark and telemetry details display."""
 
+    def test_container_cache_path_is_shown(self, capsys):
+        from srtctl.core.schema import ContainerCacheConfig, ContainerCacheMode
+
+        cache = ContainerCacheConfig(mode=ContainerCacheMode.REQUIRED, path="/shared/container-cache")
+        with patch("srtctl.cli.submit.get_container_cache_config", return_value=cache):
+            show_config_details(_make_config())
+
+        output = capsys.readouterr().out
+        assert "container cache" in output
+        assert "required" in output
+        assert "/shared/container-cache" in output
+
+    def test_automatic_container_cache_path_is_shown(self, capsys):
+        from srtctl.core.schema import ContainerCacheConfig
+
+        with patch("srtctl.cli.submit.get_container_cache_config", return_value=ContainerCacheConfig()):
+            show_config_details(_make_config())
+
+        output = capsys.readouterr().out
+        assert "automatic under output directory" in output
+
     def test_custom_benchmark_details_shown(self, capsys):
         config = _make_config(
             {

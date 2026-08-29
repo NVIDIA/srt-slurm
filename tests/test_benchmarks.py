@@ -1488,7 +1488,7 @@ class TestRunPostEval:
 
         config = SrtConfig(
             name="test",
-            model=ModelConfig(path="/model/test-model", container="/image", precision="fp4"),
+            model=ModelConfig(path="/model/test-model", container="example/image:latest", precision="fp4"),
             resources=ResourceConfig(
                 gpu_type="h100",
                 gpus_per_node=8,

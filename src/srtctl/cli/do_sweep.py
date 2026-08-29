@@ -21,7 +21,7 @@ import subprocess
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from srtctl.backends.sglang import SGLangProtocol
@@ -33,7 +33,8 @@ from srtctl.cli.mixins import (
     TelemetryStageMixin,
     WorkerStageMixin,
 )
-from srtctl.core.config import load_config
+from srtctl.core.config import get_container_cache_config, load_config
+from srtctl.core.container_image import prepare_container_image
 from srtctl.core.health import wait_for_port
 from srtctl.core.lockfile import write_lockfile
 from srtctl.core.processes import (
@@ -103,6 +104,44 @@ class SweepOrchestrator(
     def backend(self):
         """Access the backend config (implements BackendProtocol)."""
         return self.config.backend
+
+    def _prepare_container_image(self) -> None:
+        """Apply the cluster's native or reusable-image policy."""
+        groups: tuple[tuple[int | None, tuple[str, ...]], ...]
+        if self.runtime.nodes.het:
+            group0 = tuple(
+                dict.fromkeys((self.runtime.nodes.infra, self.runtime.nodes.head, *self.runtime.nodes.prefill_group))
+            )
+            groups = ((0, group0), (1, self.runtime.nodes.decode_group))
+        else:
+            nodes = tuple(
+                dict.fromkeys(
+                    (
+                        self.runtime.nodes.infra,
+                        self.runtime.nodes.head,
+                        self.runtime.nodes.bench,
+                        *self.runtime.nodes.worker,
+                    )
+                )
+            )
+            groups = ((None, nodes),)
+
+        prepared = prepare_container_image(
+            self.config.model.container,
+            get_container_cache_config(),
+            job_id=self.runtime.job_id,
+            node=self.runtime.nodes.head,
+            output_dir=self.runtime.log_dir.parent.parent,
+            visibility_groups=groups,
+        )
+        effective_image: Path | str = prepared.effective_image
+        if effective_image.startswith("/"):
+            effective_image = Path(effective_image)
+        self.runtime = replace(
+            self.runtime,
+            container_image=effective_image,
+            prepared_container=prepared,
+        )
 
     @functools.cached_property
     def endpoints(self) -> list[Endpoint]:
@@ -662,6 +701,15 @@ class SweepOrchestrator(
         exit_code = 1
 
         try:
+            # Import once before infrastructure, workers, and frontends fan out.
+            self._prepare_container_image()
+            write_lockfile(
+                self.runtime.log_dir.parent,
+                self.config,
+                self.runtime.log_dir,
+                prepared_container=self.runtime.prepared_container,
+            )
+
             # Stage 1: Head infrastructure (NATS, etcd). Only the dynamo request
             # plane uses it; static/direct frontends skip it.
             if self.config.frontend.type in {"sglang", "trtllm_serve", "vllm", "vllm-router"}:
