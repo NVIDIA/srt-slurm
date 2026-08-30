@@ -1152,6 +1152,7 @@ infra:
 ```yaml
 observability:
   enabled: true
+  debug_spans: false
 ```
 
 Tachometer scrapes the **complement** of what the benchmark client polls: worker endpoints that appear in `AIPERF_SERVER_METRICS_URLS` are left to the client (a worker endpoint is never double-polled — the extra scrape load has previously made a submission irreproducible), while the frontend, DCGM, and node-exporter endpoints are always Tachometer's. On runs whose benchmark has no aiperf client (sa-bench, lm-eval, serve-only, manual), the complement expands to every endpoint.
@@ -1160,7 +1161,8 @@ The legacy in-job Python RAW scraper is retired: a recipe still carrying `scrape
 
 | Field | Type | Default | Description |
 | ----- | ---- | ------- | ----------- |
-| `enabled` | bool | `false` | Enable server-side metrics/traces, Tachometer collection, and host sampling |
+| `enabled` | bool | `false` | Enable INFO JSONL component logs, frontend request tracing, server metrics, Tachometer collection, and host sampling |
+| `debug_spans` | bool | `false` | Add DEBUG-level `SPAN_CLOSED` records for exact router-span debugging |
 | `enable_otel` | bool | `false` | Inject OTEL tracing environment variables |
 | `otel_endpoint` | string/null | `null` | OTEL collector endpoint |
 | `tachometer` | object | `enabled: null` | Native Tachometer collection settings; `enabled: null` follows `observability.enabled`, explicit `false` opts out |

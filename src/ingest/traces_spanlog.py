@@ -16,7 +16,8 @@ the debugged gotcha). Emits per-request Tempo-format JSON that L3
 
 On an srt-slurm run the input logs are the job's ``<node>_<mode>_w<i>.out`` and
 ``<node>_frontend_<i>.out`` files, which carry SPAN_CLOSED lines whenever
-``observability.enabled`` is set (see ``ANALYTICS_SPAN_ENV`` in ``srtctl.core.schema``).
+``observability.debug_spans`` is set (see ``ANALYTICS_DEBUG_SPAN_ENV`` in
+``srtctl.core.schema``).
 
 SPAN_CLOSED line grammar (verified on real perf-on data):
   <label>: {"time":"<ISO Z>", "message":"SPAN_CLOSED", "span_name":..., "span_id":...,

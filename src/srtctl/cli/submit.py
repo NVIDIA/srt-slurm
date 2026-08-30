@@ -385,6 +385,13 @@ def show_config_details(config: SrtConfig) -> None:
             details.add_row("benchmark", "container_image", config.benchmark.container_image)
 
         tachometer = config.observability.tachometer
+        if config.observability.enabled:
+            details.add_row(
+                "observability",
+                "logging",
+                "DEBUG JSONL + span events" if config.observability.debug_spans else "INFO JSONL",
+            )
+            details.add_row("observability", "request_trace", "frontend-only metadata")
         if config.observability.tachometer_enabled:
             details.add_row("observability", "tachometer", "enabled")
             details.add_row("observability", "storage_subdir", tachometer.storage_subdir)

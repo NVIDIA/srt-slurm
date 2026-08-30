@@ -49,8 +49,19 @@ class TestExpandObservability:
         cfg = expand_observability(_trtllm_config())
         assert "publish_events_and_metrics" not in cfg["backend"]
 
-    def test_enabled_expands_span_env_on_all_three_roles(self):
+    def test_enabled_expands_info_jsonl_without_debug_spans(self):
         cfg = expand_observability(_trtllm_config(enabled=True))
+        for env in (
+            cfg["backend"]["prefill_environment"],
+            cfg["backend"]["decode_environment"],
+            cfg["frontend"]["env"],
+        ):
+            assert env["DYN_LOGGING_JSONL"] == "true"
+            assert env["DYN_LOG"] == "info"
+            assert "DYN_LOGGING_SPAN_EVENTS" not in env
+
+    def test_debug_spans_expands_debug_span_env_on_all_three_roles(self):
+        cfg = expand_observability(_trtllm_config(enabled=True, debug_spans=True))
         for env in (
             cfg["backend"]["prefill_environment"],
             cfg["backend"]["decode_environment"],
@@ -58,7 +69,6 @@ class TestExpandObservability:
         ):
             assert env["DYN_LOGGING_SPAN_EVENTS"] == "true"
             assert env["DYN_LOGGING_JSONL"] == "true"
-            # SPAN_CLOSED is emitted at DEBUG; anything higher yields no traces.
             assert env["DYN_LOG"] == "debug"
 
     def test_enabled_expands_request_trace_env_on_the_frontend_only(self):
@@ -90,12 +100,14 @@ class TestExpandObservability:
 
     def test_explicit_recipe_values_win(self):
         """setdefault semantics: an explicit recipe value must never be clobbered."""
-        cfg = _trtllm_config(enabled=True)
-        cfg["backend"]["decode_environment"]["DYN_LOG"] = "info"
+        cfg = _trtllm_config(enabled=True, debug_spans=True)
+        cfg["backend"]["decode_environment"]["DYN_LOG"] = "warn"
+        cfg["frontend"]["env"]["DYN_LOGGING_JSONL"] = "false"
         cfg["backend"]["trtllm_config"]["decode"]["return_perf_metrics"] = False
         cfg["backend"]["publish_events_and_metrics"] = False
         out = expand_observability(cfg)
-        assert out["backend"]["decode_environment"]["DYN_LOG"] == "info"
+        assert out["backend"]["decode_environment"]["DYN_LOG"] == "warn"
+        assert out["frontend"]["env"]["DYN_LOGGING_JSONL"] == "false"
         assert out["backend"]["trtllm_config"]["decode"]["return_perf_metrics"] is False
         assert out["backend"]["publish_events_and_metrics"] is False
 
@@ -104,12 +116,13 @@ class TestExpandObservability:
         assert cfg["backend"]["prefill_environment"]["TLLM_LOG_LEVEL"] == "INFO"
         assert cfg["frontend"]["env"]["DYN_TOKENIZER"] == "fastokens"
 
-    def test_non_trtllm_backend_keeps_span_env_but_no_engine_keys(self):
+    def test_non_trtllm_backend_keeps_logging_env_but_no_engine_keys(self):
         cfg = dict(BASE_CONFIG)
         cfg["backend"] = {"type": "sglang"}
         cfg["observability"] = {"enabled": True}
         out = expand_observability(cfg)
-        assert out["backend"]["prefill_environment"]["DYN_LOGGING_SPAN_EVENTS"] == "true"
+        assert out["backend"]["prefill_environment"]["DYN_LOG"] == "info"
+        assert "DYN_LOGGING_SPAN_EVENTS" not in out["backend"]["prefill_environment"]
         assert "publish_events_and_metrics" not in out["backend"]
 
     def test_missing_sections_are_created(self):
@@ -248,6 +261,7 @@ class TestObservabilitySchema:
     def test_defaults_are_off(self):
         cfg = SrtConfig.Schema().load(BASE_CONFIG)
         assert cfg.observability.enabled is False
+        assert cfg.observability.debug_spans is False
         assert cfg.observability.enable_otel is False
 
     def test_knob_exposes_no_benchmark_client_fields(self):
