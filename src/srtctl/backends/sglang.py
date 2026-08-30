@@ -518,6 +518,21 @@ class SGLangProtocol:
         sidecar.extend(["--grpc-endpoint", f"127.0.0.1:{grpc_port}"])
         if mode == "prefill":
             sidecar.extend(["--bootstrap-host", leader_ip])
+        if kv_cfg and len(endpoint_nodes) > 1:
+            enable_dp_attention = bool(config.get("enable-dp-attention", config.get("enable_dp_attention", False)))
+            dp_size = int(config.get("dp-size", config.get("dp_size", 1)))
+            if enable_dp_attention and dp_size > 1:
+                rank_hosts = [
+                    get_hostname_ip(candidate.node)
+                    for candidate in sorted(endpoint_processes, key=lambda item: item.node_rank)
+                    for _ in candidate.gpu_indices
+                ]
+                if len(rank_hosts) != dp_size:
+                    raise ValueError(
+                        "SGLang sidecar multi-node DP KV-event mapping requires one assigned GPU "
+                        f"per DP rank, got {len(rank_hosts)} GPUs for dp-size {dp_size}"
+                    )
+                sidecar.extend(["--kv-event-hosts", ",".join(rank_hosts)])
         sidecar.extend(sidecar_config.sidecar_args)
 
         return build_sidecar_launch_command(
