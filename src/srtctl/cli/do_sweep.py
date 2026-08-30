@@ -751,6 +751,7 @@ class SweepOrchestrator(
             logger.info("Cleanup")
             # NOTE: finalize before registry.cleanup() so samples and manifest are durable.
             exit_code = self.finalize_power_telemetry(exit_code, interrupted=stop_event.is_set())
+            self.finalize_tachometer(registry)
             stop_event.set()
             registry.cleanup()
             if exit_code != 0:
