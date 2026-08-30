@@ -77,12 +77,12 @@ def test_sglang_sidecar_maps_multi_node_dp_kv_event_publishers() -> None:
     leader = _process(mode="prefill", kv_events_port=5557)
     follower = _process(node="node1", node_rank=1, mode="prefill", sys_port=7501, kv_events_port=5557)
     backend = SGLangProtocol(
-        kv_events_config={"prefill": True},
         sglang_config=SGLangServerConfig(
             prefill={
                 "tensor-parallel-size": 8,
                 "dp-size": 8,
                 "enable-dp-attention": True,
+                "kv-events-config": '{"publisher":"zmq","endpoint":"tcp://*:5557"}',
             }
         ),
     )

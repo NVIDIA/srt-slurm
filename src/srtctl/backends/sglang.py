@@ -502,6 +502,9 @@ class SGLangProtocol:
         # The SGLang sidecar discovers the publisher; SGLang still needs this
         # flag to enable it and advertise the topology-assigned endpoint.
         kv_cfg = self.get_kv_events_config_for_mode(mode)
+        kv_events_enabled = (
+            kv_cfg is not None or config.get("kv-events-config", config.get("kv_events_config")) is not None
+        )
         if kv_cfg and process.kv_events_port is not None:
             kv_cfg["endpoint"] = f"tcp://*:{process.kv_events_port}"
             engine.extend(["--kv-events-config", json.dumps(kv_cfg)])
@@ -518,7 +521,7 @@ class SGLangProtocol:
         sidecar.extend(["--grpc-endpoint", f"127.0.0.1:{grpc_port}"])
         if mode == "prefill":
             sidecar.extend(["--bootstrap-host", leader_ip])
-        if kv_cfg and len(endpoint_nodes) > 1:
+        if kv_events_enabled and len(endpoint_nodes) > 1:
             enable_dp_attention = bool(config.get("enable-dp-attention", config.get("enable_dp_attention", False)))
             dp_size = int(config.get("dp-size", config.get("dp_size", 1)))
             if enable_dp_attention and dp_size > 1:
