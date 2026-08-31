@@ -193,6 +193,23 @@ def setup_logging(level: int = logging.INFO) -> None:
     )
 
 
+def _host_setup_source(config: SrtConfig) -> str:
+    """Where the effective host_setup came from: the recipe or srtslurm.yaml.
+
+    resolve_config_with_defaults only injects default_host_setup when the recipe
+    omits the block entirely, so an exact match against the cluster default
+    identifies it. Worth showing: an unexpected `sudo` in the dry-run output is
+    much easier to chase when you know which file to open.
+    """
+    default = get_srtslurm_setting("default_host_setup")
+    if isinstance(default, dict):
+        commands = list(default.get("commands") or [])
+        teardown = list(default.get("teardown") or [])
+        if commands == config.host_setup.commands and teardown == config.host_setup.teardown:
+            return "srtslurm.yaml (default_host_setup)"
+    return "recipe"
+
+
 def show_config_details(config: SrtConfig) -> None:
     """Display container mounts and environment variables for dry-run verification.
 
@@ -345,6 +362,36 @@ def show_config_details(config: SrtConfig) -> None:
         console.print(Panel(env_table, border_style="yellow"))
     else:
         console.print("[dim]No custom environment variables configured.[/]")
+
+    # --- Host setup (runs on the bare node, outside the container) ---
+    if config.host_setup.enabled:
+        host_table = Table(title="Host Setup (outside container)", show_lines=False, pad_edge=False)
+        host_table.add_column("Phase", style="dim", width=10)
+        host_table.add_column("Command", style="white")
+        for command in config.host_setup.commands:
+            host_table.add_row("setup", command)
+        for command in config.host_setup.teardown:
+            host_table.add_row("teardown", command)
+        console.print(Panel(host_table, border_style="red"))
+
+        setup = config.host_setup
+        source = _host_setup_source(config)
+        console.print(
+            f"[dim]host_setup:[/] nodes={setup.nodes} "
+            f"ignore_failure={str(setup.ignore_failure).lower()} "
+            f"timeout_seconds={setup.timeout_seconds} [dim]source: {source}[/]"
+        )
+        if any("sudo" in command for command in [*setup.commands, *setup.teardown]):
+            console.print(
+                "[yellow]NOTE:[/] host_setup runs as you, not root. Confirm passwordless sudo on a "
+                "compute node first (`srun --jobid <job> --overlap -w <node> sudo -n true`); "
+                "a sudo that prompts will hang until timeout_seconds and fail the job."
+            )
+        if setup.commands and not setup.teardown:
+            console.print(
+                "[yellow]NOTE:[/] no host_setup.teardown configured — any node state set here "
+                "outlives this allocation and is inherited by the next job on these nodes."
+            )
 
     # --- srun options ---
     if config.srun_options:

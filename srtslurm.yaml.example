@@ -19,6 +19,22 @@ default_time_limit: "04:00:00"
 #   max_attempts: 540        # 540 * 10s = 90 min
 #   interval_seconds: 10
 
+# Commands run on every allocated node's bare host, OUTSIDE the container,
+# before any worker starts -- for node state a container cannot reach, such as
+# locking GPU clocks on machines that need it. Runs as you, so anything
+# privileged needs passwordless sudo (`sudo -n`); a sudo that prompts hangs
+# until timeout_seconds and fails the job.
+# Recipes that set their own `host_setup:` block override this entirely, and
+# `host_setup: {commands: []}` opts a single run out.
+# default_host_setup:
+#   commands:
+#     - "sudo -n nvidia-smi -lmc <min>,<max>"
+#   teardown:                      # -lmc outlives the job; reset it for the next tenant
+#     - "sudo -n nvidia-smi -rmc"
+#   nodes: all                     # all | workers
+#   ignore_failure: false
+#   timeout_seconds: 300
+
 # SLURM directive compatibility
 # Set to false if your cluster doesn't support --gpus-per-node
 use_gpus_per_node_directive: true  # Default: true

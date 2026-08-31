@@ -28,6 +28,7 @@ Complete reference for job configuration YAML files.
 - [sbatch_directives](#sbatch_directives)
 - [srun_options](#srun_options)
 - [setup_script](#setup_script)
+- [host_setup](#host_setup)
 - [enable_config_dump](#enable_config_dump)
 - [Complete Examples](#complete-examples)
 
@@ -118,11 +119,14 @@ The `srtslurm.yaml` file can contain the following fields:
 | `containers`                    | dict   | Container image aliases                               |
 | `default_mounts`                | dict   | Cluster-wide container mounts                         |
 | `default_bash_preamble`         | string | Shell snippet prepended to every container srun       |
+| `default_host_setup`            | object | Commands run on every node's bare host, outside the container |
 | `nginx_raise_ulimit`          | bool   | Optional default for `frontend.nginx_raise_ulimit`  |
 
 **output_dir**: When set, job logs are written to `output_dir/{job_id}/logs` instead of `srtctl_root/outputs/{job_id}/logs`. Useful for CI/CD and ephemeral environments.
 
 **default_bash_preamble**: A shell snippet (e.g. `"ulimit -n 1048576 -s unlimited -u 1048576"`) prepended to every container srun launched by srtctl — workers, frontends, telemetry, benchmark, postprocess. Runs before per-call `bash_preamble` and the main command, so cluster-wide ulimits apply to everything downstream. Silently dropped for distroless containers (e.g. `prom/node-exporter`) that bypass the bash wrapper; a WARNING log is emitted in that case.
+
+**default_host_setup**: A [`host_setup`](#host_setup) block applied to every job on the cluster — for node state that has to be set outside the container, such as locking GPU clocks. A recipe that sets its own `host_setup:` block replaces it entirely; `host_setup: {commands: []}` opts a single run out.
 
 **nginx_raise_ulimit**: When set to `true` or `false`, this value is applied to jobs that omit `frontend.nginx_raise_ulimit` in the recipe. Use `true` on clusters where raising the nginx container’s open-file limit is allowed; leave unset if each job should rely on the frontend default (`false`). A recipe that sets `frontend.nginx_raise_ulimit` always wins.
 
@@ -1627,6 +1631,43 @@ setup_script: "install-custom-deps.sh"
 #!/bin/bash
 pip install --quiet git+https://github.com/sgl-project/sglang.git
 ```
+
+---
+
+## host_setup
+
+Commands run on each allocated node's **bare host, outside the container**, before any worker starts.
+
+This is the counterpart to [`setup_script`](#setup_script), which runs *inside* the container. Use `host_setup` for node state the container cannot reach: locking GPU clocks, loading a kernel module, dropping caches.
+
+```yaml
+host_setup:
+  commands:
+    - "sudo -n nvidia-smi -lmc <min>,<max>"
+  teardown:
+    - "sudo -n nvidia-smi -rmc"
+  nodes: all
+  ignore_failure: false
+  timeout_seconds: 300
+```
+
+| Field             | Type            | Default | Description                                                              |
+| ----------------- | --------------- | ------- | ------------------------------------------------------------------------ |
+| `commands`        | list[string]    | `[]`    | Shell commands run in order on each node, joined with `&&`                |
+| `teardown`        | list[string]    | `[]`    | Commands run on each node after workers stop, on success and failure alike |
+| `nodes`           | `all`/`workers` | `all`   | `all` covers head, infra, and workers; `workers` only the worker nodes    |
+| `ignore_failure`  | bool            | `false` | Log a warning instead of failing the job when a node's commands fail      |
+| `timeout_seconds` | int             | `300`   | Per-node wall-clock budget, for `commands` and `teardown` alike           |
+
+**How it runs**: the orchestrator itself runs on the host (not in a container), so it fans these out as one container-less `srun` per node, in parallel. Output lands in `<log_dir>/host_setup_<node>.out` and `<log_dir>/host_teardown_<node>.out`.
+
+**Notes**:
+
+- **Commands run as you, not as root.** Anything privileged needs passwordless sudo (`sudo -n ...`). A `sudo` that prompts for a password will hang until `timeout_seconds` and then fail the job — verify first with `srun --jobid <job> --overlap -w <node> sudo -n true`. If sudo prompts, no recipe change helps; the cluster's SLURM `Prolog=` (which runs as root) is the only route.
+- **Prefer setting `teardown` whenever `commands` changes persistent node state.** `nvidia-smi -lmc` outlives the allocation, so without a matching `-rmc` the next job on that node inherits your locked clocks. `srtctl dry-run` warns when `commands` is set without `teardown`.
+- `teardown` runs from the job's cleanup path, so it fires on failure and cancellation too, and never changes the job's exit code.
+- Set cluster-wide via `default_host_setup` in `srtslurm.yaml` — that's the right home when *the cluster's machines* need this, rather than one recipe. See [Cluster Config Fields](#cluster-config-fields).
+- `srtctl dry-run -f config.yaml` renders the commands, their scope, and which file they came from.
 
 ---
 
