@@ -1,0 +1,22 @@
+diff --git a/vllm/v1/attention/backends/mla/flashinfer_mla.py b/vllm/v1/attention/backends/mla/flashinfer_mla.py
+--- a/vllm/v1/attention/backends/mla/flashinfer_mla.py
++++ b/vllm/v1/attention/backends/mla/flashinfer_mla.py
+@@ -209,6 +209,7 @@ class FlashInferMLABackend(MLACommonBackend):
+ 
+ class FlashInferMLAImpl(MLACommonImpl[MLACommonMetadata]):
+     can_return_lse_for_decode: bool = True
++    supports_mtp_with_cp_non_trivial_interleave_size: bool = True
+     # DCP is the only path that consumes LSE. It uses monolithic CuTeDSL,
+     # whose public LSE contract is natural-log.
+     lse_base_on_e: bool = True
+diff --git a/vllm/v1/attention/backends/mla/tokenspeed_mla.py b/vllm/v1/attention/backends/mla/tokenspeed_mla.py
+--- a/vllm/v1/attention/backends/mla/tokenspeed_mla.py
++++ b/vllm/v1/attention/backends/mla/tokenspeed_mla.py
+@@ -153,6 +153,7 @@ class TokenspeedMLABackend(MLACommonBackend):
+ 
+ class TokenspeedMLAImpl(MLACommonImpl[MLACommonMetadata]):
+     can_return_lse_for_decode: bool = True
++    supports_mtp_with_cp_non_trivial_interleave_size: bool = True
+     # tokenspeed_mla_decode returns LSE in log2 units; its own DCP test merges
+     # partial outputs with exp2(lse).
+     lse_base_on_e: bool = False
