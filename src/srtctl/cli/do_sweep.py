@@ -476,7 +476,8 @@ class SweepOrchestrator(
             return
         try:
             failures = self._run_host_commands(setup.teardown, phase="teardown")
-        except Exception:  # noqa: BLE001 - cleanup path, never mask the job result
+        except Exception:
+            # Cleanup path: a teardown failure must never mask the job's result.
             logger.exception("host_setup teardown raised; node state may need manual cleanup")
             return
         if failures:
