@@ -12,10 +12,12 @@ readonly K3_AGENT_PATCH_FILE="${VLLM_K3_AGENT_PATCH_FILE:-/configs/patches/vllm-
 readonly K3_CHECKPOINT_INDEX_INT64_PATCH_FILE="${VLLM_K3_CHECKPOINT_INDEX_INT64_PATCH_FILE:-/configs/patches/vllm-k3-prefill-checkpoint-index-int64-on-44fe2a392.patch}"
 readonly K3_MTP_BLOCK_INTERLEAVED_DCP_PATCH_FILE="${VLLM_K3_MTP_BLOCK_INTERLEAVED_DCP_PATCH_FILE:-/configs/patches/vllm-k3-mtp-block-interleaved-dcp-on-44fe2a392.patch}"
 readonly MOONCAKE_SAVE_BLOCK_SNAPSHOT_PATCH_FILE="${VLLM_MOONCAKE_SAVE_BLOCK_SNAPSHOT_PATCH_FILE:-/configs/patches/vllm-mooncake-save-block-snapshot-on-44fe2a392.patch}"
+readonly NIXL_ONLY_DCP_INTERLEAVE_PATCH_FILE="${VLLM_NIXL_ONLY_DCP_INTERLEAVE_PATCH_FILE:-/configs/patches/vllm-nixl-only-dcp-interleave-adjustment-on-44fe2a392.patch}"
 readonly K3_AGENT_MARKER_FILE="${VLLM_ROOT}/.k3_agent_all_residual_on_44fe2a392"
 readonly K3_CHECKPOINT_INDEX_INT64_MARKER_FILE="${VLLM_ROOT}/.k3_prefill_checkpoint_index_int64_on_44fe2a392"
 readonly K3_MTP_BLOCK_INTERLEAVED_DCP_MARKER_FILE="${VLLM_ROOT}/.k3_mtp_block_interleaved_dcp_on_44fe2a392"
 readonly MOONCAKE_SAVE_BLOCK_SNAPSHOT_MARKER_FILE="${VLLM_ROOT}/.mooncake_save_block_snapshot_on_44fe2a392"
+readonly NIXL_ONLY_DCP_INTERLEAVE_MARKER_FILE="${VLLM_ROOT}/.nixl_only_dcp_interleave_adjustment_on_44fe2a392"
 
 if [[ ! -r "${VERSION_FILE}" ]] || ! grep -q "44fe2a392" "${VERSION_FILE}"; then
   echo "Refusing to patch: expected vLLM nightly commit 44fe2a392." >&2
@@ -70,8 +72,13 @@ apply_patch_once \
   "Mooncake scheduled-request block snapshots" \
   "${MOONCAKE_SAVE_BLOCK_SNAPSHOT_PATCH_FILE}" \
   "${MOONCAKE_SAVE_BLOCK_SNAPSHOT_MARKER_FILE}"
+apply_patch_once \
+  "NIXL-only DCP KV-cache interleave adjustment" \
+  "${NIXL_ONLY_DCP_INTERLEAVE_PATCH_FILE}" \
+  "${NIXL_ONLY_DCP_INTERLEAVE_MARKER_FILE}"
 
 python3 -m compileall -q \
+  "${VLLM_ROOT}/config/vllm.py" \
   "${VLLM_ROOT}/config/speculative.py" \
   "${VLLM_ROOT}/v1/attention/backends/mla/flashinfer_mla.py" \
   "${VLLM_ROOT}/v1/attention/backends/mla/tokenspeed_mla.py" \

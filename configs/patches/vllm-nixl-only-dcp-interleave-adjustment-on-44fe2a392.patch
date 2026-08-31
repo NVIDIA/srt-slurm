@@ -1,0 +1,34 @@
+diff --git a/vllm/config/vllm.py b/vllm/config/vllm.py
+index 37304ec188..9506bc4387 100644
+--- a/vllm/config/vllm.py
++++ b/vllm/config/vllm.py
+@@ -2768,7 +2768,7 @@ class VllmConfig:
+ 
+         if (
+             self.kv_transfer_config is not None
+-            and self.kv_transfer_config.kv_connector is not None
++            and self.kv_transfer_config.has_connector("NixlConnector")
+             and self.parallel_config.cp_kv_cache_interleave_size != local_block_size
+         ):
+             interleave = self.parallel_config.cp_kv_cache_interleave_size
+@@ -2791,14 +2791,15 @@ class VllmConfig:
+         """
+         block_size = self.cache_config.block_size
+ 
+-        # Skip DCP interleave-size compatibility when a KV connector is configured:
+-        # cp_kv_cache_interleave_size is pinned to block_size for PD by each worker
+-        pd_active = (
++        # NIXL DCP transfer pins cp_kv_cache_interleave_size to block_size once
++        # each worker knows the final cache layout. Other connectors retain the
++        # requested interleave and must pass the normal compatibility check.
++        nixl_pd_active = (
+             self.kv_transfer_config is not None
+-            and self.kv_transfer_config.kv_connector is not None
++            and self.kv_transfer_config.has_connector("NixlConnector")
+             and self.kv_transfer_config.is_kv_transfer_instance
+         )
+-        if self.parallel_config.decode_context_parallel_size > 1 and not pd_active:
++        if self.parallel_config.decode_context_parallel_size > 1 and not nixl_pd_active:
+             assert (
+                 self.parallel_config.cp_kv_cache_interleave_size <= block_size
+                 and block_size % self.parallel_config.cp_kv_cache_interleave_size == 0
