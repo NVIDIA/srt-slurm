@@ -47,11 +47,14 @@ ulimit -n "$(ulimit -Hn)" 2>/dev/null || true
 # READY is self-validating: it records the arch and harness commit it was built
 # for, so a relocated MLPERF_RUNTIME reused across jobs (or a different pin)
 # reinstalls instead of silently measuring with the wrong harness.
-# safe.directory: the checkout is normally a bind-mount owned by whoever staged
-# it, and git refuses to read a repo owned by another user ("dubious
-# ownership"). Without this the commit silently degrades to "unknown", which
-# makes the fingerprint constant and defeats the whole point of the marker —
-# two different harness checkouts would share one installed runtime.
+# Two things stop this reading a commit, and only one is fixable here.
+# safe.directory covers the bind-mount-owned-by-another-user case ("dubious
+# ownership"). The one it cannot fix: mlperf_harness_dir points at
+# closed/NVIDIA, while .git lives at the repository root two levels up — mount
+# only the subdirectory and there is no .git anywhere above it. Measured on
+# hecate: the commit still resolves to "unknown" there, so the warning below is
+# the real answer for that layout, not this flag. Mount the repository root and
+# point mlperf_harness_dir at closed/NVIDIA inside it to get a real pin.
 HARNESS_COMMIT="$(git -c safe.directory="$HARNESS_DIR" -C "$HARNESS_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
 if [[ "$HARNESS_COMMIT" == "unknown" ]]; then
   # Not fatal — a tarball or export is a legitimate way to ship the harness —
