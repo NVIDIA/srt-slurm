@@ -195,6 +195,49 @@ class S3Config:
     Schema: ClassVar[type[Schema]] = Schema
 
 
+@dataclass(frozen=True)
+class HostSetupConfig:
+    """Commands run on the bare host of each allocated node, outside the container.
+
+    The orchestrator (which itself runs on the host, not in a container) fans these
+    out one srun per node before any worker starts, and runs ``teardown`` after the
+    workers are torn down. Use this for node state that cannot be set from inside a
+    container -- locking GPU clocks with ``nvidia-smi -lmc``, loading a kernel
+    module, dropping caches.
+
+    This is the counterpart to ``SrtConfig.setup_script``, which runs *inside* the
+    container from /configs.
+
+    Commands run as the submitting user. Anything needing root must go through
+    passwordless sudo (``sudo -n ...``); a sudo that prompts will hang until
+    ``timeout_seconds`` and fail the job.
+
+    Attributes:
+        commands: Shell commands run in order on each node, joined with ``&&``.
+        teardown: Shell commands run on each node after workers stop. Runs even
+            when the job fails, so state that outlives the allocation (locked
+            clocks persist for the next tenant) gets reset.
+        nodes: Which nodes to target. "all" covers head, infra, and workers;
+            "workers" covers only the nodes running backend workers.
+        ignore_failure: When True, a failing node logs a warning instead of
+            failing the job.
+        timeout_seconds: Per-node wall-clock budget for commands and for teardown.
+    """
+
+    commands: list[str] = field(default_factory=list)
+    teardown: list[str] = field(default_factory=list)
+    nodes: Literal["all", "workers"] = "all"
+    ignore_failure: bool = False
+    timeout_seconds: int = 300
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+    @property
+    def enabled(self) -> bool:
+        """True when there is anything to run on the nodes."""
+        return bool(self.commands or self.teardown)
+
+
 @dataclass
 class ClusterConfig:
     """Cluster configuration from srtslurm.yaml."""
@@ -229,6 +272,9 @@ class ClusterConfig:
     # ``"ulimit -n 1048576 -s unlimited -u 1048576"``. Silently dropped for
     # sruns that bypass the bash wrapper (distroless containers).
     default_bash_preamble: str | None = None
+    # Commands run on every allocated node's bare host, outside the container,
+    # before workers start. Recipes override with their own `host_setup:` block.
+    default_host_setup: HostSetupConfig | None = None
     reporting: ReportingConfig | None = None
     telemetry: dict | None = None  # opaque dict, parsed by try_start_snapshotter
     # When set, applied to job configs that omit ``frontend.nginx_raise_ulimit``.
@@ -1738,6 +1784,11 @@ class SrtConfig:
     # e.g. "custom-setup.sh" -> runs /configs/custom-setup.sh
     setup_script: str | None = None
 
+    # Commands run on each node's bare host, outside the container, before any
+    # worker starts. Cluster-wide default lives in srtslurm.yaml as
+    # default_host_setup; a recipe that sets this block replaces that default.
+    host_setup: HostSetupConfig = field(default_factory=HostSetupConfig)
+
     # Virtual identity — declares what *should* be running (verified against fingerprint)
     identity: IdentityConfig = field(default_factory=IdentityConfig)
 
@@ -1758,7 +1809,28 @@ class SrtConfig:
         self._validate_vllm_frontend()
         self._validate_static_router_frontend()
         self._validate_dynamo_sidecar()
+        self._validate_host_setup()
         self._warn_dp_launch_mode()
+
+    def _validate_host_setup(self) -> None:
+        """Reject host_setup blocks that would fail or hang mid-job.
+
+        These commands run before any worker starts, so a bad entry costs a full
+        allocation to discover. Catch the cheap cases at load time (dry-run).
+        """
+        setup = self.host_setup
+        for attr in ("commands", "teardown"):
+            for i, command in enumerate(getattr(setup, attr)):
+                if not command.strip():
+                    raise ValidationError(f"host_setup.{attr}[{i}] is empty")
+        if setup.timeout_seconds < 1:
+            raise ValidationError(f"host_setup.timeout_seconds must be at least 1, got {setup.timeout_seconds}")
+        if setup.teardown and not setup.commands:
+            logger.warning(
+                "host_setup.teardown is set without host_setup.commands; "
+                "teardown will still run after the job, which is only what you want "
+                "if something outside this recipe set the node state"
+            )
 
     def _validate_dynamo_sidecar(self) -> None:
         """Validate native sidecar configuration before job submission."""

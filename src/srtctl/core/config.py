@@ -160,6 +160,14 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
         config["health_check"] = cluster_config["default_health_check"]
         logger.debug("Applied default_health_check: %s", config["health_check"])
 
+    # Cluster-wide host setup (e.g. locking GPU clocks on nodes that need it).
+    # Whole-block replace, like default_health_check: a recipe that sets
+    # host_setup owns it entirely, so `host_setup: {commands: []}` is the way to
+    # opt a single run out of the cluster default.
+    if "host_setup" not in config and cluster_config.get("default_host_setup"):
+        config["host_setup"] = cluster_config["default_host_setup"]
+        logger.debug("Applied default_host_setup: %s", config["host_setup"])
+
     # Resolve frontend nginx_container alias
     frontend = config.get("frontend", {})
     nginx_container = frontend.get("nginx_container", "")
