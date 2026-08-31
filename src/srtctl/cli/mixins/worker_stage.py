@@ -9,6 +9,7 @@ Handles starting backend worker processes (prefill/decode/agg).
 
 import logging
 import shlex
+import subprocess
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Any
@@ -30,6 +31,7 @@ logger = logging.getLogger(__name__)
 # Dynamo runtime (Rust) log filter for worker containers; YAML prefill_environment /
 # decode_environment / aggregated_environment override via the merge below.
 _DEFAULT_WORKER_DYN_LOG = "info,dynamo_runtime::pipeline::network::ingress::push_handler=warn"
+_ENABLED_VALUES = {"1", "true", "yes", "on"}
 
 
 def _wrap_sglang_sidecar(
@@ -301,12 +303,56 @@ class WorkerStageMixin:
         )
 
         return ManagedProcess(
-            name=f"{mode}_{index}_{process.node}",
+            name=f"{mode}_{index}_{process.node}_rank{getattr(process, 'node_rank', 0)}",
             popen=proc,
             log_file=worker_log,
             node=process.node,
             critical=True,
         )
+
+    def _prewarm_worker_container(self) -> None:
+        """Import the worker image once per node before concurrent worker steps."""
+        enabled = self.runtime.environment.get("SRTCTL_PREWARM_WORKER_CONTAINER", "")
+        if enabled.strip().lower() not in _ENABLED_VALUES:
+            return
+
+        nodes = list(dict.fromkeys(process.node for process in self.backend_processes))
+        if not nodes:
+            return
+
+        timeout = max(
+            1,
+            int(self.runtime.environment.get("SRTCTL_WORKER_CONTAINER_PREWARM_TIMEOUT_S", "1800")),
+        )
+        prewarm_log = self.runtime.log_dir / "worker_container_prewarm_%N.out"
+        logger.info(
+            "Prewarming worker container %s on %d nodes: %s",
+            self.runtime.container_image,
+            len(nodes),
+            ",".join(nodes),
+        )
+        proc = start_srun_process(
+            command=["true"],
+            nodes=len(nodes),
+            ntasks=len(nodes),
+            cpus_per_task=1,
+            nodelist=nodes,
+            output=str(prewarm_log),
+            container_image=str(self.runtime.container_image),
+            container_mounts=self.runtime.container_mounts,
+            srun_options=self.runtime.srun_options,
+            srun_export_env=CONTAINER_REMAP_ROOT_EXPORT if installs_dynamo(self.config) else None,
+        )
+        try:
+            return_code = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            proc.terminate()
+            raise RuntimeError(
+                f"Worker container prewarm timed out after {timeout} seconds; see {prewarm_log}"
+            ) from exc
+        if return_code != 0:
+            raise RuntimeError(f"Worker container prewarm failed with exit code {return_code}; see {prewarm_log}")
+        logger.info("Worker container prewarm completed on %s", ",".join(nodes))
 
     def start_endpoint_worker(self, endpoint_processes: list["Process"]) -> ManagedProcess:
         """Start a worker using MPI-style launching (one srun per endpoint, used by TRTLLM).
@@ -481,6 +527,8 @@ class WorkerStageMixin:
     def start_all_workers(self) -> NamedProcesses:
         """Start all backend workers."""
         logger.info("Starting backend workers")
+
+        self._prewarm_worker_container()
 
         # Check if backend uses MPI-style per-endpoint launching
         srun_config = self.backend.get_srun_config()

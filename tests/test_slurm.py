@@ -221,7 +221,7 @@ def test_worker_stage_wraps_nonfatal_fingerprint_hook(tmp_path: Path) -> None:
     bash_preamble = mock_srun.call_args.kwargs["bash_preamble"]
     assert "setup.sh" in bash_preamble
     assert "/configs/patches/${setup_script}" in bash_preamble
-    assert "not found\" >&2; exit 1" in bash_preamble
+    assert 'not found" >&2; exit 1' in bash_preamble
     assert bash_preamble.endswith("&& ( fingerprint || true )")
     assert mock_srun.call_args.kwargs["env_to_unset"] is None
 
@@ -306,6 +306,49 @@ def test_worker_stage_no_remap_root_when_dynamo_install_false(tmp_path: Path) ->
         mixin.start_worker(process, [process])
 
     assert mock_srun.call_args.kwargs["srun_export_env"] is None
+
+
+def test_worker_container_prewarm_imports_once_per_node(tmp_path: Path) -> None:
+    base_mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=True)
+    peer = SimpleNamespace(node="node-b")
+    base_mixin.runtime.environment = {
+        "SRTCTL_PREWARM_WORKER_CONTAINER": "1",
+        "SRTCTL_WORKER_CONTAINER_PREWARM_TIMEOUT_S": "42",
+    }
+
+    class PrewarmWorkerStage(WorkerStageMixin):
+        @property
+        def backend_processes(self):
+            return [process, peer, process]
+
+    mixin = PrewarmWorkerStage()
+    mixin.config = base_mixin.config
+    mixin.runtime = base_mixin.runtime
+    prewarm_proc = MagicMock()
+    prewarm_proc.wait.return_value = 0
+
+    with patch("srtctl.cli.mixins.worker_stage.start_srun_process", return_value=prewarm_proc) as mock_srun:
+        mixin._prewarm_worker_container()
+
+    assert mock_srun.call_args.kwargs["nodes"] == 2
+    assert mock_srun.call_args.kwargs["ntasks"] == 2
+    assert mock_srun.call_args.kwargs["cpus_per_task"] == 1
+    assert mock_srun.call_args.kwargs["nodelist"] == ["node-a", "node-b"]
+    assert mock_srun.call_args.kwargs["container_image"] == "/container.sqsh"
+    assert mock_srun.call_args.kwargs["srun_export_env"] == {"ENROOT_REMAP_ROOT": "yes"}
+    prewarm_proc.wait.assert_called_once_with(timeout=42)
+
+
+def test_per_gpu_worker_names_include_rank(tmp_path: Path) -> None:
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
+    process.node_rank = 3
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process", return_value=MagicMock()),
+    ):
+        managed = mixin.start_worker(process, [process])
+
+    assert managed.name == "prefill_0_node-a_rank3"
 
 
 # ---- Event-plane propagation (DYN_EVENT_PLANE) ----
