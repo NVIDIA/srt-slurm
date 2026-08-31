@@ -57,6 +57,16 @@ while true; do
   echo \"=== sample ts=$(date --iso-8601=seconds) epoch=$(date +%s) host=$(hostname) ===\"
   echo \"--- meminfo ---\"
   grep -E '^(MemTotal|MemFree|MemAvailable|Buffers|Cached|Shmem|Slab|SReclaimable|SUnreclaim|Unevictable|Mlocked|PageTables):' /proc/meminfo || true
+  echo \"--- numa-meminfo ---\"
+  for node_meminfo in /sys/devices/system/node/node[0-9]*/meminfo; do
+    [[ -r \"$node_meminfo\" ]] || continue
+    echo \"[$node_meminfo]\"
+    grep -E 'MemTotal|MemFree|MemUsed|Active|Inactive|Unevictable|Mlocked' \"$node_meminfo\" || true
+  done
+  if command -v numastat >/dev/null 2>&1; then
+    echo \"--- numastat-system ---\"
+    numastat -m || true
+  fi
   echo \"--- dev-shm ---\"
   df -B1 /dev/shm || true
   find /dev/shm -maxdepth 1 -type f -uid \"$(id -u)\" -name 'vllm_offload_*.mmap' \\
@@ -78,6 +88,15 @@ while true; do
   done
   echo \"--- process-rss ---\"
   ps -eo pid,ppid,rss,vsz,stat,comm,args --sort=-rss | head -80 || true
+  if command -v numastat >/dev/null 2>&1; then
+    echo \"--- numastat-processes ---\"
+    pgrep -f 'EngineCore|VllmWorker|dynamo\\.vllm' 2>/dev/null | head -32 |
+    while IFS= read -r pid; do
+      [[ -n \"$pid\" ]] || continue
+      echo \"[numastat -p $pid]\"
+      numastat -p \"$pid\" 2>&1 || true
+    done
+  fi
   echo \"--- slurm-sstat ---\"
   if command -v sstat >/dev/null 2>&1 && [[ -n \"${{SLURM_JOB_ID:-}}\" ]]; then
     sstat -j \"$SLURM_JOB_ID\" --allsteps \\
