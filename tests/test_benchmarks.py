@@ -238,6 +238,7 @@ class TestCustomBenchmarkRunner:
         prefill_environment=None,
         aggregated_environment=None,
         environment=None,
+        dynamo_sidecar=False,
     ):
         from types import SimpleNamespace
 
@@ -258,6 +259,7 @@ class TestCustomBenchmarkRunner:
                 aggregated_environment=aggregated_environment or {},
             ),
             backend_type=backend_type,
+            dynamo=SimpleNamespace(uses_sidecar=dynamo_sidecar),
             frontend=SimpleNamespace(type=frontend_type),
             profiling=SimpleNamespace(enabled=False),
             resources=SimpleNamespace(num_agg=sum(p.endpoint_mode == "agg" and p.is_leader for p in processes)),
@@ -341,6 +343,30 @@ class TestCustomBenchmarkRunner:
         assert env["AIPERF_SERVER_METRICS_URLS"] == (
             "http://ip-node-a:7500/metrics,http://ip-node-c:7502/metrics,http://ip-node-e:7504/metrics"
         )
+
+    def test_sidecar_worker_endpoints_use_native_sglang_http_ports(self):
+        from unittest.mock import patch
+
+        from srtctl.benchmarks.custom import CustomBenchmarkRunner
+        from srtctl.core.topology import Process
+
+        processes = [
+            Process("node-a", frozenset(range(4)), 7500, 6100, "prefill", 0, node_rank=0),
+            Process("node-b", frozenset(range(4)), 7501, 0, "prefill", 0, node_rank=1),
+            Process("node-c", frozenset(range(4)), 7502, 6100, "decode", 0, node_rank=0),
+            Process("node-d", frozenset(range(4)), 7503, 0, "decode", 0, node_rank=1),
+        ]
+        stage = self._benchmark_stage("dynamo", processes, dynamo_sidecar=True)
+
+        with patch(
+            "srtctl.cli.mixins.benchmark_stage.get_hostname_ip",
+            side_effect=lambda node, interface: f"ip-{node}",
+        ):
+            env = stage._get_benchmark_env(CustomBenchmarkRunner())
+
+        assert env["SRT_PREFILL_ENDPOINTS"] == "ip-node-a:6100"
+        assert env["SRT_DECODE_ENDPOINTS"] == "ip-node-c:6100"
+        assert env["AIPERF_SERVER_METRICS_URLS"] == ("http://ip-node-a:6100/metrics,http://ip-node-c:6100/metrics")
 
     def test_aggregated_worker_endpoint_uses_http_port_without_dynamo(self):
         from unittest.mock import patch

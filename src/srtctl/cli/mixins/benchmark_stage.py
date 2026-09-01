@@ -213,15 +213,17 @@ class BenchmarkStageMixin:
         Positive HTTP ports identify Router-facing node-local vLLM pools;
         follower processes in a cross-node model-parallel replica retain zero.
 
-        Dynamo exposes worker metrics on each leader's system port. Direct
-        vLLM exposes aggregate metrics on the public frontend port, while
-        other frontends expose them on the worker HTTP port.
+        Dynamo in-process workers expose metrics and control APIs on each
+        leader's system port. SGLang sidecar workers keep those APIs on the
+        native SGLang HTTP port. Direct vLLM exposes aggregate metrics on the
+        public frontend port, while other frontends expose them on the worker
+        HTTP port.
         """
         endpoints: list[tuple[str, str, int]] = []
         for process in self.backend_processes:
             if self.config.frontend.type != "vllm-router" and not process.is_leader:
                 continue
-            if self.config.frontend.type == "dynamo":
+            if self.config.frontend.type == "dynamo" and not self.config.dynamo.uses_sidecar:
                 port = process.sys_port
             elif self.config.frontend.type == "vllm":
                 port = self.runtime.frontend_port
