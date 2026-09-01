@@ -278,21 +278,11 @@ class PostProcessStageMixin:
         Each benchmark type can have a rollup.py script that normalizes its output
         into a standardized format for historical tracking.
         """
-        # Built-in types find their normalizer by type name. A `custom`
-        # benchmark has no type to look up, so benchmark.rollup names one
-        # explicitly.
-        requested = self.config.benchmark.rollup
-        rollup_name = requested or self.config.benchmark.type
-        rollup_script = SCRIPTS_DIR / rollup_name / "rollup.py"
+        benchmark_type = self.config.benchmark.type
+        rollup_script = SCRIPTS_DIR / benchmark_type / "rollup.py"
 
         if not rollup_script.exists():
-            if requested:
-                # Asking for a normalizer that is not there is a real mistake:
-                # the run produced logs nothing will read. Absence of an
-                # implicit one is normal - most benchmark types have none.
-                logger.warning("benchmark.rollup=%r requested but %s does not exist", requested, rollup_script)
-            else:
-                logger.debug("No rollup script for %s", rollup_name)
+            logger.debug("No rollup script for %s", benchmark_type)
             return
 
         try:

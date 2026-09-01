@@ -932,126 +932,66 @@ Notes:
 
 ### mlperf
 
-MLPerf Inference benchmark driven by **NVIDIA's submission harness** (`nv_mlpinf`, from
-`mlpinf/mlperf-inference` under `closed/NVIDIA`). LoadGen is what produces the submission-shaped
-`mlperf_log_summary.txt` / `mlperf_log_detail.txt` / `mlperf_log_accuracy.json` triple and the
-VALID/INVALID verdict, so this benchmark type exists to get those artifacts out of a topology
-srt-slurm already stands up.
-
-**Why the NVIDIA harness and not the mlcommons reference implementations.** The reference repo has
-one harness per benchmark and they disagree on who owns the server: llama2-70b and llama3.1-405b
-build the engine in-process, deepseek-r1 launches its own server, and only gpt-oss-120b talks to an
-existing one — over SGLang's native `/generate`, which `trtllm-serve` and `vllm serve` answer with
-404. `nv_mlpinf` instead has a single `llmlib` for every benchmark with pluggable *cores*, and its
-`dynamo_endpoint` core is documented as a "minimal configuration for running harness against
-pre-deployed Dynamo clusters" that "skips all build/runtime flag loading from system configs".
-That is srt-slurm's situation exactly, and it speaks OpenAI, so any frontend serving `/v1` works.
-
-The invocation mirrors the submission repo's own sflow task
-(`closed/NVIDIA/scaleout/sflow/templates/dynamo_disagg_loadgen.yaml`) — a run here and a run there
-differ in who deployed the cluster, not in how it is measured.
+MLPerf runs as a **`custom` benchmark driving the MLPerf team's `inference-endpoint` client**, not
+as a benchmark type. srt-slurm carries no MLPerf-specific schema at all — the driver is a script at
+`/srtctl-benchmarks/mlperf/bench.sh`, mounted for every benchmark type.
 
 ```yaml
-frontend:
-  type: dynamo
-
 benchmark:
-  type: "mlperf"
-  mlperf_harness_dir: "/mlperf-inference"     # Container path to mlperf-inference/closed/NVIDIA
-  mlperf_benchmark: "deepseek-r1"             # nv_mlpinf benchmark name
-  mlperf_scenario: "Server"                   # Offline (default), Server, or Interactive
-  mlperf_mode: "PerformanceOnly"              # PerformanceOnly (default) or AccuracyOnly
-  mlperf_system_name: "GB300-NVL72_x72"       # Optional but recommended (see notes)
-  mlperf_scratch_path: "/scratch/mlperf"      # Dataset/model root
+  type: custom
+  command: bash /srtctl-benchmarks/mlperf/bench.sh
   env:
-    MLPERF_EXTRA_ARGS: "--server_target_qps=40"   # Appended verbatim to run_harness
+    MLPERF_CLIENT_CONFIG: /configs/dsr1-interactive-submission.yaml
+    MLPERF_MODE: both            # both (default) | performance | accuracy
 
 extra_mount:
-  - "/path/to/mlperf-inference/closed/NVIDIA:/mlperf-inference"
-  - "/path/to/mlperf_scratch:/scratch/mlperf"
+  - "/path/to/client-configs:/configs"
 ```
 
-| Field                 | Type   | Required | Default           | Description                                            |
-| --------------------- | ------ | -------- | ----------------- | ------------------------------------------------------ |
-| `mlperf_harness_dir`  | string | Yes      | —                 | Container path to `mlperf-inference/closed/NVIDIA`     |
-| `mlperf_benchmark`    | string | Yes      | —                 | nv_mlpinf benchmark name (`deepseek-r1`, `gpt-oss-120b`) |
-| `mlperf_scenario`     | string | No       | `Offline`         | `Offline`, `Server`, or `Interactive`                  |
-| `mlperf_mode`         | string | No       | `PerformanceOnly` | `PerformanceOnly` or `AccuracyOnly`                    |
-| `mlperf_core_type`    | string | No       | `trtllm_endpoint` | `trtllm_endpoint` or `dynamo_endpoint`                 |
-| `mlperf_system_name`  | string | No       | derived           | Passed as `--system_name` and `SYSTEM_NAME`            |
-| `mlperf_scratch_path` | string | No       | harness default   | `MLPERF_SCRATCH_PATH` — dataset/model root             |
+**The client config is passed through, not re-modelled.** It carries ~60 nested settings — model
+params, two datasets with accuracy scoring, load pattern, a ZeroMQ transport block,
+drain/warmup/early-stopping — and its shape moves with the client version. Expressing any of it as
+srt-slurm settings would be a losing race and lossy: anything not modelled becomes unsettable. The
+script rewrites exactly two values, being the only two the config cannot know before the cluster
+exists:
+
+| Rewritten | Why |
+|---|---|
+| `endpoint_config.endpoints` | frontend IPs are assigned by Slurm at run time |
+| `report_dir` | so results land with the job's other logs and get collected |
+
+Everything else is passed through untouched, including unresolved `${VAR}` placeholders that the
+client expands itself at load time. This mirrors the MLPerf team's own launcher
+(`endpoints-launch`, `NVIDIA/src/sflow/tools/generate_endpoint_yaml.py`), which rewrites one key
+and leaves the rest.
+
+Start from a template in the client repo
+(`src/inference_endpoint/config/templates/submission_template.yaml`) or one of the ~45 point configs
+in `endpoints-launch` under `NVIDIA/src/configs/<system>/<model>/point_*/client.yaml`.
+
+| Variable | Required | Default | Description |
+| -------- | -------- | ------- | ----------- |
+| `MLPERF_CLIENT_CONFIG` | Yes | — | Container path to the client config |
+| `MLPERF_MODE` | No | `both` | `both` runs performance and accuracy in one pass |
+| `MLPERF_ENDPOINTS` | No | the injected frontend | Comma-separated list, for client-side load balancing |
+| `MLPERF_CLIENT_BIN` | No | `inference-endpoint` | Client executable |
 
 Notes:
 
-- **The harness checkout must include `3rdparty/mlc-inference`.** nv_mlpinf imports the MLCommons
-  submission checker from there at CLI-import time, so a checkout without it fails with
-  `ModuleNotFoundError: No module named 'constants'` before anything reaches the endpoint. The
-  bench step sets `PROJECT_BASE_DIR` to `mlperf_harness_dir` so this resolves, and fails early with
-  a readable message if the directory is missing.
-- **`mlperf_system_name` is effectively required.** nv_mlpinf resolves a per-(benchmark, system,
-  scenario) config module *before* it looks at `core_type`, so an unregistered system is fatal even
-  though `dynamo_endpoint` needs nothing from that module — `main.py` builds
-  `<config_dir>/<benchmark>/<system_id>/<serving_framework>/<scenario>/harness.py` and raises
-  `FileNotFoundError` if it is missing. Left unset, the id is auto-detected, and any machine outside
-  the built-in list (every Vera Rubin bring-up node today) detects as `UNREGISTERED_<arch>_<gpu>xN`,
-  which has no configs. The pair matters, not just the system: a scenario directory may hold only
-  `server.py` (for the separate `RunLLMServer` action) and no `harness.py`, which `run_harness` will
-  not accept. The bench step checks for `harness.py` specifically and lists the valid
-  system/scenario pairs the checkout provides. To run an unregistered system, point `CONFIG_DIR`
-  (via `benchmark.env`) at a tree that provides the module.
-  Note the `<serving_framework>` segment is a hardcoded per-benchmark constant (`TRTLLM` for every
-  LLM benchmark) with no CLI override — the `DYNAMO/` directories next to it hold *sflow* configs,
-  not nv_mlpinf config modules.
-- `MLPINF_USE_DYNAMO` defaults to **0**, even against a Dynamo frontend. At 1 it sets
-  `NOSKIP_FINAL_CHUNK`, which keeps the client reading past `finish_reason` waiting for `[DONE]`;
-  if the frontend half-closes, the read blocks forever and wedges LoadGen's no-timeout drain. The
-  submission repo records a job that sat silent for 233 minutes this way and produced no summary.
-  `MLPINF_FIRST_TOKEN_ALWAYS` defaults to 1 because LoadGen requires a first-token latency before a
-  sample latency in any non-Offline scenario.
-- **`mlperf_scratch_path` feeds two directories, and only one of them fails loudly.**
-  `models/<benchmark>/` holds the checkpoint the harness loads its tokenizer from —
-  `harness_use_hf_tokenizer` is `False` by default, so the tokenizer is expected on disk, not on the
-  Hub (`Loaded tokenizer from local path: .../models/deepseek-r1/...`). Without it the harness can
-  fall back to treating the configured name as a Hub repo id, which needs egress and raises
-  `HFValidationError` on a path-shaped name; the submission repo has three 7-node runs that finished
-  their performance phase and then died in scoring exactly this way. There is deliberately no
-  separate tokenizer-path field: the checkpoint location is derived from this one, and a second knob
-  would be a second source of truth. The bench step warns when either directory is absent.
-- **`preprocessed_data/<benchmark>/` must hold that benchmark's tensors**, not the raw dataset. nv_mlpinf builds the QSL from pre-tokenized `.npy` files
-  (DeepSeek-R1 wants `input_ids_padded.npy` + `input_lens.npy`), and a missing directory fails an
-  assertion inside QSL construction — after the config module has loaded and the pipeline has
-  started, so it surfaces later than the other path errors and looks unrelated to path setup. The
-  parquet the endpoints client uses is a different artifact and is not a substitute.
-- **`trtllm_endpoint` is the default core, not `dynamo_endpoint`** — even against a Dynamo
-  frontend, which is also what the submission repo's own Dynamo sflow task runs. Both cores issue
-  OpenAI `/v1/completions`; the difference is that `CoreType.DYNAMO_ENDPOINT` is a dangling registry
-  entry in some checkouts, naming a `dynamo_endpoint_core` module that does not exist there (newer
-  trees alias it to `TrtllmEndpointCore`). The harness only discovers this deep inside
-  `wrap_lg_test`, after the QSL is built and the dataset read, so the bench step resolves the core
-  through the same registry up front and fails while the message is still about the core.
-- The first run of a job installs the harness into an isolated venv under `/tmp/mlperf-<jobid>`
-  (`--system-site-packages`, so the container's torch/tensorrt_llm are reused), guarded by the same
-  self-validating READY marker and atomic build lock as agentperf.
-- Scenario constraints and target QPS come from nv_mlpinf's own per-benchmark configs; override via
-  `MLPERF_EXTRA_ARGS` (`--server_target_qps=`, `--offline_expected_qps=`).
-- **`scenario` in the rollup can differ from the one you asked for, legitimately.** nv_mlpinf maps
-  `Interactive` onto LoadGen's `Server` scenario (with the Interactive latency targets — TTFT 1.5 s,
-  TPOT 15 ms), so a run configured `mlperf_scenario: Interactive` reports `Scenario : Server` in its
-  summary. The rollup records LoadGen's value as `scenario` and what srtctl asked for as
-  `srt_args.scenario`; compare the two before concluding the wrong scenario ran.
-- The rollup's `concurrency` is `null` for mlperf runs: nv_mlpinf manages its own client concurrency
-  (`workers_per_core`, `max_concurrency`) rather than taking one from srtctl, so there is nothing
-  honest to put there. `srtctl monitor` renders the throughput column but not a concurrency.
-- Results land under `<log_dir>/mlperf/<mode>/<system>/<benchmark>/<scenario>/`; `rollup.py`
-  normalizes every `mlperf_log_summary.txt` it finds into `benchmark-rollup.json` (verdict,
-  constraints, throughput, TTFT/TPOT p99, plus each LoadGen section verbatim) and merges the
-  `srt_run.json` sidecar recording the knobs srtctl chose.
-- This runs the benchmark, not a submission. Compliance tests and submission packaging remain the
-  MLPerf repo's workflow, as does topology work that a submission point needs (Dynamo namespaces,
-  per-worker node pinning, memory-clock pinning).
-- `telemetry:` (DCGM power) is not supported with mlperf — the schema rejects non-sa-bench types at
-  config load. On ASE clusters DCGM is the wrong instrument anyway; pull per-node BMC and rack
-  power-shelf CSVs after the run with `download-job-power-metrics -job <SLURM_JOB_ID>`.
+- **Run it in the MLPerf endpoint client image** (`endpoint_client_*.sqsh`). The client ships
+  pre-installed there, so there is nothing to build; the script checks it is on `PATH` and fails
+  with that message if not.
+- **The endpoint is injected, never defaulted.** srt-slurm sets `SRT_FRONTEND_HOST` /
+  `SRT_FRONTEND_PORT` for every custom benchmark, and the script errors if they are absent rather
+  than quietly benchmarking localhost.
+- **`MLPERF_ENDPOINTS` is how you get more than one frontend.** The client load-balances across the
+  list itself, which is how MLPerf gets past the roughly 28k-connection ceiling of a single
+  `ip:port` — its own submission configs ask for 84,000. srt-slurm exposes a single frontend today,
+  so at submission scale this override is currently the only route.
+- The script writes `benchmark-rollup.json` itself, which is the artifact srt-slurm's postprocess
+  already reads. Per-run metrics are deliberately absent: this client does not use LoadGen and
+  writes its own report format, which has not been observed here yet, and a fabricated parser would
+  be worse than an honest gap. The record points at `report_dir` and lists what landed there.
 
 ---
 

@@ -794,10 +794,6 @@ class BenchmarkConfig:
     # srtctl.benchmarks.custom.CustomBenchmarkRunner for details.
     command: str | None = None
     container_image: str | None = None
-    # Name of a bundled results normalizer under benchmarks/scripts/<name>/rollup.py.
-    # Built-in types find theirs by type name; a `custom` benchmark has no type
-    # to look up, so this is how it opts into one.
-    rollup: str | None = None
     env: dict[str, str] = field(default_factory=dict)
     # aiperf pip install spec (e.g., "aiperf>=0.7.0", "aiperf @ git+https://...@commit")
     # If set, runs pip install <spec> before benchmarking. Upgrades if already installed.
