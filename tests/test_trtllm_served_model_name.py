@@ -7,12 +7,11 @@ from srtctl.backends.trtllm import TRTLLMProtocol, TRTLLMServerConfig
 
 
 class TestTRTLLMServedModelName:
-    """`--served-model-name` is what a client must put in a request's "model" field.
+    """The name clients must use in a request's "model" field.
 
-    It defaults to the checkpoint directory name, which is fine when the client
-    can be told what to ask for. A client that hardcodes the name — the MLPerf
-    harness treats model identity as part of the benchmark definition — can only
-    be met by naming the model its way.
+    Defaults to the checkpoint directory name. That is fine when the client can
+    be told what to ask for; a client with the name baked in (the MLPerf
+    harness) needs the server to match it instead.
     """
 
     def test_defaults_to_the_checkpoint_directory_name(self):
@@ -23,12 +22,12 @@ class TestTRTLLMServedModelName:
         assert backend.get_served_model_name("deepseek_r1-torch-fp4-v2") == "deepseek-ai/deepseek-r1"
 
     def test_empty_string_falls_back_to_the_default(self):
-        """An unset-but-present key should not serve the model under an empty name."""
+        """An empty value in a recipe should not serve the model under an empty name."""
         assert TRTLLMProtocol(served_model_name="").get_served_model_name("ckpt") == "ckpt"
 
     def test_is_not_written_into_the_engine_yaml(self):
-        """It is a dynamo.trtllm CLI flag; leaking it into the engine config would
-        inject an option TRT-LLM's LlmArgs does not define."""
+        """trtllm_config becomes the engine's YAML file, and this is a launcher
+        flag, so it must not leak in there."""
         backend = TRTLLMProtocol(
             served_model_name="deepseek-ai/deepseek-r1",
             trtllm_config=TRTLLMServerConfig(aggregated={"tensor_parallel_size": 4}),
@@ -39,7 +38,7 @@ class TestTRTLLMServedModelName:
         assert rendered == {"tensor_parallel_size": 4}
 
     def test_reaches_the_worker_command(self):
-        """The flag the worker is launched with must reflect the override."""
+        """The worker must actually be launched with the configured name."""
         from pathlib import Path
         from unittest.mock import MagicMock
 
