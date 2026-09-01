@@ -87,6 +87,29 @@ class TRTLLMProtocol:
 
     trtllm_config: TRTLLMServerConfig | None = None
 
+    # The name dynamo.trtllm advertises the model under (`--served-model-name`),
+    # which is the string clients must put in the "model" field of a request.
+    # Defaults to the checkpoint directory name.
+    #
+    # This is a top-level field rather than a `trtllm_config` key on purpose:
+    # trtllm_config is written out verbatim as the engine YAML, and
+    # served-model-name is a dynamo.trtllm CLI flag with no LlmArgs field, so a
+    # YAML key would only inject an unknown option into the engine config. The
+    # MLPerf submission templates make the same split, carrying MODEL_PATH and
+    # SERVED_MODEL_NAME beside the engine YAML rather than inside it.
+    #
+    #     backend:
+    #       type: trtllm
+    #       served_model_name: "deepseek-ai/deepseek-r1"
+    #
+    # Set it when the client cannot be told which name to ask for. A benchmark
+    # client that takes the name as a flag (agentperf) is handed srtctl's value
+    # and needs nothing here; one that hardcodes it as part of its definition
+    # (the MLPerf harness, where model identity is what makes results
+    # comparable) can only be met by naming the model its way. Without that the
+    # request 404s with the weights loaded and serving.
+    served_model_name: str | None = None
+
     # Whether dynamo.trtllm workers pass `--publish-events-and-metrics`.
     # Enables the worker to publish KV-cache events (add/evict) + metrics, which
     # the dynamo frontend consumes for KV-cache-aware routing (router-mode: kv).
@@ -187,9 +210,8 @@ class TRTLLMProtocol:
         return {}
 
     def get_served_model_name(self, default: str) -> str:
-        """Get served model name from TRTLLM config, or return default."""
-        # TRTLLM doesn't have served-model-name in config, just use default
-        return default
+        """Get the configured served model name, or return default."""
+        return self.served_model_name or default
 
     def allocate_endpoints(
         self,
@@ -322,7 +344,7 @@ class TRTLLMProtocol:
             "--model-path",
             model_arg,
             "--served-model-name",
-            runtime.model_path.name,
+            self.get_served_model_name(runtime.model_path.name),
         ]
 
         # Only add disaggregation mode for prefill/decode, not for agg
