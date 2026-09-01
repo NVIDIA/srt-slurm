@@ -21,12 +21,17 @@ import os
 import re
 import signal
 import socket
+import sys
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
 CPU_POWER_FIELD_ID = 1130
+DCGM_PYTHON_BINDING_DIRS = (
+    Path("/usr/share/datacenter-gpu-manager-4/bindings/python3"),
+    Path("/usr/local/dcgm/bindings/python3"),
+)
 SAMPLES_HEADER = (
     "schema_version",
     "timestamp_unix",
@@ -163,6 +168,18 @@ class AcpiPowerMeterReader(CpuPowerReader):
         """ACPI sysfs reads hold no persistent resources."""
 
 
+def _add_standard_dcgm_binding_path() -> Path | None:
+    """Expose DCGM's distro-installed Python bindings when not site-packaged."""
+    for binding_dir in DCGM_PYTHON_BINDING_DIRS:
+        binding_path = str(binding_dir)
+        if binding_path in sys.path:
+            return binding_dir
+        if (binding_dir / "dcgm_agent.py").is_file():
+            sys.path.insert(0, binding_path)
+            return binding_dir
+    return None
+
+
 class DcgmCpuPowerReader(CpuPowerReader):
     """Read per-Grace-CPU instantaneous power through DCGM field 1130."""
 
@@ -170,6 +187,9 @@ class DcgmCpuPowerReader(CpuPowerReader):
 
     def __init__(self) -> None:
         self._handle: Any = None
+        self._group: Any = None
+        self._field_group: Any = None
+        _add_standard_dcgm_binding_path()
         try:
             dcgm_agent = importlib.import_module("dcgm_agent")
             dcgm_fields = importlib.import_module("dcgm_fields")
@@ -197,6 +217,32 @@ class DcgmCpuPowerReader(CpuPowerReader):
             entity.entityGroupId = dcgm_fields.DCGM_FE_CPU
             entity.entityId = cpu_id
             self._entities.append(entity)
+        try:
+            unique_suffix = f"{os.getpid()}_{time.time_ns()}"
+            self._group = pydcgm.DcgmGroup(
+                self._handle,
+                groupName=f"srtctl_cpu_power_entities_{unique_suffix}",
+                groupType=dcgm_structs.DCGM_GROUP_EMPTY,
+            )
+            for cpu_id in self._cpu_ids:
+                self._group.AddEntity(dcgm_fields.DCGM_FE_CPU, cpu_id)
+            self._field_group = pydcgm.DcgmFieldGroup(
+                self._handle,
+                name=f"srtctl_cpu_power_fields_{unique_suffix}",
+                fieldIds=[CPU_POWER_FIELD_ID],
+            )
+            self._group.samples.WatchFields(
+                self._field_group,
+                100_000,
+                60.0,
+                600,
+            )
+            # A live-data query does not implicitly install a DCGM watch. Force
+            # the first watched update so the initial collector sample is real.
+            self._agent.dcgmUpdateAllFields(self._handle.handle, True)
+        except Exception as exc:
+            self.close()
+            raise CpuPowerSourceUnavailable(f"cannot watch DCGM CPU power field: {exc}") from exc
 
     def read_watts(self) -> dict[str, float | None]:
         readings = {f"CPU{cpu_id}:cpuPowerUsageW": None for cpu_id in self._cpu_ids}
@@ -205,7 +251,7 @@ class DcgmCpuPowerReader(CpuPowerReader):
                 self._handle.handle,
                 self._entities,
                 [CPU_POWER_FIELD_ID],
-                getattr(self._structs, "DCGM_FV_FLAG_LIVE_DATA", 0),
+                0,
             )
         except Exception as exc:
             raise CpuPowerSourceUnavailable(f"DCGM CPU power read failed: {exc}") from exc
@@ -229,6 +275,19 @@ class DcgmCpuPowerReader(CpuPowerReader):
         }
 
     def close(self) -> None:
+        group = getattr(self, "_group", None)
+        field_group = getattr(self, "_field_group", None)
+        if group is not None and field_group is not None:
+            with contextlib.suppress(Exception):
+                group.samples.UnwatchFields(field_group)
+        if field_group is not None:
+            with contextlib.suppress(Exception):
+                field_group.Delete()
+            self._field_group = None
+        if group is not None:
+            with contextlib.suppress(Exception):
+                group.Delete()
+            self._group = None
         handle = getattr(self, "_handle", None)
         if handle is not None:
             with contextlib.suppress(Exception):  # DCGM shutdown must not mask completed samples
