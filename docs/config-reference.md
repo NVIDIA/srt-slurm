@@ -1034,6 +1034,14 @@ Notes:
   self-validating READY marker and atomic build lock as agentperf.
 - Scenario constraints and target QPS come from nv_mlpinf's own per-benchmark configs; override via
   `MLPERF_EXTRA_ARGS` (`--server_target_qps=`, `--offline_expected_qps=`).
+- **`scenario` in the rollup can differ from the one you asked for, legitimately.** nv_mlpinf maps
+  `Interactive` onto LoadGen's `Server` scenario (with the Interactive latency targets — TTFT 1.5 s,
+  TPOT 15 ms), so a run configured `mlperf_scenario: Interactive` reports `Scenario : Server` in its
+  summary. The rollup records LoadGen's value as `scenario` and what srtctl asked for as
+  `srt_args.scenario`; compare the two before concluding the wrong scenario ran.
+- The rollup's `concurrency` is `null` for mlperf runs: nv_mlpinf manages its own client concurrency
+  (`workers_per_core`, `max_concurrency`) rather than taking one from srtctl, so there is nothing
+  honest to put there. `srtctl monitor` renders the throughput column but not a concurrency.
 - Results land under `<log_dir>/mlperf/<mode>/<system>/<benchmark>/<scenario>/`; `rollup.py`
   normalizes every `mlperf_log_summary.txt` it finds into `benchmark-rollup.json` (verdict,
   constraints, throughput, TTFT/TPOT p99, plus each LoadGen section verbatim) and merges the
