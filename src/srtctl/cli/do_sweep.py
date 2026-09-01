@@ -36,6 +36,7 @@ from srtctl.cli.mixins import (
     WorkerStageMixin,
 )
 from srtctl.core.config import load_config
+from srtctl.core.gpu_power_limit import GpuPowerLimitManager
 from srtctl.core.health import wait_for_port
 from srtctl.core.lockfile import write_lockfile
 from srtctl.core.processes import (
@@ -760,8 +761,21 @@ class SweepOrchestrator(
         start_process_monitor(stop_event, registry)
 
         exit_code = 1
+        gpu_power_manager: GpuPowerLimitManager | None = None
 
         try:
+            # Power limits are persistent device state, so snapshot and apply
+            # them before starting any service. Cleanup restores the snapshot.
+            power_config = self.config.gpu_power_limits
+            if power_config is not None and power_config.enabled:
+                gpu_power_manager = GpuPowerLimitManager.from_processes(
+                    config=power_config,
+                    job_id=self.runtime.job_id,
+                    processes=self.backend_processes,
+                    log_dir=self.runtime.log_dir,
+                )
+                gpu_power_manager.apply()
+
             # Stage 1: Head infrastructure (NATS, etcd). Only the dynamo request
             # plane uses it; static/direct frontends skip it.
             if self.config.frontend.type in {"sglang", "trtllm_serve", "vllm", "vllm-router"}:
@@ -861,6 +875,12 @@ class SweepOrchestrator(
             exit_code = self.finalize_cpu_power_telemetry(exit_code, interrupted=stop_event.is_set())
             stop_event.set()
             registry.cleanup()
+            if gpu_power_manager is not None:
+                try:
+                    gpu_power_manager.restore()
+                except Exception:
+                    logger.exception("Failed to restore GPU power limits")
+                    exit_code = 1
             if exit_code != 0:
                 registry.print_failure_details()
             # Post-process first: generate rollup, upload logs to S3, eagerly

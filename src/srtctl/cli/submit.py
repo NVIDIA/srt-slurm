@@ -391,6 +391,7 @@ def show_config_details(config: SrtConfig) -> None:
         or config.observability.enabled
         or config.observability.tachometer.enabled
         or config.telemetry.enabled
+        or (config.gpu_power_limits is not None and config.gpu_power_limits.enabled)
         or mooncake_cfg is not None
     )
     if show_extensions:
@@ -425,6 +426,18 @@ def show_config_details(config: SrtConfig) -> None:
             details.add_row("telemetry", "artifacts", f"<log_dir>/{config.telemetry.storage_subdir}")
             if exporter is not None:
                 details.add_row("telemetry", "dcgm_exporter", f"{exporter.container_image} (port {exporter.port})")
+
+        power_limits = config.gpu_power_limits
+        if power_limits is not None and power_limits.enabled:
+            for role, watts in (
+                ("prefill", power_limits.prefill_watts),
+                ("decode", power_limits.decode_watts),
+                ("aggregated", power_limits.aggregated_watts),
+            ):
+                if watts is not None:
+                    details.add_row("gpu power", role, f"{watts} W")
+            details.add_row("gpu power", "setter", power_limits.setter)
+            details.add_row("gpu power", "restore_on_exit", str(power_limits.restore_on_exit))
 
         if mooncake_cfg is not None:
             details.add_row("mooncake", "container", mooncake_cfg.container or "<job container>")
@@ -834,6 +847,14 @@ def submit_with_orchestrator(
             metadata["tags"] = tags
         if config.setup_script:
             metadata["setup_script"] = config.setup_script
+        if config.gpu_power_limits is not None and config.gpu_power_limits.enabled:
+            metadata["gpu_power_limits"] = {
+                "prefill_watts": config.gpu_power_limits.prefill_watts,
+                "decode_watts": config.gpu_power_limits.decode_watts,
+                "aggregated_watts": config.gpu_power_limits.aggregated_watts,
+                "restore_on_exit": config.gpu_power_limits.restore_on_exit,
+                "setter": config.gpu_power_limits.setter,
+            }
 
         with open(job_output_dir / f"{job_id}.json", "w") as f:
             json.dump(metadata, f, indent=2)

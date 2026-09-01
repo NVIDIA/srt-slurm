@@ -1816,6 +1816,44 @@ class HealthCheckConfig:
 
 
 @dataclass(frozen=True)
+class GpuPowerLimitConfig:
+    """Role-specific GPU TGP limits applied only for the lifetime of a run."""
+
+    prefill_watts: int | None = None
+    decode_watts: int | None = None
+    aggregated_watts: int | None = None
+    restore_on_exit: bool = True
+    setter: Literal["auto", "nvidia-smi", "dcgmi"] = "auto"
+    nvidia_smi_command: list[str] = field(default_factory=lambda: ["nvidia-smi"])
+    dcgmi_command: list[str] = field(default_factory=lambda: ["dcgmi"])
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+    def __post_init__(self):
+        for field_name in ("prefill_watts", "decode_watts", "aggregated_watts"):
+            watts = getattr(self, field_name)
+            if watts is not None and watts <= 0:
+                raise ValueError(f"gpu_power_limits.{field_name} must be greater than zero")
+        if not self.nvidia_smi_command or any(not part for part in self.nvidia_smi_command):
+            raise ValueError("gpu_power_limits.nvidia_smi_command must contain non-empty arguments")
+        if not self.dcgmi_command or any(not part for part in self.dcgmi_command):
+            raise ValueError("gpu_power_limits.dcgmi_command must contain non-empty arguments")
+
+    @property
+    def enabled(self) -> bool:
+        return any(watts is not None for watts in (self.prefill_watts, self.decode_watts, self.aggregated_watts))
+
+    def watts_for_mode(self, mode: str) -> int | None:
+        if mode == "prefill":
+            return self.prefill_watts
+        if mode == "decode":
+            return self.decode_watts
+        if mode in ("agg", "aggregated"):
+            return self.aggregated_watts
+        raise ValueError(f"Unknown worker mode: {mode}")
+
+
+@dataclass(frozen=True)
 class InfraConfig:
     """Infrastructure configuration for etcd/nats placement.
 
@@ -1864,6 +1902,7 @@ class SrtConfig:
     infra: InfraConfig = field(default_factory=InfraConfig)
     observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
     telemetry: TelemetryConfig = field(default_factory=TelemetryConfig)
+    gpu_power_limits: GpuPowerLimitConfig | None = None
 
     environment: dict[str, str] = field(default_factory=dict)
     container_mounts: dict[
@@ -1892,6 +1931,7 @@ class SrtConfig:
         self._validate_profiling()
         self._validate_observability()
         self._validate_telemetry()
+        self._validate_gpu_power_limits()
         self._validate_mooncake_kv_store()
         self._validate_het_jobs()
         self._validate_dedicated_node_placement()
@@ -1900,6 +1940,22 @@ class SrtConfig:
         self._validate_static_router_frontend()
         self._validate_dynamo_sidecar()
         self._warn_dp_launch_mode()
+
+    def _validate_gpu_power_limits(self) -> None:
+        power = self.gpu_power_limits
+        if power is None or not power.enabled:
+            return
+        if self.resources.is_disaggregated:
+            if power.aggregated_watts is not None:
+                raise ValidationError(
+                    "Disaggregated mode uses gpu_power_limits.prefill_watts/decode_watts; "
+                    "aggregated_watts is not allowed"
+                )
+        elif power.prefill_watts is not None or power.decode_watts is not None:
+            raise ValidationError(
+                "Aggregated mode uses gpu_power_limits.aggregated_watts; "
+                "prefill_watts/decode_watts are not allowed"
+            )
 
     def _warn_dp_launch_mode(self):
         """Warn when a vLLM DP recipe selects the deprecated per-GPU layout.
