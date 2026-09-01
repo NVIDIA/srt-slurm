@@ -3,6 +3,10 @@
 
 """Tests for profiling configuration, validation, and benchmark runner."""
 
+import os
+import subprocess
+from pathlib import Path
+
 import pytest
 
 from srtctl.benchmarks import get_runner
@@ -81,8 +85,7 @@ class TestProfilingConfig:
 
     def test_nsys_time_vllm_dynamo_path(self, monkeypatch):
         """nsys-time on a non-TRTLLM backend (vllm) drives capture purely via
-        --delay/--duration (no cudaProfilerApi range), and adds
-        --trace-fork-before-exec for the dynamo frontend."""
+        a named start/stop session (no cudaProfilerApi range)."""
         from srtctl.core.schema import ProfilingConfig
 
         monkeypatch.delenv("SRTCTL_NSYS_BIN", raising=False)
@@ -90,20 +93,19 @@ class TestProfilingConfig:
         assert profiling.is_nsys_time is True
 
         prefix = profiling.get_nsys_prefix("/out/w0", frontend_type="dynamo", backend_type="vllm")
-        assert prefix[0] == "nsys"
-        assert "profile" in prefix
-        assert "--delay" in prefix and "120" in prefix
-        assert "--duration" in prefix and "30" in prefix
+        assert prefix[0] == "/srtctl-runtime/nsys_time_session.sh"
+        assert prefix[1] == "nsys"
+        assert prefix[2].startswith("srt_")
+        assert "%q" not in prefix[2]
+        assert prefix[3:5] == ["120", "30"]
+        assert prefix[5] == "cuda-sw,nvtx"
+        assert prefix[-1] == "--"
         # Time-based capture — no cudaProfilerApi capture-range trigger.
         assert "cudaProfilerApi" not in prefix
         assert "--capture-range-end" not in prefix
-        assert "--trace-fork-before-exec=true" in prefix
-        # Output file is the last token (-o <output>).
-        assert prefix[-1] == "/out/w0"
-
-        # sglangrouter / non-dynamo frontend omits the fork flag.
+        # Frontend choice does not change the session mechanism.
         prefix_router = profiling.get_nsys_prefix("/out/w0", frontend_type="sglangrouter", backend_type="vllm")
-        assert "--trace-fork-before-exec=true" not in prefix_router
+        assert prefix_router == prefix
 
     def test_nsys_binary_override(self, monkeypatch):
         """SRTCTL_NSYS_BIN overrides the nsys executable across every code path."""
@@ -116,9 +118,62 @@ class TestProfilingConfig:
         time_prefix = ProfilingConfig(type="nsys-time", delay_secs=1, duration_secs=1).get_nsys_prefix(
             "/out/w0", backend_type="vllm"
         )
-        assert time_prefix[0] == "/opt/nsight/nsys"
+        assert time_prefix[:2] == [
+            "/srtctl-runtime/nsys_time_session.sh",
+            "/opt/nsight/nsys",
+        ]
         # trtllm path
         assert ProfilingConfig(type="nsys").get_nsys_prefix("/out/w0", backend_type="trtllm")[0] == "/opt/nsight/nsys"
+
+    def test_nsys_time_session_preserves_application_lifetime(self, tmp_path):
+        """Stopping collection must not stop the serving application."""
+        log_path = tmp_path / "nsys.log"
+        application_done = tmp_path / "application.done"
+        fake_nsys = tmp_path / "nsys"
+        fake_nsys.write_text(
+            """#!/bin/bash
+set -euo pipefail
+command="$1"
+shift
+if [ "$command" = start ] && [ ! -f "$NSYS_TEST_READY" ]; then
+    exit 1
+fi
+printf '%s\\n' "$command" >> "$NSYS_TEST_LOG"
+if [ "$command" = launch ]; then
+    touch "$NSYS_TEST_READY"
+    while [[ "$1" == --* ]]; do shift; done
+    exec "$@"
+fi
+"""
+        )
+        fake_nsys.chmod(0o755)
+        application = tmp_path / "application"
+        application.write_text(f"#!/bin/bash\nsleep 0.2\nprintf done > {application_done!s}\n")
+        application.chmod(0o755)
+        wrapper = Path(__file__).parents[1] / "src/srtctl/runtime_scripts/nsys_time_session.sh"
+
+        subprocess.run(
+            [
+                wrapper,
+                fake_nsys,
+                "test-session",
+                "0",
+                "0.05",
+                "cuda-sw,nvtx",
+                str(tmp_path / "profile"),
+                "--",
+                application,
+            ],
+            check=True,
+            env={
+                **os.environ,
+                "NSYS_TEST_LOG": str(log_path),
+                "NSYS_TEST_READY": str(tmp_path / "nsys.ready"),
+            },
+        )
+
+        assert log_path.read_text().splitlines() == ["launch", "start", "stop"]
+        assert application_done.read_text() == "done"
 
     def test_torch_profiling(self):
         """Test torch profiling configuration."""
@@ -326,6 +381,30 @@ class TestProfilingValidation:
         )
         assert config.profiling.is_nsys_time
         assert config.backend.type != "trtllm"
+
+    @pytest.mark.parametrize(
+        ("delay_secs", "duration_secs", "message"),
+        [(-1, 1, "delay_secs must be non-negative"), (0, 0, "duration_secs must be positive")],
+    )
+    def test_nsys_time_rejects_invalid_window(self, delay_secs, duration_secs, message):
+        """A named-session window must have a valid wall-clock interval."""
+        from marshmallow import ValidationError
+
+        from srtctl.core.schema import ModelConfig, ProfilingConfig, ResourceConfig, SrtConfig
+
+        with pytest.raises(ValidationError, match=message):
+            SrtConfig(
+                name="test",
+                model=ModelConfig(path="/model", container="/container", precision="fp8"),
+                resources=ResourceConfig(
+                    gpu_type="gb200",
+                    prefill_nodes=1,
+                    decode_nodes=1,
+                    prefill_workers=1,
+                    decode_workers=1,
+                ),
+                profiling=ProfilingConfig(type="nsys-time", delay_secs=delay_secs, duration_secs=duration_secs),
+            )
 
     def test_vllm_profiler_config_in_vllm_config_rejected(self):
         """profiler-config.* in vllm_config conflicts with the auto-injected one."""

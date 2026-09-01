@@ -800,7 +800,7 @@ class ProfilingConfig:
 
     type: str = "none"  # "none", "nsys", "nsys-time", or "torch"
 
-    # Extra arguments passed to nsys profile (appended before `-o`; see get_nsys_prefix)
+    # Extra arguments passed to nsys profile, or to nsys start for nsys-time.
     extra_nsys_args: list[str] | None = None
 
     # Phase-specific profiling step configs (not used for nsys-time)
@@ -808,9 +808,9 @@ class ProfilingConfig:
     decode: ProfilingPhaseConfig | None = None
     aggregated: ProfilingPhaseConfig | None = None
 
-    # nsys-time fields: time-based capture window, same on all workers
-    delay_secs: int | None = None  # nsys --delay: seconds from worker launch before capture starts
-    duration_secs: int | None = None  # nsys --duration: seconds to capture after delay
+    # nsys-time fields: named-session capture window, same on all workers
+    delay_secs: int | None = None  # Seconds from worker launch before collection starts
+    duration_secs: int | None = None  # Seconds to collect before finalizing the report
     benchmark_duration_secs: int = 300  # total traffic generation duration (must cover delay + duration)
 
     @property
@@ -825,7 +825,7 @@ class ProfilingConfig:
 
     @property
     def is_nsys_time(self) -> bool:
-        """Check if using time-based nsys capture (--delay/--duration instead of cudaProfilerApi)."""
+        """Check if using a wall-clock nsys capture instead of cudaProfilerApi."""
         return self.type == "nsys-time"
 
     @property
@@ -897,21 +897,10 @@ class ProfilingConfig:
         """Get nsys command prefix for TRTLLM workers.
 
         Supports both iteration-based (cudaProfilerApi trigger via TLLM_PROFILE_START_STOP)
-        and time-based (--delay/--duration) capture modes.
+        and wall-clock named-session capture modes.
         """
         if self.is_nsys_time:
-            cmd = [
-                self.nsys_binary,
-                "profile",
-                "-t",
-                "cuda,nvtx,ucx",
-                "--sample=none",
-                "--cuda-graph-trace=node",
-            ]
-            if self.delay_secs is not None:
-                cmd += ["--delay", str(self.delay_secs)]
-            if self.duration_secs is not None:
-                cmd += ["--duration", str(self.duration_secs)]
+            return self._get_nsys_time_prefix(output_file, trace="cuda-sw,nvtx,ucx")
         else:
             # Iteration-based: TLLM_PROFILE_START_STOP env var triggers cudaProfilerStart/Stop
             cmd = [
@@ -942,6 +931,26 @@ class ProfilingConfig:
         ]
         return cmd
 
+    def _get_nsys_time_prefix(self, output_file: str, *, trace: str) -> list[str]:
+        """Launch a named session whose collection window does not own worker lifetime."""
+        if self.delay_secs is None or self.duration_secs is None:
+            raise ValueError("nsys-time requires delay_secs and duration_secs")
+        identity = hashlib.sha256(output_file.encode()).hexdigest()[:16]
+        session_seed = f"srt_{identity}"
+        cmd = [
+            "/srtctl-runtime/nsys_time_session.sh",
+            self.nsys_binary,
+            session_seed,
+            str(self.delay_secs),
+            str(self.duration_secs),
+            trace,
+            output_file,
+        ]
+        if self.extra_nsys_args:
+            cmd.extend(self.extra_nsys_args)
+        cmd.append("--")
+        return cmd
+
     def get_nsys_prefix(
         self, output_file: str, *, frontend_type: str | None = None, backend_type: str | None = None
     ) -> list[str]:
@@ -963,31 +972,10 @@ class ProfilingConfig:
         if backend_type == "trtllm":
             return self._get_nsys_prefix_trtllm(output_file)
 
-        # Time-based capture for non-TRTLLM backends (vllm, sglang). Required
-        # for vllm+dynamo because dynamo's HTTP frontend doesn't proxy
-        # /start_profile to the vllm worker (returns 404), so cudaProfilerApi
-        # capture can't be triggered from the bench client — we drive capture
-        # purely by --delay/--duration instead.
+        # Named-session capture for non-TRTLLM backends (vllm, sglang). This
+        # path is independent of framework HTTP endpoints and profiler APIs.
         if self.is_nsys_time:
-            cmd = [
-                self.nsys_binary,
-                "profile",
-                "-t",
-                "cuda,nvtx",
-                "--cuda-graph-trace=node",
-                "--force-overwrite",
-                "true",
-            ]
-            if self.delay_secs is not None:
-                cmd += ["--delay", str(self.delay_secs)]
-            if self.duration_secs is not None:
-                cmd += ["--duration", str(self.duration_secs)]
-            if self.extra_nsys_args:
-                cmd.extend(self.extra_nsys_args)
-            cmd.extend(["-o", output_file])
-            if frontend_type == "dynamo":
-                cmd.insert(-2, "--trace-fork-before-exec=true")
-            return cmd
+            return self._get_nsys_time_prefix(output_file, trace="cuda-sw,nvtx")
 
         # SGLang / default path — keep existing behavior
         cmd = [
@@ -1921,11 +1909,8 @@ class SrtConfig:
         if prof.is_torch and backend_type == "trtllm":
             raise ValidationError("torch profiling is not supported for the trtllm backend; use nsys instead")
 
-        # nsys-time (time-based capture via nsys --delay/--duration) is supported
-        # for all backends. get_nsys_prefix() emits a time-based command for the
-        # non-TRTLLM (vllm/sglang) path too, which is the only option for
-        # vllm+dynamo where /start_profile returns 404 and cudaProfilerApi-triggered
-        # capture can't fire.
+        # nsys-time uses a named launch/start/stop session for every backend. It
+        # does not depend on a framework profiling endpoint or CUDA profiler API.
 
         # nsys-time uses top-level delay/duration — no per-phase step configs needed
         if prof.is_nsys_time:
@@ -1933,6 +1918,10 @@ class SrtConfig:
                 raise ValidationError(
                     "profiling.delay_secs and profiling.duration_secs are required for nsys-time mode"
                 )
+            if prof.delay_secs < 0:
+                raise ValidationError("profiling.delay_secs must be non-negative")
+            if prof.duration_secs <= 0:
+                raise ValidationError("profiling.duration_secs must be positive")
             return
 
         r = self.resources
