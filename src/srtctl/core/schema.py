@@ -780,18 +780,6 @@ class BenchmarkConfig:
     agentperf_config: str | None = (
         None  # Container path to the client's workload YAML (endpoint/model/concurrency injected)
     )
-    # MLPerf Inference benchmark fields (NVIDIA nv_mlpinf submission harness)
-    mlperf_harness_dir: str | None = None  # Container path to mlperf-inference/closed/NVIDIA (mount via extra_mount)
-    mlperf_benchmark: str | None = None  # nv_mlpinf benchmark name (e.g. "deepseek-r1", "gpt-oss-120b")
-    mlperf_scenario: str = "Offline"  # LoadGen scenario: "Offline", "Server", or "Interactive"
-    mlperf_mode: str = "PerformanceOnly"  # LoadGen test mode: "PerformanceOnly" or "AccuracyOnly"
-    # Which llmlib core issues the requests. Both speak OpenAI over HTTP.
-    # trtllm_endpoint is the default because it is what the submission repo's
-    # own Dynamo sflow task runs, and because dynamo_endpoint is a dangling
-    # registry entry in some checkouts (see the mlperf docs section).
-    mlperf_core_type: str = "trtllm_endpoint"
-    mlperf_system_name: str | None = None  # --system_name; nv_mlpinf derives one when unset
-    mlperf_scratch_path: str | None = None  # MLPERF_SCRATCH_PATH: dataset/model root the harness reads
     # Trace replay benchmark fields (uses aiperf with mooncake_trace dataset type)
     trace_file: str | None = None  # Path to trace JSONL file (container path, e.g., /traces/dataset.jsonl)
     custom_tokenizer: str | None = None  # Custom tokenizer class (e.g., "module.path.ClassName")
@@ -806,6 +794,10 @@ class BenchmarkConfig:
     # srtctl.benchmarks.custom.CustomBenchmarkRunner for details.
     command: str | None = None
     container_image: str | None = None
+    # Name of a bundled results normalizer under benchmarks/scripts/<name>/rollup.py.
+    # Built-in types find theirs by type name; a `custom` benchmark has no type
+    # to look up, so this is how it opts into one.
+    rollup: str | None = None
     env: dict[str, str] = field(default_factory=dict)
     # aiperf pip install spec (e.g., "aiperf>=0.7.0", "aiperf @ git+https://...@commit")
     # If set, runs pip install <spec> before benchmarking. Upgrades if already installed.

@@ -2,32 +2,56 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# MLPerf Inference (LoadGen) benchmark, driven by NVIDIA's nv_mlpinf harness.
-# srt-slurm owns the deployment; this script installs the harness into an
-# isolated job-scoped runtime and points it at the ready frontend.
+# MLPerf Inference (LoadGen) via NVIDIA's nv_mlpinf submission harness.
+#
+# Driven as a `custom` benchmark rather than a first-class type, deliberately.
+# Everything below encodes the contract of one *version* of nv_mlpinf - which
+# directories it wants, which cores it implements, where it resolves paths from
+# - and that contract moves on the harness's schedule, not srt-slurm's. Keeping
+# it in a script means whoever hits a breakage can fix it here, instead of
+# waiting for a schema change in another repo. (Concretely: core_type
+# dynamo_endpoint works on nv_mlpinf main and is a dangling registry entry on
+# the branch currently in use. A schema enum would have to be right about both.)
 #
 # The invocation mirrors the submission repo's own sflow task
 # (closed/NVIDIA/scaleout/sflow/templates/dynamo_disagg_loadgen.yaml), so a run
 # here and a run there differ in who deployed the cluster, not in how it is
 # measured.
+#
+# Usage from a recipe:
+#
+#   benchmark:
+#     type: custom
+#     command: bash /srtctl-benchmarks/mlperf/bench.sh
+#     rollup: mlperf
+#     env:
+#       MLPERF_HARNESS_DIR: /mlperf-inference     # mlperf-inference/closed/NVIDIA
+#       MLPERF_BENCHMARK: deepseek-r1
+#       MLPERF_SYSTEM_NAME: GR100-NVL72_GR100-288GB_aarch64x8
+#       MLPERF_SCRATCH_PATH: /mlperf-scratch
+#       MLPERF_SCENARIO: Interactive              # Offline (default) | Server | Interactive
+#       MLPERF_TEST_MODE: PerformanceOnly         # PerformanceOnly (default) | AccuracyOnly
+#
+# The endpoint is not configured here: srt-slurm injects SRT_FRONTEND_HOST and
+# SRT_FRONTEND_PORT into every custom benchmark.
 
 set -euo pipefail
 
-ENDPOINT=$1          # host:port of the frontend (no scheme — nv_mlpinf adds it)
-HARNESS_DIR=$2       # mlperf-inference/closed/NVIDIA
-BENCHMARK=$3
-SCENARIO=$4
-TEST_MODE=$5
-CORE_TYPE=$6
-SYSTEM_NAME=${7:-${SYSTEM_NAME:-}}
-SCRATCH_PATH=${8:-}
+HARNESS_DIR=${MLPERF_HARNESS_DIR:-}
+BENCHMARK=${MLPERF_BENCHMARK:-}
+SCENARIO=${MLPERF_SCENARIO:-Offline}
+TEST_MODE=${MLPERF_TEST_MODE:-PerformanceOnly}
+CORE_TYPE=${MLPERF_CORE_TYPE:-trtllm_endpoint}
+SYSTEM_NAME=${MLPERF_SYSTEM_NAME:-${SYSTEM_NAME:-}}
+SCRATCH_PATH=${MLPERF_SCRATCH_PATH:-}
 
-# When the client runs on a different node than the frontend, localhost is
-# wrong; benchmark_stage injects the frontend's real host/port.
-if [[ -n "${SRT_FRONTEND_HOST:-}" ]]; then
-  PORT_FROM_ENDPOINT=${ENDPOINT##*:}
-  ENDPOINT="${SRT_FRONTEND_HOST}:${SRT_FRONTEND_PORT:-$PORT_FROM_ENDPOINT}"
-fi
+[[ -n "$HARNESS_DIR" ]] || { echo "ERROR: MLPERF_HARNESS_DIR is required (mlperf-inference/closed/NVIDIA, mounted via extra_mount)" >&2; exit 1; }
+[[ -n "$BENCHMARK" ]] || { echo "ERROR: MLPERF_BENCHMARK is required (e.g. deepseek-r1)" >&2; exit 1; }
+
+# srt-slurm injects the frontend it stood up; there is no mock or default here,
+# so a missing injection is a setup error rather than a silent localhost run.
+[[ -n "${SRT_FRONTEND_HOST:-}" ]] || { echo "ERROR: SRT_FRONTEND_HOST is not set - this script expects to run as a benchmark.type=custom step" >&2; exit 1; }
+ENDPOINT="${SRT_FRONTEND_HOST}:${SRT_FRONTEND_PORT:-8000}"
 
 [[ -d "$HARNESS_DIR" ]] || { echo "ERROR: mlperf_harness_dir $HARNESS_DIR not found in container (mount via extra_mount)" >&2; exit 1; }
 [[ -d "$HARNESS_DIR/src/nv_mlpinf" ]] || { echo "ERROR: $HARNESS_DIR has no src/nv_mlpinf — mlperf_harness_dir must point at mlperf-inference/closed/NVIDIA" >&2; exit 1; }

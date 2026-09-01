@@ -6,14 +6,11 @@
 import importlib.util
 import json
 from pathlib import Path
-from unittest.mock import MagicMock
 
-from srtctl.benchmarks import get_runner, list_benchmarks
-from srtctl.benchmarks import mlperf as mlperf_runner
+from srtctl.benchmarks import list_benchmarks
 from srtctl.benchmarks.base import SCRIPTS_DIR
 from srtctl.core.schema import (
     BenchmarkConfig,
-    FrontendConfig,
     ModelConfig,
     ResourceConfig,
     SrtConfig,
@@ -92,149 +89,50 @@ target_qps : 10
 """
 
 
-def _config(frontend_type="dynamo", **benchmark_kwargs):
-    return SrtConfig(
-        name="test",
-        model=ModelConfig(path="/model/deepseek-r1", container="/image", precision="fp4"),
-        resources=ResourceConfig(gpu_type="gb300"),
-        frontend=FrontendConfig(type=frontend_type),
-        benchmark=BenchmarkConfig(type="mlperf", **benchmark_kwargs),
-    )
+class TestMLPerfScript:
+    """The MLPerf harness driver is a script, not a benchmark type.
 
+    It is driven as `benchmark.type: custom` so that nv_mlpinf's contract -
+    which moves on the harness's schedule, not srt-slurm's - stays editable by
+    whoever hits a breakage, instead of being frozen into this repo's schema.
+    """
 
-def _valid_kwargs(**overrides):
-    kwargs = {
-        "mlperf_harness_dir": "/mlperf-inference/closed/NVIDIA",
-        "mlperf_benchmark": "deepseek-r1",
-    }
-    kwargs.update(overrides)
-    return kwargs
+    def test_no_mlperf_benchmark_type(self):
+        """mlperf is deliberately not a registered benchmark type."""
+        assert "mlperf" not in list_benchmarks()
 
-
-class TestMLPerfRunner:
-    """Test the MLPerf LoadGen benchmark runner."""
-
-    def test_in_registry(self):
-        """mlperf is registered in the benchmark list."""
-        assert "mlperf" in list_benchmarks()
-
-    def test_get_runner(self):
-        """Can get a runner for mlperf."""
-        runner = get_runner("mlperf")
-        assert runner.name == "MLPerf"
-        assert "mlperf" in runner.script_path
-
-    def test_validate_missing_harness_dir(self):
-        """Validates that mlperf_harness_dir is required."""
-        errors = get_runner("mlperf").validate_config(_config(**_valid_kwargs(mlperf_harness_dir=None)))
-        assert any("mlperf_harness_dir" in e for e in errors)
-
-    def test_validate_missing_benchmark(self):
-        """Validates that mlperf_benchmark is required."""
-        errors = get_runner("mlperf").validate_config(_config(**_valid_kwargs(mlperf_benchmark=None)))
-        assert any("mlperf_benchmark" in e for e in errors)
-
-    def test_validate_rejects_unknown_scenario(self):
-        """Scenario names are LoadGen's, capitalized."""
-        errors = get_runner("mlperf").validate_config(_config(**_valid_kwargs(mlperf_scenario="offline")))
-        assert any("mlperf_scenario" in e for e in errors)
-
-    def test_validate_rejects_unknown_mode(self):
-        """Test modes are LoadGen's PerformanceOnly / AccuracyOnly."""
-        errors = get_runner("mlperf").validate_config(_config(**_valid_kwargs(mlperf_mode="performance")))
-        assert any("mlperf_mode" in e for e in errors)
-
-    def test_validate_rejects_unknown_core_type(self):
-        """Only the two endpoint cores can drive an already-deployed cluster."""
-        errors = get_runner("mlperf").validate_config(_config(**_valid_kwargs(mlperf_core_type="trtllm_executor")))
-        assert any("mlperf_core_type" in e for e in errors)
-
-    def test_validate_accepts_openai_frontends(self):
-        """Both cores issue /v1/completions, so any OpenAI frontend works.
-
-        Only the frontends that pair with the default backend are constructed
-        here; trtllm_serve and vllm carry their own backend requirements that
-        SrtConfig enforces before this runner ever sees the config.
-        """
-        for frontend in ("dynamo", "sglang"):
-            errors = get_runner("mlperf").validate_config(_config(frontend_type=frontend, **_valid_kwargs()))
-            assert errors == [], f"{frontend} should be accepted: {errors}"
-        assert {"trtllm_serve", "vllm", "vllm-router"} <= mlperf_runner._OPENAI_FRONTENDS
-
-    def test_validate_rejects_non_openai_frontend(self):
-        """A frontend that does not serve /v1/completions fails at config load."""
-        errors = get_runner("mlperf").validate_config(_config(frontend_type="mystery", **_valid_kwargs()))
-        assert any("frontend.type" in e for e in errors)
-
-    def test_validate_valid(self):
-        """A fully specified config passes validation."""
-        errors = get_runner("mlperf").validate_config(
-            _config(
-                **_valid_kwargs(
-                    mlperf_scenario="Server",
-                    mlperf_mode="AccuracyOnly",
-                    mlperf_core_type="dynamo_endpoint",
-                    mlperf_system_name="GB300-NVL72",
-                    mlperf_scratch_path="/scratch/mlperf",
-                )
-            )
-        )
-        assert errors == []
-
-    def test_build_command(self):
-        """Build command carries every harness input positionally."""
-        runtime = MagicMock()
-        runtime.frontend_port = 8000
-        config = _config(
-            **_valid_kwargs(
-                mlperf_scenario="Server",
-                mlperf_mode="AccuracyOnly",
-                mlperf_core_type="dynamo_endpoint",
-                mlperf_system_name="GB300-NVL72",
-                mlperf_scratch_path="/scratch/mlperf",
-            )
-        )
-        cmd = get_runner("mlperf").build_command(config, runtime)
-        assert cmd[0] == "bash"
-        assert cmd[1] == "/srtctl-benchmarks/mlperf/bench.sh"
-        # host:port, not a URL — nv_mlpinf builds the base URL itself.
-        assert cmd[2] == "localhost:8000"
-        assert cmd[3] == "/mlperf-inference/closed/NVIDIA"
-        assert cmd[4] == "deepseek-r1"
-        assert cmd[5] == "Server"
-        assert cmd[6] == "AccuracyOnly"
-        assert cmd[7] == "dynamo_endpoint"
-        assert cmd[8] == "GB300-NVL72"
-        assert cmd[9] == "/scratch/mlperf"
-
-    def test_build_command_defaults(self):
-        """Optional inputs become empty positionals, not missing arguments."""
-        runtime = MagicMock()
-        runtime.frontend_port = 8000
-        cmd = get_runner("mlperf").build_command(_config(**_valid_kwargs()), runtime)
-        assert cmd[5] == "Offline"
-        assert cmd[6] == "PerformanceOnly"
-        assert cmd[7] == "trtllm_endpoint"
-        assert cmd[8] == ""
-        assert cmd[9] == ""
-
-    def test_script_exists(self):
-        """mlperf bench.sh and rollup.py ship with the package."""
+    def test_script_ships_with_the_package(self):
+        """bench.sh and rollup.py are mounted at /srtctl-benchmarks for every type."""
         assert (SCRIPTS_DIR / "mlperf" / "bench.sh").exists()
         assert (SCRIPTS_DIR / "mlperf" / "rollup.py").exists()
 
-    def test_environment_passthrough(self):
-        """benchmark.env reaches the harness environment."""
-        config = _config(**_valid_kwargs(env={"MLPERF_EXTRA_ARGS": "--server_target_qps=40"}))
-        env = get_runner("mlperf").get_environment(config, MagicMock())
-        assert env["MLPERF_EXTRA_ARGS"] == "--server_target_qps=40"
+    def test_script_is_env_driven(self):
+        """A custom benchmark passes env, not argv, so the script reads env."""
+        script = (SCRIPTS_DIR / "mlperf" / "bench.sh").read_text()
+        for var in ("MLPERF_HARNESS_DIR", "MLPERF_BENCHMARK", "MLPERF_SCENARIO", "MLPERF_TEST_MODE"):
+            assert var in script, f"{var} not read by bench.sh"
 
+    def test_script_requires_an_injected_frontend(self):
+        """No mock or localhost default: a missing injection must be an error."""
+        script = (SCRIPTS_DIR / "mlperf" / "bench.sh").read_text()
+        assert "SRT_FRONTEND_HOST is not set" in script
 
-def _write_run(log_dir: Path, scenario: str, mode: str, summary: str) -> Path:
-    run_dir = log_dir / "mlperf" / scenario / mode
-    run_dir.mkdir(parents=True)
-    (run_dir / "mlperf_log_summary.txt").write_text(summary)
-    return run_dir
+    def test_rollup_field_selects_a_bundled_normalizer(self):
+        """benchmark.rollup is how a custom benchmark opts into a rollup."""
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model/deepseek-r1", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="gb300"),
+            benchmark=BenchmarkConfig(
+                type="custom", command="bash /srtctl-benchmarks/mlperf/bench.sh", rollup="mlperf"
+            ),
+        )
+        assert config.benchmark.rollup == "mlperf"
+        assert (SCRIPTS_DIR / config.benchmark.rollup / "rollup.py").exists()
+
+    def test_rollup_defaults_to_unset(self):
+        """Most benchmarks have no rollup, and that stays silent."""
+        assert BenchmarkConfig(type="custom").rollup is None
 
 
 # Verbatim from an AccuracyOnly run: LoadGen writes no sections at all in this
@@ -244,6 +142,13 @@ No warnings encountered during test.
 
 No errors encountered during test.
 """
+
+
+def _write_run(log_dir: Path, scenario: str, mode: str, summary: str) -> Path:
+    run_dir = log_dir / "mlperf" / scenario / mode
+    run_dir.mkdir(parents=True)
+    (run_dir / "mlperf_log_summary.txt").write_text(summary)
+    return run_dir
 
 
 class TestParseSummary:
