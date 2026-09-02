@@ -393,6 +393,33 @@ def show_config_details(config: SrtConfig) -> None:
                 "outlives this allocation and is inherited by the next job on these nodes."
             )
 
+    # --- Auxiliary services (generic sidecar processes, see docs/auxiliary-services.md) ---
+    #
+    # Printed as plain lines rather than a Table/Panel: repo URLs and multi-arg commands
+    # routinely exceed a narrow (80-col, non-tty) console width, and a Table wraps or
+    # ellipsis-truncates cell content to fit -- silently splitting or dropping characters.
+    # crop=False keeps each value intact on one line even when that overflows the console.
+    if config.auxiliary_services:
+        console.print("[bold cyan]Auxiliary Services:[/]")
+        console.print(
+            "  [dim]launched once, on the head node, after workers+frontend are healthy "
+            "(same placement as Tachometer)[/]"
+        )
+        for service in config.auxiliary_services:
+            console.print(f"  [cyan]{service.name}[/]")
+            console.print(f"    [yellow]command:[/] {shlex.join(service.command)}", crop=False)
+            console.print(f"    [yellow]container_image:[/] {service.container_image or '<job container>'}")
+            if service.source is not None:
+                console.print(f"    [yellow]source.git:[/] {service.source.git}", crop=False)
+                console.print(f"    [yellow]source.rev:[/] {service.source.rev}", crop=False)
+                if service.source.path:
+                    console.print(f"    [yellow]source.path:[/] {service.source.path}")
+            if service.build_command:
+                console.print(f"    [yellow]build_command:[/] {shlex.join(service.build_command)}", crop=False)
+            console.print(f"    [yellow]inherit_discovery_env:[/] {str(service.inherit_discovery_env).lower()}")
+            for var, val in sorted(service.env.items()):
+                console.print(f"    [yellow]env.{var}:[/] {val}", crop=False)
+
     # --- srun options ---
     if config.srun_options:
         opts = " ".join(f"--{k}={v}" if v else f"--{k}" for k, v in config.srun_options.items())

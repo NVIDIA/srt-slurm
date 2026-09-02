@@ -3,6 +3,7 @@
 
 """Direct-only execution stages used by the standalone runner."""
 
+from .auxiliary_stage import AuxiliaryServiceStageMixin
 from .benchmark_stage import BenchmarkStageMixin
 from .infrastructure_stage import InfrastructureStageMixin
 from .postprocess_stage import PostProcessStageMixin
@@ -11,6 +12,7 @@ from .serving_stage import ServingStageMixin, router_counts
 from .telemetry_stage import TelemetryStageMixin
 
 __all__ = [
+    "AuxiliaryServiceStageMixin",
     "BenchmarkStageMixin",
     "InfrastructureStageMixin",
     "PostProcessStageMixin",

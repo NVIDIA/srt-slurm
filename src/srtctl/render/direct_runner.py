@@ -27,6 +27,7 @@ from typing import Any
 
 if __package__:
     from .direct_stages import (
+        AuxiliaryServiceStageMixin,
         BenchmarkStageMixin,
         InfrastructureStageMixin,
         PostProcessStageMixin,
@@ -41,6 +42,7 @@ else:
     # control-plane dependencies. Load its stdlib-only sibling package instead.
     stages = importlib.import_module("direct_stages")
     common = importlib.import_module("direct_stages.common")
+    AuxiliaryServiceStageMixin = stages.AuxiliaryServiceStageMixin
     BenchmarkStageMixin = stages.BenchmarkStageMixin
     InfrastructureStageMixin = stages.InfrastructureStageMixin
     PostProcessStageMixin = stages.PostProcessStageMixin
@@ -60,6 +62,7 @@ class DirectRunner(
     InfrastructureStageMixin,
     ServingStageMixin,
     TelemetryStageMixin,
+    AuxiliaryServiceStageMixin,
     BenchmarkStageMixin,
     PostProcessStageMixin,
 ):
@@ -78,6 +81,7 @@ class DirectRunner(
         self.processes: list[ManagedProcess] = []
         self.tachometer: ManagedProcess | None = None
         self.tachometer_local_dir: Path | None = None
+        self.auxiliary_services: dict[str, ManagedProcess] = {}
         self._configure_environment()
 
     def _configure_environment(self) -> None:
@@ -215,6 +219,7 @@ class DirectRunner(
         self._start_mooncake()
         self._start_workers_and_router()
         self._smoke_chat()
+        self._start_auxiliary_services()
         self._start_tachometer()
         self._run_benchmark()
 

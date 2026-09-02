@@ -1721,6 +1721,109 @@ class HealthCheckConfig:
 
 
 @dataclass(frozen=True)
+class AuxiliaryServiceSourceConfig:
+    """Git source to build an auxiliary service from before launching it.
+
+    Modeled on ``DynamoConfig``'s ``hash``/``top_of_tree`` source-build fields
+    (see ``_hash_cached_source_install``): a repo URL plus an immutable rev so
+    the build is reproducible and cacheable. Unlike ``DynamoConfig``, this has
+    no PyPI/wheel fallback -- auxiliary services are, by definition, code that
+    is not published anywhere yet.
+
+    Attributes:
+        git: Repository URL to clone (``https://github.com/...``).
+        rev: Immutable ref to check out -- a commit SHA, tag, or a
+            ``refs/pull/<n>/head`` ref for an unmerged PR. Branch names are
+            rejected because they move out from under a cached build.
+        path: Optional subdirectory within the clone that ``build_command``
+            and ``command`` should treat as the working directory (e.g. a
+            component living in a monorepo subfolder). Defaults to the repo
+            root.
+    """
+
+    git: str
+    rev: str
+    path: str | None = None
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+    def __post_init__(self) -> None:
+        if not self.git.strip():
+            raise ValidationError("auxiliary_services[].source.git must be a non-empty repository URL")
+        if not self.rev.strip():
+            raise ValidationError("auxiliary_services[].source.rev must be a non-empty immutable ref")
+        if self.rev.strip() in ("main", "master", "HEAD"):
+            raise ValidationError(
+                f"auxiliary_services[].source.rev must be an immutable ref (commit SHA, tag, or "
+                f"refs/pull/<n>/head), not a moving branch name: {self.rev!r}"
+            )
+        if self.path is not None and not self.path.strip():
+            raise ValidationError("auxiliary_services[].source.path must not be blank when set")
+
+
+@dataclass(frozen=True)
+class AuxiliaryServiceConfig:
+    """A generic, user-declared sidecar process launched alongside the job.
+
+    The auxiliary-services block is the bolt-on escape hatch for anything that
+    isn't one of srtctl's built-in components (workers, frontend, benchmark,
+    Tachometer, mooncake master, ...): declare a container/command/env, same
+    shape as ``BenchmarkConfig``'s ``type: custom``, but launched once as a
+    long-running process instead of run-to-completion. See
+    ``docs/auxiliary-services.md``.
+
+    Services launch in the order they're declared in the ``auxiliary_services``
+    YAML list, after workers/frontend are confirmed ready (see
+    ``docs/auxiliary-services.md``).
+
+    Attributes:
+        name: Unique label for this service. Used for logs (``<name>.log``)
+            and process tracking.
+        command: Argv to launch the service with (not shell-interpreted).
+        container_image: Container to launch the service in. Defaults to the
+            job's main container when unset.
+        env: Extra environment variables merged on top of any discovery env
+            (see ``inherit_discovery_env``).
+        source: Optional git source to build before ``command`` is launched.
+        build_command: Argv run once (inside the cloned ``source``) to build
+            the service before it's launched, e.g. ``maturin develop --uv``.
+            Only meaningful when ``source`` is set.
+        inherit_discovery_env: When True (default), inject ``ETCD_ENDPOINTS``
+            and ``NATS_SERVER`` -- the same discovery env the ``dynamo``
+            frontend type receives -- so the service can register with the
+            same etcd/nats the rest of the job uses.
+    """
+
+    name: str
+    command: list[str]
+    container_image: str | None = None
+    env: dict[str, str] = field(default_factory=dict)
+    source: AuxiliaryServiceSourceConfig | None = None
+    build_command: list[str] | None = None
+    inherit_discovery_env: bool = True
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+    def __post_init__(self) -> None:
+        if not self.name.strip():
+            raise ValidationError("auxiliary_services[].name must be a non-empty string")
+        if not self.command:
+            raise ValidationError(f"auxiliary_services[{self.name}].command must be non-empty")
+        if any(not str(part).strip() for part in self.command):
+            raise ValidationError(f"auxiliary_services[{self.name}].command must not contain empty arguments")
+        if self.build_command is not None and not self.build_command:
+            raise ValidationError(
+                f"auxiliary_services[{self.name}].build_command, if set, must be non-empty (omit it entirely instead)"
+            )
+        if self.source is not None and not self.build_command:
+            logger.warning(
+                "auxiliary_services[%s] sets 'source' without 'build_command'; the source will be cloned "
+                "but nothing will build it before 'command' runs -- this is almost always a mistake",
+                self.name,
+            )
+
+
+@dataclass(frozen=True)
 class InfraConfig:
     """Infrastructure configuration for etcd/nats placement.
 
@@ -1789,6 +1892,11 @@ class SrtConfig:
     # default_host_setup; a recipe that sets this block replaces that default.
     host_setup: HostSetupConfig = field(default_factory=HostSetupConfig)
 
+    # Generic bolt-on sidecar processes launched alongside the job (e.g. an
+    # experimental router built from an unmerged PR). See
+    # docs/auxiliary-services.md.
+    auxiliary_services: list[AuxiliaryServiceConfig] = field(default_factory=list)
+
     # Virtual identity — declares what *should* be running (verified against fingerprint)
     identity: IdentityConfig = field(default_factory=IdentityConfig)
 
@@ -1810,6 +1918,7 @@ class SrtConfig:
         self._validate_static_router_frontend()
         self._validate_dynamo_sidecar()
         self._validate_host_setup()
+        self._validate_auxiliary_services()
         self._warn_dp_launch_mode()
 
     def _validate_host_setup(self) -> None:
@@ -1831,6 +1940,19 @@ class SrtConfig:
                 "teardown will still run after the job, which is only what you want "
                 "if something outside this recipe set the node state"
             )
+
+    def _validate_auxiliary_services(self) -> None:
+        """Reject auxiliary_services entries that would collide.
+
+        Per-entry checks (empty command, empty name, ...) live on
+        ``AuxiliaryServiceConfig.__post_init__``; this only covers checks that
+        need the whole list -- name uniqueness.
+        """
+        seen: set[str] = set()
+        for service in self.auxiliary_services:
+            if service.name in seen:
+                raise ValidationError(f"auxiliary_services[].name must be unique; duplicate: {service.name!r}")
+            seen.add(service.name)
 
     def _validate_dynamo_sidecar(self) -> None:
         """Validate native sidecar configuration before job submission."""

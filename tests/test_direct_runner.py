@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import tarfile
+import time
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ import pytest
 from srtctl.render import direct_runner
 from srtctl.render.direct_runner import DirectRunInterrupted, DirectRunner, _router_counts
 from srtctl.render.direct_stages import (
+    AuxiliaryServiceStageMixin,
     BenchmarkStageMixin,
     InfrastructureStageMixin,
     PostProcessStageMixin,
@@ -69,6 +71,7 @@ def test_runner_composes_direct_only_stages() -> None:
         InfrastructureStageMixin,
         ServingStageMixin,
         TelemetryStageMixin,
+        AuxiliaryServiceStageMixin,
         BenchmarkStageMixin,
         PostProcessStageMixin,
     )
@@ -141,3 +144,112 @@ def test_dynamo_source_archive_excludes_build_artifacts(tmp_path) -> None:
         names = handle.getnames()
     assert "dynamo/src/main.py" in names
     assert not any("target" in name or ".git" in name for name in names)
+
+
+def _aux_service(**overrides) -> dict[str, object]:
+    service = {
+        "name": "router",
+        "command": [sys.executable, "-c", "print('ok')"],
+        "container_image": None,
+        "env": {},
+        "source": None,
+        "build_command": None,
+        "inherit_discovery_env": True,
+    }
+    service.update(overrides)
+    return service
+
+
+class TestAuxiliaryServiceStage:
+    def test_no_services_is_a_noop(self, tmp_path, monkeypatch) -> None:
+        runner = _runner(tmp_path, monkeypatch)
+
+        runner._start_auxiliary_services()
+
+        assert runner.auxiliary_services == {}
+        assert runner.processes == []
+
+    def test_launches_and_injects_discovery_env(self, tmp_path, monkeypatch) -> None:
+        runner = _runner(tmp_path, monkeypatch)
+        runner.plan["etcd_client_port"] = 2379
+        runner.plan["nats_port"] = 4222
+        marker = tmp_path / "marker.txt"
+        script = (
+            "import os\n"
+            f"open({str(marker)!r}, 'w').write(os.environ.get('ETCD_ENDPOINTS', '') + '|' "
+            "+ os.environ.get('NATS_SERVER', '') + '|' + os.environ.get('FOO', ''))\n"
+            "import time\ntime.sleep(5)\n"
+        )
+        runner.plan["auxiliary_services"] = [_aux_service(command=[sys.executable, "-c", script], env={"FOO": "bar"})]
+
+        runner._start_auxiliary_services()
+
+        assert "router" in runner.auxiliary_services
+        assert runner.auxiliary_services["router"] in runner.processes
+        for _ in range(50):
+            if marker.exists():
+                break
+            time.sleep(0.1)
+        assert marker.read_text(encoding="utf-8") == "http://127.0.0.1:2379|nats://127.0.0.1:4222|bar"
+        runner._cleanup()
+
+    def test_inherit_discovery_env_false_omits_etcd_and_nats(self, tmp_path, monkeypatch) -> None:
+        runner = _runner(tmp_path, monkeypatch)
+        runner.plan["etcd_client_port"] = 2379
+        runner.plan["nats_port"] = 4222
+        marker = tmp_path / "marker.txt"
+        script = (
+            "import os\n"
+            f"open({str(marker)!r}, 'w').write('present' if 'ETCD_ENDPOINTS' in os.environ else 'absent')\n"
+            "import time\ntime.sleep(5)\n"
+        )
+        runner.plan["auxiliary_services"] = [
+            _aux_service(command=[sys.executable, "-c", script], inherit_discovery_env=False)
+        ]
+
+        runner._start_auxiliary_services()
+
+        for _ in range(50):
+            if marker.exists():
+                break
+            time.sleep(0.1)
+        assert marker.read_text(encoding="utf-8") == "absent"
+        runner._cleanup()
+
+    def test_service_exiting_at_startup_dies(self, tmp_path, monkeypatch) -> None:
+        runner = _runner(tmp_path, monkeypatch)
+        runner.plan["etcd_client_port"] = 2379
+        runner.plan["nats_port"] = 4222
+        runner.plan["auxiliary_services"] = [_aux_service(command=[sys.executable, "-c", "import sys; sys.exit(1)"])]
+
+        with pytest.raises(RuntimeError, match="router"):
+            runner._start_auxiliary_services()
+
+        runner._cleanup()
+
+    def test_launches_in_declared_order(self, tmp_path, monkeypatch) -> None:
+        runner = _runner(tmp_path, monkeypatch)
+        runner.plan["etcd_client_port"] = 2379
+        runner.plan["nats_port"] = 4222
+        marker = tmp_path / "order.txt"
+        script = (
+            f"import pathlib; p = pathlib.Path({str(marker)!r}); "
+            "p.write_text((p.read_text() if p.exists() else '') + {name!r})\n"
+            "import time\ntime.sleep(5)\n"
+        )
+        marker.write_text("", encoding="utf-8")
+        runner.plan["auxiliary_services"] = [
+            _aux_service(name="b", command=[sys.executable, "-c", script.format(name="b,")]),
+            _aux_service(name="a", command=[sys.executable, "-c", script.format(name="a,")]),
+            _aux_service(name="c", command=[sys.executable, "-c", script.format(name="c,")]),
+        ]
+
+        runner._start_auxiliary_services()
+
+        assert list(runner.auxiliary_services.keys()) == ["b", "a", "c"]
+        for _ in range(50):
+            if marker.read_text(encoding="utf-8").count(",") == 3:
+                break
+            time.sleep(0.1)
+        assert marker.read_text(encoding="utf-8") == "b,a,c,"
+        runner._cleanup()
