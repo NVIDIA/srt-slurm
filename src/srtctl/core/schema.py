@@ -1769,12 +1769,9 @@ class AuxiliaryServiceConfig:
     isn't one of srtctl's built-in components (workers, frontend, benchmark,
     Tachometer, mooncake master, ...): declare a container/command/env, same
     shape as ``BenchmarkConfig``'s ``type: custom``, but launched once as a
-    long-running process instead of run-to-completion. See
-    ``docs/auxiliary-services.md``.
-
-    Services launch in the order they're declared in the ``auxiliary_services``
-    YAML list, after workers/frontend are confirmed ready (see
-    ``docs/auxiliary-services.md``).
+    long-running process instead of run-to-completion. Services launch in the
+    order they're declared in the ``auxiliary_services`` YAML list, after
+    workers/frontend are confirmed ready. See ``docs/auxiliary-services.md``.
 
     Attributes:
         name: Unique label for this service. Used for logs (``<name>.log``)
