@@ -1,0 +1,185 @@
+# DeepSeek-V4-Pro FP4 on B200 -- agentic aggregated TP8+EP8+DP-attention,
+# HiCache DRAM KV offload, EAGLE MTP -- with a `dynamo.thunderagent_router`
+# auxiliary-service sidecar for program-aware admission control.
+#
+# Source / provenance:
+#   - Parallelism, memory, spec-decode, and hicache flags translated from
+#     SemiAnalysisAI/InferenceX `benchmarks/single_node/agentic/dsv4_fp4_b200_sglang_mtp.sh`
+#     (DP_ATTENTION=true branch), config key
+#     `dsv4-fp4-b200-sglang-agentic-hicache-mtp`, DP-attention search-space entry.
+#   - `auxiliary_services` mechanism from this repo's own PR #374
+#     (docs/auxiliary-services.md); the `dynamo.thunderagent_router` example
+#     there is the structural template for the sidecar block below.
+#
+# ThunderAgent PR dependency:
+#   auxiliary_services[].source pins refs/pull/14000/head (unmerged) rather
+#   than a released ThunderAgent build. That PR fixes a DP-rank routing bug
+#   that ThunderAgent needs to route correctly across DP-attention ranks
+#   (TP=DP=8 here) -- without it, admission decisions can land on the wrong
+#   DP shard. Required for this recipe, not optional. Switch to a merged
+#   commit SHA once the fix lands upstream.
+#
+# ThunderAgent thresholds are intentionally left unset (pause/soft-demote/
+# pause-target/resume-hysteresis all omitted) so it runs on its own built-in
+# defaults (pause=0.95, soft-demote=0.80, pause-target=0.80,
+# resume-hysteresis=0.10) -- do not hand-tune these for this recipe.
+#
+# Investigation notes (see full report for detail):
+#   - Path: no `dynamo.sidecar`/mooncake sidecar config is set below, so
+#     `backends/sglang.py::build_worker_command` takes the default branch
+#     (`get_dynamo_sidecar_config(runtime) is None`) and launches the full
+#     `python3 -m dynamo.sglang` wrapper, NOT the native gRPC sidecar
+#     (`dynamo.sglang.sidecar` + `sglang.launch_server --grpc-port`).
+#   - `--tokenizer-worker-num 8` is dropped entirely: for frontend.type=dynamo,
+#     `dynamo.frontend` owns tokenization end-to-end (workers always get
+#     `--request-plane` and speak token IDs, confirmed by
+#     `src/srtctl/backends/sglang.py` always appending `--request-plane` when
+#     `frontend_type != "sglang"`). SGLang's own HTTP-facing tokenizer manager
+#     is never exercised in this topology, so the flag would be a no-op even
+#     where SGLang itself doesn't reject it.
+#   - `--dist-init-addr` is omitted: this is a single-node (agg_nodes: 1)
+#     TP8/DP8/EP8 topology, so `is_multi_node` is False in
+#     `build_worker_command` and srtctl never injects `--dist-init-addr` --
+#     SGLang negotiates over localhost within the one process group.
+#   - Tool-call / reasoning parser flags use Dynamo's own registry names, not
+#     InferenceX's SGLang-native `--tool-call-parser deepseekv4
+#     --reasoning-parser deepseek-v4`. Confirmed against
+#     `ai-dynamo/dynamo` `components/src/dynamo/common/configuration/groups/runtime_args.py`
+#     (`--dyn-tool-call-parser` / `--dyn-reasoning-parser`, mutually exclusive
+#     with SGLang's native `--tool-call-parser` for tool calls) and
+#     `docs/fern/pages/use-cases/tool-calling-and-reasoning/reasoning-parsing.md`
+#     line 38: "`deepseek-ai/DeepSeek-V4-*`:
+#     `--dyn-tool-call-parser deepseek_v4 --dyn-reasoning-parser deepseek_v4`".
+#     Canonical parser name is `deepseek_v4` (underscore), not InferenceX's
+#     `deepseekv4`/`deepseek-v4` spellings (both are accepted aliases upstream).
+#   - Worker endpoint for ThunderAgent: no `--namespace`/`--endpoint` is passed
+#     to the worker below, so `dynamo.sglang` falls back to its own default
+#     (`components/src/dynamo/sglang/args.py`): namespace defaults to
+#     `dynamo` (`DYN_NAMESPACE` env var, unset here), and aggregated-mode
+#     workers register at `dyn://{namespace}.backend.generate`. That's the
+#     literal endpoint given to thunderagent-router below.
+#   - `--router-block-size 64`: SGLang's `--page-size` is `resolvable=True`
+#     (computed, not a fixed literal default) in upstream `server_args.py`,
+#     so it cannot be read off statically for this exact flag combination.
+#     Not set explicitly in InferenceX's flag list either. 64 is used here
+#     to match this repo's own convention for MLA DeepSeek/Qwen3 recipes
+#     (e.g. `recipes/qwen3-32b/agg-kv-dynamo.yaml` sets `page-size: 64`) and
+#     the value used in this repo's own ThunderAgent doc example -- verify
+#     against the worker's actual resolved page size before relying on this
+#     in production routing.
+#
+# Benchmark ISL/OSL were not part of the translated parameter set (InferenceX
+# runs this as an agentic trajectory-replay workload, not a fixed-length
+# sa-bench dataset) -- only the concurrency sweep was specified. Fill in the
+# real agentic dataset/ISL/OSL before using this for a benchmarked run.
+
+name: "dsv4-pro-fp4-b200-agentic-hicache-mtp-thunderagent"
+
+slurm:
+  partition: b200
+  time_limit: "04:00:00"
+
+model:
+  path: "dsv4-pro"
+  container: "lmsysorg/sglang:nightly-dev-20260827-20621aa1"
+  precision: "fp4"
+
+frontend:
+  type: dynamo
+
+resources:
+  gpu_type: "b200"
+  gpus_per_node: 8
+  agg_nodes: 1
+  agg_workers: 1
+
+backend:
+  type: sglang
+
+  aggregated_environment:
+    PYTHONUNBUFFERED: "1"
+
+  sglang_config:
+    aggregated:
+      served-model-name: "deepseek-ai/DeepSeek-V4-Pro"
+      trust-remote-code: true
+
+      # Parallelism: TP8 + DP8 + EP8, DP-attention, single node / 8 GPU
+      tensor-parallel-size: 8
+      data-parallel-size: 8
+      expert-parallel-size: 8
+      enable-dp-attention: true
+      enable-dp-attention-local-control-broadcast: true
+
+      prefill-decode-interval: 24
+      incremental-streaming-output: true
+      stream-interval: 20
+
+      moe-a2a-backend: "megamoe"
+      enable-deepseek-v4-fp4-indexer: true
+      disable-shared-experts-fusion: true
+      disable-flashinfer-autotune: true
+
+      chunked-prefill-size: 49152
+      swa-full-tokens-ratio: 0.02
+      mem-fraction-static: 0.88
+      max-running-requests: 320
+      cuda-graph-max-bs: 32
+
+      model-loader-extra-config: '{"enable_multithread_load": true}'
+
+      # EAGLE MTP speculative decoding
+      speculative-algorithm: "EAGLE"
+      speculative-num-steps: 3
+      speculative-eagle-topk: 1
+      speculative-num-draft-tokens: 4
+
+      # HiCache DRAM KV offload (ratio=8: DEP8 shards the host pools)
+      enable-hierarchical-cache: true
+      hicache-ratio: 8
+      hicache-write-policy: "write_through"
+      hicache-io-backend: "direct"
+      hicache-mem-layout: "page_first_direct"
+
+      watchdog-timeout: 1800
+      enable-metrics: true
+      enable-cache-report: true
+
+      # Dynamo-side (not SGLang-native) tool-call/reasoning parsers -- see
+      # header note above for why these differ from InferenceX's flag names.
+      dyn-tool-call-parser: "deepseek_v4"
+      dyn-reasoning-parser: "deepseek_v4"
+
+auxiliary_services:
+  - name: thunderagent-router
+    source:
+      git: https://github.com/ai-dynamo/dynamo
+      # NOTE: switch to a merged commit SHA once this PR (DP-rank routing
+      # fix required for DP-attention topologies) lands upstream.
+      rev: refs/pull/14000/head
+    build_command:
+      - bash
+      - -lc
+      - "cd lib/bindings/python && maturin develop --uv && cd ../../.. && pip install -e ."
+    command:
+      - python3
+      - -m
+      - dynamo.thunderagent_router
+      - --endpoint
+      - dyn://dynamo.backend.generate
+      - --model-name
+      - deepseek-ai/DeepSeek-V4-Pro
+      - --router-block-size
+      - "64"
+      - --dyn-tool-call-parser
+      - deepseek_v4
+      - --dyn-reasoning-parser
+      - deepseek_v4
+    # inherit_discovery_env: true (default) -- registers against the same
+    # etcd/nats the dynamo frontend and the DP-attention worker use.
+    # Thresholds intentionally omitted -- stock defaults (see header note).
+
+benchmark:
+  type: "sa-bench"
+  concurrencies: "64x96x128x160"
+  req_rate: "inf"
