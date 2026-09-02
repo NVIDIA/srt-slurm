@@ -115,16 +115,18 @@ class DeviceValidation:
 def validate_devices(
     expected: Sequence[ExpectedDevice],
     observed: Sequence[ObservedDevice],
+    permitted_device_keys: Sequence[DeviceKey] | None = None,
 ) -> DeviceValidation:
-    """Require a non-empty expected set that exactly matches stable observations."""
+    """Require every active device and reject observations outside the permitted allocation."""
     reasons: list[str] = []
 
     expected_keys = {device.key for device in expected}
     observed_keys = {device.key for device in observed}
+    permitted_keys = set(permitted_device_keys) if permitted_device_keys is not None else expected_keys
 
     if not expected_keys or expected_keys - observed_keys:
         reasons.append(Reason.EXPECTED_DEVICE_MISSING)
-    if observed_keys - expected_keys:
+    if observed_keys - permitted_keys:
         reasons.append(Reason.UNEXPECTED_DEVICE)
     # NOTE: a UUID must map 1:1 to a device key, or one physical GPU is counted twice.
     if any(len(device.gpu_uuids) != 1 for device in observed):

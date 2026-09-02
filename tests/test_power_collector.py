@@ -147,13 +147,14 @@ def _settings(tmp_path, **overrides):
     return PowerSessionSettings(**fields)
 
 
-def _session(tmp_path, endpoints, *, processes=None, windows=None, **overrides):
+def _session(tmp_path, endpoints, *, processes=None, windows=None, permitted_device_keys=None, **overrides):
     return PowerTelemetrySession(
         settings=_settings(tmp_path, **overrides),
         expected_devices=build_expected_devices(processes if processes is not None else _processes()),
         expected_windows=windows if windows is not None else [ExpectedWindow("sa-bench", 4)],
         nodes=["node-a", "node-b"],
         endpoints=endpoints,
+        permitted_device_keys=permitted_device_keys,
     )
 
 
@@ -529,6 +530,32 @@ class TestFailurePaths:
 
         assert Reason.UNEXPECTED_DEVICE in outcome.reason_codes
         assert outcome.publication_valid is False
+
+    def test_idle_gpu_on_allocated_node_is_permitted(self, tmp_path, exporters):
+        partial_processes = [
+            Process(
+                node="node-a",
+                gpu_indices=frozenset((0, 1)),
+                sys_port=8081,
+                http_port=30000,
+                endpoint_mode="prefill",
+                endpoint_index=0,
+            )
+        ]
+        a = exporters(_body("a"))
+        session = _session(
+            tmp_path,
+            _endpoints(("node-a", a.url)),
+            processes=partial_processes,
+            permitted_device_keys=[("node-a", index) for index in range(GPUS_PER_NODE)],
+        )
+        session.initialize()
+
+        session.collect_once()
+        outcome = session.stop_and_finalize()
+
+        assert Reason.UNEXPECTED_DEVICE not in outcome.reason_codes
+        assert len(_manifest(session)["permitted_devices"]) == GPUS_PER_NODE
 
 
 class TestPublication:

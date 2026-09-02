@@ -157,6 +157,12 @@ class TelemetryStageMixin:
         worker_nodes = sorted({process.node for process in self.backend_processes})
         power_dir = self.runtime.log_dir / telemetry.storage_subdir
         command = resolve_exporter_command(exporter_config, DCGM_EXPORTER_COMMAND_TEMPLATE)
+        gpus_per_node = self.config.resources.gpus_per_node
+        permitted_device_keys = (
+            [(node, gpu_index) for node in worker_nodes for gpu_index in range(gpus_per_node)]
+            if isinstance(gpus_per_node, int) and gpus_per_node > 0
+            else None
+        )
 
         session = PowerTelemetrySession(
             settings=PowerSessionSettings(
@@ -181,6 +187,7 @@ class TelemetryStageMixin:
                 for concurrency in self.config.benchmark.get_concurrency_list()
             ],
             nodes=worker_nodes,
+            permitted_device_keys=permitted_device_keys,
         )
         # NOTE: stored before initialize() so a raise mid-startup still leaves a finalizable session.
         self._power_session = session

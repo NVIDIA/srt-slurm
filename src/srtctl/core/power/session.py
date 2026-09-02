@@ -47,7 +47,7 @@ from srtctl.core.power.manifest import (
 )
 from srtctl.core.power.parser import parse_power_scrape
 from srtctl.core.power.samples import SampleRow, SampleWriter, derive_observed_devices, read_samples
-from srtctl.core.power.topology import ExpectedDevice, validate_devices
+from srtctl.core.power.topology import DeviceKey, ExpectedDevice, validate_devices
 from srtctl.core.power.windows import convert_running_windows, validate_expected_windows
 from srtctl.core.processes import ManagedProcess
 from srtctl.core.slurm import get_hostname_ip
@@ -117,6 +117,7 @@ class PowerTelemetrySession:
         expected_windows: Sequence[ExpectedWindow],
         nodes: Sequence[str],
         endpoints: Sequence[PowerEndpoint] | None = None,
+        permitted_device_keys: Sequence[DeviceKey] | None = None,
     ):
         self._settings = settings
         self._nodes = list(nodes)
@@ -142,6 +143,11 @@ class PowerTelemetrySession:
         self._mutation_disabled = False
         expected_device_list = list(expected_devices)
         self._expected_device_keys = frozenset(device.key for device in expected_device_list)
+        self._permitted_device_keys = frozenset(
+            permitted_device_keys if permitted_device_keys is not None else self._expected_device_keys
+        )
+        if not self._expected_device_keys <= self._permitted_device_keys:
+            raise ValueError("every expected device must be permitted")
 
         self._manifest = PowerManifest(
             job_id=settings.job_id,
@@ -154,6 +160,7 @@ class PowerTelemetrySession:
             dcgm_exporter=_exporter_identity(settings),
             expected_devices=expected_device_list,
             expected_windows=list(expected_windows),
+            permitted_device_keys=list(self._permitted_device_keys),
         )
 
     @property
@@ -444,7 +451,11 @@ class PowerTelemetrySession:
     def _finalize_manifest(self, *, allow_window_mutation: bool) -> SessionOutcome:
         rows, sample_reasons = read_samples(self.samples_path)
         observed = derive_observed_devices(rows)
-        devices = validate_devices(self._manifest.expected_devices, observed)
+        devices = validate_devices(
+            self._manifest.expected_devices,
+            observed,
+            permitted_device_keys=self._permitted_device_keys,
+        )
 
         with self._state_lock:
             reasons = [*self._reasons, *sample_reasons, *devices.reason_codes]

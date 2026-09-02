@@ -19,7 +19,7 @@ from srtctl.core.power.contract import (
     dedupe,
 )
 from srtctl.core.power.samples import ObservedDevice
-from srtctl.core.power.topology import ExpectedDevice
+from srtctl.core.power.topology import DeviceKey, ExpectedDevice
 
 STATUS_STARTING = "starting"
 STATUS_RUNNING = "running"
@@ -113,6 +113,7 @@ class PowerManifest:
     dcgm_exporter: DcgmExporterIdentity
     expected_devices: list[ExpectedDevice]
     expected_windows: list[ExpectedWindow]
+    permitted_device_keys: list[DeviceKey] = field(default_factory=list)
     producer_git_commit: str | None = None
     status: str = STATUS_STARTING
     stopped_at_unix: float | None = None
@@ -159,6 +160,10 @@ class PowerManifest:
             "publication_valid": self.publication_valid,
             "dcgm_exporter": self.dcgm_exporter.to_dict(),
             "expected_devices": [device.to_dict() for device in self.expected_devices],
+            "permitted_devices": [
+                {"hostname": hostname, "gpu_index": gpu_index}
+                for hostname, gpu_index in sorted(self.permitted_device_keys)
+            ],
             "observed_devices": [device.to_dict() for device in self.observed_devices],
             "expected_windows": [window.to_dict() for window in self.expected_windows],
             "scrape_count": self.scrape_count,
