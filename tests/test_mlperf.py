@@ -67,6 +67,18 @@ class TestMLPerfScript:
         """The image keeps pyyaml in its venv; system python3 cannot import it."""
         assert "CLIENT_PYTHON" in BENCH.read_text()
 
+    def test_validates_mode_against_the_clients_own_names(self):
+        """The client's TestMode is perf/acc/both.
+
+        The config file separately uses "performance"/"accuracy" for dataset
+        types, which makes those the natural guess for --mode; passing one gets
+        a bare "Required: --mode" from the CLI parser minutes into a job (run
+        518783). Checked up front so the failure names the valid values.
+        """
+        script = BENCH.read_text()
+        assert "perf|acc|both" in script
+        assert "is not a valid mode" in script
+
     def test_requires_an_injected_frontend(self):
         """No localhost default: benchmarking nothing must fail, not pass."""
         assert "SRT_FRONTEND_HOST is not set" in BENCH.read_text()

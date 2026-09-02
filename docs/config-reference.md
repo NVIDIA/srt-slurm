@@ -942,7 +942,7 @@ benchmark:
   command: bash /srtctl-benchmarks/mlperf/bench.sh
   env:
     MLPERF_CLIENT_CONFIG: /configs/dsr1-interactive-submission.yaml
-    MLPERF_MODE: both            # both (default) | performance | accuracy
+    MLPERF_MODE: both            # both (default) | perf | acc
 
 extra_mount:
   - "/path/to/client-configs:/configs"
@@ -972,7 +972,7 @@ in `endpoints-launch` under `NVIDIA/src/configs/<system>/<model>/point_*/client.
 | Variable | Required | Default | Description |
 | -------- | -------- | ------- | ----------- |
 | `MLPERF_CLIENT_CONFIG` | Yes | — | Container path to the client config |
-| `MLPERF_MODE` | No | `both` | `both` runs performance and accuracy in one pass |
+| `MLPERF_MODE` | No | `both` | `perf`, `acc`, or `both`. These are the client's own mode names — note they are *not* the `performance`/`accuracy` spellings used for dataset types inside the client config |
 | `MLPERF_ENDPOINTS` | No | the injected frontend | Comma-separated list, for client-side load balancing |
 | `MLPERF_CLIENT_BIN` | No | `inference-endpoint` | Client executable |
 

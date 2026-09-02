@@ -31,8 +31,23 @@
 set -euo pipefail
 
 CLIENT_CONFIG=${MLPERF_CLIENT_CONFIG:-}
-MODE=${MLPERF_MODE:-both}          # both | performance | accuracy
+# The client's TestMode enum, which spells these out as perf/acc - not the
+# "performance"/"accuracy" the config file uses for dataset types. Passing an
+# invalid value gets a bare "Required: --mode" from the CLI parser, several
+# minutes into a job, so it is checked here instead.
+MODE=${MLPERF_MODE:-both}
 CLIENT_BIN=${MLPERF_CLIENT_BIN:-inference-endpoint}
+
+case "$MODE" in
+  perf|acc|both) ;;
+  *)
+    echo "ERROR: MLPERF_MODE='$MODE' is not a valid mode. Use one of:" >&2
+    echo "         perf   performance phase only" >&2
+    echo "         acc    accuracy phase only" >&2
+    echo "         both   both phases in one pass" >&2
+    exit 1
+    ;;
+esac
 
 [[ -n "$CLIENT_CONFIG" ]] || { echo "ERROR: MLPERF_CLIENT_CONFIG is required (path to the inference-endpoint client config, mounted via extra_mount)" >&2; exit 1; }
 [[ -f "$CLIENT_CONFIG" ]] || { echo "ERROR: MLPERF_CLIENT_CONFIG $CLIENT_CONFIG not found in container" >&2; exit 1; }
