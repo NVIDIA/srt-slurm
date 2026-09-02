@@ -38,7 +38,10 @@ MOONCAKE_METRICS_PORT = 8702
 # vLLM backend ports.
 VLLM_NIXL_PORT_BASE = 5400
 VLLM_DATA_PARALLEL_RPC_PORT = 8400
-VLLM_PORT_BASE = 20000
+# Keep vLLM's private message-queue scans outside Slurm's default step I/O
+# listener range.  Power telemetry adds extra srun steps; on OCI-AGA one of
+# those listeners can occupy 20003 before a DEP worker initializes TCPStore.
+VLLM_PORT_BASE = 24000
 VLLM_PORT_STRIDE = 50
 
 # Dynamo runtime and connector ports.
