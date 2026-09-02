@@ -18,9 +18,6 @@ from typing import Any
 
 from .common import run_capture, rust_toolchain
 
-_DYNAMO_SOURCE_REVISION = ".srtctl-source-revision"
-_SGLANG_SIDECAR_BINARY = "dynamo-sglang-sidecar"
-
 
 class RuntimeSetupStageMixin:
     """Install SGLang and Dynamo into the per-run serving environment."""
@@ -154,7 +151,6 @@ class RuntimeSetupStageMixin:
 
     def _install_dynamo_from_source_cache(self) -> None:
         source_hash = str(self.plan["dynamo_source_hash"])
-        source_revision = source_hash
         root = Path(os.environ.get("SRTCTL_DYNAMO_CACHE_ROOT", str(self.source_dir / "configs" / "dynamo-wheels")))
         key = self._dynamo_source_cache_key()
         cache = root / key
@@ -178,14 +174,12 @@ class RuntimeSetupStageMixin:
                     self._run_logged(
                         ["git", "-C", str(repo), "checkout", "--detach", "FETCH_HEAD"], log_name="install-dynamo.log"
                     )
-                    source_revision = run_capture(["git", "-C", str(repo), "rev-parse", "HEAD"])
                     for command in self.plan["dynamo_cargo_patch_commands"]:
                         self._run_logged(["bash", "-lc", str(command)], log_name="install-dynamo.log", cwd=repo)
                     cache.mkdir(parents=True, exist_ok=True)
                     for stale in [
                         *cache.glob("ai_dynamo_runtime-*.whl"),
                         cache / "dynamo-src.tar.gz",
-                        cache / "source-revision",
                         cache / ".complete",
                     ]:
                         stale.unlink(missing_ok=True)
@@ -201,11 +195,7 @@ class RuntimeSetupStageMixin:
                         env=environment,
                     )
                     self._write_archive(build, "dynamo", cache / "dynamo-src.tar.gz")
-                    (cache / "source-revision").write_text(f"{source_revision}\n", encoding="utf-8")
                     (cache / ".complete").touch()
-            cached_revision = cache / "source-revision"
-            if cached_revision.is_file():
-                source_revision = cached_revision.read_text(encoding="utf-8").strip() or source_revision
         wheel = next(cache.glob("ai_dynamo_runtime-*.whl"), None)
         if wheel is None:
             self._die(f"Dynamo cache is incomplete: {cache}")
@@ -214,7 +204,6 @@ class RuntimeSetupStageMixin:
         source.mkdir(parents=True, exist_ok=True)
         with tarfile.open(cache / "dynamo-src.tar.gz", "r:gz") as archive:
             archive.extractall(source, filter="data")
-        (source / _DYNAMO_SOURCE_REVISION).write_text(f"{source_revision}\n", encoding="utf-8")
         self._run_logged(
             [self.python, "-m", "pip", "install", "--quiet", "--force-reinstall", "--no-deps", str(wheel)],
             log_name="install-dynamo.log",
@@ -235,7 +224,6 @@ class RuntimeSetupStageMixin:
                 ["git", "clone", "--depth", "1", "https://github.com/ai-dynamo/dynamo.git", str(repo)],
                 log_name="install-dynamo.log",
             )
-            source_revision = run_capture(["git", "-C", str(repo), "rev-parse", "HEAD"])
             environment = dict(os.environ)
             environment["RUSTFLAGS"] = f"{environment.get('RUSTFLAGS', '')} -C target-cpu=native --cfg tokio_unstable"
             environment["CARGO_TARGET_DIR"] = str(build / "target")
@@ -252,7 +240,6 @@ class RuntimeSetupStageMixin:
             source = self.output_dir / "runtime" / "dynamo-src"
             shutil.rmtree(source, ignore_errors=True)
             shutil.copytree(repo, source, ignore=shutil.ignore_patterns(".git", "target", "__pycache__"))
-            (source / _DYNAMO_SOURCE_REVISION).write_text(f"{source_revision}\n", encoding="utf-8")
             self._run_logged(
                 [self.python, "-m", "pip", "install", "--quiet", "--force-reinstall", "--no-deps", str(wheel)],
                 log_name="install-dynamo.log",
@@ -278,56 +265,3 @@ class RuntimeSetupStageMixin:
         else:
             self._install_dynamo_from_top_of_tree()
         self._run_logged([self.python, "-c", "import dynamo"], log_name="install-dynamo.log")
-        if self.plan.get("dynamo_sidecar", False):
-            self._build_dynamo_sglang_sidecar()
-
-    def _build_dynamo_sglang_sidecar(self) -> None:
-        """Compile the standalone SGLang connector and publish it to the shared direct cache."""
-        source_root = self.output_dir / "runtime" / "dynamo-src"
-        source = source_root / "dynamo" if (source_root / "dynamo" / "Cargo.toml").is_file() else source_root
-        revision_path = source_root / _DYNAMO_SOURCE_REVISION
-        if not (source / "Cargo.toml").is_file() or not revision_path.is_file():
-            self._die(f"Dynamo source is incomplete for sidecar build: {source_root}")
-        source_revision = revision_path.read_text(encoding="utf-8").strip()
-        if not source_revision:
-            self._die(f"Dynamo source revision is empty: {revision_path}")
-
-        root = Path(os.environ.get("SRTCTL_DYNAMO_CACHE_ROOT", str(self.source_dir / "configs" / "dynamo-wheels")))
-        cache_input = f"sidecar-v1\n{source_revision}\n{self._dynamo_source_cache_key()}\n{_SGLANG_SIDECAR_BINARY}"
-        cache_key = hashlib.sha256(cache_input.encode("utf-8")).hexdigest()[:20]
-        cache = root / "sidecars" / cache_key / os.uname().machine
-        binary = cache / _SGLANG_SIDECAR_BINARY
-        lock = root / "sidecars" / f".{cache_key}-{os.uname().machine}.lock"
-        lock.parent.mkdir(parents=True, exist_ok=True)
-
-        with lock.open("w", encoding="utf-8") as handle:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            if not ((cache / ".complete").is_file() and binary.is_file() and os.access(binary, os.X_OK)):
-                self._prepare_dynamo_source_build()
-                self.log(f"Building Dynamo SGLang sidecar {source_revision} into {cache}")
-                with tempfile.TemporaryDirectory() as raw_target:
-                    environment = dict(os.environ)
-                    environment["RUSTFLAGS"] = (
-                        f"{environment.get('RUSTFLAGS', '')} -C target-cpu=native --cfg tokio_unstable"
-                    )
-                    environment["CARGO_TARGET_DIR"] = raw_target
-                    cargo_args = ["cargo", "build", "--release"]
-                    if not self.plan["dynamo_cargo_patch_commands"]:
-                        cargo_args.append("--locked")
-                    cargo_args.extend(("-p", _SGLANG_SIDECAR_BINARY))
-                    self._run_logged(cargo_args, log_name="build-dynamo-sidecar.log", cwd=source, env=environment)
-                    built_binary = Path(raw_target) / "release" / _SGLANG_SIDECAR_BINARY
-                    if not built_binary.is_file():
-                        self._die(f"Dynamo sidecar build produced no executable: {built_binary}")
-                    cache.mkdir(parents=True, exist_ok=True)
-                    temporary_binary = cache / f".{_SGLANG_SIDECAR_BINARY}.{os.getpid()}.tmp"
-                    shutil.copy2(built_binary, temporary_binary)
-                    temporary_binary.chmod(0o755)
-                    temporary_binary.replace(binary)
-                    (cache / "source-revision").write_text(f"{source_revision}\n", encoding="utf-8")
-                    (cache / ".complete").touch()
-
-        if not (binary.is_file() and os.access(binary, os.X_OK)):
-            self._die(f"Dynamo sidecar cache is incomplete: {cache}")
-        os.environ["DYNAMO_SIDECAR_BINARY"] = str(binary)
-        self.log(f"Dynamo SGLang sidecar ready: {binary}")

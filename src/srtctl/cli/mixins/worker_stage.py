@@ -32,41 +32,6 @@ logger = logging.getLogger(__name__)
 _DEFAULT_WORKER_DYN_LOG = "info,dynamo_runtime::pipeline::network::ingress::push_handler=warn"
 
 
-def _wrap_sglang_sidecar(
-    engine_command: list[str],
-    *,
-    grpc_port: int,
-    bootstrap_host: str | None,
-    health_deadline_secs: int,
-) -> list[str]:
-    """Run the native SGLang engine and its Dynamo sidecar under one supervisor.
-
-    Slurm owns one task per logical worker. Keeping both processes in that task
-    makes their loopback gRPC endpoint private and ensures either exit tears down
-    its peer instead of leaving a GPU process behind.
-    """
-    sidecar_args = [
-        "--sglang-endpoint",
-        f"http://127.0.0.1:{grpc_port}",
-        "--health-deadline-secs",
-        str(health_deadline_secs),
-    ]
-    if bootstrap_host is not None:
-        sidecar_args.extend(["--bootstrap-host", bootstrap_host])
-    sidecar_command = f'"$DYNAMO_SIDECAR_BINARY" {shlex.join(sidecar_args)}'
-    script = (
-        "set -e; "
-        f"{shlex.join(engine_command)} & engine_pid=$!; "
-        f"{sidecar_command} & sidecar_pid=$!; "
-        'cleanup() { kill "$engine_pid" "$sidecar_pid" 2>/dev/null || true; '
-        'wait "$engine_pid" "$sidecar_pid" 2>/dev/null || true; }; '
-        "trap 'cleanup; exit 143' INT TERM; "
-        'set +e; wait -n "$engine_pid" "$sidecar_pid"; status=$?; set -e; '
-        'cleanup; exit "$status"'
-    )
-    return ["bash", "-c", script]
-
-
 class WorkerStageMixin:
     """Mixin for worker process startup stage.
 
@@ -119,20 +84,10 @@ class WorkerStageMixin:
                 'else echo "WARNING: ${script_path} or ${patch_script_path} not found"; fi'
             )
 
-        # 2. Dynamo installation (required for the Dynamo frontend)
+        # 2. Dynamo installation (required for dynamo.sglang when using dynamo frontend)
         # Skip if dynamo.install is False (container already has dynamo installed)
         if installs_dynamo(self.config):
             parts.append(self.config.dynamo.get_install_commands())
-
-        # 3. Standalone sidecars are Rust executables, not Python modules. Build
-        # the selected connector from the configured Dynamo source and export
-        # DYNAMO_SIDECAR_BINARY for the supervisor command.
-        if getattr(self.config.dynamo, "uses_sidecar", False) is True:
-            parts.append(
-                self.config.dynamo.get_sidecar_build_commands(
-                    self.config.backend_type,
-                )
-            )
 
         if not parts:
             return None
@@ -168,6 +123,15 @@ class WorkerStageMixin:
             env_to_set.setdefault("DYN_KVBM_LEADER_ZMQ_PUB_PORT", str(pub_port))
             env_to_set.setdefault("DYN_KVBM_LEADER_ZMQ_ACK_PORT", str(ack_port))
 
+    def _get_worker_environment_for_mode(self, mode: str) -> dict[str, str]:
+        """Return mode environment with Dynamo sidecar-specific defaults."""
+        environment = self.backend.get_environment_for_mode(mode)
+        if getattr(self.config.dynamo, "sidecar", False) is True and self.backend.type == "vllm":
+            # Installed plugins may replace native engine output types and
+            # break the fixed Rust/Python MessagePack contract used by vllm-rs.
+            environment.setdefault("VLLM_PLUGINS", "")
+        return environment
+
     def start_worker(self, process: "Process", endpoint_processes: list["Process"]) -> ManagedProcess:
         """Start a single worker process (one srun per node, used by SGLang)."""
         mode = process.endpoint_mode
@@ -192,30 +156,15 @@ class WorkerStageMixin:
             )
 
         # Build command using backend's method
-        sidecar_mode = getattr(self.config.dynamo, "uses_sidecar", False) is True
         cmd = self.backend.build_worker_command(
             process=process,
             endpoint_processes=endpoint_processes,
             runtime=self.runtime,
-            frontend_type="sidecar" if sidecar_mode else self.config.frontend.type,
+            frontend_type=self.config.frontend.type,
             nsys_prefix=nsys_prefix,
             dump_config_path=config_dump,
             profiling=profiling,
         )
-        if sidecar_mode:
-            if process.grpc_port is None:
-                raise RuntimeError(f"No native gRPC port allocated for sidecar worker on {process.node}")
-            bootstrap_host = (
-                get_hostname_ip(process.node, self.runtime.network_interface)
-                if process.endpoint_mode == "prefill"
-                else None
-            )
-            cmd = _wrap_sglang_sidecar(
-                cmd,
-                grpc_port=process.grpc_port,
-                bootstrap_host=bootstrap_host,
-                health_deadline_secs=self.config.health_check.timeout_seconds,
-            )
 
         # Environment variables
         env_to_set = {
@@ -244,7 +193,7 @@ class WorkerStageMixin:
             def __missing__(self, key: str) -> str:
                 return "{" + key + "}"  # Leave unknown placeholders unchanged
 
-        for key, value in self.backend.get_environment_for_mode(mode).items():
+        for key, value in self._get_worker_environment_for_mode(mode).items():
             formatted_value = value.format_map(SafeDict(template_vars))
             env_to_set[key] = formatted_value
 
@@ -259,7 +208,8 @@ class WorkerStageMixin:
             env_to_set.update(profiling.get_env_vars(mode, profile_dir))
 
         should_set_cvd = getattr(self.backend, "should_set_cuda_visible_devices", lambda _process: True)
-        if should_set_cvd(process) and len(process.gpu_indices) < self.runtime.gpus_per_node:
+        force_cvd = getattr(self.config.dynamo, "sidecar", False) is True and self.backend.type == "vllm"
+        if (force_cvd or should_set_cvd(process)) and len(process.gpu_indices) < self.runtime.gpus_per_node:
             env_to_set["CUDA_VISIBLE_DEVICES"] = process.cuda_visible_devices
 
         # Add backend-specific process environment variables (e.g., unique ports)
@@ -376,6 +326,7 @@ class WorkerStageMixin:
             "ETCD_ENDPOINTS": f"http://{self.runtime.nodes.infra}:{ETCD_CLIENT_PORT}",
             "NATS_SERVER": f"nats://{self.runtime.nodes.infra}:{NATS_PORT}",
             "DYN_SYSTEM_PORT": str(leader.sys_port),
+            "DYN_REQUEST_PLANE": self.config.dynamo.request_plane,
             "DYN_SKIP_SGLANG_LOG_FORMATTING": "1",
         }
         if self.config.dynamo.event_plane:
@@ -387,7 +338,7 @@ class WorkerStageMixin:
         env_to_set.setdefault("DYN_LOG", _DEFAULT_WORKER_DYN_LOG)
 
         # Add mode-specific environment variables from backend
-        env_to_set.update(self.backend.get_environment_for_mode(mode))
+        env_to_set.update(self._get_worker_environment_for_mode(mode))
 
         # Add config environment variables
         env_to_set.update(self.runtime.environment)
@@ -398,7 +349,8 @@ class WorkerStageMixin:
             env_to_set.update(profiling.get_env_vars(mode, profile_dir))
 
         should_set_cvd = getattr(self.backend, "should_set_cuda_visible_devices", lambda _process: True)
-        if should_set_cvd(leader) and len(leader.gpu_indices) < self.runtime.gpus_per_node:
+        force_cvd = getattr(self.config.dynamo, "sidecar", False) is True and self.backend.type == "vllm"
+        if (force_cvd or should_set_cvd(leader)) and len(leader.gpu_indices) < self.runtime.gpus_per_node:
             env_to_set["CUDA_VISIBLE_DEVICES"] = leader.cuda_visible_devices
 
         # Add mooncake worker env vars if configured (SGLang only). For MPI-style
@@ -429,6 +381,11 @@ class WorkerStageMixin:
 
         # Get srun config from backend
         srun_config = self.backend.get_srun_config()
+        srun_options = dict(self.runtime.srun_options)
+        if self.backend.type == "trtllm" and getattr(self.config.dynamo, "sidecar", False) is True:
+            # The sidecar runs only on rank zero. Make any follower-rank exit
+            # terminate the full endpoint step instead of leaving rank zero up.
+            srun_options["kill-on-bad-exit"] = "1"
 
         proc = start_srun_process(
             command=cmd,
@@ -448,7 +405,7 @@ class WorkerStageMixin:
             # recipe-level srun_options; the per-process worker, benchmark and
             # telemetry paths all forward it. Needed so a cluster can express
             # per-rank CPU/NUMA binding, which srun_config.cpu_bind cannot.
-            srun_options=self.runtime.srun_options,
+            srun_options=srun_options,
             het_group=leader.het_group,
         )
 

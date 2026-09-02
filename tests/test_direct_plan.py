@@ -26,7 +26,6 @@ def _config(
     setup_script: str | None = None,
     profiling_type: str | None = None,
     mooncake: dict[str, object] | None = None,
-    health_check: dict[str, int] | None = None,
 ) -> SrtConfig:
     direct_environment = {
         "SRTCTL_LOCAL_CONTAINER_IMAGE": "lmsysorg/sglang:dev",
@@ -87,8 +86,6 @@ def _config(
         }
     if mooncake is not None:
         raw["backend"]["mooncake_kv_store"] = mooncake
-    if health_check is not None:
-        raw["health_check"] = health_check
     expand_observability(raw)
     return SrtConfig.Schema().load(yaml.safe_load(yaml.safe_dump(raw)))
 
@@ -167,30 +164,6 @@ def test_direct_plan_contains_owned_infrastructure_and_observability(tmp_path) -
     assert plan["sglang_source"] == "/tmp/sglang-source"
     assert not {"frontend_type", "needs_dynamo_infra", "dynamo_package_version", "tachometer_binary"} & set(plan)
     _assert_valid_direct_script(script)
-
-
-def test_direct_plan_sidecar_uses_native_sglang_and_supervises_the_connector(tmp_path) -> None:
-    context = build_direct_plan_context(
-        _config(
-            frontend_type="dynamo",
-            dynamo={"hash": "a6261680a974ca7c74dcf49592a7376d7de99380", "engine_mode": "sidecar"},
-            health_check={"max_attempts": 720, "interval_seconds": 10},
-        ),
-        source_dir=tmp_path / "srt-slurm",
-        output_base=tmp_path / "outputs",
-    )
-    plan = _plan(context)
-    command = context.worker_processes[0].command
-
-    assert context.dynamo_sidecar
-    assert plan["dynamo_sidecar"] is True
-    assert "-m sglang.launch_server" in command
-    assert "-m dynamo.sglang" not in command
-    assert "--grpc-port 6500" in command
-    assert '"$DYNAMO_SIDECAR_BINARY" --sglang-endpoint http://127.0.0.1:6500' in command
-    assert "--health-deadline-secs 7200" in command
-    assert 'wait -n "$engine_pid" "$sidecar_pid"' in command
-    assert "DYN_SYSTEM_PORT=7500" in command
 
 
 def test_direct_plan_expands_artifact_dir_in_frontend_environment(tmp_path) -> None:

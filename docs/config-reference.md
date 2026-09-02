@@ -28,6 +28,7 @@ Complete reference for job configuration YAML files.
 - [sbatch_directives](#sbatch_directives)
 - [srun_options](#srun_options)
 - [setup_script](#setup_script)
+- [host_setup](#host_setup)
 - [enable_config_dump](#enable_config_dump)
 - [Complete Examples](#complete-examples)
 
@@ -118,11 +119,14 @@ The `srtslurm.yaml` file can contain the following fields:
 | `containers`                    | dict   | Container image aliases                               |
 | `default_mounts`                | dict   | Cluster-wide container mounts                         |
 | `default_bash_preamble`         | string | Shell snippet prepended to every container srun       |
+| `default_host_setup`            | object | Commands run on every node's bare host, outside the container |
 | `nginx_raise_ulimit`          | bool   | Optional default for `frontend.nginx_raise_ulimit`  |
 
 **output_dir**: When set, job logs are written to `output_dir/{job_id}/logs` instead of `srtctl_root/outputs/{job_id}/logs`. Useful for CI/CD and ephemeral environments.
 
 **default_bash_preamble**: A shell snippet (e.g. `"ulimit -n 1048576 -s unlimited -u 1048576"`) prepended to every container srun launched by srtctl — workers, frontends, telemetry, benchmark, postprocess. Runs before per-call `bash_preamble` and the main command, so cluster-wide ulimits apply to everything downstream. Silently dropped for distroless containers (e.g. `prom/node-exporter`) that bypass the bash wrapper; a WARNING log is emitted in that case.
+
+**default_host_setup**: A [`host_setup`](#host_setup) block applied to every job on the cluster — for node state that has to be set outside the container, such as locking GPU clocks. A recipe that sets its own `host_setup:` block replaces it entirely; `host_setup: {commands: []}` opts a single run out.
 
 **nginx_raise_ulimit**: When set to `true` or `false`, this value is applied to jobs that omit `frontend.nginx_raise_ulimit` in the recipe. Use `true` on clusters where raising the nginx container’s open-file limit is allowed; leave unset if each job should rely on the frontend default (`false`). A recipe that sets `frontend.nginx_raise_ulimit` always wins.
 
@@ -934,20 +938,26 @@ Dynamo installation configuration.
 ```yaml
 dynamo:
   version: "0.8.0"            # Install from PyPI
-  engine_mode: in_process      # Or sidecar for native SGLang + Rust Dynamo worker
   # OR
   hash: "abc123"              # Install from git commit
   # OR
   top_of_tree: true           # Install from main branch
+  sidecar: false               # Use native engines with Dynamo sidecars
 ```
 
-| Field         | Type   | Default | Description                                            |
-| ------------- | ------ | ------- | ------------------------------------------------------ |
-| `install`     | bool   | true    | Whether to install dynamo (set false if pre-installed) |
-| `version`     | string | "0.8.0" | PyPI version                                           |
-| `hash`        | string | null    | Git commit hash (source install)                       |
-| `top_of_tree` | bool   | false   | Install from main branch                               |
-| `engine_mode` | string | `in_process` | `in_process` uses Dynamo Python engines; `sidecar` runs stock SGLang with a Rust Dynamo sidecar |
+| Field                    | Type         | Default | Description                                            |
+| ------------------------ | ------------ | ------- | ------------------------------------------------------ |
+| `install`                | bool         | true    | Whether to install dynamo (set false if pre-installed) |
+| `version`                | string       | "0.8.0" | PyPI version                                           |
+| `hash`                   | string       | null    | Git commit hash (source install)                       |
+| `top_of_tree`            | bool         | false   | Install from main branch                               |
+| `wheel`                  | string       | null    | Exact `ai-dynamo` nightly version                      |
+| `sidecar`                | bool         | false   | Replace legacy Python workers with native engines and Dynamo sidecars |
+| `sidecar_port`           | int          | 50051   | Base loopback gRPC port; co-located workers receive deterministic offsets |
+| `sidecar_binary`         | string/null  | null    | Optional standalone executable; null uses `python3 -m dynamo.<framework>.sidecar` |
+| `sidecar_args`           | list[string] | []      | Extra arguments passed to the sidecar launcher         |
+| `sidecar_startup_timeout` | int         | 1200    | Seconds to wait for the native gRPC endpoint            |
+| `sidecar_context_length` | int/null     | null    | TRT-LLM context length override                         |
 
 **Notes**:
 
@@ -956,7 +966,36 @@ dynamo:
 - `hash` and `top_of_tree` are mutually exclusive.
 - When `hash` or `top_of_tree` is set, `version` is automatically cleared.
 - Source installs (`hash` or `top_of_tree`) clone the repo and build with maturin.
-- `engine_mode: sidecar` supports `frontend.type: dynamo` with `backend.type: sglang` on Slurm and the single-node `--bash` lifecycle. It requires SGLang v0.5.16+ and rejects `dynamo.wheel`; direct Bash retains its existing `dynamo.hash` or `dynamo.top_of_tree: true` requirement. See [Dynamo Sidecar Engines](dynamo-sidecar.md).
+
+### Native sidecar mode
+
+Set `dynamo.sidecar: true` to run the framework's native engine process beside a CPU-only Dynamo sidecar instead of launching `python3 -m dynamo.<framework>`. The engine and sidecar share one Slurm step and have a coupled lifecycle: if either exits, srtctl terminates the other and marks the worker failed.
+
+By default, srtctl launches `python3 -m dynamo.<framework>.sidecar`. The `ai-dynamo` package supplies this module and pins the matching `ai-dynamo-runtime` wheel, which embeds the native Rust sidecar. The configured Dynamo version, wheel, source hash, or preinstalled container runtime must include the selected framework's launcher. No separate Cargo build is performed at job startup.
+
+Nightly deployments should select an exact `dynamo.wheel` version so srtctl stages and installs the matching `ai-dynamo` and `ai-dynamo-runtime` artifacts on every worker. Set `dynamo.sidecar_binary` only to launch a compatible standalone executable already present in the container or a bind mount.
+
+```yaml
+frontend:
+  type: dynamo
+
+backend:
+  type: vllm  # sglang, vllm, or trtllm
+
+dynamo:
+  wheel: "<nightly-with-sidecars>"
+  sidecar: true
+  sidecar_port: 50051
+  sidecar_args:
+    - --grpc-connections
+    - "4"
+```
+
+The default sidecar commands are `python3 -m dynamo.sglang.sidecar`, `python3 -m dynamo.vllm.sidecar`, and `python3 -m dynamo.trtllm.sidecar`. All three use the shared `--grpc-endpoint` flag.
+
+SGLang exposes gRPC and starts the sidecar only on an endpoint leader; distributed followers are engine-only. vLLM automatically uses one managed process per node for data-parallel endpoints and exposes the complete DP group through the leader's sidecar. Multi-node tensor-parallel vLLM endpoints remain rejected until their `vllm-rs` launch path is validated. TensorRT-LLM supports sidecars for aggregated workers only and runs the sidecar on MPI rank zero. `dynamo.sidecar_context_length` can override the TRT-LLM context length inferred from `trtllm_config.aggregated.max_seq_len`.
+
+vLLM sidecar mode sets `VLLM_PLUGINS` to an empty value by default. This prevents image-installed plugins from replacing native engine output types that must match the fixed `vllm-rs` MessagePack contract. A recipe can explicitly set `VLLM_PLUGINS` in `prefill_environment`, `decode_environment`, or `aggregated_environment` when every selected plugin is compatible with the sidecar protocol.
 
 ---
 
@@ -1592,6 +1631,43 @@ setup_script: "install-custom-deps.sh"
 #!/bin/bash
 pip install --quiet git+https://github.com/sgl-project/sglang.git
 ```
+
+---
+
+## host_setup
+
+Commands run on each allocated node's **bare host, outside the container**, before any worker starts.
+
+This is the counterpart to [`setup_script`](#setup_script), which runs *inside* the container. Use `host_setup` for node state the container cannot reach: locking GPU clocks, loading a kernel module, dropping caches.
+
+```yaml
+host_setup:
+  commands:
+    - "sudo -n nvidia-smi -lmc <min>,<max>"
+  teardown:
+    - "sudo -n nvidia-smi -rmc"
+  nodes: all
+  ignore_failure: false
+  timeout_seconds: 300
+```
+
+| Field             | Type            | Default | Description                                                              |
+| ----------------- | --------------- | ------- | ------------------------------------------------------------------------ |
+| `commands`        | list[string]    | `[]`    | Shell commands run in order on each node, joined with `&&`                |
+| `teardown`        | list[string]    | `[]`    | Commands run on each node after workers stop, on success and failure alike |
+| `nodes`           | `all`/`workers` | `all`   | `all` covers head, infra, and workers; `workers` only the worker nodes    |
+| `ignore_failure`  | bool            | `false` | Log a warning instead of failing the job when a node's commands fail      |
+| `timeout_seconds` | int             | `300`   | Per-node wall-clock budget, for `commands` and `teardown` alike           |
+
+**How it runs**: the orchestrator itself runs on the host (not in a container), so it fans these out as one container-less `srun` per node, in parallel. Output lands in `<log_dir>/host_setup_<node>.out` and `<log_dir>/host_teardown_<node>.out`.
+
+**Notes**:
+
+- **Commands run as you, not as root.** Anything privileged needs passwordless sudo (`sudo -n ...`). A `sudo` that prompts for a password will hang until `timeout_seconds` and then fail the job — verify first with `srun --jobid <job> --overlap -w <node> sudo -n true`. If sudo prompts, no recipe change helps; the cluster's SLURM `Prolog=` (which runs as root) is the only route.
+- **Prefer setting `teardown` whenever `commands` changes persistent node state.** `nvidia-smi -lmc` outlives the allocation, so without a matching `-rmc` the next job on that node inherits your locked clocks. `srtctl dry-run` warns when `commands` is set without `teardown`.
+- `teardown` runs from the job's cleanup path, so it fires on failure and cancellation too, and never changes the job's exit code.
+- Set cluster-wide via `default_host_setup` in `srtslurm.yaml` — that's the right home when *the cluster's machines* need this, rather than one recipe. See [Cluster Config Fields](#cluster-config-fields).
+- `srtctl dry-run -f config.yaml` renders the commands, their scope, and which file they came from.
 
 ---
 
