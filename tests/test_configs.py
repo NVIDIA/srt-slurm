@@ -1794,6 +1794,54 @@ class TestSbatchNodeCount:
 class TestVLLMPrefillDecodeColocation:
     """Tests for vLLM prefill/decode same-node packing."""
 
+    def test_explicit_device_ids_update_process_topology_and_worker_command(self):
+        """Explicit bindings drive launch, telemetry, and power-cap topology."""
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+
+        backend = VLLMProtocol(vllm_config=VLLMServerConfig(prefill={"device-ids": "1,2"}))
+        endpoints = backend.allocate_endpoints(
+            num_prefill=1,
+            num_decode=0,
+            num_agg=0,
+            gpus_per_prefill=2,
+            gpus_per_decode=0,
+            gpus_per_agg=0,
+            gpus_per_node=4,
+            available_nodes=("node0",),
+        )
+
+        processes = backend.endpoints_to_processes(endpoints)
+        assert len(processes) == 1
+        assert processes[0].gpu_indices == frozenset({1, 2})
+
+        runtime = MagicMock(model_path=Path("/model"), is_hf_model=False, request_plane="tcp")
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            command = backend.build_worker_command(processes[0], processes, runtime)
+        assert command.count("--device-ids") == 1
+        assert command[command.index("--device-ids") + 1] == "1,2"
+
+    @pytest.mark.parametrize("device_ids", ["1", "0,1,2", "1,4", "1,1", "x,2"])
+    def test_explicit_device_ids_reject_invalid_topology(self, device_ids):
+        """Invalid or ambiguous physical bindings fail before job launch."""
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+
+        backend = VLLMProtocol(vllm_config=VLLMServerConfig(prefill={"device-ids": device_ids}))
+        endpoints = backend.allocate_endpoints(
+            num_prefill=1,
+            num_decode=0,
+            num_agg=0,
+            gpus_per_prefill=2,
+            gpus_per_decode=0,
+            gpus_per_agg=0,
+            gpus_per_node=4,
+            available_nodes=("node0",),
+        )
+
+        with pytest.raises(ValueError, match="device-ids"):
+            backend.endpoints_to_processes(endpoints)
+
     def test_disabled_by_default_keeps_prefill_and_decode_separate(self):
         """Test vLLM preserves default P/D node separation."""
         from srtctl.backends import VLLMProtocol

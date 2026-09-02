@@ -14,7 +14,7 @@ import builtins
 import json
 import logging
 from collections.abc import Sequence
-from dataclasses import field
+from dataclasses import field, replace
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -52,6 +52,7 @@ logger = logging.getLogger(__name__)
 # command building strips them so user values cannot override allocation.
 _VLLM_ORCHESTRATION_FLAGS = frozenset(
     {
+        "device-ids",
         "headless",
         "host",
         "port",
@@ -414,6 +415,82 @@ class VLLMProtocol:
             return dict(self.vllm_config.aggregated or {})
         return {}
 
+    def _configured_device_ids(self, mode: WorkerMode) -> frozenset[int] | None:
+        """Return an explicit physical-GPU binding from a mode config.
+
+        ``--device-ids`` affects physical placement, so it cannot remain an
+        opaque vLLM CLI flag: power limits and telemetry consume the process
+        topology before the worker command is built.  Parse it here and make
+        that topology authoritative for every downstream consumer.
+        """
+        values = [
+            value
+            for key, value in self.get_config_for_mode(mode).items()
+            if normalize_vllm_config_key(key) == "device-ids"
+        ]
+        if not values:
+            return None
+        if len(values) != 1:
+            raise ValueError(f"vllm_config.{mode} defines device-ids more than once")
+
+        raw = values[0]
+        parts: Sequence[Any]
+        if isinstance(raw, str):
+            parts = [part.strip() for part in raw.split(",") if part.strip()]
+        elif isinstance(raw, Sequence) and not isinstance(raw, (bytes, bytearray)):
+            parts = raw
+        else:
+            raise TypeError(
+                f"vllm_config.{mode}.device-ids must be a comma-separated string or sequence of integers"
+            )
+
+        try:
+            ordered = tuple(int(part) for part in parts)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"vllm_config.{mode}.device-ids contains a non-integer value: {raw!r}") from exc
+        if not ordered:
+            raise ValueError(f"vllm_config.{mode}.device-ids must not be empty")
+        if len(set(ordered)) != len(ordered):
+            raise ValueError(f"vllm_config.{mode}.device-ids contains duplicate GPU indices: {raw!r}")
+        if any(index < 0 for index in ordered):
+            raise ValueError(f"vllm_config.{mode}.device-ids contains a negative GPU index: {raw!r}")
+        return frozenset(ordered)
+
+    def _apply_configured_device_ids(self, endpoints: list[Endpoint]) -> list[Endpoint]:
+        """Apply explicit vLLM device bindings to the physical topology."""
+        remapped: list[Endpoint] = []
+        for endpoint in endpoints:
+            device_ids = self._configured_device_ids(endpoint.mode)
+            if device_ids is None:
+                remapped.append(endpoint)
+                continue
+            if len(device_ids) != len(endpoint.gpu_indices):
+                raise ValueError(
+                    f"vllm_config.{endpoint.mode}.device-ids selects {len(device_ids)} GPUs, "
+                    f"but worker {endpoint.index} was allocated {len(endpoint.gpu_indices)} GPUs per node"
+                )
+            if max(device_ids) >= endpoint.gpus_per_node:
+                raise ValueError(
+                    f"vllm_config.{endpoint.mode}.device-ids selects GPU {max(device_ids)}, "
+                    f"but the allocation has only {endpoint.gpus_per_node} GPUs per node"
+                )
+            remapped.append(replace(endpoint, gpu_indices=device_ids))
+
+        claims: dict[tuple[str, int], Endpoint] = {}
+        for endpoint in remapped:
+            for node in endpoint.nodes:
+                for gpu_index in endpoint.gpu_indices:
+                    key = (node, gpu_index)
+                    previous = claims.get(key)
+                    if previous is not None and previous != endpoint:
+                        raise ValueError(
+                            f"explicit device-ids creates overlapping GPU placement on {node}:{gpu_index} "
+                            f"between {previous.mode} worker {previous.index} and "
+                            f"{endpoint.mode} worker {endpoint.index}"
+                        )
+                    claims[key] = endpoint
+        return remapped
+
     def get_kv_events_config_for_mode(self, mode: WorkerMode) -> dict[str, Any] | None:
         """Get --kv-events-config payload for a worker mode."""
         if not self.kv_events_config:
@@ -720,6 +797,8 @@ class VLLMProtocol:
         """
         from srtctl.core.topology import NodePortAllocator, Process, endpoints_to_processes
 
+        endpoints = self._apply_configured_device_ids(endpoints)
+
         if frontend_type == "vllm":
             return endpoints_to_processes(endpoints, base_sys_port=base_sys_port, port_allocator=port_allocator)
 
@@ -936,6 +1015,10 @@ class VLLMProtocol:
 
         mode = process.endpoint_mode
         config = self.get_config_for_mode(mode)
+        # endpoints_to_processes() already promoted this recipe value into the
+        # authoritative Process topology.  Do not pass the original value a
+        # second time after the topology-derived binding.
+        device_binding_override = _pop_flags(config, frozenset({"device-ids"}))
 
         # --numa-bind-nodes is expressed once in YAML as a physical-GPU map,
         # e.g. [0, 0, 1, 1] on a four-GPU GB300 node. Under per-GPU launch,
@@ -997,7 +1080,7 @@ class VLLMProtocol:
             if frontend_type == "vllm" and mode != "agg":
                 raise ValueError("frontend.type: vllm supports aggregate vLLM jobs only")
 
-            overridden = pop_vllm_orchestration_flags(config)
+            overridden = device_binding_override | pop_vllm_orchestration_flags(config)
             config.setdefault("served-model-name", served_model_name)
 
             if frontend_type == "vllm":
@@ -1107,6 +1190,7 @@ class VLLMProtocol:
                 device_ids = ",".join(str(i) for i in sorted(process.gpu_indices))
                 if device_ids:
                     cmd.extend(["--device-ids", device_ids])
+                    srtslurm_owned["device-ids"] = device_ids
             cmd.extend(_config_to_cli_args(config))
             return cmd
 
