@@ -16,6 +16,19 @@ find "${AIPERF_RUN_TMP}" -mindepth 1 -maxdepth 1 \
 chmod g+rwx "${AIPERF_RUN_TMP}"
 test -w "${AIPERF_RUN_TMP}"
 
+# The main-model cache warmer does not stage speculative draft models. Reuse
+# the established EAGLE3 helper so all ranks receive a complete local model
+# directory rather than asking vLLM to interpret a nonexistent path as a Hub
+# repository ID. The helper serializes the shared download with its own lock.
+bash /configs/patches/minimax-m3-eagle3-draft.sh
+
+if [[ -z "${MINIMAX_M3_EAGLE3_DRAFT_LOCAL_DIR:-}" ]] || \
+   [[ ! -s "${MINIMAX_M3_EAGLE3_DRAFT_LOCAL_DIR}/config.json" ]]; then
+  echo "ERROR: EAGLE3 draft model cache is missing config.json: ${MINIMAX_M3_EAGLE3_DRAFT_LOCAL_DIR:-unset}" >&2
+  exit 1
+fi
+echo "Verified EAGLE3 draft model cache at ${MINIMAX_M3_EAGLE3_DRAFT_LOCAL_DIR}"
+
 VLLM_PACKAGE_DIR=$(python3 - <<'PY'
 import importlib.util
 from pathlib import Path
