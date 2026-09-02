@@ -68,12 +68,51 @@
 #     against the worker's actual resolved page size before relying on this
 #     in production routing.
 #
-# Benchmark ISL/OSL were not part of the translated parameter set (InferenceX
-# runs this as an agentic trajectory-replay workload, not a fixed-length
-# sa-bench dataset) -- only the concurrency sweep was specified. Fill in the
-# real agentic dataset/ISL/OSL before using this for a benchmarked run.
+# No benchmark section: this recipe deliberately stops at deployment. The
+# correct client for InferenceX's agentic-coding trace replay is
+# `benchmark.type: agentx` (model_prefix: "dsv4", concurrencies: [64, 96,
+# 128, 160], InferenceX's own scenario duration is 1800s / 900s minimum --
+# this session used 900s for tractability across the 3-lane sweep) --
+# purpose-built for exactly this InferenceX harness contract (derives MODEL/
+# FRAMEWORK/PRECISION/PORT/RESULT_DIR/AIPERF_REQUIRED_SERVER_METRIC_PREFIX
+# from the recipe, requires an InferenceX checkout mounted via
+# INFMAX_WORKSPACE). As of this recipe, `agentx` only exists on the unmerged
+# branch `agentx-benchmark-type` (commit 778f3d9d, "feat: add agentx
+# benchmark type for agentic-coding replay") -- not yet on main. Once that
+# branch merges, add:
+#
+#   benchmark:
+#     type: agentx
+#     model_prefix: "dsv4"
+#     concurrencies: [64, 96, 128, 160]
+#     duration_seconds: 900
+#
+# Until then, either rebase onto that branch locally or fall back to the
+# older `benchmark.type: custom` pattern (hand-roll the harness's env
+# contract -- MODEL, MODEL_PREFIX, FRAMEWORK, PRECISION, CONC, RESULT_FILENAME,
+# DURATION -- see any pre-agentx TRT-LLM AgentX recipe in this repo's history
+# for the shape), same as every recipe had to before `agentx` existed.
 
 name: "dsv4-pro-fp4-b200-agentic-hicache-mtp-thunderagent"
+
+# NOTE: dynamo/sglang framework versions are intentionally "nightly" rather
+# than a pinned build string. This recipe tracks moving targets on purpose
+# (SGLang's nightly image tag, an unmerged Dynamo PR ref for ThunderAgent's
+# DP-rank fix, and whatever `ai-dynamo`/`ai-dynamo-runtime` nightly the
+# frontend/worker pull at deploy time) -- re-verify against `pip show
+# ai-dynamo` / the container's installed SGLang version at deploy time
+# before treating a specific run as reproducible from these strings alone.
+identity:
+  model:
+    repo: "deepseek-ai/DeepSeek-V4-Pro"
+    # Verified against the live HF API and against this session's own
+    # deployment logs (same snapshot dir SGLang loaded from).
+    revision: "b5968e9190ef611bbf34a7229255be88a0e937c1"
+  container:
+    image: "lmsysorg/sglang:nightly-dev-20260827-20621aa1"
+  frameworks:
+    dynamo: "nightly (ai-dynamo/ai-dynamo-runtime, --pre; PR #14000 unmerged for thunderagent_router)"
+    sglang: "nightly-dev-20260827-20621aa1"
 
 slurm:
   partition: b200
@@ -178,8 +217,3 @@ auxiliary_services:
     # inherit_discovery_env: true (default) -- registers against the same
     # etcd/nats the dynamo frontend and the DP-attention worker use.
     # Thresholds intentionally omitted -- stock defaults (see header note).
-
-benchmark:
-  type: "sa-bench"
-  concurrencies: "64x96x128x160"
-  req_rate: "inf"
