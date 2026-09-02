@@ -978,6 +978,10 @@ in `endpoints-launch` under `NVIDIA/src/configs/<system>/<model>/point_*/client.
 
 Notes:
 
+- **Do not mount the client config at `/configs`.** srt-slurm mounts its own `configs/` there,
+  holding the `nats-server` and `etcd` binaries the head node starts from; an `extra_mount` onto the
+  same path shadows them and the job dies early with `NATS binary not found: /configs/nats-server`,
+  which reads like a broken install rather than a mount collision. Use any other path.
 - **Run it in the MLPerf endpoint client image** (`endpoint_client_*.sqsh`). The client ships
   pre-installed there, so there is nothing to build; the script checks it is on `PATH` and fails
   with that message if not.

@@ -36,15 +36,40 @@ CLIENT_BIN=${MLPERF_CLIENT_BIN:-inference-endpoint}
 
 [[ -n "$CLIENT_CONFIG" ]] || { echo "ERROR: MLPERF_CLIENT_CONFIG is required (path to the inference-endpoint client config, mounted via extra_mount)" >&2; exit 1; }
 [[ -f "$CLIENT_CONFIG" ]] || { echo "ERROR: MLPERF_CLIENT_CONFIG $CLIENT_CONFIG not found in container" >&2; exit 1; }
+case "$CLIENT_CONFIG" in
+  /configs/*)
+    # srt-slurm mounts its own configs/ at /configs for the nats-server and etcd
+    # binaries; an extra_mount onto that path shadows them and the job dies in
+    # head-node setup with "NATS binary not found", long before this script runs.
+    # Reaching here means the mount got through, but it is still the wrong place.
+    echo "[mlperf] WARNING: $CLIENT_CONFIG is under /configs, which srt-slurm uses for its own" >&2
+    echo "         infrastructure binaries. Mount client configs elsewhere." >&2
+    ;;
+esac
 
 # The client ships pre-installed in its own image ("no editable install, no
 # runtime sync"), so unlike a source-installed harness there is nothing to build
-# here - only a check that we are in the right container.
-command -v "$CLIENT_BIN" >/dev/null 2>&1 || {
-  echo "ERROR: '$CLIENT_BIN' not found on PATH. This benchmark expects the MLPerf endpoint client image" >&2
-  echo "       (endpoint_client_*.sqsh); set model.container or benchmark.container_image to it." >&2
+# here - only a matter of finding it. The image installs it into a venv that is
+# NOT on the default PATH (measured: PATH is just the usual /usr/local/sbin../bin
+# and the binary is at /opt/venv/bin/inference-endpoint), which is why the
+# MLPerf templates source an env file before invoking it. Look there too rather
+# than requiring the caller to know.
+CLIENT_CANDIDATES=("$CLIENT_BIN" /opt/venv/bin/"$CLIENT_BIN" /usr/local/bin/"$CLIENT_BIN")
+CLIENT_RESOLVED=""
+for candidate in "${CLIENT_CANDIDATES[@]}"; do
+  if command -v "$candidate" >/dev/null 2>&1; then
+    CLIENT_RESOLVED=$(command -v "$candidate")
+    break
+  fi
+done
+[[ -n "$CLIENT_RESOLVED" ]] || {
+  echo "ERROR: could not find '$CLIENT_BIN'. Looked at:" >&2
+  for candidate in "${CLIENT_CANDIDATES[@]}"; do echo "         $candidate" >&2; done
+  echo "       This benchmark expects the MLPerf endpoint client image (endpoint_client_*.sqsh);" >&2
+  echo "       set benchmark.container_image to it, or MLPERF_CLIENT_BIN to an absolute path." >&2
   exit 1
 }
+echo "[mlperf] client: $CLIENT_RESOLVED"
 
 # srt-slurm injects the frontend it stood up. There is no localhost default:
 # silently benchmarking nothing is worse than failing here.
@@ -61,76 +86,39 @@ RESULTS_DIR=/logs/mlperf
 mkdir -p "$RESULTS_DIR"
 RESOLVED_CONFIG="$RESULTS_DIR/client_config_resolved.yaml"
 
-# Rewrite only what the cluster decides. Mirrors generate_endpoint_yaml.py:
-# load, replace, dump - no schema knowledge, no validation, no reformatting of
-# anything else.
-SRT_IN="$CLIENT_CONFIG" SRT_OUT="$RESOLVED_CONFIG" SRT_ENDPOINTS="$ENDPOINTS" SRT_REPORT_DIR="$RESULTS_DIR" \
-python3 - <<'PY'
-import os
-import sys
+# The image keeps its packages in the venv, so the system python3 has no pyyaml
+# and the helper below dies with ModuleNotFoundError. Use the interpreter that
+# sits beside the client binary, which is what the MLPerf templates do for the
+# same reason.
+CLIENT_PYTHON="$(dirname "$CLIENT_RESOLVED")/python"
+[[ -x "$CLIENT_PYTHON" ]] || CLIENT_PYTHON=$(command -v python3)
 
-import yaml
+"$CLIENT_PYTHON" "$(dirname "$0")/resolve_config.py" \
+  --input "$CLIENT_CONFIG" \
+  --output "$RESOLVED_CONFIG" \
+  --endpoints "$ENDPOINTS" \
+  --report-dir "$RESULTS_DIR"
 
-source, dest = os.environ["SRT_IN"], os.environ["SRT_OUT"]
-config = yaml.safe_load(open(source))
-if not isinstance(config, dict):
-    sys.exit(f"ERROR: expected a YAML mapping at the root of {source}")
-
-endpoints = [e.strip() for e in os.environ["SRT_ENDPOINTS"].split(",") if e.strip()]
-endpoints = [e if e.startswith(("http://", "https://")) else f"http://{e}" for e in endpoints]
-
-# endpoint_config may be absent in a hand-written config; create it rather than
-# failing, since the endpoints are the one thing we always know and it never does.
-config.setdefault("endpoint_config", {})["endpoints"] = endpoints
-# Keep results with the rest of the job's logs so they are collected and uploaded.
-config["report_dir"] = os.environ["SRT_REPORT_DIR"]
-
-with open(dest, "w") as f:
-    yaml.dump(config, f, default_flow_style=False, sort_keys=False)
-print(f"[mlperf] resolved config -> {dest}")
-for e in endpoints:
-    print(f"[mlperf]   endpoint {e}")
-PY
-
-echo "[mlperf] running $CLIENT_BIN benchmark from-config --mode $MODE"
+echo "[mlperf] running $CLIENT_RESOLVED benchmark from-config --mode $MODE"
 set +e
-"$CLIENT_BIN" benchmark from-config -c "$RESOLVED_CONFIG" --mode "$MODE"
+"$CLIENT_RESOLVED" benchmark from-config -c "$RESOLVED_CONFIG" --mode "$MODE"
 CLIENT_RC=$?
 set -e
 echo "[mlperf] client exited with $CLIENT_RC"
 
 # srt-slurm's postprocess reads benchmark-rollup.json if it exists, whoever
 # wrote it, so a custom benchmark can feed the existing rollup concept without
-# srt-slurm needing to know anything about this client. Records what srtctl
-# chose, which the client's own report does not.
+# srt-slurm needing to know anything about this client.
 #
-# The per-run metrics are deliberately absent: this client does not use LoadGen
-# and writes its own report format, which has not been observed here yet.
-# Fabricating a parser for it would be worse than leaving the field out.
-SRT_ROLLUP=/logs/benchmark-rollup.json SRT_REPORT_DIR="$RESULTS_DIR" \
-SRT_ENDPOINTS="$ENDPOINTS" SRT_MODE="$MODE" SRT_CONFIG="$CLIENT_CONFIG" SRT_RC="$CLIENT_RC" \
-python3 - <<'PY'
-import json
-import os
-from pathlib import Path
-
-report_dir = Path(os.environ["SRT_REPORT_DIR"])
-record = {
-    "benchmark_type": "mlperf",
-    "client": "inference-endpoint",
-    "runs": [
-        {
-            "mode": os.environ["SRT_MODE"],
-            "endpoints": [e.strip() for e in os.environ["SRT_ENDPOINTS"].split(",") if e.strip()],
-            "client_config": os.environ["SRT_CONFIG"],
-            "exit_code": int(os.environ["SRT_RC"]),
-            "report_dir": str(report_dir),
-            "report_files": sorted(p.name for p in report_dir.iterdir() if p.is_file()),
-        }
-    ],
-}
-Path(os.environ["SRT_ROLLUP"]).write_text(json.dumps(record, indent=1))
-print(f"[mlperf] wrote {os.environ['SRT_ROLLUP']}")
-PY
+# The parser summarises the client's own report format (not LoadGen's). It never
+# fails the step: a run whose report is missing or restructured still gets a
+# rollup, just without metrics.
+"$CLIENT_PYTHON" "$(dirname "$0")/parse_report.py" \
+  --report-dir "$RESULTS_DIR" \
+  --output /logs/benchmark-rollup.json \
+  --mode "$MODE" \
+  --endpoints "$ENDPOINTS" \
+  --client-config "$CLIENT_CONFIG" \
+  --exit-code "$CLIENT_RC"
 
 exit $CLIENT_RC
