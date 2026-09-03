@@ -62,20 +62,11 @@ class AuxiliaryServiceStageMixin:
             return None
         checkout_root = self.runtime.log_dir / "auxiliary_services" / service.name / "src"
         clone_log = self.runtime.log_dir / f"auxiliary_{service.name}.clone.out"
-        # -c http.version=HTTP/1.1, GIT_TERMINAL_PROMPT=0, and the timeout guard
-        # against the same intermittent git smart-HTTP/HTTP2 stalls seen on this
-        # cluster's login host (NVIDIA/InferenceMAX#271, fixed there for the
-        # launcher's own srt-slurm clone) -- compute nodes hit the same failure
-        # mode (exit 128) cloning arbitrary auxiliary_services sources.
         clone_script = (
             f"set -e; mkdir -p {shlex.quote(str(checkout_root.parent))}; "
             f"if [ ! -d {shlex.quote(str(checkout_root))} ]; then "
-            f"GIT_TERMINAL_PROMPT=0 timeout 120s "
-            f"git -c http.version=HTTP/1.1 clone --filter=blob:none "
-            f"{shlex.quote(source.git)} {shlex.quote(str(checkout_root))} && "
-            f"GIT_TERMINAL_PROMPT=0 timeout 120s "
-            f"git -c http.version=HTTP/1.1 -C {shlex.quote(str(checkout_root))} "
-            f"fetch origin {shlex.quote(source.rev)} && "
+            f"git clone --filter=blob:none {shlex.quote(source.git)} {shlex.quote(str(checkout_root))} && "
+            f"git -C {shlex.quote(str(checkout_root))} fetch origin {shlex.quote(source.rev)} && "
             f"git -C {shlex.quote(str(checkout_root))} checkout FETCH_HEAD; "
             "fi"
         )
