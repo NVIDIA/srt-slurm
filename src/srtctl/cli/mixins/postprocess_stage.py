@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from srtctl.benchmarks.base import SCRIPTS_DIR
-from srtctl.core.config import get_srtslurm_setting, load_cluster_config
+from srtctl.core.config import get_srtslurm_setting, git_clone_command_prefix, load_cluster_config
 from srtctl.core.git_state import GIT_STATE_FILENAME
 from srtctl.core.lockfile import collect_worker_fingerprints, generate_reproduction_report, write_lockfile
 from srtctl.core.schema import AIAnalysisConfig, S3Config
@@ -525,6 +525,7 @@ export PYTHONPATH={q_root}
         Upload is always attempted if awscli installs successfully. Parsing is
         best-effort so raw logs survive parser/tooling failures.
         """
+        git_cmd = shlex.join(git_clone_command_prefix())
         return f"""
 set -u
 set -o pipefail
@@ -539,7 +540,7 @@ if ! pip install uv awscli; then
 fi
 
 echo "Installing srtlog..."
-if cd /tmp && git clone --depth 1 https://github.com/ishandhanani/srtlog.git && uv pip install --system ./srtlog; then
+if cd /tmp && {git_cmd} clone --depth 1 https://github.com/ishandhanani/srtlog.git && uv pip install --system ./srtlog; then
   echo "Running srtlog parse..."
   cd /logs
   srtlog parse . || PARSE_STATUS=$?

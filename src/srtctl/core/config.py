@@ -591,6 +591,23 @@ def get_srtslurm_setting(key: str, default: Any = None) -> Any:
     return default
 
 
+def git_clone_command_prefix() -> list[str]:
+    """Return the ``git`` invocation every clone/fetch in srtctl should start from.
+
+    Some clusters see intermittent git smart-HTTP failures negotiating HTTP/2
+    against github.com (stalls, or truncated responses that git misreports as
+    "could not read Username" auth-prompt failures) on certain network paths --
+    observed on both a login host and its compute nodes. Setting
+    ``git_http_version: "HTTP/1.1"`` in srtslurm.yaml works around this for
+    every git clone/fetch srtctl performs, cluster-wide, without touching
+    individual recipes or call sites.
+    """
+    version = get_srtslurm_setting("git_http_version")
+    if not version:
+        return ["git"]
+    return ["git", "-c", f"http.version={version}"]
+
+
 def _setdefault_nested(parent: dict, key: str, values: dict) -> None:
     """``parent[key]`` becomes a dict and gains ``values`` without clobbering."""
     child = parent.get(key)
