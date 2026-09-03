@@ -1240,6 +1240,40 @@ telemetry:
 | `request_timeout_seconds` | float | `2.0` | Per-request exporter timeout |
 | `collector_join_timeout_seconds` | float/null | `null` | Shutdown join timeout; defaults from `request_timeout_seconds` |
 
+`telemetry.enabled` needs at least one leg: a `dcgm_exporter`, `cpu_power.enabled`, or both.
+
+### telemetry.cpu_power
+
+Host CPU rail power, collected alongside (or instead of) the DCGM GPU leg.
+`cpu-power-exporter` runs on the bare host of every worker node, publishes
+`cpu_power_acpi_watts` from `/sys/class/hwmon`, and the head-node collector
+scrapes it on the same clock as the DCGM leg into
+`<log_dir>/<storage_subdir>/{samples.csv,manifest.json}`. The same endpoints are
+handed to AIPerf through `AIPERF_SERVER_METRICS_URLS`.
+
+```yaml
+telemetry:
+  enabled: true
+  cpu_power:
+    enabled: true
+    source: "acpi"
+    required: true
+    prometheus_port: 9401
+```
+
+| Field | Type | Default | Description |
+| ----- | ---- | ------- | ----------- |
+| `enabled` | bool | `false` | Enable host CPU power collection |
+| `source` | string | `auto` | `acpi` names the provider and makes it mandatory; `auto` is best-effort — a node with no ACPI power rails contributes no samples instead of failing the run |
+| `sample_interval_seconds` | float | `0.1` | Scrape period in seconds; must be at most `3.0` |
+| `startup_timeout_seconds` | float | `30.0` | Exporter readiness timeout |
+| `required` | bool | `false` | Fail the benchmark when publishable CPU power artifacts cannot be produced; implies `source: acpi` semantics |
+| `prometheus_port` | int | `9401` | Exporter port on every worker node; must not collide with `telemetry.dcgm_exporter.port` |
+| `storage_subdir` | string | `cpu_power` | Output directory below the run log directory; must differ from `telemetry.storage_subdir` |
+
+`make setup ARCH=<compute_arch>` installs `bin/cpu-power-exporter`. `srtctl
+validate-setup` only requires it when a recipe enables this leg.
+
 ---
 
 ## sweep
