@@ -2415,6 +2415,11 @@ class SrtConfig:
             return
         if telemetry.dcgm_exporter is not None:
             self._validate_dcgm_power()
+        elif not telemetry.cpu_power.enabled:
+            raise ValidationError(
+                "telemetry.enabled requires telemetry.dcgm_exporter or telemetry.cpu_power.enabled; "
+                "otherwise there is nothing to collect"
+            )
         if telemetry.cpu_power.enabled:
             self._validate_cpu_power()
         elif telemetry.cpu_power.required:

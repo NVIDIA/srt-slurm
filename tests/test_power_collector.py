@@ -716,6 +716,8 @@ class TestRequiredReadinessGate:
         config = MagicMock()
         config.telemetry.enabled = True
         config.telemetry.required = required
+        # A MagicMock attribute is truthy, which would start the unrelated CPU power leg.
+        config.telemetry.cpu_power.enabled = False
         config.frontend.type = "dynamo"
         config.profiling.enabled = False
         runtime = MagicMock()
