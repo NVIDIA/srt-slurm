@@ -14,6 +14,7 @@ name: "cpu-power-exporter-test"
 model:
   path: "/lustre/share/core_dlfw_ci/models/Qwen3.5-27B"
   container: "/lustre/fsw/coreai_comparch_inferencex/yangminl/containers/lmsysorg+sglang+nightly-dev-20260818-c0b6474b.sqsh"
+  precision: "bf16"
 
 dynamo:
   wheel: "1.4.0"
