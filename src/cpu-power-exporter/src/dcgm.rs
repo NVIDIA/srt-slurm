@@ -99,14 +99,30 @@ union FieldValueUnion {
 
 type FnDcgmInit = unsafe extern "C" fn() -> i32;
 type FnDcgmShutdown = unsafe extern "C" fn() -> i32;
+type FnDcgmConnect =
+    unsafe extern "C" fn(ip_address: *const libc_c_char, handle: *mut Handle) -> i32;
+type FnDcgmDisconnect = unsafe extern "C" fn(handle: Handle) -> i32;
 type FnDcgmStartEmbedded = unsafe extern "C" fn(op_mode: i32, handle: *mut Handle) -> i32;
 type FnDcgmStopEmbedded = unsafe extern "C" fn(handle: Handle) -> i32;
-type FnDcgmGetEntityGroupEntities =
-    unsafe extern "C" fn(handle: Handle, entity_group: u32, entities: *mut u32, num_entities: *mut i32, flags: u32) -> i32;
-type FnDcgmGroupCreate =
-    unsafe extern "C" fn(handle: Handle, group_type: i32, name: *const libc_c_char, group_id: *mut Handle) -> i32;
-type FnDcgmGroupAddEntity =
-    unsafe extern "C" fn(handle: Handle, group_id: Handle, entity_group_id: u32, entity_id: u32) -> i32;
+type FnDcgmGetEntityGroupEntities = unsafe extern "C" fn(
+    handle: Handle,
+    entity_group: u32,
+    entities: *mut u32,
+    num_entities: *mut i32,
+    flags: u32,
+) -> i32;
+type FnDcgmGroupCreate = unsafe extern "C" fn(
+    handle: Handle,
+    group_type: i32,
+    name: *const libc_c_char,
+    group_id: *mut Handle,
+) -> i32;
+type FnDcgmGroupAddEntity = unsafe extern "C" fn(
+    handle: Handle,
+    group_id: Handle,
+    entity_group_id: u32,
+    entity_id: u32,
+) -> i32;
 type FnDcgmGroupDestroy = unsafe extern "C" fn(handle: Handle, group_id: Handle) -> i32;
 type FnDcgmFieldGroupCreate = unsafe extern "C" fn(
     handle: Handle,
@@ -151,6 +167,8 @@ struct DcgmLib {
     _lib: libloading::Library,
     init: FnDcgmInit,
     shutdown: FnDcgmShutdown,
+    connect: FnDcgmConnect,
+    disconnect: FnDcgmDisconnect,
     start_embedded: FnDcgmStartEmbedded,
     stop_embedded: FnDcgmStopEmbedded,
     get_entity_group_entities: FnDcgmGetEntityGroupEntities,
@@ -179,16 +197,22 @@ impl DcgmLib {
         unsafe {
             macro_rules! sym {
                 ($name:literal, $ty:ty) => {
-                    *lib.get::<$ty>($name)
-                        .map_err(|e| DcgmUnavailable(format!("symbol {}: {e}", stringify!($name))))?
+                    *lib.get::<$ty>($name).map_err(|e| {
+                        DcgmUnavailable(format!("symbol {}: {e}", stringify!($name)))
+                    })?
                 };
             }
             Ok(Self {
                 init: sym!(b"dcgmInit\0", FnDcgmInit),
                 shutdown: sym!(b"dcgmShutdown\0", FnDcgmShutdown),
+                connect: sym!(b"dcgmConnect\0", FnDcgmConnect),
+                disconnect: sym!(b"dcgmDisconnect\0", FnDcgmDisconnect),
                 start_embedded: sym!(b"dcgmStartEmbedded\0", FnDcgmStartEmbedded),
                 stop_embedded: sym!(b"dcgmStopEmbedded\0", FnDcgmStopEmbedded),
-                get_entity_group_entities: sym!(b"dcgmGetEntityGroupEntities\0", FnDcgmGetEntityGroupEntities),
+                get_entity_group_entities: sym!(
+                    b"dcgmGetEntityGroupEntities\0",
+                    FnDcgmGetEntityGroupEntities
+                ),
                 group_create: sym!(b"dcgmGroupCreate\0", FnDcgmGroupCreate),
                 group_add_entity: sym!(b"dcgmGroupAddEntity\0", FnDcgmGroupAddEntity),
                 group_destroy: sym!(b"dcgmGroupDestroy\0", FnDcgmGroupDestroy),
@@ -196,7 +220,10 @@ impl DcgmLib {
                 field_group_destroy: sym!(b"dcgmFieldGroupDestroy\0", FnDcgmFieldGroupDestroy),
                 watch_fields: sym!(b"dcgmWatchFields\0", FnDcgmWatchFields),
                 update_all_fields: sym!(b"dcgmUpdateAllFields\0", FnDcgmUpdateAllFields),
-                entities_get_latest_values: sym!(b"dcgmEntitiesGetLatestValues\0", FnDcgmEntitiesGetLatestValues),
+                entities_get_latest_values: sym!(
+                    b"dcgmEntitiesGetLatestValues\0",
+                    FnDcgmEntitiesGetLatestValues
+                ),
                 _lib: lib,
             })
         }
@@ -239,6 +266,14 @@ fn check(ret: i32, context: &str) -> Result<(), DcgmUnavailable> {
 
 // ── Reader ────────────────────────────────────────────────────────────────────
 
+/// How we obtained the DCGM handle — determines which teardown call to use.
+enum HandleSource {
+    /// Connected to an already-running daemon via `dcgmConnect`.
+    Connected,
+    /// We started our own in-process daemon via `dcgmStartEmbedded`.
+    Embedded,
+}
+
 /// Per-socket CPU power reading via DCGM field 1130.
 ///
 /// `Drop` cleans up the entity group, field group, embedded handle, and library
@@ -246,6 +281,7 @@ fn check(ret: i32, context: &str) -> Result<(), DcgmUnavailable> {
 pub struct DcgmReader {
     lib: DcgmLib,
     handle: Handle,
+    handle_source: HandleSource,
     group_id: Handle,
     field_group_id: Handle,
     entities: Vec<GroupEntityPair>,
@@ -257,30 +293,55 @@ pub struct DcgmReader {
 unsafe impl Send for DcgmReader {}
 
 impl DcgmReader {
-    /// Load libdcgm, start embedded mode, enumerate CPU entities, register the
-    /// field watch, and seed the first sample.
+    /// Load libdcgm, try connecting to a running daemon first, then fall back to
+    /// starting an embedded instance.  Enumerates CPU entities, registers the
+    /// field watch, and seeds the first sample.
     pub fn new() -> Result<Self, DcgmUnavailable> {
         let lib = DcgmLib::load()?;
 
         // Library init — must be called once before any other DCGM function.
         check(unsafe { (lib.init)() }, "dcgmInit")?;
 
-        // Start embedded DCGM (no external nv-hostengine required).
-        let mut handle: Handle = 0;
-        let ret = unsafe { (lib.start_embedded)(DCGM_OPERATION_MODE_AUTO, &mut handle) };
-        if ret != DCGM_ST_OK {
-            // Shutdown the library before returning the error.
-            unsafe { (lib.shutdown)() };
-            return Err(DcgmUnavailable(format!("dcgmStartEmbedded: error {ret}")));
-        }
+        // Try connecting to an already-running privileged daemon first.
+        // nv-hostengine listens on TCP 5555 by default; if one is present it has
+        // root access and its field watches return real hardware values.
+        let connect_result = Self::try_connect(&lib);
+        let (handle, handle_source) = match connect_result {
+            Ok(h) => {
+                tracing::info!("connected to existing DCGM daemon (root-level access)");
+                (h, HandleSource::Connected)
+            }
+            Err(e) => {
+                tracing::info!(reason = %e, "no running DCGM daemon; starting embedded instance");
+                let mut h: Handle = 0;
+                let ret = unsafe { (lib.start_embedded)(DCGM_OPERATION_MODE_AUTO, &mut h) };
+                if ret != DCGM_ST_OK {
+                    unsafe { (lib.shutdown)() };
+                    return Err(DcgmUnavailable(format!("dcgmStartEmbedded: error {ret}")));
+                }
+                (h, HandleSource::Embedded)
+            }
+        };
 
-        match Self::setup(lib, handle) {
+        match Self::setup(lib, handle, handle_source) {
             Ok(reader) => Ok(reader),
             Err(e) => Err(e),
         }
     }
 
-    fn setup(lib: DcgmLib, handle: Handle) -> Result<Self, DcgmUnavailable> {
+    /// Try `dcgmConnect` to a daemon at the default nv-hostengine address.
+    fn try_connect(lib: &DcgmLib) -> Result<Handle, DcgmUnavailable> {
+        let addr = CString::new("127.0.0.1").unwrap();
+        let mut handle: Handle = 0;
+        let ret = unsafe { (lib.connect)(addr.as_ptr(), &mut handle) };
+        if ret == DCGM_ST_OK {
+            Ok(handle)
+        } else {
+            Err(DcgmUnavailable(format!("dcgmConnect: error {ret}")))
+        }
+    }
+
+    fn setup(lib: DcgmLib, handle: Handle, handle_source: HandleSource) -> Result<Self, DcgmUnavailable> {
         // Enumerate supported CPU entities.
         let mut raw_ids = vec![0u32; MAX_CPU_ENTITIES];
         let mut count: i32 = MAX_CPU_ENTITIES as i32;
@@ -298,7 +359,9 @@ impl DcgmReader {
         )?;
 
         if count <= 0 {
-            return Err(DcgmUnavailable("no supported DCGM CPU entities on this host".into()));
+            return Err(DcgmUnavailable(
+                "no supported DCGM CPU entities on this host".into(),
+            ));
         }
         let cpu_ids: Vec<u32> = raw_ids[..count as usize].to_vec();
 
@@ -316,7 +379,9 @@ impl DcgmReader {
         // Create an empty entity group and add each CPU entity.
         let mut group_id: Handle = 0;
         check(
-            unsafe { (lib.group_create)(handle, DCGM_GROUP_EMPTY, group_name.as_ptr(), &mut group_id) },
+            unsafe {
+                (lib.group_create)(handle, DCGM_GROUP_EMPTY, group_name.as_ptr(), &mut group_id)
+            },
             "dcgmGroupCreate",
         )?;
 
@@ -367,6 +432,7 @@ impl DcgmReader {
         Ok(Self {
             lib,
             handle,
+            handle_source,
             group_id,
             field_group_id,
             entities,
@@ -456,13 +522,20 @@ impl Drop for DcgmReader {
                 self.handle,
                 self.group_id,
                 self.field_group_id,
-                0,   // updateFreq=0 means unwatch
+                0, // updateFreq=0 means unwatch
                 0.0,
                 0,
             );
             (self.lib.field_group_destroy)(self.handle, self.field_group_id);
             (self.lib.group_destroy)(self.handle, self.group_id);
-            (self.lib.stop_embedded)(self.handle);
+            match self.handle_source {
+                HandleSource::Connected => {
+                    (self.lib.disconnect)(self.handle);
+                }
+                HandleSource::Embedded => {
+                    (self.lib.stop_embedded)(self.handle);
+                }
+            }
             (self.lib.shutdown)();
         }
     }

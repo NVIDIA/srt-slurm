@@ -436,13 +436,34 @@ fn init_metrics_state(args: &Args) -> Result<MetricsState> {
 
     if want_dcgm {
         match dcgm::DcgmReader::new() {
-            Ok(reader) => {
+            Ok(mut reader) => {
                 tracing::info!(
                     cpu_count = reader.cpu_ids.len(),
                     cpu_ids = ?reader.cpu_ids,
                     "DCGM reader initialised"
                 );
-                return Ok(MetricsState::Dcgm(Arc::new(Mutex::new(reader))));
+                // Probe: if every entity returns zero/None the embedded daemon
+                // lacks hardware access (common when running without root while a
+                // system dcgm-exporter holds the DCGM session as root).  In Auto
+                // mode this is a silent fallback to ACPI; in Dcgm mode it is a
+                // hard failure because the caller explicitly requested DCGM.
+                let probe = reader.read_watts();
+                let any_live = probe
+                    .as_ref()
+                    .map(|v| v.iter().any(|(_, w)| w.is_some()))
+                    .unwrap_or(false);
+                if !any_live {
+                    let reason = match probe {
+                        Err(ref e) => format!("read error: {e}"),
+                        Ok(_) => "all entities returned zero watts".into(),
+                    };
+                    if matches!(args.source, SourceMode::Dcgm) {
+                        anyhow::bail!("DCGM yielded no live data: {reason}");
+                    }
+                    tracing::info!(%reason, "DCGM yielded no live data; falling back to ACPI");
+                } else {
+                    return Ok(MetricsState::Dcgm(Arc::new(Mutex::new(reader))));
+                }
             }
             Err(e) => {
                 if matches!(args.source, SourceMode::Dcgm) {
