@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 import yaml
 
 from srtctl.cli.submit import show_config_details
@@ -610,3 +611,16 @@ class TestInfmaxWorkspaceMount:
             show_config_details(config)
         output = capsys.readouterr().out
         assert "MISSING" not in output
+
+    @pytest.mark.parametrize("benchmark_type", ["agentx", "lm-eval"])
+    def test_absence_is_flagged_for_runners_that_build_the_path_themselves(self, capsys, benchmark_type):
+        """These two runners construct /infmax-workspace in Python rather than
+        naming it in benchmark.command, so scanning the command finds nothing and
+        the recipe reads as self-contained right up until it fails."""
+        config = _make_config({"benchmark": {"type": benchmark_type, "model_prefix": "dsv4", "concurrency": 8}})
+        env = {k: v for k, v in os.environ.items() if k != "INFMAX_WORKSPACE"}
+        with patch.dict(os.environ, env, clear=True):
+            show_config_details(config)
+        output = capsys.readouterr().out
+        assert "MISSING" in output
+        assert "127" in output

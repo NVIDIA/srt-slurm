@@ -275,10 +275,18 @@ def show_config_details(config: SrtConfig) -> None:
     # minutes in when it is missing, and the dry-run gave no hint either way -- the
     # table listed every other mount, which made its absence read as "no such mount
     # exists" rather than "not set".
+    #
+    # A custom command names the path itself, so it can be detected by reading the
+    # command. The agentx and lm-eval runners build that path in Python instead, so
+    # they have to be recognised by type or they get no warning at all.
     infmax_ws = os.environ.get("INFMAX_WORKSPACE")
+    needs_infmax_ws = "/infmax-workspace" in str(config.benchmark.command or "") or config.benchmark.type in (
+        "agentx",
+        "lm-eval",
+    )
     if infmax_ws:
         mounts_table.add_row("INFMAX_WORKSPACE", infmax_ws, "/infmax-workspace")
-    elif "/infmax-workspace" in str(config.benchmark.command or ""):
+    elif needs_infmax_ws:
         mounts_table.add_row(
             "[red]MISSING[/]",
             "[red]INFMAX_WORKSPACE is not set in this environment[/]",
@@ -287,7 +295,7 @@ def show_config_details(config: SrtConfig) -> None:
 
     console.print(Panel(mounts_table, border_style="green"))
 
-    if not infmax_ws and "/infmax-workspace" in str(config.benchmark.command or ""):
+    if not infmax_ws and needs_infmax_ws:
         console.print(
             "[red bold]ERROR:[/] this recipe runs its benchmark from /infmax-workspace, "
             "but INFMAX_WORKSPACE is not set, so that mount will be absent and the "

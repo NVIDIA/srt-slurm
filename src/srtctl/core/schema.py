@@ -785,6 +785,12 @@ class BenchmarkConfig:
     agentperf_config: str | None = (
         None  # Container path to the client's workload YAML (endpoint/model/concurrency injected)
     )
+    # AgentX benchmark fields (InferenceX agentic-coding harness; see
+    # srtctl.benchmarks.agentx.AgentXRunner). Everything else the harness reads
+    # is either derived from this config or passed through benchmark.env.
+    model_prefix: str | None = None  # Trace-corpus selector, e.g. "dsv4", "qwen3.5", "kimik3"
+    duration_seconds: int | None = None  # Replay duration per point (default: 3600)
+    result_filename: str | None = None  # Result basename; defaults to the recipe name
     # Trace replay benchmark fields (uses aiperf with mooncake_trace dataset type)
     trace_file: str | None = None  # Path to trace JSONL file (container path, e.g., /traces/dataset.jsonl)
     custom_tokenizer: str | None = None  # Custom tokenizer class (e.g., "module.path.ClassName")
