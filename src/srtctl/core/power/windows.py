@@ -371,22 +371,24 @@ def _check_coverage(
     return gaps, reasons
 
 
-def check_host_coverage(
+def check_series_coverage(
     start: float,
     end: float,
-    expected_hosts: Sequence[str],
-    sample_times_by_host: Mapping[str, Sequence[float]],
+    expected_series: Sequence[str],
+    sample_times_by_series: Mapping[str, Sequence[float]],
 ) -> tuple[dict[str, float], list[str]]:
-    """The same audit for a provider whose series are hosts, not GPUs.
+    """The same audit for a provider whose series are not GPU devices.
 
-    Host rails are not allocated to workers, so a node either bracketed the
-    interval with close-enough samples or it did not.
+    The caller names the series -- for the CPU leg, one per host power rail --
+    and each of them either bracketed the interval with close-enough samples or
+    did not. Auditing a coarser identity (a whole host) would let one rail go
+    quiet while its neighbours keep the host's series dense.
     """
     gaps: dict[str, float] = {}
     reasons: list[str] = []
 
-    for host in sorted(set(expected_hosts)):
-        sequence = _bracketing_sequence(sample_times_by_host.get(host, ()), start, end)
+    for host in sorted(set(expected_series)):
+        sequence = _bracketing_sequence(sample_times_by_series.get(host, ()), start, end)
         if sequence is None:
             reasons.append(Reason.MEASUREMENT_WINDOW_NOT_BRACKETED)
             continue

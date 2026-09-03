@@ -13,8 +13,9 @@ publishes ``cpu_power_acpi_watts`` per power rail. There is deliberately no GPU
 topology and no device expectation here -- host rails are not allocated to
 workers, so the artifact is a flat time series plus the sensors that were
 actually observed. Coverage is per host: publication requires that every
-configured node bracketed every benchmark the orchestrator ran, with the same
-maximum sample gap the GPU leg's measurement windows are held to. Spans come
+rail discovered at readiness bracketed every benchmark the orchestrator ran, on
+every configured node, with the same maximum sample gap the GPU leg's
+measurement windows are held to. Spans come
 from the orchestrator rather than ``windows/*.json`` because the CPU leg also
 serves benchmark types that write no window artifact.
 """
@@ -56,7 +57,7 @@ from srtctl.core.power.manifest import (
     STATUS_STARTING,
 )
 from srtctl.core.power.session import SessionOutcome, run_daemon_workers
-from srtctl.core.power.windows import check_host_coverage
+from srtctl.core.power.windows import check_series_coverage
 from srtctl.core.processes import ManagedProcess
 from srtctl.core.slurm import get_hostname_ip
 
@@ -124,13 +125,13 @@ class CpuEndpoint:
 
 @dataclass(frozen=True)
 class BenchmarkSpanCoverage:
-    """Whether every configured host sampled across one benchmark run."""
+    """Whether every expected rail sampled across one benchmark run."""
 
     start_unix: float
     end_unix: float
     covered: bool
     reason_codes: tuple[str, ...]
-    per_host_max_sample_gap_seconds: dict[str, float]
+    per_series_max_sample_gap_seconds: dict[str, float]
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -138,7 +139,7 @@ class BenchmarkSpanCoverage:
             "end_unix": self.end_unix,
             "covered": self.covered,
             "reason_codes": list(self.reason_codes),
-            "per_host_max_sample_gap_seconds": dict(self.per_host_max_sample_gap_seconds),
+            "per_series_max_sample_gap_seconds": dict(self.per_series_max_sample_gap_seconds),
         }
 
 
@@ -224,9 +225,16 @@ class CpuPowerTelemetrySession:
         self._scrape_count = 0
         self._row_count = 0
         self._observed: dict[str, set[str]] = {}
-        # One head-clock timestamp per host per producing cycle: the series a
-        # measurement window is bracketed against.
+        # One head-clock timestamp per rail per producing cycle, keyed
+        # "<host>/<sensor>": the series a measurement window is bracketed
+        # against. Per host would be too coarse -- a package rail can stop
+        # reporting while the remaining rails keep the host's series dense.
         self._sample_times: dict[str, list[float]] = {}
+        # The rails that answered in the readiness cycle. Publication holds the
+        # run to what the session promised at readiness, so a rail that
+        # disappears mid-benchmark is a coverage failure rather than an
+        # expectation that quietly shrinks with it.
+        self._expected_series: set[str] = set()
         self._benchmark_spans: list[tuple[float, float]] = []
         self._span_coverage: list[BenchmarkSpanCoverage] = []
         self._reasons: list[str] = []
@@ -381,7 +389,8 @@ class CpuPowerTelemetrySession:
             for result in settled:
                 if result.readings:
                     self._observed.setdefault(result.hostname, set()).update(r.sensor for r in result.readings)
-                    self._sample_times.setdefault(result.hostname, []).append(timestamp_unix)
+                    for reading in result.readings:
+                        self._sample_times.setdefault(f"{result.hostname}/{reading.sensor}", []).append(timestamp_unix)
 
         with self._writer_lock:
             if self._mutation_disabled or self._writer is None:
@@ -395,6 +404,10 @@ class CpuPowerTelemetrySession:
             if endpoints and covering == {endpoint.hostname for endpoint in endpoints}:
                 if self._ready_at_monotonic is None:
                     self._ready_at_monotonic = time.monotonic()
+                    with self._state_lock:
+                        self._expected_series = {
+                            f"{result.hostname}/{reading.sensor}" for result in settled for reading in result.readings
+                        }
                 self._ready.set()
         return len(rows)
 
@@ -503,6 +516,7 @@ class CpuPowerTelemetrySession:
             and self._row_count > 0
             and bool(self._nodes)
             and set(self._observed) == set(self._nodes)
+            and bool(self._expected_series)
             and spans_covered
         )
         self._outcome = self._terminal(status, publication_valid=publication_valid)
@@ -512,20 +526,21 @@ class CpuPowerTelemetrySession:
         """Hold every benchmark span to the GPU leg's bracketing and gap rules."""
         with self._state_lock:
             spans = list(self._benchmark_spans)
-            sample_times = {host: list(times) for host, times in self._sample_times.items()}
+            sample_times = {series: list(times) for series, times in self._sample_times.items()}
+            expected = sorted(self._expected_series)
         if not spans:
             logger.warning("CPU power session finalized without a benchmark span; nothing to publish")
 
         coverage: list[BenchmarkSpanCoverage] = []
         for start, end in spans:
-            gaps, reasons = check_host_coverage(start, end, self._nodes, sample_times)
+            gaps, reasons = check_series_coverage(start, end, expected, sample_times)
             coverage.append(
                 BenchmarkSpanCoverage(
                     start_unix=start,
                     end_unix=end,
                     covered=not reasons,
                     reason_codes=dedupe(reasons),
-                    per_host_max_sample_gap_seconds=gaps,
+                    per_series_max_sample_gap_seconds=gaps,
                 )
             )
         return coverage
