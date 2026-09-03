@@ -6,6 +6,7 @@
 import json
 import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -17,6 +18,7 @@ from srtctl.cli.mixins.telemetry_stage import TelemetryStageMixin
 from srtctl.core.power.contract import Reason
 from srtctl.core.power.cpu_session import (
     MAX_SCRAPE_BYTES,
+    CpuEndpoint,
     CpuPowerSessionSettings,
     CpuPowerTelemetrySession,
     parse_cpu_power_scrape,
@@ -624,6 +626,109 @@ class TestCpuPowerLifecycle:
         assert session.start_and_wait_for_readiness() is False
         outcome = session.stop_and_finalize()
         assert Reason.EXPORTER_STARTUP_TIMEOUT in outcome.reason_codes
+
+
+class TestCpuPowerScrapeBudget:
+    """Real sockets, real requests: the mocked generator cannot prove this.
+
+    urllib3 blocks inside one chunk read until the chunk is full, so an exporter
+    that trickles bytes never trips the per-operation timeout and a deadline
+    checked between chunks is never reached.
+    """
+
+    @staticmethod
+    def _trickling_server(delay: float = 0.05):
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", "1000000")
+                self.end_headers()
+                try:
+                    while True:
+                        self.wfile.write(b"x" * 20)
+                        self.wfile.flush()
+                        time.sleep(delay)
+                except OSError:
+                    pass
+
+            def log_message(self, *_args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return server
+
+    def test_a_trickling_exporter_is_cut_off_at_the_budget(self, tmp_path):
+        server = self._trickling_server()
+        self.addfinalizer = None
+        try:
+            session = _session(tmp_path, ["node-a"], request_timeout_seconds=0.2)
+            endpoint = CpuEndpoint(hostname="node-a", url=f"http://127.0.0.1:{server.server_address[1]}/metrics")
+
+            started = time.monotonic()
+            result = session._poll(endpoint)
+            elapsed = time.monotonic() - started
+
+            assert result.reason_codes == [Reason.ENDPOINT_TIMEOUT]
+            assert result.readings == []
+            # 2 x request_timeout, plus room for a loaded CI box.
+            assert elapsed < 1.5, f"the scrape ran {elapsed:.2f}s past a 0.4s budget"
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_a_cut_off_scrape_leaves_no_thread_behind(self, tmp_path):
+        """One leaked reader per cycle would outlive the run it was collecting."""
+        server = self._trickling_server()
+        try:
+            session = _session(tmp_path, ["node-a"], request_timeout_seconds=0.2)
+            endpoint = CpuEndpoint(hostname="node-a", url=f"http://127.0.0.1:{server.server_address[1]}/metrics")
+            before = threading.active_count()
+
+            for _ in range(3):
+                session._poll(endpoint)
+
+            deadline = time.monotonic() + 2.0
+            while threading.active_count() > before and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert threading.active_count() <= before
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_a_prompt_exporter_is_read_in_full(self, tmp_path):
+        """The budget must not truncate an ordinary scrape."""
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_GET(self):
+                body = ONE_RAIL.encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            session = _session(tmp_path, ["node-a"], request_timeout_seconds=0.2)
+            endpoint = CpuEndpoint(hostname="node-a", url=f"http://127.0.0.1:{server.server_address[1]}/metrics")
+
+            result = session._poll(endpoint)
+
+            assert result.reason_codes == []
+            assert [reading.sensor for reading in result.readings] == ["hwmon0/power1"]
+        finally:
+            server.shutdown()
+            server.server_close()
 
 
 class TestCpuPowerServerMetricsUrls:
