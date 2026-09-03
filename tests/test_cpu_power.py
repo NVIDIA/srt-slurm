@@ -29,12 +29,18 @@ from srtctl.core.topology import Process
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def _config(cpu_power: CpuPowerConfig, *, telemetry_enabled: bool = True, **telemetry_kwargs) -> SrtConfig:
+def _config(
+    cpu_power: CpuPowerConfig,
+    *,
+    telemetry_enabled: bool = True,
+    benchmark: BenchmarkConfig | None = None,
+    **telemetry_kwargs,
+) -> SrtConfig:
     return SrtConfig(
         name="test",
         model=ModelConfig(path="/model", container="/image", precision="fp4"),
         resources=ResourceConfig(gpu_type="gb200"),
-        benchmark=BenchmarkConfig(type="manual"),
+        benchmark=benchmark or BenchmarkConfig(type="manual"),
         telemetry=TelemetryConfig(enabled=telemetry_enabled, cpu_power=cpu_power, **telemetry_kwargs),
     )
 
@@ -102,6 +108,7 @@ class TestCpuPowerSchema:
         with pytest.raises(ValidationError, match="collides"):
             _config(
                 CpuPowerConfig(enabled=True, prometheus_port=9400),
+                benchmark=BenchmarkConfig(type="sa-bench", concurrencies=[4], client_placement="head"),
                 dcgm_exporter=TelemetryExporterConfig(container_image="dcgm", port=9400),
             )
 
@@ -356,7 +363,9 @@ class TestCpuPowerLifecycle:
         manifest = json.loads((tmp_path / "cpu_power" / "manifest.json").read_text())
         assert manifest["status"] == "complete"
         assert manifest["publication_valid"] is True
-        assert manifest["cpu_power"]["command"].endswith("--port 9401")
+        assert manifest["exporter"]["port"] == 9401
+        assert manifest["exporter"]["command"].endswith("--port 9401")
+        assert manifest["observed_sensors"] == {"node-a": ["hwmon0/power1"]}
         rows = (tmp_path / "cpu_power" / "samples.csv").read_text().splitlines()
         assert rows[0].startswith("schema_version,")
         assert any("hwmon0/power1" in row for row in rows[1:])
