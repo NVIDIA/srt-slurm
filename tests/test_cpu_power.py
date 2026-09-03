@@ -510,6 +510,54 @@ class TestCpuPowerLifecycle:
         assert mock_srun.call_args.kwargs["command"][-2:] == ["--bind", "0.0.0.0"]
         session.stop_and_finalize()
 
+    @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
+    @patch(
+        "srtctl.core.power.cpu_session.get_hostname_ip",
+        side_effect=lambda node, _iface: "2001:db8::2" if node == "node-b" else _node_ip(node),
+    )
+    def test_mixed_address_families_are_launched_separately(self, _mock_ip, mock_srun, tmp_path):
+        """One bind for the whole allocation serves whichever family it is not."""
+        mock_srun.return_value = _running_exporter()
+        harness = _harness(tmp_path, [_worker("node-a", range(4)), _worker("node-b", range(4), index=1)])
+
+        session = harness.start_cpu_power_telemetry(ProcessRegistry(job_id="12345"))
+
+        launches = [(c.kwargs["nodelist"], c.kwargs["command"][-1]) for c in mock_srun.call_args_list]
+        assert sorted(launches) == [(["node-a"], "0.0.0.0"), (["node-b"], "::")]
+        assert all(c.kwargs["ntasks"] == 1 for c in mock_srun.call_args_list)
+        session.stop_and_finalize()
+
+    @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
+    @patch(
+        "srtctl.core.power.cpu_session.get_hostname_ip",
+        side_effect=lambda node, _iface: "2001:db8::2" if node == "node-b" else _node_ip(node),
+    )
+    def test_mixed_families_within_a_het_group_stay_in_that_group(self, _mock_ip, mock_srun, tmp_path):
+        """Splitting by family must not move a task out of its het component."""
+        mock_srun.return_value = _running_exporter()
+        harness = _harness(
+            tmp_path,
+            [
+                _worker("node-a", range(4), mode="prefill", het_group=0),
+                _worker("node-b", range(4), mode="prefill", index=1, het_group=0),
+                _worker("node-c", range(4), mode="decode", index=2, het_group=1),
+            ],
+            het=True,
+            het_groups={"node-a": 0, "node-b": 0, "node-c": 1},
+        )
+
+        session = harness.start_cpu_power_telemetry(ProcessRegistry(job_id="12345"))
+
+        launches = sorted(
+            (c.kwargs["het_group"], c.kwargs["nodelist"], c.kwargs["command"][-1]) for c in mock_srun.call_args_list
+        )
+        assert launches == [
+            (0, ["node-a"], "0.0.0.0"),
+            (0, ["node-b"], "::"),
+            (1, ["node-c"], "0.0.0.0"),
+        ]
+        session.stop_and_finalize()
+
     @patch("srtctl.core.power.cpu_session.fetch_metrics")
     @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: _node_ip(node))
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
@@ -954,6 +1002,112 @@ class TestCpuPowerSampleTimestamps:
         assert stamps["node-b"] - stamps["node-a"] > 0.3, "both nodes shared one cycle timestamp"
 
 
+class TestCpuPowerMeasurementSpans:
+    """The audited interval is what the runner measured, not the whole script."""
+
+    @staticmethod
+    def _window(windows_dir: Path, name: str, *, status: str, start: float, end: float | None) -> None:
+        windows_dir.mkdir(parents=True, exist_ok=True)
+        (windows_dir / f"{name}.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "benchmark_type": "sa-bench",
+                    "result_path": f"results/{name}.json",
+                    "concurrency": 4,
+                    "benchmark_start_time_unix": start,
+                    "benchmark_end_time_unix": end,
+                    "duration": None if end is None else end - start,
+                    "clock_source": "head_node_unix_clock",
+                    "status": status,
+                    "reason": None if status != "interrupted" else "job_cancelled",
+                }
+            )
+        )
+
+    def _harness_with_session(self, tmp_path):
+        harness = _harness(tmp_path, [_worker("node-a", range(4))])
+        session = _session(tmp_path, ["node-a"])
+        session.initialize()
+        harness._cpu_power_session = session
+        return harness, session
+
+    def test_each_completed_series_is_its_own_span(self, tmp_path):
+        """Setup, warmups, and the gaps between series were never measured."""
+        harness, session = self._harness_with_session(tmp_path)
+        base = time.time()
+        windows = tmp_path / "power" / "windows"
+        self._window(windows, "c4", status="completed", start=base + 10, end=base + 20)
+        self._window(windows, "c8", status="completed", start=base + 40, end=base + 50)
+
+        harness.record_cpu_power_benchmark_spans(base, base + 60)
+        session.stop_and_finalize()
+
+        recorded = json.loads((tmp_path / "cpu_power" / "manifest.json").read_text())["benchmark_spans"]
+
+        assert [(span["start_unix"], span["end_unix"]) for span in recorded] == [
+            (base + 10, base + 20),
+            (base + 40, base + 50),
+        ]
+
+    @pytest.mark.parametrize(
+        ("status", "end"),
+        [("running", None), ("interrupted", None)],
+    )
+    def test_a_window_without_a_trustworthy_end_falls_back_to_the_script(self, tmp_path, status, end):
+        """The orchestrator never invents the boundary the runner failed to publish."""
+        harness, session = self._harness_with_session(tmp_path)
+        base = time.time()
+        self._window(tmp_path / "power" / "windows", "c4", status=status, start=base + 10, end=end)
+
+        harness.record_cpu_power_benchmark_spans(base, base + 60)
+        session.stop_and_finalize()
+
+        recorded = json.loads((tmp_path / "cpu_power" / "manifest.json").read_text())["benchmark_spans"]
+        assert [(span["start_unix"], span["end_unix"]) for span in recorded] == [(base, base + 60)]
+
+    def test_a_benchmark_that_writes_no_window_still_marks_the_script(self, tmp_path):
+        """The CPU leg serves benchmark types the window contract does not cover."""
+        harness, session = self._harness_with_session(tmp_path)
+        base = time.time()
+
+        harness.record_cpu_power_benchmark_spans(base, base + 60)
+        session.stop_and_finalize()
+
+        recorded = json.loads((tmp_path / "cpu_power" / "manifest.json").read_text())["benchmark_spans"]
+        assert [(span["start_unix"], span["end_unix"]) for span in recorded] == [(base, base + 60)]
+
+    def test_a_gap_between_series_invalidates_only_the_script_interval(self, tmp_path):
+        """This is the regression: sampling paused between series, not during one."""
+        base = time.time()
+        # Two dense series with a long idle stretch between them.
+        series = [base, base + 0.5, base + 1.0, base + 20.0, base + 20.5, base + 21.0]
+
+        def audit(spans):
+            session = _session(tmp_path / f"run{len(spans)}", ["node-a"])
+            session.initialize()
+            with patch(
+                "srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: _node_ip(node)
+            ):
+                session.resolve_endpoints()
+            for stamp in series:
+                with patch(
+                    "srtctl.core.power.cpu_session.fetch_metrics",
+                    side_effect=lambda _endpoint, _budget, at=stamp: (ONE_RAIL, at),
+                ):
+                    session.collect_once()
+            for start, end in spans:
+                session.record_benchmark_span(start, end)
+            return session.stop_and_finalize()
+
+        per_series = audit([(base + 0.1, base + 0.9), (base + 20.1, base + 20.9)])
+        whole_script = audit([(base + 0.1, base + 20.9)])
+
+        assert per_series.publication_valid is True
+        assert whole_script.publication_valid is False
+        assert Reason.SAMPLE_GAP_EXCEEDED in whole_script.reason_codes
+
+
 class TestCpuPowerServerMetricsUrls:
     """CPU exporters are advertised to AIPerf alongside the engine endpoints.
 
@@ -1069,6 +1223,27 @@ class TestCpuPowerServerMetricsUrls:
         )
 
         assert "http://[2001:db8::1]:9401/metrics" in self._urls(stage, resolve=resolve)
+
+    def test_only_endpoints_that_served_rails_are_advertised(self, tmp_path):
+        """A launched-but-dead exporter would otherwise be presented as coverage."""
+        resolve = lambda node, _iface: _node_ip(node)  # noqa: E731
+        stage = self._stage(
+            [_worker("node-a", range(4)), _worker("node-b", range(4), index=1)],
+            cpu_power=CpuPowerConfig(enabled=True),
+            session=self._resolved_session(tmp_path, ["node-a", "node-b"], resolve, serving={"node-a"}),
+        )
+
+        assert [url for url in self._urls(stage) if ":9401/" in url] == ["http://10.0.0.1:9401/metrics"]
+
+    def test_a_leg_where_nothing_served_advertises_nothing(self, tmp_path):
+        resolve = lambda node, _iface: _node_ip(node)  # noqa: E731
+        stage = self._stage(
+            [_worker("node-a", range(4))],
+            cpu_power=CpuPowerConfig(enabled=True),
+            session=self._resolved_session(tmp_path, ["node-a"], resolve, serving=set()),
+        )
+
+        assert all(":9401/" not in url for url in self._urls(stage))
 
     def test_a_leg_that_never_started_advertises_nothing(self, tmp_path):
         """Exporters that were never launched must not be presented as coverage."""
