@@ -4,6 +4,8 @@
 """Tests for the ACPI host CPU power leg: schema, lifecycle, and AIPerf wiring."""
 
 import json
+import os
+import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -283,28 +285,28 @@ def _node_ip(node: str) -> str:
     return f"10.0.0.{ord(node[-1]) - ord('a') + 1}"
 
 
+def _serve_one_rail(handler):
+    """Answer one ordinary scrape, exactly as the exporter does."""
+    body = ONE_RAIL.encode()
+    handler.send_response(200)
+    handler.send_header("Content-Type", "text/plain")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
 ONE_RAIL = _scrape('cpu_power_acpi_watts{sensor="hwmon0/power1",type="CPU",socket="0"} 42.5')
 
 
-def _response(body: str, chunks: object = None):
-    """A streaming requests.Response stand-in: the session reads chunk by chunk."""
+def _serves(body: str, *, delay: float = 0.0):
+    """A ``fetch_metrics`` stand-in: a body plus the instant it finished arriving."""
 
-    class Response:
-        def __enter__(self):
-            return self
+    def fetch(_endpoint, _budget):
+        if delay:
+            time.sleep(delay)
+        return body, time.time()
 
-        def __exit__(self, *_exc):
-            return False
-
-        @staticmethod
-        def raise_for_status():
-            return None
-
-        @staticmethod
-        def iter_content(_size):
-            return iter(chunks) if chunks is not None else iter([body.encode()])
-
-    return Response()
+    return fetch
 
 
 def _running_exporter():
@@ -488,22 +490,22 @@ class TestCpuPowerLifecycle:
 
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
     @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: _node_ip(node))
-    def test_an_ipv4_node_leaves_the_default_bind_alone(self, _mock_ip, mock_srun, tmp_path):
+    def test_an_ipv4_node_binds_the_exporter_to_that_family(self, _mock_ip, mock_srun, tmp_path):
         """An unconditional `::` would fail to bind where IPv6 is disabled."""
         mock_srun.return_value = _running_exporter()
         harness = _harness(tmp_path, [_worker("node-a", range(4))])
 
         session = harness.start_cpu_power_telemetry(ProcessRegistry(job_id="12345"))
 
-        assert "--bind" not in mock_srun.call_args.kwargs["command"]
+        assert mock_srun.call_args.kwargs["command"][-2:] == ["--bind", "0.0.0.0"]
         session.stop_and_finalize()
 
-    @patch("srtctl.core.power.cpu_session.requests.get")
+    @patch("srtctl.core.power.cpu_session.fetch_metrics")
     @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: _node_ip(node))
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
-    def test_a_serving_exporter_reaches_readiness_and_publishes(self, mock_srun, _mock_ip, mock_get, tmp_path):
+    def test_a_serving_exporter_reaches_readiness_and_publishes(self, mock_srun, _mock_ip, mock_fetch, tmp_path):
         mock_srun.return_value = _running_exporter()
-        mock_get.return_value = _response(ONE_RAIL)
+        mock_fetch.side_effect = _serves(ONE_RAIL)
         harness = _harness(tmp_path, [_worker("node-a", range(4))])
 
         harness.start_cpu_power_telemetry(ProcessRegistry(job_id="12345"))
@@ -511,9 +513,9 @@ class TestCpuPowerLifecycle:
         assert harness.cpu_power_telemetry_blocks_benchmark() is False
         start = time.time()
         time.sleep(0.3)
-        harness.record_cpu_power_benchmark_span(start, time.time())
+        harness.record_cpu_power_benchmark_spans(start, time.time())
         assert harness.finalize_cpu_power_telemetry(0) == 0
-        assert mock_get.call_args.args[0] == "http://10.0.0.1:9401/metrics"
+        assert mock_fetch.call_args.args[0].url == "http://10.0.0.1:9401/metrics"
 
         manifest = json.loads((tmp_path / "cpu_power" / "manifest.json").read_text())
         assert manifest["status"] == "complete"
@@ -528,18 +530,18 @@ class TestCpuPowerLifecycle:
             (span["covered"], sorted(span["per_series_max_sample_gap_seconds"])) for span in manifest["benchmark_spans"]
         ] == [(True, ["node-a/hwmon0/power1"])]
 
-    @patch("srtctl.core.power.cpu_session.requests.get")
+    @patch("srtctl.core.power.cpu_session.fetch_metrics")
     @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: _node_ip(node))
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
-    def test_readings_that_do_not_cover_the_benchmark_do_not_publish(self, mock_srun, _mock_ip, mock_get, tmp_path):
+    def test_readings_that_do_not_cover_the_benchmark_do_not_publish(self, mock_srun, _mock_ip, mock_fetch, tmp_path):
         """Readiness samples alone are not measurement: the run must be bracketed."""
         mock_srun.return_value = _running_exporter()
-        mock_get.return_value = _response(ONE_RAIL)
+        mock_fetch.side_effect = _serves(ONE_RAIL)
         harness = _harness(tmp_path, [_worker("node-a", range(4))])
 
         harness.start_cpu_power_telemetry(ProcessRegistry(job_id="12345"))
         # A benchmark that ran long before this session started collecting.
-        harness.record_cpu_power_benchmark_span(time.time() - 600, time.time() - 500)
+        harness.record_cpu_power_benchmark_spans(time.time() - 600, time.time() - 500)
 
         assert harness.finalize_cpu_power_telemetry(0) == 1
 
@@ -547,12 +549,14 @@ class TestCpuPowerLifecycle:
         assert manifest["publication_valid"] is False
         assert Reason.MEASUREMENT_WINDOW_NOT_BRACKETED in manifest["reason_codes"]
 
-    @patch("srtctl.core.power.cpu_session.requests.get")
+    @patch("srtctl.core.power.cpu_session.fetch_metrics")
     @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: _node_ip(node))
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
-    def test_a_session_that_never_saw_a_benchmark_never_passes_vacuously(self, mock_srun, _mock_ip, mock_get, tmp_path):
+    def test_a_session_that_never_saw_a_benchmark_never_passes_vacuously(
+        self, mock_srun, _mock_ip, mock_fetch, tmp_path
+    ):
         mock_srun.return_value = _running_exporter()
-        mock_get.return_value = _response(ONE_RAIL)
+        mock_fetch.side_effect = _serves(ONE_RAIL)
         harness = _harness(tmp_path, [_worker("node-a", range(4))])
 
         harness.start_cpu_power_telemetry(ProcessRegistry(job_id="12345"))
@@ -562,10 +566,10 @@ class TestCpuPowerLifecycle:
         assert manifest["publication_valid"] is False
         assert manifest["benchmark_spans"] == []
 
-    @patch("srtctl.core.power.cpu_session.requests.get")
+    @patch("srtctl.core.power.cpu_session.fetch_metrics")
     @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: node)
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
-    def test_a_node_that_resolves_to_its_own_name_is_never_polled(self, mock_srun, _mock_ip, mock_get, tmp_path):
+    def test_a_node_that_resolves_to_its_own_name_is_never_polled(self, mock_srun, _mock_ip, mock_fetch, tmp_path):
         """get_hostname_ip hands back the hostname when it cannot resolve it.
 
         A URL carrying that name would be re-resolved inside every requests.get,
@@ -581,11 +585,11 @@ class TestCpuPowerLifecycle:
         outcome = session.stop_and_finalize()
         assert Reason.ENDPOINT_RESOLUTION_FAILED in outcome.reason_codes
         assert outcome.publication_valid is False
-        assert mock_get.call_count == 0
+        assert mock_fetch.call_count == 0
 
-    @patch("srtctl.core.power.cpu_session.requests.get")
+    @patch("srtctl.core.power.cpu_session.fetch_metrics")
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
-    def test_a_wedged_resolver_is_bounded_and_leaves_no_growing_thread_pile(self, mock_srun, mock_get, tmp_path):
+    def test_a_wedged_resolver_is_bounded_and_leaves_no_growing_thread_pile(self, mock_srun, mock_fetch, tmp_path):
         """Resolution happens once, under the startup deadline -- not per scrape."""
         mock_srun.return_value = _running_exporter()
         wedged = threading.Event()
@@ -612,16 +616,16 @@ class TestCpuPowerLifecycle:
         assert elapsed < 5.0
         assert Reason.ENDPOINT_RESOLUTION_FAILED in outcome.reason_codes
         assert outcome.publication_valid is False
-        assert mock_get.call_count == 0
+        assert mock_fetch.call_count == 0
 
-    @patch("srtctl.core.power.cpu_session.requests.get")
+    @patch("srtctl.core.power.cpu_session.fetch_metrics")
     @patch("srtctl.core.power.cpu_session.get_hostname_ip")
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
-    def test_an_unresolvable_node_fails_readiness_closed(self, mock_srun, mock_ip, mock_get, tmp_path):
+    def test_an_unresolvable_node_fails_readiness_closed(self, mock_srun, mock_ip, mock_fetch, tmp_path):
         """Readiness on the survivors would silently shrink what the run covers."""
         mock_srun.return_value = _running_exporter()
         mock_ip.side_effect = lambda node, _iface: "" if node == "node-b" else _node_ip(node)
-        mock_get.return_value = _response(ONE_RAIL)
+        mock_fetch.side_effect = _serves(ONE_RAIL)
         harness = _harness(tmp_path, [_worker("node-a", range(4)), _worker("node-b", range(4), index=1)])
 
         session = harness.start_cpu_power_telemetry(ProcessRegistry(job_id="12345"))
@@ -631,10 +635,10 @@ class TestCpuPowerLifecycle:
         assert Reason.ENDPOINT_RESOLUTION_FAILED in outcome.reason_codes
         assert outcome.publication_valid is False
 
-    @patch("srtctl.core.power.cpu_session.requests.get")
+    @patch("srtctl.core.power.cpu_session.fetch_metrics")
     @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: _node_ip(node))
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
-    def test_a_rail_that_disappears_mid_benchmark_does_not_publish(self, mock_srun, _mock_ip, mock_get, tmp_path):
+    def test_a_rail_that_disappears_mid_benchmark_does_not_publish(self, mock_srun, _mock_ip, mock_fetch, tmp_path):
         """The surviving rails keep the host sampling, so per-host coverage would pass."""
         mock_srun.return_value = _running_exporter()
         both = _scrape(
@@ -644,19 +648,19 @@ class TestCpuPowerLifecycle:
         sysio_only = _scrape('cpu_power_acpi_watts{sensor="hwmon0/power2",type="SYSIO",socket="0"} 12.5')
         answers = {"count": 0}
 
-        def scrape(*_args, **_kwargs):
+        def scrape(_endpoint, _budget):
             answers["count"] += 1
             # The CPU rail answers the readiness cycle, then goes quiet.
-            return _response(both if answers["count"] <= 1 else sysio_only)
+            return (both if answers["count"] <= 1 else sysio_only), time.time()
 
-        mock_get.side_effect = scrape
+        mock_fetch.side_effect = scrape
         harness = _harness(tmp_path, [_worker("node-a", range(4))])
 
         harness.start_cpu_power_telemetry(ProcessRegistry(job_id="12345"))
         assert harness.cpu_power_telemetry_blocks_benchmark() is False
         start = time.time()
         time.sleep(0.3)
-        harness.record_cpu_power_benchmark_span(start, time.time())
+        harness.record_cpu_power_benchmark_spans(start, time.time())
 
         assert harness.finalize_cpu_power_telemetry(0) == 1
         manifest = json.loads((tmp_path / "cpu_power" / "manifest.json").read_text())
@@ -665,24 +669,22 @@ class TestCpuPowerLifecycle:
         gaps = manifest["benchmark_spans"][0]["per_series_max_sample_gap_seconds"]
         assert "node-a/hwmon0/power1" not in gaps, "the rail that vanished cannot report a gap"
 
-    @patch("srtctl.core.power.cpu_session.requests.get")
+    @patch("srtctl.core.power.cpu_session.fetch_metrics")
     @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: _node_ip(node))
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
-    def test_a_dribbling_exporter_is_abandoned_and_never_publishes(self, mock_srun, _mock_ip, mock_get, tmp_path):
+    def test_a_dribbling_exporter_is_abandoned_and_never_publishes(self, mock_srun, _mock_ip, mock_fetch, tmp_path):
         """A benchmark that exits 0 is not evidence the CPU leg collected anything.
 
-        The exporter here answers and then trickles forever, which never trips a
-        per-socket timeout. The scrape has to end on its own budget, and the
-        required leg has to fail the job on its own coverage check.
+        The scrape ends on its own budget (proved against real sockets in
+        TestCpuPowerScrapeBudget); the required leg still has to fail the job on
+        its own coverage check.
         """
         mock_srun.return_value = _running_exporter()
 
-        def dribble():
-            while True:
-                time.sleep(0.05)
-                yield b" "
+        def abandoned(_endpoint, _budget):
+            raise TimeoutError("scrape exceeded its budget")
 
-        mock_get.return_value = _response("", chunks=dribble())
+        mock_fetch.side_effect = abandoned
         harness = _harness(tmp_path, [_worker("node-a", range(4))])
 
         started = time.monotonic()
@@ -692,36 +694,21 @@ class TestCpuPowerLifecycle:
         assert elapsed < 5.0, f"a trickling exporter held startup for {elapsed:.1f}s"
 
         start = time.time()
-        harness.record_cpu_power_benchmark_span(start, time.time())
+        harness.record_cpu_power_benchmark_spans(start, time.time())
         # AIPerf's own exit code says nothing about CPU telemetry validity.
         assert harness.finalize_cpu_power_telemetry(0) == 1
         manifest = json.loads((tmp_path / "cpu_power" / "manifest.json").read_text())
         assert manifest["publication_valid"] is False
         assert Reason.ENDPOINT_TIMEOUT in manifest["reason_codes"]
 
-    @patch("srtctl.core.power.cpu_session.requests.get")
+    @patch("srtctl.core.power.cpu_session.fetch_metrics")
     @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: _node_ip(node))
-    def test_an_oversized_scrape_is_cut_off(self, _mock_ip, mock_get, tmp_path):
-        """A runaway body would otherwise be read to the end on the cycle's budget."""
-        mock_get.return_value = _response("", chunks=iter([b"x" * (MAX_SCRAPE_BYTES + 1)]))
-        session = _session(tmp_path, ["node-a"])
-        session.initialize()
-
-        assert session.start_and_wait_for_readiness() is False
-        outcome = session.stop_and_finalize()
-        assert Reason.ENDPOINT_HTTP_ERROR in outcome.reason_codes
-        assert outcome.publication_valid is False
-
-    @patch("srtctl.core.power.cpu_session.requests.get")
-    @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: _node_ip(node))
-    def test_readiness_reached_after_the_deadline_is_rejected(self, _mock_ip, mock_get, tmp_path):
+    def test_readiness_reached_after_the_deadline_is_rejected(self, _mock_ip, mock_fetch, tmp_path):
         """A set event proves readiness happened, not that it happened in time."""
 
-        def slow_scrape(*_args, **_kwargs):
-            time.sleep(0.3)
-            return _response(ONE_RAIL)
+        slow_scrape = _serves(ONE_RAIL, delay=0.3)
 
-        mock_get.side_effect = slow_scrape
+        mock_fetch.side_effect = slow_scrape
 
         class BlockingEvent(threading.Event):
             """Stands in for losing the race between wait() timing out and set()."""
@@ -739,30 +726,45 @@ class TestCpuPowerLifecycle:
 
 
 class TestCpuPowerScrapeBudget:
-    """Real sockets, real requests: the mocked generator cannot prove this.
+    """Real sockets: the transport owns connect and read on one wall clock.
 
-    urllib3 blocks inside one chunk read until the chunk is full, so an exporter
-    that trickles bytes never trips the per-operation timeout and a deadline
-    checked between chunks is never reached.
+    A library client bounds each operation separately, so an exporter that
+    trickles -- headers included -- resets that clock forever without ever
+    tripping a per-operation timeout, and no deadline checked between chunks is
+    ever reached.
     """
 
     @staticmethod
-    def _trickling_server(delay: float = 0.05):
+    def _endpoint(address) -> CpuEndpoint:
+        host, port = address[0], address[1]
+        return CpuEndpoint(hostname="node-a", address=host, port=port)
+
+    @staticmethod
+    def _raw_server(responder):
+        """A bare listener: an HTTP server will not trickle a header block."""
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(8)
+
+        def serve():
+            while True:
+                try:
+                    connection, _ = listener.accept()
+                except OSError:
+                    return
+                threading.Thread(target=responder, args=(connection,), daemon=True).start()
+
+        threading.Thread(target=serve, daemon=True).start()
+        return listener
+
+    @staticmethod
+    def _http_server(handler_body):
         class Handler(BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
 
             def do_GET(self):
-                self.send_response(200)
-                self.send_header("Content-Type", "text/plain")
-                self.send_header("Content-Length", "1000000")
-                self.end_headers()
-                try:
-                    while True:
-                        self.wfile.write(b"x" * 20)
-                        self.wfile.flush()
-                        time.sleep(delay)
-                except OSError:
-                    pass
+                handler_body(self)
 
             def log_message(self, *_args):
                 pass
@@ -771,14 +773,44 @@ class TestCpuPowerScrapeBudget:
         threading.Thread(target=server.serve_forever, daemon=True).start()
         return server
 
-    def test_a_trickling_exporter_is_cut_off_at_the_budget(self, tmp_path):
+    @classmethod
+    def _trickling_server(cls, delay: float = 0.05):
+        def body(handler):
+            handler.send_response(200)
+            handler.send_header("Content-Type", "text/plain")
+            handler.send_header("Content-Length", "1000000")
+            handler.end_headers()
+            try:
+                while True:
+                    handler.wfile.write(b"x" * 20)
+                    handler.wfile.flush()
+                    time.sleep(delay)
+            except OSError:
+                pass
+
+        return cls._http_server(body)
+
+    @staticmethod
+    def _trickle_headers(connection):
+        """Answer with a status line, then one header byte at a time, forever."""
+        try:
+            connection.recv(4096)
+            connection.sendall(b"HTTP/1.0 200 OK\r\n")
+            while True:
+                connection.sendall(b"X")
+                time.sleep(0.05)
+        except OSError:
+            pass
+        finally:
+            connection.close()
+
+    def test_a_trickling_body_is_cut_off_at_the_budget(self, tmp_path):
         server = self._trickling_server()
         try:
             session = _session(tmp_path, ["node-a"], request_timeout_seconds=0.2)
-            endpoint = CpuEndpoint(hostname="node-a", url=f"http://127.0.0.1:{server.server_address[1]}/metrics")
 
             started = time.monotonic()
-            result = session._poll(endpoint)
+            result = session._poll(self._endpoint(server.server_address))
             elapsed = time.monotonic() - started
 
             assert result.reason_codes == [Reason.ENDPOINT_TIMEOUT]
@@ -789,12 +821,27 @@ class TestCpuPowerScrapeBudget:
             server.shutdown()
             server.server_close()
 
-    def test_a_cut_off_scrape_leaves_no_thread_behind(self, tmp_path):
-        """One leaked reader per cycle would outlive the run it was collecting."""
-        server = self._trickling_server()
+    def test_trickled_headers_are_cut_off_at_the_budget(self, tmp_path):
+        """Nothing is a Response yet here: a client-side read timeout never fires."""
+        listener = self._raw_server(self._trickle_headers)
         try:
             session = _session(tmp_path, ["node-a"], request_timeout_seconds=0.2)
-            endpoint = CpuEndpoint(hostname="node-a", url=f"http://127.0.0.1:{server.server_address[1]}/metrics")
+
+            started = time.monotonic()
+            result = session._poll(self._endpoint(listener.getsockname()))
+            elapsed = time.monotonic() - started
+
+            assert result.reason_codes == [Reason.ENDPOINT_TIMEOUT]
+            assert elapsed < 1.5, f"the scrape ran {elapsed:.2f}s past a 0.4s budget"
+        finally:
+            listener.close()
+
+    def test_a_cut_off_scrape_leaves_no_thread_behind(self, tmp_path):
+        """One leaked reader per cycle would outlive the run it was collecting."""
+        listener = self._raw_server(self._trickle_headers)
+        try:
+            session = _session(tmp_path, ["node-a"], request_timeout_seconds=0.2)
+            endpoint = self._endpoint(listener.getsockname())
             before = threading.active_count()
 
             for _ in range(3):
@@ -805,39 +852,96 @@ class TestCpuPowerScrapeBudget:
                 time.sleep(0.05)
             assert threading.active_count() <= before
         finally:
-            server.shutdown()
-            server.server_close()
+            listener.close()
+
+    def test_an_oversized_body_is_cut_off(self, tmp_path):
+        """A runaway body would otherwise be read for the whole budget."""
+
+        def flood(connection):
+            try:
+                connection.recv(4096)
+                connection.sendall(b"HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\n\r\n")
+                while True:
+                    connection.sendall(b"x" * 65536)
+            except OSError:
+                pass
+            finally:
+                connection.close()
+
+        listener = self._raw_server(flood)
+        try:
+            session = _session(tmp_path, ["node-a"], request_timeout_seconds=5.0)
+
+            started = time.monotonic()
+            result = session._poll(self._endpoint(listener.getsockname()))
+
+            assert result.reason_codes == [Reason.ENDPOINT_HTTP_ERROR]
+            assert time.monotonic() - started < 5.0, "the size cap did not end the read"
+            assert MAX_SCRAPE_BYTES > 0
+        finally:
+            listener.close()
 
     def test_a_prompt_exporter_is_read_in_full(self, tmp_path):
         """The budget must not truncate an ordinary scrape."""
-
-        class Handler(BaseHTTPRequestHandler):
-            protocol_version = "HTTP/1.1"
-
-            def do_GET(self):
-                body = ONE_RAIL.encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "text/plain")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-
-            def log_message(self, *_args):
-                pass
-
-        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        server = self._http_server(_serve_one_rail)
         try:
             session = _session(tmp_path, ["node-a"], request_timeout_seconds=0.2)
-            endpoint = CpuEndpoint(hostname="node-a", url=f"http://127.0.0.1:{server.server_address[1]}/metrics")
 
-            result = session._poll(endpoint)
+            result = session._poll(self._endpoint(server.server_address))
 
             assert result.reason_codes == []
             assert [reading.sensor for reading in result.readings] == ["hwmon0/power1"]
         finally:
             server.shutdown()
             server.server_close()
+
+    def test_an_ambient_proxy_is_never_consulted(self, tmp_path):
+        """The exporter is on the cluster fabric; a job-wide proxy must not be dialed.
+
+        A proxy-aware client would send this scrape to a black hole, and a
+        wedged proxy resolver would block before any socket existed.
+        """
+        server = self._http_server(_serve_one_rail)
+        proxy = {var: "http://192.0.2.1:9" for var in ("http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY")}
+        try:
+            session = _session(tmp_path, ["node-a"], request_timeout_seconds=0.5)
+            with patch.dict(os.environ, proxy):
+                result = session._poll(self._endpoint(server.server_address))
+
+            assert result.reason_codes == []
+            assert [reading.sensor for reading in result.readings] == ["hwmon0/power1"]
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
+class TestCpuPowerSampleTimestamps:
+    """Every sample is dated when its own body arrived."""
+
+    def test_endpoints_are_timestamped_independently(self, tmp_path):
+        """One cycle timestamp would date a fast node's reading to the slow node's finish.
+
+        That is what moves a reading across a benchmark boundary and lets
+        coverage bracket an interval nothing actually sampled.
+        """
+        session = _session(tmp_path, ["node-a", "node-b"], request_timeout_seconds=1.0)
+        session.initialize()
+        slow = _serves(ONE_RAIL, delay=0.4)
+        fast = _serves(ONE_RAIL)
+
+        with patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: _node_ip(node)):
+            session.resolve_endpoints()
+        with patch(
+            "srtctl.core.power.cpu_session.fetch_metrics",
+            side_effect=lambda endpoint, budget: (slow if endpoint.hostname == "node-b" else fast)(endpoint, budget),
+        ):
+            session.collect_once()
+        session.stop_and_finalize()
+
+        rows = [row.split(",") for row in (tmp_path / "cpu_power" / "samples.csv").read_text().splitlines()[1:]]
+        stamps = {row[3]: float(row[1]) for row in rows}
+        assert set(stamps) == {"node-a", "node-b"}
+        assert stamps["node-b"] - stamps["node-a"] > 0.3, "both nodes shared one cycle timestamp"
 
 
 class TestCpuPowerServerMetricsUrls:
