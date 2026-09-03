@@ -144,6 +144,15 @@ class TestOrchestrator:
         assert launch_call.kwargs["command"] == service.command
         assert "cd " in launch_call.kwargs["bash_preamble"]
 
+        # Regression: build/launch run inside the container, where log_dir is
+        # mounted at /logs (RuntimeContext.from_config), not at its host path.
+        # cd'ing to the host path there is a silent, 100%-reproducible
+        # "No such file or directory" -- not a timing issue a longer poll fixes.
+        assert "/logs/auxiliary_services/router/src" in build_call.kwargs["bash_preamble"]
+        assert str(tmp_path) not in build_call.kwargs["bash_preamble"]
+        assert "/logs/auxiliary_services/router/src" in launch_call.kwargs["bash_preamble"]
+        assert str(tmp_path) not in launch_call.kwargs["bash_preamble"]
+
     def test_clone_skipped_when_checkout_already_exists(self, tmp_path):
         service = AuxiliaryServiceConfig(
             name="router",

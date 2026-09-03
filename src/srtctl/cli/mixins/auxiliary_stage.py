@@ -37,17 +37,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _await_and_cd(work_dir: Path) -> str:
-    """``cd work_dir``, tolerating a brief NFS visibility lag.
+def _await_and_cd(work_dir: str) -> str:
+    """``cd work_dir``, tolerating a brief startup lag before the mount is live.
 
-    The clone/checkout and this build/launch step run as separate ``srun``
-    invocations. Seen in practice: the clone's process exits 0 with the
-    directory genuinely written, but the very next srun's `cd` still gets
-    "No such file or directory" -- a client-side NFS attribute-cache race,
-    not a real missing directory (`ls` moments later shows it present).
-    Poll briefly instead of failing the whole service on a stale cache.
+    Belt-and-suspenders: poll briefly rather than failing outright on a
+    momentarily-missing directory, on top of resolving the right path in
+    the first place (see ``_container_path``).
     """
-    quoted = shlex.quote(str(work_dir))
+    quoted = shlex.quote(work_dir)
     return (
         f"for _i in $(seq 1 20); do [ -d {quoted} ] && break; sleep 0.5; done; "
         f"cd {quoted}"
@@ -63,6 +60,19 @@ class AuxiliaryServiceStageMixin:
     def _auxiliary_service_container_image(self, service: AuxiliaryServiceConfig) -> str:
         """Resolve the container a service launches in -- its own, or the job's main one."""
         return service.container_image or str(self.runtime.container_image)
+
+    def _container_path(self, host_path: Path) -> str:
+        """Translate a host path under ``runtime.log_dir`` to its in-container path.
+
+        ``runtime.container_mounts`` bind-mounts ``log_dir`` at ``/logs`` inside
+        every container (see ``RuntimeContext.from_config``). The clone/checkout
+        step runs on the bare host (``container_image=None``) and can use the
+        real host path directly, but build/launch run inside the service's
+        container, where that host path does not exist -- only ``/logs/...``
+        does. Using the host path there is a silent, 100%-reproducible
+        "No such file or directory", not a timing issue.
+        """
+        return str(Path("/logs") / host_path.relative_to(self.runtime.log_dir))
 
     def _build_auxiliary_service_source(self, service: AuxiliaryServiceConfig) -> Path | None:
         """Clone ``service.source`` once on the head node, returning the build/launch dir.
@@ -129,7 +139,7 @@ class AuxiliaryServiceStageMixin:
             container_mounts=self.runtime.container_mounts,
             srun_options=self.runtime.srun_options,
             het_group=self.runtime.nodes.het_group_for(self.runtime.nodes.head),
-            bash_preamble=_await_and_cd(work_dir),
+            bash_preamble=_await_and_cd(self._container_path(work_dir)),
         )
         returncode = proc.wait()
         if returncode != 0:
@@ -177,7 +187,7 @@ class AuxiliaryServiceStageMixin:
                 env_to_set=env_to_set,
                 srun_options=self.runtime.srun_options,
                 het_group=self.runtime.nodes.het_group_for(self.runtime.nodes.head),
-                bash_preamble=(_await_and_cd(work_dir) if work_dir is not None else None),
+                bash_preamble=(_await_and_cd(self._container_path(work_dir)) if work_dir is not None else None),
             )
             processes.append(
                 ManagedProcess(
