@@ -13,11 +13,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from srtctl.core.git_state import head_commit
-from srtctl.core.power.contract import Reason
+from srtctl.core.power.contract import WINDOWS_DIRNAME, Reason
 from srtctl.core.power.cpu_session import CpuPowerSessionSettings, CpuPowerTelemetrySession
 from srtctl.core.power.manifest import ExpectedWindow
 from srtctl.core.power.session import PowerSessionSettings, PowerTelemetrySession
 from srtctl.core.power.topology import build_expected_devices
+from srtctl.core.power.windows import measured_spans
 from srtctl.core.processes import ManagedProcess, ProcessRegistry
 from srtctl.core.schema import TelemetryExporterConfig
 from srtctl.core.slurm import start_srun_process
@@ -328,14 +329,23 @@ class TelemetryStageMixin:
             )
         return session
 
-    def record_cpu_power_benchmark_span(self, start_unix: float, end_unix: float) -> None:
-        """Tell the CPU leg when a benchmark actually ran.
+    def record_cpu_power_benchmark_spans(self, script_started_unix: float, script_ended_unix: float) -> None:
+        """Tell the CPU leg which intervals were formally measured.
 
-        Unlike the GPU leg, the CPU leg also serves benchmark types that write
-        no ``windows/*.json``, so the orchestrator marks the interval directly.
+        The runner's own ``windows/*.json`` boundaries win: a multi-concurrency
+        script spends much of its wall clock on setup, warmups, and the gaps
+        between series, and auditing those as measured invalidates results that
+        were in fact covered. The CPU leg also serves benchmark types that write
+        no window at all, which fall back to the whole script interval.
         """
         session = getattr(self, "_cpu_power_session", None)
-        if session is not None:
+        if session is None:
+            return
+        windows_dir = self.runtime.log_dir / self.config.telemetry.storage_subdir / WINDOWS_DIRNAME
+        spans = measured_spans(windows_dir)
+        if not spans:
+            spans = [(script_started_unix, script_ended_unix)]
+        for start_unix, end_unix in spans:
             session.record_benchmark_span(start_unix, end_unix)
 
     def power_telemetry_blocks_benchmark(self) -> bool:

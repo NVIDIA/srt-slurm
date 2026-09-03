@@ -130,6 +130,40 @@ def convert_running_windows(windows_dir: Path, *, reason: str) -> int:
     return converted
 
 
+def measured_spans(windows_dir: Path) -> list[tuple[float, float]]:
+    """The closed measurement boundaries the benchmark itself published.
+
+    A multi-series script spends much of its wall clock on setup, warmup, and
+    the gaps between series, so the script interval is not a measurement
+    window. Only ``completed`` windows are spans: they are the intervals a
+    consumer joins watts to, and ``running``/``interrupted`` ones carry no
+    trustworthy end for the orchestrator to invent.
+    """
+    if not windows_dir.is_dir():
+        return []
+    try:
+        paths = sorted(windows_dir.glob("*.json"))
+    except OSError:
+        return []
+
+    spans: list[tuple[float, float]] = []
+    for path in paths:
+        if path.is_symlink() or not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(payload, dict) or payload.get("status") != WINDOW_STATUS_COMPLETED:
+            continue
+        start = payload.get("benchmark_start_time_unix")
+        end = payload.get("benchmark_end_time_unix")
+        if not is_finite_number(start) or not is_finite_number(end) or float(end) < float(start):
+            continue
+        spans.append((float(start), float(end)))
+    return sorted(spans)
+
+
 def _scan(
     windows_dir: Path,
     result_root: Path,
