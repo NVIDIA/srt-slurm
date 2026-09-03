@@ -10,9 +10,10 @@ so CPU and GPU power share one time base.
 
 The provider is ACPI: ``cpu-power-exporter`` reads ``/sys/class/hwmon`` and
 publishes ``cpu_power_acpi_watts`` per power rail. There is deliberately no GPU
-topology, no measurement-window bracketing, and no device expectation here --
-host rails are not allocated to workers, so the artifact is a flat time series
-plus the sensors that were actually observed.
+topology and no device expectation here -- host rails are not allocated to
+workers, so the artifact is a flat time series plus the sensors that were
+actually observed. Measurement-window bracketing is per host: publication
+requires that every configured node covered every benchmark window.
 """
 
 from __future__ import annotations
@@ -45,14 +46,18 @@ from srtctl.core.power.contract import (
     dedupe,
 )
 from srtctl.core.power.manifest import (
+    ArtifactError,
+    ExpectedWindow,
     STATUS_COMPLETE,
     STATUS_FAILED,
     STATUS_INCOMPLETE,
     STATUS_RUNNING,
     STATUS_STARTING,
+    WindowValidation,
 )
 from srtctl.core.power.session import SessionOutcome, run_daemon_workers
 from srtctl.core.processes import ManagedProcess
+from srtctl.core.power.windows import validate_expected_windows_by_host
 from srtctl.core.slurm import get_hostname_ip
 
 logger = logging.getLogger(__name__)
@@ -78,6 +83,8 @@ class CpuPowerSessionSettings:
     """Everything the CPU session needs that comes from config and runtime."""
 
     cpu_dir: Path
+    windows_dir: Path
+    result_root: Path
     job_id: str
     run_name: str
     source: str
@@ -175,9 +182,16 @@ def parse_cpu_power_scrape(text: str) -> tuple[tuple[CpuPowerReading, ...], tupl
 class CpuPowerTelemetrySession:
     """One idempotent host CPU-power collection session for one sweep."""
 
-    def __init__(self, *, settings: CpuPowerSessionSettings, nodes: Sequence[str]):
+    def __init__(
+        self,
+        *,
+        settings: CpuPowerSessionSettings,
+        nodes: Sequence[str],
+        expected_windows: Sequence[ExpectedWindow] = (),
+    ):
         self._settings = settings
         self._nodes = list(nodes)
+        self._expected_windows = list(expected_windows)
         self._endpoints: list[CpuEndpoint] = []
 
         self._writer_lock = threading.Lock()
@@ -195,11 +209,17 @@ class CpuPowerTelemetrySession:
         self._scrape_count = 0
         self._row_count = 0
         self._observed: dict[str, set[str]] = {}
+        # One head-clock timestamp per host per producing cycle: the series a
+        # measurement window is bracketed against.
+        self._sample_times: dict[str, list[float]] = {}
+        self._window_validations: list[WindowValidation] = []
+        self._artifact_errors: list[ArtifactError] = []
         self._reasons: list[str] = []
         self._status = STATUS_STARTING
         self._started_at_unix = time.time()
         self._stopped_at_unix: float | None = None
         self._publication_valid: bool | None = None
+        self._ready_at_monotonic: float | None = None
         self._outcome: SessionOutcome | None = None
 
     @property
@@ -249,6 +269,9 @@ class CpuPowerTelemetrySession:
         self._resolve_endpoints(deadline)
         if not self._endpoints:
             return False
+        # A node that never resolved is a node this session cannot cover, so in
+        # mandatory mode readiness fails closed rather than on the survivors.
+        unresolved = len(self._nodes) - len(self._endpoints)
 
         self._status = STATUS_RUNNING
         self._write_manifest()
@@ -256,10 +279,13 @@ class CpuPowerTelemetrySession:
         self._thread.start()
 
         self._ready.wait(timeout=max(0.0, deadline - time.monotonic()))
-        if self._ready.is_set():
-            return True
-        self.record_reason(Reason.EXPORTER_STARTUP_TIMEOUT)
-        return False
+        # NOTE: Event.wait returning true says only that readiness happened, not
+        # that it happened in time; the timestamp is what enforces the deadline.
+        ready_at = self._ready_at_monotonic
+        if ready_at is None or ready_at > deadline:
+            self.record_reason(Reason.EXPORTER_STARTUP_TIMEOUT)
+            return False
+        return not (unresolved and self._settings.acpi_mandatory)
 
     def _resolve_endpoints(self, deadline: float) -> None:
         """Resolve every allocated hostname once, concurrently, before sampling."""
@@ -335,6 +361,7 @@ class CpuPowerTelemetrySession:
             for result in settled:
                 if result.readings:
                     self._observed.setdefault(result.hostname, set()).update(r.sensor for r in result.readings)
+                    self._sample_times.setdefault(result.hostname, []).append(timestamp_unix)
 
         with self._writer_lock:
             if self._mutation_disabled or self._writer is None:
@@ -346,6 +373,8 @@ class CpuPowerTelemetrySession:
             # the union across cycles would let a flapping exporter look healthy.
             covering = {result.hostname for result in settled if result.readings}
             if endpoints and covering == {endpoint.hostname for endpoint in endpoints}:
+                if self._ready_at_monotonic is None:
+                    self._ready_at_monotonic = time.monotonic()
                 self._ready.set()
         return len(rows)
 
@@ -426,13 +455,34 @@ class CpuPowerTelemetrySession:
             self._writer_lock.release()
 
         with self._state_lock:
+            sample_times = {host: list(times) for host, times in self._sample_times.items()}
+        self._window_validations = validate_expected_windows_by_host(
+            windows_dir=self._settings.windows_dir,
+            result_root=self._settings.result_root,
+            expected_windows=self._expected_windows,
+            expected_hosts=self._nodes,
+            sample_times_by_host=sample_times,
+            artifact_errors=self._artifact_errors,
+        )
+        with self._state_lock:
+            self._reasons.extend(
+                reason for validation in self._window_validations for reason in validation.reason_codes
+            )
+            self._reasons.extend(reason for error in self._artifact_errors for reason in error.reason_codes)
             reasons = list(self._reasons)
         status = self._terminal_status(reasons)
+        # Every configured node must be covered: an endpoint dropped at
+        # resolution time cannot silently shrink what publication means.
+        windows_valid = bool(self._expected_windows) and all(
+            validation.power_coverage_valid for validation in self._window_validations
+        )
         publication_valid = (
             status == STATUS_COMPLETE
             and self._row_count > 0
-            and set(self._observed) == {endpoint.hostname for endpoint in self._endpoints}
-            and bool(self._endpoints)
+            and bool(self._nodes)
+            and set(self._observed) == set(self._nodes)
+            and windows_valid
+            and not self._artifact_errors
         )
         self._outcome = self._terminal(status, publication_valid=publication_valid)
         return self._outcome
@@ -495,6 +545,9 @@ class CpuPowerTelemetrySession:
                 "scrape_count": scrape_count,
                 "sample_row_count": self._row_count,
                 "observed_sensors": observed,
+                "expected_windows": [window.to_dict() for window in self._expected_windows],
+                "window_validations": [validation.to_dict() for validation in self._window_validations],
+                "artifact_errors": [error.to_dict() for error in self._artifact_errors],
                 "publication_valid": self._publication_valid,
                 "reason_codes": reasons,
             },

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from srtctl.core.git_state import head_commit
-from srtctl.core.power.contract import Reason
+from srtctl.core.power.contract import WINDOWS_DIRNAME, Reason
 from srtctl.core.power.cpu_session import CpuPowerSessionSettings, CpuPowerTelemetrySession
 from srtctl.core.power.manifest import ExpectedWindow
 from srtctl.core.power.session import PowerSessionSettings, PowerTelemetrySession
@@ -245,6 +245,10 @@ class TelemetryStageMixin:
         session = CpuPowerTelemetrySession(
             settings=CpuPowerSessionSettings(
                 cpu_dir=cpu_dir,
+                # The benchmark writes its windows under the DCGM leg's subdir
+                # regardless of which legs collect; both legs audit that one set.
+                windows_dir=self.runtime.log_dir / telemetry.storage_subdir / WINDOWS_DIRNAME,
+                result_root=self.runtime.log_dir,
                 job_id=self.runtime.job_id,
                 run_name=self.runtime.run_name,
                 source=cpu_power.source,
@@ -260,6 +264,10 @@ class TelemetryStageMixin:
                 producer_git_commit=read_producer_commit(),
             ),
             nodes=worker_nodes,
+            expected_windows=[
+                ExpectedWindow(benchmark_type=self.config.benchmark.type, concurrency=concurrency)
+                for concurrency in self.config.benchmark.get_concurrency_list()
+            ],
         )
         # NOTE: stored before initialize() so a raise mid-startup still leaves a finalizable session.
         self._cpu_power_session = session

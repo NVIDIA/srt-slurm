@@ -13,7 +13,7 @@ from __future__ import annotations
 import itertools
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -57,6 +57,10 @@ class _ParsedWindow:
     duration: float | None
 
 
+#: Audits one window's sample coverage, returning per-series gaps and reasons.
+CoverageCheck = Callable[[float, float], tuple[dict[str, float], list[str]]]
+
+
 def validate_expected_windows(
     *,
     power_dir: Path,
@@ -66,13 +70,54 @@ def validate_expected_windows(
     observed_devices: Sequence[ObservedDevice],
     artifact_errors: list[ArtifactError],
 ) -> list[WindowValidation]:
+    """Emit exactly one validation row per expected window, keyed by GPU device."""
+    return _validate_windows(
+        windows_dir=power_dir / WINDOWS_DIRNAME,
+        result_root=result_root,
+        expected_windows=expected_windows,
+        artifact_errors=artifact_errors,
+        coverage=lambda start, end: _check_coverage(start, end, expected_device_keys, observed_devices),
+    )
+
+
+def validate_expected_windows_by_host(
+    *,
+    windows_dir: Path,
+    result_root: Path,
+    expected_windows: Sequence[ExpectedWindow],
+    expected_hosts: Sequence[str],
+    sample_times_by_host: Mapping[str, Sequence[float]],
+    artifact_errors: list[ArtifactError],
+) -> list[WindowValidation]:
+    """The same audit for a provider whose series are hosts, not GPUs.
+
+    Host CPU rails are not allocated to workers, so a node either bracketed the
+    window with close-enough samples or it did not.
+    """
+    return _validate_windows(
+        windows_dir=windows_dir,
+        result_root=result_root,
+        expected_windows=expected_windows,
+        artifact_errors=artifact_errors,
+        coverage=lambda start, end: _check_host_coverage(start, end, expected_hosts, sample_times_by_host),
+    )
+
+
+def _validate_windows(
+    *,
+    windows_dir: Path,
+    result_root: Path,
+    expected_windows: Sequence[ExpectedWindow],
+    artifact_errors: list[ArtifactError],
+    coverage: CoverageCheck,
+) -> list[WindowValidation]:
     """Emit exactly one validation row per expected window.
 
     A missing expected window must never pass vacuously, and every unexpected,
     malformed, duplicate, or unsafe file lands in ``artifact_errors`` so the
     expected key set can be compared against the valid observed key set.
     """
-    parsed, duplicates = _scan(power_dir / WINDOWS_DIRNAME, result_root, artifact_errors)
+    parsed, duplicates = _scan(windows_dir, result_root, artifact_errors)
     expected_keys = {window.key for window in expected_windows}
 
     for key, window in sorted(parsed.items()):
@@ -87,8 +132,7 @@ def validate_expected_windows(
             window=parsed.get(expected.key),
             duplicated=expected.key in duplicates,
             result_root=result_root,
-            expected_device_keys=expected_device_keys,
-            observed_devices=observed_devices,
+            coverage=coverage,
         )
         for expected in expected_windows
     ]
@@ -265,8 +309,7 @@ def _validate_one(
     window: _ParsedWindow | None,
     duplicated: bool,
     result_root: Path,
-    expected_device_keys: set[DeviceKey],
-    observed_devices: Sequence[ObservedDevice],
+    coverage: CoverageCheck,
 ) -> WindowValidation:
     if window is None:
         reasons = [Reason.MEASUREMENT_WINDOW_DUPLICATE] if duplicated else [Reason.MEASUREMENT_WINDOW_MISSING]
@@ -289,9 +332,7 @@ def _validate_one(
         if window.end_unix is None:
             reasons.append(Reason.MEASUREMENT_WINDOW_MALFORMED)
         else:
-            gaps, coverage_reasons = _check_coverage(
-                window.start_unix, window.end_unix, expected_device_keys, observed_devices
-            )
+            gaps, coverage_reasons = coverage(window.start_unix, window.end_unix)
             reasons.extend(coverage_reasons)
 
     return WindowValidation(
@@ -365,6 +406,29 @@ def _check_coverage(
             continue
         largest = max((later - earlier for earlier, later in itertools.pairwise(sequence)), default=0.0)
         gaps[f"{device.hostname}/{device.gpu_uuids[0]}"] = largest
+        if largest > MAX_SAMPLE_GAP_SECONDS:
+            reasons.append(Reason.SAMPLE_GAP_EXCEEDED)
+
+    return gaps, reasons
+
+
+def _check_host_coverage(
+    start: float,
+    end: float,
+    expected_hosts: Sequence[str],
+    sample_times_by_host: Mapping[str, Sequence[float]],
+) -> tuple[dict[str, float], list[str]]:
+    """Every expected host must bracket the window with small enough gaps."""
+    gaps: dict[str, float] = {}
+    reasons: list[str] = []
+
+    for host in sorted(set(expected_hosts)):
+        sequence = _bracketing_sequence(sample_times_by_host.get(host, ()), start, end)
+        if sequence is None:
+            reasons.append(Reason.MEASUREMENT_WINDOW_NOT_BRACKETED)
+            continue
+        largest = max((later - earlier for earlier, later in itertools.pairwise(sequence)), default=0.0)
+        gaps[host] = largest
         if largest > MAX_SAMPLE_GAP_SECONDS:
             reasons.append(Reason.SAMPLE_GAP_EXCEEDED)
 
