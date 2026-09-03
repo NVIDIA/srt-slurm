@@ -625,7 +625,7 @@ class TestDryRunTelemetry:
     }
     # The DCGM leg only runs under sa-bench, which owns the measurement windows.
     DCGM_ONLY = {
-        "benchmark": {"type": "sa-bench"},
+        "benchmark": {"type": "sa-bench", "concurrencies": [1, 2]},
         "telemetry": {
             "enabled": True,
             "dcgm_exporter": {"container_image": "nvcr.io/nvidia/dcgm-exporter:4.2.3", "port": 9400},
