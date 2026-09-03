@@ -857,7 +857,7 @@ class TestCpuPowerServerMetricsUrls:
         urls = self._urls(stage, resolve=lambda node, _iface: node if node == "node-b" else _node_ip(node))
 
         assert "http://10.0.0.1:9401/metrics" in urls
-        assert all("node-b" not in url for url in urls)
+        assert [url for url in urls if ":9401/" in url] == ["http://10.0.0.1:9401/metrics"]
 
     def test_an_ipv6_node_is_bracketed(self):
         """Unbracketed, the address's own colons read as the port separator."""
