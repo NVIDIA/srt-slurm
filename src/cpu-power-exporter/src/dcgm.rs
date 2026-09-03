@@ -196,11 +196,10 @@ impl DcgmLib {
     }
 
     fn open_lib() -> Result<libloading::Library, DcgmUnavailable> {
-        let names: &[&[u8]] = &[b"libdcgm.so.4\0", b"libdcgm.so.3\0", b"libdcgm.so\0"];
+        let names: &[&str] = &["libdcgm.so.4", "libdcgm.so.3", "libdcgm.so"];
         let mut last_err = String::new();
-        for name in names {
-            // SAFETY: null-terminated byte string literal.
-            match unsafe { libloading::Library::new(std::ffi::OsStr::from_bytes(&name[..name.len() - 1])) } {
+        for &name in names {
+            match unsafe { libloading::Library::new(name) } {
                 Ok(lib) => return Ok(lib),
                 Err(e) => last_err = e.to_string(),
             }
@@ -424,11 +423,6 @@ impl DcgmReader {
             .collect();
 
         Ok(result)
-    }
-
-    /// Source label used in Prometheus output.
-    pub fn source_name() -> &'static str {
-        "dcgm"
     }
 }
 
