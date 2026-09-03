@@ -2283,7 +2283,7 @@ class SrtConfig:
         if not 1 <= exporter.port <= 65535:
             raise ValidationError("telemetry.dcgm_exporter.port must be in 1..65535")
 
-        for name in ("default_frequency", "startup_timeout_seconds", "request_timeout_seconds"):
+        for name in ("default_frequency", "startup_timeout_seconds"):
             if not _is_finite_positive(getattr(telemetry, name)):
                 raise ValidationError(f"telemetry.{name} must be finite and positive")
         if telemetry.default_frequency > _DCGM_POWER_MAX_SAMPLE_GAP_SECONDS:
@@ -2293,20 +2293,6 @@ class SrtConfig:
                 "every window would fail sample_gap_exceeded. Set it to the intended collector "
                 "period (e.g. 1.0)."
             )
-        worst_case_join_seconds = 2 * (
-            2 * telemetry.request_timeout_seconds + _DCGM_POWER_COLLECT_CYCLE_TIMEOUT_GRACE_SECONDS
-        )
-        collector_join_timeout_seconds = telemetry.resolved_collector_join_timeout_seconds
-        if (
-            not _is_finite_positive(collector_join_timeout_seconds)
-            or collector_join_timeout_seconds <= worst_case_join_seconds
-        ):
-            raise ValidationError(
-                "telemetry.collector_join_timeout_seconds must be finite, positive, "
-                "and greater than two full collector cycles "
-                "(2 * (2 * telemetry.request_timeout_seconds + 1 second))"
-            )
-
         if not _is_safe_relative_subpath(telemetry.storage_subdir):
             raise ValidationError("telemetry.storage_subdir must be a safe relative path below the run log directory")
 
@@ -2327,6 +2313,30 @@ class SrtConfig:
         if not concurrencies or len(set(concurrencies)) != len(concurrencies) or any(c <= 0 for c in concurrencies):
             raise ValidationError("telemetry requires a non-empty list of unique positive benchmark.concurrencies")
 
+    def _validate_collector_budget(self):
+        """Validate the scrape and join budget every enabled leg's collector uses.
+
+        Both the DCGM and CPU legs poll with ``request_timeout_seconds`` and are
+        joined with ``collector_join_timeout_seconds``, so a leg running alone
+        needs these checked just as much as the pair does.
+        """
+        telemetry = self.telemetry
+        if not _is_finite_positive(telemetry.request_timeout_seconds):
+            raise ValidationError("telemetry.request_timeout_seconds must be finite and positive")
+        worst_case_join_seconds = 2 * (
+            2 * telemetry.request_timeout_seconds + _DCGM_POWER_COLLECT_CYCLE_TIMEOUT_GRACE_SECONDS
+        )
+        collector_join_timeout_seconds = telemetry.resolved_collector_join_timeout_seconds
+        if (
+            not _is_finite_positive(collector_join_timeout_seconds)
+            or collector_join_timeout_seconds <= worst_case_join_seconds
+        ):
+            raise ValidationError(
+                "telemetry.collector_join_timeout_seconds must be finite, positive, "
+                "and greater than two full collector cycles "
+                "(2 * (2 * telemetry.request_timeout_seconds + 1 second))"
+            )
+
     def _validate_observability(self):
         """Validate Tachometer collection under observability."""
         observability = self.observability
@@ -2335,7 +2345,9 @@ class SrtConfig:
             raise ValidationError("observability.tachometer requires observability.enabled: true")
         if not observability.tachometer_enabled:
             return
-        if self.telemetry.enabled and tachometer.dcgm_exporter is not None:
+        # Only a telemetry-owned DCGM exporter conflicts: a CPU-only telemetry
+        # block leaves Tachometer's DCGM exporter as the run's only one.
+        if self.telemetry.enabled and self.telemetry.dcgm_exporter is not None and tachometer.dcgm_exporter is not None:
             raise ValidationError(
                 "configure the shared DCGM exporter under telemetry, not observability.tachometer, "
                 "when DCGM power telemetry is enabled"
@@ -2376,12 +2388,20 @@ class SrtConfig:
         if not 1 <= cpu_power.prometheus_port <= 65535:
             raise ValidationError("telemetry.cpu_power.prometheus_port must be in 1..65535")
 
-        exporter = self.telemetry.dcgm_exporter
-        if exporter is not None and exporter.port == cpu_power.prometheus_port:
-            raise ValidationError(
-                f"telemetry.cpu_power.prometheus_port={cpu_power.prometheus_port} collides with "
-                "telemetry.dcgm_exporter.port; both run on every worker node"
-            )
+        # Every one of these runs on every worker node alongside the CPU exporter.
+        neighbours = [("telemetry.dcgm_exporter", self.telemetry.dcgm_exporter)]
+        if self.observability.tachometer_enabled:
+            tachometer = self.observability.tachometer
+            neighbours += [
+                ("observability.tachometer.dcgm_exporter", tachometer.dcgm_exporter),
+                ("observability.tachometer.node_exporter", tachometer.node_exporter),
+            ]
+        for name, exporter in neighbours:
+            if exporter is not None and exporter.port == cpu_power.prometheus_port:
+                raise ValidationError(
+                    f"telemetry.cpu_power.prometheus_port={cpu_power.prometheus_port} collides with "
+                    f"{name}.port; both run on every worker node"
+                )
 
         for name in ("sample_interval_seconds", "startup_timeout_seconds"):
             if not _is_finite_positive(getattr(cpu_power, name)):
@@ -2413,6 +2433,7 @@ class SrtConfig:
             if telemetry is not None and telemetry.cpu_power.enabled:
                 raise ValidationError("telemetry.cpu_power.enabled requires telemetry.enabled")
             return
+        self._validate_collector_budget()
         if telemetry.cpu_power.enabled:
             self._validate_cpu_power()
         elif telemetry.cpu_power.required:

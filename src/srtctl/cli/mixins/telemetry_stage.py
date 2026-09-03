@@ -454,7 +454,10 @@ class TelemetryStageMixin:
             )
 
         power_telemetry = self.config.telemetry
-        dcgm_exporter = power_telemetry.dcgm_exporter if power_telemetry.enabled else tachometer.dcgm_exporter
+        # The power leg owns the shared exporter only when it configures one:
+        # CPU-only telemetry leaves Tachometer's own DCGM exporter in charge.
+        power_owns_dcgm = power_telemetry.enabled and power_telemetry.dcgm_exporter is not None
+        dcgm_exporter = power_telemetry.dcgm_exporter if power_owns_dcgm else tachometer.dcgm_exporter
         topology = self._compute_frontend_topology()
         config_path = self.runtime.log_dir / "tachometer_config.toml"
         config_path.write_text(
@@ -483,7 +486,7 @@ class TelemetryStageMixin:
         # must never tear down the benchmark. Verified the hard way: a
         # bash-wrapped node-exporter (FROM scratch) died with execve() ENOENT
         # and, as a critical process, killed a 7-node run at startup.
-        if not power_telemetry.enabled and tachometer.dcgm_exporter is not None:
+        if not power_owns_dcgm and tachometer.dcgm_exporter is not None:
             processes.extend(
                 self._start_exporter_container(
                     exporter_config=tachometer.dcgm_exporter,
