@@ -465,8 +465,8 @@ class TestCpuPowerLifecycle:
         assert rows[0].startswith("schema_version,")
         assert any("hwmon0/power1" in row for row in rows[1:])
         assert [
-            (span["covered"], sorted(span["per_host_max_sample_gap_seconds"])) for span in manifest["benchmark_spans"]
-        ] == [(True, ["node-a"])]
+            (span["covered"], sorted(span["per_series_max_sample_gap_seconds"])) for span in manifest["benchmark_spans"]
+        ] == [(True, ["node-a/hwmon0/power1"])]
 
     @patch("srtctl.core.power.cpu_session.requests.get")
     @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: f"ip-{node}")
@@ -518,6 +518,40 @@ class TestCpuPowerLifecycle:
         outcome = session.stop_and_finalize()
         assert Reason.ENDPOINT_RESOLUTION_FAILED in outcome.reason_codes
         assert outcome.publication_valid is False
+
+    @patch("srtctl.core.power.cpu_session.requests.get")
+    @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: f"ip-{node}")
+    @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
+    def test_a_rail_that_disappears_mid_benchmark_does_not_publish(self, mock_srun, _mock_ip, mock_get, tmp_path):
+        """The surviving rails keep the host sampling, so per-host coverage would pass."""
+        mock_srun.return_value = _running_exporter()
+        both = _scrape(
+            'cpu_power_acpi_watts{sensor="hwmon0/power1",type="CPU",socket="0"} 42.5',
+            'cpu_power_acpi_watts{sensor="hwmon0/power2",type="SYSIO",socket="0"} 12.5',
+        )
+        sysio_only = _scrape('cpu_power_acpi_watts{sensor="hwmon0/power2",type="SYSIO",socket="0"} 12.5')
+        answers = {"count": 0}
+
+        def scrape(*_args, **_kwargs):
+            answers["count"] += 1
+            # The CPU rail answers the readiness cycle, then goes quiet.
+            return _response(both if answers["count"] <= 1 else sysio_only)
+
+        mock_get.side_effect = scrape
+        harness = _harness(tmp_path, [_worker("node-a", range(4))])
+
+        harness.start_cpu_power_telemetry(ProcessRegistry(job_id="12345"))
+        assert harness.cpu_power_telemetry_blocks_benchmark() is False
+        start = time.time()
+        time.sleep(0.3)
+        harness.record_cpu_power_benchmark_span(start, time.time())
+
+        assert harness.finalize_cpu_power_telemetry(0) == 1
+        manifest = json.loads((tmp_path / "cpu_power" / "manifest.json").read_text())
+        assert manifest["publication_valid"] is False
+        assert Reason.MEASUREMENT_WINDOW_NOT_BRACKETED in manifest["reason_codes"]
+        gaps = manifest["benchmark_spans"][0]["per_series_max_sample_gap_seconds"]
+        assert "node-a/hwmon0/power1" not in gaps, "the rail that vanished cannot report a gap"
 
     @patch("srtctl.core.power.cpu_session.requests.get")
     @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: f"ip-{node}")
