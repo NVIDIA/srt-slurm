@@ -2433,7 +2433,6 @@ class SrtConfig:
             if telemetry is not None and telemetry.cpu_power.enabled:
                 raise ValidationError("telemetry.cpu_power.enabled requires telemetry.enabled")
             return
-        self._validate_collector_budget()
         if telemetry.cpu_power.enabled:
             self._validate_cpu_power()
         elif telemetry.cpu_power.required:
@@ -2445,6 +2444,8 @@ class SrtConfig:
                 "telemetry.enabled requires telemetry.dcgm_exporter or telemetry.cpu_power.enabled; "
                 "otherwise there is nothing to collect"
             )
+        # Last: the more specific per-leg messages are the useful ones to hit first.
+        self._validate_collector_budget()
 
     @classmethod
     def from_yaml(cls, yaml_path: Path) -> "SrtConfig":
