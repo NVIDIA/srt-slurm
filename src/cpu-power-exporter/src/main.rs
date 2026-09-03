@@ -76,7 +76,7 @@ enum SourceMode {
 )]
 struct Args {
     /// TCP port to listen on.
-    #[arg(long, default_value_t = 9401)]
+    #[arg(long, default_value_t = 9405)]
     port: u16,
 
     /// Address to bind.

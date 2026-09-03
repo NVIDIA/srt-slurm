@@ -1219,7 +1219,7 @@ class CpuPowerConfig:
     sample_interval_seconds: float = 0.1
     startup_timeout_seconds: float = 30.0
     required: bool = False
-    prometheus_port: int = 9401
+    prometheus_port: int = 9405
     storage_subdir: str = "cpu_power"
 
     Schema: ClassVar[type[Schema]] = Schema

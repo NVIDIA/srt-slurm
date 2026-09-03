@@ -86,4 +86,4 @@ telemetry:
     # collected, so a node without them must fail rather than quietly skip.
     source: "acpi"
     required: true
-    prometheus_port: 9401
+    prometheus_port: 9405

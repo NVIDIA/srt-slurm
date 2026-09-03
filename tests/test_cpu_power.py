@@ -129,9 +129,7 @@ class TestCpuPowerSchema:
 
 
 def _scrape(*lines: str) -> str:
-    header = (
-        "# HELP cpu_power_acpi_watts Host CPU rail power.\n# TYPE cpu_power_acpi_watts gauge\n"
-    )
+    header = "# HELP cpu_power_acpi_watts Host CPU rail power.\n# TYPE cpu_power_acpi_watts gauge\n"
     return header + "".join(f"{line}\n" for line in lines)
 
 
@@ -172,9 +170,7 @@ class TestCpuPowerScrapeParsing:
         assert Reason.CPU_SENSOR_MISSING in reasons
 
     def test_negative_power_is_rejected(self):
-        readings, reasons = parse_cpu_power_scrape(
-            _scrape('cpu_power_acpi_watts{sensor="hwmon0/power1"} -1.0')
-        )
+        readings, reasons = parse_cpu_power_scrape(_scrape('cpu_power_acpi_watts{sensor="hwmon0/power1"} -1.0'))
 
         assert readings == ()
         assert Reason.INVALID_POWER_VALUE in reasons
@@ -216,8 +212,7 @@ def _harness(tmp_path, processes, *, cpu_power=None, het=False, het_groups=None)
         def __init__(self):
             # NOTE: srun is mocked so no exporter answers; a short deadline avoids a stall per test.
             self.config = _config(
-                cpu_power
-                or CpuPowerConfig(enabled=True, source="acpi", required=True, startup_timeout_seconds=0.2),
+                cpu_power or CpuPowerConfig(enabled=True, source="acpi", required=True, startup_timeout_seconds=0.2),
                 request_timeout_seconds=0.1,
                 collector_join_timeout_seconds=3.0,
             )
@@ -270,7 +265,7 @@ class TestCpuPowerLifecycle:
         assert kwargs["ntasks"] == 2
         assert kwargs["use_bash_wrapper"] is False
         assert "container_image" not in kwargs
-        assert kwargs["command"][1:] == ["--port", "9401"]
+        assert kwargs["command"][1:] == ["--port", "9405"]
         assert registry.process_count == 1
         assert all(proc.critical is False for proc in registry.get_all_processes().values())
         session.stop_and_finalize()
@@ -351,12 +346,12 @@ class TestCpuPowerLifecycle:
 
         assert harness.cpu_power_telemetry_blocks_benchmark() is False
         assert harness.finalize_cpu_power_telemetry(0) == 0
-        assert mock_get.call_args.args[0] == "http://ip-node-a:9401/metrics"
+        assert mock_get.call_args.args[0] == "http://ip-node-a:9405/metrics"
 
         manifest = json.loads((tmp_path / "cpu_power" / "manifest.json").read_text())
         assert manifest["status"] == "complete"
         assert manifest["publication_valid"] is True
-        assert manifest["cpu_power"]["command"].endswith("--port 9401")
+        assert manifest["cpu_power"]["command"].endswith("--port 9405")
         rows = (tmp_path / "cpu_power" / "samples.csv").read_text().splitlines()
         assert rows[0].startswith("schema_version,")
         assert any("hwmon0/power1" in row for row in rows[1:])
@@ -402,8 +397,8 @@ class TestCpuPowerServerMetricsUrls:
             cpu_power=CpuPowerConfig(enabled=True),
         )
 
-        assert "http://ip-node-a:9401/metrics" in self._urls(stage)
-        assert "http://ip-node-b:9401/metrics" in self._urls(stage)
+        assert "http://ip-node-a:9405/metrics" in self._urls(stage)
+        assert "http://ip-node-b:9405/metrics" in self._urls(stage)
 
     def test_vllm_frontend_still_gets_the_cpu_urls(self):
         """The vLLM branch used to return early, dropping the CPU endpoints."""
@@ -412,10 +407,10 @@ class TestCpuPowerServerMetricsUrls:
 
         urls = self._urls(stage)
 
-        assert "http://ip-node-a:9401/metrics" in urls
+        assert "http://ip-node-a:9405/metrics" in urls
         assert any(url.endswith("8000/metrics") for url in urls)
 
     def test_disabled_leg_adds_no_cpu_urls(self):
         stage = self._stage([_worker("node-a", range(4))])
 
-        assert all(":9401/" not in url for url in self._urls(stage))
+        assert all(":9405/" not in url for url in self._urls(stage))
