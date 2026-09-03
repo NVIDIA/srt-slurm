@@ -37,6 +37,23 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _await_and_cd(work_dir: Path) -> str:
+    """``cd work_dir``, tolerating a brief NFS visibility lag.
+
+    The clone/checkout and this build/launch step run as separate ``srun``
+    invocations. Seen in practice: the clone's process exits 0 with the
+    directory genuinely written, but the very next srun's `cd` still gets
+    "No such file or directory" -- a client-side NFS attribute-cache race,
+    not a real missing directory (`ls` moments later shows it present).
+    Poll briefly instead of failing the whole service on a stale cache.
+    """
+    quoted = shlex.quote(str(work_dir))
+    return (
+        f"for _i in $(seq 1 20); do [ -d {quoted} ] && break; sleep 0.5; done; "
+        f"cd {quoted}"
+    )
+
+
 class AuxiliaryServiceStageMixin:
     """Launch user-declared ``auxiliary_services`` sidecars on the real sbatch/SLURM path."""
 
@@ -112,7 +129,7 @@ class AuxiliaryServiceStageMixin:
             container_mounts=self.runtime.container_mounts,
             srun_options=self.runtime.srun_options,
             het_group=self.runtime.nodes.het_group_for(self.runtime.nodes.head),
-            bash_preamble=f"cd {shlex.quote(str(work_dir))}",
+            bash_preamble=_await_and_cd(work_dir),
         )
         returncode = proc.wait()
         if returncode != 0:
@@ -160,7 +177,7 @@ class AuxiliaryServiceStageMixin:
                 env_to_set=env_to_set,
                 srun_options=self.runtime.srun_options,
                 het_group=self.runtime.nodes.het_group_for(self.runtime.nodes.head),
-                bash_preamble=(f"cd {shlex.quote(str(work_dir))}" if work_dir is not None else None),
+                bash_preamble=(_await_and_cd(work_dir) if work_dir is not None else None),
             )
             processes.append(
                 ManagedProcess(
