@@ -22,7 +22,6 @@ from srtctl.core.power.contract import (
     MEASUREMENT_WINDOW_DIR_ENV,
     WINDOWS_DIRNAME,
 )
-from srtctl.core.power.cpu_session import cpu_endpoint_host
 from srtctl.core.processes import terminate_and_reap
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
 from srtctl.core.status import JobStage, JobStatus, StatusReporter
@@ -665,14 +664,18 @@ class BenchmarkStageMixin:
         # Add ACPI CPU power exporter endpoints (one per worker node) when enabled.
         telemetry = self.config.telemetry
         if telemetry.enabled and telemetry.cpu_power.enabled:
-            worker_nodes = sorted({process.node for process in self.backend_processes})
-            for node in worker_nodes:
-                # Same resolver the telemetry session uses, so the client is never
-                # pointed at a node the session itself refused as unreachable.
-                host = cpu_endpoint_host(node, self.runtime.network_interface)
-                if host is None:
-                    continue
-                urls.append(f"http://{host}:{telemetry.cpu_power.prometheus_port}/metrics")
+            # Project what the session resolved, never resolve again: the CPU
+            # session starts before the benchmark stage (see do_sweep), and a
+            # second resolution could drift or stall behind DNS and hand the
+            # client a different endpoint set than the one being sampled.
+            # No session means the leg never started -- pointing the client at
+            # exporters that were not launched would only fabricate coverage,
+            # and mandatory modes have already failed the startup gate.
+            session = getattr(self, "_cpu_power_session", None)
+            if session is None:
+                logger.warning("CPU power telemetry has no resolved endpoints; not advertising any to the client")
+            else:
+                urls.extend(endpoint.url for endpoint in session.endpoints)
 
         if not urls:
             return {}
