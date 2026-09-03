@@ -267,6 +267,17 @@ class TelemetryStageMixin:
         session.initialize()
         logger.info("Starting CPU power telemetry (artifacts under %s)", cpu_dir)
 
+        # Resolve before launching: the exporter listens on one address family
+        # and the scrape URLs are built from these same addresses, so binding
+        # the IPv4 default on a node the session reaches over IPv6 would serve
+        # nobody. `::` also accepts IPv4 on a dual-stack host, so it is only
+        # chosen when an IPv6 node is actually present -- an unconditional `::`
+        # would fail to bind at all where IPv6 is disabled.
+        if any(endpoint.url.startswith("http://[") for endpoint in session.resolve_endpoints()):
+            logger.info("CPU power exporter binding :: for IPv6-resolved nodes")
+            command += ["--bind", "::"]
+        session.set_exporter_command(shlex.join(command))
+
         try:
             for group_id, nodes in self._het_chunks(worker_nodes):
                 suffix = "" if not self.runtime.nodes.het else f".g{group_id}"

@@ -30,7 +30,7 @@ import socket
 import threading
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import requests
@@ -330,6 +330,15 @@ class CpuPowerTelemetrySession:
             self._handle.close()
             self._handle = None
             raise
+        self._write_manifest()
+
+    def set_exporter_command(self, command: str) -> None:
+        """Record the exact argv the exporters were launched with.
+
+        The bind address depends on what :meth:`resolve_endpoints` returned, so
+        the launcher only knows the final command after the session exists.
+        """
+        self._settings = replace(self._settings, exporter_command=command)
         self._write_manifest()
 
     def add_exporter(self, process: ManagedProcess) -> None:
