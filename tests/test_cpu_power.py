@@ -27,8 +27,8 @@ from srtctl.core.schema import (
     ModelConfig,
     ObservabilityConfig,
     ResourceConfig,
-    TachometerConfig,
     SrtConfig,
+    TachometerConfig,
     TelemetryConfig,
     TelemetryExporterConfig,
 )
