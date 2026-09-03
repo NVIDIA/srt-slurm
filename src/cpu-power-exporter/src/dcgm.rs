@@ -42,6 +42,12 @@ const DCGM_GEGE_FLAG_ONLY_SUPPORTED: u32 = 0x00000001;
 /// DCGM_ST_OK: success return code.
 const DCGM_ST_OK: i32 = 0;
 
+/// dcgmFieldValue_version2 = MAKE_DCGM_VERSION(dcgmFieldValue_v2, 2)
+/// = sizeof(dcgmFieldValue_v2) | (2 << 24). Callers must pre-set this in
+/// each output struct before calling dcgmEntitiesGetLatestValues so DCGM
+/// knows the struct size and populates the fields correctly.
+const DCGM_FIELD_VALUE_V2_VERSION: u32 = 0x02001020;
+
 /// Upper bound on CPU entity count (Grace has 2 sockets; 64 is more than enough).
 const MAX_CPU_ENTITIES: usize = 64;
 
@@ -376,7 +382,7 @@ impl DcgmReader {
         let n = self.entities.len();
         let mut values: Vec<FieldValueV2> = (0..n)
             .map(|_| FieldValueV2 {
-                version: 0,
+                version: DCGM_FIELD_VALUE_V2_VERSION,
                 entity_group_id: 0,
                 entity_id: 0,
                 field_id: 0,
@@ -411,12 +417,18 @@ impl DcgmReader {
                 let watts = if v.status == DCGM_ST_OK {
                     // SAFETY: field 1130 is a double field; union variant is valid.
                     let w = unsafe { v.val.dbl };
+                    tracing::debug!(entity_id = v.entity_id, w, "DCGM raw value");
                     if w.is_finite() && w > 0.0 {
                         Some(w)
                     } else {
                         None
                     }
                 } else {
+                    tracing::debug!(
+                        entity_id = v.entity_id,
+                        status = v.status,
+                        "DCGM non-OK status for entity; skipping"
+                    );
                     None
                 };
                 (v.entity_id, watts)
