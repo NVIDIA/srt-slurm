@@ -165,29 +165,71 @@ class TestPublishGuard:
 
 @pytest.mark.skipif(shutil.which("make") is None, reason="make is not installed")
 class TestOptionalExporterDownload:
-    """cpu-power-exporter is optional, so setup must not die when it is absent."""
+    """cpu-power-exporter is optional by default, but a pinned release is not."""
 
     @staticmethod
-    def _make(target: str, tmp_path: Path) -> subprocess.CompletedProcess:
-        # A curl that always fails stands in for a release without the asset.
+    def _sandbox(tmp_path: Path) -> Path:
+        """A copy of the Makefile with its own bin/, so the checkout is untouched."""
+        shutil.copy(REPO_ROOT / "Makefile", tmp_path / "Makefile")
         stub_bin = tmp_path / "stub-bin"
         stub_bin.mkdir()
-        curl = stub_bin / "curl"
-        curl.write_text("#!/bin/sh\nexit 22\n")
-        curl.chmod(curl.stat().st_mode | stat.S_IEXEC)
+        # A curl that always fails stands in for a release without the asset.
+        (stub_bin / "curl").write_text("#!/bin/sh\nexit 22\n")
+        # `file` is not installed everywhere, and the answer it would give for
+        # the placeholder binary below is fixed anyway.
+        (stub_bin / "file").write_text('#!/bin/sh\necho "$1: ELF 64-bit LSB executable, x86-64"\n')
+        for stub in stub_bin.iterdir():
+            stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+        return tmp_path
+
+    def _make(self, target: str, tmp_path: Path, release: str = "latest") -> subprocess.CompletedProcess:
+        sandbox = tmp_path if (tmp_path / "Makefile").exists() else self._sandbox(tmp_path)
         return subprocess.run(
-            ["make", target, "CPU_POWER_EXPORTER_RELEASE=v0.0.0-absent", "ARCH=x86_64"],
-            cwd=REPO_ROOT,
-            env={**os.environ, "PATH": f"{stub_bin}:{os.environ['PATH']}"},
+            ["make", "-C", str(sandbox), target, f"CPU_POWER_EXPORTER_RELEASE={release}", "ARCH=x86_64"],
+            env={**os.environ, "PATH": f"{sandbox / 'stub-bin'}:{os.environ['PATH']}"},
             capture_output=True,
             text=True,
             check=False,
         )
 
-    def test_setup_warns_instead_of_failing(self, tmp_path: Path):
+    @staticmethod
+    def _install(sandbox: Path, release: str) -> None:
+        """Pretend a previous run installed `release`."""
+        (sandbox / "bin").mkdir(exist_ok=True)
+        (sandbox / "bin" / "cpu-power-exporter").write_text("stale binary\n")
+        (sandbox / "bin" / ".cpu-power-exporter.release").write_text(release)
+
+    def test_setup_warns_instead_of_failing_on_the_default_release(self, tmp_path: Path):
         result = self._make("cpu-power-exporter-setup", tmp_path)
         assert result.returncode == 0, result.stdout + result.stderr
         assert "cpu-power-exporter unavailable" in result.stdout
+
+    def test_setup_fails_when_a_release_was_pinned(self, tmp_path: Path):
+        """The pin exists to get one specific version; a warning would defeat it."""
+        result = self._make("cpu-power-exporter-setup", tmp_path, release="v0.0.0-absent")
+        assert result.returncode != 0
+        assert "cpu-power-exporter unavailable" not in result.stdout
+
+    def test_a_failed_pinned_download_leaves_no_stale_binary(self, tmp_path: Path):
+        sandbox = self._sandbox(tmp_path)
+        self._install(sandbox, "v1.0.0")
+
+        result = self._make("cpu-power-exporter-setup", sandbox, release="v0.0.0-absent")
+
+        assert result.returncode != 0
+        assert not (sandbox / "bin" / "cpu-power-exporter").exists(), (
+            "validate-setup only checks existence, so a leftover binary would pass as the pinned one"
+        )
+
+    def test_the_default_release_keeps_an_installed_binary(self, tmp_path: Path):
+        """`latest` has no identity to compare against, so it must not churn."""
+        sandbox = self._sandbox(tmp_path)
+        self._install(sandbox, "v1.0.0")
+
+        result = self._make("cpu-power-exporter-setup", sandbox)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert (sandbox / "bin" / "cpu-power-exporter").exists()
 
     def test_an_explicit_download_still_fails(self, tmp_path: Path):
         result = self._make("cpu-power-exporter-download", tmp_path)
