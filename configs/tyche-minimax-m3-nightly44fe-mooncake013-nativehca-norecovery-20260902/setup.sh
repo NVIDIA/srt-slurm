@@ -16,6 +16,14 @@ find "${AIPERF_RUN_TMP}" -mindepth 1 -maxdepth 1 \
 chmod g+rwx "${AIPERF_RUN_TMP}"
 test -w "${AIPERF_RUN_TMP}"
 
+# Setup executes before the per-role worker environments are injected, so the
+# EAGLE3 helper cannot inherit these values from prefill_environment or
+# decode_environment. Define the exact GQA model and shared Tyche cache here.
+DRAFT_CACHE_ROOT=/lustre/fsw/coreai_comparch_inferencex/common/cache/draft-models
+DRAFT_LOCAL_DIR_DEFAULT="${DRAFT_CACHE_ROOT}/Inferact--MiniMax-M3-EAGLE3-GQA"
+export MINIMAX_M3_EAGLE3_DRAFT_MODEL="${MINIMAX_M3_EAGLE3_DRAFT_MODEL:-Inferact/MiniMax-M3-EAGLE3-GQA}"
+export MINIMAX_M3_EAGLE3_DRAFT_LOCAL_DIR="${MINIMAX_M3_EAGLE3_DRAFT_LOCAL_DIR:-${DRAFT_LOCAL_DIR_DEFAULT}}"
+
 # The main-model cache warmer does not stage speculative draft models. Reuse
 # the established EAGLE3 helper so all ranks receive a complete local model
 # directory rather than asking vLLM to interpret a nonexistent path as a Hub
