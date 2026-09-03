@@ -9,6 +9,14 @@ from pathlib import Path
 import pytest
 
 from srtctl.cli.submit import validate_setup
+from srtctl.core.schema import (
+    BenchmarkConfig,
+    CpuPowerConfig,
+    ModelConfig,
+    ResourceConfig,
+    SrtConfig,
+    TelemetryConfig,
+)
 
 
 class TestValidateSetup:
@@ -74,6 +82,47 @@ class TestValidateSetup:
         """validate_setup fails when nothing has been set up."""
         with pytest.raises(SystemExit):
             validate_setup(tmp_path)
+
+    @staticmethod
+    def _setup_tree(tmp_path: Path) -> None:
+        (tmp_path / "configs").mkdir()
+        (tmp_path / "configs" / "nats-server").touch()
+        (tmp_path / "configs" / "etcd").touch()
+        (tmp_path / "bin").mkdir()
+        (tmp_path / "bin" / "uv").touch()
+        (tmp_path / "bin" / "tachometer-scraper").touch()
+
+    @staticmethod
+    def _config(cpu_power_enabled: bool) -> SrtConfig:
+        return SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="h100"),
+            benchmark=BenchmarkConfig(type="manual"),
+            telemetry=TelemetryConfig(
+                enabled=cpu_power_enabled,
+                cpu_power=CpuPowerConfig(enabled=cpu_power_enabled),
+            ),
+        )
+
+    def test_cpu_power_exporter_is_not_required_when_disabled(self, tmp_path: Path):
+        """Recipes that never scrape ACPI rails must not need the exporter."""
+        self._setup_tree(tmp_path)
+
+        validate_setup(tmp_path, self._config(cpu_power_enabled=False))
+
+    def test_cpu_power_exporter_is_required_when_enabled(self, tmp_path: Path):
+        """A recipe that enables CPU power cannot run without the exporter."""
+        self._setup_tree(tmp_path)
+
+        with pytest.raises(SystemExit):
+            validate_setup(tmp_path, self._config(cpu_power_enabled=True))
+
+    def test_cpu_power_enabled_passes_once_the_exporter_is_installed(self, tmp_path: Path):
+        self._setup_tree(tmp_path)
+        (tmp_path / "bin" / "cpu-power-exporter").touch()
+
+        validate_setup(tmp_path, self._config(cpu_power_enabled=True))
 
 
 class TestMakefileArchDetection:
