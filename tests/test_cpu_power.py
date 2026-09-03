@@ -215,11 +215,16 @@ def _worker(node, gpus, mode="agg", index=0, het_group=None):
 
 
 def _harness(tmp_path, processes, *, cpu_power=None, het=False, het_groups=None):
+    cpu_power = cpu_power or CpuPowerConfig(enabled=True, source="acpi", required=True, startup_timeout_seconds=0.2)
+
     class Harness(TelemetryStageMixin):
         def __init__(self):
             # NOTE: srun is mocked so no exporter answers; a short deadline avoids a stall per test.
             self.config = _config(
-                cpu_power or CpuPowerConfig(enabled=True, source="acpi", required=True, startup_timeout_seconds=0.2),
+                cpu_power,
+                # A DCGM exporter keeps telemetry.enabled valid when the CPU leg is off.
+                benchmark=BenchmarkConfig(type="sa-bench", concurrencies=[4], client_placement="head"),
+                dcgm_exporter=TelemetryExporterConfig(container_image="dcgm", port=9400),
                 request_timeout_seconds=0.1,
                 collector_join_timeout_seconds=3.0,
             )
