@@ -17,11 +17,13 @@ use std::fmt::Write as _;
 use std::io::ErrorKind;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::{fs, process};
+use std::sync::mpsc::{self, SyncSender};
+use std::{fs, process, thread};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::signal;
 use tokio::signal::unix::{signal as unix_signal, SignalKind};
+use tokio::sync::oneshot;
 use tokio::task::JoinSet;
 use tokio::time::{timeout, Duration};
 
@@ -39,6 +41,8 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const ACCEPT_BACKOFF_MIN: Duration = Duration::from_millis(10);
 const ACCEPT_BACKOFF_MAX: Duration = Duration::from_secs(1);
+/// A wedged sysfs read must not hold a scrape open longer than the client waits.
+const COLLECT_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_REQUEST_BYTES: usize = 8192;
 /// Backpressure, not a happy-path size: a scrape target sees ~1 request/s.
 const MAX_CONNECTIONS: usize = 64;
@@ -292,7 +296,50 @@ async fn read_request(stream: &mut TcpStream) -> Option<String> {
     timeout(READ_TIMEOUT, read_headers).await.ok()?
 }
 
-async fn handle_connection(mut stream: TcpStream, sensors: &'static [Sensor]) {
+/// A pending scrape: the collection thread renders the body and replies here.
+type CollectRequest = oneshot::Sender<String>;
+
+/// Owns every blocking hwmon read on one dedicated OS thread.
+///
+/// sysfs reads can stall indefinitely on a wedged firmware path. Doing them on
+/// a Tokio worker would take that thread out of the runtime and, with enough
+/// concurrent scrapes, stop the accept loop and the signal handlers from ever
+/// being polled. Handing them to a thread of our own keeps every async task
+/// cancellable and shutdown bounded: the thread is never joined, so a stuck
+/// read delays nothing at exit.
+struct Collector {
+    requests: SyncSender<CollectRequest>,
+}
+
+impl Collector {
+    fn spawn(sensors: &'static [Sensor]) -> &'static Collector {
+        // Bounded by the connection limit, so a backlog is refused rather than queued.
+        let (requests, inbox) = mpsc::sync_channel::<CollectRequest>(MAX_CONNECTIONS);
+        thread::Builder::new()
+            .name("hwmon-collector".to_owned())
+            .spawn(move || {
+                for reply in inbox {
+                    // The receiver is gone when the client timed out; render anyway
+                    // is wasteful, so check first.
+                    if reply.is_closed() {
+                        continue;
+                    }
+                    let _ = reply.send(build_metrics(sensors));
+                }
+            })
+            .expect("spawn hwmon collector thread");
+        Box::leak(Box::new(Collector { requests }))
+    }
+
+    /// `None` when the collector is saturated or wedged past `COLLECT_TIMEOUT`.
+    async fn snapshot(&self) -> Option<String> {
+        let (reply, answer) = oneshot::channel();
+        self.requests.try_send(reply).ok()?;
+        timeout(COLLECT_TIMEOUT, answer).await.ok()?.ok()
+    }
+}
+
+async fn handle_connection(mut stream: TcpStream, collector: &'static Collector) {
     let Some(req) = read_request(&mut stream).await else {
         return;
     };
@@ -308,12 +355,17 @@ async fn handle_connection(mut stream: TcpStream, sensors: &'static [Sensor]) {
 
     let mut extra_headers = "";
     let (status, content_type, body) = match (method, path) {
+        // /health deliberately touches no sensor: it must still answer while
+        // the collection thread is stuck on a firmware read.
         ("GET" | "HEAD", "/health") => ("200 OK", "text/plain", "ok\n".to_owned()),
-        ("GET" | "HEAD", "/metrics") => (
-            "200 OK",
-            "text/plain; version=0.0.4; charset=utf-8",
-            build_metrics(sensors),
-        ),
+        ("GET" | "HEAD", "/metrics") => match collector.snapshot().await {
+            Some(body) => ("200 OK", "text/plain; version=0.0.4; charset=utf-8", body),
+            None => (
+                "503 Service Unavailable",
+                "text/plain",
+                "sensor collection unavailable\n".to_owned(),
+            ),
+        },
         ("GET" | "HEAD", _) => ("404 Not Found", "text/plain", "Not Found\n".to_owned()),
         _ => {
             extra_headers = "Allow: GET, HEAD\r\n";
@@ -381,6 +433,7 @@ async fn main() -> Result<()> {
         tracing::debug!(sensor = %s.id, kind = s.kind, socket = %s.socket, oem_info = %s.oem_info, path = %s.path.display(), "sensor");
     }
     let sensors: &'static [Sensor] = Vec::leak(sensors);
+    let collector = Collector::spawn(sensors);
 
     let addr = SocketAddr::new(args.bind, args.port);
     let listener = TcpListener::bind(addr)
@@ -400,7 +453,7 @@ async fn main() -> Result<()> {
             // the exporter is sitting at its connection limit.
             Some(_) = conns.join_next(), if at_capacity => {}
             stream = accept(&listener, &mut backoff), if !at_capacity => {
-                conns.spawn(handle_connection(stream, sensors));
+                conns.spawn(handle_connection(stream, collector));
             }
             _ = signal::ctrl_c() => {
                 tracing::info!("received SIGINT, shutting down");
@@ -580,16 +633,7 @@ mod tests {
             &[("power1", Some("CPU Power Socket 0"), "150000000")],
         );
         let sensors: &'static [Sensor] = Vec::leak(discover_sensors(dir.path()).unwrap());
-
-        let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
-            .await
-            .unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            while let Ok((stream, _)) = listener.accept().await {
-                handle_connection(stream, sensors).await;
-            }
-        });
+        let addr = serve(Collector::spawn(sensors)).await;
 
         for (head, expected) in [
             ("GET /health HTTP/1.1\r\n", "200 OK"),
@@ -621,5 +665,48 @@ mod tests {
 
         let rejected = request(addr, "POST /metrics HTTP/1.1\r\n").await;
         assert!(rejected.contains("Allow: GET, HEAD"), "{rejected}");
+    }
+
+    /// Accepts serially, so a handler that blocked its thread would stall the next request.
+    async fn serve(collector: &'static Collector) -> SocketAddr {
+        let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                handle_connection(stream, collector).await;
+            }
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn a_wedged_collector_degrades_metrics_without_blocking_the_runtime() {
+        // A collector whose thread never answers stands in for a sysfs read
+        // stuck in the kernel: /metrics must give up, and /health must not care.
+        let (requests, inbox) = mpsc::sync_channel::<CollectRequest>(MAX_CONNECTIONS);
+        let stuck = thread::spawn(move || {
+            let held: Vec<CollectRequest> = inbox.into_iter().collect();
+            drop(held);
+        });
+        let collector: &'static Collector = Box::leak(Box::new(Collector { requests }));
+        let addr = serve(collector).await;
+
+        let metrics = tokio::time::timeout(
+            COLLECT_TIMEOUT * 2,
+            request(addr, "GET /metrics HTTP/1.1\r\n"),
+        )
+        .await
+        .expect("handler must not hold the connection open indefinitely");
+        assert!(
+            metrics.starts_with("HTTP/1.1 503 Service Unavailable"),
+            "{metrics}"
+        );
+
+        let health = request(addr, "GET /health HTTP/1.1\r\n").await;
+        assert!(health.starts_with("HTTP/1.1 200 OK"), "{health}");
+        drop(collector.requests.clone());
+        let _ = stuck;
     }
 }
