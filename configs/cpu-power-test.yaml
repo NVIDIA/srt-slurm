@@ -50,33 +50,14 @@ backend:
       disaggregation-transfer-backend: nixl
 
 benchmark:
-  type: custom
-  command: |
-    set -euo pipefail
-    server_metrics_args=()
-    if [ -n "${AIPERF_SERVER_METRICS_URLS:-}" ]; then
-      IFS=',' read -r -a urls <<< "${AIPERF_SERVER_METRICS_URLS}"
-      server_metrics_args+=(--server-metrics "${urls[@]}")
-      server_metrics_args+=(--server-metrics-formats json jsonl)
-    else
-      echo "AIPERF_SERVER_METRICS_URLS is empty: nothing would be scraped" >&2
-      exit 1
-    fi
-    python -m aiperf profile \
-      --model deepseek-ai/DeepSeek-R1 \
-      --tokenizer deepseek-ai/DeepSeek-R1 \
-      --tokenizer-trust-remote-code \
-      --url "http://${SRT_FRONTEND_HOST}:${SRT_FRONTEND_PORT}" \
-      --endpoint-type chat \
-      --streaming \
-      --synthetic-input-tokens-mean 512 \
-      --output-tokens-mean 128 \
-      --concurrency 16 \
-      --request-count 100 \
-      --extra-inputs ignore_eos:true \
-      --output-artifact-dir /logs/artifacts/cpu-power \
-      --ui none \
-      "${server_metrics_args[@]}"
+  type: "trace-replay"
+  trace_file: "/configs/cpu-power-test-trace.jsonl"
+  concurrencies: [8, 16]
+  aiperf_package: "aiperf"
+  aiperf_args:
+    request-count: 50
+    tokenizer: "/model"
+    max-tokens: 128
 
 telemetry:
   enabled: true
@@ -86,4 +67,4 @@ telemetry:
     # collected, so a node without them must fail rather than quietly skip.
     source: "acpi"
     required: true
-    prometheus_port: 9401
+    prometheus_port: 9405
