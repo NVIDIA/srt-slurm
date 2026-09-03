@@ -23,6 +23,7 @@ from srtctl.core.power.cpu_session import (
     CpuEndpoint,
     CpuPowerSessionSettings,
     CpuPowerTelemetrySession,
+    cpu_endpoint_address,
     parse_cpu_power_scrape,
 )
 from srtctl.core.processes import ProcessRegistry
@@ -1106,6 +1107,101 @@ class TestCpuPowerMeasurementSpans:
         assert per_series.publication_valid is True
         assert whole_script.publication_valid is False
         assert Reason.SAMPLE_GAP_EXCEEDED in whole_script.reason_codes
+
+
+class TestCpuPowerEndpointResolution:
+    """A node is polled at a literal address, in whichever family it has one."""
+
+    @staticmethod
+    def _addrinfo(*addresses):
+        """getaddrinfo's shape, carrying only what the resolver reads."""
+        return [
+            (socket.AF_INET6 if ":" in address else socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, 0, 0, 0))
+            for address in addresses
+        ]
+
+    def test_an_interface_address_is_used_as_is(self):
+        """The interface-aware path answers first; nothing else may override it."""
+        with (
+            patch("srtctl.core.power.cpu_session.get_hostname_ip", return_value="10.0.0.7") as resolve,
+            patch("socket.getaddrinfo", side_effect=AssertionError("must not be consulted")),
+        ):
+            assert cpu_endpoint_address("node-a", "eth0") == "10.0.0.7"
+        assert resolve.call_args.args == ("node-a", "eth0")
+
+    def test_an_ipv6_only_node_resolves_to_its_ipv6_address(self):
+        """get_hostname_ip is IPv4-only and hands such a node back its own name.
+
+        Dropping it would omit the node under `auto` and fail the allocation
+        under mandatory settings, on a cluster where the exporter is reachable.
+        """
+        with (
+            patch("srtctl.core.power.cpu_session.get_hostname_ip", return_value="node-a"),
+            patch("socket.getaddrinfo", return_value=self._addrinfo("2001:db8::1")),
+        ):
+            assert cpu_endpoint_address("node-a", "eth0") == "2001:db8::1"
+
+    def test_an_ipv6_only_node_is_polled_and_advertised_bracketed(self, tmp_path):
+        """The one address is a URL both the collector and the client can use."""
+        session = _session(tmp_path, ["node-a"], exporter_port=9401)
+        with (
+            patch("srtctl.core.power.cpu_session.get_hostname_ip", return_value="node-a"),
+            patch("socket.getaddrinfo", return_value=self._addrinfo("2001:db8::1")),
+        ):
+            session.resolve_endpoints()
+
+        assert [endpoint.url for endpoint in session.endpoints] == ["http://[2001:db8::1]:9401/metrics"]
+
+    def test_a_dual_stack_node_keeps_the_ipv4_answer(self):
+        """The fallback cannot express an interface preference, so it defers to one."""
+        with (
+            patch("srtctl.core.power.cpu_session.get_hostname_ip", return_value="node-a"),
+            patch("socket.getaddrinfo", return_value=self._addrinfo("2001:db8::1", "10.0.0.7")),
+        ):
+            assert cpu_endpoint_address("node-a", "eth0") == "10.0.0.7"
+
+    def test_a_node_with_no_address_in_any_family_is_dropped(self):
+        with (
+            patch("srtctl.core.power.cpu_session.get_hostname_ip", return_value="node-a"),
+            patch("socket.getaddrinfo", side_effect=socket.gaierror("Name or service not known")),
+        ):
+            assert cpu_endpoint_address("node-a", "eth0") is None
+
+
+class TestServerMetricsUrlHosts:
+    """Every server-metrics family spells an IPv6 host the same way."""
+
+    @staticmethod
+    def _urls(stage):
+        with patch("srtctl.cli.mixins.benchmark_stage.get_hostname_ip", return_value="2001:db8::1"):
+            env = stage._get_aiperf_server_metrics_env()
+        return env.get("AIPERF_SERVER_METRICS_URLS", "").split(",")
+
+    def test_a_vllm_frontend_brackets_its_ipv6_host(self):
+        stage = TestCpuPowerServerMetricsUrls._stage([_worker("node-a", range(4))], frontend_type="vllm")
+
+        assert "http://[2001:db8::1]:8000/metrics" in self._urls(stage)
+
+    def test_a_vllm_router_brackets_its_ipv6_hosts(self):
+        stage = TestCpuPowerServerMetricsUrls._stage([_worker("node-a", range(4))], frontend_type="vllm-router")
+
+        assert "http://[2001:db8::1]:30000/metrics" in self._urls(stage)
+
+    def test_worker_sys_ports_bracket_their_ipv6_hosts(self):
+        stage = TestCpuPowerServerMetricsUrls._stage([_worker("node-a", range(4))])
+
+        assert "http://[2001:db8::1]:8081/metrics" in self._urls(stage)
+
+    def test_every_advertised_url_parses_back_to_the_address_and_port(self):
+        """An unbracketed literal parses as host "2001" -- or not at all."""
+        from urllib.parse import urlsplit
+
+        for frontend_type in ("dynamo", "vllm", "vllm-router"):
+            stage = TestCpuPowerServerMetricsUrls._stage([_worker("node-a", range(4))], frontend_type=frontend_type)
+            for url in self._urls(stage):
+                parts = urlsplit(url)
+                assert parts.hostname == "2001:db8::1", url
+                assert parts.port is not None, url
 
 
 class TestCpuPowerServerMetricsUrls:
