@@ -137,7 +137,7 @@ class TestOrchestrator:
         assert srun.call_count == 3
         clone_call, build_call, launch_call = srun.call_args_list
         assert clone_call.kwargs["container_image"] is None
-        assert "git clone" in clone_call.kwargs["command"][-1]
+        assert "git -c http.version=HTTP/1.1 clone" in clone_call.kwargs["command"][-1]
         assert build_call.kwargs["container_image"] == "/img.sqsh"
         assert build_call.kwargs["command"] == service.build_command
         assert "cd " in build_call.kwargs["bash_preamble"]

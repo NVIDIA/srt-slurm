@@ -50,12 +50,23 @@ class AuxiliaryServiceStageMixin:
         if not checkout_root.exists():
             checkout_root.parent.mkdir(parents=True, exist_ok=True)
             self.log(f"Cloning auxiliary service {name} source: {source['git']}@{source['rev']}")
+            # env/timeout/http.version=HTTP/1.1: same guard as the real-SLURM-path
+            # clone (cli/mixins/auxiliary_stage.py) against intermittent git
+            # smart-HTTP/HTTP2 stalls seen on some clusters (NVIDIA/InferenceMAX#271).
             self._run_logged(
-                ["git", "clone", "--filter=blob:none", str(source["git"]), str(checkout_root)],
+                [
+                    "env", "GIT_TERMINAL_PROMPT=0", "timeout", "120s",
+                    "git", "-c", "http.version=HTTP/1.1", "clone", "--filter=blob:none",
+                    str(source["git"]), str(checkout_root),
+                ],
                 log_name=f"{name}.build.log",
             )
             self._run_logged(
-                ["git", "-C", str(checkout_root), "fetch", "origin", str(source["rev"])],
+                [
+                    "env", "GIT_TERMINAL_PROMPT=0", "timeout", "120s",
+                    "git", "-c", "http.version=HTTP/1.1", "-C", str(checkout_root),
+                    "fetch", "origin", str(source["rev"]),
+                ],
                 log_name=f"{name}.build.log",
             )
             self._run_logged(
