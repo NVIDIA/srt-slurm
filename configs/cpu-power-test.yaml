@@ -57,7 +57,7 @@ benchmark:
   aiperf_args:
     request-count: 50
     tokenizer: "/model"
-    extra-inputs: "max_completion_tokens:128"
+    extra-inputs: "max_tokens:128"
 
 telemetry:
   enabled: true
