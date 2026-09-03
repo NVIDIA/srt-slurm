@@ -312,6 +312,10 @@ def fetch_metrics(endpoint: CpuEndpoint, budget_seconds: float) -> tuple[str, fl
         else:
             peer = (endpoint.address, endpoint.port)
         sock.connect(peer)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(f"scrape of {endpoint.url} exceeded {budget_seconds:.2f}s")
+        sock.settimeout(remaining)
         # HTTP/1.0 with an explicit close: the body ends when the socket does,
         # so no chunked framing to unpack and no connection to reuse or leak.
         host = url_host(endpoint.address)
