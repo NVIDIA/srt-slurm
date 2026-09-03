@@ -264,6 +264,7 @@ class CpuPowerTelemetrySession:
         self._settings = settings
         self._nodes = list(nodes)
         self._endpoints: list[CpuEndpoint] = []
+        self._resolved = False
 
         self._writer_lock = threading.Lock()
         self._state_lock = threading.Lock()
@@ -346,10 +347,35 @@ class CpuPowerTelemetrySession:
         with self._state_lock:
             self._reasons.append(reason)
 
+    @property
+    def endpoints(self) -> tuple[CpuEndpoint, ...]:
+        """The exporter endpoints this session accepted, resolved exactly once.
+
+        The authoritative set for every consumer, including the
+        ``AIPERF_SERVER_METRICS_URLS`` projection. Resolving a second time
+        elsewhere would let DNS drift or stall between the two, handing the
+        benchmark client a different -- or slower to obtain -- endpoint set
+        than the one this session is actually sampling.
+        """
+        return tuple(self._endpoints)
+
+    def resolve_endpoints(self) -> tuple[CpuEndpoint, ...]:
+        """Resolve every allocated node once, under the startup timeout.
+
+        Idempotent, and safe to call before the exporters are launched: the
+        launcher needs the address family to pick a compatible bind address,
+        and readiness reuses whatever this produced.
+        """
+        if self._resolved:
+            return self.endpoints
+        self._resolved = True
+        self._resolve_endpoints(time.monotonic() + self._settings.startup_timeout_seconds)
+        return self.endpoints
+
     def start_and_wait_for_readiness(self) -> bool:
         """Resolve endpoints and start collecting under one absolute deadline."""
         deadline = time.monotonic() + self._settings.startup_timeout_seconds
-        self._resolve_endpoints(deadline)
+        self.resolve_endpoints()
         if not self._endpoints:
             return False
         # A node that never resolved is a node this session cannot cover, so in
@@ -644,8 +670,11 @@ class CpuPowerTelemetrySession:
             reasons = dedupe(self._reasons)
         # Best-effort telemetry never turns a passing benchmark into a failure,
         # but something left unreaped fails the job in either mode.
+        # `acpi_mandatory`, not `required`: naming the provider explicitly is a
+        # statement that the run needs it, and the status/readiness paths
+        # already treat it that way.
         exit_nonzero = any(reason in OPERATIONAL_FAILURE_REASONS for reason in reasons) or (
-            self._settings.required and not publication_valid
+            self._settings.acpi_mandatory and not publication_valid
         )
         return SessionOutcome(
             status=status,

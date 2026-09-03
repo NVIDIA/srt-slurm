@@ -333,13 +333,15 @@ class TelemetryStageMixin:
 
         ``source: auto`` is best-effort by definition: a cluster with no ACPI
         rails still runs the benchmark and leaves the gap in the manifest.
+        Naming ``acpi`` explicitly says the opposite -- that the run needs the
+        provider -- so it gates the workload exactly like ``required`` does.
         """
         session = getattr(self, "_cpu_power_session", None)
         if session is None:
             return False
         if getattr(self, "_cpu_power_telemetry_ready", False):
             return False
-        return self.config.telemetry.cpu_power.required
+        return self.config.telemetry.cpu_power.acpi_mandatory
 
     def finalize_power_telemetry(self, exit_code: int, *, interrupted: bool = False) -> int:
         """Finalize the power session and fold required-mode invalidity into the exit code.
