@@ -2422,6 +2422,17 @@ class SrtConfig:
                 "the two legs write their own samples and manifest"
             )
 
+    def _reject_inert_cpu_power_demand(self):
+        """Reject mandatory CPU power semantics that nothing will act on."""
+        cpu_power = self.telemetry.cpu_power
+        if cpu_power.required:
+            raise ValidationError("telemetry.cpu_power.required has no effect unless telemetry.cpu_power.enabled")
+        if cpu_power.source == "acpi":
+            raise ValidationError(
+                'telemetry.cpu_power.source: "acpi" has no effect unless telemetry.cpu_power.enabled; '
+                "it names a mandatory provider for a leg that will not run"
+            )
+
     def _validate_telemetry(self):
         """Validate telemetry config.
 
@@ -2432,11 +2443,16 @@ class SrtConfig:
         if telemetry is None or not telemetry.enabled:
             if telemetry is not None and telemetry.cpu_power.enabled:
                 raise ValidationError("telemetry.cpu_power.enabled requires telemetry.enabled")
+            if telemetry is not None:
+                # A recipe that asks for mandatory CPU power under a disabled
+                # parent believes it will get it; accepting it silently would
+                # collect nothing and still pass.
+                self._reject_inert_cpu_power_demand()
             return
         if telemetry.cpu_power.enabled:
             self._validate_cpu_power()
-        elif telemetry.cpu_power.required:
-            raise ValidationError("telemetry.cpu_power.required has no effect unless telemetry.cpu_power.enabled")
+        else:
+            self._reject_inert_cpu_power_demand()
         if telemetry.dcgm_exporter is not None:
             self._validate_dcgm_power()
         elif not telemetry.cpu_power.enabled:
