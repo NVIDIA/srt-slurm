@@ -227,7 +227,7 @@ class PowerTelemetrySession:
                 return None
             return (node, ip) if ip else None
 
-        results, _ = _run_daemon_workers(
+        results, _ = run_daemon_workers(
             [(f"PowerResolve-{node}", resolve, node) for node in self._nodes],
             deadline=deadline,
         )
@@ -275,7 +275,7 @@ class PowerTelemetrySession:
 
         # NOTE: requests applies its timeout to connect and read separately, so an endpoint can take 2x.
         deadline = time.monotonic() + 2 * self._settings.request_timeout_seconds + COLLECT_CYCLE_TIMEOUT_GRACE_SECONDS
-        results, failures = _run_daemon_workers(
+        results, failures = run_daemon_workers(
             [
                 (f"PowerScrape-{endpoint.hostname}", lambda endpoint: self._poll(endpoint, scrape_seq), endpoint)
                 for endpoint in endpoints
@@ -546,12 +546,14 @@ def _exporter_identity(settings: PowerSessionSettings) -> DcgmExporterIdentity:
     )
 
 
-def _run_daemon_workers(
+def run_daemon_workers(
     jobs: Sequence[tuple[str, Callable[[Any], Any], Any]],
     *,
     deadline: float,
 ) -> tuple[tuple[Any, ...], tuple[BaseException, ...]]:
     """Run each job on its own daemon thread and abandon stragglers at ``deadline``.
+
+    Shared with the host CPU collector, which needs the same guarantee.
 
     Daemon threads mean neither a stuck HTTP request nor a slow resolver can
     keep interpreter exit alive past the caller's absolute deadline. Worker

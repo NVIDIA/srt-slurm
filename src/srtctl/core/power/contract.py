@@ -54,6 +54,8 @@ class Reason:
     ENDPOINT_PARSE_ERROR = "endpoint_parse_error"
     ENDPOINT_RESOLUTION_FAILED = "endpoint_resolution_failed"
     POWER_METRIC_MISSING = "power_metric_missing"
+    CPU_POWER_METRIC_MISSING = "cpu_power_metric_missing"
+    CPU_SENSOR_MISSING = "cpu_sensor_missing"
     DUPLICATE_POWER_METRIC = "duplicate_power_metric"
     SAMPLES_CSV_MISSING = "samples_csv_missing"
     SAMPLES_CSV_HEADER_MISMATCH = "samples_csv_header_mismatch"
