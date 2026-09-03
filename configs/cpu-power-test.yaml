@@ -1,0 +1,57 @@
+name: "cpu-power-exporter-test"
+
+model:
+  path: "/lustre/share/core_dlfw_ci/models/deepseek-r1-fp4"
+  container: "/lustre/fsw/coreai_comparch_inferencex/yangminl/containers/lmsysorg+sglang+nightly-dev-20260818-c0b6474b.sqsh"
+  precision: "fp4"
+
+dynamo:
+  wheel: "1.4.0"
+
+resources:
+  gpu_type: "gb200"
+  prefill_nodes: 1
+  decode_nodes: 1
+  prefill_workers: 1
+  decode_workers: 1
+  gpus_per_node: 4
+
+backend:
+  prefill_environment:
+    TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: "1800"
+  decode_environment:
+    TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: "1800"
+  sglang_config:
+    prefill:
+      served-model-name: "deepseek-ai/DeepSeek-R1"
+      trust-remote-code: true
+      quantization: "modelopt_fp4"
+      disaggregation-mode: "prefill"
+      mem-fraction-static: 0.88
+      tensor-parallel-size: 4
+      disaggregation-bootstrap-port: 30001
+      disaggregation-transfer-backend: nixl
+    decode:
+      served-model-name: "deepseek-ai/DeepSeek-R1"
+      trust-remote-code: true
+      quantization: "modelopt_fp4"
+      disaggregation-mode: "decode"
+      mem-fraction-static: 0.88
+      tensor-parallel-size: 4
+      disaggregation-bootstrap-port: 30001
+      disaggregation-transfer-backend: nixl
+
+benchmark:
+  type: "sa-bench"
+  isl: 512
+  osl: 128
+  concurrencies: [8, 16]
+  req_rate: "inf"
+  num_requests: 100
+
+telemetry:
+  enabled: true
+  cpu_power:
+    enabled: true
+    source: "acpi"
+    prometheus_port: 9401

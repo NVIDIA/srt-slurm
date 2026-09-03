@@ -1,0 +1,23 @@
+[package]
+name = "cpu-power-exporter"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+# Not `tokio.workspace = true`: the workspace default is `features = ["full"]`,
+# and this binary ships as a standalone release asset. The trim only holds when
+# the crate is built on its own (`--bin cpu-power-exporter`), which is what
+# docker/Dockerfile.cpu-power-exporter and `make cpu-power-exporter` do.
+tokio = { version = "1.0", features = ["rt-multi-thread", "macros", "net", "io-util", "signal", "time"] }
+clap = { workspace = true }
+anyhow.workspace = true
+tracing.workspace = true
+# No `env-filter`: it pulls regex back in via `matchers`, and its default
+# directive is ERROR, which silences every startup log unless RUST_LOG is set.
+# Without it `fmt::init()` still honours RUST_LOG but defaults to INFO.
+tracing-subscriber = { workspace = true, features = ["fmt"] }
+
+[dev-dependencies]
+tempfile = "3"

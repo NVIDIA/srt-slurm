@@ -1,10 +1,11 @@
-.PHONY: lint test test-cov ci check setup cleanup gb200-fp8 gb200-fp4 tachometer-scraper tachometer-scraper-download
+.PHONY: lint test test-cov ci check setup cleanup gb200-fp8 gb200-fp4 tachometer-scraper tachometer-scraper-download cpu-power-exporter cpu-power-exporter-download
 
 NATS_VERSION ?= v2.10.28
 ETCD_VERSION ?= v3.5.21
 LOGS_DIR ?= logs
 ARCH ?= $(shell uname -m)
 TACHOMETER_RELEASE ?= latest
+CPU_POWER_EXPORTER_RELEASE ?= latest
 
 default:
 	./run_dashboard.sh
@@ -28,6 +29,35 @@ check: lint test
 tachometer-scraper:
 	cargo build --release --locked --bin tachometer-scraper
 	install -Dm755 target/release/tachometer-scraper bin/tachometer-scraper
+
+cpu-power-exporter:
+	cargo build --release --locked --bin cpu-power-exporter
+	install -Dm755 target/release/cpu-power-exporter bin/cpu-power-exporter
+
+cpu-power-exporter-download:
+	@set -eu; \
+	case "$(ARCH)" in \
+		x86_64)  asset="cpu-power-exporter-x86_64-unknown-linux-musl"; file_pattern="x86-64" ;; \
+		aarch64) asset="cpu-power-exporter-aarch64-unknown-linux-musl"; file_pattern="aarch64" ;; \
+		*) echo "Unsupported architecture: $(ARCH)"; exit 1 ;; \
+	esac; \
+	if [ -f bin/cpu-power-exporter ] && file bin/cpu-power-exporter | grep -q "$$file_pattern"; then \
+		echo "cpu-power-exporter already installed at bin/cpu-power-exporter ($(ARCH))"; \
+		exit 0; \
+	fi; \
+	if [ "$(CPU_POWER_EXPORTER_RELEASE)" = "latest" ]; then \
+		base_url="https://github.com/NVIDIA/srt-slurm/releases/latest/download"; \
+	else \
+		base_url="https://github.com/NVIDIA/srt-slurm/releases/download/$(CPU_POWER_EXPORTER_RELEASE)"; \
+	fi; \
+	tmp_dir=$$(mktemp -d); \
+	trap 'rm -rf "$$tmp_dir"' EXIT; \
+	echo "Downloading $$asset from srt-slurm $(CPU_POWER_EXPORTER_RELEASE)"; \
+	curl --fail --location --retry 3 --retry-delay 2 "$$base_url/$$asset" --output "$$tmp_dir/$$asset"; \
+	curl --fail --location --retry 3 --retry-delay 2 "$$base_url/$$asset.sha256" --output "$$tmp_dir/$$asset.sha256"; \
+	(cd "$$tmp_dir" && sha256sum --check "$$asset.sha256"); \
+	install -Dm755 "$$tmp_dir/$$asset" bin/cpu-power-exporter; \
+	echo "Installed cpu-power-exporter at bin/cpu-power-exporter"
 
 tachometer-scraper-download:
 	@set -eu; \
@@ -70,7 +100,7 @@ gb200-fp4:
 	srtctl apply -f recipes/gb200-fp4/8k1k/max-tpt.yaml
 	srtctl apply -f recipes/gb200-fp4/8k1k/mid-curve.yaml
 
-setup: tachometer-scraper-download
+setup: tachometer-scraper-download cpu-power-exporter-download
 	@echo "📦 Setting up configs and logs directories..."
 	@mkdir -p logs
 	@echo "🖥️  Using architecture: $(ARCH)"

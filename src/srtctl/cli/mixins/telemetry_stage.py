@@ -149,8 +149,8 @@ class TelemetryStageMixin:
             return None
 
         exporter_config = telemetry.dcgm_exporter
-        if exporter_config is None:  # guaranteed by schema validation
-            raise ValueError("telemetry.dcgm_exporter is required when telemetry is enabled")
+        if exporter_config is None:
+            return None
 
         worker_nodes = sorted({process.node for process in self.backend_processes})
         power_dir = self.runtime.log_dir / telemetry.storage_subdir
@@ -212,6 +212,141 @@ class TelemetryStageMixin:
             logger.warning("Power collector did not reach readiness within %.1fs", telemetry.startup_timeout_seconds)
         return session
 
+    def start_cpu_power_telemetry(self, registry: ProcessRegistry) -> CpuPowerTelemetrySession | None:
+        """Start one host CPU-power collector per allocated worker node."""
+        telemetry = self.config.telemetry
+        cpu_power = getattr(telemetry, "cpu_power", None)
+        if not telemetry.enabled or cpu_power is None or cpu_power.enabled is not True:
+            return None
+
+        worker_nodes = sorted({process.node for process in self.backend_processes})
+        cpu_dir = self.runtime.log_dir / telemetry.storage_subdir / "cpu"
+        session = CpuPowerTelemetrySession(
+            CpuPowerSessionSettings(
+                cpu_dir=cpu_dir,
+                job_id=self.runtime.job_id,
+                run_name=self.runtime.run_name,
+                nodes=tuple(worker_nodes),
+                source=cpu_power.source,
+                sample_interval_seconds=cpu_power.sample_interval_seconds,
+                startup_timeout_seconds=cpu_power.startup_timeout_seconds,
+                required=cpu_power.required,
+                producer_git_commit=read_producer_commit(),
+            )
+        )
+        self._cpu_power_session = session
+        self._cpu_power_telemetry_ready = False
+        session.initialize()
+
+        if self.runtime.nodes.het:
+            groups: dict[int, list[str]] = {}
+            for node in worker_nodes:
+                group_id = self.runtime.nodes.het_group_for(node)
+                if group_id is None:
+                    raise RuntimeError(f"node {node!r} not in any het component")
+                groups.setdefault(group_id, []).append(node)
+            chunks = sorted(groups.items())
+        else:
+            chunks = [(-1, worker_nodes)]
+
+        command = [
+            sys.executable,
+            "-m",
+            "srtctl.core.cpu_power",
+            "--output-dir",
+            str(session.samples_dir),
+            "--ready-dir",
+            str(session.ready_dir),
+            "--source",
+            cpu_power.source,
+            "--interval-seconds",
+            str(cpu_power.sample_interval_seconds),
+        ]
+        try:
+            for group_id, nodes in chunks:
+                suffix = "" if len(chunks) == 1 else f".g{group_id}"
+                log_file = self.runtime.log_dir / f"telemetry_cpu_power{suffix}.%N.out"
+                proc = start_srun_process(
+                    command=command,
+                    nodes=len(nodes),
+                    ntasks=len(nodes),
+                    nodelist=nodes,
+                    output=str(log_file),
+                    srun_options=self.runtime.srun_options,
+                    het_group=group_id if group_id >= 0 else None,
+                    use_bash_wrapper=False,
+                )
+                process = ManagedProcess(
+                    name="telemetry_cpu_power" if len(chunks) == 1 else f"telemetry_cpu_power_g{group_id}",
+                    popen=proc,
+                    log_file=log_file,
+                    node=",".join(nodes),
+                    critical=False,
+                )
+                registry.add_process(process)
+                session.add_process(process)
+        except Exception:
+            logger.exception("CPU power collector launch failed")
+            return session
+
+        self._cpu_power_telemetry_ready = session.wait_for_readiness()
+        if not self._cpu_power_telemetry_ready:
+            logger.warning("CPU power collectors did not become ready on every worker node")
+        else:
+            logger.info("CPU power telemetry ready (artifacts under %s)", cpu_dir)
+
+        if cpu_power.prometheus_port > 0:
+            self._start_cpu_power_prometheus_exporters(registry, worker_nodes, cpu_power.prometheus_port)
+
+        return session
+
+    def _start_cpu_power_prometheus_exporters(
+        self, registry: ProcessRegistry, worker_nodes: list[str], port: int
+    ) -> None:
+        """Launch cpu-power-exporter on each worker node for AIPerf server-metrics scraping."""
+        exporter_command = [
+            self._resolve_bundled_binary("cpu-power-exporter"),
+            "--port",
+            str(port),
+        ]
+        if self.runtime.nodes.het:
+            groups: dict[int, list[str]] = {}
+            for node in worker_nodes:
+                group_id = self.runtime.nodes.het_group_for(node)
+                if group_id is None:
+                    raise RuntimeError(f"node {node!r} not in any het component")
+                groups.setdefault(group_id, []).append(node)
+            chunks = sorted(groups.items())
+        else:
+            chunks = [(-1, worker_nodes)]
+
+        for group_id, nodes in chunks:
+            suffix = "" if len(chunks) == 1 else f".g{group_id}"
+            log_file = self.runtime.log_dir / f"telemetry_cpu_power_prom{suffix}.%N.out"
+            try:
+                proc = start_srun_process(
+                    command=exporter_command,
+                    nodes=len(nodes),
+                    ntasks=len(nodes),
+                    nodelist=nodes,
+                    output=str(log_file),
+                    srun_options=self.runtime.srun_options,
+                    het_group=group_id if group_id >= 0 else None,
+                    use_bash_wrapper=False,
+                )
+                name = "telemetry_cpu_power_prom" if len(chunks) == 1 else f"telemetry_cpu_power_prom_g{group_id}"
+                registry.add_process(
+                    ManagedProcess(
+                        name=name,
+                        popen=proc,
+                        log_file=log_file,
+                        node=",".join(nodes),
+                        critical=False,
+                    )
+                )
+            except Exception:
+                logger.exception("CPU power Prometheus exporter launch failed on group %s", group_id)
+
     def power_telemetry_blocks_benchmark(self) -> bool:
         """Whether required-mode telemetry failed startup and must skip the workload.
 
@@ -265,25 +400,53 @@ class TelemetryStageMixin:
             return 1
         return exit_code
 
-    def _resolve_tachometer_binary(self, binary_path: str) -> str:
-        """Resolve the default bare binary name against the checkout's bin/.
+    def finalize_cpu_power_telemetry(self, exit_code: int, *, interrupted: bool = False) -> int:
+        """Stop host collectors, aggregate node CSVs, and apply required-mode policy."""
+        session = getattr(self, "_cpu_power_session", None)
+        if session is None:
+            return exit_code
+        try:
+            outcome = session.stop_and_finalize(interrupted=interrupted)
+        except Exception:
+            logger.exception("CPU power telemetry finalization failed")
+            return 1
+        logger.info(
+            "CPU power telemetry: status=%s publication_valid=%s reasons=%s",
+            outcome.status,
+            outcome.publication_valid,
+            ",".join(outcome.reason_codes) or "none",
+        )
+        if outcome.exit_nonzero and exit_code == 0:
+            logger.error("telemetry.cpu_power.required is set and CPU power artifacts are not publishable")
+            return 1
+        return exit_code
 
-        An explicit ``binary_path`` is always respected verbatim. The default
-        bare name used to rely on ``$PATH`` inside the srun step, while
-        ``make setup`` installs the binary to ``<srtctl_root>/bin/`` — the
-        same place ``validate_setup`` checks and the --bash lifecycle uses.
+    def _resolve_bundled_binary(self, name: str) -> str:
+        """Resolve a bare binary name against the checkout's ``bin/``.
+
+        ``make setup`` installs the released binaries to ``<srtctl_root>/bin/``
+        — the same place ``validate_setup`` checks and the --bash lifecycle
+        uses. Falling back to the bare name keeps ``$PATH`` working for ad-hoc
+        installs inside the srun step.
         """
-        if binary_path != "tachometer-scraper":
-            return binary_path
         candidates = []
         source_dir = os.environ.get("SRTCTL_SOURCE_DIR")
         if source_dir:
-            candidates.append(Path(source_dir) / "bin" / binary_path)
-        candidates.append(Path(__file__).resolve().parents[4] / "bin" / binary_path)
+            candidates.append(Path(source_dir) / "bin" / name)
+        candidates.append(Path(__file__).resolve().parents[4] / "bin" / name)
         for candidate in candidates:
             if candidate.is_file() and os.access(candidate, os.X_OK):
                 return str(candidate)
-        return binary_path
+        return name
+
+    def _resolve_tachometer_binary(self, binary_path: str) -> str:
+        """Resolve the default bare binary name against the checkout's bin/.
+
+        An explicit ``binary_path`` is always respected verbatim.
+        """
+        if binary_path != "tachometer-scraper":
+            return binary_path
+        return self._resolve_bundled_binary(binary_path)
 
     def start_tachometer(self) -> list[ManagedProcess]:
         """Start Tachometer collection (follows ``observability.enabled``)."""

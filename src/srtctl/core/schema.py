@@ -1189,6 +1189,22 @@ class ObservabilityConfig:
 
 
 @dataclass(frozen=True)
+class CpuPowerConfig:
+    """Host CPU-power collection alongside the DCGM GPU power artifact."""
+
+    enabled: bool = False
+    source: Literal["auto", "acpi", "dcgm"] = "auto"
+    sample_interval_seconds: float = 0.1
+    startup_timeout_seconds: float = 30.0
+    required: bool = False
+    # When > 0, also launch the cpu-power-exporter binary on each worker node so
+    # AIPerf can scrape ACPI power rails via --server-metrics / AIPERF_SERVER_METRICS_URLS.
+    prometheus_port: int = 9401
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
 class TelemetryConfig:
     """DCGM power telemetry for benchmark measurement windows."""
 
@@ -2318,11 +2334,12 @@ class SrtConfig:
             )
 
     def _validate_telemetry(self):
-        """Validate DCGM power telemetry."""
+        """Validate telemetry config."""
         telemetry = self.telemetry
         if telemetry is None or not telemetry.enabled:
             return
-        self._validate_dcgm_power()
+        if telemetry.dcgm_exporter is not None:
+            self._validate_dcgm_power()
 
     @classmethod
     def from_yaml(cls, yaml_path: Path) -> "SrtConfig":

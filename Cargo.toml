@@ -2,6 +2,7 @@
 members = [
     "src/tachometer/tachometer-writer",
     "src/tachometer/tachometer-scraper",
+    "src/cpu-power-exporter",
 ]
 resolver = "2"
 
@@ -27,6 +28,8 @@ url = "2.5"
 object_store = { version = "0.12", features = ["aws", "fs"] }
 log = "0.4"
 env_logger = "0.11"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
 futures = "0.3"
 
 [profile.release]
