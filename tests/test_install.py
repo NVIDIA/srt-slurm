@@ -259,10 +259,11 @@ def test_import_container_allows_non_nvcr_without_credentials(tmp_path: Path):
 # ----------------------------- slurm sbatch builder -------------------
 
 
-def _make_spec(name: str = "glm5") -> _MIS:
+def _make_spec(name: str = "glm5", hf_revision: str | None = None) -> _MIS:
     return _MIS(
         name=name,
         hf_repo_id="nvidia/GLM-5-NVFP4",
+        hf_revision=hf_revision,
         model_alias="nvidia/GLM5-NVFP4",
         container_image="nvcr.io/test/img:1.0",
         default_recipe="recipes/test/x.yaml",
@@ -276,6 +277,8 @@ def test_build_sbatch_script_uses_cluster_config():
         "default_account": "my_account",
         "default_partition": "gpu_partition",
         "default_time_limit": "06:00:00",
+        "gpus_per_node": 4,
+        "use_gpus_per_node_directive": True,
         "use_exclusive_sbatch_directive": True,
     }
     script = build_sbatch_script(
@@ -289,6 +292,7 @@ def test_build_sbatch_script_uses_cluster_config():
     assert "#SBATCH --account=my_account" in script
     assert "#SBATCH --partition=gpu_partition" in script
     assert "#SBATCH --time=06:00:00" in script
+    assert "#SBATCH --gpus-per-node=4" in script
     assert "#SBATCH --exclusive" in script
     assert '#SBATCH --job-name="srtctl-install-glm5"' in script
     # Inline format: model + container + alias-register all live in this single script.
@@ -314,6 +318,24 @@ def test_build_sbatch_script_uses_cluster_config():
             raise AssertionError(f"sbatch script invokes srtctl as a command: {line!r}")
     # Activates the user-supplied venv path.
     assert 'source "/repo/.venv/bin/activate"' in script
+
+
+def test_build_sbatch_script_pins_hf_revision():
+    cluster = {
+        "default_account": "a",
+        "default_partition": "p",
+        "default_time_limit": "01:00:00",
+    }
+    revision = "4f96cc5eec29dcee5d6ded54f7ffe889438f9516"
+    script = build_sbatch_script(
+        spec=_make_spec(hf_revision=revision),
+        srtctl_root=Path("/repo"),
+        install_base=Path("/repo/install"),
+        log_path=Path("/repo/install/install_glm5_%j.log"),
+        venv_path=Path("/repo/.venv"),
+        cluster_config=cluster,
+    )
+    assert f"revision='{revision}'" in script
 
 
 def test_build_sbatch_script_omits_exclusive_when_false():
@@ -427,6 +449,7 @@ def test_resolve_spec_requires_explicit_fields():
     args = SimpleNamespace(
         model="glm5",
         hf_repo_id=None,
+        hf_revision=None,
         model_alias=None,
         container_image=None,
         strict_auth_preflight=False,
@@ -441,6 +464,7 @@ def test_resolve_spec_supports_generic_model():
     args = SimpleNamespace(
         model="my-model",
         hf_repo_id="org/repo",
+        hf_revision="4f96cc5eec29dcee5d6ded54f7ffe889438f9516",
         model_alias="org/repo-alias",
         container_image="docker.io/org/image:1.0",
         strict_auth_preflight=False,
@@ -448,6 +472,7 @@ def test_resolve_spec_supports_generic_model():
     spec = _resolve_spec(args)
     assert spec.name == "my-model"
     assert spec.hf_repo_id == "org/repo"
+    assert spec.hf_revision == "4f96cc5eec29dcee5d6ded54f7ffe889438f9516"
     assert spec.model_alias == "org/repo-alias"
     assert spec.container_image == "docker.io/org/image:1.0"
 
@@ -458,6 +483,7 @@ def test_resolve_spec_rejects_unsafe_values():
     args = SimpleNamespace(
         model="my-model",
         hf_repo_id="org/repo",
+        hf_revision=None,
         model_alias="bad\"alias",
         container_image="docker.io/org/image:1.0",
         strict_auth_preflight=False,

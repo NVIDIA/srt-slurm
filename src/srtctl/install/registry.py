@@ -45,6 +45,9 @@ class ModelInstallSpec:
 
     description: str = ""
 
+    hf_revision: str | None = None
+    """Optional Hugging Face revision passed to ``snapshot_download`` (prefer a commit SHA)."""
+
 
 REGISTRY: dict[str, ModelInstallSpec] = {
     "glm5": ModelInstallSpec(
