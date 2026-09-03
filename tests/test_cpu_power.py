@@ -663,7 +663,6 @@ class TestCpuPowerScrapeBudget:
 
     def test_a_trickling_exporter_is_cut_off_at_the_budget(self, tmp_path):
         server = self._trickling_server()
-        self.addfinalizer = None
         try:
             session = _session(tmp_path, ["node-a"], request_timeout_seconds=0.2)
             endpoint = CpuEndpoint(hostname="node-a", url=f"http://127.0.0.1:{server.server_address[1]}/metrics")
