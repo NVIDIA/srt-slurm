@@ -406,9 +406,7 @@ class CpuPowerTelemetrySession:
         # run lasts. The total budget below is what actually ends the scrape.
         hard_stop = time.monotonic() + 2 * self._settings.request_timeout_seconds
         try:
-            with requests.get(
-                endpoint.url, timeout=self._settings.request_timeout_seconds, stream=True
-            ) as response:
+            with requests.get(endpoint.url, timeout=self._settings.request_timeout_seconds, stream=True) as response:
                 response.raise_for_status()
                 chunks: list[bytes] = []
                 size = 0
