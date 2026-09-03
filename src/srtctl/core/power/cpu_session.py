@@ -173,20 +173,60 @@ def cpu_endpoint_address(node: str, network_interface: str | None = None) -> str
     without a literal address is omitted rather than handed to a client that
     would spend the run on DNS failures. The address is returned bare;
     :class:`CpuEndpoint` brackets IPv6 where a URL needs it.
+
+    That path is IPv4-only, all the way down to the ``inet``-filtered interface
+    query it runs on the node, so an IPv6-only node comes back as its own name
+    and would be dropped -- silently under ``auto``, and as a failed allocation
+    under mandatory settings. Such a node falls back to family-neutral name
+    resolution, which is consulted second precisely because it cannot express
+    the interface preference the first path honors: a node with an IPv4 address
+    on the requested interface still gets that address.
     """
     try:
         ip = get_hostname_ip(node, network_interface)
     except Exception as exc:  # noqa: BLE001 - an unresolvable node is a caller's reason code
         logger.warning("CPU power endpoint resolution failed for %s: %s", node, exc)
-        return None
-    if not ip:
+        ip = ""
+    address = _literal_address(ip)
+    if address is None:
+        address = _resolve_any_family(node)
+    if address is None:
+        logger.warning("CPU power endpoint for %s resolved to no literal address", node)
+    return address
+
+
+def _literal_address(value: str | None) -> str | None:
+    """``value`` when it is already an IP address, else ``None``."""
+    if not value:
         return None
     try:
-        ipaddress.ip_address(ip)
+        ipaddress.ip_address(value)
     except ValueError:
-        logger.warning("CPU power endpoint for %s resolved to %r, not an address", node, ip)
         return None
-    return ip
+    return value
+
+
+def _resolve_any_family(node: str) -> str | None:
+    """A literal address for ``node`` in whichever family its name publishes.
+
+    IPv4 first, so this never changes the answer for a dual-stack node that the
+    interface-aware path simply failed to reach; IPv6 is what it is here for.
+    """
+    try:
+        infos = socket.getaddrinfo(node, None, type=socket.SOCK_STREAM)
+    except OSError as exc:
+        logger.warning("CPU power endpoint name resolution failed for %s: %s", node, exc)
+        return None
+    for family in (socket.AF_INET, socket.AF_INET6):
+        for info in infos:
+            if info[0] != family:
+                continue
+            # A link-local address arrives with its scope ("fe80::1%eth0"), which
+            # is not an address a client on another node could use.
+            address = _literal_address(str(info[4][0]))
+            if address is not None:
+                return address
+    return None
 
 
 def parse_cpu_power_scrape(text: str) -> tuple[tuple[CpuPowerReading, ...], tuple[str, ...]]:
