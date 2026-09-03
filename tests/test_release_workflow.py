@@ -1,0 +1,194 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Tests for release carry-forward and the optional cpu-power-exporter download.
+
+The carry-forward and publish guards live in shell inside
+``.github/workflows/release.yaml``. The tests below lift those exact scripts out
+of the workflow and run them against a stub ``gh``, so the behaviour under test
+is the one that actually ships.
+"""
+
+import os
+import shutil
+import stat
+import subprocess
+from pathlib import Path
+
+import pytest
+import yaml
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release.yaml"
+
+TACHOMETER_ASSETS = [
+    "tachometer-scraper-x86_64-unknown-linux-gnu",
+    "tachometer-scraper-aarch64-unknown-linux-gnu",
+]
+CPU_ASSETS = [
+    "cpu-power-exporter-x86_64-unknown-linux-musl",
+    "cpu-power-exporter-aarch64-unknown-linux-musl",
+]
+
+
+def _complete(assets: list[str]) -> list[str]:
+    return [name for asset in assets for name in (asset, f"{asset}.sha256")]
+
+
+def _step_script(step_name: str) -> str:
+    """The `run:` body of a named step in the release job."""
+    workflow = yaml.safe_load(WORKFLOW.read_text())
+    for step in workflow["jobs"]["release"]["steps"]:
+        if step.get("name") == step_name:
+            return step["run"]
+    raise AssertionError(f"no step named {step_name!r} in {WORKFLOW}")
+
+
+def _stub_gh(bin_dir: Path, previous: str, assets: list[str]) -> None:
+    """A `gh` that reports one previous release holding `assets`.
+
+    An empty `previous` means no release exists; `assets` of `["<fail>"]` makes
+    `gh release view` fail the way a transient API error would.
+    """
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    stub = bin_dir / "gh"
+    stub.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os, sys\n"
+        f"previous = {previous!r}\n"
+        f"assets = {assets!r}\n"
+        "argv = sys.argv[1:]\n"
+        "if argv[:2] == ['release', 'list']:\n"
+        "    print(previous) if previous else None\n"
+        "elif argv[:2] == ['release', 'view']:\n"
+        "    if assets == ['<fail>']:\n"
+        "        sys.exit(1)\n"
+        "    print('\\n'.join(assets))\n"
+        "elif argv[:2] == ['release', 'download']:\n"
+        "    prefix = argv[argv.index('--pattern') + 1].rstrip('*')\n"
+        "    dest = argv[argv.index('--dir') + 1]\n"
+        "    os.makedirs(dest, exist_ok=True)\n"
+        "    for name in assets:\n"
+        "        if name.startswith(prefix):\n"
+        "            open(os.path.join(dest, name), 'w').close()\n"
+        "elif argv[:2] == ['release', 'create']:\n"
+        "    pass\n"
+        "else:\n"
+        "    sys.exit('unexpected gh invocation: ' + ' '.join(argv))\n"
+    )
+    stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+
+
+def _run(script: str, cwd: Path, env: dict[str, str]) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-c", script],
+        cwd=cwd,
+        env={**os.environ, **env, "PATH": f"{cwd / 'stub-bin'}:{os.environ['PATH']}"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+class TestCarryForward:
+    """The previous release must hold the whole set, or none of it."""
+
+    SCRIPT_NAME = "Carry forward unchanged binaries from the previous release"
+
+    def _carry(self, tmp_path: Path, assets: list[str], previous: str = "v1.2.3"):
+        _stub_gh(tmp_path / "stub-bin", previous, assets)
+        return _run(
+            _step_script(self.SCRIPT_NAME),
+            tmp_path,
+            {"TACHOMETER_CHANGED": "true", "CPU_POWER_EXPORTER_CHANGED": "false"},
+        )
+
+    def test_a_complete_previous_set_is_carried_forward(self, tmp_path: Path):
+        result = self._carry(tmp_path, _complete(TACHOMETER_ASSETS) + _complete(CPU_ASSETS))
+        assert result.returncode == 0, result.stderr
+        for name in _complete(CPU_ASSETS):
+            assert (tmp_path / "dist" / name).exists(), f"{name} was not carried forward"
+
+    def test_a_partial_previous_set_fails_the_release(self, tmp_path: Path):
+        # The x86_64 half is intact; aarch64 lost its binary and checksum.
+        result = self._carry(tmp_path, _complete(CPU_ASSETS)[:2])
+        assert result.returncode != 0
+        assert "missing cpu-power-exporter assets" in result.stdout
+
+    def test_a_previous_set_missing_only_a_checksum_fails_the_release(self, tmp_path: Path):
+        result = self._carry(tmp_path, _complete(CPU_ASSETS)[:-1])
+        assert result.returncode != 0
+        assert "cpu-power-exporter-aarch64-unknown-linux-musl.sha256" in result.stdout
+
+    def test_a_binary_the_previous_release_never_had_is_only_a_warning(self, tmp_path: Path):
+        result = self._carry(tmp_path, _complete(TACHOMETER_ASSETS))
+        assert result.returncode == 0, result.stderr
+        assert "::warning::Previous release v1.2.3 has no cpu-power-exporter assets" in result.stdout
+        assert not (tmp_path / "dist").glob("cpu-power-exporter-*")
+
+    def test_the_first_release_has_nothing_to_carry(self, tmp_path: Path):
+        result = self._carry(tmp_path, [], previous="")
+        assert result.returncode == 0, result.stderr
+        assert "No previous release to carry cpu-power-exporter forward from" in result.stdout
+
+    def test_an_api_failure_is_not_treated_as_an_absent_binary(self, tmp_path: Path):
+        result = self._carry(tmp_path, ["<fail>"])
+        assert result.returncode != 0
+        assert "Could not list assets of previous release" in result.stdout
+
+
+class TestPublishGuard:
+    """A release ships a binary for both architectures or not at all."""
+
+    SCRIPT_NAME = "Create release"
+
+    def _publish(self, tmp_path: Path, dist: list[str]):
+        _stub_gh(tmp_path / "stub-bin", "v1.2.3", [])
+        (tmp_path / "dist").mkdir()
+        for name in dist:
+            (tmp_path / "dist" / name).touch()
+        return _run(_step_script(self.SCRIPT_NAME), tmp_path, {"TAG": "v1.2.4", "TARGET": "abc123"})
+
+    def test_a_complete_set_publishes(self, tmp_path: Path):
+        result = self._publish(tmp_path, _complete(TACHOMETER_ASSETS) + _complete(CPU_ASSETS))
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_one_architecture_alone_does_not_publish(self, tmp_path: Path):
+        result = self._publish(tmp_path, _complete(TACHOMETER_ASSETS) + _complete(CPU_ASSETS)[:2])
+        assert result.returncode != 0
+        assert "would ship an incomplete cpu-power-exporter set" in result.stdout
+
+    def test_a_binary_absent_from_the_release_entirely_publishes(self, tmp_path: Path):
+        result = self._publish(tmp_path, _complete(TACHOMETER_ASSETS))
+        assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.skipif(shutil.which("make") is None, reason="make is not installed")
+class TestOptionalExporterDownload:
+    """cpu-power-exporter is optional, so setup must not die when it is absent."""
+
+    @staticmethod
+    def _make(target: str, tmp_path: Path) -> subprocess.CompletedProcess:
+        # A curl that always fails stands in for a release without the asset.
+        stub_bin = tmp_path / "stub-bin"
+        stub_bin.mkdir()
+        curl = stub_bin / "curl"
+        curl.write_text("#!/bin/sh\nexit 22\n")
+        curl.chmod(curl.stat().st_mode | stat.S_IEXEC)
+        return subprocess.run(
+            ["make", target, "CPU_POWER_EXPORTER_RELEASE=v0.0.0-absent", "ARCH=x86_64"],
+            cwd=REPO_ROOT,
+            env={**os.environ, "PATH": f"{stub_bin}:{os.environ['PATH']}"},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_setup_warns_instead_of_failing(self, tmp_path: Path):
+        result = self._make("cpu-power-exporter-setup", tmp_path)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "cpu-power-exporter unavailable" in result.stdout
+
+    def test_an_explicit_download_still_fails(self, tmp_path: Path):
+        result = self._make("cpu-power-exporter-download", tmp_path)
+        assert result.returncode != 0
