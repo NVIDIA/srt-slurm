@@ -1020,7 +1020,7 @@ class TestCpuPowerMeasurementSpans:
             "schema_version": 1,
             "benchmark_type": "sa-bench",
             "result_path": f"results/{name}.json",
-            "concurrency": 4,
+            "concurrency": int(name.removeprefix("c")),
             "benchmark_start_time_unix": start,
             "benchmark_end_time_unix": end,
             "duration": duration,
