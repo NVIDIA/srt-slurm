@@ -108,6 +108,28 @@ class TestExpandTemplate:
 class TestGenerateSweepConfigs:
     """Tests for generate_sweep_configs function."""
 
+    @staticmethod
+    def _vllm_config(sweep: dict, aggregated: dict) -> dict:
+        return {
+            "name": "vllm-sweep",
+            "model": {
+                "path": "model",
+                "container": "container.sqsh",
+                "precision": "fp8",
+            },
+            "resources": {
+                "gpu_type": "h100",
+                "gpus_per_node": 8,
+                "agg_nodes": 1,
+                "agg_workers": 1,
+            },
+            "backend": {
+                "type": "vllm",
+                "vllm_config": {"aggregated": aggregated},
+            },
+            "sweep": sweep,
+        }
+
     def test_missing_sweep_section_raises(self):
         """Test that missing sweep section raises ValueError."""
         config = {"name": "test", "model": {}}
@@ -287,3 +309,95 @@ class TestGenerateSweepConfigs:
 
         assert prefill1["mem-fraction-static"] == "0.85"
         assert prefill2["mem-fraction-static"] == "0.9"
+
+    def test_vllm_sweep_filters_parallelism_larger_than_worker(self):
+        """TP/PP variants larger than the worker allocation are omitted."""
+        config = self._vllm_config(
+            sweep={"tp": [1, 2, 4, 8], "pp": [1, 2, 4, 8]},
+            aggregated={
+                "tensor-parallel-size": "{tp}",
+                "pipeline-parallel-size": "{pp}",
+            },
+        )
+
+        results = generate_sweep_configs(config)
+        params = [result[1] for result in results]
+
+        assert len(results) == 10
+        assert {"tp": 4, "pp": 2} in params
+        assert {"tp": 8, "pp": 8} not in params
+        assert all(item["tp"] * item["pp"] <= 8 for item in params)
+
+    def test_vllm_sweep_preserves_valid_combined_dp_topologies(self):
+        """DP/TP combinations matching the endpoint world size are retained."""
+        config = self._vllm_config(
+            sweep={"tp": [1, 2, 4, 8], "dp": [1, 2, 4, 8]},
+            aggregated={
+                "tensor-parallel-size": "{tp}",
+                "data-parallel-size": "{dp}",
+            },
+        )
+
+        results = generate_sweep_configs(config)
+        params = [result[1] for result in results]
+
+        assert {"tp": 4, "dp": 2} in params
+        assert {"tp": 8, "dp": 8} not in params
+        assert all(item["tp"] * item["dp"] <= 8 for item in params)
+        assert all(item["dp"] == 1 or item["tp"] * item["dp"] == 8 for item in params)
+
+    def test_vllm_router_filters_before_eager_topology_validation(self):
+        """An oversized router variant does not abort the valid variants."""
+        config = self._vllm_config(
+            sweep={"dp": [8, 16]},
+            aggregated={
+                "tensor-parallel-size": 1,
+                "data-parallel-size": "{dp}",
+            },
+        )
+        config["frontend"] = {"type": "vllm-router"}
+
+        results = generate_sweep_configs(config)
+
+        assert [result[1] for result in results] == [{"dp": 8}]
+
+    def test_non_vllm_sweep_keeps_cartesian_product(self):
+        """Backend-specific vLLM filtering does not change SGLang sweeps."""
+        config = {
+            "name": "sglang-sweep",
+            "model": {
+                "path": "model",
+                "container": "container.sqsh",
+                "precision": "fp8",
+            },
+            "resources": {
+                "gpu_type": "h100",
+                "gpus_per_node": 8,
+                "agg_nodes": 1,
+                "agg_workers": 1,
+            },
+            "backend": {
+                "type": "sglang",
+                "sglang_config": {
+                    "aggregated": {
+                        "tp-size": "{tp}",
+                        "dp-size": "{dp}",
+                    }
+                },
+            },
+            "sweep": {"tp": [4, 8], "dp": [4, 8]},
+        }
+
+        results = generate_sweep_configs(config)
+
+        assert len(results) == 4
+
+    def test_vllm_sweep_raises_when_all_topologies_are_invalid(self):
+        """An entirely incompatible sweep fails instead of submitting no jobs."""
+        config = self._vllm_config(
+            sweep={"tp": [16, 32]},
+            aggregated={"tensor-parallel-size": "{tp}"},
+        )
+
+        with pytest.raises(ValueError, match="no runnable configurations"):
+            generate_sweep_configs(config)
