@@ -482,6 +482,8 @@ def validate_setup(srtctl_source: Path) -> None:
         missing.append("bin/uv (compute-arch uv)")
     if not (srtctl_source / "bin" / "tachometer-scraper").exists():
         missing.append("bin/tachometer-scraper (compute-arch Tachometer scraper)")
+    if not (srtctl_source / "bin" / "cpu-power-exporter").exists():
+        missing.append("bin/cpu-power-exporter (compute-arch ACPI CPU power exporter)")
 
     if missing:
         console.print(f"\n[red bold]ERROR:[/] Required binaries not found in {srtctl_source}:")
