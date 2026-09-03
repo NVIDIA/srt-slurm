@@ -30,7 +30,7 @@ use std::fmt::Write as _;
 use std::io::ErrorKind;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::{fs, process};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -56,6 +56,10 @@ const ACCEPT_BACKOFF_MAX: Duration = Duration::from_secs(1);
 const MAX_REQUEST_BYTES: usize = 8192;
 /// Backpressure, not a happy-path size: a scrape target sees ~1 request/s.
 const MAX_CONNECTIONS: usize = 64;
+/// How often the background thread re-reads ACPI sysfs sensors.
+/// Each read blocks ~150 ms waiting for firmware; 6 sensors × 150 ms = ~900 ms,
+/// so a 1 s interval keeps the cache fresh without falling behind.
+const ACPI_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(clap::ValueEnum, Clone, Debug, Default)]
 enum SourceMode {
@@ -114,7 +118,9 @@ struct Candidate {
 /// Live state shared across connection handlers.
 #[derive(Clone)]
 enum MetricsState {
-    Acpi(&'static [Sensor]),
+    /// Pre-rendered Prometheus text, refreshed every `ACPI_POLL_INTERVAL` by a
+    /// background OS thread.  Scrapes read from this cache and return instantly.
+    Acpi(Arc<RwLock<String>>),
     Dcgm(Arc<Mutex<dcgm::DcgmReader>>),
 }
 
@@ -375,7 +381,7 @@ async fn handle_connection(mut stream: TcpStream, state: MetricsState) {
         ("GET" | "HEAD", "/health") => ("200 OK", "text/plain", "ok\n".to_owned()),
         ("GET" | "HEAD", "/metrics") => {
             let body = match &state {
-                MetricsState::Acpi(sensors) => build_metrics(sensors),
+                MetricsState::Acpi(cache) => cache.read().unwrap().clone(),
                 MetricsState::Dcgm(reader) => build_metrics_dcgm(reader),
             };
             ("200 OK", "text/plain; version=0.0.4; charset=utf-8", body)
@@ -448,7 +454,7 @@ fn init_metrics_state(args: &Args) -> Result<MetricsState> {
     }
 
     if want_acpi {
-        let sensors = discover_sensors(&args.hwmon_root)?;
+        let sensors: &'static [Sensor] = Vec::leak(discover_sensors(&args.hwmon_root)?);
         if sensors.is_empty() {
             anyhow::bail!(
                 "no ACPI power_meter hwmon sensors found under {}",
@@ -456,14 +462,31 @@ fn init_metrics_state(args: &Args) -> Result<MetricsState> {
             );
         }
         tracing::info!(count = sensors.len(), "discovered ACPI sensors");
-        for s in &sensors {
+        for s in sensors {
             tracing::debug!(
                 sensor = %s.id, kind = s.kind,
                 socket = %s.socket, oem_info = %s.oem_info,
                 path = %s.path.display(), "sensor"
             );
         }
-        return Ok(MetricsState::Acpi(Vec::leak(sensors)));
+
+        // Seed the cache synchronously so the first scrape after startup is not empty.
+        let initial = build_metrics(sensors);
+        let cache = Arc::new(RwLock::new(initial));
+        let cache_bg = Arc::clone(&cache);
+
+        // Background OS thread: re-reads all sensors every ACPI_POLL_INTERVAL so
+        // HTTP scrapes serve cached data and return in <1 ms.
+        std::thread::Builder::new()
+            .name("acpi-poller".to_owned())
+            .spawn(move || loop {
+                std::thread::sleep(ACPI_POLL_INTERVAL);
+                let snapshot = build_metrics(sensors);
+                *cache_bg.write().unwrap() = snapshot;
+            })
+            .context("spawn acpi-poller thread")?;
+
+        return Ok(MetricsState::Acpi(cache));
     }
 
     unreachable!("one of want_dcgm or want_acpi must be true");
@@ -677,7 +700,7 @@ mod tests {
             &[("power1", Some("CPU Power Socket 0"), "150000000")],
         );
         let sensors: &'static [Sensor] = Vec::leak(discover_sensors(dir.path()).unwrap());
-        let state = MetricsState::Acpi(sensors);
+        let state = MetricsState::Acpi(Arc::new(RwLock::new(build_metrics(sensors))));
 
         let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
             .await
