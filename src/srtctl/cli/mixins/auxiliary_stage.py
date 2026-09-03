@@ -89,21 +89,26 @@ class AuxiliaryServiceStageMixin:
             return None
         checkout_root = self.runtime.log_dir / "auxiliary_services" / service.name / "src"
         clone_log = self.runtime.log_dir / f"auxiliary_{service.name}.clone.out"
-        # -c http.version=HTTP/1.1, GIT_TERMINAL_PROMPT=0, and the timeout guard
-        # against the same intermittent git smart-HTTP/HTTP2 stalls seen on this
-        # cluster's login host (NVIDIA/InferenceMAX#271, fixed there for the
-        # launcher's own srt-slurm clone) -- compute nodes hit the same failure
-        # mode (exit 128) cloning arbitrary auxiliary_services sources.
+        # -c http.version=HTTP/1.1 and GIT_TERMINAL_PROMPT=0 guard against the same
+        # intermittent git smart-HTTP/HTTP2 stalls seen on this cluster's login host
+        # (NVIDIA/InferenceMAX#271, fixed there for the launcher's own srt-slurm
+        # clone) -- compute nodes hit the same failure mode (exit 128) cloning
+        # arbitrary auxiliary_services sources.
+        #
+        # 600s (not 120s): confirmed live that 120s was too tight for the working-tree
+        # checkout, not a network stall -- "Clone succeeded, but checkout failed" at
+        # 82% (4583/5588 files) against ai-dynamo/dynamo, exit 124. Writing thousands
+        # of small files to the /logs bind mount is just slow; give it real headroom.
         clone_script = (
             f"set -e; mkdir -p {shlex.quote(str(checkout_root.parent))}; "
             f"if [ ! -d {shlex.quote(str(checkout_root))} ]; then "
-            f"GIT_TERMINAL_PROMPT=0 timeout 120s "
+            f"GIT_TERMINAL_PROMPT=0 timeout 600s "
             f"git -c http.version=HTTP/1.1 clone --filter=blob:none "
             f"{shlex.quote(source.git)} {shlex.quote(str(checkout_root))} && "
-            f"GIT_TERMINAL_PROMPT=0 timeout 120s "
+            f"GIT_TERMINAL_PROMPT=0 timeout 600s "
             f"git -c http.version=HTTP/1.1 -C {shlex.quote(str(checkout_root))} "
             f"fetch origin {shlex.quote(source.rev)} && "
-            f"GIT_TERMINAL_PROMPT=0 timeout 120s "
+            f"GIT_TERMINAL_PROMPT=0 timeout 600s "
             f"git -c http.version=HTTP/1.1 -C {shlex.quote(str(checkout_root))} checkout FETCH_HEAD; "
             "fi"
         )
