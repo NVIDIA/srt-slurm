@@ -1,0 +1,52 @@
+# syntax=docker/dockerfile:1
+
+FROM --platform=$BUILDPLATFORM rust:1.90-slim-bookworm AS builder
+
+ARG TARGETARCH
+
+WORKDIR /app
+
+# musl-tools supplies x86_64-musl-gcc for the amd64 target.
+# arm64 uses the GNU cross-toolchain to link a musl target; it is not ideal
+# but works for fully Rust-native crates with no cc build-scripts.
+RUN apt-get update \
+    && if [ "$TARGETARCH" = "arm64" ]; then \
+        apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu; \
+    else \
+        apt-get install -y --no-install-recommends musl-tools; \
+    fi \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY rust-toolchain.toml ./
+COPY Cargo.toml Cargo.lock ./
+COPY src/tachometer/tachometer-writer/Cargo.toml src/tachometer/tachometer-writer/Cargo.toml
+COPY src/tachometer/tachometer-scraper/Cargo.toml src/tachometer/tachometer-scraper/Cargo.toml
+COPY src/cpu-power-exporter/Cargo.toml src/cpu-power-exporter/Cargo.toml
+# Empty sibling sources satisfy the workspace without compiling them.
+RUN mkdir -p src/tachometer/tachometer-writer/src src/tachometer/tachometer-scraper/src \
+    && echo 'pub fn stub(){}' > src/tachometer/tachometer-writer/src/lib.rs \
+    && echo 'fn main(){}' > src/tachometer/tachometer-scraper/src/main.rs
+
+COPY src/cpu-power-exporter/src src/cpu-power-exporter/src
+
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+        rustup target add aarch64-unknown-linux-musl; \
+    else \
+        rustup target add x86_64-unknown-linux-musl; \
+    fi
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target,id=cpu-power-target-$TARGETARCH,sharing=locked \
+    if [ "$TARGETARCH" = "arm64" ]; then \
+        export CC_aarch64_unknown_linux_musl=aarch64-linux-gnu-gcc \
+        && export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc \
+        && cargo build --release --locked --bin cpu-power-exporter --target aarch64-unknown-linux-musl \
+        && cp target/aarch64-unknown-linux-musl/release/cpu-power-exporter /cpu-power-exporter; \
+    else \
+        cargo build --release --locked --bin cpu-power-exporter --target x86_64-unknown-linux-musl \
+        && cp target/x86_64-unknown-linux-musl/release/cpu-power-exporter /cpu-power-exporter; \
+    fi
+
+FROM scratch AS artifact
+COPY --from=builder /cpu-power-exporter /cpu-power-exporter
