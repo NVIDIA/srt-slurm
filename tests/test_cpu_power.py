@@ -201,6 +201,12 @@ class TestCpuPowerSchema:
         with pytest.raises(ValidationError, match="must differ"):
             _config(CpuPowerConfig(enabled=True, storage_subdir="power"), storage_subdir="power")
 
+    @pytest.mark.parametrize("subdir", ["/abs", "../escape", "a/../../b", ""])
+    def test_cpu_only_telemetry_storage_subdir_must_stay_below_the_log_dir(self, subdir):
+        """CPU measurement windows are still read from the parent telemetry directory."""
+        with pytest.raises(ValidationError, match="telemetry.storage_subdir"):
+            _config(CpuPowerConfig(enabled=True), storage_subdir=subdir)
+
 
 def _scrape(*lines: str) -> str:
     header = "# HELP cpu_power_acpi_watts Host CPU rail power.\n# TYPE cpu_power_acpi_watts gauge\n"
