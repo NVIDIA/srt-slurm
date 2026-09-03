@@ -19,7 +19,7 @@ from srtctl.cli.mixins.telemetry_stage import TelemetryStageMixin
 from srtctl.core.power.contract import MANIFEST_FILENAME, SAMPLES_FILENAME, WINDOWS_DIRNAME, Reason
 from srtctl.core.power.manifest import ExpectedWindow
 from srtctl.core.power.samples import read_samples
-from srtctl.core.power.session import PowerEndpoint, PowerSessionSettings, PowerTelemetrySession, _run_daemon_workers
+from srtctl.core.power.session import PowerEndpoint, PowerSessionSettings, PowerTelemetrySession, run_daemon_workers
 from srtctl.core.power.topology import build_expected_devices
 from srtctl.core.processes import ManagedProcess, ProcessRegistry
 from srtctl.core.schema import TelemetryExporterConfig
@@ -187,7 +187,7 @@ class TestDaemonWorkers:
         def fail(_value):
             raise RuntimeError("worker failed")
 
-        results, failures = _run_daemon_workers(
+        results, failures = run_daemon_workers(
             [("success", succeed, 2), ("failure", fail, None)],
             deadline=time.monotonic() + 1,
         )
@@ -208,7 +208,7 @@ class TestDaemonWorkers:
                 raise RuntimeError("late failure")
             return "late"
 
-        results, failures = _run_daemon_workers(
+        results, failures = run_daemon_workers(
             [("late-worker", finish_late, None)],
             deadline=time.monotonic() + 0.01,
         )
