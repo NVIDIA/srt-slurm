@@ -1,3 +1,11 @@
+# Exercises the ACPI CPU power leg end to end on Grace hardware:
+# cpu-power-exporter on every worker node, the head-node collector writing
+# logs/<run>/cpu_power/{samples.csv,manifest.json}, and AIPerf consuming the
+# same endpoints via --server-metrics.
+#
+# benchmark.type must be one that actually reads AIPERF_SERVER_METRICS_URLS.
+# sa-bench does not, so it would launch the exporters with no consumer and
+# prove nothing about the AIPerf integration.
 name: "cpu-power-exporter-test"
 
 model:
@@ -42,16 +50,40 @@ backend:
       disaggregation-transfer-backend: nixl
 
 benchmark:
-  type: "sa-bench"
-  isl: 512
-  osl: 128
-  concurrencies: [8, 16]
-  req_rate: "inf"
-  num_requests: 100
+  type: custom
+  command: |
+    set -euo pipefail
+    server_metrics_args=()
+    if [ -n "${AIPERF_SERVER_METRICS_URLS:-}" ]; then
+      IFS=',' read -r -a urls <<< "${AIPERF_SERVER_METRICS_URLS}"
+      server_metrics_args+=(--server-metrics "${urls[@]}")
+      server_metrics_args+=(--server-metrics-formats json jsonl)
+    else
+      echo "AIPERF_SERVER_METRICS_URLS is empty: nothing would be scraped" >&2
+      exit 1
+    fi
+    python -m aiperf profile \
+      --model deepseek-ai/DeepSeek-R1 \
+      --tokenizer deepseek-ai/DeepSeek-R1 \
+      --tokenizer-trust-remote-code \
+      --url "http://${SRT_FRONTEND_HOST}:${SRT_FRONTEND_PORT}" \
+      --endpoint-type chat \
+      --streaming \
+      --synthetic-input-tokens-mean 512 \
+      --output-tokens-mean 128 \
+      --concurrency 16 \
+      --request-count 100 \
+      --extra-inputs ignore_eos:true \
+      --output-artifact-dir /logs/artifacts/cpu-power \
+      --ui none \
+      "${server_metrics_args[@]}"
 
 telemetry:
   enabled: true
   cpu_power:
     enabled: true
+    # ACPI is mandatory here: the point of the recipe is to prove the rails are
+    # collected, so a node without them must fail rather than quietly skip.
     source: "acpi"
+    required: true
     prometheus_port: 9401

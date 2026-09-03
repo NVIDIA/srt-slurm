@@ -34,6 +34,10 @@ cpu-power-exporter:
 	cargo build --release --locked --bin cpu-power-exporter
 	install -Dm755 target/release/cpu-power-exporter bin/cpu-power-exporter
 
+# bin/.cpu-power-exporter.release records which tag is installed, so pinning
+# CPU_POWER_EXPORTER_RELEASE to a different tag re-downloads (upgrade or
+# downgrade) instead of keeping whatever happens to be on disk. "latest" has
+# no stable identity to compare against, so it keeps an existing binary.
 cpu-power-exporter-download:
 	@set -eu; \
 	case "$(ARCH)" in \
@@ -41,8 +45,11 @@ cpu-power-exporter-download:
 		aarch64) asset="cpu-power-exporter-aarch64-unknown-linux-musl"; file_pattern="aarch64" ;; \
 		*) echo "Unsupported architecture: $(ARCH)"; exit 1 ;; \
 	esac; \
-	if [ -f bin/cpu-power-exporter ] && file bin/cpu-power-exporter | grep -q "$$file_pattern"; then \
-		echo "cpu-power-exporter already installed at bin/cpu-power-exporter ($(ARCH))"; \
+	marker=bin/.cpu-power-exporter.release; \
+	installed=$$(cat "$$marker" 2>/dev/null || echo ""); \
+	if [ -f bin/cpu-power-exporter ] && file bin/cpu-power-exporter | grep -q "$$file_pattern" \
+		&& { [ "$(CPU_POWER_EXPORTER_RELEASE)" = "latest" ] || [ "$$installed" = "$(CPU_POWER_EXPORTER_RELEASE)" ]; }; then \
+		echo "cpu-power-exporter $$installed already installed at bin/cpu-power-exporter ($(ARCH))"; \
 		exit 0; \
 	fi; \
 	if [ "$(CPU_POWER_EXPORTER_RELEASE)" = "latest" ]; then \
@@ -57,7 +64,8 @@ cpu-power-exporter-download:
 	curl --fail --location --retry 3 --retry-delay 2 "$$base_url/$$asset.sha256" --output "$$tmp_dir/$$asset.sha256"; \
 	(cd "$$tmp_dir" && sha256sum --check "$$asset.sha256"); \
 	install -Dm755 "$$tmp_dir/$$asset" bin/cpu-power-exporter; \
-	echo "Installed cpu-power-exporter at bin/cpu-power-exporter"
+	printf '%s' "$(CPU_POWER_EXPORTER_RELEASE)" > "$$marker"; \
+	echo "Installed cpu-power-exporter $(CPU_POWER_EXPORTER_RELEASE) at bin/cpu-power-exporter"
 
 tachometer-scraper-download:
 	@set -eu; \
