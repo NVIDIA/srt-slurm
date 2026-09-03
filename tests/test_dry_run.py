@@ -6,6 +6,7 @@
 import os
 import tempfile
 from pathlib import Path
+from typing import ClassVar
 from unittest.mock import patch
 
 import yaml
@@ -620,11 +621,11 @@ class TestDryRunTelemetry:
     exporter that has to be installed on every worker host.
     """
 
-    CPU_ONLY = {
+    CPU_ONLY: ClassVar[dict] = {
         "telemetry": {"enabled": True, "cpu_power": {"enabled": True, "required": True, "source": "acpi"}}
     }
     # The DCGM leg only runs under sa-bench, which owns the measurement windows.
-    DCGM_ONLY = {
+    DCGM_ONLY: ClassVar[dict] = {
         "benchmark": {"type": "sa-bench", "concurrencies": [1, 2]},
         "telemetry": {
             "enabled": True,
