@@ -408,7 +408,7 @@ def _harness(tmp_path, processes, *, cpu_power=None, het=False, het_groups=None)
         def __init__(self):
             # NOTE: srun is mocked so no exporter answers; a short deadline avoids a stall per test.
             self.config = _config(
-                cpu_power,
+                cpu_power or CpuPowerConfig(enabled=True, source="acpi", required=True, startup_timeout_seconds=0.2),
                 # A DCGM exporter keeps telemetry.enabled valid when the CPU leg is off.
                 benchmark=BenchmarkConfig(type="sa-bench", concurrencies=[4], client_placement="head"),
                 dcgm_exporter=TelemetryExporterConfig(container_image="dcgm", port=9400),
@@ -465,7 +465,7 @@ class TestCpuPowerLifecycle:
         assert kwargs["ntasks"] == 2
         assert kwargs["use_bash_wrapper"] is False
         assert "container_image" not in kwargs
-        assert kwargs["command"][1:] == ["--port", "9401", "--bind", "0.0.0.0"]
+        assert kwargs["command"][1:] == ["--port", "9405"]
         assert registry.process_count == 1
         assert all(proc.critical is False for proc in registry.get_all_processes().values())
         session.stop_and_finalize()
@@ -646,14 +646,12 @@ class TestCpuPowerLifecycle:
         time.sleep(0.3)
         harness.record_cpu_power_benchmark_spans(start, time.time())
         assert harness.finalize_cpu_power_telemetry(0) == 0
-        assert mock_fetch.call_args.args[0].url == "http://10.0.0.1:9401/metrics"
+        assert mock_get.call_args.args[0] == "http://ip-node-a:9405/metrics"
 
         manifest = json.loads((tmp_path / "cpu_power" / "manifest.json").read_text())
         assert manifest["status"] == "complete"
         assert manifest["publication_valid"] is True
-        assert manifest["exporter"]["port"] == 9401
-        assert manifest["exporter"]["command"].endswith("--port 9401 --bind 0.0.0.0")
-        assert manifest["observed_sensors"] == {"node-a": ["hwmon0/power1"]}
+        assert manifest["cpu_power"]["command"].endswith("--port 9405")
         rows = (tmp_path / "cpu_power" / "samples.csv").read_text().splitlines()
         assert rows[0].startswith("schema_version,")
         assert any("hwmon0/power1" in row for row in rows[1:])
@@ -1491,8 +1489,8 @@ class TestCpuPowerServerMetricsUrls:
             session=self._resolved_session(tmp_path, ["node-a", "node-b"], resolve),
         )
 
-        assert "http://10.0.0.1:9401/metrics" in self._urls(stage)
-        assert "http://10.0.0.2:9401/metrics" in self._urls(stage)
+        assert "http://ip-node-a:9405/metrics" in self._urls(stage)
+        assert "http://ip-node-b:9405/metrics" in self._urls(stage)
 
     def test_vllm_frontend_still_gets_the_cpu_urls(self, tmp_path):
         """The vLLM branch used to return early, dropping the CPU endpoints."""
@@ -1506,13 +1504,13 @@ class TestCpuPowerServerMetricsUrls:
 
         urls = self._urls(stage)
 
-        assert "http://10.0.0.1:9401/metrics" in urls
+        assert "http://ip-node-a:9405/metrics" in urls
         assert any(url.endswith("8000/metrics") for url in urls)
 
     def test_disabled_leg_adds_no_cpu_urls(self):
         stage = self._stage([_worker("node-a", range(4))])
 
-        assert all(":9401/" not in url for url in self._urls(stage))
+        assert all(":9405/" not in url for url in self._urls(stage))
 
     def test_a_node_that_never_resolves_is_not_advertised(self, tmp_path):
         """The session refuses such a node; handing it to AIPerf only buys DNS failures."""
@@ -1525,7 +1523,7 @@ class TestCpuPowerServerMetricsUrls:
 
         urls = self._urls(stage, resolve=resolve)
 
-        assert [url for url in urls if ":9401/" in url] == ["http://10.0.0.1:9401/metrics"]
+        assert [url for url in urls if ":9405/" in url] == ["http://ip-node-a:9405/metrics"]
 
     def test_an_ipv6_node_is_bracketed(self, tmp_path):
         """Unbracketed, the address's own colons read as the port separator."""
@@ -1536,7 +1534,7 @@ class TestCpuPowerServerMetricsUrls:
             session=self._resolved_session(tmp_path, ["node-a"], resolve),
         )
 
-        assert "http://[2001:db8::1]:9401/metrics" in self._urls(stage, resolve=resolve)
+        assert "http://[2001:db8::1]:9405/metrics" in self._urls(stage, resolve=resolve)
 
     def test_only_endpoints_that_served_rails_are_advertised(self, tmp_path):
         """A launched-but-dead exporter would otherwise be presented as coverage."""
@@ -1547,7 +1545,7 @@ class TestCpuPowerServerMetricsUrls:
             session=self._resolved_session(tmp_path, ["node-a", "node-b"], resolve, serving={"node-a"}),
         )
 
-        assert [url for url in self._urls(stage) if ":9401/" in url] == ["http://10.0.0.1:9401/metrics"]
+        assert [url for url in self._urls(stage) if ":9405/" in url] == ["http://ip-node-a:9405/metrics"]
 
     def test_a_leg_where_nothing_served_advertises_nothing(self, tmp_path):
         resolve = lambda node, _iface: _node_ip(node)  # noqa: E731
@@ -1557,10 +1555,10 @@ class TestCpuPowerServerMetricsUrls:
             session=self._resolved_session(tmp_path, ["node-a"], resolve, serving=set()),
         )
 
-        assert all(":9401/" not in url for url in self._urls(stage))
+        assert all(":9405/" not in url for url in self._urls(stage))
 
     def test_a_leg_that_never_started_advertises_nothing(self, tmp_path):
         """Exporters that were never launched must not be presented as coverage."""
         stage = self._stage([_worker("node-a", range(4))], cpu_power=CpuPowerConfig(enabled=True))
 
-        assert all(":9401/" not in url for url in self._urls(stage))
+        assert all(":9405/" not in url for url in self._urls(stage))

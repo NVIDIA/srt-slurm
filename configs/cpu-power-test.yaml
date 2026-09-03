@@ -6,12 +6,14 @@
 # benchmark.type must be one that actually reads AIPERF_SERVER_METRICS_URLS.
 # sa-bench does not, so it would launch the exporters with no consumer and
 # prove nothing about the AIPerf integration.
+#
+# Qwen3.5-27B BF16 (not FP4) keeps startup under 2 min by avoiding the
+# 8-minute fp4_gemm JIT autotuning pass that DeepSeek-R1 FP4 requires.
 name: "cpu-power-exporter-test"
 
 model:
-  path: "/lustre/share/core_dlfw_ci/models/deepseek-r1-fp4"
+  path: "/lustre/share/core_dlfw_ci/models/Qwen3.5-27B"
   container: "/lustre/fsw/coreai_comparch_inferencex/yangminl/containers/lmsysorg+sglang+nightly-dev-20260818-c0b6474b.sqsh"
-  precision: "fp4"
 
 dynamo:
   wheel: "1.4.0"
@@ -31,18 +33,16 @@ backend:
     TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: "1800"
   sglang_config:
     prefill:
-      served-model-name: "deepseek-ai/DeepSeek-R1"
+      served-model-name: "Qwen/Qwen3.5-27B"
       trust-remote-code: true
-      quantization: "modelopt_fp4"
       disaggregation-mode: "prefill"
       mem-fraction-static: 0.88
       tensor-parallel-size: 4
       disaggregation-bootstrap-port: 30001
       disaggregation-transfer-backend: nixl
     decode:
-      served-model-name: "deepseek-ai/DeepSeek-R1"
+      served-model-name: "Qwen/Qwen3.5-27B"
       trust-remote-code: true
-      quantization: "modelopt_fp4"
       disaggregation-mode: "decode"
       mem-fraction-static: 0.88
       tensor-parallel-size: 4

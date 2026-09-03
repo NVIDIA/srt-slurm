@@ -1,14 +1,27 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Minimal Prometheus exporter for Grace CPU power via ACPI hwmon.
+//! Grace CPU power exporter for Prometheus / AIPerf server-metrics.
 //!
-//! Reads /sys/class/hwmon/hwmon*/power*_average, exposes:
-//!   cpu_power_acpi_watts{sensor, type, socket, oem_info, source}
+//! Two back-ends are supported and selected via `--source`:
+//!
+//! - `acpi` (default fallback): reads `/sys/class/hwmon/hwmon*/power*_average` and
+//!   exposes `cpu_power_acpi_watts{sensor,type,socket,oem_info,source="acpi"}`.
+//!   Firmware-averaged; available without DCGM.
+//!
+//! - `dcgm`: reads DCGM field 1130 (`DCGM_FI_DEV_CPU_POWER_WATTS`) via the DCGM
+//!   C API and exposes `cpu_power_dcgm_watts{socket,source="dcgm"}`.
+//!   Instantaneous; requires `libdcgm.so` and a system running the DCGM embedded
+//!   host engine.
+//!
+//! - `auto` (default): tries DCGM first; falls back to ACPI if `libdcgm.so` is
+//!   absent or no CPU entities are found.
 //!
 //! Endpoints:
 //!   GET /metrics  — Prometheus text format
 //!   GET /health   — "ok\n"
+
+mod dcgm;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -17,8 +30,8 @@ use std::fmt::Write as _;
 use std::io::ErrorKind;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, SyncSender};
-use std::{fs, process, thread};
+use std::sync::{Arc, Mutex, RwLock};
+use std::{fs, process};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::signal;
@@ -46,6 +59,18 @@ const COLLECT_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_REQUEST_BYTES: usize = 8192;
 /// Backpressure, not a happy-path size: a scrape target sees ~1 request/s.
 const MAX_CONNECTIONS: usize = 64;
+/// How often the background thread re-reads ACPI sysfs sensors.
+/// Each read blocks ~150 ms waiting for firmware; 6 sensors × 150 ms = ~900 ms,
+/// so a 1 s interval keeps the cache fresh without falling behind.
+const ACPI_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+#[derive(clap::ValueEnum, Clone, Debug, Default)]
+enum SourceMode {
+    Acpi,
+    Dcgm,
+    #[default]
+    Auto,
+}
 
 #[derive(Parser)]
 #[command(
@@ -54,7 +79,7 @@ const MAX_CONNECTIONS: usize = 64;
 )]
 struct Args {
     /// TCP port to listen on.
-    #[arg(long, default_value_t = 9401)]
+    #[arg(long, default_value_t = 9405)]
     port: u16,
 
     /// Address to bind.
@@ -64,6 +89,13 @@ struct Args {
     /// Root of hwmon sysfs (override for testing).
     #[arg(long, default_value = "/sys/class/hwmon")]
     hwmon_root: PathBuf,
+
+    /// Power reading back-end.
+    ///
+    /// `auto` tries DCGM first and falls back to ACPI when libdcgm.so is
+    /// absent or reports no CPU entities.
+    #[arg(long, default_value = "auto")]
+    source: SourceMode,
 }
 
 struct Sensor {
@@ -84,6 +116,15 @@ struct Candidate {
     node: String,
     chan: String,
     oem_info: Option<String>,
+}
+
+/// Live state shared across connection handlers.
+#[derive(Clone)]
+enum MetricsState {
+    /// Pre-rendered Prometheus text, refreshed every `ACPI_POLL_INTERVAL` by a
+    /// background OS thread.  Scrapes read from this cache and return instantly.
+    Acpi(Arc<RwLock<String>>),
+    Dcgm(Arc<Mutex<dcgm::DcgmReader>>),
 }
 
 fn read_text(p: &Path) -> Option<String> {
@@ -235,7 +276,7 @@ fn discover_sensors(hwmon_root: &Path) -> Result<Vec<Sensor>> {
         .collect())
 }
 
-fn read_watts(path: &Path) -> Option<f64> {
+fn read_acpi_watts(path: &Path) -> Option<f64> {
     let raw = read_text(path)?;
     let microwatts: f64 = raw.parse().ok()?;
     let watts = microwatts / 1_000_000.0;
@@ -252,7 +293,7 @@ fn build_metrics(sensors: &[Sensor]) -> String {
          # TYPE cpu_power_acpi_watts gauge\n",
     );
     for s in sensors {
-        match read_watts(&s.path) {
+        match read_acpi_watts(&s.path) {
             Some(watts) => {
                 let _ = writeln!(
                     out,
@@ -266,6 +307,34 @@ fn build_metrics(sensors: &[Sensor]) -> String {
                 tracing::debug!(path = %s.path.display(), "unreadable channel; skipping sample")
             }
         }
+    }
+    out
+}
+
+fn build_metrics_dcgm(reader: &Arc<Mutex<dcgm::DcgmReader>>) -> String {
+    let mut out = String::from(
+        "# HELP cpu_power_dcgm_watts Grace CPU instantaneous power via DCGM field 1130 (W).\n\
+         # TYPE cpu_power_dcgm_watts gauge\n",
+    );
+    match reader.lock() {
+        Err(_) => {
+            tracing::error!("DCGM reader mutex poisoned; skipping scrape");
+        }
+        Ok(mut r) => match r.read_watts() {
+            Err(e) => tracing::warn!(error = %e, "DCGM read failed; skipping scrape"),
+            Ok(readings) => {
+                for (cpu_id, watts) in readings {
+                    if let Some(w) = watts {
+                        let _ = writeln!(
+                            out,
+                            "cpu_power_dcgm_watts{{socket=\"{cpu_id}\",source=\"dcgm\"}} {w:.6}",
+                        );
+                    } else {
+                        tracing::debug!(cpu_id, "no DCGM sample for entity; skipping");
+                    }
+                }
+            }
+        },
     }
     out
 }
@@ -296,50 +365,7 @@ async fn read_request(stream: &mut TcpStream) -> Option<String> {
     timeout(READ_TIMEOUT, read_headers).await.ok()?
 }
 
-/// A pending scrape: the collection thread renders the body and replies here.
-type CollectRequest = oneshot::Sender<String>;
-
-/// Owns every blocking hwmon read on one dedicated OS thread.
-///
-/// sysfs reads can stall indefinitely on a wedged firmware path. Doing them on
-/// a Tokio worker would take that thread out of the runtime and, with enough
-/// concurrent scrapes, stop the accept loop and the signal handlers from ever
-/// being polled. Handing them to a thread of our own keeps every async task
-/// cancellable and shutdown bounded: the thread is never joined, so a stuck
-/// read delays nothing at exit.
-struct Collector {
-    requests: SyncSender<CollectRequest>,
-}
-
-impl Collector {
-    fn spawn(sensors: &'static [Sensor]) -> Result<&'static Collector> {
-        // Bounded by the connection limit, so a backlog is refused rather than queued.
-        let (requests, inbox) = mpsc::sync_channel::<CollectRequest>(MAX_CONNECTIONS);
-        thread::Builder::new()
-            .name("hwmon-collector".to_owned())
-            .spawn(move || {
-                for reply in inbox {
-                    // The receiver is gone when the client timed out; render anyway
-                    // is wasteful, so check first.
-                    if reply.is_closed() {
-                        continue;
-                    }
-                    let _ = reply.send(build_metrics(sensors));
-                }
-            })
-            .context("spawn hwmon collector thread")?;
-        Ok(Box::leak(Box::new(Collector { requests })))
-    }
-
-    /// `None` when the collector is saturated or wedged past `COLLECT_TIMEOUT`.
-    async fn snapshot(&self) -> Option<String> {
-        let (reply, answer) = oneshot::channel();
-        self.requests.try_send(reply).ok()?;
-        timeout(COLLECT_TIMEOUT, answer).await.ok()?.ok()
-    }
-}
-
-async fn handle_connection(mut stream: TcpStream, collector: &'static Collector) {
+async fn handle_connection(mut stream: TcpStream, state: MetricsState) {
     let Some(req) = read_request(&mut stream).await else {
         return;
     };
@@ -358,14 +384,13 @@ async fn handle_connection(mut stream: TcpStream, collector: &'static Collector)
         // /health deliberately touches no sensor: it must still answer while
         // the collection thread is stuck on a firmware read.
         ("GET" | "HEAD", "/health") => ("200 OK", "text/plain", "ok\n".to_owned()),
-        ("GET" | "HEAD", "/metrics") => match collector.snapshot().await {
-            Some(body) => ("200 OK", "text/plain; version=0.0.4; charset=utf-8", body),
-            None => (
-                "503 Service Unavailable",
-                "text/plain",
-                "sensor collection unavailable\n".to_owned(),
-            ),
-        },
+        ("GET" | "HEAD", "/metrics") => {
+            let body = match &state {
+                MetricsState::Acpi(cache) => cache.read().unwrap().clone(),
+                MetricsState::Dcgm(reader) => build_metrics_dcgm(reader),
+            };
+            ("200 OK", "text/plain; version=0.0.4; charset=utf-8", body)
+        }
         ("GET" | "HEAD", _) => ("404 Not Found", "text/plain", "Not Found\n".to_owned()),
         _ => {
             extra_headers = "Allow: GET, HEAD\r\n";
@@ -410,6 +435,89 @@ async fn accept(listener: &TcpListener, backoff: &mut Duration) -> TcpStream {
     }
 }
 
+fn init_metrics_state(args: &Args) -> Result<MetricsState> {
+    let want_dcgm = matches!(args.source, SourceMode::Dcgm | SourceMode::Auto);
+    let want_acpi = matches!(args.source, SourceMode::Acpi | SourceMode::Auto);
+
+    if want_dcgm {
+        match dcgm::DcgmReader::new() {
+            Ok(mut reader) => {
+                tracing::info!(
+                    cpu_count = reader.cpu_ids.len(),
+                    cpu_ids = ?reader.cpu_ids,
+                    "DCGM reader initialised"
+                );
+                // Probe: if every entity returns zero/None the embedded daemon
+                // lacks hardware access (common when running without root while a
+                // system dcgm-exporter holds the DCGM session as root).  In Auto
+                // mode this is a silent fallback to ACPI; in Dcgm mode it is a
+                // hard failure because the caller explicitly requested DCGM.
+                let probe = reader.read_watts();
+                let any_live = probe
+                    .as_ref()
+                    .map(|v| v.iter().any(|(_, w)| w.is_some()))
+                    .unwrap_or(false);
+                if !any_live {
+                    let reason = match probe {
+                        Err(ref e) => format!("read error: {e}"),
+                        Ok(_) => "all entities returned zero watts".into(),
+                    };
+                    if matches!(args.source, SourceMode::Dcgm) {
+                        anyhow::bail!("DCGM yielded no live data: {reason}");
+                    }
+                    tracing::info!(%reason, "DCGM yielded no live data; falling back to ACPI");
+                } else {
+                    return Ok(MetricsState::Dcgm(Arc::new(Mutex::new(reader))));
+                }
+            }
+            Err(e) => {
+                if matches!(args.source, SourceMode::Dcgm) {
+                    anyhow::bail!("DCGM unavailable: {e}");
+                }
+                tracing::info!(reason = %e, "DCGM unavailable; falling back to ACPI");
+            }
+        }
+    }
+
+    if want_acpi {
+        let sensors: &'static [Sensor] = Vec::leak(discover_sensors(&args.hwmon_root)?);
+        if sensors.is_empty() {
+            anyhow::bail!(
+                "no ACPI power_meter hwmon sensors found under {}",
+                args.hwmon_root.display()
+            );
+        }
+        tracing::info!(count = sensors.len(), "discovered ACPI sensors");
+        for s in sensors {
+            tracing::debug!(
+                sensor = %s.id, kind = s.kind,
+                socket = %s.socket, oem_info = %s.oem_info,
+                path = %s.path.display(), "sensor"
+            );
+        }
+
+        // Seed the cache synchronously so the first scrape after startup is not empty.
+        let initial = build_metrics(sensors);
+        let cache = Arc::new(RwLock::new(initial));
+        let cache_bg = Arc::clone(&cache);
+
+        // Background OS thread: re-reads all sensors every ACPI_POLL_INTERVAL so
+        // HTTP scrapes serve cached data and return in <1 ms.
+        std::thread::Builder::new()
+            .name("acpi-poller".to_owned())
+            .spawn(move || loop {
+                std::thread::sleep(ACPI_POLL_INTERVAL);
+                let snapshot = build_metrics(sensors);
+                *cache_bg.write().unwrap() = snapshot;
+            })
+            .context("spawn acpi-poller thread")?;
+
+        return Ok(MetricsState::Acpi(cache));
+    }
+
+    unreachable!("one of want_dcgm or want_acpi must be true");
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Without the `env-filter` feature this honours RUST_LOG via `Targets` and
@@ -418,22 +526,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let args = Args::parse();
-
-    // Discovered once: hwmon topology is fixed for the process lifetime.
-    let sensors = discover_sensors(&args.hwmon_root)?;
-    if sensors.is_empty() {
-        anyhow::bail!(
-            "no ACPI power_meter hwmon sensors found under {}",
-            args.hwmon_root.display()
-        );
-    }
-
-    tracing::info!(count = sensors.len(), "discovered sensors");
-    for s in &sensors {
-        tracing::debug!(sensor = %s.id, kind = s.kind, socket = %s.socket, oem_info = %s.oem_info, path = %s.path.display(), "sensor");
-    }
-    let sensors: &'static [Sensor] = Vec::leak(sensors);
-    let collector = Collector::spawn(sensors)?;
+    let state = init_metrics_state(&args)?;
 
     let addr = SocketAddr::new(args.bind, args.port);
     let listener = TcpListener::bind(addr)
@@ -453,7 +546,7 @@ async fn main() -> Result<()> {
             // the exporter is sitting at its connection limit.
             Some(_) = conns.join_next(), if at_capacity => {}
             stream = accept(&listener, &mut backoff), if !at_capacity => {
-                conns.spawn(handle_connection(stream, collector));
+                conns.spawn(handle_connection(stream, state.clone()));
             }
             _ = signal::ctrl_c() => {
                 tracing::info!("received SIGINT, shutting down");
@@ -633,7 +726,17 @@ mod tests {
             &[("power1", Some("CPU Power Socket 0"), "150000000")],
         );
         let sensors: &'static [Sensor] = Vec::leak(discover_sensors(dir.path()).unwrap());
-        let addr = serve(Collector::spawn(sensors).expect("spawn collector")).await;
+        let state = MetricsState::Acpi(Arc::new(RwLock::new(build_metrics(sensors))));
+
+        let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                handle_connection(stream, state.clone()).await;
+            }
+        });
 
         for (head, expected) in [
             ("GET /health HTTP/1.1\r\n", "200 OK"),
