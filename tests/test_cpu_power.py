@@ -265,6 +265,30 @@ def _session(log_dir, nodes, **overrides):
     return CpuPowerTelemetrySession(settings=settings, nodes=nodes)
 
 
+ONE_RAIL = _scrape('cpu_power_acpi_watts{sensor="hwmon0/power1",type="CPU",socket="0"} 42.5')
+
+
+def _response(body: str, chunks: object = None):
+    """A streaming requests.Response stand-in: the session reads chunk by chunk."""
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+        @staticmethod
+        def iter_content(_size):
+            return iter(chunks) if chunks is not None else iter([body.encode()])
+
+    return Response()
+
+
 def _running_exporter():
     proc = MagicMock()
     proc.poll.return_value = None
@@ -418,10 +442,7 @@ class TestCpuPowerLifecycle:
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
     def test_a_serving_exporter_reaches_readiness_and_publishes(self, mock_srun, _mock_ip, mock_get, tmp_path):
         mock_srun.return_value = _running_exporter()
-        mock_get.return_value = SimpleNamespace(
-            text=_scrape('cpu_power_acpi_watts{sensor="hwmon0/power1",type="CPU",socket="0"} 42.5'),
-            raise_for_status=lambda: None,
-        )
+        mock_get.return_value = _response(ONE_RAIL)
         harness = _harness(tmp_path, [_worker("node-a", range(4))])
 
         harness.start_cpu_power_telemetry(ProcessRegistry(job_id="12345"))
@@ -452,10 +473,7 @@ class TestCpuPowerLifecycle:
     def test_readings_that_do_not_cover_the_benchmark_do_not_publish(self, mock_srun, _mock_ip, mock_get, tmp_path):
         """Readiness samples alone are not measurement: the run must be bracketed."""
         mock_srun.return_value = _running_exporter()
-        mock_get.return_value = SimpleNamespace(
-            text=_scrape('cpu_power_acpi_watts{sensor="hwmon0/power1",type="CPU",socket="0"} 42.5'),
-            raise_for_status=lambda: None,
-        )
+        mock_get.return_value = _response(ONE_RAIL)
         harness = _harness(tmp_path, [_worker("node-a", range(4))])
 
         harness.start_cpu_power_telemetry(ProcessRegistry(job_id="12345"))
@@ -473,10 +491,7 @@ class TestCpuPowerLifecycle:
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
     def test_a_session_that_never_saw_a_benchmark_never_passes_vacuously(self, mock_srun, _mock_ip, mock_get, tmp_path):
         mock_srun.return_value = _running_exporter()
-        mock_get.return_value = SimpleNamespace(
-            text=_scrape('cpu_power_acpi_watts{sensor="hwmon0/power1",type="CPU",socket="0"} 42.5'),
-            raise_for_status=lambda: None,
-        )
+        mock_get.return_value = _response(ONE_RAIL)
         harness = _harness(tmp_path, [_worker("node-a", range(4))])
 
         harness.start_cpu_power_telemetry(ProcessRegistry(job_id="12345"))
@@ -493,10 +508,7 @@ class TestCpuPowerLifecycle:
         """Readiness on the survivors would silently shrink what the run covers."""
         mock_srun.return_value = _running_exporter()
         mock_ip.side_effect = lambda node, _iface: "" if node == "node-b" else f"ip-{node}"
-        mock_get.return_value = SimpleNamespace(
-            text=_scrape('cpu_power_acpi_watts{sensor="hwmon0/power1",type="CPU",socket="0"} 42.5'),
-            raise_for_status=lambda: None,
-        )
+        mock_get.return_value = _response(ONE_RAIL)
         harness = _harness(tmp_path, [_worker("node-a", range(4)), _worker("node-b", range(4), index=1)])
 
         session = harness.start_cpu_power_telemetry(ProcessRegistry(job_id="12345"))
@@ -513,10 +525,7 @@ class TestCpuPowerLifecycle:
 
         def slow_scrape(*_args, **_kwargs):
             time.sleep(0.3)
-            return SimpleNamespace(
-                text=_scrape('cpu_power_acpi_watts{sensor="hwmon0/power1",type="CPU",socket="0"} 42.5'),
-                raise_for_status=lambda: None,
-            )
+            return _response(ONE_RAIL)
 
         mock_get.side_effect = slow_scrape
 
