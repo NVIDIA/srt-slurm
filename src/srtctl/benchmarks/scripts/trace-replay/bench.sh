@@ -125,7 +125,8 @@ aiperf profile \
     --extra-inputs ignore_eos:true \
     --concurrency 1 \
     --request-count 5 \
-    --artifact-dir "${WARMUP_DIR}"
+    --artifact-dir "${WARMUP_DIR}" \
+    "${EXTRA_ARGS[@]}"
 echo "Warmup complete"
 
 # Setup artifact directory
