@@ -423,6 +423,56 @@ class TestTachometerConfigGeneration:
         # The frontend endpoint is never excluded (whole-window coverage).
         assert 'url = "http://10.0.0.1:8000/metrics"' in config_text
 
+    @patch("srtctl.core.telemetry.get_hostname_ip", return_value="2001:db8::1")
+    def test_ipv6_backend_and_frontend_targets_are_bracketed(self, _mock_get_hostname_ip):
+        tachometer = TachometerConfig(enabled=True)
+        runtime = MagicMock(job_id="12345", run_name="test_12345", network_interface="eth0")
+        runtime.log_dir = Path("/runs/12345/logs")
+        process = Process(
+            node="node-a",
+            gpu_indices=frozenset({0}),
+            sys_port=8081,
+            http_port=30000,
+            endpoint_mode="prefill",
+            endpoint_index=0,
+            node_rank=0,
+        )
+        topology = FrontendTopology(nginx_node=None, frontend_nodes=["node-a"], frontend_port=8000, public_port=8000)
+
+        config_text = generate_tachometer_config(
+            processes=[process], frontend_topology=topology, runtime=runtime, tachometer=tachometer
+        )
+
+        assert 'url = "http://[2001:db8::1]:8081/metrics"' in config_text
+        assert 'url = "http://[2001:db8::1]:8000/metrics"' in config_text
+
+    @patch("srtctl.core.telemetry.get_hostname_ip", return_value="2001:db8::1")
+    def test_bracketed_aiperf_ipv6_url_excludes_the_backend_target(self, _mock_get_hostname_ip):
+        tachometer = TachometerConfig(enabled=True)
+        runtime = MagicMock(job_id="12345", run_name="test_12345", network_interface="eth0")
+        runtime.log_dir = Path("/runs/12345/logs")
+        process = Process(
+            node="node-a",
+            gpu_indices=frozenset({0}),
+            sys_port=8081,
+            http_port=30000,
+            endpoint_mode="prefill",
+            endpoint_index=0,
+            node_rank=0,
+        )
+        topology = FrontendTopology(nginx_node=None, frontend_nodes=["node-a"], frontend_port=8000, public_port=8000)
+
+        config_text = generate_tachometer_config(
+            processes=[process],
+            frontend_topology=topology,
+            runtime=runtime,
+            tachometer=tachometer,
+            exclude_urls={"http://[2001:db8::1]:8081/metrics"},
+        )
+
+        assert 'name = "backend_prefill0_rank0"' not in config_text
+        assert 'url = "http://[2001:db8::1]:8000/metrics"' in config_text
+
     @patch("srtctl.core.telemetry.get_hostname_ip", return_value="10.0.0.1")
     def test_backend_targets_cover_every_rank(self, _mock_get_hostname_ip):
         """Every worker rank is a scrape target (vLLM agg followers excepted);
