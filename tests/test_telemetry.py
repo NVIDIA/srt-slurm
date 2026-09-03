@@ -461,6 +461,56 @@ class TestTachometerConfigGeneration:
         # The frontend endpoint is never excluded (whole-window coverage).
         assert 'url = "http://10.0.0.1:8000/metrics"' in config_text
 
+    @patch("srtctl.core.telemetry.get_hostname_ip", return_value="2001:db8::1")
+    def test_ipv6_backend_and_frontend_targets_are_bracketed(self, _mock_get_hostname_ip):
+        tachometer = TachometerConfig(enabled=True)
+        runtime = MagicMock(job_id="12345", run_name="test_12345", network_interface="eth0")
+        runtime.log_dir = Path("/runs/12345/logs")
+        process = Process(
+            node="node-a",
+            gpu_indices=frozenset({0}),
+            sys_port=8081,
+            http_port=30000,
+            endpoint_mode="prefill",
+            endpoint_index=0,
+            node_rank=0,
+        )
+        topology = FrontendTopology(nginx_node=None, frontend_nodes=["node-a"], frontend_port=8000, public_port=8000)
+
+        config_text = generate_tachometer_config(
+            processes=[process], frontend_topology=topology, runtime=runtime, tachometer=tachometer
+        )
+
+        assert 'url = "http://[2001:db8::1]:8081/metrics"' in config_text
+        assert 'url = "http://[2001:db8::1]:8000/metrics"' in config_text
+
+    @patch("srtctl.core.telemetry.get_hostname_ip", return_value="2001:db8::1")
+    def test_bracketed_aiperf_ipv6_url_excludes_the_backend_target(self, _mock_get_hostname_ip):
+        tachometer = TachometerConfig(enabled=True)
+        runtime = MagicMock(job_id="12345", run_name="test_12345", network_interface="eth0")
+        runtime.log_dir = Path("/runs/12345/logs")
+        process = Process(
+            node="node-a",
+            gpu_indices=frozenset({0}),
+            sys_port=8081,
+            http_port=30000,
+            endpoint_mode="prefill",
+            endpoint_index=0,
+            node_rank=0,
+        )
+        topology = FrontendTopology(nginx_node=None, frontend_nodes=["node-a"], frontend_port=8000, public_port=8000)
+
+        config_text = generate_tachometer_config(
+            processes=[process],
+            frontend_topology=topology,
+            runtime=runtime,
+            tachometer=tachometer,
+            exclude_urls={"http://[2001:db8::1]:8081/metrics"},
+        )
+
+        assert 'name = "backend_prefill0_rank0"' not in config_text
+        assert 'url = "http://[2001:db8::1]:8000/metrics"' in config_text
+
     @patch("srtctl.core.telemetry.get_hostname_ip", return_value="10.0.0.1")
     def test_backend_targets_cover_every_rank(self, _mock_get_hostname_ip):
         """Every worker rank is a scrape target (vLLM agg followers excepted);
@@ -809,8 +859,63 @@ class TestTachometerStageMixin:
         assert 'name = "dcgm_node-a"' in (tmp_path / "tachometer_config.toml").read_text()
 
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
+    def test_cpu_only_telemetry_leaves_tachometers_dcgm_exporter_running(self, mock_srun, tmp_path):
+        """The CPU leg configures no DCGM exporter, so there is nothing to reuse."""
+
+        class Harness(TelemetryStageMixin):
+            def __init__(self):
+                self.config = _make_config(
+                    tachometer=TachometerConfig(
+                        enabled=True,
+                        dcgm_exporter=TelemetryExporterConfig(container_image="dcgm:latest", port=9400),
+                    ),
+                    telemetry=TelemetryConfig(enabled=True, cpu_power=CpuPowerConfig(enabled=True)),
+                )
+                self.runtime = MagicMock()
+                self.runtime.log_dir = tmp_path
+                self.runtime.job_id = "12345"
+                self.runtime.run_name = "test_12345"
+                self.runtime.network_interface = "eth0"
+                self.runtime.nodes.head = "node-a"
+                self.runtime.nodes.het = False
+                self.runtime.srun_options = {}
+                self.runtime.container_mounts = {Path(tmp_path): Path("/logs")}
+                self._backend_processes = [
+                    Process(
+                        node="node-a",
+                        gpu_indices=frozenset({0}),
+                        sys_port=8081,
+                        http_port=30000,
+                        endpoint_mode="agg",
+                        endpoint_index=0,
+                        node_rank=0,
+                    )
+                ]
+
+            @property
+            def backend_processes(self):
+                return self._backend_processes
+
+            def _compute_frontend_topology(self):
+                return FrontendTopology(
+                    nginx_node=None,
+                    frontend_nodes=["node-a"],
+                    frontend_port=8000,
+                    public_port=8000,
+                )
+
+        mock_srun.return_value = _running_exporter()
+        harness = Harness()
+        harness._resolve_tachometer_binary = lambda binary_path: binary_path
+
+        processes = harness.start_tachometer()
+
+        assert [process.name for process in processes] == ["tachometer_dcgm_exporter", "tachometer"]
+        assert 'name = "dcgm_node-a"' in (tmp_path / "tachometer_config.toml").read_text()
+
+    @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
     @patch("srtctl.cli.mixins.telemetry_stage.generate_tachometer_config", return_value='storage = "/run/tachometer"\n')
-    def test_multinode_exporters_request_one_node_per_task(self, _mock_config, mock_srun, tmp_path):
+    def test_multinode_exporters_request_one_node_per_taskdef test_multinode_exporters_request_one_node_per_task(self, _mock_config, mock_srun, tmp_path):
         """srun rejects --nodes 1 with a longer --nodelist, so the exporter launch
         must size --nodes to the worker set."""
 

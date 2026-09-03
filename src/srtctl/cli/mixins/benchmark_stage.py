@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from srtctl.core.fingerprint import format_identity_verification, verify_identity
+from srtctl.core.ip_utils import url_host
 from srtctl.core.health import wait_for_model
 from srtctl.core.lockfile import collect_worker_fingerprints
 from srtctl.core.power.contract import (
@@ -676,7 +677,7 @@ class BenchmarkStageMixin:
             worker_nodes = sorted({process.node for process in self.backend_processes})
             for node in worker_nodes:
                 host = get_hostname_ip(node, self.runtime.network_interface)
-                urls.append(f"http://{host}:{cpu_power.prometheus_port}/metrics")
+                urls.append(f"http://{url_host(host)}:{cpu_power.prometheus_port}/metrics")
 
         return {"AIPERF_SERVER_METRICS_URLS": ",".join(urls)}
 
