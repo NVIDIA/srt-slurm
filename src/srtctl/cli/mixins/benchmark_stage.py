@@ -671,11 +671,23 @@ class BenchmarkStageMixin:
             # No session means the leg never started -- pointing the client at
             # exporters that were not launched would only fabricate coverage,
             # and mandatory modes have already failed the startup gate.
+            # Only endpoints that actually served rails: a best-effort leg
+            # keeps running when an exporter never came up, and pointing the
+            # client at one would spend its budget on errors for a node this
+            # run has no CPU samples from either. Mandatory modes never get
+            # here -- the startup gate has already stopped the benchmark.
             session = getattr(self, "_cpu_power_session", None)
             if session is None:
                 logger.warning("CPU power telemetry has no resolved endpoints; not advertising any to the client")
             else:
-                urls.extend(endpoint.url for endpoint in session.endpoints)
+                serving = session.serving_endpoints
+                if len(serving) != len(session.endpoints):
+                    logger.warning(
+                        "advertising %d of %d CPU power endpoints; the rest never served rails",
+                        len(serving),
+                        len(session.endpoints),
+                    )
+                urls.extend(endpoint.url for endpoint in serving)
 
         if not urls:
             return {}

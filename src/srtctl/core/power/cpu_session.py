@@ -405,6 +405,18 @@ class CpuPowerTelemetrySession:
         """
         return tuple(self._endpoints)
 
+    @property
+    def serving_endpoints(self) -> tuple[CpuEndpoint, ...]:
+        """The endpoints that have actually served rails at least once.
+
+        What a client may be pointed at: an endpoint that resolved but never
+        answered is an exporter that failed to launch or to become healthy, and
+        polling it would only produce errors on the client's own budget.
+        """
+        with self._state_lock:
+            proven = set(self._observed)
+        return tuple(endpoint for endpoint in self._endpoints if endpoint.hostname in proven)
+
     def resolve_endpoints(self) -> tuple[CpuEndpoint, ...]:
         """Resolve every allocated node once, under the startup timeout.
 
