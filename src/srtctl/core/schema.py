@@ -1352,21 +1352,24 @@ def _hash_cached_source_install(dynamo_hash: str, cargo_patches: list[str] | Non
         # Build tools — install on cold cache only. apt + protoc + cargo + maturin.
         f"apt-get update -qq && apt-get install -y -qq libclang-dev curl git protobuf-compiler > /dev/null 2>&1 && "
         f"if ! command -v cargo &>/dev/null; then "
-        f"curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable -q && "
+        f"timeout 120s curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | timeout 120s sh -s -- -y --default-toolchain stable -q && "
         f". $HOME/.cargo/env; fi && "
         # Force-reinstall maturin: some images ship the module without the
         # console-script, so `command -v maturin` fails AND a plain pip
         # install reports "already satisfied".
         f"pip install --break-system-packages --force-reinstall --quiet maturin && "
-        # Clone + build the runtime wheel.
+        # Clone + build the runtime wheel. timeout on both: a stalled clone or
+        # a hung build otherwise runs silently forever (see
+        # _live_source_install_for_top_of_tree's header note for the live
+        # 54+-minute hang this is modeled on).
         f"DYN_BUILD_DIR=$(mktemp -d) && cd $DYN_BUILD_DIR && "
-        f"{_git_clone_cmd()} clone https://github.com/ai-dynamo/dynamo.git && "
+        f"timeout 600s {_git_clone_cmd()} clone https://github.com/ai-dynamo/dynamo.git && "
         f"cd dynamo && git checkout {dynamo_hash} && "
         f"{override_cmd}"
         f"cd lib/bindings/python/ && "
         f'export RUSTFLAGS="${{RUSTFLAGS:-}} -C target-cpu=native --cfg tokio_unstable" && '
         f"rm -f /tmp/ai_dynamo_runtime*.whl && "
-        f"maturin build --release -o /tmp && "
+        f"timeout 1200s maturin build --release -o /tmp && "
         # Populate cache atomically: copy artifacts first, touch .complete last.
         f"mkdir -p {cache} && "
         f"cp /tmp/ai_dynamo_runtime*.whl {cache}/ && "
@@ -1395,19 +1398,27 @@ def _live_source_install_for_top_of_tree() -> str:
     already have rust + maturin in the right places at /sgl-workspace; other
     containers (vLLM, etc.) install everything from scratch into /tmp.
     """
+    # Every network/long-running step below is wrapped in `timeout` -- without
+    # it, a stalled git clone (the same intermittent smart-HTTP corruption
+    # class fixed elsewhere via git_http_version) or a hung rustup/maturin
+    # invocation runs silently forever, since nothing here prints incremental
+    # progress. Confirmed live: a worker job sat with zero log output for 54+
+    # minutes past "Installing dynamo from source (HEAD)..." until Slurm's
+    # 8-hour job timeout would have eventually reaped it. timeout turns that
+    # into a fast, visible failure instead.
     sglang = (
         # protobuf-compiler is required by modelexpress-common's build.rs (prost-build).
         # Some SGLang images ship without /usr/bin/protoc; install it unconditionally.
         "apt-get update -qq && apt-get install -y -qq libclang-dev curl protobuf-compiler > /dev/null 2>&1 && "
-        "if ! command -v cargo &>/dev/null; then curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable -q && source $HOME/.cargo/env; fi && "
+        "if ! command -v cargo &>/dev/null; then timeout 120s curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | timeout 120s sh -s -- -y --default-toolchain stable -q && source $HOME/.cargo/env; fi && "
         # Force-reinstall maturin: see _hash_cached_source_install.
         "pip install --break-system-packages --force-reinstall --quiet maturin && "
         "cd /sgl-workspace/ && "
-        f"{_git_clone_cmd()} clone https://github.com/ai-dynamo/dynamo.git && "
+        f"timeout 600s {_git_clone_cmd()} clone https://github.com/ai-dynamo/dynamo.git && "
         "cd dynamo && "
         "cd lib/bindings/python/ && "
         'export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native --cfg tokio_unstable" && '
-        "maturin build --release -o /tmp && "
+        "timeout 1200s maturin build --release -o /tmp && "
         "pip install /tmp/ai_dynamo_runtime*.whl && "
         "cd /sgl-workspace/dynamo/ && "
         "pip install -e . && "
@@ -1419,16 +1430,16 @@ def _live_source_install_for_top_of_tree() -> str:
         "if ! command -v cargo &> /dev/null || ! command -v maturin &> /dev/null; then "
         "apt-get update -qq && apt-get install -y -qq git curl libclang-dev protobuf-compiler > /dev/null 2>&1 && "
         "if ! command -v cargo &> /dev/null; then "
-        "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && source $HOME/.cargo/env; fi; fi && "
+        "timeout 120s curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | timeout 120s sh -s -- -y && source $HOME/.cargo/env; fi; fi && "
         # Force-reinstall maturin: see _hash_cached_source_install.
         "pip install --break-system-packages --force-reinstall --quiet maturin && "
         "ORIG_DIR=$(pwd) && rm -rf /tmp/dynamo_build && mkdir -p /tmp/dynamo_build && cd /tmp/dynamo_build && "
-        f"{_git_clone_cmd()} clone https://github.com/ai-dynamo/dynamo.git && "
+        f"timeout 600s {_git_clone_cmd()} clone https://github.com/ai-dynamo/dynamo.git && "
         "cd dynamo && "
         "cd lib/bindings/python/ && "
         'export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native --cfg tokio_unstable" && '
         "rm -f /tmp/ai_dynamo_runtime*.whl && "
-        "maturin build --release -o /tmp && "
+        "timeout 1200s maturin build --release -o /tmp && "
         "pip install --break-system-packages /tmp/ai_dynamo_runtime*.whl --force-reinstall && "
         "cd /tmp/dynamo_build/dynamo/ && "
         "pip install --break-system-packages -e . && "
