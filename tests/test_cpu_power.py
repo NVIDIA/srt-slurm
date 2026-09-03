@@ -4,6 +4,8 @@
 """Tests for the ACPI host CPU power leg: schema, lifecycle, and AIPerf wiring."""
 
 import json
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -13,7 +15,12 @@ from marshmallow import ValidationError
 
 from srtctl.cli.mixins.telemetry_stage import TelemetryStageMixin
 from srtctl.core.power.contract import Reason
-from srtctl.core.power.cpu_session import parse_cpu_power_scrape
+from srtctl.core.power.cpu_session import (
+    CpuPowerSessionSettings,
+    CpuPowerTelemetrySession,
+    parse_cpu_power_scrape,
+)
+from srtctl.core.power.manifest import ExpectedWindow
 from srtctl.core.processes import ProcessRegistry
 from srtctl.core.schema import (
     BenchmarkConfig,
@@ -195,6 +202,63 @@ class TestCpuPowerScrapeParsing:
         assert Reason.ENDPOINT_PARSE_ERROR in reasons
 
 
+def _write_window(log_dir, *, start, end, concurrency=4, status="completed"):
+    """Write the completed measurement window the benchmark would have written."""
+    stem = f"sa-bench_{concurrency}"
+    duration = end - start
+    result_path = f"results/{stem}.json"
+    result_file = log_dir / result_path
+    result_file.parent.mkdir(parents=True, exist_ok=True)
+    result_file.write_text(
+        json.dumps(
+            {"benchmark_start_time_unix": start, "benchmark_end_time_unix": end, "duration": duration}
+        )
+    )
+    window_file = log_dir / "power" / "windows" / f"{stem}.json"
+    window_file.parent.mkdir(parents=True, exist_ok=True)
+    window_file.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "clock_source": "head_node_unix_clock",
+                "status": status,
+                "benchmark_type": "sa-bench",
+                "concurrency": concurrency,
+                "benchmark_start_time_unix": start,
+                "benchmark_end_time_unix": end,
+                "duration": duration,
+                "result_path": result_path,
+                "reason": None,
+            }
+        )
+    )
+
+
+def _session(log_dir, nodes, **overrides):
+    defaults = dict(
+        cpu_dir=log_dir / "cpu_power",
+        windows_dir=log_dir / "power" / "windows",
+        result_root=log_dir,
+        job_id="12345",
+        run_name="recipe_12345",
+        source="acpi",
+        sample_interval_seconds=0.1,
+        startup_timeout_seconds=0.2,
+        request_timeout_seconds=1.0,
+        collector_join_timeout_seconds=3.0,
+        required=True,
+        acpi_mandatory=True,
+        exporter_port=9401,
+        exporter_command="cpu-power-exporter --port 9401",
+    )
+    settings = CpuPowerSessionSettings(**{**defaults, **overrides})
+    return CpuPowerTelemetrySession(
+        settings=settings,
+        nodes=nodes,
+        expected_windows=[ExpectedWindow(benchmark_type="sa-bench", concurrency=4)],
+    )
+
+
 def _running_exporter():
     proc = MagicMock()
     proc.poll.return_value = None
@@ -357,6 +421,9 @@ class TestCpuPowerLifecycle:
         harness.start_cpu_power_telemetry(ProcessRegistry(job_id="12345"))
 
         assert harness.cpu_power_telemetry_blocks_benchmark() is False
+        start = time.time()
+        time.sleep(0.3)
+        _write_window(tmp_path, start=start, end=time.time())
         assert harness.finalize_cpu_power_telemetry(0) == 0
         assert mock_get.call_args.args[0] == "http://ip-node-a:9401/metrics"
 
@@ -369,6 +436,106 @@ class TestCpuPowerLifecycle:
         rows = (tmp_path / "cpu_power" / "samples.csv").read_text().splitlines()
         assert rows[0].startswith("schema_version,")
         assert any("hwmon0/power1" in row for row in rows[1:])
+        assert manifest["window_validations"] == [
+            {
+                "benchmark_type": "sa-bench",
+                "concurrency": 4,
+                "window_file": "windows/sa-bench_4.json",
+                "power_coverage_valid": True,
+                "reason_codes": [],
+                "per_device_max_sample_gap_seconds": {"node-a": pytest.approx(0.0, abs=1.0)},
+            }
+        ]
+
+    @patch("srtctl.core.power.cpu_session.requests.get")
+    @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: f"ip-{node}")
+    @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
+    def test_readings_that_do_not_cover_the_benchmark_window_do_not_publish(
+        self, mock_srun, _mock_ip, mock_get, tmp_path
+    ):
+        """Readiness samples alone are not measurement: the window must be bracketed."""
+        mock_srun.return_value = _running_exporter()
+        mock_get.return_value = SimpleNamespace(
+            text=_scrape('cpu_power_acpi_watts{sensor="hwmon0/power1",type="CPU",socket="0"} 42.5'),
+            raise_for_status=lambda: None,
+        )
+        harness = _harness(tmp_path, [_worker("node-a", range(4))])
+
+        harness.start_cpu_power_telemetry(ProcessRegistry(job_id="12345"))
+        # A window that ran long before this session started collecting.
+        _write_window(tmp_path, start=time.time() - 600, end=time.time() - 500)
+
+        assert harness.finalize_cpu_power_telemetry(0) == 1
+
+        manifest = json.loads((tmp_path / "cpu_power" / "manifest.json").read_text())
+        assert manifest["publication_valid"] is False
+        assert Reason.MEASUREMENT_WINDOW_NOT_BRACKETED in manifest["reason_codes"]
+
+    @patch("srtctl.core.power.cpu_session.requests.get")
+    @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: f"ip-{node}")
+    @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
+    def test_a_missing_benchmark_window_never_passes_vacuously(self, mock_srun, _mock_ip, mock_get, tmp_path):
+        mock_srun.return_value = _running_exporter()
+        mock_get.return_value = SimpleNamespace(
+            text=_scrape('cpu_power_acpi_watts{sensor="hwmon0/power1",type="CPU",socket="0"} 42.5'),
+            raise_for_status=lambda: None,
+        )
+        harness = _harness(tmp_path, [_worker("node-a", range(4))])
+
+        harness.start_cpu_power_telemetry(ProcessRegistry(job_id="12345"))
+
+        assert harness.finalize_cpu_power_telemetry(0) == 1
+        manifest = json.loads((tmp_path / "cpu_power" / "manifest.json").read_text())
+        assert manifest["publication_valid"] is False
+        assert Reason.MEASUREMENT_WINDOW_MISSING in manifest["reason_codes"]
+
+    @patch("srtctl.core.power.cpu_session.requests.get")
+    @patch("srtctl.core.power.cpu_session.get_hostname_ip")
+    @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
+    def test_an_unresolvable_node_fails_readiness_closed(self, mock_srun, mock_ip, mock_get, tmp_path):
+        """Readiness on the survivors would silently shrink what the run covers."""
+        mock_srun.return_value = _running_exporter()
+        mock_ip.side_effect = lambda node, _iface: "" if node == "node-b" else f"ip-{node}"
+        mock_get.return_value = SimpleNamespace(
+            text=_scrape('cpu_power_acpi_watts{sensor="hwmon0/power1",type="CPU",socket="0"} 42.5'),
+            raise_for_status=lambda: None,
+        )
+        harness = _harness(tmp_path, [_worker("node-a", range(4)), _worker("node-b", range(4), index=1)])
+
+        session = harness.start_cpu_power_telemetry(ProcessRegistry(job_id="12345"))
+
+        assert harness.cpu_power_telemetry_blocks_benchmark() is True
+        outcome = session.stop_and_finalize()
+        assert Reason.ENDPOINT_RESOLUTION_FAILED in outcome.reason_codes
+        assert outcome.publication_valid is False
+
+    @patch("srtctl.core.power.cpu_session.requests.get")
+    @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: f"ip-{node}")
+    def test_readiness_reached_after_the_deadline_is_rejected(self, _mock_ip, mock_get, tmp_path):
+        """A set event proves readiness happened, not that it happened in time."""
+
+        def slow_scrape(*_args, **_kwargs):
+            time.sleep(0.3)
+            return SimpleNamespace(
+                text=_scrape('cpu_power_acpi_watts{sensor="hwmon0/power1",type="CPU",socket="0"} 42.5'),
+                raise_for_status=lambda: None,
+            )
+
+        mock_get.side_effect = slow_scrape
+
+        class BlockingEvent(threading.Event):
+            """Stands in for losing the race between wait() timing out and set()."""
+
+            def wait(self, timeout=None):
+                return super().wait()
+
+        session = _session(tmp_path, ["node-a"], startup_timeout_seconds=0.05)
+        session._ready = BlockingEvent()
+        session.initialize()
+
+        assert session.start_and_wait_for_readiness() is False
+        outcome = session.stop_and_finalize()
+        assert Reason.EXPORTER_STARTUP_TIMEOUT in outcome.reason_codes
 
 
 class TestCpuPowerServerMetricsUrls:
