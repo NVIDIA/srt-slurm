@@ -40,18 +40,22 @@ def _describe_file(path: Path) -> str:
     return result.stdout.strip()
 
 
-def arch_from_uv_binary(source_dir: Path) -> str | None:
-    """Infer compute arch from the uv binary installed by make setup ARCH=..."""
-    uv_bin = source_dir / "bin" / "uv"
-    if not uv_bin.exists():
+def arch_from_binary(path: Path) -> str | None:
+    """The architecture an installed binary was built for, when it can be read."""
+    if not path.exists():
         return None
 
-    description = _describe_file(uv_bin)
+    description = _describe_file(path)
     if "aarch64" in description or "ARM aarch64" in description:
         return "aarch64"
     if "x86-64" in description or "x86_64" in description:
         return "x86_64"
     return None
+
+
+def arch_from_uv_binary(source_dir: Path) -> str | None:
+    """Infer compute arch from the uv binary installed by make setup ARCH=..."""
+    return arch_from_binary(source_dir / "bin" / "uv")
 
 
 def _get_env(env: Env | None) -> Env:
