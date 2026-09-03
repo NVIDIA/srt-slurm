@@ -38,6 +38,9 @@ cpu-power-exporter:
 # CPU_POWER_EXPORTER_RELEASE to a different tag re-downloads (upgrade or
 # downgrade) instead of keeping whatever happens to be on disk. "latest" has
 # no stable identity to compare against, so it keeps an existing binary.
+# A pinned tag drops the installed binary before fetching: a download that
+# then fails leaves nothing behind rather than a binary of the wrong version
+# that validate-setup would accept as the requested one.
 cpu-power-exporter-download:
 	@set -eu; \
 	case "$(ARCH)" in \
@@ -56,6 +59,7 @@ cpu-power-exporter-download:
 		base_url="https://github.com/NVIDIA/srt-slurm/releases/latest/download"; \
 	else \
 		base_url="https://github.com/NVIDIA/srt-slurm/releases/download/$(CPU_POWER_EXPORTER_RELEASE)"; \
+		rm -f bin/cpu-power-exporter "$$marker"; \
 	fi; \
 	tmp_dir=$$(mktemp -d); \
 	trap 'rm -rf "$$tmp_dir"' EXIT; \
@@ -68,13 +72,20 @@ cpu-power-exporter-download:
 	echo "Installed cpu-power-exporter $(CPU_POWER_EXPORTER_RELEASE) at bin/cpu-power-exporter"
 
 # Only recipes that enable telemetry.cpu_power need this binary, and releases
-# cut before the exporter existed do not carry it, so `make setup` warns
-# instead of failing when it cannot be fetched. `srtctl validate-setup` fails
-# closed for the recipes that do require it. Invoke
-# cpu-power-exporter-download directly to treat a missing binary as an error.
+# cut before the exporter existed do not carry it, so the default `make setup`
+# warns instead of failing when it cannot be fetched -- `srtctl validate-setup`
+# fails closed for the recipes that do require it. Pinning
+# CPU_POWER_EXPORTER_RELEASE is an explicit request for one version, so a
+# failure there is an error: silently keeping some other version is exactly
+# what the pin was meant to prevent.
 cpu-power-exporter-setup:
-	@$(MAKE) --no-print-directory cpu-power-exporter-download || \
-		echo "⚠️  cpu-power-exporter unavailable; recipes using telemetry.cpu_power need 'make cpu-power-exporter-download'"
+	@set -eu; \
+	if [ "$(CPU_POWER_EXPORTER_RELEASE)" = "latest" ]; then \
+		$(MAKE) --no-print-directory cpu-power-exporter-download || \
+			echo "⚠️  cpu-power-exporter unavailable; recipes using telemetry.cpu_power need 'make cpu-power-exporter-download'"; \
+	else \
+		$(MAKE) --no-print-directory cpu-power-exporter-download; \
+	fi
 
 tachometer-scraper-download:
 	@set -eu; \
