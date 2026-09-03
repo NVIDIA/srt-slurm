@@ -706,7 +706,6 @@ mod tests {
 
         let health = request(addr, "GET /health HTTP/1.1\r\n").await;
         assert!(health.starts_with("HTTP/1.1 200 OK"), "{health}");
-        drop(collector.requests.clone());
         let _ = stuck;
     }
 }
