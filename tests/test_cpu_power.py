@@ -373,7 +373,8 @@ class TestCpuPowerLifecycle:
         assert harness.finalize_cpu_power_telemetry(0) == 0
 
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
-    def test_one_containerless_task_per_worker_node(self, mock_srun, tmp_path):
+    @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: _node_ip(node))
+    def test_one_containerless_task_per_worker_node(self, _mock_ip, mock_srun, tmp_path):
         """The exporter reads the node's own /sys, so it runs outside the container."""
         mock_srun.return_value = _running_exporter()
         harness = _harness(
@@ -391,13 +392,14 @@ class TestCpuPowerLifecycle:
         assert kwargs["ntasks"] == 2
         assert kwargs["use_bash_wrapper"] is False
         assert "container_image" not in kwargs
-        assert kwargs["command"][1:] == ["--port", "9401"]
+        assert kwargs["command"][1:] == ["--port", "9401", "--bind", "0.0.0.0"]
         assert registry.process_count == 1
         assert all(proc.critical is False for proc in registry.get_all_processes().values())
         session.stop_and_finalize()
 
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
-    def test_heterogeneous_groups_launch_once_per_group(self, mock_srun, tmp_path):
+    @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: _node_ip(node))
+    def test_heterogeneous_groups_launch_once_per_group(self, _mock_ip, mock_srun, tmp_path):
         mock_srun.return_value = _running_exporter()
         harness = _harness(
             tmp_path,
@@ -420,7 +422,9 @@ class TestCpuPowerLifecycle:
         session.stop_and_finalize()
 
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
-    def test_launch_failure_is_session_state_not_an_exception(self, mock_srun, tmp_path):
+    @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: _node_ip(node))
+    @patch("srtctl.core.power.cpu_session.fetch_metrics", side_effect=OSError("no exporter listening"))
+    def test_launch_failure_is_session_state_not_an_exception(self, _mock_fetch, _mock_ip, mock_srun, tmp_path):
         mock_srun.side_effect = RuntimeError("srun refused")
         harness = _harness(tmp_path, [_worker("node-a", range(4))])
 
@@ -431,7 +435,9 @@ class TestCpuPowerLifecycle:
         assert outcome.exit_nonzero is True
 
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
-    def test_required_mode_blocks_the_benchmark_when_startup_fails(self, mock_srun, tmp_path):
+    @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: _node_ip(node))
+    @patch("srtctl.core.power.cpu_session.fetch_metrics", side_effect=OSError("no exporter listening"))
+    def test_required_mode_blocks_the_benchmark_when_startup_fails(self, _mock_fetch, _mock_ip, mock_srun, tmp_path):
         """Running the workload without collection would burn the allocation."""
         mock_srun.return_value = _running_exporter()
         harness = _harness(tmp_path, [_worker("node-a", range(4))])
@@ -443,7 +449,9 @@ class TestCpuPowerLifecycle:
         assert session is harness._cpu_power_session
 
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
-    def test_best_effort_mode_does_not_block_or_fail(self, mock_srun, tmp_path):
+    @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: _node_ip(node))
+    @patch("srtctl.core.power.cpu_session.fetch_metrics", side_effect=OSError("no exporter listening"))
+    def test_best_effort_mode_does_not_block_or_fail(self, _mock_fetch, _mock_ip, mock_srun, tmp_path):
         """``source: auto`` on a cluster with no ACPI rails still runs the sweep."""
         mock_srun.return_value = _running_exporter()
         harness = _harness(
@@ -458,7 +466,9 @@ class TestCpuPowerLifecycle:
         assert harness.finalize_cpu_power_telemetry(0) == 0
 
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
-    def test_naming_acpi_gates_and_fails_the_job_without_required(self, mock_srun, tmp_path):
+    @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: _node_ip(node))
+    @patch("srtctl.core.power.cpu_session.fetch_metrics", side_effect=OSError("no exporter listening"))
+    def test_naming_acpi_gates_and_fails_the_job_without_required(self, _mock_fetch, _mock_ip, mock_srun, tmp_path):
         """`source: acpi` names a mandatory provider; `required` only restates it."""
         mock_srun.return_value = _running_exporter()
         harness = _harness(
@@ -521,7 +531,7 @@ class TestCpuPowerLifecycle:
         assert manifest["status"] == "complete"
         assert manifest["publication_valid"] is True
         assert manifest["exporter"]["port"] == 9401
-        assert manifest["exporter"]["command"].endswith("--port 9401")
+        assert manifest["exporter"]["command"].endswith("--port 9401 --bind 0.0.0.0")
         assert manifest["observed_sensors"] == {"node-a": ["hwmon0/power1"]}
         rows = (tmp_path / "cpu_power" / "samples.csv").read_text().splitlines()
         assert rows[0].startswith("schema_version,")
@@ -975,11 +985,23 @@ class TestCpuPowerServerMetricsUrls:
         stage._cpu_power_session = session
         return stage
 
-    def _resolved_session(self, tmp_path, nodes, resolve):
-        """A session that resolved its endpoints exactly as the real one does."""
+    def _resolved_session(self, tmp_path, nodes, resolve, *, serving=None):
+        """A session that resolved and polled its endpoints as the real one does.
+
+        Only endpoints proven to serve rails are advertised, so a session that
+        never collected is indistinguishable from one whose exporters are dead.
+        """
         session = _session(tmp_path, nodes, exporter_port=9401)
         with patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=resolve):
             session.resolve_endpoints()
+
+        def scrape(endpoint, _budget):
+            if serving is not None and endpoint.hostname not in serving:
+                raise OSError("no exporter listening")
+            return ONE_RAIL, time.time()
+
+        with patch("srtctl.core.power.cpu_session.fetch_metrics", side_effect=scrape):
+            session.collect_once()
         return session
 
     def _urls(self, stage, resolve=None):
