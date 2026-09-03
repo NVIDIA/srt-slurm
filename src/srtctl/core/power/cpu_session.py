@@ -23,6 +23,7 @@ serves benchmark types that write no window artifact.
 from __future__ import annotations
 
 import csv
+import ipaddress
 import logging
 import math
 import socket
@@ -341,7 +342,16 @@ class CpuPowerTelemetrySession:
         return not (unresolved and self._settings.acpi_mandatory)
 
     def _resolve_endpoints(self, deadline: float) -> None:
-        """Resolve every allocated hostname once, concurrently, before sampling."""
+        """Resolve every allocated hostname once, concurrently, before sampling.
+
+        Only literal addresses become endpoints. ``get_hostname_ip`` hands back
+        the hostname unchanged when it cannot resolve it, and a URL carrying a
+        name is re-resolved on every scrape -- inside ``requests.get``, before
+        any socket exists, where neither the request timeout nor the scrape
+        watchdog reaches. A wedged resolver would then strand one poll thread
+        per cycle. Resolution happens once, here, under this deadline; a node
+        that does not yield an address is a node the session cannot cover.
+        """
 
         def resolve(node: str) -> tuple[str, str] | None:
             try:
@@ -349,7 +359,14 @@ class CpuPowerTelemetrySession:
             except Exception as exc:  # noqa: BLE001 - an unresolvable node is a reason code
                 logger.warning("CPU power endpoint resolution failed for %s: %s", node, exc)
                 return None
-            return (node, ip) if ip else None
+            if not ip:
+                return None
+            try:
+                ipaddress.ip_address(ip)
+            except ValueError:
+                logger.warning("CPU power endpoint for %s resolved to %r, not an address", node, ip)
+                return None
+            return (node, ip)
 
         results, _ = run_daemon_workers(
             [(f"CpuPowerResolve-{node}", resolve, node) for node in self._nodes],
@@ -361,8 +378,9 @@ class CpuPowerTelemetrySession:
             if ip is None:
                 self.record_reason(Reason.ENDPOINT_RESOLUTION_FAILED)
                 continue
+            host = f"[{ip}]" if isinstance(ipaddress.ip_address(ip), ipaddress.IPv6Address) else ip
             self._endpoints.append(
-                CpuEndpoint(hostname=node, url=f"http://{ip}:{self._settings.exporter_port}/metrics")
+                CpuEndpoint(hostname=node, url=f"http://{host}:{self._settings.exporter_port}/metrics")
             )
 
     def collect_once(self) -> int:
