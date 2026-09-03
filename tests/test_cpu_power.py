@@ -111,6 +111,16 @@ class TestCpuPowerSchema:
         with pytest.raises(ValidationError, match="no effect"):
             _config(CpuPowerConfig(required=True))
 
+    @pytest.mark.parametrize("cpu_power", [CpuPowerConfig(required=True), CpuPowerConfig(source="acpi")])
+    def test_mandatory_cpu_power_under_disabled_telemetry_is_rejected(self, cpu_power):
+        """Accepting it would collect nothing and still pass the run it was meant to guard."""
+        with pytest.raises(ValidationError, match="no effect"):
+            _config(cpu_power, telemetry_enabled=False)
+
+    def test_naming_acpi_without_enabling_the_leg_is_rejected(self):
+        with pytest.raises(ValidationError, match="no effect"):
+            _config(CpuPowerConfig(source="acpi"))
+
     @pytest.mark.parametrize("port", [0, 65536, -1])
     def test_port_must_be_in_range(self, port):
         with pytest.raises(ValidationError, match="prometheus_port"):
@@ -444,6 +454,47 @@ class TestCpuPowerLifecycle:
 
         assert harness.cpu_power_telemetry_blocks_benchmark() is False
         assert harness.finalize_cpu_power_telemetry(0) == 0
+
+    @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
+    def test_naming_acpi_gates_and_fails_the_job_without_required(self, mock_srun, tmp_path):
+        """`source: acpi` names a mandatory provider; `required` only restates it."""
+        mock_srun.return_value = _running_exporter()
+        harness = _harness(
+            tmp_path,
+            [_worker("node-a", range(4))],
+            cpu_power=CpuPowerConfig(enabled=True, source="acpi", required=False, startup_timeout_seconds=0.2),
+        )
+
+        harness.start_cpu_power_telemetry(ProcessRegistry(job_id="12345"))
+
+        assert harness.cpu_power_telemetry_blocks_benchmark() is True
+        assert harness.finalize_cpu_power_telemetry(0) == 1
+
+    @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
+    @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda _node, _iface: "2001:db8::1")
+    def test_an_ipv6_node_binds_the_exporter_to_that_family(self, _mock_ip, mock_srun, tmp_path):
+        """The default 0.0.0.0 bind would serve nobody at the bracketed scrape URL."""
+        mock_srun.return_value = _running_exporter()
+        harness = _harness(tmp_path, [_worker("node-a", range(4))])
+
+        session = harness.start_cpu_power_telemetry(ProcessRegistry(job_id="12345"))
+
+        command = mock_srun.call_args.kwargs["command"]
+        assert command[-2:] == ["--bind", "::"]
+        assert [endpoint.url for endpoint in session.endpoints] == ["http://[2001:db8::1]:9401/metrics"]
+        manifest = json.loads((tmp_path / "cpu_power" / "manifest.json").read_text())
+        assert manifest["exporter"]["command"].endswith("--bind ::")
+
+    @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
+    @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: _node_ip(node))
+    def test_an_ipv4_node_leaves_the_default_bind_alone(self, _mock_ip, mock_srun, tmp_path):
+        """An unconditional `::` would fail to bind where IPv6 is disabled."""
+        mock_srun.return_value = _running_exporter()
+        harness = _harness(tmp_path, [_worker("node-a", range(4))])
+
+        harness.start_cpu_power_telemetry(ProcessRegistry(job_id="12345"))
+
+        assert "--bind" not in mock_srun.call_args.kwargs["command"]
 
     @patch("srtctl.core.power.cpu_session.requests.get")
     @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: _node_ip(node))
