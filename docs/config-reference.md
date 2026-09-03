@@ -1273,8 +1273,14 @@ telemetry:
 | `storage_subdir` | string | `cpu_power` | Output directory below the run log directory; must differ from `telemetry.storage_subdir` |
 
 Publication is gated on coverage: every rail discovered at readiness must have
-sampled across each benchmark run, with no gap larger than 3 seconds. Either
+sampled across each measured interval, with no gap larger than 3 seconds. Either
 `required: true` or `source: acpi` turns a gap into a non-zero job exit.
+
+The measured intervals are the `completed` windows the runner itself published
+under `<telemetry.storage_subdir>/windows/`, one per concurrency series -- not
+the whole script, which also spends time in setup, warmups, and the gaps between
+series. A benchmark type that publishes no window is audited across its whole
+script interval instead.
 
 Nodes are resolved once, before the exporters are launched: the addresses the
 collector scrapes are the same ones handed to AIPerf, and a node that does not
@@ -1289,7 +1295,13 @@ warns when the release does not carry it -- the binary is optional, and
 `make cpu-power-exporter` to build it from the vendored source. Pinning
 `CPU_POWER_EXPORTER_RELEASE=<tag>` makes even `make setup` fail on a failed
 download, and drops the installed binary first, so a failure never leaves a
-different version behind for `validate-setup` to accept.
+different version behind for `validate-setup` to accept. Building locally clears
+that pin marker, so a later pinned download is not skipped as already installed.
+
+`srtctl validate-setup` checks more than the file's existence: an exporter that
+is not executable, or that was built for an architecture other than the one
+`make setup ARCH=` installed, is reported as missing rather than discovered once
+the allocation is already running.
 
 ---
 
