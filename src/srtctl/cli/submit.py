@@ -35,6 +35,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.syntax import Syntax
 from rich.table import Table
 
+from srtctl.cli.mixins.telemetry_stage import CPU_POWER_EXPORTER_BINARY
 from srtctl.core.config import (
     generate_override_configs,
     get_srtslurm_setting,
@@ -440,11 +441,26 @@ def show_config_details(config: SrtConfig) -> None:
 
         if config.telemetry.enabled:
             exporter = config.telemetry.dcgm_exporter
-            details.add_row("telemetry", "provider", "dcgm-power")
-            details.add_row("telemetry", "required", str(config.telemetry.required))
-            details.add_row("telemetry", "artifacts", f"<log_dir>/{config.telemetry.storage_subdir}")
+            cpu_power = config.telemetry.cpu_power
+            # The legs are independent, so the provider row names the ones the
+            # recipe actually enabled rather than assuming DCGM.
+            providers = [
+                name for name, on in (("dcgm-power", exporter is not None), ("cpu-power", cpu_power.enabled)) if on
+            ]
+            details.add_row("telemetry", "provider", ",".join(providers))
             if exporter is not None:
+                details.add_row("telemetry", "required", str(config.telemetry.required))
+                details.add_row("telemetry", "artifacts", f"<log_dir>/{config.telemetry.storage_subdir}")
                 details.add_row("telemetry", "dcgm_exporter", f"{exporter.container_image} (port {exporter.port})")
+            if cpu_power.enabled:
+                details.add_row("telemetry", "cpu_power.source", cpu_power.source)
+                details.add_row("telemetry", "cpu_power.required", str(cpu_power.required))
+                details.add_row("telemetry", "cpu_power.artifacts", f"<log_dir>/{cpu_power.storage_subdir}")
+                details.add_row(
+                    "telemetry",
+                    "cpu_power.exporter",
+                    f"{CPU_POWER_EXPORTER_BINARY} (host, port {cpu_power.prometheus_port})",
+                )
 
         if mooncake_cfg is not None:
             details.add_row("mooncake", "container", mooncake_cfg.container or "<job container>")
