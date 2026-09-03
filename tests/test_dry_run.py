@@ -620,12 +620,16 @@ class TestDryRunTelemetry:
     exporter that has to be installed on every worker host.
     """
 
-    CPU_ONLY = {"telemetry": {"enabled": True, "cpu_power": {"enabled": True, "required": True}}}
+    CPU_ONLY = {
+        "telemetry": {"enabled": True, "cpu_power": {"enabled": True, "required": True, "source": "acpi"}}
+    }
+    # The DCGM leg only runs under sa-bench, which owns the measurement windows.
     DCGM_ONLY = {
+        "benchmark": {"type": "sa-bench"},
         "telemetry": {
             "enabled": True,
             "dcgm_exporter": {"container_image": "nvcr.io/nvidia/dcgm-exporter:4.2.3", "port": 9400},
-        }
+        },
     }
 
     def test_cpu_only_telemetry_does_not_claim_dcgm(self, capsys):
@@ -644,7 +648,12 @@ class TestDryRunTelemetry:
         assert "cpu_power" in output, "the artifact subdir tells operators where readings land"
 
     def test_both_legs_are_reported_together(self, capsys):
-        config = _make_config({"telemetry": {**self.CPU_ONLY["telemetry"], **self.DCGM_ONLY["telemetry"]}})
+        config = _make_config(
+            {
+                "benchmark": self.DCGM_ONLY["benchmark"],
+                "telemetry": {**self.CPU_ONLY["telemetry"], **self.DCGM_ONLY["telemetry"]},
+            }
+        )
         show_config_details(config)
         output = capsys.readouterr().out
         assert "dcgm-power" in output
