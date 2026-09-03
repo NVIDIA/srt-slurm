@@ -2450,6 +2450,10 @@ class SrtConfig:
                 self._reject_inert_cpu_power_demand()
             return
         if telemetry.cpu_power.enabled:
+            if not _is_safe_relative_subpath(telemetry.storage_subdir):
+                raise ValidationError(
+                    "telemetry.storage_subdir must be a safe relative path below the run log directory"
+                )
             self._validate_cpu_power()
         else:
             self._reject_inert_cpu_power_demand()

@@ -1235,7 +1235,7 @@ telemetry:
 | `enabled` | bool | `false` | Enable power collection (see `cpu_power` for the host CPU leg) |
 | `dcgm_exporter` | object/null | `null` | DCGM exporter image, port, and optional command; enables the GPU leg |
 | `default_frequency` | float | `1.0` | GPU power sample interval in seconds; must be at most `3.0` |
-| `storage_subdir` | string | `power` | GPU leg output directory below the run log directory |
+| `storage_subdir` | string | `power` | Safe relative output directory below the run log directory; also holds benchmark measurement windows used by the CPU leg |
 | `required` | bool | `false` | Fail the benchmark when publishable GPU power artifacts cannot be produced |
 | `startup_timeout_seconds` | float | `30.0` | DCGM exporter readiness timeout |
 | `request_timeout_seconds` | float | `2.0` | Per-request exporter timeout; applies to every enabled leg. A scrape is also cut off at twice this value in total, so an exporter that trickles its response cannot hold a collector thread open |
