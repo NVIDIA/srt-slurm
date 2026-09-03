@@ -66,6 +66,10 @@ CPU_POWER_PRODUCER = "srt-slurm.cpu-power"
 CPU_POWER_METRIC = "cpu_power_acpi_watts"
 CPU_POWER_SCOPE = "host_cpu_power_rail_as_reported_by_acpi"
 
+# A scrape of every rail on a dense host is a few KB; a megabyte is a broken or
+# hostile exporter, and reading it to the end would burn the cycle budget.
+MAX_SCRAPE_BYTES = 1 << 20
+
 CPU_SAMPLES_HEADER = (
     "schema_version",
     "timestamp_unix",
@@ -395,10 +399,27 @@ class CpuPowerTelemetrySession:
         return len(rows)
 
     def _poll(self, endpoint: CpuEndpoint) -> _EndpointResult:
+        # requests' timeout is per socket operation, so an exporter that dribbles
+        # one byte at a time never trips it. collect_once abandons a poller that
+        # overruns the cycle, but an abandoned thread keeps the connection open
+        # forever -- one leaked thread and socket per cycle for as long as the
+        # run lasts. The total budget below is what actually ends the scrape.
+        hard_stop = time.monotonic() + 2 * self._settings.request_timeout_seconds
         try:
-            response = requests.get(endpoint.url, timeout=self._settings.request_timeout_seconds)
-            response.raise_for_status()
-            body = response.text
+            with requests.get(
+                endpoint.url, timeout=self._settings.request_timeout_seconds, stream=True
+            ) as response:
+                response.raise_for_status()
+                chunks: list[bytes] = []
+                size = 0
+                for chunk in response.iter_content(8192):
+                    chunks.append(chunk)
+                    size += len(chunk)
+                    if size > MAX_SCRAPE_BYTES:
+                        return _EndpointResult(endpoint.hostname, [], [Reason.ENDPOINT_HTTP_ERROR])
+                    if time.monotonic() > hard_stop:
+                        return _EndpointResult(endpoint.hostname, [], [Reason.ENDPOINT_TIMEOUT])
+                body = b"".join(chunks).decode("utf-8", errors="replace")
         except requests.Timeout:
             return _EndpointResult(endpoint.hostname, [], [Reason.ENDPOINT_TIMEOUT])
         except requests.RequestException:
