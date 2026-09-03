@@ -268,6 +268,11 @@ def _session(log_dir, nodes, **overrides):
     return CpuPowerTelemetrySession(settings=settings, nodes=nodes)
 
 
+def _node_ip(node: str) -> str:
+    """Node names map to addresses; the session only polls literal addresses."""
+    return f"10.0.0.{ord(node[-1]) - ord('a') + 1}"
+
+
 ONE_RAIL = _scrape('cpu_power_acpi_watts{sensor="hwmon0/power1",type="CPU",socket="0"} 42.5')
 
 
@@ -441,7 +446,7 @@ class TestCpuPowerLifecycle:
         assert harness.finalize_cpu_power_telemetry(0) == 0
 
     @patch("srtctl.core.power.cpu_session.requests.get")
-    @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: f"ip-{node}")
+    @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: _node_ip(node))
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
     def test_a_serving_exporter_reaches_readiness_and_publishes(self, mock_srun, _mock_ip, mock_get, tmp_path):
         mock_srun.return_value = _running_exporter()
@@ -455,7 +460,7 @@ class TestCpuPowerLifecycle:
         time.sleep(0.3)
         harness.record_cpu_power_benchmark_span(start, time.time())
         assert harness.finalize_cpu_power_telemetry(0) == 0
-        assert mock_get.call_args.args[0] == "http://ip-node-a:9401/metrics"
+        assert mock_get.call_args.args[0] == "http://10.0.0.1:9401/metrics"
 
         manifest = json.loads((tmp_path / "cpu_power" / "manifest.json").read_text())
         assert manifest["status"] == "complete"
@@ -471,7 +476,7 @@ class TestCpuPowerLifecycle:
         ] == [(True, ["node-a/hwmon0/power1"])]
 
     @patch("srtctl.core.power.cpu_session.requests.get")
-    @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: f"ip-{node}")
+    @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: _node_ip(node))
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
     def test_readings_that_do_not_cover_the_benchmark_do_not_publish(self, mock_srun, _mock_ip, mock_get, tmp_path):
         """Readiness samples alone are not measurement: the run must be bracketed."""
@@ -490,7 +495,7 @@ class TestCpuPowerLifecycle:
         assert Reason.MEASUREMENT_WINDOW_NOT_BRACKETED in manifest["reason_codes"]
 
     @patch("srtctl.core.power.cpu_session.requests.get")
-    @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: f"ip-{node}")
+    @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: _node_ip(node))
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
     def test_a_session_that_never_saw_a_benchmark_never_passes_vacuously(self, mock_srun, _mock_ip, mock_get, tmp_path):
         mock_srun.return_value = _running_exporter()
@@ -505,12 +510,64 @@ class TestCpuPowerLifecycle:
         assert manifest["benchmark_spans"] == []
 
     @patch("srtctl.core.power.cpu_session.requests.get")
+    @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: node)
+    @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
+    def test_a_node_that_resolves_to_its_own_name_is_never_polled(self, mock_srun, _mock_ip, mock_get, tmp_path):
+        """get_hostname_ip hands back the hostname when it cannot resolve it.
+
+        A URL carrying that name would be re-resolved inside every requests.get,
+        before any socket exists, where the watchdog cannot reach -- one stuck
+        poll thread per cycle behind a wedged resolver.
+        """
+        mock_srun.return_value = _running_exporter()
+        harness = _harness(tmp_path, [_worker("node-a", range(4))])
+
+        session = harness.start_cpu_power_telemetry(ProcessRegistry(job_id="12345"))
+
+        assert harness.cpu_power_telemetry_blocks_benchmark() is True
+        outcome = session.stop_and_finalize()
+        assert Reason.ENDPOINT_RESOLUTION_FAILED in outcome.reason_codes
+        assert outcome.publication_valid is False
+        assert mock_get.call_count == 0
+
+    @patch("srtctl.core.power.cpu_session.requests.get")
+    @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
+    def test_a_wedged_resolver_is_bounded_and_leaves_no_growing_thread_pile(self, mock_srun, mock_get, tmp_path):
+        """Resolution happens once, under the startup deadline -- not per scrape."""
+        mock_srun.return_value = _running_exporter()
+        wedged = threading.Event()
+
+        def never_resolves(_node, _iface):
+            wedged.wait()
+            return "10.0.0.1"
+
+        harness = _harness(tmp_path, [_worker("node-a", range(4))])
+        before = threading.active_count()
+        try:
+            with patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=never_resolves):
+                started = time.monotonic()
+                session = harness.start_cpu_power_telemetry(ProcessRegistry(job_id="12345"))
+                assert harness.cpu_power_telemetry_blocks_benchmark() is True
+                elapsed = time.monotonic() - started
+                # One abandoned resolver, and no scrape thread piling up behind it.
+                time.sleep(0.5)
+                assert threading.active_count() <= before + 2
+                outcome = session.stop_and_finalize()
+        finally:
+            wedged.set()
+
+        assert elapsed < 5.0
+        assert Reason.ENDPOINT_RESOLUTION_FAILED in outcome.reason_codes
+        assert outcome.publication_valid is False
+        assert mock_get.call_count == 0
+
+    @patch("srtctl.core.power.cpu_session.requests.get")
     @patch("srtctl.core.power.cpu_session.get_hostname_ip")
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
     def test_an_unresolvable_node_fails_readiness_closed(self, mock_srun, mock_ip, mock_get, tmp_path):
         """Readiness on the survivors would silently shrink what the run covers."""
         mock_srun.return_value = _running_exporter()
-        mock_ip.side_effect = lambda node, _iface: "" if node == "node-b" else f"ip-{node}"
+        mock_ip.side_effect = lambda node, _iface: "" if node == "node-b" else _node_ip(node)
         mock_get.return_value = _response(ONE_RAIL)
         harness = _harness(tmp_path, [_worker("node-a", range(4)), _worker("node-b", range(4), index=1)])
 
@@ -522,7 +579,7 @@ class TestCpuPowerLifecycle:
         assert outcome.publication_valid is False
 
     @patch("srtctl.core.power.cpu_session.requests.get")
-    @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: f"ip-{node}")
+    @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: _node_ip(node))
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
     def test_a_rail_that_disappears_mid_benchmark_does_not_publish(self, mock_srun, _mock_ip, mock_get, tmp_path):
         """The surviving rails keep the host sampling, so per-host coverage would pass."""
@@ -556,7 +613,7 @@ class TestCpuPowerLifecycle:
         assert "node-a/hwmon0/power1" not in gaps, "the rail that vanished cannot report a gap"
 
     @patch("srtctl.core.power.cpu_session.requests.get")
-    @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: f"ip-{node}")
+    @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: _node_ip(node))
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
     def test_a_dribbling_exporter_is_abandoned_and_never_publishes(self, mock_srun, _mock_ip, mock_get, tmp_path):
         """A benchmark that exits 0 is not evidence the CPU leg collected anything.
@@ -590,7 +647,7 @@ class TestCpuPowerLifecycle:
         assert Reason.ENDPOINT_TIMEOUT in manifest["reason_codes"]
 
     @patch("srtctl.core.power.cpu_session.requests.get")
-    @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: f"ip-{node}")
+    @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: _node_ip(node))
     def test_an_oversized_scrape_is_cut_off(self, _mock_ip, mock_get, tmp_path):
         """A runaway body would otherwise be read to the end on the cycle's budget."""
         mock_get.return_value = _response("", chunks=iter([b"x" * (MAX_SCRAPE_BYTES + 1)]))
@@ -603,7 +660,7 @@ class TestCpuPowerLifecycle:
         assert outcome.publication_valid is False
 
     @patch("srtctl.core.power.cpu_session.requests.get")
-    @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: f"ip-{node}")
+    @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: _node_ip(node))
     def test_readiness_reached_after_the_deadline_is_rejected(self, _mock_ip, mock_get, tmp_path):
         """A set event proves readiness happened, not that it happened in time."""
 
