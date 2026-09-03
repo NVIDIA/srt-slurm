@@ -1,15 +1,13 @@
-# OFFLINE-DISAGG 4c8g x72 on the FOUR-NAMESPACE dynamo topology (pair-a/b/c/d).
-# Client settings brought to parity with the trtllm-serve offline reference,
-# submission_repro/offline-disagg-x72_323254/config/client_4c8g_x72_90min_mc65536.yaml.
-# The name previously read "1c2g" -- stale from the point this was copied from; the
-# geometry has been 4c8g x72 throughout.
-name: dsr1-gr100-dynamo-offline-4c8g-x72-submission
+# A real MLPerf offline-disaggregated submission config, kept verbatim apart from
+# internal paths and identifiers, which have been genericized. It is a fixture so
+# the passthrough is exercised against a config nobody here wrote.
+name: dsr1-dynamo-offline-submission
 version: '1.0'
 type: submission
 benchmark_mode: offline
 
 model_params:
-  name: models--centml--DeepSeek-R1-NVFP4-v2-mlpinf-flatten
+  name: deepseek-r1-nvfp4
   tokenizer_name: "${MODEL_DIR}"
   temperature: 0.0
   top_k: 1
@@ -31,18 +29,15 @@ datasets:
       extras:
         subset_column: dataset
         question_column: question
-        # CHANGED 2026-08-04: was the trtllm-serve path
-        #   /lustre/fsw/coreai_mlperf_inference/bofengl/models/DeepSeek-R1-NVFP4-v2-mlpinf
-        # which the dynamo launchers do NOT mount, so the accuracy scorer handed it to
-        # HuggingFace, which fell back to treating it as a repo id and raised
+        # This previously pointed at a path the serving launchers do not mount, so
+        # the accuracy scorer handed it to HuggingFace, which fell back to treating
+        # it as a repo id and raised
         #   HFValidationError: Repo id must be in the form 'repo_name' or 'namespace/repo_name'
-        # Every 7-node run (355233/355234/355338) completed perf and then died here.
-        # Now points at the model actually being served -- the same centml flatten checkout
-        # model_params.name/tokenizer_name use, and the literal value of MODEL_DIR from
-        # endpoint_env.yaml (mounted at /home/mlperf_inference_storage). Written literally
-        # rather than as ${MODEL_DIR}: expansion is proven for the top-level tokenizer_name
-        # but unverified for this nested extras key, and a stale ${...} would cost a run.
-        tokenizer_path: /home/mlperf_inference_storage/models--centml--DeepSeek-R1-NVFP4-v2-mlpinf-flatten
+        # Several runs completed the performance phase and then died here. It must
+        # name the model actually being served. Written literally rather than as
+        # ${MODEL_DIR}: expansion is proven for the top-level tokenizer_name but
+        # unverified for this nested extras key, and a stale ${...} would cost a run.
+        tokenizer_path: /models/deepseek-r1
 settings:
   runtime:
     # 5,400,000 ms = 90 min (was 60,000 = 1 min, which gated nothing and let a short
@@ -62,7 +57,7 @@ settings:
   load_pattern: {type: max_throughput}   # offline: flood all samples, no target_qps
   client:
     # 64 (was 16) = reference value, "multiple of 8 gen servers / 8 frontends".
-    # This point runs 4 frontends (matching the x72 server test point), and 64 divides
+    # This point runs 4 frontends, and 64 divides
     # evenly by 4 as well -- 16 workers per frontend, 8 per gen server.
     num_workers: 64
     # 65,536 (was 16,000) = reference value ("2x of x36"). Budget is 28,232 ephemeral

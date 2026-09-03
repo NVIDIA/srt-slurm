@@ -6,8 +6,8 @@
 
 This client does not use LoadGen; it writes its own report, specified in the
 client repo at docs/metrics/report_design.md (github.com/mlcommons/endpoints).
-The field list below follows that spec and was cross-checked against real runs
-under endpoints-launch/sflow_output:
+The field list below follows that spec and was cross-checked against the output
+of real MLPerf runs:
 
   performance/result_summary.json   qps, tps, sample counts, and ttft/tpot/latency
                                     /output_sequence_lengths blocks
@@ -20,9 +20,9 @@ for the other.
 
 Two things only the real runs showed:
 
-* The location moved. A July run (286161) wrote ``result_summary.json`` at the
-  top level; August runs (355234, 412798, 474440) write
-  ``performance/result_summary.json``. Both are searched, newest layout first.
+* The location moved. An earlier run wrote ``result_summary.json`` at the top
+  level; later runs write ``performance/result_summary.json``. Both are searched,
+  newest layout first.
 * Every duration is in **nanoseconds**, including the ``percentiles`` maps. The
   report.txt renders them as milliseconds, so a value copied from the text
   report would be off by 1e6. Token-length series are counts and must not scale.

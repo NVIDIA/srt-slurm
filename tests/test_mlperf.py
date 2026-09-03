@@ -5,6 +5,8 @@
 
 import importlib.util
 import json
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -29,9 +31,9 @@ resolve_config = _load_script_module("mlperf_resolve", "resolve_config.py")
 _parse = _load_script_module("mlperf_parse", "parse_report.py")
 parse_report, build_rollup = _parse.parse_report, _parse.build_rollup
 
-# A real submission config, taken verbatim from endpoints-launch
-# (GR100-NVL72 x72, DeepSeek-R1, point_offline_disagg_dynamo_x72). Kept as a
-# fixture so the passthrough is tested against a config nobody here wrote.
+# A real DeepSeek-R1 submission config from endpoints-launch, kept as a fixture
+# so the passthrough is tested against a config nobody here wrote. Internal paths
+# and identifiers in it have been genericized.
 FIXTURE = Path(__file__).parent / "fixtures" / "mlperf_client_submission.yaml"
 
 
@@ -96,6 +98,56 @@ class TestMLPerfScript:
         assert "benchmark-rollup.json" in BENCH.read_text()
 
 
+class TestBenchTargetsTheInjectedFrontend:
+    """Client and frontend commonly land on different Slurm nodes.
+
+    With `benchmark.client_dedicated_node` or a `client_placement` that differs
+    from the frontend's, the only routable address is the one srt-slurm injects
+    as SRT_FRONTEND_HOST/PORT — the same contract agentperf and
+    `benchmark_stage.py::_get_benchmark_env` rely on. A localhost default here
+    would benchmark nothing and still exit 0, so the ENDPOINTS line is executed
+    directly rather than asserted on by substring.
+    """
+
+    def _endpoints_for(self, **env_overrides):
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("SRT_FRONTEND", "MLPERF_"))}
+        env.update(env_overrides)
+        line = next(line.strip() for line in BENCH.read_text().splitlines() if line.strip().startswith("ENDPOINTS="))
+        result = subprocess.run(
+            ["bash", "-c", f'{line}; printf "%s" "$ENDPOINTS"'],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return result.stdout
+
+    @pytest.mark.parametrize("mode", ["perf", "acc", "both"])
+    def test_targets_the_injected_frontend_node(self, mode):
+        """The frontend's real IP, for every mode -- mode selects which report
+        files get parsed, so a regression could plausibly be mode-specific."""
+        assert (
+            self._endpoints_for(SRT_FRONTEND_HOST="10.65.4.12", SRT_FRONTEND_PORT="9000", MLPERF_MODE=mode)
+            == "http://10.65.4.12:9000"
+        )
+
+    def test_defaults_the_port_but_never_the_host(self):
+        """Port has a sane default; host does not, because guessing it wrong
+        means silently benchmarking the wrong machine."""
+        assert self._endpoints_for(SRT_FRONTEND_HOST="10.65.4.12") == "http://10.65.4.12:8000"
+
+    def test_explicit_endpoints_override_the_injected_one(self):
+        """The multi-frontend escape hatch must win over the injected default."""
+        assert (
+            self._endpoints_for(
+                SRT_FRONTEND_HOST="10.65.4.12",
+                SRT_FRONTEND_PORT="9000",
+                MLPERF_ENDPOINTS="http://10.0.0.1:8000,http://10.0.0.2:8000",
+            )
+            == "http://10.0.0.1:8000,http://10.0.0.2:8000"
+        )
+
+
 class TestResolveRealSubmissionConfig:
     """Exercised against a real submission config, not one written for the test."""
 
@@ -154,7 +206,7 @@ class TestResolveRealSubmissionConfig:
 
 
 class TestParseRealReport:
-    """Against unedited output from real MLPerf runs under endpoints-launch.
+    """Against unedited output from real MLPerf runs.
 
     Expected values are cross-checked against the human-readable report.txt the
     client wrote beside each summary, so these assert agreement with the client's
