@@ -33,6 +33,10 @@ tachometer-scraper:
 cpu-power-exporter:
 	cargo build --release --locked --bin cpu-power-exporter
 	install -Dm755 target/release/cpu-power-exporter bin/cpu-power-exporter
+	@# A locally built binary is not a release. Leaving the marker behind would
+	@# tell a later pinned download that the tag is already installed, so the
+	@# job would run this working-tree build while the marker claims otherwise.
+	rm -f bin/.cpu-power-exporter.release
 
 # bin/.cpu-power-exporter.release records which tag is installed, so pinning
 # CPU_POWER_EXPORTER_RELEASE to a different tag re-downloads (upgrade or
