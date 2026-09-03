@@ -36,6 +36,7 @@ from pathlib import Path
 from prometheus_client.parser import text_string_to_metric_families
 
 from srtctl import __version__ as PRODUCER_VERSION
+from srtctl.core.ip_utils import url_host
 from srtctl.core.power.contract import (
     CLOCK_SOURCE,
     COLLECT_CYCLE_TIMEOUT_GRACE_SECONDS,
@@ -127,8 +128,7 @@ class CpuEndpoint:
     @property
     def url(self) -> str:
         """The scrape URL, which is also what the benchmark client is handed."""
-        host = f"[{self.address}]" if ":" in self.address else self.address
-        return f"http://{host}:{self.port}/metrics"
+        return f"http://{url_host(self.address)}:{self.port}/metrics"
 
 
 @dataclass(frozen=True)

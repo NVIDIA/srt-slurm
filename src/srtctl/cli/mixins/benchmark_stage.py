@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 
 from srtctl.core.fingerprint import format_identity_verification, verify_identity
 from srtctl.core.health import wait_for_model
+from srtctl.core.ip_utils import url_host
 from srtctl.core.lockfile import collect_worker_fingerprints
 from srtctl.core.power.contract import (
     CONTAINER_LOG_DIR,
@@ -622,16 +623,16 @@ class BenchmarkStageMixin:
         if logical_workers_only:
             if logical_endpoints is None:
                 logical_endpoints = self._logical_worker_endpoints()
-            urls = [f"http://{host}:{port}/metrics" for _, host, port in logical_endpoints]
+            urls = [f"http://{url_host(host)}:{port}/metrics" for _, host, port in logical_endpoints]
         else:
             if self.config.frontend.type in {"vllm", "vllm-router"}:
                 for process in self.backend_processes:
                     if self.config.frontend.type == "vllm" and process.endpoint_mode == "agg" and process.is_leader:
                         host = get_hostname_ip(process.node, self.runtime.network_interface)
-                        urls.append(f"http://{host}:{FRONTEND_PUBLIC_PORT}/metrics")
+                        urls.append(f"http://{url_host(host)}:{FRONTEND_PUBLIC_PORT}/metrics")
                     elif self.config.frontend.type == "vllm-router" and process.http_port > 0:
                         host = get_hostname_ip(process.node, self.runtime.network_interface)
-                        urls.append(f"http://{host}:{process.http_port}/metrics")
+                        urls.append(f"http://{url_host(host)}:{process.http_port}/metrics")
             # TRT-LLM workers only publish engine metrics when launched with
             # --publish-events-and-metrics (pre-v1.3.0 Dynamo gates the whole
             # worker /metrics surface on it; observability.enabled sets it at
@@ -649,7 +650,7 @@ class BenchmarkStageMixin:
                 for process in self.backend_processes:
                     if process.sys_port > 0:
                         host = get_hostname_ip(process.node, self.runtime.network_interface)
-                        urls.append(f"http://{host}:{process.sys_port}/metrics")
+                        urls.append(f"http://{url_host(host)}:{process.sys_port}/metrics")
 
         # Add KVBM metrics endpoints for prefill processes with DYN_KVBM_METRICS_PORT
         prefill_env = getattr(self.config.backend, "prefill_environment", {})
@@ -659,7 +660,7 @@ class BenchmarkStageMixin:
             for process in self.backend_processes:
                 if process.endpoint_mode in ("prefill", "agg") and process.is_leader:
                     host = get_hostname_ip(process.node, self.runtime.network_interface)
-                    urls.append(f"http://{host}:{kvbm_port}/metrics")
+                    urls.append(f"http://{url_host(host)}:{kvbm_port}/metrics")
 
         # Add ACPI CPU power exporter endpoints (one per worker node) when enabled.
         telemetry = self.config.telemetry

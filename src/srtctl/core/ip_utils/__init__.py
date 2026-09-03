@@ -7,6 +7,7 @@ IP address resolution utilities.
 This module provides:
 - get_node_ip(): Get IP address for a remote SLURM node (via srun)
 - get_local_ip(): Get local IP address
+- url_host(): Spell an address the way a URL authority needs it
 """
 
 import logging
@@ -17,6 +18,16 @@ logger = logging.getLogger(__name__)
 
 # Path to the bash scripts directory
 SCRIPTS_DIR = Path(__file__).parent
+
+
+def url_host(address: str) -> str:
+    """Spell ``address`` the way a URL authority needs it.
+
+    An IPv6 literal must be bracketed, or the colons inside the address are
+    read as the port separator and the URL is malformed. A hostname or an IPv4
+    address is handed back unchanged.
+    """
+    return f"[{address}]" if ":" in address else address
 
 
 def _run_bash_function(
