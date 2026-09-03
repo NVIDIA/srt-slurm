@@ -223,7 +223,7 @@ def _abort_scrape(response: requests.Response) -> None:
         pass
     try:
         response.close()
-    except Exception:  # noqa: BLE001 - the scrape is being abandoned either way
+    except Exception:  # the scrape is being abandoned either way
         logger.debug("closing an abandoned CPU power scrape failed", exc_info=True)
 
 
