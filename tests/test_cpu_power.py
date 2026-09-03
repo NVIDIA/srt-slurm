@@ -982,9 +982,7 @@ class TestCpuPowerScrapeBudget:
             def __init__(self):
                 self.timeout = None
                 self.send_timeout = None
-                self.responses = iter(
-                    [b"HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\n\r\nmetric 1\n", b""]
-                )
+                self.responses = iter([b"HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\n\r\nmetric 1\n", b""])
 
             def settimeout(self, timeout):
                 self.timeout = timeout
