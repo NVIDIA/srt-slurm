@@ -813,10 +813,12 @@ class TestCpuPowerServerMetricsUrls:
         stage.runtime = SimpleNamespace(network_interface="eth0")
         return stage
 
-    def _urls(self, stage):
-        with patch(
-            "srtctl.cli.mixins.benchmark_stage.get_hostname_ip",
-            side_effect=lambda node, _iface: f"ip-{node}",
+    def _urls(self, stage, resolve=None):
+        resolve = resolve or (lambda node, _iface: _node_ip(node))
+        with (
+            patch("srtctl.cli.mixins.benchmark_stage.get_hostname_ip", side_effect=resolve),
+            # The CPU branch goes through the telemetry session's own resolver.
+            patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=resolve),
         ):
             env = stage._get_aiperf_server_metrics_env()
         return env.get("AIPERF_SERVER_METRICS_URLS", "").split(",") if env else []
@@ -827,8 +829,8 @@ class TestCpuPowerServerMetricsUrls:
             cpu_power=CpuPowerConfig(enabled=True),
         )
 
-        assert "http://ip-node-a:9401/metrics" in self._urls(stage)
-        assert "http://ip-node-b:9401/metrics" in self._urls(stage)
+        assert "http://10.0.0.1:9401/metrics" in self._urls(stage)
+        assert "http://10.0.0.2:9401/metrics" in self._urls(stage)
 
     def test_vllm_frontend_still_gets_the_cpu_urls(self):
         """The vLLM branch used to return early, dropping the CPU endpoints."""
@@ -837,10 +839,30 @@ class TestCpuPowerServerMetricsUrls:
 
         urls = self._urls(stage)
 
-        assert "http://ip-node-a:9401/metrics" in urls
+        assert "http://10.0.0.1:9401/metrics" in urls
         assert any(url.endswith("8000/metrics") for url in urls)
 
     def test_disabled_leg_adds_no_cpu_urls(self):
         stage = self._stage([_worker("node-a", range(4))])
 
         assert all(":9401/" not in url for url in self._urls(stage))
+
+    def test_a_node_that_never_resolves_is_not_advertised(self):
+        """The session refuses such a node; handing it to AIPerf only buys DNS failures."""
+        stage = self._stage(
+            [_worker("node-a", range(4)), _worker("node-b", range(4), index=1)],
+            cpu_power=CpuPowerConfig(enabled=True),
+        )
+
+        urls = self._urls(stage, resolve=lambda node, _iface: node if node == "node-b" else _node_ip(node))
+
+        assert "http://10.0.0.1:9401/metrics" in urls
+        assert all("node-b" not in url for url in urls)
+
+    def test_an_ipv6_node_is_bracketed(self):
+        """Unbracketed, the address's own colons read as the port separator."""
+        stage = self._stage([_worker("node-a", range(4))], cpu_power=CpuPowerConfig(enabled=True))
+
+        urls = self._urls(stage, resolve=lambda _node, _iface: "2001:db8::1")
+
+        assert "http://[2001:db8::1]:9401/metrics" in urls
