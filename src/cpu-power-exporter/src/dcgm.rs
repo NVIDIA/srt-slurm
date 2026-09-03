@@ -129,9 +129,10 @@ type FnDcgmEntitiesGetLatestValues = unsafe extern "C" fn(
     values: *mut FieldValueV2,
 ) -> i32;
 
-// c_char alias without a libc dependency.
+// c_char is i8 on x86_64 and u8 on aarch64; use the stdlib alias so the fn
+// pointer types match CString::as_ptr() on both architectures.
 #[allow(non_camel_case_types)]
-type libc_c_char = i8;
+type libc_c_char = std::os::raw::c_char;
 
 // ── Loaded library ────────────────────────────────────────────────────────────
 
