@@ -151,8 +151,8 @@ class TelemetryStageMixin:
             return None
 
         exporter_config = telemetry.dcgm_exporter
-        if exporter_config is None:  # guaranteed by schema validation
-            raise ValueError("telemetry.dcgm_exporter is required when telemetry is enabled")
+        if exporter_config is None:
+            return None
 
         worker_nodes = sorted({process.node for process in self.backend_processes})
         power_dir = self.runtime.log_dir / telemetry.storage_subdir

@@ -2442,11 +2442,12 @@ class SrtConfig:
             )
 
     def _validate_telemetry(self):
-        """Validate DCGM power telemetry."""
+        """Validate telemetry config."""
         telemetry = self.telemetry
         if telemetry is None or not telemetry.enabled:
             return
-        self._validate_dcgm_power()
+        if telemetry.dcgm_exporter is not None:
+            self._validate_dcgm_power()
 
     @classmethod
     def from_yaml(cls, yaml_path: Path) -> "SrtConfig":
