@@ -97,6 +97,13 @@ echo "[mlperf] client: $CLIENT_RESOLVED"
 # to hand the client more than one.
 ENDPOINTS=${MLPERF_ENDPOINTS:-http://${SRT_FRONTEND_HOST}:${SRT_FRONTEND_PORT:-8000}}
 
+# Record which node the client is on next to the address it is targeting. With
+# client_dedicated_node or a client_placement away from the frontend, these are
+# different hosts, and nothing else in the run artifacts captures the client's
+# own node -- so without this line a cross-node run is indistinguishable from a
+# same-node one after the fact.
+echo "[mlperf] client node: $(hostname) -> targeting $ENDPOINTS"
+
 RESULTS_DIR=/logs/mlperf
 mkdir -p "$RESULTS_DIR"
 RESOLVED_CONFIG="$RESULTS_DIR/client_config_resolved.yaml"
