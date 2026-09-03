@@ -203,33 +203,58 @@ jobs:
           previous=$(gh release list --limit 1000 --json tagName --jq '.[].tagName' | sort -V | tail -n1)
           mkdir -p dist
           # Every merge cuts a release, so an unchanged binary is re-uploaded
-          # from the previous one to keep each release self-contained. A gap is
-          # a warning, not a failure: the first-ever release has nothing to
-          # carry forward, and a binary added later is absent from older ones.
-          # An asset the previous release never had is a real gap (a binary
-          # added later), so it warns. A download that fails while the asset
-          # IS listed is an operational failure and must not silently ship a
-          # release missing a binary users already had.
+          # from the previous one to keep each release self-contained. The
+          # expected set is both architectures plus their checksums. A
+          # previous release holding only part of that set is damaged, not a
+          # gap: carrying the remainder forward would quietly propagate a
+          # release that `make setup` cannot install on one architecture. Only
+          # a previous release with none of the assets is a real gap (the
+          # first-ever release, or a binary introduced after that tag).
           carry() {
+            prefix=$1
+            shift
+            expected=""
+            for suffix in "$@"; do
+              expected="$expected $prefix-$suffix $prefix-$suffix.sha256"
+            done
             if [ -z "$previous" ]; then
-              echo "::warning::No previous release to carry $1 forward from; this release omits it"
+              echo "::warning::No previous release to carry $prefix forward from; this release omits it"
               return 0
             fi
             if ! assets=$(gh release view "$previous" --json assets --jq '.assets[].name'); then
               echo "::error::Could not list assets of previous release $previous"
               return 1
             fi
-            if ! printf '%s\n' "$assets" | grep -q "^$1-"; then
-              echo "::warning::Previous release $previous has no $1 assets; this release omits them"
+            found=0
+            missing=""
+            for name in $expected; do
+              if printf '%s\n' "$assets" | grep -qxF "$name"; then
+                found=$((found + 1))
+              else
+                missing="$missing $name"
+              fi
+            done
+            if [ "$found" -eq 0 ]; then
+              echo "::warning::Previous release $previous has no $prefix assets; this release omits them"
               return 0
             fi
-            if ! gh release download "$previous" --pattern "$1-*" --dir dist; then
-              echo "::error::Failed to download $1 assets from $previous"
+            if [ -n "$missing" ]; then
+              echo "::error::Previous release $previous is missing $prefix assets:$missing"
               return 1
             fi
+            if ! gh release download "$previous" --pattern "$prefix-*" --dir dist; then
+              echo "::error::Failed to download $prefix assets from $previous"
+              return 1
+            fi
+            for name in $expected; do
+              if [ ! -f "dist/$name" ]; then
+                echo "::error::Carried-forward $name never landed in dist"
+                return 1
+              fi
+            done
           }
-          [ "$TACHOMETER_CHANGED" = "true" ] || carry tachometer-scraper
-          [ "$CPU_POWER_EXPORTER_CHANGED" = "true" ] || carry cpu-power-exporter
+          [ "$TACHOMETER_CHANGED" = "true" ] || carry tachometer-scraper x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
+          [ "$CPU_POWER_EXPORTER_CHANGED" = "true" ] || carry cpu-power-exporter x86_64-unknown-linux-musl aarch64-unknown-linux-musl
 
       - name: Create release
         env:
@@ -242,6 +267,27 @@ jobs:
           shopt -s nullglob
           # An unexpanded dist/* glob would be passed through as a literal path.
           assets=(dist/*)
+          # Each binary is either absent from this release entirely (nothing
+          # built and nothing to carry forward) or complete for both
+          # architectures with checksums. Half a set installs on one
+          # architecture and 404s on the other.
+          for spec in "tachometer-scraper x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu" \
+                      "cpu-power-exporter x86_64-unknown-linux-musl aarch64-unknown-linux-musl"; do
+            set -- $spec
+            prefix=$1
+            shift
+            present=()
+            missing=()
+            for suffix in "$@"; do
+              for name in "$prefix-$suffix" "$prefix-$suffix.sha256"; do
+                if [ -f "dist/$name" ]; then present+=("$name"); else missing+=("$name"); fi
+              done
+            done
+            if [ "${#present[@]}" -ne 0 ] && [ "${#missing[@]}" -ne 0 ]; then
+              echo "::error::$TAG would ship an incomplete $prefix set; missing: ${missing[*]}"
+              exit 1
+            fi
+          done
           echo "Publishing $TAG with ${#assets[@]} asset(s)"
           gh release create "$TAG" "${assets[@]}" \
             --target "$TARGET" \
