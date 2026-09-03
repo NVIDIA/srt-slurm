@@ -25,6 +25,7 @@ from __future__ import annotations
 import csv
 import logging
 import math
+import socket
 import threading
 import time
 from collections.abc import Sequence
@@ -200,6 +201,30 @@ def parse_cpu_power_scrape(text: str) -> tuple[tuple[CpuPowerReading, ...], tupl
         reasons.append(Reason.CPU_POWER_METRIC_MISSING)
 
     return tuple(by_sensor[sensor] for sensor in sorted(by_sensor)), dedupe(reasons)
+
+
+def _abort_scrape(response: requests.Response) -> None:
+    """End a scrape that overran its budget, from another thread.
+
+    Closing the response is not enough: a reader blocked in recv stays blocked
+    until the peer sends something. Shutting the socket down fails the read
+    immediately, which is the only way the budget is a wall-clock guarantee.
+    """
+    raw = getattr(response, "raw", None)
+    sock = getattr(getattr(raw, "_connection", None), "sock", None)
+    if sock is None:
+        # urllib3 hands the socket to http.client, which wraps it twice.
+        sock = getattr(getattr(getattr(raw, "_fp", None), "fp", None), "raw", None)
+        sock = getattr(sock, "_sock", None)
+    try:
+        if sock is not None:
+            sock.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
+    try:
+        response.close()
+    except Exception:  # noqa: BLE001 - the scrape is being abandoned either way
+        logger.debug("closing an abandoned CPU power scrape failed", exc_info=True)
 
 
 class CpuPowerTelemetrySession:
@@ -412,14 +437,32 @@ class CpuPowerTelemetrySession:
         return len(rows)
 
     def _poll(self, endpoint: CpuEndpoint) -> _EndpointResult:
-        # requests' timeout is per socket operation, so an exporter that dribbles
-        # one byte at a time never trips it. collect_once abandons a poller that
-        # overruns the cycle, but an abandoned thread keeps the connection open
-        # forever -- one leaked thread and socket per cycle for as long as the
-        # run lasts. The total budget below is what actually ends the scrape.
-        hard_stop = time.monotonic() + 2 * self._settings.request_timeout_seconds
+        # requests' timeout is per socket operation, and a chunk read blocks
+        # until the chunk is full, so an exporter that trickles bytes trips
+        # neither. collect_once can abandon such a poller but cannot end it: the
+        # thread and its socket would survive every cycle for the whole run.
+        # The watchdog is what actually ends the scrape -- it tears the socket
+        # down under the reader, which fails the read for real.
+        expired = threading.Event()
+        lock = threading.Lock()
+        open_response: list[requests.Response] = []
+
+        def abort() -> None:
+            with lock:
+                expired.set()
+                for response in open_response:
+                    _abort_scrape(response)
+
+        watchdog = threading.Timer(2 * self._settings.request_timeout_seconds, abort)
+        watchdog.daemon = True
+        watchdog.start()
         try:
             with requests.get(endpoint.url, timeout=self._settings.request_timeout_seconds, stream=True) as response:
+                with lock:
+                    # The watchdog may have fired between the request and here.
+                    open_response.append(response)
+                    if expired.is_set():
+                        _abort_scrape(response)
                 response.raise_for_status()
                 chunks: list[bytes] = []
                 size = 0
@@ -428,13 +471,17 @@ class CpuPowerTelemetrySession:
                     size += len(chunk)
                     if size > MAX_SCRAPE_BYTES:
                         return _EndpointResult(endpoint.hostname, [], [Reason.ENDPOINT_HTTP_ERROR])
-                    if time.monotonic() > hard_stop:
-                        return _EndpointResult(endpoint.hostname, [], [Reason.ENDPOINT_TIMEOUT])
                 body = b"".join(chunks).decode("utf-8", errors="replace")
         except requests.Timeout:
             return _EndpointResult(endpoint.hostname, [], [Reason.ENDPOINT_TIMEOUT])
-        except requests.RequestException:
-            return _EndpointResult(endpoint.hostname, [], [Reason.ENDPOINT_HTTP_ERROR])
+        except (requests.RequestException, OSError, ValueError):
+            # A torn-down socket surfaces as a transport error, not a timeout.
+            reason = Reason.ENDPOINT_TIMEOUT if expired.is_set() else Reason.ENDPOINT_HTTP_ERROR
+            return _EndpointResult(endpoint.hostname, [], [reason])
+        finally:
+            watchdog.cancel()
+        if expired.is_set():
+            return _EndpointResult(endpoint.hostname, [], [Reason.ENDPOINT_TIMEOUT])
 
         readings, reasons = parse_cpu_power_scrape(body)
         return _EndpointResult(endpoint.hostname, list(readings), list(reasons))
