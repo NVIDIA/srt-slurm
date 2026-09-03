@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from marshmallow import ValidationError
 
+from srtctl.backends import BackendConfig, SGLangProtocol, TRTLLMProtocol
 from srtctl.cli.mixins.telemetry_stage import TelemetryStageMixin
 from srtctl.core.power.contract import Reason
 from srtctl.core.power.cpu_session import (
@@ -31,6 +32,7 @@ from srtctl.core.processes import ProcessRegistry
 from srtctl.core.schema import (
     BenchmarkConfig,
     CpuPowerConfig,
+    FrontendConfig,
     ModelConfig,
     ObservabilityConfig,
     ResourceConfig,
@@ -50,12 +52,17 @@ def _config(
     telemetry_enabled: bool = True,
     benchmark: BenchmarkConfig | None = None,
     observability: ObservabilityConfig | None = None,
+    backend: BackendConfig | None = None,
+    frontend: FrontendConfig | None = None,
+    resources: ResourceConfig | None = None,
     **telemetry_kwargs,
 ) -> SrtConfig:
     return SrtConfig(
         name="test",
         model=ModelConfig(path="/model", container="/image", precision="fp4"),
-        resources=ResourceConfig(gpu_type="gb200"),
+        resources=resources or ResourceConfig(gpu_type="gb200"),
+        backend=backend or SGLangProtocol(),
+        frontend=frontend or FrontendConfig(),
         benchmark=benchmark or BenchmarkConfig(type="manual"),
         telemetry=TelemetryConfig(enabled=telemetry_enabled, cpu_power=cpu_power, **telemetry_kwargs),
         observability=observability or ObservabilityConfig(),
@@ -149,6 +156,64 @@ class TestCpuPowerSchema:
             _config(
                 CpuPowerConfig(enabled=True, prometheus_port=9401),
                 observability=ObservabilityConfig(enabled=True, tachometer=tachometer),
+            )
+
+    def test_port_may_not_collide_with_a_dynamo_system_port(self):
+        """A Dynamo worker binds its assigned system-status port on the exporter node."""
+        with pytest.raises(ValidationError, match="Dynamo system port"):
+            _config(
+                CpuPowerConfig(enabled=True, prometheus_port=7500),
+                resources=ResourceConfig(gpu_type="gb200", agg_nodes=1, agg_workers=1),
+            )
+
+    def test_each_per_process_dynamo_system_port_is_checked(self):
+        """Packed workers receive consecutive system ports on their shared node."""
+        with pytest.raises(ValidationError, match="7501"):
+            _config(
+                CpuPowerConfig(enabled=True, prometheus_port=7501),
+                resources=ResourceConfig(gpu_type="gb200", agg_nodes=1, agg_workers=2),
+            )
+
+    def test_an_unallocated_dynamo_system_port_is_allowed(self):
+        config = _config(
+            CpuPowerConfig(enabled=True, prometheus_port=7501),
+            resources=ResourceConfig(gpu_type="gb200", agg_nodes=1, agg_workers=1),
+        )
+
+        assert config.telemetry.cpu_power.prometheus_port == 7501
+
+    def test_native_sglang_does_not_reserve_dynamo_system_ports(self):
+        config = _config(
+            CpuPowerConfig(enabled=True, prometheus_port=7500),
+            frontend=FrontendConfig(type="sglang"),
+            resources=ResourceConfig(gpu_type="gb200", agg_nodes=1, agg_workers=1),
+        )
+
+        assert config.telemetry.cpu_power.prometheus_port == 7500
+
+    def test_trtllm_endpoint_launch_uses_only_each_leaders_system_port(self):
+        """MPI ranks inherit the endpoint leader's DYN_SYSTEM_PORT, not every topology value."""
+        resources = ResourceConfig(
+            gpu_type="gb200",
+            gpus_per_node=4,
+            prefill_nodes=2,
+            prefill_workers=1,
+            decode_nodes=2,
+            decode_workers=1,
+        )
+
+        allowed = _config(
+            CpuPowerConfig(enabled=True, prometheus_port=7501),
+            backend=TRTLLMProtocol(),
+            resources=resources,
+        )
+        assert allowed.telemetry.cpu_power.prometheus_port == 7501
+
+        with pytest.raises(ValidationError, match="7502"):
+            _config(
+                CpuPowerConfig(enabled=True, prometheus_port=7502),
+                backend=TRTLLMProtocol(),
+                resources=resources,
             )
 
     def test_cpu_only_telemetry_leaves_tachometers_dcgm_exporter_alone(self):
