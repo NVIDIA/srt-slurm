@@ -16,6 +16,7 @@ from marshmallow import ValidationError
 from srtctl.cli.mixins.telemetry_stage import TelemetryStageMixin
 from srtctl.core.power.contract import Reason
 from srtctl.core.power.cpu_session import (
+    MAX_SCRAPE_BYTES,
     CpuPowerSessionSettings,
     CpuPowerTelemetrySession,
     parse_cpu_power_scrape,
@@ -516,6 +517,53 @@ class TestCpuPowerLifecycle:
         assert harness.cpu_power_telemetry_blocks_benchmark() is True
         outcome = session.stop_and_finalize()
         assert Reason.ENDPOINT_RESOLUTION_FAILED in outcome.reason_codes
+        assert outcome.publication_valid is False
+
+    @patch("srtctl.core.power.cpu_session.requests.get")
+    @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: f"ip-{node}")
+    @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
+    def test_a_dribbling_exporter_is_abandoned_and_never_publishes(self, mock_srun, _mock_ip, mock_get, tmp_path):
+        """A benchmark that exits 0 is not evidence the CPU leg collected anything.
+
+        The exporter here answers and then trickles forever, which never trips a
+        per-socket timeout. The scrape has to end on its own budget, and the
+        required leg has to fail the job on its own coverage check.
+        """
+        mock_srun.return_value = _running_exporter()
+
+        def dribble():
+            while True:
+                time.sleep(0.05)
+                yield b" "
+
+        mock_get.return_value = _response("", chunks=dribble())
+        harness = _harness(tmp_path, [_worker("node-a", range(4))])
+
+        started = time.monotonic()
+        harness.start_cpu_power_telemetry(ProcessRegistry(job_id="12345"))
+        assert harness.cpu_power_telemetry_blocks_benchmark() is True
+        elapsed = time.monotonic() - started
+        assert elapsed < 5.0, f"a trickling exporter held startup for {elapsed:.1f}s"
+
+        start = time.time()
+        harness.record_cpu_power_benchmark_span(start, time.time())
+        # AIPerf's own exit code says nothing about CPU telemetry validity.
+        assert harness.finalize_cpu_power_telemetry(0) == 1
+        manifest = json.loads((tmp_path / "cpu_power" / "manifest.json").read_text())
+        assert manifest["publication_valid"] is False
+        assert Reason.ENDPOINT_TIMEOUT in manifest["reason_codes"]
+
+    @patch("srtctl.core.power.cpu_session.requests.get")
+    @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: f"ip-{node}")
+    def test_an_oversized_scrape_is_cut_off(self, _mock_ip, mock_get, tmp_path):
+        """A runaway body would otherwise be read to the end on the cycle's budget."""
+        mock_get.return_value = _response("", chunks=iter([b"x" * (MAX_SCRAPE_BYTES + 1)]))
+        session = _session(tmp_path, ["node-a"])
+        session.initialize()
+
+        assert session.start_and_wait_for_readiness() is False
+        outcome = session.stop_and_finalize()
+        assert Reason.ENDPOINT_HTTP_ERROR in outcome.reason_codes
         assert outcome.publication_valid is False
 
     @patch("srtctl.core.power.cpu_session.requests.get")
