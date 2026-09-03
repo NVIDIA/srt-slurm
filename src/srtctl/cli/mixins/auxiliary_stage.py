@@ -76,7 +76,8 @@ class AuxiliaryServiceStageMixin:
             f"GIT_TERMINAL_PROMPT=0 timeout 120s "
             f"git -c http.version=HTTP/1.1 -C {shlex.quote(str(checkout_root))} "
             f"fetch origin {shlex.quote(source.rev)} && "
-            f"git -C {shlex.quote(str(checkout_root))} checkout FETCH_HEAD; "
+            f"GIT_TERMINAL_PROMPT=0 timeout 120s "
+            f"git -c http.version=HTTP/1.1 -C {shlex.quote(str(checkout_root))} checkout FETCH_HEAD; "
             "fi"
         )
         logger.info("Cloning auxiliary service %s source: %s@%s", service.name, source.git, source.rev)

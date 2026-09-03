@@ -70,7 +70,11 @@ class AuxiliaryServiceStageMixin:
                 log_name=f"{name}.build.log",
             )
             self._run_logged(
-                ["git", "-C", str(checkout_root), "checkout", "FETCH_HEAD"],
+                [
+                    "env", "GIT_TERMINAL_PROMPT=0", "timeout", "120s",
+                    "git", "-c", "http.version=HTTP/1.1", "-C", str(checkout_root),
+                    "checkout", "FETCH_HEAD",
+                ],
                 log_name=f"{name}.build.log",
             )
         work_dir = checkout_root
