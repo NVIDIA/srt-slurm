@@ -124,7 +124,7 @@ class TestCarryForward:
         result = self._carry(tmp_path, _complete(TACHOMETER_ASSETS))
         assert result.returncode == 0, result.stderr
         assert "::warning::Previous release v1.2.3 has no cpu-power-exporter assets" in result.stdout
-        assert not (tmp_path / "dist").glob("cpu-power-exporter-*")
+        assert list((tmp_path / "dist").glob("cpu-power-exporter-*")) == []
 
     def test_the_first_release_has_nothing_to_carry(self, tmp_path: Path):
         result = self._carry(tmp_path, [], previous="")
