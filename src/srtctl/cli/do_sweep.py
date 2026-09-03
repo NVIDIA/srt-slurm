@@ -806,9 +806,12 @@ class SweepOrchestrator(
                     # Eval-only runs skip the benchmark stage, so every expected
                     # measurement window would be missing and required telemetry
                     # would fail an otherwise successful evaluation.
-                    logger.info("EVAL_ONLY=true: skipping dcgm-power telemetry (no benchmark to measure)")
+                    logger.info("EVAL_ONLY=true: skipping power telemetry (no benchmark to measure)")
                 else:
                     self.start_power_telemetry(registry)
+                    # After the GPU leg so its exporters are owned first; both
+                    # legs share the head-node clock and the same finalizer order.
+                    self.start_cpu_power_telemetry(registry)
 
             tachometer_procs = self.start_tachometer()
             for proc in tachometer_procs:
@@ -826,7 +829,7 @@ class SweepOrchestrator(
                     logger.error("Eval-only evaluation failed with exit code %d", exit_code)
                 else:
                     logger.info("Eval-only evaluation completed successfully")
-            elif self.power_telemetry_blocks_benchmark():
+            elif self.power_telemetry_blocks_benchmark() or self.cpu_power_telemetry_blocks_benchmark():
                 logger.error("Required power telemetry failed startup - skipping the formal benchmark")
                 reporter.report(JobStatus.FAILED, JobStage.BENCHMARK, "Required power telemetry failed startup")
                 exit_code = 1
@@ -853,6 +856,7 @@ class SweepOrchestrator(
             logger.info("Cleanup")
             # NOTE: finalize before registry.cleanup() so samples and manifest are durable.
             exit_code = self.finalize_power_telemetry(exit_code, interrupted=stop_event.is_set())
+            exit_code = self.finalize_cpu_power_telemetry(exit_code, interrupted=stop_event.is_set())
             stop_event.set()
             registry.cleanup()
             # After cleanup so the GPUs are idle before node state is reverted.

@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from srtctl.core.git_state import head_commit
 from srtctl.core.power.contract import Reason
+from srtctl.core.power.cpu_session import CpuPowerSessionSettings, CpuPowerTelemetrySession
 from srtctl.core.power.manifest import ExpectedWindow
 from srtctl.core.power.session import PowerSessionSettings, PowerTelemetrySession
 from srtctl.core.power.topology import build_expected_devices
@@ -30,6 +31,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 DCGM_EXPORTER_COMMAND_TEMPLATE = "dcgm-exporter --collect-interval=100 --address :{port}"
+CPU_POWER_EXPORTER_BINARY = "cpu-power-exporter"
 
 
 def resolve_exporter_command(exporter_config: TelemetryExporterConfig, default_template: str) -> str:
@@ -72,6 +74,23 @@ class TelemetryStageMixin:
         """Frontend topology helper provided by FrontendStageMixin."""
         raise NotImplementedError
 
+    def _het_chunks(self, nodelist: list[str]) -> list[tuple[int, list[str]]]:
+        """Split a nodelist into one srun per SLURM heterogeneous component.
+
+        A single srun cannot target multiple het components (prefill on group
+        0, decode on group 1), so anything launched across the allocation has
+        to be split. ``-1`` is the sentinel for "no --het-group".
+        """
+        if not self.runtime.nodes.het:
+            return [(-1, list(nodelist))]
+        groups: dict[int, list[str]] = {}
+        for node in nodelist:
+            group_id = self.runtime.nodes.het_group_for(node)
+            if group_id is None:
+                raise RuntimeError(f"node {node!r} not in any het component")
+            groups.setdefault(group_id, []).append(node)
+        return sorted(groups.items())
+
     def _start_exporter_container(
         self,
         *,
@@ -96,17 +115,7 @@ class TelemetryStageMixin:
         partial launch stays reachable by the outer cleanup path.
         """
         cmd_str = resolve_exporter_command(exporter_config, default_command_template)
-
-        if self.runtime.nodes.het:
-            groups: dict[int, list[str]] = {}
-            for node in nodelist:
-                g = self.runtime.nodes.het_group_for(node)
-                if g is None:
-                    raise RuntimeError(f"node {node!r} not in any het component")
-                groups.setdefault(g, []).append(node)
-            chunks = sorted(groups.items())
-        else:
-            chunks = [(-1, nodelist)]  # sentinel: no --het-group
+        chunks = self._het_chunks(nodelist)
 
         managed: list[ManagedProcess] = []
         for group_id, nodes in chunks:
@@ -213,139 +222,86 @@ class TelemetryStageMixin:
         return session
 
     def start_cpu_power_telemetry(self, registry: ProcessRegistry) -> CpuPowerTelemetrySession | None:
-        """Start one host CPU-power collector per allocated worker node."""
+        """Start host CPU power telemetry when it is enabled.
+
+        Like the DCGM leg, every provider-originated startup failure becomes
+        session state rather than an exception, so the orchestrator can still
+        finalize artifacts and decide the exit code after the benchmark stage.
+
+        ``cpu-power-exporter`` runs on the bare host, not in the job container:
+        it reads the node's own ``/sys/class/hwmon`` and is installed in the
+        checkout's ``bin/`` by ``make setup``.
+        """
         telemetry = self.config.telemetry
-        cpu_power = getattr(telemetry, "cpu_power", None)
-        if not telemetry.enabled or cpu_power is None or cpu_power.enabled is not True:
+        cpu_power = telemetry.cpu_power
+        if not telemetry.enabled or not cpu_power.enabled:
             return None
 
         worker_nodes = sorted({process.node for process in self.backend_processes})
-        cpu_dir = self.runtime.log_dir / telemetry.storage_subdir / "cpu"
+        cpu_dir = self.runtime.log_dir / cpu_power.storage_subdir
+        binary = self._resolve_bundled_binary(CPU_POWER_EXPORTER_BINARY)
+        command = [binary, "--port", str(cpu_power.prometheus_port)]
+
         session = CpuPowerTelemetrySession(
-            CpuPowerSessionSettings(
+            settings=CpuPowerSessionSettings(
                 cpu_dir=cpu_dir,
                 job_id=self.runtime.job_id,
                 run_name=self.runtime.run_name,
-                nodes=tuple(worker_nodes),
                 source=cpu_power.source,
                 sample_interval_seconds=cpu_power.sample_interval_seconds,
                 startup_timeout_seconds=cpu_power.startup_timeout_seconds,
+                request_timeout_seconds=telemetry.request_timeout_seconds,
+                collector_join_timeout_seconds=telemetry.resolved_collector_join_timeout_seconds,
                 required=cpu_power.required,
+                acpi_mandatory=cpu_power.acpi_mandatory,
+                exporter_port=cpu_power.prometheus_port,
+                exporter_command=shlex.join(command),
+                network_interface=self.runtime.network_interface,
                 producer_git_commit=read_producer_commit(),
-            )
+            ),
+            nodes=worker_nodes,
         )
+        # NOTE: stored before initialize() so a raise mid-startup still leaves a finalizable session.
         self._cpu_power_session = session
         self._cpu_power_telemetry_ready = False
         session.initialize()
+        logger.info("Starting CPU power telemetry (artifacts under %s)", cpu_dir)
 
-        if self.runtime.nodes.het:
-            groups: dict[int, list[str]] = {}
-            for node in worker_nodes:
-                group_id = self.runtime.nodes.het_group_for(node)
-                if group_id is None:
-                    raise RuntimeError(f"node {node!r} not in any het component")
-                groups.setdefault(group_id, []).append(node)
-            chunks = sorted(groups.items())
-        else:
-            chunks = [(-1, worker_nodes)]
-
-        command = [
-            sys.executable,
-            "-m",
-            "srtctl.core.cpu_power",
-            "--output-dir",
-            str(session.samples_dir),
-            "--ready-dir",
-            str(session.ready_dir),
-            "--source",
-            cpu_power.source,
-            "--interval-seconds",
-            str(cpu_power.sample_interval_seconds),
-        ]
         try:
-            for group_id, nodes in chunks:
-                suffix = "" if len(chunks) == 1 else f".g{group_id}"
-                log_file = self.runtime.log_dir / f"telemetry_cpu_power{suffix}.%N.out"
-                proc = start_srun_process(
-                    command=command,
-                    nodes=len(nodes),
-                    ntasks=len(nodes),
-                    nodelist=nodes,
-                    output=str(log_file),
-                    srun_options=self.runtime.srun_options,
-                    het_group=group_id if group_id >= 0 else None,
-                    use_bash_wrapper=False,
-                )
+            for group_id, nodes in self._het_chunks(worker_nodes):
+                suffix = "" if not self.runtime.nodes.het else f".g{group_id}"
+                log_file = self.runtime.log_dir / f"telemetry_cpu_power_exporter{suffix}.out"
                 process = ManagedProcess(
-                    name="telemetry_cpu_power" if len(chunks) == 1 else f"telemetry_cpu_power_g{group_id}",
-                    popen=proc,
+                    name=f"telemetry_cpu_power_exporter{suffix.replace('.', '_')}",
+                    popen=start_srun_process(
+                        command=command,
+                        nodes=len(nodes),
+                        ntasks=len(nodes),
+                        nodelist=nodes,
+                        output=str(log_file),
+                        srun_options=self.runtime.srun_options,
+                        het_group=group_id if group_id >= 0 else None,
+                        use_bash_wrapper=False,
+                    ),
                     log_file=log_file,
                     node=",".join(nodes),
+                    # An exit is telemetry invalidity, not a sweep-critical failure.
                     critical=False,
                 )
                 registry.add_process(process)
-                session.add_process(process)
+                session.add_exporter(process)
         except Exception:
-            logger.exception("CPU power collector launch failed")
+            logger.exception("CPU power exporter launch failed")
+            session.record_reason(Reason.EXPORTER_LAUNCH_FAILED)
             return session
 
-        self._cpu_power_telemetry_ready = session.wait_for_readiness()
-        if not self._cpu_power_telemetry_ready:
-            logger.warning("CPU power collectors did not become ready on every worker node")
+        if session.start_and_wait_for_readiness():
+            self._cpu_power_telemetry_ready = True
         else:
-            logger.info("CPU power telemetry ready (artifacts under %s)", cpu_dir)
-
-        if cpu_power.prometheus_port > 0:
-            self._start_cpu_power_prometheus_exporters(registry, worker_nodes, cpu_power.prometheus_port)
-
+            logger.warning(
+                "CPU power collector did not reach readiness within %.1fs", cpu_power.startup_timeout_seconds
+            )
         return session
-
-    def _start_cpu_power_prometheus_exporters(
-        self, registry: ProcessRegistry, worker_nodes: list[str], port: int
-    ) -> None:
-        """Launch cpu-power-exporter on each worker node for AIPerf server-metrics scraping."""
-        exporter_command = [
-            self._resolve_bundled_binary("cpu-power-exporter"),
-            "--port",
-            str(port),
-        ]
-        if self.runtime.nodes.het:
-            groups: dict[int, list[str]] = {}
-            for node in worker_nodes:
-                group_id = self.runtime.nodes.het_group_for(node)
-                if group_id is None:
-                    raise RuntimeError(f"node {node!r} not in any het component")
-                groups.setdefault(group_id, []).append(node)
-            chunks = sorted(groups.items())
-        else:
-            chunks = [(-1, worker_nodes)]
-
-        for group_id, nodes in chunks:
-            suffix = "" if len(chunks) == 1 else f".g{group_id}"
-            log_file = self.runtime.log_dir / f"telemetry_cpu_power_prom{suffix}.%N.out"
-            try:
-                proc = start_srun_process(
-                    command=exporter_command,
-                    nodes=len(nodes),
-                    ntasks=len(nodes),
-                    nodelist=nodes,
-                    output=str(log_file),
-                    srun_options=self.runtime.srun_options,
-                    het_group=group_id if group_id >= 0 else None,
-                    use_bash_wrapper=False,
-                )
-                name = "telemetry_cpu_power_prom" if len(chunks) == 1 else f"telemetry_cpu_power_prom_g{group_id}"
-                registry.add_process(
-                    ManagedProcess(
-                        name=name,
-                        popen=proc,
-                        log_file=log_file,
-                        node=",".join(nodes),
-                        critical=False,
-                    )
-                )
-            except Exception:
-                logger.exception("CPU power Prometheus exporter launch failed on group %s", group_id)
 
     def power_telemetry_blocks_benchmark(self) -> bool:
         """Whether required-mode telemetry failed startup and must skip the workload.
@@ -361,6 +317,19 @@ class TelemetryStageMixin:
         if getattr(self, "_power_telemetry_ready", False):
             return False
         return self.config.telemetry.required
+
+    def cpu_power_telemetry_blocks_benchmark(self) -> bool:
+        """Whether required-mode CPU power failed startup and must skip the workload.
+
+        ``source: auto`` is best-effort by definition: a cluster with no ACPI
+        rails still runs the benchmark and leaves the gap in the manifest.
+        """
+        session = getattr(self, "_cpu_power_session", None)
+        if session is None:
+            return False
+        if getattr(self, "_cpu_power_telemetry_ready", False):
+            return False
+        return self.config.telemetry.cpu_power.required
 
     def finalize_power_telemetry(self, exit_code: int, *, interrupted: bool = False) -> int:
         """Finalize the power session and fold required-mode invalidity into the exit code.
@@ -401,7 +370,12 @@ class TelemetryStageMixin:
         return exit_code
 
     def finalize_cpu_power_telemetry(self, exit_code: int, *, interrupted: bool = False) -> int:
-        """Stop host collectors, aggregate node CSVs, and apply required-mode policy."""
+        """Stop CPU collection, commit the manifest, and apply required-mode policy.
+
+        Runs before ``ProcessRegistry.cleanup()`` for the same reason the DCGM
+        finalizer does: the writer must be closed and the manifest durable
+        while the exporters are still owned.
+        """
         session = getattr(self, "_cpu_power_session", None)
         if session is None:
             return exit_code
