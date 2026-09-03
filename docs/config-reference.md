@@ -1238,7 +1238,7 @@ telemetry:
 | `storage_subdir` | string | `power` | GPU leg output directory below the run log directory |
 | `required` | bool | `false` | Fail the benchmark when publishable GPU power artifacts cannot be produced |
 | `startup_timeout_seconds` | float | `30.0` | DCGM exporter readiness timeout |
-| `request_timeout_seconds` | float | `2.0` | Per-request exporter timeout; applies to every enabled leg |
+| `request_timeout_seconds` | float | `2.0` | Per-request exporter timeout; applies to every enabled leg. A scrape is also cut off at twice this value in total, so an exporter that trickles its response cannot hold a collector thread open |
 | `collector_join_timeout_seconds` | float/null | `null` | Shutdown join timeout for every enabled leg; defaults from `request_timeout_seconds` |
 
 `telemetry.enabled` needs at least one leg: a `dcgm_exporter`, `cpu_power.enabled`, or both.
