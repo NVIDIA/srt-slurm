@@ -1284,9 +1284,12 @@ script interval instead.
 
 Nodes are resolved once, before the exporters are launched: the addresses the
 collector scrapes are the same ones handed to AIPerf, and a node that does not
-resolve to a literal address is covered by neither. When a node resolves to
-IPv6 the exporter is launched with `--bind ::` so it listens on the family the
-scrape URL names.
+resolve to a literal address is covered by neither. Resolution prefers the
+interface-aware IPv4 path `network_interface` configures and falls back to
+family-neutral name resolution, so an IPv6-only node is covered rather than
+dropped. When a node resolves to IPv6 the exporter is launched with `--bind ::`
+so it listens on the family the scrape URL names, and the URL brackets the
+address.
 
 `make setup ARCH=<compute_arch>` installs `bin/cpu-power-exporter`, but only
 warns when the release does not carry it -- the binary is optional, and
@@ -1297,6 +1300,9 @@ warns when the release does not carry it -- the binary is optional, and
 download, and drops the installed binary first, so a failure never leaves a
 different version behind for `validate-setup` to accept. Building locally clears
 that pin marker, so a later pinned download is not skipped as already installed.
+The architecture check drops an installed binary only when `file(1)` positively
+reports the wrong one; where `file(1)` is not installed the binary is kept and
+the download runs instead of reporting an unverified file as installed.
 
 `srtctl validate-setup` checks more than the file's existence: an exporter that
 is not executable, or that was built for an architecture other than the one
