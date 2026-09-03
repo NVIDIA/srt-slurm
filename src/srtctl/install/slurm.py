@@ -82,7 +82,22 @@ def build_sbatch_script(
     account = _require(cluster_config, "default_account")
     partition = _require(cluster_config, "default_partition")
     time_limit = _require(cluster_config, "default_time_limit")
-    use_exclusive = bool((cluster_config or {}).get("use_exclusive_sbatch_directive", False))
+    config = cluster_config or {}
+    use_exclusive = bool(config.get("use_exclusive_sbatch_directive", False))
+    use_gpus_per_node = bool(config.get("use_gpus_per_node_directive", False))
+    gpus_per_node = config.get("gpus_per_node")
+
+    if use_gpus_per_node:
+        try:
+            gpus_per_node = int(gpus_per_node)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "srtslurm.yaml enables use_gpus_per_node_directive but has no valid gpus_per_node value."
+            ) from exc
+        if gpus_per_node < 1:
+            raise RuntimeError(
+                "srtslurm.yaml enables use_gpus_per_node_directive but gpus_per_node must be positive."
+            )
 
     model_dir = install_base / "models" / model_storage_dirname(spec.hf_repo_id)
     container_path = install_base / "containers" / container_filename(spec.container_image)
@@ -99,6 +114,8 @@ def build_sbatch_script(
         f"#SBATCH --output={log_path}",
         f"#SBATCH --error={log_path}",
     ]
+    if use_gpus_per_node:
+        directives.append(f"#SBATCH --gpus-per-node={gpus_per_node}")
     if use_exclusive:
         directives.append("#SBATCH --exclusive")
 
@@ -147,12 +164,13 @@ def build_sbatch_script(
         f'MODEL_DIR="{model_dir}"',
         'mkdir -p "${MODEL_DIR}"',
         "",
-        f'echo "Downloading {spec.hf_repo_id} -> ${{MODEL_DIR}}"',
+        f'echo "Downloading {spec.hf_repo_id}{" @ " + spec.hf_revision if spec.hf_revision else ""} -> ${{MODEL_DIR}}"',
         "python3 - <<'PYEOF'",
         "import os",
         "from huggingface_hub import snapshot_download",
         "snapshot_download(",
         f"    repo_id={spec.hf_repo_id!r},",
+        *([f"    revision={spec.hf_revision!r},"] if spec.hf_revision else []),
         f"    local_dir={str(model_dir)!r},",
         '    token=os.environ["HF_TOKEN"],',
         "    max_workers=8,",

@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 _SAFE_MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _SAFE_HF_REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$")
+_SAFE_HF_REVISION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 _SAFE_MODEL_ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 _SAFE_CONTAINER_IMAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@:+-]*$")
 
@@ -51,6 +52,11 @@ def add_install_parser(subparsers: argparse._SubParsersAction) -> argparse.Argum
         "--hf-repo-id",
         required=True,
         help="Hugging Face repo id to download, e.g. nvidia/GLM-5-NVFP4",
+    )
+    parser.add_argument(
+        "--hf-revision",
+        default=None,
+        help="Optional Hugging Face revision to download; use an immutable commit SHA for reproducibility",
     )
     parser.add_argument(
         "--model-alias",
@@ -126,6 +132,7 @@ def _resolve_spec(args: argparse.Namespace) -> ModelInstallSpec:
     spec = ModelInstallSpec(
         name=args.model,
         hf_repo_id=args.hf_repo_id,
+        hf_revision=args.hf_revision,
         model_alias=args.model_alias,
         container_image=args.container_image,
         default_recipe="",
@@ -144,6 +151,10 @@ def _validate_spec(spec: ModelInstallSpec) -> None:
     if not _SAFE_HF_REPO_RE.fullmatch(spec.hf_repo_id):
         raise ValueError(
             f"Invalid hf repo id {spec.hf_repo_id!r}. Expected format 'org/repo' with safe URL characters."
+        )
+    if spec.hf_revision and not _SAFE_HF_REVISION_RE.fullmatch(spec.hf_revision):
+        raise ValueError(
+            f"Invalid hf revision {spec.hf_revision!r}. Allowed characters: letters, numbers, /, dot, underscore, hyphen."
         )
     if not _SAFE_MODEL_ALIAS_RE.fullmatch(spec.model_alias):
         raise ValueError(
