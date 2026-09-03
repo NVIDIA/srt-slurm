@@ -1015,22 +1015,32 @@ class TestCpuPowerMeasurementSpans:
     @staticmethod
     def _window(windows_dir: Path, name: str, *, status: str, start: float, end: float | None) -> None:
         windows_dir.mkdir(parents=True, exist_ok=True)
-        (windows_dir / f"{name}.json").write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "benchmark_type": "sa-bench",
-                    "result_path": f"results/{name}.json",
-                    "concurrency": 4,
-                    "benchmark_start_time_unix": start,
-                    "benchmark_end_time_unix": end,
-                    "duration": None if end is None else end - start,
-                    "clock_source": "head_node_unix_clock",
-                    "status": status,
-                    "reason": None if status != "interrupted" else "job_cancelled",
-                }
+        duration = None if end is None else end - start
+        payload = {
+            "schema_version": 1,
+            "benchmark_type": "sa-bench",
+            "result_path": f"results/{name}.json",
+            "concurrency": 4,
+            "benchmark_start_time_unix": start,
+            "benchmark_end_time_unix": end,
+            "duration": duration,
+            "clock_source": "head_node_unix_clock",
+            "status": status,
+            "reason": None if status != "interrupted" else "job_cancelled",
+        }
+        (windows_dir / f"{name}.json").write_text(json.dumps(payload))
+        if status == "completed":
+            results_dir = windows_dir.parent.parent / "results"
+            results_dir.mkdir(exist_ok=True)
+            (results_dir / f"{name}.json").write_text(
+                json.dumps(
+                    {
+                        "benchmark_start_time_unix": start,
+                        "benchmark_end_time_unix": end,
+                        "duration": duration,
+                    }
+                )
             )
-        )
 
     def _harness_with_session(self, tmp_path):
         harness = _harness(tmp_path, [_worker("node-a", range(4))])
@@ -1077,6 +1087,40 @@ class TestCpuPowerMeasurementSpans:
         """The CPU leg serves benchmark types the window contract does not cover."""
         harness, session = self._harness_with_session(tmp_path)
         base = time.time()
+
+        harness.record_cpu_power_benchmark_spans(base, base + 60)
+        session.stop_and_finalize()
+
+        recorded = json.loads((tmp_path / "cpu_power" / "manifest.json").read_text())["benchmark_spans"]
+        assert [(span["start_unix"], span["end_unix"]) for span in recorded] == [(base, base + 60)]
+
+    def test_an_equal_completed_span_falls_back_to_the_script(self, tmp_path):
+        """A zero-duration completed artifact is malformed, not a measured interval."""
+        harness, session = self._harness_with_session(tmp_path)
+        base = time.time()
+        self._window(tmp_path / "power" / "windows", "c4", status="completed", start=base + 10, end=base + 10)
+
+        harness.record_cpu_power_benchmark_spans(base, base + 60)
+        session.stop_and_finalize()
+
+        recorded = json.loads((tmp_path / "cpu_power" / "manifest.json").read_text())["benchmark_spans"]
+        assert [(span["start_unix"], span["end_unix"]) for span in recorded] == [(base, base + 60)]
+
+    def test_a_structurally_malformed_completed_window_falls_back_to_the_script(self, tmp_path):
+        """A status and two timestamps alone do not satisfy the window contract."""
+        harness, session = self._harness_with_session(tmp_path)
+        base = time.time()
+        windows_dir = tmp_path / "power" / "windows"
+        windows_dir.mkdir(parents=True)
+        (windows_dir / "c4.json").write_text(
+            json.dumps(
+                {
+                    "status": "completed",
+                    "benchmark_start_time_unix": base + 10,
+                    "benchmark_end_time_unix": base + 20,
+                }
+            )
+        )
 
         harness.record_cpu_power_benchmark_spans(base, base + 60)
         session.stop_and_finalize()
