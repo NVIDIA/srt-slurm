@@ -1265,16 +1265,22 @@ telemetry:
 | Field | Type | Default | Description |
 | ----- | ---- | ------- | ----------- |
 | `enabled` | bool | `false` | Enable host CPU power collection |
-| `source` | string | `auto` | `acpi` names the provider and makes it mandatory; `auto` is best-effort — a node with no ACPI power rails contributes no samples instead of failing the run |
+| `source` | string | `auto` | `acpi` names the provider and makes it mandatory — the same gate `required` applies: an unhealthy or missing exporter skips the benchmark and exits non-zero; `auto` is best-effort — a node with no ACPI power rails contributes no samples instead of failing the run. Setting `acpi` while this leg is disabled is rejected |
 | `sample_interval_seconds` | float | `0.1` | Scrape period in seconds; must be at most `3.0` |
 | `startup_timeout_seconds` | float | `30.0` | Exporter readiness timeout |
 | `required` | bool | `false` | Fail the benchmark when publishable CPU power artifacts cannot be produced; implies `source: acpi` semantics |
 | `prometheus_port` | int | `9401` | Exporter port on every worker node; must not collide with `telemetry.dcgm_exporter.port` or an `observability.tachometer` exporter port |
 | `storage_subdir` | string | `cpu_power` | Output directory below the run log directory; must differ from `telemetry.storage_subdir` |
 
-Publication is gated on coverage: every worker node must have sampled across
-each benchmark run, with no gap larger than 3 seconds. `required: true` turns a
-gap into a non-zero job exit.
+Publication is gated on coverage: every rail discovered at readiness must have
+sampled across each benchmark run, with no gap larger than 3 seconds. Either
+`required: true` or `source: acpi` turns a gap into a non-zero job exit.
+
+Nodes are resolved once, before the exporters are launched: the addresses the
+collector scrapes are the same ones handed to AIPerf, and a node that does not
+resolve to a literal address is covered by neither. When a node resolves to
+IPv6 the exporter is launched with `--bind ::` so it listens on the family the
+scrape URL names.
 
 `make setup ARCH=<compute_arch>` installs `bin/cpu-power-exporter`, but only
 warns when the release does not carry it -- the binary is optional, and
