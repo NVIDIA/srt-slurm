@@ -935,6 +935,45 @@ class TestCpuPowerScrapeBudget:
         finally:
             connection.close()
 
+    def test_send_uses_only_the_budget_remaining_after_connect(self):
+        """A slow connect must not leave sendall with the original full timeout."""
+        clock = SimpleNamespace(now=100.0)
+
+        class FakeSocket:
+            def __init__(self):
+                self.timeout = None
+                self.send_timeout = None
+                self.responses = iter(
+                    [b"HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\n\r\nmetric 1\n", b""]
+                )
+
+            def settimeout(self, timeout):
+                self.timeout = timeout
+
+            def connect(self, _peer):
+                clock.now += 0.75
+
+            def sendall(self, _request):
+                self.send_timeout = self.timeout
+
+            def recv(self, _size):
+                return next(self.responses)
+
+            def close(self):
+                pass
+
+        sock = FakeSocket()
+        endpoint = CpuEndpoint(hostname="node-a", address="127.0.0.1", port=9401)
+
+        with (
+            patch("srtctl.core.power.cpu_session.socket.socket", return_value=sock),
+            patch("srtctl.core.power.cpu_session.time.monotonic", side_effect=lambda: clock.now),
+        ):
+            body, _completed_at = fetch_metrics(endpoint, 1.0)
+
+        assert sock.send_timeout == pytest.approx(0.25)
+        assert body == "metric 1\n"
+
     def test_a_trickling_body_is_cut_off_at_the_budget(self, tmp_path):
         server = self._trickling_server()
         try:
