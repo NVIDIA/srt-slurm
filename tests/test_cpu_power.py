@@ -24,6 +24,7 @@ from srtctl.core.power.cpu_session import (
     CpuPowerSessionSettings,
     CpuPowerTelemetrySession,
     cpu_endpoint_address,
+    fetch_metrics,
     parse_cpu_power_scrape,
 )
 from srtctl.core.processes import ProcessRegistry
@@ -1209,6 +1210,32 @@ class TestCpuPowerEndpointResolution:
             patch("socket.getaddrinfo", return_value=self._addrinfo("2001:db8::1", "10.0.0.7")),
         ):
             assert cpu_endpoint_address("node-a", "eth0") == "10.0.0.7"
+
+    def test_link_local_resolution_preserves_scope_in_the_address_and_url(self):
+        """getaddrinfo carries the interface as sockaddr's scope-id field."""
+        scoped = (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("fe80::1", 0, 0, 7))
+        with (
+            patch("srtctl.core.power.cpu_session.get_hostname_ip", return_value="node-a"),
+            patch("socket.getaddrinfo", return_value=[scoped]),
+        ):
+            address = cpu_endpoint_address("node-a", "eth0")
+
+        assert address == "fe80::1%7"
+        assert CpuEndpoint("node-a", address, 9401).url == "http://[fe80::1%257]:9401/metrics"
+
+    def test_link_local_scrape_connects_with_the_resolved_scope_id(self):
+        """No live link-local interface is needed: assert the sockaddr handed to the socket."""
+        endpoint = CpuEndpoint("node-a", "fe80::1%7", 9401)
+        sock = MagicMock()
+        sock.recv.side_effect = [b"HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\n\r\nmetric 1\n", b""]
+
+        with patch("srtctl.core.power.cpu_session.socket.socket", return_value=sock) as make_socket:
+            body, _completed_at = fetch_metrics(endpoint, 1.0)
+
+        make_socket.assert_called_once_with(socket.AF_INET6, socket.SOCK_STREAM)
+        sock.connect.assert_called_once_with(("fe80::1", 9401, 0, 7))
+        assert b"Host: [fe80::1%257]:9401\r\n" in sock.sendall.call_args.args[0]
+        assert body == "metric 1\n"
 
     def test_a_node_with_no_address_in_any_family_is_dropped(self):
         with (
