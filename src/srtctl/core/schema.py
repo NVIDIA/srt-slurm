@@ -280,6 +280,11 @@ class ClusterConfig:
     # When set, applied to job configs that omit ``frontend.nginx_raise_ulimit``.
     # Clusters that disallow raising nofile for nginx containers should use false.
     nginx_raise_ulimit: bool | None = None
+    # Works around intermittent git smart-HTTP/HTTP2 failures cloning github.com
+    # (stalls, or truncated responses git misreports as "could not read
+    # Username" auth-prompt failures). See git_clone_command_prefix() in
+    # core/config.py -- applied to every git clone/fetch srtctl performs.
+    git_http_version: str | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 
