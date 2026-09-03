@@ -1300,6 +1300,14 @@ def dynamo_cargo_patch_commands(cargo_patches: list[str] | None = None) -> tuple
     return tuple(commands)
 
 
+def _git_clone_cmd() -> str:
+    """Shell-quoted ``git`` invocation for install-script bash strings; see
+    ``srtctl.core.config.git_clone_command_prefix`` for why this exists."""
+    from srtctl.core.config import git_clone_command_prefix
+
+    return shlex.join(git_clone_command_prefix())
+
+
 def _hash_cached_source_install(dynamo_hash: str, cargo_patches: list[str] | None = None) -> str:
     """Bash for hash-pinned source install with a /configs/dynamo-wheels cache.
 
@@ -1347,7 +1355,7 @@ def _hash_cached_source_install(dynamo_hash: str, cargo_patches: list[str] | Non
         f"pip install --break-system-packages --force-reinstall --quiet maturin && "
         # Clone + build the runtime wheel.
         f"DYN_BUILD_DIR=$(mktemp -d) && cd $DYN_BUILD_DIR && "
-        f"git clone https://github.com/ai-dynamo/dynamo.git && "
+        f"{_git_clone_cmd()} clone https://github.com/ai-dynamo/dynamo.git && "
         f"cd dynamo && git checkout {dynamo_hash} && "
         f"{override_cmd}"
         f"cd lib/bindings/python/ && "
@@ -1390,7 +1398,7 @@ def _live_source_install_for_top_of_tree() -> str:
         # Force-reinstall maturin: see _hash_cached_source_install.
         "pip install --break-system-packages --force-reinstall --quiet maturin && "
         "cd /sgl-workspace/ && "
-        "git clone https://github.com/ai-dynamo/dynamo.git && "
+        f"{_git_clone_cmd()} clone https://github.com/ai-dynamo/dynamo.git && "
         "cd dynamo && "
         "cd lib/bindings/python/ && "
         'export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native --cfg tokio_unstable" && '
@@ -1410,7 +1418,7 @@ def _live_source_install_for_top_of_tree() -> str:
         # Force-reinstall maturin: see _hash_cached_source_install.
         "pip install --break-system-packages --force-reinstall --quiet maturin && "
         "ORIG_DIR=$(pwd) && rm -rf /tmp/dynamo_build && mkdir -p /tmp/dynamo_build && cd /tmp/dynamo_build && "
-        "git clone https://github.com/ai-dynamo/dynamo.git && "
+        f"{_git_clone_cmd()} clone https://github.com/ai-dynamo/dynamo.git && "
         "cd dynamo && "
         "cd lib/bindings/python/ && "
         'export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native --cfg tokio_unstable" && '
