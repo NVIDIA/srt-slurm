@@ -378,7 +378,9 @@ class BenchmarkStageMixin:
 
         # Run the benchmark script
         benchmark_log = self.runtime.log_dir / "benchmark.out"
+        benchmark_started_unix = time.time()
         exit_code = self._run_benchmark_script(runner, benchmark_log, stop_event)
+        self.record_cpu_power_benchmark_span(benchmark_started_unix, time.time())
 
         if exit_code != 0:
             logger.error("Benchmark failed with exit code %d", exit_code)

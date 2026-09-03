@@ -12,8 +12,11 @@ The provider is ACPI: ``cpu-power-exporter`` reads ``/sys/class/hwmon`` and
 publishes ``cpu_power_acpi_watts`` per power rail. There is deliberately no GPU
 topology and no device expectation here -- host rails are not allocated to
 workers, so the artifact is a flat time series plus the sensors that were
-actually observed. Measurement-window bracketing is per host: publication
-requires that every configured node covered every benchmark window.
+actually observed. Coverage is per host: publication requires that every
+configured node bracketed every benchmark the orchestrator ran, with the same
+maximum sample gap the GPU leg's measurement windows are held to. Spans come
+from the orchestrator rather than ``windows/*.json`` because the CPU leg also
+serves benchmark types that write no window artifact.
 """
 
 from __future__ import annotations
@@ -46,18 +49,15 @@ from srtctl.core.power.contract import (
     dedupe,
 )
 from srtctl.core.power.manifest import (
-    ArtifactError,
-    ExpectedWindow,
     STATUS_COMPLETE,
     STATUS_FAILED,
     STATUS_INCOMPLETE,
     STATUS_RUNNING,
     STATUS_STARTING,
-    WindowValidation,
 )
 from srtctl.core.power.session import SessionOutcome, run_daemon_workers
+from srtctl.core.power.windows import check_host_coverage
 from srtctl.core.processes import ManagedProcess
-from srtctl.core.power.windows import validate_expected_windows_by_host
 from srtctl.core.slurm import get_hostname_ip
 
 logger = logging.getLogger(__name__)
@@ -83,8 +83,6 @@ class CpuPowerSessionSettings:
     """Everything the CPU session needs that comes from config and runtime."""
 
     cpu_dir: Path
-    windows_dir: Path
-    result_root: Path
     job_id: str
     run_name: str
     source: str
@@ -118,6 +116,26 @@ class CpuEndpoint:
 
     hostname: str
     url: str
+
+
+@dataclass(frozen=True)
+class BenchmarkSpanCoverage:
+    """Whether every configured host sampled across one benchmark run."""
+
+    start_unix: float
+    end_unix: float
+    covered: bool
+    reason_codes: tuple[str, ...]
+    per_host_max_sample_gap_seconds: dict[str, float]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "start_unix": self.start_unix,
+            "end_unix": self.end_unix,
+            "covered": self.covered,
+            "reason_codes": list(self.reason_codes),
+            "per_host_max_sample_gap_seconds": dict(self.per_host_max_sample_gap_seconds),
+        }
 
 
 @dataclass
@@ -182,16 +200,9 @@ def parse_cpu_power_scrape(text: str) -> tuple[tuple[CpuPowerReading, ...], tupl
 class CpuPowerTelemetrySession:
     """One idempotent host CPU-power collection session for one sweep."""
 
-    def __init__(
-        self,
-        *,
-        settings: CpuPowerSessionSettings,
-        nodes: Sequence[str],
-        expected_windows: Sequence[ExpectedWindow] = (),
-    ):
+    def __init__(self, *, settings: CpuPowerSessionSettings, nodes: Sequence[str]):
         self._settings = settings
         self._nodes = list(nodes)
-        self._expected_windows = list(expected_windows)
         self._endpoints: list[CpuEndpoint] = []
 
         self._writer_lock = threading.Lock()
@@ -212,8 +223,8 @@ class CpuPowerTelemetrySession:
         # One head-clock timestamp per host per producing cycle: the series a
         # measurement window is bracketed against.
         self._sample_times: dict[str, list[float]] = {}
-        self._window_validations: list[WindowValidation] = []
-        self._artifact_errors: list[ArtifactError] = []
+        self._benchmark_spans: list[tuple[float, float]] = []
+        self._span_coverage: list[BenchmarkSpanCoverage] = []
         self._reasons: list[str] = []
         self._status = STATUS_STARTING
         self._started_at_unix = time.time()
@@ -257,6 +268,11 @@ class CpuPowerTelemetrySession:
         """Track an exporter the registry already owns."""
         with self._exporters_lock:
             self._exporters.append(process)
+
+    def record_benchmark_span(self, start_unix: float, end_unix: float) -> None:
+        """Mark the interval a benchmark actually ran, on the head node clock."""
+        with self._state_lock:
+            self._benchmark_spans.append((start_unix, end_unix))
 
     def record_reason(self, reason: str) -> None:
         """Record a provider-level failure without raising into the sweep."""
@@ -454,38 +470,46 @@ class CpuPowerTelemetrySession:
         finally:
             self._writer_lock.release()
 
+        self._span_coverage = self._audit_spans()
         with self._state_lock:
-            sample_times = {host: list(times) for host, times in self._sample_times.items()}
-        self._window_validations = validate_expected_windows_by_host(
-            windows_dir=self._settings.windows_dir,
-            result_root=self._settings.result_root,
-            expected_windows=self._expected_windows,
-            expected_hosts=self._nodes,
-            sample_times_by_host=sample_times,
-            artifact_errors=self._artifact_errors,
-        )
-        with self._state_lock:
-            self._reasons.extend(
-                reason for validation in self._window_validations for reason in validation.reason_codes
-            )
-            self._reasons.extend(reason for error in self._artifact_errors for reason in error.reason_codes)
+            self._reasons.extend(reason for span in self._span_coverage for reason in span.reason_codes)
             reasons = list(self._reasons)
         status = self._terminal_status(reasons)
         # Every configured node must be covered: an endpoint dropped at
-        # resolution time cannot silently shrink what publication means.
-        windows_valid = bool(self._expected_windows) and all(
-            validation.power_coverage_valid for validation in self._window_validations
-        )
+        # resolution time cannot silently shrink what publication means, and a
+        # session that only ever produced its readiness sample measured nothing.
+        spans_covered = bool(self._span_coverage) and all(span.covered for span in self._span_coverage)
         publication_valid = (
             status == STATUS_COMPLETE
             and self._row_count > 0
             and bool(self._nodes)
             and set(self._observed) == set(self._nodes)
-            and windows_valid
-            and not self._artifact_errors
+            and spans_covered
         )
         self._outcome = self._terminal(status, publication_valid=publication_valid)
         return self._outcome
+
+    def _audit_spans(self) -> list[BenchmarkSpanCoverage]:
+        """Hold every benchmark span to the GPU leg's bracketing and gap rules."""
+        with self._state_lock:
+            spans = list(self._benchmark_spans)
+            sample_times = {host: list(times) for host, times in self._sample_times.items()}
+        if not spans:
+            logger.warning("CPU power session finalized without a benchmark span; nothing to publish")
+
+        coverage: list[BenchmarkSpanCoverage] = []
+        for start, end in spans:
+            gaps, reasons = check_host_coverage(start, end, self._nodes, sample_times)
+            coverage.append(
+                BenchmarkSpanCoverage(
+                    start_unix=start,
+                    end_unix=end,
+                    covered=not reasons,
+                    reason_codes=dedupe(reasons),
+                    per_host_max_sample_gap_seconds=gaps,
+                )
+            )
+        return coverage
 
     def _terminal_status(self, reasons: Sequence[str]) -> str:
         """Lifecycle precedence: losing collection outranks failing to start it."""
@@ -545,9 +569,7 @@ class CpuPowerTelemetrySession:
                 "scrape_count": scrape_count,
                 "sample_row_count": self._row_count,
                 "observed_sensors": observed,
-                "expected_windows": [window.to_dict() for window in self._expected_windows],
-                "window_validations": [validation.to_dict() for validation in self._window_validations],
-                "artifact_errors": [error.to_dict() for error in self._artifact_errors],
+                "benchmark_spans": [span.to_dict() for span in self._span_coverage],
                 "publication_valid": self._publication_valid,
                 "reason_codes": reasons,
             },

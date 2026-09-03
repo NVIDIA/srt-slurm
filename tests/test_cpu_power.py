@@ -20,7 +20,6 @@ from srtctl.core.power.cpu_session import (
     CpuPowerTelemetrySession,
     parse_cpu_power_scrape,
 )
-from srtctl.core.power.manifest import ExpectedWindow
 from srtctl.core.processes import ProcessRegistry
 from srtctl.core.schema import (
     BenchmarkConfig,
@@ -202,61 +201,23 @@ class TestCpuPowerScrapeParsing:
         assert Reason.ENDPOINT_PARSE_ERROR in reasons
 
 
-def _write_window(log_dir, *, start, end, concurrency=4, status="completed"):
-    """Write the completed measurement window the benchmark would have written."""
-    stem = f"sa-bench_{concurrency}"
-    duration = end - start
-    result_path = f"results/{stem}.json"
-    result_file = log_dir / result_path
-    result_file.parent.mkdir(parents=True, exist_ok=True)
-    result_file.write_text(
-        json.dumps(
-            {"benchmark_start_time_unix": start, "benchmark_end_time_unix": end, "duration": duration}
-        )
-    )
-    window_file = log_dir / "power" / "windows" / f"{stem}.json"
-    window_file.parent.mkdir(parents=True, exist_ok=True)
-    window_file.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "clock_source": "head_node_unix_clock",
-                "status": status,
-                "benchmark_type": "sa-bench",
-                "concurrency": concurrency,
-                "benchmark_start_time_unix": start,
-                "benchmark_end_time_unix": end,
-                "duration": duration,
-                "result_path": result_path,
-                "reason": None,
-            }
-        )
-    )
-
-
 def _session(log_dir, nodes, **overrides):
-    defaults = dict(
-        cpu_dir=log_dir / "cpu_power",
-        windows_dir=log_dir / "power" / "windows",
-        result_root=log_dir,
-        job_id="12345",
-        run_name="recipe_12345",
-        source="acpi",
-        sample_interval_seconds=0.1,
-        startup_timeout_seconds=0.2,
-        request_timeout_seconds=1.0,
-        collector_join_timeout_seconds=3.0,
-        required=True,
-        acpi_mandatory=True,
-        exporter_port=9401,
-        exporter_command="cpu-power-exporter --port 9401",
-    )
+    defaults = {
+        "cpu_dir": log_dir / "cpu_power",
+        "job_id": "12345",
+        "run_name": "recipe_12345",
+        "source": "acpi",
+        "sample_interval_seconds": 0.1,
+        "startup_timeout_seconds": 0.2,
+        "request_timeout_seconds": 1.0,
+        "collector_join_timeout_seconds": 3.0,
+        "required": True,
+        "acpi_mandatory": True,
+        "exporter_port": 9401,
+        "exporter_command": "cpu-power-exporter --port 9401",
+    }
     settings = CpuPowerSessionSettings(**{**defaults, **overrides})
-    return CpuPowerTelemetrySession(
-        settings=settings,
-        nodes=nodes,
-        expected_windows=[ExpectedWindow(benchmark_type="sa-bench", concurrency=4)],
-    )
+    return CpuPowerTelemetrySession(settings=settings, nodes=nodes)
 
 
 def _running_exporter():
@@ -423,7 +384,7 @@ class TestCpuPowerLifecycle:
         assert harness.cpu_power_telemetry_blocks_benchmark() is False
         start = time.time()
         time.sleep(0.3)
-        _write_window(tmp_path, start=start, end=time.time())
+        harness.record_cpu_power_benchmark_span(start, time.time())
         assert harness.finalize_cpu_power_telemetry(0) == 0
         assert mock_get.call_args.args[0] == "http://ip-node-a:9401/metrics"
 
@@ -436,24 +397,15 @@ class TestCpuPowerLifecycle:
         rows = (tmp_path / "cpu_power" / "samples.csv").read_text().splitlines()
         assert rows[0].startswith("schema_version,")
         assert any("hwmon0/power1" in row for row in rows[1:])
-        assert manifest["window_validations"] == [
-            {
-                "benchmark_type": "sa-bench",
-                "concurrency": 4,
-                "window_file": "windows/sa-bench_4.json",
-                "power_coverage_valid": True,
-                "reason_codes": [],
-                "per_device_max_sample_gap_seconds": {"node-a": pytest.approx(0.0, abs=1.0)},
-            }
-        ]
+        assert [
+            (span["covered"], sorted(span["per_host_max_sample_gap_seconds"])) for span in manifest["benchmark_spans"]
+        ] == [(True, ["node-a"])]
 
     @patch("srtctl.core.power.cpu_session.requests.get")
     @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: f"ip-{node}")
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
-    def test_readings_that_do_not_cover_the_benchmark_window_do_not_publish(
-        self, mock_srun, _mock_ip, mock_get, tmp_path
-    ):
-        """Readiness samples alone are not measurement: the window must be bracketed."""
+    def test_readings_that_do_not_cover_the_benchmark_do_not_publish(self, mock_srun, _mock_ip, mock_get, tmp_path):
+        """Readiness samples alone are not measurement: the run must be bracketed."""
         mock_srun.return_value = _running_exporter()
         mock_get.return_value = SimpleNamespace(
             text=_scrape('cpu_power_acpi_watts{sensor="hwmon0/power1",type="CPU",socket="0"} 42.5'),
@@ -462,8 +414,8 @@ class TestCpuPowerLifecycle:
         harness = _harness(tmp_path, [_worker("node-a", range(4))])
 
         harness.start_cpu_power_telemetry(ProcessRegistry(job_id="12345"))
-        # A window that ran long before this session started collecting.
-        _write_window(tmp_path, start=time.time() - 600, end=time.time() - 500)
+        # A benchmark that ran long before this session started collecting.
+        harness.record_cpu_power_benchmark_span(time.time() - 600, time.time() - 500)
 
         assert harness.finalize_cpu_power_telemetry(0) == 1
 
@@ -474,7 +426,7 @@ class TestCpuPowerLifecycle:
     @patch("srtctl.core.power.cpu_session.requests.get")
     @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: f"ip-{node}")
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
-    def test_a_missing_benchmark_window_never_passes_vacuously(self, mock_srun, _mock_ip, mock_get, tmp_path):
+    def test_a_session_that_never_saw_a_benchmark_never_passes_vacuously(self, mock_srun, _mock_ip, mock_get, tmp_path):
         mock_srun.return_value = _running_exporter()
         mock_get.return_value = SimpleNamespace(
             text=_scrape('cpu_power_acpi_watts{sensor="hwmon0/power1",type="CPU",socket="0"} 42.5'),
@@ -487,7 +439,7 @@ class TestCpuPowerLifecycle:
         assert harness.finalize_cpu_power_telemetry(0) == 1
         manifest = json.loads((tmp_path / "cpu_power" / "manifest.json").read_text())
         assert manifest["publication_valid"] is False
-        assert Reason.MEASUREMENT_WINDOW_MISSING in manifest["reason_codes"]
+        assert manifest["benchmark_spans"] == []
 
     @patch("srtctl.core.power.cpu_session.requests.get")
     @patch("srtctl.core.power.cpu_session.get_hostname_ip")
