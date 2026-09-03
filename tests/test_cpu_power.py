@@ -136,9 +136,7 @@ class TestCpuPowerSchema:
 
 
 def _scrape(*lines: str) -> str:
-    header = (
-        "# HELP cpu_power_acpi_watts Host CPU rail power.\n# TYPE cpu_power_acpi_watts gauge\n"
-    )
+    header = "# HELP cpu_power_acpi_watts Host CPU rail power.\n# TYPE cpu_power_acpi_watts gauge\n"
     return header + "".join(f"{line}\n" for line in lines)
 
 
@@ -179,9 +177,7 @@ class TestCpuPowerScrapeParsing:
         assert Reason.CPU_SENSOR_MISSING in reasons
 
     def test_negative_power_is_rejected(self):
-        readings, reasons = parse_cpu_power_scrape(
-            _scrape('cpu_power_acpi_watts{sensor="hwmon0/power1"} -1.0')
-        )
+        readings, reasons = parse_cpu_power_scrape(_scrape('cpu_power_acpi_watts{sensor="hwmon0/power1"} -1.0'))
 
         assert readings == ()
         assert Reason.INVALID_POWER_VALUE in reasons
@@ -223,8 +219,7 @@ def _harness(tmp_path, processes, *, cpu_power=None, het=False, het_groups=None)
         def __init__(self):
             # NOTE: srun is mocked so no exporter answers; a short deadline avoids a stall per test.
             self.config = _config(
-                cpu_power
-                or CpuPowerConfig(enabled=True, source="acpi", required=True, startup_timeout_seconds=0.2),
+                cpu_power or CpuPowerConfig(enabled=True, source="acpi", required=True, startup_timeout_seconds=0.2),
                 request_timeout_seconds=0.1,
                 collector_join_timeout_seconds=3.0,
             )

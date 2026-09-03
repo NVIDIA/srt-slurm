@@ -300,10 +300,7 @@ class CpuPowerTelemetrySession:
         # NOTE: requests applies its timeout to connect and read separately, so an endpoint can take 2x.
         deadline = time.monotonic() + 2 * self._settings.request_timeout_seconds + COLLECT_CYCLE_TIMEOUT_GRACE_SECONDS
         results, failures = run_daemon_workers(
-            [
-                (f"CpuPowerScrape-{endpoint.hostname}", self._poll, endpoint)
-                for endpoint in endpoints
-            ],
+            [(f"CpuPowerScrape-{endpoint.hostname}", self._poll, endpoint) for endpoint in endpoints],
             deadline=deadline,
         )
         if failures:
