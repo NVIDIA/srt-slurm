@@ -2378,6 +2378,35 @@ class SrtConfig:
                 "observability.tachometer.storage_subdir must be a safe relative path below the run log directory"
             )
 
+    def _dynamo_system_ports(self) -> set[int]:
+        """System-status ports that backend launches actually bind on worker nodes."""
+        if self.frontend.type != "dynamo":
+            return set()
+
+        resources = self.resources
+        nodes = [f"validation-worker-{index}" for index in range(self.total_nodes)]
+        endpoints = self.backend.allocate_endpoints(
+            num_prefill=resources.num_prefill,
+            num_decode=resources.num_decode,
+            num_agg=resources.num_agg,
+            gpus_per_prefill=resources.gpus_per_prefill,
+            gpus_per_decode=resources.gpus_per_decode,
+            gpus_per_agg=resources.gpus_per_agg,
+            gpus_per_node=resources.gpus_per_node,
+            available_nodes=nodes,
+            spread_workers=resources.spread_workers,
+        )
+        processes = self.backend.endpoints_to_processes(
+            endpoints,
+            frontend_type=self.frontend.type,
+            dynamo_sidecar=self.dynamo.sidecar,
+        )
+        if self.backend.get_srun_config().launch_per_endpoint:
+            # MPI-style launches set one environment for the whole endpoint, so
+            # every rank inherits its endpoint leader's DYN_SYSTEM_PORT.
+            processes = [process for process in processes if process.node_rank == 0]
+        return {process.sys_port for process in processes}
+
     def _validate_cpu_power(self):
         """Validate the host CPU power leg.
 
@@ -2402,6 +2431,12 @@ class SrtConfig:
                     f"telemetry.cpu_power.prometheus_port={cpu_power.prometheus_port} collides with "
                     f"{name}.port; both run on every worker node"
                 )
+
+        if cpu_power.prometheus_port in self._dynamo_system_ports():
+            raise ValidationError(
+                f"telemetry.cpu_power.prometheus_port={cpu_power.prometheus_port} collides with a Dynamo system port "
+                "assigned to a backend process on a worker node"
+            )
 
         for name in ("sample_interval_seconds", "startup_timeout_seconds"):
             if not _is_finite_positive(getattr(cpu_power, name)):

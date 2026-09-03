@@ -1269,7 +1269,7 @@ telemetry:
 | `sample_interval_seconds` | float | `0.1` | Scrape period in seconds; must be at most `3.0` |
 | `startup_timeout_seconds` | float | `30.0` | Exporter readiness timeout |
 | `required` | bool | `false` | Fail the benchmark when publishable CPU power artifacts cannot be produced; implies `source: acpi` semantics |
-| `prometheus_port` | int | `9401` | Exporter port on every worker node; must not collide with `telemetry.dcgm_exporter.port` or an `observability.tachometer` exporter port |
+| `prometheus_port` | int | `9401` | Exporter port on every worker node; must not collide with another configured exporter or a Dynamo backend system port actually assigned by the worker topology |
 | `storage_subdir` | string | `cpu_power` | Output directory below the run log directory; must differ from `telemetry.storage_subdir` |
 
 Publication is gated on coverage: every rail discovered at readiness must have
