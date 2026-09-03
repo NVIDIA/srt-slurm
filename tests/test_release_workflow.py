@@ -267,6 +267,64 @@ class TestOptionalExporterDownload:
         assert "already installed" not in result.stdout
 
     @staticmethod
+    def _path_without_file(sandbox: Path) -> str:
+        """A PATH holding what the recipe runs, minus the `file` it inspects with."""
+        tools = sandbox / "no-file-bin"
+        tools.mkdir(exist_ok=True)
+        for name in ("make", "sh", "rm", "cat", "grep", "mktemp", "install", "sha256sum", "cp", "chmod"):
+            real = shutil.which(name)
+            assert real is not None, f"{name} is needed to run the download recipe"
+            (tools / name).symlink_to(real)
+        return f"{sandbox / 'stub-bin'}:{tools}"
+
+    def test_an_unverifiable_architecture_does_not_delete_the_binary(self, tmp_path: Path):
+        """A missing file(1) is not evidence that the installed binary is wrong.
+
+        Deleting it and then failing to fetch a replacement -- which the
+        warn-on-failure path does quietly -- would leave no exporter at all.
+        """
+        sandbox = self._sandbox(tmp_path)
+        self._install(sandbox, "v1.0.0")
+        (sandbox / "stub-bin" / "file").unlink()
+
+        result = subprocess.run(
+            ["make", "-C", str(sandbox), "cpu-power-exporter-download", "ARCH=x86_64"],
+            env={**os.environ, "PATH": self._path_without_file(sandbox)},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode != 0, "the stub curl cannot fetch anything"
+        assert "file(1) is not installed" in result.stdout
+        assert "not a x86_64 binary" not in result.stdout
+        assert (sandbox / "bin" / "cpu-power-exporter").exists()
+
+    def test_an_unverifiable_architecture_is_not_reported_as_installed(self, tmp_path: Path):
+        """Skipping would report an unchecked binary as the pinned one."""
+        sandbox = self._sandbox(tmp_path)
+        self._install(sandbox, "v1.0.0")
+        (sandbox / "stub-bin" / "file").unlink()
+
+        result = subprocess.run(
+            [
+                "make",
+                "-C",
+                str(sandbox),
+                "cpu-power-exporter-download",
+                "ARCH=x86_64",
+                "CPU_POWER_EXPORTER_RELEASE=v1.0.0",
+            ],
+            env={**os.environ, "PATH": self._path_without_file(sandbox)},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode != 0, "a pin that cannot be verified or fetched must fail loudly"
+        assert "already installed" not in result.stdout
+
+    @staticmethod
     def _report_arch(sandbox: Path, arch: str) -> None:
         """Make the `file` stub report `arch` for whatever it is asked about."""
         stub = sandbox / "stub-bin" / "file"
