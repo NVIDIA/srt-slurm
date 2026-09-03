@@ -44,11 +44,16 @@ cpu-power-exporter:
 # no stable identity to compare against, so it keeps an existing binary.
 # A pinned tag drops the installed binary before fetching: a download that
 # then fails leaves nothing behind rather than a binary of the wrong version
-# that validate-setup would accept as the requested one. A binary of the wrong
-# *architecture* is dropped up front on either path -- otherwise reusing a
-# checkout across architectures and then losing release access would leave the
-# warn-on-failure path preserving a binary that cannot run on this host, which
-# validate-setup accepts because it only checks that the file is there.
+# that validate-setup would accept as the requested one. A binary the
+# architecture check positively rejects is dropped up front on either path --
+# otherwise reusing a checkout across architectures and then losing release
+# access would leave the warn-on-failure path preserving a binary that cannot
+# run on this host, which validate-setup accepts because it only checks that
+# the file is there. A missing file(1) is not such a rejection: with no verdict
+# to act on the binary stays, and the download runs rather than reporting an
+# unverified file as the installed one. A pinned release still fails loudly
+# when it cannot be fetched, which is the clear failure the unverifiable case
+# deserves.
 cpu-power-exporter-download:
 	@set -eu; \
 	case "$(ARCH)" in \
@@ -59,7 +64,10 @@ cpu-power-exporter-download:
 	marker=bin/.cpu-power-exporter.release; \
 	installed=$$(cat "$$marker" 2>/dev/null || echo ""); \
 	if [ -f bin/cpu-power-exporter ]; then \
-		if ! file bin/cpu-power-exporter | grep -q "$$file_pattern"; then \
+		if ! command -v file >/dev/null 2>&1; then \
+			echo "Cannot check the architecture of bin/cpu-power-exporter: file(1) is not installed"; \
+			echo "Downloading the $(ARCH) asset rather than trusting or deleting it"; \
+		elif ! file bin/cpu-power-exporter | grep -q "$$file_pattern"; then \
 			echo "Removing bin/cpu-power-exporter: not a $(ARCH) binary"; \
 			rm -f bin/cpu-power-exporter "$$marker"; \
 		elif [ "$(CPU_POWER_EXPORTER_RELEASE)" = "latest" ] || [ "$$installed" = "$(CPU_POWER_EXPORTER_RELEASE)" ]; then \
@@ -107,12 +115,15 @@ tachometer-scraper-download:
 		*) echo "Unsupported architecture: $(ARCH)"; exit 1 ;; \
 	esac; \
 	if [ -f bin/tachometer-scraper ]; then \
-		if file bin/tachometer-scraper | grep -q "$$file_pattern"; then \
+		if ! command -v file >/dev/null 2>&1; then \
+			echo "Cannot check the architecture of bin/tachometer-scraper: file(1) is not installed"; \
+		elif file bin/tachometer-scraper | grep -q "$$file_pattern"; then \
 			echo "Tachometer scraper already installed at bin/tachometer-scraper ($(ARCH))"; \
 			exit 0; \
+		else \
+			echo "Removing bin/tachometer-scraper: not a $(ARCH) binary"; \
+			rm -f bin/tachometer-scraper; \
 		fi; \
-		echo "Removing bin/tachometer-scraper: not a $(ARCH) binary"; \
-		rm -f bin/tachometer-scraper; \
 	fi; \
 	if [ "$(TACHOMETER_RELEASE)" = "latest" ]; then \
 		base_url="https://github.com/NVIDIA/srt-slurm/releases/latest/download"; \
