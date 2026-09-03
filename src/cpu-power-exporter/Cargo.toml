@@ -18,6 +18,10 @@ tracing.workspace = true
 # directive is ERROR, which silences every startup log unless RUST_LOG is set.
 # Without it `fmt::init()` still honours RUST_LOG but defaults to INFO.
 tracing-subscriber = { workspace = true, features = ["fmt"] }
+# Dynamic loading for optional DCGM dependency — libdcgm.so is not present on
+# every host, so linking at build time would prevent the binary from starting
+# on ACPI-only systems.
+libloading = "0.8"
 
 [dev-dependencies]
 tempfile = "3"
