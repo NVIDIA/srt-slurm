@@ -484,6 +484,7 @@ class TestCpuPowerLifecycle:
         assert [endpoint.url for endpoint in session.endpoints] == ["http://[2001:db8::1]:9401/metrics"]
         manifest = json.loads((tmp_path / "cpu_power" / "manifest.json").read_text())
         assert manifest["exporter"]["command"].endswith("--bind ::")
+        session.stop_and_finalize()
 
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
     @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: _node_ip(node))
@@ -492,9 +493,10 @@ class TestCpuPowerLifecycle:
         mock_srun.return_value = _running_exporter()
         harness = _harness(tmp_path, [_worker("node-a", range(4))])
 
-        harness.start_cpu_power_telemetry(ProcessRegistry(job_id="12345"))
+        session = harness.start_cpu_power_telemetry(ProcessRegistry(job_id="12345"))
 
         assert "--bind" not in mock_srun.call_args.kwargs["command"]
+        session.stop_and_finalize()
 
     @patch("srtctl.core.power.cpu_session.requests.get")
     @patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: _node_ip(node))
