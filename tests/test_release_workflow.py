@@ -236,6 +236,37 @@ class TestOptionalExporterDownload:
         assert result.returncode != 0
 
     @staticmethod
+    def _stub_cargo(sandbox: Path) -> None:
+        """A cargo that produces a binary without a toolchain or a network."""
+        stub = sandbox / "stub-bin" / "cargo"
+        stub.write_text("#!/bin/sh\nmkdir -p target/release\nprintf 'built' > target/release/cpu-power-exporter\n")
+        stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+
+    def test_a_local_build_invalidates_the_release_marker(self, tmp_path: Path):
+        """A working-tree build is not the released tag the marker names."""
+        sandbox = self._sandbox(tmp_path)
+        self._install(sandbox, "v1.0.0")
+        self._stub_cargo(sandbox)
+
+        result = self._make("cpu-power-exporter", sandbox)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert (sandbox / "bin" / "cpu-power-exporter").read_text() == "built"
+        assert not (sandbox / "bin" / ".cpu-power-exporter.release").exists()
+
+    def test_a_pinned_download_after_a_local_build_is_not_skipped(self, tmp_path: Path):
+        """Otherwise the pin silently keeps whatever the working tree happened to build."""
+        sandbox = self._sandbox(tmp_path)
+        self._install(sandbox, "v1.0.0")
+        self._stub_cargo(sandbox)
+        assert self._make("cpu-power-exporter", sandbox).returncode == 0
+
+        result = self._make("cpu-power-exporter-download", sandbox, release="v1.0.0")
+
+        assert result.returncode != 0, "the download was skipped as already installed"
+        assert "already installed" not in result.stdout
+
+    @staticmethod
     def _report_arch(sandbox: Path, arch: str) -> None:
         """Make the `file` stub report `arch` for whatever it is asked about."""
         stub = sandbox / "stub-bin" / "file"
