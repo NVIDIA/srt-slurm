@@ -212,6 +212,11 @@ class PostProcessStageMixin:
         # would leave them behind on a node whose /lustre scratch is transient.
         self._build_perf_dashboard()
 
+        # Best-effort CPU/GPU energy-per-token report. Same ordering
+        # requirement as the perf dashboard above: must land before the S3
+        # sync so it ships with the rest of the log directory.
+        self._build_power_energy_report()
+
         # Run srtlog + S3 upload in single container (if S3 configured)
         _parquet_path, s3_url = self._run_postprocess_container()
 
@@ -271,6 +276,42 @@ class PostProcessStageMixin:
             try_build(self.config, self.runtime)
         except Exception as e:  # noqa: BLE001 - visualisation is never fatal
             logger.warning("Perf dashboard build skipped: %s", e)
+
+    def _build_power_energy_report(self) -> None:
+        """Best-effort CPU/GPU trapezoidal energy report, written next to the samples.
+
+        Quietly skipped (DEBUG only) whenever it does not apply: telemetry
+        disabled (no power CSVs), a benchmark type without sa-bench/aiperf
+        timing artifacts (e.g. lm-eval, gpqa), or a serve-only run with no
+        formal benchmark window. Runs after ``finalize_power_telemetry`` /
+        ``finalize_cpu_power_telemetry`` in ``do_sweep.py``'s cleanup block,
+        so the CPU/GPU ``samples.csv`` files are already durable by the time
+        this executes.
+        """
+        try:
+            from srtctl.analysis.power_energy_report import PowerReportError, build_reports, report_to_dict
+        except ImportError as e:
+            logger.warning("Power energy report unavailable (import failed): %s", e)
+            return
+
+        try:
+            reports = build_reports(self.runtime.log_dir)
+        except PowerReportError as e:
+            logger.debug("Power energy report skipped: %s", e)
+            return
+        except Exception as e:  # noqa: BLE001 - post-processing must never fail the benchmark
+            logger.warning("Power energy report failed: %s", e)
+            return
+
+        output_path = self.runtime.log_dir / "power_energy_report.json"
+        output_path.write_text(json.dumps([report_to_dict(report) for report in reports], indent=2) + "\n")
+        total_joules = sum(report.combined_total_joules for report in reports)
+        logger.info(
+            "Power energy report: %d concurrency point(s), %.1f J combined total -> %s",
+            len(reports),
+            total_joules,
+            output_path,
+        )
 
     def _generate_rollup(self) -> None:
         """Run benchmark-specific rollup script to generate benchmark-rollup.json.
