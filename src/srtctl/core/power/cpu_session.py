@@ -372,6 +372,7 @@ class CpuPowerTelemetrySession:
         self._scrape_seq = 0
         self._scrape_count = 0
         self._row_count = 0
+        self._row_count_known = True
         self._observed: dict[str, set[str]] = {}
         # One head-clock timestamp per rail per producing cycle, keyed
         # "<host>/<sensor>": the series a measurement window is bracketed
@@ -681,6 +682,7 @@ class CpuPowerTelemetrySession:
 
         if not self._writer_lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
             self.record_reason(Reason.COLLECTOR_JOIN_TIMEOUT)
+            self._row_count_known = False
             self._outcome = self._terminal(STATUS_INCOMPLETE, publication_valid=False)
             logger.error("CPU power collector did not release its writer; wrote a minimal terminal manifest")
             return self._outcome
@@ -794,7 +796,7 @@ class CpuPowerTelemetrySession:
                 "started_at_unix": self._started_at_unix,
                 "stopped_at_unix": self._stopped_at_unix,
                 "scrape_count": scrape_count,
-                "sample_row_count": self._row_count,
+                "sample_row_count": self._row_count if self._row_count_known else None,
                 "observed_sensors": observed,
                 "benchmark_spans": [span.to_dict() for span in self._span_coverage],
                 "publication_valid": self._publication_valid,
