@@ -25,7 +25,9 @@ from srtctl.core.schema import (
     BenchmarkConfig,
     CpuPowerConfig,
     ModelConfig,
+    ObservabilityConfig,
     ResourceConfig,
+    TachometerConfig,
     SrtConfig,
     TelemetryConfig,
     TelemetryExporterConfig,
@@ -40,6 +42,7 @@ def _config(
     *,
     telemetry_enabled: bool = True,
     benchmark: BenchmarkConfig | None = None,
+    observability: ObservabilityConfig | None = None,
     **telemetry_kwargs,
 ) -> SrtConfig:
     return SrtConfig(
@@ -48,6 +51,7 @@ def _config(
         resources=ResourceConfig(gpu_type="gb200"),
         benchmark=benchmark or BenchmarkConfig(type="manual"),
         telemetry=TelemetryConfig(enabled=telemetry_enabled, cpu_power=cpu_power, **telemetry_kwargs),
+        observability=observability or ObservabilityConfig(),
     )
 
 
@@ -116,6 +120,47 @@ class TestCpuPowerSchema:
                 CpuPowerConfig(enabled=True, prometheus_port=9400),
                 benchmark=BenchmarkConfig(type="sa-bench", concurrencies=[4], client_placement="head"),
                 dcgm_exporter=TelemetryExporterConfig(container_image="dcgm", port=9400),
+            )
+
+    @pytest.mark.parametrize("exporter", ["dcgm_exporter", "node_exporter"])
+    def test_port_may_not_collide_with_a_tachometer_exporter(self, exporter):
+        """Tachometer's exporters run on the same worker nodes as this one."""
+        tachometer = TachometerConfig(
+            enabled=True, **{exporter: TelemetryExporterConfig(container_image="img", port=9401)}
+        )
+        with pytest.raises(ValidationError, match=f"observability.tachometer.{exporter}"):
+            _config(
+                CpuPowerConfig(enabled=True, prometheus_port=9401),
+                observability=ObservabilityConfig(enabled=True, tachometer=tachometer),
+            )
+
+    def test_cpu_only_telemetry_leaves_tachometers_dcgm_exporter_alone(self):
+        """Nothing conflicts: the CPU leg configures no DCGM exporter of its own."""
+        config = _config(
+            CpuPowerConfig(enabled=True),
+            observability=ObservabilityConfig(
+                enabled=True,
+                tachometer=TachometerConfig(
+                    enabled=True, dcgm_exporter=TelemetryExporterConfig(container_image="dcgm", port=9400)
+                ),
+            ),
+        )
+
+        assert config.observability.tachometer.dcgm_exporter is not None
+
+    @pytest.mark.parametrize("timeout", [0.0, -1.0, float("inf"), float("nan")])
+    def test_cpu_only_telemetry_still_validates_the_scrape_timeout(self, timeout):
+        """cpu_session polls with it, so a DCGM-less recipe needs it checked too."""
+        with pytest.raises(ValidationError, match="request_timeout_seconds"):
+            _config(CpuPowerConfig(enabled=True), request_timeout_seconds=timeout)
+
+    def test_cpu_only_telemetry_still_validates_the_collector_join_budget(self):
+        """A join shorter than two collector cycles abandons the writer."""
+        with pytest.raises(ValidationError, match="collector_join_timeout_seconds"):
+            _config(
+                CpuPowerConfig(enabled=True),
+                request_timeout_seconds=5.0,
+                collector_join_timeout_seconds=1.0,
             )
 
     @pytest.mark.parametrize("interval", [0.0, -1.0, float("inf"), float("nan")])
