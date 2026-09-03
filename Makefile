@@ -1,4 +1,4 @@
-.PHONY: lint test test-cov ci check setup cleanup gb200-fp8 gb200-fp4 tachometer-scraper tachometer-scraper-download cpu-power-exporter cpu-power-exporter-download
+.PHONY: lint test test-cov ci check setup cleanup gb200-fp8 gb200-fp4 tachometer-scraper tachometer-scraper-download cpu-power-exporter cpu-power-exporter-download cpu-power-exporter-setup
 
 NATS_VERSION ?= v2.10.28
 ETCD_VERSION ?= v3.5.21
@@ -67,6 +67,15 @@ cpu-power-exporter-download:
 	printf '%s' "$(CPU_POWER_EXPORTER_RELEASE)" > "$$marker"; \
 	echo "Installed cpu-power-exporter $(CPU_POWER_EXPORTER_RELEASE) at bin/cpu-power-exporter"
 
+# Only recipes that enable telemetry.cpu_power need this binary, and releases
+# cut before the exporter existed do not carry it, so `make setup` warns
+# instead of failing when it cannot be fetched. `srtctl validate-setup` fails
+# closed for the recipes that do require it. Invoke
+# cpu-power-exporter-download directly to treat a missing binary as an error.
+cpu-power-exporter-setup:
+	@$(MAKE) --no-print-directory cpu-power-exporter-download || \
+		echo "⚠️  cpu-power-exporter unavailable; recipes using telemetry.cpu_power need 'make cpu-power-exporter-download'"
+
 tachometer-scraper-download:
 	@set -eu; \
 	case "$(ARCH)" in \
@@ -108,7 +117,7 @@ gb200-fp4:
 	srtctl apply -f recipes/gb200-fp4/8k1k/max-tpt.yaml
 	srtctl apply -f recipes/gb200-fp4/8k1k/mid-curve.yaml
 
-setup: tachometer-scraper-download cpu-power-exporter-download
+setup: tachometer-scraper-download cpu-power-exporter-setup
 	@echo "📦 Setting up configs and logs directories..."
 	@mkdir -p logs
 	@echo "🖥️  Using architecture: $(ARCH)"
