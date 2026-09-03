@@ -313,11 +313,13 @@ class TelemetryStageMixin:
         self, registry: ProcessRegistry, worker_nodes: list[str], port: int
     ) -> None:
         """Launch cpu-power-exporter on each worker node for AIPerf server-metrics scraping."""
-        exporter_command = [
-            self._resolve_bundled_binary("cpu-power-exporter"),
-            "--port",
-            str(port),
-        ]
+        resolved = self._resolve_bundled_binary("cpu-power-exporter")
+        if Path(resolved).is_file() and os.access(resolved, os.X_OK):
+            exporter_command = [resolved, "--port", str(port)]
+            logger.info("CPU power exporter: using Rust binary %s", resolved)
+        else:
+            exporter_command = ["python3", "-m", "srtctl.core.cpu_power_exporter", "--port", str(port)]
+            logger.info("CPU power exporter: Rust binary not found, falling back to Python exporter")
         if self.runtime.nodes.het:
             groups: dict[int, list[str]] = {}
             for node in worker_nodes:
