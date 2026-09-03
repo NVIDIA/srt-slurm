@@ -3,6 +3,7 @@
 
 """Tests for validate_setup pre-flight check and Makefile arch detection."""
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -140,7 +141,14 @@ class TestMakefileArchDetection:
 
     @staticmethod
     def _file_description(path: Path) -> str:
-        """Get just the description part of file(1) output (after the colon)."""
+        """Get just the description part of file(1) output (after the colon).
+
+        These tests assert what file(1) says, so a host without it has nothing
+        to assert against -- skipping is the honest answer, and the assertions
+        below are untouched wherever it is installed.
+        """
+        if shutil.which("file") is None:
+            pytest.skip("file(1) is not installed")
         result = subprocess.run(["file", str(path)], capture_output=True, text=True, check=False)
         return result.stdout.split(":", 1)[1] if ":" in result.stdout else result.stdout
 
