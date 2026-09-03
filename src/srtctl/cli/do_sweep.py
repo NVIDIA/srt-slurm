@@ -809,6 +809,7 @@ class SweepOrchestrator(
                     logger.info("EVAL_ONLY=true: skipping dcgm-power telemetry (no benchmark to measure)")
                 else:
                     self.start_power_telemetry(registry)
+                    self.start_cpu_power_telemetry(registry)
 
             tachometer_procs = self.start_tachometer()
             for proc in tachometer_procs:
@@ -853,6 +854,7 @@ class SweepOrchestrator(
             logger.info("Cleanup")
             # NOTE: finalize before registry.cleanup() so samples and manifest are durable.
             exit_code = self.finalize_power_telemetry(exit_code, interrupted=stop_event.is_set())
+            exit_code = self.finalize_cpu_power_telemetry(exit_code, interrupted=stop_event.is_set())
             stop_event.set()
             registry.cleanup()
             # After cleanup so the GPUs are idle before node state is reverted.

@@ -1189,6 +1189,19 @@ class ObservabilityConfig:
 
 
 @dataclass(frozen=True)
+class CpuPowerConfig:
+    """Host CPU-power collection on each backend node."""
+
+    enabled: bool = False
+    source: Literal["auto", "acpi", "dcgm"] = "auto"
+    sample_interval_seconds: float = 0.1
+    startup_timeout_seconds: float = 30.0
+    required: bool = False
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
 class TelemetryConfig:
     """DCGM power telemetry for benchmark measurement windows."""
 
@@ -1201,6 +1214,7 @@ class TelemetryConfig:
     request_timeout_seconds: float = 2.0
     # None derives a safe shutdown budget from request_timeout_seconds.
     collector_join_timeout_seconds: float | None = None
+    cpu_power: CpuPowerConfig = field(default_factory=CpuPowerConfig)
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -2261,6 +2275,12 @@ class SrtConfig:
         if not _is_safe_relative_subpath(telemetry.storage_subdir):
             raise ValidationError("telemetry.storage_subdir must be a safe relative path below the run log directory")
 
+        cpu_power = telemetry.cpu_power
+        if cpu_power.enabled:
+            for name in ("sample_interval_seconds", "startup_timeout_seconds"):
+                if not _is_finite_positive(getattr(cpu_power, name)):
+                    raise ValidationError(f"telemetry.cpu_power.{name} must be finite and positive")
+
         if self.benchmark.type != _BENCHMARK_TYPE_SA_BENCH:
             raise ValidationError(f"telemetry requires benchmark.type: {_BENCHMARK_TYPE_SA_BENCH}")
         if self.benchmark.client_placement != "head":
@@ -2320,7 +2340,11 @@ class SrtConfig:
     def _validate_telemetry(self):
         """Validate DCGM power telemetry."""
         telemetry = self.telemetry
-        if telemetry is None or not telemetry.enabled:
+        if telemetry is None:
+            return
+        if not telemetry.enabled:
+            if telemetry.cpu_power.enabled:
+                raise ValidationError("telemetry.cpu_power requires telemetry.enabled: true")
             return
         self._validate_dcgm_power()
 

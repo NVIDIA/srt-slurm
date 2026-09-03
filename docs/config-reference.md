@@ -1227,6 +1227,12 @@ telemetry:
   dcgm_exporter:
     container_image: /containers/dcgm-exporter.sqsh
     port: 9400
+  cpu_power:
+    enabled: true
+    source: auto
+    sample_interval_seconds: 0.1
+    startup_timeout_seconds: 30.0
+    required: true
 ```
 
 | Field | Type | Default | Description |
@@ -1239,6 +1245,23 @@ telemetry:
 | `startup_timeout_seconds` | float | `30.0` | Exporter readiness timeout |
 | `request_timeout_seconds` | float | `2.0` | Per-request exporter timeout |
 | `collector_join_timeout_seconds` | float/null | `null` | Shutdown join timeout; defaults from `request_timeout_seconds` |
+
+### CPU power
+
+`telemetry.cpu_power` starts one host-side collector on every backend node and
+writes auditable per-node samples plus an aggregated CSV under
+`<log_dir>/<storage_subdir>/cpu/`. The collector runs outside the model
+container so it can read the host power interfaces. `auto` follows the BTK
+Grace source order: Linux ACPI `power_meter` channels named `CPU Power Socket
+N`, then DCGM CPU entity field 1130.
+
+| CPU power field | Type | Default | Description |
+| --------------- | ---- | ------- | ----------- |
+| `enabled` | bool | `false` | Enable host CPU-power collection |
+| `source` | `auto`/`acpi`/`dcgm` | `auto` | Requested host power source |
+| `sample_interval_seconds` | float | `0.1` | Collector sampling interval |
+| `startup_timeout_seconds` | float | `30.0` | Timeout for all backend nodes to publish source readiness |
+| `required` | bool | `false` | Skip/fail the benchmark if CPU power cannot be collected on every backend node |
 
 ---
 

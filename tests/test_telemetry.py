@@ -16,6 +16,7 @@ from srtctl.core.power.contract import Reason
 from srtctl.core.processes import ProcessRegistry
 from srtctl.core.schema import (
     BenchmarkConfig,
+    CpuPowerConfig,
     InfraConfig,
     ModelConfig,
     ObservabilityConfig,
@@ -121,6 +122,39 @@ class TestDcgmPowerConfig:
         assert defaults.request_timeout_seconds == 2.0
         assert defaults.collector_join_timeout_seconds is None
         assert defaults.resolved_collector_join_timeout_seconds == 12.0
+        assert defaults.cpu_power.enabled is False
+        assert defaults.cpu_power.source == "auto"
+
+    def test_accepts_cpu_power_collection(self):
+        config = _make_config(
+            telemetry=_dcgm_power(
+                cpu_power=CpuPowerConfig(
+                    enabled=True,
+                    source="acpi",
+                    sample_interval_seconds=0.1,
+                    startup_timeout_seconds=10.0,
+                    required=True,
+                )
+            ),
+            benchmark=_sa_bench(),
+        )
+
+        assert config.telemetry.cpu_power.enabled is True
+        assert config.telemetry.cpu_power.required is True
+
+    def test_cpu_power_requires_telemetry(self):
+        with pytest.raises(ValidationError, match="telemetry.cpu_power requires telemetry.enabled"):
+            _make_config(telemetry=TelemetryConfig(cpu_power=CpuPowerConfig(enabled=True)))
+
+    @pytest.mark.parametrize("field_name", ["sample_interval_seconds", "startup_timeout_seconds"])
+    def test_cpu_power_intervals_must_be_positive(self, field_name):
+        with pytest.raises(ValidationError, match=f"telemetry.cpu_power.{field_name}"):
+            _make_config(
+                telemetry=_dcgm_power(
+                    cpu_power=CpuPowerConfig(enabled=True, **{field_name: 0.0}),
+                ),
+                benchmark=_sa_bench(),
+            )
 
     def test_join_timeout_default_tracks_request_timeout(self):
         config = _make_config(
@@ -1014,3 +1048,53 @@ class TestDcgmPowerExporterLaunch:
         assert Reason.EXPORTER_LAUNCH_FAILED in outcome.reason_codes
         assert outcome.status == "failed"
         assert outcome.exit_nonzero is True
+
+
+class TestCpuPowerCollectorLaunch:
+    """CPU power runs once per backend node on the bare host."""
+
+    @patch("srtctl.cli.mixins.telemetry_stage.CpuPowerTelemetrySession.wait_for_readiness", return_value=True)
+    @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
+    def test_multinode_launches_native_collectors(self, mock_srun, _mock_ready, tmp_path):
+        mock_srun.return_value = _running_exporter()
+        harness = _power_harness(
+            tmp_path,
+            [_worker("node-a", range(4)), _worker("node-b", range(4), index=1)],
+        )
+        harness.config = _make_config(
+            telemetry=_dcgm_power(
+                startup_timeout_seconds=0.2,
+                request_timeout_seconds=0.1,
+                collector_join_timeout_seconds=3.0,
+                cpu_power=CpuPowerConfig(enabled=True, source="auto", required=True),
+            ),
+            benchmark=_sa_bench(),
+        )
+        registry = ProcessRegistry(job_id="12345")
+
+        session = harness.start_cpu_power_telemetry(registry)
+
+        assert session is not None
+        assert mock_srun.call_count == 1
+        kwargs = mock_srun.call_args.kwargs
+        assert kwargs["nodes"] == 2
+        assert kwargs["ntasks"] == 2
+        assert kwargs["nodelist"] == ["node-a", "node-b"]
+        assert kwargs["use_bash_wrapper"] is False
+        assert "container_image" not in kwargs
+        assert kwargs["command"][1:3] == ["-m", "srtctl.core.cpu_power"]
+        assert registry.process_count == 1
+        assert all(proc.critical is False for proc in registry.get_all_processes().values())
+
+    def test_required_cpu_power_failure_blocks_benchmark(self, tmp_path):
+        harness = _power_harness(tmp_path, [_worker("node-a", range(4))])
+        harness.config = _make_config(
+            telemetry=_dcgm_power(cpu_power=CpuPowerConfig(enabled=True, required=True)),
+            benchmark=_sa_bench(),
+        )
+        harness._cpu_power_session = MagicMock()
+        harness._cpu_power_telemetry_ready = False
+        harness._power_session = MagicMock()
+        harness._power_telemetry_ready = True
+
+        assert harness.power_telemetry_blocks_benchmark() is True
