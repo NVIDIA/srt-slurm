@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from srtctl.core.fingerprint import format_identity_verification, verify_identity
+from srtctl.core.ip_utils import url_host
 from srtctl.core.health import wait_for_model
 from srtctl.core.lockfile import collect_worker_fingerprints
 from srtctl.core.power.contract import (
@@ -669,6 +670,15 @@ class BenchmarkStageMixin:
         # Custom commands preserve logical topology order; built-in AIPerf
         # runners retain their historical sorted physical-process list.
         urls = list(dict.fromkeys(urls)) if logical_workers_only else sorted(set(urls))
+
+        # Add ACPI CPU power exporter endpoints (one per worker node) when enabled.
+        cpu_power = getattr(self.config.telemetry, "cpu_power", None)
+        if self.config.telemetry.enabled and cpu_power is not None and cpu_power.enabled and cpu_power.prometheus_port > 0:
+            worker_nodes = sorted({process.node for process in self.backend_processes})
+            for node in worker_nodes:
+                host = get_hostname_ip(node, self.runtime.network_interface)
+                urls.append(f"http://{url_host(host)}:{cpu_power.prometheus_port}/metrics")
+
         return {"AIPERF_SERVER_METRICS_URLS": ",".join(urls)}
 
     def _client_polled_metric_urls(self) -> frozenset[str]:

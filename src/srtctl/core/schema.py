@@ -55,6 +55,7 @@ logger = logging.getLogger(__name__)
 _BENCHMARK_TYPE_SA_BENCH = "sa-bench"
 _DCGM_POWER_MAX_SAMPLE_GAP_SECONDS = 3.0
 _DCGM_POWER_COLLECT_CYCLE_TIMEOUT_GRACE_SECONDS = 1.0
+_CPU_POWER_MAX_SAMPLE_GAP_SECONDS = 3.0
 
 
 def _is_safe_relative_subpath(value: str) -> bool:
@@ -1143,15 +1144,48 @@ class ObservabilityConfig:
 
 @dataclass(frozen=True)
 class CpuPowerConfig:
-    """Host CPU-power collection alongside the DCGM GPU power artifact."""
+    """Host CPU-power collection alongside the DCGM GPU power artifact.
+
+    ACPI is the only implemented provider: ``cpu-power-exporter`` runs on every
+    worker node, publishes ``cpu_power_acpi_watts`` from ``/sys/class/hwmon``,
+    and the head-node session scrapes it on the same clock as the DCGM leg. The
+    same endpoints are handed to AIPerf via ``AIPERF_SERVER_METRICS_URLS``.
+
+    Attributes:
+        enabled: Master switch for the CPU power leg. Default: False.
+        source: Which provider to use. ``acpi`` names it explicitly and makes it
+            mandatory; ``auto`` is best-effort -- a node with no ACPI power
+            rails simply contributes no CPU samples instead of failing the run.
+        sample_interval_seconds: Scrape period, in seconds.
+        startup_timeout_seconds: How long to wait for the exporters to serve
+            ``/metrics`` before giving up on the leg.
+        required: Fail the job when the leg does not start or does not produce a
+            valid publication. Implies the ``acpi`` provider is mandatory.
+        prometheus_port: Port ``cpu-power-exporter`` listens on, on every worker
+            node. Must not collide with ``telemetry.dcgm_exporter.port``.
+        storage_subdir: Directory below the run log directory that holds the CPU
+            samples and manifest.
+    """
 
     enabled: bool = False
-    source: Literal["auto", "acpi", "dcgm"] = "auto"
+    source: Literal["auto", "acpi"] = "auto"
     sample_interval_seconds: float = 0.1
     startup_timeout_seconds: float = 30.0
     required: bool = False
+    prometheus_port: int = 9405
+    storage_subdir: str = "cpu_power"
 
     Schema: ClassVar[type[Schema]] = Schema
+
+    @property
+    def acpi_mandatory(self) -> bool:
+        """Whether an absent or unhealthy ACPI exporter must fail the run.
+
+        ``auto`` is best-effort, so a cluster without ACPI power rails still
+        runs. Naming ``acpi`` explicitly, or asking for fail-closed behaviour
+        with ``required``, makes exporter readiness mandatory.
+        """
+        return self.source == "acpi" or self.required
 
 
 @dataclass(frozen=True)
@@ -2347,7 +2381,7 @@ class SrtConfig:
         if not 1 <= exporter.port <= 65535:
             raise ValidationError("telemetry.dcgm_exporter.port must be in 1..65535")
 
-        for name in ("default_frequency", "startup_timeout_seconds", "request_timeout_seconds"):
+        for name in ("default_frequency", "startup_timeout_seconds"):
             if not _is_finite_positive(getattr(telemetry, name)):
                 raise ValidationError(f"telemetry.{name} must be finite and positive")
         if telemetry.default_frequency > _DCGM_POWER_MAX_SAMPLE_GAP_SECONDS:
@@ -2356,19 +2390,6 @@ class SrtConfig:
                 f"{_DCGM_POWER_MAX_SAMPLE_GAP_SECONDS}s max sample gap the power validator accepts; "
                 "every window would fail sample_gap_exceeded. Set it to the intended collector "
                 "period (e.g. 1.0)."
-            )
-        worst_case_join_seconds = 2 * (
-            2 * telemetry.request_timeout_seconds + _DCGM_POWER_COLLECT_CYCLE_TIMEOUT_GRACE_SECONDS
-        )
-        collector_join_timeout_seconds = telemetry.resolved_collector_join_timeout_seconds
-        if (
-            not _is_finite_positive(collector_join_timeout_seconds)
-            or collector_join_timeout_seconds <= worst_case_join_seconds
-        ):
-            raise ValidationError(
-                "telemetry.collector_join_timeout_seconds must be finite, positive, "
-                "and greater than two full collector cycles "
-                "(2 * (2 * telemetry.request_timeout_seconds + 1 second))"
             )
 
         if not _is_safe_relative_subpath(telemetry.storage_subdir):
@@ -2399,6 +2420,113 @@ class SrtConfig:
         if not concurrencies or len(set(concurrencies)) != len(concurrencies) or any(c <= 0 for c in concurrencies):
             raise ValidationError("telemetry requires a non-empty list of unique positive benchmark.concurrencies")
 
+    def _dynamo_system_ports(self) -> set[int]:
+        """System-status ports that backend launches actually bind on worker nodes."""
+        if self.frontend.type != "dynamo":
+            return set()
+
+        resources = self.resources
+        nodes = [f"validation-worker-{index}" for index in range(self.total_nodes)]
+        endpoints = self.backend.allocate_endpoints(
+            num_prefill=resources.num_prefill,
+            num_decode=resources.num_decode,
+            num_agg=resources.num_agg,
+            gpus_per_prefill=resources.gpus_per_prefill,
+            gpus_per_decode=resources.gpus_per_decode,
+            gpus_per_agg=resources.gpus_per_agg,
+            gpus_per_node=resources.gpus_per_node,
+            available_nodes=nodes,
+            spread_workers=resources.spread_workers,
+        )
+        processes = self.backend.endpoints_to_processes(
+            endpoints,
+            frontend_type=self.frontend.type,
+            dynamo_sidecar=self.dynamo.sidecar,
+        )
+        if self.backend.get_srun_config().launch_per_endpoint:
+            processes = [process for process in processes if process.node_rank == 0]
+        return {process.sys_port for process in processes}
+
+    def _validate_collector_budget(self) -> None:
+        """Validate the scrape and join budget every enabled leg's collector uses.
+
+        Both the DCGM and CPU legs poll with ``request_timeout_seconds`` and are
+        joined with ``collector_join_timeout_seconds``, so a leg running alone
+        needs these checked just as much as the pair does.
+        """
+        telemetry = self.telemetry
+        if not _is_finite_positive(telemetry.request_timeout_seconds):
+            raise ValidationError("telemetry.request_timeout_seconds must be finite and positive")
+        worst_case_join_seconds = 2 * (
+            2 * telemetry.request_timeout_seconds + _DCGM_POWER_COLLECT_CYCLE_TIMEOUT_GRACE_SECONDS
+        )
+        collector_join_timeout_seconds = telemetry.resolved_collector_join_timeout_seconds
+        if (
+            not _is_finite_positive(collector_join_timeout_seconds)
+            or collector_join_timeout_seconds <= worst_case_join_seconds
+        ):
+            raise ValidationError(
+                "telemetry.collector_join_timeout_seconds must be finite, positive, "
+                "and greater than two full collector cycles "
+                "(2 * (2 * telemetry.request_timeout_seconds + 1 second))"
+            )
+
+    def _validate_cpu_power(self) -> None:
+        """Validate the host CPU power leg."""
+        cpu_power = self.telemetry.cpu_power
+        if not 1 <= cpu_power.prometheus_port <= 65535:
+            raise ValidationError("telemetry.cpu_power.prometheus_port must be in 1..65535")
+
+        neighbours = [("telemetry.dcgm_exporter", self.telemetry.dcgm_exporter)]
+        if self.observability.tachometer_enabled:
+            tachometer = self.observability.tachometer
+            neighbours += [
+                ("observability.tachometer.dcgm_exporter", tachometer.dcgm_exporter),
+                ("observability.tachometer.node_exporter", tachometer.node_exporter),
+            ]
+        for name, exporter in neighbours:
+            if exporter is not None and exporter.port == cpu_power.prometheus_port:
+                raise ValidationError(
+                    f"telemetry.cpu_power.prometheus_port={cpu_power.prometheus_port} collides with "
+                    f"{name}.port; both run on every worker node"
+                )
+
+        if cpu_power.prometheus_port in self._dynamo_system_ports():
+            raise ValidationError(
+                f"telemetry.cpu_power.prometheus_port={cpu_power.prometheus_port} collides with a Dynamo system port "
+                "assigned to a backend process on a worker node"
+            )
+
+        for name in ("sample_interval_seconds", "startup_timeout_seconds"):
+            if not _is_finite_positive(getattr(cpu_power, name)):
+                raise ValidationError(f"telemetry.cpu_power.{name} must be finite and positive")
+        if cpu_power.sample_interval_seconds > _CPU_POWER_MAX_SAMPLE_GAP_SECONDS:
+            raise ValidationError(
+                f"telemetry.cpu_power.sample_interval_seconds={cpu_power.sample_interval_seconds} exceeds the "
+                f"{_CPU_POWER_MAX_SAMPLE_GAP_SECONDS}s max sample gap; every window would fail sample_gap_exceeded"
+            )
+
+        if not _is_safe_relative_subpath(cpu_power.storage_subdir):
+            raise ValidationError(
+                "telemetry.cpu_power.storage_subdir must be a safe relative path below the run log directory"
+            )
+        if cpu_power.storage_subdir == self.telemetry.storage_subdir:
+            raise ValidationError(
+                "telemetry.cpu_power.storage_subdir must differ from telemetry.storage_subdir; "
+                "the two legs write their own samples and manifest"
+            )
+
+    def _reject_inert_cpu_power_demand(self) -> None:
+        """Reject mandatory CPU power semantics that nothing will act on."""
+        cpu_power = self.telemetry.cpu_power
+        if cpu_power.required:
+            raise ValidationError("telemetry.cpu_power.required has no effect unless telemetry.cpu_power.enabled")
+        if cpu_power.source == "acpi":
+            raise ValidationError(
+                'telemetry.cpu_power.source: "acpi" has no effect unless telemetry.cpu_power.enabled; '
+                "it names a mandatory provider for a leg that will not run"
+            )
+
     def _validate_observability(self):
         """Validate Tachometer collection under observability."""
         observability = self.observability
@@ -2407,7 +2535,7 @@ class SrtConfig:
             raise ValidationError("observability.tachometer requires observability.enabled: true")
         if not observability.tachometer_enabled:
             return
-        if self.telemetry.enabled and tachometer.dcgm_exporter is not None:
+        if self.telemetry.enabled and self.telemetry.dcgm_exporter is not None and tachometer.dcgm_exporter is not None:
             raise ValidationError(
                 "configure the shared DCGM exporter under telemetry, not observability.tachometer, "
                 "when DCGM power telemetry is enabled"
@@ -2439,11 +2567,34 @@ class SrtConfig:
             )
 
     def _validate_telemetry(self):
-        """Validate DCGM power telemetry."""
+        """Validate telemetry config.
+
+        The two legs are independent: a recipe may enable CPU power without a
+        DCGM exporter, or either alone.
+        """
         telemetry = self.telemetry
         if telemetry is None or not telemetry.enabled:
+            if telemetry is not None and telemetry.cpu_power.enabled:
+                raise ValidationError("telemetry.cpu_power.enabled requires telemetry.enabled")
+            if telemetry is not None:
+                self._reject_inert_cpu_power_demand()
             return
-        self._validate_dcgm_power()
+        if telemetry.cpu_power.enabled:
+            if not _is_safe_relative_subpath(telemetry.storage_subdir):
+                raise ValidationError(
+                    "telemetry.storage_subdir must be a safe relative path below the run log directory"
+                )
+            self._validate_cpu_power()
+        else:
+            self._reject_inert_cpu_power_demand()
+        if telemetry.dcgm_exporter is not None:
+            self._validate_dcgm_power()
+        elif not telemetry.cpu_power.enabled:
+            raise ValidationError(
+                "telemetry.enabled requires telemetry.dcgm_exporter or telemetry.cpu_power.enabled; "
+                "otherwise there is nothing to collect"
+            )
+        self._validate_collector_budget()
 
     @classmethod
     def from_yaml(cls, yaml_path: Path) -> "SrtConfig":

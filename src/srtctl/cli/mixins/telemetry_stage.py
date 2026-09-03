@@ -151,18 +151,12 @@ class TelemetryStageMixin:
             return None
 
         exporter_config = telemetry.dcgm_exporter
-        if exporter_config is None:  # guaranteed by schema validation
-            raise ValueError("telemetry.dcgm_exporter is required when telemetry is enabled")
+        if exporter_config is None:
+            return None
 
         worker_nodes = sorted({process.node for process in self.backend_processes})
         power_dir = self.runtime.log_dir / telemetry.storage_subdir
         command = resolve_exporter_command(exporter_config, DCGM_EXPORTER_COMMAND_TEMPLATE)
-        gpus_per_node = self.config.resources.gpus_per_node
-        permitted_device_keys = (
-            [(node, gpu_index) for node in worker_nodes for gpu_index in range(gpus_per_node)]
-            if isinstance(gpus_per_node, int) and gpus_per_node > 0
-            else None
-        )
 
         session = PowerTelemetrySession(
             settings=PowerSessionSettings(
@@ -187,7 +181,6 @@ class TelemetryStageMixin:
                 for concurrency in self.config.benchmark.get_concurrency_list()
             ],
             nodes=worker_nodes,
-            permitted_device_keys=permitted_device_keys,
         )
         # NOTE: stored before initialize() so a raise mid-startup still leaves a finalizable session.
         self._power_session = session
@@ -229,7 +222,7 @@ class TelemetryStageMixin:
             return None
 
         worker_nodes = sorted({process.node for process in self.backend_processes})
-        cpu_dir = self.runtime.log_dir / telemetry.storage_subdir / "cpu"
+        cpu_dir = self.runtime.log_dir / cpu_power.storage_subdir
         session = CpuPowerTelemetrySession(
             CpuPowerSessionSettings(
                 cpu_dir=cpu_dir,
@@ -303,7 +296,60 @@ class TelemetryStageMixin:
             logger.warning("CPU power collectors did not become ready on every worker node")
         else:
             logger.info("CPU power telemetry ready (artifacts under %s)", cpu_dir)
+
+        if cpu_power.prometheus_port > 0:
+            self._start_cpu_power_prometheus_exporters(registry, worker_nodes, cpu_power.prometheus_port)
+
         return session
+
+    def _start_cpu_power_prometheus_exporters(
+        self, registry: ProcessRegistry, worker_nodes: list[str], port: int
+    ) -> None:
+        """Launch cpu-power-exporter on each worker node for AIPerf server-metrics scraping."""
+        resolved = self._resolve_bundled_binary("cpu-power-exporter")
+        if Path(resolved).is_file() and os.access(resolved, os.X_OK):
+            exporter_command = [resolved, "--port", str(port)]
+            logger.info("CPU power exporter: using Rust binary %s", resolved)
+        else:
+            exporter_command = ["python3", "-m", "srtctl.core.cpu_power_exporter", "--port", str(port)]
+            logger.info("CPU power exporter: Rust binary not found, falling back to Python exporter")
+        if self.runtime.nodes.het:
+            groups: dict[int, list[str]] = {}
+            for node in worker_nodes:
+                group_id = self.runtime.nodes.het_group_for(node)
+                if group_id is None:
+                    raise RuntimeError(f"node {node!r} not in any het component")
+                groups.setdefault(group_id, []).append(node)
+            chunks = sorted(groups.items())
+        else:
+            chunks = [(-1, worker_nodes)]
+
+        for group_id, nodes in chunks:
+            suffix = "" if len(chunks) == 1 else f".g{group_id}"
+            log_file = self.runtime.log_dir / f"telemetry_cpu_power_prom{suffix}.%N.out"
+            try:
+                proc = start_srun_process(
+                    command=exporter_command,
+                    nodes=len(nodes),
+                    ntasks=len(nodes),
+                    nodelist=nodes,
+                    output=str(log_file),
+                    srun_options=self.runtime.srun_options,
+                    het_group=group_id if group_id >= 0 else None,
+                    use_bash_wrapper=False,
+                )
+                name = "telemetry_cpu_power_prom" if len(chunks) == 1 else f"telemetry_cpu_power_prom_g{group_id}"
+                registry.add_process(
+                    ManagedProcess(
+                        name=name,
+                        popen=proc,
+                        log_file=log_file,
+                        node=",".join(nodes),
+                        critical=False,
+                    )
+                )
+            except Exception:
+                logger.exception("CPU power Prometheus exporter launch failed on group %s", group_id)
 
     def power_telemetry_blocks_benchmark(self) -> bool:
         """Whether required-mode telemetry failed startup and must skip the workload.
@@ -385,25 +431,32 @@ class TelemetryStageMixin:
             return 1
         return exit_code
 
-    def _resolve_tachometer_binary(self, binary_path: str) -> str:
-        """Resolve the default bare binary name against the checkout's bin/.
+    def _resolve_bundled_binary(self, name: str) -> str:
+        """Resolve a bare binary name against the checkout's ``bin/``.
 
-        An explicit ``binary_path`` is always respected verbatim. The default
-        bare name used to rely on ``$PATH`` inside the srun step, while
-        ``make setup`` installs the binary to ``<srtctl_root>/bin/`` — the
-        same place ``validate_setup`` checks and the --bash lifecycle uses.
+        ``make setup`` installs the released binaries to ``<srtctl_root>/bin/``
+        — the same place ``validate_setup`` checks and the --bash lifecycle
+        uses. Falling back to the bare name keeps ``$PATH`` working for ad-hoc
+        installs inside the srun step.
         """
-        if binary_path != "tachometer-scraper":
-            return binary_path
         candidates = []
         source_dir = os.environ.get("SRTCTL_SOURCE_DIR")
         if source_dir:
-            candidates.append(Path(source_dir) / "bin" / binary_path)
-        candidates.append(Path(__file__).resolve().parents[4] / "bin" / binary_path)
+            candidates.append(Path(source_dir) / "bin" / name)
+        candidates.append(Path(__file__).resolve().parents[4] / "bin" / name)
         for candidate in candidates:
             if candidate.is_file() and os.access(candidate, os.X_OK):
                 return str(candidate)
-        return binary_path
+        return name
+
+    def _resolve_tachometer_binary(self, binary_path: str) -> str:
+        """Resolve the default bare binary name against the checkout's bin/.
+
+        An explicit ``binary_path`` is always respected verbatim.
+        """
+        if binary_path != "tachometer-scraper":
+            return binary_path
+        return self._resolve_bundled_binary(binary_path)
 
     def start_tachometer(self) -> list[ManagedProcess]:
         """Start Tachometer collection (follows ``observability.enabled``)."""

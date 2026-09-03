@@ -2,6 +2,7 @@
 members = [
     "src/tachometer/tachometer-writer",
     "src/tachometer/tachometer-scraper",
+    "src/cpu-power-exporter",
 ]
 resolver = "2"
 

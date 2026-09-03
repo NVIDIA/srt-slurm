@@ -1,0 +1,73 @@
+# Exercises the ACPI CPU power leg end to end on Grace hardware:
+# cpu-power-exporter on every worker node, the head-node collector writing
+# logs/<run>/cpu_power/{samples.csv,manifest.json}, and AIPerf consuming the
+# same endpoints via --server-metrics.
+#
+# benchmark.type must be one that actually reads AIPERF_SERVER_METRICS_URLS.
+# sa-bench does not, so it would launch the exporters with no consumer and
+# prove nothing about the AIPerf integration.
+#
+# Qwen3.5-27B BF16 (not FP4) keeps startup under 2 min by avoiding the
+# 8-minute fp4_gemm JIT autotuning pass that DeepSeek-R1 FP4 requires.
+name: "cpu-power-exporter-test"
+
+model:
+  path: "/lustre/share/core_dlfw_ci/models/Qwen3.5-27B"
+  container: "/lustre/fsw/coreai_comparch_inferencex/yangminl/containers/lmsysorg+sglang+nightly-dev-20260818-c0b6474b.sqsh"
+  precision: "bf16"
+
+dynamo:
+  wheel: "1.4.0"
+
+resources:
+  gpu_type: "gb200"
+  prefill_nodes: 1
+  decode_nodes: 1
+  prefill_workers: 1
+  decode_workers: 1
+  gpus_per_node: 4
+
+backend:
+  prefill_environment:
+    TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: "1800"
+  decode_environment:
+    TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: "1800"
+  sglang_config:
+    prefill:
+      served-model-name: "Qwen/Qwen3.5-27B"
+      trust-remote-code: true
+      disaggregation-mode: "prefill"
+      mem-fraction-static: 0.88
+      tensor-parallel-size: 4
+      disaggregation-bootstrap-port: 30001
+      disaggregation-transfer-backend: nixl
+      page-size: 64
+    decode:
+      served-model-name: "Qwen/Qwen3.5-27B"
+      trust-remote-code: true
+      disaggregation-mode: "decode"
+      mem-fraction-static: 0.88
+      tensor-parallel-size: 4
+      disaggregation-bootstrap-port: 30001
+      disaggregation-transfer-backend: nixl
+      page-size: 64
+
+benchmark:
+  type: "trace-replay"
+  trace_file: "/configs/cpu-power-test-trace.jsonl"
+  concurrencies: [8, 16]
+  aiperf_package: "aiperf"
+  aiperf_args:
+    request-count: 50
+    tokenizer: "/model"
+    extra-inputs: "max_tokens:128,enable_thinking:false"
+
+telemetry:
+  enabled: true
+  cpu_power:
+    enabled: true
+    # ACPI is mandatory here: the point of the recipe is to prove the rails are
+    # collected, so a node without them must fail rather than quietly skip.
+    source: "acpi"
+    required: true
+    prometheus_port: 9405
