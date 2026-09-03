@@ -1150,6 +1150,9 @@ class CpuPowerConfig:
     sample_interval_seconds: float = 0.1
     startup_timeout_seconds: float = 30.0
     required: bool = False
+    # When > 0, also launch cpu_power_exporter.py on each worker node so
+    # AIPerf can scrape ACPI power rails via --server-metrics / AIPERF_SERVER_METRICS_URLS.
+    prometheus_port: int = 9401
 
     Schema: ClassVar[type[Schema]] = Schema
 

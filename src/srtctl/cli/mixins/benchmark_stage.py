@@ -664,6 +664,14 @@ class BenchmarkStageMixin:
                     host = get_hostname_ip(process.node, self.runtime.network_interface)
                     urls.append(f"http://{host}:{kvbm_port}/metrics")
 
+        # Add ACPI CPU power exporter endpoints (one per worker node) when enabled.
+        cpu_power = getattr(self.config.telemetry, "cpu_power", None)
+        if self.config.telemetry.enabled and cpu_power is not None and cpu_power.enabled and cpu_power.prometheus_port > 0:
+            worker_nodes = sorted({process.node for process in self.backend_processes})
+            for node in worker_nodes:
+                host = get_hostname_ip(node, self.runtime.network_interface)
+                urls.append(f"http://{host}:{cpu_power.prometheus_port}/metrics")
+
         if not urls:
             return {}
         # Custom commands preserve logical topology order; built-in AIPerf

@@ -303,7 +303,60 @@ class TelemetryStageMixin:
             logger.warning("CPU power collectors did not become ready on every worker node")
         else:
             logger.info("CPU power telemetry ready (artifacts under %s)", cpu_dir)
+
+        if cpu_power.prometheus_port > 0:
+            self._start_cpu_power_prometheus_exporters(registry, worker_nodes, cpu_power.prometheus_port)
+
         return session
+
+    def _start_cpu_power_prometheus_exporters(
+        self, registry: ProcessRegistry, worker_nodes: list[str], port: int
+    ) -> None:
+        """Launch cpu_power_exporter.py on each worker node for AIPerf server-metrics scraping."""
+        exporter_command = [
+            sys.executable,
+            "-m",
+            "srtctl.core.cpu_power_exporter",
+            "--port",
+            str(port),
+        ]
+        if self.runtime.nodes.het:
+            groups: dict[int, list[str]] = {}
+            for node in worker_nodes:
+                group_id = self.runtime.nodes.het_group_for(node)
+                if group_id is None:
+                    raise RuntimeError(f"node {node!r} not in any het component")
+                groups.setdefault(group_id, []).append(node)
+            chunks = sorted(groups.items())
+        else:
+            chunks = [(-1, worker_nodes)]
+
+        for group_id, nodes in chunks:
+            suffix = "" if len(chunks) == 1 else f".g{group_id}"
+            log_file = self.runtime.log_dir / f"telemetry_cpu_power_prom{suffix}.%N.out"
+            try:
+                proc = start_srun_process(
+                    command=exporter_command,
+                    nodes=len(nodes),
+                    ntasks=len(nodes),
+                    nodelist=nodes,
+                    output=str(log_file),
+                    srun_options=self.runtime.srun_options,
+                    het_group=group_id if group_id >= 0 else None,
+                    use_bash_wrapper=False,
+                )
+                name = "telemetry_cpu_power_prom" if len(chunks) == 1 else f"telemetry_cpu_power_prom_g{group_id}"
+                registry.add_process(
+                    ManagedProcess(
+                        name=name,
+                        popen=proc,
+                        log_file=log_file,
+                        node=",".join(nodes),
+                        critical=False,
+                    )
+                )
+            except Exception:
+                logger.exception("CPU power Prometheus exporter launch failed on group %s", group_id)
 
     def power_telemetry_blocks_benchmark(self) -> bool:
         """Whether required-mode telemetry failed startup and must skip the workload.
