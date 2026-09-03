@@ -40,7 +40,11 @@ cpu-power-exporter:
 # no stable identity to compare against, so it keeps an existing binary.
 # A pinned tag drops the installed binary before fetching: a download that
 # then fails leaves nothing behind rather than a binary of the wrong version
-# that validate-setup would accept as the requested one.
+# that validate-setup would accept as the requested one. A binary of the wrong
+# *architecture* is dropped up front on either path -- otherwise reusing a
+# checkout across architectures and then losing release access would leave the
+# warn-on-failure path preserving a binary that cannot run on this host, which
+# validate-setup accepts because it only checks that the file is there.
 cpu-power-exporter-download:
 	@set -eu; \
 	case "$(ARCH)" in \
@@ -50,10 +54,14 @@ cpu-power-exporter-download:
 	esac; \
 	marker=bin/.cpu-power-exporter.release; \
 	installed=$$(cat "$$marker" 2>/dev/null || echo ""); \
-	if [ -f bin/cpu-power-exporter ] && file bin/cpu-power-exporter | grep -q "$$file_pattern" \
-		&& { [ "$(CPU_POWER_EXPORTER_RELEASE)" = "latest" ] || [ "$$installed" = "$(CPU_POWER_EXPORTER_RELEASE)" ]; }; then \
-		echo "cpu-power-exporter $$installed already installed at bin/cpu-power-exporter ($(ARCH))"; \
-		exit 0; \
+	if [ -f bin/cpu-power-exporter ]; then \
+		if ! file bin/cpu-power-exporter | grep -q "$$file_pattern"; then \
+			echo "Removing bin/cpu-power-exporter: not a $(ARCH) binary"; \
+			rm -f bin/cpu-power-exporter "$$marker"; \
+		elif [ "$(CPU_POWER_EXPORTER_RELEASE)" = "latest" ] || [ "$$installed" = "$(CPU_POWER_EXPORTER_RELEASE)" ]; then \
+			echo "cpu-power-exporter $$installed already installed at bin/cpu-power-exporter ($(ARCH))"; \
+			exit 0; \
+		fi; \
 	fi; \
 	if [ "$(CPU_POWER_EXPORTER_RELEASE)" = "latest" ]; then \
 		base_url="https://github.com/NVIDIA/srt-slurm/releases/latest/download"; \
@@ -94,9 +102,13 @@ tachometer-scraper-download:
 		aarch64) asset="tachometer-scraper-aarch64-unknown-linux-gnu"; file_pattern="aarch64" ;; \
 		*) echo "Unsupported architecture: $(ARCH)"; exit 1 ;; \
 	esac; \
-	if [ -f bin/tachometer-scraper ] && file bin/tachometer-scraper | grep -q "$$file_pattern"; then \
-		echo "Tachometer scraper already installed at bin/tachometer-scraper ($(ARCH))"; \
-		exit 0; \
+	if [ -f bin/tachometer-scraper ]; then \
+		if file bin/tachometer-scraper | grep -q "$$file_pattern"; then \
+			echo "Tachometer scraper already installed at bin/tachometer-scraper ($(ARCH))"; \
+			exit 0; \
+		fi; \
+		echo "Removing bin/tachometer-scraper: not a $(ARCH) binary"; \
+		rm -f bin/tachometer-scraper; \
 	fi; \
 	if [ "$(TACHOMETER_RELEASE)" = "latest" ]; then \
 		base_url="https://github.com/NVIDIA/srt-slurm/releases/latest/download"; \
