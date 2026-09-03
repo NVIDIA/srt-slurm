@@ -96,10 +96,10 @@ class CpuPowerTelemetrySession:
                             malformed = True
                             continue
                         rows.append(row)
-                        observed_nodes.add(row[2])
+                        observed_nodes.add(row[3])
             except (OSError, csv.Error, UnicodeDecodeError):
                 malformed = True
-        rows.sort(key=lambda row: (float(row[1]), row[2], row[4]))
+        rows.sort(key=lambda row: (float(row[1]), row[3], row[5]))
         with self.samples_path.open("w", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
             writer.writerow(SAMPLES_HEADER)

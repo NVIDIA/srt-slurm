@@ -8,6 +8,7 @@ from __future__ import annotations
 import csv
 import json
 import types
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,7 @@ from srtctl.core.cpu_power import (
     AcpiPowerMeterReader,
     CpuPowerSourceUnavailable,
     _add_standard_dcgm_binding_path,
+    format_local_timestamp,
 )
 from srtctl.core.cpu_power_session import CpuPowerSessionSettings, CpuPowerTelemetrySession
 
@@ -47,6 +49,15 @@ def test_acpi_reader_reports_only_cpu_socket_rails(tmp_path: Path) -> None:
 def test_acpi_reader_rejects_missing_cpu_domains(tmp_path: Path) -> None:
     with pytest.raises(CpuPowerSourceUnavailable, match="no ACPI"):
         AcpiPowerMeterReader(tmp_path)
+
+
+def test_format_local_timestamp_round_trips_to_the_same_unix_time() -> None:
+    timestamp = 1_788_310_143.627448
+
+    local = format_local_timestamp(timestamp)
+
+    assert datetime.fromisoformat(local).timestamp() == pytest.approx(timestamp)
+    assert datetime.fromisoformat(local).utcoffset() is not None
 
 
 def test_standard_dcgm_binding_path_is_discovered(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -158,10 +169,11 @@ class _FakeProcess:
 
 
 def _write_node_csv(path: Path, hostname: str, timestamp: float, watts: float) -> None:
+    timestamp_local = format_local_timestamp(timestamp)
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow(SAMPLES_HEADER)
-        writer.writerow((1, timestamp, hostname, "acpi", "CPU0:cpuPowerUsageW", 0, watts, watts))
+        writer.writerow((2, timestamp, timestamp_local, hostname, "acpi", "CPU0:cpuPowerUsageW", 0, watts, watts))
 
 
 def test_session_aggregates_every_expected_node(tmp_path: Path) -> None:
@@ -187,7 +199,7 @@ def test_session_aggregates_every_expected_node(tmp_path: Path) -> None:
     with session.samples_path.open(newline="", encoding="utf-8") as handle:
         rows = list(csv.reader(handle))
     assert rows[0] == list(SAMPLES_HEADER)
-    assert [row[2] for row in rows[1:]] == ["node-b", "node-a"]
+    assert [row[3] for row in rows[1:]] == ["node-b", "node-a"]
     manifest = json.loads(session.manifest_path.read_text())
     assert manifest["status"] == "complete"
     assert manifest["sample_row_count"] == 2

@@ -24,10 +24,12 @@ import socket
 import sys
 import time
 from abc import ABC, abstractmethod
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 CPU_POWER_FIELD_ID = 1130
+SAMPLES_SCHEMA_VERSION = 2
 DCGM_PYTHON_BINDING_DIRS = (
     Path("/usr/share/datacenter-gpu-manager-4/bindings/python3"),
     Path("/usr/local/dcgm/bindings/python3"),
@@ -35,6 +37,7 @@ DCGM_PYTHON_BINDING_DIRS = (
 SAMPLES_HEADER = (
     "schema_version",
     "timestamp_unix",
+    "timestamp_local",
     "hostname",
     "source",
     "sensor",
@@ -42,6 +45,11 @@ SAMPLES_HEADER = (
     "power_w",
     "total_power_w",
 )
+
+
+def format_local_timestamp(timestamp: float) -> str:
+    """ISO 8601 local wall-clock time (with UTC offset) for a ``time.time()`` value."""
+    return datetime.fromtimestamp(timestamp).astimezone().isoformat()
 
 
 class CpuPowerSourceUnavailable(RuntimeError):
@@ -342,7 +350,7 @@ def collect(*, output_dir: Path, ready_dir: Path, source: str, interval_seconds:
     metadata = reader.metadata()
     metadata.update(
         {
-            "schema_version": 1,
+            "schema_version": SAMPLES_SCHEMA_VERSION,
             "hostname": hostname,
             "requested_source": source,
             "sample_interval_seconds": interval_seconds,
@@ -358,6 +366,7 @@ def collect(*, output_dir: Path, ready_dir: Path, source: str, interval_seconds:
         next_sample = time.monotonic()
         while not stop:
             timestamp = time.time()
+            timestamp_local = format_local_timestamp(timestamp)
             try:
                 readings = reader.read_watts()
             except CpuPowerSourceUnavailable:
@@ -369,7 +378,17 @@ def collect(*, output_dir: Path, ready_dir: Path, source: str, interval_seconds:
                 socket_match = re.match(r"CPU(\d+):", sensor)
                 socket_id = int(socket_match.group(1)) if socket_match else ""
                 writer.writerow(
-                    (1, repr(timestamp), hostname, reader.source_name, sensor, socket_id, repr(watts), repr(total))
+                    (
+                        SAMPLES_SCHEMA_VERSION,
+                        repr(timestamp),
+                        timestamp_local,
+                        hostname,
+                        reader.source_name,
+                        sensor,
+                        socket_id,
+                        repr(watts),
+                        repr(total),
+                    )
                 )
                 sample_count += 1
             handle.flush()
