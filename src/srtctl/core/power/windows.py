@@ -130,37 +130,23 @@ def convert_running_windows(windows_dir: Path, *, reason: str) -> int:
     return converted
 
 
-def measured_spans(windows_dir: Path) -> list[tuple[float, float]]:
-    """The closed measurement boundaries the benchmark itself published.
+def measured_spans(windows_dir: Path, result_root: Path) -> list[tuple[float, float]]:
+    """The valid closed measurement boundaries the benchmark itself published.
 
     A multi-series script spends much of its wall clock on setup, warmup, and
     the gaps between series, so the script interval is not a measurement
-    window. Only ``completed`` windows are spans: they are the intervals a
-    consumer joins watts to, and ``running``/``interrupted`` ones carry no
-    trustworthy end for the orchestrator to invent.
+    window. Only fully valid ``completed`` windows are spans: they are the
+    intervals a consumer joins watts to, and malformed/incomplete ones carry no
+    trustworthy boundary for the orchestrator to use instead of its fallback.
     """
-    if not windows_dir.is_dir():
-        return []
-    try:
-        paths = sorted(windows_dir.glob("*.json"))
-    except OSError:
-        return []
-
-    spans: list[tuple[float, float]] = []
-    for path in paths:
-        if path.is_symlink() or not path.is_file():
-            continue
-        try:
-            payload = json.loads(path.read_text())
-        except (OSError, ValueError):
-            continue
-        if not isinstance(payload, dict) or payload.get("status") != WINDOW_STATUS_COMPLETED:
-            continue
-        start = payload.get("benchmark_start_time_unix")
-        end = payload.get("benchmark_end_time_unix")
-        if not is_finite_number(start) or not is_finite_number(end) or float(end) < float(start):
-            continue
-        spans.append((float(start), float(end)))
+    parsed, _duplicates = _scan(windows_dir, result_root, [])
+    spans = [
+        (window.start_unix, window.end_unix)
+        for window in parsed.values()
+        if window.status == WINDOW_STATUS_COMPLETED
+        and window.end_unix is not None
+        and not _check_result(window, result_root)
+    ]
     return sorted(spans)
 
 

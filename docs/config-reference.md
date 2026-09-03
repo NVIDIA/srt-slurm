@@ -1276,8 +1276,9 @@ Publication is gated on coverage: every rail discovered at readiness must have
 sampled across each measured interval, with no gap larger than 3 seconds. Either
 `required: true` or `source: acpi` turns a gap into a non-zero job exit.
 
-The measured intervals are the `completed` windows the runner itself published
-under `<telemetry.storage_subdir>/windows/`, one per concurrency series -- not
+The measured intervals are the structurally valid `completed` windows whose
+result timing records also match, published by the runner under
+`<telemetry.storage_subdir>/windows/`, one per concurrency series -- not
 the whole script, which also spends time in setup, warmups, and the gaps between
 series. A benchmark type that publishes no window is audited across its whole
 script interval instead.

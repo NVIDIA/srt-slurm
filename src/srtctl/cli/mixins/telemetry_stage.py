@@ -342,7 +342,7 @@ class TelemetryStageMixin:
         if session is None:
             return
         windows_dir = self.runtime.log_dir / self.config.telemetry.storage_subdir / WINDOWS_DIRNAME
-        spans = measured_spans(windows_dir)
+        spans = measured_spans(windows_dir, self.runtime.log_dir)
         if not spans:
             spans = [(script_started_unix, script_ended_unix)]
         for start_unix, end_unix in spans:
