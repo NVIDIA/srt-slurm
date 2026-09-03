@@ -9,6 +9,7 @@ import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from srtctl.core.ip_utils import url_host
 from srtctl.core.slurm import get_hostname_ip
 from srtctl.ports import FRONTEND_PUBLIC_PORT
 
@@ -116,7 +117,7 @@ def generate_tachometer_config(
             port = process.http_port
         else:
             port = process.sys_port
-        url = f"http://{node_ip}:{port}/metrics"
+        url = f"http://{url_host(node_ip)}:{port}/metrics"
         if url in exclude_urls:
             # The benchmark client already polls this endpoint on its own
             # cadence; scrape the complement instead of double-polling.
@@ -161,7 +162,7 @@ def generate_tachometer_config(
         endpoints.append(
             TelemetryEndpoint(
                 name=f"frontend{frontend_index}",
-                url=f"http://{node_ip}:{frontend_topology.frontend_port}/metrics",
+                url=f"http://{url_host(node_ip)}:{frontend_topology.frontend_port}/metrics",
                 frequency=tachometer.default_frequency,
                 filter="frontend",
                 node_metadata=node_metadata,
