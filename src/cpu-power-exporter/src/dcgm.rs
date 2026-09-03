@@ -379,6 +379,14 @@ impl DcgmReader {
     /// Returns one `(cpu_id, watts)` pair per entity.  `None` means the DCGM
     /// status for that entity was not `DCGM_ST_OK` or the value was not finite.
     pub fn read_watts(&mut self) -> Result<Vec<(u32, Option<f64>)>, DcgmUnavailable> {
+        // Force a fresh hardware sample before reading cached values.  The initial
+        // update in new() can return 0.0 if the first hardware poll hasn't
+        // completed yet; calling here ensures every scrape gets real data.
+        check(
+            unsafe { (self.lib.update_all_fields)(self.handle, 1) },
+            "dcgmUpdateAllFields",
+        )?;
+
         let n = self.entities.len();
         let mut values: Vec<FieldValueV2> = (0..n)
             .map(|_| FieldValueV2 {
