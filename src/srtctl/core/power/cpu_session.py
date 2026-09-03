@@ -33,7 +33,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-import requests
 from prometheus_client.parser import text_string_to_metric_families
 
 from srtctl import __version__ as PRODUCER_VERSION
@@ -119,10 +118,17 @@ class CpuPowerReading:
 
 @dataclass(frozen=True)
 class CpuEndpoint:
-    """An allocated node and the resolved URL used to poll it."""
+    """An allocated node and the literal address its exporter is polled at."""
 
     hostname: str
-    url: str
+    address: str
+    port: int
+
+    @property
+    def url(self) -> str:
+        """The scrape URL, which is also what the benchmark client is handed."""
+        host = f"[{self.address}]" if ":" in self.address else self.address
+        return f"http://{host}:{self.port}/metrics"
 
 
 @dataclass(frozen=True)
@@ -150,10 +156,12 @@ class _EndpointResult:
     hostname: str
     readings: list[CpuPowerReading]
     reason_codes: list[str]
+    # When this endpoint's body finished arriving, not when the cycle settled.
+    timestamp_unix: float = 0.0
 
 
-def cpu_endpoint_host(node: str, network_interface: str | None = None) -> str | None:
-    """The URL host of ``node``'s CPU power exporter, or ``None`` if it has no address.
+def cpu_endpoint_address(node: str, network_interface: str | None = None) -> str | None:
+    """The literal address of ``node``'s CPU power exporter, or ``None`` if it has none.
 
     The single source of truth for both consumers: the telemetry session's own
     endpoints and the ``AIPERF_SERVER_METRICS_URLS`` projection handed to the
@@ -163,8 +171,8 @@ def cpu_endpoint_host(node: str, network_interface: str | None = None) -> str | 
     ``get_hostname_ip`` hands back the hostname unchanged when it cannot resolve
     it, and a URL carrying a name is re-resolved on every scrape -- so a node
     without a literal address is omitted rather than handed to a client that
-    would spend the run on DNS failures. IPv6 is bracketed, without which the
-    address's own colons would be read as the port separator.
+    would spend the run on DNS failures. The address is returned bare;
+    :class:`CpuEndpoint` brackets IPv6 where a URL needs it.
     """
     try:
         ip = get_hostname_ip(node, network_interface)
@@ -174,11 +182,11 @@ def cpu_endpoint_host(node: str, network_interface: str | None = None) -> str | 
     if not ip:
         return None
     try:
-        address = ipaddress.ip_address(ip)
+        ipaddress.ip_address(ip)
     except ValueError:
         logger.warning("CPU power endpoint for %s resolved to %r, not an address", node, ip)
         return None
-    return f"[{ip}]" if isinstance(address, ipaddress.IPv6Address) else ip
+    return ip
 
 
 def parse_cpu_power_scrape(text: str) -> tuple[tuple[CpuPowerReading, ...], tuple[str, ...]]:
@@ -233,28 +241,57 @@ def parse_cpu_power_scrape(text: str) -> tuple[tuple[CpuPowerReading, ...], tupl
     return tuple(by_sensor[sensor] for sensor in sorted(by_sensor)), dedupe(reasons)
 
 
-def _abort_scrape(response: requests.Response) -> None:
-    """End a scrape that overran its budget, from another thread.
+def fetch_metrics(endpoint: CpuEndpoint, budget_seconds: float) -> tuple[str, float]:
+    """GET the exporter's ``/metrics``, bounded by one wall-clock budget.
 
-    Closing the response is not enough: a reader blocked in recv stays blocked
-    until the peer sends something. Shutting the socket down fails the read
-    immediately, which is the only way the budget is a wall-clock guarantee.
+    A plain socket rather than ``requests``: every phase of the exchange has to
+    be interruptible, and the library's phases are not. Its timeout is per
+    socket operation, so an exporter that trickles bytes -- header bytes
+    included -- never trips it, and until a response object exists there is
+    nothing an external watchdog can tear down. Ambient ``*_proxy`` variables
+    are a second hazard: requests would honour them, sending a scrape of a
+    literal cluster address through a proxy whose own DNS can stall.
+
+    Returns the body and the instant it finished arriving; the caller
+    timestamps this endpoint's samples with that, not with when the cycle ended.
     """
-    raw = getattr(response, "raw", None)
-    sock = getattr(getattr(raw, "_connection", None), "sock", None)
-    if sock is None:
-        # urllib3 hands the socket to http.client, which wraps it twice.
-        sock = getattr(getattr(getattr(raw, "_fp", None), "fp", None), "raw", None)
-        sock = getattr(sock, "_sock", None)
+    deadline = time.monotonic() + budget_seconds
+    family = socket.AF_INET6 if ":" in endpoint.address else socket.AF_INET
+    sock = socket.socket(family, socket.SOCK_STREAM)
     try:
-        if sock is not None:
-            sock.shutdown(socket.SHUT_RDWR)
-    except OSError:
-        pass
-    try:
-        response.close()
-    except Exception:  # the scrape is being abandoned either way
-        logger.debug("closing an abandoned CPU power scrape failed", exc_info=True)
+        sock.settimeout(max(0.0, deadline - time.monotonic()))
+        sock.connect((endpoint.address, endpoint.port))
+        # HTTP/1.0 with an explicit close: the body ends when the socket does,
+        # so no chunked framing to unpack and no connection to reuse or leak.
+        host = f"[{endpoint.address}]" if family == socket.AF_INET6 else endpoint.address
+        sock.sendall(
+            f"GET /metrics HTTP/1.0\r\nHost: {host}:{endpoint.port}\r\n"
+            f"Accept: text/plain\r\nConnection: close\r\n\r\n".encode()
+        )
+        buffer = bytearray()
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f"scrape of {endpoint.url} exceeded {budget_seconds:.2f}s")
+            sock.settimeout(remaining)
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            buffer += chunk
+            if len(buffer) > MAX_SCRAPE_BYTES:
+                raise ValueError(f"scrape of {endpoint.url} exceeded {MAX_SCRAPE_BYTES} bytes")
+    finally:
+        sock.close()
+    completed_at = time.time()
+
+    head, separator, body = bytes(buffer).partition(b"\r\n\r\n")
+    if not separator:
+        raise ValueError(f"{endpoint.url} sent no complete header block")
+    status_line = head.split(b"\r\n", 1)[0]
+    status = status_line.split()
+    if len(status) < 2 or not status[0].startswith(b"HTTP/1.") or status[1] != b"200":
+        raise ValueError(f"{endpoint.url} answered {status_line!r}")
+    return body.decode("utf-8", errors="replace"), completed_at
 
 
 class CpuPowerTelemetrySession:
@@ -418,7 +455,7 @@ class CpuPowerTelemetrySession:
         """
 
         def resolve(node: str) -> tuple[str, str] | None:
-            host = cpu_endpoint_host(node, self._settings.network_interface)
+            host = cpu_endpoint_address(node, self._settings.network_interface)
             return (node, host) if host else None
 
         results, _ = run_daemon_workers(
@@ -431,9 +468,7 @@ class CpuPowerTelemetrySession:
             if host is None:
                 self.record_reason(Reason.ENDPOINT_RESOLUTION_FAILED)
                 continue
-            self._endpoints.append(
-                CpuEndpoint(hostname=node, url=f"http://{host}:{self._settings.exporter_port}/metrics")
-            )
+            self._endpoints.append(CpuEndpoint(hostname=node, address=host, port=self._settings.exporter_port))
 
     def collect_once(self) -> int:
         """Run one logical cycle: poll every endpoint concurrently, append rows."""
@@ -446,7 +481,8 @@ class CpuPowerTelemetrySession:
             self._scrape_seq += 1
             self._scrape_count += 1
 
-        # NOTE: requests applies its timeout to connect and read separately, so an endpoint can take 2x.
+        # Each scrape bounds itself at 2x the request timeout; the grace covers
+        # thread hand-off so the cycle outlives its own pollers.
         deadline = time.monotonic() + 2 * self._settings.request_timeout_seconds + COLLECT_CYCLE_TIMEOUT_GRACE_SECONDS
         results, failures = run_daemon_workers(
             [(f"CpuPowerScrape-{endpoint.hostname}", self._poll, endpoint) for endpoint in endpoints],
@@ -456,7 +492,10 @@ class CpuPowerTelemetrySession:
             raise failures[0]
 
         settled = sorted(results, key=lambda item: item.hostname)
-        timestamp_unix = time.time()
+        # Each endpoint carries the instant its own body arrived. One shared
+        # cycle timestamp would date a fast node's samples to when the slowest
+        # node finished, which can move a reading across a benchmark boundary
+        # and let coverage bracket an interval nothing actually sampled.
         rows: list[list[object]] = []
         reasons: list[str] = []
         for result in settled:
@@ -465,7 +504,7 @@ class CpuPowerTelemetrySession:
                 rows.append(
                     [
                         SCHEMA_VERSION,
-                        repr(timestamp_unix),
+                        repr(result.timestamp_unix),
                         scrape_seq,
                         result.hostname,
                         reading.sensor,
@@ -485,7 +524,9 @@ class CpuPowerTelemetrySession:
                 if result.readings:
                     self._observed.setdefault(result.hostname, set()).update(r.sensor for r in result.readings)
                     for reading in result.readings:
-                        self._sample_times.setdefault(f"{result.hostname}/{reading.sensor}", []).append(timestamp_unix)
+                        self._sample_times.setdefault(f"{result.hostname}/{reading.sensor}", []).append(
+                            result.timestamp_unix
+                        )
 
         with self._writer_lock:
             if self._mutation_disabled or self._writer is None:
@@ -507,54 +548,19 @@ class CpuPowerTelemetrySession:
         return len(rows)
 
     def _poll(self, endpoint: CpuEndpoint) -> _EndpointResult:
-        # requests' timeout is per socket operation, and a chunk read blocks
-        # until the chunk is full, so an exporter that trickles bytes trips
-        # neither. collect_once can abandon such a poller but cannot end it: the
-        # thread and its socket would survive every cycle for the whole run.
-        # The watchdog is what actually ends the scrape -- it tears the socket
-        # down under the reader, which fails the read for real.
-        expired = threading.Event()
-        lock = threading.Lock()
-        open_response: list[requests.Response] = []
-
-        def abort() -> None:
-            with lock:
-                expired.set()
-                for response in open_response:
-                    _abort_scrape(response)
-
-        watchdog = threading.Timer(2 * self._settings.request_timeout_seconds, abort)
-        watchdog.daemon = True
-        watchdog.start()
+        """One scrape, on its own total budget, with its own acquisition time."""
+        # The budget covers connect and read together: the transport is bounded
+        # end to end, so nothing here needs a watchdog thread or a socket
+        # torn down under a blocked reader.
         try:
-            with requests.get(endpoint.url, timeout=self._settings.request_timeout_seconds, stream=True) as response:
-                with lock:
-                    # The watchdog may have fired between the request and here.
-                    open_response.append(response)
-                    if expired.is_set():
-                        _abort_scrape(response)
-                response.raise_for_status()
-                chunks: list[bytes] = []
-                size = 0
-                for chunk in response.iter_content(8192):
-                    chunks.append(chunk)
-                    size += len(chunk)
-                    if size > MAX_SCRAPE_BYTES:
-                        return _EndpointResult(endpoint.hostname, [], [Reason.ENDPOINT_HTTP_ERROR])
-                body = b"".join(chunks).decode("utf-8", errors="replace")
-        except requests.Timeout:
+            body, completed_at = fetch_metrics(endpoint, 2 * self._settings.request_timeout_seconds)
+        except TimeoutError:
             return _EndpointResult(endpoint.hostname, [], [Reason.ENDPOINT_TIMEOUT])
-        except (requests.RequestException, OSError, ValueError):
-            # A torn-down socket surfaces as a transport error, not a timeout.
-            reason = Reason.ENDPOINT_TIMEOUT if expired.is_set() else Reason.ENDPOINT_HTTP_ERROR
-            return _EndpointResult(endpoint.hostname, [], [reason])
-        finally:
-            watchdog.cancel()
-        if expired.is_set():
-            return _EndpointResult(endpoint.hostname, [], [Reason.ENDPOINT_TIMEOUT])
+        except (OSError, ValueError):
+            return _EndpointResult(endpoint.hostname, [], [Reason.ENDPOINT_HTTP_ERROR])
 
         readings, reasons = parse_cpu_power_scrape(body)
-        return _EndpointResult(endpoint.hostname, list(readings), list(reasons))
+        return _EndpointResult(endpoint.hostname, list(readings), list(reasons), timestamp_unix=completed_at)
 
     def _run(self) -> None:
         """Collector thread: fixed-cadence cycles that never overlap."""
