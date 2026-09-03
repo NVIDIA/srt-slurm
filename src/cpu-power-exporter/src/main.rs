@@ -312,7 +312,7 @@ struct Collector {
 }
 
 impl Collector {
-    fn spawn(sensors: &'static [Sensor]) -> &'static Collector {
+    fn spawn(sensors: &'static [Sensor]) -> Result<&'static Collector> {
         // Bounded by the connection limit, so a backlog is refused rather than queued.
         let (requests, inbox) = mpsc::sync_channel::<CollectRequest>(MAX_CONNECTIONS);
         thread::Builder::new()
@@ -327,8 +327,8 @@ impl Collector {
                     let _ = reply.send(build_metrics(sensors));
                 }
             })
-            .expect("spawn hwmon collector thread");
-        Box::leak(Box::new(Collector { requests }))
+            .context("spawn hwmon collector thread")?;
+        Ok(Box::leak(Box::new(Collector { requests })))
     }
 
     /// `None` when the collector is saturated or wedged past `COLLECT_TIMEOUT`.
@@ -433,7 +433,7 @@ async fn main() -> Result<()> {
         tracing::debug!(sensor = %s.id, kind = s.kind, socket = %s.socket, oem_info = %s.oem_info, path = %s.path.display(), "sensor");
     }
     let sensors: &'static [Sensor] = Vec::leak(sensors);
-    let collector = Collector::spawn(sensors);
+    let collector = Collector::spawn(sensors)?;
 
     let addr = SocketAddr::new(args.bind, args.port);
     let listener = TcpListener::bind(addr)
@@ -633,7 +633,7 @@ mod tests {
             &[("power1", Some("CPU Power Socket 0"), "150000000")],
         );
         let sensors: &'static [Sensor] = Vec::leak(discover_sensors(dir.path()).unwrap());
-        let addr = serve(Collector::spawn(sensors)).await;
+        let addr = serve(Collector::spawn(sensors).expect("spawn collector")).await;
 
         for (head, expected) in [
             ("GET /health HTTP/1.1\r\n", "200 OK"),
