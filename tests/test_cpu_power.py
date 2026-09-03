@@ -856,6 +856,45 @@ class TestCpuPowerLifecycle:
         assert Reason.EXPORTER_STARTUP_TIMEOUT in outcome.reason_codes
 
 
+class TestCpuPowerShutdown:
+    def test_lock_timeout_marks_sample_count_unknown_while_a_row_can_still_commit(self, tmp_path):
+        """A terminal manifest must not freeze a count before its blocked writer finishes."""
+        session = _session(tmp_path, ["node-a"], collector_join_timeout_seconds=0.05)
+        session.initialize()
+        with patch("srtctl.core.power.cpu_session.get_hostname_ip", side_effect=lambda node, _iface: _node_ip(node)):
+            session.resolve_endpoints()
+
+        entered_writer = threading.Event()
+        release_writer = threading.Event()
+        writer = session._writer
+
+        class BlockingWriter:
+            def writerows(self, rows):
+                entered_writer.set()
+                release_writer.wait()
+                writer.writerows(rows)
+
+        session._writer = BlockingWriter()
+        with patch("srtctl.core.power.cpu_session.fetch_metrics", side_effect=_serves(ONE_RAIL)):
+            collector = threading.Thread(target=session.collect_once, daemon=True)
+            session._thread = collector
+            collector.start()
+            assert entered_writer.wait(1.0)
+            try:
+                outcome = session.stop_and_finalize()
+            finally:
+                release_writer.set()
+                collector.join(1.0)
+
+        manifest = json.loads(session.manifest_path.read_text())
+        committed_rows = session.samples_path.read_text().splitlines()[1:]
+        assert len(committed_rows) == 1
+        assert manifest["sample_row_count"] is None
+        assert manifest["publication_valid"] is False
+        assert Reason.COLLECTOR_JOIN_TIMEOUT in outcome.reason_codes
+        assert Reason.COLLECTOR_JOIN_TIMEOUT in manifest["reason_codes"]
+
+
 class TestCpuPowerScrapeBudget:
     """Real sockets: the transport owns connect and read on one wall clock.
 
