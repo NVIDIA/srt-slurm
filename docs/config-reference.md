@@ -925,9 +925,10 @@ Notes:
   `benchmark-rollup.json`.
 - Two runs must not share a results dir concurrently (the client resets `phase_manifest.jsonl`
   at start).
-- `telemetry:` (DCGM power measurement windows) is not supported with agentperf — the schema
-  rejects non-sa-bench benchmark types at config load. Tachometer
-  (`observability.enabled`) works normally.
+- `telemetry.dcgm_exporter` (DCGM power measurement windows) is not supported with agentperf —
+  the schema rejects non-sa-bench benchmark types at config load. The CPU-only
+  leg (`telemetry.cpu_power` with no `dcgm_exporter`) has no such restriction.
+  Tachometer (`observability.enabled`) works normally.
 
 ---
 
@@ -1214,9 +1215,9 @@ The scraper runs as a best-effort process: if it dies (or the binary is missing 
 
 ## telemetry
 
-`telemetry` is reserved for DCGM power measurement. It can run alongside `observability.tachometer`; it does not start Tachometer itself.
+`telemetry` is reserved for power measurement. It has two independent legs: DCGM GPU power (`dcgm_exporter`) and host CPU rail power (`cpu_power`). Either alone is a valid configuration. It can run alongside `observability.tachometer`; it does not start Tachometer itself.
 
-When both are enabled, `telemetry.dcgm_exporter` is shared with Tachometer. Do not also configure `observability.tachometer.dcgm_exporter`; Tachometer can still launch an optional node exporter from its own block.
+When `telemetry.dcgm_exporter` is configured, it is shared with Tachometer — do not also configure `observability.tachometer.dcgm_exporter`. A CPU-only `telemetry` block configures no DCGM exporter, so Tachometer keeps its own. Tachometer can always launch an optional node exporter from its own block.
 
 ```yaml
 telemetry:
@@ -1231,14 +1232,14 @@ telemetry:
 
 | Field | Type | Default | Description |
 | ----- | ---- | ------- | ----------- |
-| `enabled` | bool | `false` | Enable DCGM power collection |
-| `dcgm_exporter` | object/null | `null` | DCGM exporter image, port, and optional command; required when enabled |
-| `default_frequency` | float | `1.0` | Power sample interval in seconds; must be at most `3.0` |
-| `storage_subdir` | string | `power` | Output directory below the run log directory |
-| `required` | bool | `false` | Fail the benchmark when publishable power artifacts cannot be produced |
-| `startup_timeout_seconds` | float | `30.0` | Exporter readiness timeout |
-| `request_timeout_seconds` | float | `2.0` | Per-request exporter timeout |
-| `collector_join_timeout_seconds` | float/null | `null` | Shutdown join timeout; defaults from `request_timeout_seconds` |
+| `enabled` | bool | `false` | Enable power collection (see `cpu_power` for the host CPU leg) |
+| `dcgm_exporter` | object/null | `null` | DCGM exporter image, port, and optional command; enables the GPU leg |
+| `default_frequency` | float | `1.0` | GPU power sample interval in seconds; must be at most `3.0` |
+| `storage_subdir` | string | `power` | GPU leg output directory below the run log directory |
+| `required` | bool | `false` | Fail the benchmark when publishable GPU power artifacts cannot be produced |
+| `startup_timeout_seconds` | float | `30.0` | DCGM exporter readiness timeout |
+| `request_timeout_seconds` | float | `2.0` | Per-request exporter timeout; applies to every enabled leg |
+| `collector_join_timeout_seconds` | float/null | `null` | Shutdown join timeout for every enabled leg; defaults from `request_timeout_seconds` |
 
 `telemetry.enabled` needs at least one leg: a `dcgm_exporter`, `cpu_power.enabled`, or both.
 
@@ -1268,8 +1269,12 @@ telemetry:
 | `sample_interval_seconds` | float | `0.1` | Scrape period in seconds; must be at most `3.0` |
 | `startup_timeout_seconds` | float | `30.0` | Exporter readiness timeout |
 | `required` | bool | `false` | Fail the benchmark when publishable CPU power artifacts cannot be produced; implies `source: acpi` semantics |
-| `prometheus_port` | int | `9401` | Exporter port on every worker node; must not collide with `telemetry.dcgm_exporter.port` |
+| `prometheus_port` | int | `9401` | Exporter port on every worker node; must not collide with `telemetry.dcgm_exporter.port` or an `observability.tachometer` exporter port |
 | `storage_subdir` | string | `cpu_power` | Output directory below the run log directory; must differ from `telemetry.storage_subdir` |
+
+Publication is gated on coverage: every worker node must have sampled across
+each benchmark run, with no gap larger than 3 seconds. `required: true` turns a
+gap into a non-zero job exit.
 
 `make setup ARCH=<compute_arch>` installs `bin/cpu-power-exporter`. `srtctl
 validate-setup` only requires it when a recipe enables this leg.
