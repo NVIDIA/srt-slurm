@@ -53,7 +53,7 @@ make setup ARCH=aarch64  # or ARCH=x86_64
 
 The setup will:
 
-1. Download NATS, ETCD, uv, and the Tachometer scraper for your compute-node architecture
+1. Download NATS, ETCD, uv, the Tachometer scraper, and the CPU power exporter for your compute-node architecture
 2. Verify the downloaded Tachometer scraper with its release checksum
 3. Prompt you for cluster settings:
    - SLURM account (default: `restricted`)
@@ -64,6 +64,13 @@ The setup will:
 5. Auto-detect and set `srtctl_root` path
 
 The scraper binaries are attached to srt-slurm GitHub releases for `x86_64` and `aarch64`. `make setup` downloads the matching asset from the latest release and verifies its SHA-256 checksum. Run `make tachometer-scraper` to build the vendored source instead.
+
+Each release carries both architectures with checksums, or omits the binary
+entirely -- a half-published set fails the release job. The CPU power exporter
+is optional (only recipes enabling `telemetry.cpu_power` use it), so `make
+setup` warns and continues when it cannot be fetched; `make
+cpu-power-exporter-download` makes that an error, and `make
+cpu-power-exporter` builds it from source.
 
 After setup, the existing Python observability capture needs only:
 

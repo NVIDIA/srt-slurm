@@ -1276,8 +1276,11 @@ Publication is gated on coverage: every worker node must have sampled across
 each benchmark run, with no gap larger than 3 seconds. `required: true` turns a
 gap into a non-zero job exit.
 
-`make setup ARCH=<compute_arch>` installs `bin/cpu-power-exporter`. `srtctl
-validate-setup` only requires it when a recipe enables this leg.
+`make setup ARCH=<compute_arch>` installs `bin/cpu-power-exporter`, but only
+warns when the release does not carry it -- the binary is optional, and
+`srtctl validate-setup` requires it only when a recipe enables this leg. Run
+`make cpu-power-exporter-download` to treat a failed download as an error, or
+`make cpu-power-exporter` to build it from the vendored source.
 
 ---
 
