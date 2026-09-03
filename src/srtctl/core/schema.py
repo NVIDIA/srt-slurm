@@ -55,6 +55,7 @@ logger = logging.getLogger(__name__)
 _BENCHMARK_TYPE_SA_BENCH = "sa-bench"
 _DCGM_POWER_MAX_SAMPLE_GAP_SECONDS = 3.0
 _DCGM_POWER_COLLECT_CYCLE_TIMEOUT_GRACE_SECONDS = 1.0
+_CPU_POWER_MAX_SAMPLE_GAP_SECONDS = 3.0
 
 
 def _is_safe_relative_subpath(value: str) -> bool:
@@ -1190,18 +1191,48 @@ class ObservabilityConfig:
 
 @dataclass(frozen=True)
 class CpuPowerConfig:
-    """Host CPU-power collection alongside the DCGM GPU power artifact."""
+    """Host CPU-power collection alongside the DCGM GPU power artifact.
+
+    ACPI is the only implemented provider: ``cpu-power-exporter`` runs on every
+    worker node, publishes ``cpu_power_acpi_watts`` from ``/sys/class/hwmon``,
+    and the head-node session scrapes it on the same clock as the DCGM leg. The
+    same endpoints are handed to AIPerf via ``AIPERF_SERVER_METRICS_URLS``.
+
+    Attributes:
+        enabled: Master switch for the CPU power leg. Default: False.
+        source: Which provider to use. ``acpi`` names it explicitly and makes it
+            mandatory; ``auto`` is best-effort -- a node with no ACPI power
+            rails simply contributes no CPU samples instead of failing the run.
+        sample_interval_seconds: Scrape period, in seconds.
+        startup_timeout_seconds: How long to wait for the exporters to serve
+            ``/metrics`` before giving up on the leg.
+        required: Fail the job when the leg does not start or does not produce a
+            valid publication. Implies the ``acpi`` provider is mandatory.
+        prometheus_port: Port ``cpu-power-exporter`` listens on, on every worker
+            node. Must not collide with ``telemetry.dcgm_exporter.port``.
+        storage_subdir: Directory below the run log directory that holds the CPU
+            samples and manifest.
+    """
 
     enabled: bool = False
-    source: Literal["auto", "acpi", "dcgm"] = "auto"
+    source: Literal["auto", "acpi"] = "auto"
     sample_interval_seconds: float = 0.1
     startup_timeout_seconds: float = 30.0
     required: bool = False
-    # When > 0, also launch the cpu-power-exporter binary on each worker node so
-    # AIPerf can scrape ACPI power rails via --server-metrics / AIPERF_SERVER_METRICS_URLS.
     prometheus_port: int = 9401
+    storage_subdir: str = "cpu_power"
 
     Schema: ClassVar[type[Schema]] = Schema
+
+    @property
+    def acpi_mandatory(self) -> bool:
+        """Whether an absent or unhealthy ACPI exporter must fail the run.
+
+        ``auto`` is best-effort, so a cluster without ACPI power rails still
+        runs. Naming ``acpi`` explicitly, or asking for fail-closed behaviour
+        with ``required``, makes exporter readiness mandatory.
+        """
+        return self.source == "acpi" or self.required
 
 
 @dataclass(frozen=True)
@@ -1217,6 +1248,8 @@ class TelemetryConfig:
     request_timeout_seconds: float = 2.0
     # None derives a safe shutdown budget from request_timeout_seconds.
     collector_join_timeout_seconds: float | None = None
+    # Host CPU power, collected alongside (or without) the DCGM GPU leg.
+    cpu_power: CpuPowerConfig = field(default_factory=CpuPowerConfig)
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -2333,13 +2366,59 @@ class SrtConfig:
                 "observability.tachometer.storage_subdir must be a safe relative path below the run log directory"
             )
 
+    def _validate_cpu_power(self):
+        """Validate the host CPU power leg.
+
+        Its collector runs in the orchestrator process like the DCGM one, and
+        scrapes a ``cpu-power-exporter`` on every worker node.
+        """
+        cpu_power = self.telemetry.cpu_power
+        if not 1 <= cpu_power.prometheus_port <= 65535:
+            raise ValidationError("telemetry.cpu_power.prometheus_port must be in 1..65535")
+
+        exporter = self.telemetry.dcgm_exporter
+        if exporter is not None and exporter.port == cpu_power.prometheus_port:
+            raise ValidationError(
+                f"telemetry.cpu_power.prometheus_port={cpu_power.prometheus_port} collides with "
+                "telemetry.dcgm_exporter.port; both run on every worker node"
+            )
+
+        for name in ("sample_interval_seconds", "startup_timeout_seconds"):
+            if not _is_finite_positive(getattr(cpu_power, name)):
+                raise ValidationError(f"telemetry.cpu_power.{name} must be finite and positive")
+        if cpu_power.sample_interval_seconds > _CPU_POWER_MAX_SAMPLE_GAP_SECONDS:
+            raise ValidationError(
+                f"telemetry.cpu_power.sample_interval_seconds={cpu_power.sample_interval_seconds} exceeds the "
+                f"{_CPU_POWER_MAX_SAMPLE_GAP_SECONDS}s max sample gap; every window would fail sample_gap_exceeded"
+            )
+
+        if not _is_safe_relative_subpath(cpu_power.storage_subdir):
+            raise ValidationError(
+                "telemetry.cpu_power.storage_subdir must be a safe relative path below the run log directory"
+            )
+        if cpu_power.storage_subdir == self.telemetry.storage_subdir:
+            raise ValidationError(
+                "telemetry.cpu_power.storage_subdir must differ from telemetry.storage_subdir; "
+                "the two legs write their own samples and manifest"
+            )
+
     def _validate_telemetry(self):
-        """Validate telemetry config."""
+        """Validate telemetry config.
+
+        The two legs are independent: a recipe may enable CPU power without a
+        DCGM exporter, or either alone.
+        """
         telemetry = self.telemetry
         if telemetry is None or not telemetry.enabled:
+            if telemetry is not None and telemetry.cpu_power.enabled:
+                raise ValidationError("telemetry.cpu_power.enabled requires telemetry.enabled")
             return
         if telemetry.dcgm_exporter is not None:
             self._validate_dcgm_power()
+        if telemetry.cpu_power.enabled:
+            self._validate_cpu_power()
+        elif telemetry.cpu_power.required:
+            raise ValidationError("telemetry.cpu_power.required has no effect unless telemetry.cpu_power.enabled")
 
     @classmethod
     def from_yaml(cls, yaml_path: Path) -> "SrtConfig":
