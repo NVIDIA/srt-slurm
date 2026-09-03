@@ -610,3 +610,49 @@ class TestInfmaxWorkspaceMount:
             show_config_details(config)
         output = capsys.readouterr().out
         assert "MISSING" not in output
+
+
+class TestDryRunTelemetry:
+    """The two telemetry legs are independent, so dry-run must name the enabled ones.
+
+    Reporting `provider: dcgm-power` for a CPU-only recipe told operators the run
+    would collect GPU power it never touches, and said nothing about the ACPI
+    exporter that has to be installed on every worker host.
+    """
+
+    CPU_ONLY = {"telemetry": {"enabled": True, "cpu_power": {"enabled": True, "required": True}}}
+    DCGM_ONLY = {
+        "telemetry": {
+            "enabled": True,
+            "dcgm_exporter": {"container_image": "nvcr.io/nvidia/dcgm-exporter:4.2.3", "port": 9400},
+        }
+    }
+
+    def test_cpu_only_telemetry_does_not_claim_dcgm(self, capsys):
+        config = _make_config(self.CPU_ONLY)
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "cpu-power" in output
+        assert "dcgm-power" not in output
+
+    def test_cpu_only_telemetry_shows_source_port_and_artifacts(self, capsys):
+        config = _make_config(self.CPU_ONLY)
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "acpi" in output
+        assert "9401" in output, "the exporter port has to be verifiable before submitting"
+        assert "cpu_power" in output, "the artifact subdir tells operators where readings land"
+
+    def test_both_legs_are_reported_together(self, capsys):
+        config = _make_config({"telemetry": {**self.CPU_ONLY["telemetry"], **self.DCGM_ONLY["telemetry"]}})
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "dcgm-power" in output
+        assert "cpu-power" in output
+
+    def test_dcgm_only_telemetry_says_nothing_about_the_cpu_leg(self, capsys):
+        config = _make_config(self.DCGM_ONLY)
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "dcgm-power" in output
+        assert "acpi" not in output
