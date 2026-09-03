@@ -1288,9 +1288,9 @@ collector scrapes are the same ones handed to AIPerf, and a node that does not
 resolve to a literal address is covered by neither. Resolution prefers the
 interface-aware IPv4 path `network_interface` configures and falls back to
 family-neutral name resolution, so an IPv6-only node is covered rather than
-dropped. When a node resolves to IPv6 the exporter is launched with `--bind ::`
-so it listens on the family the scrape URL names, and the URL brackets the
-address.
+dropped. IPv6 link-local scope IDs are preserved for the collector's socket and
+percent-encoded in bracketed URLs. When a node resolves to IPv6 the exporter is
+launched with `--bind ::` so it listens on the family the scrape URL names.
 
 `make setup ARCH=<compute_arch>` installs `bin/cpu-power-exporter`, but only
 warns when the release does not carry it -- the binary is optional, and

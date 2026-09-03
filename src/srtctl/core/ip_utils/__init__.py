@@ -27,7 +27,7 @@ def url_host(address: str) -> str:
     read as the port separator and the URL is malformed. A hostname or an IPv4
     address is handed back unchanged.
     """
-    return f"[{address}]" if ":" in address else address
+    return f"[{address.replace('%', '%25')}]" if ":" in address else address
 
 
 def _run_bash_function(

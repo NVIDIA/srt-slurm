@@ -221,9 +221,11 @@ def _resolve_any_family(node: str) -> str | None:
         for info in infos:
             if info[0] != family:
                 continue
-            # A link-local address arrives with its scope ("fe80::1%eth0"), which
-            # is not an address a client on another node could use.
-            address = _literal_address(str(info[4][0]))
+            sockaddr = info[4]
+            candidate = str(sockaddr[0])
+            if family == socket.AF_INET6 and len(sockaddr) >= 4 and sockaddr[3] and "%" not in candidate:
+                candidate = f"{candidate}%{sockaddr[3]}"
+            address = _literal_address(candidate)
             if address is not None:
                 return address
     return None
@@ -300,10 +302,19 @@ def fetch_metrics(endpoint: CpuEndpoint, budget_seconds: float) -> tuple[str, fl
     sock = socket.socket(family, socket.SOCK_STREAM)
     try:
         sock.settimeout(max(0.0, deadline - time.monotonic()))
-        sock.connect((endpoint.address, endpoint.port))
+        if family == socket.AF_INET6:
+            address, separator, zone = endpoint.address.rpartition("%")
+            if separator:
+                scope_id = int(zone) if zone.isdecimal() else socket.if_nametoindex(zone)
+                peer = (address, endpoint.port, 0, scope_id)
+            else:
+                peer = (endpoint.address, endpoint.port, 0, 0)
+        else:
+            peer = (endpoint.address, endpoint.port)
+        sock.connect(peer)
         # HTTP/1.0 with an explicit close: the body ends when the socket does,
         # so no chunked framing to unpack and no connection to reuse or leak.
-        host = f"[{endpoint.address}]" if family == socket.AF_INET6 else endpoint.address
+        host = url_host(endpoint.address)
         sock.sendall(
             f"GET /metrics HTTP/1.0\r\nHost: {host}:{endpoint.port}\r\n"
             f"Accept: text/plain\r\nConnection: close\r\n\r\n".encode()
