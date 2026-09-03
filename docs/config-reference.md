@@ -1280,7 +1280,10 @@ gap into a non-zero job exit.
 warns when the release does not carry it -- the binary is optional, and
 `srtctl validate-setup` requires it only when a recipe enables this leg. Run
 `make cpu-power-exporter-download` to treat a failed download as an error, or
-`make cpu-power-exporter` to build it from the vendored source.
+`make cpu-power-exporter` to build it from the vendored source. Pinning
+`CPU_POWER_EXPORTER_RELEASE=<tag>` makes even `make setup` fail on a failed
+download, and drops the installed binary first, so a failure never leaves a
+different version behind for `validate-setup` to accept.
 
 ---
 
