@@ -270,37 +270,51 @@ class TelemetryStageMixin:
         # Resolve before launching: the exporter listens on one address family
         # and the scrape URLs are built from these same addresses, so binding
         # the IPv4 default on a node the session reaches over IPv6 would serve
-        # nobody. `::` also accepts IPv4 on a dual-stack host, so it is only
-        # chosen when an IPv6 node is actually present -- an unconditional `::`
-        # would fail to bind at all where IPv6 is disabled.
-        if any(endpoint.url.startswith("http://[") for endpoint in session.resolve_endpoints()):
-            logger.info("CPU power exporter binding :: for IPv6-resolved nodes")
-            command += ["--bind", "::"]
-        session.set_exporter_command(shlex.join(command))
+        # nobody. The bind is per launch rather than per allocation: `::` on an
+        # IPv4-only node, or one with net.ipv6.bindv6only=1, either fails to
+        # bind or cannot serve the address the session will scrape.
+        binds = {
+            endpoint.hostname: "::" if ":" in endpoint.address else "0.0.0.0"
+            for endpoint in session.resolve_endpoints()
+        }
+        unresolved = [node for node in worker_nodes if node not in binds]
+        if unresolved:
+            # Nothing could scrape these, so an exporter there would only
+            # occupy a task; the session already recorded them as uncovered.
+            logger.warning("CPU power exporter not launched on unresolved nodes: %s", ", ".join(unresolved))
 
         try:
+            commands: list[str] = []
             for group_id, nodes in self._het_chunks(worker_nodes):
-                suffix = "" if not self.runtime.nodes.het else f".g{group_id}"
-                log_file = self.runtime.log_dir / f"telemetry_cpu_power_exporter{suffix}.out"
-                process = ManagedProcess(
-                    name=f"telemetry_cpu_power_exporter{suffix.replace('.', '_')}",
-                    popen=start_srun_process(
-                        command=command,
-                        nodes=len(nodes),
-                        ntasks=len(nodes),
-                        nodelist=nodes,
-                        output=str(log_file),
-                        srun_options=self.runtime.srun_options,
-                        het_group=group_id if group_id >= 0 else None,
-                        use_bash_wrapper=False,
-                    ),
-                    log_file=log_file,
-                    node=",".join(nodes),
-                    # An exit is telemetry invalidity, not a sweep-critical failure.
-                    critical=False,
-                )
-                registry.add_process(process)
-                session.add_exporter(process)
+                families = sorted({binds[node] for node in nodes if node in binds})
+                for bind in families:
+                    members = [node for node in nodes if binds.get(node) == bind]
+                    group_suffix = "" if not self.runtime.nodes.het else f".g{group_id}"
+                    family_suffix = "" if len(families) == 1 else f".{'v6' if bind == '::' else 'v4'}"
+                    suffix = f"{group_suffix}{family_suffix}"
+                    launch = [*command, "--bind", bind]
+                    commands.append(shlex.join(launch))
+                    log_file = self.runtime.log_dir / f"telemetry_cpu_power_exporter{suffix}.out"
+                    process = ManagedProcess(
+                        name=f"telemetry_cpu_power_exporter{suffix.replace('.', '_')}",
+                        popen=start_srun_process(
+                            command=launch,
+                            nodes=len(members),
+                            ntasks=len(members),
+                            nodelist=members,
+                            output=str(log_file),
+                            srun_options=self.runtime.srun_options,
+                            het_group=group_id if group_id >= 0 else None,
+                            use_bash_wrapper=False,
+                        ),
+                        log_file=log_file,
+                        node=",".join(members),
+                        # An exit is telemetry invalidity, not a sweep-critical failure.
+                        critical=False,
+                    )
+                    registry.add_process(process)
+                    session.add_exporter(process)
+            session.set_exporter_command(" | ".join(dict.fromkeys(commands)))
         except Exception:
             logger.exception("CPU power exporter launch failed")
             session.record_reason(Reason.EXPORTER_LAUNCH_FAILED)
