@@ -142,8 +142,8 @@ jobs:
         with:
           ref: ${{ needs.version.outputs.target }}
 
-      - uses: docker/setup-qemu-action@v3
-
+      # No QEMU: the Dockerfile builds on $BUILDPLATFORM and cross-links, and
+      # the artifact stage only copies the result.
       - uses: docker/setup-buildx-action@v3
 
       - name: Build cpu-power-exporter binary
@@ -206,13 +206,26 @@ jobs:
           # from the previous one to keep each release self-contained. A gap is
           # a warning, not a failure: the first-ever release has nothing to
           # carry forward, and a binary added later is absent from older ones.
+          # An asset the previous release never had is a real gap (a binary
+          # added later), so it warns. A download that fails while the asset
+          # IS listed is an operational failure and must not silently ship a
+          # release missing a binary users already had.
           carry() {
             if [ -z "$previous" ]; then
               echo "::warning::No previous release to carry $1 forward from; this release omits it"
               return 0
             fi
-            if ! gh release download "$previous" --pattern "$1-*" --dir dist; then
+            if ! assets=$(gh release view "$previous" --json assets --jq '.assets[].name'); then
+              echo "::error::Could not list assets of previous release $previous"
+              return 1
+            fi
+            if ! printf '%s\n' "$assets" | grep -q "^$1-"; then
               echo "::warning::Previous release $previous has no $1 assets; this release omits them"
+              return 0
+            fi
+            if ! gh release download "$previous" --pattern "$1-*" --dir dist; then
+              echo "::error::Failed to download $1 assets from $previous"
+              return 1
             fi
           }
           [ "$TACHOMETER_CHANGED" = "true" ] || carry tachometer-scraper

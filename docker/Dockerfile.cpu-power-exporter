@@ -35,10 +35,9 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then \
         rustup target add x86_64-unknown-linux-musl; \
     fi
 
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/app/target,id=cpu-power-target-$TARGETARCH,sharing=locked \
-    if [ "$TARGETARCH" = "arm64" ]; then \
+# No --mount=type=cache: every caller builds this with a fresh BuildKit
+# instance, so the mounts never hit and only obscure what the build does.
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
         export CC_aarch64_unknown_linux_musl=aarch64-linux-gnu-gcc \
         && export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc \
         && cargo build --release --locked --bin cpu-power-exporter --target aarch64-unknown-linux-musl \
