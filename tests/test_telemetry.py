@@ -16,6 +16,7 @@ from srtctl.core.power.contract import Reason
 from srtctl.core.processes import ProcessRegistry
 from srtctl.core.schema import (
     BenchmarkConfig,
+    CpuPowerConfig,
     InfraConfig,
     ModelConfig,
     ObservabilityConfig,
@@ -767,6 +768,61 @@ class TestTachometerStageMixin:
 
         assert [process.name for process in processes] == ["tachometer"]
         assert mock_srun.call_count == 1
+        assert 'name = "dcgm_node-a"' in (tmp_path / "tachometer_config.toml").read_text()
+
+    @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
+    def test_cpu_only_telemetry_leaves_tachometers_dcgm_exporter_running(self, mock_srun, tmp_path):
+        """The CPU leg configures no DCGM exporter, so there is nothing to reuse."""
+
+        class Harness(TelemetryStageMixin):
+            def __init__(self):
+                self.config = _make_config(
+                    tachometer=TachometerConfig(
+                        enabled=True,
+                        dcgm_exporter=TelemetryExporterConfig(container_image="dcgm:latest", port=9400),
+                    ),
+                    telemetry=TelemetryConfig(enabled=True, cpu_power=CpuPowerConfig(enabled=True)),
+                )
+                self.runtime = MagicMock()
+                self.runtime.log_dir = tmp_path
+                self.runtime.job_id = "12345"
+                self.runtime.run_name = "test_12345"
+                self.runtime.network_interface = "eth0"
+                self.runtime.nodes.head = "node-a"
+                self.runtime.nodes.het = False
+                self.runtime.srun_options = {}
+                self.runtime.container_mounts = {Path(tmp_path): Path("/logs")}
+                self._backend_processes = [
+                    Process(
+                        node="node-a",
+                        gpu_indices=frozenset({0}),
+                        sys_port=8081,
+                        http_port=30000,
+                        endpoint_mode="agg",
+                        endpoint_index=0,
+                        node_rank=0,
+                    )
+                ]
+
+            @property
+            def backend_processes(self):
+                return self._backend_processes
+
+            def _compute_frontend_topology(self):
+                return FrontendTopology(
+                    nginx_node=None,
+                    frontend_nodes=["node-a"],
+                    frontend_port=8000,
+                    public_port=8000,
+                )
+
+        mock_srun.return_value = _running_exporter()
+        harness = Harness()
+        harness._resolve_tachometer_binary = lambda binary_path: binary_path
+
+        processes = harness.start_tachometer()
+
+        assert [process.name for process in processes] == ["tachometer_dcgm_exporter", "tachometer"]
         assert 'name = "dcgm_node-a"' in (tmp_path / "tachometer_config.toml").read_text()
 
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
