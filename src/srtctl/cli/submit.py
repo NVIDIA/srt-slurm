@@ -472,11 +472,14 @@ def show_config_details(config: SrtConfig) -> None:
         console.print(Panel(details, border_style="blue"))
 
 
-def validate_setup(srtctl_source: Path) -> None:
+def validate_setup(srtctl_source: Path, config: SrtConfig | None = None) -> None:
     """Validate that make setup has been run and required binaries exist.
 
     Checks for NATS, etcd, Tachometer, and compute-arch uv binaries. Raises SystemExit
     with a clear error message if anything is missing.
+
+    ``cpu-power-exporter`` is only required by recipes that enable
+    ``telemetry.cpu_power``; every other recipe submits without it.
     """
     missing = []
 
@@ -489,7 +492,8 @@ def validate_setup(srtctl_source: Path) -> None:
         missing.append("bin/uv (compute-arch uv)")
     if not (srtctl_source / "bin" / "tachometer-scraper").exists():
         missing.append("bin/tachometer-scraper (compute-arch Tachometer scraper)")
-    if not (srtctl_source / "bin" / "cpu-power-exporter").exists():
+    cpu_power_enabled = config is not None and config.telemetry.enabled and config.telemetry.cpu_power.enabled
+    if cpu_power_enabled and not (srtctl_source / "bin" / "cpu-power-exporter").exists():
         missing.append("bin/cpu-power-exporter (compute-arch ACPI CPU power exporter)")
 
     if missing:
@@ -763,7 +767,7 @@ def submit_with_orchestrator(
     # Validate setup before submitting (not during dry-run)
     srtctl_root = get_srtslurm_setting("srtctl_root")
     srtctl_source = Path(srtctl_root) if srtctl_root else Path(__file__).parent.parent.parent.parent
-    validate_setup(srtctl_source)
+    validate_setup(srtctl_source, config)
 
     # Write script to temp file
     fd, script_path = tempfile.mkstemp(suffix=".slurm", prefix="srtctl_", text=True)

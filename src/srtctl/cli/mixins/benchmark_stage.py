@@ -630,17 +630,19 @@ class BenchmarkStageMixin:
                     elif self.config.frontend.type == "vllm-router" and process.http_port > 0:
                         host = get_hostname_ip(process.node, self.runtime.network_interface)
                         urls.append(f"http://{host}:{process.http_port}/metrics")
-                if urls:
-                    return {"AIPERF_SERVER_METRICS_URLS": ",".join(sorted(set(urls)))}
-
             # TRT-LLM workers only publish engine metrics when launched with
             # --publish-events-and-metrics (pre-v1.3.0 Dynamo gates the whole
             # worker /metrics surface on it; observability.enabled sets it at
             # config load). Without the flag the sys-port endpoints serve
             # nothing, so advertising them would only create the impression
             # that worker metrics are being captured.
-            if self.config.backend_type != "trtllm" or getattr(
-                self.config.backend, "publish_events_and_metrics", False
+            #
+            # A vLLM layout publishes engine metrics on the frontend or router
+            # port instead, so the sys-port list is its fallback, not an
+            # addition. The appends below still run either way.
+            if not urls and (
+                self.config.backend_type != "trtllm"
+                or getattr(self.config.backend, "publish_events_and_metrics", False)
             ):
                 for process in self.backend_processes:
                     if process.sys_port > 0:
@@ -658,8 +660,8 @@ class BenchmarkStageMixin:
                     urls.append(f"http://{host}:{kvbm_port}/metrics")
 
         # Add ACPI CPU power exporter endpoints (one per worker node) when enabled.
-        cpu_power = getattr(self.config.telemetry, "cpu_power", None)
-        if self.config.telemetry.enabled and cpu_power is not None and cpu_power.enabled and cpu_power.prometheus_port > 0:
+        cpu_power = self.config.telemetry.cpu_power
+        if self.config.telemetry.enabled and cpu_power.enabled:
             worker_nodes = sorted({process.node for process in self.backend_processes})
             for node in worker_nodes:
                 host = get_hostname_ip(node, self.runtime.network_interface)
