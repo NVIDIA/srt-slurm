@@ -234,3 +234,39 @@ class TestOptionalExporterDownload:
     def test_an_explicit_download_still_fails(self, tmp_path: Path):
         result = self._make("cpu-power-exporter-download", tmp_path)
         assert result.returncode != 0
+
+    @staticmethod
+    def _report_arch(sandbox: Path, arch: str) -> None:
+        """Make the `file` stub report `arch` for whatever it is asked about."""
+        stub = sandbox / "stub-bin" / "file"
+        stub.write_text(f'#!/bin/sh\necho "$1: ELF 64-bit LSB executable, {arch}"\n')
+        stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+
+    def test_the_default_release_drops_a_wrong_architecture_binary(self, tmp_path: Path):
+        """A checkout reused across architectures must not keep the other one's binary.
+
+        The warn-on-failure path would otherwise leave a binary that cannot run
+        on this host, and validate-setup accepts it because it only checks that
+        the file is there.
+        """
+        sandbox = self._sandbox(tmp_path)
+        self._install(sandbox, "v1.0.0")
+        self._report_arch(sandbox, "aarch64")
+
+        result = self._make("cpu-power-exporter-setup", sandbox)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "cpu-power-exporter unavailable" in result.stdout
+        assert not (sandbox / "bin" / "cpu-power-exporter").exists()
+        assert not (sandbox / "bin" / ".cpu-power-exporter.release").exists()
+
+    def test_the_scraper_download_drops_a_wrong_architecture_binary(self, tmp_path: Path):
+        sandbox = self._sandbox(tmp_path)
+        (sandbox / "bin").mkdir(exist_ok=True)
+        (sandbox / "bin" / "tachometer-scraper").write_text("stale binary\n")
+        self._report_arch(sandbox, "aarch64")
+
+        result = self._make("tachometer-scraper-download", sandbox)
+
+        assert result.returncode != 0
+        assert not (sandbox / "bin" / "tachometer-scraper").exists()
