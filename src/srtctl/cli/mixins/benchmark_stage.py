@@ -22,6 +22,7 @@ from srtctl.core.power.contract import (
     MEASUREMENT_WINDOW_DIR_ENV,
     WINDOWS_DIRNAME,
 )
+from srtctl.core.power.cpu_session import cpu_endpoint_host
 from srtctl.core.processes import terminate_and_reap
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
 from srtctl.core.status import JobStage, JobStatus, StatusReporter
@@ -666,7 +667,11 @@ class BenchmarkStageMixin:
         if telemetry.enabled and telemetry.cpu_power.enabled:
             worker_nodes = sorted({process.node for process in self.backend_processes})
             for node in worker_nodes:
-                host = get_hostname_ip(node, self.runtime.network_interface)
+                # Same resolver the telemetry session uses, so the client is never
+                # pointed at a node the session itself refused as unreachable.
+                host = cpu_endpoint_host(node, self.runtime.network_interface)
+                if host is None:
+                    continue
                 urls.append(f"http://{host}:{telemetry.cpu_power.prometheus_port}/metrics")
 
         if not urls:

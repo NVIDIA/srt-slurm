@@ -152,6 +152,35 @@ class _EndpointResult:
     reason_codes: list[str]
 
 
+def cpu_endpoint_host(node: str, network_interface: str | None = None) -> str | None:
+    """The URL host of ``node``'s CPU power exporter, or ``None`` if it has no address.
+
+    The single source of truth for both consumers: the telemetry session's own
+    endpoints and the ``AIPERF_SERVER_METRICS_URLS`` projection handed to the
+    benchmark client. Computing them separately let the two disagree about
+    which nodes are reachable and how an address is spelled.
+
+    ``get_hostname_ip`` hands back the hostname unchanged when it cannot resolve
+    it, and a URL carrying a name is re-resolved on every scrape -- so a node
+    without a literal address is omitted rather than handed to a client that
+    would spend the run on DNS failures. IPv6 is bracketed, without which the
+    address's own colons would be read as the port separator.
+    """
+    try:
+        ip = get_hostname_ip(node, network_interface)
+    except Exception as exc:  # noqa: BLE001 - an unresolvable node is a caller's reason code
+        logger.warning("CPU power endpoint resolution failed for %s: %s", node, exc)
+        return None
+    if not ip:
+        return None
+    try:
+        address = ipaddress.ip_address(ip)
+    except ValueError:
+        logger.warning("CPU power endpoint for %s resolved to %r, not an address", node, ip)
+        return None
+    return f"[{ip}]" if isinstance(address, ipaddress.IPv6Address) else ip
+
+
 def parse_cpu_power_scrape(text: str) -> tuple[tuple[CpuPowerReading, ...], tuple[str, ...]]:
     """Parse one exporter ``/metrics`` body into publishable rail readings.
 
@@ -354,19 +383,8 @@ class CpuPowerTelemetrySession:
         """
 
         def resolve(node: str) -> tuple[str, str] | None:
-            try:
-                ip = get_hostname_ip(node, self._settings.network_interface)
-            except Exception as exc:  # noqa: BLE001 - an unresolvable node is a reason code
-                logger.warning("CPU power endpoint resolution failed for %s: %s", node, exc)
-                return None
-            if not ip:
-                return None
-            try:
-                ipaddress.ip_address(ip)
-            except ValueError:
-                logger.warning("CPU power endpoint for %s resolved to %r, not an address", node, ip)
-                return None
-            return (node, ip)
+            host = cpu_endpoint_host(node, self._settings.network_interface)
+            return (node, host) if host else None
 
         results, _ = run_daemon_workers(
             [(f"CpuPowerResolve-{node}", resolve, node) for node in self._nodes],
@@ -374,11 +392,10 @@ class CpuPowerTelemetrySession:
         )
         resolved = dict(result for result in results if result is not None)
         for node in self._nodes:
-            ip = resolved.get(node)
-            if ip is None:
+            host = resolved.get(node)
+            if host is None:
                 self.record_reason(Reason.ENDPOINT_RESOLUTION_FAILED)
                 continue
-            host = f"[{ip}]" if isinstance(ipaddress.ip_address(ip), ipaddress.IPv6Address) else ip
             self._endpoints.append(
                 CpuEndpoint(hostname=node, url=f"http://{host}:{self._settings.exporter_port}/metrics")
             )
