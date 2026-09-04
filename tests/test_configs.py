@@ -508,7 +508,7 @@ class TestSGLangProtocol:
         assert config.get_environment_for_mode("agg") == {}
 
     def test_kv_events_config_global_bool(self):
-        """Test kv_events_config=True enables prefill+decode with defaults."""
+        """Test kv_events_config=True enables prefill+decode+aggregated with defaults."""
         config = SGLangProtocol(kv_events_config=True)
 
         assert config.get_kv_events_config_for_mode("prefill") == {
@@ -519,7 +519,10 @@ class TestSGLangProtocol:
             "publisher": "zmq",
             "topic": "kv-events",
         }
-        assert config.get_kv_events_config_for_mode("agg") is None
+        assert config.get_kv_events_config_for_mode("agg") == {
+            "publisher": "zmq",
+            "topic": "kv-events",
+        }
 
     def test_kv_events_config_per_mode(self):
         """Test kv_events_config per-mode control."""
