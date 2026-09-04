@@ -13,6 +13,27 @@ if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import SrtConfig
 
+DEFAULT_SA_BENCH_BACKEND = "dynamo"
+DEFAULT_SA_BENCH_API_ENDPOINT = "/v1/completions"
+CHAT_SA_BENCH_API_ENDPOINT = "/v1/chat/completions"
+SA_BENCH_BACKENDS = frozenset(
+    {
+        "tgi",
+        "vllm",
+        "dynamo",
+        "lmdeploy",
+        "deepspeed-mii",
+        "openai",
+        "openai-chat",
+        "tensorrt-llm",
+        "scalellm",
+        "sglang",
+    }
+)
+# Adapters that can send an OpenAI chat request. The rest only know how to post
+# a completions body, so pairing them with the chat API would 400 at the server.
+CHAT_CAPABLE_SA_BENCH_BACKENDS = frozenset({"dynamo", "openai-chat"})
+
 
 @register_benchmark("sa-bench")
 class SABenchRunner(BenchmarkRunner):
@@ -28,6 +49,8 @@ class SABenchRunner(BenchmarkRunner):
         - benchmark.req_rate: Request rate (default: "inf")
         - benchmark.dataset_name: "random" (default) or "custom"
         - benchmark.dataset_path: Container path to dataset file (required when dataset_name="custom")
+        - benchmark.backend: SA-Bench HTTP client adapter (default: dynamo)
+        - benchmark.endpoint: API path, e.g. /v1/completions or /v1/chat/completions
         - benchmark.reuse_http_connections: Reuse a benchmark-scoped HTTP connection pool
           for the Dynamo adapter (default: false)
         - benchmark.slow_down_sleep_time / benchmark.slow_down_wait_time: When both are set and
@@ -62,6 +85,24 @@ class SABenchRunner(BenchmarkRunner):
             errors.append("benchmark.concurrencies is required for sa-bench")
         if is_custom and not b.dataset_path:
             errors.append("benchmark.dataset_path is required when dataset_name='custom'")
+
+        backend = b.backend or DEFAULT_SA_BENCH_BACKEND
+        api_endpoint = b.endpoint or DEFAULT_SA_BENCH_API_ENDPOINT
+        if backend not in SA_BENCH_BACKENDS:
+            errors.append(f"benchmark.backend must be one of {sorted(SA_BENCH_BACKENDS)}; got {backend!r}")
+        if not api_endpoint.startswith("/"):
+            errors.append(f"benchmark.endpoint must be an absolute path starting with '/'; got {api_endpoint!r}")
+
+        is_chat_endpoint = api_endpoint.rstrip("/").endswith("chat/completions")
+        if is_chat_endpoint and backend not in CHAT_CAPABLE_SA_BENCH_BACKENDS:
+            errors.append(
+                f"benchmark.endpoint {api_endpoint} needs a chat-capable benchmark.backend "
+                f"({sorted(CHAT_CAPABLE_SA_BENCH_BACKENDS)}); {backend!r} only sends a completions body"
+            )
+        if backend == "openai-chat" and not is_chat_endpoint:
+            errors.append(f"benchmark.backend openai-chat requires benchmark.endpoint: {CHAT_SA_BENCH_API_ENDPOINT}")
+        if b.reuse_http_connections and backend != "dynamo":
+            errors.append("benchmark.reuse_http_connections is supported only with benchmark.backend: dynamo")
 
         return errors
 
@@ -117,5 +158,7 @@ class SABenchRunner(BenchmarkRunner):
             dataset_name,
             b.dataset_path or "",
             str(b.reuse_http_connections).lower(),
+            b.backend or DEFAULT_SA_BENCH_BACKEND,
+            b.endpoint or DEFAULT_SA_BENCH_API_ENDPOINT,
         ]
         return cmd

@@ -333,6 +333,27 @@ async def async_request_openai_completions(
     return output
 
 
+def is_chat_completions_url(api_url: str) -> bool:
+    """True when the API path is the OpenAI chat API rather than plain completions."""
+    return api_url.rstrip("/").endswith("chat/completions")
+
+
+async def async_request_dynamo(
+    request_func_input: RequestFuncInput,
+    pbar: tqdm | None = None,
+    *,
+    session: aiohttp.ClientSession | None = None,
+) -> RequestFuncOutput:
+    """Send to the Dynamo frontend, picking the payload the API path expects.
+
+    Recipes select the API with ``benchmark.endpoint`` alone; the two paths
+    differ only in the request body and the field tokens stream back in.
+    """
+    if is_chat_completions_url(request_func_input.api_url):
+        return await async_request_dynamo_chat_completions(request_func_input, pbar, session=session)
+    return await async_request_dynamo_completions(request_func_input, pbar, session=session)
+
+
 async def async_request_dynamo_completions(
     request_func_input: RequestFuncInput,
     pbar: tqdm | None = None,
@@ -419,6 +440,129 @@ async def async_request_dynamo_completions(
                                 most_recent_timestamp = timestamp
                                 generated_text += text or ""
                                 output.text_chunks.append(text or "")
+                            if usage := data.get("usage"):
+                                output.output_tokens = usage.get("completion_tokens")
+                    if first_chunk_received:
+                        output.success = True
+                    else:
+                        output.success = False
+                        output.error = (
+                            "Never received a valid chunk to calculate TTFT." "This response will be marked as failed!"
+                        )
+                    output.generated_text = generated_text
+                    output.latency = most_recent_timestamp - st
+                else:
+                    output.error = response.reason or ""
+                    output.success = False
+        except Exception:
+            output.success = False
+            exc_info = sys.exc_info()
+            output.error = "".join(traceback.format_exception(*exc_info))
+
+    if pbar:
+        pbar.update(1)
+    return output
+
+
+async def async_request_dynamo_chat_completions(
+    request_func_input: RequestFuncInput,
+    pbar: tqdm | None = None,
+    *,
+    session: aiohttp.ClientSession | None = None,
+) -> RequestFuncOutput:
+    api_url = request_func_input.api_url
+    assert is_chat_completions_url(
+        api_url
+    ), "OpenAI Chat Completions API URL must end with 'chat/completions'."
+
+    # Same session ownership rules as the completions path: borrow an injected
+    # benchmark-scoped pool, otherwise own a per-request session.
+    session_context = (
+        aiohttp.ClientSession(trust_env=True, timeout=AIOHTTP_TIMEOUT)
+        if session is None
+        else nullcontext(session)
+    )
+
+    async with session_context as request_session:
+        # A bare string is accepted by every OpenAI-compatible frontend; the
+        # content-part list is only needed to carry multi-modal attachments.
+        content = request_func_input.prompt
+        if request_func_input.multi_modal_content:
+            content = [
+                {"type": "text", "text": request_func_input.prompt},
+                request_func_input.multi_modal_content,
+            ]
+        payload = {
+            "model": request_func_input.model_name if request_func_input.model_name else request_func_input.model,
+            "messages": [
+                {"role": "user", "content": content},
+            ],
+            "temperature": 0.0,
+            "max_completion_tokens": request_func_input.output_len,
+            "stream": True,
+            "stream_options": {
+                "include_usage": True,
+            },
+        }
+        if request_func_input.ignore_eos:
+            payload["ignore_eos"] = request_func_input.ignore_eos
+        if request_func_input.extra_body:
+            payload.update(request_func_input.extra_body)
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {os.environ.get('OPENAI_API_KEY')}",
+        }
+
+        output = RequestFuncOutput()
+        output.prompt_len = request_func_input.prompt_len
+
+        generated_text = ""
+        st = time.perf_counter()
+        output.start_time = st
+        most_recent_timestamp = st
+        try:
+            async with request_session.post(url=api_url, json=payload, headers=headers) as response:
+                if response.status == 200:
+                    first_chunk_received = False
+                    async for chunk_bytes in response.content:
+                        chunk_bytes = chunk_bytes.strip()
+                        if not chunk_bytes:
+                            continue
+
+                        chunk = chunk_bytes.decode("utf-8")
+
+                        # Skip SSE event/comment lines (not data)
+                        if chunk.startswith("event:") or chunk.startswith(":"):
+                            continue
+
+                        chunk = chunk.removeprefix("data: ")
+                        if chunk != "[DONE]":
+                            data = json.loads(chunk)
+
+                            if choices := data.get("choices"):
+                                delta = choices[0].get("delta") or {}
+                                text = delta.get("content")
+                                # Dynamo hangs the assistant role on the first
+                                # content delta instead of a chunk of its own
+                                # (preprocessor.rs normalize_chat_stream_roles),
+                                # so a delta without content is the trailing
+                                # finish-reason one and carries no token. An
+                                # empty string does: the incremental detokenizer
+                                # emits one per partial UTF-8 sequence.
+                                if text is not None:
+                                    timestamp = time.perf_counter()
+                                    # First token
+                                    if not first_chunk_received:
+                                        first_chunk_received = True
+                                        output.ttft = timestamp - st
+
+                                    # Decoding phase
+                                    else:
+                                        output.itl.append(timestamp - most_recent_timestamp)
+
+                                    most_recent_timestamp = timestamp
+                                    generated_text += text
+                                    output.text_chunks.append(text)
                             if usage := data.get("usage"):
                                 output.output_tokens = usage.get("completion_tokens")
                     if first_chunk_received:
@@ -699,7 +843,7 @@ def get_tokenizer(
 ASYNC_REQUEST_FUNCS = {
     "tgi": async_request_tgi,
     "vllm": async_request_openai_completions,
-    "dynamo": async_request_dynamo_completions,
+    "dynamo": async_request_dynamo,
     "lmdeploy": async_request_openai_completions,
     "deepspeed-mii": async_request_deepspeed_mii,
     "openai": async_request_openai_completions,

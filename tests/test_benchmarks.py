@@ -161,8 +161,70 @@ class TestSABenchRunner:
         )
         cmd = runner.build_command(config, runtime)
         assert "random" in cmd
-        assert cmd[-2] == ""  # empty dataset path
-        assert cmd[-1] == "false"  # per-request HTTP sessions by default
+        assert cmd[-4] == ""  # empty dataset path
+        assert cmd[-3] == "false"  # per-request HTTP sessions by default
+        assert cmd[-2] == "dynamo"
+        assert cmd[-1] == "/v1/completions"
+
+    def test_build_command_custom_backend_and_endpoint(self):
+        """build_command passes backend and API path through to bench.sh."""
+        from unittest.mock import MagicMock
+
+        from srtctl.benchmarks.sa_bench import SABenchRunner
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        runner = SABenchRunner()
+        runtime = MagicMock(frontend_port=8000, model_path="/model", is_hf_model=False)
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="h100"),
+            benchmark=BenchmarkConfig(
+                type="sa-bench",
+                isl=8192,
+                osl=1024,
+                concurrencies="2560",
+                backend="dynamo",
+                endpoint="/v1/chat/completions",
+            ),
+        )
+
+        cmd = runner.build_command(config, runtime)
+
+        assert cmd[-2] == "dynamo"
+        assert cmd[-1] == "/v1/chat/completions"
+
+    def _chat_endpoint_config(self, backend):
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        return SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="h100"),
+            benchmark=BenchmarkConfig(
+                type="sa-bench",
+                isl=8192,
+                osl=1024,
+                concurrencies="2560",
+                backend=backend,
+                endpoint="/v1/chat/completions",
+            ),
+        )
+
+    @pytest.mark.parametrize("backend", ["dynamo", "openai-chat"])
+    def test_validate_config_accepts_chat_capable_backends(self, backend):
+        """Both chat adapters may target /v1/chat/completions."""
+        from srtctl.benchmarks.sa_bench import SABenchRunner
+
+        assert SABenchRunner().validate_config(self._chat_endpoint_config(backend)) == []
+
+    @pytest.mark.parametrize("backend", ["vllm", "sglang", "openai"])
+    def test_validate_config_rejects_completions_backend_on_chat_endpoint(self, backend):
+        """Completions-only adapters cannot post to the chat API."""
+        from srtctl.benchmarks.sa_bench import SABenchRunner
+
+        errors = SABenchRunner().validate_config(self._chat_endpoint_config(backend))
+        assert any("chat-capable" in error for error in errors)
 
     def test_build_command_enables_http_connection_reuse(self):
         """Explicit opt-in is appended without shifting existing arguments."""
@@ -189,8 +251,8 @@ class TestSABenchRunner:
 
         cmd = runner.build_command(config, runtime)
 
-        assert cmd[-2] == "/data/bench.jsonl"
-        assert cmd[-1] == "true"
+        assert cmd[-4] == "/data/bench.jsonl"
+        assert cmd[-3] == "true"
 
     def test_http_connection_reuse_schema_default_and_roundtrip(self):
         """The YAML field is typed and remains opt-in when omitted."""
