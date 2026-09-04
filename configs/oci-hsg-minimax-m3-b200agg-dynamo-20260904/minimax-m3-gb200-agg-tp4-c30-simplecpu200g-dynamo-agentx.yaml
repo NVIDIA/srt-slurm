@@ -1,0 +1,160 @@
+# OCI-HSG port of InferenceMAX's active B200 MiniMax-M3 aggregate TP4
+# SimpleCPU-offload AgentX recipe. The model/runtime flags remain aligned with
+# the submitted B200 configuration; Dynamo is added as an aggregate frontend
+# and the host KV tier is capped to this cluster's 200 GiB/node allowance.
+name: "minimax-m3-gb200-agg-tp4-c30-simplecpu200g-dynamo-agentx-oci-hsg-090426"
+
+model:
+  path: "/lustre/fs1/portfolios/coreai/projects/coreai_dlalgo_ci/artifacts/model/nvidia_minimax-m3-nvfp4/hf/hf-9014640_orig"
+  container: &container "/lustre/fs1/portfolios/coreai/projects/coreai_comparch_inferencex/common/cache/containers/vllm_vllm-openai_nightly-1dc464d42681d22f38caf1fdc1eb632dc4421c45_arm64.sqsh"
+  precision: "fp4"
+
+identity:
+  model:
+    repo: "nvidia/MiniMax-M3-NVFP4"
+    revision: "901464083161bf8612a29ff7ad29914cd4ab4a85"
+  container:
+    image: "vllm/vllm-openai:nightly-1dc464d42681d22f38caf1fdc1eb632dc4421c45"
+  frameworks:
+    dynamo: "1.5.0.dev20260823"
+
+dynamo:
+  wheel: "1.5.0.dev20260823"
+  install: true
+  request_plane: tcp
+
+environment:
+  PYTHONHASHSEED: "0"
+  SRTCTL_CONTAINER_STAGE_SOURCE: "docker://vllm/vllm-openai:nightly-1dc464d42681d22f38caf1fdc1eb632dc4421c45"
+  SRTCTL_CONTAINER_STAGE_ARCH: "aarch64"
+  SRTCTL_CONTAINER_STAGE_OUTPUT: *container
+  SRTCTL_HOST_MEMORY_DIAGNOSTICS: "1"
+  SRTCTL_HOST_MEMORY_SAMPLE_INTERVAL_S: "5"
+
+slurm:
+  account: "coreai_comparch_inferencex"
+  partition: "batch"
+  time_limit: "04:00:00"
+
+health_check:
+  max_attempts: 1440
+  interval_seconds: 10
+
+resources:
+  gpu_type: "gb200"
+  gpus_per_node: 4
+  agg_nodes: 1
+  agg_workers: 1
+  gpus_per_agg: 4
+
+infra:
+  etcd_nats_dedicated_node: false
+  nats_max_payload_mb: 32
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+  env:
+    DYN_TCP_REQUEST_TIMEOUT: "60"
+  args:
+    dyn-chat-processor: "vllm"
+    trust-remote-code: true
+    tool-call-parser: "minimax_m3"
+    reasoning-parser: "minimax_m3"
+    enable-auto-tool-choice: true
+    router-mode: "kv"
+    router-kv-events: true
+    router-reset-states: true
+    router-temperature: "0"
+    router-session-affinity-ttl-secs: 14400
+    kv-cache-block-size: 128
+
+backend:
+  type: vllm
+  connector: null
+  kv_events_config:
+    aggregated: true
+  aggregated_environment:
+    HF_HOME: "/lustre/fs1/portfolios/coreai/projects/coreai_comparch_inferencex/common/cache"
+    PYTHONNOUSERSITE: "1"
+    PYTHONUNBUFFERED: "1"
+    VLLM_ENGINE_READY_TIMEOUT_S: "3600"
+    VLLM_FLOAT32_MATMUL_PRECISION: "high"
+    VLLM_FLASHINFER_ALLREDUCE_BACKEND: "trtllm"
+    VLLM_LOG_STATS_INTERVAL: "1"
+    VLLM_USE_SIMPLE_KV_OFFLOAD: "1"
+    NCCL_CUMEM_ENABLE: "1"
+    NCCL_MNNVL_ENABLE: "1"
+    NCCL_NVLS_ENABLE: "1"
+  vllm_config:
+    aggregated:
+      served-model-name: "nvidia/MiniMax-M3-NVFP4"
+      tensor-parallel-size: 4
+      pipeline-parallel-size: 1
+      trust-remote-code: true
+      enable-prefix-caching: true
+      kv-cache-metrics: true
+      attention-config: '{"backend":"FLASHINFER","use_trtllm_attention":true,"indexer_kv_dtype":"fp8"}'
+      block-size: 128
+      gpu-memory-utilization: 0.9
+      language-model-only: true
+      kv-cache-dtype: "fp8"
+      speculative-config: '{"method":"eagle3","model":"/draft_model","num_speculative_tokens":3,"attention_backend":"FLASH_ATTN","rejection_sample_method":"synthetic","synthetic_acceptance_length":2.78}'
+      kv-transfer-config: '{"kv_connector":"SimpleCPUOffloadConnector","kv_role":"kv_both","kv_connector_extra_config":{"cpu_bytes_to_use":214748364800,"cpu_bytes_to_use_per_rank":53687091200,"lazy_offload":true}}'
+      default-chat-template-kwargs: '{"thinking_mode":"enabled"}'
+      max-cudagraph-capture-size: 512
+      max-num-batched-tokens: 16384
+      no-enable-flashinfer-autotune: true
+      reasoning-parser: "minimax_m3"
+      dyn-tool-call-parser: "minimax_m3"
+      dyn-reasoning-parser: "minimax_m3"
+      stream-interval: 20
+
+setup_script: "oci-hsg-minimax-m3-b200agg-dynamo-20260904/setup.sh"
+
+sbatch_directives:
+  cpus-per-task: "144"
+  mem: "0"
+srun_options:
+  mem: "0"
+
+benchmark:
+  type: agentic
+  concurrencies: [30]
+  duration: 3600
+  model_prefix: "minimaxm3"
+  result_filename: "minimax-m3-gb200-agg-tp4-c30-simplecpu200g-dynamo-agentx-oci-hsg-090426"
+  env:
+    AGENTIC_WARMUP_GRACE_PERIOD: "1800"
+    AIPERF_AGENTX_REF: "b7b16cf851885567988a643282266bce74e34437"
+    AIPERF_DATASET_CONFIGURATION_TIMEOUT: "1800"
+    AIPERF_EXTRA_INPUTS: "thinking:true"
+    AIPERF_HTTP_X_DYNAMO_SESSION_ID_FROM_CORRELATION_ID: "true"
+    AIPERF_SERVER_METRICS_COLLECTION_INTERVAL: "1.0"
+    AIPERF_SERVICE_PROFILE_CONFIGURE_TIMEOUT: "1800"
+    AIPERF_TRACE_IDLE_GAP_CAP_SECONDS: "300"
+    AIPERF_USE_DYNAMO_CONV_AWARE_ROUTING: "0"
+    AIPERF_WARMUP_REQUESTS_PER_LANE: "10"
+    AIPERF_DYNAMO_SESSION_TIMEOUT_SECONDS: "14400"
+    HF_DATASETS_CACHE: "/lustre/fs1/portfolios/coreai/projects/coreai_comparch_inferencex/common/cache/datasets-agentx-aiperfb7b16"
+    HF_HOME: "/lustre/fs1/portfolios/coreai/projects/coreai_comparch_inferencex/common/cache"
+    INFERENCEX_AGENTX_COMMIT: "f6c1f5b5d122bc4a62b93c9bd2919dfef68ccbcd"
+    IS_MULTINODE: "true"
+    KV_OFFLOADING: "dram"
+    KV_OFFLOAD_BACKEND: "vllm-simple"
+    KV_OFFLOAD_BACKEND_METADATA: '{"name":"vllm-simple"}'
+    TOTAL_CPU_DRAM_GB: "200"
+    IMAGE: "vllm/vllm-openai:nightly-1dc464d42681d22f38caf1fdc1eb632dc4421c45"
+    RUNNER_TYPE: "gb200"
+    SPEC_DECODING: "eagle3-gqa-k3"
+    SYNTHETIC_ACCEPTANCE_LENGTH: "2.78"
+    THINKING_MODE: "thinking_on"
+    CPU_KV_OFFLOAD_GIB_PER_NODE: "200"
+    CPU_KV_OFFLOAD_GIB_PER_RANK: "50"
+    SOURCE_CONFIG: "InferenceMAX minimaxm3-fp4-b200-vllm-agentic-mtp TP4 SimpleCPU offload arm"
+    SOURCE_INFERENCEMAX_COMMIT: "75908a871"
+    STUDY_CHANGE: "b200-vllm-aggregate-to-gb200-dynamo-aggregate-with-200gib-node-host-kv-cap"
+    PERFORMANCE_ROLLUP_ELIGIBLE: "true"
+
+extra_mount:
+  - "/lustre/fs1/portfolios/coreai/projects/coreai_dlalgo_ci/artifacts/model/inferact_minimax-m3-eagle3-gqa/hf/hf-9669248_orig:/draft_model"
