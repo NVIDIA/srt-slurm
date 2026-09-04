@@ -88,6 +88,23 @@ class TRTLLMProtocol:
 
     trtllm_config: TRTLLMServerConfig | None = None
 
+    # The name clients must use in a request's "model" field.
+    # Defaults to the checkpoint directory name.
+    #
+    #     backend:
+    #       type: trtllm
+    #       served_model_name: "deepseek-ai/deepseek-r1"
+    #
+    # Set it when the client cannot be told which name to ask for. agentperf
+    # takes the name as a flag, so it never needs this; the MLPerf harness has
+    # it fixed in the benchmark definition, so the server must match or every
+    # request 404s.
+    #
+    # Top-level rather than a trtllm_config key because trtllm_config is dumped
+    # straight into the engine's YAML file, and this is a launcher flag the
+    # engine does not recognise.
+    served_model_name: str | None = None
+
     # Whether dynamo.trtllm workers pass `--publish-events-and-metrics`.
     # Enables the worker to publish KV-cache events (add/evict) + metrics, which
     # the dynamo frontend consumes for KV-cache-aware routing (router-mode: kv).
@@ -188,9 +205,8 @@ class TRTLLMProtocol:
         return {}
 
     def get_served_model_name(self, default: str) -> str:
-        """Get served model name from TRTLLM config, or return default."""
-        # TRTLLM doesn't have served-model-name in config, just use default
-        return default
+        """Get the configured served model name, or return default."""
+        return self.served_model_name or default
 
     def allocate_endpoints(
         self,
@@ -341,7 +357,7 @@ class TRTLLMProtocol:
             "--model-path",
             model_arg,
             "--served-model-name",
-            runtime.model_path.name,
+            self.get_served_model_name(runtime.model_path.name),
         ]
 
         # Only add disaggregation mode for prefill/decode, not for agg

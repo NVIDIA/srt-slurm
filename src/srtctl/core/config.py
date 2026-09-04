@@ -160,6 +160,14 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
         config["health_check"] = cluster_config["default_health_check"]
         logger.debug("Applied default_health_check: %s", config["health_check"])
 
+    # Cluster-wide host setup (e.g. locking GPU clocks on nodes that need it).
+    # Whole-block replace, like default_health_check: a recipe that sets
+    # host_setup owns it entirely, so `host_setup: {commands: []}` is the way to
+    # opt a single run out of the cluster default.
+    if "host_setup" not in config and cluster_config.get("default_host_setup"):
+        config["host_setup"] = cluster_config["default_host_setup"]
+        logger.debug("Applied default_host_setup: %s", config["host_setup"])
+
     # Resolve frontend nginx_container alias
     frontend = config.get("frontend", {})
     nginx_container = frontend.get("nginx_container", "")
@@ -581,6 +589,23 @@ def get_srtslurm_setting(key: str, default: Any = None) -> Any:
     if cluster_config and key in cluster_config:
         return cluster_config[key]
     return default
+
+
+def git_clone_command_prefix() -> list[str]:
+    """Return the ``git`` invocation every clone/fetch in srtctl should start from.
+
+    Some clusters see intermittent git smart-HTTP failures negotiating HTTP/2
+    against github.com (stalls, or truncated responses that git misreports as
+    "could not read Username" auth-prompt failures) on certain network paths --
+    observed on both a login host and its compute nodes. Setting
+    ``git_http_version: "HTTP/1.1"`` in srtslurm.yaml works around this for
+    every git clone/fetch srtctl performs, cluster-wide, without touching
+    individual recipes or call sites.
+    """
+    version = get_srtslurm_setting("git_http_version")
+    if not version:
+        return ["git"]
+    return ["git", "-c", f"http.version={version}"]
 
 
 def _setdefault_nested(parent: dict, key: str, values: dict) -> None:
