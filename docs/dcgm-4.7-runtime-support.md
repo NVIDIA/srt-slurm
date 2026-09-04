@@ -5,7 +5,7 @@
 This document records the work needed for srt-slurm to consume a user-supplied
 DCGM 4.7 ARM64 runtime package. It is a design checklist, not an implemented
 feature. The current implementation uses the host ACPI `power_meter` hwmon
-interface for Vera CPU-side power collection. No DCGM downloader, package
+interface for CPU-side power collection. No DCGM downloader, package
 installer, or host mutation is included in this branch.
 
 A target-system validation enumerated both CPU entities and returned valid
@@ -81,7 +81,7 @@ mixed package versions, content-based repository discovery, environment
 construction, and cleanup. A target-system integration test must additionally
 prove:
 
-- both Vera CPU entities are enumerated on every selected node;
+- all expected CPU entities are enumerated on every selected node;
 - field 1130 returns positive status-0 watched values;
 - the mapped DCGM and SysMon libraries match the staged 4.7 runtime;
 - sampling occurs once per node rather than once per model process;

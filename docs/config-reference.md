@@ -1260,10 +1260,20 @@ The `acpi` source is implemented through Linux's host hwmon interface under
 exposes socket totals and component rails, the collector records `Total Power`,
 `CPU Rail Power`, `SoC Rail Power`, and `DRAM Power` for each socket. It accepts
 standard `power*_average` channels and falls back to `power*_input` when an
-average is unavailable. Only the socket `Total Power` channels contribute to
-the node-level `total_power_w`; all expected socket totals must be readable.
+average is unavailable. Only recognized CPU-side socket-total channels
+contribute to the node-level `total_power_w`; all expected socket totals must
+be readable.
 The component rails are reference breakdowns and are not added again. CPU-rail
 output, cumulative energy, and throttle channels are excluded.
+
+Discovery is label-driven and does not require explicit CPU-model detection.
+Firmware exposing `Total Power`, `CPU Rail Power`, `SOC Rail Power`, and `DRAM
+Power` labels uses that schema directly. Firmware exposing `Grace Power Socket
+N`, `CPU Power Socket N`, and `SysIO Power Socket N` uses the first as the
+CPU-side socket total and the latter two as CPU and SoC component rails. Only
+the recognized socket-total label contributes to `total_power_w`; component
+rails remain reference breakdowns.
+
 When DCGM is used as the fallback, field 1130 represents CPU-rail power rather
 than the complete CPU-side socket envelope; the manifest records that narrower
 aggregate scope.

@@ -83,6 +83,13 @@ class AcpiPowerMeterReader(CpuPowerReader):
 
     source_name = "acpi"
     _DOMAIN_PATTERNS = (
+        # Grace (including GB200/GB300) exposes the complete CPU-side socket
+        # envelope separately from its component rails.
+        (
+            "total",
+            "cpuSidePowerUsageW",
+            re.compile(r"\bGrace\s+Power\s+Socket\s+(\d+)\b", re.IGNORECASE),
+        ),
         (
             "total",
             "cpuSidePowerUsageW",
@@ -103,11 +110,17 @@ class AcpiPowerMeterReader(CpuPowerReader):
             "dramPowerUsageW",
             re.compile(r"\bDRAM\s+Power(?:\s+in\s+uW)?\s+socket\s+(\d+)\b", re.IGNORECASE),
         ),
-        # Preserve the original branch's generic ACPI label as a socket total.
+        # Grace component-rail labels. CPU Power is not the complete Grace
+        # socket envelope and therefore must not contribute to total_power_w.
         (
-            "total",
-            "cpuPowerUsageW",
+            "cpu_rail",
+            "cpuRailPowerUsageW",
             re.compile(r"\bCPU\s+Power\s+Socket\s+(\d+)\b", re.IGNORECASE),
+        ),
+        (
+            "soc",
+            "socPowerUsageW",
+            re.compile(r"\bSysIO\s+Power\s+Socket\s+(\d+)\b", re.IGNORECASE),
         ),
     )
 
@@ -219,7 +232,9 @@ class AcpiPowerMeterReader(CpuPowerReader):
             "semantics": "firmware-reported average CPU-side socket total and component power in watts",
             "sensors": sensors,
             "available_power_domains": self._available_domains,
-            "total_method": "sum of socket Total Power domains only; component rails are reference breakdowns",
+            "total_method": (
+                "sum of recognized CPU-side socket-total domains only; component rails are reference breakdowns"
+            ),
             "aggregate_scope": "cpu_side_socket_total",
         }
 

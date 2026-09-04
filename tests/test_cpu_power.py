@@ -43,18 +43,48 @@ def _make_acpi_sensor(
     (device / "power1_average_interval").write_text("100\n")
 
 
-def test_acpi_reader_preserves_legacy_cpu_socket_total_name(tmp_path: Path) -> None:
-    _make_acpi_sensor(tmp_path, hwmon_id=0, socket_id=0, microwatts=125_500_000)
+def test_acpi_reader_maps_grace_socket_total_and_component_rails(tmp_path: Path) -> None:
+    _make_acpi_sensor(
+        tmp_path,
+        hwmon_id=0,
+        socket_id=0,
+        microwatts=150_000_000,
+        domain="Grace Power Socket 0",
+    )
+    _make_acpi_sensor(tmp_path, hwmon_id=1, socket_id=0, microwatts=125_500_000)
+    _make_acpi_sensor(
+        tmp_path,
+        hwmon_id=2,
+        socket_id=0,
+        microwatts=9_500_000,
+        domain="SysIO Power Socket 0",
+    )
     reader = AcpiPowerMeterReader(tmp_path)
 
     readings = reader.read_watts()
-    assert readings == {"CPU0:cpuPowerUsageW": 125.5}
-    assert reader.aggregate_watts(readings) == 125.5
+    assert readings == {
+        "CPU0:cpuSidePowerUsageW": 150.0,
+        "CPU0:cpuRailPowerUsageW": 125.5,
+        "CPU0:socPowerUsageW": 9.5,
+    }
+    assert reader.aggregate_watts(readings) == 150.0
     metadata = reader.metadata()
     assert metadata["source"] == "acpi"
     assert metadata["sensors"][0]["socket_id"] == 0
     assert metadata["sensors"][0]["average_interval_ms"] == 100
     assert metadata["aggregate_scope"] == "cpu_side_socket_total"
+    assert {sensor["domain_kind"] for sensor in metadata["sensors"]} == {
+        "total",
+        "cpu_rail",
+        "soc",
+    }
+
+
+def test_acpi_reader_does_not_treat_grace_cpu_rail_as_socket_total(tmp_path: Path) -> None:
+    _make_acpi_sensor(tmp_path, hwmon_id=0, socket_id=0, microwatts=125_500_000)
+
+    with pytest.raises(CpuPowerSourceUnavailable, match="no ACPI socket-total"):
+        AcpiPowerMeterReader(tmp_path)
 
 
 def test_acpi_reader_collects_breakdowns_without_double_counting_total(tmp_path: Path) -> None:
