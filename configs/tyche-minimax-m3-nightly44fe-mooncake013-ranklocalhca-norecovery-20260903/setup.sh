@@ -5,8 +5,8 @@ umask 002
 
 # Setup runs once per allocated node against a shared result directory. Keep
 # cleanup and verification serialized while applying the narrowly scoped
-# Mooncake scheduler hotfix from vLLM PR #55066.
-exec 9>/logs/.setup-nightly44fe-mooncake013.lock
+# Mooncake scheduler and per-GPU HCA fixes.
+exec 9>/logs/.setup-nightly44fe-mooncake013-ranklocal.lock
 flock -x 9
 
 AIPERF_RUN_TMP=/logs/agentx-tmp
@@ -130,6 +130,67 @@ fi
 
 verify_hash "${VLLM_NUMA_UTILS_PATCHED_SHA}" "${VLLM_NUMA_UTILS}"
 
+MOONCAKE_WORKER="${VLLM_PACKAGE_DIR}/distributed/kv_transfer/kv_connector/v1/mooncake/store/worker.py"
+MOONCAKE_WORKER_STOCK_SHA=303be42819e8308ff3e3e1b660748d6ba45eac1b2be9c77eb4269a13c0f6ea6e
+MOONCAKE_WORKER_PATCHED_SHA=6b964a289777cb22d06c8be183d714079955098cbfbb955414e6171c1bba3c49
+MOONCAKE_WORKER_SHA=$(sha256sum "${MOONCAKE_WORKER}" | awk '{print $1}')
+
+if [[ "${MOONCAKE_WORKER_SHA}" == "${MOONCAKE_WORKER_STOCK_SHA}" ]]; then
+  MOONCAKE_WORKER="${MOONCAKE_WORKER}" python3 - <<'PY'
+import os
+from pathlib import Path
+
+path = Path(os.environ["MOONCAKE_WORKER"])
+source = path.read_text()
+old = '''        # Initialize MooncakeDistributedStore with its own TransferEngine
+        store_config = MooncakeStoreConfig.load_from_config()
+        self.store = MooncakeDistributedStore()
+'''
+new = '''        # Initialize MooncakeDistributedStore with its own TransferEngine
+        store_config = MooncakeStoreConfig.load_from_config()
+
+        # srt-slurm-sa: select one GPU-local Mooncake HCA per per-GPU rank.
+        # Using all four Tyche HCAs causes Mooncake 0.3.13 to allocate a
+        # two-region segment whose first-touch pages collapse onto NUMA node 1.
+        # data_parallel_index is the explicit global DP rank supplied by the
+        # per-GPU launcher; modulo the map length gives the node-local GPU.
+        rank_local_hcas = [
+            value.strip()
+            for value in os.getenv(
+                "VLLM_MOONCAKE_RANK_LOCAL_HCA_MAP", ""
+            ).split(",")
+            if value.strip()
+        ]
+        if rank_local_hcas:
+            gpu_rank_for_hca = self.dp_rank * self.tp_size + self.tp_rank
+            selected_hca = rank_local_hcas[
+                gpu_rank_for_hca % len(rank_local_hcas)
+            ]
+            store_config.device_name = selected_hca.split(":", 1)[0]
+            logger.info(
+                "Per-GPU-rank Mooncake HCA selection: dp_rank=%d "
+                "tp_rank=%d gpu_rank=%d device_name=%s",
+                self.dp_rank,
+                self.tp_rank,
+                gpu_rank_for_hca,
+                store_config.device_name,
+            )
+
+        self.store = MooncakeDistributedStore()
+'''
+if source.count(old) != 1:
+    raise SystemExit(
+        "Mooncake rank-local HCA fix expected exactly one stock setup block"
+    )
+path.write_text(source.replace(old, new))
+PY
+elif [[ "${MOONCAKE_WORKER_SHA}" != "${MOONCAKE_WORKER_PATCHED_SHA}" ]]; then
+  echo "ERROR: unexpected Mooncake worker source hash: ${MOONCAKE_WORKER_SHA}" >&2
+  exit 1
+fi
+
+verify_hash "${MOONCAKE_WORKER_PATCHED_SHA}" "${MOONCAKE_WORKER}"
+
 MOONCAKE_SCHEDULER="${VLLM_PACKAGE_DIR}/distributed/kv_transfer/kv_connector/v1/mooncake/store/scheduler.py"
 MOONCAKE_SCHEDULER_STOCK_SHA=82ce9a5d55f8b5e9d47953487a251f92bcef2eece9b8a30a0b79ffc0678bf6ef
 MOONCAKE_SCHEDULER_PATCHED_SHA=a3c7daad29b8b250791186c90b225e24bc5b7d0613dece4698b3c831807ed03c
@@ -182,6 +243,7 @@ python3 -m py_compile \
   "${VLLM_NUMA_UTILS}" \
   "${VLLM_PACKAGE_DIR}/v1/worker/gpu/dp_utils.py" \
   "${VLLM_PACKAGE_DIR}/v1/worker/gpu/spec_decode/autoregressive/speculator.py" \
+  "${MOONCAKE_WORKER}" \
   "${MOONCAKE_SCHEDULER}"
 
 VLLM_PACKAGE_DIR="${VLLM_PACKAGE_DIR}" python3 - <<'PY'
@@ -239,13 +301,55 @@ if hotfix_marker not in mooncake_scheduler_source:
 if 'assert block_ids is not None, (' in mooncake_scheduler_source:
     raise SystemExit("Stock fatal Mooncake block-table assertion remains")
 
+mooncake_worker_source = (
+    vllm_root
+    / "distributed/kv_transfer/kv_connector/v1/mooncake/store/worker.py"
+).read_text()
+rank_local_hca_marker = (
+    "srt-slurm-sa: select one GPU-local Mooncake HCA per per-GPU rank"
+)
+if rank_local_hca_marker not in mooncake_worker_source:
+    raise SystemExit("Per-GPU-rank Mooncake HCA patch marker is absent")
+if "gpu_rank_for_hca = self.dp_rank * self.tp_size + self.tp_rank" not in mooncake_worker_source:
+    raise SystemExit("Mooncake HCA selection is not based on the explicit DP/TP rank")
+
 print(
     "Verified nightly-44fe runtime with vLLM PR #55066 scheduler hotfix: "
     f"vllm={vllm.__version__}, mooncake={actual_mooncake}, "
     "worker CPU affinity with preferred-node memory spill, "
-    "no legacy NUMA interleave, no Recovery-v3"
+    "per-GPU-rank Mooncake HCA selection, no legacy NUMA interleave, "
+    "no Recovery-v3"
 )
 PY
+
+RANK_LOCAL_HCA_MAP=${VLLM_MOONCAKE_RANK_LOCAL_HCA_MAP:-}
+if [[ -z "${RANK_LOCAL_HCA_MAP}" ]]; then
+  echo "ERROR: VLLM_MOONCAKE_RANK_LOCAL_HCA_MAP is required" >&2
+  exit 1
+fi
+
+IFS=',' read -r -a RANK_LOCAL_HCAS <<< "${RANK_LOCAL_HCA_MAP}"
+if [[ ${#RANK_LOCAL_HCAS[@]} -ne 4 ]]; then
+  echo "ERROR: expected four Tyche rank-local HCAs, found ${#RANK_LOCAL_HCAS[@]}" >&2
+  exit 1
+fi
+
+EXPECTED_NUMA_NODES=(0 0 1 1)
+for index in "${!RANK_LOCAL_HCAS[@]}"; do
+  hca=${RANK_LOCAL_HCAS[${index}]%%:*}
+  numa_path="/sys/class/infiniband/${hca}/device/numa_node"
+  if [[ ! -r "${numa_path}" ]]; then
+    echo "ERROR: rank-local Mooncake HCA is unavailable: ${hca}" >&2
+    exit 1
+  fi
+  actual_numa=$(<"${numa_path}")
+  expected_numa=${EXPECTED_NUMA_NODES[${index}]}
+  if [[ "${actual_numa}" != "${expected_numa}" ]]; then
+    echo "ERROR: ${hca} maps to NUMA ${actual_numa}, expected ${expected_numa}" >&2
+    exit 1
+  fi
+  echo "Verified Mooncake rank-local HCA slot ${index}: ${hca} -> NUMA ${actual_numa}"
+done
 
 # EngineCore retains its native NUMA policy after setup while rank workers use
 # a preferred-node spill policy. Confirm both policies work on both sockets.
@@ -262,6 +366,6 @@ for numa_node in 0 1; do
   fi
 done
 
-echo "Verified NUMA access on nodes 0 and 1; preferred-node worker spill and native Tyche HCA mode"
+echo "Verified NUMA access on nodes 0 and 1; preferred-node worker spill and rank-local Tyche Mooncake HCAs"
 
 flock -u 9
