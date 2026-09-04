@@ -958,6 +958,32 @@ class TestSetupScript:
         assert "src/srtctl/runtime_scripts/dynamo_wheels.py" in script
         assert "configs/prefetch-ai-dynamo-wheel.sh" not in script
 
+    def test_sbatch_template_stages_shared_sqsh_before_orchestrator(self):
+        """Deferred OCI import happens once on the allocated compute node."""
+        from pathlib import Path
+
+        from srtctl.cli.submit import generate_minimal_sbatch_script
+        from srtctl.core.schema import ModelConfig, ResourceConfig, SrtConfig
+
+        output = "/lustre/cache/vllm-nightly.sqsh"
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="hf:nvidia/test", container=output, precision="fp4"),
+            resources=ResourceConfig(gpu_type="gb200", gpus_per_node=4, agg_nodes=1),
+            environment={
+                "SRTCTL_CONTAINER_STAGE_SOURCE": "docker://vllm/vllm-openai:nightly-test",
+                "SRTCTL_CONTAINER_STAGE_ARCH": "aarch64",
+                "SRTCTL_CONTAINER_STAGE_OUTPUT": output,
+            },
+        )
+
+        script = generate_minimal_sbatch_script(config, Path("/tmp/test.yaml"))
+
+        assert 'export SRTCTL_CONTAINER_STAGE_ARCH=aarch64' in script
+        assert 'enroot import --arch "${STAGE_ARCH}"' in script
+        assert 'flock -x 8' in script
+        assert script.index("enroot import") < script.index("Running orchestrator on host")
+
     def test_setup_script_env_var_override(self, monkeypatch):
         """Test that SRTCTL_SETUP_SCRIPT env var overrides config."""
         import os

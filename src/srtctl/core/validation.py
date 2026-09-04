@@ -243,6 +243,34 @@ def _preflight_container(
             [],
         )
 
+    # A recipe may defer creation of a shared SquashFS to the allocated
+    # compute node. The sbatch template validates the same contract and runs
+    # Enroot once before RuntimeContext checks the local path or launches any
+    # per-GPU service steps.
+    environment = resolved_config.get("environment") or {}
+    stage_source = str(environment.get("SRTCTL_CONTAINER_STAGE_SOURCE", ""))
+    stage_arch = str(environment.get("SRTCTL_CONTAINER_STAGE_ARCH", ""))
+    stage_output = str(environment.get("SRTCTL_CONTAINER_STAGE_OUTPUT", ""))
+    if (
+        isinstance(resolved, str)
+        and stage_source.startswith("docker://")
+        and stage_arch in {"aarch64", "x86_64"}
+        and stage_output == resolved
+        and resolved.startswith("/lustre/")
+        and resolved.endswith(".sqsh")
+    ):
+        return (
+            PreflightResolution(
+                field="model.container",
+                raw=raw,
+                resolved=resolved,
+                source="in-allocation-container-stage",
+                ok=True,
+                message=f"SquashFS will be staged inside allocation: {resolved}",
+            ),
+            [],
+        )
+
     if source == "srtslurm.yaml:containers":
         message = (
             f"Container alias '{raw}' resolved to '{resolved}', but that file is unavailable. "

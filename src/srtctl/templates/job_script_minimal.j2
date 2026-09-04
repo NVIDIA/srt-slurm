@@ -121,6 +121,76 @@ export SRTCTL_SOURCE_DIR="${SRTCTL_SOURCE}"
 export {{ key }}={{ value }}
 {% endfor %}
 
+# Optional one-time container materialization. This deliberately runs on the
+# allocated compute node: Pyxis/Enroot helpers there retain the capabilities
+# needed to convert OCI whiteouts, while restricted CI runners may not. The
+# final SquashFS is shared, so per-GPU worker steps mount it without repeating
+# registry imports in every service cgroup.
+if [ -n "${SRTCTL_CONTAINER_STAGE_SOURCE:-}" ]; then
+    STAGE_SOURCE="${SRTCTL_CONTAINER_STAGE_SOURCE}"
+    STAGE_ARCH="${SRTCTL_CONTAINER_STAGE_ARCH:?SRTCTL_CONTAINER_STAGE_ARCH is required}"
+    STAGE_OUTPUT="${SRTCTL_CONTAINER_STAGE_OUTPUT:?SRTCTL_CONTAINER_STAGE_OUTPUT is required}"
+    case "${STAGE_SOURCE}" in
+        docker://*) ;;
+        *) echo "ERROR: container stage source must use docker://: ${STAGE_SOURCE}" >&2; exit 1 ;;
+    esac
+    case "${STAGE_ARCH}" in
+        aarch64|x86_64) ;;
+        *) echo "ERROR: unsupported container stage architecture: ${STAGE_ARCH}" >&2; exit 1 ;;
+    esac
+    case "${STAGE_OUTPUT}" in
+        /lustre/*.sqsh) ;;
+        *) echo "ERROR: container stage output must be /lustre/*.sqsh: ${STAGE_OUTPUT}" >&2; exit 1 ;;
+    esac
+    if [ "${STAGE_OUTPUT}" != "{{ container_image }}" ]; then
+        echo "ERROR: container stage output does not match model.container" >&2
+        exit 1
+    fi
+
+    mkdir -p "$(dirname "${STAGE_OUTPUT}")"
+    exec 8>"${STAGE_OUTPUT}.lock"
+    flock -x 8
+    if [ -s "${STAGE_OUTPUT}" ] && [ -r "${STAGE_OUTPUT}" ]; then
+        echo "Reusing staged SquashFS: ${STAGE_OUTPUT} ($(stat -c %s "${STAGE_OUTPUT}") bytes)"
+    else
+        command -v enroot >/dev/null || {
+            echo "ERROR: enroot is unavailable on the allocated compute node" >&2
+            exit 1
+        }
+        STAGE_LOCAL=$(mktemp -d /tmp/srtctl-enroot-import.XXXXXX)
+        STAGE_PARTIAL="${STAGE_OUTPUT}.partial.${SLURM_JOB_ID}.$$"
+        cleanup_container_stage() {
+            rm -rf -- "${STAGE_LOCAL}"
+            if [ -n "${STAGE_PARTIAL:-}" ]; then
+                rm -f -- "${STAGE_PARTIAL}"
+            fi
+        }
+        trap cleanup_container_stage EXIT
+        export ENROOT_RUNTIME_PATH="${STAGE_LOCAL}/runtime"
+        export ENROOT_DATA_PATH="${STAGE_LOCAL}/data"
+        export ENROOT_CONFIG_PATH="${STAGE_LOCAL}/config"
+        export ENROOT_CACHE_PATH="${STAGE_LOCAL}/cache"
+        export ENROOT_TEMP_PATH="${STAGE_LOCAL}/tmp"
+        mkdir -p "${ENROOT_RUNTIME_PATH}" "${ENROOT_DATA_PATH}" \
+            "${ENROOT_CONFIG_PATH}" "${ENROOT_CACHE_PATH}" "${ENROOT_TEMP_PATH}"
+        rm -f -- "${STAGE_PARTIAL}"
+        echo "Staging shared SquashFS on ${HEAD_NODE}: ${STAGE_SOURCE} -> ${STAGE_OUTPUT}"
+        enroot import --arch "${STAGE_ARCH}" --output "${STAGE_PARTIAL}" "${STAGE_SOURCE}"
+        if [ ! -s "${STAGE_PARTIAL}" ]; then
+            echo "ERROR: enroot returned success but staged image is empty" >&2
+            exit 1
+        fi
+        mv -- "${STAGE_PARTIAL}" "${STAGE_OUTPUT}"
+        STAGE_PARTIAL=""
+        chmod g+r "${STAGE_OUTPUT}"
+        echo "Staged SquashFS: ${STAGE_OUTPUT} ($(stat -c %s "${STAGE_OUTPUT}") bytes)"
+        cleanup_container_stage
+        trap - EXIT
+    fi
+    flock -u 8
+    exec 8>&-
+fi
+
 echo ""
 echo "Preparing srtctl environment..."
 

@@ -461,6 +461,36 @@ class TestPreflightConfigVariants:
             issue.code == "container-not-available" for issue in results[0].errors
         )
 
+    def test_preflight_accepts_deferred_in_allocation_sqsh_stage(self):
+        output = "/lustre/cache/vllm-nightly.sqsh"
+        results = preflight_config_variants(
+            {
+                "name": "deferred-sqsh",
+                "model": {
+                    "path": "hf:nvidia/Kimi-K2.5-NVFP4",
+                    "container": output,
+                    "precision": "fp4",
+                },
+                "resources": {
+                    "gpu_type": "gb200",
+                    "gpus_per_node": 4,
+                    "prefill_nodes": 1,
+                    "decode_nodes": 1,
+                    "prefill_workers": 1,
+                    "decode_workers": 1,
+                },
+                "environment": {
+                    "SRTCTL_CONTAINER_STAGE_SOURCE": "docker://vllm/vllm-openai:nightly-test",
+                    "SRTCTL_CONTAINER_STAGE_ARCH": "aarch64",
+                    "SRTCTL_CONTAINER_STAGE_OUTPUT": output,
+                },
+            },
+        )
+
+        assert results[0].ok is True
+        assert results[0].container.source == "in-allocation-container-stage"
+        assert results[0].container.resolved == output
+
     def test_telemetry_aliases_resolve_and_pass_when_files_exist(self, tmp_path):
         model_dir = tmp_path / "model"
         model_dir.mkdir()
