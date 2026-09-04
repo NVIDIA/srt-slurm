@@ -322,10 +322,16 @@ print(
 )
 PY
 
-RANK_LOCAL_HCA_MAP=${VLLM_MOONCAKE_RANK_LOCAL_HCA_MAP:-}
-if [[ -z "${RANK_LOCAL_HCA_MAP}" ]]; then
-  echo "ERROR: VLLM_MOONCAKE_RANK_LOCAL_HCA_MAP is required" >&2
-  exit 1
+# This setup hook is shared by Dynamo's frontend and vLLM workers.  The
+# frontend intentionally does not receive worker-only environment variables,
+# but it still needs to install and validate the common runtime overlay.  Use
+# the canonical Tyche map for install-time hardware validation when the hook is
+# running outside a worker; every vLLM worker continues to receive the explicit
+# VLLM_MOONCAKE_RANK_LOCAL_HCA_MAP from the recipe environment.
+CANONICAL_RANK_LOCAL_HCA_MAP=mlx5_0,mlx5_1,mlx5_4,mlx5_5
+RANK_LOCAL_HCA_MAP=${VLLM_MOONCAKE_RANK_LOCAL_HCA_MAP:-${CANONICAL_RANK_LOCAL_HCA_MAP}}
+if [[ -z "${VLLM_MOONCAKE_RANK_LOCAL_HCA_MAP:-}" ]]; then
+  echo "VLLM_MOONCAKE_RANK_LOCAL_HCA_MAP is unset in this setup context; validating canonical Tyche map ${CANONICAL_RANK_LOCAL_HCA_MAP}"
 fi
 
 IFS=',' read -r -a RANK_LOCAL_HCAS <<< "${RANK_LOCAL_HCA_MAP}"
