@@ -12,7 +12,6 @@ orchestrator can finalize artifacts before deciding the job's exit code.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import queue
 import threading
@@ -35,6 +34,7 @@ from srtctl.core.power.contract import (
     Reason,
     atomic_write_json,
     dedupe,
+    sha256_file,
 )
 from srtctl.core.power.manifest import (
     STATUS_COMPLETE,
@@ -443,6 +443,12 @@ class PowerTelemetrySession:
 
     def _finalize_manifest(self, *, allow_window_mutation: bool) -> SessionOutcome:
         rows, sample_reasons = read_samples(self.samples_path)
+        try:
+            self._manifest.samples_sha256 = sha256_file(self.samples_path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            self.record_reason(Reason.SAMPLES_DIGEST_UNAVAILABLE)
         observed = derive_observed_devices(rows)
         devices = validate_devices(self._manifest.expected_devices, observed)
 
@@ -477,6 +483,7 @@ class PowerTelemetrySession:
             and devices.valid
             and windows_valid
             and not sample_reasons
+            and self._manifest.samples_sha256 is not None
             and not self._manifest.artifact_errors
         )
 
@@ -533,11 +540,7 @@ def _exporter_identity(settings: PowerSessionSettings) -> DcgmExporterIdentity:
     digest: str | None = None
     candidate = Path(image)
     if "://" not in image and candidate.is_file():
-        hasher = hashlib.sha256()
-        with open(candidate, "rb") as handle:
-            for chunk in iter(lambda: handle.read(1 << 20), b""):
-                hasher.update(chunk)
-        digest = hasher.hexdigest()
+        digest = sha256_file(candidate)
     return DcgmExporterIdentity(
         container_image_resolved=image,
         container_image_sha256=digest,

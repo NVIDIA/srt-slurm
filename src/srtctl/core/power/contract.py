@@ -5,12 +5,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
 import tempfile
 from pathlib import Path, PurePosixPath
-from typing import Any, TypeGuard
+from typing import Any, TypeGuard, cast
 
 SCHEMA_VERSION = 1
 
@@ -58,6 +59,7 @@ class Reason:
     SAMPLES_CSV_MISSING = "samples_csv_missing"
     SAMPLES_CSV_HEADER_MISMATCH = "samples_csv_header_mismatch"
     SAMPLES_CSV_MALFORMED = "samples_csv_malformed"
+    SAMPLES_DIGEST_UNAVAILABLE = "samples_digest_unavailable"
     DUPLICATE_SAMPLE_ROW = "duplicate_sample_row"
     GPU_INDEX_MISSING = "gpu_index_missing"
     GPU_UUID_MISSING = "gpu_uuid_missing"
@@ -85,6 +87,11 @@ class Reason:
     MEASUREMENT_WINDOW_CLOCK_MISMATCH = "measurement_window_clock_mismatch"
     MEASUREMENT_WINDOW_NOT_BRACKETED = "measurement_window_not_bracketed"
     SAMPLE_GAP_EXCEEDED = "sample_gap_exceeded"
+
+
+ALL_REASON_CODES: frozenset[str] = frozenset(
+    cast(str, value) for name, value in vars(Reason).items() if name.isupper() and isinstance(value, str)
+)
 
 
 FATAL_LIFECYCLE_REASONS = (
@@ -124,6 +131,15 @@ def is_finite_number(value: Any) -> TypeGuard[int | float]:
 def dedupe(values: list[str]) -> tuple[str, ...]:
     """First-seen-order deduplication for reason-code accumulation."""
     return tuple(dict.fromkeys(values))
+
+
+def sha256_file(path: Path) -> str:
+    """Return the lowercase SHA-256 digest of the exact bytes at ``path``."""
+    hasher = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
 
 
 def atomic_write_json(path: Path, payload: Any) -> None:
