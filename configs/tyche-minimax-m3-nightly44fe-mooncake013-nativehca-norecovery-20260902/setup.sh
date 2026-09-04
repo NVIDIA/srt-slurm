@@ -66,6 +66,70 @@ verify_hash e22fb8ac09874f1109752f211f43919e026958274b629412cf9da7bdde6bff54 \
 verify_hash 1506ec0e865e92f5d44a81bc6c26398be68fedc1e2302b5ddc1e1d4d5f0b8a55 \
   "${VLLM_PACKAGE_DIR}/v1/worker/gpu/spec_decode/autoregressive/speculator.py"
 
+VLLM_NUMA_UTILS="${VLLM_PACKAGE_DIR}/utils/numa_utils.py"
+VLLM_NUMA_UTILS_STOCK_SHA=e8d5d52e65bda7b3457f9f3863ecb5431a82bc2f7af97760425dd64626a75f68
+VLLM_NUMA_UTILS_PATCHED_SHA=314a3600842650155f88a5131864bb53e146e1cc631b330d5cb0f403b9c3a060
+VLLM_NUMA_UTILS_SHA=$(sha256sum "${VLLM_NUMA_UTILS}" | awk '{print $1}')
+
+if [[ "${VLLM_NUMA_UTILS_SHA}" == "${VLLM_NUMA_UTILS_STOCK_SHA}" ]]; then
+  VLLM_NUMA_UTILS="${VLLM_NUMA_UTILS}" python3 - <<'PY'
+import os
+from pathlib import Path
+
+path = Path(os.environ["VLLM_NUMA_UTILS"])
+source = path.read_text()
+old = '''    if cpu_binding is not None:
+        logger.info(
+            "Binding worker subprocess (local_rank=%s, gpu_index=%s) to CPUs %s and NUMA node %s",  # noqa: E501
+            local_rank,
+            gpu_index,
+            cpu_binding,
+            numa_node,
+        )
+        return f"--physcpubind={cpu_binding} --membind={numa_node}"
+
+    logger.info(
+        "Binding worker subprocess (local_rank=%s, gpu_index=%s) to NUMA node %s",
+        local_rank,
+        gpu_index,
+        numa_node,
+    )
+    return f"--cpunodebind={numa_node} --membind={numa_node}"
+'''
+new = '''    # srt-slurm-sa: keep worker CPU affinity with preferred-node memory spill.
+    # Mooncake and model warmup together can exceed one socket capacity even
+    # when the Slurm job cgroup and host retain substantial free memory.
+    if cpu_binding is not None:
+        logger.info(
+            "Binding worker subprocess (local_rank=%s, gpu_index=%s) to CPUs %s with preferred NUMA node %s",  # noqa: E501
+            local_rank,
+            gpu_index,
+            cpu_binding,
+            numa_node,
+        )
+        return f"--physcpubind={cpu_binding} --preferred={numa_node}"
+
+    logger.info(
+        "Binding worker subprocess (local_rank=%s, gpu_index=%s) to CPUs from preferred NUMA node %s",  # noqa: E501
+        local_rank,
+        gpu_index,
+        numa_node,
+    )
+    return f"--cpunodebind={numa_node} --preferred={numa_node}"
+'''
+if source.count(old) != 1:
+    raise SystemExit(
+        "NUMA spill fix expected exactly one stock worker binding block"
+    )
+path.write_text(source.replace(old, new))
+PY
+elif [[ "${VLLM_NUMA_UTILS_SHA}" != "${VLLM_NUMA_UTILS_PATCHED_SHA}" ]]; then
+  echo "ERROR: unexpected vLLM NUMA source hash: ${VLLM_NUMA_UTILS_SHA}" >&2
+  exit 1
+fi
+
+verify_hash "${VLLM_NUMA_UTILS_PATCHED_SHA}" "${VLLM_NUMA_UTILS}"
+
 MOONCAKE_SCHEDULER="${VLLM_PACKAGE_DIR}/distributed/kv_transfer/kv_connector/v1/mooncake/store/scheduler.py"
 MOONCAKE_SCHEDULER_STOCK_SHA=82ce9a5d55f8b5e9d47953487a251f92bcef2eece9b8a30a0b79ffc0678bf6ef
 MOONCAKE_SCHEDULER_PATCHED_SHA=a3c7daad29b8b250791186c90b225e24bc5b7d0613dece4698b3c831807ed03c
@@ -115,6 +179,7 @@ fi
 verify_hash "${MOONCAKE_SCHEDULER_PATCHED_SHA}" "${MOONCAKE_SCHEDULER}"
 
 python3 -m py_compile \
+  "${VLLM_NUMA_UTILS}" \
   "${VLLM_PACKAGE_DIR}/v1/worker/gpu/dp_utils.py" \
   "${VLLM_PACKAGE_DIR}/v1/worker/gpu/spec_decode/autoregressive/speculator.py" \
   "${MOONCAKE_SCHEDULER}"
@@ -146,6 +211,15 @@ vllm_root = Path(os.environ["VLLM_PACKAGE_DIR"])
 numa_source = (vllm_root / "utils/numa_utils.py").read_text()
 if "srt-slurm-sa: interleave NUMA memory across nodes 0 and 1" in numa_source:
     raise SystemExit("Legacy --interleave=0,1 patch is still present")
+numa_spill_marker = (
+    "srt-slurm-sa: keep worker CPU affinity with preferred-node memory spill"
+)
+if numa_spill_marker not in numa_source:
+    raise SystemExit("CPU-affinity-only NUMA worker patch marker is absent")
+if 'return f"--physcpubind={cpu_binding} --membind={numa_node}"' in numa_source:
+    raise SystemExit("Strict worker physcpubind/membind policy remains")
+if 'return f"--cpunodebind={numa_node} --membind={numa_node}"' in numa_source:
+    raise SystemExit("Strict worker cpunodebind/membind policy remains")
 
 nixl_root = vllm_root / "distributed/kv_transfer/kv_connector/v1/nixl"
 recovery_markers = ("read_validation_timeout", "READ_ACK", "READ_NACK")
@@ -168,12 +242,13 @@ if 'assert block_ids is not None, (' in mooncake_scheduler_source:
 print(
     "Verified nightly-44fe runtime with vLLM PR #55066 scheduler hotfix: "
     f"vllm={vllm.__version__}, mooncake={actual_mooncake}, "
+    "worker CPU affinity with preferred-node memory spill, "
     "no legacy NUMA interleave, no Recovery-v3"
 )
 PY
 
-# EngineCore applies the per-rank NUMA policies after setup. Confirm both
-# sockets are visible inside Slurm's cgroup before worker startup.
+# EngineCore retains its native NUMA policy after setup while rank workers use
+# a preferred-node spill policy. Confirm both policies work on both sockets.
 for numa_node in 0 1; do
   if ! numactl --cpunodebind="${numa_node}" --membind="${numa_node}" true; then
     echo "ERROR: NUMA node ${numa_node} is unavailable for EngineCore binding" >&2
@@ -181,8 +256,12 @@ for numa_node in 0 1; do
     echo "Allowed memory nodes: $(grep '^Mems_allowed_list:' /proc/self/status | awk '{print $2}')" >&2
     exit 1
   fi
+  if ! numactl --cpunodebind="${numa_node}" --preferred="${numa_node}" true; then
+    echo "ERROR: preferred-node spill policy is unavailable on NUMA node ${numa_node}" >&2
+    exit 1
+  fi
 done
 
-echo "Verified EngineCore NUMA access on nodes 0 and 1; native Tyche HCA mode"
+echo "Verified NUMA access on nodes 0 and 1; preferred-node worker spill and native Tyche HCA mode"
 
 flock -u 9
