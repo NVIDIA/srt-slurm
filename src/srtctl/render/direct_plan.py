@@ -88,6 +88,7 @@ class DirectPlanContext:
     tachometer_sync_interval_secs: int
     tachometer_compaction_threads: int
     ruter_enabled: bool
+    auxiliary_services: tuple[dict[str, Any], ...]
     direct_plan_json: str
     direct_host_plan_json: str
 
@@ -411,6 +412,27 @@ def _build_direct_mooncake_master_command(config: SrtConfig) -> tuple[str, ...] 
     )
 
 
+def _build_direct_auxiliary_services(config: SrtConfig) -> tuple[dict[str, Any], ...]:
+    """Serialize ``auxiliary_services`` into the plain-dict shape the direct runner consumes."""
+    services = []
+    for service in config.auxiliary_services:
+        source = None
+        if service.source is not None:
+            source = {"git": service.source.git, "rev": service.source.rev, "path": service.source.path}
+        services.append(
+            {
+                "name": service.name,
+                "command": list(service.command),
+                "container_image": service.container_image,
+                "env": dict(service.env),
+                "source": source,
+                "build_command": list(service.build_command) if service.build_command else None,
+                "inherit_discovery_env": service.inherit_discovery_env,
+            }
+        )
+    return tuple(services)
+
+
 def _build_direct_plan_json(context: DirectPlanContext) -> str:
     """Serialize the direct-only execution plan consumed inside the container.
 
@@ -452,6 +474,7 @@ def _build_direct_plan_json(context: DirectPlanContext) -> str:
         "tachometer_sync_interval_secs": context.tachometer_sync_interval_secs,
         "tachometer_compaction_threads": context.tachometer_compaction_threads,
         "ruter_enabled": context.ruter_enabled,
+        "auxiliary_services": list(context.auxiliary_services),
     }
     return json.dumps(plan, sort_keys=True, separators=(",", ":"))
 
@@ -557,6 +580,7 @@ def build_direct_plan_context(
         tachometer_sync_interval_secs=config.observability.tachometer.sync_interval_secs,
         tachometer_compaction_threads=config.observability.tachometer.compaction_threads,
         ruter_enabled=config.observability.enabled,
+        auxiliary_services=_build_direct_auxiliary_services(config),
         direct_plan_json="",
         direct_host_plan_json="",
     )

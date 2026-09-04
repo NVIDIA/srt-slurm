@@ -1352,21 +1352,24 @@ def _hash_cached_source_install(dynamo_hash: str, cargo_patches: list[str] | Non
         # Build tools — install on cold cache only. apt + protoc + cargo + maturin.
         f"apt-get update -qq && apt-get install -y -qq libclang-dev curl git protobuf-compiler > /dev/null 2>&1 && "
         f"if ! command -v cargo &>/dev/null; then "
-        f"curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable -q && "
+        f"timeout 120s curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | timeout 120s sh -s -- -y --default-toolchain stable -q && "
         f". $HOME/.cargo/env; fi && "
         # Force-reinstall maturin: some images ship the module without the
         # console-script, so `command -v maturin` fails AND a plain pip
         # install reports "already satisfied".
         f"pip install --break-system-packages --force-reinstall --quiet maturin && "
-        # Clone + build the runtime wheel.
+        # Clone + build the runtime wheel. timeout on both: a stalled clone or
+        # a hung build otherwise runs silently forever (see
+        # _live_source_install_for_top_of_tree's header note for the live
+        # 54+-minute hang this is modeled on).
         f"DYN_BUILD_DIR=$(mktemp -d) && cd $DYN_BUILD_DIR && "
-        f"{_git_clone_cmd()} clone https://github.com/ai-dynamo/dynamo.git && "
+        f"timeout 600s {_git_clone_cmd()} clone https://github.com/ai-dynamo/dynamo.git && "
         f"cd dynamo && git checkout {dynamo_hash} && "
         f"{override_cmd}"
         f"cd lib/bindings/python/ && "
         f'export RUSTFLAGS="${{RUSTFLAGS:-}} -C target-cpu=native --cfg tokio_unstable" && '
         f"rm -f /tmp/ai_dynamo_runtime*.whl && "
-        f"maturin build --release -o /tmp && "
+        f"timeout 1200s maturin build --release -o /tmp && "
         # Populate cache atomically: copy artifacts first, touch .complete last.
         f"mkdir -p {cache} && "
         f"cp /tmp/ai_dynamo_runtime*.whl {cache}/ && "
@@ -1395,19 +1398,27 @@ def _live_source_install_for_top_of_tree() -> str:
     already have rust + maturin in the right places at /sgl-workspace; other
     containers (vLLM, etc.) install everything from scratch into /tmp.
     """
+    # Every network/long-running step below is wrapped in `timeout` -- without
+    # it, a stalled git clone (the same intermittent smart-HTTP corruption
+    # class fixed elsewhere via git_http_version) or a hung rustup/maturin
+    # invocation runs silently forever, since nothing here prints incremental
+    # progress. Confirmed live: a worker job sat with zero log output for 54+
+    # minutes past "Installing dynamo from source (HEAD)..." until Slurm's
+    # 8-hour job timeout would have eventually reaped it. timeout turns that
+    # into a fast, visible failure instead.
     sglang = (
         # protobuf-compiler is required by modelexpress-common's build.rs (prost-build).
         # Some SGLang images ship without /usr/bin/protoc; install it unconditionally.
         "apt-get update -qq && apt-get install -y -qq libclang-dev curl protobuf-compiler > /dev/null 2>&1 && "
-        "if ! command -v cargo &>/dev/null; then curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable -q && source $HOME/.cargo/env; fi && "
+        "if ! command -v cargo &>/dev/null; then timeout 120s curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | timeout 120s sh -s -- -y --default-toolchain stable -q && source $HOME/.cargo/env; fi && "
         # Force-reinstall maturin: see _hash_cached_source_install.
         "pip install --break-system-packages --force-reinstall --quiet maturin && "
         "cd /sgl-workspace/ && "
-        f"{_git_clone_cmd()} clone https://github.com/ai-dynamo/dynamo.git && "
+        f"timeout 600s {_git_clone_cmd()} clone https://github.com/ai-dynamo/dynamo.git && "
         "cd dynamo && "
         "cd lib/bindings/python/ && "
         'export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native --cfg tokio_unstable" && '
-        "maturin build --release -o /tmp && "
+        "timeout 1200s maturin build --release -o /tmp && "
         "pip install /tmp/ai_dynamo_runtime*.whl && "
         "cd /sgl-workspace/dynamo/ && "
         "pip install -e . && "
@@ -1419,16 +1430,16 @@ def _live_source_install_for_top_of_tree() -> str:
         "if ! command -v cargo &> /dev/null || ! command -v maturin &> /dev/null; then "
         "apt-get update -qq && apt-get install -y -qq git curl libclang-dev protobuf-compiler > /dev/null 2>&1 && "
         "if ! command -v cargo &> /dev/null; then "
-        "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && source $HOME/.cargo/env; fi; fi && "
+        "timeout 120s curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | timeout 120s sh -s -- -y && source $HOME/.cargo/env; fi; fi && "
         # Force-reinstall maturin: see _hash_cached_source_install.
         "pip install --break-system-packages --force-reinstall --quiet maturin && "
         "ORIG_DIR=$(pwd) && rm -rf /tmp/dynamo_build && mkdir -p /tmp/dynamo_build && cd /tmp/dynamo_build && "
-        f"{_git_clone_cmd()} clone https://github.com/ai-dynamo/dynamo.git && "
+        f"timeout 600s {_git_clone_cmd()} clone https://github.com/ai-dynamo/dynamo.git && "
         "cd dynamo && "
         "cd lib/bindings/python/ && "
         'export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native --cfg tokio_unstable" && '
         "rm -f /tmp/ai_dynamo_runtime*.whl && "
-        "maturin build --release -o /tmp && "
+        "timeout 1200s maturin build --release -o /tmp && "
         "pip install --break-system-packages /tmp/ai_dynamo_runtime*.whl --force-reinstall && "
         "cd /tmp/dynamo_build/dynamo/ && "
         "pip install --break-system-packages -e . && "
@@ -1734,6 +1745,114 @@ class HealthCheckConfig:
 
 
 @dataclass(frozen=True)
+class AuxiliaryServiceSourceConfig:
+    """Git source to build an auxiliary service from before launching it.
+
+    Modeled on ``DynamoConfig``'s ``hash``/``top_of_tree`` source-build fields
+    (see ``_hash_cached_source_install``): a repo URL plus an immutable rev so
+    the build is reproducible and cacheable. Unlike ``DynamoConfig``, this has
+    no PyPI/wheel fallback -- auxiliary services are, by definition, code that
+    is not published anywhere yet.
+
+    Attributes:
+        git: Repository URL to clone (``https://github.com/...``).
+        rev: Immutable ref to check out -- a commit SHA, tag, or a
+            ``refs/pull/<n>/head`` ref for an unmerged PR. Branch names are
+            rejected because they move out from under a cached build.
+        path: Optional subdirectory within the clone that ``build_command``
+            and ``command`` should treat as the working directory (e.g. a
+            component living in a monorepo subfolder). Defaults to the repo
+            root.
+    """
+
+    git: str
+    rev: str
+    path: str | None = None
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+    def __post_init__(self) -> None:
+        if not self.git.strip():
+            raise ValidationError("auxiliary_services[].source.git must be a non-empty repository URL")
+        if not self.rev.strip():
+            raise ValidationError("auxiliary_services[].source.rev must be a non-empty immutable ref")
+        if self.rev.strip() in ("main", "master", "HEAD"):
+            raise ValidationError(
+                f"auxiliary_services[].source.rev must be an immutable ref (commit SHA, tag, or "
+                f"refs/pull/<n>/head), not a moving branch name: {self.rev!r}"
+            )
+        if self.path is not None and not self.path.strip():
+            raise ValidationError("auxiliary_services[].source.path must not be blank when set")
+
+
+@dataclass(frozen=True)
+class AuxiliaryServiceConfig:
+    """A generic, user-declared sidecar process launched alongside the job.
+
+    The auxiliary-services block is the bolt-on escape hatch for anything that
+    isn't one of srtctl's built-in components (workers, frontend, benchmark,
+    Tachometer, mooncake master, ...): declare a container/command/env, same
+    shape as ``BenchmarkConfig``'s ``type: custom``, but launched once as a
+    long-running process instead of run-to-completion. Services launch in the
+    order they're declared in the ``auxiliary_services`` YAML list, after
+    workers/frontend are confirmed ready. See ``docs/auxiliary-services.md``.
+
+    Attributes:
+        name: Unique label for this service. Used for logs (``<name>.log``)
+            and process tracking.
+        command: Argv to launch the service with (not shell-interpreted).
+        container_image: Container to launch the service in. Defaults to the
+            job's main container when unset.
+        env: Extra environment variables merged on top of any discovery env
+            (see ``inherit_discovery_env``).
+        source: Optional git source to build before ``command`` is launched.
+        build_command: Argv run once (inside the cloned ``source``) to build
+            the service before it's launched, e.g. ``maturin develop --uv``.
+            Only meaningful when ``source`` is set.
+        inherit_discovery_env: When True (default), inject ``ETCD_ENDPOINTS``
+            and ``NATS_SERVER`` -- the same discovery env the ``dynamo``
+            frontend type receives -- so the service can register with the
+            same etcd/nats the rest of the job uses.
+        critical: When True, a crash of this service (at any point, not just
+            startup) fails the whole run, same as a worker or frontend
+            process dying. Default False -- matches the historical
+            best-effort behavior for telemetry-adjacent sidecars. Set True
+            for a service that sits in the live request path (e.g. a router
+            other components register under), where running without it
+            silently changes what's being measured instead of failing loudly.
+    """
+
+    name: str
+    command: list[str]
+    container_image: str | None = None
+    env: dict[str, str] = field(default_factory=dict)
+    source: AuxiliaryServiceSourceConfig | None = None
+    build_command: list[str] | None = None
+    inherit_discovery_env: bool = True
+    critical: bool = False
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+    def __post_init__(self) -> None:
+        if not self.name.strip():
+            raise ValidationError("auxiliary_services[].name must be a non-empty string")
+        if not self.command:
+            raise ValidationError(f"auxiliary_services[{self.name}].command must be non-empty")
+        if any(not str(part).strip() for part in self.command):
+            raise ValidationError(f"auxiliary_services[{self.name}].command must not contain empty arguments")
+        if self.build_command is not None and not self.build_command:
+            raise ValidationError(
+                f"auxiliary_services[{self.name}].build_command, if set, must be non-empty (omit it entirely instead)"
+            )
+        if self.source is not None and not self.build_command:
+            logger.warning(
+                "auxiliary_services[%s] sets 'source' without 'build_command'; the source will be cloned "
+                "but nothing will build it before 'command' runs -- this is almost always a mistake",
+                self.name,
+            )
+
+
+@dataclass(frozen=True)
 class InfraConfig:
     """Infrastructure configuration for etcd/nats placement.
 
@@ -1802,6 +1921,11 @@ class SrtConfig:
     # default_host_setup; a recipe that sets this block replaces that default.
     host_setup: HostSetupConfig = field(default_factory=HostSetupConfig)
 
+    # Generic bolt-on sidecar processes launched alongside the job (e.g. an
+    # experimental router built from an unmerged PR). See
+    # docs/auxiliary-services.md.
+    auxiliary_services: list[AuxiliaryServiceConfig] = field(default_factory=list)
+
     # Virtual identity — declares what *should* be running (verified against fingerprint)
     identity: IdentityConfig = field(default_factory=IdentityConfig)
 
@@ -1823,6 +1947,7 @@ class SrtConfig:
         self._validate_static_router_frontend()
         self._validate_dynamo_sidecar()
         self._validate_host_setup()
+        self._validate_auxiliary_services()
         self._warn_dp_launch_mode()
 
     def _validate_host_setup(self) -> None:
@@ -1844,6 +1969,19 @@ class SrtConfig:
                 "teardown will still run after the job, which is only what you want "
                 "if something outside this recipe set the node state"
             )
+
+    def _validate_auxiliary_services(self) -> None:
+        """Reject auxiliary_services entries that would collide.
+
+        Per-entry checks (empty command, empty name, ...) live on
+        ``AuxiliaryServiceConfig.__post_init__``; this only covers checks that
+        need the whole list -- name uniqueness.
+        """
+        seen: set[str] = set()
+        for service in self.auxiliary_services:
+            if service.name in seen:
+                raise ValidationError(f"auxiliary_services[].name must be unique; duplicate: {service.name!r}")
+            seen.add(service.name)
 
     def _validate_dynamo_sidecar(self) -> None:
         """Validate native sidecar configuration before job submission."""
