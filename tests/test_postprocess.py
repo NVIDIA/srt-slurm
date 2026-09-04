@@ -231,6 +231,8 @@ class TestPostProcessStageMixin:
         for path in (warmup_inputs, run_inputs, keep_artifact, keep_outside):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("test")
+        directory_inputs = log_dir / "artifacts" / "directory" / "inputs.json"
+        directory_inputs.mkdir(parents=True)
 
         mixin = PostProcessStageMixin()
         mixin.runtime = MagicMock(log_dir=log_dir)
@@ -240,6 +242,7 @@ class TestPostProcessStageMixin:
         with mixin._quarantine_excluded_artifacts():
             assert not warmup_inputs.exists()
             assert not run_inputs.exists()
+            assert directory_inputs.exists()
             assert keep_artifact.exists()
             assert keep_outside.exists()
             quarantine_roots = list(log_dir.parent.glob(".postprocess-quarantine-*"))
@@ -275,6 +278,18 @@ class TestPostProcessStageMixin:
                 assert not inputs.exists()
 
         assert inputs.read_text() == "test"
+
+    def test_artifact_exclusions_skip_unknown_benchmarks(self, tmp_path):
+        """Unknown benchmark types skip artifact exclusions."""
+        from srtctl.cli.mixins.postprocess_stage import PostProcessStageMixin
+
+        mixin = PostProcessStageMixin()
+        mixin.runtime = MagicMock(log_dir=tmp_path / "logs")
+        mixin.config = MagicMock()
+        mixin.config.benchmark.type = "unknown-benchmark"
+
+        with mixin._quarantine_excluded_artifacts():
+            pass
 
     def test_artifact_exclusions_do_not_apply_to_other_benchmarks(self, tmp_path):
         """A matching filename is retained for benchmarks outside the policy."""
@@ -324,6 +339,28 @@ class TestPostProcessStageMixin:
 
         assert small.exists()
         assert threshold.read_text() == "12345"
+
+    def test_artifact_quarantine_logs_restore_and_cleanup_errors(self, tmp_path):
+        """Restore and quarantine cleanup errors are handled without raising."""
+        from srtctl.cli.mixins.postprocess_stage import (
+            PostProcessStageMixin,
+            _QuarantinedArtifact,
+        )
+
+        mixin = PostProcessStageMixin()
+        artifact = _QuarantinedArtifact(
+            original_path=tmp_path / "logs" / "artifacts" / "inputs.json",
+            quarantined_path=tmp_path / "quarantine" / "artifacts" / "inputs.json",
+        )
+
+        with patch("pathlib.Path.replace", side_effect=OSError("restore failed")):
+            mixin._restore_quarantined_artifacts(tmp_path / "quarantine", [artifact])
+
+        with patch(
+            "srtctl.cli.mixins.postprocess_stage.shutil.rmtree",
+            side_effect=OSError("cleanup failed"),
+        ):
+            mixin._restore_quarantined_artifacts(tmp_path / "quarantine", [])
 
     def test_artifact_quarantine_restores_after_postprocess_failure(self, tmp_path):
         """Excluded files are restored when work inside the quarantine fails."""
