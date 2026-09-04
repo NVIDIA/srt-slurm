@@ -57,6 +57,12 @@ while true; do
   echo \"=== sample ts=$(date --iso-8601=seconds) epoch=$(date +%s) host=$(hostname) ===\"
   echo \"--- meminfo ---\"
   grep -E '^(MemTotal|MemFree|MemAvailable|Buffers|Cached|Shmem|Slab|SReclaimable|SUnreclaim|Unevictable|Mlocked|PageTables):' /proc/meminfo || true
+  echo \"--- numa-meminfo ---\"
+  for node_meminfo in /sys/devices/system/node/node*/meminfo; do
+    [[ -r \"$node_meminfo\" ]] || continue
+    echo \"numa_path=$node_meminfo\"
+    grep -E ' (MemTotal|MemFree|MemUsed|FilePages|AnonPages|Shmem|Slab|SReclaimable|SUnreclaim|Unevictable|PageTables):' \"$node_meminfo\" || true
+  done
   echo \"--- dev-shm ---\"
   df -B1 /dev/shm || true
   find /dev/shm -maxdepth 1 -type f -uid \"$(id -u)\" -name 'vllm_offload_*.mmap' \\
@@ -76,12 +82,30 @@ while true; do
     path=${{path%/*}}
     [[ -n \"$path\" ]] || break
   done
+  echo \"--- slurm-job-cgroups ---\"
+  if [[ -n \"${{SLURM_JOB_ID:-}}\" ]]; then
+    job_cgroup=\"/sys/fs/cgroup/slurmd.slice/slurmstepd.scope/job_${{SLURM_JOB_ID}}\"
+    if [[ -d \"$job_cgroup\" ]]; then
+      while IFS= read -r -d '' sibling; do
+        echo \"sibling_cgroup_path=$sibling\"
+        for metric in memory.current memory.max memory.peak memory.events cpuset.cpus.effective cpuset.mems.effective; do
+          if [[ -r \"$sibling/$metric\" ]]; then
+            echo \"[$metric]\"
+            cat \"$sibling/$metric\"
+          fi
+        done
+      done < <(
+        find \"$job_cgroup\" -mindepth 1 -maxdepth 3 -type d \\
+          \\( -name 'step_*' -o -name user -o -name 'task_*' \\) -print0 2>/dev/null | sort -z
+      )
+    fi
+  fi
   echo \"--- process-rss ---\"
   ps -eo pid,ppid,rss,vsz,stat,comm,args --sort=-rss | head -80 || true
   echo \"--- slurm-sstat ---\"
   if command -v sstat >/dev/null 2>&1 && [[ -n \"${{SLURM_JOB_ID:-}}\" ]]; then
     sstat -j \"$SLURM_JOB_ID\" --allsteps \\
-      --format=JobID,State,AveRSS,MaxRSS,MaxRSSTask,MaxRSSNode,AveVMSize,MaxVMSize 2>&1 || true
+      --format=JobID,AveRSS,MaxRSS,MaxRSSTask,MaxRSSNode,AveVMSize,MaxVMSize 2>&1 || true
   fi
   echo
   sleep \"$interval\"

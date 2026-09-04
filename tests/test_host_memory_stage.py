@@ -31,11 +31,15 @@ def test_telemetry_script_captures_required_signals() -> None:
         "memory.current",
         "memory.max",
         "memory.events",
+        "numa-meminfo",
+        "slurm-job-cgroups",
+        "cpuset.mems.effective",
         "ps -eo",
         "sstat -j",
         "df -B1 /dev/shm",
     ):
         assert signal in script
+    assert "JobID,State" not in script
 
 
 @patch("srtctl.cli.mixins.host_memory_stage.start_srun_process")
