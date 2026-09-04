@@ -227,8 +227,8 @@ class TestPostProcessStageMixin:
         warmup_inputs = log_dir / "artifacts" / "warmup" / "inputs.json"
         run_inputs = log_dir / "artifacts" / "run" / "nested" / "inputs.json"
         keep_artifact = log_dir / "artifacts" / "run" / "profile_export.jsonl"
-        keep_outside = log_dir / "inputs.json"
-        for path in (warmup_inputs, run_inputs, keep_artifact, keep_outside):
+        root_inputs = log_dir / "inputs.json"
+        for path in (warmup_inputs, run_inputs, keep_artifact, root_inputs):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("test")
         directory_inputs = log_dir / "artifacts" / "directory" / "inputs.json"
@@ -242,9 +242,9 @@ class TestPostProcessStageMixin:
         with mixin._quarantine_excluded_artifacts():
             assert not warmup_inputs.exists()
             assert not run_inputs.exists()
+            assert not root_inputs.exists()
             assert directory_inputs.exists()
             assert keep_artifact.exists()
-            assert keep_outside.exists()
             quarantine_roots = list(log_dir.parent.glob(".postprocess-quarantine-*"))
             assert len(quarantine_roots) == 1
             assert quarantine_roots[0].parent == log_dir.parent
@@ -252,6 +252,7 @@ class TestPostProcessStageMixin:
 
         assert warmup_inputs.read_text() == "test"
         assert run_inputs.read_text() == "test"
+        assert root_inputs.read_text() == "test"
         assert not list(tmp_path.glob(".postprocess-quarantine-*"))
 
     def test_artifact_exclusions_apply_to_aiperf_runners(self, tmp_path):

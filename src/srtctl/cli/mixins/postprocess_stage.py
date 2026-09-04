@@ -66,7 +66,7 @@ class _QuarantinedArtifact:
     quarantined_path: Path
 
 
-_AIPERF_ARTIFACT_EXCLUSIONS = (_ArtifactExclusion(pattern="artifacts/**/inputs.json"),)
+_AIPERF_ARTIFACT_EXCLUSIONS = (_ArtifactExclusion(pattern="**/inputs.json"),)
 
 
 class PostProcessStageMixin:
