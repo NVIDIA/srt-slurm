@@ -1,10 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Host-side per-socket CPU power collector.
+"""Host-side per-socket CPU-side power collector.
 
 The implementation follows BTK's CPU-power source ordering for NVIDIA Grace:
-Linux ACPI ``power_meter`` CPU rails first, then DCGM CPU entity field 1130.
+Linux ACPI ``power_meter`` socket totals first, then DCGM CPU entity field 1130.
 It runs on the host (not in the model container) so sysfs and the host DCGM
 installation remain visible.
 """
@@ -66,6 +66,10 @@ class CpuPowerReader(ABC):
         """Return watts by stable sensor name."""
 
     @abstractmethod
+    def aggregate_watts(self, readings: dict[str, float | None]) -> float | None:
+        """Return the reader's node-level aggregate without double-counting components."""
+
+    @abstractmethod
     def metadata(self) -> dict[str, Any]:
         """Return source and sensor provenance."""
 
@@ -75,16 +79,43 @@ class CpuPowerReader(ABC):
 
 
 class AcpiPowerMeterReader(CpuPowerReader):
-    """Read Grace CPU-rail ACPI ``power_meter`` channels."""
+    """Read ACPI ``power_meter`` socket totals and reference component rails."""
 
     source_name = "acpi"
-    _CPU_DOMAIN = re.compile(r"\bCPU\s+Power\s+Socket\s+(\d+)\b", re.IGNORECASE)
+    _DOMAIN_PATTERNS = (
+        (
+            "total",
+            "cpuSidePowerUsageW",
+            re.compile(r"\bTotal\s+Power(?:\s+in\s+uW)?\s+socket\s+(\d+)\b", re.IGNORECASE),
+        ),
+        (
+            "cpu_rail",
+            "cpuRailPowerUsageW",
+            re.compile(r"\bCPU\s+Rail\s+Power(?:\s+in\s+uW)?\s+socket\s+(\d+)\b", re.IGNORECASE),
+        ),
+        (
+            "soc",
+            "socPowerUsageW",
+            re.compile(r"\bSoC\s+Rail\s+Power(?:\s+in\s+uW)?\s+socket\s+(\d+)\b", re.IGNORECASE),
+        ),
+        (
+            "dram",
+            "dramPowerUsageW",
+            re.compile(r"\bDRAM\s+Power(?:\s+in\s+uW)?\s+socket\s+(\d+)\b", re.IGNORECASE),
+        ),
+        # Preserve the original branch's generic ACPI label as a socket total.
+        (
+            "total",
+            "cpuPowerUsageW",
+            re.compile(r"\bCPU\s+Power\s+Socket\s+(\d+)\b", re.IGNORECASE),
+        ),
+    )
 
     def __init__(self, hwmon_root: Path = Path("/sys/class/hwmon")) -> None:
         sensors: list[dict[str, Any]] = []
         available_domains: list[dict[str, str]] = []
         seen_paths: set[str] = set()
-        seen_sockets: set[int] = set()
+        seen_domains: set[tuple[int, str]] = set()
         for hwmon_dir in sorted(hwmon_root.glob("hwmon*")):
             try:
                 if (hwmon_dir / "name").read_text().strip() != "power_meter":
@@ -92,34 +123,41 @@ class AcpiPowerMeterReader(CpuPowerReader):
             except OSError:
                 continue
             for attribute_root in (hwmon_dir / "device", hwmon_dir):
-                for average_path in sorted(attribute_root.glob("power*_average")):
-                    try:
-                        identity = str(average_path.resolve())
-                    except OSError:
-                        identity = str(average_path)
-                    if identity in seen_paths:
-                        continue
-                    seen_paths.add(identity)
-                    channel = average_path.stem.removesuffix("_average")
+                channels = {
+                    path.stem.removesuffix(suffix)
+                    for suffix in ("_average", "_input")
+                    for path in attribute_root.glob(f"power*{suffix}")
+                }
+                for channel in sorted(channels):
+                    average_path = attribute_root / f"{channel}_average"
                     input_path = attribute_root / f"{channel}_input"
                     value_path = average_path if average_path.is_file() else input_path
                     if not value_path.is_file():
                         continue
+                    try:
+                        identity = str(value_path.resolve())
+                    except OSError:
+                        identity = str(value_path)
+                    if identity in seen_paths:
+                        continue
+                    seen_paths.add(identity)
                     domain = _read_optional_text(attribute_root / f"{channel}_oem_info")
                     label = _read_optional_text(attribute_root / f"{channel}_label")
                     display_name = domain or label or channel
                     available_domains.append({"name": display_name, "path": str(value_path)})
-                    match = self._CPU_DOMAIN.search(display_name)
-                    if match is None:
+                    classified = self._classify_domain(display_name)
+                    if classified is None:
                         continue
-                    socket_id = int(match.group(1))
-                    if socket_id in seen_sockets:
+                    domain_kind, sensor_suffix, socket_id = classified
+                    identity_key = (socket_id, domain_kind)
+                    if identity_key in seen_domains:
                         continue
-                    seen_sockets.add(socket_id)
+                    seen_domains.add(identity_key)
                     sensors.append(
                         {
-                            "name": f"CPU{socket_id}:cpuPowerUsageW",
+                            "name": f"CPU{socket_id}:{sensor_suffix}",
                             "socket_id": socket_id,
+                            "domain_kind": domain_kind,
                             "domain": display_name,
                             "label": label,
                             "path": value_path,
@@ -129,12 +167,18 @@ class AcpiPowerMeterReader(CpuPowerReader):
                     )
         self._sensors = sorted(sensors, key=lambda sensor: sensor["socket_id"])
         self._available_domains = available_domains
-        if not self._sensors:
+        if not any(sensor["domain_kind"] == "total" for sensor in self._sensors):
             domains = ", ".join(domain["name"] for domain in available_domains)
             suffix = f"; available domains: {domains}" if domains else ""
-            raise CpuPowerSourceUnavailable(
-                f"no ACPI 'CPU Power Socket N' power_meter channels under {hwmon_root}{suffix}"
-            )
+            raise CpuPowerSourceUnavailable(f"no ACPI socket-total power_meter channels under {hwmon_root}{suffix}")
+
+    @classmethod
+    def _classify_domain(cls, display_name: str) -> tuple[str, str, int] | None:
+        for domain_kind, sensor_suffix, pattern in cls._DOMAIN_PATTERNS:
+            match = pattern.search(display_name)
+            if match is not None:
+                return domain_kind, sensor_suffix, int(match.group(1))
+        return None
 
     def read_watts(self) -> dict[str, float | None]:
         readings: dict[str, float | None] = {}
@@ -146,6 +190,11 @@ class AcpiPowerMeterReader(CpuPowerReader):
                 readings[sensor["name"]] = None
         return readings
 
+    def aggregate_watts(self, readings: dict[str, float | None]) -> float | None:
+        totals = [readings.get(sensor["name"]) for sensor in self._sensors if sensor["domain_kind"] == "total"]
+        valid = [watts for watts in totals if watts is not None]
+        return sum(valid) if totals and len(valid) == len(totals) else None
+
     def metadata(self) -> dict[str, Any]:
         sensors: list[dict[str, Any]] = []
         for sensor in self._sensors:
@@ -156,6 +205,7 @@ class AcpiPowerMeterReader(CpuPowerReader):
                 {
                     "name": sensor["name"],
                     "socket_id": sensor["socket_id"],
+                    "domain_kind": sensor["domain_kind"],
                     "domain": sensor["domain"],
                     "label": sensor["label"],
                     "path": str(sensor["path"]),
@@ -166,10 +216,11 @@ class AcpiPowerMeterReader(CpuPowerReader):
         return {
             "source": self.source_name,
             "driver": "Linux ACPI power_meter hwmon",
-            "semantics": "firmware-reported average CPU rail power in watts",
+            "semantics": "firmware-reported average CPU-side socket total and component power in watts",
             "sensors": sensors,
             "available_power_domains": self._available_domains,
-            "total_method": "sum of CPU Power Socket N domains",
+            "total_method": "sum of socket Total Power domains only; component rails are reference breakdowns",
+            "aggregate_scope": "cpu_side_socket_total",
         }
 
     def close(self) -> None:
@@ -272,6 +323,10 @@ class DcgmCpuPowerReader(CpuPowerReader):
                 readings[key] = watts
         return readings
 
+    def aggregate_watts(self, readings: dict[str, float | None]) -> float | None:
+        valid = [watts for watts in readings.values() if watts is not None]
+        return sum(valid) if valid else None
+
     def metadata(self) -> dict[str, Any]:
         return {
             "source": self.source_name,
@@ -280,6 +335,7 @@ class DcgmCpuPowerReader(CpuPowerReader):
             "semantics": "instantaneous power usage in watts",
             "sensors": [{"name": f"CPU{cpu_id}:cpuPowerUsageW", "cpu_entity_id": cpu_id} for cpu_id in self._cpu_ids],
             "total_method": "sum of available DCGM CPU entities",
+            "aggregate_scope": "cpu_rail_only",
         }
 
     def close(self) -> None:
@@ -373,7 +429,7 @@ def collect(*, output_dir: Path, ready_dir: Path, source: str, interval_seconds:
                 read_failures += 1
                 readings = {}
             valid = {name: watts for name, watts in readings.items() if watts is not None}
-            total = sum(valid.values()) if valid else None
+            total = reader.aggregate_watts(valid)
             for sensor, watts in sorted(valid.items()):
                 socket_match = re.match(r"CPU(\d+):", sensor)
                 socket_id = int(socket_match.group(1)) if socket_match else ""

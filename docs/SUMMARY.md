@@ -10,6 +10,7 @@
 ## Configuration
 
 - [Configuration Reference](config-reference.md)
+- [Deferred DCGM 4.7 runtime support](dcgm-4.7-runtime-support.md)
 - [Parameter Sweeps](sweeps.md)
 - [Config Overrides](config-reference.md#config-overrides)
 

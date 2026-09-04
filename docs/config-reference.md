@@ -1252,13 +1252,26 @@ telemetry:
 writes auditable per-node samples plus an aggregated CSV under
 `<log_dir>/<storage_subdir>/cpu/`. The collector runs outside the model
 container so it can read the host power interfaces. `auto` follows the BTK
-Grace source order: Linux ACPI `power_meter` channels named `CPU Power Socket
-N`, then DCGM CPU entity field 1130.
+Grace source order: Linux ACPI `power_meter` channels, then DCGM CPU entity
+field 1130.
+
+The `acpi` source is implemented through Linux's host hwmon interface under
+`/sys/class/hwmon`; it requires the `power_meter` driver. For ACPI firmware that
+exposes socket totals and component rails, the collector records `Total Power`,
+`CPU Rail Power`, `SoC Rail Power`, and `DRAM Power` for each socket. It accepts
+standard `power*_average` channels and falls back to `power*_input` when an
+average is unavailable. Only the socket `Total Power` channels contribute to
+the node-level `total_power_w`; all expected socket totals must be readable.
+The component rails are reference breakdowns and are not added again. CPU-rail
+output, cumulative energy, and throttle channels are excluded.
+When DCGM is used as the fallback, field 1130 represents CPU-rail power rather
+than the complete CPU-side socket envelope; the manifest records that narrower
+aggregate scope.
 
 | CPU power field | Type | Default | Description |
 | --------------- | ---- | ------- | ----------- |
 | `enabled` | bool | `false` | Enable host CPU-power collection |
-| `source` | `auto`/`acpi`/`dcgm` | `auto` | Requested host power source |
+| `source` | `auto`/`acpi`/`dcgm` | `auto` | Requested host power source; `acpi` reads the ACPI `power_meter` hwmon interface |
 | `sample_interval_seconds` | float | `0.1` | Collector sampling interval |
 | `startup_timeout_seconds` | float | `30.0` | Timeout for all backend nodes to publish source readiness |
 | `required` | bool | `false` | Skip/fail the benchmark if CPU power cannot be collected on every backend node |

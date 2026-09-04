@@ -24,26 +24,118 @@ from srtctl.core.cpu_power import (
 from srtctl.core.cpu_power_session import CpuPowerSessionSettings, CpuPowerTelemetrySession
 
 
-def _make_acpi_sensor(root: Path, *, socket_id: int, microwatts: int) -> None:
-    hwmon = root / f"hwmon{socket_id}"
+def _make_acpi_sensor(
+    root: Path,
+    *,
+    hwmon_id: int,
+    socket_id: int,
+    microwatts: int,
+    domain: str | None = None,
+    value_attribute: str = "average",
+) -> None:
+    hwmon = root / f"hwmon{hwmon_id}"
     device = hwmon / "device"
     device.mkdir(parents=True)
     (hwmon / "name").write_text("power_meter\n")
-    (device / "power1_average").write_text(f"{microwatts}\n")
-    (device / "power1_oem_info").write_text(f"CPU Power Socket {socket_id}\n")
+    (device / f"power1_{value_attribute}").write_text(f"{microwatts}\n")
+    (device / "power1_oem_info").write_text(f"{domain or f'CPU Power Socket {socket_id}'}\n")
     (device / "power1_accuracy").write_text("1\n")
     (device / "power1_average_interval").write_text("100\n")
 
 
-def test_acpi_reader_reports_only_cpu_socket_rails(tmp_path: Path) -> None:
-    _make_acpi_sensor(tmp_path, socket_id=0, microwatts=125_500_000)
+def test_acpi_reader_preserves_legacy_cpu_socket_total_name(tmp_path: Path) -> None:
+    _make_acpi_sensor(tmp_path, hwmon_id=0, socket_id=0, microwatts=125_500_000)
     reader = AcpiPowerMeterReader(tmp_path)
 
-    assert reader.read_watts() == {"CPU0:cpuPowerUsageW": 125.5}
+    readings = reader.read_watts()
+    assert readings == {"CPU0:cpuPowerUsageW": 125.5}
+    assert reader.aggregate_watts(readings) == 125.5
     metadata = reader.metadata()
     assert metadata["source"] == "acpi"
     assert metadata["sensors"][0]["socket_id"] == 0
     assert metadata["sensors"][0]["average_interval_ms"] == 100
+    assert metadata["aggregate_scope"] == "cpu_side_socket_total"
+
+
+def test_acpi_reader_collects_breakdowns_without_double_counting_total(tmp_path: Path) -> None:
+    domains = (
+        (0, "Total Power in uW socket 0", 150_000_000),
+        (1, "CPU Rail Power in uW socket 0", 70_000_000),
+        (2, "SOC Rail Power in uW socket 0", 6_000_000),
+        (3, "DRAM Power in uW socket 0", 8_000_000),
+        (4, "CPU Rail Output Power in uW socket 0", 55_000_000),
+        (5, "Total CPU Energy In uJ socket 0", 1_000_000),
+        (6, "Chipthrot DDR Throttle (samples x1000) socket 0", 2_000),
+        (7, "Total Power in uW socket 1", 160_000_000),
+        (8, "CPU Rail Power in uW socket 1", 75_000_000),
+        (9, "SOC Rail Power in uW socket 1", 7_000_000),
+        (10, "DRAM Power in uW socket 1", 9_000_000),
+    )
+    for hwmon_id, domain, microwatts in domains:
+        socket_id = 1 if domain.endswith("socket 1") else 0
+        _make_acpi_sensor(
+            tmp_path,
+            hwmon_id=hwmon_id,
+            socket_id=socket_id,
+            microwatts=microwatts,
+            domain=domain,
+        )
+
+    reader = AcpiPowerMeterReader(tmp_path)
+    readings = reader.read_watts()
+
+    assert readings == {
+        "CPU0:cpuSidePowerUsageW": 150.0,
+        "CPU0:cpuRailPowerUsageW": 70.0,
+        "CPU0:socPowerUsageW": 6.0,
+        "CPU0:dramPowerUsageW": 8.0,
+        "CPU1:cpuSidePowerUsageW": 160.0,
+        "CPU1:cpuRailPowerUsageW": 75.0,
+        "CPU1:socPowerUsageW": 7.0,
+        "CPU1:dramPowerUsageW": 9.0,
+    }
+    assert reader.aggregate_watts(readings) == 310.0
+    assert {sensor["domain_kind"] for sensor in reader.metadata()["sensors"]} == {
+        "total",
+        "cpu_rail",
+        "soc",
+        "dram",
+    }
+
+
+def test_acpi_reader_accepts_input_only_hwmon_channel(tmp_path: Path) -> None:
+    _make_acpi_sensor(
+        tmp_path,
+        hwmon_id=0,
+        socket_id=0,
+        microwatts=141_250_000,
+        domain="Total Power in uW socket 0",
+        value_attribute="input",
+    )
+
+    reader = AcpiPowerMeterReader(tmp_path)
+
+    assert reader.read_watts() == {"CPU0:cpuSidePowerUsageW": 141.25}
+
+
+def test_acpi_reader_does_not_publish_partial_socket_total(tmp_path: Path) -> None:
+    _make_acpi_sensor(
+        tmp_path,
+        hwmon_id=0,
+        socket_id=0,
+        microwatts=150_000_000,
+        domain="Total Power in uW socket 0",
+    )
+    _make_acpi_sensor(
+        tmp_path,
+        hwmon_id=1,
+        socket_id=1,
+        microwatts=160_000_000,
+        domain="Total Power in uW socket 1",
+    )
+    reader = AcpiPowerMeterReader(tmp_path)
+
+    assert reader.aggregate_watts({"CPU0:cpuSidePowerUsageW": 150.0}) is None
 
 
 def test_acpi_reader_rejects_missing_cpu_domains(tmp_path: Path) -> None:
