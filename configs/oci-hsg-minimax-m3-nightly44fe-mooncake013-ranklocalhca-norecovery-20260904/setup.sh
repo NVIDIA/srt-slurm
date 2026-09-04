@@ -20,7 +20,13 @@ test -w "${AIPERF_RUN_TMP}"
 # EAGLE3 helper cannot inherit these values from prefill_environment or
 # decode_environment. Define the exact GQA model and shared OCI-HSG cache here.
 DRAFT_CACHE_ROOT=/lustre/fs1/portfolios/coreai/projects/coreai_comparch_inferencex/common/cache/draft-models
-DRAFT_LOCAL_DIR_DEFAULT="${DRAFT_CACHE_ROOT}/Inferact--MiniMax-M3-EAGLE3-GQA"
+if [[ -s /draft_model/config.json ]]; then
+  # OCI-HSG publishes this exact draft revision as a shared read-only artifact;
+  # prefer that mount when present so the cluster port does not redownload it.
+  DRAFT_LOCAL_DIR_DEFAULT=/draft_model
+else
+  DRAFT_LOCAL_DIR_DEFAULT="${DRAFT_CACHE_ROOT}/Inferact--MiniMax-M3-EAGLE3-GQA"
+fi
 export MINIMAX_M3_EAGLE3_DRAFT_MODEL="${MINIMAX_M3_EAGLE3_DRAFT_MODEL:-Inferact/MiniMax-M3-EAGLE3-GQA}"
 export MINIMAX_M3_EAGLE3_DRAFT_LOCAL_DIR="${MINIMAX_M3_EAGLE3_DRAFT_LOCAL_DIR:-${DRAFT_LOCAL_DIR_DEFAULT}}"
 
