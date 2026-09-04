@@ -20,12 +20,17 @@ import os
 import shlex
 import shutil
 import subprocess
+import tempfile
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from srtctl.benchmarks.base import SCRIPTS_DIR
+from srtctl.benchmarks import get_runner
+from srtctl.benchmarks.base import SCRIPTS_DIR, AIPerfBenchmarkRunner
 from srtctl.core.config import get_srtslurm_setting, load_cluster_config
 from srtctl.core.git_state import GIT_STATE_FILENAME
 from srtctl.core.lockfile import collect_worker_fingerprints, generate_reproduction_report, write_lockfile
@@ -43,6 +48,25 @@ logger = logging.getLogger(__name__)
 POSTPROCESS_PARSE_FAILED_EXIT = 20
 POSTPROCESS_UPLOAD_FAILED_EXIT = 11
 NODE_METRICS_EXPORT_TIMEOUT_SEC = 600
+
+
+@dataclass(frozen=True)
+class _ArtifactExclusion:
+    """A postprocess rule for omitting files from saved artifacts."""
+
+    pattern: str
+    min_size_bytes: int | None = None
+
+
+@dataclass(frozen=True)
+class _QuarantinedArtifact:
+    """An artifact temporarily moved out of the upload tree."""
+
+    original_path: Path
+    quarantined_path: Path
+
+
+_AIPERF_ARTIFACT_EXCLUSIONS = (_ArtifactExclusion(pattern="artifacts/**/inputs.json"),)
 
 
 class PostProcessStageMixin:
@@ -154,16 +178,17 @@ class PostProcessStageMixin:
         """Run post-processing after benchmark completion.
 
         Handles:
-        1. Copy config YAML into log directory (for S3 upload)
-        2. Rollup generation (benchmark-specific normalization)
-        3. Benchmark result extraction (reads rollup or falls back to raw)
-        4. srtlog parsing + S3 upload (if S3 configured)
-        5. Eager push of ``logs_url`` to the status API right after the S3 sync
+        1. Benchmark-specific artifact exclusions
+        2. Copy config YAML into log directory (for S3 upload)
+        3. Rollup generation (benchmark-specific normalization)
+        4. Benchmark result extraction (reads rollup or falls back to raw)
+        5. srtlog parsing + S3 upload (if S3 configured)
+        6. Eager push of ``logs_url`` to the status API right after the S3 sync
            completes, so downstream consumers can fetch results from S3 even
            if later stages below fail or hang.
-        6. Stash ``logs_url`` on self so the caller's final
+        7. Stash ``logs_url`` on self so the caller's final
            ``report_completed`` PUT in do_sweep can reassert the pointer.
-        7. AI-powered failure analysis (only on failures, if enabled).
+        8. AI-powered failure analysis (only on failures, if enabled).
 
         Benchmark results themselves are NOT pushed to the status API — S3 is
         the source of truth for artifacts. The collector only stores pointers.
@@ -171,9 +196,15 @@ class PostProcessStageMixin:
         Args:
             exit_code: Exit code from the benchmark run
             reporter: Optional StatusReporter for eager mid-run pushes. When
-                provided, ``logs_url`` is PUT as soon as it's known (step 5);
+                provided, ``logs_url`` is PUT as soon as it's known (step 6);
                 when None, only the stash path is used.
         """
+        with self._quarantine_excluded_artifacts():
+            self._run_postprocess_steps(exit_code, reporter)
+
+    def _run_postprocess_steps(self, exit_code: int, reporter: "StatusReporter | None") -> None:
+        """Run postprocessing while excluded artifacts are quarantined."""
+
         # Copy config into log directory so it's included in S3 upload
         self._copy_config_to_logs()
 
@@ -230,6 +261,101 @@ class PostProcessStageMixin:
             if ai_config and ai_config.enabled:
                 logger.info("Running AI-powered failure analysis...")
                 self._run_ai_analysis(ai_config)
+
+    @contextmanager
+    def _quarantine_excluded_artifacts(self) -> Iterator[None]:
+        """Temporarily move excluded artifacts out of the postprocess tree."""
+        try:
+            runner = get_runner(self.config.benchmark.type)
+        except ValueError:
+            exclusions = ()
+        else:
+            exclusions = _AIPERF_ARTIFACT_EXCLUSIONS if isinstance(runner, AIPerfBenchmarkRunner) else ()
+        with self._quarantine_artifacts(exclusions):
+            yield
+
+    @contextmanager
+    def _quarantine_artifacts(self, exclusions: tuple[_ArtifactExclusion, ...]) -> Iterator[None]:
+        """Move matching files to a temporary sibling and restore them on exit."""
+        log_dir = self.runtime.log_dir
+        paths: set[Path] = set()
+        for exclusion in exclusions:
+            for path in log_dir.glob(exclusion.pattern):
+                if not path.is_file():
+                    continue
+                if exclusion.min_size_bytes is not None and path.stat().st_size < exclusion.min_size_bytes:
+                    continue
+                paths.add(path)
+
+        if not paths:
+            yield
+            return
+
+        quarantine_root = Path(
+            tempfile.mkdtemp(
+                prefix=".postprocess-quarantine-",
+                dir=log_dir.parent,
+            )
+        )
+        quarantined: list[_QuarantinedArtifact] = []
+        try:
+            for original_path in sorted(paths):
+                relative_path = original_path.relative_to(log_dir)
+                quarantined_path = quarantine_root / relative_path
+                quarantined_path.parent.mkdir(parents=True, exist_ok=True)
+                original_path.replace(quarantined_path)
+                quarantined.append(
+                    _QuarantinedArtifact(
+                        original_path=original_path,
+                        quarantined_path=quarantined_path,
+                    )
+                )
+                logger.info("Quarantined excluded benchmark artifact %s", original_path)
+            yield
+        finally:
+            self._restore_quarantined_artifacts(quarantine_root, quarantined)
+
+    def _restore_quarantined_artifacts(
+        self,
+        quarantine_root: Path,
+        artifacts: list[_QuarantinedArtifact],
+    ) -> None:
+        """Restore quarantined files without overwriting newly created files."""
+        all_restored = True
+        for artifact in reversed(artifacts):
+            try:
+                if artifact.original_path.exists():
+                    all_restored = False
+                    logger.error(
+                        "Cannot restore excluded artifact %s because it already exists; "
+                        "quarantined copy retained at %s",
+                        artifact.original_path,
+                        artifact.quarantined_path,
+                    )
+                    continue
+                artifact.original_path.parent.mkdir(parents=True, exist_ok=True)
+                artifact.quarantined_path.replace(artifact.original_path)
+                logger.info("Restored excluded benchmark artifact %s", artifact.original_path)
+            except OSError as error:
+                all_restored = False
+                logger.error(
+                    "Failed to restore excluded artifact %s; quarantined copy retained at %s: %s",
+                    artifact.original_path,
+                    artifact.quarantined_path,
+                    error,
+                )
+
+        if all_restored:
+            try:
+                shutil.rmtree(quarantine_root)
+            except OSError as error:
+                logger.warning(
+                    "Failed to remove empty artifact quarantine %s: %s",
+                    quarantine_root,
+                    error,
+                )
+        else:
+            logger.error("Artifact quarantine retained at %s", quarantine_root)
 
     def _normalize_ruter(self) -> None:
         """Best-effort Dynamo post-processing shared with the direct Bash lifecycle."""
