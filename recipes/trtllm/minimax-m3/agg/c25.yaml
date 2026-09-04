@@ -1,0 +1,144 @@
+# MiniMax-M3 aggregated on GB200, TP8/EP8, batch 25.
+#
+# Ported from the trtllm-serve recipe in ~/Downloads/configs (c25.yaml + serve.sh),
+# rehosted on the Dynamo frontend: workers are `python3 -m dynamo.trtllm` and
+# register into etcd/NATS instead of serving OpenAI directly.
+#
+# Two deltas vs. the original serve.sh, both forced by that move:
+#   - `--chat_template /model/chat_template.jinja` has no dynamo.trtllm equivalent.
+#     Dynamo reads the template from the checkpoint's tokenizer config, so the
+#     checkpoint dir must contain chat_template.jinja (it does if serve.sh was
+#     pointing at a file inside /model).
+#   - `--tp_size/--ep_size` move into the engine YAML below as
+#     tensor_parallel_size / moe_expert_parallel_size.
+name: "minimax-m3-trtllm-agg-gb200-tp8-c25"
+
+model:
+  # Define these aliases in srtslurm.yaml -> model_paths / containers.
+  path: "minimax-m3"
+  container: "dynamo-trtllm"
+  precision: "fp4"
+
+# Eagle3 draft checkpoint. serve.sh referenced it as /modele; keep that container
+# path so speculative_config.speculative_model below stays valid.
+extra_mount:
+  - "<FILL_ME>/MiniMax-M3-Eagle3:/modele"
+
+resources:
+  gpu_type: "gb200"
+  gpus_per_node: 4
+  agg_nodes: 2
+  agg_workers: 1
+  gpus_per_agg: 8
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+  env:
+    ETCD_LEASE_TTL: '120'
+    DYN_ROUTER_QUEUE_THRESHOLD: None
+    DYN_ROUTER_TEMPERATURE: '0'
+    DYN_TOKENIZER_CACHE: '1'
+    DYN_TOKENIZER_CACHE_BYTES: '8000000000'
+    DYN_TOKENIZER: fastokens
+    DYN_TCP_REQUEST_TIMEOUT: '30'
+    DYN_LOG: warn
+    DYN_ROUTER_SESSION_AFFINITY_TTL_SECS: '14400'
+  args:
+    router-mode: kv
+    no-kv-events: true
+    active-decode-blocks-threshold: None
+    active-prefill-tokens-threshold: None
+    active-prefill-tokens-threshold-frac: None
+
+dynamo:
+  install: true
+  version: "1.5.0.dev20260831"
+  request_plane: "tcp"
+
+backend:
+  type: trtllm
+
+  aggregated_environment:
+    TLLM_LOG_LEVEL: "INFO"
+    TRTLLM_SERVER_DISABLE_GC: "1"
+    TRTLLM_WORKER_DISABLE_GC: "1"
+    TLLM_PROFILE_LOG_RANKS: "all"
+    HF_HUB_OFFLINE: "1"
+    PYTHONNOUSERSITE: "1"
+    TRTLLM_ENABLE_PDL: "1"
+    NCCL_GRAPH_MIXING_SUPPORT: "0"
+    MIMALLOC_PURGE_DELAY: "0"
+    TRANSFORMERS_OFFLINE: "1"
+    TQDM_DISABLE: "1"
+    HF_HUB_DISABLE_PROGRESS_BARS: "1"
+    PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+    TRTLLM_SERVE_ENABLE_MSGSPEC: "1"
+    TRTLLM_TORCH_COMPILE_CONTEXT_ONLY: "1"
+    TLLM_SPEC_DECODE_FORCE_NUM_ACCEPTED_TOKENS: "1.78"
+
+  trtllm_config:
+    aggregated:
+      # $TP / $EP from serve.sh
+      tensor_parallel_size: 8
+      moe_expert_parallel_size: 8
+      pipeline_parallel_size: 1
+
+      max_seq_len: 1048576
+      max_num_tokens: 16384
+      max_batch_size: 25
+      cuda_graph_config:
+        enable_padding: true
+        batch_sizes: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 17, 19, 21, 23, 25]
+      torch_compile_config:
+        enable_fullgraph: true
+        enable_inductor: false
+        enable_piecewise_cuda_graph: true
+        capture_num_tokens: [1, 512, 1024, 2048]
+        enable_userbuffers: true
+        max_num_streams: 3
+      moe_config:
+        backend: TRTLLM
+        use_low_precision_moe_combine: true
+      sparse_attention_config:
+        algorithm: minimax_m3
+        implementation: msa
+        indexer_kv_dtype: fp8
+        sparse_disable_index_value: true
+        fuse_qkv_index_projection: true
+      kv_cache_config:
+        free_gpu_memory_fraction: 0.94
+        enable_block_reuse: true
+        block_reuse_policy: per_conversation
+        tokens_per_block: 128
+        use_kv_cache_manager_v2: true
+        dtype: fp8
+        event_buffer_max_size: 0
+        host_cache_size: 206158430208
+      speculative_config:
+        decoding_type: Eagle3
+        max_draft_len: 3
+        speculative_model: /modele
+      scheduler_config:
+        capacity_scheduler_policy: MAX_UTILIZATION
+      enable_chunked_prefill: true
+      enable_autotuner: true
+      trust_remote_code: true
+      stream_interval: 20
+      print_iter_log: true
+      num_postprocess_workers: 8
+      enable_attention_dp: false
+
+benchmark:
+  type: custom
+  command: bash /infmax-workspace/benchmarks/multi_node/agentic_srt.sh
+  env:
+    INFMAX_CONTAINER_WORKSPACE: "/infmax-workspace"
+    RESULT_DIR: "/logs/agentic"
+    PORT: "8000"
+    AIPERF_HTTP_X_DYNAMO_SESSION_ID_FROM_CORRELATION_ID: "true"
+    AIPERF_USE_DYNAMO_CONV_AWARE_ROUTING: "0"
+    AIPERF_DYNAMO_SESSION_TIMEOUT_SECONDS: "14400"
+    AIPERF_DATASET_MMAP_CACHE_DIR: "/aiperf_mmap_cache"
+    HF_HUB_CACHE: "/hf_hub_cache"
+    WEKA_LOADER_OVERRIDE: "semianalysis_cc_traces_weka_062126"
