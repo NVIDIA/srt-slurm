@@ -88,6 +88,7 @@ auxiliary_services:
       path: subdir                      # optional, subdirectory to build/launch from
     build_command: ["bash", "-lc", "pip install -e ."]  # required if source is set
     inherit_discovery_env: true         # optional, default: true
+    critical: false                     # optional, default: false
 ```
 
 | Field                    | Required | Default          | Notes                                                                 |
@@ -99,6 +100,7 @@ auxiliary_services:
 | `source`                 | no       | none              | Git repo to clone before building. See [Building From Source](#building-from-source). |
 | `build_command`          | no       | none              | Argv run once, from the cloned `source`, before `command` is launched. srtctl warns if `source` is set without `build_command` -- almost always a mistake. |
 | `inherit_discovery_env`  | no       | `true`            | Inject `ETCD_ENDPOINTS`/`NATS_SERVER`. |
+| `critical`               | no       | `false`           | On the real `sbatch`/SLURM path, a crash of this service at any point fails the whole run instead of being logged and ignored. Set `true` for anything in the live request path -- e.g. a router other components register under -- where running without it silently changes what's being measured. The `--bash` dev-mode path always fails fast on an early crash regardless of this flag (see [Launch Order](#launch-order)). |
 
 ## Discovery Environment
 
@@ -126,7 +128,15 @@ The two paths differ in what "started" means before moving to the next service i
   launch -- before the next service starts.
 - **Real `sbatch`/SLURM path**: the `srun` launch call returning is enough to move on; ongoing
   health is left to the shared `ProcessRegistry` background monitor, the same as every other
-  process in the job.
+  process in the job. That monitor only tears down the run for services with `critical: true`
+  (default `false`) -- a best-effort sidecar can crash mid-run and the job keeps going, logging
+  nothing beyond its own `<name>.out`. This has bitten a real run: a `thunderagent-router`
+  auxiliary service that failed during its own startup download (never completing registration)
+  left the frontend silently routing directly to the raw backend worker for the rest of the
+  job, producing a full benchmark result that looked complete but never exercised the router at
+  all (NVIDIA/InferenceMAX#271). Any service other components register under or route through --
+  as opposed to a passive observer like Tachometer or a DCGM exporter -- should set
+  `critical: true`.
 
 ## Building From Source
 
@@ -187,6 +197,12 @@ auxiliary_services:
       - "0.1"
     # inherit_discovery_env: true (default) -- the router registers against
     # the same etcd/nats the dynamo frontend and workers already use.
+    #
+    # critical: true -- the router is the thing under test here; other
+    # components register under its endpoint. If it dies, traffic silently
+    # falls back to the raw backend worker instead of failing the run, which
+    # would make the benchmark measure something other than what it claims to.
+    critical: true
 ```
 
 `build_command` runs once, from the cloned checkout, before `command` starts. Because

@@ -1813,6 +1813,13 @@ class AuxiliaryServiceConfig:
             and ``NATS_SERVER`` -- the same discovery env the ``dynamo``
             frontend type receives -- so the service can register with the
             same etcd/nats the rest of the job uses.
+        critical: When True, a crash of this service (at any point, not just
+            startup) fails the whole run, same as a worker or frontend
+            process dying. Default False -- matches the historical
+            best-effort behavior for telemetry-adjacent sidecars. Set True
+            for a service that sits in the live request path (e.g. a router
+            other components register under), where running without it
+            silently changes what's being measured instead of failing loudly.
     """
 
     name: str
@@ -1822,6 +1829,7 @@ class AuxiliaryServiceConfig:
     source: AuxiliaryServiceSourceConfig | None = None
     build_command: list[str] | None = None
     inherit_discovery_env: bool = True
+    critical: bool = False
 
     Schema: ClassVar[type[Schema]] = Schema
 

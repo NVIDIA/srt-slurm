@@ -83,6 +83,16 @@ class TestOrchestrator:
         assert proc.node == "node0"
         assert proc.critical is False
 
+    def test_critical_true_is_propagated_to_managed_process(self, tmp_path):
+        service = AuxiliaryServiceConfig(name="svc", command=["true"], critical=True)
+        orchestrator = SweepOrchestrator(config=_config(auxiliary_services=[service]), runtime=_runtime(tmp_path))
+
+        with patch("srtctl.cli.mixins.auxiliary_stage.start_srun_process", return_value=_ok_proc()):
+            processes = orchestrator.start_auxiliary_services()
+
+        assert len(processes) == 1
+        assert processes[0].critical is True
+
     def test_own_container_image_overrides_job_container(self, tmp_path):
         service = AuxiliaryServiceConfig(
             name="svc", command=["true"], container_image="my-image.sqsh", inherit_discovery_env=False

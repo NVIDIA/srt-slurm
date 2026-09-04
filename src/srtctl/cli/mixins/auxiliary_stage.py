@@ -200,11 +200,14 @@ class AuxiliaryServiceStageMixin:
                     popen=popen,
                     log_file=log_file,
                     node=self.runtime.nodes.head,
-                    # Best-effort by contract, same as Tachometer and the DCGM/node
-                    # exporters: a dead sidecar costs its own log, not the run. Crash
-                    # detection is the shared ProcessRegistry's background monitor
-                    # thread (start_process_monitor), not a startup-only check.
-                    critical=False,
+                    # Best-effort by default, same as Tachometer and the DCGM/node
+                    # exporters: a dead sidecar costs its own log, not the run. A
+                    # service can opt into `critical: true` (see AuxiliaryServiceConfig)
+                    # when it sits in the live request path instead of being purely
+                    # observability. Crash detection either way is the shared
+                    # ProcessRegistry's background monitor thread (start_process_monitor),
+                    # not a startup-only check.
+                    critical=service.critical,
                 )
             )
 

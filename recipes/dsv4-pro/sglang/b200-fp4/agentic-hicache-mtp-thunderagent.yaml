@@ -217,3 +217,13 @@ auxiliary_services:
     # inherit_discovery_env: true (default) -- registers against the same
     # etcd/nats the dynamo frontend and the DP-attention worker use.
     # Thresholds intentionally omitted -- stock defaults (see header note).
+    #
+    # critical: true -- the router is the component under test; the backend
+    # worker registers under the same discovery endpoint the router does, so
+    # a dead router silently degrades to raw unmediated backend access rather
+    # than erroring. Without this flag a crashed router produces a complete-
+    # looking benchmark result that never actually exercised admission
+    # control at all -- this happened for real (NVIDIA/InferenceMAX#271: the
+    # router died in register_model on a rate-limited HF download, on every
+    # concurrency point in that sweep, and every run still "succeeded").
+    critical: true
