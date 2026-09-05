@@ -13,13 +13,20 @@ def _load(name: str) -> dict:
 def _assert_minimax_reasoning(config: dict) -> None:
     endpoint = config["target"]["api_endpoint"]
     adapter = endpoint["adapter_config"]
-    assert adapter["use_reasoning"] is True
-    assert adapter["params_to_add"] == {
+    assert "use_reasoning" not in adapter
+    assert "params_to_add" not in adapter
+    interceptors = adapter["interceptors"]
+    names = [item["name"] for item in interceptors]
+    assert names.index("payload_modifier") < names.index("endpoint")
+    payload_modifier = next(
+        item["config"] for item in interceptors if item["name"] == "payload_modifier"
+    )
+    assert payload_modifier["params_to_add"] == {
         "chat_template_kwargs": {"thinking_mode": "enabled"}
     }
     reasoning = next(
         item["config"]
-        for item in adapter["interceptors"]
+        for item in interceptors
         if item["name"] == "reasoning"
     )
     assert reasoning["start_reasoning_token"] == "<mm:think>"

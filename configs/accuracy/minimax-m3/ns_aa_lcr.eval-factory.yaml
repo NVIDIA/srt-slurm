@@ -31,6 +31,11 @@ target:
             max_requests: 20
             output_dir: __NEL_OUTPUT_DIR__
           name: request_logging
+        - config:
+            params_to_add:
+              chat_template_kwargs:
+                thinking_mode: enabled
+          name: payload_modifier
         - name: endpoint
         - config:
             enable_reasoning_tracking: true
@@ -42,10 +47,6 @@ target:
             max_responses: 20
             output_dir: __NEL_OUTPUT_DIR__
           name: response_logging
-      params_to_add:
-        chat_template_kwargs:
-          thinking_mode: enabled
-      use_reasoning: true
     model_id: nvidia/MiniMax-M3-NVFP4
     post_eval_hooks:
       - config:
