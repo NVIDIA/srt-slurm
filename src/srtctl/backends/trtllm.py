@@ -301,7 +301,7 @@ class TRTLLMProtocol:
         if self.numa_memory_bind is None:
             use_numactl = runtime.gpu_type in ("gb200", "gb300") and mode in ("prefill", "decode")
         else:
-            use_numactl = self.numa_memory_bind and mode in ("prefill", "decode")
+            use_numactl = self.numa_memory_bind
         numactl_prefix = ["numactl", "-m", "0,1"] if use_numactl else []
         base_prefix = list(nsys_prefix or []) + numactl_prefix + ["trtllm-llmapi-launch"]
 

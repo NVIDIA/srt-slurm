@@ -3825,6 +3825,27 @@ class TestHuggingFaceModelSupport:
 
         assert "numactl" not in cmd
 
+    def test_trtllm_numa_memory_bind_true_applies_to_agg_mode(self):
+        """numa_memory_bind=True also wraps aggregated-mode workers with numactl."""
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from srtctl.backends import TRTLLMProtocol
+
+        backend = TRTLLMProtocol(numa_memory_bind=True)
+        process = self._make_process(mode="agg")
+        runtime = self._make_runtime(is_hf=False)
+        runtime.log_dir = Path("/tmp/test-logs")
+        runtime.gpu_type = "h100"
+
+        with (
+            patch("pathlib.Path.write_text"),
+            patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
+        ):
+            cmd = backend.build_worker_command(process=process, endpoint_processes=[process], runtime=runtime)
+
+        assert cmd[:3] == ["numactl", "-m", "0,1"]
+
     def test_trtllm_numa_cpu_bind_wraps_decode_command_with_taskset(self):
         """numa_cpu_bind=True wraps decode commands with configs/numa_cpu_bind.sh."""
         from pathlib import Path
