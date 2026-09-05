@@ -26,6 +26,7 @@ from typing import (
 from marshmallow import Schema, ValidationError
 from marshmallow_dataclass import dataclass
 
+from srtctl.backends.mooncake import MooncakeStandaloneStoreConfig
 from srtctl.backends.sidecar import build_sidecar_launch_command, get_dynamo_sidecar_config, sidecar_grpc_port
 from srtctl.ports import (
     DYN_SYSTEM_PORT_BASE,
@@ -198,6 +199,7 @@ class VLLMMooncakeKVStoreConfig:
     container: str | None = None
     env: dict[str, str] = field(default_factory=dict)
     master_extra_args: list[str] = field(default_factory=list)
+    standalone: MooncakeStandaloneStoreConfig | None = None
     # ``store_config`` values are JSON-serialized into MOONCAKE_CONFIG_PATH and
     # parsed by vLLM's ``MooncakeStoreConfig`` dataclass — fields are a mix of
     # str (e.g. ``protocol``), int (e.g. ``port``), and human-readable sizes
