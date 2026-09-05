@@ -47,11 +47,11 @@ target:
             max_responses: 20
             output_dir: __NEL_OUTPUT_DIR__
           name: response_logging
+      post_eval_hooks:
+        - config:
+            html_report_size: 5
+            report_types: [html, json]
+          name: post_eval_report
     model_id: nvidia/MiniMax-M3-NVFP4
-    post_eval_hooks:
-      - config:
-          html_report_size: 5
-          report_types: [html, json]
-        name: post_eval_report
     type: chat
     url: __SRT_TARGET_URL__

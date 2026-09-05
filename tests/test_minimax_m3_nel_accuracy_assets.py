@@ -31,6 +31,16 @@ def _assert_minimax_reasoning(config: dict) -> None:
     )
     assert reasoning["start_reasoning_token"] == "<mm:think>"
     assert reasoning["end_reasoning_token"] == "</mm:think>"
+    assert adapter["post_eval_hooks"] == [
+        {
+            "config": {
+                "html_report_size": 5,
+                "report_types": ["html", "json"],
+            },
+            "name": "post_eval_report",
+        }
+    ]
+    assert "post_eval_hooks" not in endpoint
     assert endpoint["url"] == "__SRT_TARGET_URL__"
 
 
