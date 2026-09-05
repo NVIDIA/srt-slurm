@@ -247,22 +247,51 @@ class TestDryRunExecutionExtensions:
         assert "container_image" in output
         assert "nvcr.io/nvidia/python:3.11" in output
 
-    def test_telemetry_details_shown(self, capsys):
+    def test_observability_tachometer_details_shown(self, capsys):
         config = _make_config(
             {
-                "telemetry": {
+                "observability": {
                     "enabled": True,
-                    "container_image": "telemetry:latest",
-                    "dcgm_exporter": {"container_image": "dcgm:latest", "port": 9401},
-                    "node_exporter": {"container_image": "node:latest", "port": 9101},
+                    "tachometer": {"enabled": True},
                 }
             }
         )
         show_config_details(config)
         output = capsys.readouterr().out
-        assert "telemetry" in output
-        assert "scraper" in output
+        assert "observability" in output
+        assert "tachometer" in output
+        assert "binary_path" in output
+        assert "tachometer-scraper" in output
         assert "storage_subdir" in output
+
+    def test_tachometer_details_shown_without_explicit_block(self, capsys):
+        """observability.enabled alone implies Tachometer; dry-run must say so."""
+        config = _make_config({"observability": {"enabled": True}})
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "tachometer" in output
+        assert "enabled" in output
+        assert "storage_subdir" in output
+
+    def test_dcgm_power_telemetry_details_shown(self, capsys):
+        config = _make_config(
+            {
+                "benchmark": {"type": "sa-bench", "isl": 8192, "osl": 1024, "concurrencies": [4]},
+                "telemetry": {
+                    "enabled": True,
+                    "default_frequency": 1.0,
+                    "storage_subdir": "power",
+                    "required": True,
+                    "dcgm_exporter": {"container_image": "dcgm-exporter", "port": 9401},
+                },
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "dcgm-power" in output
+        assert "required" in output
+        assert "<log_dir>/power" in output
+        assert "dcgm-exporter (port 9401)" in output
 
     def test_mooncake_kv_store_details_shown(self, capsys):
         """mooncake_kv_store should appear in env vars and execution extensions."""
@@ -449,3 +478,135 @@ class TestDryRunRemapRoot:
         show_config_details(config)
         output = capsys.readouterr().out
         assert "ENROOT_REMAP_ROOT" not in output
+
+
+class TestDryRunVllmOrchestrationWarnings:
+    """Dry-run warns when recipes set topology-managed vLLM flags."""
+
+    def test_orchestration_flags_emit_warnings(self, capsys):
+        config = _make_config(
+            {
+                "resources": {
+                    "gpu_type": "b200",
+                    "gpus_per_node": 8,
+                    "prefill_nodes": None,
+                    "decode_nodes": None,
+                    "prefill_workers": None,
+                    "decode_workers": None,
+                    "agg_nodes": 2,
+                    "agg_workers": 1,
+                },
+                "frontend": {"type": "vllm", "enable_multiple_frontends": False},
+                "backend": {
+                    "type": "vllm",
+                    "vllm_config": {
+                        "aggregated": {
+                            "tensor-parallel-size": 8,
+                            "headless": True,
+                            "master-addr": "10.9.9.9",
+                            "master-port": 26300,
+                        }
+                    },
+                },
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "WARNING:" in output
+        assert "vllm_config.aggregated.headless" in output
+        assert "vllm_config.aggregated.master-addr" in output
+        assert "vllm_config.aggregated.master-port" not in output
+
+    def test_clean_recipe_has_no_orchestration_warnings(self, capsys):
+        config = _make_config(
+            {
+                "resources": {
+                    "gpu_type": "b200",
+                    "gpus_per_node": 8,
+                    "prefill_nodes": None,
+                    "decode_nodes": None,
+                    "prefill_workers": None,
+                    "decode_workers": None,
+                    "agg_nodes": 2,
+                    "agg_workers": 1,
+                },
+                "frontend": {"type": "vllm", "enable_multiple_frontends": False},
+                "backend": {
+                    "type": "vllm",
+                    "vllm_config": {"aggregated": {"tensor-parallel-size": 8}},
+                },
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "vllm_config.aggregated.headless" not in output
+        assert "derives this from the job topology" not in output
+
+    def test_dynamo_recipe_has_no_direct_vllm_orchestration_warning(self, capsys):
+        config = _make_config(
+            {
+                "resources": {
+                    "gpu_type": "b200",
+                    "gpus_per_node": 8,
+                    "prefill_nodes": None,
+                    "decode_nodes": None,
+                    "prefill_workers": None,
+                    "decode_workers": None,
+                    "agg_nodes": 2,
+                    "agg_workers": 1,
+                },
+                "frontend": {"type": "dynamo"},
+                "backend": {
+                    "type": "vllm",
+                    "vllm_config": {"aggregated": {"master-addr": "10.9.9.9"}},
+                },
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "vllm_config.aggregated.master-addr" not in output
+        assert "configured value is ignored" not in output
+
+
+class TestInfmaxWorkspaceMount:
+    """INFMAX_WORKSPACE comes from the environment, not the recipe.
+
+    That is precisely why dry-run has to show it: nothing in the config file mentions
+    it, so a reader comparing recipe against dry-run sees what looks like a complete
+    picture and is wrong. Recipes whose benchmark command lives under
+    /infmax-workspace fail with exit 127 after the workers have loaded when it is
+    missing -- observed on ablation arms 2751879-82, where diffing the working run's
+    --container-mounts against the failed arm's showed this single missing entry.
+    """
+
+    AGENTIC = {"benchmark": {"type": "custom",
+                             "command": "bash /infmax-workspace/benchmarks/multi_node/agentic_srt.sh"}}
+
+    def test_mount_is_shown_when_the_variable_is_set(self, capsys):
+        config = _make_config(self.AGENTIC)
+        with patch.dict(os.environ, {"INFMAX_WORKSPACE": "/lustre/checkouts/InferenceX-abc"}):
+            show_config_details(config)
+        output = capsys.readouterr().out
+        assert "/lustre/checkouts/InferenceX-abc" in output
+        assert "/infmax-workspace" in output
+
+    def test_absence_is_flagged_when_the_benchmark_needs_it(self, capsys):
+        """The failure this prevents is expensive and silent: the table listed every
+        other mount, so the missing row read as 'no such mount exists' rather than
+        'not set in this environment'."""
+        config = _make_config(self.AGENTIC)
+        env = {k: v for k, v in os.environ.items() if k != "INFMAX_WORKSPACE"}
+        with patch.dict(os.environ, env, clear=True):
+            show_config_details(config)
+        output = capsys.readouterr().out
+        assert "MISSING" in output
+        assert "127" in output, "the dry-run must name the failure mode, not just the gap"
+
+    def test_no_warning_when_the_benchmark_does_not_use_it(self, capsys):
+        """Most recipes never touch /infmax-workspace; they must not be nagged."""
+        config = _make_config()
+        env = {k: v for k, v in os.environ.items() if k != "INFMAX_WORKSPACE"}
+        with patch.dict(os.environ, env, clear=True):
+            show_config_details(config)
+        output = capsys.readouterr().out
+        assert "MISSING" not in output

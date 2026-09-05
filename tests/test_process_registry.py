@@ -66,7 +66,10 @@ class TestTerminateAndReap:
         mock_popen = MagicMock(spec=Popen)
         mock_popen.poll.return_value = 0
 
-        assert terminate_and_reap(mock_popen) is True
+        outcome = terminate_and_reap(mock_popen)
+
+        assert outcome.reaped is True
+        assert outcome.force_killed is False
         mock_popen.terminate.assert_not_called()
 
     def test_graceful_terminate_is_reported_reaped(self):
@@ -74,19 +77,34 @@ class TestTerminateAndReap:
         mock_popen.poll.return_value = None
         mock_popen.wait.return_value = 0
 
-        assert terminate_and_reap(mock_popen, terminate_timeout=0.01) is True
+        outcome = terminate_and_reap(mock_popen, terminate_timeout=0.01)
+
+        assert outcome.reaped is True
+        assert outcome.force_killed is False
         mock_popen.terminate.assert_called_once()
         mock_popen.kill.assert_not_called()
+
+    def test_force_killed_child_is_reaped_but_not_graceful(self):
+        mock_popen = MagicMock(spec=Popen)
+        mock_popen.poll.return_value = None
+        mock_popen.wait.side_effect = [TimeoutExpired(cmd="worker", timeout=1), -9]
+
+        outcome = terminate_and_reap(mock_popen, terminate_timeout=0.01, kill_timeout=0.01)
+
+        assert outcome.reaped is True
+        assert outcome.force_killed is True
+        mock_popen.terminate.assert_called_once()
+        mock_popen.kill.assert_called_once()
 
     def test_unreapable_child_is_reported_not_reaped(self):
         mock_popen = MagicMock(spec=Popen)
         mock_popen.poll.return_value = None
         mock_popen.wait.side_effect = TimeoutExpired(cmd="worker", timeout=1)
 
-        assert (
-            terminate_and_reap(mock_popen, terminate_timeout=0.01, kill_timeout=0.01)
-            is False
-        )
+        outcome = terminate_and_reap(mock_popen, terminate_timeout=0.01, kill_timeout=0.01)
+
+        assert outcome.reaped is False
+        assert outcome.force_killed is True
         mock_popen.terminate.assert_called_once()
         mock_popen.kill.assert_called_once()
 

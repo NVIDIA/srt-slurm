@@ -160,3 +160,54 @@ def test_benchmark_env_injects_frontend_host():
         env = orch._get_benchmark_env(runner)
     assert env["SRT_FRONTEND_HOST"] == "ip-g0"
     assert env["SRT_FRONTEND_PORT"] == "8000"
+
+
+def _agg_vllm_config() -> SrtConfig:
+    data = {
+        "name": "test",
+        "model": {"path": "/models/test", "container": "test.sqsh", "precision": "fp4"},
+        "resources": {
+            "gpu_type": "b200",
+            "gpus_per_node": 8,
+            "agg_nodes": 2,
+            "agg_workers": 1,
+        },
+        "backend": {"type": "vllm"},
+        "frontend": {"type": "vllm", "enable_multiple_frontends": False},
+        "benchmark": {"type": "custom", "command": "true"},
+    }
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+        yaml.dump(data, f)
+        f.flush()
+        path = f.name
+    return SrtConfig.from_yaml(Path(path))
+
+
+_AGG_PROCS = [
+    Process(
+        node="g0",
+        gpu_indices=frozenset(range(8)),
+        sys_port=8081,
+        http_port=0,
+        endpoint_mode="agg",
+        endpoint_index=0,
+        node_rank=0,
+    ),
+    Process(
+        node="g1",
+        gpu_indices=frozenset(range(8)),
+        sys_port=8082,
+        http_port=0,
+        endpoint_mode="agg",
+        endpoint_index=0,
+        node_rank=1,
+    ),
+]
+
+
+def test_public_api_node_for_direct_vllm_agg_uses_leader_not_head():
+    """Direct vLLM serve binds the public port on the agg endpoint leader."""
+    orch = SweepOrchestrator(config=_agg_vllm_config(), runtime=_runtime(["p0", "g0", "g1"]))
+    with patch.object(type(orch), "backend_processes", new_callable=PropertyMock, return_value=_AGG_PROCS):
+        assert orch._orchestrator_node() == "p0"
+        assert orch._public_api_node() == "g0"

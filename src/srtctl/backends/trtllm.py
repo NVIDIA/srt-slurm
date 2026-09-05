@@ -11,12 +11,13 @@ import yaml
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
+from srtctl.backends.sidecar import build_sidecar_launch_command, get_dynamo_sidecar_config, sidecar_grpc_port
 from srtctl.ports import DYN_SYSTEM_PORT_BASE
 
 if TYPE_CHECKING:
     from srtctl.backends.base import SrunConfig
     from srtctl.core.runtime import RuntimeContext
-    from srtctl.core.schema import ProfilingConfig
+    from srtctl.core.schema import DynamoConfig, ProfilingConfig
     from srtctl.core.topology import Endpoint, NodePortAllocator, Process
 
 # Type alias for worker modes
@@ -64,7 +65,45 @@ class TRTLLMProtocol:
     decode_environment: dict[str, str] = field(default_factory=dict)
     aggregated_environment: dict[str, str] = field(default_factory=dict)
 
+    # Extra `trtllm-serve` CLI flags per mode, appended verbatim to the worker
+    # command (frontend.type: trtllm_serve only -- dynamo.trtllm takes a
+    # different CLI).
+    #
+    # `trtllm_config` already covers everything that belongs in the engine YAML,
+    # which is nearly everything: trtllm-serve merges that file into LlmArgs. But
+    # a few of its options configure the OpenAI SERVER layer rather than the
+    # engine and have no LlmArgs field, so no YAML key can reach them. The one
+    # that matters in practice is `--tool_parser` (a click.Choice consumed
+    # directly by the server constructor); note that its sibling
+    # `--reasoning_parser` IS forwarded into get_llm_args() and so remains
+    # settable from `trtllm_config`.
+    #
+    #     backend:
+    #       type: trtllm
+    #       prefill_extra_args: ["--tool_parser", "glm47"]
+    #       decode_extra_args:  ["--tool_parser", "glm47"]
+    prefill_extra_args: list[str] = field(default_factory=list)
+    decode_extra_args: list[str] = field(default_factory=list)
+    aggregated_extra_args: list[str] = field(default_factory=list)
+
     trtllm_config: TRTLLMServerConfig | None = None
+
+    # The name clients must use in a request's "model" field.
+    # Defaults to the checkpoint directory name.
+    #
+    #     backend:
+    #       type: trtllm
+    #       served_model_name: "deepseek-ai/deepseek-r1"
+    #
+    # Set it when the client cannot be told which name to ask for. agentperf
+    # takes the name as a flag, so it never needs this; the MLPerf harness has
+    # it fixed in the benchmark definition, so the server must match or every
+    # request 404s.
+    #
+    # Top-level rather than a trtllm_config key because trtllm_config is dumped
+    # straight into the engine's YAML file, and this is a launcher flag the
+    # engine does not recognise.
+    served_model_name: str | None = None
 
     # Whether dynamo.trtllm workers pass `--publish-events-and-metrics`.
     # Enables the worker to publish KV-cache events (add/evict) + metrics, which
@@ -72,6 +111,37 @@ class TRTLLMProtocol:
     # This may impact performance so should be disabled if exact KV aware routing
     # is not needed.
     publish_events_and_metrics: bool = False
+
+    # Controls batched startup of workers that share the same node.
+    # 0 = start all workers in parallel (no constraint).
+    # 1 = fully sequential: one worker at a time, each must be ready before the next.
+    # N > 1 = start N workers simultaneously per batch, wait for all to be ready, then next batch.
+    # For trtllm_serve: readiness is an HTTP 200 on the worker's http_port.
+    # For dynamo.trtllm: readiness is a TCP connection on the worker's sys_port.
+    sequential_node_start: int = 0
+
+    # Whether to prefix the trtllm worker command with `numactl -m 0,1`.
+    # None (default) preserves the existing auto-detected behavior (enabled
+    # only for gb200/gb300). True/False forces numactl on/off regardless of
+    # gpu_type.
+    numa_memory_bind: bool | None = None
+
+    # Optional stricter NUMA CPU affinity for the worker process, in addition
+    # to numa_memory_bind. A previous post-hoc `taskset -pc <cpuset> $PPID`
+    # approach (see bind-b300-prefill-cpus.sh) only pins the leader PID
+    # *after* launch, so secondary threads spawned by Python/UCX/MPI/TRT-LLM
+    # can still land cross-socket. When true, srtctl instead:
+    #   1. sets TLLM_NUMA_AWARE_WORKER_AFFINITY=0 (disables TRT-LLM's own
+    #      internal NUMA thread-pinning, which fights with the OS-level mask)
+    #   2. wraps the worker command (prefill/decode/agg) in `taskset -c
+    #      <cpu_list>`, applied *before* exec so every spawned thread
+    #      inherits the mask. The CPU list is discovered at runtime
+    #      (configs/numa_cpu_bind.sh) from the physical GPU this task owns,
+    #      not a static SLURM_LOCALID table — a static table assumes
+    #      SLURM_LOCALID is a node-wide GPU ordinal, which breaks when two
+    #      endpoints share a node (each gets its own srun step, so LOCALID
+    #      restarts at 0 for both).
+    numa_cpu_bind: bool = False
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
@@ -102,6 +172,15 @@ class TRTLLMProtocol:
             return dict(self.trtllm_config.aggregated or {})
         return {}
 
+    def get_extra_args_for_mode(self, mode: WorkerMode) -> list[str]:
+        """Extra trtllm-serve CLI flags for this mode (see the field docs)."""
+        by_mode: dict[WorkerMode, list[str]] = {
+            "prefill": self.prefill_extra_args,
+            "decode": self.decode_extra_args,
+            "agg": self.aggregated_extra_args,
+        }
+        return list(by_mode.get(mode) or [])
+
     def get_environment_for_mode(self, mode: WorkerMode) -> dict[str, str]:
         eplb_prefix = f"moe_shared_{uuid.uuid4().hex}"
 
@@ -113,7 +192,10 @@ class TRTLLMProtocol:
         base_env = env_by_mode.get(mode)
         if base_env is None:
             return {}
-        return {**base_env, "TRTLLM_EPLB_SHM_NAME": eplb_prefix}
+        env = {**base_env, "TRTLLM_EPLB_SHM_NAME": eplb_prefix}
+        if self.numa_cpu_bind:
+            env["TLLM_NUMA_AWARE_WORKER_AFFINITY"] = "0"
+        return env
 
     def get_process_environment(self, process: "Process") -> dict[str, str]:
         """Get process-specific environment variables.
@@ -123,9 +205,8 @@ class TRTLLMProtocol:
         return {}
 
     def get_served_model_name(self, default: str) -> str:
-        """Get served model name from TRTLLM config, or return default."""
-        # TRTLLM doesn't have served-model-name in config, just use default
-        return default
+        """Get the configured served model name, or return default."""
+        return self.served_model_name or default
 
     def allocate_endpoints(
         self,
@@ -160,11 +241,27 @@ class TRTLLMProtocol:
         base_sys_port: int = DYN_SYSTEM_PORT_BASE,
         port_allocator: "NodePortAllocator | None" = None,
         frontend_type: str = "dynamo",
+        dynamo_sidecar: bool = False,
     ) -> list["Process"]:
         """Convert endpoints to processes."""
         from srtctl.core.topology import endpoints_to_processes
 
         return endpoints_to_processes(endpoints, base_sys_port=base_sys_port, port_allocator=port_allocator)
+
+    def _wrap_with_numa_cpu_bind(self, cmd: list[str]) -> list[str]:
+        """Wrap ``cmd`` in configs/numa_cpu_bind.sh, which taskset-binds per task.
+
+        Applies to all worker modes (prefill/decode/agg) when numa_cpu_bind
+        is enabled. The CPU list depends on which physical GPU the task owns
+        (resolved from CUDA_VISIBLE_DEVICES and SLURM_LOCALID) and srun sets
+        SLURM_LOCALID per-task at launch time — since the same argv is
+        replicated across all ranks of the endpoint's srun (MPI-style
+        launch), the lookup must happen in a script at runtime rather than
+        being baked into the static command list.
+        """
+        if not self.numa_cpu_bind:
+            return cmd
+        return ["bash", "/configs/numa_cpu_bind.sh", *cmd]
 
     def build_worker_command(
         self,
@@ -181,6 +278,13 @@ class TRTLLMProtocol:
         mode = process.endpoint_mode
         config = self.get_config_for_mode(mode)
 
+        sidecar_config = get_dynamo_sidecar_config(runtime)
+        if sidecar_config is not None:
+            if frontend_type != "dynamo":
+                raise ValueError("TensorRT-LLM sidecar mode requires frontend.type: dynamo")
+            if mode != "agg":
+                raise ValueError("TensorRT-LLM sidecar mode supports aggregated workers only")
+
         # Write config to host path (log_dir)
         config_filename = f"trtllm_config_{mode}.yaml"
         host_config_path = runtime.log_dir / config_filename
@@ -194,23 +298,38 @@ class TRTLLMProtocol:
         # For local models, model is mounted to /model in the container
         model_arg = runtime.worker_model_arg
 
-        numactl_prefix = (
-            ["numactl", "-m", "0,1"] if runtime.gpu_type in ("gb200", "gb300") and mode in ("prefill", "decode") else []
-        )
+        if self.numa_memory_bind is None:
+            use_numactl = runtime.gpu_type in ("gb200", "gb300") and mode in ("prefill", "decode")
+        else:
+            use_numactl = self.numa_memory_bind
+        numactl_prefix = ["numactl", "-m", "0,1"] if use_numactl else []
         base_prefix = list(nsys_prefix or []) + numactl_prefix + ["trtllm-llmapi-launch"]
 
-        # trtllm-serve path: launch an OpenAI-compatible trtllm-serve worker. The
-        # trtllm_serve frontend fronts these via a static ser.yaml (context/generation
-        # server URLs), so there is no dynamo request plane and no --disaggregation-mode:
-        # a worker is prefill or decode purely by which list it appears in in ser.yaml.
+        if sidecar_config is not None:
+            return self._build_sidecar_command(
+                process=process,
+                config=config,
+                model_arg=model_arg,
+                container_config_path=container_config_path,
+                base_prefix=base_prefix,
+                sidecar_config=sidecar_config,
+            )
+
+        # trtllm-serve path: launch an OpenAI-compatible trtllm-serve worker. In
+        # disaggregated mode the trtllm_serve frontend fronts these via a static
+        # ser.yaml (context/generation server URLs). In aggregated mode the one
+        # worker is also the public frontend, so it binds runtime.frontend_port.
+        # There is no Dynamo request plane and no --disaggregation-mode: a disagg
+        # worker is prefill or decode purely by which list it appears in in ser.yaml.
         if frontend_type == "trtllm_serve":
+            http_port = runtime.frontend_port if mode == "agg" else process.http_port
             cmd = base_prefix + [
                 "trtllm-serve",
                 model_arg,
                 "--host",
                 "0.0.0.0",
                 "--port",
-                str(process.http_port),
+                str(http_port),
             ]
             # Parallelism also lives in the engine yaml, but pass it explicitly to match
             # the trtllm-serve CLI contract (srun --ntasks == TP*PP is set by the worker stage).
@@ -226,7 +345,8 @@ class TRTLLMProtocol:
             # ai-dynamo tensorrtllm-runtime 1.3.0-dev.1 container, which accept --config;
             # some trtllm-serve builds spell this --extra_llm_api_options.
             cmd.extend(["--config", str(container_config_path)])
-            return cmd
+            cmd.extend(self.get_extra_args_for_mode(mode))
+            return self._wrap_with_numa_cpu_bind(cmd)
 
         # dynamo.trtllm path (default): workers register into etcd/NATS and the dynamo
         # frontend discovers them.
@@ -237,7 +357,7 @@ class TRTLLMProtocol:
             "--model-path",
             model_arg,
             "--served-model-name",
-            runtime.model_path.name,
+            self.get_served_model_name(runtime.model_path.name),
         ]
 
         # Only add disaggregation mode for prefill/decode, not for agg
@@ -256,4 +376,62 @@ class TRTLLMProtocol:
         if self.publish_events_and_metrics:
             cmd.append("--publish-events-and-metrics")
 
-        return cmd
+        return self._wrap_with_numa_cpu_bind(cmd)
+
+    def _build_sidecar_command(
+        self,
+        *,
+        process: "Process",
+        config: dict[str, Any],
+        model_arg: str,
+        container_config_path: Path,
+        base_prefix: list[str],
+        sidecar_config: "DynamoConfig",
+    ) -> list[str]:
+        """Build a lifecycle-coupled TensorRT-LLM native-gRPC and sidecar launch."""
+        grpc_port = sidecar_grpc_port(sidecar_config.sidecar_port, process)
+        engine = self._wrap_with_numa_cpu_bind(
+            base_prefix
+            + [
+                "python3",
+                "-m",
+                "tensorrt_llm.commands.serve",
+                model_arg,
+                "--grpc",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(grpc_port),
+                "--extra_llm_api_options",
+                str(container_config_path),
+            ]
+        )
+
+        sidecar = (
+            [sidecar_config.sidecar_binary]
+            if sidecar_config.sidecar_binary is not None
+            else ["python3", "-m", "dynamo.trtllm.sidecar"]
+        )
+        sidecar.extend(
+            [
+                "--grpc-endpoint",
+                f"127.0.0.1:{grpc_port}",
+                "--model-path",
+                model_arg,
+            ]
+        )
+        context_length = sidecar_config.sidecar_context_length
+        if context_length is None:
+            context_length = config.get("max_seq_len") or config.get("max-seq-len")
+        if context_length is not None:
+            sidecar.extend(["--context-length", str(context_length)])
+        sidecar.extend(sidecar_config.sidecar_args)
+
+        return build_sidecar_launch_command(
+            engine=engine,
+            sidecar=sidecar,
+            grpc_port=grpc_port,
+            engine_name="TensorRT-LLM",
+            startup_timeout=sidecar_config.sidecar_startup_timeout,
+            rank_zero_only=True,
+        )
