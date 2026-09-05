@@ -1084,16 +1084,41 @@ class TelemetryExporterConfig:
     Schema: ClassVar[type[Schema]] = Schema
 
 
+# Built-in exporter defaults (sweep path only; the --bash lifecycle keys on the
+# raw recipe fields and never launches exporter containers). Pinned multi-arch
+# registry URIs, so pyxis pulls the node's architecture with zero setup; both
+# pins are production-verified on GB300 (all 19 DCGM families; 125 node
+# families incl. meminfo, no host /proc mount needed). Ports are deliberately
+# offset from the conventional 9400/9100 — managed clusters may already run
+# host-level exporters there. Air-gapped or version-pinning clusters override
+# the image through the srtslurm.yaml ``containers:`` alias map, which already
+# resolves these fields.
+DEFAULT_DCGM_EXPORTER = TelemetryExporterConfig(
+    container_image="nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04",
+    port=9401,
+)
+DEFAULT_NODE_EXPORTER = TelemetryExporterConfig(
+    container_image="quay.io#prometheus/node-exporter:v1.8.2",
+    port=9101,
+)
+
+
 @dataclass(frozen=True)
 class TachometerConfig:
     """Native Tachometer collection for an observability-enabled run.
 
-    ``enabled`` is tri-state: ``None`` (the default) follows
-    ``observability.enabled``, so an observability run collects Tachometer
-    data with no ``tachometer:`` block at all; an explicit ``false`` opts
-    out; an explicit ``true`` under ``observability.enabled: false`` is a
-    validation error (Tachometer's targets only have content when the
-    observability expansion ran).
+    ``enabled`` is tri-state: ``None`` (the default) means ON — every run
+    collects Tachometer data with no ``tachometer:`` block at all; an
+    explicit ``false`` opts out. Note that without ``observability.enabled``
+    the TRT-LLM worker endpoints may have no engine metrics to serve (the
+    observability expansion is what turns their content on); the frontend
+    and the exporters are always worth capturing.
+
+    DCGM and node exporters default ON via the ``resolved_*`` properties
+    (sweep path only): an explicit ``dcgm_exporter``/``node_exporter`` block
+    always wins, ``default_exporters: false`` disables the built-ins, and the
+    raw fields stay ``None`` unless the recipe set them — which is what the
+    power-telemetry sharing validation and the --bash gate key on.
     """
 
     enabled: bool | None = None
@@ -1103,10 +1128,25 @@ class TachometerConfig:
     compaction_threads: int = 4
     storage_subdir: str = "tachometer"
     extra_metadata: dict[str, str] = field(default_factory=dict)
+    default_exporters: bool = True
     dcgm_exporter: TelemetryExporterConfig | None = None
     node_exporter: TelemetryExporterConfig | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
+
+    @property
+    def resolved_dcgm_exporter(self) -> TelemetryExporterConfig | None:
+        """User-configured DCGM exporter, else the built-in default."""
+        if self.dcgm_exporter is not None:
+            return self.dcgm_exporter
+        return DEFAULT_DCGM_EXPORTER if self.default_exporters else None
+
+    @property
+    def resolved_node_exporter(self) -> TelemetryExporterConfig | None:
+        """User-configured node exporter, else the built-in default."""
+        if self.node_exporter is not None:
+            return self.node_exporter
+        return DEFAULT_NODE_EXPORTER if self.default_exporters else None
 
 
 @dataclass(frozen=True)
@@ -1184,8 +1224,14 @@ class ObservabilityConfig:
 
     @property
     def tachometer_enabled(self) -> bool:
-        """Resolved Tachometer enablement (tri-state ``tachometer.enabled``)."""
-        return self.enabled if self.tachometer.enabled is None else self.tachometer.enabled
+        """Resolved Tachometer enablement (tri-state ``tachometer.enabled``).
+
+        Tachometer is on by default for every run — server-side capture is
+        not an opt-in special occasion, and its cost is bounded (1 Hz,
+        best-effort, complement of the client's polling). ``enabled: false``
+        opts out; ``observability.enabled`` no longer gates it.
+        """
+        return True if self.tachometer.enabled is None else self.tachometer.enabled
 
 
 @dataclass(frozen=True)
@@ -2282,8 +2328,6 @@ class SrtConfig:
         """Validate Tachometer collection under observability."""
         observability = self.observability
         tachometer = observability.tachometer
-        if tachometer.enabled is True and not observability.enabled:
-            raise ValidationError("observability.tachometer requires observability.enabled: true")
         if not observability.tachometer_enabled:
             return
         if self.telemetry.enabled and tachometer.dcgm_exporter is not None:

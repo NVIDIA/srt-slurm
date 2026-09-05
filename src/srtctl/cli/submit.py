@@ -437,6 +437,14 @@ def show_config_details(config: SrtConfig) -> None:
             details.add_row("observability", "storage_subdir", tachometer.storage_subdir)
             details.add_row("observability", "frequency", str(tachometer.default_frequency))
             details.add_row("observability", "binary_path", tachometer.binary_path)
+            if config.telemetry.enabled:
+                details.add_row("observability", "dcgm_exporter", "shared with power telemetry")
+            elif tachometer.resolved_dcgm_exporter is not None:
+                dcgm = tachometer.resolved_dcgm_exporter
+                details.add_row("observability", "dcgm_exporter", f"{dcgm.container_image} :{dcgm.port}")
+            if tachometer.resolved_node_exporter is not None:
+                node = tachometer.resolved_node_exporter
+                details.add_row("observability", "node_exporter", f"{node.container_image} :{node.port}")
 
         if config.telemetry.enabled:
             exporter = config.telemetry.dcgm_exporter

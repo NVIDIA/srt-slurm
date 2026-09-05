@@ -84,6 +84,26 @@ class TestTachometerConfig:
         assert config.observability.tachometer.dcgm_exporter is None
         assert config.observability.tachometer.node_exporter is None
 
+    def test_exporters_resolve_to_built_in_defaults(self):
+        """No exporter blocks needed: pinned multi-arch registry defaults."""
+        tachometer = TachometerConfig()
+        assert tachometer.dcgm_exporter is None  # raw stays None (power/--bash gates)
+        assert tachometer.resolved_dcgm_exporter.port == 9401
+        assert "dcgm-exporter" in tachometer.resolved_dcgm_exporter.container_image
+        assert tachometer.resolved_node_exporter.port == 9101
+        assert "node-exporter" in tachometer.resolved_node_exporter.container_image
+
+    def test_default_exporters_false_disables_built_ins(self):
+        tachometer = TachometerConfig(default_exporters=False)
+        assert tachometer.resolved_dcgm_exporter is None
+        assert tachometer.resolved_node_exporter is None
+
+    def test_explicit_exporter_block_wins_over_default(self):
+        custom = TelemetryExporterConfig(container_image="/containers/dcgm.sqsh", port=9500)
+        tachometer = TachometerConfig(dcgm_exporter=custom)
+        assert tachometer.resolved_dcgm_exporter is custom
+        assert tachometer.resolved_node_exporter.port == 9101
+
     def test_default_frequency_is_one_hz(self):
         """1 Hz matches the retired RAW scraper's cadence; 5 Hz produced ~9M
         rows in a 25-minute run with no analysis consuming the extra
@@ -460,7 +480,7 @@ class TestTachometerConfigGeneration:
 
     @patch("srtctl.core.telemetry.get_hostname_ip", return_value="10.0.0.1")
     def test_generate_config_without_exporters_targets_servers_only(self, _mock_get_hostname_ip):
-        tachometer = TachometerConfig(enabled=True)
+        tachometer = TachometerConfig(enabled=True, default_exporters=False)
         runtime = MagicMock(job_id="12345", run_name="test_12345", network_interface="eth0")
         runtime.log_dir = Path("/runs/12345/logs")
         processes = [
@@ -668,6 +688,9 @@ class TestTachometerStageMixin:
                 self.runtime.run_name = "test_12345"
                 self.runtime.network_interface = "eth0"
                 self.runtime.nodes.head = "node-a"
+                self.runtime.nodes.het = False
+                self.runtime.srun_options = {}
+                self.runtime.container_mounts = {Path(tmp_path): Path("/logs")}
                 self._backend_processes = [
                     Process(
                         node="node-a",
@@ -698,7 +721,12 @@ class TestTachometerStageMixin:
 
         procs = harness.start_tachometer()
 
-        assert [proc.name for proc in procs] == ["tachometer"]
+        # Built-in exporters launch by default alongside the scraper.
+        assert [proc.name for proc in procs] == [
+            "tachometer_dcgm_exporter",
+            "tachometer_node_exporter",
+            "tachometer",
+        ]
         assert (tmp_path / "tachometer_config.toml").exists()
 
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
@@ -765,8 +793,8 @@ class TestTachometerStageMixin:
 
         processes = Harness().start_tachometer()
 
-        assert [process.name for process in processes] == ["tachometer"]
-        assert mock_srun.call_count == 1
+        assert [process.name for process in processes] == ["tachometer_node_exporter", "tachometer"]
+        assert mock_srun.call_count == 2
         assert 'name = "dcgm_node-a"' in (tmp_path / "tachometer_config.toml").read_text()
 
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")

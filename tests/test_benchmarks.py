@@ -1508,13 +1508,18 @@ class TestRunPostEval:
             FrontendConfig,
             HealthCheckConfig,
             ModelConfig,
+            ObservabilityConfig,
             ResourceConfig,
             SrtConfig,
+            TachometerConfig,
         )
 
         config = SrtConfig(
             name="test",
             model=ModelConfig(path="/model/test-model", container="/image", precision="fp4"),
+            # These tests exercise the eval flow, not telemetry; opt out of the
+            # default-on Tachometer so run() needs no scraper mocks.
+            observability=ObservabilityConfig(tachometer=TachometerConfig(enabled=False)),
             resources=ResourceConfig(
                 gpu_type="h100",
                 gpus_per_node=8,

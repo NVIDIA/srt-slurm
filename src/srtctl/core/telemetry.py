@@ -58,8 +58,8 @@ def generate_tachometer_config(
     node-exporter endpoints are never excluded: the frontend scrape is cheap
     and Tachometer is the only whole-window, per-replica capture of it.
     """
-    dcgm_exporter = dcgm_exporter or tachometer.dcgm_exporter
-    node_exporter = tachometer.node_exporter
+    dcgm_exporter = dcgm_exporter or tachometer.resolved_dcgm_exporter
+    node_exporter = tachometer.resolved_node_exporter
     endpoints: list[TelemetryEndpoint] = []
     physical_nodes: dict[str, list[Process]] = {}
     for process in processes:

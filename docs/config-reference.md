@@ -1151,7 +1151,7 @@ infra:
 
 ## observability
 
-`observability.enabled` turns on the server metrics and trace surfaces and collects them with the native Tachometer scraper for the whole run:
+Tachometer collection is **on by default for every run** (no configuration needed; `observability.tachometer.enabled: false` opts out). `observability.enabled` turns on the server metrics *content* (the TRT-LLM publish flag and engine statistics) and the trace surfaces:
 
 ```yaml
 observability:
@@ -1171,7 +1171,7 @@ The legacy in-job Python RAW scraper is retired: a recipe still carrying `scrape
 
 The component perf dashboard is **not** configured here. It is built in post-processing on every run; `enabled` decides which capture legs exist and therefore which tabs the page carries. See [Component Performance Dashboard](component-dashboard.md).
 
-Tachometer collects every worker rank and frontend metrics by default (minus the client-polled complement described above). DCGM and node exporters are optional additions:
+Tachometer collects every worker rank, frontend, DCGM, and node metrics by default (minus the client-polled complement described above) — the exporters launch from pinned multi-arch registry images with no configuration. Air-gapped clusters override the images via the `containers:` alias map in `srtslurm.yaml`; `default_exporters: false` disables the built-ins:
 
 ```yaml
 observability:
@@ -1194,15 +1194,16 @@ observability:
 
 | Tachometer field | Type | Default | Description |
 | ---------------- | ---- | ------- | ----------- |
-| `enabled` | bool/null | `null` | `null` follows `observability.enabled`; explicit `false` opts out; explicit `true` without `observability.enabled` is a validation error |
+| `enabled` | bool/null | `null` | `null` means ON for every run (decoupled from `observability.enabled`); explicit `false` opts out |
 | `binary_path` | string | `tachometer-scraper` | Scraper command or path on the compute nodes |
 | `default_frequency` | float | `1.0` | Scrape frequency in Hz |
 | `sync_interval_secs` | int | `120` | Interval for intermediate Parquet compaction; `0` disables it |
 | `compaction_threads` | int | `4` | Value passed as `POLARS_MAX_THREADS` |
 | `storage_subdir` | string | `tachometer` | Output directory below the run log directory |
 | `extra_metadata` | dict | `{}` | Static string metadata added to every endpoint |
-| `dcgm_exporter` | object/null | `null` | Optional DCGM exporter image, port, and command |
-| `node_exporter` | object/null | `null` | Optional node exporter image, port, and command |
+| `default_exporters` | bool | `true` | Launch the built-in DCGM + node exporters when no explicit blocks are set (sweep path only) |
+| `dcgm_exporter` | object/null | built-in | Defaults to `nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04` on port 9401; an explicit block overrides |
+| `node_exporter` | object/null | built-in | Defaults to `quay.io#prometheus/node-exporter:v1.8.2` on port 9101; an explicit block overrides |
 
 `make setup ARCH=<compute_arch>` downloads and checksum-verifies the matching Tachometer binary from the latest srt-slurm release. The scraper runs as a native `srun` process on the head node; configured exporters remain containerized on worker nodes. Run `make tachometer-scraper` to build from source instead.
 
