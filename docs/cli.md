@@ -18,6 +18,7 @@
   - [srtctl apply](#srtctl-apply)
   - [srtctl dry-run](#srtctl-dry-run)
   - [srtctl resolve-override](#srtctl-resolve-override)
+  - [srtctl bake-image](#srtctl-bake-image)
 - [Output](#output)
 - [Sweep Support](#sweep-support)
 - [Config Override Support](#config-override-support)
@@ -385,6 +386,74 @@ srtctl monitor --interval 10            # Refresh every 10s (default: 5)
 srtctl monitor --once                   # Snapshot and exit
 srtctl monitor --resume KEY             # Resume a previous session
 ```
+
+### `srtctl bake-image`
+
+Preinstall dynamo, the sa-bench Python packages, a recipe `setup_script`, and/or
+a vLLM unified diff into a new container image, so jobs stop paying for the same
+work on every run.
+
+```bash
+srtctl bake-image --image my-model-fp8 --dynamo 1.2.0.dev20260526 --sa-bench
+srtctl bake-image --image my-model-fp8 --script install-nixl-dsv4.sh
+srtctl bake-image --image my-model-fp8 --patch mine.diff
+```
+
+No allocation needed: srun requests a node itself, taking `default_account` and
+`default_partition` from `srtslurm.yaml`. Run it inside an existing `salloc` and
+it joins that allocation instead, skipping the queue.
+
+| Flag | Description |
+| ---- | ----------- |
+| `--image` | Source `.sqsh` path, or a container alias from `srtslurm.yaml` |
+| `-o`, `--output` | Output path (default: source name plus what was installed) |
+| `--dynamo VERSION` | `ai-dynamo` version to pip-install |
+| `--sa-bench` | Install the packages sa-bench needs at runtime |
+| `--script`, `--setup-script` | Run a `configs/` setup script inside the image (same as recipe `setup_script`). Name under `configs/` or `configs/patches/`, or a path |
+| `--patch FILE.diff` | Apply a unified diff to the image's vLLM tree (repeatable). Name under `configs/patches/` or a path. A conflict aborts the bake; no output image is kept |
+| `--force` | Overwrite an existing output image |
+| `--time` | Time limit when srun allocates a node itself (default: `0:30:00`) |
+| `--account`, `--partition` | Override the `srtslurm.yaml` defaults |
+| `--dry-run` | Print the srun command and install script without running them |
+
+Inside the container the steps run in this order: `--script`, then each
+`--patch`, then dynamo, then sa-bench. `--script` mounts the repo `configs/`
+tree at `/configs`, the same path jobs use. `--patch` dry-runs `patch(1)`
+against the installed vLLM package first; if a hunk does not apply, the step
+exits non-zero and a newly written `.sqsh` is removed so a conflicted tree is
+not baked.
+
+The default output name records its contents, so a directory of images stays
+readable:
+
+```
+my-model-fp8+dynamo1.2.0.dev20260526+sa-bench.sqsh
+my-model-fp8+install-nixl-dsv4.sqsh
+my-model-fp8+mine.sqsh
+my-model-fp8+dynamo1.2.0.dev20260526+sa-bench.manifest.json
+```
+
+The manifest records the source image, what was installed (including the setup
+script and patch filenames) and when.
+
+Nothing understands the squashfs format here: pyxis' `--container-save` exports
+the container filesystem to a new image when the step ends. Bind mounts are not
+part of that export; only overlay writes (patched site-packages, pip installs)
+persist. The install runs as root inside the container via `ENROOT_REMAP_ROOT`,
+and pip caches plus `/tmp` are cleared before the save so they are not baked in.
+
+Once an image is baked, drop the matching work from your recipes:
+
+```yaml
+dynamo:
+  install: false        # already in the image
+# setup_script: "install-nixl-dsv4.sh"   # already baked; omit
+```
+
+`bench.sh` needs no change — it skips its own install when every package it
+checks for is importable. Both sides read the same list from
+`src/srtctl/benchmarks/scripts/sa-bench/deps.sh`, which is what keeps a baked
+image from drifting away from what the benchmark expects.
 
 ## Output
 

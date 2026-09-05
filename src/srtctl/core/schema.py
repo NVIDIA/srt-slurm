@@ -1598,15 +1598,20 @@ class DynamoConfig:
             env["DYNAMO_VERSION"] = version
         return env
 
-    def get_install_commands(self) -> str:
+    def get_install_commands(self, *, serialize: bool = True) -> str:
         """Get the bash commands to install dynamo.
 
         The returned command is wrapped in a node-local flock + sentinel so
         that co-located srun tasks (``--ntasks-per-node > 1``, e.g. TRTLLM)
         install once per node instead of racing concurrent pip installs into
         the shared container site-packages. See ``_serialize_node_install``.
+
+        Pass ``serialize=False`` when baking the install into a container image:
+        there is a single task, and the sentinel would otherwise be captured in
+        the image and make every later job skip its own install.
         """
-        return _serialize_node_install(self._build_install_commands())
+        raw = self._build_install_commands()
+        return _serialize_node_install(raw) if serialize else raw
 
     def _build_install_commands(self) -> str:
         """Build the raw (unserialized) dynamo install command."""
