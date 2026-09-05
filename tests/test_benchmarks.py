@@ -392,6 +392,31 @@ class TestCustomBenchmarkRunner:
         assert "SRT_DECODE_ENDPOINTS" not in env
         assert env["AIPERF_SERVER_METRICS_URLS"] == "http://ip-node-a:6100/metrics"
 
+    def test_sglang_sidecar_metrics_use_native_http_ports(self):
+        from unittest.mock import patch
+
+        from srtctl.benchmarks.custom import CustomBenchmarkRunner
+        from srtctl.core.topology import Process
+
+        processes = [
+            Process("node-a", frozenset(range(4)), 7500, 6100, "prefill", 0, node_rank=0),
+            Process("node-b", frozenset(range(4)), 7501, 0, "prefill", 0, node_rank=1),
+            Process("node-c", frozenset(range(4)), 7502, 6200, "decode", 0, node_rank=0),
+        ]
+        stage = self._benchmark_stage("dynamo", processes, dynamo_sidecar=True)
+
+        with patch(
+            "srtctl.cli.mixins.benchmark_stage.get_hostname_ip",
+            side_effect=lambda node, interface: f"ip-{node}",
+        ):
+            env = stage._get_benchmark_env(CustomBenchmarkRunner())
+
+        assert env["SRT_PREFILL_ENDPOINTS"] == "ip-node-a:7500"
+        assert env["SRT_DECODE_ENDPOINTS"] == "ip-node-c:7502"
+        assert env["AIPERF_SERVER_METRICS_URLS"] == (
+            "http://ip-node-a:6100/metrics,http://ip-node-c:6200/metrics"
+        )
+
     def test_observability_does_not_reach_the_benchmark_client(self):
         """``observability`` configures what the servers emit, not the client.
 

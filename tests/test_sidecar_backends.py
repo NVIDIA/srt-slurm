@@ -73,6 +73,28 @@ def test_sglang_sidecar_owns_leader_and_couples_lifecycle() -> None:
     assert "dynamo.sglang.sidecar" not in follower_command
 
 
+def test_sglang_sidecar_maps_multi_node_dp_kv_event_publishers() -> None:
+    leader = _process(mode="prefill", kv_events_port=5557)
+    follower = _process(node="node1", node_rank=1, mode="prefill", sys_port=7501, kv_events_port=5557)
+    backend = SGLangProtocol(
+        sglang_config=SGLangServerConfig(
+            prefill={
+                "tensor-parallel-size": 8,
+                "dp-size": 8,
+                "enable-dp-attention": True,
+                "kv-events-config": '{"publisher":"zmq","endpoint":"tcp://*:5557"}',
+            }
+        ),
+    )
+    node_ips = {"node0": "10.0.0.1", "node1": "10.0.0.2"}
+
+    with patch("srtctl.core.slurm.get_hostname_ip", side_effect=lambda node: node_ips[node]):
+        leader_command = backend.build_worker_command(leader, [leader, follower], _runtime())
+
+    leader_script = leader_command[2]
+    assert "--kv-event-hosts 10.0.0.1,10.0.0.1,10.0.0.1,10.0.0.1,10.0.0.2,10.0.0.2,10.0.0.2,10.0.0.2" in leader_script
+
+
 def test_vllm_sidecar_exposes_one_complete_multi_node_dp_group() -> None:
     backend = VLLMProtocol(
         connector=None,
