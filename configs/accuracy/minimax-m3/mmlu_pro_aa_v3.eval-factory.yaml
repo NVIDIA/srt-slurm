@@ -1,0 +1,48 @@
+config:
+  output_dir: __NEL_OUTPUT_DIR__
+  params:
+    extra:
+      n_samples: 1
+    max_new_tokens: 65536
+    max_retries: 10
+    parallelism: 10
+    request_timeout: 3600
+    temperature: 1.0
+    top_p: 0.95
+  type: mmlu_pro_aa_v3
+metadata:
+  source: nemo-evaluator-launcher-dry-run
+  versioning:
+    nemo_evaluator_launcher: 0.2.7+20260902.673edc82
+    nemo_evaluator_launcher_internal: 0.3.178+20260805
+target:
+  api_endpoint:
+    adapter_config:
+      interceptors:
+        - config:
+            max_requests: 20
+            output_dir: __NEL_OUTPUT_DIR__
+          name: request_logging
+        - name: endpoint
+        - config:
+            enable_reasoning_tracking: true
+            end_reasoning_token: </mm:think>
+            include_if_not_finished: true
+            start_reasoning_token: <mm:think>
+          name: reasoning
+        - config:
+            max_responses: 20
+            output_dir: __NEL_OUTPUT_DIR__
+          name: response_logging
+      params_to_add:
+        chat_template_kwargs:
+          thinking_mode: enabled
+      use_reasoning: true
+    model_id: nvidia/MiniMax-M3-NVFP4
+    post_eval_hooks:
+      - config:
+          html_report_size: 5
+          report_types: [html, json]
+        name: post_eval_report
+    type: chat
+    url: __SRT_TARGET_URL__
