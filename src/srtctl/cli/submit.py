@@ -485,6 +485,7 @@ def generate_minimal_sbatch_script(
 
     # Resolve container image path (expand aliases from srtslurm.yaml)
     container_image = os.path.expandvars(config.model.container)
+    benchmark_container_image = os.path.expandvars(config.benchmark.container_image or "")
 
     account = config.slurm.account or os.environ.get("SLURM_ACCOUNT", "default")
     partition = config.slurm.partition or os.environ.get("SLURM_PARTITION", "default")
@@ -509,6 +510,7 @@ def generate_minimal_sbatch_script(
         use_exclusive_sbatch_directive=get_srtslurm_setting("use_exclusive_sbatch_directive", False),
         sbatch_directives=config.sbatch_directives,
         container_image=container_image,
+        benchmark_container_image=benchmark_container_image,
         srtctl_source=str(srtctl_source.resolve()),
         output_base=output_base,
         setup_script=setup_script,

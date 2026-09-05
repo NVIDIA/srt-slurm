@@ -491,6 +491,38 @@ class TestPreflightConfigVariants:
         assert results[0].container.source == "in-allocation-container-stage"
         assert results[0].container.resolved == output
 
+    def test_benchmark_stage_does_not_mask_missing_model_container(self):
+        output = "/lustre/cache/nemo-skills.sqsh"
+        results = preflight_config_variants(
+            {
+                "name": "benchmark-sidecar-stage",
+                "model": {
+                    "path": "hf:nvidia/Kimi-K2.5-NVFP4",
+                    "container": "/lustre/cache/missing-model.sqsh",
+                    "precision": "fp4",
+                },
+                "resources": {
+                    "gpu_type": "gb200",
+                    "gpus_per_node": 4,
+                    "agg_nodes": 1,
+                },
+                "benchmark": {
+                    "type": "custom",
+                    "command": "true",
+                    "container_image": output,
+                },
+                "environment": {
+                    "SRTCTL_CONTAINER_STAGE_SOURCE": "docker://registry.example/nemo-skills:26.03",
+                    "SRTCTL_CONTAINER_STAGE_ARCH": "aarch64",
+                    "SRTCTL_CONTAINER_STAGE_OUTPUT": output,
+                    "SRTCTL_CONTAINER_STAGE_TARGET": "benchmark",
+                },
+            },
+        )
+
+        assert results[0].ok is False
+        assert any(issue.code == "container-not-available" for issue in results[0].errors)
+
     def test_telemetry_aliases_resolve_and_pass_when_files_exist(self, tmp_path):
         model_dir = tmp_path / "model"
         model_dir.mkdir()

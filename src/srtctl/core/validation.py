@@ -251,8 +251,10 @@ def _preflight_container(
     stage_source = str(environment.get("SRTCTL_CONTAINER_STAGE_SOURCE", ""))
     stage_arch = str(environment.get("SRTCTL_CONTAINER_STAGE_ARCH", ""))
     stage_output = str(environment.get("SRTCTL_CONTAINER_STAGE_OUTPUT", ""))
+    stage_target = str(environment.get("SRTCTL_CONTAINER_STAGE_TARGET", "model"))
     if (
         isinstance(resolved, str)
+        and stage_target == "model"
         and stage_source.startswith("docker://")
         and stage_arch in {"aarch64", "x86_64"}
         and stage_output == resolved

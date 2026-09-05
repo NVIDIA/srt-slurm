@@ -984,6 +984,33 @@ class TestSetupScript:
         assert 'flock -x 8' in script
         assert script.index("enroot import") < script.index("Running orchestrator on host")
 
+    def test_sbatch_template_stages_benchmark_sqsh_before_orchestrator(self):
+        """Deferred OCI import can target the custom benchmark sidecar."""
+        from pathlib import Path
+
+        from srtctl.cli.submit import generate_minimal_sbatch_script
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        output = "/lustre/cache/nemo-skills.sqsh"
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="hf:nvidia/test", container="/lustre/cache/vllm.sqsh", precision="fp4"),
+            resources=ResourceConfig(gpu_type="gb200", gpus_per_node=4, agg_nodes=1),
+            benchmark=BenchmarkConfig(type="custom", container_image=output, command="true"),
+            environment={
+                "SRTCTL_CONTAINER_STAGE_SOURCE": "docker://registry.example/nemo-skills:26.03",
+                "SRTCTL_CONTAINER_STAGE_ARCH": "aarch64",
+                "SRTCTL_CONTAINER_STAGE_OUTPUT": output,
+                "SRTCTL_CONTAINER_STAGE_TARGET": "benchmark",
+            },
+        )
+
+        script = generate_minimal_sbatch_script(config, Path("/tmp/test.yaml"))
+
+        assert "benchmark) STAGE_EXPECTED=\"/lustre/cache/nemo-skills.sqsh\"" in script
+        assert "model) STAGE_EXPECTED=\"/lustre/cache/vllm.sqsh\"" in script
+        assert 'export SRTCTL_CONTAINER_STAGE_TARGET=benchmark' in script
+
     def test_setup_script_env_var_override(self, monkeypatch):
         """Test that SRTCTL_SETUP_SCRIPT env var overrides config."""
         import os

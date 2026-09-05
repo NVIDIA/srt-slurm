@@ -130,6 +130,7 @@ if [ -n "${SRTCTL_CONTAINER_STAGE_SOURCE:-}" ]; then
     STAGE_SOURCE="${SRTCTL_CONTAINER_STAGE_SOURCE}"
     STAGE_ARCH="${SRTCTL_CONTAINER_STAGE_ARCH:?SRTCTL_CONTAINER_STAGE_ARCH is required}"
     STAGE_OUTPUT="${SRTCTL_CONTAINER_STAGE_OUTPUT:?SRTCTL_CONTAINER_STAGE_OUTPUT is required}"
+    STAGE_TARGET="${SRTCTL_CONTAINER_STAGE_TARGET:-model}"
     case "${STAGE_SOURCE}" in
         docker://*) ;;
         *) echo "ERROR: container stage source must use docker://: ${STAGE_SOURCE}" >&2; exit 1 ;;
@@ -142,8 +143,17 @@ if [ -n "${SRTCTL_CONTAINER_STAGE_SOURCE:-}" ]; then
         /lustre/*.sqsh) ;;
         *) echo "ERROR: container stage output must be /lustre/*.sqsh: ${STAGE_OUTPUT}" >&2; exit 1 ;;
     esac
-    if [ "${STAGE_OUTPUT}" != "{{ container_image }}" ]; then
-        echo "ERROR: container stage output does not match model.container" >&2
+    case "${STAGE_TARGET}" in
+        model) STAGE_EXPECTED="{{ container_image }}" ;;
+        benchmark) STAGE_EXPECTED="{{ benchmark_container_image }}" ;;
+        *) echo "ERROR: container stage target must be model or benchmark: ${STAGE_TARGET}" >&2; exit 1 ;;
+    esac
+    if [ -z "${STAGE_EXPECTED}" ]; then
+        echo "ERROR: container stage target ${STAGE_TARGET} has no configured container" >&2
+        exit 1
+    fi
+    if [ "${STAGE_OUTPUT}" != "${STAGE_EXPECTED}" ]; then
+        echo "ERROR: container stage output does not match ${STAGE_TARGET} container" >&2
         exit 1
     fi
 
