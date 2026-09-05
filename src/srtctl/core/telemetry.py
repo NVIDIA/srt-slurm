@@ -19,6 +19,14 @@ if TYPE_CHECKING:
     from srtctl.core.topology import Process
 
 
+# Tachometer owns its final storage directory and rejects a pre-existing leaf
+# (see tachometer-scraper `parse_storage`). srtctl must therefore create only the
+# parent and hand the scraper a not-yet-existing leaf. This mirrors what the
+# direct-host path already does in templates/local_lifecycle.sh.j2.
+TACHOMETER_STORAGE_PARENT = "raw"
+TACHOMETER_STORAGE_LEAF = "scrape"
+
+
 @dataclass(frozen=True)
 class TelemetryEndpoint:
     """One telemetry endpoint entry in the scraper config."""
@@ -39,8 +47,17 @@ def generate_tachometer_config(
     tachometer: TachometerConfig,
     dcgm_exporter: TelemetryExporterConfig | None = None,
     frontend_type: str = "dynamo",
+    exclude_urls: frozenset[str] | set[str] = frozenset(),
 ) -> str:
-    """Generate Tachometer TOML from backend and frontend topology."""
+    """Generate Tachometer TOML from backend and frontend topology.
+
+    ``exclude_urls`` is the set of ``/metrics`` URLs the benchmark client
+    already polls (``AIPERF_SERVER_METRICS_URLS``). Tachometer scrapes the
+    complement so a worker endpoint is never double-polled — the extra scrape
+    load has previously made a submission irreproducible. Frontend, DCGM and
+    node-exporter endpoints are never excluded: the frontend scrape is cheap
+    and Tachometer is the only whole-window, per-replica capture of it.
+    """
     dcgm_exporter = dcgm_exporter or tachometer.dcgm_exporter
     node_exporter = tachometer.node_exporter
     endpoints: list[TelemetryEndpoint] = []
@@ -85,10 +102,25 @@ def generate_tachometer_config(
             )
 
     for process in sorted(processes, key=lambda p: (p.endpoint_mode, p.endpoint_index, p.node_rank, p.node)):
+        # Every rank is a target (vLLM agg followers excepted below): follower
+        # metadata columns keep rows distinguishable, and rank coverage is
+        # exactly what the physical-process client list provides for vLLM DP.
         if frontend_type == "vllm" and process.endpoint_mode == "agg" and not process.is_leader:
             continue
+        if frontend_type == "vllm-router" and process.http_port <= 0:
+            continue
         node_ip = get_hostname_ip(process.node, runtime.network_interface)
-        port = FRONTEND_PUBLIC_PORT if frontend_type == "vllm" and process.endpoint_mode == "agg" else process.sys_port
+        if frontend_type == "vllm" and process.endpoint_mode == "agg":
+            port = FRONTEND_PUBLIC_PORT
+        elif frontend_type == "vllm-router":
+            port = process.http_port
+        else:
+            port = process.sys_port
+        url = f"http://{node_ip}:{port}/metrics"
+        if url in exclude_urls:
+            # The benchmark client already polls this endpoint on its own
+            # cadence; scrape the complement instead of double-polling.
+            continue
         node_metadata = {
             "hostname": process.node,
             "worker_index": str(process.endpoint_index),
@@ -99,7 +131,7 @@ def generate_tachometer_config(
         endpoints.append(
             TelemetryEndpoint(
                 name=f"backend_{process.endpoint_mode}{process.endpoint_index}_rank{process.node_rank}",
-                url=f"http://{node_ip}:{port}/metrics",
+                url=url,
                 frequency=tachometer.default_frequency,
                 filter="backend",
                 node_metadata=node_metadata,
@@ -138,7 +170,7 @@ def generate_tachometer_config(
 
     return _dump_toml(
         endpoints=endpoints,
-        storage=str(runtime.log_dir / tachometer.storage_subdir),
+        storage=str(runtime.log_dir / tachometer.storage_subdir / TACHOMETER_STORAGE_PARENT / TACHOMETER_STORAGE_LEAF),
     )
 
 

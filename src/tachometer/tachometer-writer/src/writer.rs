@@ -15,11 +15,11 @@ use tokio::time::{Duration, Instant};
 pub struct Row {
     pub scraper_endpoint: String,
     pub metric_name: String,
-    pub metric_value: f32,
-    pub histogram_bucket_lower: Option<f32>,
-    pub histogram_bucket_upper: Option<f32>,
-    pub histogram_sum: Option<f32>,
-    pub histogram_count: Option<f32>,
+    pub metric_value: f64,
+    pub histogram_bucket_lower: Option<f64>,
+    pub histogram_bucket_upper: Option<f64>,
+    pub histogram_sum: Option<f64>,
+    pub histogram_count: Option<f64>,
     pub extras: Vec<(String, String)>, // Sorted metadata key-value pairs
 }
 
@@ -31,17 +31,23 @@ pub struct DatasetWriter {
     rows_per_parquet: usize,
     save_handle: tokio::task::JoinHandle<()>,
     start_time: Instant,
+    /// Wall-clock time at writer start, as nanoseconds since UNIX_EPOCH.
+    /// Captured at the same moment as `start_time` so that
+    /// `start_epoch_ns + start_time.elapsed()` yields a monotonic epoch
+    /// timestamp even if the wall clock steps afterwards.
+    start_epoch_ns: i64,
 }
 
 struct RecordBatchBuffer {
     scraper_endpoints: Vec<String>,
     metric_names: Vec<String>,
-    metric_values: Vec<f32>,
-    histogram_bucket_lowers: Vec<Option<f32>>,
-    histogram_bucket_uppers: Vec<Option<f32>>,
-    histogram_sums: Vec<Option<f32>>,
-    histogram_counts: Vec<Option<f32>>,
+    metric_values: Vec<f64>,
+    histogram_bucket_lowers: Vec<Option<f64>>,
+    histogram_bucket_uppers: Vec<Option<f64>>,
+    histogram_sums: Vec<Option<f64>>,
+    histogram_counts: Vec<Option<f64>>,
     time_since_starts: Vec<f64>,
+    timestamp_ns: Vec<i64>,
     extras_columns: Vec<Vec<String>>, // One Vec<String> per extra column
     extra_column_names: Vec<String>,  // Names of extra columns (sorted)
 }
@@ -58,6 +64,7 @@ impl RecordBatchBuffer {
             histogram_sums: Vec::new(),
             histogram_counts: Vec::new(),
             time_since_starts: Vec::new(),
+            timestamp_ns: Vec::new(),
             extras_columns,
             extra_column_names,
         }
@@ -67,7 +74,7 @@ impl RecordBatchBuffer {
         self.scraper_endpoints.len()
     }
 
-    fn append_row(&mut self, row: &Row, time_since_start: f64) {
+    fn append_row(&mut self, row: &Row, time_since_start: f64, timestamp_ns: i64) {
         self.scraper_endpoints.push(row.scraper_endpoint.clone());
         self.metric_names.push(row.metric_name.clone());
         self.metric_values.push(row.metric_value);
@@ -78,6 +85,7 @@ impl RecordBatchBuffer {
         self.histogram_sums.push(row.histogram_sum);
         self.histogram_counts.push(row.histogram_count);
         self.time_since_starts.push(time_since_start);
+        self.timestamp_ns.push(timestamp_ns);
 
         // Populate extras columns - ensure all columns have values (empty string if missing)
         for (col_idx, col_name) in self.extra_column_names.iter().enumerate() {
@@ -100,6 +108,7 @@ impl RecordBatchBuffer {
         self.histogram_sums.clear();
         self.histogram_counts.clear();
         self.time_since_starts.clear();
+        self.timestamp_ns.clear();
         for col in &mut self.extras_columns {
             col.clear();
         }
@@ -115,12 +124,13 @@ impl RecordBatchBuffer {
         let mut fields = vec![
             Field::new("scraper_endpoint", DataType::Utf8, false),
             Field::new("metric_name", DataType::Utf8, false),
-            Field::new("metric_value", DataType::Float32, false),
-            Field::new("histogram_bucket_lower", DataType::Float32, true),
-            Field::new("histogram_bucket_upper", DataType::Float32, true),
-            Field::new("histogram_sum", DataType::Float32, true),
-            Field::new("histogram_count", DataType::Float32, true),
+            Field::new("metric_value", DataType::Float64, false),
+            Field::new("histogram_bucket_lower", DataType::Float64, true),
+            Field::new("histogram_bucket_upper", DataType::Float64, true),
+            Field::new("histogram_sum", DataType::Float64, true),
+            Field::new("histogram_count", DataType::Float64, true),
             Field::new("time_since_start", DataType::Float64, false),
+            Field::new("timestamp_ns", DataType::Int64, false),
         ];
 
         // Add extra columns to schema
@@ -133,12 +143,13 @@ impl RecordBatchBuffer {
         let mut arrays: Vec<Arc<dyn Array>> = vec![
             Arc::new(StringArray::from(self.scraper_endpoints.clone())),
             Arc::new(StringArray::from(self.metric_names.clone())),
-            Arc::new(Float32Array::from(self.metric_values.clone())),
-            Arc::new(Float32Array::from(self.histogram_bucket_lowers.clone())),
-            Arc::new(Float32Array::from(self.histogram_bucket_uppers.clone())),
-            Arc::new(Float32Array::from(self.histogram_sums.clone())),
-            Arc::new(Float32Array::from(self.histogram_counts.clone())),
+            Arc::new(Float64Array::from(self.metric_values.clone())),
+            Arc::new(Float64Array::from(self.histogram_bucket_lowers.clone())),
+            Arc::new(Float64Array::from(self.histogram_bucket_uppers.clone())),
+            Arc::new(Float64Array::from(self.histogram_sums.clone())),
+            Arc::new(Float64Array::from(self.histogram_counts.clone())),
             Arc::new(Float64Array::from(self.time_since_starts.clone())),
+            Arc::new(Int64Array::from(self.timestamp_ns.clone())),
         ];
 
         // Add extra column arrays
@@ -176,7 +187,19 @@ impl DatasetWriter {
         let buffer = Arc::new(Mutex::new(RecordBatchBuffer::new(extra_column_names)));
         let row_count = Arc::new(Mutex::new(0));
         let parquet_index = Arc::new(Mutex::new(1));
+        // Capture the monotonic and wall-clock start times at the same moment.
+        // All per-row epoch timestamps are derived as start_epoch_ns + elapsed
+        // (monotonic), so rows stay monotonic even if the wall clock steps.
         let start_time = Instant::now();
+        let start_epoch_ns = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| {
+                crate::NoMoreError::Io(std::io::Error::other(format!(
+                    "System clock is before UNIX_EPOCH: {}",
+                    e
+                )))
+            })?
+            .as_nanos() as i64;
 
         let buffer_clone = buffer.clone();
         let local_dir_clone = local_dir.clone();
@@ -193,6 +216,7 @@ impl DatasetWriter {
             rows_per_parquet,
             save_handle,
             start_time,
+            start_epoch_ns,
         })
     }
 
@@ -202,11 +226,13 @@ impl DatasetWriter {
     }
 
     pub async fn append_row(&self, row: Row) -> Result<()> {
-        let time_since_start = self.start_time.elapsed().as_secs_f64();
+        let elapsed = self.start_time.elapsed();
+        let time_since_start = elapsed.as_secs_f64();
+        let timestamp_ns = self.start_epoch_ns + elapsed.as_nanos() as i64;
         let mut buffer = self.buffer.lock().await;
         let mut row_count = self.row_count.lock().await;
 
-        buffer.append_row(&row, time_since_start);
+        buffer.append_row(&row, time_since_start, timestamp_ns);
         *row_count += 1;
 
         // Check if we need to create a numbered parquet file
@@ -228,12 +254,14 @@ impl DatasetWriter {
     }
 
     pub async fn append_rows(&self, rows: Vec<Row>) -> Result<()> {
-        let time_since_start = self.start_time.elapsed().as_secs_f64();
+        let elapsed = self.start_time.elapsed();
+        let time_since_start = elapsed.as_secs_f64();
+        let timestamp_ns = self.start_epoch_ns + elapsed.as_nanos() as i64;
         let mut buffer = self.buffer.lock().await;
         let mut row_count = self.row_count.lock().await;
 
         for row in rows {
-            buffer.append_row(&row, time_since_start);
+            buffer.append_row(&row, time_since_start, timestamp_ns);
             *row_count += 1;
         }
 

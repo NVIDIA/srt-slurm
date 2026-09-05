@@ -107,9 +107,9 @@ def test_apply_bash_outputs_direct_container_script(monkeypatch, tmp_path: Path,
     assert captured.err == ""
     assert output.startswith("#!/usr/bin/env bash\n")
     assert "DRY-RUN" not in output
-    assert "Direct-container shim" in output
-    assert "direct-plan.json" in output
-    assert "direct_runner.py" in output
+    assert "Direct Docker bootstrap" in output
+    assert "direct_host_runner.py" in output
+    assert "SRTCTL_DIRECT_HOST_PLAN_" in output
     assert "worker-0.log" in output
     assert "#SBATCH" not in output
     assert "SLURM_" not in output

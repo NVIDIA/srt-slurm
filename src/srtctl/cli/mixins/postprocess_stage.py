@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from srtctl.benchmarks.base import SCRIPTS_DIR
-from srtctl.core.config import get_srtslurm_setting, load_cluster_config
+from srtctl.core.config import get_srtslurm_setting, git_clone_command_prefix, load_cluster_config
 from srtctl.core.git_state import GIT_STATE_FILENAME
 from srtctl.core.lockfile import collect_worker_fingerprints, generate_reproduction_report, write_lockfile
 from srtctl.core.schema import AIAnalysisConfig, S3Config
@@ -206,10 +206,10 @@ class PostProcessStageMixin:
         # Keep the prepared bundle inside logs/ so the existing S3 sync below
         # transfers it with the raw benchmark artifacts.
         self._normalize_ruter()
-        # Build the component perf dashboard (optional). Deliberately ordered BEFORE
-        # the S3 sync below: the sync ships the whole log dir, so building here is what
-        # gets perf_dashboard.{html,json} and its bundle off the cluster. Building
-        # after would leave them behind on a node whose /lustre scratch is transient.
+        # Build the component perf dashboard. Deliberately ordered BEFORE the S3 sync
+        # below: the sync ships the whole log dir, so building here is what gets
+        # perf_dashboard.{html,json} and its bundle off the cluster. Building after
+        # would leave them behind on a node whose /lustre scratch is transient.
         self._build_perf_dashboard()
 
         # Run srtlog + S3 upload in single container (if S3 configured)
@@ -252,18 +252,18 @@ class PostProcessStageMixin:
             logger.warning("ruter normalization failed: %s", error)
 
     def _build_perf_dashboard(self) -> None:
-        """Render the component perf dashboard from this run's own capture.
+        """Render the component perf dashboard from this run's own artifacts.
 
-        Closes the loop `observability.enabled` opens: that knob makes the run emit
-        raw_prometheus.jsonl, SPAN_CLOSED lines and the frontend request-trace, and
-        this turns them into `<log_dir>/perf_dashboard.{html,json}` plus the
-        intermediate bundle — so one submission yields the page, with no second
-        hand-driven step from a checkout.
+        Turns whatever the run captured — `raw_prometheus.jsonl` or the client's own
+        metrics export, SPAN_CLOSED lines, the request trace, the per-iteration log —
+        into `<log_dir>/perf_dashboard.{html,json}` plus the intermediate bundle, so
+        one submission yields the page with no second hand-driven step from a
+        checkout.
 
-        Gated on `observability.build_dashboard`, which follows `observability.enabled`
-        by default. Best-effort: `try_build` swallows its own failures, and the extra
-        guard here means even an import error cannot fail a benchmark that has already
-        produced results.
+        Runs on every job; `observability.enabled` changes which tabs the page carries,
+        not whether it is built. Best-effort: `try_build` swallows its own failures,
+        and the extra guard here means even an import error cannot fail a benchmark
+        that has already produced results.
         """
         try:
             from srtctl.analysis.perf_dashboard import try_build
@@ -525,6 +525,7 @@ export PYTHONPATH={q_root}
         Upload is always attempted if awscli installs successfully. Parsing is
         best-effort so raw logs survive parser/tooling failures.
         """
+        git_cmd = shlex.join(git_clone_command_prefix())
         return f"""
 set -u
 set -o pipefail
@@ -539,7 +540,7 @@ if ! pip install uv awscli; then
 fi
 
 echo "Installing srtlog..."
-if cd /tmp && git clone --depth 1 https://github.com/ishandhanani/srtlog.git && uv pip install --system ./srtlog; then
+if cd /tmp && {git_cmd} clone --depth 1 https://github.com/ishandhanani/srtlog.git && uv pip install --system ./srtlog; then
   echo "Running srtlog parse..."
   cd /logs
   srtlog parse . || PARSE_STATUS=$?

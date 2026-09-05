@@ -93,7 +93,7 @@ export SRTCTL_OUTPUT_DIR="${OUTPUT_DIR}"
 exec 2>&1
 
 echo "=========================================="
-echo "🚀 srtctl Sweep Orchestrator"
+echo "🚀 srtctl {% if serve_only %}Serve-Only{% else %}Sweep{% endif %} Orchestrator"
 echo "=========================================="
 echo "Job ID: ${SLURM_JOB_ID}"
 echo "Config: {{ config_path }}"
@@ -166,16 +166,16 @@ cd "${SRTCTL_SOURCE}"
 # errors. The flock serializes only the venv init; the lock is released
 # before the actual sweep so jobs still run in parallel.
 flock -x "${SRTCTL_SOURCE}/.venv-compute.lock" uv sync --python 3.12 --no-dev
-uv run --python 3.12 --no-dev --no-sync -m srtctl.cli.do_sweep "${OUTPUT_DIR}/{{ runtime_config_filename }}"
+uv run --python 3.12 --no-dev --no-sync -m srtctl.cli.do_sweep "${OUTPUT_DIR}/{{ runtime_config_filename }}"{% if serve_only %} --serve-only{% endif %}
 EXIT_CODE=$?
 set -e  # Re-enable exit-on-error
 
 echo ""
 echo "=========================================="
 if [ $EXIT_CODE -eq 0 ]; then
-    echo "✓ Sweep completed successfully"
+    echo "✓ {% if serve_only %}Serve-only job ended successfully{% else %}Sweep completed successfully{% endif %}"
 else
-    echo "✗ Sweep failed (exit code: $EXIT_CODE)"
+    echo "✗ {% if serve_only %}Serve-only job failed{% else %}Sweep failed{% endif %} (exit code: $EXIT_CODE)"
 fi
 echo "End: $(date)"
 echo "=========================================="

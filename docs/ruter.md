@@ -14,7 +14,7 @@
        enabled: true
    ```
 
-2. Run the recipe through either lifecycle. The post-process step is the same for SLURM and direct Bash:
+2. Run the recipe through either lifecycle. The post-process step is the same for SLURM and the [direct Docker lifecycle](direct-host.md):
 
    ```bash
    uv run srtctl apply -f recipe.yaml

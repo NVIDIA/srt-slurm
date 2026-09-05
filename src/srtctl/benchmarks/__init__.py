@@ -5,6 +5,7 @@
 
 # Import runners to trigger registration
 from srtctl.benchmarks import (
+    agentperf,
     custom,
     gpqa,
     gsm8k,
@@ -27,6 +28,7 @@ from srtctl.benchmarks.base import (
 __all__ = [
     "BenchmarkRunner",
     # Runners
+    "agentperf",
     "custom",
     "get_runner",
     "gpqa",

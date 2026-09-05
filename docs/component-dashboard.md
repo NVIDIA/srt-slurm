@@ -21,17 +21,10 @@ from a repo checkout.
 
 ---
 
-## Quick start — one run, built automatically
+## Quick start — nothing to turn on
 
-Set the analytics knob in the recipe and the dashboard is produced by the job itself:
-
-```yaml
-observability:
-  enabled: true          # capture + build the dashboard
-  # build_dashboard: false   # capture only, skip rendering
-```
-
-Post-processing then writes, into the run's log dir:
+**Every job builds its own dashboard.** There is no knob and nothing to remember:
+post-processing writes, into the run's log dir:
 
 ```
 perf_dashboard.html          self-contained page (D3 inlined, no network needed)
@@ -50,6 +43,20 @@ is logged and never changes the outcome of a benchmark that already produced res
 
 Nothing else is required. One `srtctl` submission collects the data, post-processes it
 and renders the page, in that order, inside the job.
+
+What `observability.enabled` changes is **which tabs the page carries**, not whether
+there is a page:
+
+```yaml
+observability:
+  enabled: true          # adds the server-side capture legs — see the table below
+```
+
+Without it the page is built from the client's own metrics export, the per-iteration
+worker logs and the frontend log: **Frontend / Router / Engine / Log-analysis**.
+Turning it on adds the scraped `/metrics` stream and the `SPAN_CLOSED` traces, and
+with them the **Overview** tab. Either way there is a dashboard, because the question
+it answers is asked *after* the run, when opting in is no longer possible.
 
 ### Comparing two runs
 
@@ -148,19 +155,22 @@ network — copy it anywhere.
 
 ## Capturing the inputs
 
-Everything the dashboard reads is produced by **one recipe knob**:
+The dashboard reads whatever the run happens to have. Four of the eight legs below do
+not depend on `observability.enabled` at all; that knob is what adds the other four:
 
 ```yaml
 observability:
   enabled: true
 ```
 
-That expands (see `ObservabilityConfig` in `src/srtctl/core/schema.py`) into the
-capture legs below. Without it you still get the Log-analysis tab, and nothing else.
+It expands (see `ObservabilityConfig` in `src/srtctl/core/schema.py`) into the legs
+marked with it below. Without it the Metrics leg falls back to the client's own
+export, and the page is built without the traces — so it keeps every time-series tab
+and loses Overview.
 
 | Leg | Recipe requirement | Artifact | Bundle output | Feeds |
 | --- | ------------------ | -------- | ------------- | ----- |
-| **Metrics** | `observability.enabled` | `<log_dir>/raw_prometheus.jsonl` | `server_metrics_export.jsonl` | every time-series panel |
+| **Metrics** | `observability.enabled` (Tachometer), else the client's own export | `<log_dir>/tachometer/raw/scrape/*.parquet`, else historical `<log_dir>/raw_prometheus.jsonl`, else `<log_dir>/agentic/*/…/server_metrics_export.json(l)` | `server_metrics_export.jsonl` | every time-series panel |
 | **Request trace** | `observability.enabled` | `<log_dir>/dynamo-request-trace` | `request_trace.jsonl` | per-request card, per-session view, the waterfall's KV-transfer band |
 | **Per-iteration** | `print_iter_log: true` in the engine config | `SPAN`-free lines in `<log_dir>/*_w*.out` | `iter_bins.json` | batch composition, host/device step time |
 | **Traces** | `observability.enabled` **and** an AIPerf benchmark | `SPAN_CLOSED` lines in `<log_dir>/*.out` | `tempo_traces/<xid>.json` | Overview, routing outcome on the card |
@@ -171,8 +181,8 @@ capture legs below. Without it you still get the Log-analysis tab, and nothing e
 
 ### Host telemetry — what the metrics stream cannot say
 
-`srtctl.analysis.host_sampler` runs in-process beside the metrics scraper, on the same
-opt-in, reading only `/proc`. It exists because every other leg describes what Dynamo
+`srtctl.analysis.host_sampler` runs in-process during the benchmark window, on the
+same `observability.enabled` opt-in, reading only `/proc`. It exists because every other leg describes what Dynamo
 and TRT-LLM *choose to publish*, and three failure modes live below that line:
 
 * **Host CPU saturation / lock convoys.** A frontend pinned at 100% of one core is
@@ -405,7 +415,7 @@ Vendored from `dynamo-benchmark-perf-dashboard` at commit
 `22f49fea243e43403690b38e70a8d4092dec4cc8`. Only what the component dashboard needs was
 copied; the upstream panel dashboard (`dashboard.py`, `template/`), the framework
 adapters (`src/common/`, `src/trtllm/`, `src/vllm/`), the capture layer (`src/capture/`
-— srt-slurm's own `srtctl.analysis.metrics_scraper` already implements that contract),
+— srt-slurm's Tachometer capture already implements that contract),
 and two unreachable processors (`agentperf` client, live `tempo` trace scrape) were
 deliberately left behind.
 

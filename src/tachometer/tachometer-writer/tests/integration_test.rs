@@ -30,7 +30,7 @@ fn create_test_rows(count: usize, metric_prefix: &str) -> Vec<Row> {
         .map(|i| Row {
             scraper_endpoint: "test_endpoint".to_string(),
             metric_name: format!("{}_{}", metric_prefix, i),
-            metric_value: i as f32,
+            metric_value: i as f64,
             histogram_bucket_lower: None,
             histogram_bucket_upper: None,
             histogram_sum: None,
@@ -434,12 +434,12 @@ async fn test_writer_handles_histogram_rows() {
     let lowers = batch
         .column(3)
         .as_any()
-        .downcast_ref::<arrow::array::Float32Array>()
+        .downcast_ref::<arrow::array::Float64Array>()
         .unwrap();
     let uppers = batch
         .column(4)
         .as_any()
-        .downcast_ref::<arrow::array::Float32Array>()
+        .downcast_ref::<arrow::array::Float64Array>()
         .unwrap();
 
     // Check that values are not null and have correct values
@@ -484,8 +484,8 @@ async fn test_compact_and_upload_preserves_all_columns() {
     let batch = &batches[0];
     let schema = batch.schema();
 
-    // Should have 9 columns with required names (order may vary with polars)
-    assert_eq!(schema.fields().len(), 9);
+    // Should have 10 columns with required names (order may vary with polars)
+    assert_eq!(schema.fields().len(), 10);
 
     // Verify all required columns exist by name
     let required_columns = [
@@ -498,6 +498,7 @@ async fn test_compact_and_upload_preserves_all_columns() {
         "histogram_sum",
         "histogram_count",
         "time_since_start",
+        "timestamp_ns",
     ];
 
     for col_name in &required_columns {
@@ -612,7 +613,7 @@ async fn test_compact_and_upload_skips_corrupt_files() {
     std::fs::create_dir_all(&local_dir).unwrap();
 
     // Create a valid parquet file manually
-    use arrow::array::{Float32Array, Float64Array, StringArray};
+    use arrow::array::{Float64Array, Int64Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
     use parquet::arrow::ArrowWriter;
@@ -620,12 +621,13 @@ async fn test_compact_and_upload_skips_corrupt_files() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("scraper_endpoint", DataType::Utf8, false),
         Field::new("metric_name", DataType::Utf8, false),
-        Field::new("metric_value", DataType::Float32, false),
-        Field::new("histogram_bucket_lower", DataType::Float32, true),
-        Field::new("histogram_bucket_upper", DataType::Float32, true),
-        Field::new("histogram_sum", DataType::Float32, true),
-        Field::new("histogram_count", DataType::Float32, true),
+        Field::new("metric_value", DataType::Float64, false),
+        Field::new("histogram_bucket_lower", DataType::Float64, true),
+        Field::new("histogram_bucket_upper", DataType::Float64, true),
+        Field::new("histogram_sum", DataType::Float64, true),
+        Field::new("histogram_count", DataType::Float64, true),
         Field::new("time_since_start", DataType::Float64, false),
+        Field::new("timestamp_ns", DataType::Int64, false),
     ]));
 
     // Write a valid out-1.parquet
@@ -634,12 +636,16 @@ async fn test_compact_and_upload_skips_corrupt_files() {
         vec![
             Arc::new(StringArray::from(vec!["ep1", "ep1"])),
             Arc::new(StringArray::from(vec!["valid_metric_1", "valid_metric_2"])),
-            Arc::new(Float32Array::from(vec![1.0, 2.0])),
-            Arc::new(Float32Array::from(vec![None, None])),
-            Arc::new(Float32Array::from(vec![None, None])),
-            Arc::new(Float32Array::from(vec![None, None])),
-            Arc::new(Float32Array::from(vec![None, None])),
+            Arc::new(Float64Array::from(vec![1.0, 2.0])),
+            Arc::new(Float64Array::from(vec![None, None])),
+            Arc::new(Float64Array::from(vec![None, None])),
+            Arc::new(Float64Array::from(vec![None, None])),
+            Arc::new(Float64Array::from(vec![None, None])),
             Arc::new(Float64Array::from(vec![0.1, 0.2])),
+            Arc::new(Int64Array::from(vec![
+                1_700_000_000_000_000_000i64,
+                1_700_000_000_100_000_000i64,
+            ])),
         ],
     )
     .unwrap();
@@ -778,7 +784,7 @@ async fn test_compact_handles_multiple_incomplete_files() {
     std::fs::create_dir_all(&local_dir).unwrap();
 
     // Create multiple incomplete-*.parquet files manually
-    use arrow::array::{Float32Array, Float64Array, StringArray};
+    use arrow::array::{Float64Array, Int64Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
     use parquet::arrow::ArrowWriter;
@@ -786,12 +792,13 @@ async fn test_compact_handles_multiple_incomplete_files() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("scraper_endpoint", DataType::Utf8, false),
         Field::new("metric_name", DataType::Utf8, false),
-        Field::new("metric_value", DataType::Float32, false),
-        Field::new("histogram_bucket_lower", DataType::Float32, true),
-        Field::new("histogram_bucket_upper", DataType::Float32, true),
-        Field::new("histogram_sum", DataType::Float32, true),
-        Field::new("histogram_count", DataType::Float32, true),
+        Field::new("metric_value", DataType::Float64, false),
+        Field::new("histogram_bucket_lower", DataType::Float64, true),
+        Field::new("histogram_bucket_upper", DataType::Float64, true),
+        Field::new("histogram_sum", DataType::Float64, true),
+        Field::new("histogram_count", DataType::Float64, true),
         Field::new("time_since_start", DataType::Float64, false),
+        Field::new("timestamp_ns", DataType::Int64, false),
     ]));
 
     // Create incomplete-1.parquet and incomplete-2.parquet
@@ -805,15 +812,20 @@ async fn test_compact_handles_multiple_incomplete_files() {
                     format!("metric_{}_b", idx),
                     format!("metric_{}_c", idx),
                 ])),
-                Arc::new(Float32Array::from(vec![1.0, 2.0, 3.0])),
-                Arc::new(Float32Array::from(vec![None, None, None])),
-                Arc::new(Float32Array::from(vec![None, None, None])),
-                Arc::new(Float32Array::from(vec![None, None, None])),
-                Arc::new(Float32Array::from(vec![None, None, None])),
+                Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0])),
+                Arc::new(Float64Array::from(vec![None, None, None])),
+                Arc::new(Float64Array::from(vec![None, None, None])),
+                Arc::new(Float64Array::from(vec![None, None, None])),
+                Arc::new(Float64Array::from(vec![None, None, None])),
                 Arc::new(Float64Array::from(vec![
                     idx as f64 * 0.1,
                     idx as f64 * 0.2,
                     idx as f64 * 0.3,
+                ])),
+                Arc::new(Int64Array::from(vec![
+                    1_700_000_000_000_000_000i64 + idx as i64,
+                    1_700_000_000_000_000_001i64 + idx as i64,
+                    1_700_000_000_000_000_002i64 + idx as i64,
                 ])),
             ],
         )
@@ -851,4 +863,139 @@ async fn test_compact_handles_multiple_incomplete_files() {
         0,
         "All incomplete files should be deleted"
     );
+}
+
+/// Regression guard for the two schema defects:
+/// (a) rows must carry an epoch-nanosecond `timestamp_ns` join key that is
+///     plausibly recent and non-decreasing across appended rows;
+/// (b) metric values must be stored as Float64 so that integers above f32's
+///     24-bit mantissa (2^24 = 16,777,216) round-trip exactly. Under the old
+///     Float32 schema, 16_777_217.0 would come back as 16_777_216.0.
+#[tokio::test]
+async fn test_timestamp_ns_and_f64_precision() {
+    let (_local_temp, _remote_temp, local_dir, _remote_store, _remote_path) =
+        create_test_setup().await;
+
+    let writer = Arc::new(
+        DatasetWriter::new(
+            local_dir.clone(),
+            3,    // rows_per_parquet: cut a parquet file after 3 rows
+            1000, // save_interval_secs (long to avoid periodic saves during test)
+            vec![],
+        )
+        .unwrap(),
+    );
+
+    // 2^24 + 1: the first integer NOT representable in f32
+    const F32_UNREPRESENTABLE: f64 = 16_777_217.0;
+
+    let make_row = |name: &str, value: f64| Row {
+        scraper_endpoint: "test_endpoint".to_string(),
+        metric_name: name.to_string(),
+        metric_value: value,
+        histogram_bucket_lower: None,
+        histogram_bucket_upper: None,
+        histogram_sum: Some(F32_UNREPRESENTABLE),
+        histogram_count: Some(F32_UNREPRESENTABLE),
+        extras: vec![],
+    };
+
+    // Append one row at a time with small sleeps so timestamps advance
+    writer
+        .append_row(make_row("big_counter_bytes", F32_UNREPRESENTABLE))
+        .await
+        .unwrap();
+    tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+    writer.append_row(make_row("metric_b", 1.5)).await.unwrap();
+    tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+    writer.append_row(make_row("metric_c", 2.5)).await.unwrap();
+
+    // 3 rows == rows_per_parquet, so out-1.parquet must exist
+    let path = local_dir.join("out-1.parquet");
+    assert!(path.exists(), "Parquet file should exist at {:?}", path);
+
+    let batches = read_local_parquet_file(&path);
+    assert_eq!(batches.len(), 1);
+    let batch = &batches[0];
+    assert_eq!(batch.num_rows(), 3);
+
+    // (a) timestamp_ns: present, Int64, non-nullable, recent, non-decreasing
+    let schema = batch.schema();
+    let ts_field = schema
+        .field_with_name("timestamp_ns")
+        .expect("Schema should contain timestamp_ns column");
+    assert_eq!(ts_field.data_type(), &arrow::datatypes::DataType::Int64);
+    assert!(
+        !ts_field.is_nullable(),
+        "timestamp_ns should be non-nullable"
+    );
+
+    let timestamps = batch
+        .column_by_name("timestamp_ns")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<arrow::array::Int64Array>()
+        .expect("timestamp_ns should be an Int64Array");
+
+    let now_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as i64;
+    const ONE_HOUR_NS: i64 = 3_600 * 1_000_000_000;
+
+    for i in 0..timestamps.len() {
+        assert!(!timestamps.is_null(i), "timestamp_ns must not be null");
+        let ts = timestamps.value(i);
+        assert!(
+            (now_ns - ts).abs() < ONE_HOUR_NS,
+            "timestamp_ns {} should be within an hour of now {}",
+            ts,
+            now_ns
+        );
+    }
+    for i in 1..timestamps.len() {
+        assert!(
+            timestamps.value(i) >= timestamps.value(i - 1),
+            "timestamp_ns must be non-decreasing across appended rows: row {} ({}) < row {} ({})",
+            i,
+            timestamps.value(i),
+            i - 1,
+            timestamps.value(i - 1)
+        );
+    }
+    // Rows appended with sleeps in between must have strictly increasing timestamps
+    assert!(
+        timestamps.value(2) > timestamps.value(0),
+        "timestamps of rows appended later should advance"
+    );
+
+    // (b) f64 round-trip: 2^24 + 1 must survive exactly (fails under Float32)
+    let values = batch
+        .column_by_name("metric_value")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<arrow::array::Float64Array>()
+        .expect("metric_value should be a Float64Array");
+    assert_eq!(
+        values.value(0),
+        F32_UNREPRESENTABLE,
+        "metric_value must round-trip 2^24+1 exactly (f32 would truncate to 16_777_216)"
+    );
+
+    let sums = batch
+        .column_by_name("histogram_sum")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<arrow::array::Float64Array>()
+        .expect("histogram_sum should be a Float64Array");
+    let counts = batch
+        .column_by_name("histogram_count")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<arrow::array::Float64Array>()
+        .expect("histogram_count should be a Float64Array");
+    assert_eq!(sums.value(0), F32_UNREPRESENTABLE);
+    assert_eq!(counts.value(0), F32_UNREPRESENTABLE);
+
+    writer.shutdown().await.unwrap();
 }

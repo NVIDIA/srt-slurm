@@ -94,16 +94,19 @@ def _plan(context) -> dict[str, object]:
     return json.loads(context.direct_plan_json)
 
 
+def _host_plan(context) -> dict[str, object]:
+    return json.loads(context.direct_host_plan_json)
+
+
 def _assert_valid_direct_script(script: str) -> None:
     syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
     assert syntax.returncode == 0, syntax.stderr
-    assert (
-        'exec "${SRTCTL_PYTHON}" "${SRTCTL_SOURCE}/src/srtctl/render/direct_runner.py" --plan "${DIRECT_PLAN}"'
-        in script
-    )
-    assert "direct-plan.json" in script
-    assert "srt_launch" not in script
-    assert "srt_stop_group" not in script
+    assert "direct_host_runner.py" in script
+    assert "--plan -" in script
+    assert "SRTCTL_DIRECT_HOST_PLAN_" in script
+    assert "direct_runner.py" not in script
+    assert "docker " not in script
+    assert "SRTCTL_LOCAL_CONTAINERIZED" not in script
     for removed_compatibility_path in ("SRTCTL_TACHOMETER", "SRTCTL_NATS_BINARY"):
         assert removed_compatibility_path not in script
     for forbidden in ("#SBATCH", "SLURM_", "scontrol", "srun", "do_sweep", "run_benchmark"):
@@ -118,6 +121,7 @@ def test_direct_plan_renders_eight_tp1_workers_with_separate_logs(tmp_path) -> N
     )
     script = render_direct_container_shim(context)
     plan = _plan(context)
+    host_plan = _host_plan(context)
 
     assert len(context.worker_processes) == 8
     assert {worker.log_name for worker in context.worker_processes} == {f"worker-{index}.log" for index in range(8)}
@@ -131,6 +135,7 @@ def test_direct_plan_renders_eight_tp1_workers_with_separate_logs(tmp_path) -> N
     assert 'name = "router"' in str(plan["tachometer_config"])
     assert [worker["log_name"] for worker in plan["worker_processes"]] == [f"worker-{index}.log" for index in range(8)]
     assert plan["router_command"] == context.router_command
+    assert host_plan["direct_plan"] == plan
     _assert_valid_direct_script(script)
 
 
@@ -213,7 +218,7 @@ def test_direct_plan_caches_a_hash_pinned_source_build(tmp_path) -> None:
     assert plan["dynamo_top_of_tree"] is False
 
 
-def test_direct_container_shim_runs_inside_sglang_container(tmp_path) -> None:
+def test_direct_container_shim_bootstraps_the_python_host_runner(tmp_path) -> None:
     source = tmp_path / "sglang"
     source.mkdir()
     context = build_direct_plan_context(
@@ -232,29 +237,13 @@ def test_direct_container_shim_runs_inside_sglang_container(tmp_path) -> None:
 
     assert context.local_container_image == "lmsysorg/sglang:dev"
     assert context.sglang_source == str(source)
-    assert "SRTCTL_LOCAL_CONTAINERIZED" in script
-    assert "--network host" in script
-    assert "--ipc host" in script
-    assert "--gpus all" in script
-    assert 'SRTCTL_MODEL_MOUNT_PATH="${SRTCTL_RENDERED_MODEL_PATH}"' in script
-    assert '"$(basename "$(dirname "${SRTCTL_MODEL_MOUNT_PATH}")")" == "snapshots"' in script
-    assert 'SRTCTL_MODEL_MOUNT_PATH="$(dirname "$(dirname "${SRTCTL_MODEL_MOUNT_PATH}")")"' in script
-    assert 'SRTCTL_CONTAINER_NAME="srtctl-direct-$$"' in script
-    assert '--detach\n        --name "${SRTCTL_CONTAINER_NAME}"' in script
-    assert '--label "${SRTCTL_CONTAINER_LABEL}"' in script
-    assert 'docker ps -aq --filter "label=${SRTCTL_CONTAINER_LABEL}"' in script
-    assert 'docker run "${SRT_CONTAINER_ARGS[@]}" >/dev/null' in script
-    assert 'docker exec "${SRT_CONTAINER_EXEC_ARGS[@]}" "${SRTCTL_CONTAINER_NAME}" bash /run/srtctl-direct.sh' in script
-    assert 'docker rm -f "${SRTCTL_CONTAINER_NAME}"' in script
-    assert "SRTCTL_OUTPUT_DIR=${OUTPUT_DIR}" in script
-    assert "SRTCTL_SGLANG_RUNTIME_DIR=${SRTCTL_SGLANG_RUNTIME_DIR}" in script
-    assert 'sudo -n chown -R "${owner}" "${path}"' in script
-    assert "--user" not in script
-    assert "SRTCTL_HOST_CARGO_HOME" not in script
-    assert 'mkdir -p "${OUTPUT_BASE}"' in script
-    assert 'if [[ "${SRTCTL_LOCAL_CONTAINERIZED:-}" != "1" ]]; then' in script
-    assert 'if [[ "${mode}" == "readonly" ]]; then' in script
-    assert 'mount+=",readonly"' in script
+    host_plan = _host_plan(context)
+
+    assert host_plan["source_dir"] == str((tmp_path / "srt-slurm").resolve())
+    assert host_plan["model_path"] == "fake/mock-model"
+    assert host_plan["sglang_source"] == str(source)
+    assert host_plan["local_container_image"] == "lmsysorg/sglang:dev"
+    assert host_plan["direct_plan"] == _plan(context)
     _assert_valid_direct_script(script)
 
 
@@ -307,6 +296,7 @@ def test_direct_plan_starts_mooncake_and_injects_worker_environment(tmp_path) ->
     )
     script = render_direct_container_shim(context)
     plan = _plan(context)
+    host_plan = _host_plan(context)
 
     assert context.mooncake_master_command is not None
     assert "--custom-flag=true" in context.mooncake_master_command
@@ -315,9 +305,9 @@ def test_direct_plan_starts_mooncake_and_injects_worker_environment(tmp_path) ->
     assert "MOONCAKE_TE_META_DATA_SERVER=http://127.0.0.1:8701/metadata" in context.worker_processes[0].command
     assert "MOONCAKE_PROTOCOL=rdma" in context.worker_processes[0].command
     assert plan["mooncake_master_command"] == list(context.mooncake_master_command)
-    assert 'SRTCTL_MOONCAKE_CONTAINER_NAME="${SRTCTL_CONTAINER_NAME}-mooncake"' in script
-    assert "nvcr.io/nvidia/mooncake:latest" in script
-    assert 'docker logs -f "${SRTCTL_MOONCAKE_CONTAINER_NAME}"' in script
+    assert host_plan["mooncake_master_command"] == list(context.mooncake_master_command)
+    assert host_plan["mooncake_container"] == "nvcr.io/nvidia/mooncake:latest"
+    assert host_plan["mooncake_environment"] == [["MOONCAKE_PROTOCOL", "rdma"]]
     _assert_valid_direct_script(script)
 
 

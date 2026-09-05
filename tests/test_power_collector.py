@@ -3,6 +3,7 @@
 
 """Head-node power collector lifecycle against fake DCGM endpoints."""
 
+import hashlib
 import json
 import subprocess
 import threading
@@ -21,6 +22,7 @@ from srtctl.core.power.manifest import ExpectedWindow
 from srtctl.core.power.samples import read_samples
 from srtctl.core.power.session import PowerEndpoint, PowerSessionSettings, PowerTelemetrySession, _run_daemon_workers
 from srtctl.core.power.topology import build_expected_devices
+from srtctl.core.power.validate_artifacts import validate_power_artifacts
 from srtctl.core.processes import ManagedProcess, ProcessRegistry
 from srtctl.core.schema import TelemetryExporterConfig
 from srtctl.core.topology import Process
@@ -254,6 +256,21 @@ class TestCollection:
         assert len({row.gpu_uuid for row in rows}) == 2 * GPUS_PER_NODE
         assert {row.hostname for row in rows} == {"node-a", "node-b"}
         assert {row.scrape_seq for row in rows} == {0}
+
+    def test_terminal_manifest_records_the_samples_digest(self, tmp_path, exporters):
+        endpoint = exporters(_body("a"))
+        session = _session(
+            tmp_path,
+            _endpoints(("node-a", endpoint.url)),
+            processes=_processes()[:1],
+        )
+        session.initialize()
+        session.collect_once()
+
+        session.stop_and_finalize()
+
+        samples = session.power_dir / SAMPLES_FILENAME
+        assert _manifest(session)["samples_sha256"] == hashlib.sha256(samples.read_bytes()).hexdigest()
 
     def test_hostname_comes_from_the_endpoint_map(self, tmp_path, exporters):
         a = exporters(_body("a"))
@@ -588,6 +605,36 @@ class TestPublication:
         assert len(manifest["window_validations"][0]["per_device_max_sample_gap_seconds"]) == 2 * GPUS_PER_NODE
         assert manifest["artifact_errors"] == []
 
+        # Round-trip the producer's package through the offline validator so the
+        # two publication_valid formulas can never drift apart silently.
+        report = validate_power_artifacts(
+            power_dir=session.power_dir,
+            result_root=session.power_dir.parent,
+        )
+        assert report.ok is True, report.failures
+
+    def test_digest_io_failure_is_not_reclassified_as_malformed(self, tmp_path, exporters):
+        a = exporters(_body("a"))
+        b = exporters(_body("b"))
+        session = _session(tmp_path, _endpoints(("node-a", a.url), ("node-b", b.url)), sample_interval_seconds=0.2)
+        session.initialize()
+        assert session.start_and_wait_for_readiness() is True
+
+        start = time.time()
+        time.sleep(0.6)
+        end = time.time()
+        self._write_window_and_result(session, start, end)
+
+        with patch("srtctl.core.power.session.sha256_file", side_effect=PermissionError("digest denied")):
+            outcome = session.stop_and_finalize(allow_window_mutation=True)
+        report = validate_power_artifacts(power_dir=session.power_dir, result_root=session.power_dir.parent)
+
+        assert outcome.publication_valid is False
+        assert Reason.SAMPLES_DIGEST_UNAVAILABLE in outcome.reason_codes
+        assert Reason.SAMPLES_CSV_MALFORMED not in outcome.reason_codes
+        assert not any("disk-derived reason_codes mismatch" in failure for failure in report.failures)
+        assert not any("publication_valid is False, recomputed True" in failure for failure in report.failures)
+
     def test_a_stray_artifact_file_blocks_publication(self, tmp_path, exporters):
         """A valid expected window must not publish beside an unusable file."""
         a = exporters(_body("a"))
@@ -692,6 +739,16 @@ class TestSessionOwnership:
         assert manifest["status"] in ("complete", "incomplete", "failed")
         assert manifest["stopped_at_unix"] is not None
         assert exit_code == 1
+
+    def test_missing_samples_are_not_reclassified_as_malformed(self, tmp_path):
+        session = _session(tmp_path, [])
+
+        outcome = session.stop_and_finalize()
+        report = validate_power_artifacts(power_dir=session.power_dir, result_root=session.power_dir.parent)
+
+        assert Reason.SAMPLES_CSV_MISSING in outcome.reason_codes
+        assert Reason.SAMPLES_CSV_MALFORMED not in outcome.reason_codes
+        assert not any("disk-derived reason_codes mismatch" in failure for failure in report.failures)
 
     def test_exporter_launch_failure_blocks_the_benchmark(self, tmp_path):
         """Sibling of the readiness gate: a failed launch must not run the workload."""
