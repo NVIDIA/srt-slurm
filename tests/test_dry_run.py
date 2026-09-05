@@ -263,6 +263,8 @@ class TestDryRunExecutionExtensions:
         assert "binary_path" in output
         assert "tachometer-scraper" in output
         assert "storage_subdir" in output
+        assert "INFO JSONL" in output
+        assert "frontend-only metadata" in output
 
     def test_tachometer_details_shown_without_explicit_block(self, capsys):
         """observability.enabled alone implies Tachometer; dry-run must say so."""

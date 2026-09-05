@@ -631,29 +631,34 @@ def expand_observability(cfg: dict) -> dict:
     No-op unless ``observability.enabled`` is truthy.
     """
     from srtctl.core.schema import (
+        ANALYTICS_DEBUG_SPAN_ENV,
         ANALYTICS_ENGINE_CONFIG,
+        ANALYTICS_INFO_ENV,
         ANALYTICS_REQUEST_TRACE_ENV,
-        ANALYTICS_SPAN_ENV,
     )
 
     observability = cfg.get("observability")
     if not isinstance(observability, dict) or not observability.get("enabled"):
         return cfg
 
-    # --- traces leg: SPAN_CLOSED lines on prefill, decode and frontend -------
+    # --- structured logging on prefill, decode and frontend ------------------
+    component_log_env = dict(ANALYTICS_INFO_ENV)
+    if observability.get("debug_spans"):
+        component_log_env.update(ANALYTICS_DEBUG_SPAN_ENV)
+
     backend = cfg.get("backend")
     if not isinstance(backend, dict):
         backend = {}
         cfg["backend"] = backend
 
     for mode in ("prefill", "decode", "aggregated"):
-        _setdefault_nested(backend, f"{mode}_environment", ANALYTICS_SPAN_ENV)
+        _setdefault_nested(backend, f"{mode}_environment", component_log_env)
 
     frontend = cfg.get("frontend")
     if not isinstance(frontend, dict):
         frontend = {}
         cfg["frontend"] = frontend
-    _setdefault_nested(frontend, "env", ANALYTICS_SPAN_ENV)
+    _setdefault_nested(frontend, "env", component_log_env)
 
     # --- request-trace leg: per-request phase timings, frontend only ---------
     # Complements the span leg rather than duplicating it. Spans decompose the
@@ -689,8 +694,9 @@ def expand_observability(cfg: dict) -> dict:
                 _setdefault_nested(trtllm_config, mode, ANALYTICS_ENGINE_CONFIG)
 
     logger.info(
-        "observability.enabled: expanded span-event env (prefill/decode/frontend), "
-        "publish_events_and_metrics and per-iteration engine stats"
+        "observability.enabled: expanded INFO JSONL env and frontend request trace, "
+        "publish_events_and_metrics and per-iteration engine stats%s",
+        " with DEBUG span events" if observability.get("debug_spans") else "",
     )
     return cfg
 

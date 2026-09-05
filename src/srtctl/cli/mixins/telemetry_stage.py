@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import os
 import shlex
+import subprocess
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -20,7 +21,7 @@ from srtctl.core.power.topology import build_expected_devices
 from srtctl.core.processes import ManagedProcess, ProcessRegistry
 from srtctl.core.schema import TelemetryExporterConfig
 from srtctl.core.slurm import start_srun_process
-from srtctl.core.telemetry import TACHOMETER_STORAGE_PARENT, generate_tachometer_config
+from srtctl.core.telemetry import TACHOMETER_STORAGE_LEAF, TACHOMETER_STORAGE_PARENT, generate_tachometer_config
 
 if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
@@ -30,6 +31,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 DCGM_EXPORTER_COMMAND_TEMPLATE = "dcgm-exporter --collect-interval=100 --address :{port}"
+TACHOMETER_COMPACT_TIMEOUT_SECONDS = 30 * 60
 
 
 def resolve_exporter_command(exporter_config: TelemetryExporterConfig, default_template: str) -> str:
@@ -399,3 +401,69 @@ class TelemetryStageMixin:
         )
         logger.info("Tachometer started with artifacts under %s", tachometer_dir)
         return processes
+
+    def finalize_tachometer(self, registry: ProcessRegistry) -> bool:
+        """Stop Tachometer and explicitly compact its durable local shards.
+
+        Terminating a local ``srun`` client can cause Slurm to kill the remote
+        step before the scraper handles SIGTERM. The periodic shards remain
+        durable, but the scraper never publishes ``final.parquet``. Run the
+        idempotent compact subcommand after the scraper step exits so
+        post-processing always sees the authoritative final artifact.
+        """
+        observability = self.config.observability
+        if not observability.tachometer_enabled:
+            return True
+
+        scraper = registry.get_process("tachometer")
+        if scraper is None:
+            logger.debug("No registered Tachometer scraper to finalize")
+            return True
+        if scraper.is_running:
+            logger.info("Stopping Tachometer before final compaction")
+            scraper.terminate(timeout=30.0)
+
+        tachometer = observability.tachometer
+        tachometer_dir = self.runtime.log_dir / tachometer.storage_subdir
+        local_dir = tachometer_dir / "local"
+        storage_leaf = tachometer_dir / TACHOMETER_STORAGE_PARENT / TACHOMETER_STORAGE_LEAF
+        compact_log = self.runtime.log_dir / "tachometer_compact.out"
+        command = [
+            self._resolve_tachometer_binary(tachometer.binary_path),
+            "compact",
+            str(local_dir),
+            "--output",
+            f"file://{storage_leaf}",
+        ]
+        env_to_set: dict[str, str] = {}
+        if tachometer.compaction_threads > 0:
+            env_to_set["POLARS_MAX_THREADS"] = str(tachometer.compaction_threads)
+
+        logger.info("Compacting Tachometer artifacts to %s", storage_leaf / "final.parquet")
+        proc = start_srun_process(
+            command=command,
+            nodelist=[self.runtime.nodes.head],
+            output=str(compact_log),
+            env_to_set=env_to_set,
+            srun_options=self.runtime.srun_options,
+            het_group=self.runtime.nodes.het_group_for(self.runtime.nodes.head),
+        )
+        try:
+            return_code = proc.wait(timeout=TACHOMETER_COMPACT_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            logger.error(
+                "Tachometer final compaction timed out after %ds; see %s",
+                TACHOMETER_COMPACT_TIMEOUT_SECONDS,
+                compact_log,
+            )
+            proc.kill()
+            proc.wait()
+            return False
+        if return_code != 0:
+            logger.error("Tachometer final compaction exited %d; see %s", return_code, compact_log)
+            return False
+        if not (storage_leaf / "final.parquet").is_file():
+            logger.error("Tachometer compaction returned success without %s", storage_leaf / "final.parquet")
+            return False
+        logger.info("Tachometer final compaction complete")
+        return True

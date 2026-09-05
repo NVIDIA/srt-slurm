@@ -1111,7 +1111,7 @@ class TachometerConfig:
 
 @dataclass(frozen=True)
 class ObservabilityConfig:
-    """Observability configuration for OTEL tracing.
+    """Observability configuration for structured logs, metrics, and tracing.
 
     When enable_otel is True, OTEL environment variables (DYN_LOGGING_JSONL,
     OTEL_EXPORT_ENABLED, OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, OTEL_SERVICE_NAME)
@@ -1131,8 +1131,13 @@ class ObservabilityConfig:
     * ``enable_iter_perf_stats`` + ``return_perf_metrics`` on every engine
       config -- the ``trtllm_kv_cache_*`` occupancy gauges and per-request
       histograms appear on that surface.
-    * ``DYN_LOGGING_SPAN_EVENTS`` / ``DYN_LOGGING_JSONL`` / ``DYN_LOG=debug`` on
-      prefill, decode and frontend -- per-request ``SPAN_CLOSED`` trace lines.
+    * ``DYN_LOGGING_JSONL=true`` / ``DYN_LOG=info`` on prefill, decode and
+      frontend -- lightweight structured component logs.
+    * ``DYN_REQUEST_TRACE=1`` on the frontend only -- metadata-only per-request
+      timing and routing records, persisted below the run log directory.
+
+    Setting ``debug_spans`` additionally enables ``DYN_LOGGING_SPAN_EVENTS``
+    and changes the default log level to DEBUG for exact router-span analysis.
 
     and, for the run's server-side capture:
 
@@ -1160,6 +1165,8 @@ class ObservabilityConfig:
 
     Attributes:
         enabled: Master analytics knob. Default: False.
+        debug_spans: Emit DEBUG-level span events for exact router debugging.
+            Default: False.
         enable_otel: If True, inject OTEL environment variables into all workers
             and frontends. Requires otel_endpoint to be set. Default: False.
         otel_endpoint: OTEL collector endpoint (e.g. "http://10.0.0.1:4317").
@@ -1175,6 +1182,7 @@ class ObservabilityConfig:
     """
 
     enabled: bool = False
+    debug_spans: bool = False
     enable_otel: bool = False
     otel_endpoint: str | None = None
 
@@ -1229,13 +1237,16 @@ def build_otel_env(observability: ObservabilityConfig, component: str) -> dict[s
     }
 
 
-# Env that makes Dynamo emit one JSONL ``SPAN_CLOSED`` line per closed span on
-# the component's stdout. This is the *only* source for the per-request trace
-# leg of the offline perf tooling; without it those panels have no input.
-# DYN_LOG=debug is required because the span events are emitted at DEBUG level.
-ANALYTICS_SPAN_ENV: dict[str, str] = {
-    "DYN_LOGGING_SPAN_EVENTS": "true",
+# Lightweight structured logging used for every observability-enabled run.
+ANALYTICS_INFO_ENV: dict[str, str] = {
     "DYN_LOGGING_JSONL": "true",
+    "DYN_LOG": "info",
+}
+
+# Optional exact router-span debugging. Span events are emitted at DEBUG level,
+# so both settings are required when observability.debug_spans is enabled.
+ANALYTICS_DEBUG_SPAN_ENV: dict[str, str] = {
+    "DYN_LOGGING_SPAN_EVENTS": "true",
     "DYN_LOG": "debug",
 }
 

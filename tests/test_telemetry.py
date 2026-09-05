@@ -654,6 +654,46 @@ class TestTachometerStageMixin:
         assert stage._resolve_tachometer_binary("tachometer-scraper") == str(binary)
 
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
+    def test_finalize_tachometer_stops_scraper_and_compacts(self, mock_srun, tmp_path):
+        class Harness(TelemetryStageMixin):
+            def __init__(self):
+                self.config = _make_config(tachometer=TachometerConfig(enabled=True))
+                self.runtime = MagicMock()
+                self.runtime.log_dir = tmp_path
+                self.runtime.nodes.head = "node-a"
+                self.runtime.nodes.het_group_for.return_value = None
+                self.runtime.srun_options = {}
+
+        local_dir = tmp_path / "tachometer" / "local"
+        storage_leaf = tmp_path / "tachometer" / "raw" / "scrape"
+        local_dir.mkdir(parents=True)
+        storage_leaf.mkdir(parents=True)
+
+        scraper = MagicMock()
+        scraper.is_running = True
+        registry = MagicMock()
+        registry.get_process.return_value = scraper
+
+        compact = MagicMock()
+        compact.wait.return_value = 0
+        mock_srun.return_value = compact
+        harness = Harness()
+        harness._resolve_tachometer_binary = lambda binary_path: binary_path
+
+        # The real compact process creates this before returning success.
+        compact.wait.side_effect = lambda timeout: (storage_leaf / "final.parquet").touch() or 0
+
+        assert harness.finalize_tachometer(registry) is True
+        scraper.terminate.assert_called_once_with(timeout=30.0)
+        assert mock_srun.call_args.kwargs["command"] == [
+            "tachometer-scraper",
+            "compact",
+            str(local_dir),
+            "--output",
+            f"file://{storage_leaf}",
+        ]
+
+    @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
     def test_tachometer_auto_starts_under_observability_enabled(self, mock_srun, tmp_path):
         """observability.enabled alone starts Tachometer — no tachometer: block needed."""
         import dataclasses
