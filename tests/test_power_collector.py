@@ -3,6 +3,7 @@
 
 """Head-node power collector lifecycle against fake DCGM endpoints."""
 
+import hashlib
 import json
 import subprocess
 import threading
@@ -21,8 +22,9 @@ from srtctl.core.power.manifest import ExpectedWindow
 from srtctl.core.power.samples import read_samples
 from srtctl.core.power.session import PowerEndpoint, PowerSessionSettings, PowerTelemetrySession, _run_daemon_workers
 from srtctl.core.power.topology import build_expected_devices
+from srtctl.core.power.validate_artifacts import validate_power_artifacts
 from srtctl.core.processes import ManagedProcess, ProcessRegistry
-from srtctl.core.schema import TelemetryExporterConfig, TelemetryProvider
+from srtctl.core.schema import TelemetryExporterConfig
 from srtctl.core.topology import Process
 
 GPUS_PER_NODE = 4
@@ -254,6 +256,21 @@ class TestCollection:
         assert len({row.gpu_uuid for row in rows}) == 2 * GPUS_PER_NODE
         assert {row.hostname for row in rows} == {"node-a", "node-b"}
         assert {row.scrape_seq for row in rows} == {0}
+
+    def test_terminal_manifest_records_the_samples_digest(self, tmp_path, exporters):
+        endpoint = exporters(_body("a"))
+        session = _session(
+            tmp_path,
+            _endpoints(("node-a", endpoint.url)),
+            processes=_processes()[:1],
+        )
+        session.initialize()
+        session.collect_once()
+
+        session.stop_and_finalize()
+
+        samples = session.power_dir / SAMPLES_FILENAME
+        assert _manifest(session)["samples_sha256"] == hashlib.sha256(samples.read_bytes()).hexdigest()
 
     def test_hostname_comes_from_the_endpoint_map(self, tmp_path, exporters):
         a = exporters(_body("a"))
@@ -588,6 +605,36 @@ class TestPublication:
         assert len(manifest["window_validations"][0]["per_device_max_sample_gap_seconds"]) == 2 * GPUS_PER_NODE
         assert manifest["artifact_errors"] == []
 
+        # Round-trip the producer's package through the offline validator so the
+        # two publication_valid formulas can never drift apart silently.
+        report = validate_power_artifacts(
+            power_dir=session.power_dir,
+            result_root=session.power_dir.parent,
+        )
+        assert report.ok is True, report.failures
+
+    def test_digest_io_failure_is_not_reclassified_as_malformed(self, tmp_path, exporters):
+        a = exporters(_body("a"))
+        b = exporters(_body("b"))
+        session = _session(tmp_path, _endpoints(("node-a", a.url), ("node-b", b.url)), sample_interval_seconds=0.2)
+        session.initialize()
+        assert session.start_and_wait_for_readiness() is True
+
+        start = time.time()
+        time.sleep(0.6)
+        end = time.time()
+        self._write_window_and_result(session, start, end)
+
+        with patch("srtctl.core.power.session.sha256_file", side_effect=PermissionError("digest denied")):
+            outcome = session.stop_and_finalize(allow_window_mutation=True)
+        report = validate_power_artifacts(power_dir=session.power_dir, result_root=session.power_dir.parent)
+
+        assert outcome.publication_valid is False
+        assert Reason.SAMPLES_DIGEST_UNAVAILABLE in outcome.reason_codes
+        assert Reason.SAMPLES_CSV_MALFORMED not in outcome.reason_codes
+        assert not any("disk-derived reason_codes mismatch" in failure for failure in report.failures)
+        assert not any("publication_valid is False, recomputed True" in failure for failure in report.failures)
+
     def test_a_stray_artifact_file_blocks_publication(self, tmp_path, exporters):
         """A valid expected window must not publish beside an unusable file."""
         a = exporters(_body("a"))
@@ -644,7 +691,6 @@ class TestSessionOwnership:
             def __init__(self):
                 self.config = MagicMock()
                 self.config.telemetry.enabled = True
-                self.config.telemetry.provider = TelemetryProvider.DCGM_POWER
                 self.config.telemetry.storage_subdir = "power"
                 self.config.telemetry.default_frequency = 0.05
                 self.config.telemetry.startup_timeout_seconds = 0.2
@@ -694,6 +740,16 @@ class TestSessionOwnership:
         assert manifest["stopped_at_unix"] is not None
         assert exit_code == 1
 
+    def test_missing_samples_are_not_reclassified_as_malformed(self, tmp_path):
+        session = _session(tmp_path, [])
+
+        outcome = session.stop_and_finalize()
+        report = validate_power_artifacts(power_dir=session.power_dir, result_root=session.power_dir.parent)
+
+        assert Reason.SAMPLES_CSV_MISSING in outcome.reason_codes
+        assert Reason.SAMPLES_CSV_MALFORMED not in outcome.reason_codes
+        assert not any("disk-derived reason_codes mismatch" in failure for failure in report.failures)
+
     def test_exporter_launch_failure_blocks_the_benchmark(self, tmp_path):
         """Sibling of the readiness gate: a failed launch must not run the workload."""
         harness = self._harness(tmp_path, None)
@@ -716,7 +772,6 @@ class TestRequiredReadinessGate:
     def _orchestrator(self, tmp_path, *, required, ready):
         config = MagicMock()
         config.telemetry.enabled = True
-        config.telemetry.provider = TelemetryProvider.DCGM_POWER
         config.telemetry.required = required
         config.frontend.type = "dynamo"
         config.profiling.enabled = False
@@ -748,6 +803,7 @@ class TestRequiredReadinessGate:
         orchestrator = self._orchestrator(tmp_path, required=True, ready=False)
 
         with (
+            patch.object(SweepOrchestrator, "start_tachometer", return_value=[]) as start_tachometer,
             patch.object(SweepOrchestrator, "start_power_telemetry") as start_power,
             patch.object(SweepOrchestrator, "run_benchmark") as run_benchmark,
             patch.object(SweepOrchestrator, "start_all_workers", return_value={}),
@@ -769,6 +825,7 @@ class TestRequiredReadinessGate:
             exit_code = orchestrator.run()
 
         run_benchmark.assert_not_called()
+        start_tachometer.assert_called_once()
         assert exit_code == 1
 
     def test_eval_only_run_never_starts_power_telemetry(self, tmp_path):
@@ -777,6 +834,7 @@ class TestRequiredReadinessGate:
         orchestrator._power_session = None
 
         with (
+            patch.object(SweepOrchestrator, "start_tachometer", return_value=[]) as start_tachometer,
             patch.object(SweepOrchestrator, "start_power_telemetry") as start_power,
             patch.object(SweepOrchestrator, "run_benchmark") as run_benchmark,
             patch.object(SweepOrchestrator, "_run_post_eval", return_value=0),
@@ -798,6 +856,7 @@ class TestRequiredReadinessGate:
             exit_code = orchestrator.run()
 
         start_power.assert_not_called()
+        start_tachometer.assert_called_once()
         run_benchmark.assert_not_called()
         assert exit_code == 0
 

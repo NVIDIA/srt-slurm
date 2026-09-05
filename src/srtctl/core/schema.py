@@ -45,6 +45,9 @@ from srtctl.core.formatting import (
     FormattablePathField,
 )
 
+# Leaf module (stdlib-only imports), so this cannot cycle back into schema.
+from srtctl.core.power.contract import CONTAINER_LOG_DIR
+
 logger = logging.getLogger(__name__)
 
 # Local copies of srtctl.core.power.contract values so that loading a config
@@ -192,6 +195,49 @@ class S3Config:
     Schema: ClassVar[type[Schema]] = Schema
 
 
+@dataclass(frozen=True)
+class HostSetupConfig:
+    """Commands run on the bare host of each allocated node, outside the container.
+
+    The orchestrator (which itself runs on the host, not in a container) fans these
+    out one srun per node before any worker starts, and runs ``teardown`` after the
+    workers are torn down. Use this for node state that cannot be set from inside a
+    container -- locking GPU clocks with ``nvidia-smi -lmc``, loading a kernel
+    module, dropping caches.
+
+    This is the counterpart to ``SrtConfig.setup_script``, which runs *inside* the
+    container from /configs.
+
+    Commands run as the submitting user. Anything needing root must go through
+    passwordless sudo (``sudo -n ...``); a sudo that prompts will hang until
+    ``timeout_seconds`` and fail the job.
+
+    Attributes:
+        commands: Shell commands run in order on each node, joined with ``&&``.
+        teardown: Shell commands run on each node after workers stop. Runs even
+            when the job fails, so state that outlives the allocation (locked
+            clocks persist for the next tenant) gets reset.
+        nodes: Which nodes to target. "all" covers head, infra, and workers;
+            "workers" covers only the nodes running backend workers.
+        ignore_failure: When True, a failing node logs a warning instead of
+            failing the job.
+        timeout_seconds: Per-node wall-clock budget for commands and for teardown.
+    """
+
+    commands: list[str] = field(default_factory=list)
+    teardown: list[str] = field(default_factory=list)
+    nodes: Literal["all", "workers"] = "all"
+    ignore_failure: bool = False
+    timeout_seconds: int = 300
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+    @property
+    def enabled(self) -> bool:
+        """True when there is anything to run on the nodes."""
+        return bool(self.commands or self.teardown)
+
+
 @dataclass
 class ClusterConfig:
     """Cluster configuration from srtslurm.yaml."""
@@ -226,11 +272,19 @@ class ClusterConfig:
     # ``"ulimit -n 1048576 -s unlimited -u 1048576"``. Silently dropped for
     # sruns that bypass the bash wrapper (distroless containers).
     default_bash_preamble: str | None = None
+    # Commands run on every allocated node's bare host, outside the container,
+    # before workers start. Recipes override with their own `host_setup:` block.
+    default_host_setup: HostSetupConfig | None = None
     reporting: ReportingConfig | None = None
     telemetry: dict | None = None  # opaque dict, parsed by try_start_snapshotter
     # When set, applied to job configs that omit ``frontend.nginx_raise_ulimit``.
     # Clusters that disallow raising nofile for nginx containers should use false.
     nginx_raise_ulimit: bool | None = None
+    # Works around intermittent git smart-HTTP/HTTP2 failures cloning github.com
+    # (stalls, or truncated responses git misreports as "could not read
+    # Username" auth-prompt failures). See git_clone_command_prefix() in
+    # core/config.py -- applied to every git clone/fetch srtctl performs.
+    git_http_version: str | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -270,11 +324,6 @@ class ProfilingType(str, Enum):
     NSYS = "nsys"
     TORCH = "torch"
     NONE = "none"
-
-
-class TelemetryProvider(str, Enum):
-    SCRAPER = "scraper"
-    DCGM_POWER = "dcgm-power"
 
 
 # ============================================================================
@@ -693,6 +742,18 @@ class BenchmarkConfig:
     #                       a different node than the orchestrator, use the injected
     #                       $SRT_FRONTEND_HOST env in the benchmark command's URL.
     client_placement: str = "head"
+    # If True, reserve a node exclusively for the benchmark client instead of
+    # running it on a worker node. Requires at least 2 nodes. Not supported
+    # together with resources.het_jobs: true.
+    # Default: False.
+    client_dedicated_node: bool = False
+    # Governs how the dedicated-node flags combine when more than one of
+    # client_dedicated_node, frontend.dedicated_node, and
+    # infra.etcd_nats_dedicated_node is set. If True (default), every
+    # requested role shares a single reserved node. If False, each requested
+    # role gets its own reserved node (requires enough total nodes: worker
+    # count + number of dedicated roles).
+    colocate_with_frontend: bool = True
     sweep: Annotated[SweepConfig, SweepConfigField(allow_none=True, load_default=None, dump_default=None)] | None = None
     # Accuracy benchmark fields
     num_examples: int | None = None
@@ -719,6 +780,11 @@ class BenchmarkConfig:
     # Custom dataset fields (sa-bench)
     dataset_name: str | None = None  # "random" (default) or "custom"
     dataset_path: str | None = None  # Container path to dataset file (mount via extra_mount)
+    # AgentPerf benchmark fields (agentperf-client trajectory replay)
+    agentperf_client_dir: str | None = None  # Container path to an agentperf-client checkout (mount via extra_mount)
+    agentperf_config: str | None = (
+        None  # Container path to the client's workload YAML (endpoint/model/concurrency injected)
+    )
     # Trace replay benchmark fields (uses aiperf with mooncake_trace dataset type)
     trace_file: str | None = None  # Path to trace JSONL file (container path, e.g., /traces/dataset.jsonl)
     custom_tokenizer: str | None = None  # Custom tokenizer class (e.g., "module.path.ClassName")
@@ -1008,6 +1074,42 @@ class ProfilingConfig:
 
 
 @dataclass(frozen=True)
+class TelemetryExporterConfig:
+    """Configuration for a metrics exporter deployed on worker nodes."""
+
+    container_image: str
+    port: int
+    command: str | None = None
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
+class TachometerConfig:
+    """Native Tachometer collection for an observability-enabled run.
+
+    ``enabled`` is tri-state: ``None`` (the default) follows
+    ``observability.enabled``, so an observability run collects Tachometer
+    data with no ``tachometer:`` block at all; an explicit ``false`` opts
+    out; an explicit ``true`` under ``observability.enabled: false`` is a
+    validation error (Tachometer's targets only have content when the
+    observability expansion ran).
+    """
+
+    enabled: bool | None = None
+    binary_path: str = "tachometer-scraper"
+    default_frequency: float = 1.0
+    sync_interval_secs: int = 120
+    compaction_threads: int = 4
+    storage_subdir: str = "tachometer"
+    extra_metadata: dict[str, str] = field(default_factory=dict)
+    dcgm_exporter: TelemetryExporterConfig | None = None
+    node_exporter: TelemetryExporterConfig | None = None
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
 class ObservabilityConfig:
     """Observability configuration for OTEL tracing.
 
@@ -1019,81 +1121,81 @@ class ObservabilityConfig:
     dynamo-decode, dynamo-frontend) and can be overridden per-component via
     prefill_environment, decode_environment, or frontend.env.
 
+    ``enabled`` is the single analytics knob. Turning it on makes the run emit
+    every signal the offline perf-analysis tooling consumes, without the user
+    having to remember six independent flags. It expands (at config-load time,
+    via :func:`srtctl.core.config.expand_observability`) into:
+
+    * ``backend.publish_events_and_metrics: true`` -- the worker/frontend
+      Prometheus ``/metrics`` surface exists at all.
+    * ``enable_iter_perf_stats`` + ``return_perf_metrics`` on every engine
+      config -- the ``trtllm_kv_cache_*`` occupancy gauges and per-request
+      histograms appear on that surface.
+    * ``DYN_LOGGING_SPAN_EVENTS`` / ``DYN_LOGGING_JSONL`` / ``DYN_LOG=debug`` on
+      prefill, decode and frontend -- per-request ``SPAN_CLOSED`` trace lines.
+
+    and, for the run's server-side capture:
+
+    * native Tachometer collection of every ``/metrics`` endpoint the benchmark
+      client does not already poll (see ``TelemetryStageMixin.start_tachometer``
+      and ``tachometer`` below).
+
+    Every expansion uses setdefault semantics: an explicit value in the recipe
+    always wins, so ``observability.enabled`` is safe to switch on globally.
+
+    Scope is deliberately server-side. The knob configures what the workers and
+    frontend *emit*, and captures that surface by scraping the endpoints
+    directly. It never asks the benchmark client to re-export what the servers
+    already publish. (One indirect exception: on TRT-LLM the client's
+    ``AIPERF_SERVER_METRICS_URLS`` worker list exists only when
+    ``publish_events_and_metrics`` gives those endpoints content, and this knob
+    is one way that flag gets set — see ``BenchmarkStageMixin``.)
+
+    It does **not** decide whether the component perf dashboard is built. That
+    happens on every run (see :mod:`srtctl.analysis.perf_dashboard`); ``enabled``
+    only decides which capture legs exist and therefore which tabs the page
+    carries. Keeping the two separate is deliberate: a run that captured nothing
+    server-side still renders from the client export and the per-iteration log,
+    and that is the shape most runs have.
+
     Attributes:
+        enabled: Master analytics knob. Default: False.
         enable_otel: If True, inject OTEL environment variables into all workers
             and frontends. Requires otel_endpoint to be set. Default: False.
         otel_endpoint: OTEL collector endpoint (e.g. "http://10.0.0.1:4317").
             Required when enable_otel is True.
-    """
+        tachometer: Native Tachometer capture configuration. Follows ``enabled``
+            unless ``tachometer.enabled`` is set explicitly (see
+            :class:`TachometerConfig`).
 
-    enable_otel: bool = False
-    otel_endpoint: str | None = None
-
-    Schema: ClassVar[type[Schema]] = Schema
-
-
-@dataclass(frozen=True)
-class TelemetryExporterConfig:
-    """Configuration for telemetry exporters deployed on worker nodes."""
-
-    container_image: str
-    port: int
-    command: str | None = None
-
-    Schema: ClassVar[type[Schema]] = Schema
-
-
-@dataclass(frozen=True)
-class LiveMetricsConfig:
-    """In-flight batch-metrics snapshotter (a form of lightweight telemetry).
-
-    When enabled, the orchestrator spawns a daemon thread during the benchmark
-    stage that re-parses prefill/decode worker logs every ``interval_seconds``
-    and atomically overwrites ``<log_dir>/batch_metrics.png``, giving a
-    near-real-time view of the run without any external monitoring stack.
-
-    Lives entirely in :mod:`srtctl.analysis.live_metrics`; this dataclass
-    only defines the user-visible knobs.
+    The retired ``scrape_metrics`` / ``scrape_interval_seconds`` /
+    ``scrape_output`` knobs (the in-job RAW Prometheus scraper) are rejected
+    at load like any unknown key; the ingest still reads historical
+    ``raw_prometheus.jsonl`` artifacts.
     """
 
     enabled: bool = False
-    interval_seconds: int = 60
-    downsample: int = 1
+    enable_otel: bool = False
+    otel_endpoint: str | None = None
+
+    tachometer: TachometerConfig = field(default_factory=TachometerConfig)
 
     Schema: ClassVar[type[Schema]] = Schema
+
+    @property
+    def tachometer_enabled(self) -> bool:
+        """Resolved Tachometer enablement (tri-state ``tachometer.enabled``)."""
+        return self.enabled if self.tachometer.enabled is None else self.tachometer.enabled
 
 
 @dataclass(frozen=True)
 class TelemetryConfig:
-    """Telemetry configuration for benchmark jobs.
-
-    The default provider bundles a scraper with dcgm_exporter and node_exporter.
-    Other providers can reuse the same top-level contract later.
-
-    ``live_metrics`` is a lightweight complementary signal: it tails worker
-    logs in-process (no external stack required) and writes a per-run
-    ``batch_metrics.png`` during the benchmark.
-
-    The ``dcgm-power`` provider needs only ``dcgm_exporter``: it runs a
-    head-node collector inside srtctl instead of the scraper container, so
-    ``container_image``, ``binary_path``, and ``node_exporter`` stay unused.
-    For that provider ``default_frequency`` is the collector cycle period in
-    seconds, and ``required`` decides whether telemetry invalidity fails the job.
-    """
+    """DCGM power telemetry for benchmark measurement windows."""
 
     enabled: bool = False
-    # NOTE: without by_value the schema accepts only enum member names, not "dcgm-power".
-    provider: Annotated[TelemetryProvider, fields.Enum(TelemetryProvider, by_value=True)] = TelemetryProvider.SCRAPER
-    container_image: str | None = None
-    binary_path: str = "/usr/local/bin/telemetry-scraper"
-    default_frequency: float = 5.0
-    sync_interval_secs: int = 120
-    compaction_threads: int = 4
-    storage_subdir: str = "telemetry"
-    extra_metadata: dict[str, str] = field(default_factory=dict)
     dcgm_exporter: TelemetryExporterConfig | None = None
-    node_exporter: TelemetryExporterConfig | None = None
-    live_metrics: LiveMetricsConfig | None = None
+    default_frequency: float = 1.0
+    storage_subdir: str = "power"
     required: bool = False
     startup_timeout_seconds: float = 30.0
     request_timeout_seconds: float = 2.0
@@ -1127,11 +1229,88 @@ def build_otel_env(observability: ObservabilityConfig, component: str) -> dict[s
     }
 
 
+# Env that makes Dynamo emit one JSONL ``SPAN_CLOSED`` line per closed span on
+# the component's stdout. This is the *only* source for the per-request trace
+# leg of the offline perf tooling; without it those panels have no input.
+# DYN_LOG=debug is required because the span events are emitted at DEBUG level.
+ANALYTICS_SPAN_ENV: dict[str, str] = {
+    "DYN_LOGGING_SPAN_EVENTS": "true",
+    "DYN_LOGGING_JSONL": "true",
+    "DYN_LOG": "debug",
+}
+
+# Env that makes the Dynamo *frontend* write one ``dynamo.request.trace.v1``
+# ``request_end`` record per request to a JSONL file. This is a different signal
+# from the span leg above: spans decompose the router in detail but treat each
+# worker as one opaque ``handle_payload``, whereas these records carry the
+# frontend's own phase timings -- ``prefill_wait_time_ms`` (receive to dispatch),
+# ``prefill_time_ms`` (dispatch to first token) and, on disagg,
+# ``kv_transfer_estimated_latency_ms`` -- plus ``x_request_id``, so they join to
+# the client and span legs on the key those already use.
+#
+# Frontend-only: the timings come from the router's RequestTracker
+# (``lib/llm/src/protocols/common/timing.rs``) and are emitted from the
+# preprocessor. Workers have no tracker and would write empty files.
+#
+# Only two vars are needed:
+#   * DYN_REQUEST_TRACE enables the default request-end records, the file sink,
+#     and Dynamo's rotated jsonl_gz format.
+#   * DYN_REQUEST_TRACE_FILE_PATH must be overridden. The built-in default is
+#     /tmp/dynamo-request-trace, and container /tmp does not survive the job --
+#     the capture would be written and then thrown away with the node.
+ANALYTICS_REQUEST_TRACE_ENV: dict[str, str] = {
+    "DYN_REQUEST_TRACE": "1",
+    "DYN_REQUEST_TRACE_FILE_PATH": f"{CONTAINER_LOG_DIR}/dynamo-request-trace",
+}
+
+# Engine-config keys that surface per-request and per-iteration statistics on
+# the worker's /metrics endpoint. ``enable_iter_perf_stats`` is what produces
+# the ``trtllm_kv_cache_{used,free,max}_blocks`` gauges; ``return_perf_metrics``
+# adds the per-request latency / KV-transfer histograms.
+ANALYTICS_ENGINE_CONFIG: dict[str, bool] = {
+    "enable_iter_perf_stats": True,
+    "return_perf_metrics": True,
+}
+
+
 # /configs/dynamo-wheels is the lustre-mounted cache for hash-pinned dynamo
 # source builds. The bench/frontend container always mounts srtslurm's
 # `configs/` dir at /configs (see RuntimeContext.container_mounts), so this
 # path is reachable from every node without any extra recipe wiring.
 _DYNAMO_CACHE_ROOT = "/configs/dynamo-wheels"
+
+
+def dynamo_source_cache_key(dynamo_hash: str, cargo_patches: list[str] | None = None) -> str:
+    """Return the cache key shared by Slurm and direct source builds."""
+    if not cargo_patches:
+        return dynamo_hash
+    # Version the build recipe so a patching change invalidates old artifacts
+    # even when the dependency declarations themselves do not change.
+    digest = hashlib.sha1(("dep-override-v3\n" + "\n".join(cargo_patches)).encode()).hexdigest()[:8]
+    return f"{dynamo_hash}-patch-{digest}"
+
+
+def dynamo_cargo_patch_commands(cargo_patches: list[str] | None = None) -> tuple[str, ...]:
+    """Return shell-safe Cargo.toml replacement commands for a source build."""
+    if not cargo_patches:
+        return ()
+    commands = []
+    for entry in cargo_patches:
+        crate = entry.split("=", 1)[0].strip()
+        if not crate:
+            continue
+        repl = entry.replace("&", r"\&")  # '&' is the sed replacement metachar
+        script = f"s|^{crate}[[:space:]]*=.*|{repl}|"
+        commands.append(f"find . -name Cargo.toml -exec sed -i -E {shlex.quote(script)} {{}} +")
+    return tuple(commands)
+
+
+def _git_clone_cmd() -> str:
+    """Shell-quoted ``git`` invocation for install-script bash strings; see
+    ``srtctl.core.config.git_clone_command_prefix`` for why this exists."""
+    from srtctl.core.config import git_clone_command_prefix
+
+    return shlex.join(git_clone_command_prefix())
 
 
 def _hash_cached_source_install(dynamo_hash: str, cargo_patches: list[str] | None = None) -> str:
@@ -1152,31 +1331,14 @@ def _hash_cached_source_install(dynamo_hash: str, cargo_patches: list[str] | Non
     Uses FD 201 (not 200) so it nests cleanly inside the node-local
     ``flock -x 200`` from ``_serialize_node_install``.
     """
-    cache_key = dynamo_hash
-    override_cmd = ""
-    if cargo_patches:
-        # The marker prefix versions the override build-recipe so a recipe fix busts the
-        # cache even when the override strings are unchanged.
-        digest = hashlib.sha1(("dep-override-v3\n" + "\n".join(cargo_patches)).encode()).hexdigest()[:8]
-        cache_key = f"{dynamo_hash}-patch-{digest}"
-        # Replace each crate's dependency DECLARATION (a full `<crate> = <spec>` line) across
-        # every Cargo.toml in the tree — retargeting the workspace dependency (and any direct
-        # decls, incl. `{ workspace = true }` members) at, typically, a git branch.
-        # Why source-replacement and not [patch.crates-io]: a patch is silently dropped when
-        # the branch version doesn't satisfy dynamo's exact pin (e.g. dynamo pins "=1.5.0" but
-        # the branch is 1.5.3 -> "patch ... was not used in the crate graph"), and relaxing the
-        # pin alone loses to the committed Cargo.lock. Changing the dependency SOURCE needs no
-        # version match and forces Cargo to re-resolve, so the branch is actually built.
-        seds = []
-        for entry in cargo_patches:
-            crate = entry.split("=", 1)[0].strip()
-            if not crate:
-                continue
-            repl = entry.replace("&", r"\&")  # '&' is the sed replacement metachar
-            script = f"s|^{crate}[[:space:]]*=.*|{repl}|"
-            seds.append(f"find . -name Cargo.toml -exec sed -i -E {shlex.quote(script)} {{}} +")
-        if seds:
-            override_cmd = " && ".join(seds) + " && "
+    cache_key = dynamo_source_cache_key(dynamo_hash, cargo_patches)
+    # Replace each crate's dependency declaration tree-wide. Source replacement
+    # (rather than [patch.crates-io]) forces Cargo to resolve the requested source
+    # even when its version would not satisfy Dynamo's exact existing pin.
+    patch_commands = dynamo_cargo_patch_commands(cargo_patches)
+    override_cmd = " && ".join(patch_commands)
+    if override_cmd:
+        override_cmd += " && "
     cache = f"{_DYNAMO_CACHE_ROOT}/{cache_key}"
     lock = f"{_DYNAMO_CACHE_ROOT}/.{cache_key}.lock"
     return (
@@ -1198,7 +1360,7 @@ def _hash_cached_source_install(dynamo_hash: str, cargo_patches: list[str] | Non
         f"pip install --break-system-packages --force-reinstall --quiet maturin && "
         # Clone + build the runtime wheel.
         f"DYN_BUILD_DIR=$(mktemp -d) && cd $DYN_BUILD_DIR && "
-        f"git clone https://github.com/ai-dynamo/dynamo.git && "
+        f"{_git_clone_cmd()} clone https://github.com/ai-dynamo/dynamo.git && "
         f"cd dynamo && git checkout {dynamo_hash} && "
         f"{override_cmd}"
         f"cd lib/bindings/python/ && "
@@ -1241,7 +1403,7 @@ def _live_source_install_for_top_of_tree() -> str:
         # Force-reinstall maturin: see _hash_cached_source_install.
         "pip install --break-system-packages --force-reinstall --quiet maturin && "
         "cd /sgl-workspace/ && "
-        "git clone https://github.com/ai-dynamo/dynamo.git && "
+        f"{_git_clone_cmd()} clone https://github.com/ai-dynamo/dynamo.git && "
         "cd dynamo && "
         "cd lib/bindings/python/ && "
         'export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native --cfg tokio_unstable" && '
@@ -1261,7 +1423,7 @@ def _live_source_install_for_top_of_tree() -> str:
         # Force-reinstall maturin: see _hash_cached_source_install.
         "pip install --break-system-packages --force-reinstall --quiet maturin && "
         "ORIG_DIR=$(pwd) && rm -rf /tmp/dynamo_build && mkdir -p /tmp/dynamo_build && cd /tmp/dynamo_build && "
-        "git clone https://github.com/ai-dynamo/dynamo.git && "
+        f"{_git_clone_cmd()} clone https://github.com/ai-dynamo/dynamo.git && "
         "cd dynamo && "
         "cd lib/bindings/python/ && "
         'export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native --cfg tokio_unstable" && '
@@ -1336,6 +1498,7 @@ class DynamoConfig:
         request_plane: Request plane to use (default: "tcp"). Valid values: "nats", "tcp", "http"
         event_plane: Event plane override, sets DYN_EVENT_PLANE (default: None — follow
                      the Dynamo image's own default). Valid values: "nats", "zmq"
+        sidecar: Replace legacy Python workers with native engines and Dynamo sidecars.
 
     If top_of_tree, hash, or wheel is set, version is automatically cleared.
     """
@@ -1350,6 +1513,12 @@ class DynamoConfig:
     wheel: str | None = None
     request_plane: str = "tcp"
     event_plane: str | None = None
+    sidecar: bool = False
+    sidecar_port: int = 50051
+    sidecar_binary: str | None = None
+    sidecar_startup_timeout: int = 1200
+    sidecar_context_length: int | None = None
+    sidecar_args: list[str] = field(default_factory=list)
     # Optional dependency-declaration overrides applied to the dynamo Cargo.toml tree before a
     # source build (requires `hash`). Each entry is a full `<crate> = <spec>` TOML line, e.g.
     #   'dynamo-tokenizers = { git = "https://github.com/ai-dynamo/frontend-crates", branch = "..." }'
@@ -1391,6 +1560,15 @@ class DynamoConfig:
             raise ValueError(
                 f"Invalid event_plane '{self.event_plane}', must be one of: {', '.join(self._VALID_EVENT_PLANES)}"
             )
+
+        if not 1 <= self.sidecar_port <= 65535:
+            raise ValueError(f"dynamo.sidecar_port must be between 1 and 65535, got {self.sidecar_port}")
+        if self.sidecar_startup_timeout < 1:
+            raise ValueError("dynamo.sidecar_startup_timeout must be at least 1")
+        if self.sidecar_binary is not None and not self.sidecar_binary.strip():
+            raise ValueError("dynamo.sidecar_binary must be a non-empty executable path")
+        if self.sidecar_context_length is not None and self.sidecar_context_length < 1:
+            raise ValueError("dynamo.sidecar_context_length must be at least 1")
 
     @property
     def needs_source_install(self) -> bool:
@@ -1476,7 +1654,8 @@ class FrontendConfig:
     """Frontend/router configuration.
 
     Attributes:
-        type: Frontend type - "dynamo" (default), "sglang", "trtllm_serve", or "vllm"
+        type: Frontend type - "dynamo" (default), "sglang", "vllm-router",
+            "trtllm_serve", or direct "vllm"
         enable_multiple_frontends: Scale with nginx + multiple routers.
             When ``True`` (default), srtctl stands up nginx and fans out
             to ``num_additional_frontends + 1`` router replicas. When
@@ -1502,6 +1681,8 @@ class FrontendConfig:
             carry the session id in that header instead.
         args: CLI arguments passed to the frontend/router process
         env: Environment variables for frontend processes
+        container_image: Optional router-specific image. Static routers use the
+            model/backend image when omitted.
     """
 
     type: str = "dynamo"
@@ -1514,6 +1695,7 @@ class FrontendConfig:
     nginx_keepalive_timeout: str = "600s"
     args: dict[str, Any] | None = None
     env: dict[str, str] | None = None
+    container_image: str | None = None
     # trtllm_serve orchestrator (ser.yaml) options; ignored by other frontends.
     ctx_router: dict[str, Any] | None = None  # context_servers.router, e.g. {type: conversation}
     gen_router: dict[str, Any] | None = None  # generation_servers.router
@@ -1522,6 +1704,10 @@ class FrontendConfig:
     #   "head" (default) -> nodes.head (first prefill/CTX node)
     #   "first_decode"   -> first decode/GEN worker-leader node
     orchestrator_placement: str = "head"
+    # If True, reserve a node exclusively for the frontend/orchestrator instead
+    # of running it on a worker node. Requires at least 2 nodes. Not supported
+    # together with resources.het_jobs: true. Default: False.
+    dedicated_node: bool = False
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
@@ -1611,6 +1797,11 @@ class SrtConfig:
     # e.g. "custom-setup.sh" -> runs /configs/custom-setup.sh
     setup_script: str | None = None
 
+    # Commands run on each node's bare host, outside the container, before any
+    # worker starts. Cluster-wide default lives in srtslurm.yaml as
+    # default_host_setup; a recipe that sets this block replaces that default.
+    host_setup: HostSetupConfig = field(default_factory=HostSetupConfig)
+
     # Virtual identity — declares what *should* be running (verified against fingerprint)
     identity: IdentityConfig = field(default_factory=IdentityConfig)
 
@@ -1622,21 +1813,57 @@ class SrtConfig:
     def __post_init__(self):
         """Validate configuration after initialization."""
         self._validate_profiling()
+        self._validate_observability()
         self._validate_telemetry()
         self._validate_mooncake_kv_store()
         self._validate_het_jobs()
+        self._validate_dedicated_node_placement()
         self._validate_trtllm_serve()
         self._validate_vllm_frontend()
+        self._validate_static_router_frontend()
+        self._validate_dynamo_sidecar()
+        self._validate_host_setup()
         self._warn_dp_launch_mode()
 
+    def _validate_host_setup(self) -> None:
+        """Reject host_setup blocks that would fail or hang mid-job.
+
+        These commands run before any worker starts, so a bad entry costs a full
+        allocation to discover. Catch the cheap cases at load time (dry-run).
+        """
+        setup = self.host_setup
+        for attr in ("commands", "teardown"):
+            for i, command in enumerate(getattr(setup, attr)):
+                if not command.strip():
+                    raise ValidationError(f"host_setup.{attr}[{i}] is empty")
+        if setup.timeout_seconds < 1:
+            raise ValidationError(f"host_setup.timeout_seconds must be at least 1, got {setup.timeout_seconds}")
+        if setup.teardown and not setup.commands:
+            logger.warning(
+                "host_setup.teardown is set without host_setup.commands; "
+                "teardown will still run after the job, which is only what you want "
+                "if something outside this recipe set the node state"
+            )
+
+    def _validate_dynamo_sidecar(self) -> None:
+        """Validate native sidecar configuration before job submission."""
+        if not self.dynamo.sidecar:
+            return
+        if self.frontend.type != "dynamo":
+            raise ValidationError("dynamo.sidecar: true requires frontend.type: dynamo")
+        if not isinstance(self.backend, (SGLangProtocol, VLLMProtocol, TRTLLMProtocol)):
+            raise ValidationError("dynamo.sidecar: true supports sglang, vllm, and trtllm backends only")
+        if isinstance(self.backend, VLLMProtocol):
+            self.backend.validate_sidecar_dp_config()
+
     def _warn_dp_launch_mode(self):
-        """Nudge vLLM DP recipes toward the per-node launch topology.
+        """Warn when a vLLM DP recipe selects the deprecated per-GPU layout.
 
         Skipped for frontend.type: vllm, where the setting has no effect —
         `vllm serve` owns the local DP ranks, so the layout is one process per
         node whatever dp_launch_mode says.
         """
-        if not isinstance(self.backend, VLLMProtocol) or self.frontend.type == "vllm":
+        if not isinstance(self.backend, VLLMProtocol) or self.frontend.type == "vllm" or self.dynamo.sidecar:
             return
         if self.backend.dp_launch_mode != "per_gpu":
             return
@@ -1646,8 +1873,8 @@ class SrtConfig:
             return
 
         logger.warning(
-            "vLLM DP mode(s) %s use dp_launch_mode=per_gpu. per_node is the recommended topology "
-            "and will become the default in a future release; set backend.dp_launch_mode: per_node now",
+            "vLLM DP mode(s) %s use deprecated dp_launch_mode=per_gpu; "
+            "use backend.dp_launch_mode: per_node instead. per_gpu will be removed in a future release",
             ", ".join(mode_name for mode_name, _ in dp_modes),
         )
 
@@ -1655,8 +1882,8 @@ class SrtConfig:
         """Catch trtllm_serve misconfigurations at load time (dry-run) instead of
         failing mid-job at the frontend stage.
 
-        The trtllm_serve frontend runs a single ``trtllm-serve disaggregated``
-        orchestrator, so it needs the trtllm backend, a disaggregated layout, and the
+        The trtllm_serve frontend supports either one direct aggregate worker or a
+        single ``trtllm-serve disaggregated`` orchestrator. Both use the
         single-frontend path (no nginx/multi-frontend).
         """
         if self.frontend.type != "trtllm_serve":
@@ -1667,12 +1894,12 @@ class SrtConfig:
             )
         if self.frontend.enable_multiple_frontends:
             raise ValidationError(
-                "frontend.type: trtllm_serve runs a single orchestrator; set frontend.enable_multiple_frontends: false"
+                "frontend.type: trtllm_serve uses one public endpoint; set frontend.enable_multiple_frontends: false"
             )
-        if not self.resources.is_disaggregated:
+        if not self.resources.is_disaggregated and self.resources.num_agg != 1:
             raise ValidationError(
-                "frontend.type: trtllm_serve requires a disaggregated layout "
-                "(set resources.prefill_nodes/prefill_workers and decode_nodes/decode_workers)"
+                "frontend.type: trtllm_serve aggregate mode requires exactly one "
+                "aggregate worker (set resources.agg_workers: 1)"
             )
 
     def _validate_vllm_frontend(self):
@@ -1701,6 +1928,95 @@ class SrtConfig:
                 "worker across nodes with resources.agg_nodes."
             )
 
+    def _validate_static_router_frontend(self):
+        """Validate static-router/backend pairings and vLLM DP ownership."""
+        required_backend = {"sglang": "sglang", "vllm-router": "vllm"}.get(self.frontend.type)
+        if required_backend is None:
+            return
+        if self.backend_type != required_backend:
+            raise ValidationError(
+                f"frontend.type: {self.frontend.type} requires backend.type: {required_backend}; "
+                f"got {self.backend_type!r}"
+            )
+
+        if self.frontend.type != "vllm-router":
+            return
+        if not isinstance(self.backend, VLLMProtocol):
+            raise ValidationError(f"frontend.type: vllm-router requires backend.type: vllm; got {self.backend_type!r}")
+        backend = self.backend
+
+        endpoint_gpu_counts: dict[Literal["prefill", "decode", "agg"], int] = {
+            "prefill": self.resources.gpus_per_prefill if self.resources.num_prefill else 0,
+            "decode": self.resources.gpus_per_decode if self.resources.num_decode else 0,
+            "agg": self.resources.gpus_per_agg if self.resources.num_agg else 0,
+        }
+        if backend.find_dp_modes() and backend.dp_launch_mode != "per_node":
+            raise ValidationError(
+                "frontend.type: vllm-router with data-parallel-size requires "
+                "backend.dp_launch_mode: per_node; deprecated per_gpu processes are "
+                "Dynamo registrations, not independently routable vLLM API servers"
+            )
+
+        expansion_by_mode: dict[str, int] = {}
+        for mode, gpu_count in endpoint_gpu_counts.items():
+            if gpu_count <= 0:
+                continue
+            if not backend._is_dp_mode(mode):
+                expansion_by_mode[mode] = 1
+                continue
+            try:
+                configured_dp_size = backend._get_dp_size(mode)
+                dp_size = int(configured_dp_size) if configured_dp_size is not None else 1
+                if dp_size < 1:
+                    raise ValueError(
+                        f"vLLM {mode} data-parallel-size must be a positive integer; got {configured_dp_size!r}"
+                    )
+                replica_size = backend._get_model_parallel_size(mode)
+            except (TypeError, ValueError) as exc:
+                raise ValidationError(str(exc)) from exc
+
+            required_gpus = dp_size * replica_size
+            if required_gpus != gpu_count:
+                raise ValidationError(
+                    f"vLLM Router {mode} parallelism requires DP*TP*PP*PCP="
+                    f"{dp_size}*{replica_size}={required_gpus} GPUs, "
+                    f"but resources allocate {gpu_count} GPUs per worker"
+                )
+
+            local_gpu_count = min(gpu_count, self.resources.gpus_per_node)
+            if replica_size > local_gpu_count:
+                expansion_by_mode[mode] = 1
+            else:
+                try:
+                    expansion_by_mode[mode] = backend._get_local_dp_size(mode, local_gpu_count)
+                except ValueError as exc:
+                    raise ValidationError(str(exc)) from exc
+
+        expansions = set(expansion_by_mode.values())
+        if len(expansions) > 1:
+            detail = ", ".join(f"{mode}={size}" for mode, size in expansion_by_mode.items())
+            raise ValidationError(
+                "vLLM Router has one --intra-node-data-parallel-size for all worker pools, "
+                f"but the allocated topology derives different expansion factors: {detail}"
+            )
+
+        configured_expansion = (self.frontend.args or {}).get(
+            "intra-node-data-parallel-size",
+            (self.frontend.args or {}).get("intra_node_data_parallel_size"),
+        )
+        derived_expansion = next(iter(expansions), 1)
+        try:
+            configured_expansion_value = int(configured_expansion) if configured_expansion is not None else None
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(
+                f"frontend.args.intra-node-data-parallel-size must be an integer; got {configured_expansion!r}"
+            ) from exc
+        if configured_expansion_value is not None and configured_expansion_value != derived_expansion:
+            raise ValidationError(
+                "frontend.args.intra-node-data-parallel-size conflicts with the allocated vLLM topology: "
+                f"configured {configured_expansion}, derived {derived_expansion}"
+            )
+
     def _validate_het_jobs(self):
         """When ``resources.het_jobs`` is set to True, enforce supported shape.
 
@@ -1721,6 +2037,27 @@ class SrtConfig:
         if self.backend_type != "sglang":
             raise ValidationError(
                 f"het_jobs=true is only supported on the sglang backend; got backend.type={self.backend_type!r}"
+            )
+        if self.frontend.dedicated_node or self.benchmark.client_dedicated_node:
+            raise ValidationError(
+                "frontend.dedicated_node/benchmark.client_dedicated_node are not supported together with "
+                "het_jobs=true (a dedicated frontend/client node is not carved out of a het allocation)"
+            )
+
+    def _validate_dedicated_node_placement(self):
+        """A dedicated node is wasted if a placement override routes the
+        orchestrator/client somewhere else — the reserved node would then sit
+        idle while the intended workload runs on a worker node instead.
+        """
+        if self.frontend.dedicated_node and self.frontend.orchestrator_placement != "head":
+            raise ValidationError(
+                f"frontend.dedicated_node requires frontend.orchestrator_placement: head "
+                f"(got {self.frontend.orchestrator_placement!r}); otherwise the reserved node is never used"
+            )
+        if self.benchmark.client_dedicated_node and self.benchmark.client_placement != "head":
+            raise ValidationError(
+                f"benchmark.client_dedicated_node requires benchmark.client_placement: head "
+                f"(got {self.benchmark.client_placement!r}); otherwise the reserved node is never used"
             )
 
     def _validate_mooncake_kv_store(self):
@@ -1881,7 +2218,7 @@ class SrtConfig:
                 )
 
     def _validate_dcgm_power(self):
-        """Validate the DCGM-only power provider.
+        """Validate DCGM power telemetry.
 
         It runs its collector in the orchestrator process, so it needs neither
         the scraper image nor node_exporter. Sample and window timestamps must
@@ -1891,7 +2228,7 @@ class SrtConfig:
         telemetry = self.telemetry
         exporter = telemetry.dcgm_exporter
         if exporter is None:
-            raise ValidationError("telemetry.dcgm_exporter is required for provider dcgm-power")
+            raise ValidationError("telemetry.dcgm_exporter is required when telemetry is enabled")
         if not exporter.container_image:
             raise ValidationError("telemetry.dcgm_exporter.container_image must be non-empty")
         if not 1 <= exporter.port <= 65535:
@@ -1925,54 +2262,75 @@ class SrtConfig:
             raise ValidationError("telemetry.storage_subdir must be a safe relative path below the run log directory")
 
         if self.benchmark.type != _BENCHMARK_TYPE_SA_BENCH:
-            raise ValidationError(f"telemetry provider dcgm-power requires benchmark.type: {_BENCHMARK_TYPE_SA_BENCH}")
+            raise ValidationError(f"telemetry requires benchmark.type: {_BENCHMARK_TYPE_SA_BENCH}")
         if self.benchmark.client_placement != "head":
-            raise ValidationError("telemetry provider dcgm-power requires benchmark.client_placement: head")
+            raise ValidationError("telemetry requires benchmark.client_placement: head")
 
         # NOTE: a dedicated infra node moves nodes.head off the batch host the collector runs on.
         if self.infra.etcd_nats_dedicated_node:
             raise ValidationError(
-                "telemetry provider dcgm-power requires infra.etcd_nats_dedicated_node: false, because a "
+                "telemetry requires infra.etcd_nats_dedicated_node: false, because a "
                 "dedicated infra node moves nodes.head off the batch host and power samples would no longer "
                 "share the benchmark's clock"
             )
 
         concurrencies = self.benchmark.get_concurrency_list()
         if not concurrencies or len(set(concurrencies)) != len(concurrencies) or any(c <= 0 for c in concurrencies):
+            raise ValidationError("telemetry requires a non-empty list of unique positive benchmark.concurrencies")
+
+    def _validate_observability(self):
+        """Validate Tachometer collection under observability."""
+        observability = self.observability
+        tachometer = observability.tachometer
+        if tachometer.enabled is True and not observability.enabled:
+            raise ValidationError("observability.tachometer requires observability.enabled: true")
+        if not observability.tachometer_enabled:
+            return
+        if self.telemetry.enabled and tachometer.dcgm_exporter is not None:
             raise ValidationError(
-                "telemetry provider dcgm-power requires a non-empty list of unique positive benchmark.concurrencies"
+                "configure the shared DCGM exporter under telemetry, not observability.tachometer, "
+                "when DCGM power telemetry is enabled"
+            )
+        if self.telemetry.enabled and tachometer.storage_subdir == self.telemetry.storage_subdir:
+            raise ValidationError(
+                "observability.tachometer.storage_subdir and telemetry.storage_subdir must be different"
+            )
+
+        for name in ("dcgm_exporter", "node_exporter"):
+            exporter = getattr(tachometer, name)
+            if exporter is None:
+                continue
+            if not exporter.container_image:
+                raise ValidationError(f"observability.tachometer.{name}.container_image must be non-empty")
+            if not 1 <= exporter.port <= 65535:
+                raise ValidationError(f"observability.tachometer.{name}.port must be in 1..65535")
+        if not tachometer.binary_path:
+            raise ValidationError("observability.tachometer.binary_path must be non-empty")
+        if tachometer.default_frequency <= 0:
+            raise ValidationError("observability.tachometer.default_frequency must be positive")
+        if tachometer.sync_interval_secs < 0:
+            raise ValidationError("observability.tachometer.sync_interval_secs must be >= 0")
+        if tachometer.compaction_threads < 0:
+            raise ValidationError("observability.tachometer.compaction_threads must be >= 0")
+        if not _is_safe_relative_subpath(tachometer.storage_subdir):
+            raise ValidationError(
+                "observability.tachometer.storage_subdir must be a safe relative path below the run log directory"
             )
 
     def _validate_telemetry(self):
-        """Validate telemetry configuration."""
+        """Validate DCGM power telemetry."""
         telemetry = self.telemetry
         if telemetry is None or not telemetry.enabled:
             return
-
-        if telemetry.provider == TelemetryProvider.DCGM_POWER:
-            self._validate_dcgm_power()
-            return
-
-        if telemetry.provider != TelemetryProvider.SCRAPER:
-            raise ValidationError(f"Unsupported telemetry provider: {telemetry.provider}")
-
-        if not telemetry.container_image:
-            raise ValidationError("telemetry.container_image is required when telemetry is enabled")
-        if telemetry.dcgm_exporter is None:
-            raise ValidationError("telemetry.dcgm_exporter is required when telemetry is enabled")
-        if telemetry.node_exporter is None:
-            raise ValidationError("telemetry.node_exporter is required when telemetry is enabled")
-        if telemetry.default_frequency <= 0:
-            raise ValidationError("telemetry.default_frequency must be positive")
-        if telemetry.sync_interval_secs < 0:
-            raise ValidationError("telemetry.sync_interval_secs must be >= 0")
-        if telemetry.compaction_threads < 0:
-            raise ValidationError("telemetry.compaction_threads must be >= 0")
+        self._validate_dcgm_power()
 
     @classmethod
     def from_yaml(cls, yaml_path: Path) -> "SrtConfig":
+        from srtctl.core.config import expand_observability
+
         with open(yaml_path) as f:
             data = yaml.safe_load(f)
+        expand_observability(data)
         schema = cls.Schema()
         return schema.load(data)
 

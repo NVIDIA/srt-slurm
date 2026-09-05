@@ -4,6 +4,7 @@
 """Tests for lustre->node-local model staging (model.stage_dir)."""
 
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -102,16 +103,36 @@ class TestWorkerCommandUsesStagedPath:
     def test_trtllm_serve_worker_uses_staged_path(self, tmp_path):
         backend = TRTLLMProtocol(trtllm_config=TRTLLMServerConfig(decode={"tensor_parallel_size": 4}))
         cmd = backend.build_worker_command(
-            self._proc(), [self._proc()], self._runtime_mock(tmp_path, "/raid/scratch/models/DeepSeek-V4-Pro"),
+            self._proc(),
+            [self._proc()],
+            self._runtime_mock(tmp_path, "/raid/scratch/models/DeepSeek-V4-Pro"),
             frontend_type="trtllm_serve",
         )
         assert "/raid/scratch/models/DeepSeek-V4-Pro" in cmd
         assert "/model" not in cmd
 
+    def test_trtllm_serve_aggregate_worker_binds_public_port(self, tmp_path):
+        process = self._proc()
+        process = replace(process, endpoint_mode="agg")
+        runtime = self._runtime_mock(tmp_path, "/model")
+        runtime.frontend_port = 8000
+        backend = TRTLLMProtocol(trtllm_config=TRTLLMServerConfig(aggregated={"tensor_parallel_size": 8}))
+
+        cmd = backend.build_worker_command(
+            process,
+            [process],
+            runtime,
+            frontend_type="trtllm_serve",
+        )
+
+        assert cmd[cmd.index("--port") + 1] == "8000"
+
     def test_dynamo_worker_uses_staged_path(self, tmp_path):
         backend = TRTLLMProtocol(trtllm_config=TRTLLMServerConfig(decode={"tensor_parallel_size": 4}))
         cmd = backend.build_worker_command(
-            self._proc(), [self._proc()], self._runtime_mock(tmp_path, "/raid/scratch/models/DeepSeek-V4-Pro"),
+            self._proc(),
+            [self._proc()],
+            self._runtime_mock(tmp_path, "/raid/scratch/models/DeepSeek-V4-Pro"),
             frontend_type="dynamo",
         )
         # dynamo path passes it as --model-path
@@ -120,7 +141,9 @@ class TestWorkerCommandUsesStagedPath:
     def test_dynamo_worker_does_not_publish_events_by_default(self, tmp_path):
         backend = TRTLLMProtocol(trtllm_config=TRTLLMServerConfig(decode={"tensor_parallel_size": 4}))
         cmd = backend.build_worker_command(
-            self._proc(), [self._proc()], self._runtime_mock(tmp_path, "/raid/scratch/models/DeepSeek-V4-Pro"),
+            self._proc(),
+            [self._proc()],
+            self._runtime_mock(tmp_path, "/raid/scratch/models/DeepSeek-V4-Pro"),
             frontend_type="dynamo",
         )
         assert "--publish-events-and-metrics" not in cmd
@@ -131,7 +154,9 @@ class TestWorkerCommandUsesStagedPath:
             publish_events_and_metrics=True,
         )
         cmd = backend.build_worker_command(
-            self._proc(), [self._proc()], self._runtime_mock(tmp_path, "/raid/scratch/models/DeepSeek-V4-Pro"),
+            self._proc(),
+            [self._proc()],
+            self._runtime_mock(tmp_path, "/raid/scratch/models/DeepSeek-V4-Pro"),
             frontend_type="dynamo",
         )
         assert "--publish-events-and-metrics" in cmd

@@ -49,17 +49,12 @@ from srtctl.core.schema import (
 SA_BENCH_DIR = Path(__file__).resolve().parents[1] / "src/srtctl/benchmarks/scripts/sa-bench"
 
 
-def _benchmark_harness(tmp_path, *, provider="dcgm-power", enabled=True):
+def _benchmark_harness(tmp_path, *, enabled=True):
     telemetry = TelemetryConfig(
         enabled=enabled,
-        provider=provider,
         default_frequency=1.0,
         storage_subdir="power",
-        container_image="scraper" if provider == "scraper" else None,
         dcgm_exporter=TelemetryExporterConfig(container_image="dcgm-exporter", port=9401),
-        node_exporter=TelemetryExporterConfig(container_image="node-exporter", port=9101)
-        if provider == "scraper"
-        else None,
     )
     harness = BenchmarkStageMixin()
     harness.config = SrtConfig(
@@ -565,19 +560,18 @@ class TestArtifactErrors:
         assert Reason.MEASUREMENT_WINDOW_RESULT_PATH_INVALID in errors[0].reason_codes
 
     def test_benchmark_stage_injects_the_container_windows_dir(self, tmp_path):
-        harness = _benchmark_harness(tmp_path, provider="dcgm-power")
+        harness = _benchmark_harness(tmp_path)
 
         env = harness._get_measurement_window_env()
 
         assert env == {"SRT_MEASUREMENT_WINDOW_DIR": f"/logs/power/{WINDOWS_DIRNAME}"}
 
     def test_other_providers_get_no_window_dir(self, tmp_path):
-        assert _benchmark_harness(tmp_path, provider="scraper")._get_measurement_window_env() == {}
         assert _benchmark_harness(tmp_path, enabled=False)._get_measurement_window_env() == {}
 
     def test_sa_bench_env_keeps_window_after_logical_endpoint_refactor(self, tmp_path):
         """One benchmark env must carry logical endpoints, slow_down, and the window dir together."""
-        harness = _benchmark_harness(tmp_path, provider="dcgm-power")
+        harness = _benchmark_harness(tmp_path)
         harness.config = SrtConfig(
             name="test",
             model=ModelConfig(path="/model", container="/image", precision="fp8"),

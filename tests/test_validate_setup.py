@@ -21,6 +21,7 @@ class TestValidateSetup:
         (tmp_path / "configs" / "etcd").touch()
         (tmp_path / "bin").mkdir()
         (tmp_path / "bin" / "uv").touch()
+        (tmp_path / "bin" / "tachometer-scraper").touch()
 
         # Should not raise
         validate_setup(tmp_path)
@@ -31,6 +32,7 @@ class TestValidateSetup:
         (tmp_path / "configs" / "etcd").touch()
         (tmp_path / "bin").mkdir()
         (tmp_path / "bin" / "uv").touch()
+        (tmp_path / "bin" / "tachometer-scraper").touch()
 
         with pytest.raises(SystemExit):
             validate_setup(tmp_path)
@@ -41,6 +43,7 @@ class TestValidateSetup:
         (tmp_path / "configs" / "nats-server").touch()
         (tmp_path / "bin").mkdir()
         (tmp_path / "bin" / "uv").touch()
+        (tmp_path / "bin" / "tachometer-scraper").touch()
 
         with pytest.raises(SystemExit):
             validate_setup(tmp_path)
@@ -50,6 +53,19 @@ class TestValidateSetup:
         (tmp_path / "configs").mkdir()
         (tmp_path / "configs" / "nats-server").touch()
         (tmp_path / "configs" / "etcd").touch()
+        (tmp_path / "bin").mkdir()
+        (tmp_path / "bin" / "tachometer-scraper").touch()
+
+        with pytest.raises(SystemExit):
+            validate_setup(tmp_path)
+
+    def test_fails_when_tachometer_scraper_missing(self, tmp_path: Path):
+        """validate_setup fails when the compute-architecture scraper is missing."""
+        (tmp_path / "configs").mkdir()
+        (tmp_path / "configs" / "nats-server").touch()
+        (tmp_path / "configs" / "etcd").touch()
+        (tmp_path / "bin").mkdir()
+        (tmp_path / "bin" / "uv").touch()
 
         with pytest.raises(SystemExit):
             validate_setup(tmp_path)
@@ -76,7 +92,7 @@ class TestMakefileArchDetection:
     @staticmethod
     def _file_description(path: Path) -> str:
         """Get just the description part of file(1) output (after the colon)."""
-        result = subprocess.run(["file", str(path)], capture_output=True, text=True)
+        result = subprocess.run(["file", str(path)], capture_output=True, text=True, check=False)
         return result.stdout.split(":", 1)[1] if ":" in result.stdout else result.stdout
 
     def test_file_detects_x86_64(self, tmp_path: Path):

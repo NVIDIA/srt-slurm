@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ruter</title>
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+    <style>
+      :root { color-scheme: dark; --ink: #111923; --ink-raised: #162231; --steel: #253346; --rule: #34465b; --bone: #e6e0d5; --mist: #aebdca; --muted: #6f8398; --copper: #d47f45; --blue: #6d9eff; --plum: #b98de3; --coral: #e66f61; --serif: Iowan Old Style, Palatino Linotype, Book Antiqua, Georgia, serif; --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif; --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+      * { box-sizing: border-box; }
+      body { min-width: 320px; margin: 0; color: var(--bone); background: var(--ink); font: 13px/1.45 var(--sans); }
+      body::before { position: fixed; inset: 0; z-index: -1; content: ""; opacity: .14; background-image: linear-gradient(to right, transparent 0, transparent calc(100% - 1px), #253346 calc(100% - 1px)), linear-gradient(to bottom, transparent 0, transparent calc(100% - 1px), #253346 calc(100% - 1px)); background-size: 96px 96px; pointer-events: none; }
+      main { max-width: 1500px; margin: 0 auto; padding: 30px 32px 48px; }
+      .kicker, .eyebrow, .label, .candidate-columns { color: var(--muted); font: 10px/1.2 var(--mono); letter-spacing: .12em; text-transform: uppercase; }
+      .masthead { display: grid; grid-template-columns: minmax(320px, 1fr) auto; gap: 42px; padding: 2px 0 24px; border-bottom: 1px solid var(--rule); }
+      .brand { display: flex; align-items: center; gap: 16px; }
+      .beaver-badge { width: 78px; padding: 0; border: 0; border-radius: 50%; background: transparent; cursor: pointer; }
+      .beaver-badge img { display: block; width: 100%; height: auto; border-radius: 50%; transition: transform .15s ease; }
+      .beaver-badge:hover img, .beaver-badge:focus-visible img { transform: rotate(-3deg) scale(1.06); }
+      .beaver-badge:focus-visible { outline: 2px solid var(--copper); outline-offset: 3px; }
+      h1 { margin: 7px 0 5px; color: var(--bone); font: 500 clamp(32px, 4vw, 53px)/.96 var(--serif); letter-spacing: -.055em; }
+      h1 em { color: var(--copper); font-weight: 400; }
+      .subtitle { max-width: 620px; margin: 0; color: var(--mist); font-size: 14px; }
+      .run-stats { display: grid; grid-template-columns: repeat(4, minmax(92px, 1fr)); align-self: end; border-left: 1px solid var(--rule); }
+      .stat { min-width: 104px; padding: 0 16px; border-right: 1px solid var(--rule); }
+      .stat:first-child { padding-left: 18px; }
+      .stat-value { display: block; margin-top: 5px; color: var(--bone); font: 500 20px/1 var(--mono); letter-spacing: -.05em; }
+      #router-settings { display: none; align-items: baseline; flex-wrap: wrap; gap: 8px 18px; padding: 12px 0; border-bottom: 1px solid var(--rule); color: var(--mist); font: 11px var(--mono); }
+      #router-settings.visible { display: flex; }
+      #router-settings span { white-space: nowrap; }
+      #router-settings b { color: var(--bone); font-weight: 500; }
+      .context-sheet { margin-top: 28px; border: 1px solid var(--rule); background: rgba(22, 34, 49, .76); }
+      .section-band { display: flex; justify-content: space-between; gap: 18px; padding: 11px 15px; border-bottom: 1px solid var(--steel); }
+      .section-band p { margin: 0; color: var(--muted); font: 11px/1.35 var(--sans); }
+      #chart { height: 390px; }
+      .chart-note { margin: 0; padding: 0 15px 13px; color: var(--muted); font-size: 11px; }
+      .decision-sheet { position: relative; margin-top: 28px; border: 1px solid var(--rule); border-left: 3px solid var(--copper); background: #141f2b; }
+      .decision-sheet.loading { opacity: .62; }
+      .decision-head { display: flex; align-items: baseline; justify-content: space-between; gap: 20px; padding: 14px 17px 10px; }
+      .decision-head h2 { margin: 3px 0 0; color: var(--bone); font: 500 22px/1 var(--serif); letter-spacing: -.025em; }
+      #inspector-reason { margin: 0 17px 15px; color: var(--mist); font-size: 12px; }
+      .route-verdict { display: grid; grid-template-columns: minmax(128px, .45fr) minmax(180px, .7fr) 1.75fr; align-items: stretch; margin: 0 17px; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+      .route-destination, .route-score, .route-margin { min-height: 106px; padding: 16px 18px; border-right: 1px solid var(--rule); }
+      .route-margin { border-right: 0; }
+      .route-destination span, .route-score span, .route-margin span { display: block; color: var(--muted); font: 10px/1.1 var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+      .route-destination strong { display: block; margin-top: 2px; color: var(--copper); font: 500 70px/.82 var(--serif); letter-spacing: -.09em; }
+      .route-score b { display: block; margin-top: 12px; color: var(--bone); font: 500 30px/.9 var(--mono); letter-spacing: -.075em; }
+      .route-score small { color: var(--mist); font: 11px var(--sans); }
+      .route-margin b { display: block; margin-top: 14px; color: var(--blue); font: 500 18px/1 var(--mono); letter-spacing: -.05em; }
+      .route-margin p { margin: 7px 0 0; color: var(--mist); font-size: 12px; }
+      #request-facts { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); margin: 0 17px; border-bottom: 1px solid var(--steel); }
+      #request-facts div { min-height: 64px; padding: 13px 18px 12px 0; }
+      #request-facts span { display: block; color: var(--muted); font: 10px/1.1 var(--mono); letter-spacing: .09em; text-transform: uppercase; }
+      #request-facts strong { display: block; margin-top: 6px; color: var(--bone); font: 500 13px var(--mono); }
+      .contender-intro { display: flex; justify-content: space-between; gap: 16px; margin: 15px 17px 8px; }
+      .contender-intro h3 { margin: 0; color: var(--bone); font: 500 16px/1 var(--serif); }
+      .contender-intro p { margin: 0; color: var(--muted); font: 10px var(--mono); }
+      #candidate-rows { padding: 0 17px 15px; }
+      .candidate-columns, .candidate { display: grid; grid-template-columns: 104px minmax(155px, .75fr) minmax(255px, 1.15fr) minmax(330px, 1.35fr); gap: 18px; }
+      .candidate-columns.decode, .candidate.decode { grid-template-columns: 104px minmax(255px, 1.15fr) minmax(330px, 1.35fr); }
+      .candidate-columns { padding: 0 12px 8px; }
+      .candidate-columns em { margin-left: 8px; color: #52677d; font-style: normal; letter-spacing: 0; text-transform: none; }
+      .candidate { align-items: center; min-height: 79px; padding: 10px 12px; border-top: 1px solid var(--steel); }
+      .candidate.selected { margin: 0 -1px; border-top-color: var(--copper); background: linear-gradient(90deg, rgba(212,127,69,.18), rgba(212,127,69,.04) 64%, transparent); box-shadow: inset 2px 0 0 var(--copper); }
+      .candidate-worker { display: flex; align-items: baseline; gap: 7px; }
+      .candidate-worker strong { color: var(--bone); font: 500 24px/.9 var(--serif); }
+      .selection { color: var(--muted); font: 9px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+      .candidate.selected .selection { color: var(--copper); }
+      .candidate-score b { color: var(--bone); font: 500 15px/1 var(--mono); }
+      .candidate-score > span { margin-left: 4px; color: var(--muted); font: 10px var(--mono); }
+      .candidate-prefix .best-prefix { margin-left: 5px; color: var(--copper); font: 9px var(--mono); letter-spacing: .06em; text-transform: uppercase; }
+      .candidate p { margin: 3px 0 4px; color: var(--bone); font: 12px var(--mono); }
+      small { color: var(--muted); font-size: 10px; }
+      .cost-bar { display: flex; overflow: hidden; height: 6px; margin-top: 7px; background: #253346; }
+      .cost-bar i { display: block; height: 100%; min-width: 0; }
+      .cost-bar .prefill { background: var(--plum); } .cost-bar .decode { background: var(--blue); } .cost-bar .active { background: var(--coral); }
+      .terms { display: flex; gap: 9px; margin-top: 4px; color: var(--muted); font: 9px var(--mono); }
+      .decision-log { margin-top: 28px; }
+      .decision-log-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 9px; }
+      .decision-log h2 { margin: 0; color: var(--bone); font: 500 19px/1 var(--serif); }
+      .route-log-selected { margin-left: 7px; color: var(--copper); font: 9px var(--mono); letter-spacing: .07em; text-transform: uppercase; }
+      .table-wrap { overflow: auto; max-height: 600px; border: 1px solid var(--rule); background: rgba(22, 34, 49, .76); }
+      table { width: 100%; border-collapse: collapse; white-space: nowrap; font-family: var(--mono); }
+      thead { position: sticky; top: 0; z-index: 1; background: #1a2735; }
+      th, td { padding: 10px 13px; border-bottom: 1px solid var(--steel); text-align: left; }
+      th { color: var(--muted); font: 10px var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+      tbody tr { cursor: pointer; } tbody tr:hover { background: rgba(109,158,255,.06); } tbody tr.selected { background: rgba(212,127,69,.13); box-shadow: inset 2px 0 var(--copper); }
+      .worker { color: var(--copper); }
+      .stage-link { margin: -5px 0; padding: 5px 7px; border: 1px solid transparent; border-radius: 3px; color: var(--bone); background: transparent; font: 11px var(--mono); cursor: pointer; }
+      .stage-link:hover, .stage-link:focus-visible { border-color: var(--blue); background: rgba(109,158,255,.08); outline: 0; }
+      .stage-link.selected { border-color: var(--copper); color: var(--copper); }
+      .stage-link span { margin-right: 5px; color: var(--muted); font-size: 9px; letter-spacing: .08em; }
+      #error { display: none; margin-top: 16px; color: var(--coral); }
+      @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+      @media (max-width: 980px) { main { padding: 20px 16px 32px; } .masthead { grid-template-columns: 1fr; gap: 24px; } .run-stats { width: 100%; border-left: 0; } .stat:first-child { padding-left: 0; } .route-verdict { grid-template-columns: 120px 1fr; } .route-margin { grid-column: 1 / -1; min-height: auto; border-top: 1px solid var(--rule); } .candidate-columns { display: none; } .candidate { grid-template-columns: 96px 1fr; gap: 8px 16px; } .candidate-prefix, .candidate-score, .candidate-state { grid-column: 2; } }
+      @media (max-width: 620px) { .run-stats, #request-facts { grid-template-columns: repeat(2, 1fr); } .stat:nth-child(2) { border-right: 0; } .stat:nth-child(n+3) { margin-top: 14px; } #chart { height: 360px; } .section-band { display: block; } .section-band p { margin-top: 5px; } .route-verdict { grid-template-columns: 100px 1fr; } .route-destination, .route-score { min-height: 90px; padding: 14px; } .route-destination strong { font-size: 59px; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header class="masthead">
+        <div class="brand">
+          <button id="beaver-badge" class="beaver-badge" type="button" aria-label="Play ruter audio"><img src="/assets/certified-beaver.png" alt="Certified Beaver"></button>
+          <h1>ruter</h1>
+        </div>
+        <div class="run-stats" aria-label="benchmark summary">
+          <div class="stat"><span class="label">requests</span><strong class="stat-value" id="traces">—</strong></div>
+          <div class="stat"><span class="label">mean KV hit</span><strong class="stat-value" id="kv-hit">—</strong></div>
+          <div class="stat"><span class="label">mean TTFT</span><strong class="stat-value" id="ttft">—</strong></div>
+          <div class="stat"><span class="label">workers</span><strong class="stat-value" id="workers">—</strong></div>
+        </div>
+      </header>
+      <div id="router-settings" aria-label="resolved router settings"></div>
+
+      <section class="context-sheet">
+        <div class="section-band"><span class="eyebrow">workload context</span><p>Shared time axis · select any mark to inspect its route</p></div>
+        <div id="chart"></div>
+      </section>
+
+      <section class="decision-log">
+        <div class="decision-log-head"><h2>Route log</h2><span id="route-log-selection" class="eyebrow">select a row for the full scorecard</span></div>
+        <div class="table-wrap"><table><thead><tr><th>time</th><th>route</th><th>prefix match</th><th>prefill score</th><th>decode score</th></tr></thead><tbody id="decision-rows"></tbody></table></div>
+      </section>
+
+      <section id="inspector" class="decision-sheet">
+        <div class="decision-head"><div><div class="eyebrow">route decision</div><h2 id="inspector-title">Select a request</h2></div><div class="eyebrow">lower score wins</div></div>
+        <p id="inspector-reason">Choose a request from the context chart or route log.</p>
+        <div id="route-verdict" class="route-verdict"></div>
+        <div id="request-facts"></div>
+        <div class="contender-intro"><h3>All workers at decision time</h3><p>P prefill · D decode · A active</p></div>
+        <div id="candidate-rows"></div>
+      </section>
+      <div id="error"></div>
+    </main>
+    <audio id="beaver-audio" preload="metadata" src="/assets/ruter.mp3"></audio>
+    <script src="/app.js"></script>
+  </body>
+</html>
