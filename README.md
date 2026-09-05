@@ -32,6 +32,9 @@ make setup ARCH=aarch64  # or ARCH=x86_64
 # Submit job(s)
 srtctl apply -f config.yaml
 
+# Deploy an inference endpoint without running a benchmark
+srtctl apply -f config.yaml --serve-only
+
 # Submit with custom setup script
 srtctl apply -f config.yaml --setup-script custom-setup.sh
 

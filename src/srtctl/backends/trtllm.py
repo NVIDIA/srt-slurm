@@ -11,12 +11,13 @@ import yaml
 from marshmallow import Schema
 from marshmallow_dataclass import dataclass
 
+from srtctl.backends.sidecar import build_sidecar_launch_command, get_dynamo_sidecar_config, sidecar_grpc_port
 from srtctl.ports import DYN_SYSTEM_PORT_BASE
 
 if TYPE_CHECKING:
     from srtctl.backends.base import SrunConfig
     from srtctl.core.runtime import RuntimeContext
-    from srtctl.core.schema import ProfilingConfig
+    from srtctl.core.schema import DynamoConfig, ProfilingConfig
     from srtctl.core.topology import Endpoint, NodePortAllocator, Process
 
 # Type alias for worker modes
@@ -64,7 +65,45 @@ class TRTLLMProtocol:
     decode_environment: dict[str, str] = field(default_factory=dict)
     aggregated_environment: dict[str, str] = field(default_factory=dict)
 
+    # Extra `trtllm-serve` CLI flags per mode, appended verbatim to the worker
+    # command (frontend.type: trtllm_serve only -- dynamo.trtllm takes a
+    # different CLI).
+    #
+    # `trtllm_config` already covers everything that belongs in the engine YAML,
+    # which is nearly everything: trtllm-serve merges that file into LlmArgs. But
+    # a few of its options configure the OpenAI SERVER layer rather than the
+    # engine and have no LlmArgs field, so no YAML key can reach them. The one
+    # that matters in practice is `--tool_parser` (a click.Choice consumed
+    # directly by the server constructor); note that its sibling
+    # `--reasoning_parser` IS forwarded into get_llm_args() and so remains
+    # settable from `trtllm_config`.
+    #
+    #     backend:
+    #       type: trtllm
+    #       prefill_extra_args: ["--tool_parser", "glm47"]
+    #       decode_extra_args:  ["--tool_parser", "glm47"]
+    prefill_extra_args: list[str] = field(default_factory=list)
+    decode_extra_args: list[str] = field(default_factory=list)
+    aggregated_extra_args: list[str] = field(default_factory=list)
+
     trtllm_config: TRTLLMServerConfig | None = None
+
+    # The name clients must use in a request's "model" field.
+    # Defaults to the checkpoint directory name.
+    #
+    #     backend:
+    #       type: trtllm
+    #       served_model_name: "deepseek-ai/deepseek-r1"
+    #
+    # Set it when the client cannot be told which name to ask for. agentperf
+    # takes the name as a flag, so it never needs this; the MLPerf harness has
+    # it fixed in the benchmark definition, so the server must match or every
+    # request 404s.
+    #
+    # Top-level rather than a trtllm_config key because trtllm_config is dumped
+    # straight into the engine's YAML file, and this is a launcher flag the
+    # engine does not recognise.
+    served_model_name: str | None = None
 
     # Whether dynamo.trtllm workers pass `--publish-events-and-metrics`.
     # Enables the worker to publish KV-cache events (add/evict) + metrics, which
@@ -133,6 +172,15 @@ class TRTLLMProtocol:
             return dict(self.trtllm_config.aggregated or {})
         return {}
 
+    def get_extra_args_for_mode(self, mode: WorkerMode) -> list[str]:
+        """Extra trtllm-serve CLI flags for this mode (see the field docs)."""
+        by_mode: dict[WorkerMode, list[str]] = {
+            "prefill": self.prefill_extra_args,
+            "decode": self.decode_extra_args,
+            "agg": self.aggregated_extra_args,
+        }
+        return list(by_mode.get(mode) or [])
+
     def get_environment_for_mode(self, mode: WorkerMode) -> dict[str, str]:
         eplb_prefix = f"moe_shared_{uuid.uuid4().hex}"
 
@@ -157,9 +205,8 @@ class TRTLLMProtocol:
         return {}
 
     def get_served_model_name(self, default: str) -> str:
-        """Get served model name from TRTLLM config, or return default."""
-        # TRTLLM doesn't have served-model-name in config, just use default
-        return default
+        """Get the configured served model name, or return default."""
+        return self.served_model_name or default
 
     def allocate_endpoints(
         self,
@@ -194,6 +241,7 @@ class TRTLLMProtocol:
         base_sys_port: int = DYN_SYSTEM_PORT_BASE,
         port_allocator: "NodePortAllocator | None" = None,
         frontend_type: str = "dynamo",
+        dynamo_sidecar: bool = False,
     ) -> list["Process"]:
         """Convert endpoints to processes."""
         from srtctl.core.topology import endpoints_to_processes
@@ -230,6 +278,13 @@ class TRTLLMProtocol:
         mode = process.endpoint_mode
         config = self.get_config_for_mode(mode)
 
+        sidecar_config = get_dynamo_sidecar_config(runtime)
+        if sidecar_config is not None:
+            if frontend_type != "dynamo":
+                raise ValueError("TensorRT-LLM sidecar mode requires frontend.type: dynamo")
+            if mode != "agg":
+                raise ValueError("TensorRT-LLM sidecar mode supports aggregated workers only")
+
         # Write config to host path (log_dir)
         config_filename = f"trtllm_config_{mode}.yaml"
         host_config_path = runtime.log_dir / config_filename
@@ -246,9 +301,19 @@ class TRTLLMProtocol:
         if self.numa_memory_bind is None:
             use_numactl = runtime.gpu_type in ("gb200", "gb300") and mode in ("prefill", "decode")
         else:
-            use_numactl = self.numa_memory_bind and mode in ("prefill", "decode")
+            use_numactl = self.numa_memory_bind
         numactl_prefix = ["numactl", "-m", "0,1"] if use_numactl else []
         base_prefix = list(nsys_prefix or []) + numactl_prefix + ["trtllm-llmapi-launch"]
+
+        if sidecar_config is not None:
+            return self._build_sidecar_command(
+                process=process,
+                config=config,
+                model_arg=model_arg,
+                container_config_path=container_config_path,
+                base_prefix=base_prefix,
+                sidecar_config=sidecar_config,
+            )
 
         # trtllm-serve path: launch an OpenAI-compatible trtllm-serve worker. In
         # disaggregated mode the trtllm_serve frontend fronts these via a static
@@ -280,6 +345,7 @@ class TRTLLMProtocol:
             # ai-dynamo tensorrtllm-runtime 1.3.0-dev.1 container, which accept --config;
             # some trtllm-serve builds spell this --extra_llm_api_options.
             cmd.extend(["--config", str(container_config_path)])
+            cmd.extend(self.get_extra_args_for_mode(mode))
             return self._wrap_with_numa_cpu_bind(cmd)
 
         # dynamo.trtllm path (default): workers register into etcd/NATS and the dynamo
@@ -291,7 +357,7 @@ class TRTLLMProtocol:
             "--model-path",
             model_arg,
             "--served-model-name",
-            runtime.model_path.name,
+            self.get_served_model_name(runtime.model_path.name),
         ]
 
         # Only add disaggregation mode for prefill/decode, not for agg
@@ -311,3 +377,61 @@ class TRTLLMProtocol:
             cmd.append("--publish-events-and-metrics")
 
         return self._wrap_with_numa_cpu_bind(cmd)
+
+    def _build_sidecar_command(
+        self,
+        *,
+        process: "Process",
+        config: dict[str, Any],
+        model_arg: str,
+        container_config_path: Path,
+        base_prefix: list[str],
+        sidecar_config: "DynamoConfig",
+    ) -> list[str]:
+        """Build a lifecycle-coupled TensorRT-LLM native-gRPC and sidecar launch."""
+        grpc_port = sidecar_grpc_port(sidecar_config.sidecar_port, process)
+        engine = self._wrap_with_numa_cpu_bind(
+            base_prefix
+            + [
+                "python3",
+                "-m",
+                "tensorrt_llm.commands.serve",
+                model_arg,
+                "--grpc",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(grpc_port),
+                "--extra_llm_api_options",
+                str(container_config_path),
+            ]
+        )
+
+        sidecar = (
+            [sidecar_config.sidecar_binary]
+            if sidecar_config.sidecar_binary is not None
+            else ["python3", "-m", "dynamo.trtllm.sidecar"]
+        )
+        sidecar.extend(
+            [
+                "--grpc-endpoint",
+                f"127.0.0.1:{grpc_port}",
+                "--model-path",
+                model_arg,
+            ]
+        )
+        context_length = sidecar_config.sidecar_context_length
+        if context_length is None:
+            context_length = config.get("max_seq_len") or config.get("max-seq-len")
+        if context_length is not None:
+            sidecar.extend(["--context-length", str(context_length)])
+        sidecar.extend(sidecar_config.sidecar_args)
+
+        return build_sidecar_launch_command(
+            engine=engine,
+            sidecar=sidecar,
+            grpc_port=grpc_port,
+            engine_name="TensorRT-LLM",
+            startup_timeout=sidecar_config.sidecar_startup_timeout,
+            rank_zero_only=True,
+        )

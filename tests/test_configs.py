@@ -56,6 +56,26 @@ class TestConfigLoading:
                 print(f"  - {err}")
 
 
+class TestClusterConfigGitHttpVersion:
+    """srtslurm.yaml is schema-validated, and a failure there silently drops
+    every cluster default (model_paths, containers, etc.) -- so a new key
+    has to be declared in ClusterConfig, not just read via
+    get_srtslurm_setting(). See TestHostSetup.test_cluster_schema_accepts_the_key
+    for the same lesson applied to an earlier field."""
+
+    def test_cluster_schema_accepts_the_key(self):
+        from srtctl.core.schema import ClusterConfig
+
+        loaded = ClusterConfig.Schema().load({"git_http_version": "HTTP/1.1"})
+        assert loaded.git_http_version == "HTTP/1.1"
+
+    def test_unset_defaults_to_none(self):
+        from srtctl.core.schema import ClusterConfig
+
+        loaded = ClusterConfig.Schema().load({})
+        assert loaded.git_http_version is None
+
+
 class TestSrtConfigStructure:
     """Tests for SrtConfig dataclass structure."""
 
@@ -425,6 +445,43 @@ class TestDynamoConfig:
 
         with pytest.raises(ValueError, match="Invalid event_plane"):
             DynamoConfig(event_plane="kafka")
+
+
+class TestSidecarValidation:
+    """Configuration contract for wheel-provided backend sidecars."""
+
+    @staticmethod
+    def _config(*, frontend_type: str = "dynamo", backend=None):
+        from srtctl.core.schema import DynamoConfig, FrontendConfig, ModelConfig, ResourceConfig
+
+        return SrtConfig(
+            name="sidecar",
+            model=ModelConfig(path="/model", container="/container.sqsh", precision="fp16"),
+            resources=ResourceConfig(gpu_type="h100", gpus_per_node=1, agg_nodes=1, agg_workers=1),
+            frontend=FrontendConfig(type=frontend_type),
+            backend=backend or SGLangProtocol(),
+            dynamo=DynamoConfig(wheel="1.5.0.dev20260828", sidecar=True),
+        )
+
+    def test_wheel_backed_sidecar_is_valid(self) -> None:
+        config = self._config()
+
+        assert config.dynamo.sidecar is True
+        assert config.dynamo.wheel == "1.5.0.dev20260828"
+
+    def test_sidecar_requires_dynamo_frontend(self) -> None:
+        from marshmallow import ValidationError
+
+        with pytest.raises(ValidationError, match="dynamo.sidecar: true requires frontend.type: dynamo"):
+            self._config(frontend_type="sglang")
+
+    def test_sidecar_rejects_unsupported_backend(self) -> None:
+        from marshmallow import ValidationError
+
+        from srtctl.backends import MockerProtocol
+
+        with pytest.raises(ValidationError, match="supports sglang, vllm, and trtllm backends only"):
+            self._config(backend=MockerProtocol())
 
 
 class TestSGLangProtocol:
@@ -3767,6 +3824,27 @@ class TestHuggingFaceModelSupport:
             cmd = backend.build_worker_command(process=process, endpoint_processes=[process], runtime=runtime)
 
         assert "numactl" not in cmd
+
+    def test_trtllm_numa_memory_bind_true_applies_to_agg_mode(self):
+        """numa_memory_bind=True also wraps aggregated-mode workers with numactl."""
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from srtctl.backends import TRTLLMProtocol
+
+        backend = TRTLLMProtocol(numa_memory_bind=True)
+        process = self._make_process(mode="agg")
+        runtime = self._make_runtime(is_hf=False)
+        runtime.log_dir = Path("/tmp/test-logs")
+        runtime.gpu_type = "h100"
+
+        with (
+            patch("pathlib.Path.write_text"),
+            patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
+        ):
+            cmd = backend.build_worker_command(process=process, endpoint_processes=[process], runtime=runtime)
+
+        assert cmd[:3] == ["numactl", "-m", "0,1"]
 
     def test_trtllm_numa_cpu_bind_wraps_decode_command_with_taskset(self):
         """numa_cpu_bind=True wraps decode commands with configs/numa_cpu_bind.sh."""

@@ -188,6 +188,26 @@ backend:
 
 **Validation:** In disaggregated mode, srtslurm rejects configs that set `mooncake_kv_store` without `disaggregation-transfer-backend: mooncake` on `sglang_config.prefill` or `sglang_config.decode`. This catches the common misconfiguration where the master process gets launched but workers fall back to default transport.
 
+### Host Setup
+
+`host_setup` runs commands on each node's **bare host, outside the container**, before any
+worker starts — the counterpart to `setup_script`, which runs *inside* the container. Use it
+for node state a container cannot reach (GPU clocks, kernel modules).
+
+```yaml
+host_setup:
+  commands: ["sudo -n nvidia-smi -lmc <min>,<max>"]
+  teardown: ["sudo -n nvidia-smi -rmc"]   # runs on the cleanup path, success or failure
+  nodes: all                              # all | workers
+```
+
+Implemented in `SweepOrchestrator._run_host_setup()` / `._run_host_teardown()` as one
+container-less `start_srun_process(container_image=None, ...)` per node. Cluster-wide default
+lives in `srtslurm.yaml` as `default_host_setup` (whole-block replace, like
+`default_health_check`). Commands run as the submitting user, so privileged ones need
+passwordless sudo. Always pair a `commands` entry that sets persistent state with a
+`teardown` — otherwise it leaks to the next job on that node.
+
 ### ResourceConfig
 
 Supports explicit GPUs per worker (overrides computed values):
@@ -264,6 +284,7 @@ Config sources that feed into dry-run display:
 - **Mounts**: `config.extra_mount`, `config.container_mounts`, `default_mounts` from srtslurm.yaml
 - **Env vars**: `config.environment` (global), `backend.prefill_environment`, `backend.decode_environment`, `backend.aggregated_environment`
 - **srun options**: `config.srun_options`
+- **Host setup**: `config.host_setup`, `default_host_setup` from srtslurm.yaml
 
 ## Debugging
 

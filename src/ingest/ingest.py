@@ -94,6 +94,26 @@ AIPERF_METRIC_PATTERNS = [
     "artifacts/*/server_metrics_export.json",
 ]
 
+# AIPerf's per-scrape jsonl sibling (written with --server-metrics-formats json jsonl),
+# mirroring AIPERF_METRIC_PATTERNS. One line per (scrape, endpoint), values verbatim.
+AIPERF_JSONL_PATTERNS = [
+    "agentic/*/aiperf_artifacts/server_metrics_export.jsonl",
+    "agentic/*/server_metrics_export.jsonl",
+    "artifacts/*/server_metrics_export.jsonl",
+]
+
+# Where the Tachometer leg leaves its parquet, in preference order: the post-run
+# compaction writes final.parquet under the storage leaf (tachometer/raw/scrape);
+# tachometer/final holds the direct-host explicit-compact output; tachometer/local
+# holds out-N/incomplete-N leftovers that only matter when compaction never ran.
+TACHOMETER_PATTERNS = [
+    "tachometer/raw/scrape/final.parquet",
+    "tachometer/raw/scrape/*.parquet",
+    "tachometer/final/final.parquet",
+    "tachometer/local/final.parquet",
+    "tachometer/local/*.parquet",
+]
+
 CLIENT_PATTERNS = [
     "agentic/*/aiperf_artifacts/profile_export.jsonl",
     "agentic/*/profile_export.jsonl",
@@ -302,6 +322,7 @@ def generate_dashboard_yaml(
     have_request_trace: bool = False,
     warmup_end_ns: int | None = None,
     warmup_source: str | None = None,
+    metrics_source: str | None = None,
 ) -> str:
     """Render a dashboard.yaml (skeleton fields: name/description/mode/framework/
     topology/sources) whose ``sources:`` point at the bundle's own files (so the
@@ -346,7 +367,13 @@ def generate_dashboard_yaml(
     if have_traces:
         lines.append("  tempo_traces:   tempo_traces")
     if have_metrics:
-        lines.append("  server_metrics: server_metrics_export.jsonl")
+        # metrics_source is only set for the sources whose provenance is not obvious
+        # from the run dir (tachometer / aiperf per-scrape jsonl); the annotation is a
+        # comment, so the sources: entry itself stays byte-identical for L3.
+        sm_line = "  server_metrics: server_metrics_export.jsonl"
+        if metrics_source:
+            sm_line += f"   # source: {metrics_source}"
+        lines.append(sm_line)
     if have_request_trace:
         lines.append("  request_trace:  request_trace.jsonl")
     return "\n".join(lines) + "\n"
@@ -441,20 +468,77 @@ def run_metrics(args, run_dir: Path, bundle: Path) -> bool:
 
     mode = args.metrics
     if mode == "auto":
-        # Pick the source the run actually captured. An `observability.enabled` run has
+        # Pick the source the run actually captured, best first: the tachometer
+        # parquet (whole-window, per-replica, every endpoint) wins over the in-job
+        # raw_prometheus.jsonl, which wins over AIPerf's own exports (per-scrape
+        # jsonl over the aggregate json). An `observability.enabled` run has
         # raw_prometheus.jsonl; a run without it usually still has AIPerf's own export,
         # because the frontend's /metrics surface exists regardless of that knob and
         # the benchmark scrapes it. Choosing here rather than at every call site is
-        # what lets one ingest command work on both.
+        # what lets one ingest command work on all of them.
+        tach: list[str] = []
+        for pat in ([args.tachometer_parquet] if args.tachometer_parquet else TACHOMETER_PATTERNS):
+            tach.extend(resolve_inputs(pat, run_dir))
         raw = resolve_inputs(args.raw_prometheus or "raw_prometheus.jsonl", run_dir)
-        if raw:
+        if tach:
+            mode = "tachometer"
+        elif raw:
             mode = "prometheus"
         else:
-            found: list[str] = []
-            for pat in AIPERF_METRIC_PATTERNS:
-                found.extend(resolve_inputs(pat, run_dir))
-            mode = "aiperf-json" if found else "prometheus"
+            found_jsonl: list[str] = []
+            for pat in AIPERF_JSONL_PATTERNS:
+                found_jsonl.extend(resolve_inputs(pat, run_dir))
+            if found_jsonl:
+                mode = "aiperf-jsonl"
+            else:
+                found: list[str] = []
+                for pat in AIPERF_METRIC_PATTERNS:
+                    found.extend(resolve_inputs(pat, run_dir))
+                mode = "aiperf-json" if found else "prometheus"
         _log("L2 metrics", f"auto-selected source: {mode}")
+
+    if mode == "tachometer":
+        # The in-job Tachometer scraper's parquet: the whole-window per-replica
+        # capture of every /metrics endpoint. First pattern with a hit wins, so
+        # final.parquet is preferred over shards/leftovers.
+        patterns = ([args.tachometer_parquet] if args.tachometer_parquet
+                    else list(TACHOMETER_PATTERNS))
+        srcs: list[str] = []
+        for pat in patterns:
+            srcs = resolve_inputs(pat, run_dir)
+            if srcs:
+                break
+        if not srcs:
+            _log("L2 metrics", f"WARN no tachometer parquet matched {patterns} under {run_dir}; skipping")
+            return False
+        shards = f" (+{len(srcs) - 1} shard(s))" if len(srcs) > 1 else ""
+        _log("L1", f"metrics raw: {srcs[0]}{shards} (tachometer parquet)")
+        proc = get_processor("metrics", "tachometer")
+        n = proc(srcs if len(srcs) > 1 else srcs[0], str(out))
+        nin, nout = dedup_server_metrics(out)
+        _log("L2 metrics", f"tachometer -> {out.name}: {n} timestamps, dedup {nin} -> {nout} lines")
+        args._metrics_source = "tachometer parquet"
+        return out.exists()
+
+    if mode == "aiperf-jsonl":
+        # AIPerf's per-scrape export (--server-metrics-formats json jsonl): raw
+        # readings per (scrape, endpoint), so no timeslice reconstruction needed.
+        patterns = ([args.aiperf_server_metrics_jsonl] if args.aiperf_server_metrics_jsonl
+                    else list(AIPERF_JSONL_PATTERNS))
+        srcs = []
+        for pat in patterns:
+            srcs.extend(resolve_inputs(pat, run_dir))
+        srcs = sorted(dict.fromkeys(srcs))
+        if not srcs:
+            _log("L2 metrics", f"WARN no aiperf per-scrape jsonl matched {patterns} under {run_dir}; skipping")
+            return False
+        _log("L1", f"metrics raw: {srcs[0]} (AIPerf per-scrape server_metrics_export.jsonl)")
+        proc = get_processor("metrics", "aiperf-jsonl")
+        n = proc(srcs[0], str(out))
+        nin, nout = dedup_server_metrics(out)
+        _log("L2 metrics", f"aiperf-jsonl -> {out.name}: {n} timestamps, dedup {nin} -> {nout} lines")
+        args._metrics_source = "aiperf per-scrape jsonl"
+        return out.exists()
 
     if mode == "aiperf-json":
         # AIPerf's own export. The only server-metrics source on a run that predates
@@ -1132,12 +1216,19 @@ def build_parser() -> argparse.ArgumentParser:
                         "(default: *_prefill_w*.out, *_decode_w*.out, *_agg_w*.out)")
 
     # metrics axis
-    p.add_argument("--metrics", choices=["auto", "prometheus", "aiperf-json", "none"],
+    p.add_argument("--metrics", choices=["auto", "tachometer", "prometheus", "aiperf-jsonl", "aiperf-json", "none"],
                    default="auto",
-                   help="metrics source; 'auto' uses raw_prometheus.jsonl when the run has it "
-                        "and falls back to AIPerf's own export when it does not")
+                   help="metrics source; 'auto' prefers the tachometer parquet, then "
+                        "raw_prometheus.jsonl, then AIPerf's per-scrape jsonl, then "
+                        "AIPerf's aggregate json")
     p.add_argument("--raw-prometheus", default=None,
                    help="raw_prometheus.jsonl path/glob (default: raw_prometheus.jsonl)")
+    p.add_argument("--tachometer-parquet", default=None,
+                   help="tachometer parquet path/glob for --metrics tachometer "
+                        "(default: tachometer/raw/scrape/final.parquet, then shards/local leftovers)")
+    p.add_argument("--aiperf-server-metrics-jsonl", default=None,
+                   help="AIPerf per-scrape server_metrics_export.jsonl path/glob for --metrics aiperf-jsonl "
+                        "(default: agentic/*/ then artifacts/*/)")
     p.add_argument("--aiperf-server-metrics", default=None,
                    help="AIPerf server_metrics_export.json path/glob for --metrics aiperf-json "
                         "(default: agentic/*/ then artifacts/*/)")
@@ -1211,6 +1302,7 @@ def main(argv=None) -> int:
         have_request_trace=have_req_trace,
         warmup_end_ns=warmup_ns,
         warmup_source=warmup_src,
+        metrics_source=getattr(args, "_metrics_source", None),
     )
     yaml_path = bundle / "dashboard.yaml"
     yaml_path.write_text(yaml_text)

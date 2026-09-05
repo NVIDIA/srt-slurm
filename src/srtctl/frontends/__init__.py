@@ -8,6 +8,7 @@ Supported frontend types:
 - dynamo: Dynamo frontend with NATS/etcd communication
 - sglang: SGLang native router with direct worker connections
 - vllm: Direct vLLM OpenAI server for aggregate jobs
+- vllm-router: Official vLLM Router with static aggregate or P/D workers
 """
 
 from srtctl.frontends.base import (
@@ -19,6 +20,7 @@ from srtctl.frontends.dynamo import DynamoFrontend
 from srtctl.frontends.sglang import SGLangFrontend
 from srtctl.frontends.trtllm_serve import TRTLLMServeFrontend
 from srtctl.frontends.vllm import VLLMFrontend
+from srtctl.frontends.vllm_router import VLLMRouterFrontend
 
 __all__ = [
     "DynamoFrontend",
@@ -27,5 +29,6 @@ __all__ = [
     "SGLangFrontend",
     "TRTLLMServeFrontend",
     "VLLMFrontend",
+    "VLLMRouterFrontend",
     "get_frontend",
 ]

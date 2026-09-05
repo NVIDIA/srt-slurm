@@ -193,6 +193,23 @@ def setup_logging(level: int = logging.INFO) -> None:
     )
 
 
+def _host_setup_source(config: SrtConfig) -> str:
+    """Where the effective host_setup came from: the recipe or srtslurm.yaml.
+
+    resolve_config_with_defaults only injects default_host_setup when the recipe
+    omits the block entirely, so an exact match against the cluster default
+    identifies it. Worth showing: an unexpected `sudo` in the dry-run output is
+    much easier to chase when you know which file to open.
+    """
+    default = get_srtslurm_setting("default_host_setup")
+    if isinstance(default, dict):
+        commands = list(default.get("commands") or [])
+        teardown = list(default.get("teardown") or [])
+        if commands == config.host_setup.commands and teardown == config.host_setup.teardown:
+            return "srtslurm.yaml (default_host_setup)"
+    return "recipe"
+
+
 def show_config_details(config: SrtConfig) -> None:
     """Display container mounts and environment variables for dry-run verification.
 
@@ -355,6 +372,36 @@ def show_config_details(config: SrtConfig) -> None:
     else:
         console.print("[dim]No custom environment variables configured.[/]")
 
+    # --- Host setup (runs on the bare node, outside the container) ---
+    if config.host_setup.enabled:
+        host_table = Table(title="Host Setup (outside container)", show_lines=False, pad_edge=False)
+        host_table.add_column("Phase", style="dim", width=10)
+        host_table.add_column("Command", style="white")
+        for command in config.host_setup.commands:
+            host_table.add_row("setup", command)
+        for command in config.host_setup.teardown:
+            host_table.add_row("teardown", command)
+        console.print(Panel(host_table, border_style="red"))
+
+        setup = config.host_setup
+        source = _host_setup_source(config)
+        console.print(
+            f"[dim]host_setup:[/] nodes={setup.nodes} "
+            f"ignore_failure={str(setup.ignore_failure).lower()} "
+            f"timeout_seconds={setup.timeout_seconds} [dim]source: {source}[/]"
+        )
+        if any("sudo" in command for command in [*setup.commands, *setup.teardown]):
+            console.print(
+                "[yellow]NOTE:[/] host_setup runs as you, not root. Confirm passwordless sudo on a "
+                "compute node first (`srun --jobid <job> --overlap -w <node> sudo -n true`); "
+                "a sudo that prompts will hang until timeout_seconds and fail the job."
+            )
+        if setup.commands and not setup.teardown:
+            console.print(
+                "[yellow]NOTE:[/] no host_setup.teardown configured — any node state set here "
+                "outlives this allocation and is inherited by the next job on these nodes."
+            )
+
     # --- srun options ---
     if config.srun_options:
         opts = " ".join(f"--{k}={v}" if v else f"--{k}" for k, v in config.srun_options.items())
@@ -393,10 +440,8 @@ def show_config_details(config: SrtConfig) -> None:
         if config.benchmark.container_image:
             details.add_row("benchmark", "container_image", config.benchmark.container_image)
 
-        if config.observability.enabled:
-            details.add_row("observability", "raw_metrics", str(config.observability.scraper_enabled))
         tachometer = config.observability.tachometer
-        if tachometer.enabled:
+        if config.observability.tachometer_enabled:
             details.add_row("observability", "tachometer", "enabled")
             details.add_row("observability", "storage_subdir", tachometer.storage_subdir)
             details.add_row("observability", "frequency", str(tachometer.default_frequency))
@@ -494,6 +539,7 @@ def generate_minimal_sbatch_script(
     setup_script: str | None = None,
     output_dir: Path | None = None,
     runtime_config_filename: str = "config.yaml",
+    serve_only: bool = False,
 ) -> str:
     """Generate minimal sbatch script that calls the Python orchestrator.
 
@@ -506,6 +552,7 @@ def generate_minimal_sbatch_script(
         setup_script: Optional setup script override (passed via env var)
         output_dir: Custom output directory (CLI flag, highest priority)
         runtime_config_filename: Config file name under OUTPUT_DIR used by do_sweep
+        serve_only: Keep the inference endpoint running without launching a benchmark
 
     Returns:
         Rendered sbatch script as string
@@ -596,20 +643,24 @@ def generate_minimal_sbatch_script(
         srtctl_source=str(srtctl_source.resolve()),
         output_base=output_base,
         setup_script=setup_script,
+        serve_only=serve_only,
         config_environment={key: shlex.quote(str(value)) for key, value in config_environment.items()},
     )
 
     return rendered
 
 
-def _print_running_summary(config: SrtConfig, console: Console) -> None:
+def _print_running_summary(config: SrtConfig, console: Console, *, serve_only: bool = False) -> None:
     """Print what's being run and identity verification status."""
     console.print()
     console.print("[bold]Running:[/]")
     console.print(f"  Model:     {config.model.path}")
     console.print(f"  Container: {config.model.container}")
     console.print(f"  Backend:   {config.backend_type}")
-    console.print(f"  Benchmark: {config.benchmark.type}")
+    if serve_only:
+        console.print("  Mode:      Serve only (no benchmark)")
+    else:
+        console.print(f"  Benchmark: {config.benchmark.type}")
 
     has_identity = config.identity and (
         (config.identity.model and (config.identity.model.repo or config.identity.model.revision))
@@ -665,6 +716,7 @@ def submit_with_orchestrator(
     variant_suffix: str | None = None,
     source_config_path: Path | None = None,
     runtime_config_text: str | None = None,
+    serve_only: bool = False,
 ) -> str | None:
     """Submit job using the new Python orchestrator.
 
@@ -683,6 +735,7 @@ def submit_with_orchestrator(
                             while the job executes a resolved variant config.
         runtime_config_text: Resolved runtime YAML written under OUTPUT_DIR when
                              source_config_path is set.
+        serve_only: Keep the inference endpoint running without launching a benchmark.
 
     Returns:
         job_id string on success, None for dry_run.
@@ -705,6 +758,7 @@ def submit_with_orchestrator(
         setup_script=setup_script,
         output_dir=output_dir,
         runtime_config_filename=runtime_config_filename,
+        serve_only=serve_only,
     )
 
     # Identity validation (inline, <1s) — runs for both dry-run and submit
@@ -733,7 +787,7 @@ def submit_with_orchestrator(
         show_config_details(config)
 
         # Show running summary + identity in dry-run too
-        _print_running_summary(config, console)
+        _print_running_summary(config, console, serve_only=serve_only)
         return
 
     # Validate setup before submitting (not during dry-run)
@@ -824,6 +878,8 @@ def submit_with_orchestrator(
                 "osl": config.benchmark.osl,
             },
         }
+        if serve_only:
+            metadata["serve_only"] = True
         if tags:
             metadata["tags"] = tags
         if config.setup_script:
@@ -868,7 +924,7 @@ def submit_with_orchestrator(
         console.print(f"[dim]📋 Monitor:[/] tail -f {log}")
         console.print(f"[dim]📊 Queue:[/] squeue --job {job_id}")
 
-        _print_running_summary(config, console)
+        _print_running_summary(config, console, serve_only=serve_only)
 
         return job_id
 
@@ -894,6 +950,7 @@ def submit_single(
     source_config_path: Path | None = None,
     runtime_config_text: str | None = None,
     enforce_preflight: bool = True,
+    serve_only: bool = False,
 ) -> str | None:
     """Submit a single job from YAML config.
 
@@ -911,6 +968,7 @@ def submit_single(
                             resolved variant config.
         runtime_config_text: Resolved runtime YAML written under OUTPUT_DIR for
                              override submissions.
+        serve_only: Keep the inference endpoint running without launching a benchmark.
 
     Returns:
         job_id string on success, None for dry_run.
@@ -943,6 +1001,7 @@ def submit_single(
         variant_suffix=variant_suffix,
         source_config_path=source_config_path,
         runtime_config_text=runtime_config_text,
+        serve_only=serve_only,
     )
 
 
@@ -1327,6 +1386,7 @@ def submit_override(
     tags: list[str] | None = None,
     output_dir: Path | None = None,
     enforce_preflight: bool = True,
+    serve_only: bool = False,
 ) -> None:
     """Expand an override config file and submit each variant.
 
@@ -1343,6 +1403,7 @@ def submit_override(
         enforce_preflight: When False, skip the pre-submit model/container/telemetry
             FS checks for every expanded variant (propagated to submit_single /
             submit_sweep).
+        serve_only: Keep the inference endpoint running without launching a benchmark.
     """
     with open(config_path) as f:
         raw_config = yaml.safe_load(f)
@@ -1365,6 +1426,8 @@ def submit_override(
     from srtctl.core.yaml_utils import dump_yaml_with_comments
 
     resolved_variants = resolve_override_yaml(config_path, selector=selector)
+    if serve_only and len(resolved_variants) != 1:
+        raise ValueError("--serve-only requires an override selector that resolves to exactly one job")
 
     for i, (suffix, config_cm) in enumerate(resolved_variants, 1):
         variant_label = "base" if suffix == "base" else f"override_{suffix}"
@@ -1382,6 +1445,8 @@ def submit_override(
         config = SrtConfig.Schema().load(resolved_config)
 
         if "sweep" in config_cm:
+            if serve_only:
+                raise ValueError("--serve-only does not support sweep configs")
             fd, temp_config_path = tempfile.mkstemp(suffix=".yaml", prefix="srtctl_override_", text=True)
             try:
                 with os.fdopen(fd, "w") as f:
@@ -1409,6 +1474,7 @@ def submit_override(
                 source_config_path=config_path,
                 runtime_config_text=runtime_config_text,
                 enforce_preflight=enforce_preflight,
+                serve_only=serve_only,
             )
 
 
@@ -1469,6 +1535,7 @@ def main():
         epilog="""Examples:
   srtctl                                         # Interactive mode
   srtctl apply -f config.yaml                    # Submit job
+  srtctl apply -f config.yaml --serve-only       # Serve until cancelled; do not benchmark
   srtctl apply -f config.yaml --bash             # Print a direct single-node Bash lifecycle script
   srtctl apply -f ./configs/                     # Submit all YAMLs in directory
   srtctl apply -f config.yaml --sweep            # Submit sweep
@@ -1502,6 +1569,11 @@ def main():
     add_common_args(apply_parser)
     apply_parser.add_argument("--setup-script", type=str, help="Custom setup script in configs/")
     apply_parser.add_argument("--tags", type=str, help="Comma-separated tags")
+    apply_parser.add_argument(
+        "--serve-only",
+        action="store_true",
+        help="Deploy the inference endpoint without running a benchmark; keep serving until the job is cancelled.",
+    )
     apply_parser.add_argument(
         "--bash",
         action="store_true",
@@ -1604,12 +1676,19 @@ def main():
     json_mode = bool(getattr(args, "json_output", False))
     mock_mode = bool(getattr(args, "mock_mode", False))
     bash_mode = bool(getattr(args, "bash_output", False))
+    serve_only = bool(getattr(args, "serve_only", False))
     if bash_mode and json_mode:
         parser.error("--bash cannot be combined with --json")
     if bash_mode and mock_mode:
         parser.error("--bash cannot be combined with --mock")
     if bash_mode and getattr(args, "sweep", False):
         parser.error("--bash currently supports single-job configs only; sweeps expand to multiple sbatch jobs")
+    if serve_only and bash_mode:
+        parser.error("--serve-only cannot be combined with --bash")
+    if serve_only and mock_mode:
+        parser.error("--serve-only cannot be combined with --mock")
+    if serve_only and getattr(args, "sweep", False):
+        parser.error("--serve-only does not support sweeps")
 
     # Always rebind the module console on each invocation so json-mode prose
     # goes to stderr and non-json prose returns to stdout. Save the original
@@ -1780,6 +1859,8 @@ def main():
 
             # Handle directory input
             if effective_config_path.is_dir():
+                if serve_only:
+                    raise ValueError("--serve-only expects a single config file, not a directory")
                 if selector:
                     logger.warning(f"Selector ':{selector}' ignored for directory input")
                 submit_directory(
@@ -1800,12 +1881,15 @@ def main():
                     tags=tags,
                     output_dir=output_dir,
                     enforce_preflight=enforce_preflight,
+                    serve_only=serve_only,
                 )
             else:
                 if selector:
                     logger.warning(f"Selector ':{selector}' ignored — config is not an override file")
                 is_sweep = args.sweep or is_sweep_config(effective_config_path)
                 if is_sweep:
+                    if serve_only:
+                        raise ValueError("--serve-only does not support sweep configs")
                     submit_sweep(
                         effective_config_path,
                         dry_run=is_dry_run,
@@ -1822,6 +1906,7 @@ def main():
                         tags=tags,
                         output_dir=output_dir,
                         enforce_preflight=enforce_preflight,
+                        serve_only=serve_only,
                     )
     except Exception as e:
         # Restore subprocess.run etc. before we exit so in-process test

@@ -28,6 +28,7 @@ Complete reference for job configuration YAML files.
 - [sbatch_directives](#sbatch_directives)
 - [srun_options](#srun_options)
 - [setup_script](#setup_script)
+- [host_setup](#host_setup)
 - [enable_config_dump](#enable_config_dump)
 - [Complete Examples](#complete-examples)
 
@@ -118,11 +119,14 @@ The `srtslurm.yaml` file can contain the following fields:
 | `containers`                    | dict   | Container image aliases                               |
 | `default_mounts`                | dict   | Cluster-wide container mounts                         |
 | `default_bash_preamble`         | string | Shell snippet prepended to every container srun       |
+| `default_host_setup`            | object | Commands run on every node's bare host, outside the container |
 | `nginx_raise_ulimit`          | bool   | Optional default for `frontend.nginx_raise_ulimit`  |
 
 **output_dir**: When set, job logs are written to `output_dir/{job_id}/logs` instead of `srtctl_root/outputs/{job_id}/logs`. Useful for CI/CD and ephemeral environments.
 
 **default_bash_preamble**: A shell snippet (e.g. `"ulimit -n 1048576 -s unlimited -u 1048576"`) prepended to every container srun launched by srtctl — workers, frontends, telemetry, benchmark, postprocess. Runs before per-call `bash_preamble` and the main command, so cluster-wide ulimits apply to everything downstream. Silently dropped for distroless containers (e.g. `prom/node-exporter`) that bypass the bash wrapper; a WARNING log is emitted in that case.
+
+**default_host_setup**: A [`host_setup`](#host_setup) block applied to every job on the cluster — for node state that has to be set outside the container, such as locking GPU clocks. A recipe that sets its own `host_setup:` block replaces it entirely; `host_setup: {commands: []}` opts a single run out.
 
 **nginx_raise_ulimit**: When set to `true` or `false`, this value is applied to jobs that omit `frontend.nginx_raise_ulimit` in the recipe. Use `true` on clusters where raising the nginx container’s open-file limit is allowed; leave unset if each job should rely on the frontend default (`false`). A recipe that sets `frontend.nginx_raise_ulimit` always wins.
 
@@ -271,7 +275,7 @@ Frontend/router configuration.
 
 ```yaml
 frontend:
-  # Frontend type: "dynamo" (default), "sglang", "trtllm_serve", or "vllm"
+  # Frontend type: "dynamo" (default), "sglang", "vllm-router", "trtllm_serve", or "vllm"
   type: dynamo
 
   # Scaling
@@ -291,17 +295,21 @@ frontend:
   # Environment variables for frontend processes
   env:
     MY_VAR: "value"
+
+  # Optional static-router image; defaults to model.container
+  # container_image: vllm-router
 ```
 
 | Field                       | Type | Default       | Description                         |
 | --------------------------- | ---- | ------------- | ----------------------------------- |
-| `type`                      | str  | dynamo        | Frontend type: "dynamo", "sglang", "trtllm_serve", or "vllm" |
+| `type`                      | str  | dynamo        | Frontend type: "dynamo", "sglang", "vllm-router", "trtllm_serve", or "vllm" |
 | `enable_multiple_frontends` | bool | true          | Scale with nginx + multiple routers |
 | `num_additional_frontends`  | int  | 9             | Additional routers beyond master    |
 | `nginx_container`           | str  | nginx:1.27.4  | Custom nginx container image        |
 | `nginx_raise_ulimit`      | bool | false         | When true with nginx in use, run `ulimit -n 1048576` before nginx and emit `worker_rlimit_nofile 1048576` in generated `nginx.conf`. Off by default so restrictive clusters do not fail. Cluster `srtslurm.yaml` may set `nginx_raise_ulimit` for jobs that omit this field. |
 | `args`                      | dict | null          | CLI args for the frontend           |
 | `env`                       | dict | null          | Env vars for frontend processes     |
+| `container_image`           | str  | null          | Static-router image; falls back to `model.container` |
 
 See [SGLang Router](sglang-router.md) for detailed architecture.
 
@@ -417,6 +425,14 @@ Slurm head node.
 
 Compare with `frontend.type: dynamo` + `backend.type: vllm`, which keeps Dynamo as
 the request router and uses `python3 -m dynamo.vllm` workers with NATS/etcd.
+
+### vllm-router frontend
+
+`type: vllm-router` launches the official vLLM Router in front of direct
+`vllm serve` workers. It supports aggregate replicas and disaggregated P/D
+topologies without Dynamo or NATS/etcd. See [vLLM Router](vllm-router.md) for
+complete topology examples and the division of responsibility between the
+upstream vLLM backend topology and Router adapter.
 
 ---
 
@@ -636,10 +652,14 @@ benchmark:
 | `longbenchv2`     | Long-context evaluation benchmark              |
 | `router`          | Router performance with prefix caching         |
 | `mooncake-router` | KV-aware routing with Mooncake trace           |
+| `agentperf`       | AgentPerf trajectory replay (agentperf-client) |
 
 ### manual
 
 No benchmark is run. Use for manual testing and debugging.
+
+For a one-off serving run, `srtctl apply -f config.yaml --serve-only` provides the same behavior without changing
+the recipe's configured benchmark.
 
 ```yaml
 benchmark:
@@ -681,6 +701,15 @@ they do not own separate engines; co-located logical workers retain repeated IPs
 so list positions remain aligned. With a Dynamo frontend, endpoint and metrics URLs use each
 leader's `DYN_SYSTEM_PORT`; other frontends use the worker HTTP port. If KVBM metrics are configured,
 their URLs are appended to `AIPERF_SERVER_METRICS_URLS` after the logical worker URLs.
+
+Two caveats for `AIPERF_SERVER_METRICS_URLS`:
+
+- **TRT-LLM worker URLs are omitted when the workers publish no metrics.** A TRT-LLM worker
+  launched without `--publish-events-and-metrics` (the default; `observability.enabled` turns it
+  on) serves nothing on its sys-port `/metrics`, so those URLs are not advertised. KVBM URLs are
+  unaffected — KVBM serves its own endpoint regardless of the flag.
+- **An explicit `AIPERF_SERVER_METRICS_URLS` in the recipe `environment:` wins.** Injection is
+  skipped when the variable is already set, so a curated endpoint list is never clobbered.
 
 Values in `benchmark.env` are applied last and can explicitly override any automatically injected
 variable.
@@ -847,6 +876,60 @@ Dataset characteristics (conversation trace):
 - Avg input: 12,035 tokens, Avg output: 343 tokens
 - 36.64% cache efficiency potential
 
+### agentperf
+
+Trajectory-replay benchmark using the standalone
+[agentperf-client](https://github.com/ArtificialAnalysis-External/agentperf-client) — a deterministic
+agentic load generator with a Rust streaming core. The client checkout is mounted into the container
+(pin the commit for comparable runs); the workload definition (trajectory dataset, user-assignments
+file, `settling_time_seconds`, `phase_timeout_seconds`, stop criteria) lives in the client's own
+config YAML. srtctl injects the endpoint, model and concurrency at run time via the client's
+`--base-url` / `--model` / `--concurrencies` flags. Note the client validates the workload YAML
+*before* merging CLI overrides, so the YAML must still carry syntactically valid placeholder
+`base_url`, `model` and `concurrencies` values — and `phase_timeout_seconds` must satisfy the
+client's ramp-up bound for the *injected* concurrency
+(`phase_timeout_seconds >= (concurrency - 1) / user_spawn_rate + settling_time_seconds +
+min_measurement_seconds`).
+
+```yaml
+benchmark:
+  type: "agentperf"
+  agentperf_client_dir: "/agentperf-client"       # Container path to the client checkout
+  agentperf_config: "/workloads/agentperf.yaml"   # Container path to the client's workload YAML
+  concurrencies: [1010]                           # One benchmark phase per level
+  env:
+    AGENTPERF_EXTRA_ARGS: "--seed 100"            # Optional: appended to agentperf/run.py verbatim
+
+extra_mount:
+  - "/path/on/host/agentperf-client:/agentperf-client"
+  - "/path/on/host/workloads:/workloads"
+```
+
+| Field                  | Type        | Required | Default | Description                                            |
+| ---------------------- | ----------- | -------- | ------- | ------------------------------------------------------ |
+| `agentperf_client_dir` | string      | Yes      | —       | Container path to an agentperf-client checkout         |
+| `agentperf_config`     | string      | Yes      | —       | Container path to the client's workload YAML           |
+| `concurrencies`        | list/string | Yes*     | —       | Levels, one client phase each; string form is x-separated (`"64x1010"`), matching other benchmark types |
+| `concurrency`          | int         | Yes*     | —       | Single level (alternative to `concurrencies`)          |
+
+*One of `concurrency` / `concurrencies` is required.
+
+Notes:
+- The first run of a job builds an isolated client runtime under `/tmp/agentperf-<jobid>`
+  (uv env, pinned Rust toolchain, `rustcore` extension, tokenizer cache) and stages the trajectory
+  and user-assignments datasets from shared storage to node-local `/tmp` — this preflight needs
+  network egress from the benchmark node and adds several minutes before the first phase.
+- The user-assignments file referenced by the workload YAML must cover the highest concurrency
+  level (`assign_trajectories` fails loudly otherwise).
+- Results land under `<log_dir>/agentperf/` (per-phase `*__traj*.{jsonl,txt,json}`,
+  `requests.jsonl`, `phase_manifest.jsonl`); `rollup.py` normalizes them into
+  `benchmark-rollup.json`.
+- Two runs must not share a results dir concurrently (the client resets `phase_manifest.jsonl`
+  at start).
+- `telemetry:` (DCGM power measurement windows) is not supported with agentperf — the schema
+  rejects non-sa-bench benchmark types at config load. Tachometer
+  (`observability.enabled`) works normally.
+
 ---
 
 ## dynamo
@@ -860,14 +943,22 @@ dynamo:
   hash: "abc123"              # Install from git commit
   # OR
   top_of_tree: true           # Install from main branch
+  sidecar: false               # Use native engines with Dynamo sidecars
 ```
 
-| Field         | Type   | Default | Description                                            |
-| ------------- | ------ | ------- | ------------------------------------------------------ |
-| `install`     | bool   | true    | Whether to install dynamo (set false if pre-installed) |
-| `version`     | string | "0.8.0" | PyPI version                                           |
-| `hash`        | string | null    | Git commit hash (source install)                       |
-| `top_of_tree` | bool   | false   | Install from main branch                               |
+| Field                    | Type         | Default | Description                                            |
+| ------------------------ | ------------ | ------- | ------------------------------------------------------ |
+| `install`                | bool         | true    | Whether to install dynamo (set false if pre-installed) |
+| `version`                | string       | "0.8.0" | PyPI version                                           |
+| `hash`                   | string       | null    | Git commit hash (source install)                       |
+| `top_of_tree`            | bool         | false   | Install from main branch                               |
+| `wheel`                  | string       | null    | Exact `ai-dynamo` nightly version                      |
+| `sidecar`                | bool         | false   | Replace legacy Python workers with native engines and Dynamo sidecars |
+| `sidecar_port`           | int          | 50051   | Base loopback gRPC port; co-located workers receive deterministic offsets |
+| `sidecar_binary`         | string/null  | null    | Optional standalone executable; null uses `python3 -m dynamo.<framework>.sidecar` |
+| `sidecar_args`           | list[string] | []      | Extra arguments passed to the sidecar launcher         |
+| `sidecar_startup_timeout` | int         | 1200    | Seconds to wait for the native gRPC endpoint            |
+| `sidecar_context_length` | int/null     | null    | TRT-LLM context length override                         |
 
 **Notes**:
 
@@ -876,6 +967,36 @@ dynamo:
 - `hash` and `top_of_tree` are mutually exclusive.
 - When `hash` or `top_of_tree` is set, `version` is automatically cleared.
 - Source installs (`hash` or `top_of_tree`) clone the repo and build with maturin.
+
+### Native sidecar mode
+
+Set `dynamo.sidecar: true` to run the framework's native engine process beside a CPU-only Dynamo sidecar instead of launching `python3 -m dynamo.<framework>`. The engine and sidecar share one Slurm step and have a coupled lifecycle: if either exits, srtctl terminates the other and marks the worker failed.
+
+By default, srtctl launches `python3 -m dynamo.<framework>.sidecar`. The `ai-dynamo` package supplies this module and pins the matching `ai-dynamo-runtime` wheel, which embeds the native Rust sidecar. The configured Dynamo version, wheel, source hash, or preinstalled container runtime must include the selected framework's launcher. No separate Cargo build is performed at job startup.
+
+Nightly deployments should select an exact `dynamo.wheel` version so srtctl stages and installs the matching `ai-dynamo` and `ai-dynamo-runtime` artifacts on every worker. Set `dynamo.sidecar_binary` only to launch a compatible standalone executable already present in the container or a bind mount.
+
+```yaml
+frontend:
+  type: dynamo
+
+backend:
+  type: vllm  # sglang, vllm, or trtllm
+
+dynamo:
+  wheel: "<nightly-with-sidecars>"
+  sidecar: true
+  sidecar_port: 50051
+  sidecar_args:
+    - --grpc-connections
+    - "4"
+```
+
+The default sidecar commands are `python3 -m dynamo.sglang.sidecar`, `python3 -m dynamo.vllm.sidecar`, and `python3 -m dynamo.trtllm.sidecar`. All three use the shared `--grpc-endpoint` flag.
+
+SGLang exposes gRPC and starts the sidecar only on an endpoint leader; distributed followers are engine-only. vLLM automatically uses one managed process per node for data-parallel endpoints and exposes the complete DP group through the leader's sidecar. Multi-node tensor-parallel vLLM endpoints remain rejected until their `vllm-rs` launch path is validated. TensorRT-LLM supports sidecars for aggregated workers only and runs the sidecar on MPI rank zero. `dynamo.sidecar_context_length` can override the TRT-LLM context length inferred from `trtllm_config.aggregated.max_seq_len`.
+
+vLLM sidecar mode sets `VLLM_PLUGINS` to an empty value by default. This prevents image-installed plugins from replacing native engine output types that must match the fixed `vllm-rs` MessagePack contract. A recipe can explicitly set `VLLM_PLUGINS` in `prefill_environment`, `decode_environment`, or `aggregated_environment` when every selected plugin is compatible with the sidecar protocol.
 
 ---
 
@@ -1031,44 +1152,34 @@ infra:
 
 ## observability
 
-`observability.enabled` turns on the server metrics and trace surfaces and captures raw Prometheus responses during the benchmark window:
+`observability.enabled` turns on the server metrics and trace surfaces and collects them with the native Tachometer scraper for the whole run:
 
 ```yaml
 observability:
   enabled: true
 ```
 
-The default Python scraper writes `<log_dir>/raw_prometheus.jsonl`. To additionally collect parsed Parquet with the native Tachometer scraper:
+Tachometer scrapes the **complement** of what the benchmark client polls: worker endpoints that appear in `AIPERF_SERVER_METRICS_URLS` are left to the client (a worker endpoint is never double-polled — the extra scrape load has previously made a submission irreproducible), while the frontend, DCGM, and node-exporter endpoints are always Tachometer's. On runs whose benchmark has no aiperf client (sa-bench, lm-eval, serve-only, manual), the complement expands to every endpoint.
 
-```yaml
-observability:
-  enabled: true
-  tachometer:
-    enabled: true
-```
-
-Set `scrape_metrics: false` beside `enabled` to use Tachometer without also writing the raw JSONL capture. Otherwise the Python RAW scraper and Tachometer run together.
+The legacy in-job Python RAW scraper is retired: a recipe still carrying `scrape_metrics`, `scrape_interval_seconds`, or `scrape_output` fails validation at submit time. Historical `raw_prometheus.jsonl` artifacts remain readable by the post-processing ingest.
 
 | Field | Type | Default | Description |
 | ----- | ---- | ------- | ----------- |
-| `enabled` | bool | `false` | Enable server-side metrics/traces and the raw Python scraper |
-| `scrape_metrics` | bool/null | `null` | Override raw capture; `null` follows `enabled` |
-| `scrape_interval_seconds` | float | `1.0` | Interval between raw Prometheus scrape sweeps |
-| `scrape_output` | string | `raw_prometheus.jsonl` | Raw capture filename below the run log directory |
+| `enabled` | bool | `false` | Enable server-side metrics/traces, Tachometer collection, and host sampling |
 | `enable_otel` | bool | `false` | Inject OTEL tracing environment variables |
 | `otel_endpoint` | string/null | `null` | OTEL collector endpoint |
-| `tachometer` | object | `enabled: false` | Native Tachometer collection settings |
+| `tachometer` | object | `enabled: null` | Native Tachometer collection settings; `enabled: null` follows `observability.enabled`, explicit `false` opts out |
 
 The component perf dashboard is **not** configured here. It is built in post-processing on every run; `enabled` decides which capture legs exist and therefore which tabs the page carries. See [Component Performance Dashboard](component-dashboard.md).
 
-Tachometer always collects worker and frontend metrics. DCGM and node exporters are optional additions:
+Tachometer collects every worker rank and frontend metrics by default (minus the client-polled complement described above). DCGM and node exporters are optional additions:
 
 ```yaml
 observability:
   enabled: true
   tachometer:
     enabled: true
-    default_frequency: 5
+    default_frequency: 1
     sync_interval_secs: 120
     compaction_threads: 4
     storage_subdir: tachometer
@@ -1084,9 +1195,9 @@ observability:
 
 | Tachometer field | Type | Default | Description |
 | ---------------- | ---- | ------- | ----------- |
-| `enabled` | bool | `false` | Enable native Tachometer collection |
+| `enabled` | bool/null | `null` | `null` follows `observability.enabled`; explicit `false` opts out; explicit `true` without `observability.enabled` is a validation error |
 | `binary_path` | string | `tachometer-scraper` | Scraper command or path on the compute nodes |
-| `default_frequency` | float | `5.0` | Scrape frequency in Hz |
+| `default_frequency` | float | `1.0` | Scrape frequency in Hz |
 | `sync_interval_secs` | int | `120` | Interval for intermediate Parquet compaction; `0` disables it |
 | `compaction_threads` | int | `4` | Value passed as `POLARS_MAX_THREADS` |
 | `storage_subdir` | string | `tachometer` | Output directory below the run log directory |
@@ -1096,7 +1207,9 @@ observability:
 
 `make setup ARCH=<compute_arch>` downloads and checksum-verifies the matching Tachometer binary from the latest srt-slurm release. The scraper runs as a native `srun` process on the head node; configured exporters remain containerized on worker nodes. Run `make tachometer-scraper` to build from source instead.
 
-Tachometer writes `<log_dir>/<storage_subdir>/final.parquet`. Intermediate files remain in `<log_dir>/<storage_subdir>/local` until shutdown compaction completes.
+Tachometer writes its Parquet stream under `<log_dir>/<storage_subdir>/raw/scrape/` (the leaf is created by the scraper itself — srtctl pre-creates only the parent, because the scraper refuses a pre-existing storage directory), compacting to `final.parquet` there on shutdown. Intermediate files remain in `<log_dir>/<storage_subdir>/local` until shutdown compaction completes. Rows carry an epoch `timestamp_ns` column, so they join directly with AIPerf records and Dynamo spans; the post-processing ingest converts the Parquet into the dashboard's `server_metrics_export.jsonl`.
+
+The scraper runs as a best-effort process: if it dies (or the binary is missing at runtime), the benchmark continues and the loss is visible in `tachometer.out` and the sweep log. `srtctl validate-setup` still fails fast at submit time when `bin/tachometer-scraper` is absent.
 
 ---
 
@@ -1519,6 +1632,43 @@ setup_script: "install-custom-deps.sh"
 #!/bin/bash
 pip install --quiet git+https://github.com/sgl-project/sglang.git
 ```
+
+---
+
+## host_setup
+
+Commands run on each allocated node's **bare host, outside the container**, before any worker starts.
+
+This is the counterpart to [`setup_script`](#setup_script), which runs *inside* the container. Use `host_setup` for node state the container cannot reach: locking GPU clocks, loading a kernel module, dropping caches.
+
+```yaml
+host_setup:
+  commands:
+    - "sudo -n nvidia-smi -lmc <min>,<max>"
+  teardown:
+    - "sudo -n nvidia-smi -rmc"
+  nodes: all
+  ignore_failure: false
+  timeout_seconds: 300
+```
+
+| Field             | Type            | Default | Description                                                              |
+| ----------------- | --------------- | ------- | ------------------------------------------------------------------------ |
+| `commands`        | list[string]    | `[]`    | Shell commands run in order on each node, joined with `&&`                |
+| `teardown`        | list[string]    | `[]`    | Commands run on each node after workers stop, on success and failure alike |
+| `nodes`           | `all`/`workers` | `all`   | `all` covers head, infra, and workers; `workers` only the worker nodes    |
+| `ignore_failure`  | bool            | `false` | Log a warning instead of failing the job when a node's commands fail      |
+| `timeout_seconds` | int             | `300`   | Per-node wall-clock budget, for `commands` and `teardown` alike           |
+
+**How it runs**: the orchestrator itself runs on the host (not in a container), so it fans these out as one container-less `srun` per node, in parallel. Output lands in `<log_dir>/host_setup_<node>.out` and `<log_dir>/host_teardown_<node>.out`.
+
+**Notes**:
+
+- **Commands run as you, not as root.** Anything privileged needs passwordless sudo (`sudo -n ...`). A `sudo` that prompts for a password will hang until `timeout_seconds` and then fail the job — verify first with `srun --jobid <job> --overlap -w <node> sudo -n true`. If sudo prompts, no recipe change helps; the cluster's SLURM `Prolog=` (which runs as root) is the only route.
+- **Prefer setting `teardown` whenever `commands` changes persistent node state.** `nvidia-smi -lmc` outlives the allocation, so without a matching `-rmc` the next job on that node inherits your locked clocks. `srtctl dry-run` warns when `commands` is set without `teardown`.
+- `teardown` runs from the job's cleanup path, so it fires on failure and cancellation too, and never changes the job's exit code.
+- Set cluster-wide via `default_host_setup` in `srtslurm.yaml` — that's the right home when *the cluster's machines* need this, rather than one recipe. See [Cluster Config Fields](#cluster-config-fields).
+- `srtctl dry-run -f config.yaml` renders the commands, their scope, and which file they came from.
 
 ---
 
