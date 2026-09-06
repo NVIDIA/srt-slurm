@@ -93,6 +93,25 @@ class TestTachometerConfig:
         assert tachometer.resolved_node_exporter.port == 9101
         assert "node-exporter" in tachometer.resolved_node_exporter.container_image
 
+    def test_default_dcgm_exporter_samples_gently(self):
+        """The built-in DCGM exporter must NOT inherit the power-telemetry
+        template's 100ms collect interval: 10 Hz NVML sampling measured ~2%
+        ITL p50 overhead on GB300 decode, while 5000ms measured at parity
+        with no telemetry (A/B/C/D/E isolation runs, 2026-09-06). The power
+        path keeps 100ms — high-rate sampling is its purpose."""
+        from srtctl.cli.mixins.telemetry_stage import (
+            DCGM_EXPORTER_COMMAND_TEMPLATE,
+            resolve_exporter_command,
+        )
+
+        tachometer = TachometerConfig()
+        cmd = resolve_exporter_command(
+            tachometer.resolved_dcgm_exporter, DCGM_EXPORTER_COMMAND_TEMPLATE
+        )
+        assert "--collect-interval=5000" in cmd
+        assert ":9401" in cmd
+        assert "--collect-interval=100 " in DCGM_EXPORTER_COMMAND_TEMPLATE
+
     def test_default_exporters_false_disables_built_ins(self):
         tachometer = TachometerConfig(default_exporters=False)
         assert tachometer.resolved_dcgm_exporter is None
