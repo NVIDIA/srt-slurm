@@ -382,8 +382,9 @@ class TestTachometerConfigGeneration:
         assert not local_dir.is_relative_to(storage_path)
 
     @patch("srtctl.core.telemetry.get_hostname_ip", return_value="10.0.0.1")
-    def test_client_polled_urls_are_excluded_from_backend_targets(self, _mock_get_hostname_ip):
-        """Tachometer scrapes the complement of the client's URL list."""
+    def test_client_polled_urls_are_still_scraped(self, _mock_get_hostname_ip):
+        """Tachometer scrapes every endpoint, including URLs the benchmark
+        client also polls — double-polling has been validated as harmless."""
         tachometer = TachometerConfig(enabled=True)
         runtime = MagicMock(job_id="12345", run_name="test_12345", network_interface="eth0")
         runtime.log_dir = Path("/runs/12345/logs")
@@ -414,12 +415,12 @@ class TestTachometerConfigGeneration:
             frontend_topology=topology,
             runtime=runtime,
             tachometer=tachometer,
-            exclude_urls={"http://10.0.0.1:8081/metrics"},
         )
 
-        assert 'url = "http://10.0.0.1:8081/metrics"' not in config_text
+        # Both worker endpoints appear even though a benchmark client would
+        # poll the same sys-port URLs via AIPERF_SERVER_METRICS_URLS.
+        assert 'url = "http://10.0.0.1:8081/metrics"' in config_text
         assert 'url = "http://10.0.0.1:8082/metrics"' in config_text
-        # The frontend endpoint is never excluded (whole-window coverage).
         assert 'url = "http://10.0.0.1:8000/metrics"' in config_text
 
     @patch("srtctl.core.telemetry.get_hostname_ip", return_value="10.0.0.1")

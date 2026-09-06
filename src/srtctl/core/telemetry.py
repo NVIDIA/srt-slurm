@@ -47,16 +47,13 @@ def generate_tachometer_config(
     tachometer: TachometerConfig,
     dcgm_exporter: TelemetryExporterConfig | None = None,
     frontend_type: str = "dynamo",
-    exclude_urls: frozenset[str] | set[str] = frozenset(),
 ) -> str:
     """Generate Tachometer TOML from backend and frontend topology.
 
-    ``exclude_urls`` is the set of ``/metrics`` URLs the benchmark client
-    already polls (``AIPERF_SERVER_METRICS_URLS``). Tachometer scrapes the
-    complement so a worker endpoint is never double-polled — the extra scrape
-    load has previously made a submission irreproducible. Frontend, DCGM and
-    node-exporter endpoints are never excluded: the frontend scrape is cheap
-    and Tachometer is the only whole-window, per-replica capture of it.
+    Every endpoint is scraped even when the benchmark client polls the same
+    URL (``AIPERF_SERVER_METRICS_URLS``): double-polling has been validated
+    as harmless, and unconditional coverage keeps Tachometer the one
+    whole-window, per-replica capture regardless of what the client does.
     """
     dcgm_exporter = dcgm_exporter or tachometer.dcgm_exporter
     node_exporter = tachometer.node_exporter
@@ -117,10 +114,6 @@ def generate_tachometer_config(
         else:
             port = process.sys_port
         url = f"http://{node_ip}:{port}/metrics"
-        if url in exclude_urls:
-            # The benchmark client already polls this endpoint on its own
-            # cadence; scrape the complement instead of double-polling.
-            continue
         node_metadata = {
             "hostname": process.node,
             "worker_index": str(process.endpoint_index),

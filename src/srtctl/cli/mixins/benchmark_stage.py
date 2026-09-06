@@ -664,38 +664,6 @@ class BenchmarkStageMixin:
         urls = list(dict.fromkeys(urls)) if logical_workers_only else sorted(set(urls))
         return {"AIPERF_SERVER_METRICS_URLS": ",".join(urls)}
 
-    def _client_polled_metric_urls(self) -> frozenset[str]:
-        """The ``/metrics`` URLs the benchmark client will poll on its own.
-
-        Tachometer scrapes the complement of this set (see
-        ``TelemetryStageMixin.start_tachometer``), so it is derived from the
-        same logic that injects ``AIPERF_SERVER_METRICS_URLS`` — including the
-        dead-TRT-LLM-worker omission and the explicit recipe override. It is
-        deliberately NOT a second endpoint list to maintain: when the injected
-        set changes, the complement moves with it. A serve-only or manual run
-        has no client, so nothing is polled and Tachometer covers everything.
-        """
-        if bool(getattr(self, "serve_only", False)):
-            return frozenset()
-        explicit = self.runtime.environment.get("AIPERF_SERVER_METRICS_URLS")
-        if explicit is not None:
-            return frozenset(url for url in explicit.split(",") if url)
-        from srtctl.benchmarks.base import AIPerfBenchmarkRunner, get_runner
-
-        benchmark_type = self.config.benchmark.type
-        if benchmark_type == "custom":
-            env = self._get_aiperf_server_metrics_env(logical_workers_only=True)
-        else:
-            try:
-                runner = get_runner(benchmark_type)
-            except ValueError:
-                return frozenset()
-            if not isinstance(runner, AIPerfBenchmarkRunner):
-                return frozenset()
-            env = self._get_aiperf_server_metrics_env()
-        urls = env.get("AIPERF_SERVER_METRICS_URLS", "")
-        return frozenset(url for url in urls.split(",") if url)
-
     def _get_benchmark_env(self, runner: "BenchmarkRunner") -> dict[str, str]:
         """Get environment variables for the benchmark script."""
         from srtctl.benchmarks.base import AIPerfBenchmarkRunner

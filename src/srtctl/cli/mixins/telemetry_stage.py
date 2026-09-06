@@ -295,17 +295,6 @@ class TelemetryStageMixin:
 
         logger.info("Starting Tachometer")
 
-        # Scrape the complement of what the benchmark client already polls;
-        # the helper lives on BenchmarkStageMixin (same orchestrator object).
-        client_urls_fn = getattr(self, "_client_polled_metric_urls", None)
-        exclude_urls = client_urls_fn() if client_urls_fn is not None else frozenset()
-        if exclude_urls:
-            logger.info(
-                "Tachometer excludes %d endpoint(s) the benchmark client polls: %s",
-                len(exclude_urls),
-                ",".join(sorted(exclude_urls)),
-            )
-
         power_telemetry = self.config.telemetry
         dcgm_exporter = power_telemetry.dcgm_exporter if power_telemetry.enabled else tachometer.dcgm_exporter
         topology = self._compute_frontend_topology()
@@ -318,7 +307,6 @@ class TelemetryStageMixin:
                 tachometer=tachometer,
                 dcgm_exporter=dcgm_exporter,
                 frontend_type=self.config.frontend.type,
-                exclude_urls=exclude_urls,
             )
         )
 
