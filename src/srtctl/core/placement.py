@@ -5,9 +5,15 @@
 
 One vocabulary replaces the per-block placement knobs::
 
-    frontend:  {placement: {node: head | first_decode | dedicated}}
-    benchmark: {placement: {node: head | last_decode | dedicated}}
-    infra:     {placement: {node: head | dedicated}}
+    frontend:
+      placement:
+        node: head          # head | first_decode | dedicated
+    benchmark:
+      placement:
+        node: last_decode   # head | last_decode | dedicated
+    infra:
+      placement:
+        node: dedicated     # head | dedicated
 
 ``node: dedicated`` reserves a node for that component (and implies the head
 location, which the legacy validation already required). Any other value is a

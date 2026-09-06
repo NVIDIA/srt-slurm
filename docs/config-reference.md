@@ -236,9 +236,15 @@ The legacy fields (`resources.prefill_workers`, `backend.prefill_environment`, `
 `placement:` is one vocabulary for where the frontend, benchmark client, and infra services run, replacing the per-block placement knobs:
 
 ```yaml
-frontend:  { placement: { node: head | first_decode | dedicated } }
-benchmark: { placement: { node: head | last_decode | dedicated } }
-infra:     { placement: { node: head | dedicated } }
+frontend:
+  placement:
+    node: head          # head | first_decode | dedicated
+benchmark:
+  placement:
+    node: last_decode   # head | last_decode | dedicated
+infra:
+  placement:
+    node: dedicated     # head | dedicated
 ```
 
 `node: dedicated` reserves a node for that component (and implies the head location, which the legacy validation already required). Any other value is a location string.
