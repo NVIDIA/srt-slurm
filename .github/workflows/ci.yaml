@@ -199,21 +199,16 @@ jobs:
       - name: Install dependencies
         run: uv sync --dev
 
-      - name: Validate all curated examples load
+      - name: Validate every example (sweep and override files are expanded)
         run: |
           uv run python -c "
           from pathlib import Path
           from srtctl.core.config import validate_config_file
 
-          examples = [
-              example
-              for example_dir in (Path('examples/llm'), Path('examples/mocker'))
-              if example_dir.exists()
-              for example in example_dir.rglob('*.yaml')
-          ]
+          examples = sorted(Path('examples').rglob('*.yaml'))
           print(f'Found {len(examples)} examples')
           if not examples:
-              print('No curated examples found')
+              print('No examples found')
               exit(1)
 
           all_errors = []
@@ -229,5 +224,5 @@ jobs:
           if all_errors:
               print(f'\n{len(all_errors)} validation error(s)')
               exit(1)
-          print(f'\nAll {len(examples)} curated examples valid')
+          print(f'\nAll {len(examples)} examples valid')
           "

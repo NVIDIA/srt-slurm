@@ -1,0 +1,49 @@
+# SGLang aggregated, fronted by the SGLang router (Model Gateway).
+#
+# Two TP1 SGLang workers on one node, the router load-balancing between them with
+# cache-aware policy. No Dynamo, NATS, or etcd is involved: workers run
+# `sglang.launch_server` and the router runs `sglang_router.launch_router`.
+#
+# Aliases (`qwen3-0.6b`, `sglang`) resolve through srtslurm.yaml; see examples/README.md.
+
+name: "qwen3-0.6b-sglang-router-agg"
+
+slurm:
+  time_limit: "00:30:00"
+
+model:
+  path: "qwen3-0.6b"
+  container: "sglang"
+  precision: "bf16"
+
+resources:
+  gpu_type: "h100"
+  gpus_per_node: 8
+  agg_nodes: 1
+  agg_workers: 2
+  gpus_per_agg: 1
+
+frontend:
+  type: sglang
+  enable_multiple_frontends: false
+  args:
+    policy: "cache_aware"
+
+backend:
+  type: sglang
+  aggregated_environment:
+    PYTHONUNBUFFERED: "1"
+  sglang_config:
+    aggregated:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 1
+      mem-fraction-static: 0.5
+      context-length: 4096
+      # The experimental piecewise CUDA graph faults on some nightly builds; off is the safe default.
+      disable-piecewise-cuda-graph: true
+
+benchmark:
+  type: "sa-bench"
+  isl: 128
+  osl: 128
+  concurrencies: "4x8"

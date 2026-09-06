@@ -32,10 +32,10 @@
 srtctl
 
 # Submit a job directly
-srtctl apply -f examples/llm/sglang/qwen3-32b-disaggregated.yaml
+srtctl apply -f examples/sglang/sglang-router-disagg.yaml
 
 # Deploy the recipe and keep its inference endpoint available until cancellation
-srtctl apply -f recipes/gb200-fp8/sglang-1p4d.yaml --serve-only
+srtctl apply -f examples/sglang/sglang-router-disagg.yaml --serve-only
 
 # Preview without submitting
 srtctl dry-run -f config.yaml
@@ -66,12 +66,14 @@ On launch, interactive mode scans the `examples/` directory and presents curated
 
 ```
 ? Select an example:
-  ── examples/llm/sglang ──
-    qwen3-32b-aggregated.yaml
-    qwen3-32b-disaggregated.yaml
-  ── examples/llm/trtllm ──
-    gpt-oss-120b-aggregated-b200-fp4.yaml
-    deepseek-r1-disaggregated-b200-fp4.yaml
+  ── examples/sglang ──
+    dynamo-agg.yaml
+    dynamo-disagg.yaml
+    sglang-router-agg.yaml
+    sglang-router-disagg.yaml
+  ── examples/vllm ──
+    dynamo-agg.yaml
+    ...
   ──────────────
   📁 Browse for file...
 ```
@@ -206,7 +208,7 @@ For sweeps, the confirmation shows:
 **Exploring a curated example:**
 ```
 $ srtctl
-> Select: examples/llm/sglang/qwen3-32b-disaggregated.yaml
+> Select: examples/sglang/sglang-router-disagg.yaml
 > Action: 👁️  Preview sbatch script  (review generated script)
 > Action: 🔍 Dry-run                 (full dry-run)
 > Action: 📁 Select different config (try another)
@@ -215,7 +217,7 @@ $ srtctl
 **Quick experiment with modifications:**
 ```
 $ srtctl
-> Select: examples/llm/vllm/qwen3-32b-aggregated.yaml
+> Select: examples/vllm/dynamo-agg.yaml
 > Action: ✏️  Modify parameters
   > Change decode_workers: 8
   > Change isl: 2048
@@ -258,10 +260,10 @@ srtctl apply -f <config.yaml> [options]
 
 ```bash
 # Submit single job
-srtctl apply -f examples/llm/sglang/qwen3-32b-disaggregated.yaml
+srtctl apply -f examples/sglang/sglang-router-disagg.yaml
 
 # Serve the same recipe without running its configured benchmark
-srtctl apply -f recipes/gb200-fp8/sglang-1p4d.yaml --serve-only
+srtctl apply -f examples/sglang/sglang-router-disagg.yaml --serve-only
 
 # Submit sweep (auto-detected from sweep: section)
 srtctl apply -f configs/my-sweep.yaml

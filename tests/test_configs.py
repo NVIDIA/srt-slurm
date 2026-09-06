@@ -24,37 +24,66 @@ from srtctl.ports import (
 class TestConfigLoading:
     """Tests for config file loading."""
 
-    def test_config_loading_from_yaml(self):
-        """Test that every runnable curated example can be loaded."""
-        config_files = sorted(
-            path
-            for example_dir in (Path("examples/llm"), Path("examples/mocker"))
-            if example_dir.exists()
-            for path in example_dir.rglob("*.yaml")
-        )
+    TOPOLOGY_EXAMPLE_DIRS = ("examples/sglang", "examples/vllm", "examples/trtllm", "examples/mocker")
 
+    def test_topology_examples_load_as_plain_configs(self):
+        """Every topology example is a plain (non-sweep, non-override) config that loads."""
+        config_files = sorted(
+            path for example_dir in self.TOPOLOGY_EXAMPLE_DIRS for path in Path(example_dir).rglob("*.yaml")
+        )
         if not config_files:
-            pytest.fail("No runnable curated examples found in examples/llm or examples/mocker")
+            pytest.fail(f"No topology examples found under {self.TOPOLOGY_EXAMPLE_DIRS}")
 
         errors = []
-        loaded = 0
         for config_path in config_files:
             try:
-                config = SrtConfig.from_yaml(Path(config_path))
+                config = SrtConfig.from_yaml(config_path)
                 assert config.name is not None
                 assert config.model is not None
                 assert config.resources is not None
                 assert config.backend is not None
-                loaded += 1
-                print(f"\n✓ Loaded config: {config_path}")
-                print(f"  Name: {config.name}")
-                print(f"  Backend: {config.backend_type}")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 errors.append(f"{config_path}: {e}")
 
-        print(f"\nLoaded {loaded}/{len(config_files)} configs")
         if errors:
-            pytest.fail("Failed to load runnable curated examples:\n" + "\n".join(errors))
+            pytest.fail("Failed to load topology examples:\n" + "\n".join(errors))
+
+    def test_every_example_validates(self):
+        """validate_config_file accepts every file under examples/, including sweep and override files."""
+        from srtctl.core.config import validate_config_file
+
+        example_files = sorted(Path("examples").rglob("*.yaml"))
+        if not example_files:
+            pytest.fail("No examples found under examples/")
+
+        errors = [error for path in example_files for error in validate_config_file(path)]
+        if errors:
+            pytest.fail("Example validation errors:\n" + "\n".join(errors))
+
+    def test_examples_cover_the_frontend_matrix(self):
+        """The matrix documented in examples/README.md is present on disk."""
+        expected = {
+            "examples/sglang/dynamo-agg.yaml",
+            "examples/sglang/dynamo-disagg.yaml",
+            "examples/sglang/sglang-router-agg.yaml",
+            "examples/sglang/sglang-router-disagg.yaml",
+            "examples/vllm/dynamo-agg.yaml",
+            "examples/vllm/dynamo-disagg.yaml",
+            "examples/vllm/vllm-router-agg.yaml",
+            "examples/vllm/vllm-router-disagg.yaml",
+            "examples/vllm/vllm-direct-agg.yaml",
+            "examples/trtllm/dynamo-agg.yaml",
+            "examples/trtllm/dynamo-disagg.yaml",
+            "examples/trtllm/trtllm-serve-agg.yaml",
+            "examples/trtllm/trtllm-serve-disagg.yaml",
+            "examples/mocker/dynamo-agg.yaml",
+            "examples/features/sweep.yaml",
+            "examples/features/override.yaml",
+            "examples/features/profiling.yaml",
+        }
+        present = {str(p) for p in Path("examples").rglob("*.yaml")}
+        missing = expected - present
+        assert not missing, f"Missing examples: {sorted(missing)}"
 
 
 class TestClusterConfigGitHttpVersion:

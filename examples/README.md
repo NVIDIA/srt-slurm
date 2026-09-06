@@ -1,16 +1,56 @@
-# Curated examples
+# Examples
 
-The runnable starting points under `llm/` and `mocker/` are intentionally small rather than a benchmark-results archive. Copy one into your own configuration, set the model path and cluster-specific fields, then use `srtctl dry-run -f <config>` before submitting it.
+Small, runnable starting points, one per frontend and topology. Every example serves the same model (Qwen3-0.6B) on one node so the files differ only in the frontend and the prefill/decode layout, and a full matrix run finishes in minutes. They are not performance claims. Copy one, change the model, GPU type, topology, and engine flags to match your target, then `srtctl dry-run -f <config>` before submitting.
 
-| Framework | Aggregated | Disaggregated |
-| --- | --- | --- |
-| vLLM | `llm/vllm/qwen3-32b-aggregated.yaml` | `llm/vllm/qwen3-32b-disaggregated.yaml` |
-| SGLang | `llm/sglang/qwen3-32b-aggregated.yaml` | `llm/sglang/qwen3-32b-disaggregated.yaml` |
-| TRT-LLM | `llm/trtllm/gpt-oss-120b-aggregated-b200-fp4.yaml` | `llm/trtllm/deepseek-r1-disaggregated-b200-fp4.yaml` |
+## Matrix
 
-Additional focused examples:
+| Backend | Dynamo frontend | Native router | Router-free direct |
+| --- | --- | --- | --- |
+| SGLang | `sglang/dynamo-agg.yaml`, `sglang/dynamo-disagg.yaml` | `sglang/sglang-router-agg.yaml`, `sglang/sglang-router-disagg.yaml` | |
+| vLLM | `vllm/dynamo-agg.yaml`, `vllm/dynamo-disagg.yaml` | `vllm/vllm-router-agg.yaml`, `vllm/vllm-router-disagg.yaml` | `vllm/vllm-direct-agg.yaml` |
+| TRT-LLM | `trtllm/dynamo-agg.yaml`, `trtllm/dynamo-disagg.yaml` | `trtllm/trtllm-serve-disagg.yaml` | `trtllm/trtllm-serve-agg.yaml` |
+| Mocker | `mocker/dynamo-agg.yaml` | | |
 
-- `mocker/aggregated.yaml` exercises the end-to-end orchestration path without model weights.
-- `llm/sglang/qwen3-32b-ruter-3p2d-direct-host.yaml` is a one-host Dynamo + SGLang route-observability run for `srtctl apply --bash`.
+- **Dynamo frontend**: workers register with etcd/NATS and the Dynamo frontend routes (KV-aware here). Dynamo is installed at job start via `dynamo.version` unless the container ships it (`dynamo.install: false`, as the TRT-LLM examples do).
+- **Native router**: the engine's own router in front of plain engine workers. No Dynamo, NATS, or etcd. SGLang uses the Model Gateway (`sglang_router`), vLLM the official vLLM Router (`vllm-router`), TRT-LLM `trtllm-serve disaggregated` with a generated `ser.yaml`.
+- **Router-free direct**: one worker owns the public port. `frontend.type: vllm` and `frontend.type: trtllm_serve` in aggregate mode launch no router process.
+- **Mocker**: `dynamo.mocker` stands in for an engine, so the whole orchestration path runs without loading weights. The fastest way to validate a cluster config.
 
-The examples are not performance claims. Their model paths, containers, GPU types, and topology are explicit so they can be adapted safely to a particular cluster.
+Aggregated examples run two TP1 workers; disaggregated examples run one TP1 prefill and one TP1 decode worker on the same node (`decode_nodes: 0` places decode on the prefill node's spare GPUs).
+
+## Features
+
+| File | Shows |
+| --- | --- |
+| `features/sweep.yaml` | `sweep:` plus `{placeholder}` substitution; one job per combination |
+| `features/override.yaml` | `base` plus `override_*` and `zip_override_*` variants in one file |
+| `features/profiling.yaml` | `profiling:` torch capture on an aggregated worker |
+
+## Cluster aliases
+
+The examples reference two kinds of aliases that `srtslurm.yaml` resolves:
+
+```yaml
+model_paths:
+  qwen3-0.6b: /path/to/Qwen3-0.6B          # or use path: "hf:Qwen/Qwen3-0.6B" in the recipe
+
+containers:
+  sglang: /path/to/sglang.sqsh              # SGLang image; Dynamo examples pip-install ai-dynamo into it
+  vllm: /path/to/vllm.sqsh                  # vLLM image with the vllm-router executable
+  trtllm: /path/to/tensorrtllm-runtime.sqsh # Dynamo TRT-LLM runtime image (ships ai-dynamo and trtllm-serve)
+```
+
+`resources.gpu_type` and `gpus_per_node` are set to `h100` and `8`; change them to match the partition you submit to.
+
+## Validation
+
+CI validates every file under `examples/`, expanding sweep and override files into their variants. Run the same check locally with:
+
+```bash
+uv run python -c "
+from pathlib import Path
+from srtctl.core.config import validate_config_file
+for p in sorted(Path('examples').rglob('*.yaml')):
+    print(validate_config_file(p) or f'ok {p}')
+"
+```

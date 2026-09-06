@@ -1,0 +1,46 @@
+# vLLM aggregated, router-free.
+#
+# The smallest vLLM topology: exactly one `vllm serve` worker owns the public
+# OpenAI port directly. No router, no Dynamo, no NATS or etcd. `frontend.type: vllm`
+# supports one aggregated worker only; use `vllm-router` or `dynamo` for more.
+#
+# Aliases (`qwen3-0.6b`, `vllm`) resolve through srtslurm.yaml; see examples/README.md.
+
+name: "qwen3-0.6b-vllm-direct-agg"
+
+slurm:
+  time_limit: "00:30:00"
+
+model:
+  path: "qwen3-0.6b"
+  container: "vllm"
+  precision: "bf16"
+
+resources:
+  gpu_type: "h100"
+  gpus_per_node: 8
+  agg_nodes: 1
+  agg_workers: 1
+  gpus_per_agg: 1
+
+frontend:
+  type: vllm
+  enable_multiple_frontends: false
+
+backend:
+  type: vllm
+  aggregated_environment:
+    PYTHONUNBUFFERED: "1"
+  vllm_config:
+    aggregated:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 1
+      gpu-memory-utilization: 0.5
+      max-model-len: 4096
+      disable-log-requests: true
+
+benchmark:
+  type: "sa-bench"
+  isl: 128
+  osl: 128
+  concurrencies: "4x8"

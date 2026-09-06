@@ -1,0 +1,56 @@
+# TRT-LLM aggregated behind the Dynamo frontend with KV-aware routing.
+#
+# Two TP1 `dynamo.trtllm` workers on one node register with etcd/NATS; the Dynamo
+# frontend routes with `--router-mode kv`. Dynamo TRT-LLM runtime images already
+# ship `ai-dynamo`, so the install step is skipped.
+#
+# Aliases (`qwen3-0.6b`, `trtllm`) resolve through srtslurm.yaml; see examples/README.md.
+
+name: "qwen3-0.6b-trtllm-dynamo-agg"
+
+slurm:
+  time_limit: "00:30:00"
+
+model:
+  path: "qwen3-0.6b"
+  container: "trtllm"
+  precision: "bf16"
+
+resources:
+  gpu_type: "h100"
+  gpus_per_node: 8
+  agg_nodes: 1
+  agg_workers: 2
+  gpus_per_agg: 1
+
+dynamo:
+  install: false
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+  args:
+    router-mode: "kv"
+
+backend:
+  type: trtllm
+  served_model_name: "Qwen/Qwen3-0.6B"
+  aggregated_environment:
+    PYTHONUNBUFFERED: "1"
+    TLLM_LOG_LEVEL: "INFO"
+  trtllm_config:
+    aggregated:
+      backend: "pytorch"
+      tensor_parallel_size: 1
+      max_batch_size: 64
+      max_num_tokens: 8192
+      max_seq_len: 4096
+      trust_remote_code: true
+      kv_cache_config:
+        free_gpu_memory_fraction: 0.5
+
+benchmark:
+  type: "sa-bench"
+  isl: 128
+  osl: 128
+  concurrencies: "4x8"

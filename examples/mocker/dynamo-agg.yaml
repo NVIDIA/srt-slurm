@@ -1,0 +1,42 @@
+# Dynamo mocker: the full orchestration path with no model weights on the GPU.
+#
+# One `dynamo.mocker` worker stands in for an engine (it needs only the tokenizer
+# from the model path) behind the Dynamo frontend, so etcd/NATS, discovery,
+# health gating, the benchmark, and post-processing all run in about a minute.
+# Use it to validate srtctl, cluster config, and recipe plumbing.
+#
+# Aliases (`qwen3-0.6b`, `sglang`) resolve through srtslurm.yaml; see examples/README.md.
+
+name: "qwen3-0.6b-mocker-dynamo-agg"
+
+slurm:
+  time_limit: "00:15:00"
+
+model:
+  path: "qwen3-0.6b"
+  container: "sglang"
+  precision: "bf16"
+
+resources:
+  gpu_type: "h100"
+  gpus_per_node: 8
+  agg_nodes: 1
+  agg_workers: 1
+
+dynamo:
+  version: "1.4.2"
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+
+backend:
+  type: mocker
+  engine_type: vllm
+  speedup_ratio: 100
+
+benchmark:
+  type: "sa-bench"
+  isl: 128
+  osl: 128
+  concurrencies: "4"

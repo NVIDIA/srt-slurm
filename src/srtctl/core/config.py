@@ -564,6 +564,16 @@ def validate_config_file(path: Path | str) -> list[str]:
                 schema.load(resolved)
             except Exception as e:  # noqa: BLE001
                 errors.append(f"{path} [{suffix}]: {e}")
+    elif "sweep" in raw:
+        # Sweep format — expand every combination; the expander validates each one
+        from .sweep import generate_sweep_configs
+
+        try:
+            expanded = generate_sweep_configs(raw)
+        except Exception as e:  # noqa: BLE001
+            return [f"{path}: failed to expand sweep: {e}"]
+        if not expanded:
+            errors.append(f"{path}: sweep expanded to zero jobs")
     else:
         # Plain config
         try:

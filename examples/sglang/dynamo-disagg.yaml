@@ -1,0 +1,63 @@
+# SGLang disaggregated prefill/decode behind the Dynamo frontend.
+#
+# One TP1 prefill worker and one TP1 decode worker sharing a node (`decode_nodes: 0`
+# places decode on the prefill node's spare GPUs). Both run `dynamo.sglang`; the
+# Dynamo frontend routes with `--router-mode kv` and dispatches prefill to the
+# prefill pool. srtctl adds `--disaggregation-mode` and the bootstrap port.
+#
+# Aliases (`qwen3-0.6b`, `sglang`) resolve through srtslurm.yaml; see examples/README.md.
+
+name: "qwen3-0.6b-sglang-dynamo-disagg"
+
+slurm:
+  time_limit: "00:30:00"
+
+model:
+  path: "qwen3-0.6b"
+  container: "sglang"
+  precision: "bf16"
+
+resources:
+  gpu_type: "h100"
+  gpus_per_node: 8
+  prefill_nodes: 1
+  prefill_workers: 1
+  gpus_per_prefill: 1
+  decode_nodes: 0
+  decode_workers: 1
+  gpus_per_decode: 1
+
+dynamo:
+  version: "1.4.2"
+
+frontend:
+  type: dynamo
+  enable_multiple_frontends: false
+  args:
+    router-mode: "kv"
+
+backend:
+  type: sglang
+  prefill_environment:
+    PYTHONUNBUFFERED: "1"
+  decode_environment:
+    PYTHONUNBUFFERED: "1"
+  sglang_config:
+    prefill:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 1
+      mem-fraction-static: 0.5
+      context-length: 4096
+      disable-piecewise-cuda-graph: true
+    decode:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 1
+      mem-fraction-static: 0.5
+      context-length: 4096
+      disable-piecewise-cuda-graph: true
+
+benchmark:
+  type: "sa-bench"
+  isl: 128
+  osl: 128
+  concurrencies: "4x8"

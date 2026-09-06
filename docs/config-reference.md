@@ -326,7 +326,7 @@ Because the orchestrator is a single process, set
 `enable_multiple_frontends: false` (the nginx + multi-router path is not
 supported). A configuration can be switched between the two TRT-LLM serving stacks by
 changing only `frontend.type` between `dynamo` and `trtllm_serve`; start from the
-curated `examples/llm/trtllm/deepseek-r1-disaggregated-b200-fp4.yaml` configuration.
+`examples/trtllm/dynamo-disagg.yaml` and `examples/trtllm/trtllm-serve-disagg.yaml` examples.
 
 ### vllm frontend
 
