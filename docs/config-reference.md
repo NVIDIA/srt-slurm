@@ -216,9 +216,14 @@ roles:
     nodes: 0          # 0 shares the prefill node's spare GPUs
     workers: 2
     gpus: 2
-    env: { PYTHONUNBUFFERED: "1" }
-    args: { tensor-parallel-size: 2, disaggregation-mode: decode }
+    env:
+      PYTHONUNBUFFERED: "1"
+    args:
+      tensor-parallel-size: 2
+      disaggregation-mode: decode
 ```
+
+`env` and `args` are ordinary YAML mappings, written exactly as `backend.prefill_environment` and `backend.sglang_config.prefill` were. Nothing needs JSON or inline `{}` syntax.
 
 Role names are `prefill`, `decode`, and `agg`. The aggregated role is `agg` (matching `resources.agg_*`); its `env` and `args` map to `backend.aggregated_environment` and `backend.<engine>_config.aggregated`. Per-role `extra_args` maps to `backend.<mode>_extra_args` (TRT-LLM). `roles:` is normalized into those fields before validation, so it is exactly equivalent to writing them directly; you cannot set both for the same role.
 

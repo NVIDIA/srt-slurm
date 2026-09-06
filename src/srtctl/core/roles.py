@@ -6,8 +6,20 @@
 A recipe can group everything about a worker role under one block::
 
     roles:
-      prefill: {nodes: 2, workers: 6, gpus: 2, env: {...}, args: {...}}
-      decode:  {nodes: 0, workers: 2, gpus: 2, env: {...}, args: {...}}
+      prefill:
+        nodes: 2
+        workers: 6
+        gpus: 2
+        env:
+          PYTHONUNBUFFERED: "1"
+        args:
+          tensor-parallel-size: 2
+      decode:
+        nodes: 0
+        workers: 2
+        gpus: 2
+        args:
+          tensor-parallel-size: 2
 
 instead of spreading it across ``resources.prefill_workers`` /
 ``resources.gpus_per_prefill``, ``backend.prefill_environment``, and
