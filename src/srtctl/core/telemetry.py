@@ -21,8 +21,7 @@ if TYPE_CHECKING:
 
 # Tachometer owns its final storage directory and rejects a pre-existing leaf
 # (see tachometer-scraper `parse_storage`). srtctl must therefore create only the
-# parent and hand the scraper a not-yet-existing leaf. This mirrors what the
-# direct-host path already does in templates/local_lifecycle.sh.j2.
+# parent and hand the scraper a not-yet-existing leaf.
 TACHOMETER_STORAGE_PARENT = "raw"
 TACHOMETER_STORAGE_LEAF = "scrape"
 

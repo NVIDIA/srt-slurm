@@ -290,7 +290,7 @@ class TelemetryStageMixin:
         An explicit ``binary_path`` is always respected verbatim. The default
         bare name used to rely on ``$PATH`` inside the srun step, while
         ``make setup`` installs the binary to ``<srtctl_root>/bin/`` — the
-        same place ``validate_setup`` checks and the --bash lifecycle uses.
+        same place ``validate_setup`` checks.
         """
         if binary_path != "tachometer-scraper":
             return binary_path
@@ -331,7 +331,7 @@ class TelemetryStageMixin:
 
         tachometer_dir = self.runtime.log_dir / tachometer.storage_subdir
         # Create only the PARENT of the storage path: tachometer-scraper aborts if the
-        # storage leaf already exists. Same rule the --bash lifecycle already follows.
+        # storage leaf already exists.
         (tachometer_dir / TACHOMETER_STORAGE_PARENT).mkdir(parents=True, exist_ok=True)
         local_dir = tachometer_dir / "local"
         local_dir.mkdir(parents=True, exist_ok=True)

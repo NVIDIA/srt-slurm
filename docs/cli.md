@@ -253,7 +253,6 @@ srtctl apply -f <config.yaml> [options]
 | `--setup-script` | Custom setup script from `configs/` |
 | `--tags` | Comma-separated tags for the run |
 | `--serve-only` | Deploy the endpoint without running a benchmark; serve until cancellation |
-| `--bash` | Print a direct single-node lifecycle script to stdout without submitting |
 | `-y, --yes` | Skip confirmation prompts |
 
 **Examples:**
@@ -277,11 +276,6 @@ srtctl apply -f config.yaml:override_tp64
 # Submit only the base config (ignore overrides)
 srtctl apply -f config.yaml:base
 
-# Render and run one single-node recipe through Docker
-srtctl apply -f config.yaml -o /absolute/path/to/runs --bash > job.sh
-chmod +x job.sh
-./job.sh
-
 # With tags
 srtctl apply -f config.yaml --tags "experiment-1,baseline"
 ```
@@ -290,15 +284,6 @@ srtctl apply -f config.yaml --tags "experiment-1,baseline"
 the frontend URL in the sweep log, and keeps the service running until the job is cancelled or reaches its Slurm
 time limit. It ignores the recipe's configured benchmark for that submission. Use `scancel <job-id>` to stop the
 service; srtctl then cleans up the processes it started.
-
-`--bash` renders a small direct-host launcher; it is not an sbatch script. The launcher owns a Docker serving
-container and runs the serving lifecycle inside the selected SGLang image. It currently supports a one-node
-SGLang backend with the Dynamo frontend, `frontend.enable_multiple_frontends: false`, and one
-`benchmark.type: custom` command. It requires Docker with GPU support, an absolute `SRTCTL_SGLANG_SOURCE`,
-`SRTCTL_LOCAL_CONTAINER_IMAGE`, and either `dynamo.hash` or `dynamo.top_of_tree: true`. The run creates
-separate worker, router, Tachometer, and benchmark logs, gates load on worker/router readiness and a
-chat-completions smoke request, then cleans up only containers and process groups it owns. See
-[Direct Host Lifecycle](direct-host.md) for the complete setup and the included 3P2D Dynamo recipe.
 
 ### `srtctl dry-run`
 

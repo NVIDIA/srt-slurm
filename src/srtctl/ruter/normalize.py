@@ -152,7 +152,7 @@ def normalize_run(root: Path, *, output_dir: Path | None = None) -> Normalizatio
 
 
 def discover_inputs(root: Path) -> RunInputs:
-    """Find the known direct-host and SLURM log layouts under ``root``."""
+    """Find the SLURM run log layout under ``root``."""
     paths = sorted((path for path in root.rglob("*") if path.is_file()), key=lambda path: str(path))
     router_logs = [path for path in paths if path.name == "router.log"]
     workers = [path for path in paths if _WORKER_LOG.fullmatch(path.name)]
