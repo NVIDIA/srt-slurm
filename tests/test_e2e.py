@@ -16,15 +16,21 @@ from srtctl.core.topology import allocate_endpoints, endpoints_to_processes
 
 EXAMPLES_DIR = Path(__file__).parent.parent / "examples"
 CI_DIR = Path(__file__).parent.parent / "ci"
-QWEN_SGLANG_DISAGG = EXAMPLES_DIR / "llm" / "sglang" / "qwen3-32b-disaggregated.yaml"
+SGLANG_ROUTER_DISAGG = EXAMPLES_DIR / "sglang" / "sglang-router-disagg.yaml"
+MOCKER_EXAMPLE = EXAMPLES_DIR / "mocker" / "dynamo-agg.yaml"
+# Every topology example (Dynamo, native router, and direct frontends for each engine).
+TOPOLOGY_EXAMPLES = tuple(
+    sorted(path for engine in ("sglang", "vllm", "trtllm") for path in (EXAMPLES_DIR / engine).glob("*.yaml"))
+)
 
 
 def test_interactive_discovers_curated_examples():
     """Interactive mode exposes the curated examples, not a removed recipe tree."""
     examples = find_examples(Path(__file__).parent.parent)
 
-    assert QWEN_SGLANG_DISAGG in examples
-    assert EXAMPLES_DIR / "mocker" / "aggregated.yaml" in examples
+    assert SGLANG_ROUTER_DISAGG in examples
+    assert MOCKER_EXAMPLE in examples
+    assert len(TOPOLOGY_EXAMPLES) == 13
 
 
 # =============================================================================
@@ -163,15 +169,15 @@ class GB200HetRack:
 # =============================================================================
 
 
-class TestGB200Example:
-    """Curated GB200 mocker example on a GB200 NVL rack."""
+class TestMockerExample:
+    """The mocker example on an 8-GPU rack."""
 
-    RACK = GB200NVLRack
-    EXAMPLES = (EXAMPLES_DIR / "mocker" / "aggregated.yaml",)
+    RACK = H100Rack
+    EXAMPLES = (MOCKER_EXAMPLE,)
 
     @pytest.mark.parametrize("example_path", EXAMPLES, ids=lambda p: p.name)
-    def test_gpus_per_node_is_4(self, example_path):
-        """The GB200 example uses four GPUs per node."""
+    def test_gpus_per_node_is_8(self, example_path):
+        """The mocker example uses eight GPUs per node like the rest of the matrix."""
         with (
             patch.dict(os.environ, self.RACK.slurm_env(), clear=False),
             patch("subprocess.run", side_effect=self.RACK.mock_scontrol()),
@@ -184,7 +190,7 @@ class TestGB200Example:
 
     @pytest.mark.parametrize("example_path", EXAMPLES, ids=lambda p: p.name)
     def test_fits_in_rack(self, example_path):
-        """Example fits within the GB200 NVL rack (18 nodes)."""
+        """Example fits within the rack."""
         with (
             patch.dict(os.environ, self.RACK.slurm_env(), clear=False),
             patch("subprocess.run", side_effect=self.RACK.mock_scontrol()),
@@ -198,7 +204,7 @@ class TestGB200Example:
 
     @pytest.mark.parametrize("example_path", EXAMPLES, ids=lambda p: p.name)
     def test_endpoint_allocation(self, example_path):
-        """Endpoints are allocated correctly on GB200 NVL rack."""
+        """Endpoints are allocated correctly for the mocker example."""
         with (
             patch.dict(os.environ, self.RACK.slurm_env(), clear=False),
             patch("subprocess.run", side_effect=self.RACK.mock_scontrol()),
@@ -239,15 +245,10 @@ class TestGB200Example:
 
 
 class TestH100Examples:
-    """Curated H100 examples on an H100 rack (13 nodes × 8 GPUs)."""
+    """Every topology example on an H100 rack (13 nodes × 8 GPUs)."""
 
     RACK = H100Rack
-    EXAMPLES = (
-        EXAMPLES_DIR / "llm" / "vllm" / "qwen3-32b-aggregated.yaml",
-        EXAMPLES_DIR / "llm" / "vllm" / "qwen3-32b-disaggregated.yaml",
-        EXAMPLES_DIR / "llm" / "sglang" / "qwen3-32b-aggregated.yaml",
-        QWEN_SGLANG_DISAGG,
-    )
+    EXAMPLES = TOPOLOGY_EXAMPLES
 
     @pytest.mark.parametrize("example_path", EXAMPLES, ids=lambda p: p.name)
     def test_gpus_per_node_is_8(self, example_path):
@@ -369,15 +370,15 @@ class TestCIConfigs:
                 assert ep.total_gpus == r.gpus_per_decode
 
 
-class TestQwen32BExamples:
-    """Qwen3-32B examples with shared-node allocation (decode_nodes=0)."""
+class TestSharedNodeDisaggExample:
+    """Disaggregated examples share one node between prefill and decode (decode_nodes=0)."""
 
     RACK = H100Rack
     EXAMPLES = TestH100Examples.EXAMPLES
 
     @pytest.mark.parametrize("example_path", EXAMPLES, ids=lambda p: p.name)
     def test_config_loads(self, example_path):
-        """Qwen3-32B examples load correctly."""
+        """Topology examples load correctly."""
         with (
             patch.dict(os.environ, self.RACK.slurm_env(), clear=False),
             patch("subprocess.run", side_effect=self.RACK.mock_scontrol()),
@@ -386,11 +387,11 @@ class TestQwen32BExamples:
             assert config.name is not None
             assert config.resources.gpus_per_node == 8
 
-    def test_disagg_kv_router_shared_node_allocation(self):
-        """disagg-kv-sglang.yaml: 6P+2D on 2 nodes with decode_nodes=0."""
-        example_path = QWEN_SGLANG_DISAGG
-        assert example_path.exists()
+    DISAGG_EXAMPLES = tuple(path for path in TOPOLOGY_EXAMPLES if path.name.endswith("-disagg.yaml"))
 
+    @pytest.mark.parametrize("example_path", DISAGG_EXAMPLES, ids=lambda p: f"{p.parent.name}/{p.name}")
+    def test_disagg_shared_node_allocation(self, example_path):
+        """1P+1D TP1 on one node with decode_nodes=0: decode lands on the prefill node's spare GPUs."""
         with (
             patch.dict(os.environ, self.RACK.slurm_env(), clear=False),
             patch("subprocess.run", side_effect=self.RACK.mock_scontrol()),
@@ -398,13 +399,11 @@ class TestQwen32BExamples:
             config = load_config(str(example_path))
             r = config.resources
 
-            # Verify decode_nodes=0 triggers inheritance from prefill
-            assert r.decode_nodes == 0, "decode_nodes should be 0"
-            assert r.gpus_per_prefill == 2, "prefill TP should be 2"
-            assert r.gpus_per_decode == 2, "decode TP should inherit 2 from prefill"
+            assert r.decode_nodes == 0, "decode_nodes should be 0 (shared node)"
+            assert r.gpus_per_prefill == 1
+            assert r.gpus_per_decode == 1
 
-            # Allocate endpoints
-            nodes = self.RACK.nodes()[:2]
+            nodes = self.RACK.nodes()[:1]
             endpoints = allocate_endpoints(
                 num_prefill=r.num_prefill,
                 num_decode=r.num_decode,
@@ -418,39 +417,18 @@ class TestQwen32BExamples:
 
             prefill_eps = [e for e in endpoints if e.mode == "prefill"]
             decode_eps = [e for e in endpoints if e.mode == "decode"]
+            assert len(prefill_eps) == 1
+            assert len(decode_eps) == 1
+            assert prefill_eps[0].nodes[0] == nodes[0]
+            assert decode_eps[0].nodes[0] == nodes[0], "decode should share the prefill node"
 
-            assert len(prefill_eps) == 6
-            assert len(decode_eps) == 2
+            prefill_gpus = set(prefill_eps[0].gpu_indices)
+            decode_gpus = set(decode_eps[0].gpu_indices)
+            assert prefill_gpus.isdisjoint(decode_gpus), f"GPU overlap: prefill {prefill_gpus}, decode {decode_gpus}"
 
-            # Check prefill allocation: first 4 on node0, next 2 on node1
-            for i, ep in enumerate(prefill_eps[:4]):
-                assert ep.nodes[0] == nodes[0], f"prefill {i} should be on node0"
-            for i, ep in enumerate(prefill_eps[4:]):
-                assert ep.nodes[0] == nodes[1], f"prefill {i + 4} should be on node1"
-
-            # Check decode allocation: on node1 (GPUs 4-5, 6-7)
-            for ep in decode_eps:
-                assert ep.nodes[0] == nodes[1], "decode should be on node1"
-
-            # Verify GPU indices don't overlap on shared node (node1)
-            node1_prefill_gpus = set()
-            for ep in prefill_eps:
-                if ep.nodes[0] == nodes[1]:
-                    node1_prefill_gpus.update(ep.gpu_indices)
-
-            node1_decode_gpus = set()
-            for ep in decode_eps:
-                node1_decode_gpus.update(ep.gpu_indices)
-
-            assert node1_prefill_gpus.isdisjoint(node1_decode_gpus), (
-                f"GPU overlap on node1! prefill uses {node1_prefill_gpus}, decode uses {node1_decode_gpus}"
-            )
-
-    def test_disagg_kv_router_cuda_visible_devices(self):
-        """Processes on shared node have non-overlapping CUDA_VISIBLE_DEVICES."""
-        example_path = QWEN_SGLANG_DISAGG
-        assert example_path.exists()
-
+    @pytest.mark.parametrize("example_path", DISAGG_EXAMPLES, ids=lambda p: f"{p.parent.name}/{p.name}")
+    def test_disagg_cuda_visible_devices(self, example_path):
+        """Processes on the shared node have non-overlapping CUDA_VISIBLE_DEVICES."""
         with (
             patch.dict(os.environ, self.RACK.slurm_env(), clear=False),
             patch("subprocess.run", side_effect=self.RACK.mock_scontrol()),
@@ -458,7 +436,7 @@ class TestQwen32BExamples:
             config = load_config(str(example_path))
             r = config.resources
 
-            nodes = self.RACK.nodes()[:2]
+            nodes = self.RACK.nodes()[:1]
             endpoints = allocate_endpoints(
                 num_prefill=r.num_prefill,
                 num_decode=r.num_decode,
@@ -469,45 +447,23 @@ class TestQwen32BExamples:
                 gpus_per_node=r.gpus_per_node,
                 available_nodes=nodes,
             )
-
             processes = endpoints_to_processes(endpoints)
+            node0_processes = [p for p in processes if p.node == nodes[0]]
 
-            # Group processes by node
-            node1_processes = [p for p in processes if p.node == nodes[1]]
+            assert len(node0_processes) == 2, f"Expected 1 prefill + 1 decode process, got {len(node0_processes)}"
 
-            # Should have 2 prefill + 2 decode = 4 processes on node1
-            assert len(node1_processes) == 4, f"Expected 4 processes on node1, got {len(node1_processes)}"
-
-            # Each process should have unique, non-overlapping GPU indices
-            all_gpus_on_node1 = set()
-            for proc in node1_processes:
+            seen: set[int] = set()
+            for proc in node0_processes:
                 for gpu in proc.gpu_indices:
-                    assert gpu not in all_gpus_on_node1, f"GPU {gpu} assigned to multiple processes on {nodes[1]}!"
-                    all_gpus_on_node1.add(gpu)
+                    assert gpu not in seen, f"GPU {gpu} assigned to multiple processes on {nodes[0]}"
+                    seen.add(gpu)
+                expected_cvd = ",".join(str(g) for g in sorted(proc.gpu_indices))
+                assert proc.cuda_visible_devices == expected_cvd
+            assert seen == {0, 1}, f"Expected GPUs 0 and 1 in use, got {seen}"
 
-            # All 8 GPUs on node1 should be used
-            assert all_gpus_on_node1 == {
-                0,
-                1,
-                2,
-                3,
-                4,
-                5,
-                6,
-                7,
-            }, f"Expected all 8 GPUs used on node1, got {all_gpus_on_node1}"
-
-            # Verify CUDA_VISIBLE_DEVICES strings are correct
-            for proc in node1_processes:
-                cvd = proc.cuda_visible_devices
-                expected_gpus = sorted(proc.gpu_indices)
-                expected_cvd = ",".join(str(g) for g in expected_gpus)
-                assert cvd == expected_cvd, f"Expected CUDA_VISIBLE_DEVICES={expected_cvd}, got {cvd}"
-
-    def test_disagg_kv_router_total_allocation_fits(self):
+    @pytest.mark.parametrize("example_path", DISAGG_EXAMPLES, ids=lambda p: f"{p.parent.name}/{p.name}")
+    def test_disagg_total_allocation_fits(self, example_path):
         """Total GPU allocation fits within declared nodes."""
-        example_path = QWEN_SGLANG_DISAGG
-        assert example_path.exists()
 
         with (
             patch.dict(os.environ, self.RACK.slurm_env(), clear=False),
