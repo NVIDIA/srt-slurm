@@ -163,6 +163,14 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
     """
     # Deep copy to avoid mutating original
     config = copy.deepcopy(user_config)
+
+    # Normalize the 2.0 ``roles:`` authoring block into the existing internal
+    # fields (resources.*_workers, backend.*_environment, backend.<engine>_config.*)
+    # before anything else reads them. No-op for legacy recipes.
+    from srtctl.core.roles import expand_roles
+
+    expand_roles(config)
+
     if cluster_config is None:
         return config
 

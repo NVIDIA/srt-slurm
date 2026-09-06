@@ -21,9 +21,6 @@ model:
 resources:
   gpu_type: "h100"
   gpus_per_node: 8
-  agg_nodes: 1
-  agg_workers: 1
-
 dynamo:
   version: "1.4.2"
 
@@ -36,6 +33,10 @@ backend:
   engine_type: vllm
   speedup_ratio: 100
 
+roles:
+  agg:
+    nodes: 1
+    workers: 1
 benchmark:
   type: "sa-bench"
   isl: 128

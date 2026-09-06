@@ -28,10 +28,6 @@ model:
 resources:
   gpu_type: "h100"
   gpus_per_node: 8
-  agg_nodes: 1
-  agg_workers: 2
-  gpus_per_agg: 1
-
 frontend:
   type: sglang
   enable_multiple_frontends: false
@@ -40,10 +36,14 @@ frontend:
 
 backend:
   type: sglang
-  aggregated_environment:
-    PYTHONUNBUFFERED: "1"
-  sglang_config:
-    aggregated:
+roles:
+  agg:
+    nodes: 1
+    workers: 2
+    gpus: 1
+    env:
+      PYTHONUNBUFFERED: "1"
+    args:
       served-model-name: "Qwen/Qwen3-0.6B"
       tensor-parallel-size: 1
       mem-fraction-static: 0.5

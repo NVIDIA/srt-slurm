@@ -20,10 +20,6 @@ model:
 resources:
   gpu_type: "h100"
   gpus_per_node: 8
-  agg_nodes: 1
-  agg_workers: 1
-  gpus_per_agg: 1
-
 frontend:
   type: trtllm_serve
   enable_multiple_frontends: false
@@ -31,11 +27,15 @@ frontend:
 backend:
   type: trtllm
   served_model_name: "Qwen/Qwen3-0.6B"
-  aggregated_environment:
-    PYTHONUNBUFFERED: "1"
-    TLLM_LOG_LEVEL: "INFO"
-  trtllm_config:
-    aggregated:
+roles:
+  agg:
+    nodes: 1
+    workers: 1
+    gpus: 1
+    env:
+      PYTHONUNBUFFERED: "1"
+      TLLM_LOG_LEVEL: "INFO"
+    args:
       backend: "pytorch"
       tensor_parallel_size: 1
       max_batch_size: 64

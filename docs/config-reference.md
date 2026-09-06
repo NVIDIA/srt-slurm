@@ -197,6 +197,35 @@ model:
 
 ---
 
+## roles
+
+`roles:` is the 2.0 way to describe a worker role. It groups everything about a role in one place instead of spreading it across `resources`, `backend.*_environment`, and `backend.<engine>_config.*`:
+
+```yaml
+roles:
+  prefill:
+    nodes: 2          # -> resources.prefill_nodes
+    workers: 6        # -> resources.prefill_workers
+    gpus: 2           # -> resources.gpus_per_prefill
+    env:              # -> backend.prefill_environment
+      PYTHONUNBUFFERED: "1"
+    args:             # -> backend.<engine>_config.prefill (engine from backend.type)
+      tensor-parallel-size: 2
+      disaggregation-mode: prefill
+  decode:
+    nodes: 0          # 0 shares the prefill node's spare GPUs
+    workers: 2
+    gpus: 2
+    env: { PYTHONUNBUFFERED: "1" }
+    args: { tensor-parallel-size: 2, disaggregation-mode: decode }
+```
+
+Role names are `prefill`, `decode`, and `agg`. The aggregated role is `agg` (matching `resources.agg_*`); its `env` and `args` map to `backend.aggregated_environment` and `backend.<engine>_config.aggregated`. Per-role `extra_args` maps to `backend.<mode>_extra_args` (TRT-LLM). `roles:` is normalized into those fields before validation, so it is exactly equivalent to writing them directly; you cannot set both for the same role.
+
+The legacy fields (`resources.prefill_workers`, `backend.prefill_environment`, `backend.sglang_config.prefill`, ...) still load unchanged, so v1 recipes keep working. `srtctl migrate` stamps `schema: 2` but does not yet rewrite the legacy layout into `roles:`; both forms are valid v2. The `examples/` are written with `roles:` (except `features/override.yaml`, kept legacy to show that the v1 layout still loads).
+
+---
+
 ## resources
 
 GPU allocation and worker topology.
