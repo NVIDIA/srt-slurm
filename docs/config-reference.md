@@ -113,7 +113,8 @@ The `srtslurm.yaml` file can contain the following fields:
 | `default_account`               | string | Default SLURM account                                 |
 | `default_partition`             | string | Default SLURM partition                               |
 | `default_time_limit`            | string | Default job time limit                                |
-| `gpus_per_node`                 | int    | Default GPUs per node                                 |
+| `gpus_per_node`                 | int    | Default GPUs per node (applied to recipes that omit `resources.gpus_per_node`) |
+| `default_gpu_type`              | string | Default `resources.gpu_type` for recipes that omit it |
 | `network_interface`             | string | Network interface for NCCL                            |
 | `srtctl_root`                   | string | Root directory for srtctl                             |
 | `output_dir`                    | string | Custom output directory (overrides srtctl_root/outputs) |
@@ -226,8 +227,8 @@ resources:
 
 | Field             | Type   | Default            | Description                           |
 | ----------------- | ------ | ------------------ | ------------------------------------- |
-| `gpu_type`        | string | -                  | GPU type: "gb200", "gb300", or "h100" |
-| `gpus_per_node`   | int    | 4                  | GPUs per node                         |
+| `gpu_type`        | string | `default_gpu_type` | GPU type, e.g. "gb200", "gb300", "h100". Optional; inherits `default_gpu_type` from `srtslurm.yaml` when omitted |
+| `gpus_per_node`   | int    | cluster / 4        | GPUs per node; inherits the cluster `gpus_per_node` when omitted, else 4 |
 | `prefill_nodes`   | int    | null               | Nodes dedicated to prefill            |
 | `decode_nodes`    | int    | null               | Nodes dedicated to decode             |
 | `prefill_workers` | int    | null               | Number of prefill workers             |

@@ -247,6 +247,9 @@ class ClusterConfig:
     default_partition: str | None = None
     default_time_limit: str | None = None
     gpus_per_node: int | None = None
+    # Default for ``ResourceConfig.gpu_type`` when the recipe omits it. Lets one
+    # recipe move between clusters of different GPU types without an edit.
+    default_gpu_type: str | None = None
     network_interface: str | None = None
     use_gpus_per_node_directive: bool = True
     use_segment_sbatch_directive: bool = True
@@ -548,7 +551,11 @@ class HetComponent:
 class ResourceConfig:
     """Resource allocation configuration."""
 
-    gpu_type: str
+    # GPU type (h100, gb200, ...). Cluster fact, not a topology choice. Optional:
+    # a recipe that omits it inherits `default_gpu_type` from srtslurm.yaml, and
+    # `gpus_per_node` inherits the cluster `gpus_per_node`. Both are still worth
+    # setting in a recipe so it is self-describing for result rollups.
+    gpu_type: str | None = None
     gpus_per_node: int = 4
 
     # Disaggregated mode

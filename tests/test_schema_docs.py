@@ -46,7 +46,12 @@ def test_marshmallow_data_key_wins_over_private_attribute_name() -> None:
     assert "gpus_per_decode" in rows
     assert "_explicit_gpus_per_prefill" not in rows
     assert rows["gpus_per_node"].default == "`4`"
-    assert rows["gpu_type"].default == "required"
+    assert rows["gpu_type"].default == "`None`"
+
+
+def test_required_field_renders_as_required() -> None:
+    rows = {row.key: row for row in field_docs(SrtConfig)}
+    assert rows["name"].default == "required"
 
 
 def test_docstring_attributes_become_descriptions() -> None:

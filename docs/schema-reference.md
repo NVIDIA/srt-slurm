@@ -55,7 +55,7 @@ Resource allocation configuration.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `gpu_type` | str | required |  |
+| `gpu_type` | str \| None | `None` | GPU type (h100, gb200, ...). Cluster fact, not a topology choice. Optional: a recipe that omits it inherits `default_gpu_type` from srtslurm.yaml, and `gpus_per_node` inherits the cluster `gpus_per_node`. Both are still worth setting in a recipe so it is self-describing for result rollups. |
 | `gpus_per_node` | int | `4` |  |
 | `prefill_nodes` | int \| None | `None` | Disaggregated mode |
 | `decode_nodes` | int \| None | `None` |  |
@@ -543,6 +543,7 @@ Top-level keys of `srtslurm.yaml`. Recipes inherit these defaults and resolve al
 | `default_partition` | str \| None | `None` |  |
 | `default_time_limit` | str \| None | `None` |  |
 | `gpus_per_node` | int \| None | `None` |  |
+| `default_gpu_type` | str \| None | `None` | Default for ``ResourceConfig.gpu_type`` when the recipe omits it. Lets one recipe move between clusters of different GPU types without an edit. |
 | `network_interface` | str \| None | `None` |  |
 | `use_gpus_per_node_directive` | bool | `True` |  |
 | `use_segment_sbatch_directive` | bool | `True` |  |

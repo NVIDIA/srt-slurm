@@ -180,6 +180,18 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
         slurm["time_limit"] = cluster_config["default_time_limit"]
         logger.debug(f"Applied default time_limit: {slurm['time_limit']}")
 
+    # GPU-topology facts inherited from the cluster when the recipe omits them.
+    # gpu_type and gpus_per_node describe the machine, not the deployment, so a
+    # recipe can move between clusters by leaving them to srtslurm.yaml.
+    resources_defaults = config.get("resources")
+    if isinstance(resources_defaults, dict):
+        if not resources_defaults.get("gpu_type") and cluster_config.get("default_gpu_type"):
+            resources_defaults["gpu_type"] = cluster_config["default_gpu_type"]
+            logger.debug("Applied default gpu_type: %s", resources_defaults["gpu_type"])
+        if "gpus_per_node" not in resources_defaults and cluster_config.get("gpus_per_node") is not None:
+            resources_defaults["gpus_per_node"] = cluster_config["gpus_per_node"]
+            logger.debug("Applied cluster gpus_per_node: %s", resources_defaults["gpus_per_node"])
+
     default_sbatch_directives = cluster_config.get("default_sbatch_directives")
     if isinstance(default_sbatch_directives, dict):
         sbatch_directives = config.setdefault("sbatch_directives", {})
