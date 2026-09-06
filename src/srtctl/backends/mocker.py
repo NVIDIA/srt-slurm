@@ -224,6 +224,12 @@ class MockerProtocol:
         # Determine model path: HF model ID or container mount path
         model_arg = str(runtime.model_path) if runtime.is_hf_model else "/model"
 
+        # Register under the name the benchmark client requests (the model path
+        # basename, see SrtConfig.served_model_name). Left to its own devices the
+        # mocker derives the name from --model-path, which for the /model mount is
+        # "model" and makes every request 404 with "Model not found".
+        served_model_name = Path(str(runtime.model_path)).name
+
         # Start with nsys prefix if provided
         cmd: list[str] = list(nsys_prefix) if nsys_prefix else []
 
@@ -234,6 +240,8 @@ class MockerProtocol:
                 "dynamo.mocker",
                 "--model-path",
                 model_arg,
+                "--model-name",
+                served_model_name,
             ]
         )
 

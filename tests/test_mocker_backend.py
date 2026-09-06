@@ -236,6 +236,25 @@ class TestMockerCommandConstruction:
         idx = cmd.index("--model-path")
         assert cmd[idx + 1] == "/model"
 
+    def test_model_name_matches_the_client_default(self):
+        """--model-name is the model path basename, the name sa-bench requests.
+
+        Without it the mocker registers the /model mount as "model" and the
+        benchmark 404s.
+        """
+        backend = MockerProtocol()
+        process = _make_process()
+
+        local_cmd = backend.build_worker_command(
+            process=process, endpoint_processes=[process], runtime=_make_runtime(is_hf=False)
+        )
+        assert local_cmd[local_cmd.index("--model-name") + 1] == "my-model"
+
+        hf_cmd = backend.build_worker_command(
+            process=process, endpoint_processes=[process], runtime=_make_runtime(is_hf=True)
+        )
+        assert hf_cmd[hf_cmd.index("--model-name") + 1] == "Qwen3-0.6B"
+
     def test_core_params_always_present(self):
         """Core simulation params are always emitted."""
         backend = MockerProtocol()
