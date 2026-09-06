@@ -24,6 +24,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -67,8 +68,14 @@ logger = logging.getLogger(__name__)
 # main() when --json is set so callers get one JSON line per submitted job.
 _submissions: list[dict] = []
 
+# Rendered --set/--unset overrides for the current invocation; echoed into every
+# submission record so a caller can see exactly what was applied.
+_active_overrides: list[str] = []
+
 
 def _record_submission(data: dict) -> None:
+    if _active_overrides:
+        data["applied_overrides"] = list(_active_overrides)
     _submissions.append(data)
 
 
@@ -1263,19 +1270,40 @@ def is_override_config(config_path: Path) -> bool:
 
 
 @contextlib.contextmanager
-def materialize_config_path(config_path: Path):
-    """Stage stdin-backed configs to a temporary YAML file for repeated reads."""
-    if str(config_path) not in {"-", "/dev/stdin"}:
+def materialize_config_path(config_path: Path, overrides: Sequence[Any] = ()):
+    """Stage stdin-backed or --set/--unset-modified configs to a temporary YAML file.
+
+    Overrides are applied to the raw document (comments preserved) before any
+    reader sees it, so they take effect identically for plain, sweep, and
+    override-format files and end up in the config.yaml copied into the job
+    output directory. The source file is never modified.
+    """
+    from_stdin = str(config_path) in {"-", "/dev/stdin"}
+    if not from_stdin and not overrides:
         yield config_path
         return
+    if not from_stdin and (not config_path.exists() or config_path.is_dir()):
+        if config_path.is_dir():
+            raise ValueError("--set/--unset apply to a single config file, not a directory")
+        yield config_path  # let the caller report the missing file
+        return
 
-    payload = sys.stdin.read()
+    payload = sys.stdin.read() if from_stdin else config_path.read_text()
     if not payload.strip():
-        raise ValueError("No YAML received on stdin")
+        raise ValueError("No YAML received on stdin" if from_stdin else f"{config_path} is empty")
+
+    if overrides:
+        from srtctl.core.overrides import apply_overrides_to_recipe
+        from srtctl.core.yaml_utils import dump_yaml_with_comments, load_yaml_text_with_comments
+
+        document = load_yaml_text_with_comments(payload)
+        for entry in apply_overrides_to_recipe(document, overrides):
+            logger.info("Applied override: %s", entry)
+        payload = dump_yaml_with_comments(document) or ""
 
     fd, temp_path = tempfile.mkstemp(
         suffix=".yaml",
-        prefix="srtctl_stdin_",
+        prefix="srtctl_stdin_" if from_stdin else "srtctl_override_",
         text=True,
     )
     try:
@@ -1462,6 +1490,29 @@ def main():
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    def add_override_args(p):
+        p.add_argument(
+            "--set",
+            action="append",
+            default=[],
+            metavar="KEY=VALUE",
+            dest="set_overrides",
+            help=(
+                "Override a recipe value by dotted path before validation (repeatable), e.g. "
+                "--set health_check.max_attempts=720 or --set 'backend.sglang_config.prefill.dist-timeout=1800'. "
+                "Values parse as YAML scalars or lists; mappings stay literal strings. "
+                "On override files the value is written into base and every variant."
+            ),
+        )
+        p.add_argument(
+            "--unset",
+            action="append",
+            default=[],
+            metavar="KEY",
+            dest="unset_overrides",
+            help="Remove a recipe key by dotted path before validation (repeatable), e.g. --unset health_check",
+        )
+
     def add_common_args(p):
         p.add_argument(
             "-f",
@@ -1474,6 +1525,7 @@ def main():
         p.add_argument("-o", "--output", type=Path, dest="output_dir", help="Custom output directory for job logs")
         p.add_argument("--sweep", action="store_true", help="Force sweep mode")
         p.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompts")
+        add_override_args(p)
 
     apply_parser = subparsers.add_parser("apply", help="Submit job(s) to SLURM")
     add_common_args(apply_parser)
@@ -1535,6 +1587,7 @@ def main():
         dest="config",
         help="YAML config file, or file:selector for overrides",
     )
+    add_override_args(preflight_parser)
 
     monitor_parser = subparsers.add_parser("monitor", help="Live dashboard for srt-slurm jobs", add_help=False)
     monitor_parser.add_argument("args", nargs=argparse.REMAINDER)
@@ -1563,6 +1616,7 @@ def main():
         action="store_true",
         help="Print resolved YAML to stdout instead of writing files",
     )
+    add_override_args(resolve_parser)
 
     # Fingerprint comparison: srtctl diff <path_a> <path_b>
     diff_parser = subparsers.add_parser("diff", help="Compare fingerprints from two runs")
@@ -1637,6 +1691,15 @@ def main():
 
     if json_mode:
         _submissions.clear()
+
+    from srtctl.core.overrides import parse_overrides
+
+    try:
+        overrides = parse_overrides(getattr(args, "set_overrides", None), getattr(args, "unset_overrides", None))
+    except ValueError as exc:
+        parser.error(str(exc))
+    global _active_overrides
+    _active_overrides = [override.render() for override in overrides]
 
     _mock_patch_teardowns: list = []
     if mock_mode:
@@ -1754,7 +1817,7 @@ def main():
     tags = [t.strip() for t in (getattr(args, "tags", "") or "").split(",") if t.strip()] or None
 
     try:
-        with materialize_config_path(config_path) as effective_config_path:
+        with materialize_config_path(config_path, overrides) as effective_config_path:
             if not effective_config_path.exists():
                 console.print(f"[bold red]Config not found:[/] {config_path}")
                 sys.exit(1)

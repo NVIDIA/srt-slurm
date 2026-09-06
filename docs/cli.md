@@ -254,13 +254,22 @@ srtctl apply -f <config.yaml> [options]
 | `--setup-script` | Custom setup script from `configs/` |
 | `--tags` | Comma-separated tags for the run |
 | `--serve-only` | Deploy the endpoint without running a benchmark; serve until cancellation |
+| `--set KEY=VALUE` | Override one recipe value by dotted path before validation (repeatable). Also on `dry-run`, `preflight`, `resolve-override` |
+| `--unset KEY` | Remove one recipe key by dotted path before validation (repeatable) |
 | `-y, --yes` | Skip confirmation prompts |
+
+`--set` and `--unset` are the supported way to tweak a recipe from a script instead of editing the YAML. Paths are dotted, `[N]` indexes a list, and quotes protect a segment that contains dots (`container_mounts."/a/b.c"`). Values parse as YAML: `720` is an int, `"720"` a string, `[4, 8]` a list; a mapping such as `{"rope_type": "yarn"}` stays a literal string because that is how engine flags take JSON. Overrides are applied to the raw document before cluster defaults, sweep expansion, and validation, so an explicit `--set` always wins and `{placeholder}` values still expand. On an override file the value is written into `base` and every `override_*` / `zip_override_*` variant, so no variant can shadow it. The applied overrides are listed in each `--json` record as `applied_overrides`, and the `config.yaml` copied into the job directory reflects them. The source file is never modified.
 
 **Examples:**
 
 ```bash
 # Submit single job
 srtctl apply -f examples/sglang/sglang-router-disagg.yaml
+
+# Tweak a recipe from a script without editing it
+srtctl apply -f config.yaml --set health_check.max_attempts=720 --unset sbatch_directives.exclude
+srtctl apply -f config.yaml --set 'backend.sglang_config.decode.speculative-config={"method": "eagle"}'
+srtctl dry-run -f config.yaml --set benchmark.concurrencies=[4,8]
 
 # Serve the same recipe without running its configured benchmark
 srtctl apply -f examples/sglang/sglang-router-disagg.yaml --serve-only
