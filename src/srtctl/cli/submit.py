@@ -71,11 +71,16 @@ _submissions: list[dict] = []
 # Rendered --set/--unset overrides for the current invocation; echoed into every
 # submission record so a caller can see exactly what was applied.
 _active_overrides: list[str] = []
+# "dynamo.source: refs/pull/14000/head -> <sha>" notes from pinning source revs at
+# submit time; echoed the same way so a caller can see exactly what will build.
+_pinned_sources: list[str] = []
 
 
 def _record_submission(data: dict) -> None:
     if _active_overrides:
         data["applied_overrides"] = list(_active_overrides)
+    if _pinned_sources:
+        data["pinned_sources"] = list(_pinned_sources)
     _submissions.append(data)
 
 
@@ -435,6 +440,17 @@ def show_config_details(config: SrtConfig) -> None:
         console.print(
             "[dim]srun --export (dynamo install):[/] ALL,ENROOT_REMAP_ROOT=yes [dim](workers + dynamo frontend)[/]"
         )
+        source = config.dynamo.source
+        if source is not None and source.git:
+            console.print(f"[dim]dynamo source:[/] {source.git} @ {source.rev}", crop=False)
+            if source.sha:
+                console.print(f"[dim]dynamo source sha:[/] {source.sha}", crop=False)
+            else:
+                console.print("[dim]dynamo source sha:[/] resolved from rev at submit (srtctl apply)")
+        elif source is not None and source.pypi:
+            console.print(f"[dim]dynamo source:[/] PyPI ai-dynamo=={source.pypi}")
+        elif source is not None and source.wheel:
+            console.print(f"[dim]dynamo source:[/] staged wheel ai-dynamo=={source.wheel}")
 
     show_extensions = (
         config.benchmark.type == "custom"
@@ -1298,36 +1314,56 @@ def is_override_config(config_path: Path) -> bool:
 
 
 @contextlib.contextmanager
-def materialize_config_path(config_path: Path, overrides: Sequence[Any] = ()):
-    """Stage stdin-backed or --set/--unset-modified configs to a temporary YAML file.
+def materialize_config_path(config_path: Path, overrides: Sequence[Any] = (), *, pin_sources: bool = False):
+    """Stage stdin-backed, --set/--unset-modified, or source-pinned configs to a temporary YAML file.
 
     Overrides are applied to the raw document (comments preserved) before any
     reader sees it, so they take effect identically for plain, sweep, and
     override-format files and end up in the config.yaml copied into the job
-    output directory. The source file is never modified.
+    output directory. With ``pin_sources`` (submit only), every ``source.rev``
+    that is not already a commit is resolved with ``git ls-remote`` and recorded
+    as ``source.sha`` in that same document, so the job builds exactly the
+    commit the lockfile names. The source file is never modified.
     """
     from_stdin = str(config_path) in {"-", "/dev/stdin"}
-    if not from_stdin and not overrides:
+    if not from_stdin and not overrides and not pin_sources:
         yield config_path
         return
     if not from_stdin and (not config_path.exists() or config_path.is_dir()):
-        if config_path.is_dir():
+        if config_path.is_dir() and overrides:
             raise ValueError("--set/--unset apply to a single config file, not a directory")
-        yield config_path  # let the caller report the missing file
+        yield config_path  # let the caller report the missing file, or handle the directory
         return
 
     payload = sys.stdin.read() if from_stdin else config_path.read_text()
     if not payload.strip():
         raise ValueError("No YAML received on stdin" if from_stdin else f"{config_path} is empty")
 
-    if overrides:
-        from srtctl.core.overrides import apply_overrides_to_recipe
+    changed = from_stdin
+    if overrides or pin_sources:
         from srtctl.core.yaml_utils import dump_yaml_with_comments, load_yaml_text_with_comments
 
         document = load_yaml_text_with_comments(payload)
-        for entry in apply_overrides_to_recipe(document, overrides):
-            logger.info("Applied override: %s", entry)
-        payload = dump_yaml_with_comments(document) or ""
+        if overrides:
+            from srtctl.core.overrides import apply_overrides_to_recipe
+
+            for entry in apply_overrides_to_recipe(document, overrides):
+                logger.info("Applied override: %s", entry)
+            changed = True
+        if pin_sources and "source" in payload:
+            from srtctl.core.source import pin_source_revs
+
+            pinned = pin_source_revs(document)
+            for entry in pinned:
+                logger.info("Pinned source: %s", entry)
+            _pinned_sources.extend(pinned)
+            changed = changed or bool(pinned)
+        if changed:
+            payload = dump_yaml_with_comments(document) or ""
+
+    if not changed:
+        yield config_path
+        return
 
     fd, temp_path = tempfile.mkstemp(
         suffix=".yaml",
@@ -1845,7 +1881,9 @@ def main():
     tags = [t.strip() for t in (getattr(args, "tags", "") or "").split(",") if t.strip()] or None
 
     try:
-        with materialize_config_path(config_path, overrides) as effective_config_path:
+        with materialize_config_path(
+            config_path, overrides, pin_sources=args.command == "apply"
+        ) as effective_config_path:
             if not effective_config_path.exists():
                 console.print(f"[bold red]Config not found:[/] {config_path}")
                 sys.exit(1)

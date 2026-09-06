@@ -492,6 +492,28 @@ class TestDryRunServices:
         assert "Services:" not in capsys.readouterr().out
 
 
+class TestDryRunDynamoSource:
+    """dynamo.source: the repo, ref, and whether it is pinned must be visible before submitting."""
+
+    def test_git_source_shown_unpinned_and_pinned(self, capsys):
+        base = {"frontend": {"type": "dynamo"}}
+        config = _make_config({**base, "dynamo": {"source": {"rev": "refs/pull/14000/head"}}})
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "https://github.com/ai-dynamo/dynamo.git @ refs/pull/14000/head" in output
+        assert "resolved from rev at submit" in output
+
+        sha = "2ecbdfdf192c69c02c6d21e931d20d3b4a0bb64a"
+        config = _make_config({**base, "dynamo": {"source": {"rev": "v1.4.2", "sha": sha}}})
+        show_config_details(config)
+        assert f"dynamo source sha: {sha}" in capsys.readouterr().out
+
+    def test_pypi_source_shown(self, capsys):
+        config = _make_config({"frontend": {"type": "dynamo"}, "dynamo": {"source": {"pypi": "1.4.2"}}})
+        show_config_details(config)
+        assert "PyPI ai-dynamo==1.4.2" in capsys.readouterr().out
+
+
 class TestDryRunHetJobs:
     """Het structure panel appears only when het is enabled."""
 

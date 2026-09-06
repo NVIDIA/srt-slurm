@@ -152,6 +152,12 @@ the service node (git and network access are host concerns, and the job containe
 PR. `main`, `master`, and `HEAD` are rejected at load time. Because the build installs into one
 container instance, `source` is only allowed with single-node placements (`head`, `infra`).
 
+`source` is the same shape `dynamo.source` uses. At submit time `srtctl apply` resolves a non-commit
+`rev` with `git ls-remote` and records the commit as `source.sha` in the submitted `config.yaml`
+(the recipe on disk is untouched), so the job checks out exactly the commit the lockfile names even
+if the PR is pushed to again while the job waits in the queue. `--json` output lists what was pinned
+under `pinned_sources`. `srtctl dry-run` never touches the network.
+
 ## Service Types
 
 `type` selects a registered `ServiceKind` (`src/srtctl/services/`). A kind supplies defaults and the

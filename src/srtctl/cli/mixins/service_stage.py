@@ -150,11 +150,11 @@ class ServiceStageMixin:
             f"set -e; mkdir -p {shlex.quote(str(checkout_root.parent))}; "
             f"if [ ! -d {root} ]; then "
             f"{git} clone --filter=blob:none {shlex.quote(source.git)} {root} && "
-            f"{git} -C {root} fetch origin {shlex.quote(source.rev)} && "
+            f"{git} -C {root} fetch origin {shlex.quote(source.checkout)} && "
             f"{git} -C {root} checkout FETCH_HEAD; "
             "fi"
         )
-        logger.info("Cloning service %s source %s@%s on %s", service.name, source.git, source.rev, node)
+        logger.info("Cloning service %s source %s@%s on %s", service.name, source.git, source.checkout, node)
         popen = start_srun_process(
             command=["bash", "-c", clone_script],
             nodelist=[node],

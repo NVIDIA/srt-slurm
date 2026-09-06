@@ -26,6 +26,7 @@ Aggregated examples run two TP1 workers; disaggregated examples run one TP1 pref
 | `features/override.yaml` | `base` plus `override_*` and `zip_override_*` variants in one file |
 | `features/profiling.yaml` | `profiling:` torch capture on an aggregated worker |
 | `features/services.yaml` | `services:` sidecar (an HTTP log browser on the head node) with a `readiness:` port gate |
+| `features/dynamo-source.yaml` | `dynamo.source:` building Dynamo from a git tag (or a PR head via `--set dynamo.source.rev=refs/pull/<n>/head`), pinned to a commit at submit |
 
 ## Cluster aliases
 

@@ -19,6 +19,8 @@ from typing import ClassVar
 from marshmallow import Schema, ValidationError
 from marshmallow_dataclass import dataclass
 
+from srtctl.core.source import SourceConfig
+
 logger = logging.getLogger(__name__)
 
 # Where a service runs. head / infra are one node; prefill / decode / agg are the
@@ -29,41 +31,8 @@ SINGLE_NODE_PLACEMENTS: frozenset[str] = frozenset({"head", "infra"})
 # When a service starts relative to the rest of the job.
 SERVICE_STARTS: tuple[str, ...] = ("before_workers", "after_frontend")
 
-# Immutable-ref guard for services[].source.rev.
-_MOVING_REFS: frozenset[str] = frozenset({"main", "master", "HEAD"})
-
-
-@dataclass(frozen=True)
-class ServiceSourceConfig:
-    """Git source to build a service from before launching it.
-
-    Attributes:
-        git: Repository URL to clone.
-        rev: Immutable ref to check out: a commit SHA, a tag, or
-            ``refs/pull/<n>/head`` for an unmerged PR. Branch names are
-            rejected because they move out from under a build.
-        path: Optional subdirectory of the clone that ``build_command`` and
-            ``command`` run from. Defaults to the repository root.
-    """
-
-    git: str
-    rev: str
-    path: str | None = None
-
-    Schema: ClassVar[type[Schema]] = Schema
-
-    def __post_init__(self) -> None:
-        if not self.git.strip():
-            raise ValidationError("services[].source.git must be a non-empty repository URL")
-        if not self.rev.strip():
-            raise ValidationError("services[].source.rev must be a non-empty immutable ref")
-        if self.rev.strip() in _MOVING_REFS:
-            raise ValidationError(
-                "services[].source.rev must be an immutable ref (commit SHA, tag, or refs/pull/<n>/head), "
-                f"not a moving branch name: {self.rev!r}"
-            )
-        if self.path is not None and not self.path.strip():
-            raise ValidationError("services[].source.path must not be blank when set")
+# services[].source is the shared git-at-an-immutable-ref shape.
+ServiceSourceConfig = SourceConfig
 
 
 @dataclass(frozen=True)

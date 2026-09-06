@@ -1020,21 +1020,34 @@ Dynamo installation configuration.
 
 ```yaml
 dynamo:
-  version: "0.8.0"            # Install from PyPI
-  # OR
-  hash: "abc123"              # Install from git commit
-  # OR
-  top_of_tree: true           # Install from main branch
-  sidecar: false               # Use native engines with Dynamo sidecars
+  source:                     # 2.0: one block for where Dynamo comes from
+    git: https://github.com/ai-dynamo/dynamo
+    rev: refs/pull/14000/head # a commit, a tag, or a PR head; never a branch name
+    # sha: <filled in by srtctl apply>
+  sidecar: false              # Use native engines with Dynamo sidecars
+```
+
+```yaml
+dynamo:
+  source:
+    pypi: "1.4.2"             # a release from PyPI
+```
+
+```yaml
+dynamo:
+  source:
+    wheel: "1.5.0.dev20260901" # a staged nightly wheel
 ```
 
 | Field                    | Type         | Default | Description                                            |
 | ------------------------ | ------------ | ------- | ------------------------------------------------------ |
 | `install`                | bool         | true    | Whether to install dynamo (set false if pre-installed) |
-| `version`                | string       | "0.8.0" | PyPI version                                           |
-| `hash`                   | string       | null    | Git commit hash (source install)                       |
-| `top_of_tree`            | bool         | false   | Install from main branch                               |
-| `wheel`                  | string       | null    | Exact `ai-dynamo` nightly version                      |
+| `source`                 | object       | null    | Exactly one of `git` + `rev` (optionally `patches`, `sha`), `pypi`, or `wheel`; see below |
+| `version`                | string       | "0.8.0" | Legacy: PyPI version (same as `source.pypi`)           |
+| `hash`                   | string       | null    | Legacy: git commit hash (same as `source.git` + `rev`) |
+| `top_of_tree`            | bool         | false   | Legacy: install from main branch                       |
+| `wheel`                  | string       | null    | Legacy: exact `ai-dynamo` nightly version (same as `source.wheel`) |
+| `cargo_patches`          | list[string] | null    | Legacy: Cargo dependency replacements (same as `source.patches`) |
 | `sidecar`                | bool         | false   | Replace legacy Python workers with native engines and Dynamo sidecars |
 | `sidecar_port`           | int          | 50051   | Base loopback gRPC port; co-located workers receive deterministic offsets |
 | `sidecar_binary`         | string/null  | null    | Optional standalone executable; null uses `python3 -m dynamo.<framework>.sidecar` |
@@ -1045,10 +1058,12 @@ dynamo:
 **Notes**:
 
 - Set `install: false` if your container already has dynamo pre-installed.
-- Only one of `version`, `hash`, or `top_of_tree` should be specified.
-- `hash` and `top_of_tree` are mutually exclusive.
-- When `hash` or `top_of_tree` is set, `version` is automatically cleared.
-- Source installs (`hash` or `top_of_tree`) clone the repo and build with maturin.
+- `source` is the same shape `services[].source` uses. `git` defaults to the upstream repository when only `rev` is given, so a fork is `git: https://github.com/<you>/dynamo`.
+- `rev` must be immutable: a commit SHA, a tag such as `v1.4.2`, or `refs/pull/<n>/head` for an unmerged PR. `main`, `master`, and `HEAD` are rejected; use `top_of_tree: true` if you really want a moving target.
+- `srtctl apply` resolves a non-commit `rev` with `git ls-remote`, writes the commit as `source.sha` into the submitted `config.yaml` (comments preserved, the recipe on disk is untouched), and echoes it as `pinned_sources` in `--json` output. The job builds that commit and the `/configs/dynamo-wheels` cache is keyed by it, so two runs of one recipe cannot silently build different code because the PR moved. If the login node cannot reach the remote, the submit continues with a warning and the compute node fetches the ref by name.
+- `source` cannot be combined with `hash`, `top_of_tree`, `wheel`, or `cargo_patches`. The legacy fields keep working unchanged; `source` maps onto them at load, so nothing downstream changes.
+- Source installs (`source.git`, `hash`, or `top_of_tree`) clone the repo and build with maturin; `patches` / `cargo_patches` replace Cargo dependency declarations tree-wide before the build.
+- `srtctl dry-run` prints the resolved Dynamo source.
 
 ### Native sidecar mode
 

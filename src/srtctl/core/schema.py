@@ -47,6 +47,7 @@ from srtctl.core.formatting import (
 
 # Leaf module (stdlib-only imports), so this cannot cycle back into schema.
 from srtctl.core.power.contract import CONTAINER_LOG_DIR
+from srtctl.core.source import DynamoSourceConfig, is_commit_sha
 from srtctl.services.config import ServiceConfig
 
 logger = logging.getLogger(__name__)
@@ -1331,13 +1332,19 @@ _DYNAMO_CACHE_ROOT = "/configs/dynamo-wheels"
 
 
 def dynamo_source_cache_key(dynamo_hash: str, cargo_patches: list[str] | None = None) -> str:
-    """Return the cache key shared by Slurm and direct source builds."""
+    """Return the cache key shared by Slurm and direct source builds.
+
+    A ref that is not a commit (``refs/pull/14000/head`` when ``srtctl apply``
+    could not pin it) is sanitized into a directory name; such a key can go
+    stale as the ref moves, which is why apply pins refs to SHAs up front.
+    """
+    key = dynamo_hash.strip().replace("/", "-")
     if not cargo_patches:
-        return dynamo_hash
+        return key
     # Version the build recipe so a patching change invalidates old artifacts
     # even when the dependency declarations themselves do not change.
     digest = hashlib.sha1(("dep-override-v3\n" + "\n".join(cargo_patches)).encode()).hexdigest()[:8]
-    return f"{dynamo_hash}-patch-{digest}"
+    return f"{key}-patch-{digest}"
 
 
 def dynamo_cargo_patch_commands(cargo_patches: list[str] | None = None) -> tuple[str, ...]:
@@ -1363,8 +1370,17 @@ def _git_clone_cmd() -> str:
     return shlex.join(git_clone_command_prefix())
 
 
-def _hash_cached_source_install(dynamo_hash: str, cargo_patches: list[str] | None = None) -> str:
+def _hash_cached_source_install(
+    dynamo_hash: str,
+    cargo_patches: list[str] | None = None,
+    repo_url: str = DynamoSourceConfig.DEFAULT_GIT,
+) -> str:
     """Bash for hash-pinned source install with a /configs/dynamo-wheels cache.
+
+    ``dynamo_hash`` is normally a commit SHA (``srtctl apply`` pins
+    ``dynamo.source.rev`` before submit). A bare ref such as
+    ``refs/pull/14000/head`` still works: it is fetched by name and checked out
+    as ``FETCH_HEAD``, since a plain clone does not carry PR refs.
 
     Cache layout: ``{root}/<key>/`` contains the maturin wheel
     (``ai_dynamo_runtime-*.whl``), a tarball of the dynamo source tree
@@ -1391,6 +1407,11 @@ def _hash_cached_source_install(dynamo_hash: str, cargo_patches: list[str] | Non
         override_cmd += " && "
     cache = f"{_DYNAMO_CACHE_ROOT}/{cache_key}"
     lock = f"{_DYNAMO_CACHE_ROOT}/.{cache_key}.lock"
+    checkout_cmd = (
+        f"git checkout {dynamo_hash}"
+        if is_commit_sha(dynamo_hash)
+        else f"git fetch origin {shlex.quote(dynamo_hash)} && git checkout FETCH_HEAD"
+    )
     return (
         f"echo 'Installing dynamo from source ({dynamo_hash}, /configs cache)...' && "
         f"mkdir -p {_DYNAMO_CACHE_ROOT} && "
@@ -1410,8 +1431,8 @@ def _hash_cached_source_install(dynamo_hash: str, cargo_patches: list[str] | Non
         f"pip install --break-system-packages --force-reinstall --quiet maturin && "
         # Clone + build the runtime wheel.
         f"DYN_BUILD_DIR=$(mktemp -d) && cd $DYN_BUILD_DIR && "
-        f"{_git_clone_cmd()} clone https://github.com/ai-dynamo/dynamo.git && "
-        f"cd dynamo && git checkout {dynamo_hash} && "
+        f"{_git_clone_cmd()} clone {shlex.quote(repo_url)} dynamo && "
+        f"cd dynamo && {checkout_cmd} && "
         f"{override_cmd}"
         f"cd lib/bindings/python/ && "
         f'export RUSTFLAGS="${{RUSTFLAGS:-}} -C target-cpu=native --cfg tokio_unstable" && '
@@ -1545,6 +1566,9 @@ class DynamoConfig:
         top_of_tree: Clone repo at HEAD (latest)
         wheel: ai-dynamo package version to install via staged wheels. The
                matching ai-dynamo-runtime wheel is installed automatically.
+        source: One block for all of the above: ``git`` + ``rev`` (commit, tag,
+               or ``refs/pull/<n>/head``; ``srtctl apply`` pins it to ``sha``),
+               ``pypi``, or ``wheel``. Cannot be combined with the legacy fields.
         request_plane: Request plane to use (default: "tcp"). Valid values: "nats", "tcp", "http"
         event_plane: Event plane override, sets DYN_EVENT_PLANE (default: None — follow
                      the Dynamo image's own default). Valid values: "nats", "zmq"
@@ -1561,6 +1585,10 @@ class DynamoConfig:
     hash: str | None = None
     top_of_tree: bool = False
     wheel: str | None = None
+    # The 2.0 way to say which Dynamo: one of git+rev, pypi, or wheel. Mapped onto
+    # the legacy fields above in __post_init__, so every consumer keeps reading
+    # hash / version / wheel / cargo_patches unchanged.
+    source: DynamoSourceConfig | None = None
     request_plane: str = "tcp"
     event_plane: str | None = None
     sidecar: bool = False
@@ -1577,6 +1605,27 @@ class DynamoConfig:
     cargo_patches: list[str] | None = None
 
     def __post_init__(self) -> None:
+        if self.source is not None:
+            legacy = [
+                name
+                for name, on in (
+                    ("hash", self.hash is not None),
+                    ("top_of_tree", self.top_of_tree),
+                    ("wheel", self.wheel is not None),
+                    ("cargo_patches", bool(self.cargo_patches)),
+                )
+                if on
+            ]
+            if legacy:
+                raise ValueError("dynamo.source cannot be combined with dynamo." + ", dynamo.".join(legacy))
+            if self.source.pypi is not None:
+                object.__setattr__(self, "version", self.source.pypi)
+            elif self.source.wheel is not None:
+                object.__setattr__(self, "wheel", self.source.wheel)
+            else:
+                object.__setattr__(self, "hash", self.source.checkout)
+                object.__setattr__(self, "cargo_patches", list(self.source.patches) if self.source.patches else None)
+
         install_sources = [
             ("hash", self.hash is not None),
             ("top_of_tree", self.top_of_tree),
@@ -1692,7 +1741,10 @@ class DynamoConfig:
         # to ~10 sec lustre access for repeat hashes. top_of_tree skips the
         # cache (no stable key) and always live-builds.
         if self.hash is not None:
-            return _hash_cached_source_install(self.hash, self.cargo_patches)
+            repo_url = (
+                self.source.git if self.source is not None and self.source.git else DynamoSourceConfig.DEFAULT_GIT
+            )
+            return _hash_cached_source_install(self.hash, self.cargo_patches, repo_url=repo_url)
 
         return _live_source_install_for_top_of_tree()
 

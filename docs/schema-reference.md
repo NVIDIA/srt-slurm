@@ -114,6 +114,7 @@ Dynamo installation configuration.
 | `hash` | str \| None | `None` |  |
 | `top_of_tree` | bool | `False` |  |
 | `wheel` | str \| None | `None` |  |
+| `source` | [DynamoSourceConfig](#dynamosourceconfig) \| None | `None` | The 2.0 way to say which Dynamo: one of git+rev, pypi, or wheel. Mapped onto the legacy fields above in __post_init__, so every consumer keeps reading hash / version / wheel / cargo_patches unchanged. |
 | `request_plane` | str | `'tcp'` |  |
 | `event_plane` | str \| None | `None` |  |
 | `sidecar` | bool | `False` |  |
@@ -274,7 +275,7 @@ One entry of the top-level ``services:`` list.
 | `args` | list[str] | `[]` | Extra argv appended to ``command``. |
 | `container` | str \| None | `None` | Container image or ``srtslurm.yaml`` alias. Defaults to the kind's fallback (Mooncake's ``mooncake_kv_store.container``), then the job container. |
 | `env` | dict[str, str] | `{}` | Environment for the service process, on top of what the kind injects. |
-| `source` | [ServiceSourceConfig](#servicesourceconfig) \| None | `None` | Optional git source to clone before ``build_command`` and ``command`` run. Single-node placements only. |
+| `source` | [SourceConfig](#sourceconfig) \| None | `None` | Optional git source to clone before ``build_command`` and ``command`` run. Single-node placements only. |
 | `build_command` | list[str] \| None | `None` | Argv run once inside the service container, from the clone, before ``command`` starts. Only meaningful with ``source``. |
 | `placement` | [ServicePlacementConfig](#serviceplacementconfig) | `ServicePlacementConfig()` | Where the service runs. Default ``head``. |
 | `start` | str \| None | `None` | ``after_frontend`` (default for ``generic``) or ``before_workers`` (default for ``mooncake-store``). |
@@ -306,6 +307,19 @@ Reporting configuration for status updates, AI analysis, and log exports.
 | `status` | [ReportingStatusConfig](#reportingstatusconfig) \| None | `None` |  |
 | `ai_analysis` | [AIAnalysisConfig](#aianalysisconfig) \| None | `None` |  |
 | `s3` | [S3Config](#s3config) \| None | `None` |  |
+
+### DynamoSourceConfig
+
+Where Dynamo comes from. Exactly one of ``git``, ``pypi``, or ``wheel``.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `git` | str \| None | `None` | Repository URL to build from (default upstream when ``rev`` is set without it). Builds ``ai-dynamo-runtime`` with maturin and installs ``ai-dynamo`` from the checkout; cached on ``/configs`` by commit. |
+| `rev` | str \| None | `None` | Immutable ref in ``git``: commit SHA, tag, or ``refs/pull/<n>/head``. |
+| `sha` | str \| None | `None` | The commit ``rev`` resolved to; filled in by ``srtctl apply``. |
+| `patches` | list[str] \| None | `None` | Cargo dependency replacements applied tree-wide before the build (the legacy ``cargo_patches``). |
+| `pypi` | str \| None | `None` | Release version from PyPI (the legacy ``version``). |
+| `wheel` | str \| None | `None` | Staged nightly ``ai-dynamo`` version (the legacy ``wheel``). |
 
 ### SweepConfig
 
@@ -352,15 +366,16 @@ Configuration for a metrics exporter deployed on worker nodes.
 | `port` | int | required |  |
 | `command` | str \| None | `None` |  |
 
-### ServiceSourceConfig
+### SourceConfig
 
-Git source to build a service from before launching it.
+A git repository at an immutable ref.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `git` | str | required | Repository URL to clone. |
-| `rev` | str | required | Immutable ref to check out: a commit SHA, a tag, or ``refs/pull/<n>/head`` for an unmerged PR. Branch names are rejected because they move out from under a build. |
-| `path` | str \| None | `None` | Optional subdirectory of the clone that ``build_command`` and ``command`` run from. Defaults to the repository root. |
+| `rev` | str | required | Immutable ref: a commit SHA, a tag, or ``refs/pull/<n>/head`` for an unmerged PR. Branch names are rejected because they move. |
+| `path` | str \| None | `None` | Optional subdirectory of the clone to build and run from. |
+| `sha` | str \| None | `None` | The commit ``rev`` resolved to. Filled in by ``srtctl apply`` at submit time; write it yourself only to pin an exact commit while keeping the human-readable ``rev`` beside it. |
 
 ### ServicePlacementConfig
 
