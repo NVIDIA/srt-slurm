@@ -39,7 +39,6 @@ backend:
       tensor-parallel-size: 1
       gpu-memory-utilization: 0.5
       max-model-len: 4096
-      disable-log-requests: true
 
 benchmark:
   type: "sa-bench"
