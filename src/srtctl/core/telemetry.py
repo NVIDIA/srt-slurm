@@ -33,7 +33,7 @@ class TelemetryEndpoint:
 
     name: str
     url: str
-    frequency: float
+    collect_interval_ms: int
     filter: str | None = None
     node_metadata: dict[str, str] = field(default_factory=dict)
     gpu_metadata: dict[str, dict[str, str]] = field(default_factory=dict)
@@ -81,7 +81,7 @@ def generate_tachometer_config(
                 TelemetryEndpoint(
                     name=f"dcgm_{node}",
                     url=f"http://{node}:{dcgm_exporter.port}/metrics",
-                    frequency=tachometer.default_frequency,
+                    collect_interval_ms=tachometer.collect_interval_ms,
                     filter="dcgm",
                     node_metadata=node_metadata,
                     gpu_metadata=gpu_metadata,
@@ -92,7 +92,7 @@ def generate_tachometer_config(
                 TelemetryEndpoint(
                     name=f"node_exporter_{node}",
                     url=f"http://{node}:{node_exporter.port}/metrics",
-                    frequency=tachometer.default_frequency,
+                    collect_interval_ms=tachometer.collect_interval_ms,
                     filter="node_exporter",
                     node_metadata=node_metadata,
                 )
@@ -125,7 +125,7 @@ def generate_tachometer_config(
             TelemetryEndpoint(
                 name=f"backend_{process.endpoint_mode}{process.endpoint_index}_rank{process.node_rank}",
                 url=url,
-                frequency=tachometer.default_frequency,
+                collect_interval_ms=tachometer.collect_interval_ms,
                 filter="backend",
                 node_metadata=node_metadata,
             )
@@ -155,7 +155,7 @@ def generate_tachometer_config(
             TelemetryEndpoint(
                 name=f"frontend{frontend_index}",
                 url=f"http://{node_ip}:{frontend_topology.frontend_port}/metrics",
-                frequency=tachometer.default_frequency,
+                collect_interval_ms=tachometer.collect_interval_ms,
                 filter="frontend",
                 node_metadata=node_metadata,
             )
@@ -174,7 +174,7 @@ def _dump_toml(*, endpoints: list[TelemetryEndpoint], storage: str) -> str:
         lines.append("[[endpoints]]")
         lines.append(f"name = {json.dumps(endpoint.name)}")
         lines.append(f"url = {json.dumps(endpoint.url)}")
-        lines.append(f"frequency = {endpoint.frequency}")
+        lines.append(f"collect_interval_ms = {endpoint.collect_interval_ms}")
         if endpoint.filter is not None:
             lines.append(f"filter = {json.dumps(endpoint.filter)}")
         if endpoint.node_metadata:

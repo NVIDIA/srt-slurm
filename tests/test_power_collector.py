@@ -692,7 +692,7 @@ class TestSessionOwnership:
                 self.config = MagicMock()
                 self.config.telemetry.enabled = True
                 self.config.telemetry.storage_subdir = "power"
-                self.config.telemetry.default_frequency = 0.05
+                self.config.telemetry.collect_interval_ms = 50
                 self.config.telemetry.startup_timeout_seconds = 0.2
                 self.config.telemetry.request_timeout_seconds = 0.1
                 self.config.telemetry.collector_join_timeout_seconds = 1.0

@@ -26,9 +26,9 @@ struct Args {
     #[arg(long = "endpoint", value_name = "NAME=URL", num_args = 0..)]
     endpoints: Vec<String>,
 
-    /// Polling frequency in Hz (e.g., 0.1 for 10 seconds) - used only with --endpoint
-    #[arg(long = "freq", default_value = "0.2")]
-    frequency: f64,
+    /// Milliseconds between scrapes (e.g., 5000 scrapes every 5 seconds) - used only with --endpoint
+    #[arg(long = "collect-interval-ms", default_value = "5000")]
+    collect_interval_ms: u64,
 
     /// Storage location (e.g., "s3://bucket/run_0" or "./local/path") - used only with --endpoint
     #[arg(long = "storage", value_name = "PATH")]
@@ -84,7 +84,7 @@ enum Commands {
 struct EndpointConfig {
     name: String,
     url: String,
-    frequency: f64,
+    collect_interval_ms: u64,
     filter: Option<Box<dyn MetricFilter>>,
 }
 
@@ -478,7 +478,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 endpoint_configs.push(EndpointConfig {
                     name: cfg_endpoint.name.clone(),
                     url: cfg_endpoint.url.clone(),
-                    frequency: cfg_endpoint.frequency.unwrap_or(2.0),
+                    collect_interval_ms: cfg_endpoint.collect_interval_ms.unwrap_or(500),
                     filter,
                 });
             }
@@ -512,7 +512,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 endpoint_configs.push(EndpointConfig {
                     name,
                     url,
-                    frequency: args.frequency,
+                    collect_interval_ms: args.collect_interval_ms,
                     filter,
                 });
             }
@@ -563,14 +563,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Press Ctrl+C or send SIGTERM to gracefully shutdown and compact data...");
 
     // Use tokio's cross-platform signal handler
-    // Create a task per endpoint with its own frequency
+    // Create a task per endpoint with its own collect interval
     let mut tasks = Vec::new();
     for endpoint in endpoints {
         let writer_clone = writer.clone();
         let endpoint_name = endpoint.name.clone();
         let endpoint_url = endpoint.url.clone();
         let endpoint_filter = endpoint.filter;
-        let sleep_duration = std::time::Duration::from_secs_f64(1.0 / endpoint.frequency);
+        let sleep_duration = std::time::Duration::from_millis(endpoint.collect_interval_ms);
 
         let task = tokio::spawn(async move {
             loop {

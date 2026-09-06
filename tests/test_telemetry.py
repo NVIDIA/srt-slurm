@@ -53,7 +53,7 @@ def _sa_bench(**overrides) -> BenchmarkConfig:
 def _dcgm_power(**overrides) -> TelemetryConfig:
     fields: dict = {
         "enabled": True,
-        "default_frequency": 1.0,
+        "collect_interval_ms": 1000,
         "storage_subdir": "power",
         "required": True,
         "startup_timeout_seconds": 30.0,
@@ -123,13 +123,13 @@ class TestTachometerConfig:
         assert tachometer.resolved_dcgm_exporter is custom
         assert tachometer.resolved_node_exporter.port == 9101
 
-    def test_default_frequency_is_one_hz(self):
-        """1 Hz matches the retired RAW scraper's cadence; 5 Hz produced ~9M
+    def test_default_collect_interval_is_one_second(self):
+        """1000ms matches the retired RAW scraper's cadence; 200ms produced ~9M
         rows in a 25-minute run with no analysis consuming the extra
         resolution, and scrape load on worker endpoints is not free."""
         config = _make_config(tachometer=TachometerConfig(enabled=True))
 
-        assert config.observability.tachometer.default_frequency == 1.0
+        assert config.observability.tachometer.collect_interval_ms == 1000
 
     def test_scraper_requires_nonempty_binary_path(self):
         with pytest.raises(ValidationError, match="observability.tachometer.binary_path"):
@@ -154,7 +154,7 @@ class TestDcgmPowerConfig:
     def test_defaults_are_stable(self):
         defaults = TelemetryConfig()
 
-        assert defaults.default_frequency == 1.0
+        assert defaults.collect_interval_ms == 1000
         assert defaults.required is False
         assert defaults.startup_timeout_seconds == 30.0
         assert defaults.request_timeout_seconds == 2.0
@@ -211,10 +211,9 @@ class TestDcgmPowerConfig:
                 None,
                 "port",
             ),
-            ({"default_frequency": 0.0}, None, "default_frequency"),
-            ({"default_frequency": float("nan")}, None, "default_frequency"),
-            ({"default_frequency": float("inf")}, None, "default_frequency"),
-            ({"default_frequency": 3.5}, None, "sample_gap_exceeded"),
+            ({"collect_interval_ms": 0}, None, "collect_interval_ms"),
+            ({"collect_interval_ms": -1}, None, "collect_interval_ms"),
+            ({"collect_interval_ms": 3500}, None, "sample_gap_exceeded"),
             ({"startup_timeout_seconds": 0.0}, None, "startup_timeout_seconds"),
             ({"request_timeout_seconds": -1.0}, None, "request_timeout_seconds"),
             ({"collector_join_timeout_seconds": 2.0}, None, "collector_join_timeout_seconds"),
@@ -243,7 +242,7 @@ class TestDcgmPowerConfig:
     def test_dcgm_power_rejects_a_sample_interval_above_the_contract_limit(self):
         telemetry = TelemetryConfig(
             enabled=True,
-            default_frequency=5.0,
+            collect_interval_ms=5000,
             storage_subdir="power",
             required=True,
             startup_timeout_seconds=30.0,

@@ -435,7 +435,7 @@ def show_config_details(config: SrtConfig) -> None:
         if config.observability.tachometer_enabled:
             details.add_row("observability", "tachometer", "enabled")
             details.add_row("observability", "storage_subdir", tachometer.storage_subdir)
-            details.add_row("observability", "frequency", str(tachometer.default_frequency))
+            details.add_row("observability", "collect_interval_ms", str(tachometer.collect_interval_ms))
             details.add_row("observability", "binary_path", tachometer.binary_path)
             if config.telemetry.enabled:
                 details.add_row("observability", "dcgm_exporter", "shared with power telemetry")

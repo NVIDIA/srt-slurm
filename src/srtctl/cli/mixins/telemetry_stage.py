@@ -162,7 +162,7 @@ class TelemetryStageMixin:
                 log_dir=self.runtime.log_dir,
                 job_id=self.runtime.job_id,
                 run_name=self.runtime.run_name,
-                sample_interval_seconds=telemetry.default_frequency,
+                sample_interval_seconds=telemetry.collect_interval_ms / 1000.0,
                 startup_timeout_seconds=telemetry.startup_timeout_seconds,
                 request_timeout_seconds=telemetry.request_timeout_seconds,
                 collector_join_timeout_seconds=telemetry.resolved_collector_join_timeout_seconds,

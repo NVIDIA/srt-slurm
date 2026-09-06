@@ -577,7 +577,7 @@ class TestPreflightConfigVariants:
             "benchmark": {"type": "sa-bench", "isl": 8192, "osl": 1024, "concurrencies": [4]},
             "telemetry": {
                 "enabled": True,
-                "default_frequency": 1.0,
+                "collect_interval_ms": 1000,
                 "storage_subdir": "power",
                 "required": True,
                 "dcgm_exporter": {"container_image": str(dcgm_image), "port": 9401},

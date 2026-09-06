@@ -354,7 +354,7 @@ def _build_tachometer_config(config: SrtConfig, processes: list[Process]) -> str
                 "[[endpoints]]",
                 f"name = {json.dumps(name)}",
                 f"url = {json.dumps(url)}",
-                f"frequency = {tachometer.default_frequency}",
+                f"collect_interval_ms = {tachometer.collect_interval_ms}",
                 f"filter = {json.dumps(metric_filter)}",
                 "[endpoints.node_metadata]",
                 *(f"{json.dumps(key)} = {json.dumps(value)}" for key, value in sorted(metadata.items())),

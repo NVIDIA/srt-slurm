@@ -1178,7 +1178,7 @@ observability:
   enabled: true
   tachometer:
     enabled: true
-    default_frequency: 1
+    collect_interval_ms: 1000
     sync_interval_secs: 120
     compaction_threads: 4
     storage_subdir: tachometer
@@ -1196,7 +1196,7 @@ observability:
 | ---------------- | ---- | ------- | ----------- |
 | `enabled` | bool/null | `null` | `null` means ON for every run (decoupled from `observability.enabled`); explicit `false` opts out |
 | `binary_path` | string | `tachometer-scraper` | Scraper command or path on the compute nodes |
-| `default_frequency` | float | `1.0` | Scrape frequency in Hz |
+| `collect_interval_ms` | int | `1000` | Milliseconds between scrapes of every endpoint (replaces the retired Hz-based `default_frequency`) |
 | `sync_interval_secs` | int | `120` | Interval for intermediate Parquet compaction; `0` disables it |
 | `compaction_threads` | int | `4` | Value passed as `POLARS_MAX_THREADS` |
 | `storage_subdir` | string | `tachometer` | Output directory below the run log directory |
@@ -1222,7 +1222,7 @@ When both are enabled, `telemetry.dcgm_exporter` is shared with Tachometer. Do n
 ```yaml
 telemetry:
   enabled: true
-  default_frequency: 1.0
+  collect_interval_ms: 1000
   storage_subdir: power
   required: true
   dcgm_exporter:
@@ -1234,7 +1234,7 @@ telemetry:
 | ----- | ---- | ------- | ----------- |
 | `enabled` | bool | `false` | Enable DCGM power collection |
 | `dcgm_exporter` | object/null | `null` | DCGM exporter image, port, and optional command; required when enabled |
-| `default_frequency` | float | `1.0` | Power sample interval in seconds; must be at most `3.0` |
+| `collect_interval_ms` | int | `1000` | Milliseconds between collector cycles; must be at most `3000` (replaces the retired `default_frequency`, which was seconds despite its name) |
 | `storage_subdir` | string | `power` | Output directory below the run log directory |
 | `required` | bool | `false` | Fail the benchmark when publishable power artifacts cannot be produced |
 | `startup_timeout_seconds` | float | `30.0` | Exporter readiness timeout |
