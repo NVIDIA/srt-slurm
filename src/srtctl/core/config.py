@@ -15,6 +15,7 @@ import fnmatch
 import logging
 import os
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -78,6 +79,71 @@ def load_cluster_config() -> dict[str, Any] | None:
         return None
 
 
+# Keys whose string values name a container image. Any such leaf anywhere in a
+# recipe resolves against the cluster `containers:` alias map.
+CONTAINER_ALIAS_KEYS: frozenset[str] = frozenset({"container", "container_image", "image", "nginx_container"})
+
+# Sub-trees the alias walker never enters: `identity` declares the pullable image a
+# run *should* be using (verification only, never an alias); the rest are free-form
+# maps (environment variables, engine flags, mounts) where a key happening to be
+# called `image` is user data, not a container reference.
+_CONTAINER_ALIAS_SKIP_KEYS: frozenset[str] = frozenset(
+    {
+        "identity",
+        "environment",
+        "prefill_environment",
+        "decode_environment",
+        "aggregated_environment",
+        "env",
+        "args",
+        "extra_args",
+        "prefill_extra_args",
+        "decode_extra_args",
+        "aggregated_extra_args",
+        "container_mounts",
+        "sbatch_directives",
+        "srun_options",
+        "sglang_config",
+        "vllm_config",
+        "trtllm_config",
+        "mocker_config",
+        "store_config",
+    }
+)
+
+
+def resolve_container_aliases(config: dict[str, Any], containers: Mapping[str, str]) -> list[str]:
+    """Replace every container-alias leaf in ``config`` with its ``containers:`` value, in place.
+
+    Walks the whole recipe once. A leaf is any string under a key in
+    :data:`CONTAINER_ALIAS_KEYS` whose value is a key of ``containers``; literal
+    paths and registry URIs are left alone. This is the single place container
+    aliases resolve (model, frontend, nginx, benchmark, exporters, Mooncake,
+    services), so a new block that names an image needs no resolver code.
+
+    Returns one human-readable note per resolved leaf.
+    """
+    notes: list[str] = []
+
+    def walk(node: Any, path: tuple[Any, ...]) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key in _CONTAINER_ALIAS_SKIP_KEYS:
+                    continue
+                if key in CONTAINER_ALIAS_KEYS and isinstance(value, str) and value in containers:
+                    node[key] = containers[value]
+                    dotted = ".".join(str(part) for part in (*path, key))
+                    notes.append(f"Resolved container alias {dotted}: '{value}' -> '{containers[value]}'")
+                elif isinstance(value, dict | list):
+                    walk(value, (*path, key))
+        elif isinstance(node, list):
+            for index, item in enumerate(node):
+                walk(item, (*path, index))
+
+    walk(config, ())
+    return notes
+
+
 def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: dict[str, Any] | None) -> dict[str, Any]:
     """
     Resolve user config by applying cluster defaults and aliases.
@@ -85,7 +151,8 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
     This applies:
     1. Default SLURM settings (account, partition, time_limit)
     2. Model path alias resolution
-    3. Container alias resolution
+    3. Container alias resolution for every container-typed key (see
+       :func:`resolve_container_aliases`)
 
     Args:
         user_config: User's YAML config as dict
@@ -142,14 +209,13 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
         model["path"] = resolved_path
         logger.debug(f"Resolved model alias '{model_path}' -> '{resolved_path}'")
 
-    # Resolve container alias
-    container = model.get("container", "")
-
+    # Resolve every container alias in one pass (model.container,
+    # frontend.container_image / nginx_container, benchmark.container_image,
+    # exporter images, mooncake_kv_store.container, services, ...).
     containers = cluster_config.get("containers")
-    if containers and container in containers:
-        resolved_container = containers[container]
-        model["container"] = resolved_container
-        logger.debug(f"Resolved container alias '{container}' -> '{resolved_container}'")
+    if containers:
+        for note in resolve_container_aliases(config, containers):
+            logger.debug(note)
 
     # Apply reporting defaults (if not specified in user config)
     if "reporting" not in config and cluster_config.get("reporting"):
@@ -168,70 +234,12 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
         config["host_setup"] = cluster_config["default_host_setup"]
         logger.debug("Applied default_host_setup: %s", config["host_setup"])
 
-    # Resolve frontend nginx_container alias
-    frontend = config.get("frontend", {})
-    nginx_container = frontend.get("nginx_container", "")
-
-    if containers and nginx_container in containers:
-        resolved_nginx = containers[nginx_container]
-        frontend["nginx_container"] = resolved_nginx
-        config["frontend"] = frontend
-        logger.debug(f"Resolved nginx_container alias '{nginx_container}' -> '{resolved_nginx}'")
-
-    router_container = frontend.get("container_image", "")
-    if containers and router_container in containers:
-        resolved_router = containers[router_container]
-        frontend["container_image"] = resolved_router
-        config["frontend"] = frontend
-        logger.debug(f"Resolved frontend.container_image alias '{router_container}' -> '{resolved_router}'")
-
     # Cluster-level default for nginx nofile ulimit (job yaml wins if present).
+    frontend = config.get("frontend", {})
     if "nginx_raise_ulimit" not in frontend and cluster_config.get("nginx_raise_ulimit") is not None:
         frontend["nginx_raise_ulimit"] = cluster_config["nginx_raise_ulimit"]
         config["frontend"] = frontend
         logger.debug(f"Applied cluster nginx_raise_ulimit: {frontend['nginx_raise_ulimit']}")
-
-    # Resolve benchmark.container_image alias for benches that ship their own
-    # eval container (e.g. NeMo Skills for accuracy benchmarks). Mirrors how
-    # model.container and frontend.nginx_container resolve against the same
-    # `containers:` map.
-    benchmark = config.get("benchmark", {})
-    benchmark_container = benchmark.get("container_image", "")
-
-    if containers and benchmark_container in containers:
-        resolved_bench = containers[benchmark_container]
-        benchmark["container_image"] = resolved_bench
-        config["benchmark"] = benchmark
-        logger.debug(f"Resolved benchmark.container_image alias '{benchmark_container}' -> '{resolved_bench}'")
-
-    # Resolve Tachometer exporter aliases from the observability block.
-    observability = config.get("observability")
-    tachometer = observability.get("tachometer") if isinstance(observability, dict) else None
-    if tachometer and containers:
-        for exporter_key in ("dcgm_exporter", "node_exporter"):
-            exporter = tachometer.get(exporter_key)
-            if not exporter:
-                continue
-            exporter_image = exporter.get("container_image")
-            if exporter_image and exporter_image in containers:
-                resolved_exporter = containers[exporter_image]
-                exporter["container_image"] = resolved_exporter
-                logger.debug(
-                    f"Resolved observability.tachometer.{exporter_key}.container_image alias "
-                    f"'{exporter_image}' -> '{resolved_exporter}'"
-                )
-
-    # Telemetry is reserved for the DCGM power collector.
-    telemetry = config.get("telemetry")
-    if telemetry and containers:
-        exporter = telemetry.get("dcgm_exporter")
-        exporter_image = exporter.get("container_image") if isinstance(exporter, dict) else None
-        if exporter_image and exporter_image in containers:
-            resolved_exporter = containers[exporter_image]
-            exporter["container_image"] = resolved_exporter
-            logger.debug(
-                f"Resolved telemetry.dcgm_exporter.container_image alias '{exporter_image}' -> '{resolved_exporter}'"
-            )
 
     return config
 
