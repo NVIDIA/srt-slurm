@@ -33,6 +33,7 @@ Top-level keys of a recipe YAML.
 | `enable_config_dump` | bool | `True` |  |
 | `setup_script` | str \| None | `None` | Custom setup script (runs before dynamo install and worker startup) e.g. "custom-setup.sh" -> runs /configs/custom-setup.sh |
 | `host_setup` | [HostSetupConfig](#hostsetupconfig) | `HostSetupConfig()` | Commands run on each node's bare host, outside the container, before any worker starts. Cluster-wide default lives in srtslurm.yaml as default_host_setup; a recipe that sets this block replaces that default. |
+| `services` | list[[ServiceConfig](#serviceconfig)] | `[]` | Long-running processes launched next to the job: generic sidecars (an experimental router built from a PR) and typed ones (a standalone Mooncake store per worker node). See docs/services.md. |
 | `identity` | [IdentityConfig](#identityconfig) | `IdentityConfig()` | Virtual identity — declares what *should* be running (verified against fingerprint) |
 | `reporting` | [ReportingConfig](#reportingconfig) \| None | `None` | Reporting configuration (status API, future: logs to S3, etc.) |
 
@@ -261,6 +262,30 @@ Commands run on the bare host of each allocated node, outside the container.
 | `ignore_failure` | bool | `False` | When True, a failing node logs a warning instead of failing the job. |
 | `timeout_seconds` | int | `300` | Per-node wall-clock budget for commands and for teardown. |
 
+### ServiceConfig
+
+One entry of the top-level ``services:`` list.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `name` | str | required | Unique label; names the log file (``service_<name>.out``) and the tracked process. |
+| `type` | str | `'generic'` | Service kind. ``generic`` (default) launches exactly what you wrote; ``mooncake-store`` runs a standalone Mooncake Store wired to the managed master. See ``docs/services.md`` for the kinds. |
+| `command` | list[str] \| None | `None` | Argv to launch (not shell-interpreted). Required for ``generic``; typed kinds supply a default. |
+| `args` | list[str] | `[]` | Extra argv appended to ``command``. |
+| `container` | str \| None | `None` | Container image or ``srtslurm.yaml`` alias. Defaults to the kind's fallback (Mooncake's ``mooncake_kv_store.container``), then the job container. |
+| `env` | dict[str, str] | `{}` | Environment for the service process, on top of what the kind injects. |
+| `source` | [ServiceSourceConfig](#servicesourceconfig) \| None | `None` | Optional git source to clone before ``build_command`` and ``command`` run. Single-node placements only. |
+| `build_command` | list[str] \| None | `None` | Argv run once inside the service container, from the clone, before ``command`` starts. Only meaningful with ``source``. |
+| `placement` | [ServicePlacementConfig](#serviceplacementconfig) | `ServicePlacementConfig()` | Where the service runs. Default ``head``. |
+| `start` | str \| None | `None` | ``after_frontend`` (default for ``generic``) or ``before_workers`` (default for ``mooncake-store``). |
+| `readiness` | [ServiceReadinessConfig](#servicereadinessconfig) \| None | `None` | Optional TCP port gate; the job waits for it on every service node before continuing. |
+| `inherit_discovery_env` | bool | `True` | Inject ``ETCD_ENDPOINTS`` / ``NATS_SERVER`` so the service can register with the job's Dynamo discovery plane. |
+| `critical` | bool \| None | `None` | When true a crash fails the run, like a worker dying. Default false for ``generic`` (a dead sidecar costs its own log, not the run) and true for ``mooncake-store``. Set true for anything in the live request path. |
+| `preamble` | str \| None | `None` | Shell run inside the container before ``command`` (``ulimit`` and friends). |
+| `cpus_per_task` | int \| None | `None` | Optional ``srun --cpus-per-task``. |
+| `cpu_bind` | str \| None | `None` | Optional ``srun --cpu-bind``. |
+| `srun_options` | dict[str, str] | `{}` | Extra srun options for this service only. |
+
 ### IdentityConfig
 
 Virtual identity for runtime verification and reproduction.
@@ -325,6 +350,33 @@ Configuration for a metrics exporter deployed on worker nodes.
 | `container_image` | str | required |  |
 | `port` | int | required |  |
 | `command` | str \| None | `None` |  |
+
+### ServiceSourceConfig
+
+Git source to build a service from before launching it.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `git` | str | required | Repository URL to clone. |
+| `rev` | str | required | Immutable ref to check out: a commit SHA, a tag, or ``refs/pull/<n>/head`` for an unmerged PR. Branch names are rejected because they move out from under a build. |
+| `path` | str \| None | `None` | Optional subdirectory of the clone that ``build_command`` and ``command`` run from. Defaults to the repository root. |
+
+### ServicePlacementConfig
+
+Where a service runs.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `node` | str | `'head'` | ``head`` or ``infra`` (one instance), ``prefill`` / ``decode`` / ``agg`` (one instance per distinct physical node that role's workers use), or ``workers`` (one instance per worker node). |
+
+### ServiceReadinessConfig
+
+TCP readiness gate: the launch blocks until ``port`` accepts connections on every service node.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `port` | int | required | TCP port the service listens on. |
+| `timeout_seconds` | int | `120` | How long to wait per node before failing the job. |
 
 ### IdentityModelConfig
 

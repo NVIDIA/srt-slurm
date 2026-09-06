@@ -396,6 +396,34 @@ def show_config_details(config: SrtConfig) -> None:
                 "outlives this allocation and is inherited by the next job on these nodes."
             )
 
+    # --- services (see docs/services.md) ---
+    # Plain lines, not a Table: repo URLs and long argv overflow a narrow console and a
+    # Table would wrap or truncate them. crop=False keeps each value intact on one line.
+    if config.services:
+        console.print("[bold cyan]Services:[/]")
+        for service in config.services:
+            console.print(
+                f"  [cyan]{service.name}[/] [dim]type={service.type} placement={service.placement.node} "
+                f"start={service.effective_start} critical={str(service.effective_critical).lower()}[/]"
+            )
+            console.print(f"    [yellow]command:[/] {shlex.join(service.effective_command)}", crop=False)
+            console.print(f"    [yellow]container:[/] {service.container or '<job container>'}")
+            if service.source is not None:
+                console.print(f"    [yellow]source:[/] {service.source.git} @ {service.source.rev}", crop=False)
+                if service.source.path:
+                    console.print(f"    [yellow]source.path:[/] {service.source.path}")
+            if service.build_command:
+                console.print(f"    [yellow]build_command:[/] {shlex.join(service.build_command)}", crop=False)
+            if service.readiness is not None:
+                console.print(
+                    f"    [yellow]readiness:[/] tcp/{service.readiness.port}, timeout={service.readiness.timeout_seconds}s"
+                )
+            if service.preamble:
+                console.print(f"    [yellow]preamble:[/] {service.preamble.strip()}", crop=False)
+            console.print(f"    [yellow]inherit_discovery_env:[/] {str(service.inherit_discovery_env).lower()}")
+            for var, val in sorted(service.env.items()):
+                console.print(f"    [yellow]env.{var}:[/] {val}", crop=False)
+
     # --- srun options ---
     if config.srun_options:
         opts = " ".join(f"--{k}={v}" if v else f"--{k}" for k, v in config.srun_options.items())

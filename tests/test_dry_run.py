@@ -412,6 +412,86 @@ class TestDryRunExecutionExtensions:
         assert "100GB" in output
 
 
+class TestDryRunServices:
+    """services: command, env, source, and readiness must be visible before submitting."""
+
+    def test_service_command_env_and_readiness_shown(self, capsys):
+        config = _make_config(
+            {
+                "services": [
+                    {
+                        "name": "thunderagent-router",
+                        "command": ["python3", "-m", "dynamo.thunderagent_router", "--endpoint", "dyn://ns.comp.ep"],
+                        "env": {"ROUTER_LOG_LEVEL": "debug"},
+                        "readiness": {"port": 9100},
+                    }
+                ]
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "Services:" in output
+        assert "thunderagent-router" in output
+        assert "dynamo.thunderagent_router" in output
+        assert "ROUTER_LOG_LEVEL" in output
+        assert "debug" in output
+        assert "tcp/9100" in output
+        assert "placement=head" in output
+
+    def test_source_and_build_command_shown(self, capsys):
+        config = _make_config(
+            {
+                "services": [
+                    {
+                        "name": "thunderagent-router",
+                        "command": ["python3", "-m", "dynamo.thunderagent_router"],
+                        "source": {"git": "https://github.com/ai-dynamo/dynamo", "rev": "refs/pull/14000/head"},
+                        "build_command": ["bash", "-lc", "maturin develop --uv && pip install -e ."],
+                    }
+                ]
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "https://github.com/ai-dynamo/dynamo" in output
+        assert "refs/pull/14000/head" in output
+        assert "maturin develop" in output
+
+    def test_mooncake_store_shows_type_defaults(self, capsys):
+        config = _make_config(
+            {
+                "backend": {
+                    "type": "sglang",
+                    "mooncake_kv_store": {"container": "mooncake.sqsh"},
+                    "sglang_config": {
+                        "prefill": {"disaggregation-transfer-backend": "mooncake"},
+                        "decode": {"disaggregation-transfer-backend": "mooncake"},
+                    },
+                },
+                "services": [
+                    {
+                        "name": "store",
+                        "type": "mooncake-store",
+                        "placement": {"node": "workers"},
+                        "env": {"MOONCAKE_GLOBAL_SEGMENT_SIZE": "100gb"},
+                    }
+                ],
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "mooncake.mooncake_store_service" in output
+        assert "type=mooncake-store" in output
+        assert "start=before_workers" in output
+        assert "critical=true" in output
+        assert "100gb" in output
+
+    def test_no_services_omits_the_panel(self, capsys):
+        config = _make_config()
+        show_config_details(config)
+        assert "Services:" not in capsys.readouterr().out
+
+
 class TestDryRunHetJobs:
     """Het structure panel appears only when het is enabled."""
 
@@ -584,8 +664,9 @@ class TestInfmaxWorkspaceMount:
     --container-mounts against the failed arm's showed this single missing entry.
     """
 
-    AGENTIC = {"benchmark": {"type": "custom",
-                             "command": "bash /infmax-workspace/benchmarks/multi_node/agentic_srt.sh"}}
+    AGENTIC = {
+        "benchmark": {"type": "custom", "command": "bash /infmax-workspace/benchmarks/multi_node/agentic_srt.sh"}
+    }
 
     def test_mount_is_shown_when_the_variable_is_set(self, capsys):
         config = _make_config(self.AGENTIC)

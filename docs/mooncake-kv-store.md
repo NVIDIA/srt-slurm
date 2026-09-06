@@ -9,6 +9,7 @@ First-class support for [Mooncake](https://github.com/kvcache-ai/Mooncake) as th
 - [Quick Start (vLLM)](#quick-start-vllm)
 - [What srtslurm Owns vs What You Set](#what-srtslurm-owns-vs-what-you-set)
 - [Configuration Reference](#configuration-reference)
+- [Standalone Store Services](#standalone-store-services)
 - [Master Metrics Endpoint](#master-metrics-endpoint)
 - [Validation](#validation)
 - [Common Configurations](#common-configurations)
@@ -172,6 +173,29 @@ backend:
 ```
 
 Older Mooncake versions do not recognize this option, so leave it out of those recipes. The existing `--eviction_high_watermark_ratio` controls memory eviction; the `--nof_...` option independently controls the NVMe-over-Fabrics SSD tier.
+
+## Standalone Store Services
+
+Mooncake can run the Store as a standalone process per node, so workers use embedded clients with `MOONCAKE_GLOBAL_SEGMENT_SIZE=0` while dedicated stores own the DRAM segments. In srtslurm that is a `services:` entry with `type: mooncake-store`: it starts after the master is healthy and before workers, gets `MOONCAKE_MASTER`, `MOONCAKE_TE_META_DATA_SERVER`, and `MOONCAKE_LOCAL_HOSTNAME` from the runtime, and defaults its container to `mooncake_kv_store.container`.
+
+```yaml
+services:
+  - name: store
+    type: mooncake-store
+    placement:
+      node: workers          # or prefill / decode for per-role segment sizes
+    args:
+      - --port
+      - "8800"
+    env:
+      MOONCAKE_PROTOCOL: rdma
+      MOONCAKE_DEVICE: "mlx5_0,mlx5_1"
+      MOONCAKE_GLOBAL_SEGMENT_SIZE: 100gb
+    readiness:
+      port: 8800
+```
+
+The worker side stays in the backend's per-mode env (`prefill_environment` / `decode_environment`). See [Services](services.md#example-standalone-mooncake-stores) for the full shape, per-role entries, and the co-location rules.
 
 ## Master Metrics Endpoint
 

@@ -30,6 +30,7 @@ from srtctl.cli.mixins import (
     BenchmarkStageMixin,
     FrontendStageMixin,
     PostProcessStageMixin,
+    ServiceStageMixin,
     TelemetryStageMixin,
     WorkerStageMixin,
 )
@@ -83,6 +84,7 @@ class SweepOrchestrator(
     WorkerStageMixin,
     FrontendStageMixin,
     TelemetryStageMixin,
+    ServiceStageMixin,
     BenchmarkStageMixin,
     PostProcessStageMixin,
 ):
@@ -778,6 +780,11 @@ class SweepOrchestrator(
             if mooncake_proc is not None:
                 registry.add_process(mooncake_proc)
 
+            # Stage 1c: services that workers depend on (standalone Mooncake
+            # stores, anything with start: before_workers). See docs/services.md.
+            for proc in self.start_services("before_workers"):
+                registry.add_process(proc)
+
             # Pre-worker: Ensure HF model is cached before starting workers.
             # 1. Clean stale lock files from previous crashed downloads
             # 2. Download model on a single node (blocks until complete)
@@ -799,6 +806,11 @@ class SweepOrchestrator(
             reporter.report(JobStatus.FRONTEND, JobStage.FRONTEND, "Starting frontend")
             frontend_procs = self.start_frontend(registry, stop_event)
             for proc in frontend_procs:
+                registry.add_process(proc)
+
+            # Stage 3b: sidecar services (start: after_frontend, the default),
+            # once workers and the frontend are healthy and before telemetry.
+            for proc in self.start_services("after_frontend"):
                 registry.add_process(proc)
 
             if self.config.telemetry.enabled:

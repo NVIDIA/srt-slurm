@@ -47,6 +47,7 @@ from srtctl.core.formatting import (
 
 # Leaf module (stdlib-only imports), so this cannot cycle back into schema.
 from srtctl.core.power.contract import CONTAINER_LOG_DIR
+from srtctl.services.config import ServiceConfig
 
 logger = logging.getLogger(__name__)
 
@@ -1871,6 +1872,11 @@ class SrtConfig:
     # default_host_setup; a recipe that sets this block replaces that default.
     host_setup: HostSetupConfig = field(default_factory=HostSetupConfig)
 
+    # Long-running processes launched next to the job: generic sidecars (an
+    # experimental router built from a PR) and typed ones (a standalone Mooncake
+    # store per worker node). See docs/services.md.
+    services: list[ServiceConfig] = field(default_factory=list)
+
     # Virtual identity — declares what *should* be running (verified against fingerprint)
     identity: IdentityConfig = field(default_factory=IdentityConfig)
 
@@ -1893,7 +1899,24 @@ class SrtConfig:
         self._validate_dynamo_sidecar()
         self._validate_host_setup()
         self._validate_benchmark_type()
+        self._validate_services()
         self._warn_dp_launch_mode()
+
+    def _validate_services(self) -> None:
+        """Whole-list checks for ``services:``: unique names, then each kind's recipe-level rules.
+
+        Per-entry checks (empty command, moving-branch source rev, ...) live on
+        ``ServiceConfig.__post_init__``; a kind's ``validate`` sees the full
+        recipe (a ``mooncake-store`` needs ``backend.mooncake_kv_store``).
+        """
+        from srtctl.services.registry import get_service_kind
+
+        seen: set[str] = set()
+        for service in self.services:
+            if service.name in seen:
+                raise ValidationError(f"services[].name must be unique; duplicate: {service.name!r}")
+            seen.add(service.name)
+            get_service_kind(service.type).validate(service, self)
 
     def _validate_benchmark_type(self) -> None:
         """Reject a benchmark.type that no runner is registered for.

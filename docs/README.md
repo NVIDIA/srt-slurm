@@ -57,3 +57,4 @@ Once allocated, workers launch inside containers, discover each other through ET
 - [Profiling](profiling.md) - Performance analysis with torch/nsys
 - [Analyzing Results](analyzing.md) - Dashboard and visualization
 - [SGLang Router](sglang-router.md) - Alternative to Dynamo for PD disaggregation
+- [Services](services.md) - Sidecars and standalone stores launched next to the job

@@ -31,6 +31,7 @@ This page is the prose guide: what each block means, how the pieces interact, an
 - [srun_options](#srun_options)
 - [setup_script](#setup_script)
 - [host_setup](#host_setup)
+- [services](#services)
 - [enable_config_dump](#enable_config_dump)
 - [Complete Examples](#complete-examples)
 
@@ -1751,6 +1752,52 @@ host_setup:
 - `teardown` runs from the job's cleanup path, so it fires on failure and cancellation too, and never changes the job's exit code.
 - Set cluster-wide via `default_host_setup` in `srtslurm.yaml` — that's the right home when *the cluster's machines* need this, rather than one recipe. See [Cluster Config Fields](#cluster-config-fields).
 - `srtctl dry-run -f config.yaml` renders the commands, their scope, and which file they came from.
+
+---
+
+## services
+
+Long-running processes srtctl launches and tracks next to the workers, frontend, and benchmark client. One list covers generic sidecars (an experimental router built from a PR) and typed services (a standalone Mooncake store per worker node). Full reference: [services.md](services.md).
+
+```yaml
+services:
+  - name: my-sidecar
+    type: generic                # generic (default) | mooncake-store
+    command:
+      - python3
+      - -m
+      - my_package.my_sidecar
+    args:
+      - --port
+      - "9000"
+    container: my-image          # alias or path; default: job container
+    env:
+      MY_FLAG: "1"
+    placement:
+      node: head                 # head | infra | prefill | decode | agg | workers
+    start: after_frontend        # after_frontend | before_workers
+    readiness:
+      port: 9000
+      timeout_seconds: 120
+    inherit_discovery_env: true  # ETCD_ENDPOINTS / NATS_SERVER
+    critical: false
+```
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `name` | string | required | Unique; names `service_<name>.out` and the tracked process |
+| `type` | string | `generic` | Registered service kind; supplies defaults and injected env |
+| `command` | list[string] | type default | Argv, not shell-interpreted; required for `generic` |
+| `args` | list[string] | `[]` | Appended to `command` |
+| `container` | string | type fallback, then job container | Image or `srtslurm.yaml` alias |
+| `env` | dict | `{}` | Service environment; placeholders like `{node_ip}` are substituted |
+| `placement.node` | string | `head` | One instance for `head`/`infra`; one per node for `prefill`/`decode`/`agg`/`workers` |
+| `start` | string | type default | `after_frontend` (generic) or `before_workers` (mooncake-store) |
+| `readiness` | object | none | `port` + `timeout_seconds`; the job waits for it on every service node |
+| `inherit_discovery_env` | bool | `true` | Inject the Dynamo discovery env |
+| `critical` | bool | type default | A crash fails the run when true |
+| `source`, `build_command` | object, list[string] | none | Clone an immutable git rev and build once before launch; single-node placements only |
+| `preamble`, `cpus_per_task`, `cpu_bind`, `srun_options` | | none | Pass-through launch knobs for this service |
 
 ---
 

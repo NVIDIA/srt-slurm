@@ -1,0 +1,73 @@
+# A `services:` sidecar next to a normal job.
+#
+# `services:` declares long-running processes srtctl launches and tracks alongside
+# the workers, frontend, and benchmark client. This example runs a plain HTTP
+# file server over the job's log directory on the head node, gated on its port,
+# so you can watch logs from a browser while the benchmark runs. Swap the command
+# for the real thing: an experimental router built from a PR (`source:` +
+# `build_command:`), a metrics shim, a standalone Mooncake store
+# (`type: mooncake-store`). See docs/services.md.
+#
+# Aliases (`qwen3-0.6b`, `sglang`) resolve through srtslurm.yaml; see examples/README.md.
+
+schema: 2
+name: "qwen3-0.6b-services"
+
+slurm:
+  time_limit: "00:30:00"
+
+model:
+  path: "qwen3-0.6b"
+  container: "sglang"
+  precision: "bf16"
+
+resources:
+  gpu_type: "h100"
+  gpus_per_node: 8
+
+frontend:
+  type: sglang
+  enable_multiple_frontends: false
+  args:
+    policy: "cache_aware"
+
+backend:
+  type: sglang
+roles:
+  agg:
+    nodes: 1
+    workers: 2
+    gpus: 1
+    env:
+      PYTHONUNBUFFERED: "1"
+    args:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 1
+      mem-fraction-static: 0.5
+      context-length: 4096
+      disable-piecewise-cuda-graph: true
+
+services:
+  - name: log-browser
+    # type: generic (default) launches exactly this argv inside the job container.
+    command:
+      - python3
+      - -m
+      - http.server
+      - "9911"
+      - --directory
+      - /logs
+    placement:
+      node: head          # head | infra | prefill | decode | agg | workers
+    # start: after_frontend (default). Use before_workers for something workers need.
+    readiness:
+      port: 9911          # the job waits until this port answers on the service node
+      timeout_seconds: 60
+    inherit_discovery_env: false   # no etcd/NATS here; the SGLang router runs without them
+    # critical: false (default). A dead sidecar costs its own log, not the run.
+
+benchmark:
+  type: "sa-bench"
+  isl: 128
+  osl: 128
+  concurrencies: "4x8"
