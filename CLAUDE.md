@@ -268,6 +268,10 @@ with patch.dict(os.environ, H100Rack.slurm_env()):
 3. Add bash script to `benchmarks/scripts/mybench/bench.sh`
 4. Register in benchmark type mapping
 
+### Adding or Changing Any Config Field
+
+`docs/schema-reference.md` is generated from the dataclasses in `core/schema.py` and `backends/`. After adding, renaming, or re-typing a field, run `uv run srtctl schema-docs` and commit the result; CI and `tests/test_schema_docs.py` fail when the file is stale. Put the field's description in the class docstring `Attributes:` block or in a `#` comment directly above the field so it lands in the generated table.
+
 ### Adding Config That Affects srun (Mounts, Env Vars, Options)
 
 When adding new config fields that affect what gets passed to srun (environment variables, container mounts, srun options), you must also update:

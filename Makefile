@@ -1,4 +1,4 @@
-.PHONY: lint test test-cov ci check setup cleanup examples tachometer-scraper tachometer-scraper-download
+.PHONY: lint test test-cov ci check setup cleanup examples schema-docs schema-docs-check tachometer-scraper tachometer-scraper-download
 
 NATS_VERSION ?= v2.10.28
 ETCD_VERSION ?= v3.5.21
@@ -21,8 +21,16 @@ test:
 test-cov:
 	uv run pytest tests/ --cov=srtctl --cov-report=term-missing --cov-report=html
 
+# Regenerate docs/schema-reference.md from the config dataclasses
+schema-docs:
+	uv run srtctl schema-docs
+
+# Fail if docs/schema-reference.md is stale (also enforced by CI and tests/test_schema_docs.py)
+schema-docs-check:
+	uv run srtctl schema-docs --check
+
 # Run lint + tests in one command
-check: lint test
+check: lint schema-docs-check test
 	@echo "✓ All checks passed"
 
 tachometer-scraper:

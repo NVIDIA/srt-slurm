@@ -29,6 +29,9 @@ jobs:
       - name: Run ruff format check
         run: uv run ruff format --check src/srtctl/
 
+      - name: Check docs/schema-reference.md is regenerated
+        run: uv run srtctl schema-docs --check
+
   typecheck:
     runs-on: ubuntu-latest
     steps:

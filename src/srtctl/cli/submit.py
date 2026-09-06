@@ -1454,6 +1454,7 @@ def main():
   srtctl monitor                                 # Live job dashboard
   srtctl monitor --outputs /path/to/outputs      # Dashboard with custom outputs dir
   srtctl view /path/to/run-output                # Local ruter route-decision viewer
+  srtctl schema-docs [--check]                   # Regenerate (or verify) docs/schema-reference.md
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1573,6 +1574,23 @@ def main():
     check_parser.add_argument("path", type=Path, help="Lockfile or output dir to check against")
     check_parser.add_argument("--json", action="store_true", dest="json_output", help="Output as JSON")
 
+    # Generated schema reference: srtctl schema-docs [--check] [--output PATH]
+    schema_docs_parser = subparsers.add_parser(
+        "schema-docs",
+        help="Regenerate docs/schema-reference.md from the config dataclasses",
+    )
+    schema_docs_parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Exit 1 if the checked-in reference is stale instead of rewriting it (used by CI)",
+    )
+    schema_docs_parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="Write to this path instead of docs/schema-reference.md",
+    )
+
     args = parser.parse_args()
 
     json_mode = bool(getattr(args, "json_output", False))
@@ -1659,6 +1677,23 @@ def main():
             console.print(format_check_results([]))
         restore_console()
         sys.exit(1 if all_results else 0)
+
+    if args.command == "schema-docs":
+        from srtctl.core.schema_docs import DEFAULT_OUTPUT, schema_reference_is_current, write_schema_reference
+
+        output = args.output or DEFAULT_OUTPUT
+        if args.check:
+            if schema_reference_is_current(output):
+                console.print(f"[green]✓[/] {output} is up to date")
+                restore_console()
+                return
+            console.print(f"[bold red]✗[/] {output} is stale; run `srtctl schema-docs` and commit the result")
+            restore_console()
+            sys.exit(1)
+        written = write_schema_reference(output)
+        console.print(f"[green]✓[/] Wrote {written}")
+        restore_console()
+        return
 
     if args.command == "monitor":
         from srtctl.cli.monitor import main as _monitor_main

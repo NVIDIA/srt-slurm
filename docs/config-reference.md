@@ -2,6 +2,8 @@
 
 Complete reference for job configuration YAML files.
 
+This page is the prose guide: what each block means, how the pieces interact, and worked examples. The authoritative field-by-field list (every key, type, and default) is generated from the code in [schema-reference.md](schema-reference.md) and checked in CI, so if this page and that one disagree, the generated one is right.
+
 ## Table of Contents
 
 - [Overview](#overview)
