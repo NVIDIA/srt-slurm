@@ -392,6 +392,66 @@ class TestCustomBenchmarkRunner:
         assert "SRT_DECODE_ENDPOINTS" not in env
         assert env["AIPERF_SERVER_METRICS_URLS"] == "http://ip-node-a:6100/metrics"
 
+    def test_trtllm_serve_custom_endpoints_use_prometheus_path(self):
+        """Custom benchmarks against trtllm-serve advertise worker leaders'
+        OpenAI ports at /prometheus/metrics — the plain /metrics route there
+        is JSON iteration stats, not Prometheus exposition text."""
+        from unittest.mock import patch
+
+        from srtctl.benchmarks.custom import CustomBenchmarkRunner
+        from srtctl.core.topology import Process
+
+        processes = [
+            Process("node-a", frozenset(range(4)), 7500, 6100, "prefill", 0, node_rank=0),
+            Process("node-b", frozenset(range(4)), 7501, 0, "prefill", 0, node_rank=1),
+            Process("node-c", frozenset(range(4)), 7502, 6100, "decode", 0, node_rank=0),
+        ]
+        stage = self._benchmark_stage("trtllm_serve", processes, backend_type="trtllm")
+
+        with patch(
+            "srtctl.cli.mixins.benchmark_stage.get_hostname_ip",
+            side_effect=lambda node, interface: f"ip-{node}",
+        ):
+            env = stage._get_benchmark_env(CustomBenchmarkRunner())
+
+        assert env["AIPERF_SERVER_METRICS_URLS"] == (
+            "http://ip-node-a:6100/prometheus/metrics,http://ip-node-c:6100/prometheus/metrics"
+        )
+
+    def test_trtllm_serve_physical_endpoints_use_worker_http_ports(self):
+        """Built-in AIPerf path: trtllm-serve never binds the DYN_SYSTEM_PORT
+        sys-ports, so the physical-process URLs use leader http_ports at
+        /prometheus/metrics, gated on publish_events_and_metrics exactly like
+        the Dynamo sys-port path."""
+        from unittest.mock import patch
+
+        from srtctl.core.topology import Process
+
+        processes = [
+            Process("node-a", frozenset(range(4)), 7500, 6100, "prefill", 0, node_rank=0),
+            Process("node-b", frozenset(range(4)), 7501, 0, "prefill", 0, node_rank=1),
+            Process("node-c", frozenset(range(4)), 7502, 6100, "decode", 0, node_rank=0),
+        ]
+        stage = self._benchmark_stage(
+            "trtllm_serve", processes, backend_type="trtllm", publish_events_and_metrics=True
+        )
+        with patch(
+            "srtctl.cli.mixins.benchmark_stage.get_hostname_ip",
+            side_effect=lambda node, interface: f"ip-{node}",
+        ):
+            env = stage._get_aiperf_server_metrics_env()
+        assert env["AIPERF_SERVER_METRICS_URLS"] == (
+            "http://ip-node-a:6100/prometheus/metrics,http://ip-node-c:6100/prometheus/metrics"
+        )
+
+        # Without the metrics leg there is nothing to poll — no dead-port URLs.
+        stage_off = self._benchmark_stage("trtllm_serve", processes, backend_type="trtllm")
+        with patch(
+            "srtctl.cli.mixins.benchmark_stage.get_hostname_ip",
+            side_effect=lambda node, interface: f"ip-{node}",
+        ):
+            assert stage_off._get_aiperf_server_metrics_env() == {}
+
     def test_observability_does_not_reach_the_benchmark_client(self):
         """``observability`` configures what the servers emit, not the client.
 

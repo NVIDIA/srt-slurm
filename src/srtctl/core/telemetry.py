@@ -54,7 +54,20 @@ def generate_tachometer_config(
     URL (``AIPERF_SERVER_METRICS_URLS``): double-polling has been validated
     as harmless, and unconditional coverage keeps Tachometer the one
     whole-window, per-replica capture regardless of what the client does.
+
+    ``frontend_type: trtllm_serve`` targets a different surface than Dynamo:
+    workers bind only their OpenAI ``http_port`` (leaders; the DYN_SYSTEM_PORT
+    sys-ports are never created in this mode) and both the workers and the
+    disaggregated orchestrator serve Prometheus at ``/prometheus/metrics`` —
+    the worker's ``/metrics`` route is JSON iteration stats and the
+    orchestrator registers no ``/metrics`` route at all. Endpoint names keep
+    the Dynamo pattern (``backend_{mode}{index}_rank{rank}``, ``frontend{i}``)
+    so downstream grouping is identical across the two frontends. Aggregate
+    trtllm-serve is out of scope (disagg-only coverage).
     """
+    # trtllm-serve (worker and disagg orchestrator alike) exposes Prometheus
+    # text at /prometheus/metrics; every other frontend/backend uses /metrics.
+    metrics_path = "/prometheus/metrics" if frontend_type == "trtllm_serve" else "/metrics"
     dcgm_exporter = dcgm_exporter or tachometer.resolved_dcgm_exporter
     node_exporter = tachometer.resolved_node_exporter
     endpoints: list[TelemetryEndpoint] = []
@@ -106,14 +119,20 @@ def generate_tachometer_config(
             continue
         if frontend_type == "vllm-router" and process.http_port <= 0:
             continue
+        if frontend_type == "trtllm_serve" and (process.endpoint_mode == "agg" or process.http_port <= 0):
+            # trtllm-serve workers bind only the leader's OpenAI http_port;
+            # follower ranks serve nothing. Aggregate mode is out of scope
+            # (the one agg worker binds the public frontend port instead of
+            # process.http_port).
+            continue
         node_ip = get_hostname_ip(process.node, runtime.network_interface)
         if frontend_type == "vllm" and process.endpoint_mode == "agg":
             port = FRONTEND_PUBLIC_PORT
-        elif frontend_type == "vllm-router":
+        elif frontend_type in ("vllm-router", "trtllm_serve"):
             port = process.http_port
         else:
             port = process.sys_port
-        url = f"http://{node_ip}:{port}/metrics"
+        url = f"http://{node_ip}:{port}{metrics_path}"
         node_metadata = {
             "hostname": process.node,
             "worker_index": str(process.endpoint_index),
@@ -154,7 +173,7 @@ def generate_tachometer_config(
         endpoints.append(
             TelemetryEndpoint(
                 name=f"frontend{frontend_index}",
-                url=f"http://{node_ip}:{frontend_topology.frontend_port}/metrics",
+                url=f"http://{node_ip}:{frontend_topology.frontend_port}{metrics_path}",
                 collect_interval_ms=tachometer.collect_interval_ms,
                 filter="frontend",
                 node_metadata=node_metadata,

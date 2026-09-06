@@ -617,10 +617,14 @@ class BenchmarkStageMixin:
         ranks are not advertised as separate engines.
         """
         urls: list[str] = []
+        # trtllm-serve serves Prometheus at /prometheus/metrics on the worker
+        # OpenAI port (GET /metrics there is JSON iteration stats, not
+        # exposition text); every other frontend serves it at /metrics.
+        metrics_path = "/prometheus/metrics" if self.config.frontend.type == "trtllm_serve" else "/metrics"
         if logical_workers_only:
             if logical_endpoints is None:
                 logical_endpoints = self._logical_worker_endpoints()
-            urls = [f"http://{host}:{port}/metrics" for _, host, port in logical_endpoints]
+            urls = [f"http://{host}:{port}{metrics_path}" for _, host, port in logical_endpoints]
         else:
             if self.config.frontend.type in {"vllm", "vllm-router"}:
                 for process in self.backend_processes:
@@ -633,13 +637,25 @@ class BenchmarkStageMixin:
                 if urls:
                     return {"AIPERF_SERVER_METRICS_URLS": ",".join(sorted(set(urls)))}
 
+            # trtllm-serve workers bind only their OpenAI http_port (leaders) —
+            # the DYN_SYSTEM_PORT sys-port endpoints are never created in this
+            # mode, so advertising them would point the client at dead ports.
+            # The Prometheus mount exists when return_perf_metrics is set,
+            # which observability.enabled injects alongside
+            # publish_events_and_metrics.
+            if self.config.frontend.type == "trtllm_serve":
+                if getattr(self.config.backend, "publish_events_and_metrics", False):
+                    for process in self.backend_processes:
+                        if process.endpoint_mode != "agg" and process.http_port > 0:
+                            host = get_hostname_ip(process.node, self.runtime.network_interface)
+                            urls.append(f"http://{host}:{process.http_port}{metrics_path}")
             # TRT-LLM workers only publish engine metrics when launched with
             # --publish-events-and-metrics (pre-v1.3.0 Dynamo gates the whole
             # worker /metrics surface on it; observability.enabled sets it at
             # config load). Without the flag the sys-port endpoints serve
             # nothing, so advertising them would only create the impression
             # that worker metrics are being captured.
-            if self.config.backend_type != "trtllm" or getattr(
+            elif self.config.backend_type != "trtllm" or getattr(
                 self.config.backend, "publish_events_and_metrics", False
             ):
                 for process in self.backend_processes:
