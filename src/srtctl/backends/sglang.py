@@ -222,9 +222,12 @@ class SGLangProtocol:
         if not self.kv_events_config:
             return None
 
-        # Global bool: enable for prefill+decode with defaults
+        # Global bool: enable for every worker mode with defaults. Aggregated
+        # workers publish too; without this, `kv_events_config: true` on an agg
+        # topology silently dropped --kv-events-config and the router's cache
+        # overlap stayed at zero.
         if self.kv_events_config is True:
-            if mode in ("prefill", "decode"):
+            if mode in ("prefill", "decode", "agg"):
                 return {"publisher": "zmq", "topic": "kv-events"}
             return None
 
