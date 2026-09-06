@@ -231,6 +231,28 @@ The legacy fields (`resources.prefill_workers`, `backend.prefill_environment`, `
 
 ---
 
+## placement
+
+`placement:` is one vocabulary for where the frontend, benchmark client, and infra services run, replacing the per-block placement knobs:
+
+```yaml
+frontend:  { placement: { node: head | first_decode | dedicated } }
+benchmark: { placement: { node: head | last_decode | dedicated } }
+infra:     { placement: { node: head | dedicated } }
+```
+
+`node: dedicated` reserves a node for that component (and implies the head location, which the legacy validation already required). Any other value is a location string.
+
+| Block | `node: dedicated` sets | `node: <location>` sets |
+| --- | --- | --- |
+| `frontend` | `frontend.dedicated_node: true` + `orchestrator_placement: head` | `frontend.orchestrator_placement: <location>` |
+| `benchmark` | `benchmark.client_dedicated_node: true` + `client_placement: head` | `benchmark.client_placement: <location>` |
+| `infra` | `infra.etcd_nats_dedicated_node: true` | `head` only |
+
+Like `roles:`, this is normalized into the existing fields before validation, so it is exactly equivalent to writing them, cannot be combined with them for the same block, and the legacy fields still load.
+
+---
+
 ## resources
 
 GPU allocation and worker topology.

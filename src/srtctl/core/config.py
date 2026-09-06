@@ -167,9 +167,11 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
     # Normalize the 2.0 ``roles:`` authoring block into the existing internal
     # fields (resources.*_workers, backend.*_environment, backend.<engine>_config.*)
     # before anything else reads them. No-op for legacy recipes.
+    from srtctl.core.placement import expand_placement
     from srtctl.core.roles import expand_roles
 
     expand_roles(config)
+    expand_placement(config)
 
     if cluster_config is None:
         return config

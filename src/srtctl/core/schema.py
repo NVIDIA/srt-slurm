@@ -2417,11 +2417,13 @@ class SrtConfig:
     @classmethod
     def from_yaml(cls, yaml_path: Path) -> "SrtConfig":
         from srtctl.core.config import expand_observability
+        from srtctl.core.placement import expand_placement
         from srtctl.core.roles import expand_roles
 
         with open(yaml_path) as f:
             data = yaml.safe_load(f)
         expand_roles(data)
+        expand_placement(data)
         expand_observability(data)
         schema = cls.Schema()
         return schema.load(data)
