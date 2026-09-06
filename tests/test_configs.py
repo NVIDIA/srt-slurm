@@ -5073,3 +5073,38 @@ class TestClusterGpuDefaults:
         config = SrtConfig.Schema().load(self._recipe({"agg_nodes": 1, "agg_workers": 1}))
         assert config.resources.gpu_type is None
         assert config.resources.gpus_per_node == 4
+
+
+class TestBenchmarkTypeValidation:
+    """benchmark.type must name a registered runner (or 'manual')."""
+
+    def _recipe(self, benchmark: dict) -> dict:
+        return {
+            "name": "bench-type",
+            "model": {"path": "/m", "container": "/c.sqsh", "precision": "fp8"},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1, "agg_workers": 1},
+            "benchmark": benchmark,
+        }
+
+    def test_registered_and_manual_types_load(self):
+        from srtctl.core.schema import SrtConfig
+
+        for btype in ("manual", "sa-bench", "custom", "mmlu", "trace-replay", "mooncake-router"):
+            benchmark = {"type": btype}
+            if btype == "custom":
+                benchmark["command"] = "echo hi"
+            config = SrtConfig.Schema().load(self._recipe(benchmark))
+            assert config.benchmark.type == btype
+
+    def test_unknown_type_is_rejected_at_load(self):
+        import pytest
+
+        from srtctl.core.schema import SrtConfig
+
+        with pytest.raises(Exception, match="gsm8k-bench"):
+            SrtConfig.Schema().load(self._recipe({"type": "gsm8k-bench"}))
+
+    def test_benchmark_type_enum_is_gone(self):
+        import srtctl.core.schema as schema_mod
+
+        assert not hasattr(schema_mod, "BenchmarkType")

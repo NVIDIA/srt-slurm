@@ -310,19 +310,6 @@ class Precision(str, Enum):
     BF16 = "bf16"
 
 
-class BenchmarkType(str, Enum):
-    MANUAL = "manual"
-    CUSTOM = "custom"
-    SA_BENCH = "sa-bench"
-    ROUTER = "router"
-    MOONCAKE_ROUTER = "mooncake-router"
-    TRACE_REPLAY = "trace-replay"
-    MMLU = "mmlu"
-    GPQA = "gpqa"
-    GSM8K = "gsm8k"
-    LONGBENCHV2 = "longbenchv2"
-
-
 class ProfilingType(str, Enum):
     NSYS = "nsys"
     TORCH = "torch"
@@ -1905,7 +1892,28 @@ class SrtConfig:
         self._validate_static_router_frontend()
         self._validate_dynamo_sidecar()
         self._validate_host_setup()
+        self._validate_benchmark_type()
         self._warn_dp_launch_mode()
+
+    def _validate_benchmark_type(self) -> None:
+        """Reject a benchmark.type that no runner is registered for.
+
+        An unknown type (a typo like ``gsm8k-bench``, or a removed one) currently
+        loads fine and only fails deep in the benchmark stage after a full
+        allocation. Catch it at load time against the registry, plus the special
+        ``manual`` type (no runner; the server just comes up ready). Import is
+        lazy and guarded so a registry import hiccup never blocks a load.
+        """
+        btype = self.benchmark.type
+        try:
+            import srtctl.benchmarks  # noqa: F401 - importing the package registers every runner
+            from srtctl.benchmarks.base import list_benchmarks
+
+            allowed = set(list_benchmarks()) | {"manual"}
+        except Exception:  # noqa: BLE001 - never block a config load on the registry import
+            return
+        if btype not in allowed:
+            raise ValueError(f"Unknown benchmark.type {btype!r}. Available: {', '.join(sorted(allowed))}")
 
     def _validate_host_setup(self) -> None:
         """Reject host_setup blocks that would fail or hang mid-job.
