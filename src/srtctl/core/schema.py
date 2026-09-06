@@ -30,7 +30,7 @@ from typing import (
 )
 
 import yaml
-from marshmallow import Schema, ValidationError, fields
+from marshmallow import Schema, ValidationError, fields, validate
 from marshmallow_dataclass import dataclass
 
 from srtctl.backends import (
@@ -1811,6 +1811,12 @@ class InfraConfig:
 # Main Configuration Dataclass
 # ============================================================================
 
+# Recipe schema versions. A recipe without a top-level `schema:` key is version 1
+# (the pre-2.0 layout); version 2 is the 2.0 layout. The loader accepts every
+# supported version; `srtctl migrate` rewrites a recipe to the current one.
+CURRENT_SCHEMA_VERSION = 2
+SUPPORTED_SCHEMA_VERSIONS: tuple[int, ...] = (1, 2)
+
 
 @dataclass(frozen=True)
 class SrtConfig:
@@ -1825,6 +1831,20 @@ class SrtConfig:
     name: str
     model: ModelConfig
     resources: ResourceConfig
+
+    # Recipe schema version (YAML key `schema`). Absent means 1, the pre-2.0
+    # layout. `schema: 2` selects the 2.0 layout; `srtctl migrate` upgrades a
+    # recipe in place. Both versions load on main.
+    schema_version: int = field(
+        default=1,
+        metadata={
+            "marshmallow_field": fields.Integer(
+                data_key="schema",
+                load_default=1,
+                validate=validate.OneOf(SUPPORTED_SCHEMA_VERSIONS),
+            )
+        },
+    )
 
     slurm: SlurmConfig = field(default_factory=SlurmConfig)
     backend: Annotated[BackendConfig, BackendConfigField()] = field(default_factory=SGLangProtocol)

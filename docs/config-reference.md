@@ -148,6 +148,21 @@ This is useful for portable recipes that you want to share across clusters or ha
 
 ---
 
+## schema
+
+| Field    | Type    | Required | Description                                                                 |
+| -------- | ------- | -------- | --------------------------------------------------------------------------- |
+| `schema` | integer | No       | Recipe schema version. Absent means `1` (the pre-2.0 layout); `2` is current. |
+
+Every supported version loads. Put the key first in the file, beside `base:` in an override file. Upgrade a recipe with `srtctl migrate -f recipe.yaml --in-place`, which preserves comments and key order.
+
+```yaml
+schema: 2
+name: "deepseek-r1-benchmark"
+```
+
+---
+
 ## name
 
 | Field  | Type   | Required | Description                                        |

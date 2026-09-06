@@ -1455,6 +1455,7 @@ def main():
   srtctl monitor --outputs /path/to/outputs      # Dashboard with custom outputs dir
   srtctl view /path/to/run-output                # Local ruter route-decision viewer
   srtctl schema-docs [--check]                   # Regenerate (or verify) docs/schema-reference.md
+  srtctl migrate -f config.yaml --in-place       # Upgrade a recipe to the current schema version
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1591,6 +1592,27 @@ def main():
         help="Write to this path instead of docs/schema-reference.md",
     )
 
+    # Recipe migration: srtctl migrate -f recipe.yaml [--in-place | --output PATH]
+    migrate_parser = subparsers.add_parser(
+        "migrate",
+        help="Upgrade a recipe (plain, override, or lock file) to the current schema version",
+    )
+    migrate_parser.add_argument(
+        "-f",
+        "--file",
+        type=Path,
+        required=True,
+        dest="migrate_file",
+        help="Recipe YAML to migrate",
+    )
+    migrate_parser.add_argument("--in-place", action="store_true", help="Rewrite the file instead of printing")
+    migrate_parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="Write the migrated recipe to this path (default: print to stdout)",
+    )
+
     args = parser.parse_args()
 
     json_mode = bool(getattr(args, "json_output", False))
@@ -1692,6 +1714,20 @@ def main():
             sys.exit(1)
         written = write_schema_reference(output)
         console.print(f"[green]✓[/] Wrote {written}")
+        restore_console()
+        return
+
+    if args.command == "migrate":
+        from srtctl.core.migrate import migrate_recipe_file
+
+        result = migrate_recipe_file(args.migrate_file, in_place=args.in_place, output=args.output)
+        if not args.in_place and args.output is None:
+            sys.stdout.write(result.text)
+            sys.stdout.flush()
+        else:
+            target = args.migrate_file if args.in_place else args.output
+            detail = ", ".join(result.notes) if result.notes else "already current"
+            console.print(f"[green]✓[/] {target}: schema {result.from_version} -> {result.to_version} ({detail})")
         restore_console()
         return
 

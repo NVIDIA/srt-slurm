@@ -13,6 +13,7 @@ Top-level keys of a recipe YAML.
 | `name` | str | required |  |
 | `model` | [ModelConfig](#modelconfig) | required |  |
 | `resources` | [ResourceConfig](#resourceconfig) | required |  |
+| `schema` | int | `1` | Recipe schema version (YAML key `schema`). Absent means 1, the pre-2.0 layout. `schema: 2` selects the 2.0 layout; `srtctl migrate` upgrades a recipe in place. Both versions load on main. |
 | `slurm` | [SlurmConfig](#slurmconfig) | `SlurmConfig()` |  |
 | `backend` | [SGLangProtocol](#sglangprotocol) \| [TRTLLMProtocol](#trtllmprotocol) \| [VLLMProtocol](#vllmprotocol) \| [MockerProtocol](#mockerprotocol) | `SGLangProtocol()` |  |
 | `frontend` | [FrontendConfig](#frontendconfig) | `FrontendConfig()` |  |

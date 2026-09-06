@@ -10,6 +10,7 @@
 #
 # Aliases (`qwen3-0.6b`, `sglang`) resolve through srtslurm.yaml; see examples/README.md.
 
+schema: 2
 name: "qwen3-0.6b-sweep"
 
 sweep:

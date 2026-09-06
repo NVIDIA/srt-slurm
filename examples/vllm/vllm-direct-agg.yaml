@@ -6,6 +6,7 @@
 #
 # Aliases (`qwen3-0.6b`, `vllm`) resolve through srtslurm.yaml; see examples/README.md.
 
+schema: 2
 name: "qwen3-0.6b-vllm-direct-agg"
 
 slurm:

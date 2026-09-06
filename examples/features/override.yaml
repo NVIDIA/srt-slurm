@@ -12,6 +12,7 @@
 #
 # Aliases (`qwen3-0.6b`, `sglang`) resolve through srtslurm.yaml; see examples/README.md.
 
+schema: 2
 base:
   name: "qwen3-0.6b-override"
 
@@ -68,8 +69,8 @@ override_tp2:
 # A length-1 list broadcasts; a list of lists gives each variant a literal list.
 zip_override_context:
   name:
-    - "qwen3-0.6b-override-ctx2k"
-    - "qwen3-0.6b-override-ctx8k"
+  - "qwen3-0.6b-override-ctx2k"
+  - "qwen3-0.6b-override-ctx8k"
   backend:
     sglang_config:
       aggregated:

@@ -8,6 +8,7 @@
 #
 # Aliases (`qwen3-0.6b`, `trtllm`) resolve through srtslurm.yaml; see examples/README.md.
 
+schema: 2
 name: "qwen3-0.6b-trtllm-serve-disagg"
 
 slurm:

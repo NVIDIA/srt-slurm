@@ -29,9 +29,14 @@ def _make_yaml() -> YAML:
 
 def load_yaml_with_comments(path: Path) -> CommentedMap:
     """Load a YAML file preserving comments and key insertion order."""
-    y = _make_yaml()
     with open(path) as f:
-        result = y.load(f)
+        return load_yaml_text_with_comments(f.read())
+
+
+def load_yaml_text_with_comments(text: str) -> CommentedMap:
+    """Load YAML text preserving comments and key insertion order."""
+    y = _make_yaml()
+    result = y.load(text)
     if not isinstance(result, CommentedMap):
         raise TypeError(f"Expected a YAML mapping at top level, got {type(result).__name__}")
     return result

@@ -373,6 +373,23 @@ def generate_override_configs(
     raw_config: dict[str, Any],
     selector: str | None = None,
 ) -> list[tuple[str, dict[str, Any]]]:
+    """Expand an override-format config into independent variants.
+
+    Wraps :func:`_expand_override_variants` and carries a top-level ``schema``
+    key (declared beside ``base``, not inside it) into every variant so each one
+    loads at the version the file declares.
+    """
+    variants = _expand_override_variants(raw_config, selector=selector)
+    if "schema" in raw_config:
+        for _suffix, config in variants:
+            config.setdefault("schema", raw_config["schema"])
+    return variants
+
+
+def _expand_override_variants(
+    raw_config: dict[str, Any],
+    selector: str | None = None,
+) -> list[tuple[str, dict[str, Any]]]:
     """Expand a raw config with base + override_* + zip_override_* keys into independent configs.
 
     Args:
@@ -502,22 +519,26 @@ def resolve_override_yaml(
     for suffix, merged_plain in plain_variants:
         if suffix == "base":
             # No override applied — return the base CommentedMap as-is.
-            results.append(("base", base_cm))
-            continue
-
-        override_key = f"override_{suffix}"
-        if override_key in raw_cm and isinstance(raw_cm[override_key], CommentedMap):
-            # Regular override: merge CommentedMaps so override comments are kept.
-            result_cm = comment_aware_merge(base_cm, raw_cm[override_key])
-            # Preserve auto-generated fields from the existing override expansion,
-            # such as the synthesized name when the override does not set one.
-            if "name" in merged_plain:
-                result_cm["name"] = merged_plain["name"]
+            result_cm = base_cm
         else:
-            # zip_override variant (values were lists → now scalars) or any
-            # other case: merge the plain resolved dict into the base CommentedMap
-            # so at least base field order and comments are preserved.
-            result_cm = comment_aware_merge(base_cm, merged_plain)
+            override_key = f"override_{suffix}"
+            if override_key in raw_cm and isinstance(raw_cm[override_key], CommentedMap):
+                # Regular override: merge CommentedMaps so override comments are kept.
+                result_cm = comment_aware_merge(base_cm, raw_cm[override_key])
+                # Preserve auto-generated fields from the existing override expansion,
+                # such as the synthesized name when the override does not set one.
+                if "name" in merged_plain:
+                    result_cm["name"] = merged_plain["name"]
+            else:
+                # zip_override variant (values were lists → now scalars) or any
+                # other case: merge the plain resolved dict into the base CommentedMap
+                # so at least base field order and comments are preserved.
+                result_cm = comment_aware_merge(base_cm, merged_plain)
+
+        # The file-level `schema` key lives beside `base`; each resolved variant
+        # is a standalone recipe, so it declares the version itself.
+        if "schema" in raw_plain and "schema" not in result_cm:
+            result_cm.insert(0, "schema", raw_plain["schema"])
 
         results.append((suffix, result_cm))
 
