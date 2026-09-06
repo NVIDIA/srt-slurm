@@ -285,6 +285,7 @@ One entry of the top-level ``services:`` list.
 | `cpus_per_task` | int \| None | `None` | Optional ``srun --cpus-per-task``. |
 | `cpu_bind` | str \| None | `None` | Optional ``srun --cpu-bind``. |
 | `srun_options` | dict[str, str] | `{}` | Extra srun options for this service only. |
+| `build_timeout_seconds` | int | `1800` | Kill ``build_command`` after this many seconds. |
 
 ### IdentityConfig
 

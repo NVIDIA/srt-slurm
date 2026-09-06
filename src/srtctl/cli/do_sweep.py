@@ -781,9 +781,9 @@ class SweepOrchestrator(
                 registry.add_process(mooncake_proc)
 
             # Stage 1c: services that workers depend on (standalone Mooncake
-            # stores, anything with start: before_workers). See docs/services.md.
-            for proc in self.start_services("before_workers"):
-                registry.add_process(proc)
+            # stores, anything with start: before_workers). The stage registers
+            # each process as it launches. See docs/services.md.
+            self.start_services("before_workers", registry)
 
             # Pre-worker: Ensure HF model is cached before starting workers.
             # 1. Clean stale lock files from previous crashed downloads
@@ -810,8 +810,7 @@ class SweepOrchestrator(
 
             # Stage 3b: sidecar services (start: after_frontend, the default),
             # once workers and the frontend are healthy and before telemetry.
-            for proc in self.start_services("after_frontend"):
-                registry.add_process(proc)
+            self.start_services("after_frontend", registry)
 
             if self.config.telemetry.enabled:
                 if os.environ.get("EVAL_ONLY", "false").lower() == "true":

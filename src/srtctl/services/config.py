@@ -145,6 +145,7 @@ class ServiceConfig:
         cpus_per_task: Optional ``srun --cpus-per-task``.
         cpu_bind: Optional ``srun --cpu-bind``.
         srun_options: Extra srun options for this service only.
+        build_timeout_seconds: Kill ``build_command`` after this many seconds.
     """
 
     name: str
@@ -164,6 +165,9 @@ class ServiceConfig:
     cpus_per_task: int | None = None
     cpu_bind: str | None = None
     srun_options: dict[str, str] = field(default_factory=dict)
+    # Wall-clock budget for build_command; the build srun is killed when it runs out
+    # so a hung build cannot hold the allocation until walltime.
+    build_timeout_seconds: int = 1800
 
     # builtins.type: the ``type`` field above shadows the builtin inside the class body.
     Schema: ClassVar[builtins.type[Schema]] = Schema
@@ -202,6 +206,8 @@ class ServiceConfig:
             raise ValidationError(f"{label}.start must be one of {', '.join(SERVICE_STARTS)}; got {self.start!r}")
         if self.cpus_per_task is not None and self.cpus_per_task <= 0:
             raise ValidationError(f"{label}.cpus_per_task must be positive")
+        if self.build_timeout_seconds <= 0:
+            raise ValidationError(f"{label}.build_timeout_seconds must be positive")
 
     # -- effective values (type defaults applied) ------------------------------
 

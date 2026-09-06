@@ -1797,6 +1797,7 @@ services:
 | `inherit_discovery_env` | bool | `true` | Inject the Dynamo discovery env |
 | `critical` | bool | type default | A crash fails the run when true |
 | `source`, `build_command` | object, list[string] | none | Clone an immutable git rev and build once before launch; single-node placements only |
+| `build_timeout_seconds` | int | `1800` | `build_command` is killed when this runs out so a hung build cannot hold the allocation |
 | `preamble`, `cpus_per_task`, `cpu_bind`, `srun_options` | | none | Pass-through launch knobs for this service |
 
 ---

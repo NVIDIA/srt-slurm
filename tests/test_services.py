@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -239,7 +240,7 @@ def test_readiness_gate_blocks_and_failure_terminates_started(tmp_path: Path) ->
     )
     orchestrator = _orchestrator(config, tmp_path)
     with (
-        patch(SRUN, return_value=_proc()) as srun,
+        patch(SRUN, return_value=_proc()),
         patch(HOST_IP, return_value="10.0.0.10"),
         patch(WAIT, return_value=True) as wait,
     ):
@@ -247,15 +248,50 @@ def test_readiness_gate_blocks_and_failure_terminates_started(tmp_path: Path) ->
     wait.assert_called_once_with("node0", 9000, timeout=5)
 
     popen = _proc()
+    registry = MagicMock()
     with (
         patch(SRUN, return_value=popen),
         patch(HOST_IP, return_value="10.0.0.10"),
         patch(WAIT, return_value=False),
         pytest.raises(RuntimeError, match="did not open port 9000"),
     ):
-        orchestrator.start_services("after_frontend")
+        orchestrator.start_services("after_frontend", registry)
     popen.terminate.assert_called_once()
-    assert srun is not None
+    # Registered before the readiness wait, so a signal during the wait still finds it.
+    (registered,) = [call.args[0] for call in registry.add_process.call_args_list]
+    assert registered.popen is popen
+
+
+def test_readiness_fails_fast_when_the_process_dies(tmp_path: Path) -> None:
+    config = _load(
+        "services:\n  - name: a\n    command: [/bin/true]\n    readiness:\n      port: 9000\n      timeout_seconds: 600\n"
+    )
+    dead = _proc()
+    dead.poll.return_value = 127
+    with (
+        patch(SRUN, return_value=dead),
+        patch(HOST_IP, return_value="10.0.0.10"),
+        patch(WAIT, return_value=False) as wait,
+        pytest.raises(RuntimeError, match="exited with code 127 .* before opening port 9000"),
+    ):
+        _orchestrator(config, tmp_path).start_services("after_frontend")
+    # One 5s slice, not the full 600s budget.
+    wait.assert_called_once_with("node0", 9000, timeout=5)
+
+
+def test_signal_during_readiness_wait_terminates_started(tmp_path: Path) -> None:
+    # The SIGTERM handler raises SystemExit inside whatever the orchestrator is doing;
+    # the stage must still tear down what it launched.
+    config = _load("services:\n  - name: a\n    command: [/bin/true]\n    readiness:\n      port: 9000\n")
+    popen = _proc()
+    with (
+        patch(SRUN, return_value=popen),
+        patch(HOST_IP, return_value="10.0.0.10"),
+        patch(WAIT, side_effect=SystemExit(1)),
+        pytest.raises(SystemExit),
+    ):
+        _orchestrator(config, tmp_path).start_services("after_frontend")
+    popen.terminate.assert_called_once()
 
 
 def test_source_is_cloned_on_bare_host_and_built_in_container(tmp_path: Path) -> None:
@@ -307,6 +343,37 @@ services:
         pytest.raises(RuntimeError, match="build_command failed"),
     ):
         orchestrator.start_services("after_frontend")
+
+
+def test_clone_and_build_steps_are_registered_and_bounded(tmp_path: Path) -> None:
+    config = _load(
+        """
+services:
+  - name: router
+    command: [/bin/true]
+    source:
+      git: https://example.com/repo
+      rev: abc123
+    build_command: [make]
+    build_timeout_seconds: 7
+"""
+    )
+    registry = MagicMock()
+    hung = _proc()
+    hung.wait.side_effect = subprocess.TimeoutExpired(cmd="make", timeout=7)
+    hung.poll.return_value = None
+    with (
+        patch(SRUN, side_effect=[_proc(0), hung]),
+        patch("srtctl.cli.mixins.service_stage.terminate_and_reap") as reap,
+        pytest.raises(RuntimeError, match="build_command timed out after 7s"),
+    ):
+        _orchestrator(config, tmp_path).start_services("after_frontend", registry)
+
+    hung.wait.assert_called_once_with(timeout=7)
+    reap.assert_called_once_with(hung)
+    names = [call.args[0].name for call in registry.add_process.call_args_list]
+    assert names == ["service_router.clone", "service_router.build"]
+    assert all(not call.args[0].critical for call in registry.add_process.call_args_list)
 
 
 MOONCAKE_BACKEND = """backend:

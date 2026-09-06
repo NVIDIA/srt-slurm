@@ -95,6 +95,7 @@ services:
 | `preamble` | none | Shell run after the environment is exported and before `command`. |
 | `cpus_per_task`, `cpu_bind`, `srun_options` | none | Pass-through srun knobs for this service's launches. |
 | `source`, `build_command` | none | See [Building From Source](#building-from-source). |
+| `build_timeout_seconds` | `1800` | `build_command` is killed when this runs out, so a hung build cannot hold the allocation. |
 
 `command`, `args`, `env` values, and `preamble` may use these placeholders: `{node}`, `{node_ip}`,
 `{node_id}` (position in the worker list), `{index}` (instance index within the service), `{role}`
@@ -275,6 +276,25 @@ Rejected at launch, before any service starts: two services listening on the sam
 
 `srtctl dry-run` prints every service's type, placement, start phase, criticality, command,
 container, source, readiness, and env.
+
+## Cleanup
+
+Nothing a service launches outlives the job:
+
+- Every `srun` the stage starts, including the one-shot clone and build steps, is registered with the
+  job's `ProcessRegistry` the moment it exists, not when the stage returns. The registry's cleanup
+  runs on normal completion, on any failed stage, from the SIGTERM handler (`scancel`), and from the
+  crash monitor when a critical process dies, and it terminates then kills each tracked `srun`. Slurm
+  cancels the step, which kills the whole step cgroup inside the container, so forked or daemonized
+  children of the service go with it.
+- A readiness gate that fails, or a signal that arrives during one, terminates everything the stage
+  already launched before the error propagates.
+- A service whose process exits before its readiness port answers fails immediately with its exit
+  code instead of waiting out the readiness timeout.
+- The clone step is bounded by the `timeout` on each git command (600s each) and the build step by
+  `build_timeout_seconds`; a step that overruns is killed and the job fails with a pointer to its log.
+- When the batch script exits, Slurm releases the allocation and reaps any remaining step, so even a
+  cleanup path srtctl never reaches cannot leave a service running on a compute node.
 
 ## Limitations
 
