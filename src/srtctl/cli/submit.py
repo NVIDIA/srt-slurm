@@ -1554,6 +1554,7 @@ def main():
   srtctl view /path/to/run-output                # Local ruter route-decision viewer
   srtctl schema-docs [--check]                   # Regenerate (or verify) docs/schema-reference.md
   srtctl migrate -f config.yaml --in-place       # Upgrade a recipe to the current schema version
+  srtctl migrate -f recipes/ --verify            # Prove v1 and migrated v2 recipes resolve identically
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1726,15 +1727,21 @@ def main():
         "--file",
         type=Path,
         required=True,
-        dest="migrate_file",
-        help="Recipe YAML to migrate",
+        action="append",
+        dest="migrate_files",
+        help="Recipe YAML to migrate; a directory is walked recursively (repeatable)",
     )
-    migrate_parser.add_argument("--in-place", action="store_true", help="Rewrite the file instead of printing")
+    migrate_parser.add_argument("--in-place", action="store_true", help="Rewrite the file(s) instead of printing")
     migrate_parser.add_argument(
         "--output",
         type=Path,
         default=None,
-        help="Write the migrated recipe to this path (default: print to stdout)",
+        help="Write the migrated recipe to this path (single file only; default: print to stdout)",
+    )
+    migrate_parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="Do not write: migrate in memory and prove the v1 and v2 recipes resolve identically (golden equality)",
     )
 
     args = parser.parse_args()
@@ -1851,16 +1858,44 @@ def main():
         return
 
     if args.command == "migrate":
-        from srtctl.core.migrate import migrate_recipe_file
+        from srtctl.core.migrate import migrate_recipe_file, recipe_files, verify_migration_file
 
-        result = migrate_recipe_file(args.migrate_file, in_place=args.in_place, output=args.output)
-        if not args.in_place and args.output is None:
-            sys.stdout.write(result.text)
-            sys.stdout.flush()
-        else:
-            target = args.migrate_file if args.in_place else args.output
-            detail = ", ".join(result.notes) if result.notes else "already current"
-            console.print(f"[green]✓[/] {target}: schema {result.from_version} -> {result.to_version} ({detail})")
+        files = recipe_files(args.migrate_files)
+        if not files:
+            console.print("[bold red]No recipe files found[/]")
+            sys.exit(1)
+        if args.verify:
+            counts: dict[str, int] = {"ok": 0, "mismatch": 0, "skipped": 0, "error": 0}
+            for path in files:
+                outcome = verify_migration_file(path)
+                counts[outcome.status] += 1
+                if outcome.status == "ok":
+                    console.print(f"[green]✓[/] {path} ({outcome.variants} variant(s) resolve identically)")
+                elif outcome.status == "skipped":
+                    console.print(f"[yellow]-[/] {path}: skipped, {outcome.detail}")
+                else:
+                    console.print(f"[bold red]✗[/] {path}: {outcome.detail}")
+            console.print(
+                f"\n{counts['ok']} identical, {counts['mismatch']} mismatched, "
+                f"{counts['skipped']} skipped (v1 does not load), {counts['error']} unreadable"
+            )
+            restore_console()
+            sys.exit(1 if counts["mismatch"] or counts["error"] else 0)
+        if not args.in_place and args.output is None and len(files) > 1:
+            console.print("[bold red]Error:[/] printing to stdout needs a single file; use --in-place for many")
+            sys.exit(1)
+        if args.output is not None and len(files) > 1:
+            console.print("[bold red]Error:[/] --output takes a single file")
+            sys.exit(1)
+        for path in files:
+            result = migrate_recipe_file(path, in_place=args.in_place, output=args.output)
+            if not args.in_place and args.output is None:
+                sys.stdout.write(result.text)
+                sys.stdout.flush()
+            else:
+                target = path if args.in_place else args.output
+                detail = ", ".join(result.notes) if result.notes else "already current"
+                console.print(f"[green]✓[/] {target}: schema {result.from_version} -> {result.to_version} ({detail})")
         restore_console()
         return
 

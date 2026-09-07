@@ -229,3 +229,34 @@ jobs:
               exit(1)
           print(f'\nAll {len(examples)} examples valid')
           "
+
+  # Golden equality: every v1 recipe we know of must resolve to the same config
+  # after `srtctl migrate` rewrites it to schema 2. Corpus: the curated examples
+  # plus the 555 historical recipes from the last commit that carried recipes/.
+  golden-equality:
+    runs-on: ubuntu-latest
+    env:
+      GOLDEN_RECIPES_COMMIT: e6e9d8b9
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        run: uv python install 3.10
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Extract the historical recipe corpus
+        run: |
+          git fetch --depth=1 origin "$GOLDEN_RECIPES_COMMIT"
+          mkdir -p /tmp/golden
+          git archive "$GOLDEN_RECIPES_COMMIT" recipes | tar -x -C /tmp/golden
+          find /tmp/golden/recipes -name '*.yaml' | wc -l
+
+      - name: Migrate in memory and compare resolved configs
+        run: uv run srtctl migrate --verify -f examples -f /tmp/golden/recipes

@@ -159,7 +159,7 @@ This is useful for portable recipes that you want to share across clusters or ha
 | -------- | ------- | -------- | --------------------------------------------------------------------------- |
 | `schema` | integer | No       | Recipe schema version. Absent means `1` (the pre-2.0 layout); `2` is current. |
 
-Every supported version loads. Put the key first in the file, beside `base:` in an override file. Upgrade a recipe with `srtctl migrate -f recipe.yaml --in-place`, which preserves comments and key order.
+Every supported version loads. Put the key first in the file, beside `base:` in an override file. Upgrade a recipe with `srtctl migrate -f recipe.yaml --in-place`, which preserves comments and key order and folds the legacy layout into `roles:`, `placement:`, and `dynamo.source` (a directory is walked recursively). `srtctl migrate --verify -f <path>` migrates in memory and checks that the v1 and v2 documents resolve to the same config; CI runs it over the examples and the historical recipe corpus (golden equality).
 
 ```yaml
 schema: 2
@@ -229,7 +229,7 @@ roles:
 
 Role names are `prefill`, `decode`, and `agg`. The aggregated role is `agg` (matching `resources.agg_*`); its `env` and `args` map to `backend.aggregated_environment` and `backend.<engine>_config.aggregated`. Per-role `extra_args` maps to `backend.<mode>_extra_args` (TRT-LLM). `roles:` is normalized into those fields before validation, so it is exactly equivalent to writing them directly; you cannot set both for the same role.
 
-The legacy fields (`resources.prefill_workers`, `backend.prefill_environment`, `backend.sglang_config.prefill`, ...) still load unchanged, so v1 recipes keep working. `srtctl migrate` stamps `schema: 2` but does not yet rewrite the legacy layout into `roles:`; both forms are valid v2. The `examples/` are written with `roles:` (except `features/override.yaml`, kept legacy to show that the v1 layout still loads).
+The legacy fields (`resources.prefill_workers`, `backend.prefill_environment`, `backend.sglang_config.prefill`, ...) still load unchanged, so v1 recipes keep working, and both forms are valid v2. `srtctl migrate -f recipe.yaml --in-place` rewrites the legacy layout into `roles:` (and `placement:` / `dynamo.source`), preserving comments and key order; `srtctl migrate --verify -f <dir>` proves that every recipe under a directory resolves to the same config before and after. The `examples/` are written with `roles:` (except `features/override.yaml`, kept legacy to show that the v1 layout still loads).
 
 ---
 

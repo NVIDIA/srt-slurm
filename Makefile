@@ -1,4 +1,4 @@
-.PHONY: lint test test-cov ci check setup cleanup examples schema-docs schema-docs-check tachometer-scraper tachometer-scraper-download
+.PHONY: lint test test-cov ci check setup cleanup examples schema-docs schema-docs-check golden-check tachometer-scraper tachometer-scraper-download
 
 NATS_VERSION ?= v2.10.28
 ETCD_VERSION ?= v3.5.21
@@ -31,6 +31,15 @@ schema-docs-check:
 
 # Run lint + tests in one command
 check: lint schema-docs-check test
+
+# Golden equality: migrate every known v1 recipe in memory and prove the resolved
+# config is unchanged. Extracts the historical recipes from the last commit that
+# carried recipes/ (same corpus as the CI job).
+GOLDEN_RECIPES_COMMIT ?= e6e9d8b9
+golden-check:
+	@mrm -rf /tmp/srt-golden && mkdir -p /tmp/srt-golden
+	@git archive $(GOLDEN_RECIPES_COMMIT) recipes | tar -x -C /tmp/srt-golden
+	uv run srtctl migrate --verify -f examples -f /tmp/srt-golden/recipes
 	@echo "✓ All checks passed"
 
 tachometer-scraper:
