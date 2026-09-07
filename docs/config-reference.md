@@ -31,6 +31,7 @@ This page is the prose guide: what each block means, how the pieces interact, an
 - [srun_options](#srun_options)
 - [setup_script](#setup_script)
 - [host_setup](#host_setup)
+- [post_eval](#post_eval)
 - [services](#services)
 - [enable_config_dump](#enable_config_dump)
 - [Complete Examples](#complete-examples)
@@ -1767,6 +1768,32 @@ host_setup:
 - `teardown` runs from the job's cleanup path, so it fires on failure and cancellation too, and never changes the job's exit code.
 - Set cluster-wide via `default_host_setup` in `srtslurm.yaml` — that's the right home when *the cluster's machines* need this, rather than one recipe. See [Cluster Config Fields](#cluster-config-fields).
 - `srtctl dry-run -f config.yaml` renders the commands, their scope, and which file they came from.
+
+---
+
+## post_eval
+
+How the accuracy evaluation is dispatched when the job environment sets `RUN_EVAL=true` (run after the benchmark) or `EVAL_ONLY=true` (run instead of it). srtctl forwards a built-in list of workflow variables into the eval process (`RUN_EVAL`, `EVAL_ONLY`, `MODEL`, `ISL`, `OSL`, `PREFILL_TP`, ...); this block extends that list and can replace the command, so a runner sets config instead of patching srtctl's source.
+
+```yaml
+post_eval:
+  passthrough_env:          # forwarded into the eval process when set in the job environment
+    - EVAL_FRAMEWORK
+    - EVAL_CONC
+    - EVAL_LIMIT
+    - EVAL_SUITE
+  command:                  # optional; replaces the built-in lm-eval runner command
+    - bash
+    - /infmax-workspace/benchmarks/evals/run.sh
+    - "{endpoint}"
+```
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `passthrough_env` | list[string] | `[]` | Extra environment variable names copied from the orchestrator's environment into the eval process when set |
+| `command` | list[string] | none | Argv replacing the lm-eval runner. Placeholders: `{endpoint}` (frontend URL), `{infmax_workspace}`. Not shell-interpreted |
+
+`MODEL_NAME` (the served model name) and `EVAL_CONC` are always set by srtctl. `srtctl dry-run` prints the effective dispatch.
 
 ---
 

@@ -34,6 +34,7 @@ Top-level keys of a recipe YAML.
 | `setup_script` | str \| None | `None` | Custom setup script (runs before dynamo install and worker startup) e.g. "custom-setup.sh" -> runs /configs/custom-setup.sh |
 | `host_setup` | [HostSetupConfig](#hostsetupconfig) | `HostSetupConfig()` | Commands run on each node's bare host, outside the container, before any worker starts. Cluster-wide default lives in srtslurm.yaml as default_host_setup; a recipe that sets this block replaces that default. |
 | `services` | list[[ServiceConfig](#serviceconfig)] | `[]` | Long-running processes launched next to the job: generic sidecars (an experimental router built from a PR) and typed ones (a standalone Mooncake store per worker node). See docs/services.md. |
+| `post_eval` | [PostEvalConfig](#postevalconfig) | `PostEvalConfig()` | Post-benchmark / eval-only evaluation dispatch: extra env forwarded into the eval process and an optional command override. Replaces the downstream source patch that used to extend the passthrough list in do_sweep.py. |
 | `identity` | [IdentityConfig](#identityconfig) | `IdentityConfig()` | Virtual identity — declares what *should* be running (verified against fingerprint) |
 | `reporting` | [ReportingConfig](#reportingconfig) \| None | `None` | Reporting configuration (status API, future: logs to S3, etc.) |
 
@@ -287,6 +288,15 @@ One entry of the top-level ``services:`` list.
 | `cpu_bind` | str \| None | `None` | Optional ``srun --cpu-bind``. |
 | `srun_options` | dict[str, str] | `{}` | Extra srun options for this service only. |
 | `build_timeout_seconds` | int | `1800` | Kill ``build_command`` after this many seconds. |
+
+### PostEvalConfig
+
+How the post-benchmark (or eval-only) accuracy evaluation is dispatched.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `passthrough_env` | list[str] | `[]` | Extra environment variable names forwarded from the orchestrator's environment into the eval process when set (on top of the built-in list: RUN_EVAL, EVAL_ONLY, MODEL, ISL, OSL, ...). |
+| `command` | list[str] \| None | `None` | Argv that replaces the built-in lm-eval runner command. May use the placeholders ``{endpoint}`` (the frontend URL) and ``{infmax_workspace}`` (the InferenceMAX workspace mount). Not shell-interpreted; wrap in ``bash -lc`` yourself if you need a shell. |
 
 ### IdentityConfig
 

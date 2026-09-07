@@ -492,6 +492,22 @@ class TestDryRunServices:
         assert "Services:" not in capsys.readouterr().out
 
 
+class TestDryRunPostEval:
+    def test_post_eval_dispatch_shown(self, capsys):
+        config = _make_config(
+            {"post_eval": {"passthrough_env": ["EVAL_FRAMEWORK", "EVAL_SUITE"], "command": ["bash", "run.sh"]}}
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "Post-eval dispatch:" in output
+        assert "bash run.sh" in output
+        assert "EVAL_FRAMEWORK, EVAL_SUITE" in output
+
+    def test_default_post_eval_is_silent(self, capsys):
+        show_config_details(_make_config())
+        assert "Post-eval dispatch" not in capsys.readouterr().out
+
+
 class TestDryRunDynamoSource:
     """dynamo.source: the repo, ref, and whether it is pinned must be visible before submitting."""
 

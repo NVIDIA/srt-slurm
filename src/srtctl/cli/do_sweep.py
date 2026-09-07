@@ -652,22 +652,34 @@ class SweepOrchestrator(
                 logger.error("Server health check failed before eval - skipping")
                 return 1
 
-        try:
-            runner = get_runner("lm-eval")
-        except ValueError as e:
-            logger.error("lm-eval runner not available: %s", e)
-            return 1
-
         eval_log = self.runtime.log_dir / "eval.out"
-        cmd = runner.build_command(self.config, self.runtime)
+        if self.config.post_eval.command is not None:
+            # Recipe-provided dispatch (post_eval.command), with the same placeholders
+            # the lm-eval runner fills in itself.
+            placeholders = {
+                "{endpoint}": f"http://localhost:{self.runtime.frontend_port}",
+                "{infmax_workspace}": "/infmax-workspace",
+            }
+            cmd = list(self.config.post_eval.command)
+            for token, value in placeholders.items():
+                cmd = [part.replace(token, value) for part in cmd]
+        else:
+            try:
+                runner = get_runner("lm-eval")
+            except ValueError as e:
+                logger.error("lm-eval runner not available: %s", e)
+                return 1
+            cmd = runner.build_command(self.config, self.runtime)
 
         logger.info("Eval command: %s", " ".join(cmd))
         logger.info("Eval log: %s", eval_log)
 
         # Pass through eval-related env vars. InferenceX writes multi-node
-        # metadata from these variables in append_lm_eval_summary().
+        # metadata from these variables in append_lm_eval_summary(). The recipe
+        # extends this list with post_eval.passthrough_env.
         env_to_set = {}
         for var in [
+            *self.config.post_eval.passthrough_env,
             "RUN_EVAL",
             "EVAL_ONLY",
             "IS_MULTINODE",

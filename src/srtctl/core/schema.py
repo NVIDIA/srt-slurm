@@ -198,6 +198,40 @@ class S3Config:
 
 
 @dataclass(frozen=True)
+class PostEvalConfig:
+    """How the post-benchmark (or eval-only) accuracy evaluation is dispatched.
+
+    The evaluation runs when the job environment sets ``RUN_EVAL=true`` (after
+    the benchmark) or ``EVAL_ONLY=true`` (instead of it). srtctl forwards a
+    built-in list of workflow variables into the eval process; downstream runners
+    used to patch that list in srtctl's source. This block makes it config.
+
+    Attributes:
+        passthrough_env: Extra environment variable names forwarded from the
+            orchestrator's environment into the eval process when set (on top
+            of the built-in list: RUN_EVAL, EVAL_ONLY, MODEL, ISL, OSL, ...).
+        command: Argv that replaces the built-in lm-eval runner command. May use
+            the placeholders ``{endpoint}`` (the frontend URL) and
+            ``{infmax_workspace}`` (the InferenceMAX workspace mount). Not
+            shell-interpreted; wrap in ``bash -lc`` yourself if you need a shell.
+    """
+
+    passthrough_env: list[str] = field(default_factory=list)
+    command: list[str] | None = None
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+    def __post_init__(self) -> None:
+        for name in self.passthrough_env:
+            if not name.isidentifier():
+                raise ValidationError(
+                    f"post_eval.passthrough_env entries must be environment variable names, got {name!r}"
+                )
+        if self.command is not None and not self.command:
+            raise ValidationError("post_eval.command, if set, must be non-empty (omit it to use the lm-eval runner)")
+
+
+@dataclass(frozen=True)
 class HostSetupConfig:
     """Commands run on the bare host of each allocated node, outside the container.
 
@@ -1928,6 +1962,11 @@ class SrtConfig:
     # experimental router built from a PR) and typed ones (a standalone Mooncake
     # store per worker node). See docs/services.md.
     services: list[ServiceConfig] = field(default_factory=list)
+
+    # Post-benchmark / eval-only evaluation dispatch: extra env forwarded into the
+    # eval process and an optional command override. Replaces the downstream
+    # source patch that used to extend the passthrough list in do_sweep.py.
+    post_eval: PostEvalConfig = field(default_factory=PostEvalConfig)
 
     # Virtual identity — declares what *should* be running (verified against fingerprint)
     identity: IdentityConfig = field(default_factory=IdentityConfig)
