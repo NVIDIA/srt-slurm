@@ -61,7 +61,9 @@ services:
       node: head          # head | infra | prefill | decode | agg | workers
     # start: after_frontend (default). Use before_workers for something workers need.
     readiness:
-      port: 9911          # the job waits until this port answers on the service node
+      http:               # or `port: 9911` (tcp), or `log: {pattern: ...}` against the service log
+        port: 9911
+        path: /           # the directory listing; the job waits until it returns 200
       timeout_seconds: 60
     inherit_discovery_env: false   # no etcd/NATS here; the SGLang router runs without them
     # critical: false (default). A dead sidecar costs its own log, not the run.

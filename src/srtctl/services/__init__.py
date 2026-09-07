@@ -8,10 +8,13 @@ from srtctl.services import generic, mooncake_store
 from srtctl.services.config import (
     SERVICE_PLACEMENTS,
     SERVICE_STARTS,
+    HttpProbe,
+    LogProbe,
     ServiceConfig,
     ServicePlacementConfig,
     ServiceReadinessConfig,
     ServiceSourceConfig,
+    TcpProbe,
 )
 from srtctl.services.registry import (
     ServiceKind,
@@ -24,12 +27,15 @@ from srtctl.services.registry import (
 __all__ = [
     "SERVICE_PLACEMENTS",
     "SERVICE_STARTS",
+    "HttpProbe",
+    "LogProbe",
     "ServiceConfig",
     "ServiceKind",
     "ServiceLaunchContext",
     "ServicePlacementConfig",
     "ServiceReadinessConfig",
     "ServiceSourceConfig",
+    "TcpProbe",
     "generic",
     "get_service_kind",
     "list_service_types",

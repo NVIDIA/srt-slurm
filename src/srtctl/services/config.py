@@ -57,24 +57,118 @@ class ServicePlacementConfig:
 
 
 @dataclass(frozen=True)
-class ServiceReadinessConfig:
-    """TCP readiness gate: the launch blocks until ``port`` accepts connections on every service node.
-
-    Attributes:
-        port: TCP port the service listens on.
-        timeout_seconds: How long to wait per node before failing the job.
-    """
+class TcpProbe:
+    """Ready when ``port`` accepts a TCP connection on the service node."""
 
     port: int
-    timeout_seconds: int = 120
 
     Schema: ClassVar[type[Schema]] = Schema
 
     def __post_init__(self) -> None:
         if not 1 <= self.port <= 65535:
-            raise ValidationError("services[].readiness.port must be between 1 and 65535")
+            raise ValidationError("readiness.tcp.port must be between 1 and 65535")
+
+
+@dataclass(frozen=True)
+class HttpProbe:
+    """Ready when ``GET http://<node>:<port><path>`` returns ``status``."""
+
+    port: int
+    path: str = "/health"
+    status: int = 200
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.port <= 65535:
+            raise ValidationError("readiness.http.port must be between 1 and 65535")
+        if not self.path.startswith("/"):
+            raise ValidationError("readiness.http.path must start with '/'")
+        if not 100 <= self.status <= 599:
+            raise ValidationError("readiness.http.status must be an HTTP status code")
+
+
+@dataclass(frozen=True)
+class LogProbe:
+    """Ready when the service's log file contains a line matching the regular expression ``pattern``."""
+
+    pattern: str
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+    def __post_init__(self) -> None:
+        import re
+
+        try:
+            re.compile(self.pattern)
+        except re.error as exc:
+            raise ValidationError(f"readiness.log.pattern is not a valid regular expression: {exc}") from None
+
+
+@dataclass(frozen=True)
+class ServiceReadinessConfig:
+    """Readiness gate: the launch blocks until the probe passes on every service node.
+
+    Exactly one probe: ``tcp`` (a port accepts connections), ``http`` (a URL
+    returns a status), or ``log`` (the service log matches a pattern). ``port``
+    alone is shorthand for ``tcp``.
+
+    Attributes:
+        port: Shorthand for ``tcp: {port: <port>}``.
+        tcp: TCP connect probe.
+        http: HTTP GET probe.
+        log: Log-pattern probe against ``service_<name>.out``.
+        timeout_seconds: How long to wait per node before failing the job.
+        interval_seconds: Seconds between probe attempts.
+    """
+
+    port: int | None = None
+    tcp: TcpProbe | None = None
+    http: HttpProbe | None = None
+    log: LogProbe | None = None
+    timeout_seconds: int = 120
+    interval_seconds: int = 2
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+    def __post_init__(self) -> None:
+        if self.port is not None:
+            if self.tcp is not None:
+                raise ValidationError("services[].readiness: give either port (shorthand) or tcp, not both")
+            object.__setattr__(self, "tcp", TcpProbe(port=self.port))
+        probes = [name for name in ("tcp", "http", "log") if getattr(self, name) is not None]
+        if len(probes) != 1:
+            raise ValidationError(
+                f"services[].readiness needs exactly one probe: port, tcp, http, or log; got {', '.join(probes) or 'none'}"
+            )
         if self.timeout_seconds <= 0:
             raise ValidationError("services[].readiness.timeout_seconds must be positive")
+        if self.interval_seconds <= 0:
+            raise ValidationError("services[].readiness.interval_seconds must be positive")
+
+    @property
+    def probe(self) -> TcpProbe | HttpProbe | LogProbe:
+        for name in ("tcp", "http", "log"):
+            value = getattr(self, name)
+            if value is not None:
+                return value
+        raise AssertionError("unreachable: __post_init__ guarantees one probe")
+
+    @property
+    def probe_port(self) -> int | None:
+        """The port the service is expected to own, when the probe implies one."""
+        probe = self.probe
+        return probe.port if isinstance(probe, TcpProbe | HttpProbe) else None
+
+    def describe(self) -> str:
+        probe = self.probe
+        if isinstance(probe, TcpProbe):
+            what = f"tcp/{probe.port}"
+        elif isinstance(probe, HttpProbe):
+            what = f"http://<node>:{probe.port}{probe.path} -> {probe.status}"
+        else:
+            what = f"log matches /{probe.pattern}/"
+        return f"{what}, timeout={self.timeout_seconds}s"
 
 
 @dataclass(frozen=True)

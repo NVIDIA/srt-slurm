@@ -58,9 +58,10 @@ services:
     placement:
       node: head                 # head | infra | prefill | decode | agg | workers
     start: after_frontend        # after_frontend | before_workers
-    readiness:                   # optional TCP gate, checked on every service node
-      port: 9000
+    readiness:                   # optional probe, checked on every service node
+      port: 9000                 # or tcp: {port} / http: {port, path, status} / log: {pattern}
       timeout_seconds: 120
+      interval_seconds: 2
     inherit_discovery_env: true  # inject ETCD_ENDPOINTS / NATS_SERVER
     critical: false              # a crash fails the run when true
     preamble: |                  # shell run before command, inside the container
@@ -89,7 +90,7 @@ services:
 | `env` | `{}` | Merged over the type's defaults; see [Environment](#environment). |
 | `placement.node` | `head` | See [Placement](#placement). |
 | `start` | type default | `generic`: `after_frontend`. `mooncake-store`: `before_workers`. |
-| `readiness` | none | TCP port gate per node. Timing out terminates what this stage started and fails the job. |
+| `readiness` | none | One probe per node: `port` / `tcp`, `http`, or `log`, plus `timeout_seconds` and `interval_seconds`. See [Start Order and Readiness](#start-order-and-readiness). Timing out terminates what this stage started and fails the job. |
 | `inherit_discovery_env` | `true` | Inject the same `ETCD_ENDPOINTS` / `NATS_SERVER` the Dynamo frontend gets. |
 | `critical` | type default | `generic`: `false`. `mooncake-store`: `true`. |
 | `preamble` | none | Shell run after the environment is exported and before `command`. |
@@ -122,8 +123,40 @@ Services launch in declaration order within a start phase:
 - `after_frontend`: once workers and the frontend are healthy, before telemetry. For sidecars that
   register into a running job.
 
-Within a phase, a service with `readiness` blocks until its port answers on each of its nodes; a
-service without one is considered started when its `srun` is launched. Ongoing health is the shared
+Within a phase, a service with `readiness` blocks until its probe passes on each of its nodes; a
+service without one is considered started when its `srun` is launched. Three probes are available,
+and a `readiness` block names exactly one:
+
+```yaml
+readiness:
+  port: 9000                 # shorthand for tcp
+  timeout_seconds: 120       # per node; the job fails when it runs out
+  interval_seconds: 2        # between attempts
+```
+
+```yaml
+readiness:
+  tcp:
+    port: 9000               # a TCP connection is accepted
+```
+
+```yaml
+readiness:
+  http:
+    port: 8000
+    path: /ready             # GET http://<node>:8000/ready
+    status: 200              # returns this status
+```
+
+```yaml
+readiness:
+  log:
+    pattern: 'Uvicorn running on .*:\d+'   # a regex matched against service_<name>.out
+```
+
+The probe is re-run every `interval_seconds` until it passes. Between attempts the stage checks that
+the process is still alive, so a service that crashes fails the job at once with its exit code rather
+than after the full timeout. Ongoing health is the shared
 `ProcessRegistry` monitor, the same as every other process in the job. It tears the run down only for
 `critical: true` services. Anything other components register under or route through should be
 critical: a router that dies mid-run otherwise leaves the frontend silently talking to the raw

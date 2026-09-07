@@ -387,12 +387,16 @@ Where a service runs.
 
 ### ServiceReadinessConfig
 
-TCP readiness gate: the launch blocks until ``port`` accepts connections on every service node.
+Readiness gate: the launch blocks until the probe passes on every service node.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `port` | int | required | TCP port the service listens on. |
+| `port` | int \| None | `None` | Shorthand for ``tcp: {port: <port>}``. |
+| `tcp` | [TcpProbe](#tcpprobe) \| None | `None` | TCP connect probe. |
+| `http` | [HttpProbe](#httpprobe) \| None | `None` | HTTP GET probe. |
+| `log` | [LogProbe](#logprobe) \| None | `None` | Log-pattern probe against ``service_<name>.out``. |
 | `timeout_seconds` | int | `120` | How long to wait per node before failing the job. |
+| `interval_seconds` | int | `2` | Seconds between probe attempts. |
 
 ### IdentityModelConfig
 
@@ -445,6 +449,32 @@ S3 upload configuration for log artifacts.
 | `endpoint_url` | str \| None | `None` | Custom S3-compatible endpoint URL (optional) |
 | `access_key_id` | str \| None | `None` | AWS access key ID (falls back to AWS_ACCESS_KEY_ID env var) |
 | `secret_access_key` | str \| None | `None` | AWS secret access key (falls back to AWS_SECRET_ACCESS_KEY env var) |
+
+### TcpProbe
+
+Ready when ``port`` accepts a TCP connection on the service node.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `port` | int | required |  |
+
+### HttpProbe
+
+Ready when ``GET http://<node>:<port><path>`` returns ``status``.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `port` | int | required |  |
+| `path` | str | `'/health'` |  |
+| `status` | int | `200` |  |
+
+### LogProbe
+
+Ready when the service's log file contains a line matching the regular expression ``pattern``.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `pattern` | str | required |  |
 
 ## Backend types
 

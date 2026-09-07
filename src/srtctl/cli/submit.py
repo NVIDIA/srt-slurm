@@ -420,9 +420,7 @@ def show_config_details(config: SrtConfig) -> None:
             if service.build_command:
                 console.print(f"    [yellow]build_command:[/] {shlex.join(service.build_command)}", crop=False)
             if service.readiness is not None:
-                console.print(
-                    f"    [yellow]readiness:[/] tcp/{service.readiness.port}, timeout={service.readiness.timeout_seconds}s"
-                )
+                console.print(f"    [yellow]readiness:[/] {service.readiness.describe()}")
             if service.preamble:
                 console.print(f"    [yellow]preamble:[/] {service.preamble.strip()}", crop=False)
             console.print(f"    [yellow]inherit_discovery_env:[/] {str(service.inherit_discovery_env).lower()}")

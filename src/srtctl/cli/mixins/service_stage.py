@@ -6,7 +6,7 @@
 Every service kind launches the same way: resolve the nodes its ``placement``
 selects, optionally clone and build a ``source`` once, then one ``srun`` per
 node with the kind's environment merged around the recipe's ``env``, an
-optional TCP readiness gate, and a ``ManagedProcess`` for the shared
+optional readiness probe (tcp, http, or log), and a ``ManagedProcess`` for the shared
 ``ProcessRegistry`` (which provides crash detection and teardown). The kind
 (``srtctl.services.registry.ServiceKind``) never launches anything itself.
 
@@ -30,8 +30,8 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from srtctl.core.health import wait_for_port
 from srtctl.core.processes import ManagedProcess, ProcessRegistry, terminate_and_reap
+from srtctl.core.readiness import ProcessDied, wait_until_ready
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
 from srtctl.ports import ETCD_CLIENT_PORT, NATS_PORT
 from srtctl.services.registry import ServiceLaunchContext, get_service_kind
@@ -46,9 +46,6 @@ logger = logging.getLogger(__name__)
 
 # The clone script runs three git commands, each under its own `timeout 600s`.
 CLONE_TIMEOUT_SECONDS = 3 * 600 + 60
-# Readiness polling slice: how long one wait_for_port call may block before we
-# re-check that the service process is still alive.
-_READINESS_SLICE_SECONDS = 5
 
 
 def render_placeholders(value: str, replacements: dict[str, str]) -> str:
@@ -94,15 +91,16 @@ class ServiceStageMixin:
         """Two services that both listen on the same readiness port cannot share a node."""
         owners: dict[tuple[str, int], str] = {}
         for service in services:
-            if service.readiness is None:
+            port = service.readiness.probe_port if service.readiness is not None else None
+            if port is None:
                 continue
             for node in self.service_nodes(service):
-                key = (node, service.readiness.port)
+                key = (node, port)
                 other = owners.setdefault(key, service.name)
                 if other != service.name:
                     raise ValueError(
                         f"services[{service.name}] and services[{other}] both listen on port "
-                        f"{service.readiness.port} on node {node}; give them disjoint placements or ports"
+                        f"{port} on node {node}; give them disjoint placements or ports"
                     )
 
     # -- one-shot steps (clone, build) ----------------------------------------------
@@ -253,30 +251,28 @@ class ServiceStageMixin:
 
     @staticmethod
     def _wait_ready(proc: ManagedProcess, service: ServiceConfig, readiness: ServiceReadinessConfig) -> None:
-        """Block until the service's port answers, failing fast if the process dies first."""
+        """Block until the service's readiness probe passes, failing fast if the process dies first."""
         assert proc.node is not None
-        logger.info(
-            "Waiting for service %s on %s (port %d, timeout %ds)",
-            service.name,
-            proc.node,
-            readiness.port,
-            readiness.timeout_seconds,
-        )
-        waited = 0
-        while waited < readiness.timeout_seconds:
-            step = min(_READINESS_SLICE_SECONDS, readiness.timeout_seconds - waited)
-            if wait_for_port(proc.node, readiness.port, timeout=step):
-                return
-            waited += step
-            if not proc.is_running:
-                raise RuntimeError(
-                    f"services[{service.name}] exited with code {proc.exit_code} on {proc.node} before opening "
-                    f"port {readiness.port}; see {proc.log_file}"
-                )
-        raise RuntimeError(
-            f"services[{service.name}] did not open port {readiness.port} on {proc.node} within "
-            f"{readiness.timeout_seconds}s; see {proc.log_file}"
-        )
+        logger.info("Waiting for service %s on %s (%s)", service.name, proc.node, readiness.describe())
+        try:
+            ready = wait_until_ready(
+                readiness.probe,
+                host=proc.node,
+                log_file=proc.log_file,
+                timeout=readiness.timeout_seconds,
+                interval=readiness.interval_seconds,
+                is_alive=lambda: proc.is_running,
+            )
+        except ProcessDied:
+            raise RuntimeError(
+                f"services[{service.name}] exited with code {proc.exit_code} on {proc.node} before its readiness "
+                f"probe passed ({readiness.describe()}); see {proc.log_file}"
+            ) from None
+        if not ready:
+            raise RuntimeError(
+                f"services[{service.name}] on {proc.node} was not ready within {readiness.timeout_seconds}s "
+                f"({readiness.describe()}); see {proc.log_file}"
+            )
 
     def start_services(self, start: str, registry: ProcessRegistry | None = None) -> list[ManagedProcess]:
         """Launch every service whose (effective) ``start`` matches, in declaration order.

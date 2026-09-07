@@ -1808,7 +1808,7 @@ services:
 | `env` | dict | `{}` | Service environment; placeholders like `{node_ip}` are substituted |
 | `placement.node` | string | `head` | One instance for `head`/`infra`; one per node for `prefill`/`decode`/`agg`/`workers` |
 | `start` | string | type default | `after_frontend` (generic) or `before_workers` (mooncake-store) |
-| `readiness` | object | none | `port` + `timeout_seconds`; the job waits for it on every service node |
+| `readiness` | object | none | One probe (`port`/`tcp`, `http`, or `log`) plus `timeout_seconds` and `interval_seconds`; the job waits for it on every service node |
 | `inherit_discovery_env` | bool | `true` | Inject the Dynamo discovery env |
 | `critical` | bool | type default | A crash fails the run when true |
 | `source`, `build_command` | object, list[string] | none | Clone an immutable git rev and build once before launch; single-node placements only |

@@ -14,6 +14,7 @@ import yaml
 from marshmallow import ValidationError
 
 from srtctl.cli.do_sweep import SweepOrchestrator
+from srtctl.core.readiness import ProcessDied
 from srtctl.core.runtime import Nodes, RuntimeContext
 from srtctl.core.schema import SrtConfig
 from srtctl.core.topology import Endpoint
@@ -21,7 +22,7 @@ from srtctl.ports import MOONCAKE_HTTP_METADATA_PORT, MOONCAKE_MASTER_PORT
 from srtctl.services import ServiceConfig, ServiceSourceConfig, list_service_types
 
 SRUN = "srtctl.cli.mixins.service_stage.start_srun_process"
-WAIT = "srtctl.cli.mixins.service_stage.wait_for_port"
+WAIT = "srtctl.cli.mixins.service_stage.wait_until_ready"
 HOST_IP = "srtctl.cli.mixins.service_stage.get_hostname_ip"
 
 DISAGG_HEAD = """
@@ -245,7 +246,11 @@ def test_readiness_gate_blocks_and_failure_terminates_started(tmp_path: Path) ->
         patch(WAIT, return_value=True) as wait,
     ):
         orchestrator.start_services("after_frontend")
-    wait.assert_called_once_with("node0", 9000, timeout=5)
+    wait.assert_called_once()
+    assert wait.call_args.kwargs["host"] == "node0"
+    assert wait.call_args.kwargs["timeout"] == 5
+    assert wait.call_args.kwargs["log_file"] == tmp_path / "service_a.out"
+    assert wait.call_args.args[0].port == 9000
 
     popen = _proc()
     registry = MagicMock()
@@ -253,7 +258,7 @@ def test_readiness_gate_blocks_and_failure_terminates_started(tmp_path: Path) ->
         patch(SRUN, return_value=popen),
         patch(HOST_IP, return_value="10.0.0.10"),
         patch(WAIT, return_value=False),
-        pytest.raises(RuntimeError, match="did not open port 9000"),
+        pytest.raises(RuntimeError, match="was not ready within 5s"),
     ):
         orchestrator.start_services("after_frontend", registry)
     popen.terminate.assert_called_once()
@@ -271,12 +276,10 @@ def test_readiness_fails_fast_when_the_process_dies(tmp_path: Path) -> None:
     with (
         patch(SRUN, return_value=dead),
         patch(HOST_IP, return_value="10.0.0.10"),
-        patch(WAIT, return_value=False) as wait,
-        pytest.raises(RuntimeError, match="exited with code 127 .* before opening port 9000"),
+        patch(WAIT, side_effect=ProcessDied("gone")),
+        pytest.raises(RuntimeError, match="exited with code 127 .* before its readiness probe passed"),
     ):
         _orchestrator(config, tmp_path).start_services("after_frontend")
-    # One 5s slice, not the full 600s budget.
-    wait.assert_called_once_with("node0", 9000, timeout=5)
 
 
 def test_signal_during_readiness_wait_terminates_started(tmp_path: Path) -> None:
