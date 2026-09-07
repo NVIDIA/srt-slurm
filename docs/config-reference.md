@@ -1196,7 +1196,7 @@ observability:
 | ---------------- | ---- | ------- | ----------- |
 | `enabled` | bool/null | `null` | `null` means ON for every run (decoupled from `observability.enabled`); explicit `false` opts out |
 | `binary_path` | string | `tachometer-scraper` | Scraper command or path on the compute nodes |
-| `collect_interval_ms` | int | `1000` | Milliseconds between scrapes of every endpoint (replaces the retired Hz-based `default_frequency`) |
+| `collect_interval_ms` | int | `1000` | Milliseconds between scrapes of every endpoint; the single cadence knob — it also drives the launched DCGM exporter's `--collect-interval` (an explicit `dcgm_exporter.command` wins) and the host sampler. Values below `1000` speed up DCGM NVML sampling and are warned about at launch: 100ms sampling measured ~2% decode ITL overhead on GB300. Replaces the retired Hz-based `default_frequency` |
 | `sync_interval_secs` | int | `120` | Interval for intermediate Parquet compaction; `0` disables it |
 | `compaction_threads` | int | `4` | Value passed as `POLARS_MAX_THREADS` |
 | `storage_subdir` | string | `tachometer` | Output directory below the run log directory |

@@ -4685,7 +4685,7 @@ class TestSequentialNodeStart:
         import os
         import subprocess
         from pathlib import Path
-        from unittest.mock import MagicMock, call, patch
+        from unittest.mock import MagicMock, patch
 
         from srtctl.backends.trtllm import TRTLLMProtocol
         from srtctl.cli.mixins.worker_stage import WorkerStageMixin

@@ -1096,10 +1096,9 @@ class TelemetryExporterConfig:
 DEFAULT_DCGM_EXPORTER = TelemetryExporterConfig(
     container_image="nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04",
     port=9401,
-    # 100ms collection (the power-telemetry template's interval) costs ~2% ITL
-    # p50 on GB300 decode; 5000ms is measured at parity with no telemetry.
-    # Values repeat across consecutive 1 Hz scrapes, which panels tolerate.
-    command="dcgm-exporter --collect-interval=5000 --address :{port}",
+    # No command: the tachometer launch derives --collect-interval from
+    # observability.tachometer.collect_interval_ms so the exporter samples
+    # exactly as often as it is scraped. An explicit command still wins.
 )
 DEFAULT_NODE_EXPORTER = TelemetryExporterConfig(
     container_image="quay.io#prometheus/node-exporter:v1.8.2",
