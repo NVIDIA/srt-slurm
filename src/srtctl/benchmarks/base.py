@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
@@ -18,8 +18,29 @@ if TYPE_CHECKING:
 SCRIPTS_DIR = Path(__file__).parent / "scripts"
 
 
+# BenchmarkConfig fields every type may set: where the client runs, sweeps, aiperf
+# plumbing, and post-processing. Everything else belongs to specific runners.
+SHARED_BENCHMARK_FIELDS: frozenset[str] = frozenset(
+    {
+        "type",
+        "client_placement",
+        "client_dedicated_node",
+        "colocate_with_frontend",
+        "sweep",
+        "aiperf_package",
+        "aiperf_args",
+        "export_node_metrics",
+    }
+)
+
+
 class BenchmarkRunner(ABC):
     """Abstract base class that all benchmark runners must inherit."""
+
+    # BenchmarkConfig fields this runner reads, beyond SHARED_BENCHMARK_FIELDS. A
+    # recipe that sets a field outside shared + these for its type is rejected
+    # (schema 2) or warned about (schema 1) at load, see SrtConfig._validate_benchmark_type.
+    config_fields: ClassVar[frozenset[str]] = frozenset()
 
     @property
     @abstractmethod
@@ -107,6 +128,17 @@ def register_benchmark(name: str):
         return cls
 
     return decorator
+
+
+def get_runner_class(benchmark_type: str) -> type[BenchmarkRunner] | None:
+    """The registered runner class for ``benchmark_type``, or None (``manual`` has no runner)."""
+    return _BENCHMARK_RUNNERS.get(benchmark_type)
+
+
+def benchmark_config_fields(benchmark_type: str) -> frozenset[str]:
+    """Every BenchmarkConfig field a recipe of this type may set: shared plus the runner's own."""
+    runner = _BENCHMARK_RUNNERS.get(benchmark_type)
+    return SHARED_BENCHMARK_FIELDS | (runner.config_fields if runner is not None else frozenset())
 
 
 def get_runner(benchmark_type: str) -> BenchmarkRunner:

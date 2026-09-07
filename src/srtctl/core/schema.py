@@ -12,6 +12,7 @@ Backend configs are defined in srtctl.backends.configs/ for modularity.
 """
 
 import builtins
+import dataclasses
 import hashlib
 import itertools
 import logging
@@ -51,6 +52,16 @@ from srtctl.core.source import DynamoSourceConfig, is_commit_sha
 from srtctl.services.config import ServiceConfig
 
 logger = logging.getLogger(__name__)
+
+
+def _dataclass_default(item: dataclasses.Field) -> Any:
+    """The default a dataclass field would take when unset (None when it has none)."""
+    if item.default is not dataclasses.MISSING:
+        return item.default
+    if item.default_factory is not dataclasses.MISSING:
+        return item.default_factory()
+    return None
+
 
 # Local copies of srtctl.core.power.contract values so that loading a config
 # never imports the power package; equality is pinned by tests.
@@ -2021,13 +2032,32 @@ class SrtConfig:
         btype = self.benchmark.type
         try:
             import srtctl.benchmarks  # noqa: F401 - importing the package registers every runner
-            from srtctl.benchmarks.base import list_benchmarks
+            from srtctl.benchmarks.base import benchmark_config_fields, list_benchmarks
 
             allowed = set(list_benchmarks()) | {"manual"}
         except Exception:  # noqa: BLE001 - never block a config load on the registry import
             return
         if btype not in allowed:
             raise ValueError(f"Unknown benchmark.type {btype!r}. Available: {', '.join(sorted(allowed))}")
+
+        # Per-type field split: a field set for a type whose runner never reads it
+        # is a silent no-op today (isl on gsm8k, num_shots on sa-bench). Schema 2
+        # rejects it; schema 1 recipes get a warning so the corpus keeps loading.
+        accepted = benchmark_config_fields(btype)
+        stray = sorted(
+            item.name
+            for item in dataclasses.fields(BenchmarkConfig)
+            if item.name not in accepted and getattr(self.benchmark, item.name) != _dataclass_default(item)
+        )
+        if not stray:
+            return
+        message = (
+            f"benchmark.type {btype!r} does not use {', '.join(stray)}; fields it accepts: "
+            f"{', '.join(sorted(accepted))}"
+        )
+        if self.schema_version >= 2:
+            raise ValueError(message)
+        logger.warning("%s (a schema: 2 recipe would be rejected)", message)
 
     def _validate_host_setup(self) -> None:
         """Reject host_setup blocks that would fail or hang mid-job.

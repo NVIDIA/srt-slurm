@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from srtctl.benchmarks.base import SCRIPTS_DIR, BenchmarkRunner, register_benchmark
 
@@ -27,6 +27,9 @@ class RouterRunner(BenchmarkRunner):
         - benchmark.concurrency: Concurrency level (default: 20)
         - benchmark.prefix_ratios: Prefix ratios to test (default: "0.1 0.3 0.5 0.7 0.9")
     """
+
+    # BenchmarkConfig fields this runner reads (beyond the shared ones); see benchmark_config_fields().
+    config_fields: ClassVar[frozenset[str]] = frozenset({"isl", "osl", "num_requests", "concurrency", "prefix_ratios"})
 
     @property
     def name(self) -> str:

@@ -701,6 +701,24 @@ backend:
 
 Benchmark configuration. The `type` field determines which benchmark runner is used and what additional fields are available.
 
+**Per-type fields (schema 2).** Every type accepts the shared fields (`client_placement`, `client_dedicated_node`, `colocate_with_frontend`, `sweep`, `aiperf_package`, `aiperf_args`, `export_node_metrics`) plus the fields its runner reads:
+
+| `type` | Fields |
+| --- | --- |
+| `sa-bench` | `isl`, `osl`, `concurrencies`, `req_rate`, `random_range_ratio`, `num_prompts_mult`, `num_warmup_mult`, `dataset_name`, `dataset_path`, `custom_tokenizer`, `use_chat_template`, `reuse_http_connections`, `slow_down_sleep_time`, `slow_down_wait_time` |
+| `sglang-bench` | `isl`, `osl`, `concurrencies`, `req_rate` |
+| `gsm8k` | `num_examples`, `max_tokens`, `repeat`, `num_threads`, `num_shots`, `temperature`, `top_p`, `top_k` |
+| `mmlu`, `gpqa` | `num_examples`, `max_tokens`, `repeat`, `num_threads` |
+| `longbenchv2` | `num_examples`, `max_tokens`, `num_threads`, `max_context_length`, `categories` |
+| `router` | `isl`, `osl`, `num_requests`, `concurrency`, `prefix_ratios` |
+| `mooncake-router` | `mooncake_workload`, `ttft_threshold_ms`, `itl_threshold_ms` |
+| `trace-replay` | `concurrencies`, `ttft_threshold_ms`, `itl_threshold_ms`, `trace_file` |
+| `agentperf` | `isl`, `concurrencies`, `concurrency`, `agentperf_client_dir`, `agentperf_config`, `container_image`, `env` |
+| `custom` | `command`, `container_image`, `env` |
+| `lm-eval`, `manual` | shared fields only |
+
+A `schema: 2` recipe that sets a field its type does not use is rejected at load with the list of accepted fields. A schema 1 recipe gets a warning and keeps loading. Before this, such a field was a silent no-op (`isl` on `gsm8k`, `num_shots` on `sa-bench`). Each runner declares its fields as `config_fields`; adding a field to a runner means adding it there.
+
 ### Post-process: node metrics CSV
 
 When `export_node_metrics` is `true`, after the benchmark finishes srtctl prepends
