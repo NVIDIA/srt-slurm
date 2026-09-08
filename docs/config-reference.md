@@ -277,7 +277,7 @@ The legacy fields (`resources.prefill_workers`, `backend.prefill_environment`, `
 
 ## placement
 
-`placement:` is one vocabulary for where the frontend, benchmark client, and infra services run, replacing the per-block placement knobs:
+`placement:` is one vocabulary for where the frontend and the benchmark client run, replacing the per-block placement knobs:
 
 ```yaml
 frontend:
@@ -286,10 +286,9 @@ frontend:
 benchmark:
   placement:
     node: last_decode   # head | last_decode | dedicated
-infra:
-  placement:
-    node: dedicated     # head | dedicated
 ```
+
+The discovery plane (etcd, NATS) is placed through its services: an `etcd` or `nats` entry under [`services`](#services) with `placement.node: dedicated`. See [Implicit Services](services.md#implicit-services).
 
 `node: dedicated` reserves a node for that component (and implies the head location, which the legacy validation already required). Any other value is a location string.
 
@@ -297,7 +296,6 @@ infra:
 | --- | --- | --- |
 | `frontend` | `frontend.dedicated_node: true` + `orchestrator_placement: head` | `frontend.orchestrator_placement: <location>` |
 | `benchmark` | `benchmark.client_dedicated_node: true` + `client_placement: head` | `benchmark.client_placement: <location>` |
-| `infra` | `infra.etcd_nats_dedicated_node: true` | `head` only |
 
 Like `roles:`, this is normalized into the existing fields before validation, so it is exactly equivalent to writing them, cannot be combined with them for the same block, and the legacy fields still load.
 
@@ -1291,22 +1289,36 @@ health_check:
 
 ## infra
 
-Infrastructure configuration for etcd/nats placement.
+The v1 spelling for where the discovery plane (etcd, NATS) runs. In 2.0 etcd and NATS are [services](#services), implied by the Dynamo frontend and taken over by declaring them:
+
+```yaml
+services:
+  - name: etcd
+    type: etcd
+    placement:
+      node: dedicated
+  - name: nats
+    type: nats
+    placement:
+      node: dedicated
+    options:
+      max_payload_mb: 24
+```
+
+The v1 block still loads and means exactly that (`srtctl migrate` rewrites it):
 
 ```yaml
 infra:
   etcd_nats_dedicated_node: true
+  nats_max_payload_mb: 24
 ```
 
 | Field                    | Type | Default | Description                                        |
 | ------------------------ | ---- | ------- | -------------------------------------------------- |
-| `etcd_nats_dedicated_node` | bool | false   | Reserve first node for infrastructure services     |
+| `etcd_nats_dedicated_node` | bool | false   | Reserve the first allocated node for etcd and NATS; no workers run there. Isolates the discovery plane on large jobs. |
+| `nats_max_payload_mb` | int | none | Raise the NATS message size limit (long prompts on the NATS request plane). |
 
-**Notes**:
-
-- When `etcd_nats_dedicated_node: true`, the first allocated node is reserved exclusively for etcd and nats services.
-- This can improve stability for large-scale deployments by isolating infrastructure services.
-- The reserved node is not used for worker processes.
+A recipe cannot say both: declared `etcd`/`nats` services and `infra.etcd_nats_dedicated_node` must agree.
 
 ---
 
@@ -1861,12 +1873,16 @@ post_eval:
 
 ## services
 
-Long-running processes srtctl launches and tracks next to the workers, frontend, and benchmark client. One list covers generic sidecars (an experimental router built from a PR) and typed services (a standalone Mooncake store per worker node). Full reference: [services.md](services.md).
+Long-running processes srtctl launches and tracks next to the workers, frontend, and benchmark client. One list covers the built-in infrastructure (etcd and NATS under the Dynamo frontend, the Mooncake master, the DCGM and node exporters tachometer scrapes: implied by the rest of the recipe, declared only to change something), generic sidecars (an experimental router built from a PR), and typed services (a standalone Mooncake store per worker node). Full reference: [services.md](services.md), in particular [Implicit Services](services.md#implicit-services).
 
 ```yaml
 services:
+  - name: etcd
+    type: etcd                   # implied by frontend.type: dynamo; declared here to move it
+    placement:
+      node: dedicated
   - name: my-sidecar
-    type: generic                # generic (default) | mooncake-store
+    type: generic                # generic (default) | etcd | nats | mooncake-master | dcgm-exporter | node-exporter | mooncake-store
     command:
       - python3
       - -m
@@ -1878,8 +1894,8 @@ services:
     env:
       MY_FLAG: "1"
     placement:
-      node: head                 # head | infra | prefill | decode | agg | workers
-    start: after_frontend        # after_frontend | before_workers
+      node: head                 # head | infra | dedicated | prefill | decode | agg | workers
+    start: after_frontend        # infra | before_workers | after_frontend
     readiness:
       port: 9000
       timeout_seconds: 120
@@ -1890,14 +1906,17 @@ services:
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `name` | string | required | Unique; names `service_<name>.out` and the tracked process |
-| `type` | string | `generic` | Registered service kind; supplies defaults and injected env |
+| `type` | string | `generic` | Registered service kind; supplies defaults, injected env, and for the typed kinds the command |
+| `enabled` | bool | `true` | `false` drops the service; how an implied one is switched off |
+| `external` | string | none | `etcd`, `nats`, `mooncake-master`: address of an already-running instance; nothing launches |
+| `options` | dict | `{}` | Kind-specific knobs (`nats.max_payload_mb`, exporter `port` / `collect_interval_ms`, `mooncake-master.store_config`) |
 | `command` | list[string] | type default | Argv, not shell-interpreted; required for `generic` |
 | `args` | list[string] | `[]` | Appended to `command` |
 | `container` | string | type fallback, then job container | Image or `srtslurm.yaml` alias |
 | `env` | dict | `{}` | Service environment; placeholders like `{node_ip}` are substituted |
-| `placement.node` | string | `head` | One instance for `head`/`infra`; one per node for `prefill`/`decode`/`agg`/`workers` |
-| `start` | string | type default | `after_frontend` (generic) or `before_workers` (mooncake-store) |
-| `readiness` | object | none | One probe (`port`/`tcp`, `http`, or `log`) plus `timeout_seconds` and `interval_seconds`; the job waits for it on every service node |
+| `placement.node` | string | type default | One instance for `head`/`infra`/`dedicated` (`dedicated` reserves a node); one per node for `prefill`/`decode`/`agg`/`workers` |
+| `start` | string | type default | `infra` (etcd, nats), `before_workers` (mooncake-master, mooncake-store), `after_frontend` (generic, exporters) |
+| `readiness` | object | type default | One probe (`port`/`tcp`, `http`, or `log`) plus `timeout_seconds` and `interval_seconds`; the job waits for it on every service node. Typed kinds gate on their well-known ports by default |
 | `inherit_discovery_env` | bool | `true` | Inject the Dynamo discovery env |
 | `critical` | bool | type default | A crash fails the run when true |
 | `source`, `build_command` | object, list[string] | none | Clone an immutable git rev and build once before launch; single-node placements only |

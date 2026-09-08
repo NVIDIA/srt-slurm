@@ -169,9 +169,11 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
     # before anything else reads them. No-op for legacy recipes.
     from srtctl.core.placement import expand_placement
     from srtctl.core.roles import expand_roles
+    from srtctl.services.normalize import expand_services
 
     expand_roles(config)
     expand_placement(config)
+    expand_services(config)
 
     if cluster_config is None:
         return config

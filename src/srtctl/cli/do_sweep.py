@@ -24,7 +24,6 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from srtctl.backends.sglang import SGLangProtocol
 from srtctl.backends.vllm import MOONCAKE_STORE_CONFIG_FILENAME, VLLMProtocol
 from srtctl.cli.mixins import (
     BenchmarkStageMixin,
@@ -38,7 +37,6 @@ from srtctl.core.config import load_config
 from srtctl.core.health import wait_for_port
 from srtctl.core.lockfile import write_lockfile
 from srtctl.core.processes import (
-    ManagedProcess,
     ProcessRegistry,
     setup_signal_handlers,
     start_process_monitor,
@@ -51,32 +49,11 @@ from srtctl.core.status import JobStage, JobStatus, StatusReporter
 from srtctl.core.topology import Endpoint, NodePortAllocator, Process, allocate_endpoints_het
 from srtctl.logging_utils import setup_logging
 from srtctl.ports import (
-    ETCD_CLIENT_PORT,
     FRONTEND_PUBLIC_PORT,
-    MOONCAKE_HTTP_METADATA_PORT,
-    MOONCAKE_MASTER_PORT,
-    MOONCAKE_METRICS_PORT,
-    NATS_PORT,
 )
+from srtctl.services.implicit import uses_discovery_plane
 
 logger = logging.getLogger(__name__)
-
-
-def _build_mooncake_master_command(mooncake_cfg: object) -> list[str]:
-    """Build the master command, including recipe-provided version-specific flags."""
-    command = [
-        "mooncake_master",
-        f"--port={MOONCAKE_MASTER_PORT}",
-        "--enable_http_metadata_server=true",
-        f"--http_metadata_server_port={MOONCAKE_HTTP_METADATA_PORT}",
-        "--eviction_high_watermark_ratio=0.9",
-        "--default_kv_lease_ttl=10000",
-        "--rpc_thread_num=16",
-        "--enable_metric_reporting=true",
-        f"--metrics_port={MOONCAKE_METRICS_PORT}",
-    ]
-    command.extend(getattr(mooncake_cfg, "master_extra_args", []) or [])
-    return command
 
 
 @dataclass
@@ -153,153 +130,29 @@ class SweepOrchestrator(
             dynamo_sidecar=self.config.dynamo.sidecar,
         )
 
-    def start_head_infrastructure(self, registry: ProcessRegistry) -> ManagedProcess:
-        """Start NATS and etcd on the infra node.
+    def start_head_infrastructure(self, registry: ProcessRegistry) -> None:
+        """Start the discovery plane (etcd, NATS) as services.
 
-        When etcd_nats_dedicated_node is enabled, services run on a dedicated node.
-        Otherwise, they run on the head node (default behavior).
+        They are implied by ``frontend.type: dynamo`` and placed on the infra node
+        (a dedicated node when ``infra.etcd_nats_dedicated_node`` / a declared
+        etcd or nats service asks for it). A recipe may declare them to change
+        the container or point at an external instance. See docs/services.md.
         """
-        infra_node = self.runtime.nodes.infra
-        logger.info("Starting infrastructure services (NATS, etcd)")
-        logger.info("Infra node: %s", infra_node)
+        self.start_services("infra", registry)
 
-        setup_script = Path(__file__).parent / "setup_head.py"
-        if not setup_script.exists():
-            raise RuntimeError(f"setup_head.py not found at {setup_script}")
+    def _write_mooncake_store_config(self) -> None:
+        """vLLM's MooncakeStoreConnector reads its config from a JSON file, not env.
 
-        setup_script_container = Path("/tmp/setup_head.py")
-        infra_log = self.runtime.log_dir / "infra.out"
-
-        cmd = [
-            "python3",
-            str(setup_script_container),
-            "--name",
-            self.config.name,
-            "--log-dir",
-            str(self.runtime.log_dir),
-        ]
-        if self.config.infra.nats_max_payload_mb is not None:
-            cmd += ["--nats-max-payload-mb", str(self.config.infra.nats_max_payload_mb)]
-
-        mounts = dict(self.runtime.container_mounts)
-        mounts[setup_script] = setup_script_container
-        # Mount host /tmp to container /host-tmp for etcd/nats data on local storage
-        # This ensures etcd WAL writes go to fast local disk, not network storage
-        mounts[Path("/tmp")] = Path("/host-tmp")
-
-        proc = start_srun_process(
-            command=cmd,
-            nodelist=[infra_node],
-            output=str(infra_log),
-            container_image=str(self.runtime.container_image),
-            container_mounts=mounts,
-            het_group=self.runtime.nodes.het_group_for(infra_node),
-        )
-
-        managed = ManagedProcess(
-            name="infra_services",
-            popen=proc,
-            log_file=infra_log,
-            node=infra_node,
-            critical=True,
-        )
-
-        # 300s timeout to handle slow container imports on first run
-        logger.info("Waiting for NATS (port %d) on %s...", NATS_PORT, infra_node)
-        if not wait_for_port(infra_node, NATS_PORT, timeout=300):
-            raise RuntimeError("NATS failed to start")
-        logger.info("NATS is ready")
-
-        logger.info("Waiting for etcd (port %d) on %s...", ETCD_CLIENT_PORT, infra_node)
-        if not wait_for_port(infra_node, ETCD_CLIENT_PORT, timeout=300):
-            raise RuntimeError("etcd failed to start")
-        logger.info("etcd is ready")
-
-        return managed
-
-    def start_mooncake_master(self, registry: ProcessRegistry) -> ManagedProcess | None:
-        """Launch mooncake_master on the infra node if mooncake_kv_store is configured.
-
-        Runs on the same node as etcd/nats. Uses mooncake_kv_store.container if set,
-        otherwise falls back to the job container.
-
-        Both SGLang and vLLM share the same launch command and port pair
-        (see ``srtctl.ports`` for the values). We always start the master with
-        its embedded HTTP metadata server enabled
-        (``--enable_http_metadata_server=true``) so:
-
-        1. Workers can use ``MOONCAKE_TE_META_DATA_SERVER=http://infra:<metadata-port>/metadata``
-           without a separate metadata service.
-        2. Dynamo's KV router shared-cache path
-           (`lib/llm/src/kv_router/shared_cache.rs`) can call the master's
-           ``/batch_query_keys`` endpoint for L3 reach when
-           ``--shared-cache-type hicache`` is set on the frontend.
+        Written into log_dir (mounted at /logs in every worker) before workers
+        start, pointing at the Mooncake master on the infra node.
         """
         backend = self.config.backend
-        if not isinstance(backend, (SGLangProtocol, VLLMProtocol)):
-            return None
-        mooncake_cfg = backend.mooncake_kv_store
-        if mooncake_cfg is None:
-            return None
-
-        infra_node = self.runtime.nodes.infra
-        container = mooncake_cfg.container or str(self.runtime.container_image)
-        mooncake_log = self.runtime.log_dir / "mooncake_master.out"
-
-        # vLLM's MooncakeStoreConnector reads its config from a JSON file
-        # (MOONCAKE_CONFIG_PATH), not env vars. Write that JSON into log_dir
-        # before workers start; log_dir is mounted at /logs in every worker.
-        if isinstance(backend, VLLMProtocol):
-            store_cfg = backend.build_mooncake_store_config(self.runtime.infra_node_ip)
-            store_cfg_path = self.runtime.log_dir / MOONCAKE_STORE_CONFIG_FILENAME
-            store_cfg_path.write_text(json.dumps(store_cfg, indent=2))
-            logger.info("Wrote mooncake_store_config to %s: %s", store_cfg_path, store_cfg)
-
-        logger.info(
-            "Starting mooncake_master on %s (rpc=%d, http_metadata=%d, metrics=%d)",
-            infra_node,
-            MOONCAKE_MASTER_PORT,
-            MOONCAKE_HTTP_METADATA_PORT,
-            MOONCAKE_METRICS_PORT,
-        )
-
-        proc = start_srun_process(
-            command=_build_mooncake_master_command(mooncake_cfg),
-            nodelist=[infra_node],
-            output=str(mooncake_log),
-            container_image=container,
-            container_mounts=self.runtime.container_mounts,
-            het_group=self.runtime.nodes.het_group_for(infra_node),
-        )
-
-        managed = ManagedProcess(
-            name="mooncake_master",
-            popen=proc,
-            log_file=mooncake_log,
-            node=infra_node,
-            critical=True,
-        )
-
-        logger.info("Waiting for mooncake_master RPC (port %d) on %s...", MOONCAKE_MASTER_PORT, infra_node)
-        if not wait_for_port(infra_node, MOONCAKE_MASTER_PORT, timeout=120):
-            raise RuntimeError("mooncake_master RPC failed to start")
-        logger.info(
-            "Waiting for mooncake_master HTTP metadata (port %d) on %s...",
-            MOONCAKE_HTTP_METADATA_PORT,
-            infra_node,
-        )
-        if not wait_for_port(infra_node, MOONCAKE_HTTP_METADATA_PORT, timeout=120):
-            raise RuntimeError("mooncake_master HTTP metadata server failed to start")
-        logger.info(
-            "Waiting for mooncake_master metrics (port %d) on %s...",
-            MOONCAKE_METRICS_PORT,
-            infra_node,
-        )
-        if not wait_for_port(infra_node, MOONCAKE_METRICS_PORT, timeout=120):
-            raise RuntimeError("mooncake_master metrics server failed to start")
-        logger.info("mooncake_master is ready")
-
-        return managed
+        if not isinstance(backend, VLLMProtocol) or backend.mooncake_kv_store is None:
+            return
+        store_cfg = backend.build_mooncake_store_config(self.runtime.infra_node_ip)
+        store_cfg_path = self.runtime.log_dir / MOONCAKE_STORE_CONFIG_FILENAME
+        store_cfg_path.write_text(json.dumps(store_cfg, indent=2))
+        logger.info("Wrote mooncake_store_config to %s: %s", store_cfg_path, store_cfg)
 
     def _print_connection_info(self) -> None:
         """Print srun commands for connecting to nodes."""
@@ -778,23 +631,19 @@ class SweepOrchestrator(
             # before anything containerized so workers see the prepared node.
             self._run_host_setup()
 
-            # Stage 1: Head infrastructure (NATS, etcd). Only the dynamo request
-            # plane uses it; static/direct frontends skip it.
-            if self.config.frontend.type in {"sglang", "trtllm_serve", "vllm", "vllm-router"}:
-                logger.info("Skipping NATS/etcd infrastructure (frontend.type=%s)", self.config.frontend.type)
-            else:
+            # Stage 1: the discovery plane (etcd, NATS) as services. Implied by the
+            # dynamo frontend; static/direct frontends imply nothing here.
+            if uses_discovery_plane(self.config):
                 reporter.report(JobStatus.STARTING, JobStage.HEAD_INFRASTRUCTURE, "Starting head infrastructure")
-                head_proc = self.start_head_infrastructure(registry)
-                registry.add_process(head_proc)
+                self.start_head_infrastructure(registry)
+            else:
+                logger.info("No discovery plane for frontend.type=%s", self.config.frontend.type)
 
-            # Stage 1b: Mooncake master (optional, co-located with infra node).
-            mooncake_proc = self.start_mooncake_master(registry)
-            if mooncake_proc is not None:
-                registry.add_process(mooncake_proc)
-
-            # Stage 1c: services that workers depend on (standalone Mooncake
-            # stores, anything with start: before_workers). The stage registers
-            # each process as it launches. See docs/services.md.
+            # Stage 1b: services workers depend on: the Mooncake master (implied by
+            # backend.mooncake_kv_store), standalone Mooncake stores, anything with
+            # start: before_workers. The stage registers each process as it
+            # launches. See docs/services.md.
+            self._write_mooncake_store_config()
             self.start_services("before_workers", registry)
 
             # Pre-worker: Ensure HF model is cached before starting workers.

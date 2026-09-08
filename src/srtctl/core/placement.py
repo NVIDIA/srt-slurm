@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""The 2.0 ``placement:`` authoring surface for where the frontend, benchmark client, and infra run.
+"""The 2.0 ``placement:`` authoring surface for where the frontend and the benchmark client run.
 
 One vocabulary replaces the per-block placement knobs::
 
@@ -11,9 +11,6 @@ One vocabulary replaces the per-block placement knobs::
     benchmark:
       placement:
         node: last_decode   # head | last_decode | dedicated
-    infra:
-      placement:
-        node: dedicated     # head | dedicated
 
 ``node: dedicated`` reserves a node for that component (and implies the head
 location, which the legacy validation already required). Any other value is a
@@ -25,7 +22,10 @@ the legacy fields still load.
 |-------------|-----------------------------------------------|---------------------------------------|
 | frontend    | dedicated_node=True, orchestrator_placement=head | orchestrator_placement=<other>     |
 | benchmark   | client_dedicated_node=True, client_placement=head | client_placement=<other>          |
-| infra       | etcd_nats_dedicated_node=True                 | (only ``head`` is valid; = False)     |
+
+The discovery plane (etcd, NATS) is placed through its services: an ``etcd`` or
+``nats`` entry under ``services:`` with ``placement.node: dedicated``
+(``srtctl.services.normalize.expand_services``). The v1 ``infra`` block still loads.
 """
 
 from __future__ import annotations
@@ -61,7 +61,7 @@ def _expand_block(section: dict[str, Any], *, place_field: str, dedicated_field:
 
 
 def expand_placement(config: dict[str, Any]) -> dict[str, Any]:
-    """Normalize ``placement:`` blocks on frontend / benchmark / infra into the internal fields, in place."""
+    """Normalize ``placement:`` blocks on frontend / benchmark into the internal fields, in place."""
     frontend = config.get("frontend")
     if isinstance(frontend, dict):
         _expand_block(frontend, place_field=_FRONTEND[0], dedicated_field=_FRONTEND[1], block="frontend")
@@ -71,20 +71,10 @@ def expand_placement(config: dict[str, Any]) -> dict[str, Any]:
         _expand_block(benchmark, place_field=_BENCHMARK[0], dedicated_field=_BENCHMARK[1], block="benchmark")
 
     infra = config.get("infra")
-    if isinstance(infra, dict) and isinstance(infra.get("placement"), dict):
-        if "etcd_nats_dedicated_node" in infra:
-            raise ValueError("infra.placement cannot be combined with infra.etcd_nats_dedicated_node")
-        placement = infra["placement"]
-        node = placement.get("node")
-        unknown = set(placement) - {"node"}
-        if unknown:
-            raise ValueError(f"infra.placement has unknown keys: {', '.join(sorted(unknown))}")
-        if node == DEDICATED:
-            infra["etcd_nats_dedicated_node"] = True
-        elif node == "head":
-            infra["etcd_nats_dedicated_node"] = False
-        else:
-            raise ValueError(f"infra.placement.node must be 'head' or 'dedicated', got {node!r}")
-        infra.pop("placement", None)
+    if isinstance(infra, dict) and "placement" in infra:
+        raise ValueError(
+            "infra.placement is not a thing: place the discovery plane through its services "
+            "(services: - name: etcd, type: etcd, placement.node: dedicated; same for nats)"
+        )
 
     return config

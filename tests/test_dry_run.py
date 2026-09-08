@@ -487,9 +487,33 @@ class TestDryRunServices:
         assert "100gb" in output
 
     def test_no_services_omits_the_panel(self, capsys):
-        config = _make_config()
+        # No discovery plane (static frontend), no tachometer: nothing declared, nothing implied.
+        config = _make_config({"frontend": {"type": "sglang"}, "observability": {"tachometer": {"enabled": False}}})
         show_config_details(config)
         assert "Services:" not in capsys.readouterr().out
+
+    def test_implicit_services_are_listed_and_marked(self, capsys):
+        config = _make_config({"frontend": {"type": "dynamo"}})
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "Services:" in output
+        assert "etcd" in output and "nats" in output
+        assert "implied by: frontend.type dynamo" in output
+        assert "/configs/etcd" in output
+        assert "dcgm-exporter" in output and "node-exporter" in output
+        assert "implied by: observability.tachometer default exporters" in output
+
+    def test_external_service_is_shown_as_not_launched(self, capsys):
+        config = _make_config(
+            {
+                "frontend": {"type": "dynamo"},
+                "services": [{"name": "etcd", "type": "etcd", "external": "http://etcd.shared:2379"}],
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "external: http://etcd.shared:2379 (not launched)" in output
+        assert "implied by: frontend.type dynamo" not in output.split("nats")[0]
 
 
 class TestDryRunPostEval:

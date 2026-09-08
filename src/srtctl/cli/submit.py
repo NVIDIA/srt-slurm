@@ -412,15 +412,28 @@ def show_config_details(config: SrtConfig) -> None:
     # --- services (see docs/services.md) ---
     # Plain lines, not a Table: repo URLs and long argv overflow a narrow console and a
     # Table would wrap or truncate them. crop=False keeps each value intact on one line.
-    if config.services:
+    from srtctl.services.implicit import effective_services
+    from srtctl.services.registry import get_service_kind
+
+    effective = effective_services(config)
+    if effective:
         console.print("[bold cyan]Services:[/]")
-        for service in config.services:
+        for entry in effective:
+            service = entry.service
             console.print(
-                f"  [cyan]{service.name}[/] [dim]type={service.type} placement={service.placement.node} "
+                f"  [cyan]{service.name}[/] [dim]type={service.type} placement={service.effective_placement} "
                 f"start={service.effective_start} critical={str(service.effective_critical).lower()}[/]"
             )
-            console.print(f"    [yellow]command:[/] {shlex.join(service.effective_command)}", crop=False)
-            console.print(f"    [yellow]container:[/] {service.container or '<job container>'}")
+            if entry.implicit:
+                console.print(
+                    f"    [yellow]implied by:[/] {entry.reason} (declare a service named {service.name} to change it)"
+                )
+            if service.external:
+                console.print(f"    [yellow]external:[/] {service.external} (not launched)", crop=False)
+                continue
+            console.print(f"    [yellow]command:[/] {shlex.join(service.preview_command())}", crop=False)
+            container = service.container or get_service_kind(service.type).container_fallback(config)
+            console.print(f"    [yellow]container:[/] {container or '<job container>'}")
             if service.source is not None:
                 console.print(f"    [yellow]source:[/] {service.source.git} @ {service.source.rev}", crop=False)
                 if service.source.path:
@@ -429,9 +442,15 @@ def show_config_details(config: SrtConfig) -> None:
                 console.print(f"    [yellow]build_command:[/] {shlex.join(service.build_command)}", crop=False)
             if service.readiness is not None:
                 console.print(f"    [yellow]readiness:[/] {service.readiness.describe()}")
+            elif get_service_kind(service.type).default_readiness_ports:
+                ports = ", ".join(f"tcp/{p}" for p in get_service_kind(service.type).default_readiness_ports)
+                console.print(f"    [yellow]readiness:[/] {ports} (kind default)")
+            if service.options:
+                console.print(f"    [yellow]options:[/] {service.options}", crop=False)
             if service.preamble:
                 console.print(f"    [yellow]preamble:[/] {service.preamble.strip()}", crop=False)
-            console.print(f"    [yellow]inherit_discovery_env:[/] {str(service.inherit_discovery_env).lower()}")
+            if service.type not in ("etcd", "nats"):  # the discovery plane never gets its own address
+                console.print(f"    [yellow]inherit_discovery_env:[/] {str(service.inherit_discovery_env).lower()}")
             for var, val in sorted(service.env.items()):
                 console.print(f"    [yellow]env.{var}:[/] {val}", crop=False)
 

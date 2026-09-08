@@ -32,15 +32,9 @@ def test_benchmark_placement_location_and_dedicated() -> None:
     assert cfg["benchmark"]["client_placement"] == "head"
 
 
-def test_infra_placement() -> None:
-    cfg = {"infra": {"placement": {"node": "dedicated"}}}
-    expand_placement(cfg)
-    assert cfg["infra"]["etcd_nats_dedicated_node"] is True
-    assert "placement" not in cfg["infra"]
-
-    cfg = {"infra": {"placement": {"node": "head"}}}
-    expand_placement(cfg)
-    assert cfg["infra"]["etcd_nats_dedicated_node"] is False
+def test_infra_placement_is_rejected_with_a_pointer_to_services() -> None:
+    with pytest.raises(ValueError, match="through its services"):
+        expand_placement({"infra": {"placement": {"node": "dedicated"}}})
 
 
 def test_placement_and_legacy_load_identically() -> None:
@@ -61,12 +55,10 @@ def test_placement_and_legacy_load_identically() -> None:
     legacy = {
         **base,
         "frontend": {"type": "dynamo", "orchestrator_placement": "first_decode"},
-        "infra": {"etcd_nats_dedicated_node": True},
     }
     placed = {
         **base,
         "frontend": {"type": "dynamo", "placement": {"node": "first_decode"}},
-        "infra": {"placement": {"node": "dedicated"}},
     }
 
     schema = SrtConfig.Schema()
@@ -78,8 +70,6 @@ def test_placement_and_legacy_load_identically() -> None:
 def test_mixing_placement_with_legacy_fields_rejected() -> None:
     with pytest.raises(ValueError, match="cannot be combined"):
         expand_placement({"frontend": {"placement": {"node": "head"}, "orchestrator_placement": "head"}})
-    with pytest.raises(ValueError, match="cannot be combined"):
-        expand_placement({"infra": {"placement": {"node": "head"}, "etcd_nats_dedicated_node": False}})
 
 
 def test_invalid_placement_values_rejected() -> None:
@@ -87,8 +77,6 @@ def test_invalid_placement_values_rejected() -> None:
         expand_placement({"frontend": {"placement": {"node": "head", "extra": 1}}})
     with pytest.raises(ValueError, match="requires a 'node'"):
         expand_placement({"frontend": {"placement": {}}})
-    with pytest.raises(ValueError, match="must be 'head' or 'dedicated'"):
-        expand_placement({"infra": {"placement": {"node": "first_decode"}}})
 
 
 def test_no_placement_is_a_no_op() -> None:

@@ -348,50 +348,22 @@ class TelemetryStageMixin:
         local_dir = tachometer_dir / "local"
         local_dir.mkdir(parents=True, exist_ok=True)
 
-        worker_nodes = sorted({process.node for process in self.backend_processes})
         processes: list[ManagedProcess] = []
-        # Exporters run shell-less (distroless images have no bash — the same
-        # rule the power path follows) and non-critical: telemetry sidecars
-        # must never tear down the benchmark. Verified the hard way: a
-        # bash-wrapped node-exporter (FROM scratch) died with execve() ENOENT
-        # and, as a critical process, killed a 7-node run at startup.
-        if not power_telemetry.enabled and tachometer.resolved_dcgm_exporter is not None:
-            if tachometer.collect_interval_ms < DCGM_PROVEN_SAFE_INTERVAL_MS:
-                logger.warning(
-                    "observability.tachometer.collect_interval_ms=%d drives DCGM NVML "
-                    "sampling below the measured-safe %dms; 100ms sampling cost ~2%% "
-                    "decode ITL p50 on GB300. Proceeding as configured.",
-                    tachometer.collect_interval_ms,
-                    DCGM_PROVEN_SAFE_INTERVAL_MS,
-                )
-            processes.extend(
-                self._start_exporter_container(
-                    exporter_config=tachometer.resolved_dcgm_exporter,
-                    name="tachometer_dcgm_exporter",
-                    nodelist=worker_nodes,
-                    log_file=self.runtime.log_dir / "tachometer_dcgm_exporter.out",
-                    # NOT the power template (100ms): the tachometer exporter
-                    # samples exactly as often as tachometer scrapes it, so one
-                    # knob rules both cadences and every scrape is fresh.
-                    default_command_template=tachometer_dcgm_command_template(tachometer),
-                    use_bash_wrapper=False,
-                    critical=False,
-                )
-            )
-        if tachometer.resolved_node_exporter is not None:
-            processes.extend(
-                self._start_exporter_container(
-                    exporter_config=tachometer.resolved_node_exporter,
-                    name="tachometer_node_exporter",
-                    nodelist=worker_nodes,
-                    log_file=self.runtime.log_dir / "tachometer_node_exporter.out",
-                    default_command_template=(
-                        "/bin/node_exporter --web.listen-address=:{port} "
-                        "--collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo"
-                    ),
-                    use_bash_wrapper=False,
-                    critical=False,
-                )
+        # The DCGM and node exporters tachometer scrapes are services now (implied
+        # by observability.tachometer, launched by ServiceStageMixin in the
+        # after_frontend phase, shell-less and non-critical). Only the warning
+        # about aggressive sampling stays here, next to the knob it is about.
+        if (
+            not power_telemetry.enabled
+            and tachometer.resolved_dcgm_exporter is not None
+            and tachometer.collect_interval_ms < DCGM_PROVEN_SAFE_INTERVAL_MS
+        ):
+            logger.warning(
+                "observability.tachometer.collect_interval_ms=%d drives DCGM NVML "
+                "sampling below the measured-safe %dms; 100ms sampling cost ~2%% "
+                "decode ITL p50 on GB300. Proceeding as configured.",
+                tachometer.collect_interval_ms,
+                DCGM_PROVEN_SAFE_INTERVAL_MS,
             )
 
         cmd = [

@@ -18,7 +18,8 @@ from srtctl.core.health import wait_for_health
 from srtctl.core.processes import ManagedProcess, NamedProcesses
 from srtctl.core.schema import build_otel_env, installs_dynamo
 from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, get_hostname_ip, start_srun_process
-from srtctl.ports import ETCD_CLIENT_PORT, KV_EVENTS_PORT_BASE, KVBM_ZMQ_PORT_BASE, NATS_PORT
+from srtctl.ports import KV_EVENTS_PORT_BASE, KVBM_ZMQ_PORT_BASE
+from srtctl.services.implicit import discovery_env
 
 if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
@@ -169,8 +170,7 @@ class WorkerStageMixin:
         # Environment variables
         env_to_set = {
             "HEAD_NODE_IP": self.runtime.head_node_ip,
-            "ETCD_ENDPOINTS": f"http://{self.runtime.nodes.infra}:{ETCD_CLIENT_PORT}",
-            "NATS_SERVER": f"nats://{self.runtime.nodes.infra}:{NATS_PORT}",
+            **discovery_env(self.config, self.runtime),
             "DYN_SYSTEM_PORT": str(process.sys_port),
             "DYN_REQUEST_PLANE": self.config.dynamo.request_plane,
             "DYN_SKIP_SGLANG_LOG_FORMATTING": "1",
@@ -219,7 +219,10 @@ class WorkerStageMixin:
         # worker's own IP so MOONCAKE_LOCAL_HOSTNAME is correct for multi-node
         # peer-to-peer transfers (defaulting to "localhost" silently breaks them).
         if hasattr(self.backend, "get_mooncake_worker_env"):
-            local_hostname = get_hostname_ip(process.node, self.runtime.network_interface)
+            # A MOONCAKE_LOCAL_HOSTNAME already in the worker env (roles.*.env) pins a NIC; otherwise the node IP.
+            local_hostname = env_to_set.get("MOONCAKE_LOCAL_HOSTNAME") or get_hostname_ip(
+                process.node, self.runtime.network_interface
+            )
             env_to_set.update(self.backend.get_mooncake_worker_env(self.runtime.infra_node_ip, local_hostname))
 
         self._apply_kvbm_endpoint_env(env_to_set, endpoint_processes)
@@ -323,8 +326,7 @@ class WorkerStageMixin:
         # Environment variables
         env_to_set = {
             "HEAD_NODE_IP": self.runtime.head_node_ip,
-            "ETCD_ENDPOINTS": f"http://{self.runtime.nodes.infra}:{ETCD_CLIENT_PORT}",
-            "NATS_SERVER": f"nats://{self.runtime.nodes.infra}:{NATS_PORT}",
+            **discovery_env(self.config, self.runtime),
             "DYN_SYSTEM_PORT": str(leader.sys_port),
             "DYN_REQUEST_PLANE": self.config.dynamo.request_plane,
             "DYN_SKIP_SGLANG_LOG_FORMATTING": "1",
@@ -358,7 +360,9 @@ class WorkerStageMixin:
         # hostname is fundamentally per-process, but TRTLLM-style launching uses
         # one srun for the whole endpoint, so leader IP is the best we can do.
         if hasattr(self.backend, "get_mooncake_worker_env"):
-            local_hostname = get_hostname_ip(leader.node, self.runtime.network_interface)
+            local_hostname = env_to_set.get("MOONCAKE_LOCAL_HOSTNAME") or get_hostname_ip(
+                leader.node, self.runtime.network_interface
+            )
             env_to_set.update(self.backend.get_mooncake_worker_env(self.runtime.infra_node_ip, local_hostname))
 
         self._apply_kvbm_endpoint_env(env_to_set, endpoint_processes)

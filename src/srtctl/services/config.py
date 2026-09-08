@@ -14,7 +14,7 @@ that supplies defaults and injects the environment that kind needs. See
 import builtins
 import logging
 from dataclasses import field
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from marshmallow import Schema, ValidationError
 from marshmallow_dataclass import dataclass
@@ -25,11 +25,13 @@ logger = logging.getLogger(__name__)
 
 # Where a service runs. head / infra are one node; prefill / decode / agg are the
 # distinct physical nodes the role's workers land on; workers is every worker node.
-SERVICE_PLACEMENTS: tuple[str, ...] = ("head", "infra", "prefill", "decode", "agg", "workers")
-SINGLE_NODE_PLACEMENTS: frozenset[str] = frozenset({"head", "infra"})
+SERVICE_PLACEMENTS: tuple[str, ...] = ("head", "infra", "dedicated", "prefill", "decode", "agg", "workers")
+SINGLE_NODE_PLACEMENTS: frozenset[str] = frozenset({"head", "infra", "dedicated"})
 
-# When a service starts relative to the rest of the job.
-SERVICE_STARTS: tuple[str, ...] = ("before_workers", "after_frontend")
+# When a service starts relative to the rest of the job. ``infra`` is the discovery
+# plane (etcd, NATS) that everything else may depend on; ``before_workers`` runs after
+# it and before any worker; ``after_frontend`` once workers and the frontend are healthy.
+SERVICE_STARTS: tuple[str, ...] = ("infra", "before_workers", "after_frontend")
 
 # services[].source is the shared git-at-an-immutable-ref shape.
 ServiceSourceConfig = SourceConfig
@@ -40,9 +42,10 @@ class ServicePlacementConfig:
     """Where a service runs.
 
     Attributes:
-        node: ``head`` or ``infra`` (one instance), ``prefill`` / ``decode`` /
-            ``agg`` (one instance per distinct physical node that role's
-            workers use), or ``workers`` (one instance per worker node).
+        node: ``head`` or ``infra`` (one instance), ``dedicated`` (reserve the
+            infra node exclusively; infra-class kinds only), ``prefill`` /
+            ``decode`` / ``agg`` (one instance per distinct physical node that
+            role's workers use), or ``workers`` (one instance per worker node).
     """
 
     node: str = "head"
@@ -192,7 +195,9 @@ class ServiceConfig:
             ``command`` run. Single-node placements only.
         build_command: Argv run once inside the service container, from the
             clone, before ``command`` starts. Only meaningful with ``source``.
-        placement: Where the service runs. Default ``head``.
+        placement: Where the service runs. Defaults to the kind's placement
+            (``head`` for generic services, ``infra`` for etcd/nats/mooncake-master,
+            ``workers`` for the exporters).
         start: ``after_frontend`` (default for ``generic``) or
             ``before_workers`` (default for ``mooncake-store``).
         readiness: Optional TCP port gate; the job waits for it on every
@@ -209,6 +214,15 @@ class ServiceConfig:
         cpu_bind: Optional ``srun --cpu-bind``.
         srun_options: Extra srun options for this service only.
         build_timeout_seconds: Kill ``build_command`` after this many seconds.
+        enabled: ``false`` drops the service, including an implicit one
+            (``etcd`` / ``nats`` under the Dynamo frontend, the default
+            exporters) declared here by name.
+        external: For discovery-plane kinds (``etcd``, ``nats``,
+            ``mooncake-master``): use this already-running endpoint and launch
+            nothing; the URL is what the job's processes are pointed at.
+        options: Kind-specific settings (``nats``: ``max_payload_mb``;
+            ``mooncake-master``: ``store_config`` for vLLM). Unknown keys are
+            rejected by the kind.
     """
 
     name: str
@@ -219,7 +233,7 @@ class ServiceConfig:
     env: dict[str, str] = field(default_factory=dict)
     source: ServiceSourceConfig | None = None
     build_command: list[str] | None = None
-    placement: ServicePlacementConfig = field(default_factory=ServicePlacementConfig)
+    placement: ServicePlacementConfig | None = None
     start: str | None = None
     readiness: ServiceReadinessConfig | None = None
     inherit_discovery_env: bool = True
@@ -231,6 +245,9 @@ class ServiceConfig:
     # Wall-clock budget for build_command; the build srun is killed when it runs out
     # so a hung build cannot hold the allocation until walltime.
     build_timeout_seconds: int = 1800
+    enabled: bool = True
+    external: str | None = None
+    options: dict[str, Any] = field(default_factory=dict)
 
     # builtins.type: the ``type`` field above shadows the builtin inside the class body.
     Schema: ClassVar[builtins.type[Schema]] = Schema
@@ -248,16 +265,16 @@ class ServiceConfig:
         kind = get_service_kind(self.type)
         if self.command is not None and not self.command:
             raise ValidationError(f"{label}.command, if set, must be non-empty (omit it to use the type's default)")
-        if self.command is None and kind.default_command is None:
+        if self.command is None and kind.default_command is None and not kind.builds_command:
             raise ValidationError(f"{label}.command is required for type {self.type!r}")
         if any(not str(part).strip() for part in [*(self.command or []), *self.args]):
             raise ValidationError(f"{label}.command/args must not contain empty arguments")
         if self.build_command is not None and not self.build_command:
             raise ValidationError(f"{label}.build_command, if set, must be non-empty (omit it entirely instead)")
-        if self.source is not None and self.placement.node not in SINGLE_NODE_PLACEMENTS:
+        if self.source is not None and self.effective_placement not in SINGLE_NODE_PLACEMENTS:
             raise ValidationError(
                 f"{label}.source requires a single-node placement (head or infra); got placement.node="
-                f"{self.placement.node!r}"
+                f"{self.effective_placement!r}"
             )
         if self.source is not None and not self.build_command:
             logger.warning(
@@ -271,6 +288,20 @@ class ServiceConfig:
             raise ValidationError(f"{label}.cpus_per_task must be positive")
         if self.build_timeout_seconds <= 0:
             raise ValidationError(f"{label}.build_timeout_seconds must be positive")
+        if self.external is not None and not str(self.external).strip():
+            raise ValidationError(f"{label}.external must be a non-empty endpoint")
+        if self.external is not None and not kind.supports_external:
+            raise ValidationError(f"{label}.external is only valid for discovery-plane kinds, not {self.type!r}")
+        if self.effective_placement == "dedicated" and not kind.supports_dedicated:
+            raise ValidationError(
+                f"{label}.placement.node: dedicated is only supported for infra-class kinds (etcd, nats, "
+                f"mooncake-master); use head, infra, or workers for type {self.type!r}"
+            )
+        unknown_options = set(self.options) - set(kind.option_keys)
+        if unknown_options:
+            raise ValidationError(
+                f"{label}.options has keys type {self.type!r} does not understand: {', '.join(sorted(unknown_options))}"
+            )
 
     # -- effective values (type defaults applied) ------------------------------
 
@@ -282,11 +313,26 @@ class ServiceConfig:
         base = self.command if self.command is not None else list(get_service_kind(self.type).default_command or ())
         return [*base, *self.args]
 
+    def preview_command(self) -> list[str]:
+        """The command as the kind would launch it, with placeholders for runtime values (dry-run)."""
+        from srtctl.services.registry import ServiceLaunchContext, get_service_kind
+
+        return get_service_kind(self.type).build_command(self, ServiceLaunchContext.preview())
+
     @property
     def effective_start(self) -> str:
         from srtctl.services.registry import get_service_kind
 
         return self.start if self.start is not None else get_service_kind(self.type).default_start
+
+    @property
+    def effective_placement(self) -> str:
+        """``placement.node`` as written, else the kind's default (``head`` for generic services)."""
+        from srtctl.services.registry import get_service_kind
+
+        if self.placement is not None:
+            return self.placement.node
+        return get_service_kind(self.type).default_placement
 
     @property
     def effective_critical(self) -> bool:

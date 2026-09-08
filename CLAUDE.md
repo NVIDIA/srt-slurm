@@ -140,14 +140,25 @@ create_job_record(
 - Job execution is never blocked by status reporting
 - Tags are passed via `metadata["tags"]` (not a separate field)
 
-### InfraConfig
+### Services (etcd, NATS, Mooncake master, exporters)
 
-Controls infrastructure placement (etcd/nats):
+Everything that is not a worker or the frontend is a service (`src/srtctl/services/`, launched by `ServiceStageMixin`). The Dynamo frontend implies `etcd` and `nats`, `backend.mooncake_kv_store` implies `mooncake-master`, tachometer implies `dcgm-exporter` and `node-exporter` on every worker node (`services/implicit.py`). A recipe declares one by name only to change it:
 
-```python
-infra:
-  etcd_nats_dedicated_node: true  # Reserve first node for infra services
+```yaml
+services:
+  - name: etcd
+    type: etcd
+    placement:
+      node: dedicated    # reserve a node for the discovery plane (v1: infra.etcd_nats_dedicated_node)
+  - name: nats
+    type: nats
+    placement:
+      node: dedicated
+    options:
+      max_payload_mb: 24 # v1: infra.nats_max_payload_mb
 ```
+
+`services/normalize.py` maps declared etcd/nats/mooncake-master entries back onto `infra` and `backend.mooncake_kv_store` before schema load, so the runtime reads one set of fields. Adding a kind: subclass `ServiceKind` in `services/`, `@register_service("<type>")`, import it from `services/__init__.py`; if the rest of the recipe should imply it, add it to `implied_services`. See `docs/services.md`.
 
 ### Mooncake KV Store
 

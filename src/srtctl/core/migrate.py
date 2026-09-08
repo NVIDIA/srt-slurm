@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ruamel.yaml.comments import CommentedMap
+from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
 from srtctl.core.roles import ENGINE_CONFIG_KEY, ROLE_NAMES, ROLE_TO_MODE
 from srtctl.core.schema import CURRENT_SCHEMA_VERSION, SUPPORTED_SCHEMA_VERSIONS
@@ -78,6 +78,32 @@ def _child_map(parent: CommentedMap, key: str, *, after: str | None = None) -> C
     else:
         parent[key] = created
     return created
+
+
+def _services_list(variant: CommentedMap, *, near: str | None = None) -> CommentedSeq:
+    """``variant["services"]`` as a list, created (right after ``near`` when given) if missing."""
+    existing = variant.get("services")
+    if isinstance(existing, CommentedSeq):
+        return existing
+    created = CommentedSeq()
+    keys = list(variant.keys())
+    if near is not None and near in keys:
+        variant.insert(keys.index(near) + 1, "services", created)
+    else:
+        variant["services"] = created
+    return created
+
+
+def _service_entry(services: CommentedSeq, name: str) -> CommentedMap:
+    """The service named ``name`` (its ``type`` is the name for the built-in kinds), appended if missing."""
+    for entry in services:
+        if isinstance(entry, dict) and entry.get("name") == name:
+            return entry
+    entry = CommentedMap()
+    entry["name"] = name
+    entry["type"] = name
+    services.append(entry)
+    return entry
 
 
 def _drop_if_empty(parent: CommentedMap, key: str) -> None:
@@ -209,12 +235,138 @@ def _fold_placement(variant: CommentedMap, label: str) -> list[str]:
     benchmark = variant.get("benchmark")
     if isinstance(benchmark, CommentedMap):
         notes += _fold_placement_block(benchmark, "client_placement", "client_dedicated_node", f"{label}benchmark.")
+    return notes
+
+
+def _uses_discovery_plane(variant: CommentedMap, base: CommentedMap) -> bool:
+    """Whether the frontend (variant's, else base's, default dynamo) runs on etcd and NATS."""
+    for source in (variant, base):
+        frontend = source.get("frontend")
+        if isinstance(frontend, dict) and frontend.get("type") is not None:
+            return str(frontend["type"]) == "dynamo"
+    return True
+
+
+def _fold_infra_services(variant: CommentedMap, base: CommentedMap, label: str, *, is_override: bool) -> list[str]:
+    """``infra:`` -> ``etcd`` and ``nats`` services.
+
+    ``etcd_nats_dedicated_node: true`` becomes ``placement.node: dedicated`` on both;
+    ``nats_max_payload_mb`` becomes ``options.max_payload_mb`` on nats. A ``false``
+    is the default and is dropped, except in an override variant, where it has to
+    undo a base ``true`` and so is spelled out as ``placement.node: infra``. An
+    ``infra: null`` override (delete the base block) is spelled out the same way.
+
+    Under a static frontend (no discovery plane) declaring the services would
+    launch etcd and NATS that nothing uses, so the block is not folded: the
+    payload knob is dropped (it had no effect) and ``etcd_nats_dedicated_node``
+    stays in its v1 spelling, since it still reserves a node.
+    """
+    if "infra" not in variant:
+        return []
+    notes: list[str] = []
     infra = variant.get("infra")
-    if isinstance(infra, CommentedMap) and "etcd_nats_dedicated_node" in infra:
+    if not _uses_discovery_plane(variant, base):
+        if isinstance(infra, CommentedMap):
+            if "nats_max_payload_mb" in infra:
+                infra.pop("nats_max_payload_mb")
+                infra.ca.items.pop("nats_max_payload_mb", None)
+                notes.append(f"{label}dropped infra.nats_max_payload_mb (no discovery plane under this frontend)")
+            if infra.get("etcd_nats_dedicated_node"):
+                notes.append(
+                    f"{label}infra.etcd_nats_dedicated_node left as is: it reserves a node although this "
+                    "frontend runs no etcd/NATS; drop it to give the node back to the workers"
+                )
+            elif "etcd_nats_dedicated_node" in infra:
+                infra.pop("etcd_nats_dedicated_node")
+                infra.ca.items.pop("etcd_nats_dedicated_node", None)
+            if not infra:
+                variant.pop("infra")
+                variant.ca.items.pop("infra", None)
+        return notes
+    if infra is None:
+        if is_override:
+            services = _services_list(variant, near="infra")
+            for name in ("etcd", "nats"):
+                _child_map(_service_entry(services, name), "placement")["node"] = "infra"
+            notes.append(f"{label}infra: null -> services etcd/nats placement.node: infra")
+        variant.pop("infra")
+        variant.ca.items.pop("infra", None)
+        return notes
+    if not isinstance(infra, CommentedMap):
+        return notes
+
+    dedicated: bool | None = None
+    if "etcd_nats_dedicated_node" in infra:
         dedicated = bool(infra.pop("etcd_nats_dedicated_node"))
         infra.ca.items.pop("etcd_nats_dedicated_node", None)
-        _child_map(infra, "placement")["node"] = "dedicated" if dedicated else "head"
-        notes.append(f"{label}infra.placement.node: {'dedicated' if dedicated else 'head'}")
+    placement = infra.pop("placement", None)  # an earlier 2.0 draft spelled it infra.placement.node
+    if isinstance(placement, dict):
+        infra.ca.items.pop("placement", None)
+        dedicated = placement.get("node") == "dedicated"
+    payload = None
+    if "nats_max_payload_mb" in infra:
+        payload = infra.pop("nats_max_payload_mb")
+        infra.ca.items.pop("nats_max_payload_mb", None)
+
+    if dedicated or payload is not None or (dedicated is False and is_override):
+        services = _services_list(variant, near="infra")
+        if dedicated is not None:
+            node = "dedicated" if dedicated else "infra"
+            for name in ("etcd", "nats"):
+                _child_map(_service_entry(services, name), "placement")["node"] = node
+            notes.append(f"{label}infra.etcd_nats_dedicated_node -> services etcd/nats placement.node: {node}")
+        if payload is not None:
+            _child_map(_service_entry(services, "nats"), "options")["max_payload_mb"] = payload
+            notes.append(f"{label}infra.nats_max_payload_mb -> services nats options.max_payload_mb")
+    elif dedicated is False:
+        notes.append(f"{label}dropped infra.etcd_nats_dedicated_node: false (the default)")
+    if not infra:
+        variant.pop("infra")
+        variant.ca.items.pop("infra", None)
+    return notes
+
+
+def _fold_mooncake(variant: CommentedMap, label: str) -> list[str]:
+    """``backend.mooncake_kv_store`` -> a ``mooncake-master`` service plus ``roles.*.env``.
+
+    ``container`` and ``master_extra_args`` (as ``args``) and ``store_config`` (as
+    ``options.store_config``) describe the master; ``env`` was injected into every
+    worker and lands in each role's ``env`` (Mooncake values win, as they did at
+    launch). Runs after ``_fold_roles`` so the roles exist, before ``_fold_engine``.
+    """
+    backend = variant.get("backend")
+    if not isinstance(backend, CommentedMap):
+        return []
+    store = backend.get("mooncake_kv_store")
+    if not isinstance(store, CommentedMap):
+        return []
+    roles = variant.get("roles")
+    role_specs = [v for v in roles.values() if isinstance(v, CommentedMap)] if isinstance(roles, CommentedMap) else []
+    env = store.get("env")
+    if env and not role_specs:
+        return [f"{label}backend.mooncake_kv_store left as is (no roles in this variant to carry its env)"]
+    notes: list[str] = []
+    services = _services_list(variant, near="roles" if "roles" in variant else None)
+    entry = _service_entry(services, "mooncake-master")
+    if "container" in store:
+        _move(store, "container", entry, "container")
+    if "master_extra_args" in store:
+        _move(store, "master_extra_args", entry, "args")
+    if "store_config" in store:
+        _move(store, "store_config", _child_map(entry, "options"), "store_config")
+    if "env" in store:
+        moved = store.pop("env")
+        store.ca.items.pop("env", None)
+        if moved:
+            for spec in role_specs:
+                role_env = _child_map(spec, "env")
+                for key, value in moved.items():
+                    role_env[key] = value
+            notes.append(f"{label}backend.mooncake_kv_store.env -> roles.*.env")
+    if not store:
+        backend.pop("mooncake_kv_store")
+        backend.ca.items.pop("mooncake_kv_store", None)
+    notes.append(f"{label}backend.mooncake_kv_store -> services mooncake-master")
     return notes
 
 
@@ -286,10 +438,12 @@ def _migrate_1_to_2(doc: CommentedMap) -> list[str]:
         label = f"{name}: " if name else ""
         notes += _fold_roles(variant, _engine_key_for(variant, base), label)
         notes += _fold_placement(variant, label)
+        notes += _fold_infra_services(variant, base, label, is_override=name not in ("", "base"))
         notes += _fold_dynamo_source(variant, label)
         notes += _strip_unused_benchmark_fields(variant, base, label)
+        notes += _fold_mooncake(variant, label)
         notes += _fold_engine(variant, base, label)
-        for key in ("resources", "dynamo", "infra", "frontend"):
+        for key in ("resources", "dynamo", "frontend"):
             _neutralize_if_empty(variant, key)
     return notes
 
@@ -482,6 +636,33 @@ def _resolved_dump(raw: dict[str, Any]) -> dict[str, Any]:
         backend["kv_events_config"] = {
             mode: loaded.backend.get_kv_events_config_for_mode(mode) for mode, count in active.items() if count > 0
         }
+    # services are compared by effect: the list the job would run, implied ones
+    # included, so `infra:` and declared etcd/nats entries (or mooncake_kv_store
+    # and a declared master) resolve to the same thing.
+    from srtctl.services.implicit import effective_services
+
+    effective = [entry.service for entry in effective_services(loaded)]
+    dumped["services"] = schema.fields["services"]._serialize(effective, "services", loaded)
+    if not any(service.type in ("etcd", "nats") for service in effective) and isinstance(dumped.get("infra"), dict):
+        # No discovery plane: the NATS payload knob never had an effect, and the migrator drops it.
+        dumped["infra"]["nats_max_payload_mb"] = None
+    for service, item in zip(effective, dumped["services"], strict=True):
+        # Kind defaults left implicit on one side and spelled out on the other are the same service.
+        item["placement"] = {"node": service.effective_placement}
+        item["start"] = service.effective_start
+        item["critical"] = service.effective_critical
+    # mooncake_kv_store.env is compared by effect too: it was injected into every
+    # worker on top of the per-mode env, which is where the migrator puts it.
+    mooncake = backend.get("mooncake_kv_store") if isinstance(backend, dict) else None
+    if isinstance(mooncake, dict) and mooncake.get("env"):
+        for mode, key in (
+            ("prefill", "prefill_environment"),
+            ("decode", "decode_environment"),
+            ("agg", "aggregated_environment"),
+        ):
+            if getattr(loaded.resources, f"num_{mode}") > 0:
+                backend[key] = {**(backend.get(key) or {}), **mooncake["env"]}
+        mooncake["env"] = {}
     return dumped
 
 

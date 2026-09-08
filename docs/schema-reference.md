@@ -278,7 +278,7 @@ One entry of the top-level ``services:`` list.
 | `env` | dict[str, str] | `{}` | Environment for the service process, on top of what the kind injects. |
 | `source` | [SourceConfig](#sourceconfig) \| None | `None` | Optional git source to clone before ``build_command`` and ``command`` run. Single-node placements only. |
 | `build_command` | list[str] \| None | `None` | Argv run once inside the service container, from the clone, before ``command`` starts. Only meaningful with ``source``. |
-| `placement` | [ServicePlacementConfig](#serviceplacementconfig) | `ServicePlacementConfig()` | Where the service runs. Default ``head``. |
+| `placement` | [ServicePlacementConfig](#serviceplacementconfig) \| None | `None` | Where the service runs. Defaults to the kind's placement (``head`` for generic services, ``infra`` for etcd/nats/mooncake-master, ``workers`` for the exporters). |
 | `start` | str \| None | `None` | ``after_frontend`` (default for ``generic``) or ``before_workers`` (default for ``mooncake-store``). |
 | `readiness` | [ServiceReadinessConfig](#servicereadinessconfig) \| None | `None` | Optional TCP port gate; the job waits for it on every service node before continuing. |
 | `inherit_discovery_env` | bool | `True` | Inject ``ETCD_ENDPOINTS`` / ``NATS_SERVER`` so the service can register with the job's Dynamo discovery plane. |
@@ -288,6 +288,9 @@ One entry of the top-level ``services:`` list.
 | `cpu_bind` | str \| None | `None` | Optional ``srun --cpu-bind``. |
 | `srun_options` | dict[str, str] | `{}` | Extra srun options for this service only. |
 | `build_timeout_seconds` | int | `1800` | Kill ``build_command`` after this many seconds. |
+| `enabled` | bool | `True` | ``false`` drops the service, including an implicit one (``etcd`` / ``nats`` under the Dynamo frontend, the default exporters) declared here by name. |
+| `external` | str \| None | `None` | For discovery-plane kinds (``etcd``, ``nats``, ``mooncake-master``): use this already-running endpoint and launch nothing; the URL is what the job's processes are pointed at. |
+| `options` | dict[str, Any] | `{}` | Kind-specific settings (``nats``: ``max_payload_mb``; ``mooncake-master``: ``store_config`` for vLLM). Unknown keys are rejected by the kind. |
 
 ### PostEvalConfig
 
@@ -393,7 +396,7 @@ Where a service runs.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `node` | str | `'head'` | ``head`` or ``infra`` (one instance), ``prefill`` / ``decode`` / ``agg`` (one instance per distinct physical node that role's workers use), or ``workers`` (one instance per worker node). |
+| `node` | str | `'head'` | ``head`` or ``infra`` (one instance), ``dedicated`` (reserve the infra node exclusively; infra-class kinds only), ``prefill`` / ``decode`` / ``agg`` (one instance per distinct physical node that role's workers use), or ``workers`` (one instance per worker node). |
 
 ### ServiceReadinessConfig
 

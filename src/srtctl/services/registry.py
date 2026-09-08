@@ -31,6 +31,18 @@ class ServiceLaunchContext:
     index: int  # instance index within this service (0..n-1)
     role: str  # the service's placement.node value
 
+    @classmethod
+    def preview(cls, node: str = "<node>") -> ServiceLaunchContext:
+        """A context for rendering commands without a job (dry-run): placeholders stand in for runtime values."""
+        from types import SimpleNamespace
+
+        runtime = SimpleNamespace(
+            nodes=SimpleNamespace(head="<head>", infra="<infra>", worker=()),
+            head_node_ip="<head_ip>",
+            infra_node_ip="<infra_ip>",
+        )
+        return cls(runtime=runtime, node=node, node_ip="<node_ip>", node_id=0, index=0, role="<role>")  # type: ignore[arg-type]
+
     def template_vars(self) -> dict[str, str]:
         """Placeholders substituted into command, args, env values, and preamble."""
         from srtctl.ports import MOONCAKE_HTTP_METADATA_PORT, MOONCAKE_MASTER_PORT
@@ -58,12 +70,38 @@ class ServiceKind:
     default_command: ClassVar[tuple[str, ...] | None] = None
     default_start: ClassVar[str] = "after_frontend"
     default_critical: ClassVar[bool] = False
+    # Where the service runs when the recipe gives no ``placement``.
+    default_placement: ClassVar[str] = "head"
+    # TCP ports that must answer before the service counts as ready, when the recipe
+    # gives no ``readiness`` (all of them, in order). Empty: launch is enough.
+    default_readiness_ports: ClassVar[tuple[int, ...]] = ()
+    default_readiness_timeout: ClassVar[int] = 120
+    # Whether the srun wraps the command in bash (exports, preamble). Distroless
+    # images (the exporters) have no shell.
+    use_bash_wrapper: ClassVar[bool] = True
+    # Infra-class kinds may reserve the infra node (``placement.node: dedicated``)
+    # and may point at an already-running instance (``external``).
+    supports_dedicated: ClassVar[bool] = False
+    supports_external: ClassVar[bool] = False
+    # ``options`` keys this kind understands.
+    option_keys: ClassVar[tuple[str, ...]] = ()
+    # True when the kind assembles its own command in ``build_command`` (etcd, the
+    # exporters, ...), so the recipe need not give one.
+    builds_command: ClassVar[bool] = False
 
     def validate(self, service: ServiceConfig, config: SrtConfig) -> None:
         """Whole-recipe checks for one service (raise ``marshmallow.ValidationError``)."""
 
     def container_fallback(self, config: SrtConfig) -> str | None:
         """Image to use when the service sets no ``container``; None falls through to the job container."""
+        return None
+
+    def build_command(self, service: ServiceConfig, ctx: ServiceLaunchContext) -> list[str]:
+        """The argv to launch on ``ctx.node`` (placeholders already substituted by the stage)."""
+        return list(service.effective_command)
+
+    def preamble(self, service: ServiceConfig, ctx: ServiceLaunchContext) -> str | None:
+        """Shell the kind runs before the command (data-dir setup and the like); the recipe's ``preamble`` follows."""
         return None
 
     def default_environment(self, service: ServiceConfig, ctx: ServiceLaunchContext) -> dict[str, str]:

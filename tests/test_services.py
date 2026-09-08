@@ -20,6 +20,7 @@ from srtctl.core.schema import SrtConfig
 from srtctl.core.topology import Endpoint
 from srtctl.ports import MOONCAKE_HTTP_METADATA_PORT, MOONCAKE_MASTER_PORT
 from srtctl.services import ServiceConfig, ServiceSourceConfig, list_service_types
+from srtctl.services.implicit import discovery_env, effective_services, uses_discovery_plane
 
 SRUN = "srtctl.cli.mixins.service_stage.start_srun_process"
 WAIT = "srtctl.cli.mixins.service_stage.wait_until_ready"
@@ -42,7 +43,14 @@ resources:
   gpus_per_decode: 8
 benchmark:
   type: manual
+observability:
+  tachometer:
+    enabled: false
 """
+
+# Same cluster, tachometer left at its default (on): the exporters are implied.
+TACHOMETER_HEAD = DISAGG_HEAD.replace("observability:\n  tachometer:\n    enabled: false\n", "")
+assert TACHOMETER_HEAD != DISAGG_HEAD
 
 
 def _load(services_yaml: str, head: str = DISAGG_HEAD, backend: str = "backend:\n  type: sglang\n") -> SrtConfig:
@@ -78,7 +86,15 @@ def _proc(returncode: int = 0) -> MagicMock:
 
 
 def test_registered_kinds() -> None:
-    assert list_service_types() == ["generic", "mooncake-store"]
+    assert list_service_types() == [
+        "dcgm-exporter",
+        "etcd",
+        "generic",
+        "mooncake-master",
+        "mooncake-store",
+        "nats",
+        "node-exporter",
+    ]
 
 
 def test_generic_service_loads_block_yaml_with_defaults() -> None:
@@ -100,7 +116,7 @@ services:
     (svc,) = config.services
     assert svc.type == "generic"
     assert svc.effective_command == ["python3", "-m", "http.server", "9911"]
-    assert svc.placement.node == "head"
+    assert svc.effective_placement == "head"
     assert svc.effective_start == "after_frontend"
     assert svc.effective_critical is False
     assert svc.inherit_discovery_env is True
@@ -427,7 +443,7 @@ services:
 
 def test_mooncake_stores_launch_once_per_role_node_with_master_env(tmp_path: Path) -> None:
     orchestrator = _orchestrator(_load(STORES, backend=MOONCAKE_BACKEND), tmp_path)
-    ips = {"node1": "10.0.0.11", "node2": "10.0.0.12", "node3": "10.0.0.13"}
+    ips = {"node0": "10.0.0.10", "node1": "10.0.0.11", "node2": "10.0.0.12", "node3": "10.0.0.13"}
     with (
         patch(SRUN, side_effect=lambda **_: _proc()) as srun,
         patch(HOST_IP, side_effect=lambda node, _iface: ips[node]),
@@ -435,17 +451,26 @@ def test_mooncake_stores_launch_once_per_role_node_with_master_env(tmp_path: Pat
     ):
         procs = orchestrator.start_services("before_workers")
 
-    # 1 prefill node + 2 decode nodes, no launches for the head.
-    assert [p.node for p in procs] == ["node1", "node2", "node3"]
+    # The implied Mooncake master on the infra node first, then 1 prefill node +
+    # 2 decode nodes of stores; no store launches for the head.
+    assert [p.node for p in procs] == ["node0", "node1", "node2", "node3"]
     assert [p.name for p in procs] == [
+        "service_mooncake-master",
         "service_store-prefill",
         "service_store-decode_node2",
         "service_store-decode_node3",
     ]
     assert all(p.critical for p in procs)
-    assert wait.call_count == 3
+    assert all(p.step_name == p.name for p in procs)
+    # Master: three default ports gated in turn; stores: one declared probe each.
+    assert wait.call_count == 3 + 3
 
-    prefill = srun.call_args_list[0].kwargs
+    master = srun.call_args_list[0].kwargs
+    assert master["container_image"] == "/mooncake-master.sqsh"
+    assert master["command"][0] == "mooncake_master"
+    assert master["step_name"] == "service_mooncake-master"
+
+    prefill = srun.call_args_list[1].kwargs
     assert prefill["container_image"] == "/mooncake-master.sqsh"  # falls back to mooncake_kv_store.container
     assert prefill["command"] == [
         "python",
@@ -467,7 +492,7 @@ def test_mooncake_stores_launch_once_per_role_node_with_master_env(tmp_path: Pat
     assert prefill["cpu_bind"] == "none"
     assert prefill["srun_options"] == {"exclusive": ""}
 
-    decode = srun.call_args_list[1].kwargs
+    decode = srun.call_args_list[2].kwargs
     assert decode["container_image"] == "/mooncake-store.sqsh"
     assert decode["env_to_set"]["MOONCAKE_GLOBAL_SEGMENT_SIZE"] == "400gb"
     assert decode["env_to_set"]["MOONCAKE_LOCAL_HOSTNAME"] == "10.0.0.12"
@@ -497,8 +522,9 @@ def test_workers_placement_deduplicates_shared_nodes(tmp_path: Path) -> None:
         patch(WAIT, return_value=True),
     ):
         procs = orchestrator.start_services("before_workers")
-    assert srun.call_count == 3
-    assert {p.node for p in procs} == {"node1", "node2", "node3"}
+    # Implied Mooncake master on node0, then one store per worker node.
+    assert srun.call_count == 4
+    assert {p.node for p in procs} == {"node0", "node1", "node2", "node3"}
 
 
 def test_service_config_direct_construction() -> None:
@@ -506,3 +532,202 @@ def test_service_config_direct_construction() -> None:
     assert svc.effective_start == "before_workers"
     with pytest.raises(ValidationError, match="must not contain empty arguments"):
         ServiceConfig(name="x", command=["python", ""])
+
+
+# --- implicit services ------------------------------------------------------------
+
+
+def _from_yaml(tmp_path: Path, text: str) -> SrtConfig:
+    """Through the real loader (normalizers included), unlike ``_load``."""
+    path = tmp_path / "recipe.yaml"
+    path.write_text(text)
+    return SrtConfig.from_yaml(path)
+
+
+def _names(config: SrtConfig) -> list[tuple[str, bool]]:
+    return [(entry.service.name, entry.implicit) for entry in effective_services(config)]
+
+
+def test_dynamo_frontend_implies_etcd_and_nats_on_the_infra_node(tmp_path: Path) -> None:
+    config = _load("")  # frontend defaults to dynamo
+    assert _names(config) == [("etcd", True), ("nats", True)]
+    assert uses_discovery_plane(config)
+
+    orchestrator = _orchestrator(config, tmp_path)
+    with (
+        patch(SRUN, return_value=_proc()) as srun,
+        patch(HOST_IP, return_value="10.0.0.10"),
+        patch(WAIT, return_value=True) as wait,
+    ):
+        procs = orchestrator.start_services("infra")
+
+    assert [p.name for p in procs] == ["service_etcd", "service_nats"]
+    assert [p.node for p in procs] == ["node0", "node0"]
+    assert all(p.critical for p in procs)
+    assert [p.step_name for p in procs] == ["service_etcd", "service_nats"]
+    etcd, nats = (call.kwargs for call in srun.call_args_list)
+    assert etcd["command"] == [
+        "/configs/etcd",
+        "--data-dir",
+        "/tmp/etcd",
+        "--listen-client-urls",
+        "http://0.0.0.0:2379",
+        "--advertise-client-urls",
+        "http://10.0.0.10:2379",
+    ]
+    assert etcd["bash_preamble"] == "rm -rf /tmp/etcd && mkdir -p /tmp/etcd"
+    assert etcd["container_image"] == "/job.sqsh"
+    assert "ETCD_ENDPOINTS" not in etcd["env_to_set"]  # the plane does not point at itself
+    assert nats["command"] == ["/configs/nats-server", "-js", "-sd", "/tmp/nats"]
+    # One tcp probe per kind default port, against the node the service runs on.
+    assert [call.args[0].port for call in wait.call_args_list] == [2379, 4222]
+    assert all(call.kwargs["host"] == "node0" for call in wait.call_args_list)
+    assert all(call.kwargs["timeout"] == 300 for call in wait.call_args_list)
+
+
+def test_static_frontend_implies_no_discovery_plane(tmp_path: Path) -> None:
+    config = _load("frontend:\n  type: sglang\n")
+    assert _names(config) == []
+    assert not uses_discovery_plane(config)
+    with patch(SRUN) as srun:
+        assert _orchestrator(config, tmp_path).start_services("infra") == []
+    srun.assert_not_called()
+
+
+def test_declared_etcd_takes_over_and_external_is_not_launched(tmp_path: Path) -> None:
+    config = _load("services:\n  - name: etcd\n    type: etcd\n    external: http://etcd.shared:2379\n")
+    assert _names(config) == [("etcd", False), ("nats", True)]
+    orchestrator = _orchestrator(config, tmp_path)
+    with (
+        patch(SRUN, return_value=_proc()) as srun,
+        patch(HOST_IP, return_value="10.0.0.10"),
+        patch(WAIT, return_value=True),
+    ):
+        procs = orchestrator.start_services("infra")
+    assert [p.name for p in procs] == ["service_nats"]
+    assert srun.call_count == 1
+    assert discovery_env(config, orchestrator.runtime) == {
+        "ETCD_ENDPOINTS": "http://etcd.shared:2379",
+        "NATS_SERVER": "nats://node0:4222",
+    }
+
+
+def test_enabled_false_drops_an_implicit_service() -> None:
+    config = _load("services:\n  - name: nats\n    type: nats\n    enabled: false\n")
+    assert _names(config) == [("etcd", True)]
+
+
+def test_nats_max_payload_renders_a_config_file(tmp_path: Path) -> None:
+    config = _load("infra:\n  nats_max_payload_mb: 24\n")
+    orchestrator = _orchestrator(config, tmp_path)
+    with (
+        patch(SRUN, return_value=_proc()) as srun,
+        patch(HOST_IP, return_value="10.0.0.10"),
+        patch(WAIT, return_value=True),
+    ):
+        orchestrator.start_services("infra")
+    nats = srun.call_args_list[1].kwargs
+    assert nats["command"] == ["/configs/nats-server", "-c", "/tmp/nats.conf"]
+    assert f"max_payload: {24 * 1024 * 1024}" in nats["bash_preamble"]
+    assert "> /tmp/nats.conf" in nats["bash_preamble"]
+
+
+def test_declared_nats_options_flow_back_into_infra(tmp_path: Path) -> None:
+    config = _from_yaml(
+        tmp_path,
+        DISAGG_HEAD
+        + "backend:\n  type: sglang\n"
+        + "services:\n  - name: etcd\n    type: etcd\n    placement:\n      node: dedicated\n"
+        + "  - name: nats\n    type: nats\n    placement:\n      node: dedicated\n    options:\n"
+        + "      max_payload_mb: 24\n",
+    )
+    assert config.infra.etcd_nats_dedicated_node is True
+    assert config.infra.nats_max_payload_mb == 24
+    assert [entry.service.effective_placement for entry in effective_services(config)] == ["dedicated", "dedicated"]
+
+
+def test_declared_etcd_dedicated_must_agree_with_nats(tmp_path: Path) -> None:
+    with pytest.raises(Exception, match="dedicated"):
+        _from_yaml(
+            tmp_path,
+            DISAGG_HEAD
+            + "backend:\n  type: sglang\n"
+            + "services:\n  - name: etcd\n    type: etcd\n    placement:\n      node: dedicated\n"
+            + "  - name: nats\n    type: nats\n    placement:\n      node: infra\n",
+        )
+
+
+def test_declared_mooncake_master_maps_onto_the_backend(tmp_path: Path) -> None:
+    config = _from_yaml(
+        tmp_path,
+        DISAGG_HEAD
+        + """backend:
+  type: sglang
+  sglang_config:
+    prefill:
+      disaggregation-transfer-backend: mooncake
+    decode:
+      disaggregation-transfer-backend: mooncake
+services:
+  - name: mooncake-master
+    type: mooncake-master
+    container: /mm.sqsh
+    args: [--nof_eviction_high_watermark_ratio=0.9]
+""",
+    )
+    assert config.backend.mooncake_kv_store is not None
+    assert config.backend.mooncake_kv_store.container == "/mm.sqsh"
+    assert list(config.backend.mooncake_kv_store.master_extra_args) == ["--nof_eviction_high_watermark_ratio=0.9"]
+    assert ("mooncake-master", False) in _names(config)
+
+
+def test_tachometer_exporters_are_implied_on_every_worker_node(tmp_path: Path) -> None:
+    config = _load("frontend:\n  type: sglang\n", head=TACHOMETER_HEAD)
+    assert _names(config) == [("dcgm-exporter", True), ("node-exporter", True)]
+    orchestrator = _orchestrator(config, tmp_path)
+    with patch(SRUN, return_value=_proc()) as srun, patch(HOST_IP, return_value="10.0.0.11"):
+        procs = orchestrator.start_services("after_frontend")
+
+    assert [p.name for p in procs] == [
+        "service_dcgm-exporter_node1",
+        "service_dcgm-exporter_node2",
+        "service_dcgm-exporter_node3",
+        "service_node-exporter_node1",
+        "service_node-exporter_node2",
+        "service_node-exporter_node3",
+    ]
+    # A dead exporter costs its metrics, never the run.
+    assert not any(p.critical for p in procs)
+    dcgm = srun.call_args_list[0].kwargs
+    assert dcgm["container_image"] == "nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04"
+    assert dcgm["command"] == ["dcgm-exporter", "--collect-interval=1000", "--address", ":9401"]
+    # Distroless image: no bash wrapper, env rides on srun --export instead.
+    assert dcgm["use_bash_wrapper"] is False
+    assert dcgm["bash_preamble"] is None
+    assert dcgm["env_to_set"] is None
+    assert "ETCD_ENDPOINTS" in dcgm["srun_export_env"]
+    node = srun.call_args_list[3].kwargs
+    assert node["container_image"] == "quay.io#prometheus/node-exporter:v1.8.2"
+    assert node["command"][:2] == ["/bin/node_exporter", "--web.listen-address=:9101"]
+
+
+def test_declared_exporter_overrides_the_container(tmp_path: Path) -> None:
+    config = _load(
+        "frontend:\n  type: sglang\nservices:\n  - name: dcgm-exporter\n    type: dcgm-exporter\n"
+        "    container: /mirror/dcgm.sqsh\n  - name: node-exporter\n    type: node-exporter\n    enabled: false\n",
+        head=TACHOMETER_HEAD,
+    )
+    assert _names(config) == [("dcgm-exporter", False)]
+    with patch(SRUN, return_value=_proc()) as srun, patch(HOST_IP, return_value="10.0.0.11"):
+        _orchestrator(config, tmp_path).start_services("after_frontend")
+    assert srun.call_count == 3
+    assert srun.call_args.kwargs["container_image"] == "/mirror/dcgm.sqsh"
+
+
+def test_power_telemetry_owns_the_dcgm_exporter() -> None:
+    config = _load(
+        "frontend:\n  type: sglang\nbenchmark:\n  type: sa-bench\n  concurrencies: [4]\ntelemetry:\n  enabled: true\n"
+        "  dcgm_exporter:\n    container_image: dcgm-exporter\n    port: 9401\n",
+        head=TACHOMETER_HEAD.replace("benchmark:\n  type: manual\n", ""),
+    )
+    assert _names(config) == [("node-exporter", True)]

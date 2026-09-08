@@ -106,9 +106,7 @@ class TestTachometerConfig:
         )
 
         default = TachometerConfig()
-        cmd = resolve_exporter_command(
-            default.resolved_dcgm_exporter, tachometer_dcgm_command_template(default)
-        )
+        cmd = resolve_exporter_command(default.resolved_dcgm_exporter, tachometer_dcgm_command_template(default))
         assert "--collect-interval=1000" in cmd
         assert ":9401" in cmd
 
@@ -121,9 +119,10 @@ class TestTachometerConfig:
                 container_image="dcgm:latest", port=9401, command="dcgm-exporter --custom --address :{port}"
             )
         )
-        assert resolve_exporter_command(
-            custom.resolved_dcgm_exporter, tachometer_dcgm_command_template(custom)
-        ) == "dcgm-exporter --custom --address :9401"
+        assert (
+            resolve_exporter_command(custom.resolved_dcgm_exporter, tachometer_dcgm_command_template(custom))
+            == "dcgm-exporter --custom --address :9401"
+        )
 
         assert "--collect-interval=100 " in DCGM_EXPORTER_COMMAND_TEMPLATE
 
@@ -693,7 +692,7 @@ class TestTachometerStageMixin:
 
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
     @patch("srtctl.cli.mixins.telemetry_stage.generate_tachometer_config", return_value='storage = "/run/tachometer"\n')
-    def test_start_tachometer_starts_exporters_and_scraper(self, _mock_config, mock_srun, tmp_path):
+    def test_start_tachometer_starts_only_the_scraper(self, _mock_config, mock_srun, tmp_path):
         class Harness(TelemetryStageMixin):
             def __init__(self):
                 self.config = _make_config(
@@ -744,10 +743,12 @@ class TestTachometerStageMixin:
 
         procs = harness.start_tachometer()
 
-        assert len(procs) == 3
+        # The DCGM and node exporters are services now (see test_services.py);
+        # this stage launches exactly one thing: the scraper.
+        assert len(procs) == 1
         assert (tmp_path / "tachometer_config.toml").exists()
         assert (tmp_path / "tachometer" / "local").exists()
-        assert mock_srun.call_count == 3
+        assert mock_srun.call_count == 1
         scraper_call = mock_srun.call_args_list[-1]
         assert scraper_call.kwargs["command"] == [
             "tachometer-scraper",
@@ -764,13 +765,6 @@ class TestTachometerStageMixin:
         # tear down the benchmark via the critical-process check.
         assert procs[-1].name == "tachometer"
         assert procs[-1].critical is False
-        # Exporter sidecars share the contract: shell-less launch (distroless
-        # images have no bash) and non-critical (a dead sidecar never kills
-        # the run — regression guard for the 7-node startup teardown).
-        for call in mock_srun.call_args_list[:-1]:
-            assert call.kwargs["use_bash_wrapper"] is False
-        for proc in procs[:-1]:
-            assert proc.critical is False
 
     def test_resolve_tachometer_binary(self, tmp_path, monkeypatch):
         """Explicit paths are respected verbatim; the default bare name
@@ -835,12 +829,9 @@ class TestTachometerStageMixin:
 
         procs = harness.start_tachometer()
 
-        # Built-in exporters launch by default alongside the scraper.
-        assert [proc.name for proc in procs] == [
-            "tachometer_dcgm_exporter",
-            "tachometer_node_exporter",
-            "tachometer",
-        ]
+        # The built-in exporters are implied services (launched by the service
+        # stage); this stage starts the scraper alone.
+        assert [proc.name for proc in procs] == ["tachometer"]
         assert (tmp_path / "tachometer_config.toml").exists()
 
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
@@ -907,68 +898,10 @@ class TestTachometerStageMixin:
 
         processes = Harness().start_tachometer()
 
-        assert [process.name for process in processes] == ["tachometer_node_exporter", "tachometer"]
-        assert mock_srun.call_count == 2
+        # The power path owns the DCGM exporter; tachometer only scrapes it.
+        assert [process.name for process in processes] == ["tachometer"]
+        assert mock_srun.call_count == 1
         assert 'name = "dcgm_node-a"' in (tmp_path / "tachometer_config.toml").read_text()
-
-    @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
-    @patch("srtctl.cli.mixins.telemetry_stage.generate_tachometer_config", return_value='storage = "/run/tachometer"\n')
-    def test_multinode_exporters_request_one_node_per_task(self, _mock_config, mock_srun, tmp_path):
-        """srun rejects --nodes 1 with a longer --nodelist, so the exporter launch
-        must size --nodes to the worker set."""
-
-        class Harness(TelemetryStageMixin):
-            def __init__(self):
-                self.config = _make_config(
-                    tachometer=TachometerConfig(
-                        enabled=True,
-                        dcgm_exporter=TelemetryExporterConfig(container_image="dcgm:latest", port=9401),
-                        node_exporter=TelemetryExporterConfig(container_image="node:latest", port=9101),
-                    )
-                )
-                self.runtime = MagicMock()
-                self.runtime.log_dir = tmp_path
-                self.runtime.nodes.head = "node-a"
-                self.runtime.nodes.het = False
-                self.runtime.srun_options = {}
-                self.runtime.container_mounts = {Path(tmp_path): Path("/logs")}
-                self._backend_processes = [
-                    Process(
-                        node=node,
-                        gpu_indices=frozenset({0}),
-                        sys_port=8081,
-                        http_port=30000,
-                        endpoint_mode="agg",
-                        endpoint_index=index,
-                        node_rank=index,
-                    )
-                    for index, node in enumerate(["node-a", "node-b"])
-                ]
-
-            @property
-            def backend_processes(self):
-                return self._backend_processes
-
-            def _compute_frontend_topology(self):
-                return FrontendTopology(
-                    nginx_node=None,
-                    frontend_nodes=["node-a"],
-                    frontend_port=8000,
-                    public_port=8000,
-                )
-
-        mock_srun.return_value = _running_exporter()
-        harness = Harness()
-
-        harness.start_tachometer()
-
-        exporter_calls = [
-            call for call in mock_srun.call_args_list if call.kwargs.get("nodelist") == ["node-a", "node-b"]
-        ]
-        assert len(exporter_calls) == 2
-        for call in exporter_calls:
-            assert call.kwargs["nodes"] == 2
-            assert call.kwargs["ntasks"] == 2
 
 
 def _running_exporter():

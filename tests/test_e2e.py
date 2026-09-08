@@ -1027,10 +1027,10 @@ backend:
     def test_mooncake_master_extra_args_are_appended(self):
         """Version-specific master flags are opt-in and appended after defaults."""
         from srtctl.backends.vllm import VLLMMooncakeKVStoreConfig
-        from srtctl.cli.do_sweep import _build_mooncake_master_command
+        from srtctl.services.mooncake_master import mooncake_master_command
 
         nof_arg = "--nof_eviction_high_watermark_ratio=0.9"
-        command = _build_mooncake_master_command(VLLMMooncakeKVStoreConfig(master_extra_args=[nof_arg]))
+        command = mooncake_master_command(VLLMMooncakeKVStoreConfig(master_extra_args=[nof_arg]).master_extra_args)
 
         assert "--eviction_high_watermark_ratio=0.9" in command
         assert command[-1] == nof_arg

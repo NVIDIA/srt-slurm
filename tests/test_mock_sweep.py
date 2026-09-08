@@ -100,7 +100,8 @@ def test_run_mock_sweep_produces_expected_artifacts(tmp_path: Path) -> None:
     assert (output_dir / "result.json").is_file()
     assert (output_dir / "recipe.lock.yaml").is_file(), "lockfile written by real postprocess stage"
     # Per-component logs emitted by the real orchestrator, via fake srun.
-    assert (output_dir / "logs" / "infra.out").is_file()
+    assert (output_dir / "logs" / "service_etcd.out").is_file(), "etcd is a service now"
+    assert (output_dir / "logs" / "service_nats.out").is_file(), "nats is a service now"
     assert any((output_dir / "logs").glob("*_agg_w0.out")), "worker log written"
     assert any((output_dir / "logs").glob("*_frontend_*.out")), "frontend log written"
     assert (output_dir / "logs" / "benchmark.out").is_file()
@@ -179,6 +180,7 @@ def test_trtllm_aggregate_runs_complete_sa_bench_lifecycle_without_router(tmp_pa
     assert result["status"] == "completed"
     assert any((output_dir / "logs").glob("*_agg_w0.out"))
     assert (output_dir / "logs" / "benchmark.out").is_file()
-    assert not (output_dir / "logs" / "infra.out").exists()
+    assert not (output_dir / "logs" / "service_etcd.out").exists()
+    assert not (output_dir / "logs" / "service_nats.out").exists()
     assert not (output_dir / "logs" / "ser.yaml").exists()
     assert not any((output_dir / "logs").glob("*_frontend_*.out"))
