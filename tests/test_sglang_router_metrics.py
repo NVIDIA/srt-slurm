@@ -144,6 +144,7 @@ def test_tachometer_terminate_signals_the_step_then_waits() -> None:
     scancel = SimpleNamespace(returncode=0, stdout="", stderr="")
     with (
         patch.dict("os.environ", {"SLURM_JOB_ID": "12440"}),
+        patch("srtctl.core.processes.shutil.which", return_value="/usr/bin/slurm-tool"),
         patch("srtctl.core.processes.subprocess.run", side_effect=[squeue, scancel]) as run,
         patch("srtctl.core.processes.terminate_and_reap") as reap,
     ):
@@ -161,6 +162,7 @@ def test_terminate_falls_back_to_srun_sigterm_when_the_step_is_not_found() -> No
     squeue = SimpleNamespace(returncode=0, stdout="12440.extern extern\n", stderr="")
     with (
         patch.dict("os.environ", {"SLURM_JOB_ID": "12440"}),
+        patch("srtctl.core.processes.shutil.which", return_value="/usr/bin/slurm-tool"),
         patch("srtctl.core.processes.subprocess.run", return_value=squeue),
         patch("srtctl.core.processes.terminate_and_reap") as reap,
     ):
@@ -185,8 +187,8 @@ def test_registry_cleanup_uses_the_process_terminate_timeout() -> None:
     popen.poll.return_value = None
     registry = ProcessRegistry(job_id="1")
     registry.add_process(ManagedProcess(name="tachometer", popen=popen, terminate_timeout=90.0))
-    with patch("srtctl.core.processes.terminate_and_reap") as reap:
-        reap.return_value = SimpleNamespace(reaped=True, force_killed=False)
-        registry.cleanup()
-    assert reap.call_args.kwargs["terminate_timeout"] == 90.0
+    registry.cleanup()
+    popen.terminate.assert_called_once()
+    # The wait runs against a deadline set when SIGTERM went out, so it is the timeout minus a few ms.
+    assert 89.0 < popen.wait.call_args.kwargs["timeout"] <= 90.0
     assert TACHOMETER_TERMINATE_TIMEOUT_SECONDS == 90.0

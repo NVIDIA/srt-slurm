@@ -212,6 +212,10 @@ services:
 
 Adding a kind: subclass `ServiceKind`, set `default_command` / `default_start` / `default_critical`, override `validate`, `container_fallback`, `default_environment`, `forced_environment` as needed, decorate, and import it from `src/srtctl/services/__init__.py`. `srtctl dry-run` prints every service; add a `tests/test_dry_run.py` case when a kind adds visible fields.
 
+### Process cleanup and graceful shutdown
+
+Every long-running `srun` (workers, frontends, nginx, services, tachometer) is launched with a `step_name` and tracked as a `ManagedProcess` carrying the same name. `ProcessRegistry.cleanup()` stops processes by `shutdown_tier`: tier 0 (workers, frontends, sidecars) is SIGTERMed all at once through `scancel --signal=TERM --full <job>.<step>`, waited for up to each process's `terminate_timeout`, and killed if still up; then tier 1 (Mooncake master, stores), then tier 2 (etcd, NATS). SIGTERM aimed at the `srun` client itself aborts the step and SIGKILLs the task, which is why the step name matters: it is the only way the engine, router, or scraper sees the signal and gets to deregister, drain, or flush. New launch sites must pass `step_name` to both `start_srun_process` and `ManagedProcess`.
+
 ### Host Setup
 
 `host_setup` runs commands on each node's **bare host, outside the container**, before any

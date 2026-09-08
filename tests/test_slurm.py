@@ -223,6 +223,8 @@ def test_worker_stage_wraps_nonfatal_fingerprint_hook(tmp_path: Path) -> None:
     assert "/configs/patches/${setup_script}" in bash_preamble
     assert bash_preamble.endswith("&& ( fingerprint || true )")
     assert mock_srun.call_args.kwargs["env_to_unset"] is None
+    # Named step, so cleanup can SIGTERM the engine through scancel instead of killing srun.
+    assert mock_srun.call_args.kwargs["step_name"] == "prefill_0_node-a"
 
 
 def _remap_worker_mixin(tmp_path: Path, *, frontend_type: str, dynamo_install: bool):

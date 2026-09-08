@@ -106,7 +106,7 @@ class TRTLLMServeFrontend:
         stop_event: "threading.Event | None" = None,
     ) -> list["ManagedProcess"]:
         """Use the aggregate worker directly or launch the disaggregated orchestrator."""
-        from srtctl.core.processes import ManagedProcess
+        from srtctl.core.processes import FRONTEND_TERMINATE_TIMEOUT_SECONDS, ManagedProcess
 
         # trtllm-serve disaggregated fronts trtllm workers; it can't route to other backends.
         if config.backend.type != "trtllm":
@@ -191,6 +191,7 @@ class TRTLLMServeFrontend:
         # so downstream tooling that globs *_frontend_*.out (perf dashboard,
         # log collection) treats both frontends identically.
         orch_log = runtime.log_dir / f"{frontend_node}_frontend_0.out"
+        step_name = "trtllm_serve_orchestrator"
         proc = start_srun_process(
             command=cmd,
             nodelist=[frontend_node],
@@ -202,14 +203,17 @@ class TRTLLMServeFrontend:
             # for the single-rank orchestrator (same reason the dynamo frontend uses it).
             mpi="pmix",
             het_group=runtime.nodes.het_group_for(frontend_node),
+            step_name=step_name,
         )
 
         return [
             ManagedProcess(
-                name="trtllm_serve_orchestrator",
+                name=step_name,
                 popen=proc,
                 log_file=orch_log,
                 node=frontend_node,
                 critical=True,
+                terminate_timeout=FRONTEND_TERMINATE_TIMEOUT_SECONDS,
+                step_name=step_name,
             )
         ]

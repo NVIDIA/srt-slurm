@@ -167,6 +167,7 @@ class FrontendStageMixin:
                 "container-remap-root": "",
             },
             het_group=self.runtime.nodes.het_group_for(topology.nginx_node),
+            step_name="nginx",
         )
 
         return ManagedProcess(
@@ -175,6 +176,7 @@ class FrontendStageMixin:
             log_file=nginx_log,
             node=topology.nginx_node,
             critical=True,
+            step_name="nginx",
         )
 
     def _generate_nginx_config(self, topology: FrontendTopology) -> str:

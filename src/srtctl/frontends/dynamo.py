@@ -80,7 +80,7 @@ class DynamoFrontend:
         stop_event: "threading.Event | None" = None,  # unused: returns immediately
     ) -> list["ManagedProcess"]:
         """Start dynamo frontends on designated nodes."""
-        from srtctl.core.processes import ManagedProcess
+        from srtctl.core.processes import FRONTEND_TERMINATE_TIMEOUT_SECONDS, ManagedProcess
 
         processes: list[ManagedProcess] = []
 
@@ -113,6 +113,7 @@ class DynamoFrontend:
             # Build bash preamble (setup script + dynamo install)
             bash_preamble = self._build_preamble(config)
 
+            step_name = f"frontend_{idx}"
             proc = start_srun_process(
                 command=cmd,
                 nodelist=[node],
@@ -128,15 +129,18 @@ class DynamoFrontend:
                 # why this is needed in later versions of Dynamo, but it is.
                 mpi="pmix",
                 het_group=runtime.nodes.het_group_for(node),
+                step_name=step_name,
             )
 
             processes.append(
                 ManagedProcess(
-                    name=f"frontend_{idx}",
+                    name=step_name,
                     popen=proc,
                     log_file=frontend_log,
                     node=node,
                     critical=True,
+                    terminate_timeout=FRONTEND_TERMINATE_TIMEOUT_SECONDS,
+                    step_name=step_name,
                 )
             )
 

@@ -60,6 +60,9 @@ CLONE_TIMEOUT_SECONDS = 3 * 600 + 60
 SERVICE_TERMINATE_TIMEOUT_SECONDS = 30.0
 # The discovery plane itself must not be told where the discovery plane is.
 _DISCOVERY_KINDS = frozenset({"etcd", "nats"})
+# Cleanup stops lower tiers first: sidecars with the workers, then what workers
+# register with (the Mooncake master, stores), then the discovery plane.
+_SHUTDOWN_TIER = {"after_frontend": 0, "before_workers": 1, "infra": 2}
 
 
 def render_placeholders(value: str, replacements: dict[str, str]) -> str:
@@ -284,6 +287,7 @@ class ServiceStageMixin:
             critical=service.effective_critical,
             terminate_timeout=SERVICE_TERMINATE_TIMEOUT_SECONDS,
             step_name=step_name,
+            shutdown_tier=_SHUTDOWN_TIER[service.effective_start],
         )
 
     @staticmethod

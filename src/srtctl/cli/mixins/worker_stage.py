@@ -28,6 +28,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Engines shut down on SIGTERM (deregister, free GPUs, flush); give them longer than the default 10s.
+WORKER_TERMINATE_TIMEOUT_SECONDS = 30.0
+
 # Dynamo runtime (Rust) log filter for worker containers; YAML prefill_environment /
 # decode_environment / aggregated_environment override via the merge below.
 _DEFAULT_WORKER_DYN_LOG = "info,dynamo_runtime::pipeline::network::ingress::push_handler=warn"
@@ -250,6 +253,7 @@ class WorkerStageMixin:
         endpoint_nodes = {endpoint_process.node for endpoint_process in endpoint_processes}
         env_to_unset = ["VLLM_PORT"] if self.backend.type == "vllm" and len(endpoint_nodes) > 1 else None
 
+        step_name = f"{mode}_{index}_{process.node}"
         proc = start_srun_process(
             command=cmd,
             nodelist=[process.node],
@@ -262,14 +266,19 @@ class WorkerStageMixin:
             srun_options=self.runtime.srun_options,
             srun_export_env=CONTAINER_REMAP_ROOT_EXPORT if installs_dynamo(self.config) else None,
             het_group=process.het_group,
+            step_name=step_name,
         )
 
         return ManagedProcess(
-            name=f"{mode}_{index}_{process.node}",
+            name=step_name,
             popen=proc,
             log_file=worker_log,
             node=process.node,
             critical=True,
+            # SIGTERM reaches the engine through the step so it deregisters and
+            # frees the GPUs cleanly; a signalled srun would SIGKILL it instead.
+            terminate_timeout=WORKER_TERMINATE_TIMEOUT_SECONDS,
+            step_name=step_name,
         )
 
     def start_endpoint_worker(self, endpoint_processes: list["Process"]) -> ManagedProcess:
@@ -391,6 +400,7 @@ class WorkerStageMixin:
             # terminate the full endpoint step instead of leaving rank zero up.
             srun_options["kill-on-bad-exit"] = "1"
 
+        step_name = f"{mode}_{index}_{leader.node}"
         proc = start_srun_process(
             command=cmd,
             nodes=num_nodes,
@@ -411,14 +421,18 @@ class WorkerStageMixin:
             # per-rank CPU/NUMA binding, which srun_config.cpu_bind cannot.
             srun_options=srun_options,
             het_group=leader.het_group,
+            step_name=step_name,
         )
 
         return ManagedProcess(
-            name=f"{mode}_{index}_{leader.node}",
+            name=step_name,
             popen=proc,
             log_file=worker_log,
             node=leader.node,
             critical=True,
+            # scancel --signal --full reaches every MPI rank of the step at once.
+            terminate_timeout=WORKER_TERMINATE_TIMEOUT_SECONDS,
+            step_name=step_name,
         )
 
     def _wait_for_worker_ready(self, leader: "Process") -> None:

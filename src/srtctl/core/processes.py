@@ -12,15 +12,19 @@ This module provides lifecycle management for srun processes, including:
 
 import logging
 import os
+import shutil
 import signal
 import subprocess
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# Routers and frontends drain in-flight requests on SIGTERM; more than the default 10s, less than an engine.
+FRONTEND_TERMINATE_TIMEOUT_SECONDS = 20.0
 
 
 @dataclass(frozen=True)
@@ -79,6 +83,12 @@ class ManagedProcess:
     critical: bool = True
     terminate_timeout: float = 10.0
     step_name: str | None = None
+    # Cleanup stops tier 0 first and waits for it before moving on: workers and
+    # frontends (0) deregister from the Mooncake master (1) and etcd/NATS (2)
+    # while those are still up, instead of hanging on a plane that is gone.
+    shutdown_tier: int = 0
+    _stopped_via_step: bool = field(default=False, init=False, repr=False)
+    _stop_deadline: float | None = field(default=None, init=False, repr=False)
 
     @property
     def is_running(self) -> bool:
@@ -112,15 +122,57 @@ class ManagedProcess:
         if not outcome.reaped:
             logger.error("Process %s was not reaped after SIGKILL", self.name)
 
+    def request_stop(self, step_ids: dict[str, str] | None = None) -> None:
+        """Deliver SIGTERM without waiting (phase one of a group shutdown); ``await_stop`` finishes it.
+
+        ``step_ids`` is one ``squeue --steps`` listing shared by the whole group so
+        a job with dozens of workers does not query Slurm dozens of times.
+        """
+        if not self.is_running:
+            return
+        self._stopped_via_step = bool(self.step_name) and signal_step(self.step_name or "", "TERM", step_ids=step_ids)
+        if not self._stopped_via_step:
+            self.popen.terminate()
+        self._stop_deadline = time.monotonic() + self.terminate_timeout
+
+    def await_stop(self) -> None:
+        """Wait out this process's own deadline after ``request_stop``, then escalate to SIGKILL."""
+        if not self.is_running:
+            return
+        deadline = self._stop_deadline if self._stop_deadline is not None else time.monotonic()
+        try:
+            self.popen.wait(timeout=max(0.0, deadline - time.monotonic()))
+            return
+        except subprocess.TimeoutExpired:
+            pass
+        if self._stopped_via_step:
+            logger.warning(
+                "Step %s (%s) did not exit %.0fs after SIGTERM; terminating srun",
+                self.step_name,
+                self.name,
+                self.terminate_timeout,
+            )
+            outcome = terminate_and_reap(self.popen, terminate_timeout=5, kill_timeout=5)
+        else:
+            logger.warning("Process %s did not exit %.0fs after SIGTERM, killing...", self.name, self.terminate_timeout)
+            self.popen.kill()
+            try:
+                self.popen.wait(timeout=5)
+                outcome = TerminationOutcome(reaped=True, force_killed=True)
+            except subprocess.TimeoutExpired:
+                outcome = TerminationOutcome(reaped=False, force_killed=True)
+        if not outcome.reaped:
+            logger.error("Process %s was not reaped after SIGKILL", self.name)
+
 
 # Type alias for named process collections
 NamedProcesses = dict[str, ManagedProcess]
 
 
-def find_step_id(step_name: str, job_id: str | None = None) -> str | None:
-    """The ``<job>.<step>`` id of the running step named ``step_name`` in this job, or None."""
+def list_step_ids(job_id: str | None = None) -> dict[str, str] | None:
+    """``{step name: <job>.<step>}`` for the running steps of this job; None when Slurm cannot be asked."""
     job_id = job_id or os.environ.get("SLURM_JOB_ID") or os.environ.get("SLURM_JOBID")
-    if not job_id:
+    if not job_id or shutil.which("squeue") is None:
         return None
     try:
         result = subprocess.run(
@@ -131,29 +183,37 @@ def find_step_id(step_name: str, job_id: str | None = None) -> str | None:
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        logger.warning("squeue --steps failed while looking up step %s: %s", step_name, exc)
+        logger.warning("squeue --steps failed: %s", exc)
         return None
     if result.returncode != 0:
-        logger.warning(
-            "squeue --steps exited %d looking up step %s: %s", result.returncode, step_name, result.stderr.strip()
-        )
+        logger.warning("squeue --steps exited %d: %s", result.returncode, result.stderr.strip())
         return None
+    steps: dict[str, str] = {}
     for line in result.stdout.splitlines():
         parts = line.split()
-        if len(parts) >= 2 and parts[1] == step_name:
-            return parts[0]
-    return None
+        if len(parts) >= 2:
+            steps.setdefault(parts[1], parts[0])
+    return steps
 
 
-def signal_step(step_name: str, sig: str = "TERM") -> bool:
+def find_step_id(step_name: str, job_id: str | None = None) -> str | None:
+    """The ``<job>.<step>`` id of the running step named ``step_name`` in this job, or None."""
+    steps = list_step_ids(job_id)
+    return steps.get(step_name) if steps else None
+
+
+def signal_step(step_name: str, sig: str = "TERM", *, step_ids: dict[str, str] | None = None) -> bool:
     """Send ``sig`` to every process of the Slurm step named ``step_name``; True when delivered.
 
     ``srun`` turns a SIGTERM aimed at itself into a step abort that SIGKILLs the
     task, so a process that must flush on SIGTERM (tachometer compacting its
     parquet, an engine shutting down cleanly) has to be signalled through Slurm:
-    ``scancel --signal=<sig> --full <job>.<step>``.
+    ``scancel --signal=<sig> --full <job>.<step>``. ``step_ids`` is a listing from
+    ``list_step_ids`` to reuse instead of querying again.
     """
-    step_id = find_step_id(step_name)
+    if shutil.which("scancel") is None:
+        return False  # not under Slurm (tests, the mock): the caller signals srun directly
+    step_id = step_ids.get(step_name) if step_ids is not None else find_step_id(step_name)
     if step_id is None:
         logger.warning("No running step named %s found; falling back to signalling srun", step_name)
         return False
@@ -250,16 +310,32 @@ class ProcessRegistry:
             return len(self._failed_processes) > 0
 
     def cleanup(self) -> None:
-        """Terminate all registered processes."""
+        """Stop every registered process: SIGTERM to a whole tier at once, wait, escalate, next tier.
+
+        Within a tier the signal goes out in reverse registration order without
+        waiting in between, so a job with many workers finishes cleanup in about
+        one ``terminate_timeout`` rather than one per process. Tiers run lowest
+        first (workers and frontends, then the Mooncake master, then etcd/NATS),
+        and a tier is fully stopped before the next is signalled, so nothing is
+        left deregistering from a plane that has already gone away.
+        """
         with self._lock:
-            logger.info("Cleaning up %d processes...", len(self._processes))
-            for name, proc in self._processes.items():
-                if proc.is_running:
-                    logger.debug("Terminating process: %s", name)
+            running = [proc for proc in self._processes.values() if proc.is_running]
+            logger.info("Cleaning up %d processes (%d running)...", len(self._processes), len(running))
+            step_ids = list_step_ids() if any(proc.step_name for proc in running) else None
+            for tier in sorted({proc.shutdown_tier for proc in running}):
+                group = [proc for proc in running if proc.shutdown_tier == tier and proc.is_running]
+                for proc in reversed(group):
+                    logger.debug("Stopping process: %s", proc.name)
                     try:
-                        proc.terminate()
+                        proc.request_stop(step_ids)
                     except Exception as e:  # noqa: BLE001
-                        logger.warning("Failed to terminate %s: %s", name, e)
+                        logger.warning("Failed to signal %s: %s", proc.name, e)
+                for proc in group:
+                    try:
+                        proc.await_stop()
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("Failed to stop %s: %s", proc.name, e)
 
     def print_failure_details(self, tail_lines: int = 50) -> None:
         """Print detailed failure information including log tails.
