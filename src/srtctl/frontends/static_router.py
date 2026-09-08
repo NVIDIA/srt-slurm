@@ -143,7 +143,19 @@ class StaticRouterFrontend:
         del backend, backend_processes, network_interface
         return []
 
-    def build_router_command(self, workers: list[RouterWorker], host: str, port: int) -> list[str]:
+    def uses_dynamic_worker_discovery(self, backend: Any) -> bool:
+        """Whether workers register dynamically instead of using static URLs."""
+        del backend
+        return False
+
+    def build_router_command(
+        self,
+        workers: list[RouterWorker],
+        host: str,
+        port: int,
+        *,
+        dynamic_discovery: bool = False,
+    ) -> list[str]:
         """Build the router CLI for aggregate or prefill/decode topologies."""
         aggregate = [worker for worker in workers if worker.mode == "agg"]
         prefills = [worker for worker in workers if worker.mode == "prefill"]
@@ -156,12 +168,13 @@ class StaticRouterFrontend:
             if not prefills or not decodes:
                 raise ValueError("Disaggregated static router topology requires prefill and decode workers")
             cmd.append(self.pd_flag)
-            for worker in prefills:
-                cmd.extend(["--prefill", worker.url])
-                if worker.bootstrap_port is not None:
-                    cmd.append(str(worker.bootstrap_port))
-            for worker in decodes:
-                cmd.extend(["--decode", worker.url])
+            if not dynamic_discovery:
+                for worker in prefills:
+                    cmd.extend(["--prefill", worker.url])
+                    if worker.bootstrap_port is not None:
+                        cmd.append(str(worker.bootstrap_port))
+                for worker in decodes:
+                    cmd.extend(["--decode", worker.url])
         else:
             if not aggregate:
                 if self.allow_empty_workers:
@@ -213,10 +226,16 @@ class StaticRouterFrontend:
             ):
                 raise RuntimeError(f"Advertised backend endpoints did not become ready before {self.type} startup")
 
+        dynamic_discovery = self.uses_dynamic_worker_discovery(backend)
         processes: list[ManagedProcess] = []
         for idx, node in enumerate(topology.frontend_nodes):
             router_log = runtime.log_dir / f"{node}_{self.log_label or self.type}_{idx}.out"
-            cmd = self.build_router_command(workers, "0.0.0.0", topology.frontend_port)
+            cmd = self.build_router_command(
+                workers,
+                "0.0.0.0",
+                topology.frontend_port,
+                dynamic_discovery=dynamic_discovery,
+            )
             cmd.extend(self.get_managed_frontend_args(config, backend, backend_processes))
             cmd.extend(self.get_frontend_args_list(config.frontend.args))
             logger.info("Starting %s %d on %s: %s", self.type, idx, node, shlex.join(cmd))
