@@ -56,6 +56,26 @@ class TestConfigLoading:
                 print(f"  - {err}")
 
 
+class TestClusterConfigGitHttpVersion:
+    """srtslurm.yaml is schema-validated, and a failure there silently drops
+    every cluster default (model_paths, containers, etc.) -- so a new key
+    has to be declared in ClusterConfig, not just read via
+    get_srtslurm_setting(). See TestHostSetup.test_cluster_schema_accepts_the_key
+    for the same lesson applied to an earlier field."""
+
+    def test_cluster_schema_accepts_the_key(self):
+        from srtctl.core.schema import ClusterConfig
+
+        loaded = ClusterConfig.Schema().load({"git_http_version": "HTTP/1.1"})
+        assert loaded.git_http_version == "HTTP/1.1"
+
+    def test_unset_defaults_to_none(self):
+        from srtctl.core.schema import ClusterConfig
+
+        loaded = ClusterConfig.Schema().load({})
+        assert loaded.git_http_version is None
+
+
 class TestSrtConfigStructure:
     """Tests for SrtConfig dataclass structure."""
 
@@ -2629,6 +2649,120 @@ class TestVLLMDataParallelMode:
         assert len(processes) == 2
         assert [p.node_rank for p in processes] == [0, 1]
 
+    def test_dp_per_node_tp_times_dp_matches_gpus(self):
+        """TP×DP (not DP alone) must equal the endpoint GPU count."""
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Endpoint
+
+        backend = VLLMProtocol(
+            dp_launch_mode="per_node",
+            vllm_config=VLLMServerConfig(
+                decode={
+                    "data-parallel-size": 4,
+                    "tensor-parallel-size": 4,
+                    "enable-expert-parallel": True,
+                },
+            ),
+        )
+        endpoint = Endpoint(
+            mode="decode",
+            index=0,
+            nodes=("node0", "node1", "node2", "node3"),
+            gpu_indices=frozenset(range(4)),
+            gpus_per_node=4,
+        )
+
+        processes = backend.endpoints_to_processes([endpoint])
+
+        assert len(processes) == 4
+        assert [p.node for p in processes] == ["node0", "node1", "node2", "node3"]
+        assert all(p.gpu_indices == frozenset(range(4)) for p in processes)
+        assert [p.node_rank for p in processes] == [0, 1, 2, 3]
+
+    def test_dp_per_node_tp2_keeps_multiple_local_ranks(self):
+        """Two DP ranks per node when TP=2 on a 4-GPU node."""
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Endpoint
+
+        backend = VLLMProtocol(
+            dp_launch_mode="per_node",
+            vllm_config=VLLMServerConfig(
+                decode={
+                    "data-parallel-size": 8,
+                    "tensor-parallel-size": 2,
+                    "enable-expert-parallel": True,
+                },
+            ),
+        )
+        endpoint = Endpoint(
+            mode="decode",
+            index=0,
+            nodes=("node0", "node1", "node2", "node3"),
+            gpu_indices=frozenset(range(4)),
+            gpus_per_node=4,
+        )
+
+        processes = backend.endpoints_to_processes([endpoint])
+
+        assert len(processes) == 4
+        assert [p.node_rank for p in processes] == [0, 2, 4, 6]
+
+    def test_dp_per_node_rejects_tp_that_does_not_fit_node(self):
+        """TP×DP world size must match GPUs allocated to the endpoint."""
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Endpoint
+
+        backend = VLLMProtocol(
+            dp_launch_mode="per_node",
+            vllm_config=VLLMServerConfig(
+                decode={
+                    "data-parallel-size": 2,
+                    "tensor-parallel-size": 8,
+                    "enable-expert-parallel": True,
+                },
+            ),
+        )
+        endpoint = Endpoint(
+            mode="decode",
+            index=0,
+            nodes=("node0",),
+            gpu_indices=frozenset(range(4)),
+            gpus_per_node=4,
+        )
+
+        with pytest.raises(ValueError, match="require 16 GPUs"):
+            backend.endpoints_to_processes([endpoint])
+
+    def test_dp_per_gpu_groups_gpus_by_tp(self):
+        """per_gpu launches one process per DP rank, owning TP GPUs."""
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Endpoint
+
+        backend = VLLMProtocol(
+            dp_launch_mode="per_gpu",
+            vllm_config=VLLMServerConfig(
+                decode={
+                    "data-parallel-size": 4,
+                    "tensor-parallel-size": 4,
+                    "enable-expert-parallel": True,
+                },
+            ),
+        )
+        endpoint = Endpoint(
+            mode="decode",
+            index=0,
+            nodes=("node0", "node1", "node2", "node3"),
+            gpu_indices=frozenset(range(4)),
+            gpus_per_node=4,
+        )
+
+        processes = backend.endpoints_to_processes([endpoint])
+
+        assert len(processes) == 4
+        assert [p.node for p in processes] == ["node0", "node1", "node2", "node3"]
+        assert all(p.gpu_indices == frozenset(range(4)) for p in processes)
+        assert [p.node_rank for p in processes] == [0, 1, 2, 3]
+
     def test_dp_per_node_mode_rejects_tensor_parallel_mismatch(self):
         """dp_size x tp_size must still account for every allocated GPU."""
         from srtctl.backends import VLLMProtocol, VLLMServerConfig
@@ -2954,6 +3088,55 @@ class TestVLLMDataParallelMode:
         assert cmd[cmd.index("--data-parallel-rpc-port") + 1] == str(VLLM_DATA_PARALLEL_RPC_PORT)
         assert "--data-parallel-rank" not in cmd
         assert "--headless" not in cmd
+
+    def test_dp_per_node_hybrid_command_divides_local_size_by_tp(self):
+        """--data-parallel-size-local is DP ranks, not GPU count."""
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Process
+
+        backend = VLLMProtocol(
+            dp_launch_mode="per_node",
+            vllm_config=VLLMServerConfig(
+                decode={
+                    "data-parallel-size": 4,
+                    "tensor-parallel-size": 4,
+                    "enable-expert-parallel": True,
+                },
+            ),
+        )
+        leader = Process(
+            node="node0",
+            gpu_indices=frozenset(range(4)),
+            sys_port=8081,
+            http_port=6100,
+            endpoint_mode="decode",
+            endpoint_index=0,
+            node_rank=0,
+            dp_rpc_port=VLLM_DATA_PARALLEL_RPC_PORT,
+        )
+        process = Process(
+            node="node1",
+            gpu_indices=frozenset(range(4)),
+            sys_port=8082,
+            http_port=6100,
+            endpoint_mode="decode",
+            endpoint_index=0,
+            node_rank=1,
+            dp_rpc_port=VLLM_DATA_PARALLEL_RPC_PORT,
+        )
+        runtime = MagicMock()
+        runtime.model_path = Path("/model")
+        runtime.is_hf_model = False
+        runtime.request_plane = "tcp"
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            cmd = backend.build_worker_command(process, [leader, process], runtime)
+
+        assert cmd[cmd.index("--data-parallel-size-local") + 1] == "1"
+        assert cmd[cmd.index("--data-parallel-start-rank") + 1] == "1"
+        assert cmd[cmd.index("--tensor-parallel-size") + 1] == "4"
 
     def test_dp_per_node_forces_hybrid_lb_for_follower(self):
         """Per-node DP keeps every node process registered with Dynamo."""
@@ -3805,6 +3988,27 @@ class TestHuggingFaceModelSupport:
 
         assert "numactl" not in cmd
 
+    def test_trtllm_numa_memory_bind_true_applies_to_agg_mode(self):
+        """numa_memory_bind=True also wraps aggregated-mode workers with numactl."""
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from srtctl.backends import TRTLLMProtocol
+
+        backend = TRTLLMProtocol(numa_memory_bind=True)
+        process = self._make_process(mode="agg")
+        runtime = self._make_runtime(is_hf=False)
+        runtime.log_dir = Path("/tmp/test-logs")
+        runtime.gpu_type = "h100"
+
+        with (
+            patch("pathlib.Path.write_text"),
+            patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"),
+        ):
+            cmd = backend.build_worker_command(process=process, endpoint_processes=[process], runtime=runtime)
+
+        assert cmd[:3] == ["numactl", "-m", "0,1"]
+
     def test_trtllm_numa_cpu_bind_wraps_decode_command_with_taskset(self):
         """numa_cpu_bind=True wraps decode commands with configs/numa_cpu_bind.sh."""
         from pathlib import Path
@@ -4481,7 +4685,7 @@ class TestSequentialNodeStart:
         import os
         import subprocess
         from pathlib import Path
-        from unittest.mock import MagicMock, call, patch
+        from unittest.mock import MagicMock, patch
 
         from srtctl.backends.trtllm import TRTLLMProtocol
         from srtctl.cli.mixins.worker_stage import WorkerStageMixin

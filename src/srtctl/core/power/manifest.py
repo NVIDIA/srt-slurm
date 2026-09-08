@@ -121,6 +121,7 @@ class PowerManifest:
     max_scrape_duration_seconds: float | None = None
     scrape_count: int = 0
     sample_row_count: int = 0
+    samples_sha256: str | None = None
     window_validations: list[WindowValidation] = field(default_factory=list)
     artifact_errors: list[ArtifactError] = field(default_factory=list)
     reason_codes: list[str] = field(default_factory=list)
@@ -163,6 +164,7 @@ class PowerManifest:
             "expected_windows": [window.to_dict() for window in self.expected_windows],
             "scrape_count": self.scrape_count,
             "sample_row_count": self.sample_row_count,
+            "samples_sha256": self.samples_sha256,
             "window_validations": [validation.to_dict() for validation in self.window_validations],
             "artifact_errors": [error.to_dict() for error in self.artifact_errors],
             "reason_codes": list(dedupe(self.reason_codes)),

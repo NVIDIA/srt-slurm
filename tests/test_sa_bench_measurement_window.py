@@ -52,7 +52,7 @@ SA_BENCH_DIR = Path(__file__).resolve().parents[1] / "src/srtctl/benchmarks/scri
 def _benchmark_harness(tmp_path, *, enabled=True):
     telemetry = TelemetryConfig(
         enabled=enabled,
-        default_frequency=1.0,
+        collect_interval_ms=1000,
         storage_subdir="power",
         dcgm_exporter=TelemetryExporterConfig(container_image="dcgm-exporter", port=9401),
     )

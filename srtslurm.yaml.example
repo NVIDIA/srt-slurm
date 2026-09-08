@@ -11,6 +11,13 @@ default_account: "your-gpu-account"
 default_partition: "gpu"
 default_time_limit: "04:00:00"
 
+# Some clusters see intermittent git smart-HTTP failures negotiating HTTP/2
+# against github.com (stalls, or truncated responses git misreports as
+# "could not read Username" auth-prompt failures) from certain network paths.
+# Set this if srtctl's dynamo-from-source installs or any other git clone/fetch
+# it performs on the real sbatch path fail this way. No effect if unset.
+# git_http_version: "HTTP/1.1"
+
 # Default health check window for jobs that don't override `health_check:`
 # in the recipe. Useful on clusters with slow storage where large MoE models
 # need >30 min to cold-load (the schema default is max_attempts=180, ~30 min).

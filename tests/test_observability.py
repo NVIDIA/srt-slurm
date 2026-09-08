@@ -122,7 +122,7 @@ class TestExpandObservability:
             enabled=True,
             tachometer={
                 "enabled": True,
-                "default_frequency": 2.0,
+                "collect_interval_ms": 500,
                 "dcgm_exporter": {"container_image": "dcgm", "port": 9401},
             },
         )
@@ -131,7 +131,7 @@ class TestExpandObservability:
 
         assert out["observability"]["tachometer"] == {
             "enabled": True,
-            "default_frequency": 2.0,
+            "collect_interval_ms": 500,
             "dcgm_exporter": {"container_image": "dcgm", "port": 9401},
         }
         assert "telemetry" not in out
@@ -140,7 +140,7 @@ class TestExpandObservability:
         cfg = _trtllm_config(enabled=True, tachometer={"enabled": True})
         cfg["telemetry"] = {
             "enabled": True,
-            "default_frequency": 1.0,
+            "collect_interval_ms": 1000,
             "dcgm_exporter": {"container_image": "dcgm", "port": 9401},
         }
 
@@ -225,11 +225,47 @@ class TestExpandObservability:
         with pytest.raises(ValidationError, match="scrape_metrics"):
             SrtConfig.Schema().load(cfg)
 
-    def test_tachometer_requires_master_observability_knob(self):
-        cfg = _trtllm_config(enabled=False, tachometer={"enabled": True})
+    def test_retired_hz_frequency_knob_is_rejected_on_tachometer(self):
+        """``default_frequency`` (Hz) is retired in favor of ``collect_interval_ms``.
 
-        with pytest.raises(ValidationError, match="requires observability.enabled"):
+        A recipe still carrying the Hz knob must fail loudly at submit time:
+        silently accepting it would run at the 1000ms default while promising
+        a different cadence."""
+        cfg = _trtllm_config(enabled=True, tachometer={"default_frequency": 2.0})
+
+        with pytest.raises(ValidationError, match="default_frequency"):
             SrtConfig.Schema().load(cfg)
+
+    def test_retired_frequency_knob_is_rejected_on_power_telemetry(self):
+        """Power telemetry's ``default_frequency`` was a period in seconds
+        despite its name; it is retired in favor of ``collect_interval_ms``."""
+        cfg = dict(BASE_CONFIG)
+        cfg["benchmark"] = {"type": "sa-bench", "concurrencies": [4]}
+        cfg["telemetry"] = {
+            "enabled": True,
+            "default_frequency": 1.0,
+            "dcgm_exporter": {"container_image": "dcgm", "port": 9401},
+        }
+
+        with pytest.raises(ValidationError, match="default_frequency"):
+            SrtConfig.Schema().load(cfg)
+
+    def test_tachometer_no_longer_requires_master_observability_knob(self):
+        """Tachometer is decoupled from observability.enabled: explicit true
+        without the master knob is valid, and the default is on for every run."""
+        cfg = _trtllm_config(enabled=False, tachometer={"enabled": True})
+        loaded = SrtConfig.Schema().load(cfg)
+        assert loaded.observability.tachometer_enabled is True
+
+    def test_tachometer_is_on_by_default_without_observability(self):
+        cfg = _trtllm_config(enabled=False)
+        loaded = SrtConfig.Schema().load(cfg)
+        assert loaded.observability.tachometer_enabled is True
+
+    def test_tachometer_explicit_false_still_opts_out(self):
+        cfg = _trtllm_config(enabled=False, tachometer={"enabled": False})
+        loaded = SrtConfig.Schema().load(cfg)
+        assert loaded.observability.tachometer_enabled is False
 
     def test_telemetry_rejects_tachometer_fields(self):
         cfg = {
@@ -268,7 +304,7 @@ class TestObservabilitySchema:
                     **BASE_CONFIG,
                     "observability": {
                         "enabled": True,
-                        "tachometer": {"enabled": True, "default_frequency": 2.0},
+                        "tachometer": {"enabled": True, "collect_interval_ms": 500},
                     },
                 }
             )
@@ -278,4 +314,4 @@ class TestObservabilitySchema:
 
         assert cfg.observability.tachometer.enabled is True
         assert cfg.observability.tachometer_enabled is True
-        assert cfg.observability.tachometer.default_frequency == 2.0
+        assert cfg.observability.tachometer.collect_interval_ms == 500

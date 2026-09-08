@@ -250,7 +250,11 @@ def try_start_host_sampler(log_dir: Path, observability, stop_event: threading.E
     if getattr(observability, "enabled", False) is not True:
         return None
     try:
-        s = HostSampler(log_dir)
+        # One cadence knob for the whole capture stack: follow the tachometer
+        # scrape interval (HostSampler floors it at 1.0s internally).
+        tachometer = getattr(observability, "tachometer", None)
+        interval_ms = getattr(tachometer, "collect_interval_ms", 1000) if tachometer else 1000
+        s = HostSampler(log_dir, interval_seconds=interval_ms / 1000.0)
         s.start(stop_event)
         return s
     except Exception as exc:  # noqa: BLE001 - best effort

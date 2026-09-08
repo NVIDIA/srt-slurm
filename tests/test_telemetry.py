@@ -53,7 +53,7 @@ def _sa_bench(**overrides) -> BenchmarkConfig:
 def _dcgm_power(**overrides) -> TelemetryConfig:
     fields: dict = {
         "enabled": True,
-        "default_frequency": 1.0,
+        "collect_interval_ms": 1000,
         "storage_subdir": "power",
         "required": True,
         "startup_timeout_seconds": 30.0,
@@ -84,13 +84,82 @@ class TestTachometerConfig:
         assert config.observability.tachometer.dcgm_exporter is None
         assert config.observability.tachometer.node_exporter is None
 
-    def test_default_frequency_is_one_hz(self):
-        """1 Hz matches the retired RAW scraper's cadence; 5 Hz produced ~9M
+    def test_exporters_resolve_to_built_in_defaults(self):
+        """No exporter blocks needed: pinned multi-arch registry defaults."""
+        tachometer = TachometerConfig()
+        assert tachometer.dcgm_exporter is None  # raw stays None (power/--bash gates)
+        assert tachometer.resolved_dcgm_exporter.port == 9401
+        assert "dcgm-exporter" in tachometer.resolved_dcgm_exporter.container_image
+        assert tachometer.resolved_node_exporter.port == 9101
+        assert "node-exporter" in tachometer.resolved_node_exporter.container_image
+
+    def test_dcgm_sampling_follows_the_scrape_knob(self):
+        """One knob rules both cadences: the tachometer-owned DCGM exporter
+        samples NVML exactly as often as tachometer scrapes it. It must NOT
+        inherit the power template's 100ms — 10 Hz NVML sampling measured
+        ~2% ITL p50 overhead on GB300 decode (isolation runs, 2026-09-06);
+        the power path keeps 100ms because dense sampling is its purpose."""
+        from srtctl.cli.mixins.telemetry_stage import (
+            DCGM_EXPORTER_COMMAND_TEMPLATE,
+            resolve_exporter_command,
+            tachometer_dcgm_command_template,
+        )
+
+        default = TachometerConfig()
+        cmd = resolve_exporter_command(
+            default.resolved_dcgm_exporter, tachometer_dcgm_command_template(default)
+        )
+        assert "--collect-interval=1000" in cmd
+        assert ":9401" in cmd
+
+        slow = TachometerConfig(collect_interval_ms=5000)
+        assert "--collect-interval=5000" in tachometer_dcgm_command_template(slow)
+
+        # An explicit recipe command must still win over the derived template.
+        custom = TachometerConfig(
+            dcgm_exporter=TelemetryExporterConfig(
+                container_image="dcgm:latest", port=9401, command="dcgm-exporter --custom --address :{port}"
+            )
+        )
+        assert resolve_exporter_command(
+            custom.resolved_dcgm_exporter, tachometer_dcgm_command_template(custom)
+        ) == "dcgm-exporter --custom --address :9401"
+
+        assert "--collect-interval=100 " in DCGM_EXPORTER_COMMAND_TEMPLATE
+
+    def test_host_sampler_follows_the_scrape_knob(self, tmp_path):
+        """The host sampler's cadence derives from the same single knob."""
+        import threading
+
+        from srtctl.analysis.host_sampler import try_start_host_sampler
+
+        config = _make_config(tachometer=TachometerConfig(enabled=True, collect_interval_ms=4000))
+        sampler = try_start_host_sampler(tmp_path, config.observability, threading.Event())
+        try:
+            assert sampler is not None
+            assert sampler.interval_seconds == 4.0
+        finally:
+            if sampler is not None:
+                sampler.stop()
+
+    def test_default_exporters_false_disables_built_ins(self):
+        tachometer = TachometerConfig(default_exporters=False)
+        assert tachometer.resolved_dcgm_exporter is None
+        assert tachometer.resolved_node_exporter is None
+
+    def test_explicit_exporter_block_wins_over_default(self):
+        custom = TelemetryExporterConfig(container_image="/containers/dcgm.sqsh", port=9500)
+        tachometer = TachometerConfig(dcgm_exporter=custom)
+        assert tachometer.resolved_dcgm_exporter is custom
+        assert tachometer.resolved_node_exporter.port == 9101
+
+    def test_default_collect_interval_is_one_second(self):
+        """1000ms matches the retired RAW scraper's cadence; 200ms produced ~9M
         rows in a 25-minute run with no analysis consuming the extra
         resolution, and scrape load on worker endpoints is not free."""
         config = _make_config(tachometer=TachometerConfig(enabled=True))
 
-        assert config.observability.tachometer.default_frequency == 1.0
+        assert config.observability.tachometer.collect_interval_ms == 1000
 
     def test_scraper_requires_nonempty_binary_path(self):
         with pytest.raises(ValidationError, match="observability.tachometer.binary_path"):
@@ -115,7 +184,7 @@ class TestDcgmPowerConfig:
     def test_defaults_are_stable(self):
         defaults = TelemetryConfig()
 
-        assert defaults.default_frequency == 1.0
+        assert defaults.collect_interval_ms == 1000
         assert defaults.required is False
         assert defaults.startup_timeout_seconds == 30.0
         assert defaults.request_timeout_seconds == 2.0
@@ -172,10 +241,9 @@ class TestDcgmPowerConfig:
                 None,
                 "port",
             ),
-            ({"default_frequency": 0.0}, None, "default_frequency"),
-            ({"default_frequency": float("nan")}, None, "default_frequency"),
-            ({"default_frequency": float("inf")}, None, "default_frequency"),
-            ({"default_frequency": 3.5}, None, "sample_gap_exceeded"),
+            ({"collect_interval_ms": 0}, None, "collect_interval_ms"),
+            ({"collect_interval_ms": -1}, None, "collect_interval_ms"),
+            ({"collect_interval_ms": 3500}, None, "sample_gap_exceeded"),
             ({"startup_timeout_seconds": 0.0}, None, "startup_timeout_seconds"),
             ({"request_timeout_seconds": -1.0}, None, "request_timeout_seconds"),
             ({"collector_join_timeout_seconds": 2.0}, None, "collector_join_timeout_seconds"),
@@ -204,7 +272,7 @@ class TestDcgmPowerConfig:
     def test_dcgm_power_rejects_a_sample_interval_above_the_contract_limit(self):
         telemetry = TelemetryConfig(
             enabled=True,
-            default_frequency=5.0,
+            collect_interval_ms=5000,
             storage_subdir="power",
             required=True,
             startup_timeout_seconds=30.0,
@@ -382,8 +450,9 @@ class TestTachometerConfigGeneration:
         assert not local_dir.is_relative_to(storage_path)
 
     @patch("srtctl.core.telemetry.get_hostname_ip", return_value="10.0.0.1")
-    def test_client_polled_urls_are_excluded_from_backend_targets(self, _mock_get_hostname_ip):
-        """Tachometer scrapes the complement of the client's URL list."""
+    def test_client_polled_urls_are_still_scraped(self, _mock_get_hostname_ip):
+        """Tachometer scrapes every endpoint, including URLs the benchmark
+        client also polls — double-polling has been validated as harmless."""
         tachometer = TachometerConfig(enabled=True)
         runtime = MagicMock(job_id="12345", run_name="test_12345", network_interface="eth0")
         runtime.log_dir = Path("/runs/12345/logs")
@@ -414,12 +483,12 @@ class TestTachometerConfigGeneration:
             frontend_topology=topology,
             runtime=runtime,
             tachometer=tachometer,
-            exclude_urls={"http://10.0.0.1:8081/metrics"},
         )
 
-        assert 'url = "http://10.0.0.1:8081/metrics"' not in config_text
+        # Both worker endpoints appear even though a benchmark client would
+        # poll the same sys-port URLs via AIPERF_SERVER_METRICS_URLS.
+        assert 'url = "http://10.0.0.1:8081/metrics"' in config_text
         assert 'url = "http://10.0.0.1:8082/metrics"' in config_text
-        # The frontend endpoint is never excluded (whole-window coverage).
         assert 'url = "http://10.0.0.1:8000/metrics"' in config_text
 
     @patch("srtctl.core.telemetry.get_hostname_ip", return_value="10.0.0.1")
@@ -458,9 +527,74 @@ class TestTachometerConfigGeneration:
         assert 'name = "backend_prefill0_rank0"' in config_text
         assert 'name = "backend_prefill0_rank1"' in config_text
 
+    @patch("srtctl.core.telemetry.get_hostname_ip", side_effect=lambda node, interface: f"ip-{node}")
+    def test_trtllm_serve_targets_worker_prometheus_endpoints(self, _mock_get_hostname_ip):
+        """frontend_type=trtllm_serve scrapes worker leaders on their OpenAI
+        http_port and the disagg orchestrator on the frontend port, both at
+        /prometheus/metrics (the worker /metrics route is JSON iteration
+        stats; the orchestrator registers no /metrics route). sys-ports are
+        never bound in this mode and follower ranks serve nothing, so neither
+        is targeted. Endpoint names keep the Dynamo pattern."""
+        tachometer = TachometerConfig(enabled=True)
+        runtime = MagicMock(job_id="12345", run_name="test_12345", network_interface="eth0")
+        runtime.log_dir = Path("/runs/12345/logs")
+        processes = [
+            Process(
+                node="node-a",
+                gpu_indices=frozenset({0}),
+                sys_port=7500,
+                http_port=6100,
+                endpoint_mode="prefill",
+                endpoint_index=0,
+                node_rank=0,
+            ),
+            Process(
+                node="node-b",
+                gpu_indices=frozenset({0}),
+                sys_port=7501,
+                http_port=0,
+                endpoint_mode="prefill",
+                endpoint_index=0,
+                node_rank=1,
+            ),
+            Process(
+                node="node-c",
+                gpu_indices=frozenset({0}),
+                sys_port=7502,
+                http_port=6100,
+                endpoint_mode="decode",
+                endpoint_index=0,
+                node_rank=0,
+            ),
+        ]
+        topology = FrontendTopology(nginx_node=None, frontend_nodes=["head"], frontend_port=8000, public_port=8000)
+
+        config_text = generate_tachometer_config(
+            processes=processes,
+            frontend_topology=topology,
+            runtime=runtime,
+            tachometer=tachometer,
+            frontend_type="trtllm_serve",
+        )
+
+        # Worker leaders: OpenAI http_port at the Prometheus mount.
+        assert 'url = "http://ip-node-a:6100/prometheus/metrics"' in config_text
+        assert 'url = "http://ip-node-c:6100/prometheus/metrics"' in config_text
+        # Disagg orchestrator: frontend port at the Prometheus mount.
+        assert 'url = "http://ip-head:8000/prometheus/metrics"' in config_text
+        # Dead sys-ports and follower ranks are not targeted.
+        assert ":7500" not in config_text
+        assert ":7501" not in config_text
+        assert ":7502" not in config_text
+        assert "ip-node-b" not in config_text
+        # Naming stays aligned with the Dynamo frontend for downstream grouping.
+        assert 'name = "backend_prefill0_rank0"' in config_text
+        assert 'name = "backend_decode0_rank0"' in config_text
+        assert 'name = "frontend0"' in config_text
+
     @patch("srtctl.core.telemetry.get_hostname_ip", return_value="10.0.0.1")
     def test_generate_config_without_exporters_targets_servers_only(self, _mock_get_hostname_ip):
-        tachometer = TachometerConfig(enabled=True)
+        tachometer = TachometerConfig(enabled=True, default_exporters=False)
         runtime = MagicMock(job_id="12345", run_name="test_12345", network_interface="eth0")
         runtime.log_dir = Path("/runs/12345/logs")
         processes = [
@@ -668,6 +802,9 @@ class TestTachometerStageMixin:
                 self.runtime.run_name = "test_12345"
                 self.runtime.network_interface = "eth0"
                 self.runtime.nodes.head = "node-a"
+                self.runtime.nodes.het = False
+                self.runtime.srun_options = {}
+                self.runtime.container_mounts = {Path(tmp_path): Path("/logs")}
                 self._backend_processes = [
                     Process(
                         node="node-a",
@@ -698,7 +835,12 @@ class TestTachometerStageMixin:
 
         procs = harness.start_tachometer()
 
-        assert [proc.name for proc in procs] == ["tachometer"]
+        # Built-in exporters launch by default alongside the scraper.
+        assert [proc.name for proc in procs] == [
+            "tachometer_dcgm_exporter",
+            "tachometer_node_exporter",
+            "tachometer",
+        ]
         assert (tmp_path / "tachometer_config.toml").exists()
 
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
@@ -765,8 +907,8 @@ class TestTachometerStageMixin:
 
         processes = Harness().start_tachometer()
 
-        assert [process.name for process in processes] == ["tachometer"]
-        assert mock_srun.call_count == 1
+        assert [process.name for process in processes] == ["tachometer_node_exporter", "tachometer"]
+        assert mock_srun.call_count == 2
         assert 'name = "dcgm_node-a"' in (tmp_path / "tachometer_config.toml").read_text()
 
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")

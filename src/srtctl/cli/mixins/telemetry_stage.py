@@ -24,12 +24,31 @@ from srtctl.core.telemetry import TACHOMETER_STORAGE_PARENT, generate_tachometer
 
 if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
-    from srtctl.core.schema import SrtConfig
+    from srtctl.core.schema import SrtConfig, TachometerConfig
     from srtctl.core.topology import Process
 
 logger = logging.getLogger(__name__)
 
+# Power telemetry's template: 100ms NVML sampling is its purpose (dense power
+# curves inside sa-bench measurement windows). Never used for tachometer.
 DCGM_EXPORTER_COMMAND_TEMPLATE = "dcgm-exporter --collect-interval=100 --address :{port}"
+
+# Lowest DCGM sampling interval measured at parity with no telemetry on GB300
+# decode (A/F chain); 100ms measured ~2% ITL p50 overhead. Sampling faster than
+# this is allowed but warned about at launch.
+DCGM_PROVEN_SAFE_INTERVAL_MS = 1000
+
+
+def tachometer_dcgm_command_template(tachometer: TachometerConfig) -> str:
+    """DCGM exporter command for the tachometer-owned launch.
+
+    The exporter samples NVML exactly as often as tachometer scrapes it —
+    ``observability.tachometer.collect_interval_ms`` rules both cadences, so
+    every scrape sees a fresh value and no scrape sees a duplicate. An
+    explicit ``dcgm_exporter.command`` in the recipe still wins (resolved in
+    :func:`resolve_exporter_command`).
+    """
+    return f"dcgm-exporter --collect-interval={tachometer.collect_interval_ms} --address :{{port}}"
 
 
 def resolve_exporter_command(exporter_config: TelemetryExporterConfig, default_template: str) -> str:
@@ -162,7 +181,7 @@ class TelemetryStageMixin:
                 log_dir=self.runtime.log_dir,
                 job_id=self.runtime.job_id,
                 run_name=self.runtime.run_name,
-                sample_interval_seconds=telemetry.default_frequency,
+                sample_interval_seconds=telemetry.collect_interval_ms / 1000.0,
                 startup_timeout_seconds=telemetry.startup_timeout_seconds,
                 request_timeout_seconds=telemetry.request_timeout_seconds,
                 collector_join_timeout_seconds=telemetry.resolved_collector_join_timeout_seconds,
@@ -295,19 +314,8 @@ class TelemetryStageMixin:
 
         logger.info("Starting Tachometer")
 
-        # Scrape the complement of what the benchmark client already polls;
-        # the helper lives on BenchmarkStageMixin (same orchestrator object).
-        client_urls_fn = getattr(self, "_client_polled_metric_urls", None)
-        exclude_urls = client_urls_fn() if client_urls_fn is not None else frozenset()
-        if exclude_urls:
-            logger.info(
-                "Tachometer excludes %d endpoint(s) the benchmark client polls: %s",
-                len(exclude_urls),
-                ",".join(sorted(exclude_urls)),
-            )
-
         power_telemetry = self.config.telemetry
-        dcgm_exporter = power_telemetry.dcgm_exporter if power_telemetry.enabled else tachometer.dcgm_exporter
+        dcgm_exporter = power_telemetry.dcgm_exporter if power_telemetry.enabled else tachometer.resolved_dcgm_exporter
         topology = self._compute_frontend_topology()
         config_path = self.runtime.log_dir / "tachometer_config.toml"
         config_path.write_text(
@@ -318,7 +326,6 @@ class TelemetryStageMixin:
                 tachometer=tachometer,
                 dcgm_exporter=dcgm_exporter,
                 frontend_type=self.config.frontend.type,
-                exclude_urls=exclude_urls,
             )
         )
 
@@ -336,22 +343,33 @@ class TelemetryStageMixin:
         # must never tear down the benchmark. Verified the hard way: a
         # bash-wrapped node-exporter (FROM scratch) died with execve() ENOENT
         # and, as a critical process, killed a 7-node run at startup.
-        if not power_telemetry.enabled and tachometer.dcgm_exporter is not None:
+        if not power_telemetry.enabled and tachometer.resolved_dcgm_exporter is not None:
+            if tachometer.collect_interval_ms < DCGM_PROVEN_SAFE_INTERVAL_MS:
+                logger.warning(
+                    "observability.tachometer.collect_interval_ms=%d drives DCGM NVML "
+                    "sampling below the measured-safe %dms; 100ms sampling cost ~2%% "
+                    "decode ITL p50 on GB300. Proceeding as configured.",
+                    tachometer.collect_interval_ms,
+                    DCGM_PROVEN_SAFE_INTERVAL_MS,
+                )
             processes.extend(
                 self._start_exporter_container(
-                    exporter_config=tachometer.dcgm_exporter,
+                    exporter_config=tachometer.resolved_dcgm_exporter,
                     name="tachometer_dcgm_exporter",
                     nodelist=worker_nodes,
                     log_file=self.runtime.log_dir / "tachometer_dcgm_exporter.out",
-                    default_command_template=DCGM_EXPORTER_COMMAND_TEMPLATE,
+                    # NOT the power template (100ms): the tachometer exporter
+                    # samples exactly as often as tachometer scrapes it, so one
+                    # knob rules both cadences and every scrape is fresh.
+                    default_command_template=tachometer_dcgm_command_template(tachometer),
                     use_bash_wrapper=False,
                     critical=False,
                 )
             )
-        if tachometer.node_exporter is not None:
+        if tachometer.resolved_node_exporter is not None:
             processes.extend(
                 self._start_exporter_container(
-                    exporter_config=tachometer.node_exporter,
+                    exporter_config=tachometer.resolved_node_exporter,
                     name="tachometer_node_exporter",
                     nodelist=worker_nodes,
                     log_file=self.runtime.log_dir / "tachometer_node_exporter.out",

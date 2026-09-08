@@ -280,6 +280,11 @@ class ClusterConfig:
     # When set, applied to job configs that omit ``frontend.nginx_raise_ulimit``.
     # Clusters that disallow raising nofile for nginx containers should use false.
     nginx_raise_ulimit: bool | None = None
+    # Works around intermittent git smart-HTTP/HTTP2 failures cloning github.com
+    # (stalls, or truncated responses git misreports as "could not read
+    # Username" auth-prompt failures). See git_clone_command_prefix() in
+    # core/config.py -- applied to every git clone/fetch srtctl performs.
+    git_http_version: str | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -1079,29 +1084,75 @@ class TelemetryExporterConfig:
     Schema: ClassVar[type[Schema]] = Schema
 
 
+# Built-in exporter defaults (sweep path only; the --bash lifecycle keys on the
+# raw recipe fields and never launches exporter containers). Pinned multi-arch
+# registry URIs, so pyxis pulls the node's architecture with zero setup; both
+# pins are production-verified on GB300 (all 19 DCGM families; 125 node
+# families incl. meminfo, no host /proc mount needed). Ports are deliberately
+# offset from the conventional 9400/9100 — managed clusters may already run
+# host-level exporters there. Air-gapped or version-pinning clusters override
+# the image through the srtslurm.yaml ``containers:`` alias map, which already
+# resolves these fields.
+DEFAULT_DCGM_EXPORTER = TelemetryExporterConfig(
+    container_image="nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04",
+    port=9401,
+    # No command: the tachometer launch derives --collect-interval from
+    # observability.tachometer.collect_interval_ms so the exporter samples
+    # exactly as often as it is scraped. An explicit command still wins.
+)
+DEFAULT_NODE_EXPORTER = TelemetryExporterConfig(
+    container_image="quay.io#prometheus/node-exporter:v1.8.2",
+    port=9101,
+)
+
+
 @dataclass(frozen=True)
 class TachometerConfig:
     """Native Tachometer collection for an observability-enabled run.
 
-    ``enabled`` is tri-state: ``None`` (the default) follows
-    ``observability.enabled``, so an observability run collects Tachometer
-    data with no ``tachometer:`` block at all; an explicit ``false`` opts
-    out; an explicit ``true`` under ``observability.enabled: false`` is a
-    validation error (Tachometer's targets only have content when the
-    observability expansion ran).
+    ``enabled`` is tri-state: ``None`` (the default) means ON — every run
+    collects Tachometer data with no ``tachometer:`` block at all; an
+    explicit ``false`` opts out. Note that without ``observability.enabled``
+    the TRT-LLM worker endpoints may have no engine metrics to serve (the
+    observability expansion is what turns their content on); the frontend
+    and the exporters are always worth capturing.
+
+    DCGM and node exporters default ON via the ``resolved_*`` properties
+    (sweep path only): an explicit ``dcgm_exporter``/``node_exporter`` block
+    always wins, ``default_exporters: false`` disables the built-ins, and the
+    raw fields stay ``None`` unless the recipe set them — which is what the
+    power-telemetry sharing validation and the --bash gate key on.
     """
 
     enabled: bool | None = None
     binary_path: str = "tachometer-scraper"
-    default_frequency: float = 1.0
+    # Milliseconds between scrapes of every endpoint — the same unit and name
+    # as dcgm-exporter's --collect-interval. Replaces the retired Hz-based
+    # ``default_frequency`` (1000ms == the old 1.0 Hz default).
+    collect_interval_ms: int = 1000
     sync_interval_secs: int = 120
     compaction_threads: int = 4
     storage_subdir: str = "tachometer"
     extra_metadata: dict[str, str] = field(default_factory=dict)
+    default_exporters: bool = True
     dcgm_exporter: TelemetryExporterConfig | None = None
     node_exporter: TelemetryExporterConfig | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
+
+    @property
+    def resolved_dcgm_exporter(self) -> TelemetryExporterConfig | None:
+        """User-configured DCGM exporter, else the built-in default."""
+        if self.dcgm_exporter is not None:
+            return self.dcgm_exporter
+        return DEFAULT_DCGM_EXPORTER if self.default_exporters else None
+
+    @property
+    def resolved_node_exporter(self) -> TelemetryExporterConfig | None:
+        """User-configured node exporter, else the built-in default."""
+        if self.node_exporter is not None:
+            return self.node_exporter
+        return DEFAULT_NODE_EXPORTER if self.default_exporters else None
 
 
 @dataclass(frozen=True)
@@ -1179,8 +1230,14 @@ class ObservabilityConfig:
 
     @property
     def tachometer_enabled(self) -> bool:
-        """Resolved Tachometer enablement (tri-state ``tachometer.enabled``)."""
-        return self.enabled if self.tachometer.enabled is None else self.tachometer.enabled
+        """Resolved Tachometer enablement (tri-state ``tachometer.enabled``).
+
+        Tachometer is on by default for every run — server-side capture is
+        not an opt-in special occasion, and its cost is bounded (1 Hz,
+        best-effort, complement of the client's polling). ``enabled: false``
+        opts out; ``observability.enabled`` no longer gates it.
+        """
+        return True if self.tachometer.enabled is None else self.tachometer.enabled
 
 
 @dataclass(frozen=True)
@@ -1189,7 +1246,10 @@ class TelemetryConfig:
 
     enabled: bool = False
     dcgm_exporter: TelemetryExporterConfig | None = None
-    default_frequency: float = 1.0
+    # Milliseconds between collector cycles. Replaces the retired
+    # ``default_frequency``, which despite its name was a period in seconds
+    # (1000ms == the old 1.0 default).
+    collect_interval_ms: int = 1000
     storage_subdir: str = "power"
     required: bool = False
     startup_timeout_seconds: float = 30.0
@@ -1300,6 +1360,14 @@ def dynamo_cargo_patch_commands(cargo_patches: list[str] | None = None) -> tuple
     return tuple(commands)
 
 
+def _git_clone_cmd() -> str:
+    """Shell-quoted ``git`` invocation for install-script bash strings; see
+    ``srtctl.core.config.git_clone_command_prefix`` for why this exists."""
+    from srtctl.core.config import git_clone_command_prefix
+
+    return shlex.join(git_clone_command_prefix())
+
+
 def _hash_cached_source_install(dynamo_hash: str, cargo_patches: list[str] | None = None) -> str:
     """Bash for hash-pinned source install with a /configs/dynamo-wheels cache.
 
@@ -1347,7 +1415,7 @@ def _hash_cached_source_install(dynamo_hash: str, cargo_patches: list[str] | Non
         f"pip install --break-system-packages --force-reinstall --quiet maturin && "
         # Clone + build the runtime wheel.
         f"DYN_BUILD_DIR=$(mktemp -d) && cd $DYN_BUILD_DIR && "
-        f"git clone https://github.com/ai-dynamo/dynamo.git && "
+        f"{_git_clone_cmd()} clone https://github.com/ai-dynamo/dynamo.git && "
         f"cd dynamo && git checkout {dynamo_hash} && "
         f"{override_cmd}"
         f"cd lib/bindings/python/ && "
@@ -1390,7 +1458,7 @@ def _live_source_install_for_top_of_tree() -> str:
         # Force-reinstall maturin: see _hash_cached_source_install.
         "pip install --break-system-packages --force-reinstall --quiet maturin && "
         "cd /sgl-workspace/ && "
-        "git clone https://github.com/ai-dynamo/dynamo.git && "
+        f"{_git_clone_cmd()} clone https://github.com/ai-dynamo/dynamo.git && "
         "cd dynamo && "
         "cd lib/bindings/python/ && "
         'export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native --cfg tokio_unstable" && '
@@ -1410,7 +1478,7 @@ def _live_source_install_for_top_of_tree() -> str:
         # Force-reinstall maturin: see _hash_cached_source_install.
         "pip install --break-system-packages --force-reinstall --quiet maturin && "
         "ORIG_DIR=$(pwd) && rm -rf /tmp/dynamo_build && mkdir -p /tmp/dynamo_build && cd /tmp/dynamo_build && "
-        "git clone https://github.com/ai-dynamo/dynamo.git && "
+        f"{_git_clone_cmd()} clone https://github.com/ai-dynamo/dynamo.git && "
         "cd dynamo && "
         "cd lib/bindings/python/ && "
         'export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native --cfg tokio_unstable" && '
@@ -2221,15 +2289,17 @@ class SrtConfig:
         if not 1 <= exporter.port <= 65535:
             raise ValidationError("telemetry.dcgm_exporter.port must be in 1..65535")
 
-        for name in ("default_frequency", "startup_timeout_seconds", "request_timeout_seconds"):
+        for name in ("startup_timeout_seconds", "request_timeout_seconds"):
             if not _is_finite_positive(getattr(telemetry, name)):
                 raise ValidationError(f"telemetry.{name} must be finite and positive")
-        if telemetry.default_frequency > _DCGM_POWER_MAX_SAMPLE_GAP_SECONDS:
+        if telemetry.collect_interval_ms <= 0:
+            raise ValidationError("telemetry.collect_interval_ms must be positive")
+        if telemetry.collect_interval_ms > _DCGM_POWER_MAX_SAMPLE_GAP_SECONDS * 1000:
             raise ValidationError(
-                f"telemetry.default_frequency={telemetry.default_frequency} exceeds the "
+                f"telemetry.collect_interval_ms={telemetry.collect_interval_ms} exceeds the "
                 f"{_DCGM_POWER_MAX_SAMPLE_GAP_SECONDS}s max sample gap the power validator accepts; "
                 "every window would fail sample_gap_exceeded. Set it to the intended collector "
-                "period (e.g. 1.0)."
+                "period (e.g. 1000)."
             )
         worst_case_join_seconds = 2 * (
             2 * telemetry.request_timeout_seconds + _DCGM_POWER_COLLECT_CYCLE_TIMEOUT_GRACE_SECONDS
@@ -2269,8 +2339,6 @@ class SrtConfig:
         """Validate Tachometer collection under observability."""
         observability = self.observability
         tachometer = observability.tachometer
-        if tachometer.enabled is True and not observability.enabled:
-            raise ValidationError("observability.tachometer requires observability.enabled: true")
         if not observability.tachometer_enabled:
             return
         if self.telemetry.enabled and tachometer.dcgm_exporter is not None:
@@ -2293,8 +2361,8 @@ class SrtConfig:
                 raise ValidationError(f"observability.tachometer.{name}.port must be in 1..65535")
         if not tachometer.binary_path:
             raise ValidationError("observability.tachometer.binary_path must be non-empty")
-        if tachometer.default_frequency <= 0:
-            raise ValidationError("observability.tachometer.default_frequency must be positive")
+        if tachometer.collect_interval_ms <= 0:
+            raise ValidationError("observability.tachometer.collect_interval_ms must be positive")
         if tachometer.sync_interval_secs < 0:
             raise ValidationError("observability.tachometer.sync_interval_secs must be >= 0")
         if tachometer.compaction_threads < 0:

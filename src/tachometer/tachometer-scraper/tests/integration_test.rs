@@ -547,7 +547,7 @@ storage = "file://{}"
 [[endpoints]]
 name = "dcgm_test"
 url = "file://{}"
-frequency = 5.0
+collect_interval_ms = 200
 filter = "dcgm"
 
 [endpoints.gpu_metadata]

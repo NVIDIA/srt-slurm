@@ -33,7 +33,7 @@ class TelemetryEndpoint:
 
     name: str
     url: str
-    frequency: float
+    collect_interval_ms: int
     filter: str | None = None
     node_metadata: dict[str, str] = field(default_factory=dict)
     gpu_metadata: dict[str, dict[str, str]] = field(default_factory=dict)
@@ -47,19 +47,29 @@ def generate_tachometer_config(
     tachometer: TachometerConfig,
     dcgm_exporter: TelemetryExporterConfig | None = None,
     frontend_type: str = "dynamo",
-    exclude_urls: frozenset[str] | set[str] = frozenset(),
 ) -> str:
     """Generate Tachometer TOML from backend and frontend topology.
 
-    ``exclude_urls`` is the set of ``/metrics`` URLs the benchmark client
-    already polls (``AIPERF_SERVER_METRICS_URLS``). Tachometer scrapes the
-    complement so a worker endpoint is never double-polled — the extra scrape
-    load has previously made a submission irreproducible. Frontend, DCGM and
-    node-exporter endpoints are never excluded: the frontend scrape is cheap
-    and Tachometer is the only whole-window, per-replica capture of it.
+    Every endpoint is scraped even when the benchmark client polls the same
+    URL (``AIPERF_SERVER_METRICS_URLS``): double-polling has been validated
+    as harmless, and unconditional coverage keeps Tachometer the one
+    whole-window, per-replica capture regardless of what the client does.
+
+    ``frontend_type: trtllm_serve`` targets a different surface than Dynamo:
+    workers bind only their OpenAI ``http_port`` (leaders; the DYN_SYSTEM_PORT
+    sys-ports are never created in this mode) and both the workers and the
+    disaggregated orchestrator serve Prometheus at ``/prometheus/metrics`` —
+    the worker's ``/metrics`` route is JSON iteration stats and the
+    orchestrator registers no ``/metrics`` route at all. Endpoint names keep
+    the Dynamo pattern (``backend_{mode}{index}_rank{rank}``, ``frontend{i}``)
+    so downstream grouping is identical across the two frontends. Aggregate
+    trtllm-serve is out of scope (disagg-only coverage).
     """
-    dcgm_exporter = dcgm_exporter or tachometer.dcgm_exporter
-    node_exporter = tachometer.node_exporter
+    # trtllm-serve (worker and disagg orchestrator alike) exposes Prometheus
+    # text at /prometheus/metrics; every other frontend/backend uses /metrics.
+    metrics_path = "/prometheus/metrics" if frontend_type == "trtllm_serve" else "/metrics"
+    dcgm_exporter = dcgm_exporter or tachometer.resolved_dcgm_exporter
+    node_exporter = tachometer.resolved_node_exporter
     endpoints: list[TelemetryEndpoint] = []
     physical_nodes: dict[str, list[Process]] = {}
     for process in processes:
@@ -84,7 +94,7 @@ def generate_tachometer_config(
                 TelemetryEndpoint(
                     name=f"dcgm_{node}",
                     url=f"http://{node}:{dcgm_exporter.port}/metrics",
-                    frequency=tachometer.default_frequency,
+                    collect_interval_ms=tachometer.collect_interval_ms,
                     filter="dcgm",
                     node_metadata=node_metadata,
                     gpu_metadata=gpu_metadata,
@@ -95,7 +105,7 @@ def generate_tachometer_config(
                 TelemetryEndpoint(
                     name=f"node_exporter_{node}",
                     url=f"http://{node}:{node_exporter.port}/metrics",
-                    frequency=tachometer.default_frequency,
+                    collect_interval_ms=tachometer.collect_interval_ms,
                     filter="node_exporter",
                     node_metadata=node_metadata,
                 )
@@ -109,18 +119,20 @@ def generate_tachometer_config(
             continue
         if frontend_type == "vllm-router" and process.http_port <= 0:
             continue
+        if frontend_type == "trtllm_serve" and (process.endpoint_mode == "agg" or process.http_port <= 0):
+            # trtllm-serve workers bind only the leader's OpenAI http_port;
+            # follower ranks serve nothing. Aggregate mode is out of scope
+            # (the one agg worker binds the public frontend port instead of
+            # process.http_port).
+            continue
         node_ip = get_hostname_ip(process.node, runtime.network_interface)
         if frontend_type == "vllm" and process.endpoint_mode == "agg":
             port = FRONTEND_PUBLIC_PORT
-        elif frontend_type == "vllm-router":
+        elif frontend_type in ("vllm-router", "trtllm_serve"):
             port = process.http_port
         else:
             port = process.sys_port
-        url = f"http://{node_ip}:{port}/metrics"
-        if url in exclude_urls:
-            # The benchmark client already polls this endpoint on its own
-            # cadence; scrape the complement instead of double-polling.
-            continue
+        url = f"http://{node_ip}:{port}{metrics_path}"
         node_metadata = {
             "hostname": process.node,
             "worker_index": str(process.endpoint_index),
@@ -132,7 +144,7 @@ def generate_tachometer_config(
             TelemetryEndpoint(
                 name=f"backend_{process.endpoint_mode}{process.endpoint_index}_rank{process.node_rank}",
                 url=url,
-                frequency=tachometer.default_frequency,
+                collect_interval_ms=tachometer.collect_interval_ms,
                 filter="backend",
                 node_metadata=node_metadata,
             )
@@ -161,8 +173,8 @@ def generate_tachometer_config(
         endpoints.append(
             TelemetryEndpoint(
                 name=f"frontend{frontend_index}",
-                url=f"http://{node_ip}:{frontend_topology.frontend_port}/metrics",
-                frequency=tachometer.default_frequency,
+                url=f"http://{node_ip}:{frontend_topology.frontend_port}{metrics_path}",
+                collect_interval_ms=tachometer.collect_interval_ms,
                 filter="frontend",
                 node_metadata=node_metadata,
             )
@@ -181,7 +193,7 @@ def _dump_toml(*, endpoints: list[TelemetryEndpoint], storage: str) -> str:
         lines.append("[[endpoints]]")
         lines.append(f"name = {json.dumps(endpoint.name)}")
         lines.append(f"url = {json.dumps(endpoint.url)}")
-        lines.append(f"frequency = {endpoint.frequency}")
+        lines.append(f"collect_interval_ms = {endpoint.collect_interval_ms}")
         if endpoint.filter is not None:
             lines.append(f"filter = {json.dumps(endpoint.filter)}")
         if endpoint.node_metadata:

@@ -555,7 +555,7 @@ backend:
 | Value      | Process layout                                                               |
 | ---------- | ---------------------------------------------------------------------------- |
 | `per_node` | One process per node (default); supports node-local or distributed TP/PP      |
-| `per_gpu`  | One process per DP rank/GPU (deprecated compatibility mode)                   |
+| `per_gpu`  | One process per DP rank (TP×PP GPUs each; deprecated compatibility mode)     |
 
 Set `backend.dp_launch_mode: per_gpu` only when temporarily preserving the
 legacy process layout. srtslurm emits a configuration-time deprecation warning
@@ -1219,7 +1219,7 @@ infra:
 
 ## observability
 
-`observability.enabled` turns on the server metrics and trace surfaces and collects them with the native Tachometer scraper for the whole run:
+Tachometer collection is **on by default for every run** (no configuration needed; `observability.tachometer.enabled: false` opts out). `observability.enabled` turns on the server metrics *content* (the TRT-LLM publish flag and engine statistics) and the trace surfaces:
 
 ```yaml
 observability:
@@ -1239,14 +1239,14 @@ The legacy in-job Python RAW scraper is retired: a recipe still carrying `scrape
 
 The component perf dashboard is **not** configured here. It is built in post-processing on every run; `enabled` decides which capture legs exist and therefore which tabs the page carries. See [Component Performance Dashboard](component-dashboard.md).
 
-Tachometer collects every worker rank and frontend metrics by default (minus the client-polled complement described above). DCGM and node exporters are optional additions:
+Tachometer collects every worker rank, frontend, DCGM, and node metrics by default (minus the client-polled complement described above) — the exporters launch from pinned multi-arch registry images with no configuration. Air-gapped clusters override the images via the `containers:` alias map in `srtslurm.yaml`; `default_exporters: false` disables the built-ins:
 
 ```yaml
 observability:
   enabled: true
   tachometer:
     enabled: true
-    default_frequency: 1
+    collect_interval_ms: 1000
     sync_interval_secs: 120
     compaction_threads: 4
     storage_subdir: tachometer
@@ -1262,15 +1262,16 @@ observability:
 
 | Tachometer field | Type | Default | Description |
 | ---------------- | ---- | ------- | ----------- |
-| `enabled` | bool/null | `null` | `null` follows `observability.enabled`; explicit `false` opts out; explicit `true` without `observability.enabled` is a validation error |
+| `enabled` | bool/null | `null` | `null` means ON for every run (decoupled from `observability.enabled`); explicit `false` opts out |
 | `binary_path` | string | `tachometer-scraper` | Scraper command or path on the compute nodes |
-| `default_frequency` | float | `1.0` | Scrape frequency in Hz |
+| `collect_interval_ms` | int | `1000` | Milliseconds between scrapes of every endpoint; the single cadence knob — it also drives the launched DCGM exporter's `--collect-interval` (an explicit `dcgm_exporter.command` wins) and the host sampler. Values below `1000` speed up DCGM NVML sampling and are warned about at launch: 100ms sampling measured ~2% decode ITL overhead on GB300. Replaces the retired Hz-based `default_frequency` |
 | `sync_interval_secs` | int | `120` | Interval for intermediate Parquet compaction; `0` disables it |
 | `compaction_threads` | int | `4` | Value passed as `POLARS_MAX_THREADS` |
 | `storage_subdir` | string | `tachometer` | Output directory below the run log directory |
 | `extra_metadata` | dict | `{}` | Static string metadata added to every endpoint |
-| `dcgm_exporter` | object/null | `null` | Optional DCGM exporter image, port, and command |
-| `node_exporter` | object/null | `null` | Optional node exporter image, port, and command |
+| `default_exporters` | bool | `true` | Launch the built-in DCGM + node exporters when no explicit blocks are set (sweep path only) |
+| `dcgm_exporter` | object/null | built-in | Defaults to `nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04` on port 9401; an explicit block overrides |
+| `node_exporter` | object/null | built-in | Defaults to `quay.io#prometheus/node-exporter:v1.8.2` on port 9101; an explicit block overrides |
 
 `make setup ARCH=<compute_arch>` downloads and checksum-verifies the matching Tachometer binary from the latest srt-slurm release. The scraper runs as a native `srun` process on the head node; configured exporters remain containerized on worker nodes. Run `make tachometer-scraper` to build from source instead.
 
@@ -1289,7 +1290,7 @@ When both are enabled, `telemetry.dcgm_exporter` is shared with Tachometer. Do n
 ```yaml
 telemetry:
   enabled: true
-  default_frequency: 1.0
+  collect_interval_ms: 1000
   storage_subdir: power
   required: true
   dcgm_exporter:
@@ -1301,7 +1302,7 @@ telemetry:
 | ----- | ---- | ------- | ----------- |
 | `enabled` | bool | `false` | Enable DCGM power collection |
 | `dcgm_exporter` | object/null | `null` | DCGM exporter image, port, and optional command; required when enabled |
-| `default_frequency` | float | `1.0` | Power sample interval in seconds; must be at most `3.0` |
+| `collect_interval_ms` | int | `1000` | Milliseconds between collector cycles; must be at most `3000` (replaces the retired `default_frequency`, which was seconds despite its name) |
 | `storage_subdir` | string | `power` | Output directory below the run log directory |
 | `required` | bool | `false` | Fail the benchmark when publishable power artifacts cannot be produced |
 | `startup_timeout_seconds` | float | `30.0` | Exporter readiness timeout |

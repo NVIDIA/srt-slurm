@@ -221,7 +221,7 @@ class BenchmarkStageMixin:
         for process in self.backend_processes:
             if self.config.frontend.type != "vllm-router" and not process.is_leader:
                 continue
-            if self.config.frontend.type == "dynamo":
+            if self.config.frontend.type == "dynamo" and not self.config.dynamo.sidecar:
                 port = process.sys_port
             elif self.config.frontend.type == "vllm":
                 port = self.runtime.frontend_port
@@ -617,10 +617,14 @@ class BenchmarkStageMixin:
         ranks are not advertised as separate engines.
         """
         urls: list[str] = []
+        # trtllm-serve serves Prometheus at /prometheus/metrics on the worker
+        # OpenAI port (GET /metrics there is JSON iteration stats, not
+        # exposition text); every other frontend serves it at /metrics.
+        metrics_path = "/prometheus/metrics" if self.config.frontend.type == "trtllm_serve" else "/metrics"
         if logical_workers_only:
             if logical_endpoints is None:
                 logical_endpoints = self._logical_worker_endpoints()
-            urls = [f"http://{host}:{port}/metrics" for _, host, port in logical_endpoints]
+            urls = [f"http://{host}:{port}{metrics_path}" for _, host, port in logical_endpoints]
         else:
             if self.config.frontend.type in {"vllm", "vllm-router"}:
                 for process in self.backend_processes:
@@ -633,13 +637,25 @@ class BenchmarkStageMixin:
                 if urls:
                     return {"AIPERF_SERVER_METRICS_URLS": ",".join(sorted(set(urls)))}
 
+            # trtllm-serve workers bind only their OpenAI http_port (leaders) —
+            # the DYN_SYSTEM_PORT sys-port endpoints are never created in this
+            # mode, so advertising them would point the client at dead ports.
+            # The Prometheus mount exists when return_perf_metrics is set,
+            # which observability.enabled injects alongside
+            # publish_events_and_metrics.
+            if self.config.frontend.type == "trtllm_serve":
+                if getattr(self.config.backend, "publish_events_and_metrics", False):
+                    for process in self.backend_processes:
+                        if process.endpoint_mode != "agg" and process.http_port > 0:
+                            host = get_hostname_ip(process.node, self.runtime.network_interface)
+                            urls.append(f"http://{host}:{process.http_port}{metrics_path}")
             # TRT-LLM workers only publish engine metrics when launched with
             # --publish-events-and-metrics (pre-v1.3.0 Dynamo gates the whole
             # worker /metrics surface on it; observability.enabled sets it at
             # config load). Without the flag the sys-port endpoints serve
             # nothing, so advertising them would only create the impression
             # that worker metrics are being captured.
-            if self.config.backend_type != "trtllm" or getattr(
+            elif self.config.backend_type != "trtllm" or getattr(
                 self.config.backend, "publish_events_and_metrics", False
             ):
                 for process in self.backend_processes:
@@ -663,38 +679,6 @@ class BenchmarkStageMixin:
         # runners retain their historical sorted physical-process list.
         urls = list(dict.fromkeys(urls)) if logical_workers_only else sorted(set(urls))
         return {"AIPERF_SERVER_METRICS_URLS": ",".join(urls)}
-
-    def _client_polled_metric_urls(self) -> frozenset[str]:
-        """The ``/metrics`` URLs the benchmark client will poll on its own.
-
-        Tachometer scrapes the complement of this set (see
-        ``TelemetryStageMixin.start_tachometer``), so it is derived from the
-        same logic that injects ``AIPERF_SERVER_METRICS_URLS`` — including the
-        dead-TRT-LLM-worker omission and the explicit recipe override. It is
-        deliberately NOT a second endpoint list to maintain: when the injected
-        set changes, the complement moves with it. A serve-only or manual run
-        has no client, so nothing is polled and Tachometer covers everything.
-        """
-        if bool(getattr(self, "serve_only", False)):
-            return frozenset()
-        explicit = self.runtime.environment.get("AIPERF_SERVER_METRICS_URLS")
-        if explicit is not None:
-            return frozenset(url for url in explicit.split(",") if url)
-        from srtctl.benchmarks.base import AIPerfBenchmarkRunner, get_runner
-
-        benchmark_type = self.config.benchmark.type
-        if benchmark_type == "custom":
-            env = self._get_aiperf_server_metrics_env(logical_workers_only=True)
-        else:
-            try:
-                runner = get_runner(benchmark_type)
-            except ValueError:
-                return frozenset()
-            if not isinstance(runner, AIPerfBenchmarkRunner):
-                return frozenset()
-            env = self._get_aiperf_server_metrics_env()
-        urls = env.get("AIPERF_SERVER_METRICS_URLS", "")
-        return frozenset(url for url in urls.split(",") if url)
 
     def _get_benchmark_env(self, runner: "BenchmarkRunner") -> dict[str, str]:
         """Get environment variables for the benchmark script."""

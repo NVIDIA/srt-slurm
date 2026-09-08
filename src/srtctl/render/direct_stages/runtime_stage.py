@@ -18,6 +18,15 @@ from typing import Any
 
 from .common import run_capture, rust_toolchain
 
+# Some clusters see intermittent git smart-HTTP failures negotiating HTTP/2
+# against github.com (stalls, or truncated responses git misreports as
+# "could not read Username" auth-prompt failures). --bash dev-mode can't
+# read srtslurm.yaml's git_http_version (see srtctl.core.config.
+# git_clone_command_prefix, the config-driven equivalent for the real
+# sbatch path); this stdlib-only package applies the workaround
+# unconditionally instead.
+_GIT = ["git", "-c", "http.version=HTTP/1.1"]
+
 
 class RuntimeSetupStageMixin:
     """Install SGLang and Dynamo into the per-run serving environment."""
@@ -164,15 +173,15 @@ class RuntimeSetupStageMixin:
                     build = Path(raw_build)
                     repo = build / "dynamo"
                     self._run_logged(
-                        ["git", "clone", "--no-checkout", "https://github.com/ai-dynamo/dynamo.git", str(repo)],
+                        [*_GIT, "clone", "--no-checkout", "https://github.com/ai-dynamo/dynamo.git", str(repo)],
                         log_name="install-dynamo.log",
                     )
                     self._run_logged(
-                        ["git", "-C", str(repo), "fetch", "--depth", "1", "origin", source_hash],
+                        [*_GIT, "-C", str(repo), "fetch", "--depth", "1", "origin", source_hash],
                         log_name="install-dynamo.log",
                     )
                     self._run_logged(
-                        ["git", "-C", str(repo), "checkout", "--detach", "FETCH_HEAD"], log_name="install-dynamo.log"
+                        [*_GIT, "-C", str(repo), "checkout", "--detach", "FETCH_HEAD"], log_name="install-dynamo.log"
                     )
                     for command in self.plan["dynamo_cargo_patch_commands"]:
                         self._run_logged(["bash", "-lc", str(command)], log_name="install-dynamo.log", cwd=repo)
@@ -221,7 +230,7 @@ class RuntimeSetupStageMixin:
             build = Path(raw_build)
             repo = build / "dynamo"
             self._run_logged(
-                ["git", "clone", "--depth", "1", "https://github.com/ai-dynamo/dynamo.git", str(repo)],
+                [*_GIT, "clone", "--depth", "1", "https://github.com/ai-dynamo/dynamo.git", str(repo)],
                 log_name="install-dynamo.log",
             )
             environment = dict(os.environ)

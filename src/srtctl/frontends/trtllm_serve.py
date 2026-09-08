@@ -187,7 +187,10 @@ class TRTLLMServeFrontend:
         if config.frontend.env:
             env_to_set.update(config.frontend.env)
 
-        orch_log = runtime.log_dir / f"{frontend_node}_trtllm_serve_orchestrator.out"
+        # Keep the Dynamo frontend's log naming pattern ({node}_frontend_{i}.out)
+        # so downstream tooling that globs *_frontend_*.out (perf dashboard,
+        # log collection) treats both frontends identically.
+        orch_log = runtime.log_dir / f"{frontend_node}_frontend_0.out"
         proc = start_srun_process(
             command=cmd,
             nodelist=[frontend_node],
