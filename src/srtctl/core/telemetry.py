@@ -46,6 +46,7 @@ def generate_tachometer_config(
     tachometer: TachometerConfig,
     dcgm_exporter: TelemetryExporterConfig | None = None,
     frontend_type: str = "dynamo",
+    frontend_metrics_port: int | None = None,
 ) -> str:
     """Generate Tachometer TOML from backend and frontend topology.
 
@@ -63,6 +64,13 @@ def generate_tachometer_config(
     the Dynamo pattern (``backend_{mode}{index}_rank{rank}``, ``frontend{i}``)
     so downstream grouping is identical across the two frontends. Aggregate
     trtllm-serve is out of scope (disagg-only coverage).
+
+    ``frontend_type: sglang`` (the Model Gateway over native ``sglang.launch_server``
+    workers) has no Dynamo system ports either: worker leaders serve ``/metrics``
+    on their OpenAI ``http_port`` (srtctl passes ``--enable-metrics``; followers
+    of a multi-node worker serve nothing), and the gateway serves Prometheus on
+    its own listener (``frontend_metrics_port``, ``--prometheus-port``), not on
+    the routing port.
     """
     # trtllm-serve (worker and disagg orchestrator alike) exposes Prometheus
     # text at /prometheus/metrics; every other frontend/backend uses /metrics.
@@ -124,10 +132,14 @@ def generate_tachometer_config(
             # (the one agg worker binds the public frontend port instead of
             # process.http_port).
             continue
+        if frontend_type == "sglang" and (not process.is_leader or process.http_port <= 0):
+            # Native sglang.launch_server: only the leader rank of a worker binds
+            # the HTTP server that carries /metrics.
+            continue
         node_ip = get_hostname_ip(process.node, runtime.network_interface)
         if frontend_type == "vllm" and process.endpoint_mode == "agg":
             port = FRONTEND_PUBLIC_PORT
-        elif frontend_type in ("vllm-router", "trtllm_serve"):
+        elif frontend_type in ("vllm-router", "trtllm_serve", "sglang"):
             port = process.http_port
         else:
             port = process.sys_port
@@ -172,7 +184,7 @@ def generate_tachometer_config(
         endpoints.append(
             TelemetryEndpoint(
                 name=f"frontend{frontend_index}",
-                url=f"http://{node_ip}:{frontend_topology.frontend_port}{metrics_path}",
+                url=f"http://{node_ip}:{frontend_metrics_port or frontend_topology.frontend_port}{metrics_path}",
                 collect_interval_ms=tachometer.collect_interval_ms,
                 filter="frontend",
                 node_metadata=node_metadata,

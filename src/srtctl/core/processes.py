@@ -11,6 +11,7 @@ This module provides lifecycle management for srun processes, including:
 """
 
 import logging
+import os
 import signal
 import subprocess
 import sys
@@ -61,6 +62,14 @@ class ManagedProcess:
         log_file: Path to the process log file
         node: Node hostname where the process runs
         critical: If True, failure triggers full cleanup
+        terminate_timeout: Seconds to wait after SIGTERM before SIGKILL on
+            cleanup. Processes that flush state on SIGTERM (tachometer
+            compacting parquet) need more than the default.
+        step_name: The Slurm step name this srun was launched with
+            (``start_srun_process(step_name=...)``). When set, ``terminate()``
+            delivers SIGTERM to the task with ``scancel --signal=TERM --full``
+            on that step, because SIGTERM to the srun process itself only
+            aborts the step and the task is SIGKILLed without warning.
     """
 
     name: str
@@ -68,6 +77,8 @@ class ManagedProcess:
     log_file: Path | None = None
     node: str | None = None
     critical: bool = True
+    terminate_timeout: float = 10.0
+    step_name: str | None = None
 
     @property
     def is_running(self) -> bool:
@@ -79,18 +90,85 @@ class ManagedProcess:
         """Get exit code if process has exited, None otherwise."""
         return self.popen.poll()
 
-    def terminate(self, timeout: float = 10.0) -> None:
-        """Terminate the process gracefully, then kill if needed."""
+    def terminate(self, timeout: float | None = None) -> None:
+        """Terminate the process gracefully (SIGTERM, then SIGKILL after ``timeout`` or ``terminate_timeout``).
+
+        With a ``step_name`` the SIGTERM goes to the Slurm step's task via
+        ``scancel --signal``; the srun process is only SIGTERMed as a fallback.
+        """
         if not self.is_running:
             return
 
-        outcome = terminate_and_reap(self.popen, terminate_timeout=timeout, kill_timeout=5)
+        wait = self.terminate_timeout if timeout is None else timeout
+        if self.step_name and signal_step(self.step_name, "TERM"):
+            try:
+                self.popen.wait(timeout=wait)
+                return
+            except subprocess.TimeoutExpired:
+                logger.warning(
+                    "Step %s (%s) did not exit %.0fs after SIGTERM; terminating srun", self.step_name, self.name, wait
+                )
+        outcome = terminate_and_reap(self.popen, terminate_timeout=wait, kill_timeout=5)
         if not outcome.reaped:
             logger.error("Process %s was not reaped after SIGKILL", self.name)
 
 
 # Type alias for named process collections
 NamedProcesses = dict[str, ManagedProcess]
+
+
+def find_step_id(step_name: str, job_id: str | None = None) -> str | None:
+    """The ``<job>.<step>`` id of the running step named ``step_name`` in this job, or None."""
+    job_id = job_id or os.environ.get("SLURM_JOB_ID") or os.environ.get("SLURM_JOBID")
+    if not job_id:
+        return None
+    try:
+        result = subprocess.run(
+            ["squeue", "--steps", f"--jobs={job_id}", "--noheader", "--format=%i %j"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.warning("squeue --steps failed while looking up step %s: %s", step_name, exc)
+        return None
+    if result.returncode != 0:
+        logger.warning(
+            "squeue --steps exited %d looking up step %s: %s", result.returncode, step_name, result.stderr.strip()
+        )
+        return None
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == step_name:
+            return parts[0]
+    return None
+
+
+def signal_step(step_name: str, sig: str = "TERM") -> bool:
+    """Send ``sig`` to every process of the Slurm step named ``step_name``; True when delivered.
+
+    ``srun`` turns a SIGTERM aimed at itself into a step abort that SIGKILLs the
+    task, so a process that must flush on SIGTERM (tachometer compacting its
+    parquet, an engine shutting down cleanly) has to be signalled through Slurm:
+    ``scancel --signal=<sig> --full <job>.<step>``.
+    """
+    step_id = find_step_id(step_name)
+    if step_id is None:
+        logger.warning("No running step named %s found; falling back to signalling srun", step_name)
+        return False
+    try:
+        result = subprocess.run(
+            ["scancel", f"--signal={sig}", "--full", step_id], capture_output=True, text=True, timeout=30, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.warning("scancel --signal=%s %s failed: %s", sig, step_id, exc)
+        return False
+    if result.returncode != 0:
+        logger.warning("scancel --signal=%s %s exited %d: %s", sig, step_id, result.returncode, result.stderr.strip())
+        return False
+    logger.info("Sent SIG%s to step %s (%s)", sig, step_id, step_name)
+    return True
 
 
 class ProcessRegistry:

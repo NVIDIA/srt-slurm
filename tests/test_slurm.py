@@ -76,7 +76,7 @@ def test_cluster_bash_preamble_applied_when_only_cluster_set() -> None:
         start_srun_process(["python3", "-m", "server"])
 
     bash_cmd = _built_bash_command(mock_popen)
-    assert bash_cmd.startswith("ulimit -n 1048576 && python3 -m server")
+    assert bash_cmd.startswith("ulimit -n 1048576 && exec python3 -m server")
 
 
 def test_cluster_bash_preamble_warns_when_bash_wrapper_disabled(caplog) -> None:

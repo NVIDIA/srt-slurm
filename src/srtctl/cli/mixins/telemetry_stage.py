@@ -32,6 +32,9 @@ logger = logging.getLogger(__name__)
 # Power telemetry's template: 100ms NVML sampling is its purpose (dense power
 # curves inside sa-bench measurement windows). Never used for tachometer.
 DCGM_EXPORTER_COMMAND_TEMPLATE = "dcgm-exporter --collect-interval=100 --address :{port}"
+# Time tachometer gets after SIGTERM to compact its in-memory arrow rows to parquet.
+TACHOMETER_TERMINATE_TIMEOUT_SECONDS = 90.0
+TACHOMETER_STEP_NAME = "tachometer"
 
 # Lowest DCGM sampling interval measured at parity with no telemetry on GB300
 # decode (A/F chain); 100ms measured ~2% ITL p50 overhead. Sampling faster than
@@ -304,6 +307,14 @@ class TelemetryStageMixin:
                 return str(candidate)
         return binary_path
 
+    def _frontend_metrics_port(self) -> int | None:
+        """Frontends whose Prometheus listener is not the routing port: the SGLang Model Gateway."""
+        if self.config.frontend.type == "sglang":
+            from srtctl.frontends.sglang import router_metrics_port
+
+            return router_metrics_port(self.config.frontend.args)
+        return None
+
     def start_tachometer(self) -> list[ManagedProcess]:
         """Start Tachometer collection (follows ``observability.enabled``)."""
         observability = self.config.observability
@@ -326,6 +337,7 @@ class TelemetryStageMixin:
                 tachometer=tachometer,
                 dcgm_exporter=dcgm_exporter,
                 frontend_type=self.config.frontend.type,
+                frontend_metrics_port=self._frontend_metrics_port(),
             )
         )
 
@@ -406,6 +418,7 @@ class TelemetryStageMixin:
                     env_to_set=env_to_set,
                     srun_options=self.runtime.srun_options,
                     het_group=self.runtime.nodes.het_group_for(self.runtime.nodes.head),
+                    step_name=TACHOMETER_STEP_NAME,
                 ),
                 log_file=self.runtime.log_dir / "tachometer.out",
                 node=self.runtime.nodes.head,
@@ -413,6 +426,11 @@ class TelemetryStageMixin:
                 # benchmark. A dead scraper costs the capture, not the run;
                 # the loss is visible in tachometer.out and the sweep log.
                 critical=False,
+                # SIGTERM is what makes tachometer compact its arrow buffer into
+                # parquet. It has to reach the task through Slurm (step_name ->
+                # scancel --signal), and gets more than the default 10 s to finish.
+                terminate_timeout=TACHOMETER_TERMINATE_TIMEOUT_SECONDS,
+                step_name=TACHOMETER_STEP_NAME,
             )
         )
         logger.info("Tachometer started with artifacts under %s", tachometer_dir)

@@ -25,6 +25,9 @@ SGLANG_DIST_INIT_PORT_BASE = 8300
 # One per physical SGLang server process. This is used for SGLang's local TP
 # rendezvous; a deterministic assignment avoids concurrent free-port races.
 SGLANG_NCCL_PORT_BASE = 17500
+# SGLang Model Gateway (sglang_router) Prometheus listener; the router's own default.
+# Only started when --prometheus-port is passed, which srtctl does so tachometer can scrape it.
+SGLANG_ROUTER_METRICS_PORT = 29000
 
 # Mooncake transfer-engine ports (shared by SGLang and vLLM backends).
 MOONCAKE_MASTER_PORT = 8700
