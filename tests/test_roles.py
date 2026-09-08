@@ -87,8 +87,8 @@ def test_roles_round_trips_through_roles_from_legacy() -> None:
     as_roles = roles_from_legacy(legacy)
     assert as_roles["roles"] == _roles_sglang_disagg()["roles"]
     assert "prefill_workers" not in as_roles.get("resources", {})
-    assert "prefill_environment" not in as_roles["backend"]
-    assert "sglang_config" not in as_roles["backend"]
+    assert "backend" not in as_roles  # the engine moved to the top level
+    assert as_roles["engine"] == "sglang"
     # And expanding it back reproduces the original internal layout.
     assert expand_roles(copy.deepcopy(as_roles))["resources"] == legacy["resources"]
     assert expand_roles(copy.deepcopy(as_roles))["backend"] == legacy["backend"]
@@ -162,3 +162,59 @@ def test_preflight_topology_reads_expanded_roles(tmp_path) -> None:
     results = preflight_config_variants(yaml.safe_load(yaml.safe_dump(recipe)), cluster_config=None)
     topo_errors = [issue for result in results for issue in result.errors if issue.field == "resources"]
     assert topo_errors == [], topo_errors
+
+
+def test_engine_string_and_mapping_map_onto_backend() -> None:
+    assert expand_roles({"engine": "vllm"})["backend"] == {"type": "vllm"}
+    expanded = expand_roles({"engine": {"type": "trtllm", "served_model_name": "m"}, "roles": {"agg": {"workers": 1}}})
+    assert expanded["backend"]["type"] == "trtllm"
+    assert expanded["backend"]["served_model_name"] == "m"
+    assert "engine" not in expanded
+    # roles.<r>.engine may restate the engine, and must agree.
+    assert (
+        expand_roles({"engine": "sglang", "roles": {"agg": {"engine": "sglang", "workers": 1}}})["backend"]["type"]
+        == "sglang"
+    )
+    assert expand_roles({"roles": {"agg": {"engine": "vllm", "workers": 1}}})["backend"]["type"] == "vllm"
+    with pytest.raises(ValueError, match="conflicts with engine.type"):
+        expand_roles({"engine": "sglang", "roles": {"agg": {"engine": "vllm"}}})
+    with pytest.raises(ValueError, match="same engine"):
+        expand_roles({"roles": {"prefill": {"engine": "vllm"}, "decode": {"engine": "sglang"}}})
+    with pytest.raises(ValueError, match="conflicts with backend.type"):
+        expand_roles({"engine": "vllm", "backend": {"type": "sglang"}})
+
+
+def test_per_role_kv_events_and_sidecar() -> None:
+    config = expand_roles(
+        {
+            "engine": "sglang",
+            "roles": {
+                "prefill": {"workers": 1, "kv_events": True, "sidecar": True},
+                "decode": {"workers": 1, "kv_events": {"publisher": "zmq", "topic": "kv"}, "sidecar": True},
+            },
+        }
+    )
+    assert config["backend"]["kv_events_config"] == {"prefill": True, "decode": {"publisher": "zmq", "topic": "kv"}}
+    assert config["dynamo"]["sidecar"] is True
+
+    with pytest.raises(ValueError, match="sidecar must agree"):
+        expand_roles({"roles": {"prefill": {"sidecar": True}, "decode": {"sidecar": False}}})
+    with pytest.raises(ValueError, match="cannot be combined"):
+        expand_roles({"backend": {"kv_events_config": True}, "roles": {"prefill": {"kv_events": True}}})
+    with pytest.raises(ValueError, match="cannot be combined"):
+        expand_roles({"dynamo": {"sidecar": True}, "roles": {"prefill": {"sidecar": True}}})
+
+
+def test_roles_from_legacy_folds_kv_events_and_sidecar() -> None:
+    legacy = {
+        "backend": {"type": "vllm", "kv_events_config": True, "connector": "nixl"},
+        "resources": {"prefill_workers": 1, "decode_workers": 1, "agg_workers": 0},
+        "dynamo": {"sidecar": True, "sidecar_port": 50051},
+    }
+    folded = roles_from_legacy(legacy)
+    assert folded["engine"] == {"type": "vllm", "connector": "nixl"}
+    assert folded["roles"]["prefill"] == {"workers": 1, "kv_events": True, "sidecar": True}
+    assert folded["roles"]["decode"] == {"workers": 1, "kv_events": True, "sidecar": True}
+    assert folded["roles"]["agg"] == {"workers": 0, "sidecar": True}  # vLLM's bare `true` never covered agg
+    assert folded["dynamo"] == {"sidecar_port": 50051}
+    assert "backend" not in folded

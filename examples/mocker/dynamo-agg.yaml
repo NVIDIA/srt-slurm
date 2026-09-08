@@ -22,13 +22,14 @@ resources:
   gpu_type: "h100"
   gpus_per_node: 8
 dynamo:
-  version: "1.4.2"
+  source:
+    pypi: "1.4.2"
 
 frontend:
   type: dynamo
   enable_multiple_frontends: false
 
-backend:
+engine:
   type: mocker
   engine_type: vllm
   speedup_ratio: 100

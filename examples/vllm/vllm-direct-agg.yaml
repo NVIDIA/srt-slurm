@@ -24,8 +24,7 @@ frontend:
   type: vllm
   enable_multiple_frontends: false
 
-backend:
-  type: vllm
+engine: vllm
 roles:
   agg:
     nodes: 1

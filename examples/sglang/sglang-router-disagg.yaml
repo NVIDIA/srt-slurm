@@ -28,8 +28,7 @@ frontend:
   args:
     policy: "cache_aware"
 
-backend:
-  type: sglang
+engine: sglang
 roles:
   prefill:
     nodes: 1

@@ -75,7 +75,8 @@ def test_migrate_folds_roles_placement_source_and_strips_unused_benchmark_fields
         "decode": {"nodes": 1, "workers": 1, "gpus": 4, "env": {"SGLANG_X": "2"}, "args": {"tensor-parallel-size": 4}},
     }
     assert doc["resources"] == {"gpu_type": "h100", "gpus_per_node": 8}
-    assert doc["backend"] == {"type": "sglang"}
+    assert "backend" not in doc
+    assert doc["engine"] == "sglang"
     assert doc["frontend"] == {"type": "dynamo", "placement": {"node": "first_decode"}}
     assert doc["infra"] == {"placement": {"node": "dedicated"}}
     assert doc["dynamo"] == {"install": True, "source": {"rev": "abc1234", "patches": ["x = 1"]}}
@@ -87,9 +88,9 @@ def test_migrate_folds_roles_placement_source_and_strips_unused_benchmark_fields
     assert "nodes: 1       # one prefill node" in result.text or "# one prefill node" in result.text
     assert "# pinned build" in result.text
     assert "# tp" in result.text
-    # roles sits right after backend.
+    # engine takes backend's place and roles follows it.
     keys = list(doc)
-    assert keys.index("roles") == keys.index("backend") + 1
+    assert keys.index("roles") == keys.index("engine") + 1
 
 
 def test_migrate_is_idempotent_and_layout_folds_apply_to_schema_2_documents() -> None:
@@ -143,7 +144,8 @@ zip_override_ctx:
 """
     doc = yaml.safe_load(migrate_recipe_text(text).text)
     assert doc["base"]["roles"]["agg"] == {"nodes": 1, "workers": 2, "gpus": 1, "args": {"tensor-parallel-size": 1}}
-    assert "backend" not in doc["override_tp2"] or "sglang_config" not in doc["override_tp2"]["backend"]
+    assert "backend" not in doc["override_tp2"]
+    assert doc["base"]["engine"] == "sglang"
     assert doc["override_tp2"]["roles"]["agg"] == {"workers": 1, "gpus": 2, "args": {"tensor-parallel-size": 2}}
     assert doc["zip_override_ctx"]["roles"]["agg"] == {"args": {"context-length": [2048, 8192]}}
     # And the variants still combine: a partially migrated file would collide on roles vs legacy fields.

@@ -38,8 +38,7 @@ frontend:
   args:
     router-mode: "kv"
 
-backend:
-  type: sglang
+engine: sglang
 roles:
   agg:
     nodes: 1

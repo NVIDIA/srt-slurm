@@ -10,6 +10,9 @@ This page is the prose guide: what each block means, how the pieces interact, an
 - [Cluster Config Discovery](#cluster-config-discovery)
 - [name](#name)
 - [model](#model)
+- [engine](#engine)
+- [roles](#roles)
+- [placement](#placement)
 - [resources](#resources)
 - [slurm](#slurm)
 - [frontend](#frontend)
@@ -199,6 +202,37 @@ model:
 
 ---
 
+## engine
+
+`engine:` names the inference engine that builds every worker role's command. A bare string is the common form; a mapping carries engine-wide knobs, the fields that are not per role:
+
+```yaml
+engine: sglang
+```
+
+```yaml
+engine:
+  type: vllm
+  connector: nixl               # vLLM KV connector for disaggregation
+```
+
+```yaml
+engine:
+  type: trtllm
+  served_model_name: "Qwen/Qwen3-0.6B"
+```
+
+```yaml
+engine:
+  type: mocker
+  engine_type: vllm
+  speedup_ratio: 100
+```
+
+Valid types are `sglang`, `vllm`, `trtllm`, and `mocker`. `engine` is normalized into the internal `backend` block before validation (`engine: sglang` is `backend: {type: sglang}`), so the per-engine field tables under [backend](#backend) still describe the engine-wide knobs; only the per-role parts (`<mode>_environment`, `<engine>_config.<mode>`, `<mode>_extra_args`, `kv_events_config`) have moved into [roles](#roles). A v2 recipe needs no `backend:` block. `backend:` still loads as the v1 spelling and `srtctl migrate` rewrites it.
+
+---
+
 ## roles
 
 `roles:` is the 2.0 way to describe a worker role. It groups everything about a role in one place instead of spreading it across `resources`, `backend.*_environment`, and `backend.<engine>_config.*`:
@@ -228,6 +262,14 @@ roles:
 `env` and `args` are ordinary YAML mappings, written exactly as `backend.prefill_environment` and `backend.sglang_config.prefill` were. Nothing needs JSON or inline `{}` syntax.
 
 Role names are `prefill`, `decode`, and `agg`. The aggregated role is `agg` (matching `resources.agg_*`); its `env` and `args` map to `backend.aggregated_environment` and `backend.<engine>_config.aggregated`. Per-role `extra_args` maps to `backend.<mode>_extra_args` (TRT-LLM). `roles:` is normalized into those fields before validation, so it is exactly equivalent to writing them directly; you cannot set both for the same role.
+
+Two more per-role keys replace job-wide knobs:
+
+| Key | Maps to | Notes |
+| --- | --- | --- |
+| `kv_events` | `backend.kv_events_config.<mode>` | `true` for the default ZMQ publisher, or a mapping with `publisher` / `topic`; set per role instead of one job-wide flag |
+| `sidecar` | `dynamo.sidecar` | `true` runs the native engine with a Dynamo sidecar; every role must agree because the mode is job-wide, the sidecar knobs (`sidecar_port`, ...) stay under `dynamo` |
+| `engine` | `backend.type` | Optional; must equal the top-level [engine](#engine) when both are given |
 
 The legacy fields (`resources.prefill_workers`, `backend.prefill_environment`, `backend.sglang_config.prefill`, ...) still load unchanged, so v1 recipes keep working, and both forms are valid v2. `srtctl migrate -f recipe.yaml --in-place` rewrites the legacy layout into `roles:` (and `placement:` / `dynamo.source`), preserving comments and key order; `srtctl migrate --verify -f <dir>` proves that every recipe under a directory resolves to the same config before and after. The `examples/` are written with `roles:` (except `features/override.yaml`, kept legacy to show that the v1 layout still loads).
 
@@ -523,6 +565,8 @@ upstream vLLM backend topology and Router adapter.
 ## backend
 
 Worker configuration and SGLang settings.
+
+**v1 spelling.** In 2.0 the engine type and engine-wide knobs live under [engine](#engine) and the per-mode fields under [roles](#roles); `backend:` is still accepted so v1 recipes load unchanged, and `srtctl migrate` rewrites it. The field tables below remain the reference for each engine's knobs.
 
 ```yaml
 backend:

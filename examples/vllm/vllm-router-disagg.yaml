@@ -27,7 +27,7 @@ frontend:
   args:
     policy: "consistent_hash"
 
-backend:
+engine:
   type: vllm
   connector: nixl
 roles:

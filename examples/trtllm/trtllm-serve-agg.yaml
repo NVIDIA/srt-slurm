@@ -24,7 +24,7 @@ frontend:
   type: trtllm_serve
   enable_multiple_frontends: false
 
-backend:
+engine:
   type: trtllm
   served_model_name: "Qwen/Qwen3-0.6B"
 roles:

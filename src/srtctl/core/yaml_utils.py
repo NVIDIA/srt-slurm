@@ -22,7 +22,9 @@ def _make_yaml() -> YAML:
     y = YAML()
     y.preserve_quotes = True
     y.width = 120
-    object.__setattr__(y, "best_sequence_indent", 2)
+    # Block sequences nested under a key render as `key:\n  - item` (the style the
+    # examples and downstream recipes use) instead of a dash at the key's column.
+    y.indent(mapping=2, sequence=4, offset=2)
     object.__setattr__(y, "best_map_flow_style", False)
     return y
 

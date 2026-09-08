@@ -31,8 +31,7 @@ frontend:
   type: sglang
   enable_multiple_frontends: false
 
-backend:
-  type: sglang
+engine: sglang
 roles:
   agg:
     nodes: 1

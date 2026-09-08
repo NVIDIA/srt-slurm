@@ -30,7 +30,7 @@ frontend:
   args:
     router-mode: "kv"
 
-backend:
+engine:
   type: trtllm
   served_model_name: "Qwen/Qwen3-0.6B"
 roles:

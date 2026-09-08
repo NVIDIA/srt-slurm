@@ -288,20 +288,84 @@ def _migrate_1_to_2(doc: CommentedMap) -> list[str]:
         notes += _fold_placement(variant, label)
         notes += _fold_dynamo_source(variant, label)
         notes += _strip_unused_benchmark_fields(variant, base, label)
-        # A `backend:` that only held per-mode env and engine config is empty now.
-        # Make the implicit engine explicit rather than dropping the block: an
-        # override variant may `null` its way back to the default type, which
-        # only works when the base still has the key.
-        backend = variant.get("backend")
-        if isinstance(backend, CommentedMap) and not backend:
-            engine = _ENGINE_FOR_KEY.get(_engine_key_for(variant, base), "sglang")
-            backend.ca.comment = None
-            backend.ca.items.clear()
-            backend.ca.end = None
-            backend["type"] = engine
-            notes.append(f"{label}backend.type: {engine} (was the implicit default)")
+        notes += _fold_engine(variant, base, label)
         for key in ("resources", "dynamo", "infra", "frontend"):
             _neutralize_if_empty(variant, key)
+    return notes
+
+
+def _fold_engine(variant: CommentedMap, base: CommentedMap, label: str) -> list[str]:
+    """``backend:`` -> top-level ``engine:``, ``kv_events_config`` -> ``roles.*.kv_events``, ``dynamo.sidecar`` -> ``roles.*.sidecar``.
+
+    Runs after the per-mode folds, so what is left in ``backend`` is the engine
+    type plus engine-wide knobs. ``engine`` is a bare string when only the type
+    remains, else a mapping. The key is placed where ``backend`` was.
+    """
+    notes: list[str] = []
+    roles = variant.get("roles")
+    role_specs = (
+        {k: v for k, v in roles.items() if isinstance(v, CommentedMap)} if isinstance(roles, CommentedMap) else {}
+    )
+    backend = variant.get("backend")
+    if isinstance(backend, CommentedMap):
+        engine_type = backend.get("type")
+        if engine_type is None and (not backend or "type" not in backend) and not base.get("engine"):
+            # Only when this variant had a backend block that is now empty of
+            # per-mode fields: make the implicit default explicit so an override
+            # variant's `null` can still delete it (deletion needs the base key).
+            base_backend = base.get("backend") if isinstance(base.get("backend"), dict) else None
+            if not backend and not (base_backend and base_backend.get("type")):
+                engine_type = _ENGINE_FOR_KEY.get(_engine_key_for(variant, base), "sglang")
+                notes.append(f"{label}engine: {engine_type} (was the implicit default)")
+
+        kv_events = backend.get("kv_events_config")
+        if kv_events is not None and role_specs:
+            if isinstance(kv_events, dict):
+                for role_name in ROLE_NAMES:
+                    mode = ROLE_TO_MODE[role_name]
+                    if mode in kv_events and role_name in role_specs:
+                        role_specs[role_name]["kv_events"] = kv_events[mode]
+                        notes.append(f"{label}backend.kv_events_config.{mode} -> roles.{role_name}.kv_events")
+                if all(ROLE_TO_MODE[r] not in kv_events or r in role_specs for r in ROLE_NAMES):
+                    backend.pop("kv_events_config")
+                    backend.ca.items.pop("kv_events_config", None)
+            elif kv_events is True:
+                base_backend = base.get("backend") if isinstance(base.get("backend"), dict) else {}
+                resolved_type = engine_type or base_backend.get("type") or "sglang"
+                covered = ("prefill", "decode", "agg") if resolved_type == "sglang" else ("prefill", "decode")
+                for role_name in covered:
+                    if role_name in role_specs:
+                        role_specs[role_name]["kv_events"] = True
+                backend.pop("kv_events_config")
+                backend.ca.items.pop("kv_events_config", None)
+                notes.append(f"{label}backend.kv_events_config: true -> roles.*.kv_events")
+
+        remaining = CommentedMap()
+        for key in [k for k in backend if k != "type"]:
+            _move(backend, key, remaining, key)
+        if engine_type is not None or remaining:
+            keys = list(variant.keys())
+            position = keys.index("backend")
+            if remaining:
+                engine_value: Any = remaining
+                if engine_type is not None:
+                    remaining.insert(0, "type", engine_type)
+            else:
+                engine_value = engine_type
+            variant.insert(position, "engine", engine_value)
+            if "backend" in variant.ca.items:
+                variant.ca.items["engine"] = variant.ca.items.pop("backend")
+            notes.append(f"{label}backend -> engine")
+        variant.pop("backend")
+        variant.ca.items.pop("backend", None)
+
+    dynamo = variant.get("dynamo")
+    if isinstance(dynamo, CommentedMap) and dynamo.get("sidecar") is True and role_specs:
+        for spec in role_specs.values():
+            spec["sidecar"] = True
+        dynamo.pop("sidecar")
+        dynamo.ca.items.pop("sidecar", None)
+        notes.append(f"{label}dynamo.sidecar -> roles.*.sidecar")
     return notes
 
 
@@ -398,8 +462,26 @@ def _resolved_dump(raw: dict[str, Any]) -> dict[str, Any]:
     from srtctl.core.schema import SrtConfig
 
     schema = SrtConfig.Schema()
-    dumped = schema.dump(schema.load(resolve_config_with_defaults(raw, None)))
+    loaded = schema.load(resolve_config_with_defaults(raw, None))
+    dumped = schema.dump(loaded)
     dumped.pop("schema", None)
+    # kv_events_config is compared by effect, not spelling: `true` and a per-mode
+    # map that enables the same modes resolve to the same worker flags. Only modes
+    # with workers matter.
+    backend = dumped.get("backend")
+    if (
+        isinstance(backend, dict)
+        and "kv_events_config" in backend
+        and hasattr(loaded.backend, "get_kv_events_config_for_mode")
+    ):
+        active = {
+            "prefill": loaded.resources.num_prefill,
+            "decode": loaded.resources.num_decode,
+            "agg": loaded.resources.num_agg,
+        }
+        backend["kv_events_config"] = {
+            mode: loaded.backend.get_kv_events_config_for_mode(mode) for mode, count in active.items() if count > 0
+        }
     return dumped
 
 
