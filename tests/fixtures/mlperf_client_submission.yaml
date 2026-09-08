@@ -1,0 +1,73 @@
+# A real MLPerf offline-disaggregated submission config, kept verbatim apart from
+# internal paths and identifiers, which have been genericized. It is a fixture so
+# the passthrough is exercised against a config nobody here wrote.
+name: dsr1-dynamo-offline-submission
+version: '1.0'
+type: submission
+benchmark_mode: offline
+
+model_params:
+  name: deepseek-r1-nvfp4
+  tokenizer_name: "${MODEL_DIR}"
+  temperature: 0.0
+  top_k: 1
+  top_p: 1.0
+  max_new_tokens: 20000
+  streaming: 'off'
+
+datasets:
+  - name: perf-test
+    type: performance
+    path: /work/dataset/ds-r1/deepseek_r1_eval.parquet
+  - name: deepseek_r1_accuracy
+    type: accuracy
+    path: /work/dataset/ds-r1/deepseek_r1_eval.parquet
+    accuracy_config:
+      eval_method: legacy_mlperf_deepseek_r1
+      ground_truth: ground_truth
+      num_repeats: 1
+      extras:
+        subset_column: dataset
+        question_column: question
+        # This previously pointed at a path the serving launchers do not mount, so
+        # the accuracy scorer handed it to HuggingFace, which fell back to treating
+        # it as a repo id and raised
+        #   HFValidationError: Repo id must be in the form 'repo_name' or 'namespace/repo_name'
+        # Several runs completed the performance phase and then died here. It must
+        # name the model actually being served. Written literally rather than as
+        # ${MODEL_DIR}: expansion is proven for the top-level tokenizer_name but
+        # unverified for this nested extras key, and a stale ${...} would cost a run.
+        tokenizer_path: /models/deepseek-r1
+settings:
+  runtime:
+    # 5,400,000 ms = 90 min (was 60,000 = 1 min, which gated nothing and let a short
+    # sample set close the window early). Reference value.
+    min_duration_ms: 5400000
+    # 9,540,000 ms = 159 min hard cap (was 14,400,000). Reference value. Note SLURM_TIME
+    # in slurm_env.yaml is 05:00:00, so the cap is reachable inside the allocation.
+    max_duration_ms: 9540000
+    # 1,600,000 (was 360,000). Reference comment: "2x of x36 802575 (800k); keeps
+    # per-gen-server load (200k/server) + ~90min duration at 2x throughput". At 360,000
+    # this point would have drained in roughly a quarter of the 90-minute window --
+    # the same arrival-free-tail defect that deflated server run 377878.
+    n_samples_to_issue: 1600000
+    # Both seeds are the reference values (were 42/42), matching the server point.
+    scheduler_random_seed: 16159082839903944936
+    dataloader_random_seed: 2747215439041700203
+  load_pattern: {type: max_throughput}   # offline: flood all samples, no target_qps
+  client:
+    # 64 (was 16) = reference value, "multiple of 8 gen servers / 8 frontends".
+    # This point runs 4 frontends, and 64 divides
+    # evenly by 4 as well -- 16 workers per frontend, 8 per gen server.
+    num_workers: 64
+    # 65,536 (was 16,000) = reference value ("2x of x36"). Budget is 28,232 ephemeral
+    # ports per distinct ip:port DESTINATION; the 4 frontends give 4 x 28,232 = 112,928,
+    # which clears 65,536.
+    max_connections: 65536
+    warmup_connections: -1               # reference value (was 0)
+    min_required_connections: 0
+    worker_initialization_timeout: 300.0
+  drain: {performance_timeout_s: null, metrics_tokenizer_workers: 4, metrics_drain_timeout_s: 600.0}
+
+endpoint_config: {endpoints: [], api_type: openai_completions, api_key: null}
+report_dir: ${SFLOW_TASK_OUTPUT_DIR}
