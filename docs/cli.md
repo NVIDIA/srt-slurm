@@ -381,6 +381,22 @@ srtctl monitor --once                   # Snapshot and exit
 srtctl monitor --resume KEY             # Resume a previous session
 ```
 
+### `srtctl skill`
+
+Install the in-package agent skill, one document that teaches a coding agent how to drive srtctl (the 2.0 recipe shape, dry-run before apply, where a run's logs and artifacts live, the MCP tools):
+
+```bash
+srtctl skill --target claude            # .claude/skills/srtctl/SKILL.md
+srtctl skill --target codex             # .codex/skills/srtctl/SKILL.md
+srtctl skill --target cursor            # .cursor/rules/srtctl.mdc
+srtctl skill --target claude --root /path/to/project
+srtctl skill --target claude --print    # to stdout
+```
+
+### `srtctl-mcp`
+
+The MCP server (`srtctl-mcp`, stdio by default, `SRTCTL_MCP_TRANSPORT=streamable-http` with `SRTCTL_MCP_HOST` / `SRTCTL_MCP_PORT` for HTTP) exposes the schema tools anywhere and the job lifecycle tools (`submit_job`, `dry_run`, `job_status`, `job_logs`, `list_jobs`, `cancel_job`) when it runs on a Slurm login node in a checkout with `srtslurm.yaml`. `job_status` returns the Slurm accounting row, the job metadata, the orchestrator's current stage, any `[ERROR]` lines, the benchmark rollup, and the sweep-log tail; `job_logs` lists `outputs/<job_id>/logs` or tails one file.
+
 ## Output
 
 When you submit a job, `srtctl` creates an output directory:

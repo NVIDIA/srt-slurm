@@ -1574,6 +1574,7 @@ def main():
   srtctl schema-docs [--check]                   # Regenerate (or verify) docs/schema-reference.md
   srtctl migrate -f config.yaml --in-place       # Upgrade a recipe to the current schema version
   srtctl migrate -f recipes/ --verify            # Prove v1 and migrated v2 recipes resolve identically
+  srtctl skill --target claude                   # Install the srtctl agent skill into this project
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1737,6 +1738,26 @@ def main():
     )
 
     # Recipe migration: srtctl migrate -f recipe.yaml [--in-place | --output PATH]
+    skill_parser = subparsers.add_parser(
+        "skill",
+        help="Install the in-package agent skill (how to drive srtctl) for Claude Code, Codex, or Cursor",
+    )
+    skill_parser.add_argument(
+        "--target",
+        choices=["claude", "codex", "cursor"],
+        required=True,
+        help="Which agent's project skill layout to write",
+    )
+    skill_parser.add_argument(
+        "--root",
+        type=Path,
+        default=Path.cwd(),
+        help="Project root to install under (default: the current directory)",
+    )
+    skill_parser.add_argument(
+        "--print", action="store_true", dest="print_only", help="Print the skill instead of writing it"
+    )
+
     migrate_parser = subparsers.add_parser(
         "migrate",
         help="Upgrade a recipe (plain, override, or lock file) to the current schema version",
@@ -1872,6 +1893,18 @@ def main():
             restore_console()
             sys.exit(1)
         written = write_schema_reference(output)
+        console.print(f"[green]✓[/] Wrote {written}")
+        restore_console()
+        return
+
+    if args.command == "skill":
+        from srtctl.skills import install_skill, render_skill
+
+        if args.print_only:
+            print(render_skill(args.target))
+            restore_console()
+            return
+        written = install_skill(args.target, args.root)
         console.print(f"[green]✓[/] Wrote {written}")
         restore_console()
         return

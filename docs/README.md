@@ -30,11 +30,16 @@ When you run `srtctl apply -f config.yaml`, the tool:
 3. Generates a SLURM batch script and SGLang configuration files
 4. Submits to SLURM
 
-The `srtctl-mcp` server is different from `srtctl apply`: it is a schema and
-recipe-authoring helper. It does not use host-side `srtslurm.yaml` for cluster
-defaults, aliases, containers, model paths, filesystem checks, or dry-run
-behavior. Run `srtctl` on the compute side, or use an orchestrator remote
-preflight path, for those checks.
+The `srtctl-mcp` server has two halves. The schema tools (`schema_summary`,
+`explain_field`, `validate_config`, `preflight_config`, `resolve_config`,
+`get_config_reference`) are recipe-authoring helpers that work anywhere and never
+read host-side `srtslurm.yaml`. The job tools (`submit_job`, `dry_run`,
+`job_status`, `job_logs`, `list_jobs`, `cancel_job`) drive `srtctl apply`, `sacct`,
+`squeue`, and `scancel` and read the job's output directory, so they only do
+anything when the server runs on a login node of the cluster, inside the checkout
+that has its `srtslurm.yaml`. `srtctl skill --target claude|codex|cursor` installs
+the in-package agent skill (how to author, validate, submit, and read back a run)
+into a project.
 
 Once allocated, workers launch inside containers, discover each other through ETCD and NATS, and begin serving. If you've configured a benchmark, it runs automatically against the serving endpoint and saves results to the log directory.
 
