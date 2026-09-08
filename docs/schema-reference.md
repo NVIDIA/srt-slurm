@@ -233,7 +233,7 @@ DCGM power telemetry for benchmark measurement windows.
 |---|---|---|---|
 | `enabled` | bool | `False` |  |
 | `dcgm_exporter` | [TelemetryExporterConfig](#telemetryexporterconfig) \| None | `None` |  |
-| `default_frequency` | float | `1.0` |  |
+| `collect_interval_ms` | int | `1000` | Milliseconds between collector cycles. Replaces the retired ``default_frequency``, which despite its name was a period in seconds (1000ms == the old 1.0 default). |
 | `storage_subdir` | str | `'power'` |  |
 | `required` | bool | `False` |  |
 | `startup_timeout_seconds` | float | `30.0` |  |
@@ -306,11 +306,12 @@ Native Tachometer collection for an observability-enabled run.
 |---|---|---|---|
 | `enabled` | bool \| None | `None` |  |
 | `binary_path` | str | `'tachometer-scraper'` |  |
-| `default_frequency` | float | `1.0` |  |
+| `collect_interval_ms` | int | `1000` | Milliseconds between scrapes of every endpoint — the same unit and name as dcgm-exporter's --collect-interval. Replaces the retired Hz-based ``default_frequency`` (1000ms == the old 1.0 Hz default). |
 | `sync_interval_secs` | int | `120` |  |
 | `compaction_threads` | int | `4` |  |
 | `storage_subdir` | str | `'tachometer'` |  |
 | `extra_metadata` | dict[str, str] | `{}` |  |
+| `default_exporters` | bool | `True` |  |
 | `dcgm_exporter` | [TelemetryExporterConfig](#telemetryexporterconfig) \| None | `None` |  |
 | `node_exporter` | [TelemetryExporterConfig](#telemetryexporterconfig) \| None | `None` |  |
 
