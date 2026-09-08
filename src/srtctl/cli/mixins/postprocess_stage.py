@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from srtctl.benchmarks import get_runner
-from srtctl.benchmarks.base import SCRIPTS_DIR, AIPerfBenchmarkRunner
+from srtctl.benchmarks.base import SCRIPTS_DIR, AIPerfBenchmarkRunner, BenchmarkRunner
 from srtctl.core.config import get_srtslurm_setting, git_clone_command_prefix, load_cluster_config
 from srtctl.core.git_state import GIT_STATE_FILENAME
 from srtctl.core.lockfile import collect_worker_fingerprints, generate_reproduction_report, write_lockfile
@@ -67,6 +67,13 @@ class _QuarantinedArtifact:
 
 
 _AIPERF_ARTIFACT_EXCLUSIONS = (_ArtifactExclusion(pattern="**/inputs.json"),)
+
+
+def _artifact_exclusions_for(runner: BenchmarkRunner) -> tuple[_ArtifactExclusion, ...]:
+    """Return postprocess artifact exclusions for a benchmark runner."""
+    if isinstance(runner, AIPerfBenchmarkRunner):
+        return _AIPERF_ARTIFACT_EXCLUSIONS
+    return ()
 
 
 class PostProcessStageMixin:
@@ -270,7 +277,7 @@ class PostProcessStageMixin:
         except ValueError:
             exclusions = ()
         else:
-            exclusions = _AIPERF_ARTIFACT_EXCLUSIONS if isinstance(runner, AIPerfBenchmarkRunner) else ()
+            exclusions = _artifact_exclusions_for(runner)
         with self._quarantine_artifacts(exclusions):
             yield
 
