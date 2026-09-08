@@ -3106,6 +3106,60 @@ class TestVLLMDataParallelMode:
         assert "--device-ids" not in cmd
         assert backend.should_set_cuda_visible_devices(process)
 
+    @pytest.mark.parametrize(
+        ("mode", "role"),
+        [("prefill", "kv_producer"), ("decode", "kv_consumer")],
+    )
+    def test_vllm_router_moriio_worker_uses_realized_slurm_topology(self, mode, role):
+        """MoRI workers self-register their realized private HTTP endpoint."""
+        from pathlib import Path
+        from types import SimpleNamespace
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Process
+
+        backend = VLLMProtocol(
+            connector="moriio",
+            vllm_config=VLLMServerConfig(**{mode: {"tensor-parallel-size": 1}}),
+        )
+        process = Process(
+            node=f"{mode}-node",
+            gpu_indices=frozenset({0}),
+            sys_port=8081,
+            http_port=6100,
+            endpoint_mode=mode,
+            endpoint_index=0,
+            nixl_port=5400,
+        )
+        runtime = SimpleNamespace(
+            model_path=Path("Qwen/Qwen3-0.6B"),
+            is_hf_model=True,
+            frontend_port=8000,
+            head_node_ip="10.20.30.40",
+            network_interface=None,
+        )
+
+        cmd = backend.build_worker_command(
+            process=process,
+            endpoint_processes=[process],
+            runtime=runtime,
+            frontend_type="vllm-router",
+        )
+
+        kv_config = json.loads(cmd[cmd.index("--kv-transfer-config") + 1])
+        assert kv_config == {
+            "kv_connector": "MoRIIOConnector",
+            "kv_role": role,
+            "kv_connector_extra_config": {
+                "proxy_ip": "10.20.30.40",
+                "proxy_ping_port": "36367",
+                "http_port": "6100",
+                "read_mode": True,
+            },
+        }
+        assert "VLLM_NIXL_SIDE_CHANNEL_PORT" not in backend.get_process_environment(process)
+
+
     def test_direct_vllm_command_supports_vllm_rs_binary(self):
         """Direct vLLM can launch a managed-engine Rust frontend."""
         from pathlib import Path

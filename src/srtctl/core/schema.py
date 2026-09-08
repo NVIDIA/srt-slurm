@@ -2323,6 +2323,18 @@ class SrtConfig:
             raise ValidationError(f"frontend.type: vllm-router requires backend.type: vllm; got {self.backend_type!r}")
         backend = self.backend
 
+        connector = getattr(backend, "connector", None)
+        if isinstance(connector, str) and connector.lower() == "moriio":
+            if self.frontend.enable_multiple_frontends:
+                raise ValidationError(
+                    "vLLM Router MoRI-IO discovery uses one registration endpoint; "
+                    "set frontend.enable_multiple_frontends: false"
+                )
+            if self.frontend.orchestrator_placement != "head":
+                raise ValidationError("vLLM Router MoRI-IO discovery requires frontend.orchestrator_placement: head")
+            if self.resources.num_agg:
+                raise ValidationError("vLLM Router MoRI-IO requires a prefill/decode topology")
+
         endpoint_gpu_counts: dict[Literal["prefill", "decode", "agg"], int] = {
             "prefill": self.resources.gpus_per_prefill if self.resources.num_prefill else 0,
             "decode": self.resources.gpus_per_decode if self.resources.num_decode else 0,
