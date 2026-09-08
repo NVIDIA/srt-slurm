@@ -695,6 +695,67 @@ def expand_observability(cfg: dict) -> dict:
     return cfg
 
 
+def expand_trtllm_serve_defaults(cfg: dict) -> dict:
+    """Bake the trtllm-serve worker-metrics default into the TRT-LLM engine configs.
+
+    trtllm-serve registers a worker's Prometheus route (``/prometheus/metrics``)
+    only when the engine runs with ``return_perf_metrics: true`` (TensorRT-LLM
+    ``serve/openai_server.py``, ``register_routes``); TensorRT-LLM's own default
+    is ``false``. Tachometer scrapes that route on every run, so without this
+    default every trtllm-serve worker endpoint answers HTTP 404 and the capture
+    silently has no worker-level data.
+
+    Applies to every ``frontend.type: trtllm_serve`` recipe with a TRT-LLM
+    backend, independent of ``observability.enabled``. The engine sections for
+    the modes the recipe uses (prefill + decode for a disaggregated
+    ``resources`` block, ``aggregated`` otherwise) are created when absent, so a
+    recipe with no ``trtllm_config`` gets the default too. Every write is a
+    ``setdefault``: an explicit ``return_perf_metrics: false`` in the recipe
+    wins, but is reported loudly. Mutates ``cfg`` in place and returns it.
+    """
+    from srtctl.core.schema import TRTLLM_SERVE_ENGINE_DEFAULTS
+
+    frontend = cfg.get("frontend")
+    if not isinstance(frontend, dict) or frontend.get("type") != "trtllm_serve":
+        return cfg
+    backend = cfg.get("backend")
+    if not isinstance(backend, dict) or backend.get("type", "sglang") != "trtllm":
+        return cfg
+    trtllm_config = backend.get("trtllm_config")
+    if not isinstance(trtllm_config, dict):
+        trtllm_config = {}
+        backend["trtllm_config"] = trtllm_config
+
+    # Modes the layout uses: mirror ResourceConfig.is_disaggregated -- a
+    # prefill_nodes/decode_nodes pair means prefill + decode, otherwise agg.
+    resources = cfg.get("resources") if isinstance(cfg.get("resources"), dict) else {}
+    disaggregated = resources.get("prefill_nodes") is not None or resources.get("decode_nodes") is not None
+    modes_in_use = ("prefill", "decode") if disaggregated else ("aggregated",)
+
+    opted_out: list[str] = []
+    for mode in ("prefill", "decode", "aggregated"):
+        section = trtllm_config.get(mode)
+        if not isinstance(section, dict):
+            if mode not in modes_in_use:
+                continue
+            section = {}
+            trtllm_config[mode] = section
+        if section.get("return_perf_metrics") is False:
+            opted_out.append(mode)
+        for key, value in TRTLLM_SERVE_ENGINE_DEFAULTS.items():
+            section.setdefault(key, value)
+
+    if opted_out:
+        logger.warning(
+            "frontend.type: trtllm_serve with return_perf_metrics: false on %s — those "
+            "trtllm-serve workers will NOT mount /prometheus/metrics (HTTP 404), so the "
+            "Tachometer backend_* endpoints and the per-request Prometheus histograms "
+            "will be empty for them. Remove the line to keep the default.",
+            ", ".join(opted_out),
+        )
+    return cfg
+
+
 def load_config(path: Path | str) -> SrtConfig:
     """
     Load and validate YAML config, applying cluster defaults.
@@ -744,6 +805,9 @@ def load_config(path: Path | str) -> SrtConfig:
     # downstream consumer -- worker command builder, engine YAML writer,
     # frontend env -- sees the expanded values with no extra plumbing.
     expand_observability(resolved_config)
+    # trtllm-serve needs return_perf_metrics for its Prometheus route to exist
+    # at all; bake that default in for every trtllm_serve recipe (setdefault).
+    expand_trtllm_serve_defaults(resolved_config)
 
     # Parse with marshmallow schema to get typed SrtConfig
     try:

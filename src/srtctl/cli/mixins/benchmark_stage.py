@@ -640,15 +640,21 @@ class BenchmarkStageMixin:
             # trtllm-serve workers bind only their OpenAI http_port (leaders) —
             # the DYN_SYSTEM_PORT sys-port endpoints are never created in this
             # mode, so advertising them would point the client at dead ports.
-            # The Prometheus mount exists when return_perf_metrics is set,
-            # which observability.enabled injects alongside
-            # publish_events_and_metrics.
+            # trtllm-serve mounts the Prometheus route only when the engine
+            # runs with return_perf_metrics (expand_trtllm_serve_defaults sets
+            # it on every trtllm_serve recipe; an explicit false opts out), so
+            # gate each worker on its own effective engine config --
+            # publish_events_and_metrics is a dynamo.trtllm flag that never
+            # reaches a trtllm-serve worker.
             if self.config.frontend.type == "trtllm_serve":
-                if getattr(self.config.backend, "publish_events_and_metrics", False):
-                    for process in self.backend_processes:
-                        if process.endpoint_mode != "agg" and process.http_port > 0:
-                            host = get_hostname_ip(process.node, self.runtime.network_interface)
-                            urls.append(f"http://{host}:{process.http_port}{metrics_path}")
+                for process in self.backend_processes:
+                    if process.endpoint_mode == "agg" or process.http_port <= 0:
+                        continue
+                    engine_config = self.config.backend.get_config_for_mode(process.endpoint_mode)
+                    if not engine_config.get("return_perf_metrics"):
+                        continue
+                    host = get_hostname_ip(process.node, self.runtime.network_interface)
+                    urls.append(f"http://{host}:{process.http_port}{metrics_path}")
             # TRT-LLM workers only publish engine metrics when launched with
             # --publish-events-and-metrics (pre-v1.3.0 Dynamo gates the whole
             # worker /metrics surface on it; observability.enabled sets it at

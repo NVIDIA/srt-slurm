@@ -239,6 +239,7 @@ class TestCustomBenchmarkRunner:
         aggregated_environment=None,
         environment=None,
         dynamo_sidecar=False,
+        trtllm_config=None,
     ):
         from types import SimpleNamespace
 
@@ -249,6 +250,13 @@ class TestCustomBenchmarkRunner:
             def backend_processes(self):
                 return processes
 
+        # Mirrors TRTLLMProtocol.get_config_for_mode: the engine yaml section for
+        # a worker mode ("agg" maps to the "aggregated" section).
+        engine_sections = trtllm_config or {}
+
+        def get_config_for_mode(mode):
+            return dict(engine_sections.get("aggregated" if mode == "agg" else mode, {}))
+
         stage = Stage()
         stage.config = SimpleNamespace(
             benchmark=SimpleNamespace(type=benchmark_type, aiperf_package=None),
@@ -257,6 +265,7 @@ class TestCustomBenchmarkRunner:
                 publish_events_and_metrics=publish_events_and_metrics,
                 prefill_environment=prefill_environment or {},
                 aggregated_environment=aggregated_environment or {},
+                get_config_for_mode=get_config_for_mode,
             ),
             backend_type=backend_type,
             dynamo=SimpleNamespace(sidecar=dynamo_sidecar),
@@ -421,8 +430,10 @@ class TestCustomBenchmarkRunner:
     def test_trtllm_serve_physical_endpoints_use_worker_http_ports(self):
         """Built-in AIPerf path: trtllm-serve never binds the DYN_SYSTEM_PORT
         sys-ports, so the physical-process URLs use leader http_ports at
-        /prometheus/metrics, gated on publish_events_and_metrics exactly like
-        the Dynamo sys-port path."""
+        /prometheus/metrics. The route exists only when the worker's engine
+        config carries return_perf_metrics (which expand_trtllm_serve_defaults
+        sets on every trtllm_serve recipe), so the gate is that key -- not
+        publish_events_and_metrics, a dynamo.trtllm flag trtllm-serve never sees."""
         from unittest.mock import patch
 
         from srtctl.core.topology import Process
@@ -432,9 +443,8 @@ class TestCustomBenchmarkRunner:
             Process("node-b", frozenset(range(4)), 7501, 0, "prefill", 0, node_rank=1),
             Process("node-c", frozenset(range(4)), 7502, 6100, "decode", 0, node_rank=0),
         ]
-        stage = self._benchmark_stage(
-            "trtllm_serve", processes, backend_type="trtllm", publish_events_and_metrics=True
-        )
+        engine = {"prefill": {"return_perf_metrics": True}, "decode": {"return_perf_metrics": True}}
+        stage = self._benchmark_stage("trtllm_serve", processes, backend_type="trtllm", trtllm_config=engine)
         with patch(
             "srtctl.cli.mixins.benchmark_stage.get_hostname_ip",
             side_effect=lambda node, interface: f"ip-{node}",
@@ -444,8 +454,24 @@ class TestCustomBenchmarkRunner:
             "http://ip-node-a:6100/prometheus/metrics,http://ip-node-c:6100/prometheus/metrics"
         )
 
-        # Without the metrics leg there is nothing to poll — no dead-port URLs.
-        stage_off = self._benchmark_stage("trtllm_serve", processes, backend_type="trtllm")
+        # A mode that opted out (return_perf_metrics: false) mounts no route:
+        # only the other mode's leader is advertised -- no dead URLs.
+        engine_partial = {"prefill": {"return_perf_metrics": True}, "decode": {"return_perf_metrics": False}}
+        stage_partial = self._benchmark_stage(
+            "trtllm_serve", processes, backend_type="trtllm", trtllm_config=engine_partial
+        )
+        with patch(
+            "srtctl.cli.mixins.benchmark_stage.get_hostname_ip",
+            side_effect=lambda node, interface: f"ip-{node}",
+        ):
+            env = stage_partial._get_aiperf_server_metrics_env()
+        assert env["AIPERF_SERVER_METRICS_URLS"] == "http://ip-node-a:6100/prometheus/metrics"
+
+        # No engine config at all (nothing set the default): nothing to poll, and
+        # publish_events_and_metrics must not be mistaken for the trtllm-serve gate.
+        stage_off = self._benchmark_stage(
+            "trtllm_serve", processes, backend_type="trtllm", publish_events_and_metrics=True
+        )
         with patch(
             "srtctl.cli.mixins.benchmark_stage.get_hostname_ip",
             side_effect=lambda node, interface: f"ip-{node}",

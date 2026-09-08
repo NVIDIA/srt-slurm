@@ -1327,6 +1327,17 @@ ANALYTICS_ENGINE_CONFIG: dict[str, bool] = {
     "return_perf_metrics": True,
 }
 
+# Engine-config default baked in for every ``frontend.type: trtllm_serve`` run,
+# independent of ``observability.enabled``. trtllm-serve registers a worker's
+# Prometheus route (``/prometheus/metrics``) only when the engine runs with
+# ``return_perf_metrics: true`` (TensorRT-LLM ``serve/openai_server.py``,
+# ``register_routes``); TensorRT-LLM's own default is ``false``. Tachometer
+# scrapes that route on every run, so without this default every trtllm-serve
+# worker endpoint answers HTTP 404 and the capture silently has no worker data.
+TRTLLM_SERVE_ENGINE_DEFAULTS: dict[str, bool] = {
+    "return_perf_metrics": True,
+}
+
 
 # /configs/dynamo-wheels is the lustre-mounted cache for hash-pinned dynamo
 # source builds. The bench/frontend container always mounts srtslurm's
@@ -2381,11 +2392,12 @@ class SrtConfig:
 
     @classmethod
     def from_yaml(cls, yaml_path: Path) -> "SrtConfig":
-        from srtctl.core.config import expand_observability
+        from srtctl.core.config import expand_observability, expand_trtllm_serve_defaults
 
         with open(yaml_path) as f:
             data = yaml.safe_load(f)
         expand_observability(data)
+        expand_trtllm_serve_defaults(data)
         schema = cls.Schema()
         return schema.load(data)
 
