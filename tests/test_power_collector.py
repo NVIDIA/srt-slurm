@@ -980,7 +980,6 @@ class TestBenchmarkChildReaping:
 
         with (
             patch("srtctl.cli.mixins.benchmark_stage.start_srun_process", return_value=proc),
-            patch("srtctl.analysis.live_metrics.try_start_snapshotter", return_value=None),
             patch("srtctl.cli.mixins.benchmark_stage.time.sleep", side_effect=SystemExit(1)),
             pytest.raises(SystemExit),
         ):
@@ -1000,7 +999,6 @@ class TestBenchmarkChildReaping:
 
         with (
             patch("srtctl.cli.mixins.benchmark_stage.start_srun_process", return_value=proc),
-            patch("srtctl.analysis.live_metrics.try_start_snapshotter", return_value=None),
         ):
             exit_code = harness._run_benchmark_script(runner, tmp_path / "benchmark.out", stop_event)
 
@@ -1017,7 +1015,6 @@ class TestBenchmarkChildReaping:
 
         with (
             patch("srtctl.cli.mixins.benchmark_stage.start_srun_process", return_value=proc),
-            patch("srtctl.analysis.live_metrics.try_start_snapshotter", return_value=None),
             patch("srtctl.cli.mixins.benchmark_stage.time.sleep", side_effect=SystemExit(1)),
             pytest.raises(SystemExit),
         ):
@@ -1033,7 +1030,6 @@ class TestBenchmarkChildReaping:
 
         with (
             patch("srtctl.cli.mixins.benchmark_stage.start_srun_process", return_value=proc),
-            patch("srtctl.analysis.live_metrics.try_start_snapshotter", return_value=None),
             patch("srtctl.cli.mixins.benchmark_stage.time.sleep", side_effect=SystemExit(1)),
             pytest.raises(SystemExit),
         ):

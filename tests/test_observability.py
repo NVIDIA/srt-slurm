@@ -218,8 +218,8 @@ class TestExpandObservability:
 
         A recipe still carrying `scrape_metrics` (or the other scrape_* knobs)
         must fail loudly at submit time rather than silently promising a
-        raw_prometheus.jsonl that will never be written. The ingest keeps
-        reading historical raw_prometheus.jsonl artifacts regardless."""
+        raw_prometheus.jsonl that will never be written. Tachometer's parquet is
+        the only in-job metrics capture."""
         cfg = _trtllm_config(enabled=True, scrape_metrics=True)
 
         with pytest.raises(ValidationError, match="scrape_metrics"):

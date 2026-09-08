@@ -743,7 +743,7 @@ backend:
 
 Benchmark configuration. The `type` field determines which benchmark runner is used and what additional fields are available.
 
-**Per-type fields (schema 2).** Every type accepts the shared fields (`client_placement`, `client_dedicated_node`, `colocate_with_frontend`, `sweep`, `aiperf_package`, `aiperf_args`, `export_node_metrics`) plus the fields its runner reads:
+**Per-type fields (schema 2).** Every type accepts the shared fields (`client_placement`, `client_dedicated_node`, `colocate_with_frontend`, `sweep`, `aiperf_package`, `aiperf_args`) plus the fields its runner reads:
 
 | `type` | Fields |
 | --- | --- |
@@ -760,27 +760,6 @@ Benchmark configuration. The `type` field determines which benchmark runner is u
 | `lm-eval`, `manual` | shared fields only |
 
 A `schema: 2` recipe that sets a field its type does not use is rejected at load with the list of accepted fields. A schema 1 recipe gets a warning and keeps loading. Before this, such a field was a silent no-op (`isl` on `gsm8k`, `num_shots` on `sa-bench`). Each runner declares its fields as `config_fields`; adding a field to a runner means adding it there.
-
-### Post-process: node metrics CSV
-
-When `export_node_metrics` is `true`, after the benchmark finishes srtctl prepends
-`srtctl_root` to `sys.path` and calls `analysis.srtlog.export_node_metrics.export_node_metrics`
-in-process on the job output directory. That writes per-node batch CSVs and `gen_throughput.csv`
-under `logs/node_metrics/` (next to worker logs).
-
-- Set **`srtctl_root`** in `srtslurm.yaml` to the srt-slurm repository root (the directory that contains `analysis/srtlog/`). This path is inserted at the front of `sys.path` for the import.
-- The export process needs **`pandas`** and **`pyarrow`** (same as the analysis dashboard).
-
-```yaml
-benchmark:
-  type: "sa-bench"
-  export_node_metrics: true   # default: false
-  # ... other benchmark fields
-```
-
-| Field                  | Type | Default | Description                                      |
-| ---------------------- | ---- | ------- | ------------------------------------------------ |
-| `export_node_metrics`  | bool | `false` | Export node batch CSVs + gen throughput summary |
 
 ### Available Benchmark Types
 

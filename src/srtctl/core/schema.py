@@ -846,8 +846,6 @@ class BenchmarkConfig:
     aiperf_package: str | None = None
     # Extra aiperf CLI flags passed through to bench.sh (e.g., benchmark-duration: 600, workers-max: 200)
     aiperf_args: dict[str, Any] = field(default_factory=dict)
-    # Post-process: export analysis/srtlog per-node batch CSVs + gen_throughput.csv (see postprocess_stage)
-    export_node_metrics: bool = False
     # SA-Bench: optional SGLang /slow_down on decode workers (sglang frontend only; see benchmark_stage)
     slow_down_sleep_time: float | None = None  # forward_sleep_time (seconds); unset = feature off
     slow_down_wait_time: float | None = None  # seconds until POST clears slow_down; unset = feature off
@@ -1258,7 +1256,7 @@ class ObservabilityConfig:
     The retired ``scrape_metrics`` / ``scrape_interval_seconds`` /
     ``scrape_output`` knobs (the in-job RAW Prometheus scraper) are rejected
     at load like any unknown key; the ingest still reads historical
-    ``raw_prometheus.jsonl`` artifacts.
+    ``raw_prometheus.jsonl`` artifacts (the ingest no longer reads them either).
     """
 
     enabled: bool = False

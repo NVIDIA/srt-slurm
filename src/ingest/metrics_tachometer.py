@@ -39,7 +39,7 @@ name as ``<base>{k="v",...}`` where ``<base>`` is the exposition sample name wit
   row whose ``metric_value`` is the sample's CUMULATIVE bucket count, copied verbatim
   (``samples_to_rows_with_filter`` pushes ``sample.value`` unchanged). Re-emitted as
   ``<fam>_bucket`` with the ``le`` label kept -- cumulative semantics round-trip 1:1
-  with what ``metrics_prometheus`` produces. (Unfiltered endpoints keep the ``_bucket``
+  with the other schema-2 processors. (Unfiltered endpoints keep the ``_bucket``
   suffix in the stored name; it is then not re-appended.)
 * ``<fam>_sum`` / ``<fam>_count``: ``parse.rs`` DROPS the exposition ``_sum``/``_count``
   samples and instead attaches their values to every bucket row of the family via the
@@ -55,7 +55,7 @@ name as ``<base>{k="v",...}`` where ``<base>`` is the exposition sample name wit
   -- as ``foo``, and summary ``_sum``/``_count`` samples collapse onto the quantile
   series name. The suffix cannot be recovered from the parquet.
 
-Label enrichment mirrors :mod:`.metrics_prometheus`: every non-empty per-row metadata
+Label enrichment: every non-empty per-row metadata
 column is folded into the entry's labels via ``setdefault`` (never clobbering a real
 scraped label) so per-node/per-GPU series stay distinguishable, and rows whose
 ``worker_role`` metadata maps prefill -> "prefill" / decode -> "backend" additionally
@@ -92,7 +92,7 @@ from pathlib import Path
 if __package__ in (None, ""):  # pragma: no cover - only on the bare-script path
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from src.ingest.metrics_prometheus import _dedup  # noqa: E402  (shared idempotent fold)
+from src.ingest.dedup import _dedup  # noqa: E402  (shared idempotent fold)
 
 logger = logging.getLogger("metrics_tachometer")
 
@@ -113,8 +113,7 @@ _FIXED_COLUMNS = frozenset(
     }
 )
 
-# worker_role metadata -> dynamo_component label. Mirrors metrics_prometheus's
-# _ROLE_COMPONENT; roles outside the map (agg, "") get no injection.
+# worker_role metadata -> dynamo_component label; roles outside the map (agg, "") get no injection.
 _ROLE_COMPONENT = {"prefill": "prefill", "decode": "backend"}
 
 # Search order under a run log dir. final.parquet is authoritative when present;

@@ -6,8 +6,7 @@ Post-process stage mixin for SweepOrchestrator.
 
 Handles:
 - Benchmark result extraction
-- Optional node metrics CSV export (``analysis.srtlog``)
-- srtlog parsing and S3 upload
+- S3 upload of the whole log directory
 - AI-powered failure analysis using Claude Code CLI
 
 AI analysis uses Claude Code in headless mode (-p flag) with OpenRouter for authentication.
@@ -26,7 +25,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from srtctl.benchmarks.base import SCRIPTS_DIR
-from srtctl.core.config import get_srtslurm_setting, git_clone_command_prefix, load_cluster_config
+from srtctl.core.config import load_cluster_config
 from srtctl.core.git_state import GIT_STATE_FILENAME
 from srtctl.core.lockfile import collect_worker_fingerprints, generate_reproduction_report, write_lockfile
 from srtctl.core.schema import AIAnalysisConfig, S3Config
@@ -40,9 +39,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-POSTPROCESS_PARSE_FAILED_EXIT = 20
 POSTPROCESS_UPLOAD_FAILED_EXIT = 11
-NODE_METRICS_EXPORT_TIMEOUT_SEC = 600
 
 
 class PostProcessStageMixin:
@@ -157,7 +154,7 @@ class PostProcessStageMixin:
         1. Copy config YAML into log directory (for S3 upload)
         2. Rollup generation (benchmark-specific normalization)
         3. Benchmark result extraction (reads rollup or falls back to raw)
-        4. srtlog parsing + S3 upload (if S3 configured)
+        4. S3 upload of the whole log directory (if S3 configured)
         5. Eager push of ``logs_url`` to the status API right after the S3 sync
            completes, so downstream consumers can fetch results from S3 even
            if later stages below fail or hang.
@@ -200,9 +197,6 @@ class PostProcessStageMixin:
         # Compare against previous lockfile if this was a lockfile re-run
         self._compare_against_previous_lock()
 
-        # Export per-node batch CSVs + gen_throughput summary (optional)
-        self._export_node_metrics_csv()
-
         # Keep the prepared bundle inside logs/ so the existing S3 sync below
         # transfers it with the raw benchmark artifacts.
         self._normalize_ruter()
@@ -212,8 +206,8 @@ class PostProcessStageMixin:
         # would leave them behind on a node whose /lustre scratch is transient.
         self._build_perf_dashboard()
 
-        # Run srtlog + S3 upload in single container (if S3 configured)
-        _parquet_path, s3_url = self._run_postprocess_container()
+        # Upload the log directory to S3 (if configured)
+        s3_url = self._run_postprocess_container()
 
         # Eager push of logs_url to the status API. Fires BEFORE AI analysis so
         # a hanging/crashing analyzer does not strand the artifact pointer.
@@ -254,7 +248,7 @@ class PostProcessStageMixin:
     def _build_perf_dashboard(self) -> None:
         """Render the component perf dashboard from this run's own artifacts.
 
-        Turns whatever the run captured — `raw_prometheus.jsonl` or the client's own
+        Turns whatever the run captured — the tachometer parquet or the client's own
         metrics export, SPAN_CLOSED lines, the request trace, the per-iteration log —
         into `<log_dir>/perf_dashboard.{html,json}` plus the intermediate bundle, so
         one submission yields the page with no second hand-driven step from a
@@ -359,110 +353,18 @@ class PostProcessStageMixin:
         except Exception as e:  # noqa: BLE001
             logger.debug("Lockfile comparison skipped: %s", e)
 
-    def _build_node_metrics_export_script(self, run_path: str, srtctl_root: Path) -> str:
-        """Bash script: ``mktemp`` venv, ``pip install -r analysis/requirements.txt``, then ``-m`` export.
+    def _run_postprocess_container(self) -> str | None:
+        """Upload the entire log directory to S3 from a small container on the head node.
 
-        Dependencies install only inside the ephemeral venv (no ``uv pip install --system``).
-        ``PYTHONPATH`` is set to ``srtctl_root`` so ``analysis`` resolves to ``<root>/analysis/``.
-        """
-        requirements = srtctl_root / "analysis" / "requirements.txt"
-        q_root = shlex.quote(str(srtctl_root))
-        q_req = shlex.quote(str(requirements))
-        q_run = shlex.quote(run_path)
-        return f"""
-set -euo pipefail
-
-VENV_DIR=$(mktemp -d)
-cleanup() {{ rm -rf "$VENV_DIR"; }}
-trap cleanup EXIT
-
-python3 -m venv "$VENV_DIR"
-"$VENV_DIR/bin/pip" install -q -r {q_req}
-export PYTHONPATH={q_root}
-"$VENV_DIR/bin/python" -m analysis.srtlog.export_node_metrics {q_run}
-"""
-
-    def _export_node_metrics_csv(self) -> None:
-        """Export node batch metrics CSVs via ``analysis.srtlog.export_node_metrics``.
-
-        Controlled by ``benchmark.export_node_metrics``. Runs a **subprocess** whose bash
-        script creates a temporary venv, ``pip install -r <srtctl_root>/analysis/requirements.txt``,
-        then ``python -m analysis.srtlog.export_node_metrics <run_path>`` with ``PYTHONPATH``
-        set to ``srtctl_root`` from ``srtslurm.yaml``.
-
-        Writes under ``<job_output>/logs/node_metrics/`` (same layout as manual export).
-        """
-        if not self.config.benchmark.export_node_metrics:
-            return
-
-        srtctl_root = get_srtslurm_setting("srtctl_root")
-        if not srtctl_root:
-            logger.warning(
-                "benchmark.export_node_metrics is true but srtslurm.yaml has no srtctl_root; skipping CSV export"
-            )
-            return
-
-        root = Path(srtctl_root).resolve()
-        if not root.is_dir():
-            logger.warning("srtctl_root is not a directory (%s); skipping node metrics CSV export", root)
-            return
-
-        requirements = root / "analysis" / "requirements.txt"
-        if not requirements.is_file():
-            logger.warning("analysis/requirements.txt missing at %s; skipping node metrics CSV export", requirements)
-            return
-
-        run_path = self.runtime.log_dir.parent.resolve()
-        script = self._build_node_metrics_export_script(str(run_path), root)
-
-        try:
-            logger.info("Exporting node metrics CSVs in subprocess (run_path=%s)...", run_path)
-            result = subprocess.run(
-                ["bash", "-c", script],
-                capture_output=True,
-                text=True,
-                timeout=NODE_METRICS_EXPORT_TIMEOUT_SEC,
-                check=False,
-            )
-            if result.stdout:
-                for line in result.stdout.rstrip().splitlines():
-                    logger.info("%s", line)
-            if result.stderr:
-                for line in result.stderr.rstrip().splitlines():
-                    logger.warning("%s", line)
-            if result.returncode != 0:
-                logger.warning(
-                    "Node metrics CSV export subprocess failed (exit %d, run_path=%s)",
-                    result.returncode,
-                    run_path,
-                )
-            else:
-                logger.info("Node metrics CSV export subprocess finished (run_path=%s)", run_path)
-        except subprocess.TimeoutExpired:
-            logger.warning(
-                "Node metrics CSV export subprocess timed out after %d s (run_path=%s)",
-                NODE_METRICS_EXPORT_TIMEOUT_SEC,
-                run_path,
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning("Node metrics CSV export error: %s", e)
-
-    def _run_postprocess_container(self) -> tuple[Path | None, str | None]:
-        """Run srtlog and upload entire log directory to S3.
-
-        Uploads the complete log directory including:
-        - Worker logs (prefill_*.out, decode_*.out, etc.)
-        - Benchmark output (benchmark.out, artifacts/)
-        - Parquet files from srtlog (cached_assets/)
-        - Any other artifacts
-
-        Returns:
-            (parquet_path, s3_url) tuple - s3_url points to the log directory
+        Ships worker logs, benchmark output and artifacts, the tachometer parquet,
+        the perf dashboard and its bundle, and everything else under ``logs/``.
+        Returns the S3 URL of the log directory, or None when S3 is not
+        configured or the upload failed.
         """
         s3_config = self._get_s3_config()
         if not s3_config:
-            logger.debug("S3 not configured, skipping srtlog/upload")
-            return None, None
+            logger.debug("S3 not configured, skipping upload")
+            return None
 
         # S3 path: {prefix}/{YYYY-MM-DD}/{job_id}/
         date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -472,7 +374,6 @@ export PYTHONPATH={q_root}
         # Build endpoint flag if custom endpoint provided
         endpoint_flag = f"--endpoint-url {s3_config.endpoint_url}" if s3_config.endpoint_url else ""
 
-        # Build the post-processing script
         script = self._build_postprocess_script(s3_url, endpoint_flag)
 
         # Build env for AWS credentials
@@ -487,7 +388,7 @@ export PYTHONPATH={q_root}
             env["AWS_DEFAULT_REGION"] = s3_config.region
 
         try:
-            logger.info("Running post-processing container (srtlog + S3 sync)...")
+            logger.info("Uploading the log directory to %s...", s3_url)
             proc = start_srun_process(
                 command=["bash", "-c", script],
                 nodelist=[self.runtime.nodes.head],
@@ -497,67 +398,41 @@ export PYTHONPATH={q_root}
                 env_to_set=env,
                 het_group=self.runtime.nodes.het_group_for(self.runtime.nodes.head),
             )
-            proc.wait(timeout=600)  # 10 min timeout for install + parse + full sync
-
-            parquet_path = self.runtime.log_dir / "cached_assets" / "node_metrics.parquet"
+            proc.wait(timeout=600)  # 10 min for the awscli install plus a full sync
 
             if proc.returncode == 0:
-                logger.info("Post-processing complete: %s", s3_url)
-                return parquet_path if parquet_path.exists() else None, s3_url
-            if proc.returncode == POSTPROCESS_PARSE_FAILED_EXIT:
-                logger.warning("srtlog parsing failed, but raw logs were still uploaded to %s", s3_url)
-                return parquet_path if parquet_path.exists() else None, s3_url
-            else:
-                logger.warning("Post-processing failed (exit code: %s)", proc.returncode)
-                return parquet_path if parquet_path.exists() else None, None
+                logger.info("Upload complete: %s", s3_url)
+                return s3_url
+            logger.warning("S3 upload failed (exit code: %s)", proc.returncode)
+            return None
 
         except subprocess.TimeoutExpired:
-            logger.warning("Post-processing container timed out")
+            logger.warning("S3 upload container timed out")
             proc.kill()
-            return None, None
+            return None
         except Exception as e:  # noqa: BLE001
-            logger.warning("Post-processing container failed: %s", e)
-            return None, None
+            logger.warning("S3 upload container failed: %s", e)
+            return None
 
     def _build_postprocess_script(self, s3_url: str, endpoint_flag: str) -> str:
-        """Build the post-processing shell script.
-
-        Upload is always attempted if awscli installs successfully. Parsing is
-        best-effort so raw logs survive parser/tooling failures.
-        """
-        git_cmd = shlex.join(git_clone_command_prefix())
+        """Bash for the upload container: install awscli, record the destination, sync ``/logs``."""
         return f"""
 set -u
 set -o pipefail
 
-PARSE_STATUS=0
-UPLOAD_STATUS=0
-
-echo "Installing uv and awscli..."
-if ! pip install uv awscli; then
-  echo "Failed to install uv/awscli"
+echo "Installing awscli..."
+if ! pip install awscli; then
+  echo "Failed to install awscli"
   exit {POSTPROCESS_UPLOAD_FAILED_EXIT}
 fi
 
-echo "Installing srtlog..."
-if cd /tmp && {git_cmd} clone --depth 1 https://github.com/ishandhanani/srtlog.git && uv pip install --system ./srtlog; then
-  echo "Running srtlog parse..."
-  cd /logs
-  srtlog parse . || PARSE_STATUS=$?
-else
-  echo "Failed to install srtlog; continuing with raw log upload"
-  PARSE_STATUS=1
-fi
-
 cat > /logs/postprocess-status.json <<EOF
-{{"parse_status": $PARSE_STATUS, "s3_url": "{s3_url}"}}
+{{"s3_url": "{s3_url}"}}
 EOF
 
 echo "Uploading entire log directory to S3..."
-aws s3 sync /logs {s3_url} {endpoint_flag} || UPLOAD_STATUS=$?
-
-if [ "$UPLOAD_STATUS" -ne 0 ]; then
-  echo "Upload failed with status $UPLOAD_STATUS"
+if ! aws s3 sync /logs {s3_url} {endpoint_flag}; then
+  echo "Upload failed"
   exit {POSTPROCESS_UPLOAD_FAILED_EXIT}
 fi
 
@@ -566,10 +441,6 @@ echo ""
 echo "Uploaded files:"
 find /logs -type f | wc -l
 echo "files total"
-
-if [ "$PARSE_STATUS" -ne 0 ]; then
-  exit {POSTPROCESS_PARSE_FAILED_EXIT}
-fi
 """
 
     def _run_ai_analysis(self, config: AIAnalysisConfig) -> None:

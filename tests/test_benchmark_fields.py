@@ -75,7 +75,7 @@ def test_each_type_accepts_the_fields_its_recipes_use() -> None:
 
 def test_shared_fields_are_accepted_for_every_type() -> None:
     config = _load(
-        "benchmark:\n  type: gsm8k\n  num_examples: 5\n  client_placement: last_decode\n  export_node_metrics: true\n"
+        "benchmark:\n  type: gsm8k\n  num_examples: 5\n  client_placement: last_decode\n"
         "  aiperf_args:\n    workers-max: 8\n"
     )
     assert config.benchmark.client_placement == "last_decode"

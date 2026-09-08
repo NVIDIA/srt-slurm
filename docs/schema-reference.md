@@ -173,7 +173,6 @@ Benchmark configuration.
 | `env` | dict[str, str] | `{}` |  |
 | `aiperf_package` | str \| None | `None` | aiperf pip install spec (e.g., "aiperf>=0.7.0", "aiperf @ git+https://...@commit") If set, runs pip install <spec> before benchmarking. Upgrades if already installed. |
 | `aiperf_args` | dict[str, Any] | `{}` | Extra aiperf CLI flags passed through to bench.sh (e.g., benchmark-duration: 600, workers-max: 200) |
-| `export_node_metrics` | bool | `False` | Post-process: export analysis/srtlog per-node batch CSVs + gen_throughput.csv (see postprocess_stage) |
 | `slow_down_sleep_time` | float \| None | `None` | SA-Bench: optional SGLang /slow_down on decode workers (sglang frontend only; see benchmark_stage) |
 | `slow_down_wait_time` | float \| None | `None` | seconds until POST clears slow_down; unset = feature off |
 

@@ -29,7 +29,6 @@ SHARED_BENCHMARK_FIELDS: frozenset[str] = frozenset(
         "sweep",
         "aiperf_package",
         "aiperf_args",
-        "export_node_metrics",
     }
 )
 

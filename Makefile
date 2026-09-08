@@ -6,8 +6,7 @@ LOGS_DIR ?= logs
 ARCH ?= $(shell uname -m)
 TACHOMETER_RELEASE ?= latest
 
-default:
-	./run_dashboard.sh
+default: check
 
 # === CI targets ===
 lint:

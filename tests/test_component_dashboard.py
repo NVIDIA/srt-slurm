@@ -4,7 +4,7 @@
 """Tests for the vendored component perf dashboard (``src/ingest`` + ``src/visualization``).
 
 These cover the seam between srt-slurm's capture layer and the vendored ingest /
-renderer: the artifact *layout* srt-slurm actually writes (``raw_prometheus.jsonl``
+renderer: the artifact *layout* srt-slurm actually writes (the tachometer parquet
 at the log-dir root, AIPerf's export under ``artifacts/<run>/``, worker and frontend
 logs named ``*.out``) has to be what the vendored defaults look for. The vendored
 internals themselves are covered upstream; what breaks on a re-sync is the wiring.
@@ -13,6 +13,7 @@ internals themselves are covered upstream; what breaks on a re-sync is the wirin
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -34,49 +35,74 @@ XIDS = [f"xid{i}" for i in range(6)]
 # ---------------------------------------------------------------------------
 
 
-def _write_raw_prometheus(run_dir: Path, sweeps: int = 4) -> Path:
-    """The RAW capture :mod:`srtctl.analysis.metrics_scraper` writes during a job.
+_TACHOMETER_META = ("frontend_index", "hostname", "job_id", "run_name", "worker_index", "worker_process", "worker_role")
 
-    One line per (sweep, endpoint), body verbatim, roles drawn from the same
-    ``frontend`` / ``prefill`` / ``decode`` vocabulary the scraper emits.
-    """
-    path = run_dir / "raw_prometheus.jsonl"
-    with path.open("w") as f:
-        for i in range(sweeps):
-            ts = T0 + i * 1_000_000_000
-            f.write(
-                json.dumps(
-                    {
-                        "timestamp_ns": ts,
-                        "endpoint_url": "http://head:8000/metrics",
-                        "role": "frontend",
-                        "worker_id": None,
-                        "text": (
-                            f'dynamo_frontend_requests_total{{worker_type="frontend"}} {10 + i}\n'
-                            f"dynamo_frontend_queued_requests {i}\n"
-                        ),
-                    }
-                )
-                + "\n"
-            )
-            for role, host, used in (("prefill", "node1", 100 + i), ("decode", "node2", 200 + i)):
-                f.write(
-                    json.dumps(
-                        {
-                            "timestamp_ns": ts,
-                            "endpoint_url": f"http://{host}:8081/metrics",
-                            "role": role,
-                            "worker_id": host,
-                            "text": (
-                                f'trtllm_kv_cache_used_blocks{{model_name="m"}} {used}\n'
-                                f'trtllm_kv_cache_free_blocks{{model_name="m"}} {1000 - used}\n'
-                                f'trtllm_kv_cache_max_blocks{{model_name="m"}} 1000\n'
-                            ),
-                        }
-                    )
-                    + "\n"
-                )
+
+def _write_tachometer_rows(run_dir: Path, rows: list[dict]) -> Path:
+    """Write rows in tachometer-writer's parquet layout to the scraper's final.parquet path."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    path = run_dir / "tachometer" / "raw" / "scrape" / "final.parquet"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    cols = {
+        "scraper_endpoint": pa.array([r["endpoint"] for r in rows], pa.string()),
+        "metric_name": pa.array([r["name"] for r in rows], pa.string()),
+        "metric_value": pa.array([float(r["value"]) for r in rows], pa.float64()),
+        "histogram_bucket_lower": pa.array([None for _ in rows], pa.float64()),
+        "histogram_bucket_upper": pa.array([None for _ in rows], pa.float64()),
+        "histogram_sum": pa.array([None for _ in rows], pa.float64()),
+        "histogram_count": pa.array([None for _ in rows], pa.float64()),
+        "time_since_start": pa.array([(r["ts"] - T0) / 1e9 for r in rows], pa.float64()),
+        "timestamp_ns": pa.array([r["ts"] for r in rows], pa.int64()),
+    }
+    for meta in _TACHOMETER_META:
+        cols[meta] = pa.array([r.get(meta, "") for r in rows], pa.string())
+    pq.write_table(pa.table(cols), path)
     return path
+
+
+def _frontend_row(ts: int, name: str, value: float) -> dict:
+    return {
+        "endpoint": "frontend0",
+        "frontend_index": "0",
+        "hostname": "head",
+        "job_id": "12345",
+        "run_name": "smoke",
+        "name": name,
+        "value": value,
+        "ts": ts,
+    }
+
+
+def _worker_row(ts: int, role: str, host: str, name: str, value: float) -> dict:
+    return {
+        "endpoint": f"backend_{role}0_rank0",
+        "hostname": host,
+        "worker_index": "0",
+        "worker_process": "0",
+        "worker_role": role,
+        "job_id": "12345",
+        "run_name": "smoke",
+        "name": name,
+        "value": value,
+        "ts": ts,
+    }
+
+
+def _write_tachometer_parquet(run_dir: Path, sweeps: int = 4) -> Path:
+    """The in-job Tachometer capture: one scrape per second of the frontend and the
+    prefill/decode workers, with the roles and hosts the scraper stamps as metadata."""
+    rows: list[dict] = []
+    for i in range(sweeps):
+        ts = T0 + i * 1_000_000_000
+        rows.append(_frontend_row(ts, 'dynamo_frontend_requests_total{worker_type="frontend"}', 10 + i))
+        rows.append(_frontend_row(ts, "dynamo_frontend_queued_requests", i))
+        for role, host, used in (("prefill", "node1", 100 + i), ("decode", "node2", 200 + i)):
+            rows.append(_worker_row(ts, role, host, 'trtllm_kv_cache_used_blocks{model_name="m"}', used))
+            rows.append(_worker_row(ts, role, host, 'trtllm_kv_cache_free_blocks{model_name="m"}', 1000 - used))
+            rows.append(_worker_row(ts, role, host, 'trtllm_kv_cache_max_blocks{model_name="m"}', 1000))
+    return _write_tachometer_rows(run_dir, rows)
 
 
 def _write_aiperf_export(run_dir: Path) -> Path:
@@ -152,7 +178,7 @@ def run_dir(tmp_path: Path) -> Path:
     """A miniature srt-slurm ``<job>/logs/`` directory with all three capture legs."""
     d = tmp_path / "logs"
     d.mkdir()
-    _write_raw_prometheus(d)
+    _write_tachometer_parquet(d)
     _write_aiperf_export(d)
     _write_frontend_log(d)
     _write_engine_configs(d)
@@ -164,12 +190,18 @@ def _run_ingest(run_dir: Path, bundle: Path, *extra: str) -> None:
 
     rc = main(
         [
-            "--run-dir", str(run_dir),
-            "--out", str(bundle),
-            "--traces", "none",  # no SPAN_CLOSED lines in the fixture logs
-            "--name", "smoke-run",
-            "--worker", "prefill=dep:4:1",
-            "--worker", "decode=tep:4:1",
+            "--run-dir",
+            str(run_dir),
+            "--out",
+            str(bundle),
+            "--traces",
+            "none",  # no SPAN_CLOSED lines in the fixture logs
+            "--name",
+            "smoke-run",
+            "--worker",
+            "prefill=dep:4:1",
+            "--worker",
+            "decode=tep:4:1",
             *extra,
         ]
     )
@@ -202,7 +234,7 @@ class TestProcessorRegistry:
 
         assert callable(get_processor("client", "aiperf"))
         assert callable(get_processor("traces", "spanlog"))
-        assert callable(get_processor("metrics", "prometheus"))
+        assert callable(get_processor("metrics", "tachometer"))
 
     @pytest.mark.parametrize(("axis", "name"), [("client", "agentperf"), ("traces", "tempo")])
     def test_unvendored_processors_fail_loudly(self, axis: str, name: str):
@@ -220,34 +252,6 @@ class TestProcessorRegistry:
 # ---------------------------------------------------------------------------
 # L2: capture -> intermediate schemas
 # ---------------------------------------------------------------------------
-
-
-class TestMetricsPrometheus:
-    def test_raw_capture_becomes_schema_2(self, tmp_path: Path):
-        from src.ingest.metrics_prometheus import process
-
-        raw = _write_raw_prometheus(tmp_path, sweeps=3)
-        out = tmp_path / "server_metrics_export.jsonl"
-        assert process(str(raw), str(out)) == 3
-
-        lines = [json.loads(x) for x in out.read_text().splitlines() if x.strip()]
-        assert [ln["timestamp_ns"] for ln in lines] == sorted(ln["timestamp_ns"] for ln in lines)
-        assert len(lines) == 3, "the three endpoints of one sweep merge into one line"
-
-    def test_worker_labels_are_injected(self, tmp_path: Path):
-        """TRT-LLM labels its KV gauges with only {model_name}; the KV panels pair
-        them by worker_id and split by dynamo_component. Without this injection the
-        Engine tab silently renders nothing."""
-        from src.ingest.metrics_prometheus import process
-
-        raw = _write_raw_prometheus(tmp_path, sweeps=1)
-        out = tmp_path / "server_metrics_export.jsonl"
-        process(str(raw), str(out))
-
-        entries = json.loads(out.read_text().splitlines()[0])["metrics"]["trtllm_kv_cache_used_blocks"]
-        by_worker = {e["labels"]["worker_id"]: e["labels"]["dynamo_component"] for e in entries}
-        # decode maps to "backend", matching the component tag Dynamo puts on spans.
-        assert by_worker == {"node1": "prefill", "node2": "backend"}
 
 
 class TestFrontendInfoLogParser:
@@ -334,13 +338,14 @@ class TestIngestBundle:
         """The CLI flags stay a fallback for bundles carrying no engine config."""
         d = tmp_path / "logs"
         d.mkdir()
-        _write_raw_prometheus(d)
+        _write_tachometer_parquet(d)
         _write_aiperf_export(d)  # deliberately no _write_engine_configs
         bundle = tmp_path / "bundle"
         _run_ingest(d, bundle)
         payload = tmp_path / "dash.json"
-        proc = _render(bundle, tmp_path / "dash.html", "--d3-cdn", "--dump-json", str(payload),
-                       "--max-batch-decode", "77")
+        proc = _render(
+            bundle, tmp_path / "dash.html", "--d3-cdn", "--dump-json", str(payload), "--max-batch-decode", "77"
+        )
         assert proc.returncode == 0, proc.stderr
         assert json.loads(payload.read_text())["en"]["max_batch_de"] == 77
 
@@ -348,7 +353,7 @@ class TestIngestBundle:
         """A non-TRTLLM run has no such files; ingest must still produce a bundle."""
         d = tmp_path / "logs"
         d.mkdir()
-        _write_raw_prometheus(d)
+        _write_tachometer_parquet(d)
         _write_aiperf_export(d)
         bundle = tmp_path / "bundle"
         _run_ingest(d, bundle)
@@ -415,9 +420,7 @@ class TestRenderComponentDashboard:
         _run_ingest(run_dir, bundle)
 
         other = tmp_path / "other_frontend_0.out"
-        other.write_text(
-            _write_frontend_log(tmp_path).read_text().replace("xid", "otherxid")
-        )
+        other.write_text(_write_frontend_log(tmp_path).read_text().replace("xid", "otherxid"))
         proc = _render(bundle, tmp_path / "dash.html", "--d3-cdn", "--frontend-log", str(other))
         assert proc.returncode != 0
         assert "different run" in proc.stderr
@@ -558,8 +561,9 @@ class TestPerfDashboardPipeline:
 # ---------------------------------------------------------------------------
 
 
-def _trace_record(xid, sid, received_ms, *, prefill_wait, prefill, kv_transfer, total,
-                  avg_itl, osl, hashes, turn_hashes_shared=None):
+def _trace_record(
+    xid, sid, received_ms, *, prefill_wait, prefill, kv_transfer, total, avg_itl, osl, hashes, turn_hashes_shared=None
+):
     """One dynamo.request.trace.v1 request_end record, real field paths."""
     return {
         "timestamp": 700000,
@@ -585,11 +589,12 @@ def _trace_record(xid, sid, received_ms, *, prefill_wait, prefill, kv_transfer, 
                 "kv_transfer_estimated_latency_ms": kv_transfer,
                 "queue_depth": 0,
                 "worker": {
-                    "prefill_worker_id": 111, "prefill_dp_rank": 2,
-                    "decode_worker_id": 222, "decode_dp_rank": 0,
+                    "prefill_worker_id": 111,
+                    "prefill_dp_rank": 2,
+                    "decode_worker_id": 222,
+                    "decode_dp_rank": 0,
                 },
-                "replay": {"trace_block_size": 32, "input_length": 1024,
-                           "input_sequence_hashes": hashes},
+                "replay": {"trace_block_size": 32, "input_length": 1024, "input_sequence_hashes": hashes},
                 "finish_reason_metadata": {"finish_reason": "length"},
             },
         },
@@ -604,9 +609,20 @@ class TestRequestTraceProcessor:
         from 'wrong on 510/557' to 'wrong on 0/557'."""
         from src.ingest.request_trace import flatten
 
-        row = flatten(_trace_record("x1", "s1", 1000, prefill_wait=4.0, prefill=680.0,
-                                    kv_transfer=130.0, total=2500.0, avg_itl=66.0,
-                                    osl=11, hashes=[1, 2, 3]))
+        row = flatten(
+            _trace_record(
+                "x1",
+                "s1",
+                1000,
+                prefill_wait=4.0,
+                prefill=680.0,
+                kv_transfer=130.0,
+                total=2500.0,
+                avg_itl=66.0,
+                osl=11,
+                hashes=[1, 2, 3],
+            )
+        )
         assert row["ttft_prefill_ms"] == 684.0
         assert row["client_ttft_ms"] == 814.0, "must add KV transfer"
         assert row["steady_decode_ms"] == pytest.approx(2500.0 - 814.0)
@@ -617,17 +633,38 @@ class TestRequestTraceProcessor:
         roughly 11x (66.4ms raw vs 5.9ms clean)."""
         from src.ingest.request_trace import flatten
 
-        row = flatten(_trace_record("x1", "s1", 1000, prefill_wait=4.0, prefill=680.0,
-                                    kv_transfer=130.0, total=2500.0, avg_itl=66.0,
-                                    osl=11, hashes=[1]))
+        row = flatten(
+            _trace_record(
+                "x1",
+                "s1",
+                1000,
+                prefill_wait=4.0,
+                prefill=680.0,
+                kv_transfer=130.0,
+                total=2500.0,
+                avg_itl=66.0,
+                osl=11,
+                hashes=[1],
+            )
+        )
         assert row["clean_itl_ms"] == pytest.approx(66.0 - 130.0 / 10)
 
     def test_aggregated_run_has_no_kv_transfer_correction(self):
         """Non-disagg: no transfer, so client TTFT IS the prefill-side TTFT."""
         from src.ingest.request_trace import flatten
 
-        rec = _trace_record("x1", "s1", 1000, prefill_wait=4.0, prefill=680.0,
-                            kv_transfer=None, total=2500.0, avg_itl=66.0, osl=11, hashes=[1])
+        rec = _trace_record(
+            "x1",
+            "s1",
+            1000,
+            prefill_wait=4.0,
+            prefill=680.0,
+            kv_transfer=None,
+            total=2500.0,
+            avg_itl=66.0,
+            osl=11,
+            hashes=[1],
+        )
         del rec["event"]["request"]["kv_transfer_estimated_latency_ms"]
         row = flatten(rec)
         assert row["client_ttft_ms"] == row["ttft_prefill_ms"] == 684.0
@@ -636,8 +673,9 @@ class TestRequestTraceProcessor:
     def test_non_request_end_records_are_skipped(self):
         from src.ingest.request_trace import flatten
 
-        rec = _trace_record("x1", "s1", 1000, prefill_wait=1.0, prefill=1.0,
-                            kv_transfer=1.0, total=1.0, avg_itl=1.0, osl=2, hashes=[1])
+        rec = _trace_record(
+            "x1", "s1", 1000, prefill_wait=1.0, prefill=1.0, kv_transfer=1.0, total=1.0, avg_itl=1.0, osl=2, hashes=[1]
+        )
         rec["event"]["event_type"] = "tool_start"
         assert flatten(rec) is None
 
@@ -650,12 +688,40 @@ class TestRequestTraceProcessor:
         src = tmp_path / "dynamo-request-trace"
         with src.open("w") as f:
             # deliberately out of chronological order in the file
-            f.write(json.dumps(_trace_record("x2", "s1", 2000, prefill_wait=1.0, prefill=1.0,
-                                             kv_transfer=1.0, total=10.0, avg_itl=1.0, osl=3,
-                                             hashes=[1, 2, 3, 9])) + "\n")
-            f.write(json.dumps(_trace_record("x1", "s1", 1000, prefill_wait=1.0, prefill=1.0,
-                                             kv_transfer=1.0, total=10.0, avg_itl=1.0, osl=3,
-                                             hashes=[1, 2, 3])) + "\n")
+            f.write(
+                json.dumps(
+                    _trace_record(
+                        "x2",
+                        "s1",
+                        2000,
+                        prefill_wait=1.0,
+                        prefill=1.0,
+                        kv_transfer=1.0,
+                        total=10.0,
+                        avg_itl=1.0,
+                        osl=3,
+                        hashes=[1, 2, 3, 9],
+                    )
+                )
+                + "\n"
+            )
+            f.write(
+                json.dumps(
+                    _trace_record(
+                        "x1",
+                        "s1",
+                        1000,
+                        prefill_wait=1.0,
+                        prefill=1.0,
+                        kv_transfer=1.0,
+                        total=10.0,
+                        avg_itl=1.0,
+                        osl=3,
+                        hashes=[1, 2, 3],
+                    )
+                )
+                + "\n"
+            )
         out = tmp_path / "request_trace.jsonl"
         assert process(str(src), str(out)) == 2
 
@@ -670,9 +736,23 @@ class TestRequestTraceProcessor:
         from src.ingest.request_trace import process
 
         src = tmp_path / "dynamo-request-trace"
-        src.write_text(json.dumps(_trace_record("x1", "s1", 1000, prefill_wait=1.0, prefill=1.0,
-                                                kv_transfer=1.0, total=10.0, avg_itl=1.0, osl=3,
-                                                hashes=list(range(5000)))) + "\n")
+        src.write_text(
+            json.dumps(
+                _trace_record(
+                    "x1",
+                    "s1",
+                    1000,
+                    prefill_wait=1.0,
+                    prefill=1.0,
+                    kv_transfer=1.0,
+                    total=10.0,
+                    avg_itl=1.0,
+                    osl=3,
+                    hashes=list(range(5000)),
+                )
+            )
+            + "\n"
+        )
         out = tmp_path / "request_trace.jsonl"
         process(str(src), str(out))
         row = json.loads(out.read_text().strip())
@@ -681,10 +761,13 @@ class TestRequestTraceProcessor:
 
 
 class TestClientLayouts:
-    @pytest.mark.parametrize("relpath", [
-        "agentic/conc_3/aiperf_artifacts/profile_export.jsonl",  # AgentX
-        "artifacts/Qwen3-32B_conversation_20260820/profile_export.jsonl",  # AIPerf bench.sh
-    ])
+    @pytest.mark.parametrize(
+        "relpath",
+        [
+            "agentic/conc_3/aiperf_artifacts/profile_export.jsonl",  # AgentX
+            "artifacts/Qwen3-32B_conversation_20260820/profile_export.jsonl",  # AIPerf bench.sh
+        ],
+    )
     def test_both_client_layouts_are_found(self, tmp_path: Path, relpath: str):
         """AgentX nests one level deeper than the AIPerf harness. Missing the AgentX
         layout silently kills the Overview tab AND the trace leg, which is gated on
@@ -693,18 +776,22 @@ class TestClientLayouts:
 
         d = tmp_path / "logs"
         d.mkdir()
-        _write_raw_prometheus(d)
+        _write_tachometer_parquet(d)
         export = d / relpath
         export.parent.mkdir(parents=True)
         export.write_text(
-            json.dumps({
-                "metadata": {"x_request_id": "xid0", "request_start_ns": T0,
-                             "request_end_ns": T0 + 1_000_000_000},
-                "metrics": {"time_to_first_token": {"value": 120.0},
-                            "request_latency": {"value": 1200.0},
-                            "input_sequence_length": {"value": 1024},
-                            "output_sequence_length": {"value": 128}},
-            }) + "\n"
+            json.dumps(
+                {
+                    "metadata": {"x_request_id": "xid0", "request_start_ns": T0, "request_end_ns": T0 + 1_000_000_000},
+                    "metrics": {
+                        "time_to_first_token": {"value": 120.0},
+                        "request_latency": {"value": 1200.0},
+                        "input_sequence_length": {"value": 1024},
+                        "output_sequence_length": {"value": 128},
+                    },
+                }
+            )
+            + "\n"
         )
         bundle = tmp_path / "bundle"
         assert main(["--run-dir", str(d), "--out", str(bundle), "--traces", "none"]) == 0
@@ -719,12 +806,20 @@ class TestRequestAndSessionEntities:
         src = run_dir / "dynamo-request-trace"
         recs = []
         for i, xid in enumerate(XIDS):
-            recs.append(_trace_record(
-                xid, f"sess-{i % 2}", 1_787_174_000_000 + i * 1000,
-                prefill_wait=2.0, prefill=500.0 + i, kv_transfer=50.0,
-                total=1000.0 + i, avg_itl=20.0, osl=11,
-                hashes=list(range(10 + i)),
-            ))
+            recs.append(
+                _trace_record(
+                    xid,
+                    f"sess-{i % 2}",
+                    1_787_174_000_000 + i * 1000,
+                    prefill_wait=2.0,
+                    prefill=500.0 + i,
+                    kv_transfer=50.0,
+                    total=1000.0 + i,
+                    avg_itl=20.0,
+                    osl=11,
+                    hashes=list(range(10 + i)),
+                )
+            )
         src.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
         bundle = tmp_path / "bundle"
         _run_ingest(run_dir, bundle)
@@ -828,10 +923,21 @@ class TestPanelSpec:
         throughput cliff that never happened."""
         from src.visualization.panels import evaluate
 
-        spec = [{"id": "c", "tab": "t", "title": "T", "unit": "u", "kind": "counter_rate",
-                 "metrics": ["m"], "split_by": None, "why": "w", "issues": [], "caveat": None}]
-        scrapes = [(i * 1_000_000_000, {"m": [{"labels": {}, "value": v}]})
-                   for i, v in enumerate([10, 20, 5, 15])]
+        spec = [
+            {
+                "id": "c",
+                "tab": "t",
+                "title": "T",
+                "unit": "u",
+                "kind": "counter_rate",
+                "metrics": ["m"],
+                "split_by": None,
+                "why": "w",
+                "issues": [],
+                "caveat": None,
+            }
+        ]
+        scrapes = [(i * 1_000_000_000, {"m": [{"labels": {}, "value": v}]}) for i, v in enumerate([10, 20, 5, 15])]
         series = evaluate(scrapes, spec)["c"]["series"]["all"]
         assert [v for _, v in series] == [10.0, 10.0], "the reset must be dropped, not plotted"
 
@@ -840,8 +946,20 @@ class TestPanelSpec:
         these panels exist to catch."""
         from src.visualization.panels import evaluate
 
-        spec = [{"id": "h", "tab": "t", "title": "T", "unit": "s", "kind": "hist_mean",
-                 "metrics": ["lat"], "split_by": None, "why": "w", "issues": [], "caveat": None}]
+        spec = [
+            {
+                "id": "h",
+                "tab": "t",
+                "title": "T",
+                "unit": "s",
+                "kind": "hist_mean",
+                "metrics": ["lat"],
+                "split_by": None,
+                "why": "w",
+                "issues": [],
+                "caveat": None,
+            }
+        ]
         # interval 1: 10 events / 10s -> 1.0 ; interval 2: 10 events / 100s -> 10.0
         scrapes = [
             (0, {"lat_sum": [{"labels": {}, "value": 0.0}], "lat_count": [{"labels": {}, "value": 0}]}),
@@ -853,18 +971,41 @@ class TestPanelSpec:
     def test_split_by_produces_one_series_per_worker(self):
         from src.visualization.panels import evaluate
 
-        spec = [{"id": "g", "tab": "t", "title": "T", "unit": "u", "kind": "gauge",
-                 "metrics": ["m"], "split_by": "worker_id", "why": "w", "issues": [], "caveat": None}]
-        scrapes = [(0, {"m": [{"labels": {"worker_id": "a"}, "value": 1},
-                              {"labels": {"worker_id": "b"}, "value": 2}]})]
+        spec = [
+            {
+                "id": "g",
+                "tab": "t",
+                "title": "T",
+                "unit": "u",
+                "kind": "gauge",
+                "metrics": ["m"],
+                "split_by": "worker_id",
+                "why": "w",
+                "issues": [],
+                "caveat": None,
+            }
+        ]
+        scrapes = [(0, {"m": [{"labels": {"worker_id": "a"}, "value": 1}, {"labels": {"worker_id": "b"}, "value": 2}]})]
         assert set(evaluate(scrapes, spec)["g"]["series"]) == {"a", "b"}
 
     def test_panels_with_no_data_are_omitted(self):
         """Omission is what lets a tab drop cleanly instead of rendering empty."""
         from src.visualization.panels import evaluate
 
-        spec = [{"id": "absent", "tab": "t", "title": "T", "unit": "u", "kind": "gauge",
-                 "metrics": ["never_emitted"], "split_by": None, "why": "w", "issues": [], "caveat": None}]
+        spec = [
+            {
+                "id": "absent",
+                "tab": "t",
+                "title": "T",
+                "unit": "u",
+                "kind": "gauge",
+                "metrics": ["never_emitted"],
+                "split_by": None,
+                "why": "w",
+                "issues": [],
+                "caveat": None,
+            }
+        ]
         assert evaluate([(0, {"other": [{"labels": {}, "value": 1}]})], spec) == {}
 
     def test_panels_reach_the_payload(self, run_dir: Path, tmp_path: Path):
@@ -896,8 +1037,14 @@ class TestGeneratedPageStructure:
         assert _render(bundle, out, "--d3-cdn").returncode == 0
 
         html = out.read_text()
-        for marker in ("['session','Session']", "declarative spec panels",
-                       "DATA.panels", "DATA.rt", ".tbl th{", "attr('class','tbl')"):
+        for marker in (
+            "['session','Session']",
+            "declarative spec panels",
+            "DATA.panels",
+            "DATA.rt",
+            ".tbl th{",
+            "attr('class','tbl')",
+        ):
             assert marker in html, f"page lost: {marker}"
 
     def test_page_js_has_balanced_script_tags(self, run_dir: Path, tmp_path: Path):
@@ -921,11 +1068,26 @@ class TestWaterfallKvTransferBand:
         silently absorbs the wait between them. On the reference run that gap is 83%
         of TTFT at p90 -- the single largest phase, invisible."""
         src = run_dir / "dynamo-request-trace"
-        src.write_text("\n".join(
-            json.dumps(_trace_record(xid, "s1", 1_787_174_000_000 + i * 1000,
-                                     prefill_wait=2.0, prefill=500.0, kv_transfer=250.0,
-                                     total=1000.0, avg_itl=20.0, osl=11, hashes=[1, 2]))
-            for i, xid in enumerate(XIDS)) + "\n")
+        src.write_text(
+            "\n".join(
+                json.dumps(
+                    _trace_record(
+                        xid,
+                        "s1",
+                        1_787_174_000_000 + i * 1000,
+                        prefill_wait=2.0,
+                        prefill=500.0,
+                        kv_transfer=250.0,
+                        total=1000.0,
+                        avg_itl=20.0,
+                        osl=11,
+                        hashes=[1, 2],
+                    )
+                )
+                for i, xid in enumerate(XIDS)
+            )
+            + "\n"
+        )
         bundle = tmp_path / "bundle"
         _run_ingest(run_dir, bundle)
         payload = tmp_path / "dash.json"
@@ -960,13 +1122,21 @@ class TestInstantaneousImbalancePanels:
     def _trace(run_dir: Path, ranks_by_turn):
         recs = []
         for i, rank in enumerate(ranks_by_turn):
-            r = _trace_record(f"x{i}", "s1", 1_787_174_000_000 + i * 10,
-                              prefill_wait=1.0, prefill=10.0, kv_transfer=1.0,
-                              total=1000.0, avg_itl=2.0, osl=11, hashes=[1])
+            r = _trace_record(
+                f"x{i}",
+                "s1",
+                1_787_174_000_000 + i * 10,
+                prefill_wait=1.0,
+                prefill=10.0,
+                kv_transfer=1.0,
+                total=1000.0,
+                avg_itl=2.0,
+                osl=11,
+                hashes=[1],
+            )
             r["event"]["request"]["worker"]["prefill_dp_rank"] = rank
             recs.append(r)
-        (run_dir / "dynamo-request-trace").write_text(
-            "\n".join(json.dumps(r) for r in recs) + "\n")
+        (run_dir / "dynamo-request-trace").write_text("\n".join(json.dumps(r) for r in recs) + "\n")
 
     def _panels(self, run_dir: Path, tmp_path: Path):
         bundle = tmp_path / "bundle"
@@ -1008,11 +1178,26 @@ class TestRoutingOutcomeAndBeliefCheck:
     @staticmethod
     def _bundle(run_dir: Path, tmp_path: Path):
         src = run_dir / "dynamo-request-trace"
-        src.write_text("\n".join(
-            json.dumps(_trace_record(xid, "s1", 1_787_174_000_000 + i * 1000,
-                                     prefill_wait=2.0, prefill=500.0, kv_transfer=50.0,
-                                     total=1000.0, avg_itl=20.0, osl=11, hashes=[1, 2]))
-            for i, xid in enumerate(XIDS)) + "\n")
+        src.write_text(
+            "\n".join(
+                json.dumps(
+                    _trace_record(
+                        xid,
+                        "s1",
+                        1_787_174_000_000 + i * 1000,
+                        prefill_wait=2.0,
+                        prefill=500.0,
+                        kv_transfer=50.0,
+                        total=1000.0,
+                        avg_itl=20.0,
+                        osl=11,
+                        hashes=[1, 2],
+                    )
+                )
+                for i, xid in enumerate(XIDS)
+            )
+            + "\n"
+        )
         bundle = tmp_path / "bundle"
         _run_ingest(run_dir, bundle)
         payload = tmp_path / "dash.json"
@@ -1049,8 +1234,7 @@ class TestIterLogProcessor:
     def test_parses_a_real_line(self):
         from src.ingest.iter_log import parse_line
 
-        r = parse_line(_ITER_LINE.format(i=2, sched=3, kv="0.112", host="4.08",
-                                         dev="243.13ms", sec=49, gen=7))
+        r = parse_line(_ITER_LINE.format(i=2, sched=3, kv="0.112", host="4.08", dev="243.13ms", sec=49, gen=7))
         assert r["iter"] == 2 and r["num_scheduled_requests"] == 3
         assert r["kv_cache_util"] == 0.112
         assert r["host_step_time_ms"] == 4.08 and r["device_step_time_ms"] == 243.13
@@ -1061,8 +1245,12 @@ class TestIterLogProcessor:
         and would drag any aggregate toward it."""
         from src.ingest.iter_log import parse_line
 
-        assert parse_line(_ITER_LINE.format(i=1, sched=1, kv="0.001", host="243.17",
-                                            dev="N/A", sec=49, gen=0))["device_step_time_ms"] is None
+        assert (
+            parse_line(_ITER_LINE.format(i=1, sched=1, kv="0.001", host="243.17", dev="N/A", sec=49, gen=0))[
+                "device_step_time_ms"
+            ]
+            is None
+        )
 
     def test_non_iter_lines_are_ignored(self):
         from src.ingest.iter_log import parse_line
@@ -1095,9 +1283,10 @@ class TestIterLogProcessor:
         from src.ingest.iter_log import process
 
         log = tmp_path / "node_decode_w0.out"
-        lines = [_ITER_LINE.format(i=i, sched=s, kv="0.01", host="13.0", dev="12.0ms",
-                                   sec=49, gen=1)
-                 for i, s in enumerate([0, 1, 1, 4], start=1)]
+        lines = [
+            _ITER_LINE.format(i=i, sched=s, kv="0.01", host="13.0", dev="12.0ms", sec=49, gen=1)
+            for i, s in enumerate([0, 1, 1, 4], start=1)
+        ]
         log.write_text("\n".join(lines) + "\n")
         out = tmp_path / "iter_bins.json"
         assert process(str(out), [str(log)]) >= 1
@@ -1124,11 +1313,26 @@ class TestRenderedEntities:
 
     def test_request_cards_have_a_renderer(self, run_dir: Path, tmp_path: Path):
         src = run_dir / "dynamo-request-trace"
-        src.write_text("\n".join(
-            json.dumps(_trace_record(x, "s1", 1_787_174_000_000 + i * 1000,
-                                     prefill_wait=2.0, prefill=500.0, kv_transfer=50.0,
-                                     total=1000.0, avg_itl=20.0, osl=11, hashes=[1, 2]))
-            for i, x in enumerate(XIDS)) + "\n")
+        src.write_text(
+            "\n".join(
+                json.dumps(
+                    _trace_record(
+                        x,
+                        "s1",
+                        1_787_174_000_000 + i * 1000,
+                        prefill_wait=2.0,
+                        prefill=500.0,
+                        kv_transfer=50.0,
+                        total=1000.0,
+                        avg_itl=20.0,
+                        osl=11,
+                        hashes=[1, 2],
+                    )
+                )
+                for i, x in enumerate(XIDS)
+            )
+            + "\n"
+        )
         bundle = tmp_path / "bundle"
         _run_ingest(run_dir, bundle)
         out = tmp_path / "dash.html"
@@ -1137,8 +1341,7 @@ class TestRenderedEntities:
         html = out.read_text()
         # DATA.rt.requests carried the per-request card for several commits with no JS
         # consumer at all -- the payload existed and nothing drew it.
-        for marker in ("Per-request decomposition", "reqcard", "DATA.rt.requests",
-                       "Router belief vs engine reality"):
+        for marker in ("Per-request decomposition", "reqcard", "DATA.rt.requests", "Router belief vs engine reality"):
             assert marker in html, f"per-request entity lost its renderer: {marker}"
 
     def test_high_cardinality_panels_state_what_they_omit(self, run_dir: Path, tmp_path: Path):
@@ -1158,9 +1361,11 @@ class TestKvHitRateGating:
         deployment adds decode workers. On the reference run the naive mean reported
         0.0 where the true prefill rate was 65.1."""
         (run_dir / "trtllm_config_prefill.yaml").write_text(
-            "max_batch_size: 128\nmax_num_tokens: 4096\nkv_cache_config:\n  enable_block_reuse: true\n")
+            "max_batch_size: 128\nmax_num_tokens: 4096\nkv_cache_config:\n  enable_block_reuse: true\n"
+        )
         (run_dir / "trtllm_config_decode.yaml").write_text(
-            "max_batch_size: 1\nmax_num_tokens: 4\nkv_cache_config:\n  enable_block_reuse: false\n")
+            "max_batch_size: 1\nmax_num_tokens: 4\nkv_cache_config:\n  enable_block_reuse: false\n"
+        )
         bundle = tmp_path / "bundle"
         _run_ingest(run_dir, bundle)
         payload = tmp_path / "dash.json"
@@ -1207,11 +1412,15 @@ class TestRouterCoverageCaveat:
         out = [log.read_text()]
         for i in range(n_pinned + n_fresh):
             pinned = "pinned " if i < n_pinned else ""
-            out.append(json.dumps({
-                "time": f"2026-08-20T10:00:{i % 60:02d}.000000Z",
-                "target": "dynamo_llm::kv_router::scheduling::selector",
-                "message": f"Selected {pinned}worker: worker_type=decode, worker_id=1 dp_rank=0, logit=0.5",
-            }))
+            out.append(
+                json.dumps(
+                    {
+                        "time": f"2026-08-20T10:00:{i % 60:02d}.000000Z",
+                        "target": "dynamo_llm::kv_router::scheduling::selector",
+                        "message": f"Selected {pinned}worker: worker_type=decode, worker_id=1 dp_rank=0, logit=0.5",
+                    }
+                )
+            )
         log.write_text("\n".join(out) + "\n")
 
     def test_coverage_is_measured_into_the_payload(self, run_dir: Path, tmp_path: Path):
@@ -1225,8 +1434,15 @@ class TestRouterCoverageCaveat:
         bundle = tmp_path / "bundle"
         _run_ingest(run_dir, bundle)
         payload = tmp_path / "dash.json"
-        proc = _render(bundle, tmp_path / "dash.html", "--d3-cdn", "--dump-json", str(payload),
-                       "--frontend-log", str(run_dir / "node0_frontend_0.out"))
+        proc = _render(
+            bundle,
+            tmp_path / "dash.html",
+            "--d3-cdn",
+            "--dump-json",
+            str(payload),
+            "--frontend-log",
+            str(run_dir / "node0_frontend_0.out"),
+        )
         assert proc.returncode == 0, proc.stderr
         cov = json.loads(payload.read_text())["ro"]["coverage"]
         assert cov["decisions"] == 100
@@ -1258,7 +1474,8 @@ class TestBlockSizeMismatch:
     def test_engine_block_size_falls_back_to_the_run_config(self, run_dir: Path, tmp_path: Path):
         """No gauge in the scrape, but tokens_per_block in the config -> still decided."""
         (run_dir / "trtllm_config_decode.yaml").write_text(
-            "max_batch_size: 1\nmax_num_tokens: 4\nkv_cache_config:\n  tokens_per_block: 256\n")
+            "max_batch_size: 1\nmax_num_tokens: 4\nkv_cache_config:\n  tokens_per_block: 256\n"
+        )
         bundle = tmp_path / "bundle"
         _run_ingest(run_dir, bundle)
         payload = tmp_path / "dash.json"
@@ -1271,7 +1488,8 @@ class TestBlockSizeMismatch:
     def test_a_mismatch_is_reported_not_averaged_away(self, run_dir: Path, tmp_path: Path):
         """Router 32 vs engine 256 is the reference run's real configuration."""
         (run_dir / "trtllm_config_decode.yaml").write_text(
-            "max_batch_size: 1\nkv_cache_config:\n  tokens_per_block: 256\n")
+            "max_batch_size: 1\nkv_cache_config:\n  tokens_per_block: 256\n"
+        )
         bundle = tmp_path / "bundle"
         _run_ingest(run_dir, bundle)
         payload = tmp_path / "dash.json"
@@ -1317,22 +1535,33 @@ class TestJsonlSelectorRecovery:
     @staticmethod
     def _log(tmp_path: Path, msgs) -> Path:
         p = tmp_path / "node_frontend_0.out"
-        p.write_text("\n".join(json.dumps({
-            "time": "2026-08-19T21:15:34.05374%dZ" % (i % 10),
-            "level": "DEBUG",
-            "target": "dynamo_kv_router::scheduling::selector",
-            "message": m,
-        }) for i, m in enumerate(msgs)) + "\n")
+        p.write_text(
+            "\n".join(
+                json.dumps(
+                    {
+                        "time": "2026-08-19T21:15:34.05374%dZ" % (i % 10),
+                        "level": "DEBUG",
+                        "target": "dynamo_kv_router::scheduling::selector",
+                        "message": m,
+                    }
+                )
+                for i, m in enumerate(msgs)
+            )
+            + "\n"
+        )
         return p
 
     def test_jsonl_selector_decisions_are_counted(self, tmp_path: Path):
         from src.ingest.frontend_infolog_parser import parse_frontend_log
 
-        log = self._log(tmp_path, [
-            "Selected pinned worker: worker_type=prefill, worker_id=7587 dp_rank=1, logit=0.5",
-            "Selected pinned worker: worker_type=decode, worker_id=7588 dp_rank=0, logit=0.5",
-            "Selected worker",
-        ])
+        log = self._log(
+            tmp_path,
+            [
+                "Selected pinned worker: worker_type=prefill, worker_id=7587 dp_rank=1, logit=0.5",
+                "Selected pinned worker: worker_type=decode, worker_id=7588 dp_rank=0, logit=0.5",
+                "Selected worker",
+            ],
+        )
         s = parse_frontend_log(str(log))["stats"]
         assert s["selector_without_request_id"] == 3, "JSON selector records must be seen"
         assert s["selector_decisions_pinned"] == 2
@@ -1342,11 +1571,14 @@ class TestJsonlSelectorRecovery:
         decision count by the number of workers considered."""
         from src.ingest.frontend_infolog_parser import parse_frontend_log
 
-        log = self._log(tmp_path, [
-            "Formula for worker_id=7587 dp_rank=0 with 0.00 effective cached blocks: 8094.094 = a * b",
-            "Pinned formula for worker_id=7588 dp_rank=1 with 12.00 effective cached blocks: 42.0 = a * b",
-            "Selected pinned worker: worker_type=prefill, worker_id=7588 dp_rank=1, logit=0.5",
-        ])
+        log = self._log(
+            tmp_path,
+            [
+                "Formula for worker_id=7587 dp_rank=0 with 0.00 effective cached blocks: 8094.094 = a * b",
+                "Pinned formula for worker_id=7588 dp_rank=1 with 12.00 effective cached blocks: 42.0 = a * b",
+                "Selected pinned worker: worker_type=prefill, worker_id=7588 dp_rank=1, logit=0.5",
+            ],
+        )
         s = parse_frontend_log(str(log))["stats"]
         assert s["selector_candidate_scores"] == 2
         assert s["selector_without_request_id"] == 1
@@ -1356,12 +1588,23 @@ class TestJsonlSelectorRecovery:
         from src.ingest.frontend_infolog_parser import parse_frontend_log
 
         p = tmp_path / "node_frontend_0.out"
-        p.write_text(json.dumps({
-            "time": "2026-08-19T21:15:34.053746Z", "level": "DEBUG",
-            "target": "request_span", "message": "SPAN_CLOSED",
-            "request_id": "r1", "x_request_id": "xid0", "time.duration_us": 1_000_000,
-            "ttft_ms": 120.0, "input_tokens": 10, "output_tokens": 5,
-        }) + "\n")
+        p.write_text(
+            json.dumps(
+                {
+                    "time": "2026-08-19T21:15:34.053746Z",
+                    "level": "DEBUG",
+                    "target": "request_span",
+                    "message": "SPAN_CLOSED",
+                    "request_id": "r1",
+                    "x_request_id": "xid0",
+                    "time.duration_us": 1_000_000,
+                    "ttft_ms": 120.0,
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                }
+            )
+            + "\n"
+        )
         parsed = parse_frontend_log(str(p))
         assert "xid0" in parsed["requests"]
 
@@ -1373,13 +1616,24 @@ class TestSpanBusyIdleRetained:
         slow because it blocked. They were being dropped as envelope metadata."""
         from src.ingest.traces_spanlog import parse_line
 
-        span = parse_line(json.dumps({
-            "time": "2026-08-19T21:15:34.053746Z", "message": "SPAN_CLOSED",
-            "span_name": "handle_payload", "span_id": "a", "parent_id": "b",
-            "trace_id": "t", "request_id": "r", "x_request_id": "x",
-            "time.duration_us": 1000, "time.busy_us": 200, "time.idle_us": 800,
-            "component": "prefill",
-        }))
+        span = parse_line(
+            json.dumps(
+                {
+                    "time": "2026-08-19T21:15:34.053746Z",
+                    "message": "SPAN_CLOSED",
+                    "span_name": "handle_payload",
+                    "span_id": "a",
+                    "parent_id": "b",
+                    "trace_id": "t",
+                    "request_id": "r",
+                    "x_request_id": "x",
+                    "time.duration_us": 1000,
+                    "time.busy_us": 200,
+                    "time.idle_us": 800,
+                    "component": "prefill",
+                }
+            )
+        )
         assert span["attrs"]["time.busy_us"] == 200
         assert span["attrs"]["time.idle_us"] == 800
         assert "time.duration_us" not in span["attrs"], "duration is the span length, not an attr"
@@ -1394,18 +1648,13 @@ class TestMetricNameResolution:
     def test_counter_total_suffix_is_resolved(self, run_dir: Path, tmp_path: Path):
         """The tokenizer-cache KPI read 0.0% on a run whose real hit rate was 99.2%."""
         # 40 hits, 10 misses -> 80%
-        path = run_dir / "raw_prometheus.jsonl"
-        lines = []
+        rows = []
         for i in range(4):
             ts = T0 + i * 1_000_000_000
-            lines.append(json.dumps({
-                "timestamp_ns": ts, "endpoint_url": "http://head:8000/metrics",
-                "role": "frontend", "worker_id": None,
-                "text": (f"dynamo_frontend_tokenizer_cache_hits_total {10 * (i + 1)}\n"
-                         f"dynamo_frontend_tokenizer_cache_misses_total {2.5 * (i + 1)}\n"
-                         f'dynamo_frontend_requests_total{{model="m"}} {i}\n'),
-            }))
-        path.write_text("\n".join(lines) + "\n")
+            rows.append(_frontend_row(ts, "dynamo_frontend_tokenizer_cache_hits_total", 10 * (i + 1)))
+            rows.append(_frontend_row(ts, "dynamo_frontend_tokenizer_cache_misses_total", 2.5 * (i + 1)))
+            rows.append(_frontend_row(ts, 'dynamo_frontend_requests_total{model="m"}', i))
+        _write_tachometer_rows(run_dir, rows)
 
         bundle = tmp_path / "bundle"
         _run_ingest(run_dir, bundle)
@@ -1415,7 +1664,8 @@ class TestMetricNameResolution:
 
         kpi = json.loads(payload.read_text())["kpi"]
         assert kpi["tok_cache"] == pytest.approx(80.0, abs=0.1), (
-            "a counter named <x>_total must resolve from a lookup written as <x>")
+            "a counter named <x>_total must resolve from a lookup written as <x>"
+        )
 
     def test_no_renderer_metric_name_omits_a_needed_suffix(self):
         """Guards the whole class: every metric name the renderer looks up must either
@@ -1435,9 +1685,10 @@ class TestMetricNameResolution:
         referenced = set(re.findall(r'["\'](dynamo_[a-z0-9_]+|trtllm_[a-z0-9_]+)["\']', src))
         bare = referenced & counters_needing_total
         # They MAY appear bare -- but only because _entries() resolves the suffix.
-        assert "_entries" in src and "name + \"_total\"" in src, (
+        assert "_entries" in src and 'name + "_total"' in src, (
             f"bare counter names {sorted(bare)} are referenced, so the central "
-            "_total-resolution helper must still exist")
+            "_total-resolution helper must still exist"
+        )
 
 
 class TestKpiProvenance:
@@ -1448,8 +1699,7 @@ class TestKpiProvenance:
         bundle = tmp_path / "bundle"
         _run_ingest(run_dir, bundle)
         out = tmp_path / "dash.html"
-        assert _render(bundle, out, "--d3-cdn",
-                       "--frontend-log", str(run_dir / "node0_frontend_0.out")).returncode == 0
+        assert _render(bundle, out, "--d3-cdn", "--frontend-log", str(run_dir / "node0_frontend_0.out")).returncode == 0
 
         html = out.read_text()
         assert "'routing decisions seen'" in html or "routing decisions seen" in html
@@ -1540,8 +1790,7 @@ class TestClientSummaryLeg:
             "request_count": {"unit": "requests", "avg": 61.0},
             "was_cancelled": False,
             "error_summary": [],
-            "branch_stats": {"children_spawned": 5, "children_errored": 0,
-                             "children_truncated": 0},
+            "branch_stats": {"children_spawned": 5, "children_errored": 0, "children_truncated": 0},
         }
         doc.update(over)
         path = art / "profile_export_aiperf.json"
@@ -1560,8 +1809,9 @@ class TestClientSummaryLeg:
         self._write_summary(run_dir)
         bundle = tmp_path / "bundle"
         _run_ingest(run_dir, bundle)
-        assert (bundle / "profile_export_aiperf.json").is_file(), \
+        assert (bundle / "profile_export_aiperf.json").is_file(), (
             "the client summary must be copied like the engine configs"
+        )
         out = tmp_path / "dash.json"
         _render(bundle, tmp_path / "dash.html", "--d3-cdn", "--dump-json", str(out))
         cs = json.loads(out.read_text())["meta"]["client_summary"]
@@ -1572,9 +1822,12 @@ class TestClientSummaryLeg:
     def test_validity_flags_are_carried(self, run_dir: Path, tmp_path: Path):
         """A cancelled or branch-errored run produced numbers that must not be
         compared against a clean one."""
-        self._write_summary(run_dir, was_cancelled=True, error_summary=[{"e": "x"}],
-                            branch_stats={"children_spawned": 5, "children_errored": 2,
-                                          "children_truncated": 1})
+        self._write_summary(
+            run_dir,
+            was_cancelled=True,
+            error_summary=[{"e": "x"}],
+            branch_stats={"children_spawned": 5, "children_errored": 2, "children_truncated": 1},
+        )
         cs = self._payload(run_dir, tmp_path)["meta"]["client_summary"]
         assert cs["was_cancelled"] is True
         assert cs["n_errors"] == 1
@@ -1601,11 +1854,18 @@ class TestProvenanceLeg:
 
     @staticmethod
     def _fingerprint(run_dir: Path, worker: str, trtllm: str = "1.3.0rc21") -> None:
-        (run_dir / f"fingerprint_{worker}.json").write_text(json.dumps({
-            "frameworks": {"tensorrt_llm": trtllm, "dynamo": "1.3.0.dev2026071601"},
-            "cuda_version": "13.0", "nccl_version": "2.28", "python_version": "3.12.3",
-            "gpu": "GB300", "hostname": f"theia-{worker}",
-        }))
+        (run_dir / f"fingerprint_{worker}.json").write_text(
+            json.dumps(
+                {
+                    "frameworks": {"tensorrt_llm": trtllm, "dynamo": "1.3.0.dev2026071601"},
+                    "cuda_version": "13.0",
+                    "nccl_version": "2.28",
+                    "python_version": "3.12.3",
+                    "gpu": "GB300",
+                    "hostname": f"theia-{worker}",
+                }
+            )
+        )
 
     def _payload(self, run_dir: Path, tmp_path: Path) -> dict:
         bundle = tmp_path / "bundle"
@@ -1649,15 +1909,15 @@ class TestConfigProvenance:
 
     @staticmethod
     def _setup(run_dir: Path, tok_cache: str) -> None:
-        (run_dir / "fingerprint_prefill_w0.json").write_text(json.dumps(
-            {"frameworks": {"tensorrt_llm": "1.3.0rc21"}}))
+        (run_dir / "fingerprint_prefill_w0.json").write_text(json.dumps({"frameworks": {"tensorrt_llm": "1.3.0rc21"}}))
         (run_dir / "config.yaml").write_text(
             "name: arm-x\n"
             "frontend:\n  env:\n"
             f"    DYN_TOKENIZER_CACHE: '{tok_cache}'\n"
             "    DYN_ROUTER_TRACK_PREFILL_TOKENS: '1'\n"
             "backend:\n  publish_events_and_metrics: true\n"
-            "benchmark:\n  env:\n    RESULT_FILENAME: per_arm_file\n")
+            "benchmark:\n  env:\n    RESULT_FILENAME: per_arm_file\n"
+        )
 
     def _cfg(self, run_dir: Path, tmp_path: Path) -> dict:
         bundle = tmp_path / "bundle"
@@ -1706,11 +1966,12 @@ class TestBenchmarkStatus:
     @staticmethod
     def _failed_benchmark(run_dir: Path, exit_code: str, err: str) -> None:
         (run_dir / "benchmark.out").write_text(
-            "+ source /infmax-workspace/benchmarks/benchmark_lib.sh\n"
-            f"++ echo '{err}'\n{err}\n++ exit {exit_code}\n")
+            f"+ source /infmax-workspace/benchmarks/benchmark_lib.sh\n++ echo '{err}'\n{err}\n++ exit {exit_code}\n"
+        )
         (run_dir / "sweep_999.log").write_text(
             "2026-08-21 01:16:00 [INFO] Server is healthy - starting benchmark\n"
-            f"2026-08-21 01:16:17 [ERROR] Benchmark failed with exit code {exit_code}\n")
+            f"2026-08-21 01:16:17 [ERROR] Benchmark failed with exit code {exit_code}\n"
+        )
 
     def _payload(self, run_dir: Path, tmp_path: Path) -> dict:
         bundle = tmp_path / "bundle"
@@ -1724,8 +1985,9 @@ class TestBenchmarkStatus:
         self._failed_benchmark(run_dir, "1", "Error: KV_OFFLOADING must be set for agentic benchmarks")
         bs = self._payload(run_dir, tmp_path)["meta"]["benchmark_status"]
         assert bs["exit_code"] == "1"
-        assert any("KV_OFFLOADING" in e for e in bs["errors"]), \
+        assert any("KV_OFFLOADING" in e for e in bs["errors"]), (
             "the reader needs the variable name, not just 'it failed'"
+        )
 
     def test_missing_script_is_reported(self, run_dir: Path, tmp_path: Path):
         self._failed_benchmark(run_dir, "127", "bash: /infmax-workspace/x.sh: No such file or directory")
@@ -1761,21 +2023,26 @@ class TestBenchmarkStatusMessageQuality:
         return (json.loads(out.read_text())["meta"]["benchmark_status"] or {}).get("errors", [])
 
     def test_missing_variable_names_are_captured(self, run_dir: Path, tmp_path: Path):
-        errs = self._errors(run_dir, tmp_path,
+        errs = self._errors(
+            run_dir,
+            tmp_path,
             "+ echo 'Error: The following required environment variables are not set:'\n"
             "Error: The following required environment variables are not set:\n"
-            "+ for var in \"${missing_vars[@]}\"\n"
-            "  - FRAMEWORK\n  - PRECISION\n  - DURATION\n+ exit 1\n")
+            '+ for var in "${missing_vars[@]}"\n'
+            "  - FRAMEWORK\n  - PRECISION\n  - DURATION\n+ exit 1\n",
+        )
         joined = " ".join(errs)
         for var in ("FRAMEWORK", "PRECISION", "DURATION"):
             assert var in joined, f"{var} must survive into the banner; got {errs}"
 
     def test_set_x_trace_lines_are_not_reported_as_the_message(self, run_dir: Path, tmp_path: Path):
-        errs = self._errors(run_dir, tmp_path,
-            "+ echo 'Error: KV_OFFLOADING must be set'\nError: KV_OFFLOADING must be set\n")
+        errs = self._errors(
+            run_dir, tmp_path, "+ echo 'Error: KV_OFFLOADING must be set'\nError: KV_OFFLOADING must be set\n"
+        )
         assert errs, "the real message must be captured"
-        assert not any(e.lstrip().startswith("+") for e in errs), \
+        assert not any(e.lstrip().startswith("+") for e in errs), (
             "a trace line shows the mechanism instead of the message"
+        )
 
 
 class TestBenchmarkPhaseCensus:
@@ -1806,11 +2073,13 @@ class TestBenchmarkPhaseCensus:
         return json.loads(out.read_text())["meta"]["benchmark_status"] or {}
 
     def test_census_is_captured_when_no_error_line_exists(self, run_dir: Path, tmp_path: Path):
-        self._aiperf_log(run_dir,
+        self._aiperf_log(
+            run_dir,
             "2026-08-21 01:56:55.025 - PhaseRunner - NOTICE - Phase warmup complete | "
             "completed=123, cancelled=0, errors=0 | elapsed=641.51s\n"
             "2026-08-21 01:59:35.175 - PhaseRunner - NOTICE - Phase profiling complete | "
-            "completed=30, cancelled=46, errors=0 | elapsed=160.0\n")
+            "completed=30, cancelled=46, errors=0 | elapsed=160.0\n",
+        )
         bs = self._status(run_dir, tmp_path)
         assert bs.get("exit_code") == "1"
         joined = " ".join(bs.get("phases") or [])
@@ -1820,9 +2089,11 @@ class TestBenchmarkPhaseCensus:
     def test_warmup_abort_is_distinguishable_from_profiling_timeout(self, run_dir: Path, tmp_path: Path):
         """a0/a1's mode: warmup cancels, profiling never runs — so there is exactly one
         phase line, and its cancelled count is non-zero."""
-        self._aiperf_log(run_dir,
+        self._aiperf_log(
+            run_dir,
             "2026-08-21 01:57:52.022 - PhaseRunner - NOTICE - Phase warmup complete | "
-            "completed=122, cancelled=4, errors=0 | elapsed=707.04s\n")
+            "completed=122, cancelled=4, errors=0 | elapsed=707.04s\n",
+        )
         phases = self._status(run_dir, tmp_path).get("phases") or []
         assert len(phases) == 1, "profiling never ran, so it must not be reported"
         assert "cancelled=4" in phases[0]
@@ -1851,11 +2122,13 @@ class TestLogOnlySignals:
         return json.loads(out.read_text())["meta"]["log_signals"] or {}
 
     def test_crash_and_recompile_are_counted_with_timestamps(self, run_dir: Path, tmp_path: Path):
-        self._worker_log(run_dir,
+        self._worker_log(
+            run_dir,
             "2026-08-21T01:00:00Z INFO starting\n"
             "2026-08-21T01:00:05Z ERROR CUDA error: device-side assert triggered\n"
             "2026-08-21T01:00:09Z WARN torch._dynamo hit config.cache_size_limit\n"
-            "2026-08-21T01:00:11Z WARN recompile_limit reached\n")
+            "2026-08-21T01:00:11Z WARN recompile_limit reached\n",
+        )
         sig = self._signals(run_dir, tmp_path)
         assert sig["worker_crash"]["count"] == 1
         assert sig["worker_crash"]["first_ts"] == "2026-08-21T01:00:05Z"
@@ -1873,8 +2146,7 @@ class TestLogOnlySignals:
 
     def test_output_is_bounded_regardless_of_input_size(self, run_dir: Path, tmp_path: Path):
         """The whole point: a multi-GB log must not become a multi-GB bundle entry."""
-        self._worker_log(run_dir,
-            "2026-08-21T01:00:00Z ERROR Block not found during remove; skipping\n" * 5000)
+        self._worker_log(run_dir, "2026-08-21T01:00:00Z ERROR Block not found during remove; skipping\n" * 5000)
         sig = self._signals(run_dir, tmp_path)
         assert sig["kv_block_not_found"]["count"] == 5000
         assert len(sig["kv_block_not_found"]["samples"]) <= 2, "samples must stay bounded"
@@ -1952,18 +2224,30 @@ class TestHostTelemetry:
 
     @staticmethod
     def _samples(run_dir: Path, rows: list[dict]) -> None:
-        (run_dir / "host_samples.jsonl").write_text(
-            "\n".join(json.dumps(r) for r in rows) + "\n")
+        (run_dir / "host_samples.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
 
     @staticmethod
     def _row(t, busy, total, fds, ctx_invol, cpu_j):
-        return {"t": t, "host": "theia0163",
-                "cpu_busy_jiffies": busy, "cpu_total_jiffies": total,
-                "mem": {"MemTotal": 1000, "MemAvailable": 400},
-                "fd_limit": 1024, "established_conns": 12,
-                "procs": [{"pid": 7, "name": "dynamo-frontend", "rss_kb": 2048,
-                           "threads": 8, "ctx_invol": ctx_invol, "open_fds": fds,
-                           "cpu_jiffies": cpu_j}]}
+        return {
+            "t": t,
+            "host": "theia0163",
+            "cpu_busy_jiffies": busy,
+            "cpu_total_jiffies": total,
+            "mem": {"MemTotal": 1000, "MemAvailable": 400},
+            "fd_limit": 1024,
+            "established_conns": 12,
+            "procs": [
+                {
+                    "pid": 7,
+                    "name": "dynamo-frontend",
+                    "rss_kb": 2048,
+                    "threads": 8,
+                    "ctx_invol": ctx_invol,
+                    "open_fds": fds,
+                    "cpu_jiffies": cpu_j,
+                }
+            ],
+        }
 
     def _host(self, run_dir: Path, tmp_path: Path) -> dict:
         bundle = tmp_path / "bundle"
@@ -1976,15 +2260,13 @@ class TestHostTelemetry:
     def test_cpu_percent_is_derived_from_cumulative_counters(self, run_dir: Path, tmp_path: Path):
         """The sampler stores jiffies, not percentages, so the capture interval never
         gets baked into the stored number. 50 busy of 100 total = 50%."""
-        self._samples(run_dir, [self._row(100.0, 0, 0, 10, 0, 0),
-                                self._row(101.0, 50, 100, 10, 0, 0)])
+        self._samples(run_dir, [self._row(100.0, 0, 0, 10, 0, 0), self._row(101.0, 50, 100, 10, 0, 0)])
         h = self._host(run_dir, tmp_path)
         assert h["host_cpu_pct"][0][1] == 50.0
 
     def test_involuntary_ctx_switch_rate_is_exposed(self, run_dir: Path, tmp_path: Path):
         """The lock-convoy signal: descheduled against its will, not yielding."""
-        self._samples(run_dir, [self._row(100.0, 0, 0, 10, 1000, 0),
-                                self._row(102.0, 10, 100, 10, 1400, 0)])
+        self._samples(run_dir, [self._row(100.0, 0, 0, 10, 1000, 0), self._row(102.0, 10, 100, 10, 1400, 0)])
         h = self._host(run_dir, tmp_path)
         proc = next(iter(h["procs"].values()))
         assert proc["ctx_invol_rate"][0][1] == 200.0, "(1400-1000)/2s"
@@ -1992,8 +2274,7 @@ class TestHostTelemetry:
     def test_fd_headroom_against_the_limit(self, run_dir: Path, tmp_path: Path):
         """Reported even when comfortable: 'we were at 2%' is the answer that RULES OUT
         fd exhaustion, which is as useful as confirming it."""
-        self._samples(run_dir, [self._row(100.0, 0, 0, 20, 0, 0),
-                                self._row(101.0, 10, 100, 20, 0, 0)])
+        self._samples(run_dir, [self._row(100.0, 0, 0, 20, 0, 0), self._row(101.0, 10, 100, 20, 0, 0)])
         h = self._host(run_dir, tmp_path)
         assert h["fd_limit"] == 1024
         assert h["fd_headroom_pct"] == round(100.0 * 20 / 1024, 2)
@@ -2022,9 +2303,16 @@ class TestHostSamplerProcessSelection:
         }
         monkeypatch.setattr(hs.os, "listdir", lambda p: list(procs) if p == "/proc" else [])
         monkeypatch.setattr(
-            hs, "_read",
-            lambda path: procs[path.split("/")[2]][0] if path.endswith("cmdline")
-            else procs[path.split("/")[2]][1] if path.endswith("comm") else None)
+            hs,
+            "_read",
+            lambda path: (
+                procs[path.split("/")[2]][0]
+                if path.endswith("cmdline")
+                else procs[path.split("/")[2]][1]
+                if path.endswith("comm")
+                else None
+            ),
+        )
 
         got = hs._interesting_pids()
         assert set(got[:2]) == {12, 13}, f"real processes must come first, got {got}"
@@ -2037,9 +2325,16 @@ class TestHostSamplerProcessSelection:
         procs["12"] = ("python -m dynamo.trtllm", "trtllm-llmapi-l")
         monkeypatch.setattr(hs.os, "listdir", lambda p: list(procs) if p == "/proc" else [])
         monkeypatch.setattr(
-            hs, "_read",
-            lambda path: procs[path.split("/")[2]][0] if path.endswith("cmdline")
-            else procs[path.split("/")[2]][1] if path.endswith("comm") else None)
+            hs,
+            "_read",
+            lambda path: (
+                procs[path.split("/")[2]][0]
+                if path.endswith("cmdline")
+                else procs[path.split("/")[2]][1]
+                if path.endswith("comm")
+                else None
+            ),
+        )
 
         got = hs._interesting_pids(limit=5)
         assert 12 in got, "the one real worker must survive a budget full of wrappers"
@@ -2174,7 +2469,7 @@ class TestAiperfJsonMetrics:
         ]
         assert vals == [4.0, 6.0]
 
-    def test_schema_matches_the_prometheus_processor(self, tmp_path: Path):
+    def test_schema_matches_the_tachometer_processor(self, tmp_path: Path):
         """Both metrics sources must be interchangeable at the panel layer."""
         for rec in self._convert(tmp_path):
             assert set(rec) == {"timestamp_ns", "metrics"}
@@ -2208,28 +2503,55 @@ class TestIterLogOnlyBuild:
         t0 = T0 // 10**9
         bins = {
             "node0_prefill_w0": [
-                {"t": t0 + i, "n_iters": 3, "kv_cache_util": 0.4 + i * 0.01,
-                 "num_scheduled_requests": 1, "num_ctx_requests": 1,
-                 "num_ctx_tokens": 8192, "num_generation_tokens": 0,
-                 "host_step_time_ms": 340.0 + i, "device_step_time_ms": 335.0 + i,
-                 "sched_max": 1, "host_step_time_ms_max": 340.0 + i,
-                 "device_step_time_ms_max": 335.0 + i, "sched_hist": {"1": 3}}
+                {
+                    "t": t0 + i,
+                    "n_iters": 3,
+                    "kv_cache_util": 0.4 + i * 0.01,
+                    "num_scheduled_requests": 1,
+                    "num_ctx_requests": 1,
+                    "num_ctx_tokens": 8192,
+                    "num_generation_tokens": 0,
+                    "host_step_time_ms": 340.0 + i,
+                    "device_step_time_ms": 335.0 + i,
+                    "sched_max": 1,
+                    "host_step_time_ms_max": 340.0 + i,
+                    "device_step_time_ms_max": 335.0 + i,
+                    "sched_hist": {"1": 3},
+                }
                 for i in range(120)
             ],
             "node9_decode_w0": [
-                {"t": t0 + i, "n_iters": 28, "kv_cache_util": 0.40,
-                 "num_scheduled_requests": 64, "num_ctx_requests": 0,
-                 "num_ctx_tokens": 0, "num_generation_tokens": 64,
-                 "host_step_time_ms": 36.1, "device_step_time_ms": 35.7,
-                 "sched_max": 64, "host_step_time_ms_max": 36.1,
-                 "device_step_time_ms_max": 35.7, "sched_hist": {"64": 28}}
+                {
+                    "t": t0 + i,
+                    "n_iters": 28,
+                    "kv_cache_util": 0.40,
+                    "num_scheduled_requests": 64,
+                    "num_ctx_requests": 0,
+                    "num_ctx_tokens": 0,
+                    "num_generation_tokens": 64,
+                    "host_step_time_ms": 36.1,
+                    "device_step_time_ms": 35.7,
+                    "sched_max": 64,
+                    "host_step_time_ms_max": 36.1,
+                    "device_step_time_ms_max": 35.7,
+                    "sched_hist": {"64": 28},
+                }
                 for i in range(120)
             ],
         }
-        (bundle / "iter_bins.json").write_text(json.dumps(
-            {"meta": {"bin_seconds": 1.0, "offset_hours_applied": 0,
-                      "iterations": 3720, "workers": sorted(bins)},
-             "bins": bins}))
+        (bundle / "iter_bins.json").write_text(
+            json.dumps(
+                {
+                    "meta": {
+                        "bin_seconds": 1.0,
+                        "offset_hours_applied": 0,
+                        "iterations": 3720,
+                        "workers": sorted(bins),
+                    },
+                    "bins": bins,
+                }
+            )
+        )
         return bundle
 
     def test_engine_tab_survives_without_a_scrape_stream(self, tmp_path: Path):
@@ -2241,9 +2563,7 @@ class TestIterLogOnlyBuild:
         assert tabs.get("engine") is True, f"engine tab dropped on an iter-log-only bundle: {tabs}"
         assert tabs.get("frontend") is False and tabs.get("router") is False
 
-    def test_the_run_window_comes_from_the_iter_log_when_nothing_else_exists(
-        self, tmp_path: Path
-    ):
+    def test_the_run_window_comes_from_the_iter_log_when_nothing_else_exists(self, tmp_path: Path):
         """`run_dur` of ~0 is what silently discarded every bin."""
         bundle = self._iter_only_bundle(tmp_path)
         out = tmp_path / "d.html"
@@ -2305,9 +2625,10 @@ class TestIterLogOnlyBuild:
         bundle = self._iter_only_bundle(tmp_path)
         src = json.loads((bundle / "iter_bins.json").read_text())
         for r in src["bins"]["node0_prefill_w0"]:
-            r["cached_kv_tokens"] = 9000          # 9000 / (9000 + 8192)
+            r["cached_kv_tokens"] = 9000  # 9000 / (9000 + 8192)
         (bundle / "iter_bins.json").write_text(json.dumps(src))
-        out = tmp_path / "d.html"; dump = tmp_path / "d.json"
+        out = tmp_path / "d.html"
+        dump = tmp_path / "d.json"
         _render(bundle, out, "--d3-cdn", "--dump-json", str(dump))
         en = json.loads(dump.read_text())["en"]
         expected = 9000 / (9000 + 8192) * 100
@@ -2329,25 +2650,36 @@ class TestWarmupMarker:
         """AgentX-shaped export: a warmup phase, then the measured phase."""
         # The scrape window defines the rendered axis, and a boundary outside it is
         # correctly refused -- so widen the capture to cover the phases being written.
-        _write_raw_prometheus(run_dir, sweeps=warmup + profiling + 2)
+        _write_tachometer_parquet(run_dir, sweeps=warmup + profiling + 2)
         art = run_dir / "artifacts" / "run"
         art.mkdir(parents=True, exist_ok=True)
         recs = []
         for i in range(warmup):
-            recs.append({"metadata": {"x_request_id": f"w{i}", "benchmark_phase": "warmup",
-                                      "request_start_ns": T0 + i * 10**9,
-                                      "request_end_ns": T0 + (i + 1) * 10**9},
-                         "metrics": {"time_to_first_token": {"value": 100.0},
-                                     "request_latency": {"value": 200.0}}})
+            recs.append(
+                {
+                    "metadata": {
+                        "x_request_id": f"w{i}",
+                        "benchmark_phase": "warmup",
+                        "request_start_ns": T0 + i * 10**9,
+                        "request_end_ns": T0 + (i + 1) * 10**9,
+                    },
+                    "metrics": {"time_to_first_token": {"value": 100.0}, "request_latency": {"value": 200.0}},
+                }
+            )
         for i in range(profiling):
             t = T0 + (warmup + i) * 10**9
-            recs.append({"metadata": {"x_request_id": XIDS[i % len(XIDS)],
-                                      "benchmark_phase": "profiling",
-                                      "request_start_ns": t, "request_end_ns": t + 10**9},
-                         "metrics": {"time_to_first_token": {"value": 100.0},
-                                     "request_latency": {"value": 200.0}}})
-        (art / "profile_export.jsonl").write_text(
-            "\n".join(json.dumps(r) for r in recs) + "\n")
+            recs.append(
+                {
+                    "metadata": {
+                        "x_request_id": XIDS[i % len(XIDS)],
+                        "benchmark_phase": "profiling",
+                        "request_start_ns": t,
+                        "request_end_ns": t + 10**9,
+                    },
+                    "metrics": {"time_to_first_token": {"value": 100.0}, "request_latency": {"value": 200.0}},
+                }
+            )
+        (art / "profile_export.jsonl").write_text("\n".join(json.dumps(r) for r in recs) + "\n")
 
     def test_boundary_is_the_first_profiling_request(self, run_dir: Path, tmp_path: Path):
         self._client(run_dir, warmup=20, profiling=40)
@@ -2397,7 +2729,7 @@ class TestWarmupMarker:
 class TestMetricsSourceAutoSelect:
     """`--metrics auto` picks the source the run actually captured.
 
-    A run with `observability.enabled` has `raw_prometheus.jsonl`. A run without it
+    A run with tachometer on (the default) has its parquet. A run without it
     usually still has AIPerf's own export, because the frontend's `/metrics` surface
     exists regardless of that knob. Selecting per-run is what lets ONE ingest command
     -- in particular the in-job postprocess hook, which takes no source flag -- work
@@ -2409,31 +2741,40 @@ class TestMetricsSourceAutoSelect:
         # Two layouts in the wild, and the deeper one is NOT a superset of the other:
         # some harness builds write `agentic/<conc>/aiperf_artifacts/...`, others
         # `agentic/<conc>/...`, and stock AIPerf `artifacts/<run>/...`.
-        art = (run_dir / "agentic" / "conc_4" / "aiperf_artifacts") if nested \
-            else (run_dir / "artifacts" / "run")
+        art = (run_dir / "agentic" / "conc_4" / "aiperf_artifacts") if nested else (run_dir / "artifacts" / "run")
         art.mkdir(parents=True, exist_ok=True)
         t0 = T0
-        doc = {"metrics": {"dynamo_frontend_requests": {"type": "counter", "series": [
-            {"endpoint_url": "http://f:8000/metrics", "labels": {},
-             "stats": {"total": 30.0},
-             "timeslices": [
-                 {"start_ns": t0 + i * 10**9, "end_ns": t0 + (i + 1) * 10**9, "total": 10.0}
-                 for i in range(3)]}]}}}
+        doc = {
+            "metrics": {
+                "dynamo_frontend_requests": {
+                    "type": "counter",
+                    "series": [
+                        {
+                            "endpoint_url": "http://f:8000/metrics",
+                            "labels": {},
+                            "stats": {"total": 30.0},
+                            "timeslices": [
+                                {"start_ns": t0 + i * 10**9, "end_ns": t0 + (i + 1) * 10**9, "total": 10.0}
+                                for i in range(3)
+                            ],
+                        }
+                    ],
+                }
+            }
+        }
         (art / "server_metrics_export.json").write_text(json.dumps(doc, indent=2))
 
     def test_prefers_the_in_job_scraper_when_present(self, run_dir: Path, tmp_path: Path):
-        self._aiperf_export(run_dir)          # both sources available
+        self._aiperf_export(run_dir)  # both sources available
         bundle = tmp_path / "b"
-        _run_ingest(run_dir, bundle)          # no --metrics flag => auto
+        _run_ingest(run_dir, bundle)  # no --metrics flag => auto
         rec = json.loads((bundle / "server_metrics_export.jsonl").read_text().splitlines()[0])
-        # the raw-prometheus fixture carries this family; the aiperf fixture does not
+        # the tachometer fixture carries this family; the aiperf fixture does not
         assert "dynamo_frontend_queued_requests" in rec["metrics"]
 
-    def test_falls_back_to_the_aiperf_export_without_observability(
-        self, run_dir: Path, tmp_path: Path
-    ):
+    def test_falls_back_to_the_aiperf_export_without_observability(self, run_dir: Path, tmp_path: Path):
         """The `observability.enabled: false` shape: no raw scrape, AIPerf export only."""
-        (run_dir / "raw_prometheus.jsonl").unlink()
+        shutil.rmtree(run_dir / "tachometer")
         self._aiperf_export(run_dir)
         bundle = tmp_path / "b"
         _run_ingest(run_dir, bundle)
@@ -2445,7 +2786,7 @@ class TestMetricsSourceAutoSelect:
     def test_the_server_metrics_tabs_survive_that_fallback(self, run_dir: Path, tmp_path: Path):
         """This is the property that matters: a run without observability still gets
         the Frontend / Router / Engine tabs rather than a log-only page."""
-        (run_dir / "raw_prometheus.jsonl").unlink()
+        shutil.rmtree(run_dir / "tachometer")
         self._aiperf_export(run_dir)
         bundle = tmp_path / "b"
         _run_ingest(run_dir, bundle)
@@ -2457,9 +2798,8 @@ class TestMetricsSourceAutoSelect:
     def test_finds_the_nested_aiperf_artifacts_layout(self, run_dir: Path, tmp_path: Path):
         """`agentic/<conc>/aiperf_artifacts/server_metrics_export.json` -- the layout an
         srt-slurm AgentX run on lyris writes. Missing it silently costs three tabs."""
-        (run_dir / "raw_prometheus.jsonl").unlink()
+        shutil.rmtree(run_dir / "tachometer")
         self._aiperf_export(run_dir, nested=True)
         bundle = tmp_path / "b"
         _run_ingest(run_dir, bundle)
-        assert (bundle / "server_metrics_export.jsonl").exists(), \
-            "auto did not find the nested aiperf_artifacts layout"
+        assert (bundle / "server_metrics_export.jsonl").exists(), "auto did not find the nested aiperf_artifacts layout"

@@ -159,7 +159,7 @@ class TestTachometerProcessor:
         assert all("{" not in name for name in lines[0]["metrics"])
 
     def test_worker_labels_are_injected(self, log_dir: Path, tmp_path: Path):
-        """Mirrors metrics_prometheus: prefill -> "prefill", decode -> "backend",
+        """prefill -> "prefill", decode -> "backend",
         worker_id from the hostname metadata, injected via setdefault."""
         lines = _process(log_dir, tmp_path)
         entries = lines[0]["metrics"]["trtllm_kv_cache_used_blocks"]
@@ -214,22 +214,10 @@ class TestTachometerProcessor:
 
 class TestMetricsAutoSelection:
     def test_auto_prefers_tachometer_over_everything(self, log_dir: Path, tmp_path: Path, caplog):
-        """A run dir with the tachometer parquet AND raw_prometheus.jsonl AND both
-        AIPerf exports must pick the tachometer leg (whole-window, per-replica)."""
+        """A run dir with the tachometer parquet AND both AIPerf exports must pick the
+        tachometer leg (whole-window, per-replica)."""
         from src.ingest.ingest import build_parser, run_metrics
 
-        (log_dir / "raw_prometheus.jsonl").write_text(
-            json.dumps(
-                {
-                    "timestamp_ns": T0,
-                    "endpoint_url": "http://head:8000/metrics",
-                    "role": "frontend",
-                    "worker_id": None,
-                    "text": "a 1\n",
-                }
-            )
-            + "\n"
-        )
         art = log_dir / "artifacts" / "model_workload_20260826_000000"
         art.mkdir(parents=True)
         (art / "server_metrics_export.json").write_text("{}")

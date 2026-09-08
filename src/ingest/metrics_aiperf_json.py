@@ -23,7 +23,7 @@ Input shape (pretty-printed; the ``metrics`` object is the bulk of the file)::
         "series": [{"endpoint_url": ..., "labels": {...}, "stats": {...},
                     "timeslices": [{"start_ns":..., "end_ns":..., ...}, ...]}]}}}
 
-Output is schema 2, byte-compatible with ``metrics_prometheus``::
+Output is schema 2, byte-compatible with ``metrics_tachometer``::
 
     {"timestamp_ns": <int>, "metrics": {"<name>": [{"labels": {...}, "value": <num>}]}}
 
@@ -143,7 +143,7 @@ def _is_interval(slices, field, run_total):
 
 def _series_labels(series):
     labels = dict(series.get("labels") or {})
-    # metrics_prometheus injects worker_id/dynamo_component when the scrape's role is
+    # metrics_tachometer injects worker_id/dynamo_component when the scrape's role is
     # known. Here the role is not knowable from the export alone, and the labels that
     # Dynamo does publish are already on the series, so nothing is invented.
     return labels
