@@ -78,11 +78,13 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import datetime
 import glob
 import json
 import logging
 import math
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -96,18 +98,20 @@ logger = logging.getLogger("metrics_tachometer")
 
 # Columns owned by the writer schema (writer.rs) + compaction (metric_name_clean).
 # Everything else is a per-endpoint metadata column.
-_FIXED_COLUMNS = frozenset({
-    "scraper_endpoint",
-    "metric_name",
-    "metric_name_clean",
-    "metric_value",
-    "histogram_bucket_lower",
-    "histogram_bucket_upper",
-    "histogram_sum",
-    "histogram_count",
-    "time_since_start",
-    "timestamp_ns",
-})
+_FIXED_COLUMNS = frozenset(
+    {
+        "scraper_endpoint",
+        "metric_name",
+        "metric_name_clean",
+        "metric_value",
+        "histogram_bucket_lower",
+        "histogram_bucket_upper",
+        "histogram_sum",
+        "histogram_count",
+        "time_since_start",
+        "timestamp_ns",
+    }
+)
 
 # worker_role metadata -> dynamo_component label. Mirrors metrics_prometheus's
 # _ROLE_COMPONENT; roles outside the map (agg, "") get no injection.
@@ -172,13 +176,57 @@ def _finite(v) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
 
 
+_LOG_TS_RE = re.compile(r"^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?Z")
+
+
+def _start_epoch_ns(path: str, pf) -> int:
+    """Epoch of ``time_since_start == 0`` for a parquet that has no ``timestamp_ns`` column.
+
+    Scraper binaries built before the writer gained ``timestamp_ns`` (the release
+    assets were like that) only carry the relative clock. The scraper logs its
+    start as the first line of ``tachometer.out`` in the run log dir, which is the
+    same instant; failing that, the file's mtime minus the last sample's offset.
+    """
+    directory = os.path.dirname(os.path.abspath(path))
+    for _ in range(4):
+        log = os.path.join(directory, "tachometer.out")
+        if os.path.isfile(log):
+            with open(log, encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    m = _LOG_TS_RE.match(line)
+                    if m:
+                        stamp = datetime.datetime.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S").replace(
+                            tzinfo=datetime.timezone.utc
+                        )
+                        frac = (m.group(2) or "").ljust(9, "0")[:9]
+                        epoch = int(stamp.timestamp()) * 1_000_000_000 + int(frac)
+                        logger.warning(
+                            "%s has no timestamp_ns column; anchoring time_since_start to the scraper start in %s",
+                            path,
+                            log,
+                        )
+                        return epoch
+            break
+        directory = os.path.dirname(directory)
+    last = 0.0
+    for batch in pf.iter_batches(columns=["time_since_start"]):
+        values = [v for v in batch.column(0).to_pylist() if v is not None]
+        if values:
+            last = max(last, max(values))
+    epoch = int(os.path.getmtime(path) * 1e9) - int(last * 1e9)
+    logger.warning(
+        "%s has no timestamp_ns column and no tachometer.out nearby; anchoring time_since_start to the file mtime",
+        path,
+    )
+    return epoch
+
+
 def _import_parquet():
     try:
         import pyarrow.parquet as pq  # noqa: PLC0415 - lazy: keep the package stdlib-importable
     except ImportError as e:  # pragma: no cover - environment-dependent
         raise ImportError(
-            "metrics_tachometer needs pyarrow to read the tachometer parquet "
-            "(pip install pyarrow)"
+            "metrics_tachometer needs pyarrow to read the tachometer parquet (pip install pyarrow)"
         ) from e
     return pq
 
@@ -217,13 +265,17 @@ def process(raw_path, out_path: str) -> int:
             pf = pq.ParquetFile(path)
             col_names = list(pf.schema_arrow.names)
             meta_cols = [c for c in col_names if c not in _FIXED_COLUMNS]
+            start_epoch = None if "timestamp_ns" in col_names else _start_epoch_ns(path, pf)
             for batch in pf.iter_batches():
                 names = batch.column("metric_name").to_pylist()
                 values = batch.column("metric_value").to_pylist()
                 uppers = batch.column("histogram_bucket_upper").to_pylist()
                 sums = batch.column("histogram_sum").to_pylist()
                 counts = batch.column("histogram_count").to_pylist()
-                tss = batch.column("timestamp_ns").to_pylist()
+                if start_epoch is None:
+                    tss = batch.column("timestamp_ns").to_pylist()
+                else:
+                    tss = [start_epoch + int(offset * 1e9) for offset in batch.column("time_since_start").to_pylist()]
                 metas = {c: batch.column(c).to_pylist() for c in meta_cols}
                 for i in range(batch.num_rows):
                     rows_read += 1
@@ -285,7 +337,10 @@ def process(raw_path, out_path: str) -> int:
             fh.close()
         logger.info(
             "read %d parquet row(s) from %d file(s) -> %d samples across %d shard(s)",
-            rows_read, len(paths), samples, len(shards),
+            rows_read,
+            len(paths),
+            samples,
+            len(shards),
         )
 
         lines = 0
@@ -296,9 +351,7 @@ def process(raw_path, out_path: str) -> int:
                     for line in sp:
                         ts_s, name, labels_s, value_s = line.rstrip("\n").split("\t", 3)
                         merged = by_ts.setdefault(int(ts_s), {})
-                        merged.setdefault(name, []).append(
-                            {"labels": json.loads(labels_s), "value": float(value_s)}
-                        )
+                        merged.setdefault(name, []).append({"labels": json.loads(labels_s), "value": float(value_s)})
                 for ts in sorted(by_ts):
                     metrics = by_ts[ts]
                     for name in metrics:
@@ -316,12 +369,8 @@ def process(raw_path, out_path: str) -> int:
 
 
 def main(argv=None) -> int:
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S"
-    )
-    ap = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S")
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("raw_path", help="run log dir, tachometer parquet file, or glob")
     ap.add_argument("out_path", help="output server_metrics_export.jsonl (schema 2)")
     args = ap.parse_args(argv)

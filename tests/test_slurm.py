@@ -297,6 +297,34 @@ def test_worker_stage_no_remap_root_for_sglang_frontend(tmp_path: Path) -> None:
     assert mock_srun.call_args.kwargs["srun_export_env"] is None
 
 
+def test_sglang_workers_skip_the_post_sigterm_crash_diagnostics_by_default(tmp_path: Path) -> None:
+    """SGLang waits 60s for CUDA coredumps after a SIGTERM drain; nothing is collected without opting in."""
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="sglang", dynamo_install=False)
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
+    ):
+        mock_srun.return_value = MagicMock()
+        mixin.start_worker(process, [process])
+    env = mock_srun.call_args.kwargs["env_to_set"]
+    assert env["SGLANG_CUDA_COREDUMP_BEFORE_CRASH"] == "0"
+    assert env["SGLANG_PYSPY_DUMP_BEFORE_CRASH"] == "0"
+
+
+def test_sglang_workers_keep_the_coredump_wait_when_the_recipe_opts_in(tmp_path: Path) -> None:
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="sglang", dynamo_install=False)
+    mixin.runtime.environment = {"SGLANG_CUDA_COREDUMP": "1"}
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
+    ):
+        mock_srun.return_value = MagicMock()
+        mixin.start_worker(process, [process])
+    env = mock_srun.call_args.kwargs["env_to_set"]
+    assert "SGLANG_CUDA_COREDUMP_BEFORE_CRASH" not in env
+    assert env["SGLANG_CUDA_COREDUMP"] == "1"
+
+
 def test_worker_stage_no_remap_root_when_dynamo_install_false(tmp_path: Path) -> None:
     # Dynamo frontend but container already has dynamo (install=False) → no install, no remap.
     mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)

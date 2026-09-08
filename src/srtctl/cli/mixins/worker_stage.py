@@ -128,12 +128,22 @@ class WorkerStageMixin:
             env_to_set.setdefault("DYN_KVBM_LEADER_ZMQ_ACK_PORT", str(ack_port))
 
     def _get_worker_environment_for_mode(self, mode: str) -> dict[str, str]:
-        """Return mode environment with Dynamo sidecar-specific defaults."""
+        """Return mode environment with engine-specific defaults the recipe can override."""
         environment = self.backend.get_environment_for_mode(mode)
         if getattr(self.config.dynamo, "sidecar", False) is True and self.backend.type == "vllm":
             # Installed plugins may replace native engine output types and
             # break the fixed Rust/Python MessagePack contract used by vllm-rs.
             environment.setdefault("VLLM_PLUGINS", "")
+        if self.backend.type == "sglang":
+            # SGLang treats its own exit after SIGTERM as a crash: it drains in a few
+            # seconds, then tries py-spy (needs root) and waits 60s for CUDA
+            # coredumps that are never produced unless SGLANG_CUDA_COREDUMP=1. That
+            # wait is what cleanup would otherwise kill through. Skip it unless the
+            # recipe opted into coredumps (mode env or the global environment).
+            recipe_env = {**self.runtime.environment, **environment}
+            if recipe_env.get("SGLANG_CUDA_COREDUMP", "0").lower() not in ("1", "true"):
+                environment.setdefault("SGLANG_CUDA_COREDUMP_BEFORE_CRASH", "0")
+            environment.setdefault("SGLANG_PYSPY_DUMP_BEFORE_CRASH", "0")
         return environment
 
     def start_worker(self, process: "Process", endpoint_processes: list["Process"]) -> ManagedProcess:

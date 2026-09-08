@@ -13,6 +13,7 @@ filtered endpoints), and per-endpoint metadata columns padded with "".
 
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 from pathlib import Path
@@ -28,7 +29,7 @@ SECOND = 1_000_000_000
 _META_COLUMNS = ("frontend_index", "hostname", "job_id", "run_name", "worker_index", "worker_process", "worker_role")
 
 
-def _write_parquet(path: Path, rows: list[dict]) -> Path:
+def _write_parquet(path: Path, rows: list[dict], *, with_timestamp: bool = True) -> Path:
     """Build a parquet file with the exact column layout of tachometer-writer's Row."""
     cols = {
         "scraper_endpoint": pa.array([r["endpoint"] for r in rows], pa.string()),
@@ -39,7 +40,7 @@ def _write_parquet(path: Path, rows: list[dict]) -> Path:
         "histogram_sum": pa.array([r.get("sum") for r in rows], pa.float64()),
         "histogram_count": pa.array([r.get("count") for r in rows], pa.float64()),
         "time_since_start": pa.array([(r["ts"] - T0) / 1e9 for r in rows], pa.float64()),
-        "timestamp_ns": pa.array([r["ts"] for r in rows], pa.int64()),
+        **({"timestamp_ns": pa.array([r["ts"] for r in rows], pa.int64())} if with_timestamp else {}),
     }
     for meta in _META_COLUMNS:
         cols[meta] = pa.array([r.get(meta, "") for r in rows], pa.string())
@@ -249,3 +250,45 @@ class TestMetricsAutoSelection:
         lines = [json.loads(x) for x in out.read_text().splitlines() if x.strip()]
         # Tachometer content, not the decoy sources.
         assert "trtllm_kv_cache_used_blocks" in lines[0]["metrics"]
+
+
+def _read_lines(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def test_parquet_without_timestamp_ns_is_anchored_to_the_scraper_log(tmp_path: Path) -> None:
+    """Release scraper binaries predate the timestamp_ns column; tachometer.out gives the epoch."""
+    from ingest import metrics_tachometer
+
+    log_dir = tmp_path / "logs"
+    scrape = log_dir / "tachometer" / "raw" / "scrape"
+    scrape.mkdir(parents=True)
+    rows = _fixture_rows()
+    _write_parquet(scrape / "final.parquet", rows, with_timestamp=False)
+    # T0 is the scraper start: time_since_start == 0 there.
+    start = datetime.datetime.fromtimestamp(T0 / 1e9, tz=datetime.timezone.utc)
+    (log_dir / "tachometer.out").write_text(
+        f"[{start.strftime('%Y-%m-%dT%H:%M:%S')}Z INFO  tachometer_scraper] Using remote storage path: scrape\n"
+    )
+    with_ts = tmp_path / "with.jsonl"
+    without_ts = tmp_path / "without.jsonl"
+    _write_parquet(tmp_path / "ref.parquet", rows)
+    metrics_tachometer.process(tmp_path / "ref.parquet", str(with_ts))
+    metrics_tachometer.process(log_dir, str(without_ts))
+    # Same per-second grid either way (T0 is whole seconds in the fixture).
+    assert [line["timestamp_ns"] for line in _read_lines(without_ts)] == [
+        line["timestamp_ns"] for line in _read_lines(with_ts)
+    ]
+
+
+def test_parquet_without_timestamp_ns_or_log_falls_back_to_mtime(tmp_path: Path) -> None:
+    from ingest import metrics_tachometer
+
+    path = _write_parquet(tmp_path / "final.parquet", _fixture_rows(), with_timestamp=False)
+    out = tmp_path / "out.jsonl"
+    assert metrics_tachometer.process(path, str(out)) > 0
+    lines = _read_lines(out)
+    # Anchored so the last sample lands at the file mtime; everything is in the past, in order.
+    stamps = [line["timestamp_ns"] for line in lines]
+    assert stamps == sorted(stamps)
+    assert stamps[-1] <= int(path.stat().st_mtime * 1e9) + 1_000_000_000
