@@ -1,0 +1,97 @@
+# MLPerf via the inference-endpoint client, aggregated DeepSeek-R1 NVFP4 on one node.
+#
+# Reference example for `benchmark.type: custom` driving
+# /srtctl-benchmarks/mlperf/bench.sh. srt-slurm carries no MLPerf schema: the
+# client's own config is passed through and only the frontend endpoints and
+# report_dir are rewritten, because those are the only two values that cannot be
+# known before Slurm assigns nodes.
+#
+# Paths below are placeholders. Replace the four marked REPLACE: the model
+# checkpoint, the serving image, the MLPerf client image, and the directory
+# holding your client config and dataset.
+
+name: "gb300-fp4-mlperf-dsr1-agg"
+
+model:
+  # REPLACE: DeepSeek-R1 NVFP4 checkpoint.
+  path: "/path/to/models/deepseek-r1-nvfp4"
+  # REPLACE: serving image with Dynamo + TensorRT-LLM.
+  container: "/path/to/images/dynamo-trtllm.sqsh"
+  precision: "fp4"
+
+resources:
+  gpu_type: "gb300"
+  agg_nodes: 1
+  agg_workers: 1
+  gpus_per_agg: 4
+  gpus_per_node: 4
+
+backend:
+  type: trtllm
+  # The client asks for this exact string in each request's "model" field
+  # (model_params.name in the client config). The two must match or every
+  # request 404s. Without it the server advertises the checkpoint directory name.
+  served_model_name: "deepseek-ai/deepseek-r1"
+  aggregated_environment:
+    TLLM_LOG_LEVEL: "INFO"
+    TRTLLM_ENABLE_PDL: "1"
+    NCCL_MNNVL_ENABLE: "1"
+    NCCL_CUMEM_ENABLE: "1"
+  trtllm_config:
+    aggregated:
+      tensor_parallel_size: 4
+      moe_expert_parallel_size: 4
+      enable_attention_dp: true
+      pipeline_parallel_size: 1
+      max_batch_size: 32
+      max_num_tokens: 8192
+      max_seq_len: 24000
+      kv_cache_config:
+        free_gpu_memory_fraction: 0.8
+
+frontend:
+  type: "dynamo"
+  enable_multiple_frontends: false
+
+benchmark:
+  type: custom
+  command: bash /srtctl-benchmarks/mlperf/bench.sh
+  # The MLPerf client ships pre-installed in its own image, so the benchmark step
+  # runs in that image rather than the serving one. REPLACE.
+  #
+  # Pick the image and the client config together: accuracy needs an image whose
+  # eval subproject is installed, and the config's `eval_method` has to name a
+  # scorer that image actually ships.
+  container_image: "/path/to/images/endpoint_client.sqsh"
+  env:
+    # Path *inside the container* to the MLPerf client's own config, mounted via
+    # extra_mount below. Start from submission_template.yaml in the client repo
+    # (github.com/mlcommons/endpoints) or one of the point configs in
+    # endpoints-launch.
+    MLPERF_CLIENT_CONFIG: "/mlperf-configs/client.yaml"
+    # perf | acc | both. These are the client's own mode names -- note they are
+    # not the "performance"/"accuracy" spellings the config uses for dataset types.
+    MLPERF_MODE: "both"
+    # Expands ${MODEL_DIR} in the client config, which the client resolves itself.
+    MODEL_DIR: "/model"
+
+extra_mount:
+  # REPLACE: directory holding your MLPerf client config.
+  # Do NOT mount at /configs -- srt-slurm keeps its own nats-server and etcd
+  # binaries there, and shadowing them fails the job during head-node setup.
+  - "/path/to/ie-configs:/mlperf-configs"
+  # REPLACE: MLPerf dataset directory referenced by the client config.
+  - "/path/to/mlperf/dataset:/work/dataset"
+  # REPLACE: checkpoint again, for the client's tokenizer (${MODEL_DIR} above).
+  - "/path/to/models/deepseek-r1-nvfp4:/model"
+
+health_check:
+  max_attempts: 240
+  interval_seconds: 15
+
+dynamo:
+  install: false
+  request_plane: "nats"
+
+infra:
+  etcd_nats_dedicated_node: false
