@@ -330,3 +330,26 @@ def test_cli_in_place_directory(tmp_path: Path, monkeypatch) -> None:
     for name in ("a.yaml", "b.yml"):
         doc = yaml.safe_load((tmp_path / name).read_text())
         assert doc["schema"] == 2 and "roles" in doc
+
+
+def test_cli_in_place_directory_continues_past_an_unreadable_recipe(tmp_path: Path, monkeypatch, capsys) -> None:
+    """One recipe with duplicate keys must not stop the rest of the directory from migrating."""
+    import sys
+
+    from srtctl.cli import submit as submit_cli
+
+    good = tmp_path / "good.yaml"
+    good.write_text(LEGACY)
+    bad = tmp_path / "bad.yaml"
+    bad.write_text(
+        "name: dup\nmodel:\n  path: /m\n  container: /c\n  precision: bf16\nbackend:\n  type: sglang\n  type: vllm\n"
+    )
+    monkeypatch.setattr(sys, "argv", ["srtctl", "migrate", "-f", str(tmp_path), "--in-place"])
+    with pytest.raises(SystemExit) as exc:
+        submit_cli.main()
+    assert exc.value.code == 1
+    out = capsys.readouterr().out
+    assert "duplicate key" in out
+    assert "1 migrated, 1 not migrated" in out
+    assert yaml.safe_load(good.read_text())["schema"] == 2
+    assert "schema" not in bad.read_text()

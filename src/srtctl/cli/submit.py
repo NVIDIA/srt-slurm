@@ -1939,8 +1939,17 @@ def main():
         if args.output is not None and len(files) > 1:
             console.print("[bold red]Error:[/] --output takes a single file")
             sys.exit(1)
+        failed = 0
         for path in files:
-            result = migrate_recipe_file(path, in_place=args.in_place, output=args.output)
+            try:
+                result = migrate_recipe_file(path, in_place=args.in_place, output=args.output)
+            except Exception as exc:  # noqa: BLE001 - one unreadable recipe must not stop a directory run
+                failed += 1
+                detail = next(
+                    (line for line in str(exc).splitlines() if "duplicate key" in line), str(exc).splitlines()[0]
+                )
+                console.print(f"[bold red]✗[/] {path}: not migrated: {detail} (fix the recipe, then re-run)")
+                continue
             if not args.in_place and args.output is None:
                 sys.stdout.write(result.text)
                 sys.stdout.flush()
@@ -1948,6 +1957,10 @@ def main():
                 target = path if args.in_place else args.output
                 detail = ", ".join(result.notes) if result.notes else "already current"
                 console.print(f"[green]✓[/] {target}: schema {result.from_version} -> {result.to_version} ({detail})")
+        if failed:
+            console.print(f"\n{len(files) - failed} migrated, {failed} not migrated")
+            restore_console()
+            sys.exit(1)
         restore_console()
         return
 
