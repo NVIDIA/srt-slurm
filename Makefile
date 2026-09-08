@@ -35,7 +35,7 @@ check: lint schema-docs-check test
 # Golden equality: migrate every known v1 recipe in memory and prove the resolved
 # config is unchanged. Extracts the historical recipes from the last commit that
 # carried recipes/ (same corpus as the CI job).
-GOLDEN_RECIPES_COMMIT ?= e6e9d8b9
+GOLDEN_RECIPES_COMMIT ?= e6e9d8b9bee3e6c85e6f121eb4dacd88d8ca1d2c
 golden-check:
 	@mrm -rf /tmp/srt-golden && mkdir -p /tmp/srt-golden
 	@git archive $(GOLDEN_RECIPES_COMMIT) recipes | tar -x -C /tmp/srt-golden

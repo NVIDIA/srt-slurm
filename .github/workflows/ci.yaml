@@ -236,7 +236,7 @@ jobs:
   golden-equality:
     runs-on: ubuntu-latest
     env:
-      GOLDEN_RECIPES_COMMIT: e6e9d8b9
+      GOLDEN_RECIPES_COMMIT: e6e9d8b9bee3e6c85e6f121eb4dacd88d8ca1d2c  # full SHA; git fetch by SHA needs all 40 chars
     steps:
       - uses: actions/checkout@v4
 

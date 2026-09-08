@@ -24,7 +24,7 @@ import types
 from collections.abc import Set as AbstractSet
 from dataclasses import MISSING, Field, dataclass, fields, is_dataclass
 from pathlib import Path
-from typing import Any, Literal, get_args, get_origin, get_type_hints
+from typing import Annotated, Any, Literal, get_args, get_origin, get_type_hints
 
 from srtctl.backends import MockerProtocol, SGLangProtocol, TRTLLMProtocol, VLLMProtocol
 from srtctl.core.schema import ClusterConfig, SrtConfig
@@ -93,7 +93,7 @@ def _type_label(annotation: Any) -> str:
     origin = get_origin(annotation)
     if origin is None:
         return getattr(annotation, "__name__", str(annotation))
-    if str(origin) == "typing.Annotated":
+    if origin is Annotated:  # identity check: str(origin) differs across Python versions
         return _type_label(get_args(annotation)[0])
     if origin is Literal:
         return "one of " + ", ".join(f"`{value!r}`" for value in get_args(annotation))
