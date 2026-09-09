@@ -434,6 +434,30 @@ Health checks, benchmark clients, and `SRT_FRONTEND_HOST` target the **aggregate
 endpoint leader** (the node running the public `vllm serve`), not necessarily the
 Slurm head node.
 
+To use vLLM's Rust OpenAI frontend in managed-engine mode, set
+`backend.vllm_serve_binary` to `vllm-rs`. An absolute path is also accepted when
+the executable is installed in the container but is not on `PATH`:
+
+```yaml
+frontend:
+  type: vllm
+  enable_multiple_frontends: false
+
+backend:
+  type: vllm
+  vllm_serve_binary: /usr/local/lib/python3.12/dist-packages/vllm/vllm-rs
+  vllm_config:
+    aggregated:
+      tensor-parallel-size: 4
+      tokenizer-mode: hf
+      reasoning-parser: auto
+      tool-call-parser: auto
+```
+
+The default remains `vllm`, so existing recipes continue to use the Python
+frontend. This setting only changes direct `frontend.type: vllm` jobs; Dynamo,
+sidecar, and `vllm-router` launch paths are unchanged.
+
 Compare with `frontend.type: dynamo` + `backend.type: vllm`, which keeps Dynamo as
 the request router and uses `python3 -m dynamo.vllm` workers with NATS/etcd.
 

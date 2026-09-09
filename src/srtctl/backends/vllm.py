@@ -299,6 +299,10 @@ class VLLMProtocol:
     # Per-GPU remains available as a deprecated compatibility layout.
     dp_launch_mode: DPLaunchMode = "per_node"
 
+    # Executable used by direct aggregate frontend.type=vllm jobs. This can be
+    # set to vllm-rs (or its absolute path) to use the Rust OpenAI frontend.
+    vllm_serve_binary: str = "vllm"
+
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
     def find_dp_modes(self) -> list[tuple[str, dict[str, Any]]]:
@@ -1047,7 +1051,8 @@ class VLLMProtocol:
                     config.setdefault("kv-transfer-config", _connector_to_kv_transfer_config(connector))
 
             node_rank = endpoint_nodes.index(process.node)
-            cmd.extend(["vllm", "serve", model_arg])
+            serve_binary = self.vllm_serve_binary if frontend_type == "vllm" else "vllm"
+            cmd.extend([serve_binary, "serve", model_arg])
             # Collected as the command is built so the override report below can
             # name the value srtslurm actually passed for each flag it took over.
             srtslurm_owned: dict[str, str] = {}

@@ -2865,6 +2865,61 @@ class TestVLLMDataParallelMode:
         assert "--request-plane" not in cmd
         assert "dynamo.vllm" not in cmd
 
+    def test_direct_vllm_command_supports_vllm_rs_binary(self):
+        """Direct vLLM can launch a managed-engine Rust frontend."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from srtctl.backends import VLLMProtocol, VLLMServerConfig
+        from srtctl.core.topology import Process
+
+        vllm_rs = "/usr/local/lib/python3.12/dist-packages/vllm/vllm-rs"
+        backend = VLLMProtocol(
+            vllm_serve_binary=vllm_rs,
+            vllm_config=VLLMServerConfig(
+                aggregated={
+                    "tokenizer-mode": "hf",
+                    "reasoning-parser": "auto",
+                    "tool-call-parser": "auto",
+                }
+            ),
+        )
+        process = Process(
+            node="node0",
+            gpu_indices=frozenset(range(4)),
+            sys_port=8081,
+            http_port=0,
+            endpoint_mode="agg",
+            endpoint_index=0,
+            node_rank=0,
+        )
+        runtime = MagicMock()
+        runtime.model_path = Path("/model")
+        runtime.is_hf_model = False
+        runtime.frontend_port = 9000
+        runtime.network_interface = "eth0"
+
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+            cmd = backend.build_worker_command(
+                process=process,
+                endpoint_processes=[process],
+                runtime=runtime,
+                frontend_type="vllm",
+            )
+
+        assert cmd[:3] == [vllm_rs, "serve", "/model"]
+        assert cmd[cmd.index("--reasoning-parser") + 1] == "auto"
+        assert cmd[cmd.index("--tool-call-parser") + 1] == "auto"
+
+    def test_vllm_serve_binary_schema_round_trip(self):
+        """The direct serve executable can be configured from recipe YAML."""
+        from srtctl.backends import VLLMProtocol
+
+        backend = VLLMProtocol.Schema().load({"vllm_serve_binary": "vllm-rs"})
+
+        assert backend.vllm_serve_binary == "vllm-rs"
+        assert VLLMProtocol.Schema().dump(backend)["vllm_serve_binary"] == "vllm-rs"
+
     def test_direct_vllm_command_keeps_iteration_profiler_config(self):
         """Direct vllm serve retains main's profiling-derived server option."""
         from pathlib import Path
