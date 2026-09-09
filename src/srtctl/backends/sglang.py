@@ -222,9 +222,12 @@ class SGLangProtocol:
         if not self.kv_events_config:
             return None
 
-        # Global bool: enable for prefill+decode with defaults
+        # Global bool: enable for every worker mode with defaults. Aggregated
+        # workers publish too; without this, `kv_events_config: true` on an agg
+        # topology silently dropped --kv-events-config and the router's cache
+        # overlap stayed at zero.
         if self.kv_events_config is True:
-            if mode in ("prefill", "decode"):
+            if mode in ("prefill", "decode", "agg"):
                 return {"publisher": "zmq", "topic": "kv-events"}
             return None
 
@@ -373,6 +376,14 @@ class SGLangProtocol:
         # Always pass --port when using sglang.launch_server or dynamo.sglang
         cmd.extend(["--port", str(process.http_port)])
         cmd.extend(["--nccl-port", str(nccl_port)])
+
+        if use_sglang:
+            # sglang.launch_server serves Prometheus /metrics on its HTTP port only
+            # with --enable-metrics; tachometer (on by default) scrapes it there.
+            # Dynamo workers expose metrics on their system port without this.
+            mode_config = self.get_config_for_mode(mode)
+            if not any(key in mode_config for key in ("enable-metrics", "enable_metrics")):
+                cmd.append("--enable-metrics")
 
         # Add disaggregation mode for prefill/decode workers (both dynamo and sglang frontend)
         if mode != "agg":

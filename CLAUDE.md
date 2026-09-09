@@ -140,14 +140,25 @@ create_job_record(
 - Job execution is never blocked by status reporting
 - Tags are passed via `metadata["tags"]` (not a separate field)
 
-### InfraConfig
+### Services (etcd, NATS, Mooncake master, exporters)
 
-Controls infrastructure placement (etcd/nats):
+Everything that is not a worker or the frontend is a service (`src/srtctl/services/`, launched by `ServiceStageMixin`). The Dynamo frontend implies `etcd` and `nats`, `backend.mooncake_kv_store` implies `mooncake-master`, tachometer implies `dcgm-exporter` and `node-exporter` on every worker node (`services/implicit.py`). A recipe declares one by name only to change it:
 
-```python
-infra:
-  etcd_nats_dedicated_node: true  # Reserve first node for infra services
+```yaml
+services:
+  - name: etcd
+    type: etcd
+    placement:
+      node: dedicated    # reserve a node for the discovery plane (v1: infra.etcd_nats_dedicated_node)
+  - name: nats
+    type: nats
+    placement:
+      node: dedicated
+    options:
+      max_payload_mb: 24 # v1: infra.nats_max_payload_mb
 ```
+
+`services/normalize.py` maps declared etcd/nats/mooncake-master entries back onto `infra` and `backend.mooncake_kv_store` before schema load, so the runtime reads one set of fields. Adding a kind: subclass `ServiceKind` in `services/`, `@register_service("<type>")`, import it from `services/__init__.py`; if the rest of the recipe should imply it, add it to `implied_services`. See `docs/services.md`.
 
 ### Mooncake KV Store
 
@@ -182,6 +193,28 @@ backend:
 `MOONCAKE_LOCAL_HOSTNAME` is auto-resolved per-worker to that worker's own IP (using `runtime.network_interface`), so multi-node peer transfers don't fall back to `localhost`. If you need a specific NIC IP, set `MOONCAKE_LOCAL_HOSTNAME` in `env` to override the default.
 
 **Validation:** In disaggregated mode, srtslurm rejects configs that set `mooncake_kv_store` without `disaggregation-transfer-backend: mooncake` on `sglang_config.prefill` or `sglang_config.decode`. This catches the common misconfiguration where the master process gets launched but workers fall back to default transport.
+
+### Services
+
+The top-level `services:` list declares long-running processes launched next to the job (see `docs/services.md`). Each entry has a `type` that selects a `ServiceKind` registered in `src/srtctl/services/` with `@register_service("<name>")`; the kind supplies defaults (command, start phase, criticality) and the env it injects, and `ServiceStageMixin` (`src/srtctl/cli/mixins/service_stage.py`) launches every kind the same way: resolve `placement.node` to physical nodes, optional clone/build of `source`, one `srun` per node, optional TCP `readiness` gate, `ManagedProcess` into the shared registry. `start_services("before_workers")` runs after the Mooncake master; `start_services("after_frontend")` runs after the frontend is healthy.
+
+```yaml
+services:
+  - name: store
+    type: mooncake-store       # generic (default) | mooncake-store
+    placement:
+      node: workers            # head | infra | prefill | decode | agg | workers
+    env:
+      MOONCAKE_GLOBAL_SEGMENT_SIZE: 100gb
+    readiness:
+      port: 8800
+```
+
+Adding a kind: subclass `ServiceKind`, set `default_command` / `default_start` / `default_critical`, override `validate`, `container_fallback`, `default_environment`, `forced_environment` as needed, decorate, and import it from `src/srtctl/services/__init__.py`. `srtctl dry-run` prints every service; add a `tests/test_dry_run.py` case when a kind adds visible fields.
+
+### Process cleanup and graceful shutdown
+
+Every long-running `srun` (workers, frontends, nginx, services, tachometer) is launched with a `step_name` and tracked as a `ManagedProcess` carrying the same name. `ProcessRegistry.cleanup()` stops processes by `shutdown_tier`: tier 0 (workers, frontends, sidecars) is SIGTERMed all at once through `scancel --signal=TERM --full <job>.<step>`, waited for up to each process's `terminate_timeout`, and killed if still up; then tier 1 (Mooncake master, stores), then tier 2 (etcd, NATS). SIGTERM aimed at the `srun` client itself aborts the step and SIGKILLs the task, which is why the step name matters: it is the only way the engine, router, or scraper sees the signal and gets to deregister, drain, or flush. New launch sites must pass `step_name` to both `start_srun_process` and `ManagedProcess`.
 
 ### Host Setup
 
@@ -267,6 +300,10 @@ with patch.dict(os.environ, H100Rack.slurm_env()):
 2. Implement `run(config, log_dir)` method
 3. Add bash script to `benchmarks/scripts/mybench/bench.sh`
 4. Register in benchmark type mapping
+
+### Adding or Changing Any Config Field
+
+`docs/schema-reference.md` is generated from the dataclasses in `core/schema.py` and `backends/`. After adding, renaming, or re-typing a field, run `uv run srtctl schema-docs` and commit the result; CI and `tests/test_schema_docs.py` fail when the file is stale. Put the field's description in the class docstring `Attributes:` block or in a `#` comment directly above the field so it lands in the generated table.
 
 ### Adding Config That Affects srun (Mounts, Env Vars, Options)
 

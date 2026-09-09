@@ -1,0 +1,61 @@
+# vLLM disaggregated prefill/decode behind the official vLLM Router.
+#
+# One TP1 prefill and one TP1 decode `vllm serve` worker sharing a node
+# (`decode_nodes: 0` places decode on the prefill node's spare GPUs). The Router
+# is launched with `--vllm-pd-disaggregation`, a `--prefill URL NIXL_PORT` entry,
+# and a `--decode URL` entry; KV moves over the NIXL connector.
+#
+# Aliases (`qwen3-0.6b`, `vllm`) resolve through srtslurm.yaml; see examples/README.md.
+
+schema: 2
+name: "qwen3-0.6b-vllm-router-disagg"
+
+slurm:
+  time_limit: "00:30:00"
+
+model:
+  path: "qwen3-0.6b"
+  container: "vllm"
+  precision: "bf16"
+
+resources:
+  gpu_type: "h100"
+  gpus_per_node: 8
+frontend:
+  type: vllm-router
+  enable_multiple_frontends: false
+  args:
+    policy: "consistent_hash"
+
+engine:
+  type: vllm
+  connector: nixl
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    gpus: 1
+    env:
+      PYTHONUNBUFFERED: "1"
+    args:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 1
+      gpu-memory-utilization: 0.5
+      max-model-len: 4096
+  decode:
+    nodes: 0
+    workers: 1
+    gpus: 1
+    env:
+      PYTHONUNBUFFERED: "1"
+    args:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 1
+      gpu-memory-utilization: 0.5
+      max-model-len: 4096
+
+benchmark:
+  type: "sa-bench"
+  isl: 128
+  osl: 128
+  concurrencies: "4x8"

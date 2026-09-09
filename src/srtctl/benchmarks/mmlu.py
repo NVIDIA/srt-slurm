@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from srtctl.benchmarks.base import SCRIPTS_DIR, BenchmarkRunner, register_benchmark
 
@@ -26,6 +26,9 @@ class MMLURunner(BenchmarkRunner):
         - benchmark.repeat: Number of repeats (default: 8)
         - benchmark.num_threads: Concurrent threads (default: 512)
     """
+
+    # BenchmarkConfig fields this runner reads (beyond the shared ones); see benchmark_config_fields().
+    config_fields: ClassVar[frozenset[str]] = frozenset({"num_examples", "max_tokens", "repeat", "num_threads"})
 
     @property
     def name(self) -> str:

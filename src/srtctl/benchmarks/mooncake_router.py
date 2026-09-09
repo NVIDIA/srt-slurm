@@ -16,7 +16,7 @@ https://github.com/ai-dynamo/dynamo/tree/main/recipes/qwen3-32b
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from srtctl.benchmarks.base import SCRIPTS_DIR, AIPerfBenchmarkRunner, register_benchmark
 
@@ -47,6 +47,9 @@ class MooncakeRouterRunner(AIPerfBenchmarkRunner):
         - benchmark.ttft_threshold_ms: Goodput TTFT threshold (default: 2000)
         - benchmark.itl_threshold_ms: Goodput ITL threshold (default: 25)
     """
+
+    # BenchmarkConfig fields this runner reads (beyond the shared ones); see benchmark_config_fields().
+    config_fields: ClassVar[frozenset[str]] = frozenset({"mooncake_workload", "ttft_threshold_ms", "itl_threshold_ms"})
 
     @property
     def name(self) -> str:

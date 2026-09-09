@@ -3,7 +3,6 @@
 
 """Tests for configuration loading and validation."""
 
-import glob
 import json
 from pathlib import Path
 
@@ -25,35 +24,66 @@ from srtctl.ports import (
 class TestConfigLoading:
     """Tests for config file loading."""
 
-    def test_config_loading_from_yaml(self):
-        """Test that config files in recipes/ can be loaded."""
-        # Find all yaml files in recipes/
-        config_files = glob.glob("recipes/**/*.yaml", recursive=True)
+    TOPOLOGY_EXAMPLE_DIRS = ("examples/sglang", "examples/vllm", "examples/trtllm", "examples/mocker")
 
+    def test_topology_examples_load_as_plain_configs(self):
+        """Every topology example is a plain (non-sweep, non-override) config that loads."""
+        config_files = sorted(
+            path for example_dir in self.TOPOLOGY_EXAMPLE_DIRS for path in Path(example_dir).rglob("*.yaml")
+        )
         if not config_files:
-            pytest.skip("No config files found in recipes/")
+            pytest.fail(f"No topology examples found under {self.TOPOLOGY_EXAMPLE_DIRS}")
 
         errors = []
-        loaded = 0
         for config_path in config_files:
             try:
-                config = SrtConfig.from_yaml(Path(config_path))
+                config = SrtConfig.from_yaml(config_path)
                 assert config.name is not None
                 assert config.model is not None
                 assert config.resources is not None
                 assert config.backend is not None
-                loaded += 1
-                print(f"\n✓ Loaded config: {config_path}")
-                print(f"  Name: {config.name}")
-                print(f"  Backend: {config.backend_type}")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 errors.append(f"{config_path}: {e}")
 
-        print(f"\nLoaded {loaded}/{len(config_files)} configs")
         if errors:
-            print(f"Errors ({len(errors)}):")
-            for err in errors[:5]:  # Show first 5 errors
-                print(f"  - {err}")
+            pytest.fail("Failed to load topology examples:\n" + "\n".join(errors))
+
+    def test_every_example_validates(self):
+        """validate_config_file accepts every file under examples/, including sweep and override files."""
+        from srtctl.core.config import validate_config_file
+
+        example_files = sorted(Path("examples").rglob("*.yaml"))
+        if not example_files:
+            pytest.fail("No examples found under examples/")
+
+        errors = [error for path in example_files for error in validate_config_file(path)]
+        if errors:
+            pytest.fail("Example validation errors:\n" + "\n".join(errors))
+
+    def test_examples_cover_the_frontend_matrix(self):
+        """The matrix documented in examples/README.md is present on disk."""
+        expected = {
+            "examples/sglang/dynamo-agg.yaml",
+            "examples/sglang/dynamo-disagg.yaml",
+            "examples/sglang/sglang-router-agg.yaml",
+            "examples/sglang/sglang-router-disagg.yaml",
+            "examples/vllm/dynamo-agg.yaml",
+            "examples/vllm/dynamo-disagg.yaml",
+            "examples/vllm/vllm-router-agg.yaml",
+            "examples/vllm/vllm-router-disagg.yaml",
+            "examples/vllm/vllm-direct-agg.yaml",
+            "examples/trtllm/dynamo-agg.yaml",
+            "examples/trtllm/dynamo-disagg.yaml",
+            "examples/trtllm/trtllm-serve-agg.yaml",
+            "examples/trtllm/trtllm-serve-disagg.yaml",
+            "examples/mocker/dynamo-agg.yaml",
+            "examples/features/sweep.yaml",
+            "examples/features/override.yaml",
+            "examples/features/profiling.yaml",
+        }
+        present = {str(p) for p in Path("examples").rglob("*.yaml")}
+        missing = expected - present
+        assert not missing, f"Missing examples: {sorted(missing)}"
 
 
 class TestClusterConfigGitHttpVersion:
@@ -508,7 +538,7 @@ class TestSGLangProtocol:
         assert config.get_environment_for_mode("agg") == {}
 
     def test_kv_events_config_global_bool(self):
-        """Test kv_events_config=True enables prefill+decode with defaults."""
+        """Test kv_events_config=True enables prefill+decode+aggregated with defaults."""
         config = SGLangProtocol(kv_events_config=True)
 
         assert config.get_kv_events_config_for_mode("prefill") == {
@@ -519,7 +549,10 @@ class TestSGLangProtocol:
             "publisher": "zmq",
             "topic": "kv-events",
         }
-        assert config.get_kv_events_config_for_mode("agg") is None
+        assert config.get_kv_events_config_for_mode("agg") == {
+            "publisher": "zmq",
+            "topic": "kv-events",
+        }
 
     def test_kv_events_config_per_mode(self):
         """Test kv_events_config per-mode control."""
@@ -5060,3 +5093,76 @@ class TestSequentialNodeStart:
 
             # Each node has only 1 worker — no wait should be triggered
             assert wait_called == []
+
+
+class TestClusterGpuDefaults:
+    """resources.gpu_type / gpus_per_node inherit from srtslurm.yaml when omitted."""
+
+    def _recipe(self, resources: dict) -> dict:
+        return {
+            "name": "gpu-defaults",
+            "model": {"path": "/m", "container": "/c.sqsh", "precision": "fp8"},
+            "resources": resources,
+        }
+
+    def test_recipe_without_gpu_type_inherits_default_gpu_type(self):
+        from srtctl.core.config import resolve_config_with_defaults
+
+        resolved = resolve_config_with_defaults(
+            self._recipe({"agg_nodes": 1, "agg_workers": 1}),
+            {"default_gpu_type": "gb200", "gpus_per_node": 4},
+        )
+        assert resolved["resources"]["gpu_type"] == "gb200"
+        assert resolved["resources"]["gpus_per_node"] == 4
+
+    def test_recipe_gpu_fields_win_over_cluster_defaults(self):
+        from srtctl.core.config import resolve_config_with_defaults
+
+        resolved = resolve_config_with_defaults(
+            self._recipe({"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1}),
+            {"default_gpu_type": "gb200", "gpus_per_node": 4},
+        )
+        assert resolved["resources"]["gpu_type"] == "h100"
+        assert resolved["resources"]["gpus_per_node"] == 8
+
+    def test_recipe_without_gpu_type_and_no_cluster_default_loads(self):
+        from srtctl.core.schema import SrtConfig
+
+        config = SrtConfig.Schema().load(self._recipe({"agg_nodes": 1, "agg_workers": 1}))
+        assert config.resources.gpu_type is None
+        assert config.resources.gpus_per_node == 4
+
+
+class TestBenchmarkTypeValidation:
+    """benchmark.type must name a registered runner (or 'manual')."""
+
+    def _recipe(self, benchmark: dict) -> dict:
+        return {
+            "name": "bench-type",
+            "model": {"path": "/m", "container": "/c.sqsh", "precision": "fp8"},
+            "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1, "agg_workers": 1},
+            "benchmark": benchmark,
+        }
+
+    def test_registered_and_manual_types_load(self):
+        from srtctl.core.schema import SrtConfig
+
+        for btype in ("manual", "sa-bench", "custom", "mmlu", "trace-replay", "mooncake-router"):
+            benchmark = {"type": btype}
+            if btype == "custom":
+                benchmark["command"] = "echo hi"
+            config = SrtConfig.Schema().load(self._recipe(benchmark))
+            assert config.benchmark.type == btype
+
+    def test_unknown_type_is_rejected_at_load(self):
+        import pytest
+
+        from srtctl.core.schema import SrtConfig
+
+        with pytest.raises(Exception, match="gsm8k-bench"):
+            SrtConfig.Schema().load(self._recipe({"type": "gsm8k-bench"}))
+
+    def test_benchmark_type_enum_is_gone(self):
+        import srtctl.core.schema as schema_mod
+
+        assert not hasattr(schema_mod, "BenchmarkType")

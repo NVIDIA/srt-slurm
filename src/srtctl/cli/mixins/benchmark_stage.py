@@ -394,7 +394,6 @@ class BenchmarkStageMixin:
         stop_event: threading.Event,
     ) -> int:
         """Run the actual benchmark script."""
-        from srtctl.analysis.live_metrics import try_start_snapshotter
 
         cmd = runner.build_command(self.config, self.runtime)
         env_to_set = self._get_benchmark_env(runner)
@@ -405,10 +404,6 @@ class BenchmarkStageMixin:
         logger.info("Script: %s", runner.script_path)
         logger.info("Command: %s", shlex.join(cmd))
         logger.info("Log: %s", log_file)
-
-        # Optional in-flight batch-metrics snapshotter — no-op unless
-        # opted in via reporting.live_metrics in the cluster config.
-        snapshotter = try_start_snapshotter(self.runtime.log_dir, stop_event)
 
         # Host/process telemetry for the benchmark window. The Prometheus
         # families describe what Dynamo publishes; they say nothing about the
@@ -465,8 +460,6 @@ class BenchmarkStageMixin:
                 proc.wait()
                 self.benchmark_child_reaped = True
                 self.benchmark_child_allows_window_mutation = True
-            if snapshotter is not None:
-                snapshotter.stop()
             if host_sampler is not None:
                 host_sampler.stop()
 

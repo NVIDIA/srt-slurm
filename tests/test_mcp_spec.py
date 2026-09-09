@@ -219,3 +219,21 @@ def test_mcp_tools_reject_host_side_cluster_defaults() -> None:
     for tool in (validate_config, preflight_config, resolve_config):
         with pytest.raises(ValueError, match="Host-side srtslurm.yaml is not used"):
             tool(config=config, apply_cluster_defaults=True)
+
+
+def test_server_registers_the_spec_and_job_tools() -> None:
+    """The server module must import under the installed mcp SDK and expose every tool."""
+    import asyncio
+
+    from srtctl.mcp import server
+
+    names = {tool.name for tool in asyncio.run(server.mcp.list_tools())}
+    assert {
+        "health",
+        "schema_summary",
+        "explain_field",
+        "validate_config",
+        "preflight_config",
+        "resolve_config",
+    } <= names
+    assert {"submit_job", "dry_run", "job_status", "job_logs", "list_jobs", "cancel_job"} <= names

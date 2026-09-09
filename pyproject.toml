@@ -115,7 +115,6 @@ markers = [
 exclude = [
     "src/srtctl/benchmarks/scripts/",
     "scripts/",
-    "analysis/",
     "ignition/",
     "src/ingest/",
     "src/visualization/",

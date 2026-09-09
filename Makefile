@@ -1,4 +1,4 @@
-.PHONY: lint test test-cov ci check setup cleanup gb200-fp8 gb200-fp4 tachometer-scraper tachometer-scraper-download
+.PHONY: lint test test-cov ci check setup cleanup examples schema-docs schema-docs-check golden-check tachometer-scraper tachometer-scraper-download
 
 NATS_VERSION ?= v2.10.28
 ETCD_VERSION ?= v3.5.21
@@ -6,8 +6,7 @@ LOGS_DIR ?= logs
 ARCH ?= $(shell uname -m)
 TACHOMETER_RELEASE ?= latest
 
-default:
-	./run_dashboard.sh
+default: check
 
 # === CI targets ===
 lint:
@@ -21,8 +20,25 @@ test:
 test-cov:
 	uv run pytest tests/ --cov=srtctl --cov-report=term-missing --cov-report=html
 
+# Regenerate docs/schema-reference.md from the config dataclasses
+schema-docs:
+	uv run srtctl schema-docs
+
+# Fail if docs/schema-reference.md is stale (also enforced by CI and tests/test_schema_docs.py)
+schema-docs-check:
+	uv run srtctl schema-docs --check
+
 # Run lint + tests in one command
-check: lint test
+check: lint schema-docs-check test
+
+# Golden equality: migrate every known v1 recipe in memory and prove the resolved
+# config is unchanged. Extracts the historical recipes from the last commit that
+# carried recipes/ (same corpus as the CI job).
+GOLDEN_RECIPES_COMMIT ?= e6e9d8b9bee3e6c85e6f121eb4dacd88d8ca1d2c
+golden-check:
+	@rm -rf /tmp/srt-golden && mkdir -p /tmp/srt-golden
+	@git archive $(GOLDEN_RECIPES_COMMIT) recipes | tar -x -C /tmp/srt-golden
+	uv run srtctl migrate --verify -f examples -f /tmp/srt-golden/recipes
 	@echo "✓ All checks passed"
 
 tachometer-scraper:
@@ -54,21 +70,8 @@ tachometer-scraper-download:
 	install -Dm755 "$$tmp_dir/$$asset" bin/tachometer-scraper; \
 	echo "Installed Tachometer scraper at bin/tachometer-scraper"
 
-# Runners
-gb200-fp8:
-	srtctl apply -f recipes/gb200-fp8/1k1k/low-latency.yaml
-	srtctl apply -f recipes/gb200-fp8/1k1k/max-tpt-2p1d.yaml
-	srtctl apply -f recipes/gb200-fp8/1k1k/mid-curve-3p1d.yaml
-	srtctl apply -f recipes/gb200-fp8/8k1k/low-latency.yaml
-	srtctl apply -f recipes/gb200-fp8/8k1k/mid-curve-5p1d.yaml
-
-gb200-fp4:
-	srtctl apply -f recipes/gb200-fp4/1k1k/low-latency.yaml
-	srtctl apply -f recipes/gb200-fp4/1k1k/max-tpt.yaml
-	srtctl apply -f recipes/gb200-fp4/1k1k/mid-curve.yaml
-	srtctl apply -f recipes/gb200-fp4/8k1k/low-latency.yaml
-	srtctl apply -f recipes/gb200-fp4/8k1k/max-tpt.yaml
-	srtctl apply -f recipes/gb200-fp4/8k1k/mid-curve.yaml
+examples:
+	@find examples -type f -name '*.yaml' -print | sort
 
 setup: tachometer-scraper-download
 	@echo "📦 Setting up configs and logs directories..."

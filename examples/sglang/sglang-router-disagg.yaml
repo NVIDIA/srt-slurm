@@ -1,0 +1,62 @@
+# SGLang disaggregated prefill/decode, fronted by the SGLang router (Model Gateway).
+#
+# One TP1 prefill worker and one TP1 decode worker sharing a node (`decode_nodes: 0`
+# places decode on the prefill node's spare GPUs). srtctl adds `--disaggregation-mode`
+# and the prefill bootstrap port; the router is launched with `--pd-disaggregation`.
+# KV transfer uses SGLang's default backend (mooncake); set
+# `disaggregation-transfer-backend: nixl` on both roles to switch.
+#
+# Aliases (`qwen3-0.6b`, `sglang`) resolve through srtslurm.yaml; see examples/README.md.
+
+schema: 2
+name: "qwen3-0.6b-sglang-router-disagg"
+
+slurm:
+  time_limit: "00:30:00"
+
+model:
+  path: "qwen3-0.6b"
+  container: "sglang"
+  precision: "bf16"
+
+resources:
+  gpu_type: "h100"
+  gpus_per_node: 8
+frontend:
+  type: sglang
+  enable_multiple_frontends: false
+  args:
+    policy: "cache_aware"
+
+engine: sglang
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    gpus: 1
+    env:
+      PYTHONUNBUFFERED: "1"
+    args:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 1
+      mem-fraction-static: 0.5
+      context-length: 4096
+      disable-piecewise-cuda-graph: true
+  decode:
+    nodes: 0
+    workers: 1
+    gpus: 1
+    env:
+      PYTHONUNBUFFERED: "1"
+    args:
+      served-model-name: "Qwen/Qwen3-0.6B"
+      tensor-parallel-size: 1
+      mem-fraction-static: 0.5
+      context-length: 4096
+      disable-piecewise-cuda-graph: true
+
+benchmark:
+  type: "sa-bench"
+  isl: 128
+  osl: 128
+  concurrencies: "4x8"

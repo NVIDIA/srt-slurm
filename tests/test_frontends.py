@@ -526,6 +526,32 @@ class TestFrontendEnvHandling:
 # ============================================================================
 
 
+def test_dynamo_frontend_is_a_named_step_with_a_drain_timeout():
+    from srtctl.core.processes import FRONTEND_TERMINATE_TIMEOUT_SECONDS
+
+    frontend = DynamoFrontend()
+    topology = SimpleNamespace(frontend_nodes=["node0"], frontend_port=8180)
+    runtime = SimpleNamespace(
+        log_dir=Path("/logs"),
+        nodes=SimpleNamespace(infra="infra-node", het_group_for=lambda node: None),
+        container_image=Path("/container.sqsh"),
+        container_mounts={},
+        environment={},
+    )
+    config = SimpleNamespace(
+        frontend=SimpleNamespace(args=None, env=None),
+        observability=ObservabilityConfig(),
+        dynamo=SimpleNamespace(install=False, get_install_commands=lambda: "", request_plane="tcp", event_plane=None),
+        setup_script=None,
+    )
+    with patch("srtctl.frontends.dynamo.start_srun_process") as mock_srun:
+        mock_srun.return_value = MagicMock()
+        (proc,) = frontend.start_frontends(topology, runtime, config, MagicMock(), [])
+    assert mock_srun.call_args.kwargs["step_name"] == "frontend_0"
+    assert proc.step_name == "frontend_0"
+    assert proc.terminate_timeout == FRONTEND_TERMINATE_TIMEOUT_SECONDS
+
+
 def _dynamo_frontend_call(*, dynamo_install: bool, event_plane: str | None = "zmq"):
     """Invoke DynamoFrontend.start_frontends with a minimal config; return the mock srun call."""
     frontend = DynamoFrontend()

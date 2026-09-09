@@ -29,6 +29,9 @@ jobs:
       - name: Run ruff format check
         run: uv run ruff format --check src/srtctl/
 
+      - name: Check docs/schema-reference.md is regenerated
+        run: uv run srtctl schema-docs --check
+
   typecheck:
     runs-on: ubuntu-latest
     steps:
@@ -182,8 +185,8 @@ jobs:
           print('worker standalone:', r)
           "
 
-  # Quick sanity check that recipes are valid
-  validate-recipes:
+  # Quick sanity check that curated examples are valid
+  validate-examples:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -199,27 +202,61 @@ jobs:
       - name: Install dependencies
         run: uv sync --dev
 
-      - name: Validate all recipes load
+      - name: Validate every example (sweep and override files are expanded)
         run: |
           uv run python -c "
           from pathlib import Path
           from srtctl.core.config import validate_config_file
 
-          recipes = list(Path('recipes').rglob('*.yaml'))
-          print(f'Found {len(recipes)} recipes')
+          examples = sorted(Path('examples').rglob('*.yaml'))
+          print(f'Found {len(examples)} examples')
+          if not examples:
+              print('No examples found')
+              exit(1)
 
           all_errors = []
-          for recipe in recipes:
-              errors = validate_config_file(recipe)
+          for example in examples:
+              errors = validate_config_file(example)
               if errors:
                   for e in errors:
                       print(f'✗ {e}')
                   all_errors.extend(errors)
               else:
-                  print(f'✓ {recipe.name}')
+                  print(f'✓ {example.name}')
 
           if all_errors:
               print(f'\n{len(all_errors)} validation error(s)')
               exit(1)
-          print(f'\nAll {len(recipes)} recipes valid')
+          print(f'\nAll {len(examples)} examples valid')
           "
+
+  # Golden equality: every v1 recipe we know of must resolve to the same config
+  # after `srtctl migrate` rewrites it to schema 2. Corpus: the curated examples
+  # plus the 555 historical recipes from the last commit that carried recipes/.
+  golden-equality:
+    runs-on: ubuntu-latest
+    env:
+      GOLDEN_RECIPES_COMMIT: e6e9d8b9bee3e6c85e6f121eb4dacd88d8ca1d2c  # full SHA; git fetch by SHA needs all 40 chars
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        run: uv python install 3.10
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Extract the historical recipe corpus
+        run: |
+          git fetch --depth=1 origin "$GOLDEN_RECIPES_COMMIT"
+          mkdir -p /tmp/golden
+          git archive "$GOLDEN_RECIPES_COMMIT" recipes | tar -x -C /tmp/golden
+          find /tmp/golden/recipes -name '*.yaml' | wc -l
+
+      - name: Migrate in memory and compare resolved configs
+        run: uv run srtctl migrate --verify -f examples -f /tmp/golden/recipes

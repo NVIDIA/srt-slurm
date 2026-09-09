@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 from srtctl.core.health import WorkerHealthResult, check_dynamo_health
 from srtctl.core.schema import build_otel_env
 from srtctl.core.slurm import CONTAINER_REMAP_ROOT_EXPORT, start_srun_process
-from srtctl.ports import ETCD_CLIENT_PORT, NATS_PORT
+from srtctl.services.implicit import discovery_env
 
 if TYPE_CHECKING:
     from srtctl.core.processes import ManagedProcess
@@ -80,7 +80,7 @@ class DynamoFrontend:
         stop_event: "threading.Event | None" = None,  # unused: returns immediately
     ) -> list["ManagedProcess"]:
         """Start dynamo frontends on designated nodes."""
-        from srtctl.core.processes import ManagedProcess
+        from srtctl.core.processes import FRONTEND_TERMINATE_TIMEOUT_SECONDS, ManagedProcess
 
         processes: list[ManagedProcess] = []
 
@@ -92,8 +92,7 @@ class DynamoFrontend:
             cmd.extend(self.get_frontend_args_list(config.frontend.args))
 
             env_to_set = {
-                "ETCD_ENDPOINTS": f"http://{runtime.nodes.infra}:{ETCD_CLIENT_PORT}",
-                "NATS_SERVER": f"nats://{runtime.nodes.infra}:{NATS_PORT}",
+                **discovery_env(config, runtime),
                 "DYN_REQUEST_PLANE": config.dynamo.request_plane,
                 "DYN_SKIP_SGLANG_LOG_FORMATTING": "1",
             }
@@ -114,6 +113,7 @@ class DynamoFrontend:
             # Build bash preamble (setup script + dynamo install)
             bash_preamble = self._build_preamble(config)
 
+            step_name = f"frontend_{idx}"
             proc = start_srun_process(
                 command=cmd,
                 nodelist=[node],
@@ -129,15 +129,18 @@ class DynamoFrontend:
                 # why this is needed in later versions of Dynamo, but it is.
                 mpi="pmix",
                 het_group=runtime.nodes.het_group_for(node),
+                step_name=step_name,
             )
 
             processes.append(
                 ManagedProcess(
-                    name=f"frontend_{idx}",
+                    name=step_name,
                     popen=proc,
                     log_file=frontend_log,
                     node=node,
                     critical=True,
+                    terminate_timeout=FRONTEND_TERMINATE_TIMEOUT_SECONDS,
+                    step_name=step_name,
                 )
             )
 

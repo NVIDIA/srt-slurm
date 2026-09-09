@@ -493,7 +493,9 @@ def preflight_config_variants(
         resolved = resolve_config_with_defaults(variant, active_cluster_config)
         model, model_issues = _preflight_model(variant, resolved, active_cluster_config)
         container, container_issues = _preflight_container(variant, resolved, active_cluster_config)
-        topology_issues = validate_topology(variant.get("resources"))
+        # Validate the resolved resources (post roles: expansion), not the raw
+        # variant: a roles: recipe has its topology under roles, not resources.
+        topology_issues = validate_topology(resolved.get("resources"))
         telemetry_issues = _preflight_telemetry(variant, resolved, active_cluster_config)
         issues = [*model_issues, *container_issues, *topology_issues, *telemetry_issues]
         results.append(

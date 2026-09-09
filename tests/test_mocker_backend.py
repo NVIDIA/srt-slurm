@@ -53,7 +53,7 @@ class TestMockerConfigLoading:
     """Tests for mocker backend YAML deserialization."""
 
     def test_minimal_mocker_config(self):
-        """Minimal mocker recipe loads correctly."""
+        """Minimal mocker configuration loads correctly."""
         data = {
             "name": "test-mocker",
             "model": {"path": "hf:Qwen/Qwen3-0.6B", "container": "test", "precision": "fp16"},
@@ -153,14 +153,14 @@ class TestMockerConfigLoading:
         assert backend.get_environment_for_mode("decode") == {"BAZ": "qux"}
         assert backend.get_environment_for_mode("agg") == {}
 
-    def test_smoke_test_recipes_load(self):
-        """Mocker recipes in recipes/mocker/ load successfully."""
-        recipe_dir = Path("recipes/mocker")
-        if not recipe_dir.exists():
-            pytest.skip("recipes/mocker/ not found")
+    def test_smoke_test_example_loads(self):
+        """The curated mocker example loads successfully."""
+        example_dir = Path("examples/mocker")
+        if not example_dir.exists():
+            pytest.fail("examples/mocker/ not found")
 
-        for recipe in recipe_dir.glob("*.yaml"):
-            config = SrtConfig.from_yaml(recipe)
+        for example in example_dir.glob("*.yaml"):
+            config = SrtConfig.from_yaml(example)
             assert config.backend_type == "mocker"
             assert isinstance(config.backend, MockerProtocol)
 
@@ -235,6 +235,25 @@ class TestMockerCommandConstruction:
 
         idx = cmd.index("--model-path")
         assert cmd[idx + 1] == "/model"
+
+    def test_model_name_matches_the_client_default(self):
+        """--model-name is the model path basename, the name sa-bench requests.
+
+        Without it the mocker registers the /model mount as "model" and the
+        benchmark 404s.
+        """
+        backend = MockerProtocol()
+        process = _make_process()
+
+        local_cmd = backend.build_worker_command(
+            process=process, endpoint_processes=[process], runtime=_make_runtime(is_hf=False)
+        )
+        assert local_cmd[local_cmd.index("--model-name") + 1] == "my-model"
+
+        hf_cmd = backend.build_worker_command(
+            process=process, endpoint_processes=[process], runtime=_make_runtime(is_hf=True)
+        )
+        assert hf_cmd[hf_cmd.index("--model-name") + 1] == "Qwen3-0.6B"
 
     def test_core_params_always_present(self):
         """Core simulation params are always emitted."""

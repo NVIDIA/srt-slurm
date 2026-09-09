@@ -73,6 +73,27 @@ def test_sglang_sidecar_owns_leader_and_couples_lifecycle() -> None:
     assert "dynamo.sglang.sidecar" not in follower_command
 
 
+def test_sglang_sidecar_kv_events_config_true_covers_aggregated_mode() -> None:
+    # Regression: the kv_events_config=True shortcut only matched prefill/decode, so an
+    # aggregated topology never got --kv-events-config and the sidecar's
+    # kv_event_sources stayed at 0 (every routed request scored 0.00 cache overlap).
+    process = _process(mode="agg", kv_events_port=5557)
+    backend = SGLangProtocol(
+        kv_events_config=True,
+        sglang_config=SGLangServerConfig(aggregated={"tensor-parallel-size": 8}),
+    )
+
+    with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+        command = backend.build_worker_command(process, [process], _runtime())
+
+    leader_script = command[2]
+    assert "--kv-events-config" in leader_script
+    after_flag = leader_script.split("--kv-events-config ", 1)[1]
+    kv_config = json.loads(after_flag.split("'", 2)[1])
+    assert kv_config["endpoint"] == "tcp://*:5557"
+    assert kv_config["publisher"] == "zmq"
+
+
 def test_vllm_sidecar_exposes_one_complete_multi_node_dp_group() -> None:
     backend = VLLMProtocol(
         connector=None,

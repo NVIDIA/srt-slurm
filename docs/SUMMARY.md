@@ -5,11 +5,11 @@
 - [Introduction](README.md)
 - [Installation](installation.md)
 - [CLI Reference](cli.md)
-- [Direct Host Lifecycle](direct-host.md)
 
 ## Configuration
 
 - [Configuration Reference](config-reference.md)
+- [Schema Reference (generated)](schema-reference.md)
 - [Parameter Sweeps](sweeps.md)
 - [Config Overrides](config-reference.md#config-overrides)
 
@@ -19,6 +19,7 @@
 - [SGLang Router](sglang-router.md)
 - [vLLM Router](vllm-router.md)
 - [Mooncake KV Store](mooncake-kv-store.md)
+- [Services](services.md)
 
 ## Benchmarking
 
@@ -29,7 +30,6 @@
 
 - [Monitoring](monitoring.md)
 - [GPU Power Telemetry](power-telemetry.md)
-- [Analyzing Results](analyzing.md)
 - [Component Performance Dashboard](component-dashboard.md)
 - [SLURM FAQ](slurm-faq.md)
 

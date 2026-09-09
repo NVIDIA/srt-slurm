@@ -6,7 +6,7 @@
 
 - [Quick Start](#quick-start)
 - [Interactive Mode](#interactive-mode)
-  - [Recipe Browser](#recipe-browser)
+  - [Example Browser](#example-browser)
   - [Configuration Summary](#configuration-summary)
   - [Interactive Actions Menu](#interactive-actions-menu)
   - [sbatch Preview](#sbatch-preview)
@@ -28,14 +28,14 @@
 ## Quick Start
 
 ```bash
-# Interactive mode - browse recipes, preview, and submit
+# Interactive mode - browse examples, preview, and submit
 srtctl
 
 # Submit a job directly
-srtctl apply -f recipes/gb200-fp8/sglang-1p4d.yaml
+srtctl apply -f examples/sglang/sglang-router-disagg.yaml
 
 # Deploy the recipe and keep its inference endpoint available until cancellation
-srtctl apply -f recipes/gb200-fp8/sglang-1p4d.yaml --serve-only
+srtctl apply -f examples/sglang/sglang-router-disagg.yaml --serve-only
 
 # Preview without submitting
 srtctl dry-run -f config.yaml
@@ -55,37 +55,38 @@ srtctl -i
 ```
 
 Interactive mode is ideal for:
-- Exploring available recipes without memorizing paths
+- Exploring curated examples without memorizing paths
 - Previewing and tweaking configurations before submission
 - Understanding what a sweep will expand to
 - Quick experimentation and validation
 
-### Recipe Browser
+### Example Browser
 
-On launch, interactive mode scans the `recipes/` directory and presents recipes organized by subdirectory:
+On launch, interactive mode scans the `examples/` directory and presents curated configurations organized by subdirectory:
 
 ```
-? Select a recipe:
-  ── gb200-fp8 ──
-    sglang-1p4d.yaml
-    sglang-2p8d.yaml
-    dynamo-router.yaml
-  ── h100-fp8 ──
-    baseline.yaml
-    high-throughput.yaml
+? Select an example:
+  ── examples/sglang ──
+    dynamo-agg.yaml
+    dynamo-disagg.yaml
+    sglang-router-agg.yaml
+    sglang-router-disagg.yaml
+  ── examples/vllm ──
+    dynamo-agg.yaml
+    ...
   ──────────────
   📁 Browse for file...
 ```
 
 **Features:**
-- Recipes grouped by parent directory for easy navigation
+- Examples grouped by parent directory for easy navigation
 - Arrow keys to navigate, Enter to select
-- "Browse for file..." option for configs outside `recipes/`
-- If no recipes found, prompts for manual path entry
+- "Browse for file..." option for configs outside `examples/`
+- If no examples are found, prompts for manual path entry
 
 ### Configuration Summary
 
-After selecting a recipe, you'll see a tree-style summary:
+After selecting an example, you'll see a tree-style summary:
 
 ```
 📋 Configuration
@@ -122,7 +123,7 @@ After viewing the config summary, you'll see an action menu:
   👁️  Preview sbatch script  - View generated SLURM script with syntax highlighting
   ✏️  Modify parameters      - Interactively change values before submission
   🔍 Dry-run                - Full dry-run preview without submission
-  📁 Select different config - Choose a different recipe
+  📁 Select different config - Choose a different example
   ❌ Exit                   - Exit interactive mode
 ```
 
@@ -204,10 +205,10 @@ For sweeps, the confirmation shows:
 
 ### Workflow Examples
 
-**Exploring a new recipe:**
+**Exploring a curated example:**
 ```
 $ srtctl
-> Select: gb200-fp8/sglang-1p4d.yaml
+> Select: examples/sglang/sglang-router-disagg.yaml
 > Action: 👁️  Preview sbatch script  (review generated script)
 > Action: 🔍 Dry-run                 (full dry-run)
 > Action: 📁 Select different config (try another)
@@ -216,7 +217,7 @@ $ srtctl
 **Quick experiment with modifications:**
 ```
 $ srtctl
-> Select: gb200-fp8/sglang-1p4d.yaml
+> Select: examples/vllm/dynamo-agg.yaml
 > Action: ✏️  Modify parameters
   > Change decode_workers: 8
   > Change isl: 2048
@@ -253,17 +254,25 @@ srtctl apply -f <config.yaml> [options]
 | `--setup-script` | Custom setup script from `configs/` |
 | `--tags` | Comma-separated tags for the run |
 | `--serve-only` | Deploy the endpoint without running a benchmark; serve until cancellation |
-| `--bash` | Print a direct single-node lifecycle script to stdout without submitting |
+| `--set KEY=VALUE` | Override one recipe value by dotted path before validation (repeatable). Also on `dry-run`, `preflight`, `resolve-override` |
+| `--unset KEY` | Remove one recipe key by dotted path before validation (repeatable) |
 | `-y, --yes` | Skip confirmation prompts |
+
+`--set` and `--unset` are the supported way to tweak a recipe from a script instead of editing the YAML. Paths are dotted, `[N]` indexes a list, and quotes protect a segment that contains dots (`container_mounts."/a/b.c"`). Values parse as YAML: `720` is an int, `"720"` a string, `[4, 8]` a list; a mapping such as `{"rope_type": "yarn"}` stays a literal string because that is how engine flags take JSON. Overrides are applied to the raw document before cluster defaults, sweep expansion, and validation, so an explicit `--set` always wins and `{placeholder}` values still expand. On an override file the value is written into `base` and every `override_*` / `zip_override_*` variant, so no variant can shadow it. The applied overrides are listed in each `--json` record as `applied_overrides`, and the `config.yaml` copied into the job directory reflects them. The source file is never modified.
 
 **Examples:**
 
 ```bash
 # Submit single job
-srtctl apply -f recipes/gb200-fp8/sglang-1p4d.yaml
+srtctl apply -f examples/sglang/sglang-router-disagg.yaml
+
+# Tweak a recipe from a script without editing it
+srtctl apply -f config.yaml --set health_check.max_attempts=720 --unset sbatch_directives.exclude
+srtctl apply -f config.yaml --set 'backend.sglang_config.decode.speculative-config={"method": "eagle"}'
+srtctl dry-run -f config.yaml --set benchmark.concurrencies=[4,8]
 
 # Serve the same recipe without running its configured benchmark
-srtctl apply -f recipes/gb200-fp8/sglang-1p4d.yaml --serve-only
+srtctl apply -f examples/sglang/sglang-router-disagg.yaml --serve-only
 
 # Submit sweep (auto-detected from sweep: section)
 srtctl apply -f configs/my-sweep.yaml
@@ -277,11 +286,6 @@ srtctl apply -f config.yaml:override_tp64
 # Submit only the base config (ignore overrides)
 srtctl apply -f config.yaml:base
 
-# Render and run one single-node recipe through Docker
-srtctl apply -f config.yaml -o /absolute/path/to/runs --bash > job.sh
-chmod +x job.sh
-./job.sh
-
 # With tags
 srtctl apply -f config.yaml --tags "experiment-1,baseline"
 ```
@@ -290,15 +294,6 @@ srtctl apply -f config.yaml --tags "experiment-1,baseline"
 the frontend URL in the sweep log, and keeps the service running until the job is cancelled or reaches its Slurm
 time limit. It ignores the recipe's configured benchmark for that submission. Use `scancel <job-id>` to stop the
 service; srtctl then cleans up the processes it started.
-
-`--bash` renders a small direct-host launcher; it is not an sbatch script. The launcher owns a Docker serving
-container and runs the serving lifecycle inside the selected SGLang image. It currently supports a one-node
-SGLang backend with the Dynamo frontend, `frontend.enable_multiple_frontends: false`, and one
-`benchmark.type: custom` command. It requires Docker with GPU support, an absolute `SRTCTL_SGLANG_SOURCE`,
-`SRTCTL_LOCAL_CONTAINER_IMAGE`, and either `dynamo.hash` or `dynamo.top_of_tree: true`. The run creates
-separate worker, router, Tachometer, and benchmark logs, gates load on worker/router readiness and a
-chat-completions smoke request, then cleans up only containers and process groups it owns. See
-[Direct Host Lifecycle](direct-host.md) for the complete setup and the included 3P2D Dynamo recipe.
 
 ### `srtctl dry-run`
 
@@ -333,7 +328,7 @@ srtctl dry-run -f override-config.yaml:override_tp64
 
 Dry-run output includes:
 - Syntax-highlighted sbatch script
-- Container mounts table (labeled by source: built-in, srtslurm.yaml, recipe)
+- Container mounts table (labeled by source: built-in, srtslurm.yaml, configuration)
 - Environment variables table (grouped by scope: global, prefill, decode, aggregated)
 - srun options (if configured)
 - For sweeps: table of all jobs with parameters
@@ -385,6 +380,22 @@ srtctl monitor --interval 10            # Refresh every 10s (default: 5)
 srtctl monitor --once                   # Snapshot and exit
 srtctl monitor --resume KEY             # Resume a previous session
 ```
+
+### `srtctl skill`
+
+Install the in-package agent skill, one document that teaches a coding agent how to drive srtctl (the 2.0 recipe shape, dry-run before apply, where a run's logs and artifacts live, the MCP tools):
+
+```bash
+srtctl skill --target claude            # .claude/skills/srtctl/SKILL.md
+srtctl skill --target codex             # .codex/skills/srtctl/SKILL.md
+srtctl skill --target cursor            # .cursor/rules/srtctl.mdc
+srtctl skill --target claude --root /path/to/project
+srtctl skill --target claude --print    # to stdout
+```
+
+### `srtctl-mcp`
+
+The MCP server (`srtctl-mcp`, stdio by default, `SRTCTL_MCP_TRANSPORT=streamable-http` with `SRTCTL_MCP_HOST` / `SRTCTL_MCP_PORT` for HTTP) exposes the schema tools anywhere and the job lifecycle tools (`submit_job`, `dry_run`, `job_status`, `job_logs`, `list_jobs`, `cancel_job`) when it runs on a Slurm login node in a checkout with `srtslurm.yaml`. `job_status` returns the Slurm accounting row, the job metadata, the orchestrator's current stage, any `[ERROR]` lines, the benchmark rollup, and the sweep-log tail; `job_logs` lists `outputs/<job_id>/logs` or tails one file.
 
 ## Output
 
@@ -450,7 +461,7 @@ grep -E "Env:|Command:" outputs/<job_id>/logs/sweep_<job_id>.log
 
 ## Tips
 
-- Use `srtctl` (no args) for exploring recipes interactively
+- Use `srtctl` (no args) for exploring curated examples interactively
 - Use `srtctl apply -f` for scripting and CI pipelines
 - Always `dry-run` first for sweeps to check job count
 - Check `outputs/<job_id>/` for submitted configs and metadata

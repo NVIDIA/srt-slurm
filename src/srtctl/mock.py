@@ -265,6 +265,7 @@ def mock_infrastructure(*, options: MockOptions, output_dir: Path):
         ("srtctl.cli.mixins.telemetry_stage.start_srun_process", _fake_srun),
         ("srtctl.cli.mixins.benchmark_stage.start_srun_process", _fake_srun),
         ("srtctl.cli.mixins.postprocess_stage.start_srun_process", _fake_srun),
+        ("srtctl.cli.mixins.service_stage.start_srun_process", _fake_srun),
         ("srtctl.frontends.dynamo.start_srun_process", _fake_srun),
         ("srtctl.frontends.sglang.start_srun_process", _fake_srun),
         # Hostname / IP resolution.
@@ -275,12 +276,15 @@ def mock_infrastructure(*, options: MockOptions, output_dir: Path):
         ("srtctl.core.telemetry.get_hostname_ip", _fake_hostname_ip),
         ("srtctl.cli.mixins.frontend_stage.get_hostname_ip", _fake_hostname_ip),
         ("srtctl.cli.mixins.benchmark_stage.get_hostname_ip", _fake_hostname_ip),
+        ("srtctl.cli.mixins.service_stage.get_hostname_ip", _fake_hostname_ip),
         ("srtctl.frontends.sglang.get_hostname_ip", _fake_hostname_ip),
         # Port / model readiness checks.
         ("srtctl.core.health.wait_for_port", _fake_wait_for_port),
         ("srtctl.cli.do_sweep.wait_for_port", _fake_wait_for_port),
         ("srtctl.core.health.wait_for_model", _fake_wait_for_model),
         ("srtctl.cli.mixins.benchmark_stage.wait_for_model", _fake_wait_for_model),
+        # Service readiness probes (etcd, NATS, exporters, declared services).
+        ("srtctl.cli.mixins.service_stage.wait_until_ready", _fake_wait_for_port),
         # Status POST/PUT — redirect to the on-disk sink so external watchers
         # have a concrete artifact to poll.
         ("srtctl.core.status.requests.put", _fake_put),

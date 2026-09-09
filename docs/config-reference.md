@@ -2,12 +2,17 @@
 
 Complete reference for job configuration YAML files.
 
+This page is the prose guide: what each block means, how the pieces interact, and worked examples. The authoritative field-by-field list (every key, type, and default) is generated from the code in [schema-reference.md](schema-reference.md) and checked in CI, so if this page and that one disagree, the generated one is right.
+
 ## Table of Contents
 
 - [Overview](#overview)
 - [Cluster Config Discovery](#cluster-config-discovery)
 - [name](#name)
 - [model](#model)
+- [engine](#engine)
+- [roles](#roles)
+- [placement](#placement)
 - [resources](#resources)
 - [slurm](#slurm)
 - [frontend](#frontend)
@@ -29,6 +34,8 @@ Complete reference for job configuration YAML files.
 - [srun_options](#srun_options)
 - [setup_script](#setup_script)
 - [host_setup](#host_setup)
+- [post_eval](#post_eval)
+- [services](#services)
 - [enable_config_dump](#enable_config_dump)
 - [Complete Examples](#complete-examples)
 
@@ -111,18 +118,21 @@ The `srtslurm.yaml` file can contain the following fields:
 | `default_account`               | string | Default SLURM account                                 |
 | `default_partition`             | string | Default SLURM partition                               |
 | `default_time_limit`            | string | Default job time limit                                |
-| `gpus_per_node`                 | int    | Default GPUs per node                                 |
+| `gpus_per_node`                 | int    | Default GPUs per node (applied to recipes that omit `resources.gpus_per_node`) |
+| `default_gpu_type`              | string | Default `resources.gpu_type` for recipes that omit it |
 | `network_interface`             | string | Network interface for NCCL                            |
 | `srtctl_root`                   | string | Root directory for srtctl                             |
 | `output_dir`                    | string | Custom output directory (overrides srtctl_root/outputs) |
 | `model_paths`                   | dict   | Model path aliases                                    |
-| `containers`                    | dict   | Container image aliases                               |
+| `containers`                    | dict   | Container image aliases, resolved for every image key in a recipe (see below) |
 | `default_mounts`                | dict   | Cluster-wide container mounts                         |
 | `default_bash_preamble`         | string | Shell snippet prepended to every container srun       |
 | `default_host_setup`            | object | Commands run on every node's bare host, outside the container |
 | `nginx_raise_ulimit`          | bool   | Optional default for `frontend.nginx_raise_ulimit`  |
 
 **output_dir**: When set, job logs are written to `output_dir/{job_id}/logs` instead of `srtctl_root/outputs/{job_id}/logs`. Useful for CI/CD and ephemeral environments.
+
+**containers**: A map from alias to image path or registry URI. One resolver walks the whole recipe and replaces any string under a `container`, `container_image`, `image`, or `nginx_container` key that matches an alias: `model.container`, `frontend.container_image`, `frontend.nginx_container`, `benchmark.container_image`, the Tachometer and power exporter images, `backend.mooncake_kv_store.container`, and any future block that names an image. Literal paths and registry URIs pass through untouched. Free-form maps (`environment`, `*_environment`, `env`, `args`, engine config blocks, `container_mounts`) and the `identity` block are never rewritten.
 
 **default_bash_preamble**: A shell snippet (e.g. `"ulimit -n 1048576 -s unlimited -u 1048576"`) prepended to every container srun launched by srtctl — workers, frontends, telemetry, benchmark, postprocess. Runs before per-call `bash_preamble` and the main command, so cluster-wide ulimits apply to everything downstream. Silently dropped for distroless containers (e.g. `prom/node-exporter`) that bypass the bash wrapper; a WARNING log is emitted in that case.
 
@@ -143,6 +153,21 @@ The `srtslurm.yaml` file can contain the following fields:
 Workers' nats and etcd come from the dynamo/sglang container, not the yaml, so disagg/agg topologies still work end-to-end. `srtctl_root` falls back to the package install path automatically.
 
 This is useful for portable recipes that you want to share across clusters or hand to a teammate without dragging cluster config along.
+
+---
+
+## schema
+
+| Field    | Type    | Required | Description                                                                 |
+| -------- | ------- | -------- | --------------------------------------------------------------------------- |
+| `schema` | integer | No       | Recipe schema version. Absent means `1` (the pre-2.0 layout); `2` is current. |
+
+Every supported version loads. Put the key first in the file, beside `base:` in an override file. Upgrade a recipe with `srtctl migrate -f recipe.yaml --in-place`, which preserves comments and key order and folds the legacy layout into `roles:`, `placement:`, and `dynamo.source` (a directory is walked recursively). `srtctl migrate --verify -f <path>` migrates in memory and checks that the v1 and v2 documents resolve to the same config; CI runs it over the examples and the historical recipe corpus (golden equality).
+
+```yaml
+schema: 2
+name: "deepseek-r1-benchmark"
+```
 
 ---
 
@@ -177,6 +202,105 @@ model:
 
 ---
 
+## engine
+
+`engine:` names the inference engine that builds every worker role's command. A bare string is the common form; a mapping carries engine-wide knobs, the fields that are not per role:
+
+```yaml
+engine: sglang
+```
+
+```yaml
+engine:
+  type: vllm
+  connector: nixl               # vLLM KV connector for disaggregation
+```
+
+```yaml
+engine:
+  type: trtllm
+  served_model_name: "Qwen/Qwen3-0.6B"
+```
+
+```yaml
+engine:
+  type: mocker
+  engine_type: vllm
+  speedup_ratio: 100
+```
+
+Valid types are `sglang`, `vllm`, `trtllm`, and `mocker`. `engine` is normalized into the internal `backend` block before validation (`engine: sglang` is `backend: {type: sglang}`), so the per-engine field tables under [backend](#backend) still describe the engine-wide knobs; only the per-role parts (`<mode>_environment`, `<engine>_config.<mode>`, `<mode>_extra_args`, `kv_events_config`) have moved into [roles](#roles). A v2 recipe needs no `backend:` block. `backend:` still loads as the v1 spelling and `srtctl migrate` rewrites it.
+
+---
+
+## roles
+
+`roles:` is the 2.0 way to describe a worker role. It groups everything about a role in one place instead of spreading it across `resources`, `backend.*_environment`, and `backend.<engine>_config.*`:
+
+```yaml
+roles:
+  prefill:
+    nodes: 2          # -> resources.prefill_nodes
+    workers: 6        # -> resources.prefill_workers
+    gpus: 2           # -> resources.gpus_per_prefill
+    env:              # -> backend.prefill_environment
+      PYTHONUNBUFFERED: "1"
+    args:             # -> backend.<engine>_config.prefill (engine from backend.type)
+      tensor-parallel-size: 2
+      disaggregation-mode: prefill
+  decode:
+    nodes: 0          # 0 shares the prefill node's spare GPUs
+    workers: 2
+    gpus: 2
+    env:
+      PYTHONUNBUFFERED: "1"
+    args:
+      tensor-parallel-size: 2
+      disaggregation-mode: decode
+```
+
+`env` and `args` are ordinary YAML mappings, written exactly as `backend.prefill_environment` and `backend.sglang_config.prefill` were. Nothing needs JSON or inline `{}` syntax.
+
+Role names are `prefill`, `decode`, and `agg`. The aggregated role is `agg` (matching `resources.agg_*`); its `env` and `args` map to `backend.aggregated_environment` and `backend.<engine>_config.aggregated`. Per-role `extra_args` maps to `backend.<mode>_extra_args` (TRT-LLM). `roles:` is normalized into those fields before validation, so it is exactly equivalent to writing them directly; you cannot set both for the same role.
+
+Two more per-role keys replace job-wide knobs:
+
+| Key | Maps to | Notes |
+| --- | --- | --- |
+| `kv_events` | `backend.kv_events_config.<mode>` | `true` for the default ZMQ publisher, or a mapping with `publisher` / `topic`; set per role instead of one job-wide flag |
+| `sidecar` | `dynamo.sidecar` | `true` runs the native engine with a Dynamo sidecar; every role must agree because the mode is job-wide, the sidecar knobs (`sidecar_port`, ...) stay under `dynamo` |
+| `engine` | `backend.type` | Optional; must equal the top-level [engine](#engine) when both are given |
+
+The legacy fields (`resources.prefill_workers`, `backend.prefill_environment`, `backend.sglang_config.prefill`, ...) still load unchanged, so v1 recipes keep working, and both forms are valid v2. `srtctl migrate -f recipe.yaml --in-place` rewrites the legacy layout into `roles:` (and `placement:` / `dynamo.source`), preserving comments and key order; `srtctl migrate --verify -f <dir>` proves that every recipe under a directory resolves to the same config before and after. The `examples/` are written with `roles:` (except `features/override.yaml`, kept legacy to show that the v1 layout still loads).
+
+---
+
+## placement
+
+`placement:` is one vocabulary for where the frontend and the benchmark client run, replacing the per-block placement knobs:
+
+```yaml
+frontend:
+  placement:
+    node: head          # head | first_decode | dedicated
+benchmark:
+  placement:
+    node: last_decode   # head | last_decode | dedicated
+```
+
+The discovery plane (etcd, NATS) is placed through its services: an `etcd` or `nats` entry under [`services`](#services) with `placement.node: dedicated`. See [Implicit Services](services.md#implicit-services).
+
+`node: dedicated` reserves a node for that component (and implies the head location, which the legacy validation already required). Any other value is a location string.
+
+| Block | `node: dedicated` sets | `node: <location>` sets |
+| --- | --- | --- |
+| `frontend` | `frontend.dedicated_node: true` + `orchestrator_placement: head` | `frontend.orchestrator_placement: <location>` |
+| `benchmark` | `benchmark.client_dedicated_node: true` + `client_placement: head` | `benchmark.client_placement: <location>` |
+
+Like `roles:`, this is normalized into the existing fields before validation, so it is exactly equivalent to writing them, cannot be combined with them for the same block, and the legacy fields still load.
+
+---
+
 ## resources
 
 GPU allocation and worker topology.
@@ -207,8 +331,8 @@ resources:
 
 | Field             | Type   | Default            | Description                           |
 | ----------------- | ------ | ------------------ | ------------------------------------- |
-| `gpu_type`        | string | -                  | GPU type: "gb200", "gb300", or "h100" |
-| `gpus_per_node`   | int    | 4                  | GPUs per node                         |
+| `gpu_type`        | string | `default_gpu_type` | GPU type, e.g. "gb200", "gb300", "h100". Optional; inherits `default_gpu_type` from `srtslurm.yaml` when omitted |
+| `gpus_per_node`   | int    | cluster / 4        | GPUs per node; inherits the cluster `gpus_per_node` when omitted, else 4 |
 | `prefill_nodes`   | int    | null               | Nodes dedicated to prefill            |
 | `decode_nodes`    | int    | null               | Nodes dedicated to decode             |
 | `prefill_workers` | int    | null               | Number of prefill workers             |
@@ -324,9 +448,9 @@ OpenAI servers rather than `dynamo.trtllm`.
 
 Because the orchestrator is a single process, set
 `enable_multiple_frontends: false` (the nginx + multi-router path is not
-supported). A recipe can be switched between the two TRT-LLM serving stacks by
-changing only `frontend.type` between `dynamo` and `trtllm_serve`. See the sample
-recipe `recipes/trtllm/b200-fp8/1k1k/stp/ctx1_gen3_tp8_batch1024_eplb0_mtp0_4_trtllm_serve.yaml`.
+supported). A configuration can be switched between the two TRT-LLM serving stacks by
+changing only `frontend.type` between `dynamo` and `trtllm_serve`; start from the
+`examples/trtllm/dynamo-disagg.yaml` and `examples/trtllm/trtllm-serve-disagg.yaml` examples.
 
 **Worker metrics default.** srtctl sets `return_perf_metrics: true` in the
 `trtllm_config` section of every mode a `trtllm_serve` recipe uses (prefill and
@@ -474,6 +598,8 @@ upstream vLLM backend topology and Router adapter.
 ## backend
 
 Worker configuration and SGLang settings.
+
+**v1 spelling.** In 2.0 the engine type and engine-wide knobs live under [engine](#engine) and the per-mode fields under [roles](#roles); `backend:` is still accepted so v1 recipes load unchanged, and `srtctl migrate` rewrites it. The field tables below remain the reference for each engine's knobs.
 
 ```yaml
 backend:
@@ -652,26 +778,23 @@ backend:
 
 Benchmark configuration. The `type` field determines which benchmark runner is used and what additional fields are available.
 
-### Post-process: node metrics CSV
+**Per-type fields (schema 2).** Every type accepts the shared fields (`client_placement`, `client_dedicated_node`, `colocate_with_frontend`, `sweep`, `aiperf_package`, `aiperf_args`) plus the fields its runner reads:
 
-When `export_node_metrics` is `true`, after the benchmark finishes srtctl prepends
-`srtctl_root` to `sys.path` and calls `analysis.srtlog.export_node_metrics.export_node_metrics`
-in-process on the job output directory. That writes per-node batch CSVs and `gen_throughput.csv`
-under `logs/node_metrics/` (next to worker logs).
+| `type` | Fields |
+| --- | --- |
+| `sa-bench` | `isl`, `osl`, `concurrencies`, `req_rate`, `random_range_ratio`, `num_prompts_mult`, `num_warmup_mult`, `dataset_name`, `dataset_path`, `custom_tokenizer`, `use_chat_template`, `reuse_http_connections`, `slow_down_sleep_time`, `slow_down_wait_time` |
+| `sglang-bench` | `isl`, `osl`, `concurrencies`, `req_rate` |
+| `gsm8k` | `num_examples`, `max_tokens`, `repeat`, `num_threads`, `num_shots`, `temperature`, `top_p`, `top_k` |
+| `mmlu`, `gpqa` | `num_examples`, `max_tokens`, `repeat`, `num_threads` |
+| `longbenchv2` | `num_examples`, `max_tokens`, `num_threads`, `max_context_length`, `categories` |
+| `router` | `isl`, `osl`, `num_requests`, `concurrency`, `prefix_ratios` |
+| `mooncake-router` | `mooncake_workload`, `ttft_threshold_ms`, `itl_threshold_ms` |
+| `trace-replay` | `concurrencies`, `ttft_threshold_ms`, `itl_threshold_ms`, `trace_file` |
+| `agentperf` | `isl`, `concurrencies`, `concurrency`, `agentperf_client_dir`, `agentperf_config`, `container_image`, `env` |
+| `custom` | `command`, `container_image`, `env` |
+| `lm-eval`, `manual` | shared fields only |
 
-- Set **`srtctl_root`** in `srtslurm.yaml` to the srt-slurm repository root (the directory that contains `analysis/srtlog/`). This path is inserted at the front of `sys.path` for the import.
-- The export process needs **`pandas`** and **`pyarrow`** (same as the analysis dashboard).
-
-```yaml
-benchmark:
-  type: "sa-bench"
-  export_node_metrics: true   # default: false
-  # ... other benchmark fields
-```
-
-| Field                  | Type | Default | Description                                      |
-| ---------------------- | ---- | ------- | ------------------------------------------------ |
-| `export_node_metrics`  | bool | `false` | Export node batch CSVs + gen throughput summary |
+A `schema: 2` recipe that sets a field its type does not use is rejected at load with the list of accepted fields. A schema 1 recipe gets a warning and keeps loading. Before this, such a field was a silent no-op (`isl` on `gsm8k`, `num_shots` on `sa-bench`). Each runner declares its fields as `config_fields`; adding a field to a runner means adding it there.
 
 ### Available Benchmark Types
 
@@ -1043,21 +1166,34 @@ Dynamo installation configuration.
 
 ```yaml
 dynamo:
-  version: "0.8.0"            # Install from PyPI
-  # OR
-  hash: "abc123"              # Install from git commit
-  # OR
-  top_of_tree: true           # Install from main branch
-  sidecar: false               # Use native engines with Dynamo sidecars
+  source:                     # 2.0: one block for where Dynamo comes from
+    git: https://github.com/ai-dynamo/dynamo
+    rev: refs/pull/14000/head # a commit, a tag, or a PR head; never a branch name
+    # sha: <filled in by srtctl apply>
+  sidecar: false              # Use native engines with Dynamo sidecars
+```
+
+```yaml
+dynamo:
+  source:
+    pypi: "1.4.2"             # a release from PyPI
+```
+
+```yaml
+dynamo:
+  source:
+    wheel: "1.5.0.dev20260901" # a staged nightly wheel
 ```
 
 | Field                    | Type         | Default | Description                                            |
 | ------------------------ | ------------ | ------- | ------------------------------------------------------ |
 | `install`                | bool         | true    | Whether to install dynamo (set false if pre-installed) |
-| `version`                | string       | "0.8.0" | PyPI version                                           |
-| `hash`                   | string       | null    | Git commit hash (source install)                       |
-| `top_of_tree`            | bool         | false   | Install from main branch                               |
-| `wheel`                  | string       | null    | Exact `ai-dynamo` nightly version                      |
+| `source`                 | object       | null    | Exactly one of `git` + `rev` (optionally `patches`, `sha`), `pypi`, or `wheel`; see below |
+| `version`                | string       | "0.8.0" | Legacy: PyPI version (same as `source.pypi`)           |
+| `hash`                   | string       | null    | Legacy: git commit hash (same as `source.git` + `rev`) |
+| `top_of_tree`            | bool         | false   | Legacy: install from main branch                       |
+| `wheel`                  | string       | null    | Legacy: exact `ai-dynamo` nightly version (same as `source.wheel`) |
+| `cargo_patches`          | list[string] | null    | Legacy: Cargo dependency replacements (same as `source.patches`) |
 | `sidecar`                | bool         | false   | Replace legacy Python workers with native engines and Dynamo sidecars |
 | `sidecar_port`           | int          | 50051   | Base loopback gRPC port; co-located workers receive deterministic offsets |
 | `sidecar_binary`         | string/null  | null    | Optional standalone executable; null uses `python3 -m dynamo.<framework>.sidecar` |
@@ -1068,10 +1204,12 @@ dynamo:
 **Notes**:
 
 - Set `install: false` if your container already has dynamo pre-installed.
-- Only one of `version`, `hash`, or `top_of_tree` should be specified.
-- `hash` and `top_of_tree` are mutually exclusive.
-- When `hash` or `top_of_tree` is set, `version` is automatically cleared.
-- Source installs (`hash` or `top_of_tree`) clone the repo and build with maturin.
+- `source` is the same shape `services[].source` uses. `git` defaults to the upstream repository when only `rev` is given, so a fork is `git: https://github.com/<you>/dynamo`.
+- `rev` must be immutable: a commit SHA, a tag such as `v1.4.2`, or `refs/pull/<n>/head` for an unmerged PR. `main`, `master`, and `HEAD` are rejected; use `top_of_tree: true` if you really want a moving target.
+- `srtctl apply` resolves a non-commit `rev` with `git ls-remote`, writes the commit as `source.sha` into the submitted `config.yaml` (comments preserved, the recipe on disk is untouched), and echoes it as `pinned_sources` in `--json` output. The job builds that commit and the `/configs/dynamo-wheels` cache is keyed by it, so two runs of one recipe cannot silently build different code because the PR moved. If the login node cannot reach the remote, the submit continues with a warning and the compute node fetches the ref by name.
+- `source` cannot be combined with `hash`, `top_of_tree`, `wheel`, or `cargo_patches`. The legacy fields keep working unchanged; `source` maps onto them at load, so nothing downstream changes.
+- Source installs (`source.git`, `hash`, or `top_of_tree`) clone the repo and build with maturin; `patches` / `cargo_patches` replace Cargo dependency declarations tree-wide before the build.
+- `srtctl dry-run` prints the resolved Dynamo source.
 
 ### Native sidecar mode
 
@@ -1236,22 +1374,36 @@ health_check:
 
 ## infra
 
-Infrastructure configuration for etcd/nats placement.
+The v1 spelling for where the discovery plane (etcd, NATS) runs. In 2.0 etcd and NATS are [services](#services), implied by the Dynamo frontend and taken over by declaring them:
+
+```yaml
+services:
+  - name: etcd
+    type: etcd
+    placement:
+      node: dedicated
+  - name: nats
+    type: nats
+    placement:
+      node: dedicated
+    options:
+      max_payload_mb: 24
+```
+
+The v1 block still loads and means exactly that (`srtctl migrate` rewrites it):
 
 ```yaml
 infra:
   etcd_nats_dedicated_node: true
+  nats_max_payload_mb: 24
 ```
 
 | Field                    | Type | Default | Description                                        |
 | ------------------------ | ---- | ------- | -------------------------------------------------- |
-| `etcd_nats_dedicated_node` | bool | false   | Reserve first node for infrastructure services     |
+| `etcd_nats_dedicated_node` | bool | false   | Reserve the first allocated node for etcd and NATS; no workers run there. Isolates the discovery plane on large jobs. |
+| `nats_max_payload_mb` | int | none | Raise the NATS message size limit (long prompts on the NATS request plane). |
 
-**Notes**:
-
-- When `etcd_nats_dedicated_node: true`, the first allocated node is reserved exclusively for etcd and nats services.
-- This can improve stability for large-scale deployments by isolating infrastructure services.
-- The reserved node is not used for worker processes.
+A recipe cannot say both: declared `etcd`/`nats` services and `infra.etcd_nats_dedicated_node` must agree.
 
 ---
 
@@ -1775,6 +1927,86 @@ host_setup:
 - `teardown` runs from the job's cleanup path, so it fires on failure and cancellation too, and never changes the job's exit code.
 - Set cluster-wide via `default_host_setup` in `srtslurm.yaml` — that's the right home when *the cluster's machines* need this, rather than one recipe. See [Cluster Config Fields](#cluster-config-fields).
 - `srtctl dry-run -f config.yaml` renders the commands, their scope, and which file they came from.
+
+---
+
+## post_eval
+
+How the accuracy evaluation is dispatched when the job environment sets `RUN_EVAL=true` (run after the benchmark) or `EVAL_ONLY=true` (run instead of it). srtctl forwards a built-in list of workflow variables into the eval process (`RUN_EVAL`, `EVAL_ONLY`, `MODEL`, `ISL`, `OSL`, `PREFILL_TP`, ...); this block extends that list and can replace the command, so a runner sets config instead of patching srtctl's source.
+
+```yaml
+post_eval:
+  passthrough_env:          # forwarded into the eval process when set in the job environment
+    - EVAL_FRAMEWORK
+    - EVAL_CONC
+    - EVAL_LIMIT
+    - EVAL_SUITE
+  command:                  # optional; replaces the built-in lm-eval runner command
+    - bash
+    - /infmax-workspace/benchmarks/evals/run.sh
+    - "{endpoint}"
+```
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `passthrough_env` | list[string] | `[]` | Extra environment variable names copied from the orchestrator's environment into the eval process when set |
+| `command` | list[string] | none | Argv replacing the lm-eval runner. Placeholders: `{endpoint}` (frontend URL), `{infmax_workspace}`. Not shell-interpreted |
+
+`MODEL_NAME` (the served model name) and `EVAL_CONC` are always set by srtctl. `srtctl dry-run` prints the effective dispatch.
+
+---
+
+## services
+
+Long-running processes srtctl launches and tracks next to the workers, frontend, and benchmark client. One list covers the built-in infrastructure (etcd and NATS under the Dynamo frontend, the Mooncake master, the DCGM and node exporters tachometer scrapes: implied by the rest of the recipe, declared only to change something), generic sidecars (an experimental router built from a PR), and typed services (a standalone Mooncake store per worker node). Full reference: [services.md](services.md), in particular [Implicit Services](services.md#implicit-services).
+
+```yaml
+services:
+  - name: etcd
+    type: etcd                   # implied by frontend.type: dynamo; declared here to move it
+    placement:
+      node: dedicated
+  - name: my-sidecar
+    type: generic                # generic (default) | etcd | nats | mooncake-master | dcgm-exporter | node-exporter | mooncake-store
+    command:
+      - python3
+      - -m
+      - my_package.my_sidecar
+    args:
+      - --port
+      - "9000"
+    container: my-image          # alias or path; default: job container
+    env:
+      MY_FLAG: "1"
+    placement:
+      node: head                 # head | infra | dedicated | prefill | decode | agg | workers
+    start: after_frontend        # infra | before_workers | after_frontend
+    readiness:
+      port: 9000
+      timeout_seconds: 120
+    inherit_discovery_env: true  # ETCD_ENDPOINTS / NATS_SERVER
+    critical: false
+```
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `name` | string | required | Unique; names `service_<name>.out` and the tracked process |
+| `type` | string | `generic` | Registered service kind; supplies defaults, injected env, and for the typed kinds the command |
+| `enabled` | bool | `true` | `false` drops the service; how an implied one is switched off |
+| `external` | string | none | `etcd`, `nats`, `mooncake-master`: address of an already-running instance; nothing launches |
+| `options` | dict | `{}` | Kind-specific knobs (`nats.max_payload_mb`, exporter `port` / `collect_interval_ms`, `mooncake-master.store_config`) |
+| `command` | list[string] | type default | Argv, not shell-interpreted; required for `generic` |
+| `args` | list[string] | `[]` | Appended to `command` |
+| `container` | string | type fallback, then job container | Image or `srtslurm.yaml` alias |
+| `env` | dict | `{}` | Service environment; placeholders like `{node_ip}` are substituted |
+| `placement.node` | string | type default | One instance for `head`/`infra`/`dedicated` (`dedicated` reserves a node); one per node for `prefill`/`decode`/`agg`/`workers` |
+| `start` | string | type default | `infra` (etcd, nats), `before_workers` (mooncake-master, mooncake-store), `after_frontend` (generic, exporters) |
+| `readiness` | object | type default | One probe (`port`/`tcp`, `http`, or `log`) plus `timeout_seconds` and `interval_seconds`; the job waits for it on every service node. Typed kinds gate on their well-known ports by default |
+| `inherit_discovery_env` | bool | `true` | Inject the Dynamo discovery env |
+| `critical` | bool | type default | A crash fails the run when true |
+| `source`, `build_command` | object, list[string] | none | Clone an immutable git rev and build once before launch; single-node placements only |
+| `build_timeout_seconds` | int | `1800` | `build_command` is killed when this runs out so a hung build cannot hold the allocation |
+| `preamble`, `cpus_per_task`, `cpu_bind`, `srun_options` | | none | Pass-through launch knobs for this service |
 
 ---
 

@@ -32,6 +32,9 @@ logger = logging.getLogger(__name__)
 # Power telemetry's template: 100ms NVML sampling is its purpose (dense power
 # curves inside sa-bench measurement windows). Never used for tachometer.
 DCGM_EXPORTER_COMMAND_TEMPLATE = "dcgm-exporter --collect-interval=100 --address :{port}"
+# Time tachometer gets after SIGTERM to compact its in-memory arrow rows to parquet.
+TACHOMETER_TERMINATE_TIMEOUT_SECONDS = 90.0
+TACHOMETER_STEP_NAME = "tachometer"
 
 # Lowest DCGM sampling interval measured at parity with no telemetry on GB300
 # decode (A/F chain); 100ms measured ~2% ITL p50 overhead. Sampling faster than
@@ -290,7 +293,7 @@ class TelemetryStageMixin:
         An explicit ``binary_path`` is always respected verbatim. The default
         bare name used to rely on ``$PATH`` inside the srun step, while
         ``make setup`` installs the binary to ``<srtctl_root>/bin/`` — the
-        same place ``validate_setup`` checks and the --bash lifecycle uses.
+        same place ``validate_setup`` checks.
         """
         if binary_path != "tachometer-scraper":
             return binary_path
@@ -303,6 +306,14 @@ class TelemetryStageMixin:
             if candidate.is_file() and os.access(candidate, os.X_OK):
                 return str(candidate)
         return binary_path
+
+    def _frontend_metrics_port(self) -> int | None:
+        """Frontends whose Prometheus listener is not the routing port: the SGLang Model Gateway."""
+        if self.config.frontend.type == "sglang":
+            from srtctl.frontends.sglang import router_metrics_port
+
+            return router_metrics_port(self.config.frontend.args)
+        return None
 
     def start_tachometer(self) -> list[ManagedProcess]:
         """Start Tachometer collection (follows ``observability.enabled``)."""
@@ -326,60 +337,33 @@ class TelemetryStageMixin:
                 tachometer=tachometer,
                 dcgm_exporter=dcgm_exporter,
                 frontend_type=self.config.frontend.type,
+                frontend_metrics_port=self._frontend_metrics_port(),
             )
         )
 
         tachometer_dir = self.runtime.log_dir / tachometer.storage_subdir
         # Create only the PARENT of the storage path: tachometer-scraper aborts if the
-        # storage leaf already exists. Same rule the --bash lifecycle already follows.
+        # storage leaf already exists.
         (tachometer_dir / TACHOMETER_STORAGE_PARENT).mkdir(parents=True, exist_ok=True)
         local_dir = tachometer_dir / "local"
         local_dir.mkdir(parents=True, exist_ok=True)
 
-        worker_nodes = sorted({process.node for process in self.backend_processes})
         processes: list[ManagedProcess] = []
-        # Exporters run shell-less (distroless images have no bash — the same
-        # rule the power path follows) and non-critical: telemetry sidecars
-        # must never tear down the benchmark. Verified the hard way: a
-        # bash-wrapped node-exporter (FROM scratch) died with execve() ENOENT
-        # and, as a critical process, killed a 7-node run at startup.
-        if not power_telemetry.enabled and tachometer.resolved_dcgm_exporter is not None:
-            if tachometer.collect_interval_ms < DCGM_PROVEN_SAFE_INTERVAL_MS:
-                logger.warning(
-                    "observability.tachometer.collect_interval_ms=%d drives DCGM NVML "
-                    "sampling below the measured-safe %dms; 100ms sampling cost ~2%% "
-                    "decode ITL p50 on GB300. Proceeding as configured.",
-                    tachometer.collect_interval_ms,
-                    DCGM_PROVEN_SAFE_INTERVAL_MS,
-                )
-            processes.extend(
-                self._start_exporter_container(
-                    exporter_config=tachometer.resolved_dcgm_exporter,
-                    name="tachometer_dcgm_exporter",
-                    nodelist=worker_nodes,
-                    log_file=self.runtime.log_dir / "tachometer_dcgm_exporter.out",
-                    # NOT the power template (100ms): the tachometer exporter
-                    # samples exactly as often as tachometer scrapes it, so one
-                    # knob rules both cadences and every scrape is fresh.
-                    default_command_template=tachometer_dcgm_command_template(tachometer),
-                    use_bash_wrapper=False,
-                    critical=False,
-                )
-            )
-        if tachometer.resolved_node_exporter is not None:
-            processes.extend(
-                self._start_exporter_container(
-                    exporter_config=tachometer.resolved_node_exporter,
-                    name="tachometer_node_exporter",
-                    nodelist=worker_nodes,
-                    log_file=self.runtime.log_dir / "tachometer_node_exporter.out",
-                    default_command_template=(
-                        "/bin/node_exporter --web.listen-address=:{port} "
-                        "--collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo"
-                    ),
-                    use_bash_wrapper=False,
-                    critical=False,
-                )
+        # The DCGM and node exporters tachometer scrapes are services now (implied
+        # by observability.tachometer, launched by ServiceStageMixin in the
+        # after_frontend phase, shell-less and non-critical). Only the warning
+        # about aggressive sampling stays here, next to the knob it is about.
+        if (
+            not power_telemetry.enabled
+            and tachometer.resolved_dcgm_exporter is not None
+            and tachometer.collect_interval_ms < DCGM_PROVEN_SAFE_INTERVAL_MS
+        ):
+            logger.warning(
+                "observability.tachometer.collect_interval_ms=%d drives DCGM NVML "
+                "sampling below the measured-safe %dms; 100ms sampling cost ~2%% "
+                "decode ITL p50 on GB300. Proceeding as configured.",
+                tachometer.collect_interval_ms,
+                DCGM_PROVEN_SAFE_INTERVAL_MS,
             )
 
         cmd = [
@@ -406,6 +390,7 @@ class TelemetryStageMixin:
                     env_to_set=env_to_set,
                     srun_options=self.runtime.srun_options,
                     het_group=self.runtime.nodes.het_group_for(self.runtime.nodes.head),
+                    step_name=TACHOMETER_STEP_NAME,
                 ),
                 log_file=self.runtime.log_dir / "tachometer.out",
                 node=self.runtime.nodes.head,
@@ -413,6 +398,11 @@ class TelemetryStageMixin:
                 # benchmark. A dead scraper costs the capture, not the run;
                 # the loss is visible in tachometer.out and the sweep log.
                 critical=False,
+                # SIGTERM is what makes tachometer compact its arrow buffer into
+                # parquet. It has to reach the task through Slurm (step_name ->
+                # scancel --signal), and gets more than the default 10 s to finish.
+                terminate_timeout=TACHOMETER_TERMINATE_TIMEOUT_SECONDS,
+                step_name=TACHOMETER_STEP_NAME,
             )
         )
         logger.info("Tachometer started with artifacts under %s", tachometer_dir)

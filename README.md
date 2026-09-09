@@ -22,9 +22,8 @@ make setup ARCH=aarch64  # or ARCH=x86_64
 - [Monitoring](docs/monitoring.md) - Job logs and debugging
 - [Parameter Sweeps](docs/sweeps.md) - Grid searches
 - [Profiling](docs/profiling.md) - Torch/nsys profiling
-- [Analyzing Results](docs/analyzing.md) - Dashboard and visualization
+- [Component Performance Dashboard](docs/component-dashboard.md) - the per-run HTML dashboard built from the tachometer parquet
 - [ruter](docs/ruter.md) - Dynamo router post-processing
-- [Direct Host Lifecycle](docs/direct-host.md) - Run the same recipe directly through Docker
 
 ## Commands
 
@@ -43,12 +42,4 @@ srtctl apply -f config.yaml --tags experiment,baseline
 
 # Dry-run (validate without submitting)
 srtctl dry-run -f config.yaml
-
-# Render and run one single-node recipe through Docker
-srtctl apply -f config.yaml -o /absolute/path/to/runs --bash > job.sh
-chmod +x job.sh
-./job.sh
-
-# Launch analysis dashboard
-uv run streamlit run analysis/dashboard/app.py
 ```
