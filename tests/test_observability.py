@@ -7,7 +7,7 @@ import pytest
 import yaml
 from marshmallow import ValidationError
 
-from srtctl.core.config import expand_observability
+from srtctl.core.config import expand_observability, expand_trtllm_serve_defaults
 from srtctl.core.schema import SrtConfig
 
 BASE_CONFIG = {
@@ -278,6 +278,123 @@ class TestExpandObservability:
 
         with pytest.raises(ValidationError, match="binary_path"):
             SrtConfig.Schema().load(cfg)
+
+
+def _trtllm_serve_config(**observability):
+    cfg = _trtllm_config(**observability)
+    cfg["frontend"] = {"type": "trtllm_serve", "enable_multiple_frontends": False}
+    return cfg
+
+
+class TestTrtllmServeDefaults:
+    """trtllm-serve mounts a worker's /prometheus/metrics route only when the engine
+    runs with return_perf_metrics: true, and TensorRT-LLM's own default is false.
+    srtctl bakes that default in for every trtllm_serve recipe so Tachometer's
+    backend_* endpoints are never a silent 404."""
+
+    def test_return_perf_metrics_defaults_on_without_observability(self):
+        out = expand_trtllm_serve_defaults(_trtllm_serve_config())
+        for mode in ("prefill", "decode"):
+            section = out["backend"]["trtllm_config"][mode]
+            assert section["return_perf_metrics"] is True
+            # Only this key is touched; the recipe's own values survive.
+            assert "enable_iter_perf_stats" not in section
+            assert section["max_batch_size"] in (256, 64)
+
+    def test_explicit_false_wins_and_warns(self, caplog):
+        cfg = _trtllm_serve_config()
+        cfg["backend"]["trtllm_config"]["decode"]["return_perf_metrics"] = False
+        with caplog.at_level("WARNING"):
+            out = expand_trtllm_serve_defaults(cfg)
+        assert out["backend"]["trtllm_config"]["decode"]["return_perf_metrics"] is False
+        assert out["backend"]["trtllm_config"]["prefill"]["return_perf_metrics"] is True
+        assert any("decode" in rec.message and "/prometheus/metrics" in rec.message for rec in caplog.records)
+
+    def test_dynamo_frontend_is_untouched(self):
+        cfg = _trtllm_config()
+        out = expand_trtllm_serve_defaults(cfg)
+        for mode in ("prefill", "decode"):
+            assert "return_perf_metrics" not in out["backend"]["trtllm_config"][mode]
+
+    def test_non_trtllm_backend_is_untouched(self):
+        cfg = dict(BASE_CONFIG)
+        cfg["frontend"] = {"type": "trtllm_serve"}
+        cfg["backend"] = {"type": "sglang", "sglang_config": {"prefill": {}}}
+        out = expand_trtllm_serve_defaults(cfg)
+        assert out["backend"] == {"type": "sglang", "sglang_config": {"prefill": {}}}
+
+    def test_missing_sections_are_created_for_the_modes_in_use(self):
+        """A disaggregated recipe with no engine yaml at all still gets the route:
+        prefill and decode sections are created; aggregated is not (unused)."""
+        cfg = _trtllm_serve_config()
+        del cfg["backend"]["trtllm_config"]
+        out = expand_trtllm_serve_defaults(cfg)
+        assert out["backend"]["trtllm_config"] == {
+            "prefill": {"return_perf_metrics": True},
+            "decode": {"return_perf_metrics": True},
+        }
+
+    def test_partial_sections_are_completed(self):
+        cfg = _trtllm_serve_config()
+        del cfg["backend"]["trtllm_config"]["decode"]
+        out = expand_trtllm_serve_defaults(cfg)
+        assert out["backend"]["trtllm_config"]["prefill"]["return_perf_metrics"] is True
+        assert out["backend"]["trtllm_config"]["decode"] == {"return_perf_metrics": True}
+        assert "aggregated" not in out["backend"]["trtllm_config"]
+
+    def test_aggregated_layout_gets_the_default_and_can_opt_out(self, caplog):
+        cfg = dict(BASE_CONFIG)
+        cfg["resources"] = {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1, "agg_workers": 1}
+        cfg["frontend"] = {"type": "trtllm_serve", "enable_multiple_frontends": False}
+        cfg["backend"] = {"type": "trtllm", "trtllm_config": {"aggregated": {"max_batch_size": 8}}}
+        out = expand_trtllm_serve_defaults(cfg)
+        assert out["backend"]["trtllm_config"]["aggregated"]["return_perf_metrics"] is True
+        assert "prefill" not in out["backend"]["trtllm_config"]
+
+        cfg["backend"]["trtllm_config"]["aggregated"]["return_perf_metrics"] = False
+        with caplog.at_level("WARNING"):
+            expand_trtllm_serve_defaults(cfg)
+        assert any("aggregated" in rec.message for rec in caplog.records)
+
+    def test_from_yaml_applies_the_default(self, tmp_path):
+        cfg = _trtllm_serve_config()
+        cfg["benchmark"] = {"type": "sa-bench", "concurrencies": [4]}
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump(cfg))
+
+        loaded = SrtConfig.from_yaml(config_path)
+
+        for mode in ("prefill", "decode"):
+            section = getattr(loaded.backend.trtllm_config, mode)
+            assert section["return_perf_metrics"] is True
+
+    def test_load_config_applies_the_default(self, tmp_path, monkeypatch):
+        """load_config is the path every real entry point uses (srtctl apply,
+        dry-run, the in-job orchestrator); from_yaml has no production callers."""
+        from srtctl.core.config import load_config
+
+        monkeypatch.delenv("SRTSLURM_CONFIG", raising=False)
+        monkeypatch.setattr("srtctl.core.config.load_cluster_config", lambda: None)
+        cfg = _trtllm_serve_config()
+        cfg["benchmark"] = {"type": "sa-bench", "concurrencies": [4]}
+        config_path = tmp_path / "recipe.yaml"
+        config_path.write_text(yaml.safe_dump(cfg))
+
+        loaded = load_config(config_path)
+
+        for mode in ("prefill", "decode"):
+            assert loaded.backend.get_config_for_mode(mode)["return_perf_metrics"] is True
+
+    def test_observability_expansion_is_unchanged_and_composes(self):
+        """observability.enabled still injects both engine keys; the trtllm-serve
+        default only fills return_perf_metrics where nothing else set it."""
+        cfg = _trtllm_serve_config(enabled=True)
+        expand_observability(cfg)
+        out = expand_trtllm_serve_defaults(cfg)
+        for mode in ("prefill", "decode"):
+            section = out["backend"]["trtllm_config"][mode]
+            assert section["return_perf_metrics"] is True
+            assert section["enable_iter_perf_stats"] is True
 
 
 class TestObservabilitySchema:

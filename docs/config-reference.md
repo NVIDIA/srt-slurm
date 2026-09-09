@@ -452,6 +452,17 @@ supported). A configuration can be switched between the two TRT-LLM serving stac
 changing only `frontend.type` between `dynamo` and `trtllm_serve`; start from the
 `examples/trtllm/dynamo-disagg.yaml` and `examples/trtllm/trtllm-serve-disagg.yaml` examples.
 
+**Worker metrics default.** srtctl sets `return_perf_metrics: true` in the
+`trtllm_config` section of every mode a `trtllm_serve` recipe uses (prefill and
+decode, or `aggregated`), creating the section when the recipe has none. This is
+a setdefault: an explicit `return_perf_metrics: false` in the recipe wins and is
+warned about. trtllm-serve mounts a worker's `/prometheus/metrics` route only
+when the engine runs with that flag, and TensorRT-LLM's own default is `false`,
+so without it Tachometer's `backend_*` endpoints answer HTTP 404 and the capture
+has no worker-level data. The route carries the per-request series (request
+latency, TTFT, TPOT, queue/prefill/decode time, token counters); it applies
+independently of `observability.enabled`, which keeps its own expansion.
+
 ### vllm frontend
 
 `type: vllm` runs aggregate vLLM jobs **without Dynamo**. The OpenAI-compatible
@@ -827,9 +838,12 @@ their URLs are appended to `AIPERF_SERVER_METRICS_URLS` after the logical worker
 
 Two caveats for `AIPERF_SERVER_METRICS_URLS`:
 
-- **TRT-LLM worker URLs are omitted when the workers publish no metrics.** A TRT-LLM worker
+- **TRT-LLM worker URLs are omitted when the workers publish no metrics.** A Dynamo TRT-LLM worker
   launched without `--publish-events-and-metrics` (the default; `observability.enabled` turns it
-  on) serves nothing on its sys-port `/metrics`, so those URLs are not advertised. KVBM URLs are
+  on) serves nothing on its sys-port `/metrics`, so those URLs are not advertised. With
+  `frontend.type: trtllm_serve` the gate is the worker's own engine config instead: its
+  `/prometheus/metrics` URL is advertised when that mode's `return_perf_metrics` is true (the
+  srtctl default for trtllm_serve recipes; an explicit `false` drops the URL). KVBM URLs are
   unaffected — KVBM serves its own endpoint regardless of the flag.
 - **An explicit `AIPERF_SERVER_METRICS_URLS` in the recipe `environment:` wins.** Injection is
   skipped when the variable is already set, so a curated endpoint list is never clobbered.
