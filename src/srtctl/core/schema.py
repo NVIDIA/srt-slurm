@@ -931,15 +931,19 @@ class ProfilingConfig:
     # Extra arguments passed to nsys profile (appended before `-o`; see get_nsys_prefix)
     extra_nsys_args: list[str] | None = None
 
-    # Non-TRT-LLM Nsight activity domains. ``cuda-sw`` can be selected
-    # explicitly where software tracing is preferred over hardware tracing.
-    nsys_trace: str = "cuda,nvtx"
+    # Nsight activity domains. None uses cuda,nvtx,ucx for TRT-LLM and
+    # cuda,nvtx for other backends. Explicit values apply to every backend.
+    nsys_trace: str | None = None
+
+    # Optional nsys overrides; None preserves the backend defaults.
+    cuda_graph_trace_mode: str | None = None  # nsys --cuda-graph-trace (default: node)
+    sample_mode: str | None = None  # nsys --sample (TRT-LLM: none; others: omitted)
 
     # None preserves the existing Dynamo-specific default. Set explicitly for
     # worker launchers that require or cannot tolerate child-process injection.
     trace_fork_before_exec: bool | None = None
 
-    # Non-TRT-LLM behavior when cudaProfilerStop closes a capture range.
+    # Behavior when cudaProfilerStop closes an iteration-based capture range.
     capture_range_end: str = "stop"
 
     # Optional paths prepended to LD_LIBRARY_PATH for the Nsight wrapper and
@@ -1052,6 +1056,19 @@ class ProfilingConfig:
         """
         return os.environ.get("SRTCTL_NSYS_BIN", "nsys")
 
+    def _nsys_trace_domain(self, default: str) -> str:
+        """Return the configured trace domains or the path-specific default."""
+        return self.nsys_trace if self.nsys_trace is not None else default
+
+    def _nsys_cuda_graph_trace_mode(self) -> str:
+        """Return the configured CUDA graph tracing mode or the legacy default."""
+        return self.cuda_graph_trace_mode if self.cuda_graph_trace_mode is not None else "node"
+
+    def _nsys_sample_arg(self, default: str | None = None) -> list[str]:
+        """Return an nsys sampling argument while preserving path-specific defaults."""
+        mode = self.sample_mode if self.sample_mode is not None else default
+        return [f"--sample={mode}"] if mode is not None else []
+
     def _get_nsys_prefix_trtllm(self, output_file: str) -> list[str]:
         """Get nsys command prefix for TRTLLM workers.
 
@@ -1063,9 +1080,9 @@ class ProfilingConfig:
                 self.nsys_binary,
                 "profile",
                 "-t",
-                "cuda,nvtx,ucx",
-                "--sample=none",
-                "--cuda-graph-trace=node",
+                self._nsys_trace_domain("cuda,nvtx,ucx"),
+                *self._nsys_sample_arg("none"),
+                f"--cuda-graph-trace={self._nsys_cuda_graph_trace_mode()}",
             ]
             if self.delay_secs is not None:
                 cmd += ["--delay", str(self.delay_secs)]
@@ -1077,13 +1094,13 @@ class ProfilingConfig:
                 self.nsys_binary,
                 "profile",
                 "-t",
-                "cuda,nvtx,ucx",
-                "--sample=none",
-                "--cuda-graph-trace=node",
+                self._nsys_trace_domain("cuda,nvtx,ucx"),
+                *self._nsys_sample_arg("none"),
+                f"--cuda-graph-trace={self._nsys_cuda_graph_trace_mode()}",
                 "-c",
                 "cudaProfilerApi",
                 "--capture-range-end",
-                "stop",
+                self.capture_range_end,
             ]
 
         if self.extra_nsys_args:
@@ -1132,8 +1149,9 @@ class ProfilingConfig:
                 self.nsys_binary,
                 "profile",
                 "-t",
-                self.nsys_trace,
-                "--cuda-graph-trace=node",
+                self._nsys_trace_domain("cuda,nvtx"),
+                *self._nsys_sample_arg(),
+                f"--cuda-graph-trace={self._nsys_cuda_graph_trace_mode()}",
                 "--force-overwrite",
                 "true",
             ]
@@ -1153,8 +1171,9 @@ class ProfilingConfig:
             self.nsys_binary,
             "profile",
             "-t",
-            self.nsys_trace,
-            "--cuda-graph-trace=node",
+            self._nsys_trace_domain("cuda,nvtx"),
+            *self._nsys_sample_arg(),
+            f"--cuda-graph-trace={self._nsys_cuda_graph_trace_mode()}",
             "-c",
             "cudaProfilerApi",
             "--capture-range-end",
@@ -2752,7 +2771,7 @@ class SrtConfig:
         # non-TRTLLM (vllm/sglang) path too.
 
         if prof.is_nsys:
-            if not prof.nsys_trace.strip():
+            if prof.nsys_trace is not None and not prof.nsys_trace.strip():
                 raise ValidationError("profiling.nsys_trace must not be empty")
             if not prof.capture_range_end.strip():
                 raise ValidationError("profiling.capture_range_end must not be empty")
