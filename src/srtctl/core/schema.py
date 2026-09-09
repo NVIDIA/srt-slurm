@@ -859,6 +859,12 @@ class ProfilingConfig:
     # Extra arguments passed to nsys profile (appended before `-o`; see get_nsys_prefix)
     extra_nsys_args: list[str] | None = None
 
+    # Optional nsys flag overrides. A value of None preserves the existing
+    # backend-specific command defaults.
+    trace_domain: str | None = None  # nsys -t domains, e.g. "cuda,nvtx,ucx"
+    cuda_graph_trace_mode: str | None = None  # nsys --cuda-graph-trace value
+    sample_mode: str | None = None  # nsys --sample value, e.g. "none" or "cpu"
+
     # Phase-specific profiling step configs (not used for nsys-time)
     prefill: ProfilingPhaseConfig | None = None
     decode: ProfilingPhaseConfig | None = None
@@ -949,6 +955,19 @@ class ProfilingConfig:
         """
         return os.environ.get("SRTCTL_NSYS_BIN", "nsys")
 
+    def _nsys_trace_domain(self, default: str) -> str:
+        """Return the configured trace domains or the path-specific default."""
+        return self.trace_domain if self.trace_domain is not None else default
+
+    def _nsys_cuda_graph_trace_mode(self) -> str:
+        """Return the configured CUDA graph tracing mode or the legacy default."""
+        return self.cuda_graph_trace_mode if self.cuda_graph_trace_mode is not None else "node"
+
+    def _nsys_sample_arg(self, default: str | None = None) -> list[str]:
+        """Return an nsys sampling argument while preserving path-specific defaults."""
+        mode = self.sample_mode if self.sample_mode is not None else default
+        return [f"--sample={mode}"] if mode is not None else []
+
     def _get_nsys_prefix_trtllm(self, output_file: str) -> list[str]:
         """Get nsys command prefix for TRTLLM workers.
 
@@ -960,9 +979,9 @@ class ProfilingConfig:
                 self.nsys_binary,
                 "profile",
                 "-t",
-                "cuda,nvtx,ucx",
-                "--sample=none",
-                "--cuda-graph-trace=node",
+                self._nsys_trace_domain("cuda,nvtx,ucx"),
+                *self._nsys_sample_arg("none"),
+                f"--cuda-graph-trace={self._nsys_cuda_graph_trace_mode()}",
             ]
             if self.delay_secs is not None:
                 cmd += ["--delay", str(self.delay_secs)]
@@ -974,9 +993,9 @@ class ProfilingConfig:
                 self.nsys_binary,
                 "profile",
                 "-t",
-                "cuda,nvtx,ucx",
-                "--sample=none",
-                "--cuda-graph-trace=node",
+                self._nsys_trace_domain("cuda,nvtx,ucx"),
+                *self._nsys_sample_arg("none"),
+                f"--cuda-graph-trace={self._nsys_cuda_graph_trace_mode()}",
                 "-c",
                 "cudaProfilerApi",
                 "--capture-range-end",
@@ -1029,8 +1048,9 @@ class ProfilingConfig:
                 self.nsys_binary,
                 "profile",
                 "-t",
-                "cuda,nvtx",
-                "--cuda-graph-trace=node",
+                self._nsys_trace_domain("cuda,nvtx"),
+                *self._nsys_sample_arg(),
+                f"--cuda-graph-trace={self._nsys_cuda_graph_trace_mode()}",
                 "--force-overwrite",
                 "true",
             ]
@@ -1050,8 +1070,9 @@ class ProfilingConfig:
             self.nsys_binary,
             "profile",
             "-t",
-            "cuda,nvtx",
-            "--cuda-graph-trace=node",
+            self._nsys_trace_domain("cuda,nvtx"),
+            *self._nsys_sample_arg(),
+            f"--cuda-graph-trace={self._nsys_cuda_graph_trace_mode()}",
             "-c",
             "cudaProfilerApi",
             "--capture-range-end",
