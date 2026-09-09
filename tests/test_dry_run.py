@@ -275,8 +275,10 @@ class TestDryRunExecutionExtensions:
         # Built-in exporters are part of the default and must be visible.
         assert "dcgm_exporter" in output
         assert "node_exporter" in output
+        assert "process_exporter" in output
         assert ":9401" in output
         assert ":9101" in output
+        assert ":9256" in output
 
     def test_dcgm_power_telemetry_details_shown(self, capsys):
         config = _make_config(
@@ -584,8 +586,9 @@ class TestInfmaxWorkspaceMount:
     --container-mounts against the failed arm's showed this single missing entry.
     """
 
-    AGENTIC = {"benchmark": {"type": "custom",
-                             "command": "bash /infmax-workspace/benchmarks/multi_node/agentic_srt.sh"}}
+    AGENTIC = {
+        "benchmark": {"type": "custom", "command": "bash /infmax-workspace/benchmarks/multi_node/agentic_srt.sh"}
+    }
 
     def test_mount_is_shown_when_the_variable_is_set(self, capsys):
         config = _make_config(self.AGENTIC)

@@ -1104,6 +1104,17 @@ DEFAULT_NODE_EXPORTER = TelemetryExporterConfig(
     container_image="quay.io#prometheus/node-exporter:v1.8.2",
     port=9101,
 )
+# Per-process and per-thread host telemetry from /proc: CPU seconds by mode,
+# thread count and thread CPU by thread name, context switches, RSS, open fds --
+# for the frontend, the worker handlers, the engine ranks and the client, grouped
+# by command line (see telemetry_stage.process_exporter_config_yaml). This is the
+# signal the Prometheus surface cannot carry: Dynamo publishes no process_* or
+# thread metrics, and node_exporter only sees the machine. Multi-arch (amd64,
+# arm64) image; runs unprivileged and reads the host /proc that enroot exposes.
+DEFAULT_PROCESS_EXPORTER = TelemetryExporterConfig(
+    container_image="docker.io#ncabatoff/process-exporter:0.8.7",
+    port=9256,
+)
 
 
 @dataclass(frozen=True)
@@ -1117,10 +1128,11 @@ class TachometerConfig:
     observability expansion is what turns their content on); the frontend
     and the exporters are always worth capturing.
 
-    DCGM and node exporters default ON via the ``resolved_*`` properties
-    (sweep path only): an explicit ``dcgm_exporter``/``node_exporter`` block
-    always wins, ``default_exporters: false`` disables the built-ins, and the
-    raw fields stay ``None`` unless the recipe set them — which is what the
+    DCGM, node and process exporters default ON via the ``resolved_*``
+    properties (sweep path only): an explicit ``dcgm_exporter`` /
+    ``node_exporter`` / ``process_exporter`` block always wins,
+    ``default_exporters: false`` disables the built-ins, and the raw fields
+    stay ``None`` unless the recipe set them — which is what the
     power-telemetry sharing validation and the --bash gate key on.
     """
 
@@ -1137,6 +1149,7 @@ class TachometerConfig:
     default_exporters: bool = True
     dcgm_exporter: TelemetryExporterConfig | None = None
     node_exporter: TelemetryExporterConfig | None = None
+    process_exporter: TelemetryExporterConfig | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -1153,6 +1166,13 @@ class TachometerConfig:
         if self.node_exporter is not None:
             return self.node_exporter
         return DEFAULT_NODE_EXPORTER if self.default_exporters else None
+
+    @property
+    def resolved_process_exporter(self) -> TelemetryExporterConfig | None:
+        """User-configured process exporter, else the built-in default."""
+        if self.process_exporter is not None:
+            return self.process_exporter
+        return DEFAULT_PROCESS_EXPORTER if self.default_exporters else None
 
 
 @dataclass(frozen=True)

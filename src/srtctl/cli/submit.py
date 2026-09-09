@@ -445,6 +445,9 @@ def show_config_details(config: SrtConfig) -> None:
             if tachometer.resolved_node_exporter is not None:
                 node = tachometer.resolved_node_exporter
                 details.add_row("observability", "node_exporter", f"{node.container_image} :{node.port}")
+            if tachometer.resolved_process_exporter is not None:
+                proc = tachometer.resolved_process_exporter
+                details.add_row("observability", "process_exporter", f"{proc.container_image} :{proc.port}")
 
         if config.telemetry.enabled:
             exporter = config.telemetry.dcgm_exporter
