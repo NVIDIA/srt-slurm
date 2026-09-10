@@ -1075,11 +1075,25 @@ class ProfilingConfig:
 
 @dataclass(frozen=True)
 class TelemetryExporterConfig:
-    """Configuration for a metrics exporter deployed on worker nodes."""
+    """Configuration for a metrics exporter deployed on worker nodes.
+
+    Two launch modes. With ``binary`` unset the exporter runs as a pyxis
+    container from ``container_image``. With ``binary`` set it runs
+    **host-native** -- the executable is started by ``srun`` directly on the
+    node with no container; ``container_image`` is ignored (set it to ``""``).
+    Relative ``binary`` paths resolve against the srtctl checkout root, which is
+    where ``make setup`` installs the host binaries (``configs/nats-server``,
+    ``configs/etcd``, ``configs/process-exporter``). Host-native exists because
+    some enroot deployments cannot start shell-less ``FROM scratch`` images
+    (observed on hecate: ``enroot-switchroot: failed to change directory: /root``,
+    then ``/bin/sh: No such file or directory`` with the home mounted), and a
+    static Go exporter needs no container at all.
+    """
 
     container_image: str
     port: int
     command: str | None = None
+    binary: str | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -1109,11 +1123,19 @@ DEFAULT_NODE_EXPORTER = TelemetryExporterConfig(
 # for the frontend, the worker handlers, the engine ranks and the client, grouped
 # by command line (see telemetry_stage.process_exporter_config_yaml). This is the
 # signal the Prometheus surface cannot carry: Dynamo publishes no process_* or
-# thread metrics, and node_exporter only sees the machine. Multi-arch (amd64,
-# arm64) image; runs unprivileged and reads the host /proc that enroot exposes.
+# thread metrics, and node_exporter only sees the machine.
+#
+# Launched HOST-NATIVE from the static Go binary `make setup` installs at
+# configs/process-exporter (ncabatoff/process-exporter release tarball for the
+# compute arch), like nats-server and etcd. The upstream image is FROM scratch
+# (no shell, no /root) and pyxis/enroot on hecate refuses to start it; the binary
+# needs neither a container nor privileges and reads the host /proc directly. A
+# recipe may still point `process_exporter.container_image` at an image that has
+# a shell and leave `binary` unset to get the container launch.
 DEFAULT_PROCESS_EXPORTER = TelemetryExporterConfig(
-    container_image="docker.io#ncabatoff/process-exporter:0.8.7",
+    container_image="",
     port=9256,
+    binary="configs/process-exporter",
 )
 
 
@@ -2382,12 +2404,14 @@ class SrtConfig:
                 "observability.tachometer.storage_subdir and telemetry.storage_subdir must be different"
             )
 
-        for name in ("dcgm_exporter", "node_exporter"):
+        for name in ("dcgm_exporter", "node_exporter", "process_exporter"):
             exporter = getattr(tachometer, name)
             if exporter is None:
                 continue
-            if not exporter.container_image:
-                raise ValidationError(f"observability.tachometer.{name}.container_image must be non-empty")
+            if not exporter.container_image and not exporter.binary:
+                raise ValidationError(
+                    f"observability.tachometer.{name}: set container_image (container launch) or binary (host-native)"
+                )
             if not 1 <= exporter.port <= 65535:
                 raise ValidationError(f"observability.tachometer.{name}.port must be in 1..65535")
         if not tachometer.binary_path:

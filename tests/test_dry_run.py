@@ -279,6 +279,11 @@ class TestDryRunExecutionExtensions:
         assert ":9401" in output
         assert ":9101" in output
         assert ":9256" in output
+        # The process exporter is host-native by default; dry-run must say so
+        # (and name the binary make setup installs) rather than print an image.
+        # Rich wraps the cell, so the two halves are asserted separately.
+        assert "host binary" in output
+        assert "configs/process-exporter" in output
 
     def test_dcgm_power_telemetry_details_shown(self, capsys):
         config = _make_config(

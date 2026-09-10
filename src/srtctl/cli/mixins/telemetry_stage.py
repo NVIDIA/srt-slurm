@@ -41,17 +41,22 @@ DCGM_PROVEN_SAFE_INTERVAL_MS = 1000
 # process-exporter (ncabatoff) reads host /proc and publishes per-group CPU
 # seconds by mode, thread count, per-THREAD-NAME CPU/count, context switches,
 # RSS and open fds. Groups are defined by the YAML below, written into the run's
-# log dir (mounted at /logs in every srtctl container). ``-threads=true`` is what
-# exposes namedprocess_namegroup_thread_{count,cpu_seconds_total}{threadname}:
-# a runaway thread pool shows up as a step in thread_count and a CPU cluster on
-# one threadname, which no application-level metric can express.
+# log dir. ``-threads=true`` is what exposes
+# namedprocess_namegroup_thread_{count,cpu_seconds_total}{threadname}: a runaway
+# thread pool shows up as a step in thread_count and a CPU cluster on one
+# threadname, which no application-level metric can express.
 # ``-children=false``: a process is counted only by its own matcher, never
 # folded into its parent's group (engine ranks stay separate from the launcher).
+#
+# Default launch is HOST-NATIVE (binary from `make setup`, config read at its
+# host path); the container template applies only when a recipe gives a
+# container_image (config then reached through the /logs mount).
 PROCESS_EXPORTER_CONFIG_NAME = "process-exporter.yml"
+PROCESS_EXPORTER_FLAGS = "-web.listen-address=:{port} -threads=true -children=false -recheck=false"
 PROCESS_EXPORTER_COMMAND_TEMPLATE = (
-    "/bin/process-exporter -config.path /logs/process-exporter.yml "
-    "-web.listen-address=:{port} -threads=true -children=false -recheck=false"
+    f"/bin/process-exporter -config.path /logs/{PROCESS_EXPORTER_CONFIG_NAME} {PROCESS_EXPORTER_FLAGS}"
 )
+PROCESS_EXPORTER_HOST_COMMAND_TEMPLATE = "{binary} -config.path {config_path} " + PROCESS_EXPORTER_FLAGS
 
 
 def process_exporter_config_yaml() -> str:
@@ -199,6 +204,9 @@ class TelemetryStageMixin:
         else:
             chunks = [(-1, nodelist)]  # sentinel: no --het-group
 
+        # Host-native exporters (``binary`` set) run straight on the node: no
+        # container image, no mounts -- the command already carries host paths.
+        host_native = bool(exporter_config.binary)
         managed: list[ManagedProcess] = []
         for group_id, nodes in chunks:
             het_group = group_id if group_id >= 0 else None
@@ -209,8 +217,8 @@ class TelemetryStageMixin:
                 ntasks=len(nodes),
                 nodelist=nodes,
                 output=str(chunk_log),
-                container_image=exporter_config.container_image,
-                container_mounts=self.runtime.container_mounts,
+                container_image=None if host_native else exporter_config.container_image,
+                container_mounts=None if host_native else self.runtime.container_mounts,
                 srun_options=self.runtime.srun_options,
                 het_group=het_group,
                 use_bash_wrapper=use_bash_wrapper,
@@ -356,6 +364,28 @@ class TelemetryStageMixin:
             return 1
         return exit_code
 
+    def _resolve_host_binary(self, binary: str) -> Path | None:
+        """Resolve an exporter's host-native ``binary`` to an executable path, or None.
+
+        Absolute paths are taken verbatim. Relative ones resolve against the
+        srtctl checkout root (``SRTCTL_SOURCE_DIR`` from the sbatch script, else
+        this file's repo root) -- where ``make setup`` installs host binaries.
+        The path must exist on the compute nodes too; the checkout lives on the
+        shared filesystem in every supported deployment, exactly like
+        ``configs/nats-server`` and ``configs/etcd``.
+        """
+        p = Path(binary)
+        candidates = [p] if p.is_absolute() else []
+        if not p.is_absolute():
+            source_dir = os.environ.get("SRTCTL_SOURCE_DIR")
+            if source_dir:
+                candidates.append(Path(source_dir) / p)
+            candidates.append(Path(__file__).resolve().parents[4] / p)
+        for candidate in candidates:
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return candidate
+        return None
+
     def _resolve_tachometer_binary(self, binary_path: str) -> str:
         """Resolve the default bare binary name against the checkout's bin/.
 
@@ -463,18 +493,35 @@ class TelemetryStageMixin:
             # head-placed frontend node hosts no backend process, and it is
             # exactly the node whose process telemetry matters most.
             exporter_nodes = sorted(set(worker_nodes) | set(topology.frontend_nodes))
-            (self.runtime.log_dir / PROCESS_EXPORTER_CONFIG_NAME).write_text(process_exporter_config_yaml())
-            processes.extend(
-                self._start_exporter_container(
-                    exporter_config=process_exporter,
-                    name="tachometer_process_exporter",
-                    nodelist=exporter_nodes,
-                    log_file=self.runtime.log_dir / "tachometer_process_exporter.out",
-                    default_command_template=PROCESS_EXPORTER_COMMAND_TEMPLATE,
-                    use_bash_wrapper=False,
-                    critical=False,
+            pe_config = self.runtime.log_dir / PROCESS_EXPORTER_CONFIG_NAME
+            pe_config.write_text(process_exporter_config_yaml())
+            template: str | None = PROCESS_EXPORTER_COMMAND_TEMPLATE
+            if process_exporter.binary:
+                binary = self._resolve_host_binary(process_exporter.binary)
+                if binary is None:
+                    logger.warning(
+                        "process exporter: host binary %r not found under the srtctl root; run "
+                        "`make setup ARCH=<compute_arch>` to install configs/process-exporter. "
+                        "Skipping the process-exporter leg (per-process CPU/thread telemetry).",
+                        process_exporter.binary,
+                    )
+                    template = None
+                else:
+                    template = PROCESS_EXPORTER_HOST_COMMAND_TEMPLATE.replace("{binary}", str(binary)).replace(
+                        "{config_path}", str(pe_config)
+                    )
+            if template is not None:
+                processes.extend(
+                    self._start_exporter_container(
+                        exporter_config=process_exporter,
+                        name="tachometer_process_exporter",
+                        nodelist=exporter_nodes,
+                        log_file=self.runtime.log_dir / "tachometer_process_exporter.out",
+                        default_command_template=template,
+                        use_bash_wrapper=False,
+                        critical=False,
+                    )
                 )
-            )
 
         cmd = [
             self._resolve_tachometer_binary(tachometer.binary_path),

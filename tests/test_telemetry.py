@@ -94,7 +94,25 @@ class TestTachometerConfig:
         assert "node-exporter" in tachometer.resolved_node_exporter.container_image
         assert tachometer.process_exporter is None
         assert tachometer.resolved_process_exporter.port == 9256
-        assert "process-exporter" in tachometer.resolved_process_exporter.container_image
+        # Host-native by default: the upstream image is FROM scratch and some
+        # enroot deployments cannot start it (no /root, no /bin/sh).
+        assert tachometer.resolved_process_exporter.binary == "configs/process-exporter"
+        assert tachometer.resolved_process_exporter.container_image == ""
+
+    def test_process_exporter_requires_binary_or_container_image(self):
+        with pytest.raises(ValidationError, match="observability.tachometer.process_exporter"):
+            _make_config(
+                tachometer=TachometerConfig(
+                    enabled=True,
+                    process_exporter=TelemetryExporterConfig(container_image="", port=9256),
+                )
+            )
+
+    def test_process_exporter_container_override_is_accepted(self):
+        custom = TelemetryExporterConfig(container_image="/containers/process-exporter.sqsh", port=9300)
+        config = _make_config(tachometer=TachometerConfig(enabled=True, process_exporter=custom))
+        assert config.observability.tachometer.resolved_process_exporter is custom
+        assert config.observability.tachometer.resolved_process_exporter.binary is None
 
     def test_process_exporter_groups_name_every_srtctl_process_class(self):
         """The process-exporter config must isolate the frontend in its own group
@@ -120,6 +138,22 @@ class TestTachometerConfig:
         assert "-threads=true" in cmd
         assert "-children=false" in cmd
         assert ":9256" in cmd
+
+    def test_process_exporter_host_command_uses_host_paths(self):
+        """Host-native launch: no /logs mount exists, so the binary and the
+        group file are both addressed by their host paths."""
+        from srtctl.cli.mixins.telemetry_stage import (
+            PROCESS_EXPORTER_HOST_COMMAND_TEMPLATE,
+            resolve_exporter_command,
+        )
+
+        template = PROCESS_EXPORTER_HOST_COMMAND_TEMPLATE.replace("{binary}", "/srt/configs/process-exporter").replace(
+            "{config_path}", "/lustre/out/logs/process-exporter.yml"
+        )
+        cmd = resolve_exporter_command(TachometerConfig().resolved_process_exporter, template)
+        assert cmd.startswith("/srt/configs/process-exporter -config.path /lustre/out/logs/process-exporter.yml ")
+        assert "-web.listen-address=:9256" in cmd
+        assert "-threads=true" in cmd
 
     def test_dcgm_sampling_follows_the_scrape_knob(self):
         """One knob rules both cadences: the tachometer-owned DCGM exporter
@@ -812,6 +846,8 @@ class TestTachometerStageMixin:
         # Pin the default-name PATH fallback so the assertion below does not
         # depend on whether the developer's checkout has bin/tachometer-scraper.
         harness._resolve_tachometer_binary = lambda binary_path: binary_path
+        # Likewise pin the host-native process-exporter binary (installed by make setup).
+        harness._resolve_host_binary = lambda binary: Path("/srt/configs/process-exporter")
 
         procs = harness.start_tachometer()
 
@@ -819,6 +855,21 @@ class TestTachometerStageMixin:
         assert (tmp_path / "tachometer_config.toml").exists()
         assert (tmp_path / "tachometer" / "local").exists()
         assert mock_srun.call_count == 4
+        # The process exporter runs host-native: no container, host paths for
+        # the binary and its group file.
+        pe_call = mock_srun.call_args_list[2]
+        assert pe_call.kwargs["container_image"] is None
+        assert pe_call.kwargs["container_mounts"] is None
+        assert pe_call.kwargs["command"][:3] == [
+            "/srt/configs/process-exporter",
+            "-config.path",
+            str(tmp_path / "process-exporter.yml"),
+        ]
+        assert "-web.listen-address=:9256" in pe_call.kwargs["command"]
+        # The container exporters keep their image + mounts.
+        for call in mock_srun.call_args_list[:2]:
+            assert call.kwargs["container_image"] in ("dcgm:latest", "node:latest")
+            assert call.kwargs["container_mounts"] == {Path(tmp_path): Path("/logs")}
         scraper_call = mock_srun.call_args_list[-1]
         assert scraper_call.kwargs["command"] == [
             "tachometer-scraper",
@@ -903,6 +954,7 @@ class TestTachometerStageMixin:
         mock_srun.return_value = _running_exporter()
         harness = Harness()
         harness._resolve_tachometer_binary = lambda binary_path: binary_path
+        harness._resolve_host_binary = lambda binary: Path("/srt/configs/process-exporter")
 
         procs = harness.start_tachometer()
 
@@ -914,8 +966,151 @@ class TestTachometerStageMixin:
             "tachometer",
         ]
         assert (tmp_path / "tachometer_config.toml").exists()
-        # The process-exporter group file lands in the log dir (mounted at /logs).
+        # The process-exporter group file lands in the log dir.
         assert "name: frontend" in (tmp_path / "process-exporter.yml").read_text()
+
+    @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
+    def test_process_exporter_skipped_when_host_binary_missing(self, mock_srun, tmp_path, caplog):
+        """A checkout whose `make setup` predates the process exporter must still
+        run: the leg is skipped with a warning, the other exporters and the
+        scraper start as before."""
+        import dataclasses
+        import logging
+
+        class Harness(TelemetryStageMixin):
+            def __init__(self):
+                base = _make_config()
+                self.config = dataclasses.replace(base, observability=ObservabilityConfig(enabled=True))
+                self.runtime = MagicMock()
+                self.runtime.log_dir = tmp_path
+                self.runtime.job_id = "12345"
+                self.runtime.run_name = "test_12345"
+                self.runtime.network_interface = "eth0"
+                self.runtime.nodes.head = "node-a"
+                self.runtime.nodes.het = False
+                self.runtime.srun_options = {}
+                self.runtime.container_mounts = {Path(tmp_path): Path("/logs")}
+                self._backend_processes = [
+                    Process(
+                        node="node-a",
+                        gpu_indices=frozenset({0}),
+                        sys_port=8081,
+                        http_port=30000,
+                        endpoint_mode="agg",
+                        endpoint_index=0,
+                        node_rank=0,
+                    )
+                ]
+
+            @property
+            def backend_processes(self):
+                return self._backend_processes
+
+            def _compute_frontend_topology(self):
+                return FrontendTopology(
+                    nginx_node=None,
+                    frontend_nodes=["node-a"],
+                    frontend_port=8000,
+                    public_port=8000,
+                )
+
+        mock_srun.return_value = _running_exporter()
+        harness = Harness()
+        harness._resolve_tachometer_binary = lambda binary_path: binary_path
+        harness._resolve_host_binary = lambda binary: None
+
+        with caplog.at_level(logging.WARNING, logger="srtctl.cli.mixins.telemetry_stage"):
+            procs = harness.start_tachometer()
+
+        assert [proc.name for proc in procs] == [
+            "tachometer_dcgm_exporter",
+            "tachometer_node_exporter",
+            "tachometer",
+        ]
+        assert any("configs/process-exporter" in record.getMessage() for record in caplog.records)
+
+    @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
+    def test_process_exporter_container_image_launches_in_container(self, mock_srun, tmp_path):
+        """An explicit container_image (and no binary) keeps the container path:
+        image + mounts on srun, group file addressed through /logs."""
+        import dataclasses
+
+        class Harness(TelemetryStageMixin):
+            def __init__(self):
+                base = _make_config()
+                self.config = dataclasses.replace(
+                    base,
+                    observability=ObservabilityConfig(
+                        enabled=True,
+                        tachometer=TachometerConfig(
+                            enabled=True,
+                            process_exporter=TelemetryExporterConfig(container_image="pe-with-shell:latest", port=9256),
+                        ),
+                    ),
+                )
+                self.runtime = MagicMock()
+                self.runtime.log_dir = tmp_path
+                self.runtime.job_id = "12345"
+                self.runtime.run_name = "test_12345"
+                self.runtime.network_interface = "eth0"
+                self.runtime.nodes.head = "node-a"
+                self.runtime.nodes.het = False
+                self.runtime.srun_options = {}
+                self.runtime.container_mounts = {Path(tmp_path): Path("/logs")}
+                self._backend_processes = [
+                    Process(
+                        node="node-a",
+                        gpu_indices=frozenset({0}),
+                        sys_port=8081,
+                        http_port=30000,
+                        endpoint_mode="agg",
+                        endpoint_index=0,
+                        node_rank=0,
+                    )
+                ]
+
+            @property
+            def backend_processes(self):
+                return self._backend_processes
+
+            def _compute_frontend_topology(self):
+                return FrontendTopology(
+                    nginx_node=None,
+                    frontend_nodes=["node-a"],
+                    frontend_port=8000,
+                    public_port=8000,
+                )
+
+        mock_srun.return_value = _running_exporter()
+        harness = Harness()
+        harness._resolve_tachometer_binary = lambda binary_path: binary_path
+        harness._resolve_host_binary = lambda binary: (_ for _ in ()).throw(AssertionError("not consulted"))
+
+        procs = harness.start_tachometer()
+
+        assert "tachometer_process_exporter" in [proc.name for proc in procs]
+        pe_call = mock_srun.call_args_list[2]
+        assert pe_call.kwargs["container_image"] == "pe-with-shell:latest"
+        assert pe_call.kwargs["container_mounts"] == {Path(tmp_path): Path("/logs")}
+        assert pe_call.kwargs["command"][:3] == ["/bin/process-exporter", "-config.path", "/logs/process-exporter.yml"]
+
+    def test_resolve_host_binary(self, tmp_path, monkeypatch):
+        """Absolute paths verbatim; relative ones against SRTCTL_SOURCE_DIR (the
+        checkout root the sbatch script exports); missing or non-executable -> None."""
+        stage = TelemetryStageMixin()
+        monkeypatch.setenv("SRTCTL_SOURCE_DIR", str(tmp_path))
+
+        assert stage._resolve_host_binary("configs/process-exporter") is None
+
+        configs = tmp_path / "configs"
+        configs.mkdir()
+        binary = configs / "process-exporter"
+        binary.write_text("#!/bin/sh\n")
+        assert stage._resolve_host_binary("configs/process-exporter") is None  # not executable yet
+        binary.chmod(0o755)
+        assert stage._resolve_host_binary("configs/process-exporter") == binary
+        assert stage._resolve_host_binary(str(binary)) == binary
+        assert stage._resolve_host_binary("/nonexistent/process-exporter") is None
 
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
     def test_tachometer_explicit_false_opts_out(self, mock_srun, tmp_path):
@@ -978,8 +1173,10 @@ class TestTachometerStageMixin:
                 )
 
         mock_srun.return_value = _running_exporter()
+        harness = Harness()
+        harness._resolve_host_binary = lambda binary: Path("/srt/configs/process-exporter")
 
-        processes = Harness().start_tachometer()
+        processes = harness.start_tachometer()
 
         assert [process.name for process in processes] == [
             "tachometer_node_exporter",
@@ -1037,6 +1234,7 @@ class TestTachometerStageMixin:
 
         mock_srun.return_value = _running_exporter()
         harness = Harness()
+        harness._resolve_host_binary = lambda binary: Path("/srt/configs/process-exporter")
 
         harness.start_tachometer()
 
