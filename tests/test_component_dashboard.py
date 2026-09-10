@@ -2045,6 +2045,34 @@ class TestHostSamplerProcessSelection:
         assert 12 in got, "the one real worker must survive a budget full of wrappers"
         assert len(got) == 5
 
+    def test_pressure_parses_psi_totals(self, monkeypatch):
+        from srtctl.analysis import host_sampler as hs
+
+        psi = {
+            "/proc/pressure/cpu": "some avg10=0.00 avg60=0.10 avg300=0.05 total=123456\n",
+            "/proc/pressure/memory": (
+                "some avg10=0.00 avg60=0.00 avg300=0.00 total=7890\n"
+                "full avg10=0.00 avg60=0.00 avg300=0.00 total=4200\n"
+            ),
+            "/proc/pressure/io": "some avg10=0.00 avg60=0.00 avg300=0.00 total=99\nfull avg10=0.00 total=55\n",
+        }
+        monkeypatch.setattr(hs, "_read", lambda path: psi.get(path))
+
+        got = hs._pressure()
+        assert got == {
+            "cpu_some_total_us": 123456,
+            "memory_some_total_us": 7890,
+            "memory_full_total_us": 4200,
+            "io_some_total_us": 99,
+            "io_full_total_us": 55,
+        }
+
+    def test_pressure_absent_psi_yields_empty(self, monkeypatch):
+        from srtctl.analysis import host_sampler as hs
+
+        monkeypatch.setattr(hs, "_read", lambda path: None)  # kernel without CONFIG_PSI
+        assert hs._pressure() == {}
+
 
 class TestAiperfJsonMetrics:
     """AIPerf's own server-metrics export as a second metrics source.
