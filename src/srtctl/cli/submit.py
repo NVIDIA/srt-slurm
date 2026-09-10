@@ -1497,36 +1497,30 @@ def cache_inputs_cmd(
     time_limit: str | None = None,
     num_workers: int | None = None,
 ) -> int:
-    """Pre-generate the SA-Bench datasets a recipe's benchmark run would build.
+    """Pre-generate whatever the recipe's benchmark can build before its job runs.
 
     Returns the exit code of the prewarm step (0 for --dry-run).
     """
-    from srtctl.core.cache_inputs import plan_cache_inputs, run_cache_inputs
+    from srtctl.benchmarks import get_runner
 
     config = load_config(config_path)
-    plan = plan_cache_inputs(
+    plan = get_runner(config.benchmark.type).plan_prewarm(
         config,
         account=account,
         partition=partition,
         time_limit=time_limit,
         num_workers=num_workers,
     )
+    if plan is None:
+        console.print(f"[bold red]Error:[/] benchmark '{config.benchmark.type}' has nothing to pre-generate")
+        return 1
 
     table = Table(show_header=False, box=None, padding=(0, 2, 0, 0))
     table.add_column(style="cyan")
     table.add_column()
-    table.add_row("Recipe", plan.recipe_name)
-    table.add_row("Cache dir", str(plan.cache_dir))
-    table.add_row("Container", str(plan.container_image))
-    table.add_row("ISL / OSL", f"{config.benchmark.isl} / {config.benchmark.osl}")
-    table.add_row("Concurrencies", str(config.benchmark.concurrencies))
-    table.add_row(
-        f"Datasets ({len(plan.prompt_counts)})",
-        ", ".join(f"n={count}" for count in plan.prompt_counts),
-    )
-    if not plan.attaches_to_current_job:
-        table.add_row("Time limit", plan.time_limit)
-    console.print(Panel(table, title="Cache Inputs", border_style="cyan"))
+    for label, value in plan.summary_rows:
+        table.add_row(label, value)
+    console.print(Panel(table, title=plan.title, border_style="cyan"))
 
     command = shlex.join(plan.srun_command())
     if dry_run:
@@ -1534,9 +1528,9 @@ def cache_inputs_cmd(
         return 0
 
     console.print(f"[dim]{command}[/dim]\n")
-    exit_code = run_cache_inputs(plan)
+    exit_code = plan.run()
     if exit_code == 0:
-        console.print(f"\n[green]Datasets ready:[/] {plan.cache_dir}")
+        console.print(f"\n[green]{plan.done_message}[/]")
     else:
         console.print(f"\n[bold red]Prewarm failed[/] (exit code {exit_code})")
     return exit_code
@@ -1562,7 +1556,7 @@ def main():
   srtctl apply -f config.yaml --sweep            # Submit sweep
   srtctl preflight -f config.yaml                # Check model/container availability
   srtctl dry-run -f config.yaml                  # Dry run
-  srtctl cache-inputs -f config.yaml             # Pre-generate SA-Bench datasets
+  srtctl cache-inputs -f config.yaml             # Pre-generate benchmark datasets
   srtctl resolve-override -f config.yaml         # Resolve override YAML (no submit)
   srtctl resolve-override -f config.yaml --stdout  # Print to stdout
   srtctl monitor                                 # Live job dashboard
@@ -1656,7 +1650,7 @@ def main():
 
     cache_inputs_parser = subparsers.add_parser(
         "cache-inputs",
-        help="Pre-generate SA-Bench datasets into benchmark.dataset_cache_dir",
+        help="Pre-generate the datasets a recipe's benchmark would otherwise build at run time",
     )
     cache_inputs_parser.add_argument(
         "-f",

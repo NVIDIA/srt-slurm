@@ -22,17 +22,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from srtctl.benchmarks.base import SCRIPTS_DIR
-from srtctl.benchmarks.sa_bench import (
-    DEFAULT_NUM_PROMPTS_MULT,
-    DEFAULT_NUM_WARMUP_MULT,
-    SABenchRunner,
-)
+from srtctl.benchmarks.sa_bench import DEFAULT_NUM_PROMPTS_MULT, DEFAULT_NUM_WARMUP_MULT
 from srtctl.core.config import get_srtslurm_setting
 from srtctl.core.runtime import resolve_container_image, resolve_model_path
 from srtctl.core.slurm import get_container_mounts_str, get_slurm_job_id
 from srtctl.ports import FRONTEND_PUBLIC_PORT
 
 if TYPE_CHECKING:
+    from srtctl.benchmarks.sa_bench import SABenchRunner
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import SrtConfig
 
@@ -68,12 +65,19 @@ class _PrewarmRuntime:
 
 @dataclass(frozen=True)
 class CacheInputsPlan:
-    """Everything needed to prewarm one recipe, resolved from its config."""
+    """Everything needed to prewarm one recipe, resolved from its config.
+
+    Implements the ``PrewarmPlan`` protocol, so ``srtctl cache-inputs`` can
+    display and run it without knowing that SA-Bench built it.
+    """
 
     recipe_name: str
     cache_dir: Path
     container_image: Path
     mounts: dict[Path, Path]
+    isl: int
+    osl: int
+    concurrencies: tuple[int, ...]
     prompt_counts: tuple[int, ...]
     command: list[str]
     time_limit: str
@@ -85,6 +89,39 @@ class CacheInputsPlan:
     def attaches_to_current_job(self) -> bool:
         """True when srun joins the caller's allocation instead of queueing one."""
         return bool(get_slurm_job_id())
+
+    @property
+    def title(self) -> str:
+        return "Cache Inputs"
+
+    @property
+    def summary_rows(self) -> tuple[tuple[str, str], ...]:
+        rows = [
+            ("Recipe", self.recipe_name),
+            ("Cache dir", str(self.cache_dir)),
+            ("Container", str(self.container_image)),
+            ("ISL / OSL", f"{self.isl} / {self.osl}"),
+            ("Concurrencies", "x".join(str(concurrency) for concurrency in self.concurrencies)),
+            (
+                f"Datasets ({len(self.prompt_counts)})",
+                ", ".join(f"n={count}" for count in self.prompt_counts),
+            ),
+        ]
+        # A queued prewarm is bounded by the time limit; one attached to the
+        # caller's allocation inherits whatever that job has left.
+        if not self.attaches_to_current_job:
+            rows.append(("Time limit", self.time_limit))
+        return tuple(rows)
+
+    @property
+    def done_message(self) -> str:
+        return f"Datasets ready: {self.cache_dir}"
+
+    def run(self) -> int:
+        """Run the prewarm step, streaming container output to this terminal."""
+        command = self.srun_command()
+        logger.info("srun command: %s", shlex.join(command))
+        return subprocess.run(command, check=False).returncode
 
     def srun_command(self) -> list[str]:
         """Render the srun call that runs the prompt build in the container."""
@@ -177,17 +214,19 @@ def _base_mounts(config: SrtConfig, model_path: Path, is_hf_model: bool) -> dict
 
 def plan_cache_inputs(
     config: SrtConfig,
+    runner: SABenchRunner,
     *,
     account: str | None = None,
     partition: str | None = None,
     time_limit: str | None = None,
     num_workers: int | None = None,
 ) -> CacheInputsPlan:
-    """Resolve a recipe into a prewarm plan, or explain why it cannot be one."""
-    benchmark = config.benchmark
+    """Resolve a recipe into a prewarm plan, or explain why it cannot be one.
 
-    if benchmark.type != "sa-bench":
-        raise ValueError(f"cache-inputs supports benchmark.type 'sa-bench'; this recipe uses '{benchmark.type}'")
+    The plan runs the recipe's own benchmark command, so it is rendered by the
+    runner that would run it rather than by a second copy of that logic here.
+    """
+    benchmark = config.benchmark
 
     dataset_name = benchmark.dataset_name or "random"
     if dataset_name != "random":
@@ -215,7 +254,6 @@ def plan_cache_inputs(
     )
 
     model_path, is_hf_model = resolve_model_path(config.model.path)
-    runner = SABenchRunner()
     runtime = cast(
         "RuntimeContext",
         _PrewarmRuntime(
@@ -231,6 +269,9 @@ def plan_cache_inputs(
         container_image=resolve_container_image(config.model.container),
         # Creates the host cache dir, exactly as a benchmark job would.
         mounts=runner.get_container_mounts(config, runtime),
+        isl=benchmark.isl,
+        osl=benchmark.osl,
+        concurrencies=concurrencies,
         prompt_counts=counts,
         command=runner.build_command(config, runtime),
         time_limit=time_limit or config.slurm.time_limit or FALLBACK_TIME_LIMIT,
@@ -238,10 +279,3 @@ def plan_cache_inputs(
         partition=partition or config.slurm.partition,
         num_workers=num_workers,
     )
-
-
-def run_cache_inputs(plan: CacheInputsPlan) -> int:
-    """Run the prewarm step, streaming container output to this terminal."""
-    command = plan.srun_command()
-    logger.info("srun command: %s", shlex.join(command))
-    return subprocess.run(command, check=False).returncode

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from srtctl.benchmarks.base import SCRIPTS_DIR, BenchmarkRunner, register_benchmark
 
 if TYPE_CHECKING:
+    from srtctl.benchmarks.sa_bench_cache import CacheInputsPlan
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import SrtConfig
 
@@ -151,3 +152,25 @@ class SABenchRunner(BenchmarkRunner):
             host_path.mkdir(parents=True, exist_ok=True)
             mounts[host_path.resolve()] = Path(DATASET_CACHE_MOUNT)
         return mounts
+
+    def plan_prewarm(
+        self,
+        config: SrtConfig,
+        *,
+        account: str | None = None,
+        partition: str | None = None,
+        time_limit: str | None = None,
+        num_workers: int | None = None,
+    ) -> CacheInputsPlan:
+        """Plan the dataset build that fills benchmark.dataset_cache_dir."""
+        # Imported here because the planner renders this runner's own command.
+        from srtctl.benchmarks.sa_bench_cache import plan_cache_inputs
+
+        return plan_cache_inputs(
+            config,
+            self,
+            account=account,
+            partition=partition,
+            time_limit=time_limit,
+            num_workers=num_workers,
+        )

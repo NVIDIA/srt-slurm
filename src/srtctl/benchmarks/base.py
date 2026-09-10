@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
@@ -16,6 +16,38 @@ if TYPE_CHECKING:
 
 # Path to bundled benchmark scripts
 SCRIPTS_DIR = Path(__file__).parent / "scripts"
+
+
+@runtime_checkable
+class PrewarmPlan(Protocol):
+    """Work a benchmark can do before its job is submitted.
+
+    ``srtctl cache-inputs`` displays and runs a plan without knowing which
+    benchmark produced it, so everything it shows the user comes from here.
+    """
+
+    @property
+    def title(self) -> str:
+        """Heading for the plan summary."""
+        ...
+
+    @property
+    def summary_rows(self) -> tuple[tuple[str, str], ...]:
+        """Label/value pairs describing what the plan would build."""
+        ...
+
+    @property
+    def done_message(self) -> str:
+        """Reported once the plan has run successfully."""
+        ...
+
+    def srun_command(self) -> list[str]:
+        """The command that does the work, ready to display or execute."""
+        ...
+
+    def run(self) -> int:
+        """Do the work and return its exit code."""
+        ...
 
 
 class BenchmarkRunner(ABC):
@@ -70,6 +102,22 @@ class BenchmarkRunner(ABC):
     def get_environment(self, config: SrtConfig, runtime: RuntimeContext) -> dict[str, str]:
         """Get benchmark-specific environment variables."""
         return {}
+
+    def plan_prewarm(
+        self,
+        config: SrtConfig,
+        *,
+        account: str | None = None,
+        partition: str | None = None,
+        time_limit: str | None = None,
+        num_workers: int | None = None,
+    ) -> PrewarmPlan | None:
+        """Plan work this benchmark can do before its job is submitted.
+
+        None means the benchmark has nothing to build ahead of time. Raise
+        ValueError when it could, but the recipe is missing a field to do it.
+        """
+        return None
 
 
 class AIPerfBenchmarkRunner(BenchmarkRunner):

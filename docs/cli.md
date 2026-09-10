@@ -345,16 +345,18 @@ Dry-run output includes:
 
 ### `srtctl cache-inputs`
 
-Pre-generate the SA-Bench datasets a recipe's benchmark run would build, so the
-benchmark job spends its GPU time measuring instead of tokenizing.
+Pre-generate the datasets a recipe's benchmark run would build, so the benchmark
+job spends its GPU time measuring instead of tokenizing.
 
 ```bash
 srtctl cache-inputs -f <config.yaml> [options]
 ```
 
-Requires `benchmark.dataset_cache_dir` in the recipe — that is where the datasets
-are written, and where the benchmark looks for them. See
-[Dataset caching](config-reference.md#dataset-caching).
+The command asks the recipe's benchmark runner what it can build ahead of time;
+a benchmark that has nothing to pre-generate says so and nothing runs. SA-Bench
+is the one that does today, and it requires `benchmark.dataset_cache_dir` in the
+recipe — that is where the datasets are written, and where the benchmark looks
+for them. See [Dataset caching](config-reference.md#dataset-caching).
 
 **Options:**
 
