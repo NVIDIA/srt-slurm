@@ -128,6 +128,13 @@ impl MetricFilter for NodeExporterFilter {
                     base_metric.to_string()
                 }
             }
+            // Per-NUMA memory (--collector.meminfo_numa): node_memory_numa_*{node="N"}.
+            // The `node` label IS the breakdown; dropping it (as the generic
+            // memory_ arm below does) collapses every NUMA node into one series.
+            m if m.starts_with("memory_numa_") => match sample.labels.get("node") {
+                Some(numa_node) => format!("{}{{numa_node={}}}", base_metric, numa_node),
+                None => base_metric.to_string(),
+            },
             // Memory metrics - usually don't need labels
             m if m.starts_with("memory_") => base_metric.to_string(),
             // Disk metrics - simplify device names
@@ -149,10 +156,22 @@ impl MetricFilter for NodeExporterFilter {
                 if sample.labels.is_empty() {
                     base_metric.to_string()
                 } else {
-                    // Keep only the most important labels (limit to 2-3)
+                    // Keep only the most important labels (limit to 2-3).
+                    // `state` / `thread_state` carry the per-state process and
+                    // thread counts of --collector.processes
+                    // (node_processes_state{state="R"}, node_processes_threads_state);
+                    // without them the states collapse into one series.
                     let mut important_labels = Vec::new();
-                    let priority_labels =
-                        ["job", "instance", "device", "mountpoint", "fstype", "mode"];
+                    let priority_labels = [
+                        "job",
+                        "instance",
+                        "device",
+                        "mountpoint",
+                        "fstype",
+                        "mode",
+                        "state",
+                        "thread_state",
+                    ];
 
                     for key in priority_labels.iter() {
                         if let Some(value) = sample.labels.get(*key) {
@@ -396,5 +415,71 @@ pub fn get_filter(
         "backend" => Box::new(BackendFilter::new(node_metadata.unwrap_or_default())),
         "frontend" => Box::new(FrontendFilter::new(node_metadata.unwrap_or_default())),
         _ => Box::new(NoOpFilter),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parse::MetricType;
+
+    fn sample(name: &str, labels: &[(&str, &str)]) -> ParsedSample {
+        ParsedSample {
+            metric_name: name.to_string(),
+            labels: labels
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            value: 1.0,
+            metric_type: MetricType::Gauge,
+        }
+    }
+
+    #[test]
+    fn numa_memory_keeps_the_node_breakdown() {
+        // --collector.meminfo_numa: one series per NUMA node. The generic memory_
+        // arm used to drop every label, folding all nodes into one series.
+        let f = NodeExporterFilter::new(HashMap::new());
+        let (m0, _) = f.filter(&sample("node_memory_numa_MemFree_bytes", &[("node", "0")]));
+        let (m1, _) = f.filter(&sample("node_memory_numa_MemFree_bytes", &[("node", "1")]));
+        assert_eq!(m0, "memory_numa_MemFree_bytes{numa_node=0}");
+        assert_eq!(m1, "memory_numa_MemFree_bytes{numa_node=1}");
+        // Host-wide meminfo stays label-free.
+        let (m, _) = f.filter(&sample("node_memory_MemFree_bytes", &[]));
+        assert_eq!(m, "memory_MemFree_bytes");
+    }
+
+    #[test]
+    fn process_state_counts_keep_their_state_label() {
+        // --collector.processes: node_processes_state{state="R"|"S"|"D"|...}
+        let f = NodeExporterFilter::new(HashMap::new());
+        let (r, _) = f.filter(&sample("node_processes_state", &[("state", "R")]));
+        let (d, _) = f.filter(&sample("node_processes_state", &[("state", "D")]));
+        assert_eq!(r, "processes_state{state=R}");
+        assert_eq!(d, "processes_state{state=D}");
+        let (t, _) = f.filter(&sample(
+            "node_processes_threads_state",
+            &[("thread_state", "R")],
+        ));
+        assert_eq!(t, "processes_threads_state{thread_state=R}");
+    }
+
+    #[test]
+    fn label_free_scheduler_pressure_families_pass_through() {
+        // --collector.stat / vmstat / pressure carry no labels: bare names.
+        let f = NodeExporterFilter::new(HashMap::new());
+        for (name, want) in [
+            ("node_procs_running", "procs_running"),
+            ("node_procs_blocked", "procs_blocked"),
+            ("node_vmstat_pgmajfault", "vmstat_pgmajfault"),
+            (
+                "node_pressure_cpu_waiting_seconds_total",
+                "pressure_cpu_waiting_seconds_total",
+            ),
+            ("node_processes_threads", "processes_threads"),
+        ] {
+            let (m, _) = f.filter(&sample(name, &[]));
+            assert_eq!(m, want);
+        }
     }
 }
