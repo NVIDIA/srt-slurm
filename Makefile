@@ -2,6 +2,7 @@
 
 NATS_VERSION ?= v2.10.28
 ETCD_VERSION ?= v3.5.21
+PROCESS_EXPORTER_VERSION ?= 0.8.7
 LOGS_DIR ?= logs
 ARCH ?= $(shell uname -m)
 TACHOMETER_RELEASE ?= latest
@@ -126,6 +127,26 @@ setup: tachometer-scraper-download
 		chmod +x configs/etcd configs/etcdctl; \
 		rm "configs/$$ETCD_TAR"; \
 		echo "✅ ETCD installed to configs/etcd"; \
+	fi; \
+	echo ""; \
+	echo "--- process-exporter $(PROCESS_EXPORTER_VERSION) (Tachometer per-process/thread telemetry) ---"; \
+	if [ -f configs/process-exporter ] && file configs/process-exporter | grep -q "$$ARCH_FILE_PATTERN"; then \
+		echo "✅ process-exporter already installed at configs/process-exporter ($(ARCH))"; \
+	else \
+		echo "⬇️  Downloading process-exporter ($(PROCESS_EXPORTER_VERSION)) for $$ARCH_SHORT..."; \
+		PE_NAME="process-exporter-$(PROCESS_EXPORTER_VERSION).linux-$$ARCH_SHORT"; \
+		PE_TAR="$$PE_NAME.tar.gz"; \
+		PE_URL="https://github.com/ncabatoff/process-exporter/releases/download/v$(PROCESS_EXPORTER_VERSION)/$$PE_TAR"; \
+		if ! wget -q --show-progress --tries=3 --waitretry=5 "$$PE_URL" -O "configs/$$PE_TAR"; then \
+			rm -f "configs/$$PE_TAR"; \
+			echo "❌ Failed to download process-exporter from $$PE_URL"; \
+			exit 1; \
+		fi; \
+		echo "📁 Extracting process-exporter binary..."; \
+		tar -xzf "configs/$$PE_TAR" --strip-components=1 -C configs "$$PE_NAME/process-exporter"; \
+		chmod +x configs/process-exporter; \
+		rm "configs/$$PE_TAR"; \
+		echo "✅ process-exporter installed to configs/process-exporter"; \
 	fi; \
 	echo ""; \
 	echo "--- uv (compute node arch: $(ARCH)) ---"; \

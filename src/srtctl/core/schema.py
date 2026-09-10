@@ -1075,11 +1075,25 @@ class ProfilingConfig:
 
 @dataclass(frozen=True)
 class TelemetryExporterConfig:
-    """Configuration for a metrics exporter deployed on worker nodes."""
+    """Configuration for a metrics exporter deployed on worker nodes.
+
+    Two launch modes. With ``binary`` unset the exporter runs as a pyxis
+    container from ``container_image``. With ``binary`` set it runs
+    **host-native** -- the executable is started by ``srun`` directly on the
+    node with no container; ``container_image`` is ignored (set it to ``""``).
+    Relative ``binary`` paths resolve against the srtctl checkout root, which is
+    where ``make setup`` installs the host binaries (``configs/nats-server``,
+    ``configs/etcd``, ``configs/process-exporter``). Host-native exists because
+    some enroot deployments cannot start shell-less ``FROM scratch`` images
+    (observed on hecate: ``enroot-switchroot: failed to change directory: /root``,
+    then ``/bin/sh: No such file or directory`` with the home mounted), and a
+    static Go exporter needs no container at all.
+    """
 
     container_image: str
     port: int
     command: str | None = None
+    binary: str | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -1104,6 +1118,25 @@ DEFAULT_NODE_EXPORTER = TelemetryExporterConfig(
     container_image="quay.io#prometheus/node-exporter:v1.8.2",
     port=9101,
 )
+# Per-process and per-thread host telemetry from /proc: CPU seconds by mode,
+# thread count and thread CPU by thread name, context switches, RSS, open fds --
+# for the frontend, the worker handlers, the engine ranks and the client, grouped
+# by command line (see telemetry_stage.process_exporter_config_yaml). This is the
+# signal the Prometheus surface cannot carry: Dynamo publishes no process_* or
+# thread metrics, and node_exporter only sees the machine.
+#
+# Launched HOST-NATIVE from the static Go binary `make setup` installs at
+# configs/process-exporter (ncabatoff/process-exporter release tarball for the
+# compute arch), like nats-server and etcd. The upstream image is FROM scratch
+# (no shell, no /root) and pyxis/enroot on hecate refuses to start it; the binary
+# needs neither a container nor privileges and reads the host /proc directly. A
+# recipe may still point `process_exporter.container_image` at an image that has
+# a shell and leave `binary` unset to get the container launch.
+DEFAULT_PROCESS_EXPORTER = TelemetryExporterConfig(
+    container_image="",
+    port=9256,
+    binary="configs/process-exporter",
+)
 
 
 @dataclass(frozen=True)
@@ -1117,10 +1150,11 @@ class TachometerConfig:
     observability expansion is what turns their content on); the frontend
     and the exporters are always worth capturing.
 
-    DCGM and node exporters default ON via the ``resolved_*`` properties
-    (sweep path only): an explicit ``dcgm_exporter``/``node_exporter`` block
-    always wins, ``default_exporters: false`` disables the built-ins, and the
-    raw fields stay ``None`` unless the recipe set them — which is what the
+    DCGM, node and process exporters default ON via the ``resolved_*``
+    properties (sweep path only): an explicit ``dcgm_exporter`` /
+    ``node_exporter`` / ``process_exporter`` block always wins,
+    ``default_exporters: false`` disables the built-ins, and the raw fields
+    stay ``None`` unless the recipe set them — which is what the
     power-telemetry sharing validation and the --bash gate key on.
     """
 
@@ -1137,6 +1171,7 @@ class TachometerConfig:
     default_exporters: bool = True
     dcgm_exporter: TelemetryExporterConfig | None = None
     node_exporter: TelemetryExporterConfig | None = None
+    process_exporter: TelemetryExporterConfig | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -1153,6 +1188,13 @@ class TachometerConfig:
         if self.node_exporter is not None:
             return self.node_exporter
         return DEFAULT_NODE_EXPORTER if self.default_exporters else None
+
+    @property
+    def resolved_process_exporter(self) -> TelemetryExporterConfig | None:
+        """User-configured process exporter, else the built-in default."""
+        if self.process_exporter is not None:
+            return self.process_exporter
+        return DEFAULT_PROCESS_EXPORTER if self.default_exporters else None
 
 
 @dataclass(frozen=True)
@@ -1223,6 +1265,11 @@ class ObservabilityConfig:
     enabled: bool = False
     enable_otel: bool = False
     otel_endpoint: str | None = None
+    # Run the /proc host sampler on EVERY allocated node (one persistent srun per
+    # node group, files host_samples_<node>.jsonl), not just the orchestrator
+    # node. Closes the gap where worker nodes — and a dedicated frontend node —
+    # had no per-process host-CPU/scheduler telemetry at all. Follows ``enabled``.
+    host_sampler_all_nodes: bool = True
 
     tachometer: TachometerConfig = field(default_factory=TachometerConfig)
 
@@ -2362,12 +2409,14 @@ class SrtConfig:
                 "observability.tachometer.storage_subdir and telemetry.storage_subdir must be different"
             )
 
-        for name in ("dcgm_exporter", "node_exporter"):
+        for name in ("dcgm_exporter", "node_exporter", "process_exporter"):
             exporter = getattr(tachometer, name)
             if exporter is None:
                 continue
-            if not exporter.container_image:
-                raise ValidationError(f"observability.tachometer.{name}.container_image must be non-empty")
+            if not exporter.container_image and not exporter.binary:
+                raise ValidationError(
+                    f"observability.tachometer.{name}: set container_image (container launch) or binary (host-native)"
+                )
             if not 1 <= exporter.port <= 65535:
                 raise ValidationError(f"observability.tachometer.{name}.port must be in 1..65535")
         if not tachometer.binary_path:
