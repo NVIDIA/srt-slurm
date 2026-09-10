@@ -515,13 +515,22 @@ class BenchmarkStageMixin:
         for node in targets:
             groups.setdefault(nodes.het_group_for(node), []).append(node)
 
+        # Same cadence as the in-process sampler (try_start_host_sampler): the
+        # single scrape knob, observability.tachometer.collect_interval_ms, so
+        # head-node and remote rows line up at the same rate. HostSampler clamps
+        # to >= 1 s on the receiving side; mirror it here so the CLI value is
+        # the one actually used.
+        tachometer = getattr(self.config.observability, "tachometer", None)
+        interval_ms = getattr(tachometer, "collect_interval_ms", 1000) if tachometer else 1000
+        interval = f"{max(1.0, interval_ms / 1000.0):g}"
+
         procs: list[subprocess.Popen] = []
         launched_nodes = 0
         for het_group, group_nodes in sorted(groups.items(), key=lambda kv: (kv[0] is not None, kv[0])):
             suffix = "" if het_group is None else f".g{het_group}"
             try:
                 proc = start_srun_process(
-                    command=["python3", str(script), "--log-dir", str(self.runtime.log_dir), "--interval", "2"],
+                    command=["python3", str(script), "--log-dir", str(self.runtime.log_dir), "--interval", interval],
                     nodes=len(group_nodes),
                     ntasks=len(group_nodes),
                     nodelist=group_nodes,

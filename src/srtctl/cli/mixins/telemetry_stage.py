@@ -139,8 +139,11 @@ def tachometer_dcgm_command_template(tachometer: TachometerConfig) -> str:
 #   meminfo_numa -> node_memory_numa_MemFree_bytes (per-NUMA-node free memory)
 # All four are cheap procfs/sysfs reads (/proc/{stat,vmstat,pressure},
 # /sys/devices/system/node/*/meminfo); unlike dense NVML sampling they carry no
-# measured decode-latency cost. The vendored NodeExporterFilter passes every new
-# family through its default arm, so no scraper change is needed. An explicit
+# measured decode-latency cost. Scraper side: the vendored NodeExporterFilter
+# passes the label-free stat/vmstat/pressure families through unchanged, keeps
+# the NUMA `node` label of memory_numa_* as `numa_node=N`, and keeps `state` /
+# `thread_state` for the processes collector (filters.rs; without those two
+# rules the per-NUMA and per-state series collapsed into one). An explicit
 # recipe ``node_exporter.command`` still wins (resolved in
 # :func:`resolve_exporter_command`).
 #   processes    -> node_processes_threads (host-wide thread total), node_processes_state

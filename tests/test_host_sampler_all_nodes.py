@@ -65,7 +65,7 @@ class TestStandaloneMode:
 
 
 class TestRemoteLaunch:
-    def _mixin(self, worker_nodes):
+    def _mixin(self, worker_nodes, collect_interval_ms=None):
         from srtctl.cli.mixins.benchmark_stage import BenchmarkStageMixin
 
         m = BenchmarkStageMixin.__new__(BenchmarkStageMixin)
@@ -78,6 +78,12 @@ class TestRemoteLaunch:
         runtime.log_dir = Path("/tmp/logs")
         runtime.srun_options = {}
         m.runtime = runtime
+        config = MagicMock()
+        if collect_interval_ms is None:
+            config.observability.tachometer = None
+        else:
+            config.observability.tachometer.collect_interval_ms = collect_interval_ms
+        m.config = config
         return m
 
     def test_launches_on_all_nodes_except_local(self):
@@ -93,6 +99,21 @@ class TestRemoteLaunch:
         assert kwargs["command"][0] == "python3"
         assert kwargs["command"][1].endswith("host_sampler.py")
         assert "--log-dir" in kwargs["command"]
+        # No tachometer block -> the 1 s default of the scrape knob.
+        assert kwargs["command"][kwargs["command"].index("--interval") + 1] == "1"
+
+    def test_remote_interval_follows_the_scrape_knob(self):
+        """Remote samplers use observability.tachometer.collect_interval_ms like the
+        in-process one (try_start_host_sampler), so head-node and remote rows share a
+        cadence; sub-second values clamp to 1 s exactly as HostSampler does."""
+        local = os.uname().nodename
+        for interval_ms, expected in ((2000, "2"), (5000, "5"), (250, "1"), (1500, "1.5")):
+            mixin = self._mixin([local, "nodeB"], collect_interval_ms=interval_ms)
+            with patch("srtctl.cli.mixins.benchmark_stage.start_srun_process") as srun:
+                srun.return_value = MagicMock()
+                mixin._start_remote_host_samplers()
+            cmd = srun.call_args.kwargs["command"]
+            assert cmd[cmd.index("--interval") + 1] == expected, (interval_ms, cmd)
 
     def test_no_launch_when_only_local(self):
         mixin = self._mixin([os.uname().nodename])
