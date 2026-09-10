@@ -488,6 +488,8 @@ def test_result_json_records_effective_http_connection_mode(monkeypatch, tmp_pat
         use_chat_template=False,
         dataset_name="custom",
         dataset_path="/data/requests.jsonl",
+        dataset_cache_dir=None,
+        prewarm_dataset_cache=False,
         num_prompts=1,
         goodput=None,
         logprobs=None,

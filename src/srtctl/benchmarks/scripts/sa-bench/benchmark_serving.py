@@ -31,17 +31,21 @@ import argparse
 import asyncio
 import base64
 import gc
+import hashlib
 import io
 import json
 import os
+import pickle
 import random
+import re
 import time
 import warnings
 from collections.abc import AsyncGenerator, Collection
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import partial
 from multiprocessing import Pool, cpu_count
+from pathlib import Path
 from typing import Any
 
 import aiohttp
@@ -436,6 +440,210 @@ def _process_random_chat(args):
         tokenize=False,
     )
     return (prompt, int(input_len + chat_template_len), int(output_len), None)
+
+
+# Bump when sample_random_requests() changes in a way that makes previously
+# cached datasets no longer reproducible.
+RANDOM_DATASET_CACHE_VERSION = 1
+
+# Files that decide how prompts are tokenized. Model weights never affect the
+# generated prompts, so hashing these is enough to notice that a different
+# model was dropped in at the same path.
+_TOKENIZER_FINGERPRINT_FILES = ("tokenizer.json", "tokenizer_config.json", "special_tokens_map.json")
+
+
+def _tokenizer_fingerprint(tokenizer_id: str) -> str:
+    """Content hash of the local tokenizer files.
+
+    Falls back to the bare id for HF repo ids, where there is nothing local to
+    hash and the id (plus revision) already identifies the tokenizer.
+    """
+    root = Path(tokenizer_id)
+    if not root.is_dir():
+        return f"id:{tokenizer_id}"
+
+    digest = hashlib.sha256()
+    hashed_any = False
+    for name in _TOKENIZER_FINGERPRINT_FILES:
+        path = root / name
+        if not path.is_file():
+            continue
+        digest.update(name.encode())
+        with open(path, "rb") as f:
+            for chunk in iter(partial(f.read, 1 << 20), b""):
+                digest.update(chunk)
+        hashed_any = True
+
+    return f"sha256:{digest.hexdigest()}" if hashed_any else f"id:{tokenizer_id}"
+
+
+def _random_dataset_cache_key(
+    tokenizer_id: str,
+    prefix_len: int,
+    input_len: int,
+    output_len: int,
+    num_prompts: int,
+    range_ratio: float,
+    use_chat_template: bool,
+    seed: int,
+    tokenizer_mode: str,
+    custom_tokenizer: str | None,
+) -> dict[str, Any]:
+    """Every input that changes the generated prompts, collected in one dict.
+
+    num_prompts and output_len belong here even though they look like sizing
+    knobs: both consume draws from the seeded RNG, so changing either shifts
+    every prompt in the dataset.
+    """
+    return {
+        "version": RANDOM_DATASET_CACHE_VERSION,
+        "tokenizer_id": tokenizer_id,
+        "tokenizer_fingerprint": _tokenizer_fingerprint(tokenizer_id),
+        "tokenizer_mode": tokenizer_mode,
+        "custom_tokenizer": custom_tokenizer or "",
+        "prefix_len": prefix_len,
+        "input_len": input_len,
+        "output_len": output_len,
+        "num_prompts": num_prompts,
+        "range_ratio": range_ratio,
+        "use_chat_template": use_chat_template,
+        "seed": seed,
+    }
+
+
+def _random_dataset_cache_path(cache_dir: str, model_name: str, key: dict[str, Any]) -> Path:
+    """Human-readable file name plus a digest of the remaining key fields.
+
+    The readable part (model/ISL/OSL/prompt count) is what makes stale entries
+    identifiable for manual cleanup; the digest keeps datasets that differ only
+    in seed, range ratio, chat template or tokenizer from colliding.
+    """
+    digest = hashlib.sha256(json.dumps(key, sort_keys=True).encode()).hexdigest()[:8]
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", model_name).strip("._-") or "model"
+    return Path(cache_dir) / (
+        f"{slug}_isl{key['input_len']}_osl{key['output_len']}_n{key['num_prompts']}_{digest}.pkl"
+    )
+
+
+def _log_stamp() -> str:
+    """Wall-clock prefix for progress lines, matching the format bench.sh prints."""
+    return datetime.now().strftime("[%H:%M:%S]")
+
+
+def _read_cached_random_requests(cache_path: Path, key: dict[str, Any]) -> list | None:
+    """Return the cached dataset, or None when it is absent, unreadable or stale."""
+    if not cache_path.exists():
+        print(f"{_log_stamp()} [cache] miss: {cache_path} not found")
+        return None
+
+    try:
+        with open(cache_path, "rb") as f:
+            payload = pickle.load(f)
+    except Exception as e:
+        # A corrupt or truncated cache file must never fail the benchmark.
+        print(f"{_log_stamp()} [cache] warning: cannot read {cache_path} ({e}); regenerating")
+        return None
+
+    if not isinstance(payload, dict) or payload.get("key") != key:
+        print(f"{_log_stamp()} [cache] stale: {cache_path} was built with different parameters; regenerating")
+        return None
+
+    requests = payload["requests"]
+    print(
+        f"{_log_stamp()} [cache] hit: loaded {len(requests)} prompts from {cache_path} "
+        f"(built {payload.get('created_utc')})"
+    )
+    return requests
+
+
+def _write_cached_random_requests(cache_path: Path, key: dict[str, Any], requests: list) -> None:
+    payload = {
+        "key": key,
+        "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "requests": requests,
+    }
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        # Publish atomically so a concurrent sweep never reads a half-written file.
+        tmp_path = cache_path.with_name(f"{cache_path.name}.tmp.{os.getpid()}")
+        with open(tmp_path, "wb") as f:
+            pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp_path, cache_path)
+        print(f"{_log_stamp()} [cache] saved dataset to {cache_path}")
+    except OSError as e:
+        # Best effort: a read-only or full cache dir must not fail the benchmark.
+        print(f"{_log_stamp()} [cache] warning: could not write {cache_path} ({e}); continuing")
+
+
+def load_or_build_random_requests(
+    cache_dir: str | None,
+    model_name: str,
+    tokenizer_id: str,
+    seed: int,
+    *,
+    prefix_len: int,
+    input_len: int,
+    output_len: int,
+    num_prompts: int,
+    range_ratio: float,
+    tokenizer: PreTrainedTokenizerBase,
+    use_chat_template: bool = False,
+    num_workers: int = 0,
+    tokenizer_mode: str = "auto",
+    trust_remote_code: bool = False,
+    custom_tokenizer: str | None = None,
+) -> list[tuple[str, int, int]]:
+    """Build the random dataset, reusing a cached copy when one matches.
+
+    Without ``cache_dir`` this is just sample_random_requests(). With it, a hit
+    skips the tokenize/decode loop entirely, which dominates startup for long
+    ISL sweeps.
+    """
+    build = partial(
+        sample_random_requests,
+        prefix_len=prefix_len,
+        input_len=input_len,
+        output_len=output_len,
+        num_prompts=num_prompts,
+        range_ratio=range_ratio,
+        tokenizer=tokenizer,
+        use_chat_template=use_chat_template,
+        num_workers=num_workers,
+        tokenizer_id=tokenizer_id,
+        tokenizer_mode=tokenizer_mode,
+        trust_remote_code=trust_remote_code,
+        custom_tokenizer=custom_tokenizer,
+    )
+
+    if not cache_dir:
+        return build()
+
+    key = _random_dataset_cache_key(
+        tokenizer_id=tokenizer_id,
+        prefix_len=prefix_len,
+        input_len=input_len,
+        output_len=output_len,
+        num_prompts=num_prompts,
+        range_ratio=range_ratio,
+        use_chat_template=use_chat_template,
+        seed=seed,
+        tokenizer_mode=tokenizer_mode,
+        custom_tokenizer=custom_tokenizer,
+    )
+    cache_path = _random_dataset_cache_path(cache_dir, model_name, key)
+
+    cached = _read_cached_random_requests(cache_path, key)
+    if cached is not None:
+        return cached
+
+    print(f"{_log_stamp()} [cache] generating {num_prompts} prompts (isl={input_len}, osl={output_len})...")
+    build_started = time.perf_counter()
+    input_requests = build()
+    print(
+        f"{_log_stamp()} [cache] generated {num_prompts} prompts in {time.perf_counter() - build_started:.1f}s"
+    )
+    _write_cached_random_requests(cache_path, key, input_requests)
+    return input_requests
 
 
 def sample_random_requests(
@@ -833,6 +1041,7 @@ async def benchmark(
         async with semaphore:
             return await request_func(request_func_input=request_func_input, pbar=pbar)
 
+    benchmark_started_at = datetime.now().astimezone()
     benchmark_start_time = time.perf_counter()
     tasks: list[asyncio.Task] = []
     try:
@@ -894,6 +1103,7 @@ async def benchmark(
         pbar.close()
 
     benchmark_duration = time.perf_counter() - benchmark_start_time
+    benchmark_finished_at = datetime.now().astimezone()
     if backend == "dynamo" and request_session is not None and not request_session.closed:
         await request_session.close()
         # Allow asyncio to finish closing pooled transports before CPU-heavy metrics.
@@ -911,6 +1121,8 @@ async def benchmark(
 
     print("{s:{c}^{n}}".format(s=" Serving Benchmark Result ", n=50, c="="))
     print("{:<40} {:<10}".format("Successful requests:", metrics.completed))
+    print("{:<40} {:<10}".format("Benchmark start:", benchmark_started_at.strftime("%H:%M:%S")))
+    print("{:<40} {:<10}".format("Benchmark finish:", benchmark_finished_at.strftime("%H:%M:%S")))
     print("{:<40} {:<10.2f}".format("Benchmark duration (s):", benchmark_duration))
     print("{:<40} {:<10}".format("Total input tokens:", metrics.total_input))
     print("{:<40} {:<10}".format("Total generated tokens:", metrics.total_output))
@@ -923,6 +1135,8 @@ async def benchmark(
 
     result = {
         "duration": benchmark_duration,
+        "benchmark_start_time": benchmark_started_at.isoformat(timespec="seconds"),
+        "benchmark_finish_time": benchmark_finished_at.isoformat(timespec="seconds"),
         "completed": metrics.completed,
         "total_input_tokens": metrics.total_input,
         "total_output_tokens": metrics.total_output,
@@ -1076,6 +1290,19 @@ def main(args: argparse.Namespace):
     print(args)
     if args.slow_down_servers is None:
         args.slow_down_servers = []
+
+    prewarm_cache_dir = args.dataset_cache_dir or os.environ.get("SA_BENCH_DATASET_CACHE_DIR")
+    if args.prewarm_dataset_cache:
+        if args.dataset_name != "random":
+            raise ValueError(
+                f"--prewarm-dataset-cache only applies to --dataset-name random, got '{args.dataset_name}'"
+            )
+        if not prewarm_cache_dir:
+            raise ValueError(
+                "--prewarm-dataset-cache needs a cache to fill: pass --dataset-cache-dir "
+                "or set SA_BENCH_DATASET_CACHE_DIR"
+            )
+
     random.seed(args.seed)
     np.random.seed(args.seed)
 
@@ -1215,7 +1442,11 @@ def main(args: argparse.Namespace):
             )
 
         elif args.dataset_name == "random":
-            input_requests = sample_random_requests(
+            input_requests = load_or_build_random_requests(
+                prewarm_cache_dir,
+                args.model,
+                tokenizer_id,
+                args.seed,
                 prefix_len=args.random_prefix_len,
                 input_len=args.random_input_len,
                 output_len=args.random_output_len,
@@ -1224,7 +1455,6 @@ def main(args: argparse.Namespace):
                 tokenizer=tokenizer,
                 use_chat_template=args.use_chat_template,
                 num_workers=args.random_num_workers,
-                tokenizer_id=tokenizer_id,
                 tokenizer_mode=args.tokenizer_mode,
                 trust_remote_code=args.trust_remote_code,
                 custom_tokenizer=args.custom_tokenizer,
@@ -1232,6 +1462,11 @@ def main(args: argparse.Namespace):
 
         else:
             raise ValueError(f"Unknown dataset: {args.dataset_name}")
+
+    if args.prewarm_dataset_cache:
+        # The dataset is on disk now; everything below needs a live server.
+        print(f"{_log_stamp()} [cache] prewarm done: {len(input_requests)} prompts ready in {prewarm_cache_dir}")
+        return
 
     goodput_config_dict = check_goodput_args(args)
 
@@ -1600,6 +1835,23 @@ if __name__ == "__main__":
         "--use-chat-template",
         action="store_true",
         help="Use chat template to format the prompt.",
+    )
+    random_group.add_argument(
+        "--dataset-cache-dir",
+        type=str,
+        default=None,
+        help="Directory for caching generated random datasets. When set, the "
+        "expensive tokenize/decode prompt build runs once and is reused by "
+        "later runs with identical parameters. Falls back to the "
+        "SA_BENCH_DATASET_CACHE_DIR environment variable when unset. Only "
+        "applies to the 'random' dataset.",
+    )
+    random_group.add_argument(
+        "--prewarm-dataset-cache",
+        action="store_true",
+        help="Populate --dataset-cache-dir and exit without sending any "
+        "requests. No server is contacted, so the dataset for a future run can "
+        "be built while the cluster is busy. Used by 'srtctl cache-inputs'.",
     )
     random_group.add_argument(
         "--random-num-workers",

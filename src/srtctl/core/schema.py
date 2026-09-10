@@ -780,6 +780,10 @@ class BenchmarkConfig:
     # Custom dataset fields (sa-bench)
     dataset_name: str | None = None  # "random" (default) or "custom"
     dataset_path: str | None = None  # Container path to dataset file (mount via extra_mount)
+    # Host dir where sa-bench caches generated "random" datasets so repeated sweeps
+    # skip the (minutes-long) tokenize/decode prompt build. Mounted into the
+    # benchmark container by SABenchRunner.
+    dataset_cache_dir: str | None = None
     # AgentPerf benchmark fields (agentperf-client trajectory replay)
     agentperf_client_dir: str | None = None  # Container path to an agentperf-client checkout (mount via extra_mount)
     agentperf_config: str | None = (

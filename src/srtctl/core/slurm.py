@@ -280,6 +280,12 @@ def start_srun_process(
 
     if output:
         srun_cmd.extend(["--output", output])
+        # Stream task output with O_APPEND so another process on the shared
+        # filesystem can inject lines into a live log without srun overwriting
+        # them on its next write — this is what lets the benchmark mark its
+        # stages inside the worker logs. Log files are unique per job, so append
+        # behaves like truncate on the first open.
+        srun_cmd.extend(["--open-mode", "append"])
 
     # Container options
     if container_image:

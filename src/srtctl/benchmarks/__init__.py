@@ -20,6 +20,7 @@ from srtctl.benchmarks import (
 )
 from srtctl.benchmarks.base import (
     BenchmarkRunner,
+    PrewarmPlan,
     get_runner,
     list_benchmarks,
     register_benchmark,
@@ -27,6 +28,7 @@ from srtctl.benchmarks.base import (
 
 __all__ = [
     "BenchmarkRunner",
+    "PrewarmPlan",
     # Runners
     "agentperf",
     "custom",
