@@ -445,6 +445,10 @@ def show_config_details(config: SrtConfig) -> None:
             if tachometer.resolved_node_exporter is not None:
                 node = tachometer.resolved_node_exporter
                 details.add_row("observability", "node_exporter", f"{node.container_image} :{node.port}")
+            if tachometer.resolved_process_exporter is not None:
+                proc = tachometer.resolved_process_exporter
+                launch = f"host binary {proc.binary}" if proc.binary else proc.container_image
+                details.add_row("observability", "process_exporter", f"{launch} :{proc.port}")
 
         if config.telemetry.enabled:
             exporter = config.telemetry.dcgm_exporter
@@ -507,6 +511,15 @@ def validate_setup(srtctl_source: Path) -> None:
         console.print("  make setup ARCH=aarch64  [dim]# for GB200/Grace compute nodes[/]")
         console.print("  make setup ARCH=x86_64   [dim]# for x86_64 compute nodes[/]\n")
         raise SystemExit(1)
+
+    # Optional: the default process exporter is host-native and skipped at launch
+    # (with a warning in the sweep log) when its binary is absent. Surface that at
+    # submit time so the gap is not discovered after the run.
+    if not (configs_dir / "process-exporter").exists():
+        console.print(
+            "[yellow]WARNING:[/] configs/process-exporter not found; Tachometer will run without per-process/"
+            "per-thread CPU telemetry. Re-run [bold]make setup ARCH=<compute_arch>[/] to install it."
+        )
 
 
 def generate_minimal_sbatch_script(
