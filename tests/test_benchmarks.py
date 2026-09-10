@@ -161,40 +161,24 @@ class TestSABenchRunner:
         )
         cmd = runner.build_command(config, runtime)
         assert "random" in cmd
-        assert cmd[-4] == ""  # empty dataset path
-        assert cmd[-3] == "false"  # per-request HTTP sessions by default
-        assert cmd[-2] == "dynamo"
+        assert cmd[-3] == ""  # empty dataset path
+        assert cmd[-2] == "false"  # per-request HTTP sessions by default
         assert cmd[-1] == "/v1/completions"
 
-    def test_build_command_custom_backend_and_endpoint(self):
-        """build_command passes backend and API path through to bench.sh."""
+    def test_build_command_custom_endpoint(self):
+        """build_command passes the API path through to bench.sh."""
         from unittest.mock import MagicMock
 
         from srtctl.benchmarks.sa_bench import SABenchRunner
-        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
 
         runner = SABenchRunner()
         runtime = MagicMock(frontend_port=8000, model_path="/model", is_hf_model=False)
-        config = SrtConfig(
-            name="test",
-            model=ModelConfig(path="/model", container="/image", precision="fp4"),
-            resources=ResourceConfig(gpu_type="h100"),
-            benchmark=BenchmarkConfig(
-                type="sa-bench",
-                isl=8192,
-                osl=1024,
-                concurrencies="2560",
-                backend="dynamo",
-                endpoint="/v1/chat/completions",
-            ),
-        )
 
-        cmd = runner.build_command(config, runtime)
+        cmd = runner.build_command(self._endpoint_config("/v1/chat/completions"), runtime)
 
-        assert cmd[-2] == "dynamo"
         assert cmd[-1] == "/v1/chat/completions"
 
-    def _chat_endpoint_config(self, backend):
+    def _endpoint_config(self, endpoint):
         from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
 
         return SrtConfig(
@@ -206,25 +190,24 @@ class TestSABenchRunner:
                 isl=8192,
                 osl=1024,
                 concurrencies="2560",
-                backend=backend,
-                endpoint="/v1/chat/completions",
+                endpoint=endpoint,
             ),
         )
 
-    @pytest.mark.parametrize("backend", ["dynamo", "openai-chat"])
-    def test_validate_config_accepts_chat_capable_backends(self, backend):
-        """Both chat adapters may target /v1/chat/completions."""
+    @pytest.mark.parametrize("endpoint", ["/v1/completions", "/v1/chat/completions"])
+    def test_validate_config_accepts_both_api_paths(self, endpoint):
+        """The dynamo adapter serves both APIs, so neither needs extra config."""
         from srtctl.benchmarks.sa_bench import SABenchRunner
 
-        assert SABenchRunner().validate_config(self._chat_endpoint_config(backend)) == []
+        assert SABenchRunner().validate_config(self._endpoint_config(endpoint)) == []
 
-    @pytest.mark.parametrize("backend", ["vllm", "sglang", "openai"])
-    def test_validate_config_rejects_completions_backend_on_chat_endpoint(self, backend):
-        """Completions-only adapters cannot post to the chat API."""
+    def test_validate_config_rejects_relative_endpoint(self):
+        """bench.sh appends the path to the frontend URL, so it must be absolute."""
         from srtctl.benchmarks.sa_bench import SABenchRunner
 
-        errors = SABenchRunner().validate_config(self._chat_endpoint_config(backend))
-        assert any("chat-capable" in error for error in errors)
+        errors = SABenchRunner().validate_config(self._endpoint_config("v1/chat/completions"))
+
+        assert any("absolute path" in error for error in errors)
 
     def test_build_command_enables_http_connection_reuse(self):
         """Explicit opt-in is appended without shifting existing arguments."""
@@ -251,8 +234,8 @@ class TestSABenchRunner:
 
         cmd = runner.build_command(config, runtime)
 
-        assert cmd[-4] == "/data/bench.jsonl"
-        assert cmd[-3] == "true"
+        assert cmd[-3] == "/data/bench.jsonl"
+        assert cmd[-2] == "true"
 
     def test_http_connection_reuse_schema_default_and_roundtrip(self):
         """The YAML field is typed and remains opt-in when omitted."""

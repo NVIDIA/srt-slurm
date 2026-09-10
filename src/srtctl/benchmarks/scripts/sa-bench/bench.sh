@@ -67,10 +67,10 @@ USE_CHAT_TEMPLATE=${16:-true}
 DATASET_NAME=${17:-random}
 DATASET_PATH=${18:-}
 REUSE_HTTP_CONNECTIONS=${19:-false}
-SA_BENCH_BACKEND=${20:-dynamo}
-SA_BENCH_API_ENDPOINT=${21:-/v1/completions}
+SA_BENCH_API_ENDPOINT=${20:-/v1/completions}
 
-BENCHMARK_HTTP_ARGS=(--backend "$SA_BENCH_BACKEND" --endpoint "$SA_BENCH_API_ENDPOINT")
+# The dynamo adapter picks the request body from the API path, so it serves both endpoints.
+BENCHMARK_HTTP_ARGS=(--backend "dynamo" --endpoint "$SA_BENCH_API_ENDPOINT")
 
 # Build optional custom tokenizer args
 CUSTOM_TOKENIZER_ARGS=()
@@ -152,7 +152,7 @@ PORT=$(echo "$ENDPOINT" | sed 's|http://||' | cut -d: -f2 | cut -d/ -f1)
 
 WORK_DIR="$(dirname "$0")"
 
-echo "SA-Bench Config: endpoint=${ENDPOINT}; isl=${ISL}; osl=${OSL}; concurrencies=${CONCURRENCIES}; req_rate=${REQ_RATE}; model=${MODEL_NAME}; dataset=${DATASET_NAME}; dataset_path=${DATASET_PATH}; http_connection_mode=${HTTP_CONNECTION_MODE}; backend=${SA_BENCH_BACKEND}; api_path=${SA_BENCH_API_ENDPOINT}"
+echo "SA-Bench Config: endpoint=${ENDPOINT}; isl=${ISL}; osl=${OSL}; concurrencies=${CONCURRENCIES}; req_rate=${REQ_RATE}; model=${MODEL_NAME}; dataset=${DATASET_NAME}; dataset_path=${DATASET_PATH}; http_connection_mode=${HTTP_CONNECTION_MODE}; api_path=${SA_BENCH_API_ENDPOINT}"
 
 # Profiling shared helpers
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
