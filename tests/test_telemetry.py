@@ -127,6 +127,43 @@ class TestTachometerConfig:
 
         assert "--collect-interval=100 " in DCGM_EXPORTER_COMMAND_TEMPLATE
 
+    def test_node_exporter_enables_host_scheduler_collectors(self):
+        """The tachometer node_exporter must collect the host scheduler-pressure
+        family (PSI, procs/context-switch counters, memory-reclaim, per-NUMA free)
+        on top of cpu/infiniband/meminfo -- the steady_probe.sh signal set that was
+        otherwise uncollected. An explicit recipe command still wins."""
+        from srtctl.cli.mixins.telemetry_stage import (
+            NODE_EXPORTER_COLLECTORS,
+            resolve_exporter_command,
+            tachometer_node_exporter_command_template,
+        )
+
+        template = tachometer_node_exporter_command_template()
+        assert "--collector.disable-defaults" in template
+        for collector in ("cpu", "infiniband", "meminfo", "stat", "vmstat", "pressure", "meminfo_numa"):
+            assert f"--collector.{collector}" in template, collector
+        assert set(NODE_EXPORTER_COLLECTORS) >= {"stat", "vmstat", "pressure", "meminfo_numa"}
+        # vmstat's default field set omits pgsteal (page-reclaim); the override
+        # must add it while keeping pgmajfault. Verified against node-exporter v1.8.2.
+        assert "--collector.vmstat.fields=" in template
+        assert "pgsteal" in template
+
+        default = TachometerConfig()
+        cmd = resolve_exporter_command(default.resolved_node_exporter, template)
+        assert "--collector.pressure" in cmd
+        assert f":{default.resolved_node_exporter.port}" in cmd
+
+        # An explicit recipe command must still win over the derived template.
+        custom = TachometerConfig(
+            node_exporter=TelemetryExporterConfig(
+                container_image="node:latest", port=9101, command="/bin/node_exporter --custom :{port}"
+            )
+        )
+        assert (
+            resolve_exporter_command(custom.resolved_node_exporter, template)
+            == "/bin/node_exporter --custom :9101"
+        )
+
     def test_host_sampler_follows_the_scrape_knob(self, tmp_path):
         """The host sampler's cadence derives from the same single knob."""
         import threading

@@ -51,6 +51,47 @@ def tachometer_dcgm_command_template(tachometer: TachometerConfig) -> str:
     return f"dcgm-exporter --collect-interval={tachometer.collect_interval_ms} --address :{{port}}"
 
 
+# Node-exporter collectors the tachometer launch enables. Beyond the original
+# cpu/infiniband/meminfo trio, this adds the host scheduler-pressure family that
+# distinguishes "the box is busy" from "real work is blocked waiting for a
+# resource" -- the signal set the retired steady_probe.sh sampler carried and
+# tachometer did not:
+#   stat         -> node_procs_running / node_procs_blocked / node_context_switches_total
+#   vmstat       -> node_vmstat_pgmajfault / node_vmstat_pgsteal_* (memory reclaim)
+#   pressure     -> node_pressure_{cpu,memory,io}_* (PSI stall time)
+#   meminfo_numa -> node_memory_numa_MemFree_bytes (per-NUMA-node free memory)
+# All four are cheap procfs/sysfs reads (/proc/{stat,vmstat,pressure},
+# /sys/devices/system/node/*/meminfo); unlike dense NVML sampling they carry no
+# measured decode-latency cost. The vendored NodeExporterFilter passes every new
+# family through its default arm, so no scraper change is needed. An explicit
+# recipe ``node_exporter.command`` still wins (resolved in
+# :func:`resolve_exporter_command`).
+NODE_EXPORTER_COLLECTORS = ("cpu", "infiniband", "meminfo", "stat", "vmstat", "pressure", "meminfo_numa")
+
+# node_exporter's vmstat collector defaults to ``^(oom_kill|pgpg|pswp|pg.*fault).*``,
+# which ships pgmajfault but NOT pgsteal_* (page-reclaim). steady_probe.sh carried
+# both major faults and reclaim, so widen the field filter to add pgsteal. Verified
+# against node-exporter v1.8.2: without this, node_vmstat_pgsteal_* is absent.
+NODE_EXPORTER_VMSTAT_FIELDS = "^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*"
+
+
+def tachometer_node_exporter_command_template() -> str:
+    """node_exporter command for the tachometer-owned launch.
+
+    Enables exactly :data:`NODE_EXPORTER_COLLECTORS` on top of
+    ``--collector.disable-defaults`` so the scrape surface is explicit and
+    stable regardless of the node_exporter image's built-in default set. The
+    pressure collector is a no-op on kernels built without ``CONFIG_PSI``
+    (e.g. hecate's ``6.17.0-nvidia-64k``, verified 2026-09-09) -- node_exporter
+    simply omits the family, which downstream tolerates.
+    """
+    collectors = " ".join(f"--collector.{name}" for name in NODE_EXPORTER_COLLECTORS)
+    return (
+        f"/bin/node_exporter --web.listen-address=:{{port}} --collector.disable-defaults "
+        f"{collectors} --collector.vmstat.fields={NODE_EXPORTER_VMSTAT_FIELDS}"
+    )
+
+
 def resolve_exporter_command(exporter_config: TelemetryExporterConfig, default_template: str) -> str:
     """The exact command string an exporter is launched with.
 
@@ -373,10 +414,7 @@ class TelemetryStageMixin:
                     name="tachometer_node_exporter",
                     nodelist=worker_nodes,
                     log_file=self.runtime.log_dir / "tachometer_node_exporter.out",
-                    default_command_template=(
-                        "/bin/node_exporter --web.listen-address=:{port} "
-                        "--collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo"
-                    ),
+                    default_command_template=tachometer_node_exporter_command_template(),
                     use_bash_wrapper=False,
                     critical=False,
                 )

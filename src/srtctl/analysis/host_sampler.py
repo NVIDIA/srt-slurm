@@ -84,6 +84,36 @@ def _meminfo() -> dict:
     return out
 
 
+def _pressure() -> dict:
+    """PSI stall totals from ``/proc/pressure/{cpu,memory,io}``.
+
+    PSI is the signal that separates "this box is busy" from "real work spent
+    time BLOCKED waiting for a resource" -- the question the sampler exists to
+    answer, and the one metric the retired steady_probe.sh flagged as most
+    important. Node_exporter's pressure collector covers worker nodes, but the
+    exporters are launched on backend nodes only; the sampler runs on the
+    orchestrator/head node, so this read is that node's only PSI source.
+
+    Reported as cumulative ``total=`` microseconds (like the cpu jiffies above):
+    the consumer differences consecutive rows over any window it likes. Absent
+    on kernels without ``CONFIG_PSI`` -> the resource key is simply omitted.
+    """
+    out: dict = {}
+    for resource in ("cpu", "memory", "io"):
+        txt = _read(f"/proc/pressure/{resource}")
+        if not txt:
+            continue
+        for line in txt.splitlines():
+            kind = line.split(" ", 1)[0]  # "some" or "full"
+            if kind not in ("some", "full"):
+                continue
+            for field in line.split():
+                if field.startswith("total="):
+                    with contextlib.suppress(ValueError):
+                        out[f"{resource}_{kind}_total_us"] = int(field.split("=", 1)[1])
+    return out
+
+
 # Launcher processes whose cmdline mentions a worker without BEING one. On a real node
 # `srun` appears once per launched process, so a naive cmdline match spends most of the
 # budget on wrappers: observed 14 of 24 slots on theia0019 (job 2753007), crowding out
@@ -223,6 +253,7 @@ class HostSampler:
                             "cpu_total_jiffies": cpu[1] if cpu else None,
                             "loadavg": (_read("/proc/loadavg") or "").split()[:3],
                             "mem": _meminfo(),
+                            "psi": _pressure(),
                             "fd_limit": fd_limit,
                             "established_conns": _established_connections(),
                             "procs": [s for s in (_proc_sample(p) for p in _interesting_pids()) if s],
