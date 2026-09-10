@@ -11,7 +11,7 @@
 #   - nsys-time (time-based): worker is wrapped with nsys profile --delay N --duration M,
 #     capturing the same wall-clock window on all workers simultaneously.
 #
-# No HTTP calls to /engine/start_profile are needed — the benchmark script just
+# No HTTP calls to /engine/control/start_profile are needed — the benchmark script just
 # needs to generate traffic for long enough to cover the capture window.
 #
 # This library exposes the same function signatures as profiling.sh so bench.sh
