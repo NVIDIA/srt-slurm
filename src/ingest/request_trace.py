@@ -52,17 +52,29 @@ the expensive input out of the bundle while keeping the signal.
 another, and it is the renderer's job to drop a flat series -- not this layer's job to
 decide the run had no queueing.
 
+INPUT FILES
+-----------
+Dynamo's file sink is a *rotating gzip JSONL* appender: with ``DYN_REQUEST_TRACE_FILE_PATH``
+set to ``<log_dir>/dynamo-request-trace`` it writes ``dynamo-request-trace.000000.jsonl.gz``,
+``dynamo-request-trace.000001.jsonl.gz``, ... (about 128 MB / ~11k requests per shard on
+the AgentX runs), never a bare ``dynamo-request-trace`` file. ``process`` therefore takes
+one path or a list of shard paths, reads ``.gz`` transparently, and treats the shards as
+one stream -- rows are sorted by ``received_ms`` afterwards, so shard order does not
+matter. A plain uncompressed file is still accepted.
+
 Stdlib only (runs under a bare cluster python3).
 
 Usage:
-    python3 -m src.ingest.request_trace IN_PATH OUT_PATH
+    python3 -m src.ingest.request_trace IN_PATH [IN_PATH ...] OUT_PATH
 """
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import logging
 import sys
+from collections.abc import Iterator, Sequence
 from typing import Any
 
 logger = logging.getLogger("request_trace")
@@ -197,37 +209,51 @@ def _add_prefix_reuse(rows: list[dict], hashes: dict[str, list]) -> int:
     return annotated
 
 
-def process(in_path: str, out_path: str) -> int:
-    """``dynamo-request-trace`` -> ``request_trace.jsonl``. Returns rows written.
+def _iter_lines(paths: Sequence[str]) -> Iterator[str]:
+    """Yield the lines of every shard in order, decompressing ``.gz`` on the fly.
 
-    Two passes conceptually, one pass over the file: rows are flattened while the
+    ``errors="replace"`` on both openers: a torn last line in the shard that was
+    being written when the frontend was killed must not abort the whole ingest.
+    """
+    for path in paths:
+        opener = gzip.open if path.endswith(".gz") else open
+        with opener(path, "rt", errors="replace") as f:
+            yield from f
+
+
+def process(in_path: str | Sequence[str], out_path: str) -> int:
+    """``dynamo-request-trace`` shard(s) -> ``request_trace.jsonl``. Returns rows written.
+
+    ``in_path`` is one file or the list of rotated shards (see INPUT FILES above).
+
+    Two passes conceptually, one pass over the input: rows are flattened while the
     hash arrays are held aside, then the session-derived columns are filled and the
     hashes dropped. Peak memory is the hash arrays (~1.9M ints on the reference hour),
     which is the reason they never reach the bundle.
     """
+    paths = [in_path] if isinstance(in_path, str) else list(in_path)
     rows: list[dict] = []
     hashes: dict[str, list] = {}
     skipped = malformed = 0
 
-    with open(in_path, errors="replace") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                malformed += 1
-                continue
-            row = flatten(record)
-            if row is None:
-                skipped += 1
-                continue
-            seq = ((record.get("event") or {}).get("request") or {}).get("replay") or {}
-            seq_hashes = seq.get("input_sequence_hashes")
-            if seq_hashes:
-                hashes[row["x_request_id"]] = seq_hashes
-            rows.append(row)
+    for line in _iter_lines(paths):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            malformed += 1
+            continue
+        row = flatten(record)
+        if row is None:
+            skipped += 1
+            continue
+        seq = ((record.get("event") or {}).get("request") or {}).get("replay") or {}
+        seq_hashes = seq.get("input_sequence_hashes")
+        if seq_hashes:
+            hashes[row["x_request_id"]] = seq_hashes
+        rows.append(row)
 
     annotated = _add_prefix_reuse(rows, hashes)
     hashes.clear()
@@ -239,9 +265,9 @@ def process(in_path: str, out_path: str) -> int:
 
     sessions = len({r["session_id"] for r in rows if r.get("session_id")})
     logger.info(
-        "request_trace -> %s: %d rows, %d sessions, %d turns with prefix reuse"
+        "request_trace -> %s: %d rows from %d file(s), %d sessions, %d turns with prefix reuse"
         "%s%s",
-        out_path, len(rows), sessions, annotated,
+        out_path, len(rows), len(paths), sessions, annotated,
         f", {skipped} non-request_end skipped" if skipped else "",
         f", {malformed} malformed lines" if malformed else "",
     )
@@ -251,7 +277,7 @@ def process(in_path: str, out_path: str) -> int:
 def main(argv=None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S")
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("in_path", help="dynamo-request-trace (JSON lines)")
+    p.add_argument("in_path", nargs="+", help="dynamo-request-trace shard(s): JSON lines, plain or .gz")
     p.add_argument("out_path", help="output request_trace.jsonl")
     args = p.parse_args(argv)
     process(args.in_path, args.out_path)

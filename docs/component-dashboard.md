@@ -171,7 +171,7 @@ and loses Overview.
 | Leg | Recipe requirement | Artifact | Bundle output | Feeds |
 | --- | ------------------ | -------- | ------------- | ----- |
 | **Metrics** | `observability.enabled` (Tachometer), else the client's own export | `<log_dir>/tachometer/raw/scrape/*.parquet`, else historical `<log_dir>/raw_prometheus.jsonl`, else `<log_dir>/agentic/*/…/server_metrics_export.json(l)` | `server_metrics_export.jsonl` | every time-series panel |
-| **Request trace** | `observability.enabled` | `<log_dir>/dynamo-request-trace` | `request_trace.jsonl` | per-request card, per-session view, the waterfall's KV-transfer band |
+| **Request trace** | `observability.enabled` | `<log_dir>/dynamo-request-trace.NNNNNN.jsonl.gz` (Dynamo's rotated gzip shards; a bare `dynamo-request-trace` is also accepted) | `request_trace.jsonl` | per-request card, per-session view, the waterfall's KV-transfer band |
 | **Per-iteration** | `print_iter_log: true` in the engine config | `SPAN`-free lines in `<log_dir>/*_w*.out` | `iter_bins.json` | batch composition, host/device step time |
 | **Traces** | `observability.enabled` **and** an AIPerf benchmark | `SPAN_CLOSED` lines in `<log_dir>/*.out` | `tempo_traces/<xid>.json` | Overview, routing outcome on the card |
 | **Client** | an AIPerf benchmark at export level `records` (default) | `<log_dir>/agentic/*/aiperf_artifacts/` or `artifacts/*/` | `profile_export.jsonl` | Overview, warmup filtering |
@@ -270,7 +270,7 @@ Produces:
 | `--traces` | `spanlog` | `none` to skip |
 | `--span-logs` | `*.out` | srt-slurm's worker/frontend log naming |
 | `--metrics` | `prometheus` | parses `raw_prometheus.jsonl` |
-| `--request-trace` | `dynamo` | parses `dynamo-request-trace`; the only source of KV-transfer cost and `session_id` |
+| `--request-trace` | `dynamo` | parses every `dynamo-request-trace.*.jsonl[.gz]` shard (and a bare `dynamo-request-trace`) as one stream; the only source of KV-transfer cost and `session_id` |
 | `--iter-log` | `trtllm` | parses `print_iter_log` lines from the worker logs; local->UTC offset is derived per run, not hardcoded |
 | *(automatic)* | — | `trtllm_config_*.yaml` are copied from the run dir into the bundle, giving the Engine tab its real in-flight-batch ceilings instead of the `--max-batch-*` defaults |
 | *(automatic)* | — | `profile_export_aiperf.json` — AIPerf's run summary. Carries `theoretical_prefix_cache_hit` (the ceiling the *workload* offered), `error_summary` / `was_cancelled` / `branch_stats` (run validity), and `effective_concurrency`. Its **absence** is a signal too: AIPerf writes it when a concurrency finishes, so a run killed by its wall clock has none |

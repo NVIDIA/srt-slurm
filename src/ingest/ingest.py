@@ -576,6 +576,22 @@ def run_metrics(args, run_dir: Path, bundle: Path) -> bool:
     return out.exists()
 
 
+# Dynamo's request-trace sink is a rotating gzip JSONL appender. With
+# DYN_REQUEST_TRACE_FILE_PATH=<log_dir>/dynamo-request-trace it writes
+# dynamo-request-trace.000000.jsonl.gz, .000001.jsonl.gz, ... and never a bare
+# `dynamo-request-trace` file; the bare name is kept first for older captures and
+# hand-made inputs. `.jsonl*` also admits an uncompressed shard.
+REQUEST_TRACE_DEFAULT_PATTERNS = ("dynamo-request-trace", "dynamo-request-trace.*.jsonl*")
+
+
+def discover_request_trace(run_dir: Path) -> list[str]:
+    """Every request-trace input under ``run_dir`` (plain file and rotated shards), sorted."""
+    found: set[str] = set()
+    for pattern in REQUEST_TRACE_DEFAULT_PATTERNS:
+        found.update(resolve_inputs(pattern, run_dir))
+    return sorted(found)
+
+
 def run_request_trace(args, run_dir: Path, bundle: Path) -> bool:
     """L2 request-trace axis -> request_trace.jsonl. Returns whether produced.
 
@@ -584,22 +600,29 @@ def run_request_trace(args, run_dir: Path, bundle: Path) -> bool:
     the only one carrying ``session_id``, so both the per-request waterfall and the
     per-session view depend on it.
 
-    Dynamo writes it to the path in ``DYN_REQUEST_TRACE_FILE_PATH``, which srt-slurm
-    sets to ``<log_dir>/dynamo-request-trace`` (no extension, despite being JSON lines).
+    Dynamo writes it under the path in ``DYN_REQUEST_TRACE_FILE_PATH``, which srt-slurm
+    sets to ``<log_dir>/dynamo-request-trace``, as rotated ``.NNNNNN.jsonl.gz`` shards
+    (see ``REQUEST_TRACE_DEFAULT_PATTERNS``). All shards are handed to the processor as
+    one stream; a run of one hour on 8 VR200 nodes produced 12 shards of ~128 MB.
     """
     if args.request_trace == "none":
         _log("L2 req-trace", "skipped (--request-trace none)")
         return False
-    pattern = args.request_trace_input or "dynamo-request-trace"
-    srcs = resolve_inputs(pattern, run_dir)
+    if args.request_trace_input:
+        pattern: str | tuple[str, ...] = args.request_trace_input
+        srcs = resolve_inputs(args.request_trace_input, run_dir)
+    else:
+        pattern = REQUEST_TRACE_DEFAULT_PATTERNS
+        srcs = discover_request_trace(run_dir)
     if not srcs:
         _log("L2 req-trace", f"WARN no request trace matched {pattern!r} under {run_dir}; skipping")
         return False
     out = bundle / "request_trace.jsonl"
-    _log("L1", f"request trace raw: {srcs[0]}")
+    span = srcs[0] if len(srcs) == 1 else f"{srcs[0]} .. {os.path.basename(srcs[-1])}"
+    _log("L1", f"request trace raw: {len(srcs)} file(s): {span}")
     proc = get_processor("request_trace", "dynamo")
-    n = proc(srcs[0], str(out))
-    _log("L2 req-trace", f"dynamo -> {out.name}: {n} requests")
+    n = proc(srcs, str(out))
+    _log("L2 req-trace", f"dynamo -> {out.name}: {n} requests from {len(srcs)} file(s)")
     return n > 0
 
 
@@ -1207,7 +1230,8 @@ def build_parser() -> argparse.ArgumentParser:
     # request-trace axis
     p.add_argument("--request-trace", choices=["dynamo", "none"], default="dynamo")
     p.add_argument("--request-trace-input", default=None,
-                   help="dynamo-request-trace path/glob (default: dynamo-request-trace)")
+                   help="dynamo-request-trace path/glob (default: dynamo-request-trace plus the rotated "
+                        "dynamo-request-trace.NNNNNN.jsonl[.gz] shards Dynamo actually writes)")
 
     # per-iteration axis
     p.add_argument("--iter-log", choices=["trtllm", "none"], default="trtllm")
