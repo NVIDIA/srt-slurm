@@ -18,6 +18,7 @@ import logging
 import math
 import os
 import shlex
+import warnings
 from collections.abc import Iterator, Mapping
 from dataclasses import field
 from enum import Enum
@@ -869,6 +870,41 @@ class ProfilingConfig:
     duration_secs: int | None = None  # nsys --duration: seconds to capture after delay
     benchmark_duration_secs: int = 300  # total traffic generation duration (must cover delay + duration)
 
+    # ---- TRT-LLM nsys capture recipe -------------------------------------------------
+    # Defaults follow the Dynamo Benchmark Playbook §9.5.1.1 "Dynamo + TRTLLM", the set
+    # that produced every usable multi-node capture on nsys 2026.3.x / VR200 disagg:
+    #   -t cuda-sw            NOT `cuda`: on nsys 2026.x plain `cuda` selects the HES hardware
+    #                         trace, which SIGSEGVs the KV transceiver's device-to-device
+    #                         cudaMemcpyAsync; cuda-sw forces the software tracer.
+    #   --cuda-graph-trace=graph  decode runs CUDA graphs; with `node` the graph launches are
+    #                         invisible (~0.3% GPU busy reads as idle), with `graph` each
+    #                         iteration is one GRAPH_TRACE entry and utilisation is real.
+    #   --sample=none --cpuctxsw=none   --sample=process-tree wedged workers at cudaProfilerStop
+    #                         across 8 runs; the price is no scheduler/CPU-time data (every
+    #                         duration is wall-clock). --cpuctxsw=process-tree alone (context
+    #                         switches, no IP sampling) is the safer experiment; both need
+    #                         kernel.perf_event_paranoid <= 2 on the compute node.
+    #   --flush-on-cudaprofilerstop=false --cuda-flush-interval=0   matches the known-good
+    #                         captures; nsys 2026.4 flips the flush default, so set it explicitly.
+    #   --gpu-metrics-devices=none      a second collection path with its own failure modes.
+    # `-c cudaProfilerApi --capture-range-end=stop` (iteration window from prefill/decode
+    # start_step/stop_step via TLLM_PROFILE_START_STOP) is kept: finalising the report when the
+    # range closes is the only path that has produced reports on this stack.
+    nsys_trace: str = "cuda-sw,nvtx,python-gil"
+    nsys_cuda_graph_trace: str = "graph"  # "graph" | "node"
+    nsys_sample: str = "none"  # "none" | "process-tree" | "system-wide"  (nsys --sample)
+    nsys_cpuctxsw: str = "none"  # "none" | "process-tree" | "system-wide"  (nsys --cpuctxsw)
+    nsys_python_sampling: bool = False
+    nsys_python_sampling_frequency: int = 1000
+    nsys_gpu_metrics_devices: str = "none"
+    # NVTX injection library inside the worker container, exported as NVTX_INJECTION64_PATH so
+    # Dynamo's Rust NVTX ranges (DYN_ENABLE_RUST_NVTX=1; needs a wheel built with the `nvtx`
+    # cargo feature) reach nsys. The TRT-LLM containers ship it next to nsys, e.g.
+    # /usr/local/cuda-0.gpgpu/NsightSystems-cli-2026.3.0/target-linux-sbsa-armv8/libToolsInjection64.so
+    nvtx_injection_path: str | None = None
+    # TLLM_PROFILE_LOG_RANKS: which engine ranks log the profiling start/stop iterations.
+    log_ranks: str = "all"
+
     @property
     def enabled(self) -> bool:
         """Check if profiling is enabled."""
@@ -936,6 +972,15 @@ class ProfilingConfig:
             env["TLLM_PROFILE_START_STOP"] = f"{phase_config.start_step}-{phase_config.stop_step}"
             env["TLLM_LLMAPI_ENABLE_NVTX"] = "1"
 
+        if self.is_nsys:
+            # Playbook environment for the profiled workers. TLLM_* keys are ignored by
+            # other engines; DYN_ENABLE_RUST_NVTX is a no-op on wheels built without the
+            # nvtx cargo feature; NVTX_INJECTION64_PATH only when the recipe names the lib.
+            env["TLLM_PROFILE_LOG_RANKS"] = self.log_ranks
+            env["DYN_ENABLE_RUST_NVTX"] = "1"
+            if self.nvtx_injection_path:
+                env["NVTX_INJECTION64_PATH"] = self.nvtx_injection_path
+
         return env
 
     @property
@@ -949,53 +994,45 @@ class ProfilingConfig:
         """
         return os.environ.get("SRTCTL_NSYS_BIN", "nsys")
 
-    def _get_nsys_prefix_trtllm(self, output_file: str) -> list[str]:
-        """Get nsys command prefix for TRTLLM workers.
+    def _nsys_common_flags(self) -> list[str]:
+        """Flags shared by the iteration- and time-based TRT-LLM captures (see the field docs)."""
+        return [
+            "-t",
+            self.nsys_trace,
+            f"--cuda-graph-trace={self.nsys_cuda_graph_trace}",
+            f"--sample={self.nsys_sample}",
+            f"--cpuctxsw={self.nsys_cpuctxsw}",
+            f"--python-sampling={'true' if self.nsys_python_sampling else 'false'}",
+            f"--python-sampling-frequency={self.nsys_python_sampling_frequency}",
+            f"--gpu-metrics-devices={self.nsys_gpu_metrics_devices}",
+            "--flush-on-cudaprofilerstop=false",
+            "--cuda-flush-interval=0",
+        ]
 
-        Supports both iteration-based (cudaProfilerApi trigger via TLLM_PROFILE_START_STOP)
-        and time-based (--delay/--duration) capture modes.
+    def _get_nsys_prefix_trtllm(self, output_file: str) -> list[str]:
+        """nsys command prefix for TRT-LLM workers (Dynamo Benchmark Playbook §9.5.1.1 recipe).
+
+        Iteration-based (default): TLLM_PROFILE_START_STOP makes the PyExecutor call
+        cudaProfilerStart/Stop on every rank, `-c cudaProfilerApi --capture-range-end=stop`
+        records exactly that window and finalises the report as soon as it closes. Time-based
+        (nsys-time): --delay/--duration instead. One nsys per srun task (= engine rank);
+        the caller's ``output_file`` carries ``%q{SLURM_PROCID}`` so ranks never collide.
         """
+        cmd = [self.nsys_binary, "profile", "--force-overwrite=true"] + self._nsys_common_flags()
         if self.is_nsys_time:
-            cmd = [
-                self.nsys_binary,
-                "profile",
-                "-t",
-                "cuda,nvtx,ucx",
-                "--sample=none",
-                "--cuda-graph-trace=node",
-            ]
             if self.delay_secs is not None:
                 cmd += ["--delay", str(self.delay_secs)]
             if self.duration_secs is not None:
                 cmd += ["--duration", str(self.duration_secs)]
         else:
-            # Iteration-based: TLLM_PROFILE_START_STOP env var triggers cudaProfilerStart/Stop
-            cmd = [
-                self.nsys_binary,
-                "profile",
-                "-t",
-                "cuda,nvtx,ucx",
-                "--sample=none",
-                "--cuda-graph-trace=node",
-                "-c",
-                "cudaProfilerApi",
-                "--capture-range-end",
-                "stop",
-            ]
+            cmd += ["-c", "cudaProfilerApi", "--capture-range-end=stop"]
 
         if self.extra_nsys_args:
             cmd.extend(self.extra_nsys_args)
 
-        cmd += [
-            "--kill",
-            "none",
-            "--wait",
-            "all",
-            "--force-overwrite",
-            "true",
-            "-o",
-            output_file,
-        ]
+        # --kill none / --wait all: nsys must neither kill the engine when its own
+        # session ends nor exit before the MPI ranks trtllm-llmapi-launch spawns.
+        cmd += ["--kill", "none", "--wait", "all", "-o", output_file]
         return cmd
 
     def get_nsys_prefix(
@@ -2253,6 +2290,28 @@ class SrtConfig:
         # torch profiling is SGLang-only (uses SGLANG_TORCH_PROFILER_DIR)
         if prof.is_torch and backend_type == "trtllm":
             raise ValidationError("torch profiling is not supported for the trtllm backend; use nsys instead")
+
+        if prof.is_nsys:
+            for name, value, allowed in (
+                ("nsys_cuda_graph_trace", prof.nsys_cuda_graph_trace, ("graph", "node")),
+                ("nsys_sample", prof.nsys_sample, ("none", "process-tree", "system-wide")),
+                ("nsys_cpuctxsw", prof.nsys_cpuctxsw, ("none", "process-tree", "system-wide")),
+            ):
+                if value not in allowed:
+                    raise ValidationError(f"profiling.{name} must be one of {allowed}, got {value!r}")
+            if not prof.nsys_trace.strip():
+                raise ValidationError(
+                    "profiling.nsys_trace must be a non-empty nsys -t list, e.g. 'cuda-sw,nvtx,python-gil'"
+                )
+            if prof.nsys_sample != "none":
+                # Not an error: the playbook measured wedged workers at cudaProfilerStop with
+                # --sample=process-tree; the user asked for it explicitly.
+                warnings.warn(
+                    "profiling.nsys_sample != 'none': CPU IP sampling wedged TRT-LLM workers at "
+                    "cudaProfilerStop in the playbook campaign and needs kernel.perf_event_paranoid <= 2; "
+                    "prefer nsys_cpuctxsw: process-tree alone.",
+                    stacklevel=2,
+                )
 
         # nsys-time (time-based capture via nsys --delay/--duration) is supported
         # for all backends. get_nsys_prefix() emits a time-based command for the

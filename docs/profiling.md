@@ -109,17 +109,60 @@ Profiling has specific requirements:
 
 ### nsys-specific behavior
 
-When using `nsys`, workers are wrapped with:
+**TRT-LLM workers (`backend.type: trtllm`)** are wrapped with the capture recipe from the Dynamo
+Benchmark Playbook §9.5.1.1 "Dynamo + TRTLLM", the flag set that produced every usable multi-node
+capture on nsys 2026.3.x / VR200 disaggregated serving:
 
 ```bash
-nsys profile -t cuda,nvtx --cuda-graph-trace=node \
-  -c cudaProfilerApi --capture-range-end stop \
-  [extra_nsys_args...] \
-  -o /logs/profiles/{mode}/{name} \
-  python3 -m sglang.launch_server ...
+nsys profile --force-overwrite=true \
+  -t cuda-sw,nvtx,python-gil --cuda-graph-trace=graph \
+  --sample=none --cpuctxsw=none --python-sampling=false --python-sampling-frequency=1000 \
+  --gpu-metrics-devices=none --flush-on-cudaprofilerstop=false --cuda-flush-interval=0 \
+  -c cudaProfilerApi --capture-range-end=stop \
+  [extra_nsys_args...] --kill none --wait all \
+  -o /logs/profiles/{mode}/{leader}_{mode}_w{index}_profile_rank%q{SLURM_PROCID} \
+  trtllm-llmapi-launch python3 -m dynamo.trtllm ...
 ```
 
-You can pass extra arguments via `profiling.extra_nsys_args` (e.g. `["--stats=true", "--trace=osrt"]`).
+One `nsys` runs per srun task, i.e. per engine rank; `%q{SLURM_PROCID}` is nsys's own env-var
+substitution, expanded inside the launched process, so each rank gets its own `.nsys-rep`.
+The capture window is the TRT-LLM iteration range from `prefill`/`decode` `start_step`/`stop_step`
+(`TLLM_PROFILE_START_STOP`): the PyExecutor calls `cudaProfilerStart`/`cudaProfilerStop` on every rank
+at those iterations and `--capture-range-end=stop` finalises the report the moment the range closes.
+Reports appear under `<log_dir>/profiles/<mode>/` while the benchmark is still running.
+
+Why each flag (from the playbook):
+
+| Flag | Reason |
+| ---- | ------ |
+| `-t cuda-sw`, not `cuda` | on nsys 2026.x plain `cuda` selects the HES hardware trace, which SIGSEGVs the KV transceiver's device-to-device `cudaMemcpyAsync`; `cuda-sw` forces the software tracer |
+| `--cuda-graph-trace=graph` | decode runs CUDA graphs; with `node` the launches are invisible (~0.3 % GPU busy reads as idle), with `graph` each iteration is one entry and utilisation is real |
+| `--sample=none --cpuctxsw=none` | `--sample=process-tree` wedged workers at `cudaProfilerStop` across 8 runs. Cost: no scheduler/CPU-time data, every duration is wall-clock. `nsys_cpuctxsw: process-tree` alone (context switches, no IP sampling) is the safer experiment; both need `kernel.perf_event_paranoid <= 2` on the compute node |
+| `-c cudaProfilerApi --capture-range-end=stop` | finalise-at-process-exit has never produced a report on this stack |
+| `--flush-on-cudaprofilerstop=false --cuda-flush-interval=0` | matches the known-good captures; nsys 2026.4 flips the flush default, so it is set explicitly |
+| `--gpu-metrics-devices=none` | a second collection path with its own failure modes |
+
+Worker environment set alongside: `TLLM_PROFILE_START_STOP=<start>-<stop>`, `TLLM_LLMAPI_ENABLE_NVTX=1`,
+`TLLM_PROFILE_LOG_RANKS=<log_ranks>` (default `all`), `DYN_ENABLE_RUST_NVTX=1` (Dynamo's Rust NVTX
+ranges; effective only on a wheel built with the `nvtx` cargo feature) and, when
+`nvtx_injection_path` is set, `NVTX_INJECTION64_PATH` pointing at nsys's injection library inside the
+container (TRT-LLM containers ship it next to nsys, e.g.
+`/usr/local/cuda-0.gpgpu/NsightSystems-cli-2026.3.0/target-linux-sbsa-armv8/libToolsInjection64.so`).
+
+Knobs (all optional, defaults = the recipe above): `nsys_trace`, `nsys_cuda_graph_trace` (`graph`|`node`),
+`nsys_sample` and `nsys_cpuctxsw` (`none`|`process-tree`|`system-wide`), `nsys_python_sampling`,
+`nsys_python_sampling_frequency`, `nsys_gpu_metrics_devices`, `nvtx_injection_path`, `log_ranks`,
+plus `extra_nsys_args` (appended before `-o`). `nsys-time` uses the same trace flags with
+`--delay`/`--duration` instead of the cudaProfilerApi window. The `profiling:` block is independent of
+`observability.enabled`, so the capture cost can be measured against a default-visibility run.
+
+Sizing the window: `start_step` counts engine iterations, which begin with traffic, not with worker
+start. On the 8-node AgentX recipe the decode worker ran ~20 iterations/s and each prefill worker
+~2.7/s in steady state, so `decode: 6000-6600` and `prefill: 1200-1300` both capture about 30-40 s
+roughly 12 minutes into the benchmark.
+
+**SGLang / vLLM workers** keep the time-based or `--trace-fork-before-exec` prefixes described in the
+examples below; `extra_nsys_args` applies to them as well.
 
 ## Example Configurations
 
