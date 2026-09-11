@@ -28,8 +28,12 @@ SECOND = 1_000_000_000
 _META_COLUMNS = ("frontend_index", "hostname", "job_id", "run_name", "worker_index", "worker_process", "worker_role")
 
 
-def _write_parquet(path: Path, rows: list[dict]) -> Path:
-    """Build a parquet file with the exact column layout of tachometer-writer's Row."""
+def _write_parquet(path: Path, rows: list[dict], *, with_timestamp: bool = True) -> Path:
+    """Build a parquet file with the exact column layout of tachometer-writer's Row.
+
+    ``with_timestamp=False`` reproduces the pre-#350 writer (every release asset up to
+    v1.0.96): ``time_since_start`` only, no ``timestamp_ns`` column.
+    """
     cols = {
         "scraper_endpoint": pa.array([r["endpoint"] for r in rows], pa.string()),
         "metric_name": pa.array([r["name"] for r in rows], pa.string()),
@@ -39,8 +43,9 @@ def _write_parquet(path: Path, rows: list[dict]) -> Path:
         "histogram_sum": pa.array([r.get("sum") for r in rows], pa.float64()),
         "histogram_count": pa.array([r.get("count") for r in rows], pa.float64()),
         "time_since_start": pa.array([(r["ts"] - T0) / 1e9 for r in rows], pa.float64()),
-        "timestamp_ns": pa.array([r["ts"] for r in rows], pa.int64()),
     }
+    if with_timestamp:
+        cols["timestamp_ns"] = pa.array([r["ts"] for r in rows], pa.int64())
     for meta in _META_COLUMNS:
         cols[meta] = pa.array([r.get(meta, "") for r in rows], pa.string())
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -140,6 +145,76 @@ def _process(log_dir: Path, tmp_path: Path) -> list[dict]:
     lines = [json.loads(x) for x in out.read_text().splitlines() if x.strip()]
     assert n == len(lines)
     return lines
+
+
+class TestMissingTimestampColumn:
+    """Parquet from a scraper that predates ``timestamp_ns`` (#350) must still convert.
+
+    Every published release asset up to v1.0.96 is such a binary (the release workflow
+    re-used the pre-#350 build), so this is the shape most captured runs have.
+    """
+
+    @staticmethod
+    def _legacy_log_dir(tmp_path: Path) -> Path:
+        d = tmp_path / "logs"
+        _write_parquet(
+            d / "tachometer" / "raw" / "scrape" / "incomplete-4.parquet", _fixture_rows(), with_timestamp=False
+        )
+        return d
+
+    def test_start_taken_from_tachometer_out(self, tmp_path: Path, caplog):
+        import os
+        from datetime import datetime, timezone
+
+        d = self._legacy_log_dir(tmp_path)
+        # The scraper's first log line is stamped within the second it starts counting from.
+        stamp = datetime.fromtimestamp(T0 / 1e9, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        (d / "tachometer.out").write_text(
+            f"[{stamp} INFO  tachometer_scraper] Using remote storage path: scrape\n"
+            f"[{stamp} INFO  tachometer_scraper] Rows per parquet: 1000000, Save interval: 5s\n"
+        )
+        # A misleading mtime must not win over the log.
+        os.utime(d / "tachometer" / "raw" / "scrape" / "incomplete-4.parquet", (0, 0))
+
+        with caplog.at_level(logging.WARNING, logger="metrics_tachometer"):
+            lines = _process(d, tmp_path)
+
+        assert [ln["timestamp_ns"] for ln in lines] == [T0, T0 + SECOND]
+        assert lines[0]["metrics"]["dynamo_frontend_requests_total"][0]["value"] == 42.0
+        assert any("tachometer.out" in rec.getMessage() for rec in caplog.records)
+
+    def test_start_falls_back_to_parquet_mtime(self, tmp_path: Path, caplog):
+        import os
+
+        d = self._legacy_log_dir(tmp_path)
+        parquet = d / "tachometer" / "raw" / "scrape" / "incomplete-4.parquet"
+        # No tachometer.out: the file was last written at start + max(time_since_start).
+        max_since = max((r["ts"] - T0) / 1e9 for r in _fixture_rows())
+        os.utime(parquet, (T0 / 1e9 + max_since, T0 / 1e9 + max_since))
+
+        with caplog.at_level(logging.WARNING, logger="metrics_tachometer"):
+            lines = _process(d, tmp_path)
+
+        assert [ln["timestamp_ns"] for ln in lines] == [T0, T0 + SECOND]
+        assert any("mtime" in rec.getMessage() for rec in caplog.records)
+
+    def test_explicit_start_ns_wins(self, tmp_path: Path):
+        from src.ingest.metrics_tachometer import main
+
+        d = self._legacy_log_dir(tmp_path)
+        (d / "tachometer.out").write_text("[1999-01-01T00:00:00Z INFO  tachometer_scraper] wrong clock\n")
+        out = tmp_path / "server_metrics_export.jsonl"
+
+        assert main([str(d), str(out), "--start-ns", str(T0)]) == 0
+
+        lines = [json.loads(x) for x in out.read_text().splitlines() if x.strip()]
+        assert [ln["timestamp_ns"] for ln in lines] == [T0, T0 + SECOND]
+
+    def test_timestamp_column_is_preferred_when_present(self, log_dir: Path, tmp_path: Path):
+        # A stale tachometer.out must be ignored when the parquet carries real timestamps.
+        (log_dir / "tachometer.out").write_text("[1999-01-01T00:00:00Z INFO  tachometer_scraper] wrong clock\n")
+        lines = _process(log_dir, tmp_path)
+        assert [ln["timestamp_ns"] for ln in lines] == [T0, T0 + SECOND]
 
 
 class TestTachometerProcessor:
