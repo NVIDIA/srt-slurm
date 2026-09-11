@@ -671,10 +671,7 @@ def expand_observability(cfg: dict) -> dict:
         # unset here too. An explicit False must remain the master opt-out.
         if backend.get("publish_events_and_metrics") is None:
             backend["publish_events_and_metrics"] = True
-        if (
-            frontend.get("type", "dynamo") == "dynamo"
-            and backend["publish_events_and_metrics"] is False
-        ):
+        if frontend.get("type", "dynamo") == "dynamo" and backend["publish_events_and_metrics"] is False:
             logger.warning(
                 "observability.enabled but backend.publish_events_and_metrics is explicitly false "
                 "— srt-slurm will enable neither metrics nor KV-event publication. "

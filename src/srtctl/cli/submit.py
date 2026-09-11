@@ -228,7 +228,9 @@ def show_config_details(config: SrtConfig) -> None:
             }
             publication = [f"{flag} ({descriptions[flag]})" for flag in config.backend.dynamo_metrics_flags]
             disabled_by = (
-                "publish_events_and_metrics" if config.backend.publish_events_and_metrics is False else "publish_metrics"
+                "publish_events_and_metrics"
+                if config.backend.publish_events_and_metrics is False
+                else "publish_metrics"
             )
             console.print(
                 Panel(
