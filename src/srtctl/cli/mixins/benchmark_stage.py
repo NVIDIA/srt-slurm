@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 
 from srtctl.core.fingerprint import format_identity_verification, verify_identity
 from srtctl.core.health import wait_for_model
+from srtctl.core.ip_utils import url_host
 from srtctl.core.lockfile import collect_worker_fingerprints
 from srtctl.core.power.contract import (
     CONTAINER_LOG_DIR,
@@ -684,6 +685,15 @@ class BenchmarkStageMixin:
         # Custom commands preserve logical topology order; built-in AIPerf
         # runners retain their historical sorted physical-process list.
         urls = list(dict.fromkeys(urls)) if logical_workers_only else sorted(set(urls))
+
+        # Add CPU power exporter endpoints (one per worker node) when configured.
+        cpu_power_exporter = getattr(self.config.telemetry, "cpu_power_exporter", None)
+        if self.config.telemetry.enabled and cpu_power_exporter is not None:
+            worker_nodes = sorted({process.node for process in self.backend_processes})
+            for node in worker_nodes:
+                host = get_hostname_ip(node, self.runtime.network_interface)
+                urls.append(f"http://{url_host(host)}:{cpu_power_exporter.port}/metrics")
+
         return {"AIPERF_SERVER_METRICS_URLS": ",".join(urls)}
 
     def _get_benchmark_env(self, runner: "BenchmarkRunner") -> dict[str, str]:

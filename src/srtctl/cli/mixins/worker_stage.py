@@ -343,6 +343,18 @@ class WorkerStageMixin:
         # Add config environment variables
         env_to_set.update(self.runtime.environment)
 
+        # Native TRT-LLM KV-event subscribers need routable publisher hosts for
+        # multi-node endpoints.  Dynamo can otherwise fall back to
+        # SLURM_STEP_NODELIST, but that step-scoped variable is not guaranteed to
+        # be available inside every container-launch path.  Set the endpoint's
+        # nodes explicitly, while preserving a recipe-provided override.
+        if (
+            self.backend.type == "trtllm"
+            and len(endpoint_nodes) > 1
+            and env_to_set.get("DYN_TRTLLM_PUBLISH_KV_EVENTS", "").lower() == "true"
+        ):
+            env_to_set.setdefault("DYN_TRTLLM_KV_EVENT_HOSTS", ",".join(endpoint_nodes))
+
         # Add profiling environment variables
         if profiling.enabled:
             profile_dir = str(self.runtime.log_dir / "profiles")

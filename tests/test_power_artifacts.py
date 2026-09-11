@@ -13,10 +13,16 @@ import pytest
 
 import srtctl.core.power.parser as power_parser
 from srtctl.core.power.contract import (
+    GPU_UTIL_METRIC,
     MANIFEST_FILENAME,
     SAMPLES_FILENAME,
     SAMPLES_HEADER,
+    SAMPLES_HEADER_V1,
+    SAMPLES_SCHEMA_VERSION,
+    SAMPLES_SCHEMA_VERSION_V1,
     SCHEMA_VERSION,
+    SM_ACTIVE_METRIC,
+    UTILIZATION_METRICS,
     WINDOWS_DIRNAME,
     Reason,
     atomic_write_json,
@@ -66,7 +72,16 @@ def _metric(gpu, uuid, value, **labels):
     return f"DCGM_FI_DEV_POWER_USAGE{{{label_text}}} {value}"
 
 
+def _util(gpu, uuid, value, metric="DCGM_FI_DEV_GPU_UTIL", **labels):
+    label_text = ",".join(
+        [f'gpu="{gpu}"', f'UUID="{uuid}"', *[f'{k}="{v}"' for k, v in labels.items()]],
+    )
+    return f"{metric}{{{label_text}}} {value}"
+
+
 PREAMBLE = "# HELP DCGM_FI_DEV_POWER_USAGE Power draw (in W).\n# TYPE DCGM_FI_DEV_POWER_USAGE gauge\n"
+
+UTIL_PREAMBLE = "# TYPE DCGM_FI_DEV_GPU_UTIL gauge\n# TYPE DCGM_FI_PROF_SM_ACTIVE gauge\n"
 
 
 def _scrape(*metrics, preamble=PREAMBLE):
@@ -189,6 +204,135 @@ class TestDcgmParser:
         with pytest.raises(KeyboardInterrupt):
             parse_power_scrape("malformed")
 
+    def test_utilization_attaches_to_matching_power_reading(self):
+        text = _scrape(
+            _metric(0, "GPU-aaa", 400.0),
+            _metric(1, "GPU-bbb", 401.0),
+            _util(0, "GPU-aaa", 87),
+            _util(1, "GPU-bbb", 12.5),
+            _util(0, "GPU-aaa", 0.73, metric="DCGM_FI_PROF_SM_ACTIVE"),
+            preamble=PREAMBLE + UTIL_PREAMBLE,
+        )
+
+        scrape = parse_power_scrape(text)
+
+        assert [(r.gpu_index, r.power_w, r.gpu_util_pct, r.sm_active) for r in scrape.readings] == [
+            (0, 400.0, 87.0, 0.73),
+            (1, 401.0, 12.5, None),
+        ]
+        assert scrape.reason_codes == ()
+
+    def test_absent_utilization_families_leave_fields_none_without_reasons(self):
+        scrape = parse_power_scrape(_scrape(_metric(0, "GPU-aaa", 400.0)))
+
+        assert [(r.gpu_util_pct, r.sm_active) for r in scrape.readings] == [(None, None)]
+        assert scrape.reason_codes == ()
+
+    @pytest.mark.parametrize(
+        ("metric", "value"),
+        [
+            ("DCGM_FI_DEV_GPU_UTIL", "NaN"),
+            ("DCGM_FI_DEV_GPU_UTIL", "-1"),
+            ("DCGM_FI_DEV_GPU_UTIL", "100.5"),
+            ("DCGM_FI_PROF_SM_ACTIVE", "1.01"),
+            ("DCGM_FI_PROF_SM_ACTIVE", "-0.1"),
+            ("DCGM_FI_PROF_SM_ACTIVE", "+Inf"),
+        ],
+    )
+    def test_out_of_range_utilization_is_dropped_silently(self, metric, value):
+        text = _scrape(
+            _metric(0, "GPU-aaa", 400.0),
+            _util(0, "GPU-aaa", value, metric=metric),
+            preamble=PREAMBLE + UTIL_PREAMBLE,
+        )
+
+        scrape = parse_power_scrape(text)
+
+        assert [(r.gpu_index, r.gpu_util_pct, r.sm_active) for r in scrape.readings] == [(0, None, None)]
+        assert scrape.reason_codes == ()
+
+    @pytest.mark.parametrize("metric", ["DCGM_FI_DEV_GPU_UTIL", "DCGM_FI_PROF_SM_ACTIVE"])
+    def test_range_bounds_are_inclusive(self, metric):
+        high = "100" if metric == "DCGM_FI_DEV_GPU_UTIL" else "1"
+        text = _scrape(
+            _metric(0, "GPU-aaa", 400.0),
+            _metric(1, "GPU-bbb", 401.0),
+            _util(0, "GPU-aaa", "0", metric=metric),
+            _util(1, "GPU-bbb", high, metric=metric),
+            preamble=PREAMBLE + UTIL_PREAMBLE,
+        )
+
+        scrape = parse_power_scrape(text)
+
+        field = "gpu_util_pct" if metric == "DCGM_FI_DEV_GPU_UTIL" else "sm_active"
+        assert [getattr(r, field) for r in scrape.readings] == [0.0, float(high)]
+
+    def test_duplicate_utilization_for_one_gpu_is_dropped_silently(self):
+        text = _scrape(
+            _metric(0, "GPU-aaa", 400.0),
+            _util(0, "GPU-aaa", 10),
+            _util(0, "GPU-aaa", 20),
+            _util(0, "GPU-aaa", 0.5, metric="DCGM_FI_PROF_SM_ACTIVE"),
+            preamble=PREAMBLE + UTIL_PREAMBLE,
+        )
+
+        scrape = parse_power_scrape(text)
+
+        assert [(r.gpu_index, r.power_w, r.gpu_util_pct, r.sm_active) for r in scrape.readings] == [
+            (0, 400.0, None, 0.5)
+        ]
+        assert scrape.reason_codes == ()
+
+    def test_utilization_without_power_produces_no_row(self):
+        text = _scrape(
+            _metric(0, "GPU-aaa", 400.0),
+            _util(1, "GPU-bbb", 50),
+            preamble=PREAMBLE + UTIL_PREAMBLE,
+        )
+
+        scrape = parse_power_scrape(text)
+
+        assert [r.gpu_index for r in scrape.readings] == [0]
+        assert scrape.reason_codes == ()
+
+    def test_mig_utilization_is_dropped_silently(self):
+        text = _scrape(
+            _metric(0, "GPU-aaa", 400.0),
+            _util(0, "GPU-aaa", 50, GPU_I_ID="3", GPU_I_PROFILE="1g.10gb"),
+            preamble=PREAMBLE + UTIL_PREAMBLE,
+        )
+
+        scrape = parse_power_scrape(text)
+
+        assert [(r.gpu_index, r.gpu_util_pct) for r in scrape.readings] == [(0, None)]
+        assert scrape.reason_codes == ()
+
+    def test_utilization_with_bad_gpu_label_is_dropped_silently(self):
+        text = _scrape(
+            _metric(0, "GPU-aaa", 400.0),
+            'DCGM_FI_DEV_GPU_UTIL{UUID="GPU-aaa"} 50',
+            'DCGM_FI_DEV_GPU_UTIL{gpu="x",UUID="GPU-aaa"} 50',
+            preamble=PREAMBLE + UTIL_PREAMBLE,
+        )
+
+        scrape = parse_power_scrape(text)
+
+        assert [(r.gpu_index, r.gpu_util_pct) for r in scrape.readings] == [(0, None)]
+        assert scrape.reason_codes == ()
+
+    def test_duplicate_power_still_drops_the_row_even_with_utilization(self):
+        text = _scrape(
+            _metric(0, "GPU-aaa", 100.0),
+            _metric(0, "GPU-aaa", 101.0),
+            _util(0, "GPU-aaa", 50),
+            preamble=PREAMBLE + UTIL_PREAMBLE,
+        )
+
+        scrape = parse_power_scrape(text)
+
+        assert scrape.readings == ()
+        assert Reason.DUPLICATE_POWER_METRIC in scrape.reason_codes
+
 
 class TestExpectedTopology:
     """Expected devices derived from srt-slurm backend processes."""
@@ -262,9 +406,9 @@ class TestExpectedTopology:
 class TestSampleArtifact:
     """samples.csv round trip."""
 
-    def test_header_constant_is_pinned(self):
-        """Writer and reader both consume the constant, so pin it literally."""
-        assert SAMPLES_HEADER == (
+    def test_header_constants_are_pinned(self):
+        """Writer and reader both consume the constants, so pin them literally."""
+        assert SAMPLES_HEADER_V1 == (
             "schema_version",
             "timestamp_unix",
             "scrape_seq",
@@ -273,6 +417,20 @@ class TestSampleArtifact:
             "gpu_uuid",
             "power_w",
         )
+        assert (*SAMPLES_HEADER_V1, "gpu_util_pct", "sm_active") == SAMPLES_HEADER
+        assert SAMPLES_SCHEMA_VERSION_V1 == 1
+        assert SAMPLES_SCHEMA_VERSION == 2
+        assert SCHEMA_VERSION == 1
+
+    def test_utilization_metrics_are_pinned(self):
+        """Parser, reader, and manifest all key off this tuple; pin it in column order."""
+        assert [(m.column, m.metric, m.unit, m.max_value) for m in UTILIZATION_METRICS] == [
+            ("gpu_util_pct", GPU_UTIL_METRIC, "percent", 100.0),
+            ("sm_active", SM_ACTIVE_METRIC, "fraction", 1.0),
+        ]
+        assert GPU_UTIL_METRIC == "DCGM_FI_DEV_GPU_UTIL"
+        assert SM_ACTIVE_METRIC == "DCGM_FI_PROF_SM_ACTIVE"
+        assert tuple(m.column for m in UTILIZATION_METRICS) == SAMPLES_HEADER[len(SAMPLES_HEADER_V1) :]
 
     def test_round_trip_preserves_rows_and_derives_devices(self, tmp_path):
         path = tmp_path / SAMPLES_FILENAME
@@ -292,7 +450,7 @@ class TestSampleArtifact:
             assert next(csv.reader(handle)) == list(SAMPLES_HEADER)
         assert reasons == ()
         assert writer.row_count == 3
-        assert [row.schema_version for row in rows] == [SCHEMA_VERSION] * 3
+        assert [row.schema_version for row in rows] == [SAMPLES_SCHEMA_VERSION] * 3
         observed = derive_observed_devices(rows)
         assert [(d.hostname, d.gpu_index, d.gpu_uuids) for d in observed] == [
             ("node-a", 0, ("GPU-aaa",)),
@@ -340,10 +498,16 @@ class TestSampleArtifact:
     @pytest.mark.parametrize(
         ("bad_row", "reason"),
         [
-            ("1,1000.0,0,node-a,0,GPU-aaa,not-a-number", Reason.SAMPLES_CSV_MALFORMED),
-            ("1,1000.0,0,node-a,0,GPU-aaa,NaN", Reason.SAMPLES_CSV_MALFORMED),
-            ("1,1000.0,0,node-a,0,GPU-aaa,-5", Reason.SAMPLES_CSV_MALFORMED),
-            ("1,1000.0,0,node-a,0,GPU-aaa", Reason.SAMPLES_CSV_MALFORMED),
+            ("2,1000.0,0,node-a,0,GPU-aaa,not-a-number,,", Reason.SAMPLES_CSV_MALFORMED),
+            ("2,1000.0,0,node-a,0,GPU-aaa,NaN,,", Reason.SAMPLES_CSV_MALFORMED),
+            ("2,1000.0,0,node-a,0,GPU-aaa,-5,,", Reason.SAMPLES_CSV_MALFORMED),
+            ("2,1000.0,0,node-a,0,GPU-aaa", Reason.SAMPLES_CSV_MALFORMED),
+            ("1,1000.0,0,node-a,0,GPU-aaa,400.0,,", Reason.SAMPLES_CSV_MALFORMED),
+            ("2,1000.0,0,node-a,0,GPU-aaa,400.0,abc,", Reason.SAMPLES_CSV_MALFORMED),
+            ("2,1000.0,0,node-a,0,GPU-aaa,400.0,101,", Reason.SAMPLES_CSV_MALFORMED),
+            ("2,1000.0,0,node-a,0,GPU-aaa,400.0,-1,", Reason.SAMPLES_CSV_MALFORMED),
+            ("2,1000.0,0,node-a,0,GPU-aaa,400.0,,1.5", Reason.SAMPLES_CSV_MALFORMED),
+            ("2,1000.0,0,node-a,0,GPU-aaa,400.0,,nan", Reason.SAMPLES_CSV_MALFORMED),
         ],
     )
     def test_malformed_rows_are_reported(self, tmp_path, bad_row, reason):
@@ -358,7 +522,7 @@ class TestSampleArtifact:
     def test_duplicate_row_key_is_reported(self, tmp_path):
         path = tmp_path / SAMPLES_FILENAME
         path.write_text(
-            ",".join(SAMPLES_HEADER) + "\n1,1000.0,0,node-a,0,GPU-aaa,400.0\n1,1000.5,0,node-a,0,GPU-aaa,401.0\n"
+            ",".join(SAMPLES_HEADER) + "\n2,1000.0,0,node-a,0,GPU-aaa,400.0,,\n2,1000.5,0,node-a,0,GPU-aaa,401.0,,\n"
         )
 
         _, reasons = read_samples(path)
@@ -368,7 +532,7 @@ class TestSampleArtifact:
     def test_non_monotonic_device_timestamps_are_reported(self, tmp_path):
         path = tmp_path / SAMPLES_FILENAME
         path.write_text(
-            ",".join(SAMPLES_HEADER) + "\n1,1001.0,0,node-a,0,GPU-aaa,400.0\n1,1000.0,1,node-a,0,GPU-aaa,401.0\n"
+            ",".join(SAMPLES_HEADER) + "\n2,1001.0,0,node-a,0,GPU-aaa,400.0,,\n2,1000.0,1,node-a,0,GPU-aaa,401.0,,\n"
         )
 
         _, reasons = read_samples(path)
@@ -378,7 +542,7 @@ class TestSampleArtifact:
     def test_equal_device_timestamps_are_allowed(self, tmp_path):
         path = tmp_path / SAMPLES_FILENAME
         path.write_text(
-            ",".join(SAMPLES_HEADER) + "\n1,1000.0,0,node-a,0,GPU-aaa,400.0\n1,1000.0,1,node-a,0,GPU-aaa,401.0\n"
+            ",".join(SAMPLES_HEADER) + "\n2,1000.0,0,node-a,0,GPU-aaa,400.0,,\n2,1000.0,1,node-a,0,GPU-aaa,401.0,,\n"
         )
 
         _, reasons = read_samples(path)
@@ -387,7 +551,7 @@ class TestSampleArtifact:
 
     def test_invalid_utf8_bytes_are_reported(self, tmp_path):
         path = tmp_path / SAMPLES_FILENAME
-        path.write_bytes(",".join(SAMPLES_HEADER).encode() + b"\n1,1000.0,0,node-\xff\xfe,0,GPU-aaa,400.0\n")
+        path.write_bytes(",".join(SAMPLES_HEADER).encode() + b"\n2,1000.0,0,node-\xff\xfe,0,GPU-aaa,400.0,,\n")
 
         rows, reasons = read_samples(path)
 
@@ -397,7 +561,7 @@ class TestSampleArtifact:
     def test_oversized_field_is_reported(self, tmp_path):
         path = tmp_path / SAMPLES_FILENAME
         giant = "x" * (csv.field_size_limit() + 1)
-        path.write_text(",".join(SAMPLES_HEADER) + f"\n1,1000.0,0,{giant},0,GPU-aaa,400.0\n")
+        path.write_text(",".join(SAMPLES_HEADER) + f"\n2,1000.0,0,{giant},0,GPU-aaa,400.0,,\n")
 
         rows, reasons = read_samples(path)
 
@@ -410,6 +574,64 @@ class TestSampleArtifact:
 
         assert Reason.SAMPLES_CSV_HEADER_MISMATCH in read_samples(wrong)[1]
         assert Reason.SAMPLES_CSV_MISSING in read_samples(tmp_path / "nope.csv")[1]
+
+    def test_utilization_round_trips_including_empty_cells(self, tmp_path):
+        path = tmp_path / SAMPLES_FILENAME
+        writer = SampleWriter(path)
+        writer.append(
+            [
+                SampleRow(1000.0, 0, "node-a", 0, "GPU-aaa", 400.0, gpu_util_pct=87.0, sm_active=0.73),
+                SampleRow(1000.0, 0, "node-a", 1, "GPU-bbb", 401.0, gpu_util_pct=12.5),
+                SampleRow(1000.0, 0, "node-a", 2, "GPU-ccc", 402.0, sm_active=0.0),
+                SampleRow(1000.0, 0, "node-a", 3, "GPU-ddd", 403.0),
+            ]
+        )
+        writer.close()
+
+        rows, reasons = read_samples(path)
+
+        assert reasons == ()
+        assert [(r.gpu_index, r.gpu_util_pct, r.sm_active) for r in rows] == [
+            (0, 87.0, 0.73),
+            (1, 12.5, None),
+            (2, None, 0.0),
+            (3, None, None),
+        ]
+        text = path.read_text().splitlines()
+        assert text[0] == ",".join(SAMPLES_HEADER)
+        assert text[4].endswith(",403.0,,")
+
+    def test_v1_file_reads_with_utilization_none(self, tmp_path):
+        path = tmp_path / SAMPLES_FILENAME
+        path.write_text(
+            ",".join(SAMPLES_HEADER_V1) + "\n1,1000.0,0,node-a,0,GPU-aaa,400.0\n1,1001.0,1,node-a,0,GPU-aaa,401.0\n"
+        )
+
+        rows, reasons = read_samples(path)
+
+        assert reasons == ()
+        assert [(r.schema_version, r.power_w, r.gpu_util_pct, r.sm_active) for r in rows] == [
+            (SAMPLES_SCHEMA_VERSION_V1, 400.0, None, None),
+            (SAMPLES_SCHEMA_VERSION_V1, 401.0, None, None),
+        ]
+        assert [d.gpu_uuids for d in derive_observed_devices(rows)] == [("GPU-aaa",)]
+
+    @pytest.mark.parametrize(
+        ("header", "row"),
+        [
+            (SAMPLES_HEADER_V1, "1,1000.0,0,node-a,0,GPU-aaa,400.0,,"),
+            (SAMPLES_HEADER_V1, "2,1000.0,0,node-a,0,GPU-aaa,400.0"),
+            (SAMPLES_HEADER, "1,1000.0,0,node-a,0,GPU-aaa,400.0"),
+        ],
+    )
+    def test_row_shape_must_match_its_header_version(self, tmp_path, header, row):
+        path = tmp_path / SAMPLES_FILENAME
+        path.write_text(",".join(header) + "\n" + row + "\n")
+
+        rows, reasons = read_samples(path)
+
+        assert rows == ()
+        assert reasons == (Reason.SAMPLES_CSV_MALFORMED,)
 
 
 class TestDeviceValidation:
@@ -516,6 +738,12 @@ class TestManifest:
         assert payload["producer"] == "srt-slurm.dcgm-power"
         assert payload["source_metric"] == "DCGM_FI_DEV_POWER_USAGE"
         assert payload["unit"] == "W"
+        assert payload["schema_version"] == 1
+        assert payload["samples_schema_version"] == SAMPLES_SCHEMA_VERSION
+        assert payload["utilization_metrics"] == [
+            {"column": "gpu_util_pct", "source_metric": "DCGM_FI_DEV_GPU_UTIL", "unit": "percent"},
+            {"column": "sm_active", "source_metric": "DCGM_FI_PROF_SM_ACTIVE", "unit": "fraction"},
+        ]
         assert payload["timestamp_source"] == "head_node_unix_clock"
         assert payload["status"] == "starting"
         assert payload["publication_valid"] is None

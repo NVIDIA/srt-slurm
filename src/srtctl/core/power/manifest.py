@@ -15,7 +15,9 @@ from srtctl.core.power.contract import (
     POWER_SCOPE,
     POWER_UNIT,
     PRODUCER,
+    SAMPLES_SCHEMA_VERSION,
     SCHEMA_VERSION,
+    UTILIZATION_METRICS,
     dedupe,
 )
 from srtctl.core.power.samples import ObservedDevice
@@ -147,6 +149,11 @@ class PowerManifest:
             "source_metric": POWER_METRIC,
             "unit": POWER_UNIT,
             "power_scope": POWER_SCOPE,
+            "samples_schema_version": SAMPLES_SCHEMA_VERSION,
+            "utilization_metrics": [
+                {"column": metric.column, "source_metric": metric.metric, "unit": metric.unit}
+                for metric in UTILIZATION_METRICS
+            ],
             "timestamp_source": CLOCK_SOURCE,
             "job_id": self.job_id,
             "run_name": self.run_name,

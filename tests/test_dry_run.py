@@ -298,6 +298,72 @@ class TestDryRunExecutionExtensions:
         assert "<log_dir>/power" in output
         assert "dcgm-exporter (port 9401)" in output
 
+    def test_cpu_power_exporter_details_shown(self, capsys):
+        config = _make_config(
+            {
+                "benchmark": {"type": "sa-bench", "isl": 8192, "osl": 1024, "concurrencies": [4]},
+                "telemetry": {
+                    "enabled": True,
+                    "collect_interval_ms": 1000,
+                    "storage_subdir": "power",
+                    "required": True,
+                    "dcgm_exporter": {"container_image": "dcgm-exporter", "port": 9401},
+                    "cpu_power_exporter": {"port": 9405},
+                },
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "cpu_power_exporter" in output
+        assert "9405" in output
+
+    def test_cpu_power_exporter_details_hidden_when_telemetry_disabled(self, capsys):
+        """A cpu_power_exporter block that will never actually launch must not be displayed."""
+        config = _make_config(
+            {
+                "benchmark": {"type": "sa-bench", "isl": 8192, "osl": 1024, "concurrencies": [4]},
+                "telemetry": {
+                    "enabled": False,
+                    "cpu_power_exporter": {"port": 9405},
+                },
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "cpu_power_exporter" not in output
+
+    def test_cpu_power_host_collector_details_shown(self, capsys):
+        config = _make_config(
+            {
+                "benchmark": {"type": "sa-bench", "isl": 8192, "osl": 1024, "concurrencies": [4]},
+                "telemetry": {
+                    "enabled": True,
+                    "dcgm_exporter": {"container_image": "dcgm-exporter", "port": 9401},
+                    "cpu_power": {"enabled": True, "source": "acpi", "required": True},
+                },
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "cpu_power" in output
+        assert "host collector" in output
+        assert "<log_dir>/cpu_power" in output
+        assert "required" in output
+
+    def test_cpu_power_host_collector_details_hidden_when_disabled(self, capsys):
+        config = _make_config(
+            {
+                "benchmark": {"type": "sa-bench", "isl": 8192, "osl": 1024, "concurrencies": [4]},
+                "telemetry": {
+                    "enabled": True,
+                    "dcgm_exporter": {"container_image": "dcgm-exporter", "port": 9401},
+                },
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "host collector" not in output
+
     def test_mooncake_kv_store_details_shown(self, capsys):
         """mooncake_kv_store should appear in env vars and execution extensions."""
         config = _make_config(
@@ -584,8 +650,9 @@ class TestInfmaxWorkspaceMount:
     --container-mounts against the failed arm's showed this single missing entry.
     """
 
-    AGENTIC = {"benchmark": {"type": "custom",
-                             "command": "bash /infmax-workspace/benchmarks/multi_node/agentic_srt.sh"}}
+    AGENTIC = {
+        "benchmark": {"type": "custom", "command": "bash /infmax-workspace/benchmarks/multi_node/agentic_srt.sh"}
+    }
 
     def test_mount_is_shown_when_the_variable_is_set(self, capsys):
         config = _make_config(self.AGENTIC)
