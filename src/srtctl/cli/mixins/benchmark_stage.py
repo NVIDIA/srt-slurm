@@ -65,6 +65,10 @@ def _vllm_health_entries(
     """Return expected Dynamo generate registrations for a vLLM worker mode."""
     dp_size = _vllm_data_parallel_size(config, mode)
     dp_launch_mode = getattr(config.backend, "dp_launch_mode", "per_node")
+    if getattr(getattr(config, "dynamo", None), "sidecar", False):
+        # Sidecars always use one frontend per node, even for a recipe that
+        # retains the deprecated per-GPU layout setting.
+        dp_launch_mode = "per_node"
     if dp_size > 1 and dp_launch_mode == "per_node":
         if backend_processes is None:
             raise ValueError("backend_processes are required for per-node DP health expectations")

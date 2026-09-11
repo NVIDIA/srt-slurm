@@ -384,7 +384,11 @@ class VLLMProtocol:
         if hybrid_lb_modes:
             fields = ", ".join(f"vllm_config.{mode}.data-parallel-hybrid-lb" for mode in hybrid_lb_modes)
             if sidecar:
-                logger.warning("%s is not used by vLLM sidecar mode and will be ignored", fields)
+                logger.warning(
+                    "%s is unnecessary in vLLM sidecar mode; "
+                    "srtslurm derives --data-parallel-hybrid-lb from the topology and ignores the configured value",
+                    fields,
+                )
             else:
                 logger.warning(
                     "%s is unnecessary when dp_launch_mode=per_node; "
@@ -1317,12 +1321,25 @@ class VLLMProtocol:
         nsys_prefix: list[str] | None,
         sidecar_config: DynamoConfig,
     ) -> list[str]:
-        """Build a lifecycle-coupled vllm-rs native-gRPC and sidecar launch."""
+        """Build a native gRPC frontend and lifecycle-coupled sidecar per node."""
         mode = process.endpoint_mode
         is_dp_mode = self._is_dp_mode(mode)
         is_multi_node = len({candidate.node for candidate in endpoint_processes}) > 1
-        if is_multi_node and not is_dp_mode:
-            raise ValueError("vLLM sidecar mode does not support multi-node tensor-parallel endpoints; use DP")
+        if is_multi_node and (not is_dp_mode or self._get_model_parallel_size(mode) > len(process.gpu_indices)):
+            raise ValueError(
+                "vLLM sidecar mode does not support multi-node tensor-parallel endpoints; use node-local DP replicas"
+            )
+        hybrid_lb = is_dp_mode and is_multi_node
+        if hybrid_lb:
+            # Each node must expose exactly one local Rust frontend. These
+            # options would select another frontend or bypass the local API.
+            normalized = {key.replace("_", "-"): value for key, value in config.items()}
+            if normalized.get("grpc") or normalized.get("data-parallel-external-lb"):
+                raise ValueError(
+                    "vLLM sidecar hybrid mode requires the Rust frontend with hybrid load balancing; remove grpc and data-parallel-external-lb"
+                )
+            if normalized.get("api-server-count") not in (None, 1, "1"):
+                raise ValueError("vLLM sidecar hybrid mode requires api-server-count: 1 per node")
         grpc_port = sidecar_grpc_port(sidecar_config.sidecar_port, process)
 
         for key in (
@@ -1346,9 +1363,16 @@ class VLLMProtocol:
             config.pop(key, None)
 
         command: list[str] = list(nsys_prefix or [])
+        if hybrid_lb:
+            # Python owns the shared DP rendezvous and passes only this node's
+            # engine sockets to its Rust frontend. Rust-managed `serve` owns a
+            # complete group and cannot substitute for hybrid load balancing.
+            # VLLM_RUST_FRONTEND_PATH, when configured, is inherited unchanged.
+            command.extend(["env", "VLLM_USE_RUST_FRONTEND=1", "python3", "-m", "vllm.entrypoints.cli.main"])
+        else:
+            command.append("vllm-rs")
         command.extend(
             [
-                "vllm-rs",
                 "serve",
                 model_arg,
                 "--host",
@@ -1390,8 +1414,8 @@ class VLLMProtocol:
                     str(dp_rpc_port),
                 ]
             )
-            if not process.is_leader:
-                command.append("--headless")
+            if hybrid_lb:
+                command.extend(["--data-parallel-start-rank", str(process.node_rank), "--data-parallel-hybrid-lb"])
 
         mode_connector = config.pop("connector", None)
         connector = mode_connector if mode_connector is not None else self.connector
@@ -1405,11 +1429,6 @@ class VLLMProtocol:
             command.extend(["--kv-events-config", json.dumps(kv_cfg)])
 
         command.extend(_config_to_cli_args(config))
-        if is_dp_mode and not process.is_leader:
-            command.extend(["--data-parallel-start-rank", str(process.node_rank)])
-        if not process.is_leader:
-            return command
-
         sidecar = (
             [sidecar_config.sidecar_binary]
             if sidecar_config.sidecar_binary is not None
