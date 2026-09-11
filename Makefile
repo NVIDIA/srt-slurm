@@ -1,10 +1,11 @@
-.PHONY: lint test test-cov ci check setup cleanup gb200-fp8 gb200-fp4 tachometer-scraper tachometer-scraper-download
+.PHONY: lint test test-cov ci check setup cleanup gb200-fp8 gb200-fp4 tachometer-scraper tachometer-scraper-download cpu-power-exporter cpu-power-exporter-download cpu-power-exporter-setup
 
 NATS_VERSION ?= v2.10.28
 ETCD_VERSION ?= v3.5.21
 LOGS_DIR ?= logs
 ARCH ?= $(shell uname -m)
 TACHOMETER_RELEASE ?= latest
+CPU_POWER_EXPORTER_RELEASE ?= latest
 
 default:
 	./run_dashboard.sh
@@ -54,6 +55,59 @@ tachometer-scraper-download:
 	install -Dm755 "$$tmp_dir/$$asset" bin/tachometer-scraper; \
 	echo "Installed Tachometer scraper at bin/tachometer-scraper"
 
+cpu-power-exporter:
+	cargo build --release --locked --bin cpu-power-exporter
+	install -Dm755 target/release/cpu-power-exporter bin/cpu-power-exporter
+	@# A locally built binary is not a release. Leaving the marker behind would
+	@# tell a later pinned download that the tag is already installed.
+	rm -f bin/.cpu-power-exporter.release
+
+cpu-power-exporter-download:
+	@set -eu; \
+	case "$(ARCH)" in \
+		x86_64)  asset="cpu-power-exporter-x86_64-unknown-linux-musl"; file_pattern="x86-64" ;; \
+		aarch64) asset="cpu-power-exporter-aarch64-unknown-linux-musl"; file_pattern="aarch64" ;; \
+		*) echo "Unsupported architecture: $(ARCH)"; exit 1 ;; \
+	esac; \
+	marker=bin/.cpu-power-exporter.release; \
+	installed=$$(cat "$$marker" 2>/dev/null || echo ""); \
+	if [ -f bin/cpu-power-exporter ]; then \
+		if ! command -v file >/dev/null 2>&1; then \
+			echo "Cannot check the architecture of bin/cpu-power-exporter: file(1) is not installed"; \
+			echo "Downloading the $(ARCH) asset rather than trusting or deleting it"; \
+		elif ! file bin/cpu-power-exporter | grep -q "$$file_pattern"; then \
+			echo "Removing bin/cpu-power-exporter: not a $(ARCH) binary"; \
+			rm -f bin/cpu-power-exporter "$$marker"; \
+		elif [ "$(CPU_POWER_EXPORTER_RELEASE)" = "latest" ] || [ "$$installed" = "$(CPU_POWER_EXPORTER_RELEASE)" ]; then \
+			echo "cpu-power-exporter $$installed already installed at bin/cpu-power-exporter ($(ARCH))"; \
+			exit 0; \
+		fi; \
+	fi; \
+	if [ "$(CPU_POWER_EXPORTER_RELEASE)" = "latest" ]; then \
+		base_url="https://github.com/NVIDIA/srt-slurm/releases/latest/download"; \
+	else \
+		base_url="https://github.com/NVIDIA/srt-slurm/releases/download/$(CPU_POWER_EXPORTER_RELEASE)"; \
+		rm -f bin/cpu-power-exporter "$$marker"; \
+	fi; \
+	tmp_dir=$$(mktemp -d); \
+	trap 'rm -rf "$$tmp_dir"' EXIT; \
+	echo "Downloading $$asset from srt-slurm $(CPU_POWER_EXPORTER_RELEASE)"; \
+	curl --fail --location --retry 3 --retry-delay 2 "$$base_url/$$asset" --output "$$tmp_dir/$$asset"; \
+	curl --fail --location --retry 3 --retry-delay 2 "$$base_url/$$asset.sha256" --output "$$tmp_dir/$$asset.sha256"; \
+	(cd "$$tmp_dir" && sha256sum --check "$$asset.sha256"); \
+	install -Dm755 "$$tmp_dir/$$asset" bin/cpu-power-exporter; \
+	printf '%s' "$(CPU_POWER_EXPORTER_RELEASE)" > "$$marker"; \
+	echo "Installed cpu-power-exporter $(CPU_POWER_EXPORTER_RELEASE) at bin/cpu-power-exporter"
+
+cpu-power-exporter-setup:
+	@set -eu; \
+	if [ "$(CPU_POWER_EXPORTER_RELEASE)" = "latest" ]; then \
+		$(MAKE) --no-print-directory cpu-power-exporter-download || \
+		  echo "Warning: cpu-power-exporter download failed (optional for non-CPU-power recipes)"; \
+	else \
+		$(MAKE) --no-print-directory cpu-power-exporter-download; \
+	fi
+
 # Runners
 gb200-fp8:
 	srtctl apply -f recipes/gb200-fp8/1k1k/low-latency.yaml
@@ -70,7 +124,7 @@ gb200-fp4:
 	srtctl apply -f recipes/gb200-fp4/8k1k/max-tpt.yaml
 	srtctl apply -f recipes/gb200-fp4/8k1k/mid-curve.yaml
 
-setup: tachometer-scraper-download
+setup: tachometer-scraper-download cpu-power-exporter-setup
 	@echo "📦 Setting up configs and logs directories..."
 	@mkdir -p logs
 	@echo "🖥️  Using architecture: $(ARCH)"

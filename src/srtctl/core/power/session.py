@@ -340,6 +340,8 @@ class PowerTelemetrySession:
                 gpu_index=reading.gpu_index,
                 gpu_uuid=reading.gpu_uuid,
                 power_w=reading.power_w,
+                gpu_util_pct=reading.gpu_util_pct,
+                sm_active=reading.sm_active,
             )
             for reading in scrape.readings
         ]

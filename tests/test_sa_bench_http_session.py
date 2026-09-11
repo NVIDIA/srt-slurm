@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
 import sys
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -331,6 +333,58 @@ def test_session_is_closed_before_metrics(monkeypatch):
     assert request_sessions == [sessions[0], sessions[0], sessions[0]]
 
 
+def test_benchmark_records_the_exact_measured_window(monkeypatch):
+    _import_sa_bench_module("backend_request_func")
+    module = _import_sa_bench_module("benchmark_serving")
+    window = MagicMock()
+
+    async def fake_request(request_func_input, pbar=None):
+        return module.RequestFuncOutput(
+            success=True,
+            output_tokens=1,
+            prompt_len=request_func_input.prompt_len,
+            start_time=1.0,
+            ttft=0.01,
+            latency=0.02,
+        )
+
+    monkeypatch.setitem(module.ASYNC_REQUEST_FUNCS, "vllm", fake_request)
+
+    result = asyncio.run(
+        module.benchmark(
+            backend="vllm",
+            api_url="http://localhost:8000/v1/completions",
+            base_url="http://localhost:8000",
+            model_id="model",
+            model_name="model",
+            tokenizer=object(),
+            input_requests=[("prompt", 1, 1, None)],
+            logprobs=None,
+            best_of=1,
+            request_rate=float("inf"),
+            burstiness=1.0,
+            disable_tqdm=True,
+            profile=False,
+            selected_percentile_metrics=[],
+            selected_percentiles=[50.0],
+            ignore_eos=True,
+            goodput_config_dict={},
+            max_concurrency=1,
+            lora_modules=None,
+            measurement_window=window,
+        )
+    )
+
+    window.mark_running.assert_called_once()
+    window.record_boundary.assert_called_once_with(
+        start_unix=result["benchmark_start_time_unix"],
+        end_unix=result["benchmark_end_time_unix"],
+        duration=result["duration"],
+    )
+    assert result["benchmark_end_time_unix"] > result["benchmark_start_time_unix"]
+    assert result["duration"] > 0
+
+
 @pytest.mark.parametrize("failure", [RuntimeError("probe failed"), asyncio.CancelledError()])
 def test_benchmark_wrapper_closes_session_on_failure(monkeypatch, failure):
     _import_sa_bench_module("backend_request_func")
@@ -515,3 +569,99 @@ def test_result_json_records_effective_http_connection_mode(monkeypatch, tmp_pat
     result = module.json.loads((tmp_path / "result.json").read_text())
     assert observed == [reuse_http_connections]
     assert result["reuse_http_connections"] is reuse_http_connections
+
+
+def test_main_publishes_completed_measurement_window(monkeypatch, tmp_path):
+    _import_sa_bench_module("backend_request_func")
+    dataset_module = _import_sa_bench_module("benchmark_dataset")
+    module = _import_sa_bench_module("benchmark_serving")
+    result_dir = tmp_path / "sa-bench"
+    window_dir = tmp_path / "power" / "windows"
+    result_dir.mkdir()
+    window_dir.mkdir(parents=True)
+
+    monkeypatch.setattr(module, "load_tokenizer", lambda *args, **kwargs: object())
+    monkeypatch.setattr(dataset_module, "sample_custom_requests", lambda **kwargs: [("prompt", 1, 1, None)])
+    monkeypatch.setattr(module.gc, "collect", lambda: None)
+    monkeypatch.setattr(module.gc, "freeze", lambda: None)
+    monkeypatch.setattr(module, "save_to_pytorch_benchmark_format", lambda *args, **kwargs: None)
+
+    real_create = module.MeasurementWindow.create.__func__
+
+    def create_window(cls, **kwargs):
+        return real_create(
+            cls,
+            **kwargs,
+            window_dir=str(window_dir),
+            log_root=str(tmp_path),
+        )
+
+    monkeypatch.setattr(module.MeasurementWindow, "create", classmethod(create_window))
+
+    async def fake_run_benchmark_with_cleanup(**kwargs):
+        window = kwargs["measurement_window"]
+        window.mark_running(1000.0)
+        window.record_boundary(start_unix=1000.0, end_unix=1001.0, duration=1.0)
+        return {
+            "completed": 1,
+            "benchmark_start_time_unix": 1000.0,
+            "benchmark_end_time_unix": 1001.0,
+            "duration": 1.0,
+        }
+
+    monkeypatch.setattr(module, "run_benchmark_with_cleanup", fake_run_benchmark_with_cleanup)
+
+    args = module.argparse.Namespace(
+        slow_down_servers=None,
+        seed=0,
+        backend="vllm",
+        model="model",
+        served_model_name="model",
+        tokenizer="model",
+        tokenizer_mode="auto",
+        base_url="http://localhost:8000",
+        endpoint="/v1/completions",
+        host="localhost",
+        port=8000,
+        trust_remote_code=False,
+        custom_tokenizer=None,
+        use_chat_template=False,
+        dataset_name="custom",
+        dataset_path="/data/requests.jsonl",
+        num_prompts=1,
+        goodput=None,
+        logprobs=None,
+        best_of=1,
+        request_rate=float("inf"),
+        burstiness=1.0,
+        disable_tqdm=True,
+        profile=False,
+        percentile_metrics="ttft,tpot,itl,e2el",
+        metric_percentiles="50,90,99",
+        ignore_eos=True,
+        max_concurrency=1,
+        lora_modules=None,
+        slow_down_sleep_time=1.0,
+        slow_down_wait_time=60.0,
+        reuse_http_connections=False,
+        save_result=True,
+        metadata=None,
+        result_filename="result.json",
+        result_dir=str(result_dir),
+    )
+
+    module.main(args)
+
+    result = json.loads((result_dir / "result.json").read_text())
+    window = json.loads((window_dir / "result.json").read_text())
+    assert window["status"] == "completed"
+    assert window["result_path"] == "sa-bench/result.json"
+    assert (
+        window["benchmark_start_time_unix"],
+        window["benchmark_end_time_unix"],
+        window["duration"],
+    ) == (
+        result["benchmark_start_time_unix"],
+        result["benchmark_end_time_unix"],
+        result["duration"],
+    )

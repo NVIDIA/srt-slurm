@@ -826,3 +826,106 @@ class TestCopyConfigToLogs:
             mixin._copy_config_to_logs()  # Should not raise
         finally:
             log_dir.chmod(0o755)
+
+
+class TestBuildPowerEnergyReport:
+    """Tests for the best-effort power_energy_report.json step in run_postprocess."""
+
+    def _create_mixin(self, log_dir):
+        from srtctl.cli.mixins.postprocess_stage import PostProcessStageMixin
+
+        mixin = PostProcessStageMixin()
+        mixin.config = MagicMock()
+        mixin.runtime = MagicMock()
+        mixin.runtime.log_dir = log_dir
+        return mixin
+
+    def test_skips_quietly_when_no_power_telemetry_present(self, tmp_path):
+        """No benchmark.out / no samples.csv (telemetry disabled) must not raise or write anything."""
+        mixin = self._create_mixin(tmp_path)
+
+        mixin._build_power_energy_report()  # should not raise
+
+        assert not (tmp_path / "power_energy_report.json").exists()
+
+    def test_writes_report_json_for_a_valid_run(self, tmp_path):
+        import csv
+        import json
+
+        log_dir = tmp_path
+        (log_dir / "benchmark.out").write_text(
+            "17:59:31.680 NOTICE   Phase profiling (profiling) started (runner.py:593)\n"
+            "19:00:01.681 NOTICE   Phase profiling (profiling) complete (runner.py:1162)\n"
+        )
+        conc_dir = log_dir / "agentic" / "conc_4" / "aiperf_artifacts"
+        conc_dir.mkdir(parents=True)
+        with (conc_dir / "profile_export.jsonl").open("w") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "metadata": {
+                            "benchmark_phase": "profiling",
+                            "request_start_ns": 10_000_000_000,
+                            "request_end_ns": 20_000_000_000,
+                        }
+                    }
+                )
+                + "\n"
+            )
+        (conc_dir / "profile_export_aiperf.json").write_text(
+            json.dumps({"total_osl": {"avg": 5.0}, "total_isl": {"avg": 2.0}})
+        )
+
+        cpu_csv = log_dir / "power" / "cpu" / "samples.csv"
+        cpu_csv.parent.mkdir(parents=True)
+        with cpu_csv.open("w", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(
+                [
+                    "schema_version",
+                    "timestamp_unix",
+                    "hostname",
+                    "source",
+                    "sensor",
+                    "socket_id",
+                    "power_w",
+                    "total_power_w",
+                ]
+            )
+            writer.writerow([2, 9.0, "node-a", "acpi", "CPU0:cpuPowerUsageW", 0, 40.0, 40.0])
+            writer.writerow([2, 15.0, "node-a", "acpi", "CPU0:cpuPowerUsageW", 0, 44.0, 44.0])
+            writer.writerow([2, 21.0, "node-a", "acpi", "CPU0:cpuPowerUsageW", 0, 42.0, 42.0])
+
+        mixin = self._create_mixin(log_dir)
+
+        mixin._build_power_energy_report()
+
+        output_path = log_dir / "power_energy_report.json"
+        assert output_path.exists()
+        payload = json.loads(output_path.read_text())
+        assert len(payload) == 1
+        assert payload[0]["concurrency"] == 4
+        assert payload[0]["cpu_total_joules"] > 0.0
+
+    def test_run_postprocess_calls_power_energy_report(self, tmp_path):
+        """Verify run_postprocess wires this step in, without depending on real telemetry data."""
+        from srtctl.cli.mixins.postprocess_stage import PostProcessStageMixin
+
+        mixin = PostProcessStageMixin()
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        mixin.runtime = MagicMock()
+        mixin.runtime.log_dir = log_dir
+        mixin.runtime.job_id = "12345"
+        mixin.config = MagicMock()
+
+        mixin._copy_config_to_logs = MagicMock()
+        mixin._generate_rollup = MagicMock()
+        mixin._extract_benchmark_results = MagicMock(return_value=None)
+        mixin._run_postprocess_container = MagicMock(return_value=(None, None))
+        mixin._get_ai_analysis_config = MagicMock(return_value=None)
+        mixin._build_power_energy_report = MagicMock()
+
+        mixin.run_postprocess(0)
+
+        mixin._build_power_energy_report.assert_called_once()

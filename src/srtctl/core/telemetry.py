@@ -9,6 +9,7 @@ import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from srtctl.core.ip_utils import url_host
 from srtctl.core.slurm import get_hostname_ip
 from srtctl.ports import FRONTEND_PUBLIC_PORT
 
@@ -132,7 +133,7 @@ def generate_tachometer_config(
             port = process.http_port
         else:
             port = process.sys_port
-        url = f"http://{node_ip}:{port}{metrics_path}"
+        url = f"http://{url_host(node_ip)}:{port}{metrics_path}"
         node_metadata = {
             "hostname": process.node,
             "worker_index": str(process.endpoint_index),
@@ -173,7 +174,7 @@ def generate_tachometer_config(
         endpoints.append(
             TelemetryEndpoint(
                 name=f"frontend{frontend_index}",
-                url=f"http://{node_ip}:{frontend_topology.frontend_port}{metrics_path}",
+                url=f"http://{url_host(node_ip)}:{frontend_topology.frontend_port}{metrics_path}",
                 collect_interval_ms=tachometer.collect_interval_ms,
                 filter="frontend",
                 node_metadata=node_metadata,

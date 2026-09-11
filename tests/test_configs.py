@@ -55,6 +55,19 @@ class TestConfigLoading:
             for err in errors[:5]:  # Show first 5 errors
                 print(f"  - {err}")
 
+    def test_cpu_power_test_recipe_loads(self):
+        """configs/cpu-power-test.yaml lives outside recipes/, so the recipes/**/*.yaml glob
+        above never exercises it. configs/ also holds non-recipe files (shell scripts, JSON,
+        patches), so widening that glob to configs/*.yaml isn't safe -- load this one
+        explicitly instead, and assert it actually parses (unlike the loop above, which only
+        logs failures)."""
+        config = SrtConfig.from_yaml(Path("configs/cpu-power-test.yaml"))
+
+        assert config.telemetry.enabled is True
+        assert config.telemetry.cpu_power_exporter is not None
+        assert config.telemetry.cpu_power_exporter.port == 9405
+        assert config.telemetry.cpu_power_exporter.source == "acpi"
+
 
 class TestClusterConfigGitHttpVersion:
     """srtslurm.yaml is schema-validated, and a failure there silently drops

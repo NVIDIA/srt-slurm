@@ -53,13 +53,19 @@ def _processes():
     ]
 
 
-def _body(prefix, count=GPUS_PER_NODE, watts=400.0):
+def _body(prefix, count=GPUS_PER_NODE, watts=400.0, utilization=False):
     lines = ["# TYPE DCGM_FI_DEV_POWER_USAGE gauge"]
     for index in range(count):
         lines.append(
             f'DCGM_FI_DEV_POWER_USAGE{{gpu="{index}",UUID="GPU-{prefix}{index}",'
             f'device="nvidia{index}",Hostname="exporter-lies"}} {watts + index}'
         )
+    if utilization:
+        lines.append("# TYPE DCGM_FI_DEV_GPU_UTIL gauge")
+        lines.append("# TYPE DCGM_FI_PROF_SM_ACTIVE gauge")
+        for index in range(count):
+            lines.append(f'DCGM_FI_DEV_GPU_UTIL{{gpu="{index}",UUID="GPU-{prefix}{index}"}} {10 * index}')
+            lines.append(f'DCGM_FI_PROF_SM_ACTIVE{{gpu="{index}",UUID="GPU-{prefix}{index}"}} {0.1 * index}')
     return "\n".join(lines) + "\n"
 
 
@@ -271,6 +277,28 @@ class TestCollection:
 
         samples = session.power_dir / SAMPLES_FILENAME
         assert _manifest(session)["samples_sha256"] == hashlib.sha256(samples.read_bytes()).hexdigest()
+
+    def test_utilization_is_persisted_when_the_exporter_reports_it(self, tmp_path, exporters):
+        a = exporters(_body("a", utilization=True))
+        b = exporters(_body("b"))
+        session = _session(tmp_path, _endpoints(("node-a", a.url), ("node-b", b.url)), windows=[])
+        session.initialize()
+
+        session.collect_once()
+        outcome = session.stop_and_finalize()
+
+        rows, reasons = read_samples(session.power_dir / SAMPLES_FILENAME)
+        assert reasons == ()
+        by_host = {}
+        for row in rows:
+            by_host.setdefault(row.hostname, []).append(row)
+        node_a = sorted(by_host["node-a"], key=lambda row: row.gpu_index)
+        assert [(row.gpu_util_pct, row.sm_active) for row in node_a] == [
+            (float(10 * index), 0.1 * index) for index in range(GPUS_PER_NODE)
+        ]
+        assert all(row.gpu_util_pct is None and row.sm_active is None for row in by_host["node-b"])
+        assert outcome.status == "complete"
+        assert outcome.reason_codes == ()
 
     def test_hostname_comes_from_the_endpoint_map(self, tmp_path, exporters):
         a = exporters(_body("a"))
@@ -773,6 +801,7 @@ class TestRequiredReadinessGate:
         config = MagicMock()
         config.telemetry.enabled = True
         config.telemetry.required = required
+        config.telemetry.cpu_power_exporter = None
         config.frontend.type = "dynamo"
         config.profiling.enabled = False
         runtime = MagicMock()

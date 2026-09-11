@@ -17,12 +17,24 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TextIO
 
-from srtctl.core.power.contract import SAMPLES_HEADER, SCHEMA_VERSION, Reason, dedupe
+from srtctl.core.power.contract import (
+    SAMPLES_HEADER,
+    SAMPLES_HEADER_V1,
+    SAMPLES_SCHEMA_VERSION,
+    SAMPLES_SCHEMA_VERSION_V1,
+    UTILIZATION_METRICS,
+    Reason,
+    dedupe,
+)
 
 
 @dataclass(frozen=True)
 class SampleRow:
-    """One persisted observation of one GPU."""
+    """One persisted observation of one GPU.
+
+    Utilization fields are optional riders on the mandatory power reading; a v1
+    file loads with both set to ``None``.
+    """
 
     timestamp_unix: float
     scrape_seq: int
@@ -30,7 +42,9 @@ class SampleRow:
     gpu_index: int
     gpu_uuid: str
     power_w: float
-    schema_version: int = SCHEMA_VERSION
+    gpu_util_pct: float | None = None
+    sm_active: float | None = None
+    schema_version: int = SAMPLES_SCHEMA_VERSION
 
     @property
     def key(self) -> tuple[int, str, int]:
@@ -45,7 +59,13 @@ class SampleRow:
             self.gpu_index,
             self.gpu_uuid,
             repr(self.power_w),
+            _optional_cell(self.gpu_util_pct),
+            _optional_cell(self.sm_active),
         ]
+
+
+def _optional_cell(value: float | None) -> str:
+    return "" if value is None else repr(value)
 
 
 @dataclass(frozen=True)
@@ -125,10 +145,14 @@ def read_samples(path: Path) -> tuple[tuple[SampleRow, ...], tuple[str, ...]]:
         with open(path, newline="", encoding="utf-8") as handle:
             reader = csv.reader(handle)
             header = next(reader, None)
-            if header != list(SAMPLES_HEADER):
+            if header == list(SAMPLES_HEADER):
+                expected_version = SAMPLES_SCHEMA_VERSION
+            elif header == list(SAMPLES_HEADER_V1):
+                expected_version = SAMPLES_SCHEMA_VERSION_V1
+            else:
                 return (), (Reason.SAMPLES_CSV_HEADER_MISMATCH,)
             for raw in reader:
-                row = _parse_row(raw)
+                row = _parse_row(raw, expected_version)
                 if row is None:
                     reasons.append(Reason.SAMPLES_CSV_MALFORMED)
                     continue
@@ -175,8 +199,15 @@ def derive_observed_devices(rows: Sequence[SampleRow]) -> list[ObservedDevice]:
     return devices
 
 
-def _parse_row(raw: list[str]) -> SampleRow | None:
-    if len(raw) != len(SAMPLES_HEADER):
+def _parse_row(raw: list[str], expected_version: int) -> SampleRow | None:
+    """Parse one row against the header's version; any mismatch is malformed.
+
+    A v1 header only admits seven-field v1 rows, and a v2 header only admits
+    nine-field v2 rows, so a file cannot mix generations.
+    """
+    is_v2 = expected_version == SAMPLES_SCHEMA_VERSION
+    expected_width = len(SAMPLES_HEADER) if is_v2 else len(SAMPLES_HEADER_V1)
+    if len(raw) != expected_width:
         return None
     try:
         schema_version = int(raw[0])
@@ -184,11 +215,19 @@ def _parse_row(raw: list[str]) -> SampleRow | None:
         scrape_seq = int(raw[2])
         gpu_index = int(raw[4])
         power_w = float(raw[6])
+        utilization = (
+            {
+                metric.column: _parse_utilization_cell(raw[7 + offset], metric.max_value)
+                for offset, metric in enumerate(UTILIZATION_METRICS)
+            }
+            if is_v2
+            else {}
+        )
     except ValueError:
         return None
 
     hostname, gpu_uuid = raw[3], raw[5]
-    if schema_version != SCHEMA_VERSION or not hostname or not gpu_uuid:
+    if schema_version != expected_version or not hostname or not gpu_uuid:
         return None
     if not math.isfinite(timestamp_unix) or not math.isfinite(power_w) or power_w < 0:
         return None
@@ -202,7 +241,18 @@ def _parse_row(raw: list[str]) -> SampleRow | None:
         gpu_uuid=gpu_uuid,
         power_w=power_w,
         schema_version=schema_version,
+        **utilization,
     )
+
+
+def _parse_utilization_cell(cell: str, max_value: float) -> float | None:
+    """Empty means the exporter did not report it; anything else must be in range."""
+    if cell == "":
+        return None
+    value = float(cell)
+    if not math.isfinite(value) or value < 0 or value > max_value:
+        raise ValueError(f"utilization out of range: {cell!r}")
+    return value
 
 
 def _has_non_monotonic_device(rows: Sequence[SampleRow]) -> bool:

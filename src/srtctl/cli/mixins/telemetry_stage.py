@@ -8,12 +8,16 @@ from __future__ import annotations
 import logging
 import os
 import shlex
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from srtctl.core.cpu_power_session import CpuPowerSessionSettings as CpuPowerHostSessionSettings
+from srtctl.core.cpu_power_session import CpuPowerTelemetrySession
 from srtctl.core.git_state import head_commit
 from srtctl.core.power.contract import Reason
+from srtctl.core.power.cpu_session import CpuPowerCollector, CpuPowerSessionSettings
 from srtctl.core.power.manifest import ExpectedWindow
 from srtctl.core.power.session import PowerSessionSettings, PowerTelemetrySession
 from srtctl.core.power.topology import build_expected_devices
@@ -168,8 +172,8 @@ class TelemetryStageMixin:
             return None
 
         exporter_config = telemetry.dcgm_exporter
-        if exporter_config is None:  # guaranteed by schema validation
-            raise ValueError("telemetry.dcgm_exporter is required when telemetry is enabled")
+        if exporter_config is None:
+            return None
 
         worker_nodes = sorted({process.node for process in self.backend_processes})
         power_dir = self.runtime.log_dir / telemetry.storage_subdir
@@ -231,6 +235,183 @@ class TelemetryStageMixin:
             logger.warning("Power collector did not reach readiness within %.1fs", telemetry.startup_timeout_seconds)
         return session
 
+    def start_cpu_power_telemetry(self, registry: ProcessRegistry) -> CpuPowerCollector | None:
+        """Launch cpu-power-exporter on each worker node and start the head-node collector.
+
+        Independent, best-effort leg: absent config is a no-op, and any launch
+        failure is absorbed here rather than raised, since CPU power must
+        never affect the benchmark or the job's exit code.
+        """
+        telemetry = self.config.telemetry
+        if not telemetry.enabled or telemetry.cpu_power_exporter is None:
+            return None
+
+        worker_nodes = sorted({process.node for process in self.backend_processes})
+        collector = CpuPowerCollector(
+            settings=CpuPowerSessionSettings(
+                power_dir=self.runtime.log_dir / telemetry.storage_subdir / "cpu",
+                sample_interval_seconds=telemetry.collect_interval_ms / 1000.0,
+                request_timeout_seconds=telemetry.request_timeout_seconds,
+                collector_join_timeout_seconds=telemetry.resolved_collector_join_timeout_seconds,
+                exporter_port=telemetry.cpu_power_exporter.port,
+                network_interface=self.runtime.network_interface,
+                producer_git_commit=read_producer_commit(),
+            ),
+            nodes=worker_nodes,
+        )
+        self._cpu_power_collector = collector
+
+        port = telemetry.cpu_power_exporter.port
+        source = telemetry.cpu_power_exporter.source
+        resolved = self._resolve_bundled_binary("cpu-power-exporter")
+        if Path(resolved).is_file() and os.access(resolved, os.X_OK):
+            exporter_command = [resolved, "--port", str(port), "--source", source]
+            logger.info("CPU power exporter: using Rust binary %s", resolved)
+        else:
+            exporter_command = ["python3", "-m", "srtctl.core.cpu_power_exporter", "--port", str(port)]
+            logger.info("CPU power exporter: Rust binary not found, falling back to Python exporter")
+            if source != "auto":
+                logger.warning(
+                    "telemetry.cpu_power_exporter.source=%r requested, but the Python fallback exporter is "
+                    "ACPI-only and has no --source flag; this request cannot be honored",
+                    source,
+                )
+
+        try:
+            if self.runtime.nodes.het:
+                groups: dict[int, list[str]] = {}
+                for node in worker_nodes:
+                    group_id = self.runtime.nodes.het_group_for(node)
+                    if group_id is None:
+                        raise RuntimeError(f"node {node!r} not in any het component")
+                    groups.setdefault(group_id, []).append(node)
+                chunks = sorted(groups.items())
+            else:
+                chunks = [(-1, worker_nodes)]
+
+            for group_id, nodes in chunks:
+                suffix = "" if len(chunks) == 1 else f".g{group_id}"
+                log_file = self.runtime.log_dir / f"telemetry_cpu_power_exporter{suffix}.%N.out"
+                proc = start_srun_process(
+                    command=exporter_command,
+                    nodes=len(nodes),
+                    ntasks=len(nodes),
+                    nodelist=nodes,
+                    output=str(log_file),
+                    srun_options=self.runtime.srun_options,
+                    het_group=group_id if group_id >= 0 else None,
+                    use_bash_wrapper=False,  # bare host, no container
+                )
+                name = (
+                    "telemetry_cpu_power_exporter" if len(chunks) == 1 else f"telemetry_cpu_power_exporter_g{group_id}"
+                )
+                process = ManagedProcess(
+                    name=name,
+                    popen=proc,
+                    log_file=log_file,
+                    node=",".join(nodes),
+                    critical=False,
+                )
+                registry.add_process(process)
+                collector.add_exporter(process)
+        except Exception:
+            logger.exception("CPU power exporter launch failed")
+            return collector
+
+        collector.start()
+        logger.info("CPU power telemetry started (artifacts under %s)", collector.samples_path.parent)
+        return collector
+
+    def start_cpu_power_host_telemetry(self, registry: ProcessRegistry) -> CpuPowerTelemetrySession | None:
+        """Start one host-side CPU power collector per allocated worker node.
+
+        This is the ``telemetry.cpu_power`` leg: ``srtctl.core.cpu_power`` runs
+        on the bare host of every backend node, reads ACPI/DCGM directly, and
+        writes its own per-node CSV. Independent of the ``cpu_power_exporter``
+        scraper leg started by :meth:`start_cpu_power_telemetry`.
+        """
+        telemetry = self.config.telemetry
+        cpu_power = telemetry.cpu_power
+        if not telemetry.enabled or cpu_power.enabled is not True:
+            return None
+
+        worker_nodes = sorted({process.node for process in self.backend_processes})
+        cpu_dir = self.runtime.log_dir / cpu_power.storage_subdir
+        session = CpuPowerTelemetrySession(
+            CpuPowerHostSessionSettings(
+                cpu_dir=cpu_dir,
+                job_id=self.runtime.job_id,
+                run_name=self.runtime.run_name,
+                nodes=tuple(worker_nodes),
+                source=cpu_power.source,
+                sample_interval_seconds=cpu_power.sample_interval_seconds,
+                startup_timeout_seconds=cpu_power.startup_timeout_seconds,
+                required=cpu_power.required,
+                producer_git_commit=read_producer_commit(),
+            )
+        )
+        self._cpu_power_host_session = session
+        self._cpu_power_host_ready = False
+        session.initialize()
+
+        if self.runtime.nodes.het:
+            groups: dict[int, list[str]] = {}
+            for node in worker_nodes:
+                group_id = self.runtime.nodes.het_group_for(node)
+                if group_id is None:
+                    raise RuntimeError(f"node {node!r} not in any het component")
+                groups.setdefault(group_id, []).append(node)
+            chunks = sorted(groups.items())
+        else:
+            chunks = [(-1, worker_nodes)]
+
+        command = [
+            sys.executable,
+            "-m",
+            "srtctl.core.cpu_power",
+            "--output-dir",
+            str(session.samples_dir),
+            "--ready-dir",
+            str(session.ready_dir),
+            "--source",
+            cpu_power.source,
+            "--interval-seconds",
+            str(cpu_power.sample_interval_seconds),
+        ]
+        try:
+            for group_id, nodes in chunks:
+                suffix = "" if len(chunks) == 1 else f".g{group_id}"
+                log_file = self.runtime.log_dir / f"telemetry_cpu_power{suffix}.%N.out"
+                proc = start_srun_process(
+                    command=command,
+                    nodes=len(nodes),
+                    ntasks=len(nodes),
+                    nodelist=nodes,
+                    output=str(log_file),
+                    srun_options=self.runtime.srun_options,
+                    het_group=group_id if group_id >= 0 else None,
+                    use_bash_wrapper=False,  # bare host, no container
+                )
+                process = ManagedProcess(
+                    name="telemetry_cpu_power" if len(chunks) == 1 else f"telemetry_cpu_power_g{group_id}",
+                    popen=proc,
+                    log_file=log_file,
+                    node=",".join(nodes),
+                    critical=False,
+                )
+                registry.add_process(process)
+                session.add_process(process)
+        except Exception:
+            logger.exception("CPU power collector launch failed")
+            return session
+
+        self._cpu_power_host_ready = session.wait_for_readiness()
+        if not self._cpu_power_host_ready:
+            logger.warning("CPU power collectors did not become ready on every worker node")
+        else:
+            logger.info("CPU power telemetry ready (artifacts under %s)", cpu_dir)
+        return session
+
     def power_telemetry_blocks_benchmark(self) -> bool:
         """Whether required-mode telemetry failed startup and must skip the workload.
 
@@ -239,12 +420,18 @@ class TelemetryStageMixin:
         keeps serving and leaves the gap auditable in the manifest.
         """
         session = getattr(self, "_power_session", None)
-        if session is None:
-            return False
-        # NOTE: fail closed, so only proven readiness clears the gate.
-        if getattr(self, "_power_telemetry_ready", False):
-            return False
-        return self.config.telemetry.required
+        if (
+            session is not None
+            and not getattr(self, "_power_telemetry_ready", False)
+            and self.config.telemetry.required
+        ):
+            return True
+        cpu_session = getattr(self, "_cpu_power_host_session", None)
+        return (
+            cpu_session is not None
+            and not getattr(self, "_cpu_power_host_ready", False)
+            and self.config.telemetry.cpu_power.required
+        )
 
     def finalize_power_telemetry(self, exit_code: int, *, interrupted: bool = False) -> int:
         """Finalize the power session and fold required-mode invalidity into the exit code.
@@ -284,25 +471,70 @@ class TelemetryStageMixin:
             return 1
         return exit_code
 
-    def _resolve_tachometer_binary(self, binary_path: str) -> str:
-        """Resolve the default bare binary name against the checkout's bin/.
+    def finalize_cpu_power_telemetry(self, exit_code: int, *, interrupted: bool = False) -> int:
+        """Stop the head-node collector and write its manifest.
 
-        An explicit ``binary_path`` is always respected verbatim. The default
-        bare name used to rely on ``$PATH`` inside the srun step, while
-        ``make setup`` installs the binary to ``<srtctl_root>/bin/`` — the
-        same place ``validate_setup`` checks and the --bash lifecycle uses.
+        CPU power is fully best-effort: unlike DCGM power, it never mutates
+        ``exit_code``. ``interrupted`` is accepted for symmetry with
+        ``finalize_power_telemetry`` (the caller invokes both the same way)
+        but the collector's teardown does not currently branch on it.
         """
-        if binary_path != "tachometer-scraper":
-            return binary_path
+        collector = getattr(self, "_cpu_power_collector", None)
+        if collector is None:
+            return exit_code
+        try:
+            collector.stop_and_finalize()
+        except Exception:
+            logger.exception("CPU power telemetry finalization failed")
+        return exit_code
+
+    def finalize_cpu_power_host_telemetry(self, exit_code: int, *, interrupted: bool = False) -> int:
+        """Stop host collectors, aggregate node CSVs, and apply required-mode policy."""
+        session = getattr(self, "_cpu_power_host_session", None)
+        if session is None:
+            return exit_code
+        try:
+            outcome = session.stop_and_finalize(interrupted=interrupted)
+        except Exception:
+            logger.exception("CPU power telemetry finalization failed")
+            return 1
+        logger.info(
+            "CPU power telemetry: status=%s publication_valid=%s reasons=%s",
+            outcome.status,
+            outcome.publication_valid,
+            ",".join(outcome.reason_codes) or "none",
+        )
+        if outcome.exit_nonzero and exit_code == 0:
+            logger.error("telemetry.cpu_power.required is set and CPU power artifacts are not publishable")
+            return 1
+        return exit_code
+
+    def _resolve_bundled_binary(self, name: str) -> str:
+        """Resolve a bare binary name against the checkout's ``bin/``.
+
+        ``make setup`` installs the released binaries to ``<srtctl_root>/bin/``
+        — the same place ``validate_setup`` checks and the --bash lifecycle
+        uses. Falling back to the bare name keeps ``$PATH`` working for ad-hoc
+        installs inside the srun step.
+        """
         candidates = []
         source_dir = os.environ.get("SRTCTL_SOURCE_DIR")
         if source_dir:
-            candidates.append(Path(source_dir) / "bin" / binary_path)
-        candidates.append(Path(__file__).resolve().parents[4] / "bin" / binary_path)
+            candidates.append(Path(source_dir) / "bin" / name)
+        candidates.append(Path(__file__).resolve().parents[4] / "bin" / name)
         for candidate in candidates:
             if candidate.is_file() and os.access(candidate, os.X_OK):
                 return str(candidate)
-        return binary_path
+        return name
+
+    def _resolve_tachometer_binary(self, binary_path: str) -> str:
+        """Resolve the default bare binary name against the checkout's bin/.
+
+        An explicit ``binary_path`` is always respected verbatim.
+        """
+        if binary_path != "tachometer-scraper":
+            return binary_path
+        return self._resolve_bundled_binary(binary_path)
 
     def start_tachometer(self) -> list[ManagedProcess]:
         """Start Tachometer collection (follows ``observability.enabled``)."""
@@ -315,7 +547,8 @@ class TelemetryStageMixin:
         logger.info("Starting Tachometer")
 
         power_telemetry = self.config.telemetry
-        dcgm_exporter = power_telemetry.dcgm_exporter if power_telemetry.enabled else tachometer.resolved_dcgm_exporter
+        shares_dcgm_exporter = power_telemetry.enabled and power_telemetry.dcgm_exporter is not None
+        dcgm_exporter = power_telemetry.dcgm_exporter if shares_dcgm_exporter else tachometer.resolved_dcgm_exporter
         topology = self._compute_frontend_topology()
         config_path = self.runtime.log_dir / "tachometer_config.toml"
         config_path.write_text(
@@ -343,7 +576,7 @@ class TelemetryStageMixin:
         # must never tear down the benchmark. Verified the hard way: a
         # bash-wrapped node-exporter (FROM scratch) died with execve() ENOENT
         # and, as a critical process, killed a 7-node run at startup.
-        if not power_telemetry.enabled and tachometer.resolved_dcgm_exporter is not None:
+        if not shares_dcgm_exporter and tachometer.resolved_dcgm_exporter is not None:
             if tachometer.collect_interval_ms < DCGM_PROVEN_SAFE_INTERVAL_MS:
                 logger.warning(
                     "observability.tachometer.collect_interval_ms=%d drives DCGM NVML "
