@@ -69,6 +69,29 @@ def test_acpi_mode_totals_a_generic_total_power_label_too():
     assert scrape.total_power_w == 88.0
 
 
+def test_acpi_mode_recovers_input_power_labels_from_older_exporter_output():
+    body = (
+        "# HELP cpu_power_acpi_watts x\n"
+        "# TYPE cpu_power_acpi_watts gauge\n"
+        'cpu_power_acpi_watts{sensor="a/0",type="other",socket="",oem_info="Total Input Power in uW socket 0"} 88.0\n'
+        'cpu_power_acpi_watts{sensor="a/1",type="other",socket="",oem_info="CPU Rail Input Power in uW socket 0"} 60.0\n'
+        'cpu_power_acpi_watts{sensor="a/2",type="other",socket="",oem_info="SoC Rail Input Power in uW socket 0"} 8.0\n'
+        'cpu_power_acpi_watts{sensor="a/3",type="other",socket="",oem_info="DRAM Input Power in uW socket 0"} 10.0\n'
+        'cpu_power_acpi_watts{sensor="a/4",type="other",socket="",oem_info="CPU Rail Output Power in uW socket 0"} 50.0\n'
+    )
+
+    scrape = parse_cpu_scrape(body)
+
+    assert scrape.mode == "acpi"
+    assert [(reading.kind, reading.socket_id) for reading in scrape.readings] == [
+        ("total", 0),
+        ("cpu_rail", 0),
+        ("soc", 0),
+        ("dram", 0),
+    ]
+    assert scrape.total_power_w == 88.0
+
+
 def test_acpi_mode_drops_unclassified_rails():
     scrape = parse_cpu_scrape(_acpi_body())
 
