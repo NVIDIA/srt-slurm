@@ -755,6 +755,9 @@ class SweepOrchestrator(
         write_lockfile(self.runtime.log_dir.parent, self.config, self.runtime.log_dir)
 
         registry = ProcessRegistry(job_id=self.runtime.job_id)
+        # nsight-slurm: end the nsys sessions and wait for the reports before ANY teardown path kills the
+        # worker steps (finally block, critical-process monitor thread, signal handler all call cleanup()).
+        registry.add_pre_cleanup_hook(lambda: self.flush_nsight_slurm(registry))
         stop_event = threading.Event()
         setup_signal_handlers(stop_event, registry)
         start_process_monitor(stop_event, registry)
@@ -856,8 +859,6 @@ class SweepOrchestrator(
             # NOTE: finalize before registry.cleanup() so samples and manifest are durable.
             exit_code = self.finalize_power_telemetry(exit_code, interrupted=stop_event.is_set())
             stop_event.set()
-            # nsight-slurm: end the nsys sessions and wait for the reports before the steps are killed.
-            self.flush_nsight_slurm(registry)
             registry.cleanup()
             # nsight-slurm coordinator outlives the worker steps; stop it once they are gone
             # (the connectors have finished uploading their reports by then).

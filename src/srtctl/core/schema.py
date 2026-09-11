@@ -940,6 +940,12 @@ class ProfilingConfig:
         return [self.nsight_slurm_bin(), "srun"]
 
     NSIGHT_SLURM_CONNECTOR_CONTAINER_PATH: ClassVar[str] = "/usr/local/bin/nsight-slurm-connector"
+    # In-container path of the connector runtime workspace (host side: <log_dir>/nsight-slurm-runtime).
+    # Short on purpose: the connector binds an AF_UNIX callback socket under
+    # <base>/nsight-slurm-<uid>/<36-char invocation id>/ranks/<rank>/callback.sock, and sockaddr_un
+    # caps the whole path at 107 bytes, which any lustre log dir path would exceed.
+    NSIGHT_SLURM_RUNTIME_CONTAINER_PATH: ClassVar[str] = "/nsrt"
+    NSIGHT_SLURM_RUNTIME_SUBDIR: ClassVar[str] = "nsight-slurm-runtime"
 
     def nsight_slurm_container_mounts(self, log_dir: "Path | str") -> list[str]:
         """Mounts the wrapper's connector needs INSIDE the worker container (raw pyxis specs).
@@ -958,6 +964,9 @@ class ProfilingConfig:
             f"{home}:{home}:ro",
             f"{self.nsight_slurm_bin('nsight-slurm-connector')}:{self.NSIGHT_SLURM_CONNECTOR_CONTAINER_PATH}:ro",
             f"{log_dir}:{log_dir}",
+            # Connector runtime workspace (nsys scratch output + callback socket) on the shared
+            # filesystem, so range reports survive a killed step and can be rescued at teardown.
+            f"{Path(log_dir) / self.NSIGHT_SLURM_RUNTIME_SUBDIR}:{self.NSIGHT_SLURM_RUNTIME_CONTAINER_PATH}",
         ]
 
     def nsight_slurm_process_env(self, log_dir: "Path | str") -> dict[str, str]:
@@ -967,7 +976,12 @@ class ProfilingConfig:
         state (``.nsight-slurm/jobs/<id>``) lives with the run on the shared
         filesystem instead of under the checkout the sbatch was submitted from.
         """
-        return {"NSIGHT_SLURM_HOME": str(self.nsight_slurm_home), "SLURM_SUBMIT_DIR": str(log_dir)}
+        return {
+            "NSIGHT_SLURM_HOME": str(self.nsight_slurm_home),
+            "SLURM_SUBMIT_DIR": str(log_dir),
+            # Exported to the tasks by the wrapper (--export=ALL): the connector's settings read it.
+            "NSIGHT_SLURM_RUNTIME_DIR": self.NSIGHT_SLURM_RUNTIME_CONTAINER_PATH,
+        }
 
     @property
     def is_nsys_time(self) -> bool:

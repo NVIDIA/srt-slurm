@@ -30,6 +30,7 @@ from __future__ import annotations
 import logging
 import os
 import shlex
+import shutil
 import signal
 import subprocess
 import time
@@ -44,6 +45,7 @@ logger = logging.getLogger(__name__)
 
 NSIGHT_SLURM_REPORT_SUBDIR = "nsight-slurm-reports"
 NSIGHT_SLURM_LOG_NAME = "nsight-slurm.out"
+NSIGHT_SLURM_RUNTIME_SUBDIR = "nsight-slurm-runtime"
 
 
 class NsightSlurmStageMixin:
@@ -111,6 +113,14 @@ class NsightSlurmStageMixin:
         self._nsight_slurm_run("configure", "profiling-mode", prof.nsight_slurm_profiling_mode)
         self._nsight_slurm_run("configure", "tool-options", *prof.nsight_slurm_effective_tool_options())
         self._nsight_slurm_run("configure", "report-output", str(report_root))
+        # The connector writes nsys output into its runtime workspace and only copies it to the report
+        # root when its state machine sees a collection stop. With the nsys 2026.3 agent the cuda-api
+        # range states are not recognised (RangeCollection/RangeGeneration), so keep that workspace on
+        # the shared filesystem (bind-mounted at a short in-container path) instead of the
+        # container-local /tmp: reports then survive the step and flush_nsight_slurm() rescues them.
+        # The in-container path (/nsrt, see ProfilingConfig) reaches the connector through the
+        # launcher env (NSIGHT_SLURM_RUNTIME_DIR); it is bind-mounted from this host directory.
+        (Path(self.runtime.log_dir) / NSIGHT_SLURM_RUNTIME_SUBDIR).mkdir(parents=True, exist_ok=True)
         # Not `enable pyxis`: it appends a second --container-mounts flag and pyxis keeps only the
         # last one, dropping /model, /logs and /configs (hecate jobs 571147/571265). srtctl mounts
         # what the connector needs itself (see ProfilingConfig.nsight_slurm_container_mounts).
@@ -153,6 +163,25 @@ class NsightSlurmStageMixin:
             return 0
         report_root = Path(self.runtime.log_dir) / NSIGHT_SLURM_REPORT_SUBDIR
 
+        runtime_dir = Path(self.runtime.log_dir) / NSIGHT_SLURM_RUNTIME_SUBDIR
+
+        def rescue_scratch_reports() -> int:
+            """Copy nsys reports still sitting in the connectors' runtime workspaces into the report root."""
+            if not runtime_dir.exists():
+                return 0
+            rescued = 0
+            for src in runtime_dir.rglob("*.nsys-rep"):
+                dst = report_root / "rescued" / src.relative_to(runtime_dir)
+                if dst.exists() and dst.stat().st_size == src.stat().st_size:
+                    continue
+                try:
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src, dst)
+                    rescued += 1
+                except OSError as exc:
+                    logger.warning("nsight-slurm: could not rescue %s: %s", src, exc)
+            return rescued
+
         def count_reports() -> int:
             return sum(1 for _ in report_root.rglob("*.nsys-rep")) if report_root.exists() else 0
 
@@ -175,8 +204,17 @@ class NsightSlurmStageMixin:
                 break
             if not signalled and n == 0 and time.monotonic() >= first_deadline:
                 signalled = True
+                # Range reports may already exist in the runtime workspaces; save them before the
+                # connectors exit (their cleanup deletes the workspace), then end the sessions.
+                rescued = rescue_scratch_reports()
+                if rescued:
+                    logger.info("nsight-slurm: rescued %d report(s) from the runtime workspaces", rescued)
                 self._nsight_slurm_signal_workers(registry)
             time.sleep(poll_s)
+        rescued = rescue_scratch_reports()
+        if rescued:
+            logger.info("nsight-slurm: rescued %d report(s) from the runtime workspaces", rescued)
+        last = count_reports()
         logger.info("nsight-slurm: %d report file(s) under %s after flush", last, report_root)
         return last
 

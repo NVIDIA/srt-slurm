@@ -167,6 +167,16 @@ Two details srtctl handles itself instead of relying on the wrapper's defaults:
   node's own hostname can resolve to an unconnectable link-local IPv6 first, so the ranks on the
   coordinator's node would time out. srtctl sets `SLURMD_NODENAME=<head node IPv4>` for the
   wrapper CLI calls, making the published address an IP literal.
+- **Where the reports end up.** In cuda-api mode the connector keeps the nsys session open after a
+  capture range (`--capture-range-end repeat`) and writes nsys output into its runtime workspace,
+  copying it to the report root only when its state machine sees a collection stop. With the nsys
+  2026.3 agent the range states (`RangeCollection`, `RangeGeneration`) are not recognised by
+  connector 1.5.0, so nothing is copied and a container-local workspace would vanish with the step.
+  srtctl therefore configures the runtime workspace under `<log_dir>/nsight-slurm-runtime` (shared
+  filesystem), and at teardown `flush_nsight_slurm()` runs as a pre-cleanup hook of the process
+  registry, before any path kills the worker steps: `nsight-slurm stop --job`, then rescue-copy of
+  `*.nsys-rep` from the runtime workspaces into `<report_root>/rescued/`, then SIGTERM to the
+  wrapper processes so nsys can finalise, then a bounded wait for the report files to settle.
 
 Requirements: `nsight_slurm_home` must be on a filesystem the compute nodes see at the same path
 and built for the compute architecture (the connector runs inside the container; install with the

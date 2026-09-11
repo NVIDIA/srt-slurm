@@ -16,6 +16,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -118,6 +119,8 @@ class ProcessRegistry:
         """
         self.job_id = job_id
         self._processes: dict[str, ManagedProcess] = {}
+        self._pre_cleanup_hooks: list[Callable[[], None]] = []
+        self._pre_cleanup_done = False
         self._lock = threading.Lock()
         self._failed_processes: list[str] = []
 
@@ -171,8 +174,31 @@ class ProcessRegistry:
 
             return len(self._failed_processes) > 0
 
+    def add_pre_cleanup_hook(self, hook: Callable[[], None]) -> None:
+        """Register a callable that runs once, right before the first cleanup() terminates anything.
+
+        Every teardown path (normal finally, the critical-process monitor thread, signal handlers)
+        goes through cleanup(), so this is the one place to finish work that needs the processes
+        alive -- e.g. asking nsys sessions to write their reports before the worker steps die.
+        """
+        with self._lock:
+            self._pre_cleanup_hooks.append(hook)
+
+    def _run_pre_cleanup_hooks(self) -> None:
+        with self._lock:
+            if self._pre_cleanup_done:
+                return
+            self._pre_cleanup_done = True
+            hooks = list(self._pre_cleanup_hooks)
+        for hook in hooks:
+            try:
+                hook()
+            except Exception as e:  # noqa: BLE001 - cleanup must proceed regardless
+                logger.warning("Pre-cleanup hook %s failed: %s", getattr(hook, "__name__", hook), e)
+
     def cleanup(self) -> None:
-        """Terminate all registered processes."""
+        """Terminate all registered processes (after the pre-cleanup hooks ran once)."""
+        self._run_pre_cleanup_hooks()
         with self._lock:
             logger.info("Cleaning up %d processes...", len(self._processes))
             for name, proc in self._processes.items():

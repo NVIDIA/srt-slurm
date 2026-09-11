@@ -23,6 +23,7 @@ from srtctl.backends import TRTLLMProtocol
 from srtctl.cli.mixins.nsight_slurm_stage import (
     NSIGHT_SLURM_LOG_NAME,
     NSIGHT_SLURM_REPORT_SUBDIR,
+    NSIGHT_SLURM_RUNTIME_SUBDIR,
     NsightSlurmStageMixin,
 )
 from srtctl.core.schema import ModelConfig, ProfilingConfig, ProfilingPhaseConfig, ResourceConfig, SrtConfig
@@ -73,6 +74,7 @@ class TestConfig:
         assert p.nsight_slurm_process_env("/lustre/out/123/logs") == {
             "NSIGHT_SLURM_HOME": "/shared/nsight-slurm",
             "SLURM_SUBMIT_DIR": "/lustre/out/123/logs",
+            "NSIGHT_SLURM_RUNTIME_DIR": "/nsrt",
         }
         # Connector-owned flags are absent from the default option set.
         opts = p.nsight_slurm_effective_tool_options()
@@ -216,6 +218,8 @@ class TestStage:
         tool_opts = next(a for a in argvs if a[:2] == ["configure", "tool-options"])
         assert tool_opts[2:] == list(ProfilingConfig.NSIGHT_SLURM_DEFAULT_TOOL_OPTIONS)
         assert ["configure", "report-output", str(h.runtime.log_dir / NSIGHT_SLURM_REPORT_SUBDIR)] in argvs
+        assert (h.runtime.log_dir / NSIGHT_SLURM_RUNTIME_SUBDIR).is_dir()
+        assert kwargs["launcher_env"]["NSIGHT_SLURM_RUNTIME_DIR"] == "/nsrt"
         assert ["disable", "pyxis"] in argvs and ["enable", "pyxis"] not in argvs
         # The connector's mounts ride in srtctl's own --container-mounts (pyxis keeps only the last flag).
         log_dir = str(h.runtime.log_dir)
@@ -223,6 +227,7 @@ class TestStage:
             f"{home}:{home}:ro",
             f"{home}/bin/nsight-slurm-connector:/usr/local/bin/nsight-slurm-connector:ro",
             f"{log_dir}:{log_dir}",
+            f"{log_dir}/{NSIGHT_SLURM_RUNTIME_SUBDIR}:/nsrt",
         ]
         assert argvs[-1] == ["coordinator", "start"]
         # Every call ran from the log dir with the wrapper's job identity redirected there.
@@ -303,8 +308,18 @@ class TestFlush:
     def test_falls_back_to_sigterm_on_worker_steps(self, tmp_path, monkeypatch):
         h, _rec = self._ready(tmp_path, monkeypatch)
         registry, procs = self._registry("prefill_0_n1", "decode_0_n2", "frontend_0_n2", "etcd")
+        # A range report left behind in a connector runtime workspace is rescued into the report root.
+        scratch = (
+            h.runtime.log_dir / NSIGHT_SLURM_RUNTIME_SUBDIR / "nsight-slurm-1000" / "step" / "ranks" / "3" / "reports"
+        )
+        scratch.mkdir(parents=True)
+        (scratch / "prefill_n1_3.nsys-rep").write_bytes(b"data")
         n = h.flush_nsight_slurm(registry, timeout_s=0.6, first_wait_s=0.1, settle_s=0.1, poll_s=0.05)
-        assert n == 0
+        assert n == 1
+        rescued = h.runtime.log_dir / NSIGHT_SLURM_REPORT_SUBDIR / "rescued"
+        assert (
+            rescued / "nsight-slurm-1000" / "step" / "ranks" / "3" / "reports" / "prefill_n1_3.nsys-rep"
+        ).read_bytes() == b"data"
         # Only the worker steps (wrapper processes) are signalled, with a plain SIGTERM (no reap).
         procs["prefill_0_n1"].popen.send_signal.assert_called_once_with(signal.SIGTERM)
         procs["decode_0_n2"].popen.send_signal.assert_called_once_with(signal.SIGTERM)
