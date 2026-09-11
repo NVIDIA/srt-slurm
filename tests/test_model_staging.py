@@ -8,11 +8,12 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
 import yaml
 
 from srtctl.backends import TRTLLMProtocol, TRTLLMServerConfig
 from srtctl.core.runtime import Nodes, RuntimeContext
-from srtctl.core.schema import SrtConfig
+from srtctl.core.schema import DynamoConfig, SrtConfig
 
 
 def _runtime(*, staged=None, hf=False, model="/lustre/DeepSeek-V4-Pro"):
@@ -46,6 +47,35 @@ class TestWorkerModelArg:
 
 
 class TestSchema:
+    @pytest.mark.parametrize(
+        ("publishing", "expected_metrics", "expected_events"),
+        [
+            ({}, True, False),
+            ({"publish_metrics": False}, False, False),
+            ({"publish_metrics": True, "publish_events_and_metrics": False}, True, False),
+            ({"publish_metrics": False, "publish_events_and_metrics": True}, False, True),
+            ({"publish_metrics": True, "publish_events_and_metrics": True}, True, True),
+        ],
+    )
+    def test_trtllm_publishing_defaults_and_schema_roundtrip(self, publishing, expected_metrics, expected_events):
+        data = {
+            "name": "publishing-test",
+            "model": {"path": "/lustre/m", "container": "trtllm", "precision": "fp4"},
+            "resources": {"gpu_type": "gb300", "gpus_per_node": 4, "agg_nodes": 1, "agg_workers": 1},
+            "backend": {"type": "trtllm", **publishing},
+        }
+        schema = SrtConfig.Schema()
+        config = schema.load(data)
+        dumped = schema.dump(config)
+        reloaded = schema.load(dumped)
+
+        assert config.backend.publish_metrics is expected_metrics
+        assert config.backend.publish_events_and_metrics is expected_events
+        assert dumped["backend"]["publish_metrics"] is expected_metrics
+        assert dumped["backend"]["publish_events_and_metrics"] is expected_events
+        assert reloaded.backend.publish_metrics is expected_metrics
+        assert reloaded.backend.publish_events_and_metrics is expected_events
+
     def test_stage_dir_loads(self):
         data = {
             "name": "stage-test",
@@ -138,25 +168,66 @@ class TestWorkerCommandUsesStagedPath:
         # dynamo path passes it as --model-path
         assert "/raid/scratch/models/DeepSeek-V4-Pro" in cmd
 
-    def test_dynamo_worker_does_not_publish_events_by_default(self, tmp_path):
-        backend = TRTLLMProtocol(trtllm_config=TRTLLMServerConfig(decode={"tensor_parallel_size": 4}))
+    @pytest.mark.parametrize("mode", ["prefill", "decode", "agg"])
+    @pytest.mark.parametrize(
+        ("publishing", "expected_flags"),
+        [
+            ({}, ["--publish-metrics"]),
+            ({"publish_metrics": False}, []),
+            ({"publish_metrics": True, "publish_events_and_metrics": False}, ["--publish-metrics"]),
+            ({"publish_metrics": False, "publish_events_and_metrics": True}, ["--publish-events-and-metrics"]),
+            (
+                {"publish_metrics": True, "publish_events_and_metrics": True},
+                ["--publish-metrics", "--publish-events-and-metrics"],
+            ),
+        ],
+    )
+    def test_dynamo_worker_publishing_policy(self, tmp_path, mode, publishing, expected_flags):
+        backend = TRTLLMProtocol(**publishing)
+        process = replace(self._proc(), endpoint_mode=mode)
         cmd = backend.build_worker_command(
-            self._proc(),
-            [self._proc()],
+            process,
+            [process],
             self._runtime_mock(tmp_path, "/raid/scratch/models/DeepSeek-V4-Pro"),
             frontend_type="dynamo",
         )
-        assert "--publish-events-and-metrics" not in cmd
+        assert sorted(arg for arg in cmd if isinstance(arg, str) and arg.startswith("--publish-")) == sorted(
+            expected_flags
+        )
 
-    def test_dynamo_worker_publish_events_enabled(self, tmp_path):
-        backend = TRTLLMProtocol(
-            trtllm_config=TRTLLMServerConfig(decode={"tensor_parallel_size": 4}),
-            publish_events_and_metrics=True,
-        )
-        cmd = backend.build_worker_command(
-            self._proc(),
-            [self._proc()],
-            self._runtime_mock(tmp_path, "/raid/scratch/models/DeepSeek-V4-Pro"),
-            frontend_type="dynamo",
-        )
-        assert "--publish-events-and-metrics" in cmd
+    @pytest.mark.parametrize("mode", ["prefill", "decode", "agg"])
+    @pytest.mark.parametrize("publish_metrics", [False, True])
+    @pytest.mark.parametrize("publish_events_and_metrics", [False, True])
+    def test_native_worker_ignores_dynamo_publishing_options(
+        self, tmp_path, mode, publish_metrics, publish_events_and_metrics
+    ):
+        process = replace(self._proc(), endpoint_mode=mode)
+        runtime = self._runtime_mock(tmp_path, "/model")
+        runtime.frontend_port = 8000
+        baseline = TRTLLMProtocol(publish_metrics=False, publish_events_and_metrics=False)
+        backend = TRTLLMProtocol(publish_metrics=publish_metrics, publish_events_and_metrics=publish_events_and_metrics)
+
+        expected = baseline.build_worker_command(process, [process], runtime, frontend_type="trtllm_serve")
+        actual = backend.build_worker_command(process, [process], runtime, frontend_type="trtllm_serve")
+
+        assert actual == expected
+        assert "trtllm-serve" in actual
+        assert not any(arg.startswith("--publish-") for arg in actual)
+
+    @pytest.mark.parametrize("publish_metrics", [False, True])
+    @pytest.mark.parametrize("publish_events_and_metrics", [False, True])
+    def test_sidecar_worker_ignores_dynamo_publishing_options(
+        self, tmp_path, publish_metrics, publish_events_and_metrics
+    ):
+        process = replace(self._proc(), endpoint_mode="agg")
+        runtime = self._runtime_mock(tmp_path, "/model")
+        runtime.dynamo = DynamoConfig(sidecar=True)
+        baseline = TRTLLMProtocol(publish_metrics=False, publish_events_and_metrics=False)
+        backend = TRTLLMProtocol(publish_metrics=publish_metrics, publish_events_and_metrics=publish_events_and_metrics)
+
+        expected = baseline.build_worker_command(process, [process], runtime, frontend_type="dynamo")
+        actual = backend.build_worker_command(process, [process], runtime, frontend_type="dynamo")
+
+        assert actual == expected
+        assert "dynamo.trtllm.sidecar" in " ".join(actual)
+        assert "--publish-" not in " ".join(actual)

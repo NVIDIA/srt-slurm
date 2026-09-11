@@ -105,11 +105,15 @@ class TRTLLMProtocol:
     # engine does not recognise.
     served_model_name: str | None = None
 
-    # Whether dynamo.trtllm workers pass `--publish-events-and-metrics`.
-    # Enables the worker to publish KV-cache events (add/evict) + metrics, which
-    # the dynamo frontend consumes for KV-cache-aware routing (router-mode: kv).
-    # This may impact performance so should be disabled if exact KV aware routing
-    # is not needed.
+    # Publish TRT-LLM engine metrics without enabling KV-cache events.
+    # Requires a Dynamo build supporting --publish-metrics; set False to omit
+    # the flag for older builds. Native trtllm-serve and sidecars are unaffected.
+    publish_metrics: bool = True
+
+    # Legacy opt-in to both metrics and KV-cache events, independent of the
+    # metrics-only flag. Also enabled by the observability superset.
+    # Passes --publish-events-and-metrics, including KV-cache add/evict events
+    # for the frontend's KV-cache-aware routing. Events remain off by default.
     publish_events_and_metrics: bool = False
 
     # Controls batched startup of workers that share the same node.
@@ -373,6 +377,8 @@ class TRTLLMProtocol:
             ]
         )
 
+        if self.publish_metrics:
+            cmd.append("--publish-metrics")
         if self.publish_events_and_metrics:
             cmd.append("--publish-events-and-metrics")
 

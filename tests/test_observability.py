@@ -40,6 +40,15 @@ def _trtllm_config(**observability):
 
 # --------------------------------------------------------------- expansion ---
 class TestExpandObservability:
+    @pytest.mark.parametrize("enabled", [None, False, True])
+    def test_metrics_default_does_not_depend_on_observability(self, enabled):
+        cfg = _trtllm_config() if enabled is None else _trtllm_config(enabled=enabled)
+        loaded = SrtConfig.Schema().load(expand_observability(cfg))
+
+        assert loaded.backend.publish_metrics is True
+        # The master observability switch remains a superset that adds events.
+        assert loaded.backend.publish_events_and_metrics is (enabled is True)
+
     def test_disabled_is_a_noop(self):
         cfg = expand_observability(_trtllm_config(enabled=False))
         assert "publish_events_and_metrics" not in cfg["backend"]
@@ -82,6 +91,7 @@ class TestExpandObservability:
         cfg = expand_observability(_trtllm_config(enabled=True))
         assert "telemetry" not in cfg
         assert cfg["backend"]["publish_events_and_metrics"] is True
+        assert SrtConfig.Schema().load(cfg).backend.publish_metrics is True
         for mode in ("prefill", "decode"):
             section = cfg["backend"]["trtllm_config"][mode]
             # enable_iter_perf_stats is what produces trtllm_kv_cache_*_blocks.
@@ -98,6 +108,37 @@ class TestExpandObservability:
         assert out["backend"]["decode_environment"]["DYN_LOG"] == "info"
         assert out["backend"]["trtllm_config"]["decode"]["return_perf_metrics"] is False
         assert out["backend"]["publish_events_and_metrics"] is False
+
+    @pytest.mark.parametrize("frontend_type", ["dynamo", "trtllm_serve"])
+    @pytest.mark.parametrize("publish_metrics", [False, True])
+    @pytest.mark.parametrize("publish_events_and_metrics", [False, True])
+    def test_publishing_optouts_are_preserved_and_only_disabled_dynamo_metrics_warn(
+        self, caplog, frontend_type, publish_metrics, publish_events_and_metrics
+    ):
+        cfg = _trtllm_config(enabled=True)
+        cfg["frontend"]["type"] = frontend_type
+        cfg["backend"]["publish_metrics"] = publish_metrics
+        cfg["backend"]["publish_events_and_metrics"] = publish_events_and_metrics
+
+        with caplog.at_level("WARNING"):
+            out = expand_observability(cfg)
+
+        assert out["backend"]["publish_metrics"] is publish_metrics
+        assert out["backend"]["publish_events_and_metrics"] is publish_events_and_metrics
+        publishing_warnings = [record for record in caplog.records if "publish_metrics" in record.message]
+        should_warn = frontend_type == "dynamo" and not publish_metrics and not publish_events_and_metrics
+        assert bool(publishing_warnings) is should_warn
+
+    def test_observability_can_publish_legacy_metrics_when_standalone_flag_is_disabled(self, caplog):
+        cfg = _trtllm_config(enabled=True)
+        cfg["backend"]["publish_metrics"] = False
+
+        with caplog.at_level("WARNING"):
+            out = expand_observability(cfg)
+
+        assert out["backend"]["publish_metrics"] is False
+        assert out["backend"]["publish_events_and_metrics"] is True
+        assert not [record for record in caplog.records if "publish_metrics" in record.message]
 
     def test_preexisting_env_is_preserved(self):
         cfg = expand_observability(_trtllm_config(enabled=True))

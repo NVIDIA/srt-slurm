@@ -1173,8 +1173,9 @@ class ObservabilityConfig:
     having to remember six independent flags. It expands (at config-load time,
     via :func:`srtctl.core.config.expand_observability`) into:
 
-    * ``backend.publish_events_and_metrics: true`` -- the worker/frontend
-      Prometheus ``/metrics`` surface exists at all.
+    * ``backend.publish_events_and_metrics: true`` -- enable KV-cache events
+      and TRT-LLM engine metrics. Metrics-only publication already defaults on
+      independently via ``backend.publish_metrics``.
     * ``enable_iter_perf_stats`` + ``return_perf_metrics`` on every engine
       config -- the ``trtllm_kv_cache_*`` occupancy gauges and per-request
       histograms appear on that surface.
@@ -1195,8 +1196,8 @@ class ObservabilityConfig:
     directly. It never asks the benchmark client to re-export what the servers
     already publish. (One indirect exception: on TRT-LLM the client's
     ``AIPERF_SERVER_METRICS_URLS`` worker list exists only when
-    ``publish_events_and_metrics`` gives those endpoints content, and this knob
-    is one way that flag gets set — see ``BenchmarkStageMixin``.)
+    ``publish_metrics`` or the legacy ``publish_events_and_metrics`` gives
+    those endpoints engine metrics — see ``BenchmarkStageMixin``.)
 
     It does **not** decide whether the component perf dashboard is built. That
     happens on every run (see :mod:`srtctl.analysis.perf_dashboard`); ``enabled``

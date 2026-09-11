@@ -662,23 +662,22 @@ def expand_observability(cfg: dict) -> dict:
     # keyed by x_request_id so all three legs join on one id.
     _setdefault_nested(frontend, "env", ANALYTICS_REQUEST_TRACE_ENV)
 
-    # --- metrics leg: the /metrics surface and what appears on it ------------
-    # publish_events_and_metrics is what creates the endpoint; without it the
-    # engine-config keys below have nowhere to publish to.
+    # --- metrics leg: engine metrics on the worker /metrics surface ----------
+    # Metrics-only publication defaults on independently of observability.
+    # Keep observability as the existing superset that also enables KV events.
     if backend.get("type", "sglang") == "trtllm":
-        # An explicit False here defeats the whole metrics leg -- no /metrics
-        # surface means no KV-cache gauges for anyone, including the in-job
-        # scraper. setdefault still lets the recipe win (that contract matters),
-        # but say so loudly: a recipe written before this knob existed will
-        # otherwise silently produce a run with half the data missing.
-        if backend.get("publish_events_and_metrics") is False:
-            logger.warning(
-                "observability.enabled but backend.publish_events_and_metrics is "
-                "explicitly false — workers will NOT expose /metrics, so KV-cache "
-                "gauges and worker scrapes will be missing. Remove that line or "
-                "set it true to get the full analytics capture."
-            )
         backend.setdefault("publish_events_and_metrics", True)
+        if (
+            frontend.get("type", "dynamo") == "dynamo"
+            and not backend.get("publish_metrics", True)
+            and not backend.get("publish_events_and_metrics", False)
+        ):
+            logger.warning(
+                "observability.enabled but backend.publish_metrics is explicitly false "
+                "and publish_events_and_metrics is not enabled — TRT-LLM engine metrics "
+                "are not enabled by srt-slurm's publication flags. Set "
+                "backend.publish_metrics: true to enable metrics without KV-cache events."
+            )
 
         trtllm_config = backend.get("trtllm_config")
         if not isinstance(trtllm_config, dict):

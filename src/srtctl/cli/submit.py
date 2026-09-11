@@ -218,6 +218,23 @@ def show_config_details(config: SrtConfig) -> None:
     environment variables (global and backend per-mode) so users can verify their
     config is correct before submitting.
     """
+    if config.frontend.type == "dynamo" and not config.dynamo.sidecar:
+        from srtctl.backends.trtllm import TRTLLMProtocol
+
+        if isinstance(config.backend, TRTLLMProtocol):
+            publication = []
+            if config.backend.publish_metrics:
+                publication.append("--publish-metrics (metrics only)")
+            if config.backend.publish_events_and_metrics:
+                publication.append("--publish-events-and-metrics (metrics and KV events)")
+            console.print(
+                Panel(
+                    "\n".join(publication) or "No publication flag (backend.publish_metrics: false)",
+                    title="Dynamo TRT-LLM Metrics",
+                    border_style="cyan",
+                )
+            )
+
     if config.frontend.type == "vllm":
         from srtctl.backends.vllm import VLLMProtocol, find_vllm_orchestration_recipe_flags
 
