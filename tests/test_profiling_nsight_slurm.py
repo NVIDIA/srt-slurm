@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import signal
 import stat
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -216,7 +217,13 @@ class TestStage:
         assert ["configure", "tool-command", "profile"] in argvs
         assert ["configure", "profiling-mode", "cuda-api"] in argvs
         tool_opts = next(a for a in argvs if a[:2] == ["configure", "tool-options"])
-        assert tool_opts[2:] == list(ProfilingConfig.NSIGHT_SLURM_DEFAULT_TOOL_OPTIONS)
+        report_root = h.runtime.log_dir / NSIGHT_SLURM_REPORT_SUBDIR
+        assert tool_opts[2:] == [
+            *ProfilingConfig.NSIGHT_SLURM_DEFAULT_TOOL_OPTIONS,
+            "-o",
+            f"{report_root}/direct/%q{{SLURM_JOB_ID}}_%q{{SLURMD_NODENAME}}_rank%q{{SLURM_PROCID}}",
+        ]
+        assert (report_root / "direct").is_dir()
         assert ["configure", "report-output", str(h.runtime.log_dir / NSIGHT_SLURM_REPORT_SUBDIR)] in argvs
         assert (h.runtime.log_dir / NSIGHT_SLURM_RUNTIME_SUBDIR).is_dir()
         assert kwargs["launcher_env"]["NSIGHT_SLURM_RUNTIME_DIR"] == "/nsrt"
@@ -291,19 +298,39 @@ class TestFlush:
             procs[name] = SimpleNamespace(name=name, is_running=True, popen=MagicMock())
         return SimpleNamespace(get_all_processes=lambda: dict(procs)), procs
 
-    def test_stop_then_wait_for_reports(self, tmp_path, monkeypatch):
+    def test_stop_then_signal_when_nothing_new_appears(self, tmp_path, monkeypatch):
         h, rec = self._ready(tmp_path, monkeypatch)
-        registry, procs = self._registry("prefill_0_n1", "decode_0_n2", "frontend_0_n2")
-        # A report already exists (the connectors wrote it after `stop`): no worker gets signalled.
+        registry, procs = self._registry("prefill_0_n1", "decode_0_n2", "frontend_0_n2", "etcd")
+        # A report that existed before `stop` does not prove the sessions ended: the worker steps
+        # (and only they) are still asked to finish via SIGTERM to their wrapper processes.
         rep = h.runtime.log_dir / NSIGHT_SLURM_REPORT_SUBDIR / "job-777" / "collection-1"
         rep.mkdir(parents=True)
         (rep / "n1-rank0.nsys-rep").write_bytes(b"x")
-        n = h.flush_nsight_slurm(registry, timeout_s=2.0, first_wait_s=0.5, settle_s=0.2, poll_s=0.05)
+        n = h.flush_nsight_slurm(registry, timeout_s=1.0, first_wait_s=0.2, settle_s=0.1, poll_s=0.05)
         assert n == 1
         calls = [json.loads(line)["argv"] for line in rec.read_text().splitlines()]
         assert calls == [["stop", "--job", "777", "--timeout", "30"]]
-        for p in procs.values():
-            p.popen.send_signal.assert_not_called()
+        procs["prefill_0_n1"].popen.send_signal.assert_called_once_with(signal.SIGTERM)
+        procs["decode_0_n2"].popen.send_signal.assert_called_once_with(signal.SIGTERM)
+        procs["frontend_0_n2"].popen.send_signal.assert_not_called()
+        procs["etcd"].popen.send_signal.assert_not_called()
+
+    def test_new_reports_after_stop_mean_no_signal(self, tmp_path, monkeypatch):
+        import threading
+
+        h, _rec = self._ready(tmp_path, monkeypatch)
+        registry, procs = self._registry("prefill_0_n1")
+        rep = h.runtime.log_dir / NSIGHT_SLURM_REPORT_SUBDIR / "job-777" / "collection-1"
+        rep.mkdir(parents=True)
+
+        def connectors_write_after_stop():
+            time.sleep(0.15)
+            (rep / "n1-rank0.nsys-rep").write_bytes(b"x")
+
+        threading.Thread(target=connectors_write_after_stop).start()
+        n = h.flush_nsight_slurm(registry, timeout_s=3.0, first_wait_s=0.6, settle_s=0.2, poll_s=0.05)
+        assert n == 1
+        procs["prefill_0_n1"].popen.send_signal.assert_not_called()
 
     def test_falls_back_to_sigterm_on_worker_steps(self, tmp_path, monkeypatch):
         h, _rec = self._ready(tmp_path, monkeypatch)
@@ -315,7 +342,7 @@ class TestFlush:
         scratch.mkdir(parents=True)
         (scratch / "prefill_n1_3.nsys-rep").write_bytes(b"data")
         n = h.flush_nsight_slurm(registry, timeout_s=0.6, first_wait_s=0.1, settle_s=0.1, poll_s=0.05)
-        assert n == 1
+        assert n == 1  # the rescued copy counts as a report, but does not stop the SIGTERM fallback
         rescued = h.runtime.log_dir / NSIGHT_SLURM_REPORT_SUBDIR / "rescued"
         assert (
             rescued / "nsight-slurm-1000" / "step" / "ranks" / "3" / "reports" / "prefill_n1_3.nsys-rep"
@@ -333,3 +360,41 @@ class TestFlush:
                 self.runtime = SimpleNamespace(log_dir=tmp_path)
 
         assert Harness().flush_nsight_slurm(None) == 0
+
+
+class TestRegistryPreCleanupHook:
+    """A concurrent cleanup() must wait for the pre-cleanup hooks instead of killing early."""
+
+    def test_second_caller_waits_for_the_hook(self):
+        import threading
+
+        from srtctl.core.processes import ManagedProcess, ProcessRegistry
+
+        registry = ProcessRegistry(job_id="1")
+        popen = MagicMock()
+        popen.poll.return_value = None  # running
+        registry.add_process(ManagedProcess(name="prefill_0", popen=popen))
+        hook_started, release_hook = threading.Event(), threading.Event()
+        calls = []
+
+        def hook():
+            calls.append("hook")
+            hook_started.set()
+            release_hook.wait(5)
+            # Nothing may have been terminated while the hook was running.
+            popen.terminate.assert_not_called()
+
+        registry.add_pre_cleanup_hook(hook)
+        t1 = threading.Thread(target=registry.cleanup)
+        t1.start()
+        assert hook_started.wait(5)
+        t2 = threading.Thread(target=registry.cleanup)  # e.g. the finally block racing the monitor
+        t2.start()
+        t2.join(0.3)
+        assert t2.is_alive()  # blocked on the hook lock
+        popen.terminate.assert_not_called()
+        release_hook.set()
+        t1.join(5)
+        t2.join(5)
+        assert calls == ["hook"]  # ran exactly once
+        assert popen.terminate.called

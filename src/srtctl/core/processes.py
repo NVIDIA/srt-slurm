@@ -121,6 +121,7 @@ class ProcessRegistry:
         self._processes: dict[str, ManagedProcess] = {}
         self._pre_cleanup_hooks: list[Callable[[], None]] = []
         self._pre_cleanup_done = False
+        self._pre_cleanup_lock = threading.Lock()
         self._lock = threading.Lock()
         self._failed_processes: list[str] = []
 
@@ -185,16 +186,20 @@ class ProcessRegistry:
             self._pre_cleanup_hooks.append(hook)
 
     def _run_pre_cleanup_hooks(self) -> None:
-        with self._lock:
+        # Held for the whole hook run: a second cleanup() caller (the finally block racing the
+        # critical-process monitor thread, or a signal handler) must wait until the hooks are done
+        # instead of terminating the processes the hooks still need (hecate job 572590).
+        with self._pre_cleanup_lock:
             if self._pre_cleanup_done:
                 return
             self._pre_cleanup_done = True
-            hooks = list(self._pre_cleanup_hooks)
-        for hook in hooks:
-            try:
-                hook()
-            except Exception as e:  # noqa: BLE001 - cleanup must proceed regardless
-                logger.warning("Pre-cleanup hook %s failed: %s", getattr(hook, "__name__", hook), e)
+            with self._lock:
+                hooks = list(self._pre_cleanup_hooks)
+            for hook in hooks:
+                try:
+                    hook()
+                except Exception as e:  # noqa: BLE001 - cleanup must proceed regardless
+                    logger.warning("Pre-cleanup hook %s failed: %s", getattr(hook, "__name__", hook), e)
 
     def cleanup(self) -> None:
         """Terminate all registered processes (after the pre-cleanup hooks ran once)."""

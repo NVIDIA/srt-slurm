@@ -111,7 +111,14 @@ class NsightSlurmStageMixin:
         self._nsight_slurm_run("configure", "tool-path", prof.nsight_slurm_tool_path)
         self._nsight_slurm_run("configure", "tool-command", "profile")
         self._nsight_slurm_run("configure", "profiling-mode", prof.nsight_slurm_profiling_mode)
-        self._nsight_slurm_run("configure", "tool-options", *prof.nsight_slurm_effective_tool_options())
+        # -o last: nsys writes each rank's report straight into the report root (see schema).
+        self._nsight_slurm_run(
+            "configure",
+            "tool-options",
+            *prof.nsight_slurm_effective_tool_options(),
+            *prof.nsight_slurm_output_option(report_root),
+        )
+        (report_root / prof.NSIGHT_SLURM_DIRECT_REPORT_SUBDIR).mkdir(parents=True, exist_ok=True)
         self._nsight_slurm_run("configure", "report-output", str(report_root))
         # The connector writes nsys output into its runtime workspace and only copies it to the report
         # root when its state machine sees a collection stop. With the nsys 2026.3 agent the cuda-api
@@ -194,21 +201,21 @@ class NsightSlurmStageMixin:
 
         deadline = time.monotonic() + timeout_s
         first_deadline = time.monotonic() + first_wait_s
+        rescue_scratch_reports()
+        baseline = last = count_reports()  # reports that existed before `stop` do not prove anything ended
+        stable_since = time.monotonic()
         signalled = False
-        last, stable_since = count_reports(), time.monotonic()
         while time.monotonic() < deadline:
+            rescue_scratch_reports()  # cheap; connectors delete their workspace when they exit
             n = count_reports()
+            now = time.monotonic()
             if n != last:
-                last, stable_since = n, time.monotonic()
-            if n > 0 and time.monotonic() - stable_since >= settle_s:
+                last, stable_since = n, now
+            new_reports = n > baseline
+            if new_reports and now - stable_since >= settle_s and (signalled or now >= first_deadline):
                 break
-            if not signalled and n == 0 and time.monotonic() >= first_deadline:
+            if not signalled and now >= first_deadline and not new_reports:
                 signalled = True
-                # Range reports may already exist in the runtime workspaces; save them before the
-                # connectors exit (their cleanup deletes the workspace), then end the sessions.
-                rescued = rescue_scratch_reports()
-                if rescued:
-                    logger.info("nsight-slurm: rescued %d report(s) from the runtime workspaces", rescued)
                 self._nsight_slurm_signal_workers(registry)
             time.sleep(poll_s)
         rescued = rescue_scratch_reports()
