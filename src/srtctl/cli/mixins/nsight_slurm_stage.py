@@ -30,11 +30,14 @@ from __future__ import annotations
 import logging
 import os
 import shlex
+import signal
 import subprocess
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from srtctl.core.processes import ProcessRegistry
     from srtctl.core.schema import SrtConfig
 
 logger = logging.getLogger(__name__)
@@ -121,6 +124,74 @@ class NsightSlurmStageMixin:
             shlex.join(prof.nsight_slurm_launcher()),
             report_root,
         )
+
+    def flush_nsight_slurm(
+        self,
+        registry: ProcessRegistry | None,
+        *,
+        timeout_s: float = 240.0,
+        first_wait_s: float = 45.0,
+        settle_s: float = 20.0,
+        poll_s: float = 5.0,
+    ) -> int:
+        """End the nsys sessions and wait for the reports BEFORE the worker steps are killed.
+
+        In cuda-api mode a capture range closes at cudaProfilerStop, but the wrapper keeps the nsys
+        session open for the next range (``--capture-range-end repeat``), so a report only exists
+        once the session ends. Steps that die by SIGKILL (registry.cleanup + batch-script exit)
+        lose everything they captured (hecate job 571904). Two graceful triggers, in order:
+
+        1. ``nsight-slurm stop --job <id>``: coordinator -> connectors -> ``nsys stop``.
+        2. If no report showed up: SIGTERM to the wrapper processes of the worker steps; the wrapper
+           relays it to srun -> connector -> nsys, and nsys (``--kill none``) writes its report on
+           SIGTERM ("Processing events... Generated: ...") while the application keeps running.
+
+        Then wait for ``*.nsys-rep`` files under the report root to appear and settle. Returns the
+        number of report files found. Best effort: never raises.
+        """
+        if not self._nsight_slurm_coordinator_started:
+            return 0
+        report_root = Path(self.runtime.log_dir) / NSIGHT_SLURM_REPORT_SUBDIR
+
+        def count_reports() -> int:
+            return sum(1 for _ in report_root.rglob("*.nsys-rep")) if report_root.exists() else 0
+
+        job_id = os.environ.get("SLURM_JOB_ID")
+        if job_id:
+            try:
+                self._nsight_slurm_run("stop", "--job", job_id, "--timeout", "30", check=False)
+            except Exception as exc:  # noqa: BLE001 - teardown must never raise
+                logger.warning("nsight-slurm: stop failed: %s", exc)
+
+        deadline = time.monotonic() + timeout_s
+        first_deadline = time.monotonic() + first_wait_s
+        signalled = False
+        last, stable_since = count_reports(), time.monotonic()
+        while time.monotonic() < deadline:
+            n = count_reports()
+            if n != last:
+                last, stable_since = n, time.monotonic()
+            if n > 0 and time.monotonic() - stable_since >= settle_s:
+                break
+            if not signalled and n == 0 and time.monotonic() >= first_deadline:
+                signalled = True
+                self._nsight_slurm_signal_workers(registry)
+            time.sleep(poll_s)
+        logger.info("nsight-slurm: %d report file(s) under %s after flush", last, report_root)
+        return last
+
+    @staticmethod
+    def _nsight_slurm_signal_workers(registry: ProcessRegistry | None) -> None:
+        """SIGTERM the wrapper processes of the worker steps (no reap; cleanup does that later)."""
+        if registry is None:
+            return
+        for name, proc in registry.get_all_processes().items():
+            if name.startswith(("prefill_", "decode_", "agg_")) and proc.is_running:
+                logger.info("nsight-slurm: SIGTERM %s so its nsys session ends and the report is written", name)
+                try:
+                    proc.popen.send_signal(signal.SIGTERM)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("nsight-slurm: could not signal %s: %s", name, exc)
 
     def stop_nsight_slurm(self) -> None:
         """Stop the explicit coordinator (best effort; called from the sweep's cleanup)."""

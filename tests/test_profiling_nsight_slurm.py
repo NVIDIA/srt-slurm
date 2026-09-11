@@ -10,6 +10,7 @@ preconditions hold. Nothing here needs Slurm or the real tool.
 from __future__ import annotations
 
 import json
+import signal
 import stat
 from pathlib import Path
 from types import SimpleNamespace
@@ -254,3 +255,66 @@ class TestStage:
                 self.runtime = SimpleNamespace(log_dir=tmp_path)
 
         assert Harness().nsight_slurm_launch_kwargs() == {}
+
+
+class TestFlush:
+    """Reports only exist once the nsys sessions end: flush before cleanup kills the steps."""
+
+    def _ready(self, tmp_path, monkeypatch):
+        home = _fake_home(tmp_path)
+        rec = tmp_path / "calls.jsonl"
+        monkeypatch.setenv("FAKE_NSIGHT_LOG", str(rec))
+        monkeypatch.setenv("SLURM_JOB_ID", "777")
+
+        class Harness(NsightSlurmStageMixin):
+            def __init__(self):
+                self.config = _disagg(nsight_slurm_home=str(home))
+                self.runtime = SimpleNamespace(
+                    log_dir=tmp_path / "logs", container_image="/img.sqsh", head_node_ip="10.0.0.7"
+                )
+                self.runtime.log_dir.mkdir()
+
+        h = Harness()
+        h.nsight_slurm_launch_kwargs()  # configures + starts the coordinator (fake)
+        rec.write_text("")  # only record the flush from here on
+        return h, rec
+
+    @staticmethod
+    def _registry(*names):
+        procs = {}
+        for name in names:
+            procs[name] = SimpleNamespace(name=name, is_running=True, popen=MagicMock())
+        return SimpleNamespace(get_all_processes=lambda: dict(procs)), procs
+
+    def test_stop_then_wait_for_reports(self, tmp_path, monkeypatch):
+        h, rec = self._ready(tmp_path, monkeypatch)
+        registry, procs = self._registry("prefill_0_n1", "decode_0_n2", "frontend_0_n2")
+        # A report already exists (the connectors wrote it after `stop`): no worker gets signalled.
+        rep = h.runtime.log_dir / NSIGHT_SLURM_REPORT_SUBDIR / "job-777" / "collection-1"
+        rep.mkdir(parents=True)
+        (rep / "n1-rank0.nsys-rep").write_bytes(b"x")
+        n = h.flush_nsight_slurm(registry, timeout_s=2.0, first_wait_s=0.5, settle_s=0.2, poll_s=0.05)
+        assert n == 1
+        calls = [json.loads(line)["argv"] for line in rec.read_text().splitlines()]
+        assert calls == [["stop", "--job", "777", "--timeout", "30"]]
+        for p in procs.values():
+            p.popen.send_signal.assert_not_called()
+
+    def test_falls_back_to_sigterm_on_worker_steps(self, tmp_path, monkeypatch):
+        h, rec = self._ready(tmp_path, monkeypatch)
+        registry, procs = self._registry("prefill_0_n1", "decode_0_n2", "frontend_0_n2", "etcd")
+        n = h.flush_nsight_slurm(registry, timeout_s=0.6, first_wait_s=0.1, settle_s=0.1, poll_s=0.05)
+        assert n == 0
+        # Only the worker steps (wrapper processes) are signalled, with a plain SIGTERM (no reap).
+        procs["prefill_0_n1"].popen.send_signal.assert_called_once_with(signal.SIGTERM)
+        procs["decode_0_n2"].popen.send_signal.assert_called_once_with(signal.SIGTERM)
+        procs["frontend_0_n2"].popen.send_signal.assert_not_called()
+        procs["etcd"].popen.send_signal.assert_not_called()
+
+    def test_noop_without_coordinator(self, tmp_path):
+        class Harness(NsightSlurmStageMixin):
+            def __init__(self):
+                self.config = SimpleNamespace(profiling=ProfilingConfig(type="nsys"))
+                self.runtime = SimpleNamespace(log_dir=tmp_path)
+
+        assert Harness().flush_nsight_slurm(None) == 0

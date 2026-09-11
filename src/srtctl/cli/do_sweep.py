@@ -856,6 +856,8 @@ class SweepOrchestrator(
             # NOTE: finalize before registry.cleanup() so samples and manifest are durable.
             exit_code = self.finalize_power_telemetry(exit_code, interrupted=stop_event.is_set())
             stop_event.set()
+            # nsight-slurm: end the nsys sessions and wait for the reports before the steps are killed.
+            self.flush_nsight_slurm(registry)
             registry.cleanup()
             # nsight-slurm coordinator outlives the worker steps; stop it once they are gone
             # (the connectors have finished uploading their reports by then).
