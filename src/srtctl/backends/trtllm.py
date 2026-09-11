@@ -110,11 +110,11 @@ class TRTLLMProtocol:
     # the flag for older builds. Native trtllm-serve and sidecars are unaffected.
     publish_metrics: bool = True
 
-    # Legacy opt-in to both metrics and KV-cache events, independent of the
-    # metrics-only flag. Also enabled by the observability superset.
-    # Passes --publish-events-and-metrics, including KV-cache add/evict events
-    # for the frontend's KV-cache-aware routing. Events remain off by default.
-    publish_events_and_metrics: bool = False
+    # None means unspecified: metrics default on, events off (observability
+    # promotes this to True). Explicit False is a master opt-out of BOTH
+    # publication flags, even when publish_metrics is True. Preserve None in
+    # schema round-trips so an omitted value never becomes an explicit opt-out.
+    publish_events_and_metrics: bool | None = None
 
     # Controls batched startup of workers that share the same node.
     # 0 = start all workers in parallel (no constraint).
@@ -148,6 +148,18 @@ class TRTLLMProtocol:
     numa_cpu_bind: bool = False
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
+
+    @property
+    def dynamo_metrics_flags(self) -> tuple[str, ...]:
+        """Effective publication flags, preserving the explicit legacy opt-out."""
+        if self.publish_events_and_metrics is False:
+            return ()
+        flags = []
+        if self.publish_metrics:
+            flags.append("--publish-metrics")
+        if self.publish_events_and_metrics:
+            flags.append("--publish-events-and-metrics")
+        return tuple(flags)
 
     # =========================================================================
     # BackendProtocol Implementation
@@ -377,10 +389,7 @@ class TRTLLMProtocol:
             ]
         )
 
-        if self.publish_metrics:
-            cmd.append("--publish-metrics")
-        if self.publish_events_and_metrics:
-            cmd.append("--publish-events-and-metrics")
+        cmd.extend(self.dynamo_metrics_flags)
 
         return self._wrap_with_numa_cpu_bind(cmd)
 

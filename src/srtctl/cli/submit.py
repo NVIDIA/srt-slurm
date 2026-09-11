@@ -222,14 +222,17 @@ def show_config_details(config: SrtConfig) -> None:
         from srtctl.backends.trtllm import TRTLLMProtocol
 
         if isinstance(config.backend, TRTLLMProtocol):
-            publication = []
-            if config.backend.publish_metrics:
-                publication.append("--publish-metrics (metrics only)")
-            if config.backend.publish_events_and_metrics:
-                publication.append("--publish-events-and-metrics (metrics and KV events)")
+            descriptions = {
+                "--publish-metrics": "metrics only",
+                "--publish-events-and-metrics": "metrics and KV events",
+            }
+            publication = [f"{flag} ({descriptions[flag]})" for flag in config.backend.dynamo_metrics_flags]
+            disabled_by = (
+                "publish_events_and_metrics" if config.backend.publish_events_and_metrics is False else "publish_metrics"
+            )
             console.print(
                 Panel(
-                    "\n".join(publication) or "No publication flag (backend.publish_metrics: false)",
+                    "\n".join(publication) or f"No publication flag (backend.{disabled_by}: false)",
                     title="Dynamo TRT-LLM Metrics",
                     border_style="cyan",
                 )

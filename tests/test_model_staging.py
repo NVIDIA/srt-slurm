@@ -48,16 +48,31 @@ class TestWorkerModelArg:
 
 class TestSchema:
     @pytest.mark.parametrize(
-        ("publishing", "expected_metrics", "expected_events"),
+        ("publishing", "expected_metrics", "expected_events", "expected_flags"),
         [
-            ({}, True, False),
-            ({"publish_metrics": False}, False, False),
-            ({"publish_metrics": True, "publish_events_and_metrics": False}, True, False),
-            ({"publish_metrics": False, "publish_events_and_metrics": True}, False, True),
-            ({"publish_metrics": True, "publish_events_and_metrics": True}, True, True),
+            ({}, True, None, ("--publish-metrics",)),
+            ({"publish_metrics": False}, False, None, ()),
+            ({"publish_metrics": True, "publish_events_and_metrics": None}, True, None, ("--publish-metrics",)),
+            ({"publish_metrics": False, "publish_events_and_metrics": None}, False, None, ()),
+            ({"publish_metrics": True, "publish_events_and_metrics": False}, True, False, ()),
+            ({"publish_metrics": False, "publish_events_and_metrics": False}, False, False, ()),
+            (
+                {"publish_metrics": False, "publish_events_and_metrics": True},
+                False,
+                True,
+                ("--publish-events-and-metrics",),
+            ),
+            (
+                {"publish_metrics": True, "publish_events_and_metrics": True},
+                True,
+                True,
+                ("--publish-metrics", "--publish-events-and-metrics"),
+            ),
         ],
     )
-    def test_trtllm_publishing_defaults_and_schema_roundtrip(self, publishing, expected_metrics, expected_events):
+    def test_trtllm_publishing_defaults_and_schema_roundtrip(
+        self, publishing, expected_metrics, expected_events, expected_flags
+    ):
         data = {
             "name": "publishing-test",
             "model": {"path": "/lustre/m", "container": "trtllm", "precision": "fp4"},
@@ -75,6 +90,9 @@ class TestSchema:
         assert dumped["backend"]["publish_events_and_metrics"] is expected_events
         assert reloaded.backend.publish_metrics is expected_metrics
         assert reloaded.backend.publish_events_and_metrics is expected_events
+        assert TRTLLMProtocol(**publishing).dynamo_metrics_flags == expected_flags
+        assert config.backend.dynamo_metrics_flags == expected_flags
+        assert reloaded.backend.dynamo_metrics_flags == expected_flags
 
     def test_stage_dir_loads(self):
         data = {
@@ -174,7 +192,10 @@ class TestWorkerCommandUsesStagedPath:
         [
             ({}, ["--publish-metrics"]),
             ({"publish_metrics": False}, []),
-            ({"publish_metrics": True, "publish_events_and_metrics": False}, ["--publish-metrics"]),
+            ({"publish_metrics": True, "publish_events_and_metrics": None}, ["--publish-metrics"]),
+            ({"publish_metrics": False, "publish_events_and_metrics": None}, []),
+            ({"publish_metrics": True, "publish_events_and_metrics": False}, []),
+            ({"publish_metrics": False, "publish_events_and_metrics": False}, []),
             ({"publish_metrics": False, "publish_events_and_metrics": True}, ["--publish-events-and-metrics"]),
             (
                 {"publish_metrics": True, "publish_events_and_metrics": True},
@@ -184,6 +205,9 @@ class TestWorkerCommandUsesStagedPath:
     )
     def test_dynamo_worker_publishing_policy(self, tmp_path, mode, publishing, expected_flags):
         backend = TRTLLMProtocol(**publishing)
+        assert backend.publish_metrics is publishing.get("publish_metrics", True)
+        assert backend.publish_events_and_metrics is publishing.get("publish_events_and_metrics")
+        assert backend.dynamo_metrics_flags == tuple(expected_flags)
         process = replace(self._proc(), endpoint_mode=mode)
         cmd = backend.build_worker_command(
             process,
@@ -197,7 +221,7 @@ class TestWorkerCommandUsesStagedPath:
 
     @pytest.mark.parametrize("mode", ["prefill", "decode", "agg"])
     @pytest.mark.parametrize("publish_metrics", [False, True])
-    @pytest.mark.parametrize("publish_events_and_metrics", [False, True])
+    @pytest.mark.parametrize("publish_events_and_metrics", [None, False, True])
     def test_native_worker_ignores_dynamo_publishing_options(
         self, tmp_path, mode, publish_metrics, publish_events_and_metrics
     ):
@@ -215,7 +239,7 @@ class TestWorkerCommandUsesStagedPath:
         assert not any(arg.startswith("--publish-") for arg in actual)
 
     @pytest.mark.parametrize("publish_metrics", [False, True])
-    @pytest.mark.parametrize("publish_events_and_metrics", [False, True])
+    @pytest.mark.parametrize("publish_events_and_metrics", [None, False, True])
     def test_sidecar_worker_ignores_dynamo_publishing_options(
         self, tmp_path, publish_metrics, publish_events_and_metrics
     ):

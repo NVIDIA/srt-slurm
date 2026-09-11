@@ -624,9 +624,10 @@ def expand_observability(cfg: dict) -> dict:
     One knob, six effects -- see :class:`~srtctl.core.schema.ObservabilityConfig`
     for the rationale and the full list. Mutates ``cfg`` in place and returns it.
 
-    Every write is a ``setdefault``: an explicit value in the recipe always
-    wins. That makes it safe to flip ``observability.enabled`` on globally
-    without silently overriding a recipe that deliberately disabled something.
+    Defaults preserve explicit recipe values. The tri-state combined publishing
+    setting treats null as unset, while explicit False remains a master opt-out.
+    Enabling observability never overrides a recipe that deliberately disables
+    publication.
 
     No-op unless ``observability.enabled`` is truthy.
     """
@@ -666,17 +667,18 @@ def expand_observability(cfg: dict) -> dict:
     # Metrics-only publication defaults on independently of observability.
     # Keep observability as the existing superset that also enables KV events.
     if backend.get("type", "sglang") == "trtllm":
-        backend.setdefault("publish_events_and_metrics", True)
+        # None preserves an omitted setting through schema dumps; treat it as
+        # unset here too. An explicit False must remain the master opt-out.
+        if backend.get("publish_events_and_metrics") is None:
+            backend["publish_events_and_metrics"] = True
         if (
             frontend.get("type", "dynamo") == "dynamo"
-            and not backend.get("publish_metrics", True)
-            and not backend.get("publish_events_and_metrics", False)
+            and backend["publish_events_and_metrics"] is False
         ):
             logger.warning(
-                "observability.enabled but backend.publish_metrics is explicitly false "
-                "and publish_events_and_metrics is not enabled — TRT-LLM engine metrics "
-                "are not enabled by srt-slurm's publication flags. Set "
-                "backend.publish_metrics: true to enable metrics without KV-cache events."
+                "observability.enabled but backend.publish_events_and_metrics is explicitly false "
+                "— srt-slurm will enable neither metrics nor KV-event publication. "
+                "This opt-out takes precedence over backend.publish_metrics."
             )
 
         trtllm_config = backend.get("trtllm_config")

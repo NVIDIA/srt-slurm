@@ -622,7 +622,7 @@ class BenchmarkStageMixin:
             self.config.frontend.type == "dynamo"
             and self.config.backend_type == "trtllm"
             and not (
-                (not self.config.dynamo.sidecar and getattr(self.config.backend, "publish_metrics", False))
+                (not self.config.dynamo.sidecar and getattr(self.config.backend, "dynamo_metrics_flags", ()))
                 or getattr(self.config.backend, "publish_events_and_metrics", False)
             )
         )
@@ -670,7 +670,8 @@ class BenchmarkStageMixin:
             # Dynamo TRT-LLM engine metrics require either the metrics-only
             # flag (the default) or the legacy combined flag (also enabled by
             # observability). Retain the existing sidecar gate because sidecars
-            # do not receive --publish-metrics. Runtime-only metrics may still exist with both disabled,
+            # do not receive --publish-metrics. An explicit legacy False disables
+            # both flags. Runtime-only metrics may still exist with publication disabled,
             # but must not be advertised as an engine-metrics capture.
             elif not dynamo_trtllm_metrics_disabled:
                 for process in self.backend_processes:

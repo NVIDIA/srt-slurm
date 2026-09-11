@@ -1175,7 +1175,8 @@ class ObservabilityConfig:
 
     * ``backend.publish_events_and_metrics: true`` -- enable KV-cache events
       and TRT-LLM engine metrics. Metrics-only publication already defaults on
-      independently via ``backend.publish_metrics``.
+      independently via ``backend.publish_metrics``. An explicit
+      ``publish_events_and_metrics: false`` disables both publication flags.
     * ``enable_iter_perf_stats`` + ``return_perf_metrics`` on every engine
       config -- the ``trtllm_kv_cache_*`` occupancy gauges and per-request
       histograms appear on that surface.
@@ -1188,16 +1189,17 @@ class ObservabilityConfig:
       client does not already poll (see ``TelemetryStageMixin.start_tachometer``
       and ``tachometer`` below).
 
-    Every expansion uses setdefault semantics: an explicit value in the recipe
-    always wins, so ``observability.enabled`` is safe to switch on globally.
+    Expansion preserves explicit recipe values; the tri-state combined
+    publishing setting treats null as unset. Explicit False is never replaced.
 
     Scope is deliberately server-side. The knob configures what the workers and
     frontend *emit*, and captures that surface by scraping the endpoints
     directly. It never asks the benchmark client to re-export what the servers
     already publish. (One indirect exception: on TRT-LLM the client's
     ``AIPERF_SERVER_METRICS_URLS`` worker list exists only when
-    ``publish_metrics`` or the legacy ``publish_events_and_metrics`` gives
-    those endpoints engine metrics — see ``BenchmarkStageMixin``.)
+    the effective publication flags give those endpoints engine metrics,
+    respecting the explicit combined-setting opt-out — see
+    ``BenchmarkStageMixin``.)
 
     It does **not** decide whether the component perf dashboard is built. That
     happens on every run (see :mod:`srtctl.analysis.perf_dashboard`); ``enabled``

@@ -235,7 +235,7 @@ class TestCustomBenchmarkRunner:
         benchmark_type="custom",
         backend_type="sglang",
         publish_metrics=True,
-        publish_events_and_metrics=False,
+        publish_events_and_metrics=None,
         prefill_environment=None,
         aggregated_environment=None,
         environment=None,
@@ -244,6 +244,7 @@ class TestCustomBenchmarkRunner:
     ):
         from types import SimpleNamespace
 
+        from srtctl.backends import TRTLLMProtocol, TRTLLMServerConfig
         from srtctl.cli.mixins.benchmark_stage import BenchmarkStageMixin
 
         class Stage(BenchmarkStageMixin):
@@ -258,17 +259,28 @@ class TestCustomBenchmarkRunner:
         def get_config_for_mode(mode):
             return dict(engine_sections.get("aggregated" if mode == "agg" else mode, {}))
 
-        stage = Stage()
-        stage.config = SimpleNamespace(
-            benchmark=SimpleNamespace(type=benchmark_type, aiperf_package=None),
-            backend=SimpleNamespace(
+        if backend_type == "trtllm":
+            backend = TRTLLMProtocol(
+                publish_metrics=publish_metrics,
+                publish_events_and_metrics=publish_events_and_metrics,
+                prefill_environment=prefill_environment or {},
+                aggregated_environment=aggregated_environment or {},
+                trtllm_config=TRTLLMServerConfig(**engine_sections),
+            )
+        else:
+            backend = SimpleNamespace(
                 type=backend_type,
                 publish_metrics=publish_metrics,
                 publish_events_and_metrics=publish_events_and_metrics,
                 prefill_environment=prefill_environment or {},
                 aggregated_environment=aggregated_environment or {},
                 get_config_for_mode=get_config_for_mode,
-            ),
+            )
+
+        stage = Stage()
+        stage.config = SimpleNamespace(
+            benchmark=SimpleNamespace(type=benchmark_type, aiperf_package=None),
+            backend=backend,
             backend_type=backend_type,
             dynamo=SimpleNamespace(sidecar=dynamo_sidecar),
             frontend=SimpleNamespace(type=frontend_type),
@@ -430,7 +442,7 @@ class TestCustomBenchmarkRunner:
         )
 
     @pytest.mark.parametrize("publish_metrics", [False, True])
-    @pytest.mark.parametrize("publish_events_and_metrics", [False, True])
+    @pytest.mark.parametrize("publish_events_and_metrics", [None, False, True])
     def test_trtllm_serve_physical_endpoints_use_worker_http_ports(self, publish_metrics, publish_events_and_metrics):
         """Built-in AIPerf path: trtllm-serve never binds the DYN_SYSTEM_PORT
         sys-ports, so the physical-process URLs use leader http_ports at
@@ -614,8 +626,10 @@ class TestCustomBenchmarkRunner:
         ("publishing", "expected_enabled"),
         [
             ({}, True),
+            ({"publish_metrics": False, "publish_events_and_metrics": None}, False),
+            ({"publish_metrics": True, "publish_events_and_metrics": None}, True),
             ({"publish_metrics": False, "publish_events_and_metrics": False}, False),
-            ({"publish_metrics": True, "publish_events_and_metrics": False}, True),
+            ({"publish_metrics": True, "publish_events_and_metrics": False}, False),
             ({"publish_metrics": False, "publish_events_and_metrics": True}, True),
             ({"publish_metrics": True, "publish_events_and_metrics": True}, True),
         ],
@@ -695,7 +709,7 @@ class TestCustomBenchmarkRunner:
 
     @pytest.mark.parametrize("benchmark_type", ["trace-replay", "custom"])
     @pytest.mark.parametrize("publish_metrics", [False, True])
-    @pytest.mark.parametrize("publish_events_and_metrics", [False, True])
+    @pytest.mark.parametrize("publish_events_and_metrics", [None, False, True])
     def test_sidecar_metric_urls_ignore_standalone_publishing_option(
         self, benchmark_type, publish_metrics, publish_events_and_metrics
     ):
