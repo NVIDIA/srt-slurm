@@ -1424,6 +1424,73 @@ class TestNodesInfraAllocation:
         ):
             Nodes.from_slurm(etcd_nats_dedicated_node=True)
 
+    @pytest.mark.parametrize("batch_host", ["node0", "node2"])
+    @pytest.mark.parametrize("heterogeneous", [False, True])
+    def test_power_keeps_batch_host_as_head_and_excludes_infra(self, batch_host, heterogeneous):
+        from unittest.mock import patch
+
+        from srtctl.core.runtime import Nodes
+
+        with (
+            patch("srtctl.core.runtime.get_slurm_nodelist", return_value=["node0", "node1", "node2"]),
+            patch(
+                "srtctl.core.runtime.get_slurm_het_nodelists",
+                return_value=[["node0", "node1", "node2"], ["decode0"]] if heterogeneous else None,
+            ),
+        ):
+            nodes = Nodes.from_slurm(etcd_nats_dedicated_node=True, batch_host=batch_host)
+
+        assert nodes.head == nodes.bench == batch_host
+        assert nodes.infra == ("node2" if batch_host == "node0" else "node1")
+        assert nodes.infra not in nodes.worker
+        assert batch_host in nodes.worker
+        assert len(nodes.worker) == (3 if heterogeneous else 2)
+        if heterogeneous:
+            assert nodes.decode_group == ("decode0",)
+
+    @pytest.mark.parametrize("heterogeneous", [False, True])
+    def test_power_rejects_batch_host_outside_prefill_allocation(self, heterogeneous):
+        from unittest.mock import patch
+
+        from srtctl.core.runtime import Nodes
+
+        with (
+            patch("srtctl.core.runtime.get_slurm_nodelist", return_value=["node0", "node1"]),
+            patch(
+                "srtctl.core.runtime.get_slurm_het_nodelists",
+                return_value=[["node0", "node1"], ["decode0"]] if heterogeneous else None,
+            ),
+            pytest.raises(ValueError, match="batch host"),
+        ):
+            Nodes.from_slurm(etcd_nats_dedicated_node=True, batch_host="decode0")
+
+    def test_runtime_uses_authoritative_batch_hostname_for_power(self, monkeypatch, tmp_path):
+        from unittest.mock import patch
+
+        from test_telemetry import _dcgm_power
+
+        from srtctl.core.runtime import Nodes, RuntimeContext
+        from srtctl.core.schema import BenchmarkConfig, InfraConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="hf:test/model", container="registry/image:tag", precision="fp8"),
+            resources=ResourceConfig(gpu_type="b200"),
+            benchmark=BenchmarkConfig(type="sa-bench", concurrencies=[8]),
+            telemetry=_dcgm_power(),
+            infra=InfraConfig(etcd_nats_dedicated_node=True),
+        )
+        monkeypatch.setenv("SLURMD_NODENAME", "node0")
+        mapped = Nodes(head="node0", bench="node0", infra="node2", worker=("node0", "node1"))
+        with (
+            patch("srtctl.core.runtime.Nodes.from_slurm", return_value=mapped) as from_slurm,
+            patch("srtctl.core.runtime.get_hostname_ip", return_value="10.0.0.1"),
+            patch("srtctl.core.runtime.get_srtslurm_setting", return_value=None),
+        ):
+            runtime = RuntimeContext.from_config(config, job_id="123", log_dir_base=tmp_path)
+        assert runtime.nodes == mapped
+        assert from_slurm.call_args.kwargs["batch_host"] == "node0"
+
     def test_nodes_dedicated_frontend_only(self):
         """frontend_dedicated_node alone puts head+bench on node0, client rides along."""
         from unittest.mock import patch
