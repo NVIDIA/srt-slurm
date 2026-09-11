@@ -6,6 +6,7 @@
 import os
 import tempfile
 from pathlib import Path
+from typing import ClassVar
 from unittest.mock import patch
 
 import yaml
@@ -623,3 +624,51 @@ class TestInfmaxWorkspaceMount:
             show_config_details(config)
         output = capsys.readouterr().out
         assert "MISSING" not in output
+
+
+class TestDryRunProfiling:
+    """profiling changes how workers are launched, so dry-run must show it."""
+
+    NSIGHT: ClassVar[dict] = {
+        "backend": {"type": "trtllm"},
+        "profiling": {
+            "type": "nsight-slurm",
+            "nsight_slurm_home": "/shared/tools/nsight-slurm",
+            "nsight_slurm_profiling_mode": "cuda-api",
+            "nvtx_injection_path": "/opt/nsight/libToolsInjection64.so",
+            "prefill": {"start_step": 1200, "stop_step": 1300},
+            "decode": {"start_step": 6000, "stop_step": 6600},
+        },
+    }
+
+    def test_nsight_slurm_launcher_shown(self, capsys):
+        config = _make_config(self.NSIGHT)
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "Profiling" in output
+        assert "nsight-slurm" in output
+        assert "/shared/tools/nsight-slurm/bin/nsight-slurm srun" in output
+        assert "cuda-api" in output
+        assert "cuda-sw,nvtx,python-gil" in output  # default tool-options (playbook set)
+        assert "1200-1300" in output and "6000-6600" in output
+        assert "nsight-slurm-reports" in output
+        assert "libToolsInjection64.so" in output
+
+    def test_nsys_type_shown_without_wrapper_rows(self, capsys):
+        config = _make_config(
+            {
+                "profiling": {
+                    "type": "nsys",
+                    "prefill": {"start_step": 10, "stop_step": 30},
+                    "decode": {"start_step": 10, "stop_step": 30},
+                }
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "Profiling" in output and "nsys" in output
+        assert "srun launcher" not in output
+
+    def test_no_profiling_panel_by_default(self, capsys):
+        show_config_details(_make_config())
+        assert "Profiling" not in capsys.readouterr().out

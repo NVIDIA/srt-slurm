@@ -393,6 +393,35 @@ def show_config_details(config: SrtConfig) -> None:
                 "outlives this allocation and is inherited by the next job on these nodes."
             )
 
+    # --- Profiling (changes the worker launch: nsys prefix, or the nsight-slurm srun wrapper) ---
+    prof = config.profiling
+    if prof.enabled:
+        prof_table = Table(title="Profiling", show_lines=False, pad_edge=False)
+        prof_table.add_column("Setting", style="dim", width=22)
+        prof_table.add_column("Value", style="white")
+        prof_table.add_row("type", str(getattr(prof.type, "value", prof.type)))
+        for phase_name in ("prefill", "decode", "aggregated"):
+            phase = getattr(prof, phase_name)
+            if phase is not None:
+                prof_table.add_row(f"{phase_name} window", f"steps {phase.start_step}-{phase.stop_step}")
+        if prof.is_nsight_slurm:
+            prof_table.add_row("srun launcher", " ".join(prof.nsight_slurm_launcher()))
+            prof_table.add_row("install root", str(prof.nsight_slurm_home))
+            prof_table.add_row("nsys (tool-path)", prof.nsight_slurm_tool_path)
+            prof_table.add_row("profiling-mode", prof.nsight_slurm_profiling_mode)
+            prof_table.add_row("tool-options", " ".join(prof.nsight_slurm_effective_tool_options()))
+            prof_table.add_row("report-output", "<log_dir>/nsight-slurm-reports")
+            prof_table.add_row("pyxis", "enabled (install root mounted read-only; connector runs in-container)")
+        if prof.nvtx_injection_path:
+            prof_table.add_row("NVTX_INJECTION64_PATH", prof.nvtx_injection_path)
+        console.print(Panel(prof_table, border_style="cyan"))
+        if prof.is_nsight_slurm:
+            console.print(
+                "[dim]nsight-slurm:[/] worker steps run as "
+                "`nsight-slurm srun <srun options> -- <command>`; the wrapper appends its own "
+                "--export=ALL, so srtctl passes ENROOT_REMAP_ROOT and friends through the wrapper's environment."
+            )
+
     # --- srun options ---
     if config.srun_options:
         opts = " ".join(f"--{k}={v}" if v else f"--{k}" for k, v in config.srun_options.items())
