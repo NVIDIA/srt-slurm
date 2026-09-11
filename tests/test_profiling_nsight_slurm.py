@@ -221,9 +221,11 @@ class TestStage:
         assert tool_opts[2:] == [
             *ProfilingConfig.NSIGHT_SLURM_DEFAULT_TOOL_OPTIONS,
             "-o",
-            f"{report_root}/direct/%q{{SLURM_JOB_ID}}_%q{{SLURMD_NODENAME}}_rank%q{{SLURM_PROCID}}",
+            f"{h.runtime.log_dir}/nsight-slurm-direct/%q{{SLURM_JOB_ID}}_%q{{SLURMD_NODENAME}}_rank%q{{SLURM_PROCID}}",
         ]
-        assert (report_root / "direct").is_dir()
+        # Outside the wrapper's report workspace: the wrapper refuses a non-empty report-output dir.
+        assert (h.runtime.log_dir / "nsight-slurm-direct").is_dir()
+        assert not report_root.exists() or not any(report_root.iterdir())
         assert ["configure", "report-output", str(h.runtime.log_dir / NSIGHT_SLURM_REPORT_SUBDIR)] in argvs
         assert (h.runtime.log_dir / NSIGHT_SLURM_RUNTIME_SUBDIR).is_dir()
         assert kwargs["launcher_env"]["NSIGHT_SLURM_RUNTIME_DIR"] == "/nsrt"

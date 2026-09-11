@@ -116,9 +116,9 @@ class NsightSlurmStageMixin:
             "configure",
             "tool-options",
             *prof.nsight_slurm_effective_tool_options(),
-            *prof.nsight_slurm_output_option(report_root),
+            *prof.nsight_slurm_output_option(self.runtime.log_dir),
         )
-        (report_root / prof.NSIGHT_SLURM_DIRECT_REPORT_SUBDIR).mkdir(parents=True, exist_ok=True)
+        (Path(self.runtime.log_dir) / prof.NSIGHT_SLURM_DIRECT_REPORT_SUBDIR).mkdir(parents=True, exist_ok=True)
         self._nsight_slurm_run("configure", "report-output", str(report_root))
         # The connector writes nsys output into its runtime workspace and only copies it to the report
         # root when its state machine sees a collection stop. With the nsys 2026.3 agent the cuda-api
@@ -189,8 +189,10 @@ class NsightSlurmStageMixin:
                     logger.warning("nsight-slurm: could not rescue %s: %s", src, exc)
             return rescued
 
+        direct_dir = Path(self.runtime.log_dir) / self.config.profiling.NSIGHT_SLURM_DIRECT_REPORT_SUBDIR
+
         def count_reports() -> int:
-            return sum(1 for _ in report_root.rglob("*.nsys-rep")) if report_root.exists() else 0
+            return sum(sum(1 for _ in d.rglob("*.nsys-rep")) for d in (report_root, direct_dir) if d.exists())
 
         job_id = os.environ.get("SLURM_JOB_ID")
         if job_id:
@@ -222,7 +224,7 @@ class NsightSlurmStageMixin:
         if rescued:
             logger.info("nsight-slurm: rescued %d report(s) from the runtime workspaces", rescued)
         last = count_reports()
-        logger.info("nsight-slurm: %d report file(s) under %s after flush", last, report_root)
+        logger.info("nsight-slurm: %d report file(s) under %s / %s after flush", last, report_root, direct_dir)
         return last
 
     @staticmethod

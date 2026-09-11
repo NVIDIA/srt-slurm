@@ -947,19 +947,21 @@ class ProfilingConfig:
     NSIGHT_SLURM_RUNTIME_CONTAINER_PATH: ClassVar[str] = "/nsrt"
     NSIGHT_SLURM_RUNTIME_SUBDIR: ClassVar[str] = "nsight-slurm-runtime"
 
-    NSIGHT_SLURM_DIRECT_REPORT_SUBDIR: ClassVar[str] = "direct"
+    # Sibling of the wrapper's report workspace, NOT inside it: the wrapper refuses to start a step
+    # when its report-output directory is non-empty without its own .nsight-cloud-storage.conf marker.
+    NSIGHT_SLURM_DIRECT_REPORT_SUBDIR: ClassVar[str] = "nsight-slurm-direct"
 
-    def nsight_slurm_output_option(self, report_root: "Path | str") -> list[str]:
-        """``-o`` for nsys so every rank writes its report straight into the report root.
+    def nsight_slurm_output_option(self, log_dir: "Path | str") -> list[str]:
+        """``-o`` for nsys so every rank writes its report straight to the shared filesystem.
 
         The wrapper's connector otherwise lets nsys write into its runtime scratch workspace and
         copies the file out only when its state machine sees a collection stop, which never happens
         for the cuda-api range states of the nsys 2026.3 agent. nsys expands ``%q{VAR}`` itself, so
         the name is unique per job, node and rank; ``--capture-range-end repeat`` numbers repeated
-        ranges. The report root is mounted at its host path in the container.
+        ranges. The log dir is mounted at its host path in the container.
         """
         target = (
-            Path(report_root)
+            Path(log_dir)
             / self.NSIGHT_SLURM_DIRECT_REPORT_SUBDIR
             / "%q{SLURM_JOB_ID}_%q{SLURMD_NODENAME}_rank%q{SLURM_PROCID}"
         )
