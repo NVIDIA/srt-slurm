@@ -301,7 +301,7 @@ class TestFlush:
             p.popen.send_signal.assert_not_called()
 
     def test_falls_back_to_sigterm_on_worker_steps(self, tmp_path, monkeypatch):
-        h, rec = self._ready(tmp_path, monkeypatch)
+        h, _rec = self._ready(tmp_path, monkeypatch)
         registry, procs = self._registry("prefill_0_n1", "decode_0_n2", "frontend_0_n2", "etcd")
         n = h.flush_nsight_slurm(registry, timeout_s=0.6, first_wait_s=0.1, settle_s=0.1, poll_s=0.05)
         assert n == 0
