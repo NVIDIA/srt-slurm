@@ -123,6 +123,18 @@ class WorkerStageMixin:
             env_to_set.setdefault("DYN_KVBM_LEADER_ZMQ_PUB_PORT", str(pub_port))
             env_to_set.setdefault("DYN_KVBM_LEADER_ZMQ_ACK_PORT", str(ack_port))
 
+    def _profiler_launch_kwargs(self) -> dict[str, Any]:
+        """Extra start_srun_process kwargs for profiler-wrapped steps.
+
+        `profiling.type: nsight-slurm` routes the worker srun through the
+        nsight-slurm wrapper (NsightSlurmStageMixin); every other profiling type
+        wraps the command itself (nsys prefix) and needs nothing here.
+        """
+        hook = getattr(self, "nsight_slurm_launch_kwargs", None)
+        if hook is None:
+            return {}
+        return hook()
+
     def _get_worker_environment_for_mode(self, mode: str) -> dict[str, str]:
         """Return mode environment with Dynamo sidecar-specific defaults."""
         environment = self.backend.get_environment_for_mode(mode)
@@ -259,6 +271,7 @@ class WorkerStageMixin:
             srun_options=self.runtime.srun_options,
             srun_export_env=CONTAINER_REMAP_ROOT_EXPORT if installs_dynamo(self.config) else None,
             het_group=process.het_group,
+            **self._profiler_launch_kwargs(),
         )
 
         return ManagedProcess(
@@ -419,6 +432,7 @@ class WorkerStageMixin:
             # per-rank CPU/NUMA binding, which srun_config.cpu_bind cannot.
             srun_options=srun_options,
             het_group=leader.het_group,
+            **self._profiler_launch_kwargs(),
         )
 
         return ManagedProcess(

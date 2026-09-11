@@ -322,6 +322,7 @@ class BenchmarkType(str, Enum):
 
 class ProfilingType(str, Enum):
     NSYS = "nsys"
+    NSIGHT_SLURM = "nsight-slurm"
     TORCH = "torch"
     NONE = "none"
 
@@ -854,7 +855,7 @@ class ProfilingConfig:
     Per-phase start_step/stop_step are specified in the prefill/decode/aggregated sections.
     """
 
-    type: str = "none"  # "none", "nsys", "nsys-time", or "torch"
+    type: str = "none"  # "none", "nsys", "nsys-time", "nsight-slurm", or "torch"
 
     # Extra arguments passed to nsys profile (appended before `-o`; see get_nsys_prefix)
     extra_nsys_args: list[str] | None = None
@@ -869,6 +870,27 @@ class ProfilingConfig:
     duration_secs: int | None = None  # nsys --duration: seconds to capture after delay
     benchmark_duration_secs: int = 300  # total traffic generation duration (must cover delay + duration)
 
+    # ---- nsight-slurm ("Nsight Cloud for Slurm") ---------------------------------------
+    # `type: nsight-slurm` launches every worker step through `nsight-slurm srun` instead
+    # of prefixing the command with `nsys profile`. The wrapper starts one job coordinator
+    # on the orchestrator node, runs `nsight-slurm-connector` as the task entrypoint on
+    # every rank, which launches `nsys` under coordinator control, and uploads the
+    # per-rank reports into a shared report workspace with a manifest and aligned
+    # collection ids. Requirements: the tool installed with `uv tool install` at
+    # `nsight_slurm_home` on a filesystem the compute nodes see at the same path, built
+    # for the compute architecture (the connector runs inside the worker container:
+    # `nsight-slurm enable pyxis` mounts the install read-only); `nsys` inside the image.
+    nsight_slurm_home: str | None = None
+    nsight_slurm_tool_path: str = "/usr/local/bin/nsys"  # nsys inside the worker container
+    # `at-launch` | `manual` (coordinator start/stop) | `cuda-api` (TLLM_PROFILE_START_STOP
+    # window -> --capture-range cudaProfilerApi --capture-range-end repeat, added by the wrapper)
+    nsight_slurm_profiling_mode: str = "cuda-api"
+    # `nsys profile` options the connector adds; None -> the Dynamo Benchmark Playbook set.
+    # Do NOT pass -o / --force-overwrite / capture-range flags here: the connector owns them.
+    nsight_slurm_tool_options: list[str] | None = None
+    # NVTX injection library inside the container (NVTX_INJECTION64_PATH), optional.
+    nvtx_injection_path: str | None = None
+
     @property
     def enabled(self) -> bool:
         """Check if profiling is enabled."""
@@ -878,6 +900,53 @@ class ProfilingConfig:
     def is_nsys(self) -> bool:
         """Check if using NVIDIA Nsight Systems profiling (includes nsys-time)."""
         return self.type in ("nsys", "nsys-time")
+
+    @property
+    def is_nsight_slurm(self) -> bool:
+        """Check if worker steps go through the nsight-slurm wrapper (`nsight-slurm srun`)."""
+        return self.type == "nsight-slurm"
+
+    # Dynamo Benchmark Playbook §9.5.1.1 nsys recipe for TRT-LLM, minus the flags the
+    # nsight-slurm connector owns (capture range, output path, overwrite). `cuda-sw`, not
+    # `cuda`: the HES hardware trace SIGSEGVs the KV transceiver on nsys 2026.x;
+    # `--cuda-graph-trace=graph` or CUDA-graph decode work is invisible; sampling off
+    # because IP sampling wedged workers at cudaProfilerStop in the playbook campaign.
+    NSIGHT_SLURM_DEFAULT_TOOL_OPTIONS: ClassVar[tuple[str, ...]] = (
+        "-t",
+        "cuda-sw,nvtx,python-gil",
+        "--cuda-graph-trace=graph",
+        "--sample=none",
+        "--cpuctxsw=none",
+        "--python-sampling=false",
+        "--python-sampling-frequency=1000",
+        "--gpu-metrics-devices=none",
+        "--flush-on-cudaprofilerstop=false",
+        "--cuda-flush-interval=0",
+    )
+
+    def nsight_slurm_effective_tool_options(self) -> list[str]:
+        if self.nsight_slurm_tool_options is not None:
+            return list(self.nsight_slurm_tool_options)
+        return list(self.NSIGHT_SLURM_DEFAULT_TOOL_OPTIONS)
+
+    def nsight_slurm_bin(self, name: str = "nsight-slurm") -> str:
+        """Absolute path of a wrapper executable under ``nsight_slurm_home/bin``."""
+        if not self.nsight_slurm_home:
+            raise ValueError("profiling.nsight_slurm_home is required for type: nsight-slurm")
+        return str(Path(self.nsight_slurm_home) / "bin" / name)
+
+    def nsight_slurm_launcher(self) -> list[str]:
+        """Replacement for the ``srun`` executable: ``<home>/bin/nsight-slurm srun``."""
+        return [self.nsight_slurm_bin(), "srun"]
+
+    def nsight_slurm_process_env(self, log_dir: "Path | str") -> dict[str, str]:
+        """Environment the wrapper needs in ITS process (not the container).
+
+        SLURM_SUBMIT_DIR is redirected to the run's log dir so the wrapper's per-job
+        state (``.nsight-slurm/jobs/<id>``) lives with the run on the shared
+        filesystem instead of under the checkout the sbatch was submitted from.
+        """
+        return {"NSIGHT_SLURM_HOME": str(self.nsight_slurm_home), "SLURM_SUBMIT_DIR": str(log_dir)}
 
     @property
     def is_nsys_time(self) -> bool:
@@ -929,12 +998,21 @@ class ProfilingConfig:
         if self.is_nsys_time:
             env["PROFILE_BENCHMARK_DURATION_SECS"] = str(self.benchmark_duration_secs)
         elif (
-            self.is_nsys and phase_config and phase_config.start_step is not None and phase_config.stop_step is not None
+            (self.is_nsys or self.is_nsight_slurm)
+            and phase_config
+            and phase_config.start_step is not None
+            and phase_config.stop_step is not None
         ):
             # TRTLLM iteration-based nsys: PyExecutor triggers cudaProfilerStart/Stop at these boundaries.
             # Harmless on SGLang workers (unknown env vars are ignored).
             env["TLLM_PROFILE_START_STOP"] = f"{phase_config.start_step}-{phase_config.stop_step}"
             env["TLLM_LLMAPI_ENABLE_NVTX"] = "1"
+
+        if self.is_nsight_slurm:
+            env["TLLM_PROFILE_LOG_RANKS"] = "all"
+            env["DYN_ENABLE_RUST_NVTX"] = "1"
+            if self.nvtx_injection_path:
+                env["NVTX_INJECTION64_PATH"] = self.nvtx_injection_path
 
         return env
 
@@ -2253,6 +2331,39 @@ class SrtConfig:
         # torch profiling is SGLang-only (uses SGLANG_TORCH_PROFILER_DIR)
         if prof.is_torch and backend_type == "trtllm":
             raise ValidationError("torch profiling is not supported for the trtllm backend; use nsys instead")
+
+        if prof.is_nsight_slurm:
+            if not prof.nsight_slurm_home or not Path(prof.nsight_slurm_home).is_absolute():
+                raise ValidationError(
+                    "profiling.nsight_slurm_home must be the absolute uv-tool install root of nsight-slurm "
+                    "(contains bin/nsight-slurm and bin/nsight-slurm-connector) on the shared filesystem"
+                )
+            if prof.nsight_slurm_profiling_mode not in ("at-launch", "manual", "cuda-api"):
+                raise ValidationError(
+                    "profiling.nsight_slurm_profiling_mode must be one of ('at-launch', 'manual', 'cuda-api'), "
+                    f"got {prof.nsight_slurm_profiling_mode!r}"
+                )
+            if prof.nsight_slurm_tool_options:
+                owned = {
+                    "-o",
+                    "--output",
+                    "--force-overwrite",
+                    "-c",
+                    "--capture-range",
+                    "--capture-range-end",
+                    "--start-later",
+                }
+                bad = [o for o in prof.nsight_slurm_tool_options if o.split("=", 1)[0] in owned]
+                if bad:
+                    raise ValidationError(
+                        f"profiling.nsight_slurm_tool_options must not set connector-owned flags {bad}; "
+                        "the nsight-slurm connector manages output, overwrite and capture range"
+                    )
+            if backend_type != "trtllm" and prof.nsight_slurm_profiling_mode == "cuda-api":
+                raise ValidationError(
+                    "profiling.nsight_slurm_profiling_mode: cuda-api needs the TRT-LLM PyExecutor's "
+                    "TLLM_PROFILE_START_STOP trigger; use at-launch or manual for other backends"
+                )
 
         # nsys-time (time-based capture via nsys --delay/--duration) is supported
         # for all backends. get_nsys_prefix() emits a time-based command for the

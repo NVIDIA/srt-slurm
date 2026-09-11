@@ -121,6 +121,46 @@ nsys profile -t cuda,nvtx --cuda-graph-trace=node \
 
 You can pass extra arguments via `profiling.extra_nsys_args` (e.g. `["--stats=true", "--trace=osrt"]`).
 
+### nsight-slurm mode (`type: nsight-slurm`)
+
+[Nsight Slurm](https://gitlab-master.nvidia.com/mhallock/nsight-cloud-slurm) ("Nsight Cloud for
+Slurm") coordinates Nsight Systems across a whole Slurm job: one coordinator per job, a connector
+as the task entrypoint on every rank, time-aligned per-rank reports uploaded into a shared report
+workspace with a manifest and common collection ids. With `type: nsight-slurm` srtctl launches
+every worker step through the wrapper instead of prefixing the command with `nsys profile`:
+
+```yaml
+profiling:
+  type: nsight-slurm
+  nsight_slurm_home: /lustre/.../tools/nsight-slurm   # uv tool install root (bin/nsight-slurm, bin/nsight-slurm-connector)
+  nsight_slurm_tool_path: /usr/local/bin/nsys        # nsys inside the worker container (default)
+  nsight_slurm_profiling_mode: cuda-api               # at-launch | manual | cuda-api (default)
+  # nsight_slurm_tool_options: [...]                  # nsys profile options; default = the playbook set
+  prefill: {start_step: 1200, stop_step: 1300}        # cuda-api window (TLLM_PROFILE_START_STOP), as for type: nsys
+  decode:  {start_step: 6000, stop_step: 6600}
+```
+
+What srtctl does, once, before the first worker step (all through the wrapper's CLI, logged to
+`<log_dir>/nsight-slurm.out`): `configure tool-path`, `configure tool-command profile`,
+`configure profiling-mode`, `configure tool-options ...`, `configure report-output
+<log_dir>/nsight-slurm-reports`, `enable pyxis` (mounts the install read-only into the container
+and runs the connector by absolute path), `coordinator start`. Every worker `srun` then becomes
+`<home>/bin/nsight-slurm srun <native srun options> -- bash -c ...`; the wrapper re-execs `srun`
+with `nsight-slurm-connector` in front of the application and appends its own `--export=ALL`, so
+srtctl passes the task-environment exports (`ENROOT_REMAP_ROOT`) through the wrapper's process
+environment instead of `--export`. The coordinator is stopped in the sweep's cleanup after the
+worker steps are gone. `SLURM_SUBMIT_DIR` is redirected to the run's log dir for the wrapper
+invocations, so its job state lands in `<log_dir>/.nsight-slurm/jobs/<job>/`.
+
+Requirements: `nsight_slurm_home` must be on a filesystem the compute nodes see at the same path
+and built for the compute architecture (the connector runs inside the container; install with the
+tool's `INSTALLER` or `uv tool install` from a compute node of the target arch); `nsys` present in
+the image at `nsight_slurm_tool_path`; TCP from the compute nodes to the orchestrator node's
+dynamically chosen coordinator ports. `cuda-api` mode requires the TRT-LLM backend (the PyExecutor
+iteration trigger); use `at-launch` or `manual` (`nsight-slurm start/stop --job <id>`) elsewhere.
+Connector-owned flags (`-o`, `--force-overwrite`, capture range, `--start-later`) are rejected in
+`nsight_slurm_tool_options`. The block is independent of `observability.enabled`.
+
 ## Example Configurations
 
 ### Torch Profiler (Recommended for Python analysis)

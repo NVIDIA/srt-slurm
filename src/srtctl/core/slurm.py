@@ -203,6 +203,8 @@ def start_srun_process(
     oversubscribe: bool = False,
     cpu_bind: str | None = None,
     het_group: int | None = None,
+    srun_launcher: Sequence[str] | None = None,
+    launcher_env: dict[str, str] | None = None,
 ) -> subprocess.Popen:
     """Start a process via srun with container support.
 
@@ -245,7 +247,14 @@ def start_srun_process(
             env_to_set={"NATS_SERVER": "nats://node1:4222"},
         )
     """
-    srun_cmd = ["srun"]
+    # A launcher replaces the `srun` executable with a wrapper that takes native srun
+    # options followed by `--` and the application (e.g. ``nsight-slurm srun``, which
+    # re-execs srun with its profiler connector as the task entrypoint). Everything
+    # srtctl would have passed to srun is passed to the wrapper unchanged, except the
+    # ``--export`` list: the wrapper appends its own ``--export=ALL`` last, so the
+    # variables meant for the task environment are put into the WRAPPER's process
+    # environment instead (``--export=ALL`` then carries them through).
+    srun_cmd = list(srun_launcher) if srun_launcher else ["srun"]
 
     # ensures srun runs in the same job context
     slurm_job_id = get_slurm_job_id()
@@ -301,9 +310,14 @@ def start_srun_process(
     # Set env vars in the task environment so the container runtime (enroot/pyxis)
     # sees them at container-creation time. Prefix ALL to preserve srun's normal
     # full-environment propagation and only add these on top.
-    if srun_export_env:
+    if srun_export_env and not srun_launcher:
         exports = ",".join(f"{k}={v}" for k, v in srun_export_env.items())
         srun_cmd.append(f"--export=ALL,{exports}")
+
+    if srun_launcher:
+        # Explicit separator: pyxis SPANK flags such as --no-container-entrypoint are not
+        # in the wrapper's srun option table, `--` tells it where the application starts.
+        srun_cmd.append("--")
 
     # Build the actual command to run
     if use_bash_wrapper:
@@ -355,11 +369,16 @@ def start_srun_process(
     logger.debug("srun command: %s", shlex.join(srun_cmd))
 
     # Start the process
+    popen_env = None  # inherit
+    if srun_launcher and (launcher_env or srun_export_env):
+        popen_env = dict(os.environ)
+        popen_env.update(launcher_env or {})
+        popen_env.update(srun_export_env or {})
     proc = subprocess.Popen(
         srun_cmd,
         stdout=subprocess.PIPE if not output else None,
         stderr=subprocess.STDOUT if not output else None,
-        env=None,  # Inherit environment
+        env=popen_env,
     )
 
     return proc
