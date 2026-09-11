@@ -172,9 +172,11 @@ Two details srtctl handles itself instead of relying on the wrapper's defaults:
   copying it to the report root only when its state machine sees a collection stop. With the nsys
   2026.3 agent the range states (`RangeCollection`, `RangeGeneration`) are not recognised by
   connector 1.5.0, so nothing is copied and a container-local workspace would vanish with the step.
-  srtctl therefore configures the runtime workspace under `<log_dir>/nsight-slurm-runtime` (shared
-  filesystem), and at teardown `flush_nsight_slurm()` runs as a pre-cleanup hook of the process
-  registry, before any path kills the worker steps: `nsight-slurm stop --job`, then rescue-copy of
+  srtctl therefore bind-mounts `<log_dir>/nsight-slurm-runtime` (shared filesystem) at the short
+  in-container path `/nsrt` and points the connector at it (`NSIGHT_SLURM_RUNTIME_DIR`; the path must
+  stay short because the connector binds an AF_UNIX socket under it and `sockaddr_un` allows 107
+  bytes). At teardown `flush_nsight_slurm()` runs as a pre-cleanup hook of the process registry,
+  before any path kills the worker steps: `nsight-slurm stop --job`, then rescue-copy of
   `*.nsys-rep` from the runtime workspaces into `<report_root>/rescued/`, then SIGTERM to the
   wrapper processes so nsys can finalise, then a bounded wait for the report files to settle.
 
