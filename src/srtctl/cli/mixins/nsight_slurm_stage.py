@@ -16,7 +16,7 @@ own business:
     nsight-slurm configure profiling-mode <at-launch|manual|cuda-api>
     nsight-slurm configure tool-options <nsys profile options...>
     nsight-slurm configure report-output <log_dir>/nsight-slurm-reports
-    nsight-slurm enable pyxis            # mounts the install RO, runs the connector in-container
+    nsight-slurm disable pyxis           # srtctl mounts the install/connector itself (single --container-mounts)
     nsight-slurm coordinator start
 
 The wrapper keys its state on ``SLURM_SUBMIT_DIR`` and ``SLURM_JOB_ID``. SLURM_SUBMIT_DIR
@@ -108,8 +108,10 @@ class NsightSlurmStageMixin:
         self._nsight_slurm_run("configure", "profiling-mode", prof.nsight_slurm_profiling_mode)
         self._nsight_slurm_run("configure", "tool-options", *prof.nsight_slurm_effective_tool_options())
         self._nsight_slurm_run("configure", "report-output", str(report_root))
-        if self.runtime.container_image:
-            self._nsight_slurm_run("enable", "pyxis")
+        # Not `enable pyxis`: it appends a second --container-mounts flag and pyxis keeps only the
+        # last one, dropping /model, /logs and /configs (hecate jobs 571147/571265). srtctl mounts
+        # what the connector needs itself (see ProfilingConfig.nsight_slurm_container_mounts).
+        self._nsight_slurm_run("disable", "pyxis")
         self._nsight_slurm_run("configure")  # prints the effective configuration into the log
         self._nsight_slurm_run("coordinator", "start")
         self._nsight_slurm_coordinator_started = True
@@ -139,4 +141,6 @@ class NsightSlurmStageMixin:
         return {
             "srun_launcher": prof.nsight_slurm_launcher(),
             "launcher_env": prof.nsight_slurm_process_env(self.runtime.log_dir),
+            # In srtctl's own (single) --container-mounts flag; see nsight_slurm_container_mounts.
+            "extra_container_mounts": prof.nsight_slurm_container_mounts(self.runtime.log_dir),
         }

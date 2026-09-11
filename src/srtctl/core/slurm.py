@@ -204,6 +204,7 @@ def start_srun_process(
     cpu_bind: str | None = None,
     het_group: int | None = None,
     srun_launcher: Sequence[str] | None = None,
+    extra_container_mounts: Sequence[str] | None = None,
     launcher_env: dict[str, str] | None = None,
 ) -> subprocess.Popen:
     """Start a process via srun with container support.
@@ -296,9 +297,13 @@ def start_srun_process(
         srun_cmd.append("--no-container-entrypoint")
         srun_cmd.append("--no-container-mount-home")
 
-        if container_mounts:
-            mount_str = ",".join(f"{host}:{container}" for host, container in container_mounts.items())
-            srun_cmd.extend(["--container-mounts", mount_str])
+        # pyxis keeps only the LAST --container-mounts it sees on the slurmstepd side (SPANK options
+        # travel as one env var per option name), so every mount -- including raw specs a launcher
+        # needs, e.g. "src:dst:ro" -- has to ride in this single flag.
+        mount_specs = [f"{host}:{container}" for host, container in (container_mounts or {}).items()]
+        mount_specs.extend(extra_container_mounts or ())
+        if mount_specs:
+            srun_cmd.extend(["--container-mounts", ",".join(mount_specs)])
 
     if srun_options:
         for key, value in srun_options.items():

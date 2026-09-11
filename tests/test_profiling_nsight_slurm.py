@@ -146,10 +146,19 @@ class TestLauncher:
             mpi="pmix",
             srun_launcher=["/s/bin/nsight-slurm", "srun"],
             launcher_env={"NSIGHT_SLURM_HOME": "/s", "SLURM_SUBMIT_DIR": "/logs"},
+            extra_container_mounts=[
+                "/s:/s:ro",
+                "/s/bin/nsight-slurm-connector:/usr/local/bin/nsight-slurm-connector:ro",
+            ],
         )
         argv = popen.call_args.args[0]
         env = popen.call_args.kwargs["env"]
         assert argv[:2] == ["/s/bin/nsight-slurm", "srun"]
+        # Exactly one --container-mounts flag, carrying the job mounts AND the wrapper's connector mounts:
+        # pyxis applies only the last --container-mounts it is given, so they must never be split.
+        assert argv.count("--container-mounts") == 1
+        mounts = argv[argv.index("--container-mounts") + 1]
+        assert mounts == "/logs:/logs,/s:/s:ro,/s/bin/nsight-slurm-connector:/usr/local/bin/nsight-slurm-connector:ro"
         # Native srun options are forwarded unchanged and terminated by `--`.
         assert "--jobid" in argv and "--mpi" in argv and "--container-image" in argv
         assert "--no-container-entrypoint" in argv
@@ -206,7 +215,14 @@ class TestStage:
         tool_opts = next(a for a in argvs if a[:2] == ["configure", "tool-options"])
         assert tool_opts[2:] == list(ProfilingConfig.NSIGHT_SLURM_DEFAULT_TOOL_OPTIONS)
         assert ["configure", "report-output", str(h.runtime.log_dir / NSIGHT_SLURM_REPORT_SUBDIR)] in argvs
-        assert ["enable", "pyxis"] in argvs
+        assert ["disable", "pyxis"] in argvs and ["enable", "pyxis"] not in argvs
+        # The connector's mounts ride in srtctl's own --container-mounts (pyxis keeps only the last flag).
+        log_dir = str(h.runtime.log_dir)
+        assert kwargs["extra_container_mounts"] == [
+            f"{home}:{home}:ro",
+            f"{home}/bin/nsight-slurm-connector:/usr/local/bin/nsight-slurm-connector:ro",
+            f"{log_dir}:{log_dir}",
+        ]
         assert argvs[-1] == ["coordinator", "start"]
         # Every call ran from the log dir with the wrapper's job identity redirected there.
         assert {c["cwd"] for c in calls} == {str(h.runtime.log_dir)}

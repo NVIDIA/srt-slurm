@@ -939,6 +939,27 @@ class ProfilingConfig:
         """Replacement for the ``srun`` executable: ``<home>/bin/nsight-slurm srun``."""
         return [self.nsight_slurm_bin(), "srun"]
 
+    NSIGHT_SLURM_CONNECTOR_CONTAINER_PATH: ClassVar[str] = "/usr/local/bin/nsight-slurm-connector"
+
+    def nsight_slurm_container_mounts(self, log_dir: "Path | str") -> list[str]:
+        """Mounts the wrapper's connector needs INSIDE the worker container (raw pyxis specs).
+
+        srtctl does not use ``nsight-slurm enable pyxis``: that mode appends a second
+        ``--container-mounts`` flag, and pyxis keeps only the last one, which silently drops the
+        job's own mounts (/model, /logs, /configs). Instead srtctl mounts, in its own single flag:
+        the install root read-only (venv + managed Python the connector's shebang points at), the
+        connector itself onto a path on the image's PATH (the wrapper prefixes the bare command
+        name ``nsight-slurm-connector`` without pyxis management), and the log dir at its host
+        path (the wrapper's job config dir and report root live under it and are referenced by
+        absolute host path).
+        """
+        home = str(self.nsight_slurm_home)
+        return [
+            f"{home}:{home}:ro",
+            f"{self.nsight_slurm_bin('nsight-slurm-connector')}:{self.NSIGHT_SLURM_CONNECTOR_CONTAINER_PATH}:ro",
+            f"{log_dir}:{log_dir}",
+        ]
+
     def nsight_slurm_process_env(self, log_dir: "Path | str") -> dict[str, str]:
         """Environment the wrapper needs in ITS process (not the container).
 

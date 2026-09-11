@@ -143,14 +143,30 @@ profiling:
 What srtctl does, once, before the first worker step (all through the wrapper's CLI, logged to
 `<log_dir>/nsight-slurm.out`): `configure tool-path`, `configure tool-command profile`,
 `configure profiling-mode`, `configure tool-options ...`, `configure report-output
-<log_dir>/nsight-slurm-reports`, `enable pyxis` (mounts the install read-only into the container
-and runs the connector by absolute path), `coordinator start`. Every worker `srun` then becomes
-`<home>/bin/nsight-slurm srun <native srun options> -- bash -c ...`; the wrapper re-execs `srun`
-with `nsight-slurm-connector` in front of the application and appends its own `--export=ALL`, so
-srtctl passes the task-environment exports (`ENROOT_REMAP_ROOT`) through the wrapper's process
-environment instead of `--export`. The coordinator is stopped in the sweep's cleanup after the
-worker steps are gone. `SLURM_SUBMIT_DIR` is redirected to the run's log dir for the wrapper
-invocations, so its job state lands in `<log_dir>/.nsight-slurm/jobs/<job>/`.
+<log_dir>/nsight-slurm-reports`, `disable pyxis`, `coordinator start`. Every worker `srun` then
+becomes `<home>/bin/nsight-slurm srun <native srun options> -- bash -c ...`; the wrapper re-execs
+`srun` with `nsight-slurm-connector` in front of the application and appends its own
+`--export=ALL`, so srtctl passes the task-environment exports (`ENROOT_REMAP_ROOT`) through the
+wrapper's process environment instead of `--export`. The coordinator is stopped in the sweep's
+cleanup after the worker steps are gone. `SLURM_SUBMIT_DIR` is redirected to the run's log dir for
+the wrapper invocations, so its job state lands in `<log_dir>/.nsight-slurm/jobs/<job>/`.
+
+Two details srtctl handles itself instead of relying on the wrapper's defaults:
+
+- **Container mounts.** srtctl does not use `nsight-slurm enable pyxis`. That mode appends a second
+  `--container-mounts` flag, and pyxis applies only the last `--container-mounts` it receives (SPANK
+  options reach `slurmstepd` as one environment variable per option), which silently drops the job's
+  own `/model`, `/logs` and `/configs` mounts. Instead srtctl adds, inside its single
+  `--container-mounts` value: the install root read-only (venv and managed Python the connector's
+  shebang points at), the connector file onto `/usr/local/bin/nsight-slurm-connector` so the bare
+  command name the wrapper prefixes resolves on the image's `PATH`, and the log dir at its host path
+  (the wrapper's job config dir and report root live under it and are referenced by absolute path).
+  The connector's runtime files go to the container-local `/tmp`.
+- **Coordinator address.** The wrapper publishes `tcp://${SLURMD_NODENAME}:<port>`; broker and
+  client run ZMQ with `IPV6=1`, and ZMQ connects only to the first address a name resolves to. A
+  node's own hostname can resolve to an unconnectable link-local IPv6 first, so the ranks on the
+  coordinator's node would time out. srtctl sets `SLURMD_NODENAME=<head node IPv4>` for the
+  wrapper CLI calls, making the published address an IP literal.
 
 Requirements: `nsight_slurm_home` must be on a filesystem the compute nodes see at the same path
 and built for the compute architecture (the connector runs inside the container; install with the
