@@ -31,7 +31,7 @@ FAKE_TOOL = """#!/usr/bin/env bash
 # record every invocation: argv as JSON + selected env, one line each
 python3 - "$@" <<'PY'
 import json, os, sys
-rec = {"argv": sys.argv[1:], "env": {k: os.environ.get(k) for k in ("NSIGHT_SLURM_HOME", "SLURM_SUBMIT_DIR", "SLURM_JOB_ID")}, "cwd": os.getcwd()}
+rec = {"argv": sys.argv[1:], "env": {k: os.environ.get(k) for k in ("NSIGHT_SLURM_HOME", "SLURM_SUBMIT_DIR", "SLURM_JOB_ID", "SLURMD_NODENAME")}, "cwd": os.getcwd()}
 with open(os.environ["FAKE_NSIGHT_LOG"], "a") as f:
     f.write(json.dumps(rec) + "\\n")
 PY
@@ -178,7 +178,9 @@ class TestStage:
         class Harness(NsightSlurmStageMixin):
             def __init__(self):
                 self.config = _disagg(nsight_slurm_home=str(home))
-                self.runtime = SimpleNamespace(log_dir=tmp_path / "logs", container_image="/img.sqsh")
+                self.runtime = SimpleNamespace(
+                    log_dir=tmp_path / "logs", container_image="/img.sqsh", head_node_ip="10.0.0.7"
+                )
                 self.runtime.log_dir.mkdir()
 
         return Harness()
@@ -210,6 +212,11 @@ class TestStage:
         assert {c["cwd"] for c in calls} == {str(h.runtime.log_dir)}
         assert {c["env"]["SLURM_SUBMIT_DIR"] for c in calls} == {str(h.runtime.log_dir)}
         assert {c["env"]["NSIGHT_SLURM_HOME"] for c in calls} == {str(home)}
+        # The coordinator address is published from SLURMD_NODENAME: force the head node's IPv4 literal so
+        # ranks on the coordinator's own node do not resolve its name to an unconnectable IPv6 (job 571147).
+        assert {c["env"]["SLURMD_NODENAME"] for c in calls} == {"10.0.0.7"}
+        # ... but the wrapper-launched srun steps must not carry that override into the tasks.
+        assert "SLURMD_NODENAME" not in kwargs["launcher_env"]
         assert (h.runtime.log_dir / NSIGHT_SLURM_LOG_NAME).read_text().count("$ ") == len(calls)
 
         h.stop_nsight_slurm()

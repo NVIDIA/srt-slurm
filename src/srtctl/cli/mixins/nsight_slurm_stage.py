@@ -54,6 +54,15 @@ class NsightSlurmStageMixin:
     def _nsight_slurm_env(self) -> dict[str, str]:
         env = dict(os.environ)
         env.update(self.config.profiling.nsight_slurm_process_env(self.runtime.log_dir))
+        head_node_ip = getattr(self.runtime, "head_node_ip", None)
+        if head_node_ip:
+            # The wrapper publishes the coordinator as tcp://${SLURMD_NODENAME:-fqdn}:<port>. Its ZMQ
+            # sockets run with IPV6=1, and ZMQ connects to the FIRST address a name resolves to (glibc
+            # returns v4-mapped addresses only when the name has no IPv6 at all). A node's own name can
+            # resolve to a link-local IPv6 that is not connectable, so the connectors that run on the
+            # coordinator's node would time out (observed on hecate, job 571147). Publishing the head
+            # node's IPv4 literal sidesteps name resolution for every rank.
+            env["SLURMD_NODENAME"] = str(head_node_ip)
         return env
 
     def _nsight_slurm_run(self, *args: str, check: bool = True) -> subprocess.CompletedProcess:
