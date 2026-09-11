@@ -137,6 +137,33 @@ def test_acpi_reader_collects_breakdowns_without_double_counting_total(tmp_path:
     }
 
 
+def test_acpi_reader_collects_input_power_naming_variants(tmp_path: Path) -> None:
+    domains = (
+        (0, "Total Input Power in uW socket 0", 150_000_000),
+        (1, "CPU Rail Input Power in uW socket 0", 70_000_000),
+        (2, "SoC Rail Input Power in uW socket 0", 6_000_000),
+        (3, "DRAM Input Power in uW socket 0", 8_000_000),
+        (4, "CPU Rail Output Power in uW socket 0", 55_000_000),
+    )
+    for hwmon_id, domain, microwatts in domains:
+        _make_acpi_sensor(
+            tmp_path,
+            hwmon_id=hwmon_id,
+            socket_id=0,
+            microwatts=microwatts,
+            domain=domain,
+        )
+
+    reader = AcpiPowerMeterReader(tmp_path)
+
+    assert reader.read_watts() == {
+        "CPU0:cpuSidePowerUsageW": 150.0,
+        "CPU0:cpuRailPowerUsageW": 70.0,
+        "CPU0:socPowerUsageW": 6.0,
+        "CPU0:dramPowerUsageW": 8.0,
+    }
+
+
 def test_acpi_reader_accepts_input_only_hwmon_channel(tmp_path: Path) -> None:
     _make_acpi_sensor(
         tmp_path,

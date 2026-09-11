@@ -127,22 +127,28 @@ class AcpiPowerMeterReader(CpuPowerReader):
         (
             "total",
             "cpuSidePowerUsageW",
-            re.compile(r"\bTotal\s+Power(?:\s+in\s+uW)?\s+socket\s+(\d+)\b", re.IGNORECASE),
+            re.compile(r"\bTotal(?:\s+Input)?\s+Power(?:\s+in\s+uW)?\s+socket\s+(\d+)\b", re.IGNORECASE),
         ),
         (
             "cpu_rail",
             "cpuRailPowerUsageW",
-            re.compile(r"\bCPU\s+Rail\s+Power(?:\s+in\s+uW)?\s+socket\s+(\d+)\b", re.IGNORECASE),
+            re.compile(
+                r"\bCPU\s+Rail(?:\s+Input)?\s+Power(?:\s+in\s+uW)?\s+socket\s+(\d+)\b",
+                re.IGNORECASE,
+            ),
         ),
         (
             "soc",
             "socPowerUsageW",
-            re.compile(r"\bSoC\s+Rail\s+Power(?:\s+in\s+uW)?\s+socket\s+(\d+)\b", re.IGNORECASE),
+            re.compile(
+                r"\bSoC\s+Rail(?:\s+Input)?\s+Power(?:\s+in\s+uW)?\s+socket\s+(\d+)\b",
+                re.IGNORECASE,
+            ),
         ),
         (
             "dram",
             "dramPowerUsageW",
-            re.compile(r"\bDRAM\s+Power(?:\s+in\s+uW)?\s+socket\s+(\d+)\b", re.IGNORECASE),
+            re.compile(r"\bDRAM(?:\s+Input)?\s+Power(?:\s+in\s+uW)?\s+socket\s+(\d+)\b", re.IGNORECASE),
         ),
         # Grace component-rail labels. CPU Power is not the complete Grace
         # socket envelope and therefore must not contribute to total_power_w.

@@ -57,6 +57,8 @@ const OEM_KINDS: [(&str, &[&str]); 4] = [
             "grace power socket ",
             "total power socket ",
             "total power in uw socket ",
+            "total input power socket ",
+            "total input power in uw socket ",
         ],
     ),
     (
@@ -64,6 +66,8 @@ const OEM_KINDS: [(&str, &[&str]); 4] = [
         &[
             "cpu rail power socket ",
             "cpu rail power in uw socket ",
+            "cpu rail input power socket ",
+            "cpu rail input power in uw socket ",
             "cpu power socket ",
         ],
     ),
@@ -72,10 +76,20 @@ const OEM_KINDS: [(&str, &[&str]); 4] = [
         &[
             "soc rail power socket ",
             "soc rail power in uw socket ",
+            "soc rail input power socket ",
+            "soc rail input power in uw socket ",
             "sysio power socket ",
         ],
     ),
-    ("dram", &["dram power socket ", "dram power in uw socket "]),
+    (
+        "dram",
+        &[
+            "dram power socket ",
+            "dram power in uw socket ",
+            "dram input power socket ",
+            "dram input power in uw socket ",
+        ],
+    ),
 ];
 
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
@@ -730,6 +744,26 @@ mod tests {
         assert_eq!(
             classify_oem("DRAM Power in uW socket 0"),
             ("dram", "0".into())
+        );
+        assert_eq!(
+            classify_oem("Total Input Power in uW socket 0"),
+            ("total", "0".into())
+        );
+        assert_eq!(
+            classify_oem("CPU Rail Input Power in uW socket 1"),
+            ("cpu_rail", "1".into())
+        );
+        assert_eq!(
+            classify_oem("SoC Rail Input Power in uW socket 1"),
+            ("soc", "1".into())
+        );
+        assert_eq!(
+            classify_oem("DRAM Input Power in uW socket 0"),
+            ("dram", "0".into())
+        );
+        assert_eq!(
+            classify_oem("CPU Rail Output Power in uW socket 0"),
+            ("other", String::new())
         );
     }
 

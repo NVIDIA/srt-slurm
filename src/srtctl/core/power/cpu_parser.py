@@ -14,6 +14,7 @@ when both exist.
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass
 
 from prometheus_client.parser import text_string_to_metric_families
@@ -21,6 +22,31 @@ from prometheus_client.parser import text_string_to_metric_families
 DCGM_METRIC = "cpu_power_dcgm_watts"
 ACPI_METRIC = "cpu_power_acpi_watts"
 TOTAL_KIND = "total"
+_ACPI_KINDS = {"total", "cpu_rail", "soc", "dram"}
+_ACPI_DOMAIN_PATTERNS = (
+    (
+        "total",
+        re.compile(r"\b(?:Grace|Total(?:\s+Input)?)\s+Power(?:\s+in\s+uW)?\s+Socket\s+(\d+)\b", re.IGNORECASE),
+    ),
+    (
+        "cpu_rail",
+        re.compile(
+            r"\bCPU(?:\s+Rail)?(?:\s+Input)?\s+Power(?:\s+in\s+uW)?\s+Socket\s+(\d+)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "soc",
+        re.compile(
+            r"\b(?:SoC\s+Rail(?:\s+Input)?|SysIO)\s+Power(?:\s+in\s+uW)?\s+Socket\s+(\d+)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "dram",
+        re.compile(r"\bDRAM(?:\s+Input)?\s+Power(?:\s+in\s+uW)?\s+Socket\s+(\d+)\b", re.IGNORECASE),
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -94,10 +120,15 @@ def _parse_acpi(families) -> list[CpuReading]:
             if sample.name != ACPI_METRIC:
                 continue
             labels = sample.labels
+            kind = labels.get("type") or ""
             socket_id = _parse_socket(labels.get("socket"))
+            if socket_id is None or kind not in _ACPI_KINDS:
+                inferred = _classify_acpi_domain(labels.get("oem_info") or "")
+                if inferred is not None:
+                    kind, socket_id = inferred
             # An unclassified rail (the exporter's "other" kind) has no
             # numeric socket, and socket_id is not nullable in the CSV.
-            if socket_id is None:
+            if socket_id is None or kind not in _ACPI_KINDS:
                 continue
             value = sample.value
             if not math.isfinite(value) or value < 0:
@@ -108,7 +139,7 @@ def _parse_acpi(families) -> list[CpuReading]:
                     sensor=labels.get("oem_info") or "",
                     socket_id=socket_id,
                     power_w=value,
-                    kind=labels.get("type") or "",
+                    kind=kind,
                 )
             )
     return readings
@@ -117,6 +148,15 @@ def _parse_acpi(families) -> list[CpuReading]:
 def _sum_by_kind(readings: list[CpuReading], kind: str) -> float | None:
     matching = [reading.power_w for reading in readings if reading.kind == kind]
     return sum(matching) if matching else None
+
+
+def _classify_acpi_domain(oem_info: str) -> tuple[str, int] | None:
+    """Recover the semantic rail and socket from a firmware OEM label."""
+    for kind, pattern in _ACPI_DOMAIN_PATTERNS:
+        match = pattern.search(oem_info)
+        if match is not None:
+            return kind, int(match.group(1))
+    return None
 
 
 def _parse_socket(raw: str | None) -> int | None:
