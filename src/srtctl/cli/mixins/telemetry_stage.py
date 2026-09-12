@@ -135,6 +135,39 @@ def tachometer_dcgm_command_template(tachometer: TachometerConfig) -> str:
     return f"dcgm-exporter --collect-interval={tachometer.collect_interval_ms} --address :{{port}}"
 
 
+# Node-exporter collectors for host CPU, process state and scheduler pressure.
+#   stat         -> node_procs_running / node_procs_blocked / node_context_switches_total
+#   vmstat       -> node_vmstat_pgmajfault / node_vmstat_pgsteal_* (memory reclaim)
+#   pressure     -> node_pressure_{cpu,memory,io}_* (PSI stall time)
+#   meminfo_numa -> node_memory_numa_MemFree{node=N} (per-NUMA-node free memory)
+# These collectors read procfs/sysfs. Their workload overhead has not been
+# measured here. NodeExporterFilter must retain NUMA-node and process-state
+# labels so the raw series remain distinct. Explicit recipe commands still win.
+NODE_EXPORTER_COLLECTORS = ("cpu", "infiniband", "meminfo", "processes", "stat", "vmstat", "pressure", "meminfo_numa")
+
+# node_exporter's vmstat collector defaults to ``^(oom_kill|pgpg|pswp|pg.*fault).*``,
+# which ships pgmajfault but NOT pgsteal_* (page-reclaim). steady_probe.sh carried
+# both major faults and reclaim, so widen the field filter to add pgsteal. Verified
+# against node-exporter v1.8.2: without this, node_vmstat_pgsteal_* is absent.
+NODE_EXPORTER_VMSTAT_FIELDS = "^(oom_kill|pgpg|pswp|pgsteal|pg.*fault).*"
+
+
+def tachometer_node_exporter_command_template() -> str:
+    """node_exporter command for the tachometer-owned launch.
+
+    Enables exactly :data:`NODE_EXPORTER_COLLECTORS` on top of
+    ``--collector.disable-defaults`` so the scrape surface is explicit and
+    stable regardless of the node_exporter image's built-in default set. The
+    pressure metrics are unavailable when the host does not expose PSI.
+    Missing families must be treated as unavailable rather than zero pressure.
+    """
+    collectors = " ".join(f"--collector.{name}" for name in NODE_EXPORTER_COLLECTORS)
+    return (
+        f"/bin/node_exporter --web.listen-address=:{{port}} --collector.disable-defaults "
+        f"{collectors} --collector.vmstat.fields={NODE_EXPORTER_VMSTAT_FIELDS}"
+    )
+
+
 def resolve_exporter_command(exporter_config: TelemetryExporterConfig, default_template: str) -> str:
     """The exact command string an exporter is launched with.
 
@@ -711,14 +744,7 @@ class TelemetryStageMixin:
                     name="tachometer_node_exporter",
                     nodelist=worker_nodes,
                     log_file=self.runtime.log_dir / "tachometer_node_exporter.out",
-                    default_command_template=(
-                        "/bin/node_exporter --web.listen-address=:{port} "
-                        "--collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo "
-                        # processes: node_processes_threads (host-wide thread total),
-                        # node_processes_state and node_processes_threads_state -- the
-                        # cheapest possible "how many threads exist on this box" signal.
-                        "--collector.processes"
-                    ),
+                    default_command_template=tachometer_node_exporter_command_template(),
                     use_bash_wrapper=False,
                     critical=False,
                 )
