@@ -5,6 +5,8 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 from srtctl.cli.mixins.benchmark_stage import _get_health_expectations, _vllm_data_parallel_size
 
 
@@ -17,11 +19,13 @@ def _config(
     num_agg=0,
     vllm_config=None,
     dp_launch_mode="per_node",
+    sidecar=False,
 ):
     """Build a duck-typed stand-in for SrtConfig with only the fields the helpers read."""
     backend = SimpleNamespace(type=backend_type, vllm_config=vllm_config, dp_launch_mode=dp_launch_mode)
     return SimpleNamespace(
         frontend=SimpleNamespace(type=frontend_type),
+        dynamo=SimpleNamespace(sidecar=sidecar),
         backend=backend,
         resources=SimpleNamespace(num_prefill=num_prefill, num_decode=num_decode, num_agg=num_agg),
     )
@@ -82,7 +86,8 @@ def test_dynamo_vllm_per_gpu_aggregated_multiplies_by_data_parallel_size():
     assert count_desc == "0P + 8D Dynamo generate instances; logical workers: 1 agg"
 
 
-def test_dynamo_vllm_per_node_disagg_counts_node_processes():
+@pytest.mark.parametrize("dp_launch_mode,sidecar", [("per_node", False), ("per_node", True), ("per_gpu", True)])
+def test_dynamo_vllm_per_node_disagg_counts_node_processes(dp_launch_mode, sidecar):
     """Per-node DEP8/DEP16 registers once per node-local process, not per DP rank."""
     vllm_config = SimpleNamespace(
         prefill={"data-parallel-size": 8},
@@ -95,6 +100,8 @@ def test_dynamo_vllm_per_node_disagg_counts_node_processes():
         num_prefill=3,
         num_decode=1,
         vllm_config=vllm_config,
+        dp_launch_mode=dp_launch_mode,
+        sidecar=sidecar,
     )
 
     n_prefill, n_decode, count_desc, num_workers = _get_health_expectations(config, _processes(prefill=6, decode=4))
