@@ -1,0 +1,221 @@
+name: "kimi-k25-vllm-disagg-gb200-1p1d-pdcp8-ddcp8-c128"
+
+model:
+  path: "kimi-k2.5-nvfp4"
+  container: "inferactinc/public:sprint-agentx-arm64-cu13.0.1-90e0957"
+  precision: "fp4"
+
+identity:
+  model:
+    repo: "nvidia/Kimi-K2.5-NVFP4"
+    revision: "c0285e649c34d4386b01e38abca642c06cbe014e"
+  container:
+    image: "inferactinc/public:sprint-agentx-arm64-cu13.0.1-90e0957"
+  frameworks:
+    dynamo: "1.2.1"
+
+dynamo:
+  version: "1.2.1"
+
+setup_script: "vllm-container-deps.sh"
+
+slurm:
+  time_limit: "08:00:00"
+
+health_check:
+  max_attempts: 2160
+  interval_seconds: 10
+
+resources:
+  gpu_type: "gb200"
+  gpus_per_node: 4
+  prefill_nodes: 2
+  decode_nodes: 2
+  prefill_workers: 1
+  decode_workers: 1
+  gpus_per_prefill: 8
+  gpus_per_decode: 8
+
+infra:
+  etcd_nats_dedicated_node: false
+  nats_max_payload_mb: 32
+
+frontend:
+  type: "dynamo"
+  enable_multiple_frontends: false
+  args:
+    router-mode: "kv"
+    router-reset-states: true
+    router-temperature: 0.0
+    router-queue-threshold: 65536
+    active-decode-blocks-threshold: "None"
+    active-prefill-tokens-threshold: "None"
+    active-prefill-tokens-threshold-frac: "None"
+
+backend:
+  type: "vllm"
+  connector: "null"
+  kv_events_config:
+    prefill: true
+  mooncake_kv_store:
+    env:
+      MC_ENABLE_DEST_DEVICE_AFFINITY: "1"
+      MC_STORE_CLIENT_METRIC: "0"
+      MC_STORE_CLIENT_METRIC_INTERVAL: "5"
+      MC_TE_METRIC: "0"
+    store_config:
+      metadata_server: "P2PHANDSHAKE"
+      global_segment_size: "200GB"
+      local_buffer_size: "4GB"
+      protocol: "rdma"
+      device_name: "mlx5_0,mlx5_1,mlx5_3,mlx5_4"
+      mode: "embedded"
+      enable_offload: false
+  prefill_environment:
+    PYTHONHASHSEED: "42"
+    HF_HUB_DISABLE_XET: "1"
+    VLLM_ENGINE_READY_TIMEOUT_S: "3600"
+    VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT: "1800"
+    VLLM_RPC_TIMEOUT: "600000"
+    VLLM_LOG_STATS_INTERVAL: "1"
+    VLLM_V2_WARMUP_MAX_NUM_SEQS: "20"
+    VLLM_SERVER_DEV_MODE: "1"
+    VLLM_USE_V2_MODEL_RUNNER: "1"
+    VLLM_MOONCAKE_LOAD_RECV_THREADS: "4"
+    VLLM_USE_FLASHINFER_MOE_FP4: "1"
+    VLLM_FLASHINFER_MOE_BACKEND: "latency"
+    VLLM_MOE_DP_CHUNK_SIZE: "1024"
+    VLLM_SHARED_EXPERTS_STREAM_TOKEN_THRESHOLD: "8192"
+    VLLM_ALLREDUCE_USE_SYMM_MEM: "0"
+    VLLM_ALLREDUCE_USE_FLASHINFER: "1"
+    VLLM_FLASHINFER_ALLREDUCE_BACKEND: "mnnvl"
+    TILELANG_CLEANUP_TEMP_FILES: "1"
+    NCCL_CUMEM_ENABLE: "1"
+    NCCL_MNNVL_ENABLE: "1"
+    NCCL_NVLS_ENABLE: "1"
+    VLLM_RANDOMIZE_DP_DUMMY_INPUTS: "1"
+    UCX_MEMTYPE_CACHE: "n"
+    UCX_NET_DEVICES: "mlx5_0:1,mlx5_1:1,mlx5_3:1,mlx5_4:1"
+    UCX_TLS: "rc,cuda_copy"
+    NCCL_IB_HCA: "=mlx5_0,mlx5_1,mlx5_3,mlx5_4"
+    VLLM_MOONCAKE_STORE_TIER_LOG: "1"
+  decode_environment:
+    PYTHONHASHSEED: "42"
+    HF_HUB_DISABLE_XET: "1"
+    VLLM_ENGINE_READY_TIMEOUT_S: "3600"
+    VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT: "1800"
+    VLLM_RPC_TIMEOUT: "600000"
+    VLLM_LOG_STATS_INTERVAL: "1"
+    VLLM_V2_WARMUP_MAX_NUM_SEQS: "20"
+    VLLM_SERVER_DEV_MODE: "1"
+    VLLM_USE_V2_MODEL_RUNNER: "1"
+    VLLM_MOONCAKE_LOAD_RECV_THREADS: "4"
+    VLLM_USE_FLASHINFER_MOE_FP4: "1"
+    VLLM_FLASHINFER_MOE_BACKEND: "latency"
+    VLLM_MOE_DP_CHUNK_SIZE: "1024"
+    VLLM_SHARED_EXPERTS_STREAM_TOKEN_THRESHOLD: "8192"
+    VLLM_ALLREDUCE_USE_SYMM_MEM: "0"
+    VLLM_ALLREDUCE_USE_FLASHINFER: "1"
+    VLLM_FLASHINFER_ALLREDUCE_BACKEND: "mnnvl"
+    TILELANG_CLEANUP_TEMP_FILES: "1"
+    NCCL_CUMEM_ENABLE: "1"
+    NCCL_MNNVL_ENABLE: "1"
+    NCCL_NVLS_ENABLE: "1"
+    VLLM_RANDOMIZE_DP_DUMMY_INPUTS: "1"
+    UCX_MEMTYPE_CACHE: "n"
+    UCX_NET_DEVICES: "mlx5_0:1,mlx5_1:1,mlx5_3:1,mlx5_4:1"
+    UCX_TLS: "rc,cuda_copy"
+    NCCL_IB_HCA: "=mlx5_0,mlx5_1,mlx5_3,mlx5_4"
+    VLLM_MOONCAKE_STORE_TIER_LOG: "1"
+  vllm_config:
+    prefill:
+      kv-transfer-config: '{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_producer","kv_load_failure_policy":"fail","kv_buffer_device":"cuda","kv_connector_extra_config":{"enforce_handshake_compat":false,"enable_cross_layers_blocks":"true","kv_lease_duration":1800}},{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both","kv_connector_extra_config":{"load_async":true,"lookup_async":true,"enable_cross_layers_blocks":"true"}}]}}'
+      served-model-name: "nvidia/Kimi-K2.5-NVFP4"
+      kv-cache-dtype: "fp8"
+      tensor-parallel-size: 8
+      pipeline-parallel-size: 1
+      enable-expert-parallel: true
+      enable-ep-weight-filter: true
+      max-model-len: 262144
+      max-num-seqs: 256
+      max-num-batched-tokens: 8192
+      trust-remote-code: true
+      no-enable-flashinfer-autotune: true
+      block-size: 64
+      gpu-memory-utilization: 0.85
+      no-disable-hybrid-kv-cache-manager: true
+      enable-sleep-mode: true
+      language-model-only: true
+      attention-config: '{"backend":"FLASHINFER_MLA","mla_prefill_backend":"FLASH_ATTN","use_prefill_query_quantization":true}'
+      all2all-backend: "flashinfer_nvlink_one_sided"
+      linear-backend: "flashinfer_trtllm"
+      decode-context-parallel-size: 8
+      dcp-comm-backend: "a2a"
+    decode:
+      kv-transfer-config: '{"kv_connector":"MultiConnector","kv_role":"kv_consumer","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_consumer","kv_load_failure_policy":"fail","kv_buffer_device":"cuda","kv_connector_extra_config":{"enforce_handshake_compat":false,"enable_cross_layers_blocks":"true","kv_lease_duration":1800}},{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_consumer","kv_connector_extra_config":{"load_async":true,"lookup_async":true,"enable_cross_layers_blocks":"true"}}]}}'
+      served-model-name: "nvidia/Kimi-K2.5-NVFP4"
+      kv-cache-dtype: "fp8"
+      tensor-parallel-size: 8
+      pipeline-parallel-size: 1
+      enable-expert-parallel: true
+      enable-ep-weight-filter: true
+      max-model-len: 262144
+      max-num-seqs: 256
+      max-num-batched-tokens: 8192
+      trust-remote-code: true
+      no-enable-flashinfer-autotune: true
+      block-size: 64
+      gpu-memory-utilization: 0.85
+      no-disable-hybrid-kv-cache-manager: true
+      enable-sleep-mode: true
+      language-model-only: true
+      attention-config: '{"backend":"FLASHINFER_MLA","mla_prefill_backend":"FLASH_ATTN","use_prefill_query_quantization":true}'
+      all2all-backend: "flashinfer_nvlink_one_sided"
+      linear-backend: "flashinfer_trtllm"
+      decode-context-parallel-size: 8
+      dcp-comm-backend: "a2a"
+
+sbatch_directives:
+  cpus-per-task: "72"
+
+benchmark:
+  type: "custom"
+  command: |
+    set -euo pipefail
+    export PYTHONUNBUFFERED=1
+    ARTIFACT_DIR="${ARTIFACT_DIR:-/logs/agentic/aiperf_artifacts}"
+    mkdir -p "${ARTIFACT_DIR}"
+
+    if ! command -v aiperf >/dev/null 2>&1; then
+      if ! command -v uv >/dev/null 2>&1; then
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        export PATH="${HOME}/.local/bin:${PATH}"
+      fi
+      AIPERF_VENV="/tmp/aiperf-${SLURM_JOB_ID:-$$}"
+      uv venv "${AIPERF_VENV}"
+      uv pip install -p "${AIPERF_VENV}" "${AIPERF_PACKAGE:-aiperf}" tiktoken
+      export PATH="${AIPERF_VENV}/bin:${PATH}"
+    fi
+
+    aiperf profile \
+      --scenario inferencex-agentx-mvp \
+      --url "http://${SRT_FRONTEND_HOST}:${SRT_FRONTEND_PORT}" \
+      --endpoint /v1/chat/completions \
+      --endpoint-type chat \
+      --streaming \
+      --model nvidia/Kimi-K2.5-NVFP4 \
+      --concurrency 128 \
+      --benchmark-duration 1800 \
+      --random-seed 42 \
+      --failed-request-threshold 0.10 \
+      --trajectory-start-min-ratio 0.25 \
+      --trajectory-start-max-ratio 0.75 \
+      --agentic-cache-warmup-duration 600 \
+      --use-server-token-count \
+      --no-gpu-telemetry \
+      --tokenizer-trust-remote-code \
+      --max-context-length 260000 \
+      --num-dataset-entries 393 \
+      --slice-duration 1.0 \
+      --output-artifact-dir "${ARTIFACT_DIR}" \
+      --public-dataset semianalysis_cc_traces_weka_062126_256k
