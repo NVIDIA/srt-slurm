@@ -221,6 +221,7 @@ class TestStage:
             *ProfilingConfig.NSIGHT_SLURM_DEFAULT_TOOL_OPTIONS,
             "-o",
             f"{h.runtime.log_dir}/nsight-slurm-direct/%q{{SLURM_JOB_ID}}_%q{{SLURMD_NODENAME}}_rank%q{{SLURM_PROCID}}",
+            "--wait=primary",
         ]
         # Outside the wrapper's report workspace: the wrapper refuses a non-empty report-output dir.
         assert (h.runtime.log_dir / "nsight-slurm-direct").is_dir()

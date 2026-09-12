@@ -952,7 +952,7 @@ class ProfilingConfig:
     NSIGHT_SLURM_DIRECT_REPORT_SUBDIR: ClassVar[str] = "nsight-slurm-direct"
 
     def nsight_slurm_output_option(self, log_dir: "Path | str") -> list[str]:
-        """``-o`` for nsys so every rank writes its report straight to the shared filesystem.
+        """``-o`` (+ ``--wait=primary``) so every rank's report lands on the shared filesystem.
 
         The wrapper's connector otherwise lets nsys write into its runtime scratch workspace and
         copies the file out only when its state machine sees a collection stop, which never happens
@@ -965,7 +965,11 @@ class ProfilingConfig:
             / self.NSIGHT_SLURM_DIRECT_REPORT_SUBDIR
             / "%q{SLURM_JOB_ID}_%q{SLURMD_NODENAME}_rank%q{SLURM_PROCID}"
         )
-        return ["-o", str(target)]
+        # --wait=primary: when the worker exits (teardown SIGTERM), nsys must finalise the report at
+        # once instead of waiting for the worker's re-parented child processes ("The target
+        # application terminated. One or more process it created re-parented. Waiting for
+        # termination of re-parented processes." -- hecate job 576684, no report written).
+        return ["-o", str(target), "--wait=primary"]
 
     def nsight_slurm_container_mounts(self, log_dir: "Path | str") -> list[str]:
         """Mounts the wrapper's connector needs INSIDE the worker container (raw pyxis specs).
