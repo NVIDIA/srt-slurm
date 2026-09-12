@@ -222,9 +222,9 @@ class SGLangProtocol:
         if not self.kv_events_config:
             return None
 
-        # Global bool: enable for prefill+decode with defaults
+        # Global bool: enable for prefill+decode+aggregated with defaults
         if self.kv_events_config is True:
-            if mode in ("prefill", "decode"):
+            if mode in ("prefill", "decode", "agg"):
                 return {"publisher": "zmq", "topic": "kv-events"}
             return None
 

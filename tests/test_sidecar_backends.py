@@ -73,6 +73,34 @@ def test_sglang_sidecar_owns_leader_and_couples_lifecycle() -> None:
     assert "dynamo.sglang.sidecar" not in follower_command
 
 
+def test_sglang_sidecar_kv_events_config_true_covers_aggregated_mode() -> None:
+    # Regression test: kv_events_config=True's "global bool" shortcut only
+    # checked mode in ("prefill", "decode"), silently dropping --kv-events-config
+    # for aggregated-mode topologies (mode == "agg") -- confirmed live: an
+    # aggregated ThunderAgent deployment with kv_events_config: true never
+    # got --kv-events-config in its launched sglang.launch_server command,
+    # leaving dynamo.sglang.sidecar's kv_event_sources permanently at 0 and
+    # every routed request's cache-overlap score stuck at 0.00.
+    process = _process(mode="agg", kv_events_port=5557)
+    backend = SGLangProtocol(
+        kv_events_config=True,
+        sglang_config=SGLangServerConfig(aggregated={"tensor-parallel-size": 8}),
+    )
+
+    with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
+        command = backend.build_worker_command(process, [process], _runtime())
+
+    leader_script = command[2]
+    assert "--kv-events-config" in leader_script
+    # The script quotes the JSON arg with single quotes (bash -lc style);
+    # pull out what's between the first pair following the flag.
+    after_flag = leader_script.split("--kv-events-config ", 1)[1]
+    raw_json = after_flag.split("'", 2)[1]
+    kv_config = json.loads(raw_json)
+    assert kv_config["endpoint"] == "tcp://*:5557"
+    assert kv_config["publisher"] == "zmq"
+
+
 def test_vllm_sidecar_exposes_one_complete_multi_node_dp_group() -> None:
     backend = VLLMProtocol(
         connector=None,

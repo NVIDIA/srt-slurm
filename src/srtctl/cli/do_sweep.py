@@ -27,6 +27,7 @@ from pathlib import Path
 from srtctl.backends.sglang import SGLangProtocol
 from srtctl.backends.vllm import MOONCAKE_STORE_CONFIG_FILENAME, VLLMProtocol
 from srtctl.cli.mixins import (
+    AuxiliaryServiceStageMixin,
     BenchmarkStageMixin,
     FrontendStageMixin,
     PostProcessStageMixin,
@@ -83,6 +84,7 @@ class SweepOrchestrator(
     WorkerStageMixin,
     FrontendStageMixin,
     TelemetryStageMixin,
+    AuxiliaryServiceStageMixin,
     BenchmarkStageMixin,
     PostProcessStageMixin,
 ):
@@ -799,6 +801,13 @@ class SweepOrchestrator(
             reporter.report(JobStatus.FRONTEND, JobStage.FRONTEND, "Starting frontend")
             frontend_procs = self.start_frontend(registry, stop_event)
             for proc in frontend_procs:
+                registry.add_process(proc)
+
+            # Stage 3b: Auxiliary services (generic sidecars, see docs/auxiliary-services.md).
+            # Same ordering as the --bash dev-mode lifecycle: after workers+frontend are
+            # healthy, before telemetry/Tachometer.
+            aux_procs = self.start_auxiliary_services()
+            for proc in aux_procs:
                 registry.add_process(proc)
 
             if self.config.telemetry.enabled:

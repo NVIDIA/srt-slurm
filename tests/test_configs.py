@@ -89,6 +89,26 @@ class TestClusterConfigGitHttpVersion:
         assert loaded.git_http_version is None
 
 
+class TestClusterConfigGitHttpVersion:
+    """srtslurm.yaml is schema-validated, and a failure there silently drops
+    every cluster default (model_paths, containers, etc.) -- so a new key
+    has to be declared in ClusterConfig, not just read via
+    get_srtslurm_setting(). See TestHostSetup.test_cluster_schema_accepts_the_key
+    for the same lesson applied to an earlier field."""
+
+    def test_cluster_schema_accepts_the_key(self):
+        from srtctl.core.schema import ClusterConfig
+
+        loaded = ClusterConfig.Schema().load({"git_http_version": "HTTP/1.1"})
+        assert loaded.git_http_version == "HTTP/1.1"
+
+    def test_unset_defaults_to_none(self):
+        from srtctl.core.schema import ClusterConfig
+
+        loaded = ClusterConfig.Schema().load({})
+        assert loaded.git_http_version is None
+
+
 class TestSrtConfigStructure:
     """Tests for SrtConfig dataclass structure."""
 
@@ -521,7 +541,7 @@ class TestSGLangProtocol:
         assert config.get_environment_for_mode("agg") == {}
 
     def test_kv_events_config_global_bool(self):
-        """Test kv_events_config=True enables prefill+decode with defaults."""
+        """Test kv_events_config=True enables prefill+decode+aggregated with defaults."""
         config = SGLangProtocol(kv_events_config=True)
 
         assert config.get_kv_events_config_for_mode("prefill") == {
@@ -532,7 +552,10 @@ class TestSGLangProtocol:
             "publisher": "zmq",
             "topic": "kv-events",
         }
-        assert config.get_kv_events_config_for_mode("agg") is None
+        assert config.get_kv_events_config_for_mode("agg") == {
+            "publisher": "zmq",
+            "topic": "kv-events",
+        }
 
     def test_kv_events_config_per_mode(self):
         """Test kv_events_config per-mode control."""
