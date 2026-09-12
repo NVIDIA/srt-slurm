@@ -1284,11 +1284,11 @@ infra:
 
 | Field                    | Type | Default | Description                                        |
 | ------------------------ | ---- | ------- | -------------------------------------------------- |
-| `etcd_nats_dedicated_node` | bool | false   | Reserve first node for infrastructure services     |
+| `etcd_nats_dedicated_node` | bool | false   | Reserve a node for infrastructure services         |
 
 **Notes**:
 
-- When `etcd_nats_dedicated_node: true`, the first allocated node is reserved exclusively for etcd and nats services.
+- When `etcd_nats_dedicated_node: true`, the first allocated node is normally reserved exclusively for etcd and nats services. With power telemetry enabled, the actual Slurm batch host remains the head and benchmark node so power samples and benchmark boundaries share a clock. Infrastructure uses the last other node (in the prefill component for heterogeneous jobs) and is excluded from serving-GPU measurements. Dedicated frontend or client nodes cannot be combined with power telemetry.
 - This can improve stability for large-scale deployments by isolating infrastructure services.
 - The reserved node is not used for worker processes.
 

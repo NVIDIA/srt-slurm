@@ -450,31 +450,41 @@ class TestDcgmPowerConfig:
         assert schema_module._is_safe_relative_subpath(value) is expected
         assert contract.is_safe_relative_subpath(value) is expected
 
-    @pytest.mark.parametrize(
-        ("telemetry", "dedicated", "rejected"),
-        [
-            (_dcgm_power(), True, True),
-            (_dcgm_power(), False, False),
-        ],
-        ids=["dcgm-power-dedicated", "dcgm-power-shared"],
-    )
-    def test_a_dedicated_infra_node_is_rejected_for_dcgm_power(self, telemetry, dedicated, rejected):
-        def build():
-            return SrtConfig(
+    @pytest.mark.parametrize("dedicated", [True, False])
+    def test_dcgm_power_accepts_dedicated_or_shared_infra(self, dedicated):
+        config = SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="h100"),
+            benchmark=_sa_bench(),
+            telemetry=_dcgm_power(),
+            infra=InfraConfig(etcd_nats_dedicated_node=dedicated),
+        )
+        assert config.infra.etcd_nats_dedicated_node is dedicated
+
+    @pytest.mark.parametrize("role", ["frontend", "client"])
+    def test_dcgm_power_rejects_separate_frontend_or_client_clock(self, role):
+        with pytest.raises(ValidationError, match="batch-host clock"):
+            SrtConfig(
+                name="test",
+                model=ModelConfig(path="/model", container="/image", precision="fp4"),
+                resources=ResourceConfig(gpu_type="h100"),
+                benchmark=_sa_bench(client_dedicated_node=role == "client"),
+                frontend=FrontendConfig(dedicated_node=role == "frontend"),
+                telemetry=_dcgm_power(),
+            )
+
+    @pytest.mark.parametrize("option", ["nodefile", "nodelist"])
+    def test_dcgm_power_rejects_benchmark_node_override(self, option):
+        with pytest.raises(ValidationError, match="srun_options"):
+            SrtConfig(
                 name="test",
                 model=ModelConfig(path="/model", container="/image", precision="fp4"),
                 resources=ResourceConfig(gpu_type="h100"),
                 benchmark=_sa_bench(),
-                telemetry=telemetry,
-                infra=InfraConfig(etcd_nats_dedicated_node=dedicated),
+                telemetry=_dcgm_power(),
+                srun_options={option: "other-node"},
             )
-
-        if rejected:
-            with pytest.raises(ValidationError, match="etcd_nats_dedicated_node"):
-                build()
-            return
-
-        assert build().infra.etcd_nats_dedicated_node is dedicated
 
 
 class TestCpuPowerExporterConfig:

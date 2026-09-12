@@ -74,6 +74,7 @@ class Nodes:
         client_dedicated_node: bool = False,
         etcd_nats_dedicated_node: bool = False,
         colocate_dedicated_nodes: bool = True,
+        batch_host: str | None = None,
     ) -> "Nodes":
         """Create Nodes from SLURM environment.
 
@@ -101,7 +102,14 @@ class Nodes:
                                       placement (frontend/client fall back to
                                       colocating with whichever node ends up
                                       being head; infra falls back to head).
+            batch_host: Keep the benchmark on this Slurm batch host for power
+                        telemetry; dedicated infra uses another node.
         """
+        # Power samples are timestamped by the batch process. Its benchmark
+        # client must share that host clock, including with dedicated infra.
+        if batch_host is not None and (frontend_dedicated_node or client_dedicated_node):
+            raise ValueError("power telemetry cannot use dedicated frontend or client nodes")
+
         dedicated_roles = [
             role
             for role, wanted in (
@@ -118,11 +126,24 @@ class Nodes:
                 raise ValueError(
                     "frontend_dedicated_node/client_dedicated_node are not supported for heterogeneous SLURM jobs"
                 )
-            return cls._from_het_slurm(het_lists, etcd_nats_dedicated_node)
+            return cls._from_het_slurm(het_lists, etcd_nats_dedicated_node, batch_host)
 
         nodelist = get_slurm_nodelist()
         if not nodelist:
             raise RuntimeError("SLURM_NODELIST not set - are we running in SLURM?")
+
+        if batch_host is not None:
+            if batch_host not in nodelist:
+                raise ValueError(f"batch host {batch_host!r} is not in the SLURM allocation")
+            if etcd_nats_dedicated_node:
+                if len(nodelist) < 2:
+                    raise ValueError("etcd_nats_dedicated_node requires at least 2 nodes")
+                infra = next(node for node in reversed(nodelist) if node != batch_host)
+                worker = tuple(node for node in nodelist if node != infra)
+            else:
+                infra = batch_host
+                worker = tuple(nodelist)
+            return cls(head=batch_host, bench=batch_host, infra=infra, worker=worker)
 
         if not dedicated_roles:
             head = bench = infra = nodelist[0]
@@ -170,6 +191,7 @@ class Nodes:
         cls,
         het_lists: list[list[str]],
         etcd_nats_dedicated_node: bool,
+        batch_host: str | None = None,
     ) -> "Nodes":
         """Carve a Nodes from a SLURM heterogeneous-job allocation.
 
@@ -184,15 +206,23 @@ class Nodes:
         if not group0 or not group1:
             raise RuntimeError("Empty SLURM_JOB_NODELIST_HET_GROUP_* — are we inside a het job?")
 
+        if batch_host is not None and batch_host not in group0:
+            raise ValueError(f"batch host {batch_host!r} must be in heterogeneous group 0")
+
         if etcd_nats_dedicated_node:
             if len(group0) < 2:
                 raise ValueError("etcd_nats_dedicated_node requires >= 2 nodes in het group 0")
-            infra = group0[0]
-            head = group0[1]
-            prefill_group = tuple(group0[1:])
+            if batch_host is not None:
+                head = batch_host
+                infra = next(node for node in reversed(group0) if node != head)
+                prefill_group = tuple(node for node in group0 if node != infra)
+            else:
+                infra = group0[0]
+                head = group0[1]
+                prefill_group = tuple(group0[1:])
         else:
-            infra = group0[0]
-            head = group0[0]
+            head = batch_host or group0[0]
+            infra = head
             prefill_group = tuple(group0)
         bench = head
         decode_group = tuple(group1)
@@ -276,11 +306,17 @@ class RuntimeContext:
             log_dir_base: Base directory for logs (default: ./outputs)
         """
         # Get nodes from SLURM
+        batch_host = None
+        if config.telemetry.enabled:
+            batch_host = os.environ.get("SLURMD_NODENAME")
+            if not batch_host:
+                raise ValueError("power telemetry requires SLURMD_NODENAME for the batch host")
         nodes = Nodes.from_slurm(
             frontend_dedicated_node=config.frontend.dedicated_node,
             client_dedicated_node=config.benchmark.client_dedicated_node,
             etcd_nats_dedicated_node=config.infra.etcd_nats_dedicated_node,
             colocate_dedicated_nodes=config.benchmark.colocate_with_frontend,
+            batch_host=batch_host,
         )
 
         # Compute run_name

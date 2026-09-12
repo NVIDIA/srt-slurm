@@ -1917,8 +1917,9 @@ class InfraConfig:
 
     Attributes:
         etcd_nats_dedicated_node: If True, run etcd and nats on a dedicated node
-            instead of the head node. This reserves the first node exclusively
-            for infrastructure services. Default: False.
+            instead of the head node. Normally reserves the first node; power
+            telemetry keeps the batch host as head and uses the last other node.
+            Default: False.
         nats_max_payload_mb: Maximum NATS message payload in MB. Default: None (uses
             NATS default of 1MB). Set to 24+ for disaggregated serving with long ISL
             (e.g. 65K+ tokens where prompt data exceeds 1MB in NATS messages).
@@ -2435,12 +2436,16 @@ class SrtConfig:
         if self.benchmark.client_placement != "head":
             raise ValidationError("telemetry requires benchmark.client_placement: head")
 
-        # NOTE: a dedicated infra node moves nodes.head off the batch host the collector runs on.
-        if self.infra.etcd_nats_dedicated_node:
+        if self.frontend.dedicated_node or self.benchmark.client_dedicated_node:
             raise ValidationError(
-                "telemetry requires infra.etcd_nats_dedicated_node: false, because a "
-                "dedicated infra node moves nodes.head off the batch host and power samples would no longer "
-                "share the benchmark's clock"
+                "telemetry requires frontend.dedicated_node and benchmark.client_dedicated_node: false, "
+                "because the benchmark must share the collector's batch-host clock"
+            )
+        placement_options = sorted({"nodefile", "nodelist"}.intersection(self.srun_options))
+        if placement_options:
+            raise ValidationError(
+                "telemetry does not allow srun_options placement keys because the benchmark must run on "
+                "the collector's batch host: " + ", ".join(placement_options)
             )
 
         concurrencies = self.benchmark.get_concurrency_list()
