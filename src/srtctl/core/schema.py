@@ -2032,7 +2032,7 @@ class SrtConfig:
             return
         if self.frontend.type != "dynamo":
             raise ValidationError("dynamo.sidecar: true requires frontend.type: dynamo")
-        if not isinstance(self.backend, (SGLangProtocol, VLLMProtocol, TRTLLMProtocol)):
+        if not isinstance(self.backend, SGLangProtocol | VLLMProtocol | TRTLLMProtocol):
             raise ValidationError("dynamo.sidecar: true supports sglang, vllm, and trtllm backends only")
         if isinstance(self.backend, VLLMProtocol):
             self.backend.validate_sidecar_dp_config()
