@@ -5,6 +5,8 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from srtctl.core.schema import (
     DEFAULT_AI_ANALYSIS_PROMPT,
     AIAnalysisConfig,
@@ -162,6 +164,9 @@ class TestPostProcessStageMixin:
         mixin.runtime.log_dir = log_dir
         mixin.config = MagicMock()
 
+        from contextlib import nullcontext
+
+        mixin._quarantine_excluded_artifacts = MagicMock(return_value=nullcontext())
         mixin._copy_config_to_logs = MagicMock()
         mixin._generate_rollup = MagicMock()
         mixin._extract_benchmark_results = MagicMock(return_value=None)
@@ -210,8 +215,197 @@ class TestPostProcessStageMixin:
 
         mixin._extract_benchmark_results.assert_called_once()
         mixin._run_postprocess_container.assert_called_once()
+        mixin._quarantine_excluded_artifacts.assert_called_once()
         # logs_url is stashed on self for do_sweep's final report_completed PUT
         assert mixin._last_logs_url is None  # no S3 configured in this mock
+
+    def test_applies_benchmark_artifact_exclusions(self, tmp_path):
+        """Postprocess policy removes matching AIPerf files only."""
+        from srtctl.cli.mixins.postprocess_stage import PostProcessStageMixin
+
+        log_dir = tmp_path / "logs"
+        warmup_inputs = log_dir / "artifacts" / "warmup" / "inputs.json"
+        run_inputs = log_dir / "artifacts" / "run" / "nested" / "inputs.json"
+        keep_artifact = log_dir / "artifacts" / "run" / "profile_export.jsonl"
+        root_inputs = log_dir / "inputs.json"
+        for path in (warmup_inputs, run_inputs, keep_artifact, root_inputs):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("test")
+        directory_inputs = log_dir / "artifacts" / "directory" / "inputs.json"
+        directory_inputs.mkdir(parents=True)
+
+        mixin = PostProcessStageMixin()
+        mixin.runtime = MagicMock(log_dir=log_dir)
+        mixin.config = MagicMock()
+        mixin.config.benchmark.type = "trace-replay"
+
+        with mixin._quarantine_excluded_artifacts():
+            assert not warmup_inputs.exists()
+            assert not run_inputs.exists()
+            assert not root_inputs.exists()
+            assert directory_inputs.exists()
+            assert keep_artifact.exists()
+            quarantine_roots = list(log_dir.parent.glob(".postprocess-quarantine-*"))
+            assert len(quarantine_roots) == 1
+            assert quarantine_roots[0].parent == log_dir.parent
+            assert not quarantine_roots[0].is_relative_to(log_dir)
+
+        assert warmup_inputs.read_text() == "test"
+        assert run_inputs.read_text() == "test"
+        assert root_inputs.read_text() == "test"
+        assert not list(tmp_path.glob(".postprocess-quarantine-*"))
+
+    def test_artifact_exclusions_apply_to_aiperf_runners(self, tmp_path):
+        """AIPerf inheritance, rather than a benchmark-name list, selects policy."""
+        from srtctl.benchmarks.base import AIPerfBenchmarkRunner
+        from srtctl.cli.mixins.postprocess_stage import PostProcessStageMixin
+
+        log_dir = tmp_path / "logs"
+        inputs = log_dir / "artifacts" / "run" / "inputs.json"
+        inputs.parent.mkdir(parents=True)
+        inputs.write_text("test")
+
+        mixin = PostProcessStageMixin()
+        mixin.runtime = MagicMock(log_dir=log_dir)
+        mixin.config = MagicMock()
+        mixin.config.benchmark.type = "aiperf-benchmark"
+
+        runner = MagicMock(spec=AIPerfBenchmarkRunner)
+        with patch(
+            "srtctl.cli.mixins.postprocess_stage.get_runner",
+            return_value=runner,
+        ):
+            with mixin._quarantine_excluded_artifacts():
+                assert not inputs.exists()
+
+        assert inputs.read_text() == "test"
+
+    def test_artifact_exclusions_skip_unknown_benchmarks(self, tmp_path):
+        """Unknown benchmark types skip artifact exclusions."""
+        from srtctl.cli.mixins.postprocess_stage import PostProcessStageMixin
+
+        mixin = PostProcessStageMixin()
+        mixin.runtime = MagicMock(log_dir=tmp_path / "logs")
+        mixin.config = MagicMock()
+        mixin.config.benchmark.type = "unknown-benchmark"
+
+        with mixin._quarantine_excluded_artifacts():
+            pass
+
+    def test_artifact_exclusions_do_not_apply_to_other_benchmarks(self, tmp_path):
+        """A matching filename is retained for benchmarks outside the policy."""
+        from srtctl.cli.mixins.postprocess_stage import PostProcessStageMixin
+
+        log_dir = tmp_path / "logs"
+        inputs = log_dir / "artifacts" / "run" / "inputs.json"
+        inputs.parent.mkdir(parents=True)
+        inputs.write_text("test")
+
+        mixin = PostProcessStageMixin()
+        mixin.runtime = MagicMock(log_dir=log_dir)
+        mixin.config = MagicMock()
+        mixin.config.benchmark.type = "sa-bench"
+
+        with mixin._quarantine_excluded_artifacts():
+            assert inputs.exists()
+
+        assert inputs.exists()
+
+    def test_artifact_exclusion_honors_minimum_size(self, tmp_path):
+        """Size-qualified exclusions retain smaller files and remove files at the boundary."""
+        from srtctl.cli.mixins.postprocess_stage import (
+            PostProcessStageMixin,
+            _ArtifactExclusion,
+        )
+
+        log_dir = tmp_path / "logs"
+        small = log_dir / "artifacts" / "small" / "inputs.json"
+        threshold = log_dir / "artifacts" / "threshold" / "inputs.json"
+        for path, contents in ((small, "1234"), (threshold, "12345")):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(contents)
+
+        mixin = PostProcessStageMixin()
+        mixin.runtime = MagicMock(log_dir=log_dir)
+
+        exclusions = (
+            _ArtifactExclusion(
+                pattern="artifacts/**/inputs.json",
+                min_size_bytes=5,
+            ),
+        )
+        with mixin._quarantine_artifacts(exclusions):
+            assert small.exists()
+            assert not threshold.exists()
+
+        assert small.exists()
+        assert threshold.read_text() == "12345"
+
+    def test_artifact_quarantine_logs_restore_and_cleanup_errors(self, tmp_path):
+        """Restore and quarantine cleanup errors are handled without raising."""
+        from srtctl.cli.mixins.postprocess_stage import (
+            PostProcessStageMixin,
+            _QuarantinedArtifact,
+        )
+
+        mixin = PostProcessStageMixin()
+        artifact = _QuarantinedArtifact(
+            original_path=tmp_path / "logs" / "artifacts" / "inputs.json",
+            quarantined_path=tmp_path / "quarantine" / "artifacts" / "inputs.json",
+        )
+
+        with patch("pathlib.Path.replace", side_effect=OSError("restore failed")):
+            mixin._restore_quarantined_artifacts(tmp_path / "quarantine", [artifact])
+
+        with patch(
+            "srtctl.cli.mixins.postprocess_stage.shutil.rmtree",
+            side_effect=OSError("cleanup failed"),
+        ):
+            mixin._restore_quarantined_artifacts(tmp_path / "quarantine", [])
+
+    def test_artifact_quarantine_restores_after_postprocess_failure(self, tmp_path):
+        """Excluded files are restored when work inside the quarantine fails."""
+        from srtctl.cli.mixins.postprocess_stage import PostProcessStageMixin
+
+        log_dir = tmp_path / "logs"
+        inputs = log_dir / "artifacts" / "run" / "inputs.json"
+        inputs.parent.mkdir(parents=True)
+        inputs.write_text("original")
+
+        mixin = PostProcessStageMixin()
+        mixin.runtime = MagicMock(log_dir=log_dir)
+        mixin.config = MagicMock()
+        mixin.config.benchmark.type = "trace-replay"
+
+        with pytest.raises(RuntimeError, match="postprocess failed"):
+            with mixin._quarantine_excluded_artifacts():
+                assert not inputs.exists()
+                raise RuntimeError("postprocess failed")
+
+        assert inputs.read_text() == "original"
+        assert not list(tmp_path.glob(".postprocess-quarantine-*"))
+
+    def test_artifact_quarantine_does_not_overwrite_recreated_file(self, tmp_path):
+        """A recreated destination wins and the original stays quarantined."""
+        from srtctl.cli.mixins.postprocess_stage import PostProcessStageMixin
+
+        log_dir = tmp_path / "logs"
+        inputs = log_dir / "artifacts" / "run" / "inputs.json"
+        inputs.parent.mkdir(parents=True)
+        inputs.write_text("original")
+
+        mixin = PostProcessStageMixin()
+        mixin.runtime = MagicMock(log_dir=log_dir)
+        mixin.config = MagicMock()
+        mixin.config.benchmark.type = "trace-replay"
+
+        with mixin._quarantine_excluded_artifacts():
+            inputs.write_text("replacement")
+
+        quarantine_roots = list(tmp_path.glob(".postprocess-quarantine-*"))
+        assert inputs.read_text() == "replacement"
+        assert len(quarantine_roots) == 1
+        assert (quarantine_roots[0] / "artifacts" / "run" / "inputs.json").read_text() == "original"
 
     def test_run_postprocess_eagerly_pushes_logs_url_to_reporter(self):
         """When a reporter is passed and S3 sync produces a URL, push eagerly."""
