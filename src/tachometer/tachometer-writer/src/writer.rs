@@ -459,16 +459,22 @@ mod tests {
                 .filter(|path| path.file_name().is_some_and(|name| name != "out-1.parquet"))
                 .collect();
             assert_eq!(pending.len(), 1);
-            assert!(ParquetRecordBatchReaderBuilder::try_new(
-                File::open(&pending[0]).unwrap()
-            )
-            .is_err());
+            assert!(
+                ParquetRecordBatchReaderBuilder::try_new(File::open(&pending[0]).unwrap()).is_err()
+            );
             // The real compactor consumes the completed first part, but must
             // neither read nor delete the part whose writer is still open.
             let compacted = runtime
-                .block_on(periodic_compact_and_sync(local.path(), store.clone(), "run"))
+                .block_on(periodic_compact_and_sync(
+                    local.path(),
+                    store.clone(),
+                    "run",
+                ))
                 .unwrap();
-            assert!(pending[0].exists(), "compactor deleted the unfinished write");
+            assert!(
+                pending[0].exists(),
+                "compactor deleted the unfinished write"
+            );
             assert_eq!(compacted, 1);
             assert!(!local.path().join("out-2.parquet").exists());
             writer.close().unwrap();
@@ -479,7 +485,11 @@ mod tests {
         assert!(local.path().join("out-2.parquet").exists());
         assert_eq!(
             runtime
-                .block_on(periodic_compact_and_sync(local.path(), store.clone(), "run"))
+                .block_on(periodic_compact_and_sync(
+                    local.path(),
+                    store.clone(),
+                    "run"
+                ))
                 .unwrap(),
             2
         );
