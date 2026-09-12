@@ -639,9 +639,43 @@ backend:
 | `prefill_environment` | dict   | {}      | Environment variables for prefill       |
 | `decode_environment`  | dict   | {}      | Environment variables for decode        |
 | `trtllm_config`       | object | null    | TRTLLM CLI configuration per mode       |
+| `publish_metrics` | bool | true | Pass `--publish-metrics` to Dynamo TRT-LLM workers; does not enable KV events |
+| `publish_events_and_metrics` | bool or null | unset | `false`: disable both publication flags; `true`: enable the combined flag; unset/null: inherit defaults |
+
+With `frontend.type: dynamo`, prefill, decode, and aggregated workers publish engine metrics
+by default using `--publish-metrics`, regardless of whether observability is enabled. Without
+observability, this does not enable KV events. `observability.enabled: true` retains its existing
+superset behavior: it additionally enables `--publish-events-and-metrics` when the combined
+setting is omitted or null. Explicitly requesting the combined flag also works without
+observability.
+
+**An explicit `backend.publish_events_and_metrics: false` is a master opt-out:** neither
+publication flag is passed, even if `publish_metrics` is true or observability is enabled.
+This differs from omitting the combined setting, which keeps metrics on by default. Unset
+values remain null through config serialization so a saved config does not acquire an opt-out.
+
+| `publish_events_and_metrics` | Observability | Default publication flags |
+| --- | --- | --- |
+| omitted / null | disabled / omitted | `--publish-metrics` |
+| omitted / null | enabled | `--publish-metrics --publish-events-and-metrics` |
+| `false` | either | none |
+| `true` | either | `--publish-metrics --publish-events-and-metrics` |
+
+**Compatibility:** the metrics-only flag requires a Dynamo build containing
+[ai-dynamo/dynamo#12162](https://github.com/ai-dynamo/dynamo/pull/12162) or equivalent support.
+Older builds (including Dynamo v1.4.2) reject the flag. Set `backend.publish_metrics: false`
+to omit only the new flag, including when observability is enabled; this does not disable a
+combined flag enabled by observability or the recipe. Set `backend.publish_events_and_metrics: false`
+to omit **both** flags. srt-slurm does not substitute the combined flag as an automatic
+compatibility fallback, because that would enable KV events. Omitting the flag does
+not override metrics-related environment variables supplied by the user. Metrics collection
+adds engine telemetry work; metrics-only does not mean zero overhead.
+
+These options do not change native `trtllm_serve` or sidecar worker commands. `srtctl dry-run`
+shows the publication flag selected for Dynamo TRT-LLM workers.
 
 **Key differences from SGLang backend**:
-- No aggregated mode support (prefill/decode only)
+- Supports prefill, decode, and aggregated workers
 - Uses MPI-style launching (one srun per endpoint with all nodes)
 - Uses `trtllm-llmapi-launch` for distributed launching
 - Automatically sets `TRTLLM_EPLB_SHM_NAME` with unique UUID per endpoint
@@ -739,9 +773,14 @@ their URLs are appended to `AIPERF_SERVER_METRICS_URLS` after the logical worker
 
 Two caveats for `AIPERF_SERVER_METRICS_URLS`:
 
-- **TRT-LLM worker URLs are omitted when the workers publish no metrics.** A Dynamo TRT-LLM worker
-  launched without `--publish-events-and-metrics` (the default; `observability.enabled` turns it
-  on) serves nothing on its sys-port `/metrics`, so those URLs are not advertised. With
+- **Dynamo TRT-LLM worker URLs are advertised when engine metrics are enabled.** This is the
+  default via `backend.publish_metrics: true` (`--publish-metrics`) when the combined setting
+  is omitted; `backend.publish_events_and_metrics: true` also enables them. Explicit
+  `backend.publish_events_and_metrics: false` suppresses both publication flags and worker
+  URLs, regardless of the metrics-only setting. URLs are also omitted when no flag is enabled
+  (for example, metrics-only false and the combined setting omitted without observability).
+  This applies to built-in AIPerf and custom benchmarks, excluding sidecars, whose behavior is
+  unchanged. Runtime-only metrics may still exist but do not constitute an engine-metrics capture. With
   `frontend.type: trtllm_serve` the gate is the worker's own engine config instead: its
   `/prometheus/metrics` URL is advertised when that mode's `return_perf_metrics` is true (the
   srtctl default for trtllm_serve recipes; an explicit `false` drops the URL). KVBM URLs are
@@ -1264,7 +1303,9 @@ observability:
   enabled: true
 ```
 
-Tachometer scrapes the **complement** of what the benchmark client polls: worker endpoints that appear in `AIPERF_SERVER_METRICS_URLS` are left to the client (a worker endpoint is never double-polled — the extra scrape load has previously made a submission irreproducible), while the frontend, DCGM, and node-exporter endpoints are always Tachometer's. On runs whose benchmark has no aiperf client (sa-bench, lm-eval, serve-only, manual), the complement expands to every endpoint.
+The capture window aligns with the load, the same window the benchmark client's own `AIPERF_SERVER_METRICS_URLS` polling covers: on benchmark runs the scraper starts once the server passes the health gate (bring-up produces only dead-endpoint noise while workers load) and is stopped **gracefully** when the client exits, with a configurable grace period for compacting `final.parquet` before post-processing reads it. Runs without a discrete load window (serve-only, `manual`, eval-only) capture the whole serve session as before. Signal handlers and the critical-process monitor still use the process registry’s existing teardown budget; the benchmark shutdown grace does not override those paths.
+
+Tachometer scrapes all configured worker, frontend, DCGM, and node-exporter endpoints, independently of the benchmark client's `AIPERF_SERVER_METRICS_URLS` polling. This keeps the raw capture complete even when the client also collects metrics.
 
 The legacy in-job Python RAW scraper is retired: a recipe still carrying `scrape_metrics`, `scrape_interval_seconds`, or `scrape_output` fails validation at submit time. Historical `raw_prometheus.jsonl` artifacts remain readable by the post-processing ingest.
 
@@ -1304,6 +1345,7 @@ observability:
 | `binary_path` | string | `tachometer-scraper` | Scraper command or path on the compute nodes |
 | `collect_interval_ms` | int | `1000` | Milliseconds between scrapes of every endpoint; the single cadence knob — it also drives the launched DCGM exporter's `--collect-interval` (an explicit `dcgm_exporter.command` wins) and the host sampler. Values below `1000` speed up DCGM NVML sampling and are warned about at launch: 100ms sampling measured ~2% decode ITL overhead on GB300. Replaces the retired Hz-based `default_frequency` |
 | `sync_interval_secs` | int | `120` | Interval for intermediate Parquet compaction; `0` disables it |
+| `shutdown_grace_secs` | float | `120.0` | Time the scraper gets after SIGTERM to flush and compact `final.parquet` before it is killed; compaction scales with the data accumulated since the last periodic sync |
 | `compaction_threads` | int | `4` | Value passed as `POLARS_MAX_THREADS` |
 | `storage_subdir` | string | `tachometer` | Output directory below the run log directory |
 | `extra_metadata` | dict | `{}` | Static string metadata added to every endpoint |
