@@ -1155,6 +1155,11 @@ profiling:
   # Extra arguments for nsys profile (when type is nsys or nsys-time)
   extra_nsys_args: ["--stats=true"]       # Optional: list of strings
 
+  # Optional nsys flag overrides. Omit to keep backend-specific defaults.
+  trace_domain: "cuda,nvtx,ucx"
+  cuda_graph_trace_mode: "node:host-only:nvtx-precapture"
+  sample_mode: "cpu"
+
   # Phase-specific profiling step configs
   prefill:
     start_step: 10                   # Step to start profiling
@@ -1172,6 +1177,9 @@ profiling:
 | ------------- | ------ | -------- | ------- | ---------------------------------------- |
 | `type`        | string | No       | "none"  | Profiling type: "none", "nsys", "torch"  |
 | `extra_nsys_args` | list[string] | No | null | Extra args for nsys profile (when type is `nsys` or `nsys-time`) |
+| `trace_domain` | string | No | null | Override domains passed to `nsys -t`; null retains the backend-specific default |
+| `cuda_graph_trace_mode` | string | No | null | Override the value passed to `nsys --cuda-graph-trace`; null uses `node` |
+| `sample_mode` | string | No | null | Override the value passed to `nsys --sample`; null retains the backend-specific default |
 | `prefill`     | object | Disaggregated | null | Prefill phase config                   |
 | `decode`      | object | Disaggregated | null | Decode phase config                    |
 | `aggregated`  | object | Aggregated | null | Aggregated phase config                  |

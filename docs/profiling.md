@@ -59,6 +59,11 @@ profiling:
   # nsys / nsys-time: extra arguments for nsys profile (e.g. ["--stats=true"])
   extra_nsys_args: []  # Optional
 
+  # Optional nsys flag overrides. Omit these to preserve the backend defaults.
+  trace_domain: "cuda,nvtx,ucx"
+  cuda_graph_trace_mode: "node:host-only:nvtx-precapture"
+  sample_mode: "cpu"
+
   # Disaggregated mode: must set both prefill and decode sections
   prefill:
     start_step: 0 # Step to start profiling for prefill workers
@@ -84,6 +89,9 @@ profiling:
 | `decode.stop_step`      | Step number to end decode profiling           | `50`     |
 | `aggregated.start_step` | Step number to begin aggregated profiling     | `0`      |
 | `aggregated.stop_step`  | Step number to end aggregated profiling       | `50`     |
+| `trace_domain`          | Domains passed to `nsys -t`                   | backend-specific |
+| `cuda_graph_trace_mode` | Value passed to `nsys --cuda-graph-trace`     | `node`   |
+| `sample_mode`           | Value passed to `nsys --sample`               | backend-specific |
 
 ## Constraints
 
@@ -120,6 +128,10 @@ nsys profile -t cuda,nvtx --cuda-graph-trace=node \
 ```
 
 You can pass extra arguments via `profiling.extra_nsys_args` (e.g. `["--stats=true", "--trace=osrt"]`).
+For commonly tuned flags, set `profiling.trace_domain`, `profiling.cuda_graph_trace_mode`, or
+`profiling.sample_mode`. When omitted, these retain the legacy command for the selected backend:
+TRT-LLM uses `-t cuda,nvtx,ucx --sample=none`; other backends use `-t cuda,nvtx` and leave
+sampling at nsys's own default.
 
 ## Example Configurations
 
