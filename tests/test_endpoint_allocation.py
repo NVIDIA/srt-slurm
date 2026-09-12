@@ -267,6 +267,92 @@ class TestAllocateEndpoints:
         assert decode_eps[0].nodes == ("node1",)
         assert decode_eps[0].gpu_indices == frozenset({0, 1, 2, 3})
 
+    def test_prefill_workers_per_node_packs_multiple_on_same_node(self):
+        """prefill_workers_per_node=2 packs 2 prefill workers per node."""
+        endpoints = allocate_endpoints(
+            num_prefill=4,
+            num_decode=0,
+            num_agg=0,
+            gpus_per_prefill=4,
+            gpus_per_decode=0,
+            gpus_per_agg=0,
+            gpus_per_node=8,
+            available_nodes=("node0", "node1"),
+            prefill_nodes=2,
+            prefill_workers_per_node=2,
+        )
+
+        prefill_eps = [e for e in endpoints if e.mode == "prefill"]
+        assert len(prefill_eps) == 4
+        assert prefill_eps[0].nodes == ("node0",)
+        assert prefill_eps[0].gpu_indices == frozenset({0, 1, 2, 3})
+        assert prefill_eps[1].nodes == ("node0",)
+        assert prefill_eps[1].gpu_indices == frozenset({4, 5, 6, 7})
+        assert prefill_eps[2].nodes == ("node1",)
+        assert prefill_eps[2].gpu_indices == frozenset({0, 1, 2, 3})
+        assert prefill_eps[3].nodes == ("node1",)
+        assert prefill_eps[3].gpu_indices == frozenset({4, 5, 6, 7})
+
+    def test_prefill_workers_per_node_validation_rejects_mismatch(self):
+        """prefill_workers_per_node raises if required_nodes != prefill_nodes."""
+        with pytest.raises(ValueError, match="prefill placement needs"):
+            allocate_endpoints(
+                num_prefill=4,
+                num_decode=0,
+                num_agg=0,
+                gpus_per_prefill=4,
+                gpus_per_decode=0,
+                gpus_per_agg=0,
+                gpus_per_node=8,
+                available_nodes=tuple(f"node{i}" for i in range(4)),
+                prefill_nodes=3,
+                prefill_workers_per_node=2,
+            )
+
+    def test_spread_decode_workers_one_per_node(self):
+        """spread_decode_workers=True places each partial-node decode worker on its own node."""
+        endpoints = allocate_endpoints(
+            num_prefill=0,
+            num_decode=3,
+            num_agg=0,
+            gpus_per_prefill=0,
+            gpus_per_decode=4,
+            gpus_per_agg=0,
+            gpus_per_node=8,
+            available_nodes=("node0", "node1", "node2"),
+            spread_decode_workers=True,
+        )
+
+        decode_eps = [e for e in endpoints if e.mode == "decode"]
+        assert len(decode_eps) == 3
+        assert decode_eps[0].nodes == ("node0",)
+        assert decode_eps[0].gpu_indices == frozenset({0, 1, 2, 3})
+        assert decode_eps[1].nodes == ("node1",)
+        assert decode_eps[1].gpu_indices == frozenset({0, 1, 2, 3})
+        assert decode_eps[2].nodes == ("node2",)
+        assert decode_eps[2].gpu_indices == frozenset({0, 1, 2, 3})
+
+    def test_spread_decode_workers_false_packs(self):
+        """spread_decode_workers=False (default) packs decode workers onto the same node."""
+        endpoints = allocate_endpoints(
+            num_prefill=0,
+            num_decode=2,
+            num_agg=0,
+            gpus_per_prefill=0,
+            gpus_per_decode=4,
+            gpus_per_agg=0,
+            gpus_per_node=8,
+            available_nodes=("node0",),
+            spread_decode_workers=False,
+        )
+
+        decode_eps = [e for e in endpoints if e.mode == "decode"]
+        assert len(decode_eps) == 2
+        assert decode_eps[0].nodes == ("node0",)
+        assert decode_eps[1].nodes == ("node0",)
+        assert decode_eps[0].gpu_indices == frozenset({0, 1, 2, 3})
+        assert decode_eps[1].gpu_indices == frozenset({4, 5, 6, 7})
+
 
 class TestEndpointsToProcesses:
     """Tests for endpoints_to_processes function."""
