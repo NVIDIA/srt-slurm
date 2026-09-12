@@ -87,16 +87,13 @@ def _meminfo() -> dict:
 def _pressure() -> dict:
     """PSI stall totals from ``/proc/pressure/{cpu,memory,io}``.
 
-    PSI is the signal that separates "this box is busy" from "real work spent
-    time BLOCKED waiting for a resource" -- the question the sampler exists to
-    answer, and the one metric the retired steady_probe.sh flagged as most
-    important. Node_exporter's pressure collector covers worker nodes, but the
-    exporters are launched on backend nodes only; the sampler runs on the
-    orchestrator/head node, so this read is that node's only PSI source.
+    The optional sampler reads the local sweep/orchestrator host only; it does
+    not collect PSI from a separately placed frontend. Worker-node PSI is
+    collected independently by node_exporter's pressure collector.
 
-    Reported as cumulative ``total=`` microseconds (like the cpu jiffies above):
-    the consumer differences consecutive rows over any window it likes. Absent
-    on kernels without ``CONFIG_PSI`` -> the resource key is simply omitted.
+    Values are cumulative ``total=`` microseconds. Consumers can difference
+    consecutive samples over their analysis window. Missing or unreadable
+    PSI files leave the corresponding resource absent, rather than zero.
     """
     out: dict = {}
     for resource in ("cpu", "memory", "io"):

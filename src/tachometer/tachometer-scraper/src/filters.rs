@@ -152,6 +152,12 @@ impl MetricFilter for NodeExporterFilter {
                     base_metric.to_string()
                 }
             }
+            // Per-NUMA memory and allocation counters need their node breakdown.
+            // Normalize the exporter label to numa_node, distinct from host metadata.
+            m if m.starts_with("memory_numa_") => match sample.labels.get("node") {
+                Some(numa_node) => format!("{}{{numa_node={}}}", base_metric, numa_node),
+                None => base_metric.to_string(),
+            },
             // Memory metrics - usually don't need labels
             m if m.starts_with("memory_") => base_metric.to_string(),
             // Disk metrics - simplify device names
@@ -436,6 +442,69 @@ pub fn get_filter(
 mod tests {
     use super::*;
     use crate::parse::{parse_prometheus_samples, samples_to_rows, samples_to_rows_with_filter};
+
+    #[test]
+    fn node_exporter_numa_memory_rows_keep_node_identity() {
+        let filter = get_filter(
+            "node_exporter",
+            None,
+            Some(HashMap::from([("node".to_string(), "host0".to_string())])),
+        );
+        for (metric, metric_type) in [
+            ("memory_numa_MemFree", "gauge"),
+            ("memory_numa_numa_hit_total", "counter"),
+            ("memory_numa_numa_miss_total", "counter"),
+            ("memory_numa_local_node_total", "counter"),
+        ] {
+            let text = format!(
+                "# TYPE node_{metric} {metric_type}\n\
+                 node_{metric}{{node=\"0\"}} 1024\n\
+                 node_{metric}{{node=\"1\"}} 2048\n"
+            );
+            let rows = samples_to_rows_with_filter(
+                parse_prometheus_samples(&text).unwrap(),
+                "node_exporter_host0",
+                filter.as_ref(),
+            );
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[0].metric_name, format!("{metric}{{numa_node=0}}"));
+            assert_eq!(rows[1].metric_name, format!("{metric}{{numa_node=1}}"));
+            assert_eq!(rows[0].metric_value, 1024.0);
+            assert_eq!(rows[1].metric_value, 2048.0);
+            for row in &rows {
+                assert_eq!(row.scraper_endpoint, "node_exporter_host0");
+                assert_eq!(
+                    row.extras,
+                    vec![("hostname".to_string(), "host0".to_string())]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn node_exporter_memory_without_numa_label_keeps_existing_names() {
+        let text = r#"
+node_memory_MemFree_bytes 4096
+node_memory_MemTotal_bytes 8192
+node_memory_numa_MemFree 1024
+"#;
+        let filter = get_filter("node_exporter", None, None);
+        let rows = samples_to_rows_with_filter(
+            parse_prometheus_samples(text).unwrap(),
+            "node_exporter_host0",
+            filter.as_ref(),
+        );
+        assert_eq!(
+            rows.iter()
+                .map(|row| (row.metric_name.as_str(), row.metric_value))
+                .collect::<Vec<_>>(),
+            vec![
+                ("memory_MemFree_bytes", 4096.0),
+                ("memory_MemTotal_bytes", 8192.0),
+                ("memory_numa_MemFree", 1024.0),
+            ]
+        );
+    }
 
     #[test]
     fn node_exporter_process_state_counts_remain_distinct() {

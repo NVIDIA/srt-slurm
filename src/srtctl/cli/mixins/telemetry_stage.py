@@ -135,21 +135,14 @@ def tachometer_dcgm_command_template(tachometer: TachometerConfig) -> str:
     return f"dcgm-exporter --collect-interval={tachometer.collect_interval_ms} --address :{{port}}"
 
 
-# Node-exporter collectors the tachometer launch enables. Beyond the original
-# cpu/infiniband/meminfo trio, this adds the host scheduler-pressure family that
-# distinguishes "the box is busy" from "real work is blocked waiting for a
-# resource" -- the signal set the retired steady_probe.sh sampler carried and
-# tachometer did not:
+# Node-exporter collectors for host CPU, process state and scheduler pressure.
 #   stat         -> node_procs_running / node_procs_blocked / node_context_switches_total
 #   vmstat       -> node_vmstat_pgmajfault / node_vmstat_pgsteal_* (memory reclaim)
 #   pressure     -> node_pressure_{cpu,memory,io}_* (PSI stall time)
-#   meminfo_numa -> node_memory_numa_MemFree_bytes (per-NUMA-node free memory)
-# All four are cheap procfs/sysfs reads (/proc/{stat,vmstat,pressure},
-# /sys/devices/system/node/*/meminfo); unlike dense NVML sampling they carry no
-# measured decode-latency cost. The vendored NodeExporterFilter passes every new
-# family through its default arm, so no scraper change is needed. An explicit
-# recipe ``node_exporter.command`` still wins (resolved in
-# :func:`resolve_exporter_command`).
+#   meminfo_numa -> node_memory_numa_MemFree{node=N} (per-NUMA-node free memory)
+# These collectors read procfs/sysfs. Their workload overhead has not been
+# measured here. NodeExporterFilter must retain NUMA-node and process-state
+# labels so the raw series remain distinct. Explicit recipe commands still win.
 NODE_EXPORTER_COLLECTORS = ("cpu", "infiniband", "meminfo", "processes", "stat", "vmstat", "pressure", "meminfo_numa")
 
 # node_exporter's vmstat collector defaults to ``^(oom_kill|pgpg|pswp|pg.*fault).*``,
@@ -165,9 +158,8 @@ def tachometer_node_exporter_command_template() -> str:
     Enables exactly :data:`NODE_EXPORTER_COLLECTORS` on top of
     ``--collector.disable-defaults`` so the scrape surface is explicit and
     stable regardless of the node_exporter image's built-in default set. The
-    pressure collector is a no-op on kernels built without ``CONFIG_PSI``
-    (e.g. hecate's ``6.17.0-nvidia-64k``, verified 2026-09-09) -- node_exporter
-    simply omits the family, which downstream tolerates.
+    pressure metrics are unavailable when the host does not expose PSI.
+    Missing families must be treated as unavailable rather than zero pressure.
     """
     collectors = " ".join(f"--collector.{name}" for name in NODE_EXPORTER_COLLECTORS)
     return (
