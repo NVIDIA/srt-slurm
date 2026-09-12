@@ -24,6 +24,7 @@ from srtctl.core.power.topology import build_expected_devices
 from srtctl.core.processes import ManagedProcess, ProcessRegistry, terminate_and_reap
 from srtctl.core.schema import TelemetryExporterConfig
 from srtctl.core.slurm import start_srun_process
+from srtctl.core.tachometer_process import TachometerProcess, TachometerStep
 from srtctl.core.telemetry import TACHOMETER_STORAGE_PARENT, generate_tachometer_config
 
 if TYPE_CHECKING:
@@ -799,19 +800,16 @@ class TelemetryStageMixin:
         if tachometer.compaction_threads > 0:
             srun_export_env["POLARS_MAX_THREADS"] = str(tachometer.compaction_threads)
 
+        step = TachometerStep.create(self.runtime.log_dir, self.runtime.job_id)
         processes.append(
-            ManagedProcess(
+            TachometerProcess(
                 name="tachometer",
                 popen=start_srun_process(
-                    command=cmd,
+                    command=step.command(cmd),
                     nodelist=[self.runtime.nodes.head],
                     output=str(self.runtime.log_dir / "tachometer.out"),
-                    # Shell-less on purpose: the scraper compacts final.parquet
-                    # on SIGTERM, and srun forwards signals to the task it
-                    # launched. Under the bash wrapper the task is bash, which
-                    # exits without signaling its child — the scraper then dies
-                    # by step SIGKILL with the capture stranded in the arrow
-                    # WAL (hecate job 487539). Env goes via --export instead.
+                    # Record the step then exec the scraper. Cleanup signals
+                    # that step; SIGTERM to srun would SIGKILL its task.
                     use_bash_wrapper=False,
                     srun_export_env=srun_export_env,
                     srun_options=self.runtime.srun_options,
@@ -823,26 +821,22 @@ class TelemetryStageMixin:
                 # benchmark. A dead scraper costs the capture, not the run;
                 # the loss is visible in tachometer.out and the sweep log.
                 critical=False,
+                step=step,
+                shutdown_grace_secs=tachometer.shutdown_grace_secs,
             )
         )
         logger.info("Tachometer started with artifacts under %s", tachometer_dir)
         return processes
 
     def stop_tachometer(self, processes: list[ManagedProcess]) -> None:
-        """Stop Tachometer gracefully so the scraper compacts final.parquet.
-
-        SIGTERM starts the scraper's flush + compact + upload path; anything
-        harder loses everything since the last periodic sync. The scraper gets
-        ``tachometer.shutdown_grace_secs`` to finish compacting before the
-        SIGKILL escalation; the exporter sidecars are plain daemons and keep
-        the registry's default budget. Already-exited processes are skipped,
-        so the registry's later cleanup pass stays a no-op for these.
-        """
-        grace = self.config.observability.tachometer.shutdown_grace_secs
+        """Give the scraper its compaction grace through its exact Slurm step."""
         for process in processes:
+            if isinstance(process, TachometerProcess):
+                process.terminate()
+                continue
             if not process.is_running:
                 continue
-            timeout = grace if process.name == "tachometer" else 10.0
+            timeout = 10.0
             outcome = terminate_and_reap(process.popen, terminate_timeout=timeout, kill_timeout=10.0)
             if outcome.force_killed:
                 logger.warning(
@@ -850,5 +844,5 @@ class TelemetryStageMixin:
                     process.name,
                     timeout,
                 )
-            else:
-                logger.info("%s stopped gracefully", process.name)
+            elif outcome.reaped:
+                logger.info("%s launcher exited with status %s", process.name, process.exit_code)
