@@ -11,11 +11,14 @@ set -e
 # Creates an isolated venv with --system-site-packages so container packages are
 # reused and only missing deps get installed — without touching system Python.
 SA_BENCH_VENV="/tmp/sa-bench-venv"
-SA_BENCH_DEPS=(aiohttp numpy pandas datasets Pillow tqdm transformers huggingface_hub)
+# SA_BENCH_DEPS / SA_BENCH_IMPORTS live in deps.sh so that `srtctl bake-image`
+# can preinstall exactly this list into a container image.
+# shellcheck source=deps.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/deps.sh"
 
 ensure_sa_bench_deps() {
     # Quick check: if all deps import fine in current Python, skip venv entirely
-    if python3 -c "import aiohttp, numpy, pandas, datasets, PIL, tqdm, transformers, huggingface_hub" 2>/dev/null; then
+    if python3 -c "import ${SA_BENCH_IMPORTS}" 2>/dev/null; then
         echo "All sa-bench deps already available — skipping venv setup"
         return
     fi
