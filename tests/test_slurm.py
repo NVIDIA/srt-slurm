@@ -356,6 +356,41 @@ def test_start_endpoint_worker_request_plane_injected(tmp_path: Path) -> None:
     assert env["DYN_REQUEST_PLANE"] == "nats"
 
 
+def test_trtllm_native_kv_events_receive_endpoint_hosts(tmp_path: Path) -> None:
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
+    mixin.config.backend.type = "trtllm"
+    mixin.runtime.environment = {"DYN_TRTLLM_PUBLISH_KV_EVENTS": "true"}
+    second_process = SimpleNamespace(**{**process.__dict__, "node": "node-b"})
+
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
+    ):
+        mock_srun.return_value = MagicMock()
+        mixin.start_endpoint_worker([process, second_process])
+
+    assert mock_srun.call_args.kwargs["env_to_set"]["DYN_TRTLLM_KV_EVENT_HOSTS"] == "node-a,node-b"
+
+
+def test_trtllm_native_kv_event_host_override_is_preserved(tmp_path: Path) -> None:
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
+    mixin.config.backend.type = "trtllm"
+    mixin.runtime.environment = {
+        "DYN_TRTLLM_PUBLISH_KV_EVENTS": "true",
+        "DYN_TRTLLM_KV_EVENT_HOSTS": "override-a,override-b",
+    }
+    second_process = SimpleNamespace(**{**process.__dict__, "node": "node-b"})
+
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
+    ):
+        mock_srun.return_value = MagicMock()
+        mixin.start_endpoint_worker([process, second_process])
+
+    assert mock_srun.call_args.kwargs["env_to_set"]["DYN_TRTLLM_KV_EVENT_HOSTS"] == "override-a,override-b"
+
+
 def test_trtllm_sidecar_endpoint_kills_step_on_rank_failure(tmp_path: Path) -> None:
     mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
     mixin.config.backend.type = "trtllm"

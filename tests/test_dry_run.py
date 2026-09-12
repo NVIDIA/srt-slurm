@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 import yaml
 
 from srtctl.cli.submit import show_config_details
@@ -46,6 +47,87 @@ def _make_config(overrides: dict | None = None) -> SrtConfig:
         yaml.dump(data, f)
         tmp_path = Path(f.name)
     return SrtConfig.from_yaml(tmp_path)
+
+
+class TestDryRunDynamoMetrics:
+    @pytest.mark.parametrize(
+        ("settings", "expected", "excluded"),
+        [
+            ({}, "--publish-metrics", "--publish-events-and-metrics"),
+            ({"publish_events_and_metrics": None}, "--publish-metrics", "--publish-events-and-metrics"),
+            ({"publish_events_and_metrics": False}, "No publication flag", "--publish-"),
+            (
+                {"publish_metrics": True, "publish_events_and_metrics": False},
+                "No publication flag",
+                "--publish-",
+            ),
+            ({"publish_metrics": False}, "No publication flag", "--publish-metrics"),
+            (
+                {"publish_metrics": False, "publish_events_and_metrics": True},
+                "--publish-events-and-metrics",
+                "--publish-metrics",
+            ),
+        ],
+    )
+    def test_selected_flag_is_visible(self, capsys, settings, expected, excluded):
+        config = _make_config({"backend": {"type": "trtllm", **settings}, "frontend": {"type": "dynamo"}})
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "Dynamo TRT-LLM Metrics" in output
+        assert expected in output
+        assert excluded not in output
+
+    @pytest.mark.parametrize("frontend", ["trtllm_serve", "dynamo"])
+    def test_unrelated_workers_have_no_dynamo_trtllm_publication_panel(self, capsys, frontend):
+        backend = "trtllm" if frontend == "trtllm_serve" else "sglang"
+        config = _make_config(
+            {"backend": {"type": backend}, "frontend": {"type": frontend, "enable_multiple_frontends": False}}
+        )
+        show_config_details(config)
+        assert "Dynamo TRT-LLM Metrics" not in capsys.readouterr().out
+
+    def test_both_flags_are_visible(self, capsys):
+        config = _make_config(
+            {"backend": {"type": "trtllm", "publish_events_and_metrics": True}, "frontend": {"type": "dynamo"}}
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "--publish-metrics" in output
+        assert "--publish-events-and-metrics" in output
+
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_explicit_combined_false_wins_over_observability(self, capsys, enabled):
+        config = _make_config(
+            {
+                "backend": {"type": "trtllm", "publish_events_and_metrics": False},
+                "frontend": {"type": "dynamo"},
+                "observability": {"enabled": enabled},
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "No publication flag" in output
+        assert "backend.publish_events_and_metrics: false" in output
+        assert "--publish-" not in output
+
+    def test_sidecar_has_no_dynamo_trtllm_publication_panel(self, capsys):
+        config = _make_config(
+            {
+                "backend": {"type": "trtllm", "trtllm_config": {"aggregated": {"max_seq_len": 8192}}},
+                "frontend": {"type": "dynamo"},
+                "dynamo": {"sidecar": True},
+                "resources": {
+                    "prefill_nodes": 0,
+                    "decode_nodes": 0,
+                    "prefill_workers": 0,
+                    "decode_workers": 0,
+                    "agg_nodes": 1,
+                    "agg_workers": 1,
+                },
+            }
+        )
+        show_config_details(config)
+        assert "Dynamo TRT-LLM Metrics" not in capsys.readouterr().out
 
 
 class TestDryRunMounts:
@@ -304,6 +386,72 @@ class TestDryRunExecutionExtensions:
         assert "required" in output
         assert "<log_dir>/power" in output
         assert "dcgm-exporter (port 9401)" in output
+
+    def test_cpu_power_exporter_details_shown(self, capsys):
+        config = _make_config(
+            {
+                "benchmark": {"type": "sa-bench", "isl": 8192, "osl": 1024, "concurrencies": [4]},
+                "telemetry": {
+                    "enabled": True,
+                    "collect_interval_ms": 1000,
+                    "storage_subdir": "power",
+                    "required": True,
+                    "dcgm_exporter": {"container_image": "dcgm-exporter", "port": 9401},
+                    "cpu_power_exporter": {"port": 9405},
+                },
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "cpu_power_exporter" in output
+        assert "9405" in output
+
+    def test_cpu_power_exporter_details_hidden_when_telemetry_disabled(self, capsys):
+        """A cpu_power_exporter block that will never actually launch must not be displayed."""
+        config = _make_config(
+            {
+                "benchmark": {"type": "sa-bench", "isl": 8192, "osl": 1024, "concurrencies": [4]},
+                "telemetry": {
+                    "enabled": False,
+                    "cpu_power_exporter": {"port": 9405},
+                },
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "cpu_power_exporter" not in output
+
+    def test_cpu_power_host_collector_details_shown(self, capsys):
+        config = _make_config(
+            {
+                "benchmark": {"type": "sa-bench", "isl": 8192, "osl": 1024, "concurrencies": [4]},
+                "telemetry": {
+                    "enabled": True,
+                    "dcgm_exporter": {"container_image": "dcgm-exporter", "port": 9401},
+                    "cpu_power": {"enabled": True, "source": "acpi", "required": True},
+                },
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "cpu_power" in output
+        assert "host collector" in output
+        assert "<log_dir>/cpu_power" in output
+        assert "required" in output
+
+    def test_cpu_power_host_collector_details_hidden_when_disabled(self, capsys):
+        config = _make_config(
+            {
+                "benchmark": {"type": "sa-bench", "isl": 8192, "osl": 1024, "concurrencies": [4]},
+                "telemetry": {
+                    "enabled": True,
+                    "dcgm_exporter": {"container_image": "dcgm-exporter", "port": 9401},
+                },
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "host collector" not in output
 
     def test_mooncake_kv_store_details_shown(self, capsys):
         """mooncake_kv_store should appear in env vars and execution extensions."""
