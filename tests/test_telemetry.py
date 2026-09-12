@@ -4,10 +4,12 @@
 """Tests for Tachometer and DCGM power telemetry."""
 
 import json
+import re
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 from marshmallow import ValidationError
 
 from srtctl.cli.mixins.frontend_stage import FrontendTopology
@@ -141,6 +143,34 @@ class TestTachometerConfig:
         assert "-threads=true" in cmd
         assert "-children=false" in cmd
         assert ":9256" in cmd
+
+    @pytest.mark.parametrize(
+        ("cmdline", "expected"),
+        [
+            ("trtllm-llmapi-launch python3 -m dynamo.trtllm", "trtllm_llmapi_launch"),
+            ("/opt/bin/trtllm-llmapi-launch python3 -m dynamo.trtllm", "trtllm_llmapi_launch"),
+            ("/bin/bash /opt/bin/trtllm-llmapi-launch python3 -m dynamo.trtllm", "trtllm_llmapi_launch"),
+            ("python3 -m tensorrt_llm.llmapi.mgmn_worker_node --rank 0", "trtllm_engine"),
+            ("python3 -m dynamo.trtllm --disaggregation-mode decode", "dynamo_trtllm"),
+            ("python3 -m dynamo.frontend", "frontend"),
+            ("trtllm-llmapi-launch-other", None),
+            ("python3 -m tensorrt_llm.llmapi.mgmn_worker_node_extra", None),
+        ],
+    )
+    def test_process_exporter_matches_full_command_lines(self, cmdline, expected):
+        """Match full argv, including interpreter prefixes and separate engine children."""
+        from srtctl.cli.mixins.telemetry_stage import process_exporter_config_yaml
+
+        groups = yaml.safe_load(process_exporter_config_yaml())["process_names"]
+        matched = next(
+            (
+                group["name"]
+                for group in groups
+                if group.get("cmdline") and all(re.search(pattern, cmdline) for pattern in group["cmdline"])
+            ),
+            None,
+        )
+        assert matched == expected
 
     def test_process_exporter_host_command_uses_host_paths(self):
         """Host-native launch: no /logs mount exists, so the binary and the
@@ -953,8 +983,8 @@ class TestTachometerConfigGeneration:
         """A head-placed or dedicated frontend node hosts no backend process, so the
         per-node exporters would skip it -- yet it is where frontend CPU lives.
         The process exporter must target the union of backend and frontend nodes,
-        unfiltered (groupname/threadname labels pass through)."""
-        tachometer = TachometerConfig(enabled=True)
+        preserving groupname/threadname labels and host metadata."""
+        tachometer = TachometerConfig(enabled=True, extra_metadata={"study": "process-monitoring"})
         runtime = MagicMock(job_id="12345", run_name="test_12345", network_interface="eth0")
         runtime.log_dir = Path("/runs/12345/logs")
         processes = [
@@ -988,7 +1018,11 @@ class TestTachometerConfigGeneration:
         # DCGM/node exporters keep their backend-node scope.
         assert 'name = "node_exporter_fe-node"' not in config_text
         block = config_text.split('name = "process_exporter_fe-node"', 1)[1].split("[[endpoints]]", 1)[0]
-        assert "filter =" not in block
+        assert 'filter = "passthrough"' in block
+        assert '"hostname" = "fe-node"' in block
+        assert '"job_id" = "12345"' in block
+        assert '"run_name" = "test_12345"' in block
+        assert '"study" = "process-monitoring"' in block
 
     @patch("srtctl.core.telemetry.get_hostname_ip")
     def test_vllm_frontend_targets_only_agg_leader_metrics(self, mock_get_hostname_ip):

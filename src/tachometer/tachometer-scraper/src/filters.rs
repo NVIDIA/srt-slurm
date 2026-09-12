@@ -34,6 +34,30 @@ impl MetricFilter for NoOpFilter {
     }
 }
 
+/// Preserve unfiltered metric names and labels while attaching capture metadata.
+pub struct PassthroughFilter {
+    node_metadata: HashMap<String, String>,
+}
+
+impl PassthroughFilter {
+    pub fn new(node_metadata: HashMap<String, String>) -> Self {
+        Self { node_metadata }
+    }
+}
+
+impl MetricFilter for PassthroughFilter {
+    fn filter(&self, sample: &ParsedSample) -> (String, Vec<(String, String)>) {
+        let (metric_name, mut metadata) = crate::parse::format_sample_as_metric_name(sample);
+        metadata.extend(
+            self.node_metadata
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone())),
+        );
+        metadata.sort_by(|a, b| a.0.cmp(&b.0));
+        (metric_name, metadata)
+    }
+}
+
 fn format_labels(labels: &HashMap<String, String>) -> String {
     let mut pairs: Vec<(&String, &String)> = labels.iter().collect();
     pairs.sort_by_key(|(k, _)| *k);
@@ -149,7 +173,7 @@ impl MetricFilter for NodeExporterFilter {
                 if sample.labels.is_empty() {
                     base_metric.to_string()
                 } else {
-                    // Keep only the most important labels (limit to 2-3)
+                    // Keep up to two priority labels, plus process-state labels below.
                     let mut important_labels = Vec::new();
                     let priority_labels =
                         ["job", "instance", "device", "mountpoint", "fstype", "mode"];
@@ -160,6 +184,14 @@ impl MetricFilter for NodeExporterFilter {
                             if important_labels.len() >= 2 {
                                 break;
                             }
+                        }
+                    }
+
+                    // Process state is the breakdown, so preserve it even when
+                    // job/instance already occupy both priority-label slots.
+                    for key in ["state", "thread_state"] {
+                        if let Some(value) = sample.labels.get(key) {
+                            important_labels.push(format!("{}={}", key, value));
                         }
                     }
 
@@ -393,8 +425,125 @@ pub fn get_filter(
         "dcgm" | "dcgm_exporter" | "dcgm-exporter" => {
             Box::new(DcgmFilter::new(gpu_metadata.unwrap_or_default()))
         }
+        "passthrough" => Box::new(PassthroughFilter::new(node_metadata.unwrap_or_default())),
         "backend" => Box::new(BackendFilter::new(node_metadata.unwrap_or_default())),
         "frontend" => Box::new(FrontendFilter::new(node_metadata.unwrap_or_default())),
         _ => Box::new(NoOpFilter),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parse::{parse_prometheus_samples, samples_to_rows, samples_to_rows_with_filter};
+
+    #[test]
+    fn node_exporter_process_state_counts_remain_distinct() {
+        let filter = get_filter("node_exporter", None, None);
+        for (metric, label) in [
+            ("processes_state", "state"),
+            ("processes_threads_state", "thread_state"),
+        ] {
+            let text =
+                format!("node_{metric}{{{label}=\"R\"}} 3\nnode_{metric}{{{label}=\"D\"}} 7\n");
+            let rows = samples_to_rows_with_filter(
+                parse_prometheus_samples(&text).unwrap(),
+                "node_exporter_host0",
+                filter.as_ref(),
+            );
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[0].metric_name, format!("{metric}{{{label}=R}}"));
+            assert_eq!(rows[1].metric_name, format!("{metric}{{{label}=D}}"));
+            assert_eq!(rows[0].metric_value, 3.0);
+            assert_eq!(rows[1].metric_value, 7.0);
+        }
+    }
+
+    #[test]
+    fn node_exporter_process_state_survives_other_priority_labels() {
+        let filter = get_filter("node_exporter", None, None);
+        for (metric, label) in [
+            ("processes_state", "state"),
+            ("processes_threads_state", "thread_state"),
+        ] {
+            let text = format!("node_{metric}{{job=\"nodes\",instance=\"host0\",{label}=\"D\"}} 7");
+            let samples = parse_prometheus_samples(&text).unwrap();
+            let (name, _) = filter.filter(&samples[0]);
+            assert_eq!(
+                name,
+                format!("{metric}{{job=nodes,instance=host0,{label}=D}}")
+            );
+        }
+    }
+
+    #[test]
+    fn passthrough_retains_process_labels_and_capture_metadata() {
+        let filter = get_filter(
+            "passthrough",
+            None,
+            Some(HashMap::from([
+                ("run_name".to_string(), "run-a".to_string()),
+                ("hostname".to_string(), "host0".to_string()),
+                ("job_id".to_string(), "123".to_string()),
+            ])),
+        );
+        let text = r#"
+# TYPE namedprocess_namegroup_thread_cpu_seconds_total counter
+namedprocess_namegroup_thread_cpu_seconds_total{groupname="frontend",threadname="tokio-runtime-worker",mode="user"} 12.5
+"#;
+        let rows = samples_to_rows_with_filter(
+            parse_prometheus_samples(text).unwrap(),
+            "process_exporter_host0",
+            filter.as_ref(),
+        );
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].metric_name,
+            "namedprocess_namegroup_thread_cpu_seconds_total{groupname=\"frontend\",mode=\"user\",threadname=\"tokio-runtime-worker\"}"
+        );
+        assert_eq!(rows[0].metric_value, 12.5);
+        assert_eq!(rows[0].scraper_endpoint, "process_exporter_host0");
+        assert_eq!(
+            rows[0].extras,
+            vec![
+                ("hostname".to_string(), "host0".to_string()),
+                ("job_id".to_string(), "123".to_string()),
+                ("run_name".to_string(), "run-a".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn passthrough_summary_names_match_unfiltered_rows() {
+        let text = r#"
+# TYPE go_gc_duration_seconds summary
+go_gc_duration_seconds{quantile="0"} 0.001
+go_gc_duration_seconds{quantile="1"} 0.004
+go_gc_duration_seconds_sum 0.05
+go_gc_duration_seconds_count 20
+"#;
+        let samples = parse_prometheus_samples(text).unwrap();
+        let unfiltered = samples_to_rows(samples.clone(), "process_exporter_host0");
+        let filter = get_filter(
+            "passthrough",
+            None,
+            Some(HashMap::from([(
+                "hostname".to_string(),
+                "host0".to_string(),
+            )])),
+        );
+        let rows = samples_to_rows_with_filter(samples, "process_exporter_host0", filter.as_ref());
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[2].metric_name, "go_gc_duration_seconds_sum");
+        assert_eq!(rows[3].metric_name, "go_gc_duration_seconds_count");
+        for (row, original) in rows.iter().zip(&unfiltered) {
+            assert_eq!(row.metric_name, original.metric_name);
+            assert_eq!(row.metric_value, original.metric_value);
+            assert_eq!(row.scraper_endpoint, original.scraper_endpoint);
+            assert_eq!(
+                row.extras,
+                vec![("hostname".to_string(), "host0".to_string())]
+            );
+        }
     }
 }

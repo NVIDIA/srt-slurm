@@ -69,8 +69,8 @@ def process_exporter_config_yaml() -> str:
     ``cmdline`` regexps run against the full argv; ``comm`` is the 15-char kernel
     task name. The Dynamo frontend (``python3 -m dynamo.frontend``) gets its own
     group because it is the process every frontend CPU pathology lives in; the
-    TRT-LLM/SGLang/vLLM worker handlers and their engine ranks share the
-    ``dynamo.<backend>`` module name and are grouped per backend; the MPI
+    worker handlers are grouped by their ``dynamo.<backend>`` module name.
+    TRT-LLM engine children use a separate ``trtllm_engine`` group; the MPI
     launcher, the benchmark client and the infra daemons are named so their CPU
     is attributable rather than silently dropped. Unmatched processes are not
     exported (no catch-all): the per-thread breakdown of every process on a
@@ -83,7 +83,10 @@ process_names:
       - 'dynamo\\.frontend'
   - name: trtllm_llmapi_launch
     cmdline:
-      - '^trtllm-llmapi-launch'
+      - '(^|[ /])trtllm-llmapi-launch( |$)'
+  - name: trtllm_engine
+    cmdline:
+      - '(^| )tensorrt_llm\\.llmapi\\.mgmn_worker_node( |$)'
   - name: dynamo_trtllm
     cmdline:
       - 'dynamo\\.trtllm'
@@ -639,7 +642,7 @@ class TelemetryStageMixin:
         return self._resolve_bundled_binary(binary_path)
 
     def start_tachometer(self) -> list[ManagedProcess]:
-        """Start Tachometer collection (follows ``observability.enabled``)."""
+        """Start Tachometer collection unless explicitly disabled."""
         observability = self.config.observability
         tachometer = observability.tachometer
         if not observability.tachometer_enabled:
@@ -712,7 +715,7 @@ class TelemetryStageMixin:
                         "/bin/node_exporter --web.listen-address=:{port} "
                         "--collector.disable-defaults --collector.cpu --collector.infiniband --collector.meminfo "
                         # processes: node_processes_threads (host-wide thread total),
-                        # node_processes_state, node_procs_{running,blocked} -- the
+                        # node_processes_state and node_processes_threads_state -- the
                         # cheapest possible "how many threads exist on this box" signal.
                         "--collector.processes"
                     ),
