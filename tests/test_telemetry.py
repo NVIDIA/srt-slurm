@@ -1213,7 +1213,7 @@ class TestTachometerStageMixin:
             assert call.kwargs["container_image"] in ("dcgm:latest", "node:latest")
             assert call.kwargs["container_mounts"] == {Path(tmp_path): Path("/logs")}
         scraper_call = mock_srun.call_args_list[-1]
-        assert scraper_call.kwargs["command"] == [
+        assert scraper_call.kwargs["command"][7:] == [
             "tachometer-scraper",
             "--config",
             str(tmp_path / "tachometer_config.toml"),
@@ -1224,17 +1224,16 @@ class TestTachometerStageMixin:
         ]
         assert "container_image" not in scraper_call.kwargs
         assert "container_mounts" not in scraper_call.kwargs
-        # Shell-less launch is load-bearing for graceful shutdown: srun
-        # forwards SIGTERM to the task it launched, and the scraper only
-        # compacts final.parquet if IT is that task. Under the bash wrapper
-        # the signal dies with bash and the capture is lost to step SIGKILL
-        # (hecate job 487539). Env must ride --export, not a bash `export`.
+        # Only the dedicated metadata wrapper is allowed; it execs the scraper.
+        assert scraper_call.kwargs["command"][:2] == ["bash", "-c"]
         assert scraper_call.kwargs["use_bash_wrapper"] is False
         assert scraper_call.kwargs["srun_export_env"] == {"POLARS_MAX_THREADS": "4"}
         assert "env_to_set" not in scraper_call.kwargs
         # Telemetry is best-effort by contract: a dead scraper must never
         # tear down the benchmark via the critical-process check.
         assert procs[-1].name == "tachometer"
+        assert procs[-1].step.job_id == "12345"
+        assert procs[-1].shutdown_grace_secs == harness.config.observability.tachometer.shutdown_grace_secs
         assert procs[-1].critical is False
         # Exporter sidecars share the contract: shell-less launch (distroless
         # images have no bash) and non-critical (a dead sidecar never kills
@@ -1620,6 +1619,7 @@ class TestTachometerStageMixin:
                 )
                 self.runtime = MagicMock()
                 self.runtime.log_dir = tmp_path
+                self.runtime.job_id = "12345"
                 self.runtime.nodes.head = "node-a"
                 self.runtime.nodes.het = False
                 self.runtime.srun_options = {}
@@ -1674,19 +1674,23 @@ class TestStopTachometer:
         return stage
 
     @patch("srtctl.cli.mixins.telemetry_stage.terminate_and_reap")
-    def test_scraper_gets_the_shutdown_grace_and_exporters_do_not(self, mock_reap):
+    def test_scraper_uses_scoped_shutdown_and_exporters_keep_default(self, mock_reap):
         from srtctl.core.processes import ManagedProcess, TerminationOutcome
+        from srtctl.core.tachometer_process import TachometerProcess
 
         mock_reap.return_value = TerminationOutcome(reaped=True, force_killed=False)
         exporter = ManagedProcess(name="tachometer_node_exporter", popen=_running_exporter(), critical=False)
-        scraper = ManagedProcess(name="tachometer", popen=_running_exporter(), critical=False)
+
+        scraper = TachometerProcess(name="tachometer", popen=_running_exporter(), critical=False)
+        scraper.terminate = MagicMock()
 
         self._stage(grace=45.0).stop_tachometer([exporter, scraper])
 
         # The scraper compacts final.parquet after SIGTERM and needs the
         # configured grace; the exporter sidecars are plain daemons.
         assert mock_reap.call_args_list[0].kwargs["terminate_timeout"] == 10.0
-        assert mock_reap.call_args_list[1].kwargs["terminate_timeout"] == 45.0
+        assert mock_reap.call_count == 1
+        scraper.terminate.assert_called_once_with()
 
     @patch("srtctl.cli.mixins.telemetry_stage.terminate_and_reap")
     def test_already_exited_processes_are_skipped(self, mock_reap):
@@ -1712,7 +1716,7 @@ class TestBenchmarkWindowTachometerLifecycle:
     @staticmethod
     def _harness(tmp_path, calls):
         from srtctl.cli.mixins.benchmark_stage import BenchmarkStageMixin
-        from srtctl.core.processes import ManagedProcess
+        from srtctl.core.tachometer_process import TachometerProcess
 
         class Stage(BenchmarkStageMixin):
             pass
@@ -1722,7 +1726,7 @@ class TestBenchmarkWindowTachometerLifecycle:
         stage.runtime = MagicMock()
         stage.runtime.log_dir = tmp_path
         stage._wait_for_service_ready = lambda stop_event: True
-        scraper = ManagedProcess(name="tachometer", popen=_running_exporter(), critical=False)
+        scraper = TachometerProcess(name="tachometer", popen=_running_exporter(), critical=False)
         stage.start_tachometer = MagicMock(side_effect=lambda: (calls.append("start"), [scraper])[1])
         stage.stop_tachometer = MagicMock(side_effect=lambda procs: calls.append("stop"))
         return stage, scraper
@@ -1741,6 +1745,23 @@ class TestBenchmarkWindowTachometerLifecycle:
         assert calls == ["start", "script", "stop"]
         registry.add_process.assert_called_once_with(scraper)
         stage.stop_tachometer.assert_called_once_with([scraper])
+
+    def test_benchmark_registration_preserves_scoped_cleanup(self, tmp_path):
+        import threading
+
+        from srtctl.core.processes import ProcessRegistry
+        from srtctl.core.tachometer_process import TachometerProcess
+
+        stage, scraper = self._harness(tmp_path, [])
+        stage._run_benchmark_script = MagicMock(return_value=0)
+        registry = ProcessRegistry(job_id="12345")
+
+        assert stage.run_benchmark(registry, threading.Event(), reporter=None) == 0
+        assert registry._processes["tachometer"] is scraper
+        with patch.object(TachometerProcess, "terminate") as scoped_stop:
+            registry.cleanup()
+        scoped_stop.assert_called_once_with()
+        scraper.popen.terminate.assert_not_called()
 
     def test_capture_stops_even_when_the_script_raises(self, tmp_path):
         import threading
