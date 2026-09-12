@@ -638,6 +638,14 @@ class BenchmarkStageMixin:
         ranks are not advertised as separate engines.
         """
         urls: list[str] = []
+        dynamo_trtllm_metrics_disabled = (
+            self.config.frontend.type == "dynamo"
+            and self.config.backend_type == "trtllm"
+            and not (
+                (not self.config.dynamo.sidecar and getattr(self.config.backend, "dynamo_metrics_flags", ()))
+                or getattr(self.config.backend, "publish_events_and_metrics", False)
+            )
+        )
         # trtllm-serve serves Prometheus at /prometheus/metrics on the worker
         # OpenAI port (GET /metrics there is JSON iteration stats, not
         # exposition text); every other frontend serves it at /metrics.
@@ -645,7 +653,10 @@ class BenchmarkStageMixin:
         if logical_workers_only:
             if logical_endpoints is None:
                 logical_endpoints = self._logical_worker_endpoints()
-            urls = [f"http://{host}:{port}{metrics_path}" for _, host, port in logical_endpoints]
+            # Sidecars use native worker commands, so publish_metrics does not
+            # control their existing logical-worker URL discovery.
+            if self.config.dynamo.sidecar or not dynamo_trtllm_metrics_disabled:
+                urls = [f"http://{host}:{port}{metrics_path}" for _, host, port in logical_endpoints]
         else:
             if self.config.frontend.type in {"vllm", "vllm-router"}:
                 for process in self.backend_processes:
@@ -676,15 +687,13 @@ class BenchmarkStageMixin:
                         continue
                     host = get_hostname_ip(process.node, self.runtime.network_interface)
                     urls.append(f"http://{host}:{process.http_port}{metrics_path}")
-            # TRT-LLM workers only publish engine metrics when launched with
-            # --publish-events-and-metrics (pre-v1.3.0 Dynamo gates the whole
-            # worker /metrics surface on it; observability.enabled sets it at
-            # config load). Without the flag the sys-port endpoints serve
-            # nothing, so advertising them would only create the impression
-            # that worker metrics are being captured.
-            elif self.config.backend_type != "trtllm" or getattr(
-                self.config.backend, "publish_events_and_metrics", False
-            ):
+            # Dynamo TRT-LLM engine metrics require either the metrics-only
+            # flag (the default) or the legacy combined flag (also enabled by
+            # observability). Retain the existing sidecar gate because sidecars
+            # do not receive --publish-metrics. An explicit legacy False disables
+            # both flags. Runtime-only metrics may still exist with publication disabled,
+            # but must not be advertised as an engine-metrics capture.
+            elif not dynamo_trtllm_metrics_disabled:
                 for process in self.backend_processes:
                     if process.sys_port > 0:
                         host = get_hostname_ip(process.node, self.runtime.network_interface)

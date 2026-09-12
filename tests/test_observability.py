@@ -7,7 +7,7 @@ import pytest
 import yaml
 from marshmallow import ValidationError
 
-from srtctl.core.config import expand_observability, expand_trtllm_serve_defaults
+from srtctl.core.config import expand_observability, expand_trtllm_serve_defaults, load_config
 from srtctl.core.schema import SrtConfig
 
 BASE_CONFIG = {
@@ -40,6 +40,87 @@ def _trtllm_config(**observability):
 
 # --------------------------------------------------------------- expansion ---
 class TestExpandObservability:
+    @pytest.mark.parametrize("enabled", [None, False, True])
+    def test_metrics_default_does_not_depend_on_observability(self, enabled):
+        cfg = _trtllm_config() if enabled is None else _trtllm_config(enabled=enabled)
+        loaded = SrtConfig.Schema().load(expand_observability(cfg))
+
+        assert loaded.backend.publish_metrics is True
+        # The master observability switch remains a superset that adds events.
+        assert loaded.backend.publish_events_and_metrics is (True if enabled is True else None)
+        expected = ("--publish-metrics",)
+        if enabled is True:
+            expected += ("--publish-events-and-metrics",)
+        assert loaded.backend.dynamo_metrics_flags == expected
+
+    @pytest.mark.parametrize("loader_name", ["from_yaml", "load_config"])
+    @pytest.mark.parametrize("enabled", [False, True])
+    @pytest.mark.parametrize("publish_metrics", [False, True])
+    @pytest.mark.parametrize("publish_events_and_metrics", [None, False, True])
+    def test_publishing_yaml_loaders_and_roundtrip(
+        self, tmp_path, monkeypatch, loader_name, enabled, publish_metrics, publish_events_and_metrics
+    ):
+        monkeypatch.setattr("srtctl.core.config.load_cluster_config", lambda: None)
+        cfg = _trtllm_config(enabled=enabled)
+        cfg["benchmark"] = {"type": "sa-bench", "concurrencies": [4]}
+        cfg["backend"]["publish_metrics"] = publish_metrics
+        cfg["backend"]["publish_events_and_metrics"] = publish_events_and_metrics
+        loader = SrtConfig.from_yaml if loader_name == "from_yaml" else load_config
+        expected_events = True if enabled and publish_events_and_metrics is None else publish_events_and_metrics
+        if expected_events is False:
+            expected_flags = ()
+        else:
+            expected_flags = ("--publish-metrics",) if publish_metrics else ()
+            if expected_events is True:
+                expected_flags += ("--publish-events-and-metrics",)
+
+        # Check the raw recipe and a schema-dumped recipe through the same real
+        # loader: configured values and effective flags must both survive.
+        for filename in ("recipe.yaml", "roundtrip.yaml"):
+            path = tmp_path / filename
+            path.write_text(yaml.safe_dump(cfg))
+            loaded = loader(path)
+            assert loaded.backend.publish_metrics is publish_metrics
+            assert loaded.backend.publish_events_and_metrics is expected_events
+            assert loaded.backend.dynamo_metrics_flags == expected_flags
+            cfg = SrtConfig.Schema().dump(loaded)
+            assert cfg["backend"]["publish_metrics"] is publish_metrics
+            assert cfg["backend"]["publish_events_and_metrics"] is expected_events
+
+    @pytest.mark.parametrize("loader_name", ["from_yaml", "load_config"])
+    @pytest.mark.parametrize("publish_metrics", [False, True])
+    @pytest.mark.parametrize("explicit_optout", [False, True])
+    def test_schema_dump_preserves_omission_before_observability_is_enabled(
+        self, tmp_path, monkeypatch, loader_name, publish_metrics, explicit_optout
+    ):
+        """The sweep's load/dump/reload path must not turn omission into False."""
+        monkeypatch.setattr("srtctl.core.config.load_cluster_config", lambda: None)
+        cfg = _trtllm_config()
+        cfg["benchmark"] = {"type": "sa-bench", "concurrencies": [4]}
+        cfg["backend"]["publish_metrics"] = publish_metrics
+        if explicit_optout:
+            cfg["backend"]["publish_events_and_metrics"] = False
+        else:
+            assert "publish_events_and_metrics" not in cfg["backend"]
+        schema = SrtConfig.Schema()
+        dumped = schema.dump(schema.load(cfg))
+        assert "publish_events_and_metrics" in dumped["backend"]
+        assert dumped["backend"]["publish_events_and_metrics"] is (False if explicit_optout else None)
+
+        dumped["observability"]["enabled"] = True
+        path = tmp_path / "enable-observability.yaml"
+        path.write_text(yaml.safe_dump(dumped))
+        loader = SrtConfig.from_yaml if loader_name == "from_yaml" else load_config
+        loaded = loader(path)
+
+        assert loaded.backend.publish_metrics is publish_metrics
+        assert loaded.backend.publish_events_and_metrics is (not explicit_optout)
+        if explicit_optout:
+            assert loaded.backend.dynamo_metrics_flags == ()
+        else:
+            expected = ("--publish-metrics",) if publish_metrics else ()
+            assert loaded.backend.dynamo_metrics_flags == (*expected, "--publish-events-and-metrics")
+
     def test_disabled_is_a_noop(self):
         cfg = expand_observability(_trtllm_config(enabled=False))
         assert "publish_events_and_metrics" not in cfg["backend"]
@@ -82,6 +163,7 @@ class TestExpandObservability:
         cfg = expand_observability(_trtllm_config(enabled=True))
         assert "telemetry" not in cfg
         assert cfg["backend"]["publish_events_and_metrics"] is True
+        assert SrtConfig.Schema().load(cfg).backend.publish_metrics is True
         for mode in ("prefill", "decode"):
             section = cfg["backend"]["trtllm_config"][mode]
             # enable_iter_perf_stats is what produces trtllm_kv_cache_*_blocks.
@@ -98,6 +180,37 @@ class TestExpandObservability:
         assert out["backend"]["decode_environment"]["DYN_LOG"] == "info"
         assert out["backend"]["trtllm_config"]["decode"]["return_perf_metrics"] is False
         assert out["backend"]["publish_events_and_metrics"] is False
+
+    @pytest.mark.parametrize("frontend_type", ["dynamo", "trtllm_serve"])
+    @pytest.mark.parametrize("publish_metrics", [False, True])
+    @pytest.mark.parametrize("publish_events_and_metrics", [False, True])
+    def test_publishing_optouts_are_preserved_and_only_disabled_dynamo_metrics_warn(
+        self, caplog, frontend_type, publish_metrics, publish_events_and_metrics
+    ):
+        cfg = _trtllm_config(enabled=True)
+        cfg["frontend"]["type"] = frontend_type
+        cfg["backend"]["publish_metrics"] = publish_metrics
+        cfg["backend"]["publish_events_and_metrics"] = publish_events_and_metrics
+
+        with caplog.at_level("WARNING"):
+            out = expand_observability(cfg)
+
+        assert out["backend"]["publish_metrics"] is publish_metrics
+        assert out["backend"]["publish_events_and_metrics"] is publish_events_and_metrics
+        publishing_warnings = [record for record in caplog.records if "publish_events_and_metrics" in record.message]
+        should_warn = frontend_type == "dynamo" and publish_events_and_metrics is False
+        assert bool(publishing_warnings) is should_warn
+
+    def test_observability_can_publish_legacy_metrics_when_standalone_flag_is_disabled(self, caplog):
+        cfg = _trtllm_config(enabled=True)
+        cfg["backend"]["publish_metrics"] = False
+
+        with caplog.at_level("WARNING"):
+            out = expand_observability(cfg)
+
+        assert out["backend"]["publish_metrics"] is False
+        assert out["backend"]["publish_events_and_metrics"] is True
+        assert not [record for record in caplog.records if "publish_metrics" in record.message]
 
     def test_preexisting_env_is_preserved(self):
         cfg = expand_observability(_trtllm_config(enabled=True))

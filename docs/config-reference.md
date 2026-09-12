@@ -639,9 +639,43 @@ backend:
 | `prefill_environment` | dict   | {}      | Environment variables for prefill       |
 | `decode_environment`  | dict   | {}      | Environment variables for decode        |
 | `trtllm_config`       | object | null    | TRTLLM CLI configuration per mode       |
+| `publish_metrics` | bool | true | Pass `--publish-metrics` to Dynamo TRT-LLM workers; does not enable KV events |
+| `publish_events_and_metrics` | bool or null | unset | `false`: disable both publication flags; `true`: enable the combined flag; unset/null: inherit defaults |
+
+With `frontend.type: dynamo`, prefill, decode, and aggregated workers publish engine metrics
+by default using `--publish-metrics`, regardless of whether observability is enabled. Without
+observability, this does not enable KV events. `observability.enabled: true` retains its existing
+superset behavior: it additionally enables `--publish-events-and-metrics` when the combined
+setting is omitted or null. Explicitly requesting the combined flag also works without
+observability.
+
+**An explicit `backend.publish_events_and_metrics: false` is a master opt-out:** neither
+publication flag is passed, even if `publish_metrics` is true or observability is enabled.
+This differs from omitting the combined setting, which keeps metrics on by default. Unset
+values remain null through config serialization so a saved config does not acquire an opt-out.
+
+| `publish_events_and_metrics` | Observability | Default publication flags |
+| --- | --- | --- |
+| omitted / null | disabled / omitted | `--publish-metrics` |
+| omitted / null | enabled | `--publish-metrics --publish-events-and-metrics` |
+| `false` | either | none |
+| `true` | either | `--publish-metrics --publish-events-and-metrics` |
+
+**Compatibility:** the metrics-only flag requires a Dynamo build containing
+[ai-dynamo/dynamo#12162](https://github.com/ai-dynamo/dynamo/pull/12162) or equivalent support.
+Older builds (including Dynamo v1.4.2) reject the flag. Set `backend.publish_metrics: false`
+to omit only the new flag, including when observability is enabled; this does not disable a
+combined flag enabled by observability or the recipe. Set `backend.publish_events_and_metrics: false`
+to omit **both** flags. srt-slurm does not substitute the combined flag as an automatic
+compatibility fallback, because that would enable KV events. Omitting the flag does
+not override metrics-related environment variables supplied by the user. Metrics collection
+adds engine telemetry work; metrics-only does not mean zero overhead.
+
+These options do not change native `trtllm_serve` or sidecar worker commands. `srtctl dry-run`
+shows the publication flag selected for Dynamo TRT-LLM workers.
 
 **Key differences from SGLang backend**:
-- No aggregated mode support (prefill/decode only)
+- Supports prefill, decode, and aggregated workers
 - Uses MPI-style launching (one srun per endpoint with all nodes)
 - Uses `trtllm-llmapi-launch` for distributed launching
 - Automatically sets `TRTLLM_EPLB_SHM_NAME` with unique UUID per endpoint
@@ -739,9 +773,14 @@ their URLs are appended to `AIPERF_SERVER_METRICS_URLS` after the logical worker
 
 Two caveats for `AIPERF_SERVER_METRICS_URLS`:
 
-- **TRT-LLM worker URLs are omitted when the workers publish no metrics.** A Dynamo TRT-LLM worker
-  launched without `--publish-events-and-metrics` (the default; `observability.enabled` turns it
-  on) serves nothing on its sys-port `/metrics`, so those URLs are not advertised. With
+- **Dynamo TRT-LLM worker URLs are advertised when engine metrics are enabled.** This is the
+  default via `backend.publish_metrics: true` (`--publish-metrics`) when the combined setting
+  is omitted; `backend.publish_events_and_metrics: true` also enables them. Explicit
+  `backend.publish_events_and_metrics: false` suppresses both publication flags and worker
+  URLs, regardless of the metrics-only setting. URLs are also omitted when no flag is enabled
+  (for example, metrics-only false and the combined setting omitted without observability).
+  This applies to built-in AIPerf and custom benchmarks, excluding sidecars, whose behavior is
+  unchanged. Runtime-only metrics may still exist but do not constitute an engine-metrics capture. With
   `frontend.type: trtllm_serve` the gate is the worker's own engine config instead: its
   `/prometheus/metrics` URL is advertised when that mode's `return_perf_metrics` is true (the
   srtctl default for trtllm_serve recipes; an explicit `false` drops the URL). KVBM URLs are
