@@ -1439,15 +1439,18 @@ ANALYTICS_ENGINE_CONFIG: dict[str, bool] = {
     "return_perf_metrics": True,
 }
 
-# Engine-config default baked in for every ``frontend.type: trtllm_serve`` run,
+# Engine-config defaults baked in for every ``frontend.type: trtllm_serve`` run,
 # independent of ``observability.enabled``. trtllm-serve registers a worker's
 # Prometheus route (``/prometheus/metrics``) only when the engine runs with
 # ``return_perf_metrics: true`` (TensorRT-LLM ``serve/openai_server.py``,
 # ``register_routes``); TensorRT-LLM's own default is ``false``. Tachometer
 # scrapes that route on every run, so without this default every trtllm-serve
 # worker endpoint answers HTTP 404 and the capture silently has no worker data.
+# The PyTorch backend also needs ``enable_iter_perf_stats`` for iteration-level
+# statistics, including KV-cache occupancy, to populate on that metrics surface.
 TRTLLM_SERVE_ENGINE_DEFAULTS: dict[str, bool] = {
     "return_perf_metrics": True,
+    "enable_iter_perf_stats": True,
 }
 
 

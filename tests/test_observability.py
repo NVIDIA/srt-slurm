@@ -405,13 +405,12 @@ class TestTrtllmServeDefaults:
     srtctl bakes that default in for every trtllm_serve recipe so Tachometer's
     backend_* endpoints are never a silent 404."""
 
-    def test_return_perf_metrics_defaults_on_without_observability(self):
+    def test_engine_metrics_default_on_without_observability(self):
         out = expand_trtllm_serve_defaults(_trtllm_serve_config())
         for mode in ("prefill", "decode"):
             section = out["backend"]["trtllm_config"][mode]
             assert section["return_perf_metrics"] is True
-            # Only this key is touched; the recipe's own values survive.
-            assert "enable_iter_perf_stats" not in section
+            assert section["enable_iter_perf_stats"] is True
             assert section["max_batch_size"] in (256, 64)
 
     def test_explicit_false_wins_and_warns(self, caplog):
@@ -428,6 +427,7 @@ class TestTrtllmServeDefaults:
         out = expand_trtllm_serve_defaults(cfg)
         for mode in ("prefill", "decode"):
             assert "return_perf_metrics" not in out["backend"]["trtllm_config"][mode]
+            assert "enable_iter_perf_stats" not in out["backend"]["trtllm_config"][mode]
 
     def test_non_trtllm_backend_is_untouched(self):
         cfg = dict(BASE_CONFIG)
@@ -443,8 +443,8 @@ class TestTrtllmServeDefaults:
         del cfg["backend"]["trtllm_config"]
         out = expand_trtllm_serve_defaults(cfg)
         assert out["backend"]["trtllm_config"] == {
-            "prefill": {"return_perf_metrics": True},
-            "decode": {"return_perf_metrics": True},
+            "prefill": {"return_perf_metrics": True, "enable_iter_perf_stats": True},
+            "decode": {"return_perf_metrics": True, "enable_iter_perf_stats": True},
         }
 
     def test_partial_sections_are_completed(self):
@@ -452,7 +452,10 @@ class TestTrtllmServeDefaults:
         del cfg["backend"]["trtllm_config"]["decode"]
         out = expand_trtllm_serve_defaults(cfg)
         assert out["backend"]["trtllm_config"]["prefill"]["return_perf_metrics"] is True
-        assert out["backend"]["trtllm_config"]["decode"] == {"return_perf_metrics": True}
+        assert out["backend"]["trtllm_config"]["decode"] == {
+            "return_perf_metrics": True,
+            "enable_iter_perf_stats": True,
+        }
         assert "aggregated" not in out["backend"]["trtllm_config"]
 
     def test_aggregated_layout_gets_the_default_and_can_opt_out(self, caplog):
@@ -462,6 +465,7 @@ class TestTrtllmServeDefaults:
         cfg["backend"] = {"type": "trtllm", "trtllm_config": {"aggregated": {"max_batch_size": 8}}}
         out = expand_trtllm_serve_defaults(cfg)
         assert out["backend"]["trtllm_config"]["aggregated"]["return_perf_metrics"] is True
+        assert out["backend"]["trtllm_config"]["aggregated"]["enable_iter_perf_stats"] is True
         assert "prefill" not in out["backend"]["trtllm_config"]
 
         cfg["backend"]["trtllm_config"]["aggregated"]["return_perf_metrics"] = False
@@ -480,6 +484,7 @@ class TestTrtllmServeDefaults:
         for mode in ("prefill", "decode"):
             section = getattr(loaded.backend.trtllm_config, mode)
             assert section["return_perf_metrics"] is True
+            assert section["enable_iter_perf_stats"] is True
 
     def test_load_config_applies_the_default(self, tmp_path, monkeypatch):
         """load_config is the path every real entry point uses (srtctl apply,
@@ -497,10 +502,32 @@ class TestTrtllmServeDefaults:
 
         for mode in ("prefill", "decode"):
             assert loaded.backend.get_config_for_mode(mode)["return_perf_metrics"] is True
+            assert loaded.backend.get_config_for_mode(mode)["enable_iter_perf_stats"] is True
+
+    @pytest.mark.parametrize("loader_name", ["from_yaml", "load_config"])
+    @pytest.mark.parametrize("enabled", [False, True])
+    @pytest.mark.parametrize("opted_out", ["return_perf_metrics", "enable_iter_perf_stats"])
+    def test_engine_stat_opt_out_survives_yaml_loaders(self, tmp_path, monkeypatch, loader_name, enabled, opted_out):
+        """Defaults and observability must preserve each opt-out across sweep serialization."""
+        monkeypatch.setattr("srtctl.core.config.load_cluster_config", lambda: None)
+        cfg = _trtllm_serve_config(enabled=enabled)
+        cfg["benchmark"] = {"type": "sa-bench", "concurrencies": [4]}
+        cfg["backend"]["trtllm_config"]["decode"][opted_out] = False
+        loader = SrtConfig.from_yaml if loader_name == "from_yaml" else load_config
+
+        for filename in ("recipe.yaml", "roundtrip.yaml"):
+            path = tmp_path / filename
+            path.write_text(yaml.safe_dump(cfg))
+            loaded = loader(path)
+            for key in ("return_perf_metrics", "enable_iter_perf_stats"):
+                assert loaded.backend.get_config_for_mode("decode")[key] is (key != opted_out)
+                assert loaded.backend.get_config_for_mode("prefill")[key] is True
+            assert loaded.backend.get_config_for_mode("decode")["max_batch_size"] == 64
+            cfg = SrtConfig.Schema().dump(loaded)
 
     def test_observability_expansion_is_unchanged_and_composes(self):
         """observability.enabled still injects both engine keys; the trtllm-serve
-        default only fills return_perf_metrics where nothing else set it."""
+        defaults only fill missing values for those same keys."""
         cfg = _trtllm_serve_config(enabled=True)
         expand_observability(cfg)
         out = expand_trtllm_serve_defaults(cfg)
