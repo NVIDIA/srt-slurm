@@ -371,23 +371,169 @@ fn write_parquet_file_local(local_dir: &Path, filename: &str, batch: &RecordBatc
         .set_write_batch_size(100_000)
         .build();
 
-    let path = local_dir.join(filename);
-    let file = File::create(&path).map_err(|e| {
-        crate::NoMoreError::Io(std::io::Error::other(format!(
-            "Failed to create file {}: {}",
-            path.display(),
-            e
-        )))
-    })?;
+    publish_parquet_file(local_dir, filename, |file| {
+        let mut writer = ArrowWriter::try_new(file, batch.schema(), Some(props))
+            .map_err(|e| crate::NoMoreError::Parquet(e.to_string()))?;
+        writer
+            .write(batch)
+            .map_err(|e| crate::NoMoreError::Parquet(e.to_string()))?;
+        writer
+            .close()
+            .map_err(|e| crate::NoMoreError::Parquet(e.to_string()))?;
+        Ok(())
+    })
+}
 
-    let mut writer = ArrowWriter::try_new(file, batch.schema(), Some(props))
-        .map_err(|e| crate::NoMoreError::Parquet(e.to_string()))?;
-    writer
-        .write(batch)
-        .map_err(|e| crate::NoMoreError::Parquet(e.to_string()))?;
-    writer
-        .close()
-        .map_err(|e| crate::NoMoreError::Parquet(e.to_string()))?;
-
+/// Keep in-progress files outside the compactor's out-*.parquet scan. The
+/// callback must close its Parquet writer successfully before publication.
+fn publish_parquet_file(
+    local_dir: &Path,
+    filename: &str,
+    write: impl FnOnce(&mut File) -> Result<()>,
+) -> Result<()> {
+    // A same-directory temporary file guarantees the rename stays on one
+    // filesystem. Dropping it removes partial output on write/close errors.
+    let mut pending = tempfile::Builder::new()
+        .prefix(".tachometer-")
+        .suffix(".tmp")
+        .tempfile_in(local_dir)?;
+    write(pending.as_file_mut())?;
+    pending
+        .persist(local_dir.join(filename))
+        .map_err(|e| crate::NoMoreError::Io(e.error))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::periodic_compact_and_sync;
+    use object_store::local::LocalFileSystem;
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+    use parquet::arrow::ArrowWriter;
+    use std::io::Write;
+
+    fn batch(first: usize) -> RecordBatch {
+        let mut buffer = RecordBatchBuffer::new(vec![]);
+        for value in first..first + 3 {
+            buffer.append_row(
+                &Row {
+                    scraper_endpoint: "worker0".into(),
+                    metric_name: "requests_total".into(),
+                    metric_value: value as f64,
+                    histogram_bucket_lower: None,
+                    histogram_bucket_upper: None,
+                    histogram_sum: None,
+                    histogram_count: None,
+                    extras: vec![],
+                },
+                value as f64,
+                1_700_000_000_000_000_000 + value as i64,
+            );
+        }
+        buffer.to_record_batch().unwrap()
+    }
+
+    #[test]
+    fn compaction_cannot_observe_an_unfinished_parquet_file() {
+        let local = tempfile::tempdir().unwrap();
+        let remote = tempfile::tempdir().unwrap();
+        let store = Arc::new(LocalFileSystem::new_with_prefix(remote.path()).unwrap());
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        write_parquet_file_local(local.path(), "out-1.parquet", &batch(0)).unwrap();
+
+        publish_parquet_file(local.path(), "out-2.parquet", |file| {
+            let next = batch(3);
+            let mut writer = ArrowWriter::try_new(file, next.schema(), None).unwrap();
+            writer.write(&next).unwrap();
+            // Flush actual row data, leaving the writer open without a footer.
+            // No timing or scheduler luck is needed to exercise this interleaving.
+            writer.flush().unwrap();
+            let pending: Vec<_> = std::fs::read_dir(local.path())
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .filter(|path| path.file_name().is_some_and(|name| name != "out-1.parquet"))
+                .collect();
+            assert_eq!(pending.len(), 1);
+            assert!(ParquetRecordBatchReaderBuilder::try_new(
+                File::open(&pending[0]).unwrap()
+            )
+            .is_err());
+            // The real compactor consumes the completed first part, but must
+            // neither read nor delete the part whose writer is still open.
+            let compacted = runtime
+                .block_on(periodic_compact_and_sync(local.path(), store.clone(), "run"))
+                .unwrap();
+            assert!(pending[0].exists(), "compactor deleted the unfinished write");
+            assert_eq!(compacted, 1);
+            assert!(!local.path().join("out-2.parquet").exists());
+            writer.close().unwrap();
+            Ok(())
+        })
+        .unwrap();
+
+        assert!(local.path().join("out-2.parquet").exists());
+        assert_eq!(
+            runtime
+                .block_on(periodic_compact_and_sync(local.path(), store.clone(), "run"))
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            runtime
+                .block_on(periodic_compact_and_sync(local.path(), store, "run"))
+                .unwrap(),
+            0
+        );
+        let files: Vec<_> = std::fs::read_dir(local.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(files.len(), 1);
+        let reader = ParquetRecordBatchReaderBuilder::try_new(File::open(&files[0]).unwrap())
+            .unwrap()
+            .build()
+            .unwrap();
+        let mut values = Vec::new();
+        for batch in reader {
+            let batch = batch.unwrap();
+            let column = batch
+                .column_by_name("metric_value")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<Float64Array>()
+                .unwrap();
+            values.extend_from_slice(column.values());
+        }
+        values.sort_by(f64::total_cmp);
+        assert_eq!(values, vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+    }
+
+    #[test]
+    fn failed_parquet_write_does_not_publish_or_leave_a_partial_file() {
+        let local = tempfile::tempdir().unwrap();
+        let result = publish_parquet_file(local.path(), "out-1.parquet", |file| {
+            file.write_all(b"PAR1unfinished parquet")?;
+            Err(crate::NoMoreError::Io(std::io::Error::other(
+                "injected write failure",
+            )))
+        });
+        assert!(result.is_err());
+        assert_eq!(std::fs::read_dir(local.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn failed_parquet_publication_does_not_leave_a_partial_file() {
+        let local = tempfile::tempdir().unwrap();
+        // Renaming a regular file over an existing directory must fail.
+        let destination = local.path().join("out-1.parquet");
+        std::fs::create_dir(&destination).unwrap();
+        assert!(write_parquet_file_local(local.path(), "out-1.parquet", &batch(0)).is_err());
+        assert!(destination.is_dir());
+        assert_eq!(std::fs::read_dir(local.path()).unwrap().count(), 1);
+    }
 }
