@@ -435,6 +435,7 @@ def show_config_details(config: SrtConfig) -> None:
         or config.observability.tachometer.enabled
         or config.telemetry.enabled
         or mooncake_cfg is not None
+        or config.profiling.enabled
     )
     if show_extensions:
         details = Table(title="Execution Extensions", show_lines=False, pad_edge=False)
@@ -453,6 +454,41 @@ def show_config_details(config: SrtConfig) -> None:
         # resolved to the expected sqsh / URI.
         if config.benchmark.container_image:
             details.add_row("benchmark", "container_image", config.benchmark.container_image)
+
+        profiling = config.profiling
+        if profiling.enabled:
+            details.add_row("profiling", "type", profiling.type)
+            if profiling.is_nsys:
+                details.add_row("profiling", "nsys_trace", profiling.nsys_trace)
+                details.add_row("profiling", "capture_range_end", profiling.capture_range_end)
+                fork_setting = (
+                    "dynamo default"
+                    if profiling.trace_fork_before_exec is None
+                    else str(profiling.trace_fork_before_exec).lower()
+                )
+                details.add_row("profiling", "trace_fork_before_exec", fork_setting)
+                if profiling.nsys_library_paths:
+                    details.add_row(
+                        "profiling",
+                        "nsys_library_paths",
+                        ":".join(profiling.nsys_library_paths),
+                    )
+                for mode, phase in (
+                    ("prefill", profiling.prefill),
+                    ("decode", profiling.decode),
+                    ("aggregated", profiling.aggregated),
+                ):
+                    if phase is not None and not profiling.is_nsys_time:
+                        target = (
+                            "all physical processes"
+                            if phase.capture_scope == "all"
+                            else f"worker {phase.worker_index}, rank {phase.worker_rank}"
+                        )
+                        details.add_row(
+                            "profiling",
+                            f"{mode} target",
+                            target,
+                        )
 
         tachometer = config.observability.tachometer
         if config.observability.tachometer_enabled:

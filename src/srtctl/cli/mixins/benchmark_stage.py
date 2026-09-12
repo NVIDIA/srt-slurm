@@ -235,6 +235,86 @@ class BenchmarkStageMixin:
             endpoints.append((process.endpoint_mode, host, port))
         return endpoints
 
+    def _profiling_worker_endpoints(self) -> list[tuple[str, str, int]]:
+        """Return only the process endpoints that control this capture.
+
+        Iteration-triggered Nsight captures for vLLM and SGLang target either
+        one selected physical process or all processes in each serving phase.
+        Time-based Nsight, Torch, and TRT-LLM retain their existing
+        endpoint-wide behavior.
+        """
+        profiling = self.config.profiling
+        if not profiling.is_nsys or profiling.is_nsys_time or self.config.backend_type == "trtllm":
+            return self._logical_worker_endpoints()
+
+        endpoints: list[tuple[str, str, int]] = []
+        selected_modes: set[str] = set()
+        for process in self.backend_processes:
+            worker_index = process.endpoint_index
+            worker_rank = process.node_rank
+            capture_all = profiling.captures_all_processes(process.endpoint_mode)
+            if not profiling.selects_process(
+                process.endpoint_mode,
+                worker_index,
+                worker_rank,
+            ):
+                continue
+
+            leader_only_control = self.config.frontend.type == "vllm" or (
+                self.config.frontend.type == "dynamo" and self.config.dynamo.sidecar
+            )
+            if leader_only_control and not process.is_leader:
+                # The direct-vLLM server and a Dynamo sidecar expose one
+                # control server per logical endpoint, on its leader only.
+                # All-process capture still wraps followers, but sends a
+                # single request to the leader. A selected follower cannot be
+                # controlled independently and must fail explicitly.
+                if capture_all:
+                    continue
+                raise ValueError(
+                    "Selected profiling process does not expose its own control endpoint: "
+                    f"mode={process.endpoint_mode}, worker_index={worker_index}, "
+                    f"worker_rank={worker_rank}"
+                )
+
+            if self.config.frontend.type == "dynamo":
+                port = process.sys_port
+            elif self.config.frontend.type == "vllm":
+                port = self.runtime.frontend_port
+            else:
+                port = process.http_port
+            if port <= 0:
+                # Native distributed servers expose one HTTP control endpoint
+                # for multiple physical processes. Wrap every process, but send
+                # only the routable leader endpoint to the benchmark.
+                if capture_all:
+                    continue
+                raise ValueError(
+                    "Selected profiling worker does not expose an HTTP control endpoint: "
+                    f"mode={process.endpoint_mode}, worker_index={worker_index}, "
+                    f"worker_rank={worker_rank}"
+                )
+
+            host = get_hostname_ip(process.node, self.runtime.network_interface)
+            endpoints.append((process.endpoint_mode, host, port))
+            selected_modes.add(process.endpoint_mode)
+
+        required_modes = {
+            mode
+            for mode, phase in (
+                ("prefill", profiling.prefill),
+                ("decode", profiling.decode),
+                ("agg", profiling.aggregated),
+            )
+            if phase is not None
+        }
+        missing_modes = required_modes - selected_modes
+        if missing_modes:
+            missing = ", ".join(sorted(missing_modes))
+            raise ValueError(f"No physical process matches the profiling selector for: {missing}")
+
+        return list(dict.fromkeys(endpoints))
+
     def _wait_for_service_ready(self, stop_event: threading.Event) -> bool:
         """Wait for frontend counts and any adapter-specific backend barrier."""
         from srtctl.core import health as health_utils
@@ -494,7 +574,7 @@ class BenchmarkStageMixin:
     def _get_benchmark_profiling_env(
         self,
         runner: "BenchmarkRunner",
-        logical_endpoints: list[tuple[str, str, int]] | None = None,
+        profiling_endpoints: list[tuple[str, str, int]] | None = None,
     ) -> dict[str, str]:
         """Get environment variables for the benchmark script."""
         env: dict[str, str] = {}
@@ -539,9 +619,9 @@ class BenchmarkStageMixin:
         decode_endpoints = []
         agg_endpoints = []
 
-        if logical_endpoints is None:
-            logical_endpoints = self._logical_worker_endpoints()
-        for mode, leader_ip, port in logical_endpoints:
+        if profiling_endpoints is None:
+            profiling_endpoints = self._profiling_worker_endpoints()
+        for mode, leader_ip, port in profiling_endpoints:
             leader_endpoint = f"{leader_ip}:{port}"
             if mode == "prefill":
                 prefill_ips.append(leader_ip)
@@ -731,7 +811,8 @@ class BenchmarkStageMixin:
 
         is_custom = self.config.benchmark.type == "custom"
         logical_endpoints = self._logical_worker_endpoints() if self.config.profiling.enabled or is_custom else None
-        env = self._get_benchmark_profiling_env(runner, logical_endpoints)
+        profiling_endpoints = self._profiling_worker_endpoints() if self.config.profiling.enabled else None
+        env = self._get_benchmark_profiling_env(runner, profiling_endpoints)
         if is_custom:
             assert logical_endpoints is not None
             env.update(self._get_worker_endpoint_env(logical_endpoints))

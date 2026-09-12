@@ -828,6 +828,9 @@ class ProfilingPhaseConfig:
 
     start_step: int | None = None  # Step to start profiling
     stop_step: int | None = None  # Step to stop profiling
+    capture_scope: Literal["selected", "all"] = "selected"
+    worker_index: int = 0  # Logical worker within the phase
+    worker_rank: int = 0  # Physical process rank within that worker
 
     @property
     def vllm_nsys_delay_iterations(self) -> int:
@@ -859,6 +862,21 @@ class ProfilingConfig:
 
     # Extra arguments passed to nsys profile (appended before `-o`; see get_nsys_prefix)
     extra_nsys_args: list[str] | None = None
+
+    # Non-TRT-LLM Nsight activity domains. ``cuda-sw`` can be selected
+    # explicitly where software tracing is preferred over hardware tracing.
+    nsys_trace: str = "cuda,nvtx"
+
+    # None preserves the existing Dynamo-specific default. Set explicitly for
+    # worker launchers that require or cannot tolerate child-process injection.
+    trace_fork_before_exec: bool | None = None
+
+    # Non-TRT-LLM behavior when cudaProfilerStop closes a capture range.
+    capture_range_end: str = "stop"
+
+    # Optional paths prepended to LD_LIBRARY_PATH for the Nsight wrapper and
+    # profiled worker, for containers that do not discover the host libcuda.
+    nsys_library_paths: list[str] | None = None
 
     # Phase-specific profiling step configs (not used for nsys-time)
     prefill: ProfilingPhaseConfig | None = None
@@ -900,13 +918,16 @@ class ProfilingConfig:
             return self.aggregated
         return None
 
-    def get_env_vars(self, mode: str, profile_dir: str) -> dict[str, str]:
+    def get_env_vars(
+        self,
+        mode: str,
+        profile_dir: str,
+    ) -> dict[str, str]:
         """Get profiling-specific environment variables.
 
         Args:
             mode: Worker mode (prefill/decode/agg)
-            profile_dir: Base directory for profiling output
-
+            profile_dir: Base directory for profiling output.
         Returns:
             Dictionary of environment variables
         """
@@ -938,6 +959,22 @@ class ProfilingConfig:
             env["TLLM_LLMAPI_ENABLE_NVTX"] = "1"
 
         return env
+
+    def selects_process(self, mode: str, worker_index: int, worker_rank: int) -> bool:
+        """Whether an iteration-triggered capture targets this process."""
+        phase = self._get_phase_config(mode)
+        return bool(
+            phase is not None
+            and (
+                phase.capture_scope == "all"
+                or (phase.worker_index == worker_index and phase.worker_rank == worker_rank)
+            )
+        )
+
+    def captures_all_processes(self, mode: str) -> bool:
+        """Whether the phase captures every physical process."""
+        phase = self._get_phase_config(mode)
+        return bool(phase is not None and phase.capture_scope == "all")
 
     @property
     def nsys_binary(self) -> str:
@@ -1020,17 +1057,17 @@ class ProfilingConfig:
         if backend_type == "trtllm":
             return self._get_nsys_prefix_trtllm(output_file)
 
-        # Time-based capture for non-TRTLLM backends (vllm, sglang). Required
-        # for vllm+dynamo because dynamo's HTTP frontend doesn't proxy
-        # /start_profile to the vllm worker (returns 404), so cudaProfilerApi
-        # capture can't be triggered from the bench client — we drive capture
-        # purely by --delay/--duration instead.
+        trace_fork_before_exec = self.trace_fork_before_exec
+        if trace_fork_before_exec is None:
+            trace_fork_before_exec = frontend_type == "dynamo"
+
+        # Time-based capture for non-TRTLLM backends (vllm, sglang).
         if self.is_nsys_time:
             cmd = [
                 self.nsys_binary,
                 "profile",
                 "-t",
-                "cuda,nvtx",
+                self.nsys_trace,
                 "--cuda-graph-trace=node",
                 "--force-overwrite",
                 "true",
@@ -1042,7 +1079,7 @@ class ProfilingConfig:
             if self.extra_nsys_args:
                 cmd.extend(self.extra_nsys_args)
             cmd.extend(["-o", output_file])
-            if frontend_type == "dynamo":
+            if trace_fork_before_exec:
                 cmd.insert(-2, "--trace-fork-before-exec=true")
             return cmd
 
@@ -1051,12 +1088,12 @@ class ProfilingConfig:
             self.nsys_binary,
             "profile",
             "-t",
-            "cuda,nvtx",
+            self.nsys_trace,
             "--cuda-graph-trace=node",
             "-c",
             "cudaProfilerApi",
             "--capture-range-end",
-            "stop",
+            self.capture_range_end,
             "--force-overwrite",
             "true",
         ]
@@ -1066,7 +1103,7 @@ class ProfilingConfig:
 
         cmd.extend(["-o", output_file])
 
-        if frontend_type == "dynamo":
+        if trace_fork_before_exec:
             cmd.insert(-2, "--trace-fork-before-exec=true")
 
         return cmd
@@ -2307,6 +2344,32 @@ class SrtConfig:
                     "for you."
                 )
 
+    def _profiling_worker_ranks(self, mode: Literal["prefill", "decode", "agg"]) -> set[int]:
+        """Derive selectable physical ranks from the configured worker layout."""
+        from srtctl.core.topology import Endpoint
+
+        resources = self.resources
+        gpus_per_worker = {
+            "prefill": resources.gpus_per_prefill,
+            "decode": resources.gpus_per_decode,
+            "agg": resources.gpus_per_agg,
+        }[mode]
+        nodes_per_worker = math.ceil(gpus_per_worker / resources.gpus_per_node)
+        local_gpus = resources.gpus_per_node if nodes_per_worker > 1 else gpus_per_worker
+        endpoint = Endpoint(
+            mode=mode,
+            index=0,
+            nodes=tuple(f"profiling-node-{rank}" for rank in range(nodes_per_worker)),
+            gpu_indices=frozenset(range(local_gpus)),
+            gpus_per_node=resources.gpus_per_node,
+        )
+        processes = self.backend.endpoints_to_processes(
+            [endpoint],
+            frontend_type=self.frontend.type,
+            dynamo_sidecar=self.dynamo.sidecar,
+        )
+        return {process.node_rank for process in processes}
+
     def _validate_profiling(self):
         """Validate profiling configuration matches serving mode."""
         prof = self.profiling
@@ -2321,9 +2384,15 @@ class SrtConfig:
 
         # nsys-time (time-based capture via nsys --delay/--duration) is supported
         # for all backends. get_nsys_prefix() emits a time-based command for the
-        # non-TRTLLM (vllm/sglang) path too, which is the only option for
-        # vllm+dynamo where /start_profile returns 404 and cudaProfilerApi-triggered
-        # capture can't fire.
+        # non-TRTLLM (vllm/sglang) path too.
+
+        if prof.is_nsys:
+            if not prof.nsys_trace.strip():
+                raise ValidationError("profiling.nsys_trace must not be empty")
+            if not prof.capture_range_end.strip():
+                raise ValidationError("profiling.capture_range_end must not be empty")
+            if prof.nsys_library_paths is not None and any(not path for path in prof.nsys_library_paths):
+                raise ValidationError("profiling.nsys_library_paths must not contain empty paths")
 
         # nsys-time uses top-level delay/duration — no per-phase step configs needed
         if prof.is_nsys_time:
@@ -2363,6 +2432,46 @@ class SrtConfig:
                 )
             if (r.agg_workers or 0) <= 0:
                 raise ValidationError("Aggregated mode requires agg_workers to be > 0.")
+
+        if prof.is_nsys:
+            phase_workers = (
+                (("prefill", prof.prefill, r.prefill_workers), ("decode", prof.decode, r.decode_workers))
+                if is_disaggregated
+                else (("aggregated", prof.aggregated, r.agg_workers),)
+            )
+            for phase_name, phase_config, worker_count in phase_workers:
+                assert phase_config is not None
+                if phase_config.capture_scope not in ("selected", "all"):
+                    raise ValidationError(f"profiling.{phase_name}.capture_scope must be 'selected' or 'all'")
+                if backend_type == "trtllm" or phase_config.capture_scope == "all":
+                    continue
+                if phase_config.worker_index < 0:
+                    raise ValidationError(f"profiling.{phase_name}.worker_index must be non-negative")
+                if phase_config.worker_index >= (worker_count or 0):
+                    raise ValidationError(
+                        f"profiling.{phase_name}.worker_index={phase_config.worker_index} is out of range "
+                        f"for {worker_count or 0} configured workers"
+                    )
+                if phase_config.worker_rank < 0:
+                    raise ValidationError(f"profiling.{phase_name}.worker_rank must be non-negative")
+                mode = "agg" if phase_name == "aggregated" else phase_name
+                try:
+                    valid_ranks = self._profiling_worker_ranks(mode)
+                except ValueError as exc:
+                    raise ValidationError(str(exc)) from exc
+                if phase_config.worker_rank not in valid_ranks:
+                    ranks = ", ".join(str(rank) for rank in sorted(valid_ranks))
+                    raise ValidationError(
+                        f"profiling.{phase_name}.worker_rank={phase_config.worker_rank} is not a physical "
+                        f"process rank for this worker layout; valid ranks: {ranks}"
+                    )
+                if (
+                    self.frontend.type == "vllm" or (self.frontend.type == "dynamo" and self.dynamo.sidecar)
+                ) and phase_config.worker_rank != 0:
+                    raise ValidationError(
+                        f"profiling.{phase_name}.worker_rank={phase_config.worker_rank} has no independent "
+                        "control endpoint; direct vLLM and Dynamo sidecar profiling must select rank 0"
+                    )
 
         # Iteration-based nsys (type: nsys) drives the vLLM engine profiler via
         # --profiler-config, derived from the profiling: block. Forbid duplicating
