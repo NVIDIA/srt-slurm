@@ -42,6 +42,16 @@ default_time_limit: "04:00:00"
 #   ignore_failure: false
 #   timeout_seconds: 300
 
+# Seconds to wait for NATS and etcd to accept connections after the head
+# infrastructure srun is launched. Default: 300. The wait starts before the
+# workload container is imported on the infra node, so on a cold enroot cache
+# the first Pyxis import of a multi-GB registry image counts against this
+# budget and can exceed 300s on its own (observed: 143-161s on warm-cache
+# nodes, over 300s cold). Raise this on clusters that pull registry-URI
+# containers instead of pre-imported local .sqsh files. A single submission can
+# override this with `srtctl apply --startup-timeout <seconds>`.
+# startup_timeout: 1800
+
 # SLURM directive compatibility
 # Set to false if your cluster doesn't support --gpus-per-node
 use_gpus_per_node_directive: true  # Default: true
