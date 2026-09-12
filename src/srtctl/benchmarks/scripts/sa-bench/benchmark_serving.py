@@ -71,6 +71,7 @@ try:
 except ImportError:
     from argparse import ArgumentParser as FlexibleArgumentParser
 
+from benchmark_outcome import benchmark_outcome
 from benchmark_utils import convert_to_pytorch_benchmark_format
 from measurement_window import MeasurementWindow
 
@@ -867,6 +868,15 @@ async def benchmark(
             )
             tasks.append(asyncio.create_task(limited_request_func(request_func_input=request_func_input, pbar=pbar)))
         outputs: list[RequestFuncOutput] = await asyncio.gather(*tasks)
+        benchmark_end_time = time.perf_counter()
+        benchmark_end_time_unix = time.time()
+        benchmark_duration = benchmark_end_time - benchmark_start_time
+        if measurement_window is not None:
+            measurement_window.record_boundary(
+                start_unix=benchmark_start_time_unix,
+                end_unix=benchmark_end_time_unix,
+                duration=benchmark_duration,
+            )
     except BaseException:
         if backend == "dynamo" and request_session is not None:
             # A shared pool must outlive every request using it. Preserve the
@@ -903,15 +913,6 @@ async def benchmark(
     if pbar is not None:
         pbar.close()
 
-    benchmark_end_time = time.perf_counter()
-    benchmark_end_time_unix = time.time()
-    benchmark_duration = benchmark_end_time - benchmark_start_time
-    if measurement_window is not None:
-        measurement_window.record_boundary(
-            start_unix=benchmark_start_time_unix,
-            end_unix=benchmark_end_time_unix,
-            duration=benchmark_duration,
-        )
     if backend == "dynamo" and request_session is not None and not request_session.closed:
         await request_session.close()
         # Allow asyncio to finish closing pooled transports before CPU-heavy metrics.
@@ -1295,7 +1296,10 @@ def main(args: argparse.Namespace):
             )
         )
 
-        # Save config and results to json
+        outcome = benchmark_outcome(len(input_requests), benchmark_result["completed"])
+        benchmark_result["benchmark_outcome"] = outcome
+
+        # Failed runs still need request diagnostics for artifact inspection.
         if args.save_result:
             result_json: dict[str, Any] = {}
 
@@ -1306,7 +1310,6 @@ def main(args: argparse.Namespace):
             result_json["model_id"] = model_id
             result_json["tokenizer_id"] = tokenizer_id
             result_json["best_of"] = args.best_of
-            result_json["num_prompts"] = args.num_prompts
 
             # Metadata
             if args.metadata:
@@ -1327,6 +1330,10 @@ def main(args: argparse.Namespace):
             # Record the effective transport mode after both free-form metadata and
             # benchmark output so it cannot disagree with this run.
             result_json["reuse_http_connections"] = args.reuse_http_connections
+            # Dataset limits can exceed the available requests. Keep the
+            # issued count aligned with its outcome without losing CLI intent.
+            result_json["num_prompts"] = outcome["requested"]
+            result_json["requested_num_prompts"] = args.num_prompts
 
             # Save to file
             base_model_id = model_id.split("/")[-1]
@@ -1340,12 +1347,19 @@ def main(args: argparse.Namespace):
                 json.dump(result_json, outfile)
             save_to_pytorch_benchmark_format(args, result_json, file_name)
 
-            if measurement_window is not None:
-                measurement_window.mark_completed(
-                    start_unix=benchmark_result["benchmark_start_time_unix"],
-                    end_unix=benchmark_result["benchmark_end_time_unix"],
-                    duration=benchmark_result["duration"],
-                )
+        if outcome["status"] == "failed":
+            raise SystemExit(
+                f"FAIL: request failure rate {outcome['failed'] / outcome['requested']:.1%} exceeds "
+                f"{outcome['max_failure_rate']:.0%} threshold "
+                f"({outcome['completed']}/{outcome['requested']} completed)"
+            )
+
+        if measurement_window is not None:
+            measurement_window.mark_completed(
+                start_unix=benchmark_result["benchmark_start_time_unix"],
+                end_unix=benchmark_result["benchmark_end_time_unix"],
+                duration=benchmark_result["duration"],
+            )
     except BaseException as exc:
         if measurement_window is not None:
             measurement_window.fail_at_recorded_boundary(f"{type(exc).__name__}: {exc}")
