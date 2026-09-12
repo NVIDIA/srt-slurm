@@ -1,9 +1,9 @@
 # Qwen3.5-397B-A17B-FP8 1P1D DEP4 (prefill) + DEP8 (decode) + no deepep
 # Phase 3a: smoke cc2048; flip concurrencies to full sweep for Phase 3b.
 
-name: "qwen3.5-1p1d-dep8-dpep-router"
+name: "qwen3.5-wideep-1p1d-dep8-dpep-ccsweep"
 
-setup_script: rebuild-deepep.sh
+setup_script: setup-router-and-deepep.sh
 
 dynamo:
   hash: 4e4006138bb9dde377a2bb2cacbcc65aaa616ac1
@@ -14,6 +14,14 @@ model:
   path: "qwen3.5-fp8"
   container: "dev"
   precision: "fp8"
+
+identity:
+  model:
+    repo: "Qwen/Qwen3.5-397B-A17B-FP8"
+  container:
+    image: "lmsysorg/sglang:0.5.10.post1"
+  frameworks:
+    sglang: "0.5.10.post1"
 
 resources:
   gpu_type: "gb200"
@@ -50,7 +58,7 @@ backend:
     NCCL_CUMEM_ENABLE: "1"
     MC_FORCE_MNNVL: "1"
     MC_TE_METRIC: "true"
-    SGLANG_DG_CACHE_DIR: "/configs/deepgemm-cache"
+    SGLANG_DG_CACHE_DIR: "/tmp/deepgemm-cache"  # node-local, seeded from /configs/deepgemm-cache by setup script
     FLASHINFER_WORKSPACE_BASE: "/configs/flashinfer-cache"
     SGLANG_DISAGGREGATION_HEARTBEAT_MAX_FAILURE: "100000"
     SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT: "100000"
@@ -115,7 +123,6 @@ backend:
       moe-dense-tp-size: 1
       enable-dp-attention: true
       enable-dp-lm-head: true
-      prefill-round-robin-balance: true
 
       mamba-scheduler-strategy: "no_buffer"
       mamba-track-interval: 128
