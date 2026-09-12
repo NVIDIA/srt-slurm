@@ -13,6 +13,8 @@ if TYPE_CHECKING:
     from srtctl.core.runtime import RuntimeContext
     from srtctl.core.schema import SrtConfig
 
+DEFAULT_SA_BENCH_API_ENDPOINT = "/v1/completions"
+
 
 @register_benchmark("sa-bench")
 class SABenchRunner(BenchmarkRunner):
@@ -28,6 +30,7 @@ class SABenchRunner(BenchmarkRunner):
         - benchmark.req_rate: Request rate (default: "inf")
         - benchmark.dataset_name: "random" (default) or "custom"
         - benchmark.dataset_path: Container path to dataset file (required when dataset_name="custom")
+        - benchmark.endpoint: API path, /v1/completions (default) or /v1/chat/completions
         - benchmark.reuse_http_connections: Reuse a benchmark-scoped HTTP connection pool
           for the Dynamo adapter (default: false)
         - benchmark.slow_down_sleep_time / benchmark.slow_down_wait_time: When both are set and
@@ -62,6 +65,10 @@ class SABenchRunner(BenchmarkRunner):
             errors.append("benchmark.concurrencies is required for sa-bench")
         if is_custom and not b.dataset_path:
             errors.append("benchmark.dataset_path is required when dataset_name='custom'")
+
+        api_endpoint = b.endpoint or DEFAULT_SA_BENCH_API_ENDPOINT
+        if not api_endpoint.startswith("/"):
+            errors.append(f"benchmark.endpoint must be an absolute path starting with '/'; got {api_endpoint!r}")
 
         return errors
 
@@ -117,5 +124,6 @@ class SABenchRunner(BenchmarkRunner):
             dataset_name,
             b.dataset_path or "",
             str(b.reuse_http_connections).lower(),
+            b.endpoint or DEFAULT_SA_BENCH_API_ENDPOINT,
         ]
         return cmd

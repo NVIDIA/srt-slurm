@@ -161,8 +161,53 @@ class TestSABenchRunner:
         )
         cmd = runner.build_command(config, runtime)
         assert "random" in cmd
-        assert cmd[-2] == ""  # empty dataset path
-        assert cmd[-1] == "false"  # per-request HTTP sessions by default
+        assert cmd[-3] == ""  # empty dataset path
+        assert cmd[-2] == "false"  # per-request HTTP sessions by default
+        assert cmd[-1] == "/v1/completions"
+
+    def test_build_command_custom_endpoint(self):
+        """build_command passes the API path through to bench.sh."""
+        from unittest.mock import MagicMock
+
+        from srtctl.benchmarks.sa_bench import SABenchRunner
+
+        runner = SABenchRunner()
+        runtime = MagicMock(frontend_port=8000, model_path="/model", is_hf_model=False)
+
+        cmd = runner.build_command(self._endpoint_config("/v1/chat/completions"), runtime)
+
+        assert cmd[-1] == "/v1/chat/completions"
+
+    def _endpoint_config(self, endpoint):
+        from srtctl.core.schema import BenchmarkConfig, ModelConfig, ResourceConfig, SrtConfig
+
+        return SrtConfig(
+            name="test",
+            model=ModelConfig(path="/model", container="/image", precision="fp4"),
+            resources=ResourceConfig(gpu_type="h100"),
+            benchmark=BenchmarkConfig(
+                type="sa-bench",
+                isl=8192,
+                osl=1024,
+                concurrencies="2560",
+                endpoint=endpoint,
+            ),
+        )
+
+    @pytest.mark.parametrize("endpoint", ["/v1/completions", "/v1/chat/completions"])
+    def test_validate_config_accepts_both_api_paths(self, endpoint):
+        """The dynamo adapter serves both APIs, so neither needs extra config."""
+        from srtctl.benchmarks.sa_bench import SABenchRunner
+
+        assert SABenchRunner().validate_config(self._endpoint_config(endpoint)) == []
+
+    def test_validate_config_rejects_relative_endpoint(self):
+        """bench.sh appends the path to the frontend URL, so it must be absolute."""
+        from srtctl.benchmarks.sa_bench import SABenchRunner
+
+        errors = SABenchRunner().validate_config(self._endpoint_config("v1/chat/completions"))
+
+        assert any("absolute path" in error for error in errors)
 
     def test_build_command_enables_http_connection_reuse(self):
         """Explicit opt-in is appended without shifting existing arguments."""
@@ -189,8 +234,8 @@ class TestSABenchRunner:
 
         cmd = runner.build_command(config, runtime)
 
-        assert cmd[-2] == "/data/bench.jsonl"
-        assert cmd[-1] == "true"
+        assert cmd[-3] == "/data/bench.jsonl"
+        assert cmd[-2] == "true"
 
     def test_http_connection_reuse_schema_default_and_roundtrip(self):
         """The YAML field is typed and remains opt-in when omitted."""
