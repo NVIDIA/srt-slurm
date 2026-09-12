@@ -253,10 +253,7 @@ class TestTachometerConfig:
                 container_image="node:latest", port=9101, command="/bin/node_exporter --custom :{port}"
             )
         )
-        assert (
-            resolve_exporter_command(custom.resolved_node_exporter, template)
-            == "/bin/node_exporter --custom :9101"
-        )
+        assert resolve_exporter_command(custom.resolved_node_exporter, template) == "/bin/node_exporter --custom :9101"
 
     def test_host_sampler_follows_the_scrape_knob(self, tmp_path):
         """The host sampler's cadence derives from the same single knob."""
@@ -1197,10 +1194,18 @@ class TestTachometerStageMixin:
         assert "-web.listen-address=:9256" in pe_call.kwargs["command"]
         node_command = mock_srun.call_args_list[1].kwargs["command"]
         assert {
-            "--collector.cpu", "--collector.infiniband", "--collector.meminfo", "--collector.processes",
-            "--collector.stat", "--collector.vmstat", "--collector.pressure", "--collector.meminfo_numa",
+            "--collector.cpu",
+            "--collector.infiniband",
+            "--collector.meminfo",
+            "--collector.processes",
+            "--collector.stat",
+            "--collector.vmstat",
+            "--collector.pressure",
+            "--collector.meminfo_numa",
         }.issubset(node_command)
-        vmstat_fields = next(arg.split("=", 1)[1] for arg in node_command if arg.startswith("--collector.vmstat.fields="))
+        vmstat_fields = next(
+            arg.split("=", 1)[1] for arg in node_command if arg.startswith("--collector.vmstat.fields=")
+        )
         assert re.search(vmstat_fields, "pgmajfault")
         assert re.search(vmstat_fields, "pgsteal_kswapd")
         # The container exporters keep their image + mounts.
