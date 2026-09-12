@@ -1397,8 +1397,13 @@ class TestTachometerStageMixin:
     def test_resolve_host_binary(self, tmp_path, monkeypatch):
         """Absolute paths verbatim; relative ones against SRTCTL_SOURCE_DIR (the
         checkout root the sbatch script exports); missing or non-executable -> None."""
+        from srtctl.cli.mixins import telemetry_stage
+
         stage = TelemetryStageMixin()
         monkeypatch.setenv("SRTCTL_SOURCE_DIR", str(tmp_path))
+        # Keep the checkout fallback inside the fixture too: developer machines
+        # may already have installed configs/process-exporter via make setup.
+        monkeypatch.setattr(telemetry_stage, "__file__", str(tmp_path / "src/srtctl/cli/mixins/telemetry_stage.py"))
 
         assert stage._resolve_host_binary("configs/process-exporter") is None
 
@@ -1535,13 +1540,15 @@ class TestTachometerStageMixin:
         mock_srun.return_value = _running_exporter()
         harness = Harness()
         harness._resolve_tachometer_binary = lambda binary_path: binary_path
+        harness._resolve_host_binary = lambda binary: tmp_path / "process-exporter"
 
         processes = harness.start_tachometer()
 
-        # The built-in node exporter launches by default alongside the explicit DCGM exporter.
+        # Both built-in host exporters launch alongside the explicit DCGM exporter.
         assert [process.name for process in processes] == [
             "tachometer_dcgm_exporter",
             "tachometer_node_exporter",
+            "tachometer_process_exporter",
             "tachometer",
         ]
         assert 'name = "dcgm_node-a"' in (tmp_path / "tachometer_config.toml").read_text()
