@@ -423,3 +423,47 @@ class TestRegistryPreCleanupHook:
         t2.join(5)
         assert calls == ["hook"]  # ran exactly once
         assert popen.terminate.called
+
+
+class TestFlushWaitsForReportBytes:
+    """nsys creates the .nsys-rep file immediately and fills it for minutes; the flush must wait for the bytes."""
+
+    def test_growing_report_is_not_settled_until_stable_and_non_empty(self, tmp_path, monkeypatch):
+        import threading
+
+        home = _fake_home(tmp_path)
+        monkeypatch.setenv("FAKE_NSIGHT_LOG", str(tmp_path / "calls.jsonl"))
+        monkeypatch.setenv("SLURM_JOB_ID", "777")
+
+        class Harness(NsightSlurmStageMixin):
+            def __init__(self):
+                self.config = _disagg(nsight_slurm_home=str(home))
+                self.runtime = SimpleNamespace(
+                    log_dir=tmp_path / "logs", container_image="/img.sqsh", head_node_ip="10.0.0.7"
+                )
+                self.runtime.log_dir.mkdir()
+
+        h = Harness()
+        h.nsight_slurm_launch_kwargs()
+        h._slurm_cmd = lambda args: "777.8|nsight-slurm-connector\n" if args[0] == "squeue" else ""
+        direct = h.runtime.log_dir / "nsight-slurm-direct"
+        rep = direct / "777_n1_rank0.1.nsys-rep"
+
+        def nsys_writes_slowly():
+            time.sleep(0.15)  # after the signal: placeholder first, then bytes trickle in for a while
+            rep.write_bytes(b"")
+            for _ in range(6):
+                time.sleep(0.1)
+                with open(rep, "ab") as f:
+                    f.write(b"x" * 1024)
+
+        t = threading.Thread(target=nsys_writes_slowly)
+        t.start()
+        started = time.monotonic()
+        n = h.flush_nsight_slurm(None, timeout_s=5.0, first_wait_s=0.1, settle_s=0.3, poll_s=0.05)
+        elapsed = time.monotonic() - started
+        t.join()
+        assert n == 1
+        # It returned only after the file stopped growing (~0.75 s of writes + 0.3 s settle), not at first sight.
+        assert elapsed >= 0.9
+        assert rep.stat().st_size == 6 * 1024

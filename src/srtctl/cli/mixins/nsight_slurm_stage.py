@@ -145,9 +145,9 @@ class NsightSlurmStageMixin:
         self,
         registry: ProcessRegistry | None,
         *,
-        timeout_s: float = 240.0,
+        timeout_s: float = 600.0,
         first_wait_s: float = 45.0,
-        settle_s: float = 20.0,
+        settle_s: float = 60.0,
         poll_s: float = 5.0,
     ) -> int:
         """End the nsys sessions and wait for the reports BEFORE the worker steps are killed.
@@ -190,8 +190,17 @@ class NsightSlurmStageMixin:
 
         direct_dir = Path(self.runtime.log_dir) / self.config.profiling.NSIGHT_SLURM_DIRECT_REPORT_SUBDIR
 
+        def report_files() -> list[Path]:
+            return [f for d in (report_root, direct_dir) if d.exists() for f in d.rglob("*.nsys-rep")]
+
         def count_reports() -> int:
-            return sum(sum(1 for _ in d.rglob("*.nsys-rep")) for d in (report_root, direct_dir) if d.exists())
+            return len(report_files())
+
+        def progress_signature() -> tuple[int, int, int]:
+            """(files, non-empty files, total bytes): nsys creates the .nsys-rep at once and fills it for minutes."""
+            files = report_files()
+            sizes = [f.stat().st_size for f in files if f.exists()]
+            return len(sizes), sum(1 for s in sizes if s > 0), sum(sizes)
 
         job_id = os.environ.get("SLURM_JOB_ID")
         if job_id:
@@ -203,17 +212,21 @@ class NsightSlurmStageMixin:
         deadline = time.monotonic() + timeout_s
         first_deadline = time.monotonic() + first_wait_s
         rescue_scratch_reports()
-        baseline = last = count_reports()  # reports that existed before `stop` do not prove anything ended
+        baseline = count_reports()  # reports that existed before `stop` do not prove anything ended
+        last_sig = progress_signature()
         stable_since = time.monotonic()
         signalled = False
         while time.monotonic() < deadline:
             rescue_scratch_reports()  # cheap; connectors delete their workspace when they exit
-            n = count_reports()
+            sig = progress_signature()
             now = time.monotonic()
-            if n != last:
-                last, stable_since = n, now
-            new_reports = n > baseline
-            if new_reports and now - stable_since >= settle_s and (signalled or now >= first_deadline):
+            if sig != last_sig:
+                last_sig, stable_since = sig, now
+            n_files, n_nonempty, _ = sig
+            new_reports = n_files > baseline
+            # Settled = nothing changed (count AND bytes) for settle_s and every report has content.
+            settled = now - stable_since >= settle_s and n_nonempty == n_files
+            if new_reports and settled and (signalled or now >= first_deadline):
                 break
             if not signalled and now >= first_deadline and not new_reports:
                 signalled = True
@@ -222,9 +235,16 @@ class NsightSlurmStageMixin:
         rescued = rescue_scratch_reports()
         if rescued:
             logger.info("nsight-slurm: rescued %d report(s) from the runtime workspaces", rescued)
-        last = count_reports()
-        logger.info("nsight-slurm: %d report file(s) under %s / %s after flush", last, report_root, direct_dir)
-        return last
+        n_files, n_nonempty, total = progress_signature()
+        logger.info(
+            "nsight-slurm: %d report file(s) (%d non-empty, %d bytes) under %s / %s after flush",
+            n_files,
+            n_nonempty,
+            total,
+            report_root,
+            direct_dir,
+        )
+        return n_files
 
     NSIGHT_SLURM_CONNECTOR_STEP_NAME: str = "nsight-slurm-connector"
 
