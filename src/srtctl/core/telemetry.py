@@ -181,6 +181,27 @@ def generate_tachometer_config(
             )
         )
 
+    process_exporter = tachometer.resolved_process_exporter
+    if process_exporter is not None:
+        # Per-process / per-thread host telemetry on every node that hosts a
+        # backend rank OR a frontend replica. The frontend node is the one the
+        # other exporters can miss (a dedicated or `orchestrator_placement:
+        # head` frontend hosts no backend process), and it is where frontend
+        # CPU pathologies live. Preserve metric names and labels while
+        # attaching host and run metadata to the raw rows.
+        for node in sorted(set(physical_nodes) | set(frontend_nodes)):
+            node_metadata = {"hostname": node, "job_id": runtime.job_id, "run_name": runtime.run_name}
+            node_metadata.update(tachometer.extra_metadata)
+            endpoints.append(
+                TelemetryEndpoint(
+                    name=f"process_exporter_{node}",
+                    url=f"http://{node}:{process_exporter.port}/metrics",
+                    collect_interval_ms=tachometer.collect_interval_ms,
+                    filter="passthrough",
+                    node_metadata=node_metadata,
+                )
+            )
+
     return _dump_toml(
         endpoints=endpoints,
         storage=str(runtime.log_dir / tachometer.storage_subdir / TACHOMETER_STORAGE_PARENT / TACHOMETER_STORAGE_LEAF),

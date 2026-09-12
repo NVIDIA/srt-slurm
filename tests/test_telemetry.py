@@ -4,10 +4,12 @@
 """Tests for Tachometer and DCGM power telemetry."""
 
 import json
+import re
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 from marshmallow import ValidationError
 
 from srtctl.cli.mixins.frontend_stage import FrontendTopology
@@ -95,6 +97,96 @@ class TestTachometerConfig:
         assert "dcgm-exporter" in tachometer.resolved_dcgm_exporter.container_image
         assert tachometer.resolved_node_exporter.port == 9101
         assert "node-exporter" in tachometer.resolved_node_exporter.container_image
+        assert tachometer.process_exporter is None
+        assert tachometer.resolved_process_exporter.port == 9256
+        # Host-native by default: the upstream image is FROM scratch and some
+        # enroot deployments cannot start it (no /root, no /bin/sh).
+        assert tachometer.resolved_process_exporter.binary == "configs/process-exporter"
+        assert tachometer.resolved_process_exporter.container_image == ""
+
+    def test_process_exporter_requires_binary_or_container_image(self):
+        with pytest.raises(ValidationError, match="observability.tachometer.process_exporter"):
+            _make_config(
+                tachometer=TachometerConfig(
+                    enabled=True,
+                    process_exporter=TelemetryExporterConfig(container_image="", port=9256),
+                )
+            )
+
+    def test_process_exporter_container_override_is_accepted(self):
+        custom = TelemetryExporterConfig(container_image="/containers/process-exporter.sqsh", port=9300)
+        config = _make_config(tachometer=TachometerConfig(enabled=True, process_exporter=custom))
+        assert config.observability.tachometer.resolved_process_exporter is custom
+        assert config.observability.tachometer.resolved_process_exporter.binary is None
+
+    def test_process_exporter_groups_name_every_srtctl_process_class(self):
+        """The process-exporter config must isolate the frontend in its own group
+        (its CPU is the signal the Prometheus surface cannot carry) and expose
+        thread-name breakdowns; first match wins, so the launcher precedes the
+        module it wraps."""
+        from srtctl.cli.mixins.telemetry_stage import (
+            PROCESS_EXPORTER_COMMAND_TEMPLATE,
+            process_exporter_config_yaml,
+            resolve_exporter_command,
+        )
+
+        text = process_exporter_config_yaml()
+        names = [line.split("name:", 1)[1].strip() for line in text.splitlines() if "name:" in line]
+        assert names[0] == "frontend"
+        assert names.index("trtllm_llmapi_launch") < names.index("dynamo_trtllm")
+        for expected in ("dynamo_trtllm", "dynamo_sglang", "dynamo_vllm", "aiperf", "etcd", "nats"):
+            assert expected in names
+        assert "dynamo\\.frontend" in text
+
+        cmd = resolve_exporter_command(TachometerConfig().resolved_process_exporter, PROCESS_EXPORTER_COMMAND_TEMPLATE)
+        assert "-config.path /logs/process-exporter.yml" in cmd
+        assert "-threads=true" in cmd
+        assert "-children=false" in cmd
+        assert ":9256" in cmd
+
+    @pytest.mark.parametrize(
+        ("cmdline", "expected"),
+        [
+            ("trtllm-llmapi-launch python3 -m dynamo.trtllm", "trtllm_llmapi_launch"),
+            ("/opt/bin/trtllm-llmapi-launch python3 -m dynamo.trtllm", "trtllm_llmapi_launch"),
+            ("/bin/bash /opt/bin/trtllm-llmapi-launch python3 -m dynamo.trtllm", "trtllm_llmapi_launch"),
+            ("python3 -m tensorrt_llm.llmapi.mgmn_worker_node --rank 0", "trtllm_engine"),
+            ("python3 -m dynamo.trtllm --disaggregation-mode decode", "dynamo_trtllm"),
+            ("python3 -m dynamo.frontend", "frontend"),
+            ("trtllm-llmapi-launch-other", None),
+            ("python3 -m tensorrt_llm.llmapi.mgmn_worker_node_extra", None),
+        ],
+    )
+    def test_process_exporter_matches_full_command_lines(self, cmdline, expected):
+        """Match full argv, including interpreter prefixes and separate engine children."""
+        from srtctl.cli.mixins.telemetry_stage import process_exporter_config_yaml
+
+        groups = yaml.safe_load(process_exporter_config_yaml())["process_names"]
+        matched = next(
+            (
+                group["name"]
+                for group in groups
+                if group.get("cmdline") and all(re.search(pattern, cmdline) for pattern in group["cmdline"])
+            ),
+            None,
+        )
+        assert matched == expected
+
+    def test_process_exporter_host_command_uses_host_paths(self):
+        """Host-native launch: no /logs mount exists, so the binary and the
+        group file are both addressed by their host paths."""
+        from srtctl.cli.mixins.telemetry_stage import (
+            PROCESS_EXPORTER_HOST_COMMAND_TEMPLATE,
+            resolve_exporter_command,
+        )
+
+        template = PROCESS_EXPORTER_HOST_COMMAND_TEMPLATE.replace("{binary}", "/srt/configs/process-exporter").replace(
+            "{config_path}", "/lustre/out/logs/process-exporter.yml"
+        )
+        cmd = resolve_exporter_command(TachometerConfig().resolved_process_exporter, template)
+        assert cmd.startswith("/srt/configs/process-exporter -config.path /lustre/out/logs/process-exporter.yml ")
+        assert "-web.listen-address=:9256" in cmd
+        assert "-threads=true" in cmd
 
     def test_dcgm_sampling_follows_the_scrape_knob(self):
         """One knob rules both cadences: the tachometer-owned DCGM exporter
@@ -148,6 +240,7 @@ class TestTachometerConfig:
         tachometer = TachometerConfig(default_exporters=False)
         assert tachometer.resolved_dcgm_exporter is None
         assert tachometer.resolved_node_exporter is None
+        assert tachometer.resolved_process_exporter is None
 
     def test_explicit_exporter_block_wins_over_default(self):
         custom = TelemetryExporterConfig(container_image="/containers/dcgm.sqsh", port=9500)
@@ -883,6 +976,53 @@ class TestTachometerConfigGeneration:
         assert 'name = "frontend0"' in config_text
         assert "dcgm_" not in config_text
         assert "node_exporter_" not in config_text
+        assert "process_exporter_" not in config_text
+
+    @patch("srtctl.core.telemetry.get_hostname_ip", return_value="10.0.0.1")
+    def test_process_exporter_targets_frontend_node_even_without_backend(self, _mock_get_hostname_ip):
+        """A head-placed or dedicated frontend node hosts no backend process, so the
+        per-node exporters would skip it -- yet it is where frontend CPU lives.
+        The process exporter must target the union of backend and frontend nodes,
+        preserving groupname/threadname labels and host metadata."""
+        tachometer = TachometerConfig(enabled=True, extra_metadata={"study": "process-monitoring"})
+        runtime = MagicMock(job_id="12345", run_name="test_12345", network_interface="eth0")
+        runtime.log_dir = Path("/runs/12345/logs")
+        processes = [
+            Process(
+                node="node-a",
+                gpu_indices=frozenset({0}),
+                sys_port=8081,
+                http_port=30000,
+                endpoint_mode="agg",
+                endpoint_index=0,
+                node_rank=0,
+            )
+        ]
+        topology = FrontendTopology(
+            nginx_node=None,
+            frontend_nodes=["fe-node"],
+            frontend_port=8000,
+            public_port=8000,
+        )
+
+        config_text = generate_tachometer_config(
+            processes=processes,
+            frontend_topology=topology,
+            runtime=runtime,
+            tachometer=tachometer,
+        )
+
+        assert 'name = "process_exporter_node-a"' in config_text
+        assert 'name = "process_exporter_fe-node"' in config_text
+        assert 'url = "http://fe-node:9256/metrics"' in config_text
+        # DCGM/node exporters keep their backend-node scope.
+        assert 'name = "node_exporter_fe-node"' not in config_text
+        block = config_text.split('name = "process_exporter_fe-node"', 1)[1].split("[[endpoints]]", 1)[0]
+        assert 'filter = "passthrough"' in block
+        assert '"hostname" = "fe-node"' in block
+        assert '"job_id" = "12345"' in block
+        assert '"run_name" = "test_12345"' in block
+        assert '"study" = "process-monitoring"' in block
 
     @patch("srtctl.core.telemetry.get_hostname_ip")
     def test_vllm_frontend_targets_only_agg_leader_metrics(self, mock_get_hostname_ip):
@@ -998,13 +1138,30 @@ class TestTachometerStageMixin:
         # Pin the default-name PATH fallback so the assertion below does not
         # depend on whether the developer's checkout has bin/tachometer-scraper.
         harness._resolve_tachometer_binary = lambda binary_path: binary_path
+        # Likewise pin the host-native process-exporter binary (installed by make setup).
+        harness._resolve_host_binary = lambda binary: Path("/srt/configs/process-exporter")
 
         procs = harness.start_tachometer()
 
-        assert len(procs) == 3
+        assert len(procs) == 4  # dcgm + node + process exporters + scraper
         assert (tmp_path / "tachometer_config.toml").exists()
         assert (tmp_path / "tachometer" / "local").exists()
-        assert mock_srun.call_count == 3
+        assert mock_srun.call_count == 4
+        # The process exporter runs host-native: no container, host paths for
+        # the binary and its group file.
+        pe_call = mock_srun.call_args_list[2]
+        assert pe_call.kwargs["container_image"] is None
+        assert pe_call.kwargs["container_mounts"] is None
+        assert pe_call.kwargs["command"][:3] == [
+            "/srt/configs/process-exporter",
+            "-config.path",
+            str(tmp_path / "process-exporter.yml"),
+        ]
+        assert "-web.listen-address=:9256" in pe_call.kwargs["command"]
+        # The container exporters keep their image + mounts.
+        for call in mock_srun.call_args_list[:2]:
+            assert call.kwargs["container_image"] in ("dcgm:latest", "node:latest")
+            assert call.kwargs["container_mounts"] == {Path(tmp_path): Path("/logs")}
         scraper_call = mock_srun.call_args_list[-1]
         assert scraper_call.kwargs["command"] == [
             "tachometer-scraper",
@@ -1097,6 +1254,7 @@ class TestTachometerStageMixin:
         mock_srun.return_value = _running_exporter()
         harness = Harness()
         harness._resolve_tachometer_binary = lambda binary_path: binary_path
+        harness._resolve_host_binary = lambda binary: Path("/srt/configs/process-exporter")
 
         procs = harness.start_tachometer()
 
@@ -1104,9 +1262,160 @@ class TestTachometerStageMixin:
         assert [proc.name for proc in procs] == [
             "tachometer_dcgm_exporter",
             "tachometer_node_exporter",
+            "tachometer_process_exporter",
             "tachometer",
         ]
         assert (tmp_path / "tachometer_config.toml").exists()
+        # The process-exporter group file lands in the log dir.
+        assert "name: frontend" in (tmp_path / "process-exporter.yml").read_text()
+
+    @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
+    def test_process_exporter_skipped_when_host_binary_missing(self, mock_srun, tmp_path, caplog):
+        """A checkout whose `make setup` predates the process exporter must still
+        run: the leg is skipped with a warning, the other exporters and the
+        scraper start as before."""
+        import dataclasses
+        import logging
+
+        class Harness(TelemetryStageMixin):
+            def __init__(self):
+                base = _make_config()
+                self.config = dataclasses.replace(base, observability=ObservabilityConfig(enabled=True))
+                self.runtime = MagicMock()
+                self.runtime.log_dir = tmp_path
+                self.runtime.job_id = "12345"
+                self.runtime.run_name = "test_12345"
+                self.runtime.network_interface = "eth0"
+                self.runtime.nodes.head = "node-a"
+                self.runtime.nodes.het = False
+                self.runtime.srun_options = {}
+                self.runtime.container_mounts = {Path(tmp_path): Path("/logs")}
+                self._backend_processes = [
+                    Process(
+                        node="node-a",
+                        gpu_indices=frozenset({0}),
+                        sys_port=8081,
+                        http_port=30000,
+                        endpoint_mode="agg",
+                        endpoint_index=0,
+                        node_rank=0,
+                    )
+                ]
+
+            @property
+            def backend_processes(self):
+                return self._backend_processes
+
+            def _compute_frontend_topology(self):
+                return FrontendTopology(
+                    nginx_node=None,
+                    frontend_nodes=["node-a"],
+                    frontend_port=8000,
+                    public_port=8000,
+                )
+
+        mock_srun.return_value = _running_exporter()
+        harness = Harness()
+        harness._resolve_tachometer_binary = lambda binary_path: binary_path
+        harness._resolve_host_binary = lambda binary: None
+
+        with caplog.at_level(logging.WARNING, logger="srtctl.cli.mixins.telemetry_stage"):
+            procs = harness.start_tachometer()
+
+        assert [proc.name for proc in procs] == [
+            "tachometer_dcgm_exporter",
+            "tachometer_node_exporter",
+            "tachometer",
+        ]
+        assert any("configs/process-exporter" in record.getMessage() for record in caplog.records)
+
+    @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
+    def test_process_exporter_container_image_launches_in_container(self, mock_srun, tmp_path):
+        """An explicit container_image (and no binary) keeps the container path:
+        image + mounts on srun, group file addressed through /logs."""
+        import dataclasses
+
+        class Harness(TelemetryStageMixin):
+            def __init__(self):
+                base = _make_config()
+                self.config = dataclasses.replace(
+                    base,
+                    observability=ObservabilityConfig(
+                        enabled=True,
+                        tachometer=TachometerConfig(
+                            enabled=True,
+                            process_exporter=TelemetryExporterConfig(container_image="pe-with-shell:latest", port=9256),
+                        ),
+                    ),
+                )
+                self.runtime = MagicMock()
+                self.runtime.log_dir = tmp_path
+                self.runtime.job_id = "12345"
+                self.runtime.run_name = "test_12345"
+                self.runtime.network_interface = "eth0"
+                self.runtime.nodes.head = "node-a"
+                self.runtime.nodes.het = False
+                self.runtime.srun_options = {}
+                self.runtime.container_mounts = {Path(tmp_path): Path("/logs")}
+                self._backend_processes = [
+                    Process(
+                        node="node-a",
+                        gpu_indices=frozenset({0}),
+                        sys_port=8081,
+                        http_port=30000,
+                        endpoint_mode="agg",
+                        endpoint_index=0,
+                        node_rank=0,
+                    )
+                ]
+
+            @property
+            def backend_processes(self):
+                return self._backend_processes
+
+            def _compute_frontend_topology(self):
+                return FrontendTopology(
+                    nginx_node=None,
+                    frontend_nodes=["node-a"],
+                    frontend_port=8000,
+                    public_port=8000,
+                )
+
+        mock_srun.return_value = _running_exporter()
+        harness = Harness()
+        harness._resolve_tachometer_binary = lambda binary_path: binary_path
+        harness._resolve_host_binary = lambda binary: (_ for _ in ()).throw(AssertionError("not consulted"))
+
+        procs = harness.start_tachometer()
+
+        assert "tachometer_process_exporter" in [proc.name for proc in procs]
+        pe_call = mock_srun.call_args_list[2]
+        assert pe_call.kwargs["container_image"] == "pe-with-shell:latest"
+        assert pe_call.kwargs["container_mounts"] == {Path(tmp_path): Path("/logs")}
+        assert pe_call.kwargs["command"][:3] == ["/bin/process-exporter", "-config.path", "/logs/process-exporter.yml"]
+
+    def test_resolve_host_binary(self, tmp_path, monkeypatch):
+        """Absolute paths verbatim; relative ones against SRTCTL_SOURCE_DIR (the
+        checkout root the sbatch script exports); missing or non-executable -> None."""
+        from srtctl.cli.mixins import telemetry_stage
+
+        stage = TelemetryStageMixin()
+        monkeypatch.setenv("SRTCTL_SOURCE_DIR", str(tmp_path))
+        # Keep the checkout fallback inside the fixture too: developer machines
+        # may already have installed configs/process-exporter via make setup.
+        monkeypatch.setattr(telemetry_stage, "__file__", str(tmp_path / "src/srtctl/cli/mixins/telemetry_stage.py"))
+
+        assert stage._resolve_host_binary("configs/process-exporter") is None
+
+        configs = tmp_path / "configs"
+        configs.mkdir()
+        binary = configs / "process-exporter"
+        binary.write_text("#!/bin/sh\n")
+        assert stage._resolve_host_binary("configs/process-exporter") is None  # not executable yet
+        binary.chmod(0o755)
+        assert stage._resolve_host_binary("configs/process-exporter") == binary
+        assert stage._resolve_host_binary(str(binary)) == binary
+        assert stage._resolve_host_binary("/nonexistent/process-exporter") is None
 
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
     def test_tachometer_explicit_false_opts_out(self, mock_srun, tmp_path):
@@ -1169,11 +1478,17 @@ class TestTachometerStageMixin:
                 )
 
         mock_srun.return_value = _running_exporter()
+        harness = Harness()
+        harness._resolve_host_binary = lambda binary: Path("/srt/configs/process-exporter")
 
-        processes = Harness().start_tachometer()
+        processes = harness.start_tachometer()
 
-        assert [process.name for process in processes] == ["tachometer_node_exporter", "tachometer"]
-        assert mock_srun.call_count == 2
+        assert [process.name for process in processes] == [
+            "tachometer_node_exporter",
+            "tachometer_process_exporter",
+            "tachometer",
+        ]
+        assert mock_srun.call_count == 3
         assert 'name = "dcgm_node-a"' in (tmp_path / "tachometer_config.toml").read_text()
 
     @patch("srtctl.cli.mixins.telemetry_stage.start_srun_process")
@@ -1225,13 +1540,15 @@ class TestTachometerStageMixin:
         mock_srun.return_value = _running_exporter()
         harness = Harness()
         harness._resolve_tachometer_binary = lambda binary_path: binary_path
+        harness._resolve_host_binary = lambda binary: tmp_path / "process-exporter"
 
         processes = harness.start_tachometer()
 
-        # The built-in node exporter launches by default alongside the explicit DCGM exporter.
+        # Both built-in host exporters launch alongside the explicit DCGM exporter.
         assert [process.name for process in processes] == [
             "tachometer_dcgm_exporter",
             "tachometer_node_exporter",
+            "tachometer_process_exporter",
             "tachometer",
         ]
         assert 'name = "dcgm_node-a"' in (tmp_path / "tachometer_config.toml").read_text()
@@ -1284,13 +1601,14 @@ class TestTachometerStageMixin:
 
         mock_srun.return_value = _running_exporter()
         harness = Harness()
+        harness._resolve_host_binary = lambda binary: Path("/srt/configs/process-exporter")
 
         harness.start_tachometer()
 
         exporter_calls = [
             call for call in mock_srun.call_args_list if call.kwargs.get("nodelist") == ["node-a", "node-b"]
         ]
-        assert len(exporter_calls) == 2
+        assert len(exporter_calls) == 3  # dcgm, node, process exporters
         for call in exporter_calls:
             assert call.kwargs["nodes"] == 2
             assert call.kwargs["ntasks"] == 2
