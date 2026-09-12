@@ -328,16 +328,18 @@ supported). A recipe can be switched between the two TRT-LLM serving stacks by
 changing only `frontend.type` between `dynamo` and `trtllm_serve`. See the sample
 recipe `recipes/trtllm/b200-fp8/1k1k/stp/ctx1_gen3_tp8_batch1024_eplb0_mtp0_4_trtllm_serve.yaml`.
 
-**Worker metrics default.** srtctl sets `return_perf_metrics: true` in the
-`trtllm_config` section of every mode a `trtllm_serve` recipe uses (prefill and
-decode, or `aggregated`), creating the section when the recipe has none. This is
-a setdefault: an explicit `return_perf_metrics: false` in the recipe wins and is
-warned about. trtllm-serve mounts a worker's `/prometheus/metrics` route only
-when the engine runs with that flag, and TensorRT-LLM's own default is `false`,
-so without it Tachometer's `backend_*` endpoints answer HTTP 404 and the capture
-has no worker-level data. The route carries the per-request series (request
-latency, TTFT, TPOT, queue/prefill/decode time, token counters); it applies
-independently of `observability.enabled`, which keeps its own expansion.
+**Worker metrics defaults.** srtctl sets `return_perf_metrics: true` and
+`enable_iter_perf_stats: true` in the `trtllm_config` section of every mode a
+`trtllm_serve` recipe uses (prefill and decode, or `aggregated`), creating the
+section when absent. These defaults apply independently of `observability.enabled`.
+
+`return_perf_metrics` enables the worker's `/prometheus/metrics` route and
+per-request statistics such as latency and token counters. `enable_iter_perf_stats`
+also enables the PyTorch engine's iteration statistics, including KV-cache occupancy.
+Explicit values for either option are preserved: `return_perf_metrics: false`
+disables the route and produces a configuration warning, while
+`enable_iter_perf_stats: false` disables iteration statistics without disabling
+the route. Use the latter to opt out of iteration-stat collection overhead.
 
 ### vllm frontend
 

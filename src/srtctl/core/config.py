@@ -701,15 +701,19 @@ def expand_trtllm_serve_defaults(cfg: dict) -> dict:
     ``serve/openai_server.py``, ``register_routes``); TensorRT-LLM's own default
     is ``false``. Tachometer scrapes that route on every run, so without this
     default every trtllm-serve worker endpoint answers HTTP 404 and the capture
-    silently has no worker-level data.
+    silently has no worker-level data. ``enable_iter_perf_stats: true`` also
+    enables the PyTorch backend's iteration statistics, including KV-cache
+    occupancy, on that surface.
 
     Applies to every ``frontend.type: trtllm_serve`` recipe with a TRT-LLM
     backend, independent of ``observability.enabled``. The engine sections for
     the modes the recipe uses (prefill + decode for a disaggregated
     ``resources`` block, ``aggregated`` otherwise) are created when absent, so a
     recipe with no ``trtllm_config`` gets the default too. Every write is a
-    ``setdefault``: an explicit ``return_perf_metrics: false`` in the recipe
-    wins, but is reported loudly. Mutates ``cfg`` in place and returns it.
+    ``setdefault``: explicit values for either engine option are preserved.
+    ``return_perf_metrics: false`` is reported because it disables the route;
+    ``enable_iter_perf_stats: false`` disables iteration statistics independently.
+    Mutates ``cfg`` in place and returns it.
     """
     from srtctl.core.schema import TRTLLM_SERVE_ENGINE_DEFAULTS
 
