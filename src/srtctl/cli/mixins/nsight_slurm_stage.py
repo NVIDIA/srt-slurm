@@ -31,7 +31,6 @@ import logging
 import os
 import shlex
 import shutil
-import signal
 import subprocess
 import time
 from pathlib import Path
@@ -227,18 +226,47 @@ class NsightSlurmStageMixin:
         logger.info("nsight-slurm: %d report file(s) under %s / %s after flush", last, report_root, direct_dir)
         return last
 
+    NSIGHT_SLURM_CONNECTOR_STEP_NAME: str = "nsight-slurm-connector"
+
     @staticmethod
-    def _nsight_slurm_signal_workers(registry: ProcessRegistry | None) -> None:
-        """SIGTERM the wrapper processes of the worker steps (no reap; cleanup does that later)."""
-        if registry is None:
+    def _slurm_cmd(args: list[str]) -> str:
+        """Run a Slurm CLI command on the orchestrator node and return its stdout (empty on failure)."""
+        try:
+            return subprocess.run(args, capture_output=True, text=True, timeout=60, check=False).stdout
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            logger.warning("nsight-slurm: %s failed: %s", args[0], exc)
+            return ""
+
+    def _nsight_slurm_connector_steps(self, job_id: str) -> list[str]:
+        """Step ids of the wrapper-launched worker steps (their task command is the connector)."""
+        out = self._slurm_cmd(["squeue", "-s", "-j", job_id, "-h", "-o", "%i|%j"])
+        steps = []
+        for line in out.splitlines():
+            step_id, _, name = line.strip().partition("|")
+            if name == self.NSIGHT_SLURM_CONNECTOR_STEP_NAME and step_id:
+                steps.append(step_id)
+        return steps
+
+    def _nsight_slurm_signal_workers(self, registry: ProcessRegistry | None) -> None:
+        """SIGTERM the connector TASKS of the worker steps so nsys ends its session and writes its report.
+
+        Not the wrapper processes: the wrapper relays a SIGTERM to its srun, and srun then cancels
+        the step with SIGKILL ("STEP ... CANCELLED ... DUE to SIGNAL Killed", hecate job 576022), which
+        loses the report. `scancel --signal=TERM <job>.<step>` reaches only the tasks, i.e. the
+        connectors, which terminate nsys gracefully (``--kill none`` leaves the application running).
+        """
+        job_id = os.environ.get("SLURM_JOB_ID")
+        if not job_id:
             return
-        for name, proc in registry.get_all_processes().items():
-            if name.startswith(("prefill_", "decode_", "agg_")) and proc.is_running:
-                logger.info("nsight-slurm: SIGTERM %s so its nsys session ends and the report is written", name)
-                try:
-                    proc.popen.send_signal(signal.SIGTERM)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("nsight-slurm: could not signal %s: %s", name, exc)
+        steps = self._nsight_slurm_connector_steps(job_id)
+        if not steps:
+            logger.warning("nsight-slurm: no %s steps found to signal", self.NSIGHT_SLURM_CONNECTOR_STEP_NAME)
+            return
+        for step in steps:
+            logger.info(
+                "nsight-slurm: SIGTERM step %s (connector tasks) so its nsys sessions end and reports are written", step
+            )
+            self._slurm_cmd(["scancel", "--signal=TERM", step])
 
     def stop_nsight_slurm(self) -> None:
         """Stop the explicit coordinator (best effort; called from the sweep's cleanup)."""

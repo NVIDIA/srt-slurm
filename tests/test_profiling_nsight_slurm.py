@@ -10,7 +10,6 @@ preconditions hold. Nothing here needs Slurm or the real tool.
 from __future__ import annotations
 
 import json
-import signal
 import stat
 import time
 from pathlib import Path
@@ -300,6 +299,20 @@ class TestFlush:
             procs[name] = SimpleNamespace(name=name, is_running=True, popen=MagicMock())
         return SimpleNamespace(get_all_processes=lambda: dict(procs)), procs
 
+    @staticmethod
+    def _fake_slurm(h):
+        """squeue lists worker (connector) steps and other steps; record scancel calls."""
+        calls = []
+
+        def slurm_cmd(args):
+            calls.append(args)
+            if args[0] == "squeue":
+                return "777.0|bash\n777.2|bash\n777.8|nsight-slurm-connector\n777.9|nsight-slurm-connector\n777.17|dcgm-exporter\n"
+            return ""
+
+        h._slurm_cmd = slurm_cmd
+        return calls
+
     def test_stop_then_signal_when_nothing_new_appears(self, tmp_path, monkeypatch):
         h, rec = self._ready(tmp_path, monkeypatch)
         registry, procs = self._registry("prefill_0_n1", "decode_0_n2", "frontend_0_n2", "etcd")
@@ -308,20 +321,25 @@ class TestFlush:
         rep = h.runtime.log_dir / NSIGHT_SLURM_REPORT_SUBDIR / "job-777" / "collection-1"
         rep.mkdir(parents=True)
         (rep / "n1-rank0.nsys-rep").write_bytes(b"x")
+        slurm_calls = self._fake_slurm(h)
         n = h.flush_nsight_slurm(registry, timeout_s=1.0, first_wait_s=0.2, settle_s=0.1, poll_s=0.05)
         assert n == 1
         calls = [json.loads(line)["argv"] for line in rec.read_text().splitlines()]
         assert calls == [["stop", "--job", "777", "--timeout", "30"]]
-        procs["prefill_0_n1"].popen.send_signal.assert_called_once_with(signal.SIGTERM)
-        procs["decode_0_n2"].popen.send_signal.assert_called_once_with(signal.SIGTERM)
-        procs["frontend_0_n2"].popen.send_signal.assert_not_called()
-        procs["etcd"].popen.send_signal.assert_not_called()
+        # Only the connector steps get SIGTERM (their tasks), never the wrapper processes: the wrapper
+        # would relay the signal to srun, which cancels the step with SIGKILL and loses the report.
+        assert [c for c in slurm_calls if c[0] == "scancel"] == [
+            ["scancel", "--signal=TERM", "777.8"],
+            ["scancel", "--signal=TERM", "777.9"],
+        ]
+        for p in procs.values():
+            p.popen.send_signal.assert_not_called()
 
     def test_new_reports_after_stop_mean_no_signal(self, tmp_path, monkeypatch):
         import threading
 
         h, _rec = self._ready(tmp_path, monkeypatch)
-        registry, procs = self._registry("prefill_0_n1")
+        registry, _procs = self._registry("prefill_0_n1")
         rep = h.runtime.log_dir / NSIGHT_SLURM_REPORT_SUBDIR / "job-777" / "collection-1"
         rep.mkdir(parents=True)
 
@@ -330,11 +348,12 @@ class TestFlush:
             (rep / "n1-rank0.nsys-rep").write_bytes(b"x")
 
         threading.Thread(target=connectors_write_after_stop).start()
+        slurm_calls = self._fake_slurm(h)
         n = h.flush_nsight_slurm(registry, timeout_s=3.0, first_wait_s=0.6, settle_s=0.2, poll_s=0.05)
         assert n == 1
-        procs["prefill_0_n1"].popen.send_signal.assert_not_called()
+        assert not [c for c in slurm_calls if c[0] == "scancel"]
 
-    def test_falls_back_to_sigterm_on_worker_steps(self, tmp_path, monkeypatch):
+    def test_falls_back_to_signalling_the_connector_steps(self, tmp_path, monkeypatch):
         h, _rec = self._ready(tmp_path, monkeypatch)
         registry, procs = self._registry("prefill_0_n1", "decode_0_n2", "frontend_0_n2", "etcd")
         # A range report left behind in a connector runtime workspace is rescued into the report root.
@@ -343,17 +362,20 @@ class TestFlush:
         )
         scratch.mkdir(parents=True)
         (scratch / "prefill_n1_3.nsys-rep").write_bytes(b"data")
+        slurm_calls = self._fake_slurm(h)
         n = h.flush_nsight_slurm(registry, timeout_s=0.6, first_wait_s=0.1, settle_s=0.1, poll_s=0.05)
         assert n == 1  # the rescued copy counts as a report, but does not stop the SIGTERM fallback
+        assert [c for c in slurm_calls if c[0] == "scancel"] == [
+            ["scancel", "--signal=TERM", "777.8"],
+            ["scancel", "--signal=TERM", "777.9"],
+        ]
         rescued = h.runtime.log_dir / NSIGHT_SLURM_REPORT_SUBDIR / "rescued"
         assert (
             rescued / "nsight-slurm-1000" / "step" / "ranks" / "3" / "reports" / "prefill_n1_3.nsys-rep"
         ).read_bytes() == b"data"
         # Only the worker steps (wrapper processes) are signalled, with a plain SIGTERM (no reap).
-        procs["prefill_0_n1"].popen.send_signal.assert_called_once_with(signal.SIGTERM)
-        procs["decode_0_n2"].popen.send_signal.assert_called_once_with(signal.SIGTERM)
-        procs["frontend_0_n2"].popen.send_signal.assert_not_called()
-        procs["etcd"].popen.send_signal.assert_not_called()
+        for p in procs.values():
+            p.popen.send_signal.assert_not_called()  # wrapper processes are never signalled
 
     def test_noop_without_coordinator(self, tmp_path):
         class Harness(NsightSlurmStageMixin):
