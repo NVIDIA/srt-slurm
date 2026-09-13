@@ -13,7 +13,7 @@ Top-level keys of a recipe YAML.
 | `name` | str | required |  |
 | `model` | [ModelConfig](#modelconfig) | required |  |
 | `resources` | [ResourceConfig](#resourceconfig) | required |  |
-| `engine` | str \| mapping | required | The engine type (`sglang`, `trtllm`, `vllm`, `mocker`) as a string, or a mapping with `type` plus the engine-wide knobs listed under [Engine types](#engine-types). |
+| `engine` | str \| mapping | required | The engine type (`atom`, `sglang`, `trtllm`, `vllm`, `mocker`) as a string, or a mapping with `type` plus the engine-wide knobs listed under [Engine types](#engine-types). |
 | `roles` | mapping of role -> [Role](#roles) | required | One block per worker role (`prefill`, `decode`, `agg`): topology, env, and engine args. |
 | `schema` | int | `2` | Recipe schema version. Write `schema: 2` for this layout. |
 | `slurm` | [SlurmConfig](#slurmconfig) | `SlurmConfig()` |  |
@@ -44,7 +44,7 @@ Three vocabularies are specific to the 2.0 layout. They are normalized into the 
 
 ### engine
 
-`engine: <type>` or `engine: {type: <type>, ...}`. `type` is one of `sglang`, `trtllm`, `vllm`, `mocker`; the remaining keys are that engine's knobs, listed under [Engine types](#engine-types).
+`engine: <type>` or `engine: {type: <type>, ...}`. `type` is one of `atom`, `sglang`, `trtllm`, `vllm`, `mocker`; the remaining keys are that engine's knobs, listed under [Engine types](#engine-types).
 
 ### roles
 
@@ -526,6 +526,18 @@ Ready when the service's log file contains a line matching the regular expressio
 
 `engine.type` selects one of the following; the remaining `engine` keys are that type's knobs.
 
+### AtomProtocol
+
+`engine.type: atom`
+
+Launch ``atom.entrypoints.openai_server`` on ROCm workers.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `type` | one of `'atom'` | `'atom'` |  |
+| `connector` | one of `'mooncake'` | `'mooncake'` |  |
+| `mooncake_protocol` | one of `'rdma'`, `'tcp'` \| None | `None` |  |
+
 ### SGLangProtocol
 
 `engine.type: sglang`
@@ -562,8 +574,9 @@ vLLM protocol - implements BackendProtocol.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `type` | one of `'vllm'` | `'vllm'` |  |
-| `set_cuda_visible_devices` | bool | `False` | Legacy device binding for vLLM builds without --device-ids. |
-| `connector` | str \| None | `'nixl'` | Default KV connector: "nixl", "lmcache", or a raw JSON string for --kv-transfer-config. Can be overridden per role by setting "connector" in roles.<role>.args. dynamo 1.0.0+: translated to --kv-transfer-config (--connector was removed). |
+| `set_visible_devices` | bool \| None | `None` | Vendor-neutral device binding for vLLM builds without --device-ids. When unset, preserve the legacy CUDA-named option below. |
+| `set_cuda_visible_devices` | bool | `False` | Legacy compatibility alias. New recipes should use set_visible_devices. |
+| `connector` | str \| None | `'nixl'` | Default KV connector: "nixl", "lmcache", "moriio", or a raw JSON string for --kv-transfer-config. Can be overridden per role by setting "connector" in roles.<role>.args. dynamo 1.0.0+: translated to --kv-transfer-config (--connector was removed). |
 | `allow_prefill_decode_colocation` | bool | `False` | Allow prefill and decode workers to share one node when the combined GPU request fits within gpus_per_node. Defaults off to preserve existing P/D node separation. |
 | `allow_prefill_decode_colocation_across_nodes` | bool | `False` | Extend P/D colocation to multi-node topologies. When enabled together with allow_prefill_decode_colocation, workers are packed contiguously across the minimum number of nodes instead of reserving separate P/D node pools. Defaults off to preserve the original one-node-only policy. |
 | `dp_launch_mode` | one of `'per_gpu'`, `'per_node'` | `'per_node'` | DP process layout. Per-node lets vLLM manage the node-local portion of a DP x TP x PP topology in one CUDA namespace and derives cross-node TP/PP rendezvous when a replica is larger than the node-local GPU allocation. Per-GPU remains available as a deprecated compatibility layout. |
@@ -607,6 +620,9 @@ Top-level keys of `srtslurm.yaml`. Recipes inherit these defaults and resolve al
 | `gpus_per_node` | int \| None | `None` |  |
 | `default_gpu_type` | str \| None | `None` | Default for ``ResourceConfig.gpu_type`` when the recipe omits it. Lets one recipe move between clusters of different GPU types without an edit. |
 | `network_interface` | str \| None | `None` |  |
+| `accelerator_vendor` | one of `'nvidia'`, `'amd'` | `'nvidia'` |  |
+| `gpu_sbatch_directive` | one of `'gpus-per-node'`, `'gres'`, `'none'` \| None | `None` |  |
+| `runtime_config_transport` | one of `'shared-filesystem'`, `'embedded'` | `'shared-filesystem'` |  |
 | `use_gpus_per_node_directive` | bool | `True` |  |
 | `use_segment_sbatch_directive` | bool | `True` |  |
 | `use_exclusive_sbatch_directive` | bool | `False` |  |

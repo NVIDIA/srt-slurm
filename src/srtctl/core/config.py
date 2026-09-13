@@ -104,6 +104,7 @@ _CONTAINER_ALIAS_SKIP_KEYS: frozenset[str] = frozenset(
         "sbatch_directives",
         "srun_options",
         "sglang_config",
+        "atom_config",
         "vllm_config",
         "trtllm_config",
         "mocker_config",

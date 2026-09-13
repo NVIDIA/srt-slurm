@@ -219,8 +219,8 @@ services:
     assert kw["nodelist"] == ["node0"]
     assert kw["command"] == ["python3", "-m", "router", "--node", "node0", "--infra", "10.0.0.10"]
     assert kw["container_image"] == "/job.sqsh"
-    assert kw["env_to_set"]["ETCD_ENDPOINTS"] == "http://node0:2379"
-    assert kw["env_to_set"]["NATS_SERVER"] == "nats://node0:4222"
+    assert kw["env_to_set"]["ETCD_ENDPOINTS"] == "http://10.0.0.10:2379"
+    assert kw["env_to_set"]["NATS_SERVER"] == "nats://10.0.0.10:4222"
     assert kw["env_to_set"]["LOG_LEVEL"] == "debug"
     assert kw["bash_preamble"] is None
     (proc,) = procs
@@ -609,7 +609,7 @@ def test_declared_etcd_takes_over_and_external_is_not_launched(tmp_path: Path) -
     assert srun.call_count == 1
     assert discovery_env(config, orchestrator.runtime) == {
         "ETCD_ENDPOINTS": "http://etcd.shared:2379",
-        "NATS_SERVER": "nats://node0:4222",
+        "NATS_SERVER": "nats://10.0.0.10:4222",
     }
 
 

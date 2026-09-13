@@ -115,6 +115,35 @@ def test_dep4_expansion_and_health_counts_follow_upstream_per_node_topology() ->
     )
 
 
+def test_multinode_dep8_routes_node_local_hybrid_pools_without_rank_reexpansion() -> None:
+    """A later node owns global ranks 4..7, not another local 0..3 namespace."""
+    backend = VLLMProtocol(
+        vllm_config=VLLMServerConfig(
+            prefill={"data-parallel-size": 8},
+            decode={"data-parallel-size": 8},
+        )
+    )
+    processes = [
+        Process("p0", frozenset(range(4)), 7500, 6100, "prefill", 0, node_rank=0),
+        Process("p1", frozenset(range(4)), 7501, 6100, "prefill", 0, node_rank=4),
+        Process("d0", frozenset(range(4)), 7502, 6100, "decode", 0, node_rank=0),
+        Process("d1", frozenset(range(4)), 7503, 6100, "decode", 0, node_rank=4),
+    ]
+    config = SimpleNamespace(
+        frontend=SimpleNamespace(type="vllm-router"),
+        backend=backend,
+        resources=SimpleNamespace(num_prefill=1, num_decode=1, num_agg=0),
+    )
+
+    assert node_local_data_parallel_size(backend, processes) == 1
+    assert _get_health_expectations(config, processes) == (
+        2,
+        2,
+        "2P + 2D Router workers; logical workers: 1P + 1D",
+        4,
+    )
+
+
 def test_cross_node_model_parallel_base_is_not_dp_expanded() -> None:
     backend = VLLMProtocol(
         vllm_config=VLLMServerConfig(aggregated={"data-parallel-size": 2, "tensor-parallel-size": 8})

@@ -205,6 +205,35 @@ class TestProcessRegistry:
 
         mock_popen.terminate.assert_called_once()
 
+    def test_failure_details_tolerate_non_utf8_worker_logs(self, tmp_path, caplog):
+        """ROCm/compiler output must not hide the useful failure log tail."""
+        log_file = tmp_path / "worker.out"
+        log_file.write_bytes(b"valid line\ninvalid: \xff\xfe\nlast line\n")
+
+        mock_popen = MagicMock(spec=Popen)
+        mock_popen.poll.return_value = 137
+        mock_popen.returncode = 137
+        mock_popen.pid = 12345
+
+        registry = ProcessRegistry(job_id="test_job")
+        registry.add_process(
+            ManagedProcess(
+                name="decode_0",
+                popen=mock_popen,
+                log_file=log_file,
+                node="amd-worker",
+                critical=True,
+            )
+        )
+        assert registry.check_failures()
+
+        with caplog.at_level("ERROR"):
+            registry.print_failure_details()
+
+        assert "Could not read log file" not in caplog.text
+        assert "invalid: \ufffd\ufffd" in caplog.text
+        assert "last line" in caplog.text
+
 
 class TestTieredCleanup:
     """Cleanup signals a whole tier, waits for it, escalates, then moves to the next tier."""

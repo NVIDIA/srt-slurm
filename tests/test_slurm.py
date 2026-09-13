@@ -4,21 +4,131 @@
 """Tests for SLURM command construction."""
 
 import subprocess
+from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from srtctl.cli.do_sweep import SweepOrchestrator
 from srtctl.cli.mixins.worker_stage import WorkerStageMixin
 from srtctl.core.schema import ObservabilityConfig
-from srtctl.core.slurm import get_slurm_het_nodelists, start_srun_process
+from srtctl.core.slurm import get_slurm_het_nodelists, start_srun_process, wait_for_job
+
+
+def test_wait_streams_late_logs_and_requires_allocation_accounting(monkeypatch, tmp_path: Path) -> None:
+    log = tmp_path / "sweep.log"
+    output = StringIO()
+    replies = iter(
+        [
+            ("squeue", 0, "42\n"),
+            ("squeue", 0, ""),
+            ("sacct", 0, ""),
+            ("squeue", 0, ""),
+            ("sacct", 1, ""),
+            ("squeue", 0, ""),
+            ("sacct", 0, "99|COMPLETED|0:0\n42.batch|COMPLETED|0:0\n42|RUNNING|0:0\n"),
+            ("squeue", 0, ""),
+            ("sacct", 0, "42|COMPLETED|7:0\n"),
+        ]
+    )
+
+    def query(command, **kwargs):
+        if command[0] == "scontrol":
+            return subprocess.CompletedProcess(command, 1, "", "job purged")
+        expected_command, code, stdout = next(replies)
+        assert command[0] == expected_command
+        assert command[command.index("--jobs") + 1] == "42"
+        if stdout == "42|COMPLETED|7:0\n":
+            with log.open("a") as stream:
+                stream.write("finished\n")
+        return subprocess.CompletedProcess(command, code, stdout, "accounting unavailable" if code else "")
+
+    def tick(_seconds):
+        if not log.exists():
+            log.write_text("started\n")
+
+    monkeypatch.setattr("srtctl.core.slurm.subprocess.run", query)
+    monkeypatch.setattr("srtctl.core.slurm.time.sleep", tick)
+    result = wait_for_job("42", log_path=log, output=output)
+
+    assert result.returncode == 7
+    assert output.getvalue() == "started\nfinished\n"
+
+
+@pytest.mark.parametrize(
+    ("state", "code", "expected"),
+    [
+        ("COMPLETED", "0:0", 0),
+        ("FAILED", "0:0", 1),
+        ("FAILED", "3:0", 3),
+        ("COMPLETED", "0:9", 137),
+        ("CANCELLED by 1000", "0:0", 1),
+        ("TIMEOUT", "0:0", 1),
+    ],
+)
+def test_wait_never_reports_unsuccessful_allocation_as_success(monkeypatch, state, code, expected) -> None:
+    def query(command, **kwargs):
+        stdout = f"42|{state}|{code}\n" if command[0] == "sacct" else ""
+        return subprocess.CompletedProcess(command, 0, stdout, "")
+
+    monkeypatch.setattr("srtctl.core.slurm.subprocess.run", query)
+    assert wait_for_job("42").returncode == expected
+
+
+def test_wait_retries_observation_timeout_without_resubmission(monkeypatch) -> None:
+    replies = iter([subprocess.TimeoutExpired("squeue", 15), "", "42|COMPLETED|0:0\n"])
+
+    def query(command, **kwargs):
+        if command[0] == "scontrol":
+            return subprocess.CompletedProcess(command, 1, "", "job purged")
+        assert command[0] in {"squeue", "sacct"}
+        reply = next(replies)
+        if isinstance(reply, Exception):
+            raise reply
+        return subprocess.CompletedProcess(command, 0, reply, "")
+
+    monkeypatch.setattr("srtctl.core.slurm.subprocess.run", query)
+    monkeypatch.setattr("srtctl.core.slurm.time.sleep", lambda _seconds: None)
+    assert wait_for_job("42").returncode == 0
+
+
+@pytest.mark.parametrize(
+    ("record", "expected", "uses_accounting"),
+    [
+        ("JobId=42 JobState=COMPLETED ExitCode=0:0", 0, False),
+        ("JobId=42 JobState=FAILED ExitCode=7:0", 7, False),
+        ("JobId=42 JobState=CANCELLED ExitCode=0:15", 143, False),
+        ("JobId=42 JobState=FAILED ExitCode=0:0", 1, False),
+        ("JobId=142 JobState=COMPLETED ExitCode=0:0", 9, True),
+        ("JobId=42.batch JobState=COMPLETED ExitCode=0:0", 9, True),
+        ("JobId=42 JobState=COMPLETED ExitCode=unknown", 9, True),
+        ("JobId=42 JobState=RUNNING ExitCode=0:0", 9, True),
+        ("JobId=42 JobState=COMPLETING ExitCode=0:0", 9, True),
+        ("JobId=42 JobState=COMPLETED", 9, True),
+        ("", 9, True),
+    ],
+)
+def test_wait_uses_exact_terminal_controller_record(monkeypatch, record, expected, uses_accounting):
+    commands = []
+
+    def query(command, **kwargs):
+        commands.append(command[0])
+        replies = {"squeue": "", "scontrol": record, "sacct": "42|FAILED|9:0\n"}
+        return subprocess.CompletedProcess(command, 0, replies[command[0]], "")
+
+    monkeypatch.setattr("srtctl.core.slurm.subprocess.run", query)
+    assert wait_for_job("42").returncode == expected
+    assert ("sacct" in commands) is uses_accounting
 
 
 def _built_bash_command(mock_popen: MagicMock) -> str:
     srun_cmd = mock_popen.call_args.args[0]
     assert srun_cmd[-3:-1] == ["bash", "-c"]
     return srun_cmd[-1]
+
+
 
 
 def test_start_srun_exports_env_before_preamble() -> None:
@@ -198,7 +308,7 @@ def test_worker_stage_wraps_nonfatal_fingerprint_hook(tmp_path: Path) -> None:
         gpus_per_node=8,
         environment={},
         container_image=Path("/container.sqsh"),
-        container_mounts={},
+        container_mounts={tmp_path: Path("/logs")},
         srun_options=[],
     )
     process = SimpleNamespace(
@@ -258,7 +368,7 @@ def _remap_worker_mixin(tmp_path: Path, *, frontend_type: str, dynamo_install: b
         gpus_per_node=8,
         environment={},
         container_image=Path("/container.sqsh"),
-        container_mounts={},
+        container_mounts={tmp_path: Path("/logs")},
         srun_options=[],
     )
     process = SimpleNamespace(
@@ -271,6 +381,22 @@ def _remap_worker_mixin(tmp_path: Path, *, frontend_type: str, dynamo_install: b
         het_group=None,
     )
     return mixin, process
+
+
+@pytest.mark.parametrize("launch_method", ["start_worker", "start_endpoint_worker"])
+def test_worker_config_dump_uses_container_log_mount(tmp_path: Path, launch_method: str) -> None:
+    """Backend config dumps must use a path visible inside the worker container."""
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="sglang", dynamo_install=False)
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process", return_value=MagicMock()),
+    ):
+        if launch_method == "start_worker":
+            mixin.start_worker(process, [process])
+        else:
+            mixin.start_endpoint_worker([process])
+
+    assert mixin.backend.build_worker_command.call_args.kwargs["dump_config_path"] == Path("/logs/node-a_config.json")
 
 
 def test_worker_stage_injects_remap_root_for_dynamo_install(tmp_path: Path) -> None:
@@ -336,6 +462,29 @@ def test_worker_stage_no_remap_root_when_dynamo_install_false(tmp_path: Path) ->
         mixin.start_worker(process, [process])
 
     assert mock_srun.call_args.kwargs["srun_export_env"] is None
+
+
+@pytest.mark.parametrize(("recipe_value", "expected"), [(None, "1"), ("0", "0")])
+def test_worker_stage_applies_frontend_integration_environment(
+    tmp_path: Path,
+    recipe_value: str | None,
+    expected: str,
+) -> None:
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="sglang", dynamo_install=False)
+    mixin.config.frontend.args = {"dp-aware": True}
+    integration_key = "SGLANG_DISAGGREGATION_FORCE_QUERY_PREFILL_DP_RANK"
+    mixin.backend.get_frontend_integration_environment.return_value = {integration_key: "1"}
+    mixin.backend.get_environment_for_mode.return_value = (
+        {} if recipe_value is None else {integration_key: recipe_value}
+    )
+
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process", return_value=MagicMock()) as mock_srun,
+    ):
+        mixin.start_worker(process, [process])
+
+    assert mock_srun.call_args.kwargs["env_to_set"][integration_key] == expected
 
 
 # ---- Event-plane propagation (DYN_EVENT_PLANE) ----
@@ -455,6 +604,16 @@ def test_vllm_sidecar_disables_plugins_by_default(tmp_path: Path) -> None:
     assert mock_srun.call_args.kwargs["env_to_set"]["VLLM_PLUGINS"] == ""
 
 
+def test_worker_control_plane_uses_routable_infra_ip(tmp_path: Path) -> None:
+    for env in (
+        _start_worker_env(tmp_path, event_plane=None),
+        _start_endpoint_worker_env(tmp_path, event_plane=None),
+    ):
+        assert env["NATS_SERVER"] == "nats://10.0.0.1:4222"
+        assert env["ETCD_ENDPOINTS"] == "http://10.0.0.1:2379"
+        assert "infra-node" not in env["NATS_SERVER"]
+
+
 @pytest.mark.parametrize("event_plane", ["zmq", "nats"])
 def test_start_endpoint_worker_event_plane_injected(tmp_path: Path, event_plane: str) -> None:
     env = _start_endpoint_worker_env(tmp_path, event_plane=event_plane)
@@ -555,7 +714,7 @@ def test_worker_stage_unsets_vllm_port_for_multinode_endpoint(tmp_path: Path) ->
         gpus_per_node=8,
         environment={},
         container_image=Path("/container.sqsh"),
-        container_mounts={},
+        container_mounts={tmp_path: Path("/logs")},
         srun_options=[],
     )
     process = SimpleNamespace(

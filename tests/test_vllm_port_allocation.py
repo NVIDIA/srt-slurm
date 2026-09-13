@@ -3,7 +3,9 @@
 
 """Tests for per-process VLLM_PORT assignment (rendezvous EADDRINUSE avoidance)."""
 
-from srtctl.backends.vllm import VLLMProtocol
+import pytest
+
+from srtctl.backends.vllm import VLLMProtocol, VLLMServerConfig
 from srtctl.core.topology import Process
 from srtctl.ports import DYN_SYSTEM_PORT_BASE, VLLM_PORT_BASE, VLLM_PORT_STRIDE
 
@@ -45,3 +47,20 @@ def test_vllm_port_clamps_when_sys_port_below_anchor():
     env = backend.get_process_environment(_process(DYN_SYSTEM_PORT_BASE - 10))
 
     assert env["VLLM_PORT"] == str(VLLM_PORT_BASE)
+
+
+@pytest.mark.parametrize("mode_override", [False, True])
+def test_moriio_uses_upstream_ephemeral_port_allocation(mode_override):
+    """TP children must not inherit one fixed scan base for MoRI listeners."""
+    backend = (
+        VLLMProtocol(connector="nixl", vllm_config=VLLMServerConfig(decode={"connector": "moriio"}))
+        if mode_override
+        else VLLMProtocol(connector="moriio")
+    )
+
+    env = backend.get_process_environment(_process(DYN_SYSTEM_PORT_BASE))
+
+    # vLLM's native allocator binds port 0 when VLLM_PORT is absent. With a
+    # fixed base, every TP child can choose the same still-unbound MoRI port.
+    assert "VLLM_PORT" not in env
+    assert "VLLM_NIXL_SIDE_CHANNEL_PORT" not in env

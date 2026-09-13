@@ -364,7 +364,11 @@ class ProcessRegistry:
                 # Tail the log file if available
                 if proc.log_file and proc.log_file.exists():
                     try:
-                        lines = proc.log_file.read_text().splitlines()
+                        # Backend logs can contain terminal progress output or
+                        # compiler diagnostics with bytes that are not valid
+                        # UTF-8. Failure reporting must remain available even
+                        # when the worker log is not clean text.
+                        lines = proc.log_file.read_text(errors="replace").splitlines()
                         if lines:
                             logger.error("\nLast %d lines of log:", tail_lines)
                             for line in lines[-tail_lines:]:
