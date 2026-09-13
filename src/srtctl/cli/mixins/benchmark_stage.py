@@ -101,8 +101,8 @@ def _get_health_expectations(
 
     Dynamo's /health endpoint reports registered generate instances. For vLLM
     DP workers, per-GPU launch registers one entry per DP rank, while per-node
-    launch registers one entry per node-local process. vLLM Router expands
-    each advertised base URL into its node-local DP ranks.
+    launch registers one entry per node-local process. vLLM Router expands a
+    base URL only when one base owns the complete logical endpoint.
     """
     r = config.resources
 
@@ -127,15 +127,15 @@ def _get_health_expectations(
         return n_prefill, n_decode, count_desc, n_prefill + n_decode
 
     if config.frontend.type == "vllm-router" and backend_processes is not None:
-        from srtctl.frontends.vllm_router import routed_process_dp_size
+        from srtctl.frontends.vllm_router import node_local_data_parallel_size
+
+        expansion = node_local_data_parallel_size(config.backend, backend_processes)
 
         n_prefill = sum(
-            routed_process_dp_size(config.backend, process)
-            for process in backend_processes
-            if process.endpoint_mode == "prefill" and process.http_port > 0
+            expansion for process in backend_processes if process.endpoint_mode == "prefill" and process.http_port > 0
         )
         n_decode = sum(
-            routed_process_dp_size(config.backend, process)
+            expansion
             for process in backend_processes
             if process.endpoint_mode in {"decode", "agg"} and process.http_port > 0
         )

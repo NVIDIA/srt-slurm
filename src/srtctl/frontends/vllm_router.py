@@ -40,7 +40,23 @@ def routed_process_dp_size(backend: Any, process: Process) -> int:
 
 def node_local_data_parallel_size(backend: Any, backend_processes: list[Process]) -> int:
     """Return Router's single DP expansion factor for all advertised URLs."""
-    routed_sizes = {routed_process_dp_size(backend, process) for process in backend_processes if process.http_port > 0}
+    routable = [process for process in backend_processes if process.http_port > 0]
+    process_count_by_endpoint: dict[tuple[str, int], int] = {}
+    for process in routable:
+        endpoint = (process.endpoint_mode, process.endpoint_index)
+        process_count_by_endpoint[endpoint] = process_count_by_endpoint.get(endpoint, 0) + 1
+
+    # --intra-node-data-parallel-size expands every advertised base URL with
+    # X-Data-Parallel-Rank values starting at zero. That is correct when one
+    # base URL owns the whole logical endpoint. It is not correct for vLLM's
+    # multi-node hybrid-LB topology: later node-local pools own global ranks
+    # such as 4..7, so expanding their URLs to 0..3 addresses nonexistent
+    # local engines and returns HTTP 500. Keep each node-local hybrid-LB pool
+    # as one Router worker and let that vLLM frontend select its local ranks.
+    if any(count > 1 for count in process_count_by_endpoint.values()):
+        return 1
+
+    routed_sizes = {routed_process_dp_size(backend, process) for process in routable}
     if len(routed_sizes) > 1:
         sizes = ", ".join(str(size) for size in sorted(routed_sizes))
         raise ValueError(f"vLLM Router requires one uniform node-local DP expansion factor; derived {sizes}")

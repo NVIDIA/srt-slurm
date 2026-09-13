@@ -35,6 +35,7 @@ from marshmallow import Schema, ValidationError, fields, validate
 from marshmallow_dataclass import dataclass
 
 from srtctl.backends import (
+    AtomProtocol,
     BackendConfig,
     MockerProtocol,
     SGLangProtocol,
@@ -387,7 +388,7 @@ class BackendConfigField(fields.Field):
             # Default to SGLang
             return SGLangProtocol()
 
-        if isinstance(value, SGLangProtocol | TRTLLMProtocol | VLLMProtocol | MockerProtocol):
+        if isinstance(value, AtomProtocol | SGLangProtocol | TRTLLMProtocol | VLLMProtocol | MockerProtocol):
             return value
 
         if not isinstance(value, dict):
@@ -396,7 +397,9 @@ class BackendConfigField(fields.Field):
         # Get backend type from the value dict
         backend_type = value.get("type", "sglang")
 
-        if backend_type == "sglang":
+        if backend_type == "atom":
+            return AtomProtocol.Schema().load(value)
+        elif backend_type == "sglang":
             schema = SGLangProtocol.Schema()
             return schema.load(value)
         elif backend_type == "trtllm":
@@ -410,13 +413,15 @@ class BackendConfigField(fields.Field):
             return schema.load(value)
         else:
             raise ValidationError(
-                f"Unknown backend type: {backend_type!r}. Supported types: sglang, trtllm, vllm, mocker"
+                f"Unknown backend type: {backend_type!r}. Supported types: atom, sglang, trtllm, vllm, mocker"
             )
 
     def _serialize(self, value: Any | None, attr: str | None, obj: Any, **kwargs) -> Any:
         """Serialize backend config to dict."""
         if value is None:
             return None
+        if isinstance(value, AtomProtocol):
+            return AtomProtocol.Schema().dump(value)
         if isinstance(value, SGLangProtocol):
             return SGLangProtocol.Schema().dump(value)
         if isinstance(value, TRTLLMProtocol):
@@ -2308,7 +2313,7 @@ class SrtConfig:
 
     def _validate_static_router_frontend(self):
         """Validate static-router/backend pairings and vLLM DP ownership."""
-        required_backend = {"sglang": "sglang", "vllm-router": "vllm"}.get(self.frontend.type)
+        required_backend = {"atomesh": "atom", "sglang": "sglang", "vllm-router": "vllm"}.get(self.frontend.type)
         if required_backend is None:
             return
         if self.backend_type != required_backend:
@@ -2374,7 +2379,8 @@ class SrtConfig:
                 )
 
             local_gpu_count = min(gpu_count, self.resources.gpus_per_node)
-            if replica_size > local_gpu_count:
+            nodes_per_worker = (gpu_count + self.resources.gpus_per_node - 1) // self.resources.gpus_per_node
+            if replica_size > local_gpu_count or nodes_per_worker > 1:
                 expansion_by_mode[mode] = 1
             else:
                 try:
@@ -2940,6 +2946,17 @@ class SrtConfig:
     def served_model_name(self) -> str:
         """Get the served model name from backend config or model path."""
         default = Path(self.model.path).name
+        if isinstance(self.backend, AtomProtocol):
+            # ATOM advertises the literal --model argument; unlike SGLang/vLLM,
+            # it has no separate served-model-name alias. Match the worker's
+            # HF ID or container-visible path, including node-local staging.
+            model_path = os.path.expandvars(self.model.path)
+            if model_path.startswith("hf:"):
+                default = model_path[3:]
+            elif self.model.stage_dir:
+                default = str(Path(os.path.expandvars(self.model.stage_dir)) / Path(model_path).resolve().name)
+            else:
+                default = "/model"
         return self.backend.get_served_model_name(default)
 
     @property

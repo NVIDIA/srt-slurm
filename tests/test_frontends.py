@@ -330,7 +330,9 @@ class TestSGLangGrpcScheme:
     @patch("srtctl.frontends.sglang.get_hostname_ip")
     def test_disaggregated_mode_command(self, mock_get_ip, mock_srun):
         """Disaggregated mode uses --pd-disaggregation with --prefill and --decode."""
-        mock_get_ip.side_effect = lambda node: f"10.0.0.{node[-1]}"
+        mock_get_ip.side_effect = lambda node, interface=None: (
+            f"10.0.0.{node[-1]}" if interface == "eth0" else f"192.168.0.{node[-1]}"
+        )
         mock_srun.return_value = MagicMock()
 
         frontend = SGLangFrontend()
@@ -344,6 +346,7 @@ class TestSGLangGrpcScheme:
         backend.is_grpc_mode.return_value = False
 
         runtime = MagicMock()
+        runtime.network_interface = "eth0"
         runtime.log_dir = MagicMock()
         runtime.log_dir.__truediv__ = lambda self, x: f"/logs/{x}"
         runtime.container_image = "/container.sqsh"
@@ -366,12 +369,19 @@ class TestSGLangGrpcScheme:
         assert "--decode" in cmd
         # Bootstrap port should be included
         assert "30001" in cmd
+        assert "http://10.0.0.1:30000" in cmd
+        assert "http://10.0.0.2:30000" in cmd
+        assert frontend.get_pre_start_backend_health_urls(backend, processes, "eth0") == [
+            "http://10.0.0.1:30000/health",
+            "http://10.0.0.2:30000/health",
+            "http://10.0.0.3:30000/health",
+        ]
 
     @patch("srtctl.frontends.sglang.start_srun_process")
     @patch("srtctl.frontends.sglang.get_hostname_ip")
     def test_aggregated_mode_command(self, mock_get_ip, mock_srun):
         """Aggregated mode uses --worker-urls."""
-        mock_get_ip.side_effect = lambda node: f"10.0.0.{node[-1]}"
+        mock_get_ip.side_effect = lambda node, interface=None: f"10.0.0.{node[-1]}"
         mock_srun.return_value = MagicMock()
 
         frontend = SGLangFrontend()

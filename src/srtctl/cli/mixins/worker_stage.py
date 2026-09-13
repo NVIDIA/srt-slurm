@@ -168,6 +168,19 @@ class WorkerStageMixin:
             environment.setdefault("SGLANG_PYSPY_DUMP_BEFORE_CRASH", "0")
         return environment
 
+    def _apply_frontend_integration_env(self, env_to_set: dict[str, str], mode: str) -> None:
+        """Add backend/frontend integration defaults without overriding recipes."""
+        integration_environment = getattr(self.backend, "get_frontend_integration_environment", None)
+        if not callable(integration_environment):
+            return
+        integration_env = integration_environment(
+            mode,
+            self.config.frontend.type,
+            dict(getattr(self.config.frontend, "args", None) or {}),
+        )
+        for key, value in integration_env.items():
+            env_to_set.setdefault(key, value)
+
     def start_worker(self, process: "Process", endpoint_processes: list["Process"]) -> ManagedProcess:
         """Start a single worker process (one srun per node, used by SGLang)."""
         mode = process.endpoint_mode
@@ -236,6 +249,8 @@ class WorkerStageMixin:
         for key, value in self.runtime.environment.items():
             formatted_value = value.format_map(SafeDict(template_vars))
             env_to_set[key] = formatted_value
+
+        self._apply_frontend_integration_env(env_to_set, mode)
 
         # Add profiling environment variables
         if profiling.enabled:
@@ -394,6 +409,8 @@ class WorkerStageMixin:
             and env_to_set.get("DYN_TRTLLM_PUBLISH_KV_EVENTS", "").lower() == "true"
         ):
             env_to_set.setdefault("DYN_TRTLLM_KV_EVENT_HOSTS", ",".join(endpoint_nodes))
+
+        self._apply_frontend_integration_env(env_to_set, mode)
 
         # Add profiling environment variables
         if profiling.enabled:

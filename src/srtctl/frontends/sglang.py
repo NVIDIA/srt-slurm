@@ -78,8 +78,7 @@ class SGLangFrontend(StaticRouterFrontend):
         ]
 
     def resolve_worker_host(self, node: str, network_interface: str | None) -> str:
-        del network_interface
-        return get_hostname_ip(node)
+        return get_hostname_ip(node, network_interface)
 
     def start_process(self, **kwargs: Any) -> Any:
         return start_srun_process(**kwargs)

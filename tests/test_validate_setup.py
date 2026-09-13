@@ -106,7 +106,7 @@ class TestValidateSetup:
             validate_setup(tmp_path)
 
     def test_fails_when_tachometer_scraper_missing(self, tmp_path: Path):
-        """validate_setup fails when the compute-architecture scraper is missing."""
+        """An enabled Tachometer collector requires its compute-architecture scraper."""
         (tmp_path / "configs").mkdir()
         (tmp_path / "configs" / "nats-server").touch()
         (tmp_path / "configs" / "etcd").touch()
@@ -115,6 +115,24 @@ class TestValidateSetup:
 
         with pytest.raises(SystemExit):
             validate_setup(tmp_path)
+
+    def test_tachometer_scraper_is_optional_when_collection_is_disabled(self, tmp_path: Path):
+        """Recipes that do not enable Tachometer must not require its binary."""
+        from dataclasses import replace
+
+        from srtctl.core.schema import ObservabilityConfig, TachometerConfig
+
+        (tmp_path / "configs").mkdir()
+        (tmp_path / "configs" / "nats-server").touch()
+        (tmp_path / "configs" / "etcd").touch()
+        (tmp_path / "bin").mkdir()
+        (tmp_path / "bin" / "uv").touch()
+
+        config = replace(
+            self._config(cpu_power_enabled=False),
+            observability=ObservabilityConfig(tachometer=TachometerConfig(enabled=False)),
+        )
+        validate_setup(tmp_path, config)
 
     def test_fails_when_all_missing(self, tmp_path: Path):
         """validate_setup fails when nothing has been set up."""

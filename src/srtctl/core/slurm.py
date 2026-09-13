@@ -53,7 +53,7 @@ def wait_for_job(
     """Observe an allocation without cancelling or resubmitting it.
 
     An empty queue is not success: accounting can lag behind squeue. Require
-    the allocation's terminal accounting record and exit status, continuing
+    the allocation's terminal controller/accounting record and exit status, continuing
     through transient status-query failures and requeues.
     """
     if not re.fullmatch(r"[0-9]+", job_id) or int(job_id) < 1:
@@ -104,6 +104,29 @@ def wait_for_job(
             if queue.returncode == 0 and queue.stdout.strip():
                 time.sleep(poll_interval)
                 continue
+            # The controller retains recently finished allocations even when
+            # slurmdbd is unavailable. Require the exact job and a terminal
+            # state plus its explicit exit status; an empty queue is not proof.
+            controller = subprocess.run(
+                ["scontrol", "show", "job", "--oneliner", job_id],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=15,
+            )
+            if controller.returncode == 0:
+                for line in controller.stdout.splitlines():
+                    fields = dict(re.findall(r"(?:^|\s)(JobId|JobState|ExitCode)=([^\s]+)", line))
+                    state = fields.get("JobState", "")
+                    code = fields.get("ExitCode", "")
+                    if (
+                        fields.get("JobId") == job_id
+                        and state in terminal_states
+                        and re.fullmatch(r"[0-9]+:[0-9]+", code)
+                    ):
+                        exit_code, signal = map(int, code.split(":"))
+                        stream_log()
+                        return SlurmJobResult(job_id, state, exit_code, signal)
             accounting = subprocess.run(
                 ["sacct", "-X", "--noheader", "--parsable2", "--jobs", job_id, "--format=JobIDRaw,State%40,ExitCode"],
                 capture_output=True,
