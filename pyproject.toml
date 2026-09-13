@@ -49,12 +49,12 @@ packages = ["src/srtctl"]
 # main (bump size from the conventional-commit PR title). hatch-vcs derives the
 # package version from the nearest tag, so `srtctl --version`, the wheel, the
 # lockfile stamp, and the GitHub release always agree. Between tags a checkout
-# reports e.g. 1.1.0.post3+g49715b7; without git metadata it falls back below.
+# reports e.g. 2.0.0.post3+g49715b7; without git metadata it falls back below.
 [tool.hatch.version]
 source = "vcs"
 
 [tool.hatch.version.raw-options]
-# 1.1.0 at the tag, 1.1.0.post3+g<sha> three commits later (not a guessed 1.1.1.dev3).
+# 2.0.0 at the tag, 2.0.0.post3+g<sha> three commits later (not a guessed 2.0.1.dev3).
 version_scheme = "post-release"
 fallback_version = "0.0.0+unknown"
 
