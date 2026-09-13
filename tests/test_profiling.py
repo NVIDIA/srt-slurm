@@ -426,6 +426,51 @@ class TestProfilingValidation:
                 ),
             )
 
+    @pytest.mark.parametrize("backend_type", ["sglang", "vllm"])
+    @pytest.mark.parametrize("phase_name", ["prefill", "decode", "aggregated"])
+    @pytest.mark.parametrize("explicit_all", [False, True])
+    @pytest.mark.parametrize("selector", [{}, {"worker_index": 1}, {"worker_rank": 1}])
+    def test_nsys_all_scope_warns_on_ignored_selectors(self, caplog, backend_type, phase_name, explicit_all, selector):
+        """Implicit and explicit all scope warn on ignored selectors without narrowing capture."""
+        from srtctl.backends.sglang import SGLangProtocol
+        from srtctl.backends.vllm import VLLMProtocol
+        from srtctl.core.schema import ModelConfig, ProfilingConfig, ProfilingPhaseConfig, ResourceConfig, SrtConfig
+
+        phase = ProfilingPhaseConfig(
+            start_step=0,
+            stop_step=10,
+            **({"capture_scope": "all"} if explicit_all else {}),
+            **selector,
+        )
+        if phase_name == "aggregated":
+            resources = ResourceConfig(gpu_type="h100", agg_nodes=1, agg_workers=1)
+            phases = {phase_name: phase}
+        else:
+            resources = ResourceConfig(
+                gpu_type="h100", prefill_nodes=1, decode_nodes=1, prefill_workers=1, decode_workers=1
+            )
+            phases = {"prefill": ProfilingPhaseConfig(), "decode": ProfilingPhaseConfig(), phase_name: phase}
+        with caplog.at_level("WARNING", logger="srtctl.core.schema"):
+            config = SrtConfig(
+                name="test",
+                model=ModelConfig(path="/model", container="/container", precision="fp8"),
+                resources=resources,
+                backend=VLLMProtocol() if backend_type == "vllm" else SGLangProtocol(),
+                profiling=ProfilingConfig(type="nsys", **phases),
+            )
+
+        messages = [record.message for record in caplog.records if "ignores worker_index=" in record.message]
+        if selector:
+            assert len(messages) == 1
+            assert f"profiling.{phase_name}.capture_scope='all'" in messages[0]
+            assert f"worker_index={phase.worker_index} and worker_rank={phase.worker_rank}" in messages[0]
+            assert "Set capture_scope='selected'" in messages[0]
+        else:
+            assert messages == []
+        assert phase.capture_scope == "all"
+        mode = "agg" if phase_name == "aggregated" else phase_name
+        assert config.profiling.selects_process(mode, worker_index=0, worker_rank=0)
+
     def test_nsys_capture_scope_validation(self):
         """Only the documented selected/all capture scopes are accepted."""
         from marshmallow import ValidationError
@@ -453,7 +498,7 @@ class TestProfilingValidation:
                 ),
             )
 
-    def test_nsys_worker_rank_uses_configured_physical_topology(self):
+    def test_nsys_worker_rank_uses_configured_physical_topology(self, caplog):
         """A multi-node worker accepts only ranks that its layout creates."""
         from marshmallow import ValidationError
 
@@ -489,6 +534,7 @@ class TestProfilingValidation:
         assert make_config(1).profiling.aggregated.worker_rank == 1
         with pytest.raises(ValidationError, match="worker_rank=2 is not a physical process rank"):
             make_config(2)
+        assert "ignores worker_index=" not in caplog.text
 
     @pytest.mark.parametrize(
         ("profiling_kwargs", "error"),

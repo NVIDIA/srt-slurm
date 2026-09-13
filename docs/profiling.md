@@ -153,7 +153,10 @@ Profiling has specific requirements:
 `backend.dp_launch_mode: per_gpu`, this is the DP rank. With `per_node`, one
 wrapped process may own multiple local DP ranks; use `per_gpu` when a capture
 must produce a separate report for every DP rank. `worker_index` and
-`worker_rank` are ignored when `capture_scope: all`.
+`worker_rank` are ignored when `capture_scope: all`. For non-TRT-LLM `nsys`,
+validation warns if either ignored selector is nonzero; set
+`capture_scope: selected` to use those selectors. Default zero-valued selectors
+do not warn, so existing all-worker recipes remain unchanged.
 
 ### nsys-specific behavior
 

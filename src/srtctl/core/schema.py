@@ -2668,7 +2668,17 @@ class SrtConfig:
                 assert phase_config is not None
                 if phase_config.capture_scope not in ("selected", "all"):
                     raise ValidationError(f"profiling.{phase_name}.capture_scope must be 'selected' or 'all'")
-                if backend_type == "trtllm" or phase_config.capture_scope == "all":
+                if backend_type == "trtllm":
+                    continue
+                if phase_config.capture_scope == "all":
+                    if phase_config.worker_index != 0 or phase_config.worker_rank != 0:
+                        logger.warning(
+                            "profiling.%s.capture_scope='all' ignores worker_index=%s and worker_rank=%s; "
+                            "all workers remain selected. Set capture_scope='selected' to use these selectors.",
+                            phase_name,
+                            phase_config.worker_index,
+                            phase_config.worker_rank,
+                        )
                     continue
                 if phase_config.worker_index < 0:
                     raise ValidationError(f"profiling.{phase_name}.worker_index must be non-negative")
