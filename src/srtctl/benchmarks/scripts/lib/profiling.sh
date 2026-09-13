@@ -76,7 +76,7 @@ profiling__start_profile_on_worker() {
 
     local start_path=""
     case "${SRTCTL_FRONTEND_TYPE}" in
-        dynamo) start_path="/engine/start_profile" ;;
+        dynamo) start_path="/engine/control/start_profile" ;;
         sglang) start_path="/start_profile" ;;
         *)
             echo "Error: unsupported SRTCTL_FRONTEND_TYPE='${SRTCTL_FRONTEND_TYPE}' (expected 'dynamo' or 'sglang')" >&2
@@ -109,7 +109,7 @@ profiling__stop_profile_on_worker() {
 
     local stop_path=""
     case "${SRTCTL_FRONTEND_TYPE}" in
-        dynamo) stop_path="/engine/stop_profile" ;;
+        dynamo) stop_path="/engine/control/stop_profile" ;;
         sglang) stop_path="/stop_profile" ;;
         *)
             echo "Error: unsupported SRTCTL_FRONTEND_TYPE='${SRTCTL_FRONTEND_TYPE}' (expected 'dynamo' or 'sglang')" >&2
