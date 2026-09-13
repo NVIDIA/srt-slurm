@@ -9,6 +9,7 @@ on:
 
 permissions:
   pull-requests: read
+  statuses: write  # `wip: true` reports a pending commit status on WIP titles
 
 jobs:
   conventional-title:
