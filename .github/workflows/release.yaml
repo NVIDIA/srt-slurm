@@ -7,6 +7,18 @@ on:
   pull_request_target:
     types: [closed]
     branches: [main]
+  # Re-cut a release by hand from the current main (for example after a failed run).
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Semver bump relative to the latest release"
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      build_binaries:
+        description: "Rebuild tachometer-scraper and cpu-power-exporter instead of carrying them forward"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -18,7 +30,7 @@ concurrency:
 
 jobs:
   version:
-    if: github.event.pull_request.merged == true
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -26,12 +38,14 @@ jobs:
     outputs:
       tag: ${{ steps.ver.outputs.tag }}
       version: ${{ steps.ver.outputs.version }}
-      target: ${{ github.event.pull_request.merge_commit_sha }}
-      tachometer_changed: ${{ steps.changed.outputs.tachometer }}
-      cpu_power_exporter_changed: ${{ steps.changed.outputs.cpu_power_exporter }}
+      # The merge commit for a PR; the current main for a manual re-cut.
+      target: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+      tachometer_changed: ${{ steps.changed.outputs.tachometer || github.event.inputs.build_binaries }}
+      cpu_power_exporter_changed: ${{ steps.changed.outputs.cpu_power_exporter || github.event.inputs.build_binaries }}
     steps:
       - name: Detect changed binaries
         id: changed
+        if: github.event_name != 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -67,6 +81,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
+          BUMP: ${{ github.event.inputs.bump }}
         run: |
           set -euo pipefail
           # Bump from the HIGHEST existing GitHub Release. The merged PR title is a
@@ -74,8 +89,19 @@ jobs:
           # "BREAKING CHANGE:" body bumps MAJOR, "feat:" bumps MINOR, anything
           # else bumps PATCH. First run only (no release yet): seed v1.0.0.
           latest=$(gh release list --limit 1000 --json tagName --jq '.[].tagName' | sort -V | tail -n1)
-          next=$(bash .github/scripts/next_version.sh "$latest" "$PR_TITLE" "$PR_BODY")
-          echo "Latest release: ${latest:-none}  Title: $PR_TITLE  Next: $next"
+          if [ -n "${BUMP:-}" ]; then
+            # Manual re-cut: the bump comes from the workflow_dispatch input.
+            case "$BUMP" in
+              major) title="chore!: manual release" ;;
+              minor) title="feat: manual release" ;;
+              *)     title="chore: manual release" ;;
+            esac
+            next=$(bash .github/scripts/next_version.sh "$latest" "$title" "")
+            echo "Latest release: ${latest:-none}  Manual bump: $BUMP  Next: $next"
+          else
+            next=$(bash .github/scripts/next_version.sh "$latest" "$PR_TITLE" "$PR_BODY")
+            echo "Latest release: ${latest:-none}  Title: $PR_TITLE  Next: $next"
+          fi
           echo "tag=$next" >> "$GITHUB_OUTPUT"
           echo "version=${next#v}" >> "$GITHUB_OUTPUT"
 
@@ -84,7 +110,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ steps.ver.outputs.tag }}
-          TARGET: ${{ github.event.pull_request.merge_commit_sha }}
+          TARGET: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
         run: |
           set -euo pipefail
           # The tag exists before the wheel or the binaries are built, so
@@ -218,15 +244,16 @@ jobs:
           } > notes-header.md
 
       - name: Generate the changelog from the merged PR titles
-        uses: orhun/git-cliff-action@v4
-        id: cliff
-        with:
-          config: cliff.toml
-          # From the previous release tag to this one; PR numbers and authors come from the GitHub API.
-          args: --latest --strip all --github-repo ${{ github.repository }}
         env:
-          OUTPUT: notes-body.md
           GITHUB_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # git-cliff from PyPI rather than orhun/git-cliff-action: this repository's Actions
+          # policy only allows GitHub-owned, verified-creator, and allowlisted actions.
+          # --latest renders previous tag..this tag; PR numbers and authors come from the GitHub API.
+          uvx git-cliff==2.13.1 --config cliff.toml --latest --strip all \
+            --github-repo "$GH_REPO" --output notes-body.md
 
       - name: Assemble the release notes
         run: |
