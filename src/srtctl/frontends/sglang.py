@@ -58,6 +58,25 @@ class SGLangFrontend(StaticRouterFrontend):
     def worker_scheme(self, backend: Any, mode: str) -> str:
         return "grpc" if backend.is_grpc_mode(mode) else "http"
 
+    def get_pre_start_backend_health_urls(
+        self,
+        backend: Any,
+        backend_processes: list[Any],
+        network_interface: str | None = None,
+    ) -> list[str]:
+        """Wait for HTTP workers before Model Gateway's one-shot registration.
+
+        Model Gateway removes a static worker when its initial AddWorker job
+        exhausts health retries and does not add it later when the server becomes
+        ready. Starting the router only after the advertised HTTP endpoints are
+        healthy preserves the complete static topology on slow model startups.
+        """
+        return [
+            f"{worker.url.rstrip('/')}/health"
+            for worker in self.collect_workers(backend, backend_processes, network_interface)
+            if worker.url.startswith(("http://", "https://"))
+        ]
+
     def resolve_worker_host(self, node: str, network_interface: str | None) -> str:
         del network_interface
         return get_hostname_ip(node)

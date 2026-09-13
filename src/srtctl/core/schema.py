@@ -299,6 +299,9 @@ class ClusterConfig:
     # recipe move between clusters of different GPU types without an edit.
     default_gpu_type: str | None = None
     network_interface: str | None = None
+    accelerator_vendor: Literal["nvidia", "amd"] = "nvidia"
+    gpu_sbatch_directive: Literal["gpus-per-node", "gres", "none"] | None = None
+    runtime_config_transport: Literal["shared-filesystem", "embedded"] = "shared-filesystem"
     use_gpus_per_node_directive: bool = True
     use_segment_sbatch_directive: bool = True
     use_exclusive_sbatch_directive: bool = False
@@ -1221,9 +1224,13 @@ class TachometerConfig:
 
     @property
     def resolved_dcgm_exporter(self) -> TelemetryExporterConfig | None:
-        """User-configured DCGM exporter, else the built-in default."""
+        """User-configured exporter, else the NVIDIA-only built-in default."""
+        from srtctl.core.config import get_srtslurm_setting
+
         if self.dcgm_exporter is not None:
             return self.dcgm_exporter
+        if get_srtslurm_setting("accelerator_vendor", "nvidia") != "nvidia":
+            return None
         return DEFAULT_DCGM_EXPORTER if self.default_exporters else None
 
     @property
@@ -1679,7 +1686,7 @@ def _live_source_install_for_top_of_tree() -> str:
     )
 
 
-def _serialize_node_install(install_cmd: str) -> str:
+def _serialize_node_install(install_cmd: str, *, job_local_site_packages: bool = False) -> str:
     """Serialize a node-shared dynamo install across co-located srun tasks.
 
     With ``--ntasks-per-node > 1`` (e.g. TRTLLM's MPI-style launch, one task
@@ -1689,31 +1696,40 @@ def _serialize_node_install(install_cmd: str) -> str:
     serializes them; a sentinel lets every task after the first short-circuit
     the (idempotent) install entirely.
 
-    The lock/sentinel are anchored in the active Python environment
-    (``sys.prefix``) — the exact resource being protected. That location is
-    part of the container root filesystem, so it is:
-      * shared by every task sharing that site-packages (correct serialization),
-      * private to each container instance, so co-located containers with a
-        bind-mounted /tmp neither over-serialize nor wrongly skip each other's
-        install, and distinct across jobs (no cross-job/version staleness).
+    Stable release installs use the writable per-job ``/logs`` mount. Separate
+    frontend/worker steps on one node therefore share both the install and the
+    adjacent site-packages directory, while separate jobs and nodes remain
+    isolated. This avoids assuming that the container root or user home is
+    writable. Source and wheel installs retain a per-step runtime lock because
+    those legacy paths still install into each container's private root.
 
     FD 200 (node-local) is kept distinct from the ``flock -x 201`` that the
     hash-pinned source install nests on the /configs cache lock inside a
     subshell. Distinct FDs keep the two node-local and cross-node locks
     independent and refactor-proof even if that inner subshell is removed.
     """
-    # Resolve the env dir at runtime; fall back to $HOME (also container-private)
-    # if python3 is somehow unavailable before the install runs.
-    resolve_dir = 'DYN_LOCK_DIR="$(python3 -c \'import sys; print(sys.prefix)\' 2>/dev/null || echo "${HOME:-/root}")"'
-    lock = '"$DYN_LOCK_DIR/.srtctl_dynamo_install.lock"'
-    sentinel = '"$DYN_LOCK_DIR/.srtctl_dynamo_install.complete"'
+    if job_local_site_packages:
+        resolve_dir = (
+            'DYN_INSTALL_DIR="/logs/.srtctl-dynamo-${SLURM_JOB_ID:-job}" && '
+            'DYN_SITE_PACKAGES="$DYN_INSTALL_DIR/site-packages" && '
+            'mkdir -p "$DYN_SITE_PACKAGES"'
+        )
+        expose_install = ' && export PYTHONPATH="$DYN_SITE_PACKAGES${PYTHONPATH:+:$PYTHONPATH}"'
+    else:
+        resolve_dir = (
+            'DYN_INSTALL_DIR="${XDG_RUNTIME_DIR:-/tmp}/srtctl-dynamo-'
+            '${SLURM_JOB_ID:-job}-${SLURM_STEP_ID:-step}" && mkdir -p "$DYN_INSTALL_DIR"'
+        )
+        expose_install = ""
+    lock = '"$DYN_INSTALL_DIR/.srtctl_dynamo_install.lock"'
+    sentinel = '"$DYN_INSTALL_DIR/.srtctl_dynamo_install.complete"'
     return (
         f"{resolve_dir} && "
         f"( flock -x 200; "
         f"if [ -f {sentinel} ]; then "
         f"echo 'dynamo install already completed in this environment, skipping'; "
         f"else {{ {install_cmd} ; }} && touch {sentinel}; fi "
-        f") 200>{lock}"
+        f") 200>{lock}{expose_install}"
     )
 
 
@@ -1864,12 +1880,15 @@ class DynamoConfig:
     def get_install_commands(self) -> str:
         """Get the bash commands to install dynamo.
 
-        The returned command is wrapped in a node-local flock + sentinel so
-        that co-located srun tasks (``--ntasks-per-node > 1``, e.g. TRTLLM)
-        install once per node instead of racing concurrent pip installs into
-        the shared container site-packages. See ``_serialize_node_install``.
+        The returned command is wrapped in a node-local flock + sentinel.
+        Stable releases install once per node into a job-local directory that
+        frontend and worker containers share; legacy source/wheel installs are
+        serialized within each container step. See ``_serialize_node_install``.
         """
-        return _serialize_node_install(self._build_install_commands())
+        return _serialize_node_install(
+            self._build_install_commands(),
+            job_local_site_packages=self.version is not None,
+        )
 
     def _build_install_commands(self) -> str:
         """Build the raw (unserialized) dynamo install command."""
@@ -1894,7 +1913,12 @@ class DynamoConfig:
         if self.version is not None:
             return (
                 f"echo 'Installing dynamo {self.version}...' && "
-                f"pip install --break-system-packages --quiet --extra-index-url https://pypi.nvidia.com ai-dynamo-runtime=={self.version} ai-dynamo=={self.version} && "
+                # The backend image already owns its framework dependencies
+                # (torch, numpy, fsspec, etc.). Pull only Dynamo into the
+                # overlay so its resolver cannot shadow those validated pins.
+                'python3 -m pip install --quiet --upgrade --no-deps --target "$DYN_SITE_PACKAGES" '
+                "--extra-index-url https://pypi.nvidia.com "
+                f"ai-dynamo-runtime=={self.version} ai-dynamo=={self.version} && "
                 f"echo 'Dynamo {self.version} installed'"
             )
 
@@ -2370,6 +2394,30 @@ class SrtConfig:
                 "frontend.args.intra-node-data-parallel-size conflicts with the allocated vLLM topology: "
                 f"configured {configured_expansion}, derived {derived_expansion}"
             )
+
+    def _validate_sglang_data_parallelism(self):
+        """Reject SGLang TP/DP combinations that the server cannot initialize."""
+        if self.backend_type != "sglang":
+            return
+
+        sglang_cfg = getattr(self.backend, "sglang_config", None)
+        if sglang_cfg is None:
+            return
+
+        for mode, mode_cfg in (
+            ("prefill", sglang_cfg.prefill),
+            ("decode", sglang_cfg.decode),
+            ("aggregated", sglang_cfg.aggregated),
+        ):
+            if not mode_cfg:
+                continue
+            tp_size = int(mode_cfg.get("tp-size", mode_cfg.get("tp_size", 1)))
+            dp_size = int(mode_cfg.get("dp-size", mode_cfg.get("dp_size", 1)))
+            if tp_size % dp_size != 0:
+                raise ValidationError(
+                    f"sglang_config.{mode}: tp-size={tp_size} must be divisible by "
+                    f"dp-size={dp_size}; SGLang rejects this data-parallel layout"
+                )
 
     def _validate_het_jobs(self):
         """When ``resources.het_jobs`` is set to True, enforce supported shape.

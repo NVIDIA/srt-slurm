@@ -2,7 +2,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #SBATCH --job-name={{ job_name }}
+#SBATCH --chdir={{ srtctl_source }}
+{% if embedded_config_files %}
+# Node-local output bases cannot have their per-job directory created by the
+# submitter. SLURM opens stdout before the batch script runs, so open it in the
+# existing base and move the live file after creating OUTPUT_DIR below.
+#SBATCH --output={{ output_base }}/.srtctl-sweep-%j.log
+{% else %}
 #SBATCH --output={{ output_base }}/%j/logs/sweep_%j.log
+{% endif %}
 {% if het_components %}
 {# SLURM applies each `#SBATCH ...` to the component immediately preceding it.
    Per-component required scheduling directives (--account/--partition/--time
@@ -20,8 +28,10 @@
 #SBATCH --ntasks={{ c.nodes }}
 #SBATCH --ntasks-per-node=1
 {% endif %}
-{% if use_gpus_per_node_directive %}
+{% if gpu_sbatch_directive == "gpus-per-node" %}
 #SBATCH --gpus-per-node={{ c.gpus_per_node }}
+{% elif gpu_sbatch_directive == "gres" %}
+#SBATCH --gres=gpu:{{ c.gpus_per_node }}
 {% endif %}
 {% if use_segment_sbatch_directive %}
 #SBATCH --segment={{ c.segment }}
@@ -49,8 +59,10 @@
 #SBATCH --ntasks={{ total_nodes }}
 #SBATCH --ntasks-per-node=1
 {% endif %}
-{% if use_gpus_per_node_directive %}
+{% if gpu_sbatch_directive == "gpus-per-node" %}
 #SBATCH --gpus-per-node={{ gpus_per_node }}
+{% elif gpu_sbatch_directive == "gres" %}
+#SBATCH --gres=gpu:{{ gpus_per_node }}
 {% endif %}
 {% if use_segment_sbatch_directive %}
 #SBATCH --segment={{ total_nodes }}
@@ -86,6 +98,35 @@ OUTPUT_DIR="${OUTPUT_BASE}/${SLURM_JOB_ID}"
 LOG_DIR="${OUTPUT_DIR}/logs"
 mkdir -p "${LOG_DIR}"
 
+{% if embedded_config_files %}
+# The output base is node-local in embedded mode. Create the identical host
+# mount source on every allocated node before any containerized worker starts.
+# Worker stdout remains node-local; result collection is handled separately.
+if [ "${SLURM_JOB_NUM_NODES:-1}" -gt 1 ]; then
+    srun --overlap --nodes="${SLURM_JOB_NUM_NODES}" --ntasks="${SLURM_JOB_NUM_NODES}" \
+        --ntasks-per-node=1 mkdir -p "${LOG_DIR}"
+fi
+
+BOOTSTRAP_LOG="${OUTPUT_BASE}/.srtctl-sweep-${SLURM_JOB_ID}.log"
+if [ -e "${BOOTSTRAP_LOG}" ]; then
+    mv "${BOOTSTRAP_LOG}" "${LOG_DIR}/sweep_${SLURM_JOB_ID}.log"
+fi
+
+# These payloads contain data only. Base64 keeps arbitrary YAML from becoming
+# shell syntax; the temporary file and atomic rename prevent partial reads.
+{% for config_file in embedded_config_files %}
+RUNTIME_CONFIG="${OUTPUT_DIR}/{{ config_file.filename }}"
+RUNTIME_CONFIG_TMP="${RUNTIME_CONFIG}.tmp.$$"
+(umask 077; printf '%s' '{{ config_file.payload }}' | base64 --decode > "${RUNTIME_CONFIG_TMP}")
+mv "${RUNTIME_CONFIG_TMP}" "${RUNTIME_CONFIG}"
+{% endfor %}
+{% if embedded_cluster_config_filename %}
+# The submitter and compute nodes may not share the cluster-profile path.
+# Point every compute-side config lookup at the exact embedded profile.
+export SRTSLURM_CONFIG="${OUTPUT_DIR}/{{ embedded_cluster_config_filename }}"
+{% endif %}
+{% endif %}
+
 # Export for Python orchestrator to use the same paths
 export SRTCTL_OUTPUT_DIR="${OUTPUT_DIR}"
 
@@ -120,7 +161,7 @@ export {{ key }}={{ value }}
 echo ""
 echo "Preparing srtctl environment..."
 
-# Use compute-arch uv from srt-slurm/bin (installed by make setup ARCH=<compute_arch>)
+# Use compute-arch uv from srt-slurm/bin (installed by make setup-compute ARCH=<compute_arch>)
 # This avoids arch mismatch when login node (x86_64) != compute node (aarch64)
 export PATH="${SRTCTL_SOURCE}/bin:$HOME/.local/bin:$PATH"
 
@@ -129,8 +170,8 @@ export PATH="${SRTCTL_SOURCE}/bin:$HOME/.local/bin:$PATH"
 export UV_PROJECT_ENVIRONMENT="${SRTCTL_SOURCE}/.venv-compute"
 
 if ! command -v uv &> /dev/null; then
-    echo "ERROR: uv not found. Run 'make setup ARCH=<compute_arch>' first."
-    echo "  e.g., make setup ARCH=aarch64  (for GB200/Grace compute nodes)"
+    echo "ERROR: uv not found. Run 'make setup-compute ARCH=<compute_arch>' first."
+    echo "  e.g., make setup-compute ARCH=x86_64  (for AMD compute nodes)"
     exit 1
 fi
 
