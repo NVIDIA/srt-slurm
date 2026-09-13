@@ -67,7 +67,7 @@ profiling:
   prefill:
     start_step: 0 # Step to start profiling for prefill workers
     stop_step: 50 # Step to stop profiling for prefill workers
-    capture_scope: selected # "selected" (default) or "all"
+    capture_scope: selected # Opt in to targeting; "all" is the default
     worker_index: 0 # Logical prefill worker to capture
     worker_rank: 0 # Physical process rank within that worker
   decode:
@@ -94,7 +94,7 @@ profiling:
 | `decode.stop_step`      | Step number to end decode profiling           | `50`     |
 | `aggregated.start_step` | Step number to begin aggregated profiling     | `0`      |
 | `aggregated.stop_step`  | Step number to end aggregated profiling       | `50`     |
-| `*.capture_scope`       | Capture one selected process or all physical processes | `selected` |
+| `*.capture_scope`       | Capture one selected process or all physical processes | `all` |
 | `*.worker_index`        | Logical worker selected for iteration-based nsys | `0`    |
 | `*.worker_rank`         | Physical process rank selected within that worker | `0`  |
 | `nsys_trace`            | Non-TRT-LLM Nsight activity domains          | `cuda,nvtx` |
@@ -102,6 +102,10 @@ profiling:
 | `capture_range_end`     | Non-TRT-LLM action after a CUDA profiler range ends | `stop` |
 | `nsys_library_paths`    | Paths prepended to the worker `LD_LIBRARY_PATH` | unset |
 | `extra_nsys_args`       | Additional `nsys profile` arguments          | unset    |
+
+For non-TRT-LLM workers, set `nsys_trace` to choose trace domains. Do not
+also pass `--trace` in `extra_nsys_args`: that emits duplicate options whose
+precedence depends on Nsight's argument parsing.
 
 ## Constraints
 
@@ -122,10 +126,11 @@ Profiling has specific requirements:
 
 - Supported benchmark scripts receive the selected worker control endpoints
   needed to control iteration-triggered profiling.
-- For non-TRT-LLM `nsys`, each phase defaults to `capture_scope: selected`,
-  which wraps the process identified by `worker_index` and `worker_rank`.
-  Set `capture_scope: all` to wrap every physical process in that phase and
-  send every usable control endpoint to the benchmark.
+- For non-TRT-LLM `nsys`, each phase defaults to `capture_scope: all`,
+  preserving the all-worker wrapping behavior of existing recipes and sending
+  every usable control endpoint to the benchmark. Set `capture_scope: selected`
+  to opt in to targeting the process identified by `worker_index` and
+  `worker_rank`.
 - A Dynamo worker is controlled through its `DYN_SYSTEM_PORT`, not through the
   public OpenAI serving port.
 - Direct SGLang uses its native `/start_profile` and `/stop_profile` endpoints.

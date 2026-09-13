@@ -334,6 +334,8 @@ class TestDryRunExecutionExtensions:
         assert "repeat:1:async" in output
         assert "/host/lib64:/host/lib" in output
         assert "all physical processes" in output
+        assert "Execution Extensions" in output
+        assert "profiling" in output
 
     def test_custom_benchmark_details_shown(self, capsys):
         config = _make_config(
@@ -350,6 +352,7 @@ class TestDryRunExecutionExtensions:
         assert "Execution Extensions" in output
         assert "container_image" in output
         assert "nvcr.io/nvidia/python:3.11" in output
+        assert "profiling" not in output
 
     def test_observability_tachometer_details_shown(self, capsys):
         config = _make_config(

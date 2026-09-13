@@ -1097,7 +1097,7 @@ profiling:
   prefill:
     start_step: 10                   # Step to start profiling
     stop_step: 20                    # Step to stop profiling
-    capture_scope: "selected"        # "selected" (default) or "all"
+    capture_scope: "selected"        # Opt in to targeting; "all" is the default
     worker_index: 0                  # Logical worker to profile
     worker_rank: 0                   # Physical process rank within the worker
   decode:
@@ -1129,16 +1129,16 @@ Each phase config has:
 | ----- | ---- | -------- | ------- | ----------- |
 | `start_step` | int | No | null | Step to start profiling |
 | `stop_step` | int | No | null | Step to stop profiling |
-| `capture_scope` | string | No | "selected" | Capture one selected physical process or "all" processes |
+| `capture_scope` | string | No | "all" | Capture all physical processes or opt in to "selected" |
 | `worker_index` | int | No | 0 | Logical worker selected for iteration-based Nsight |
 | `worker_rank` | int | No | 0 | Physical process rank selected within the worker |
 
 ### Profiling Modes
 
 - **nsys**: NVIDIA Nsight Systems profiling. For vLLM and SGLang, each phase
-  captures one selected physical process by default. Set `capture_scope: all`
-  to wrap every physical process and send every usable control endpoint to the
-  benchmark. A Dynamo control endpoint uses the worker's `DYN_SYSTEM_PORT`.
+  captures all physical processes by default and sends every usable control
+  endpoint to the benchmark. Set `capture_scope: selected` to opt in to one
+  worker/rank. A Dynamo control endpoint uses the worker's `DYN_SYSTEM_PORT`.
   Native Dynamo sidecars and direct vLLM expose control only on the endpoint
   leader: all-process capture sends one control request to rank 0, while
   selected capture must explicitly target rank 0.

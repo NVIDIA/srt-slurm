@@ -867,7 +867,7 @@ class ProfilingPhaseConfig:
 
     start_step: int | None = None  # Step to start profiling
     stop_step: int | None = None  # Step to stop profiling
-    capture_scope: Literal["selected", "all"] = "selected"
+    capture_scope: Literal["selected", "all"] = "all"
     worker_index: int = 0  # Logical worker within the phase
     worker_rank: int = 0  # Physical process rank within that worker
 
@@ -957,16 +957,13 @@ class ProfilingConfig:
             return self.aggregated
         return None
 
-    def get_env_vars(
-        self,
-        mode: str,
-        profile_dir: str,
-    ) -> dict[str, str]:
+    def get_env_vars(self, mode: str, profile_dir: str) -> dict[str, str]:
         """Get profiling-specific environment variables.
 
         Args:
             mode: Worker mode (prefill/decode/agg)
             profile_dir: Base directory for profiling output.
+
         Returns:
             Dictionary of environment variables
         """
@@ -2577,6 +2574,10 @@ class SrtConfig:
             "agg": resources.gpus_per_agg,
         }[mode]
         nodes_per_worker = math.ceil(gpus_per_worker / resources.gpus_per_node)
+        # Match allocate_endpoints: multi-node workers use the same full GPU
+        # index set on every node (whole-node allocation); partial-node workers
+        # use a contiguous subset. Actual placement/ports are resolved later,
+        # and _profiling_worker_endpoints checks the selector against that topology.
         local_gpus = resources.gpus_per_node if nodes_per_worker > 1 else gpus_per_worker
         endpoint = Endpoint(
             mode=mode,
@@ -2585,6 +2586,8 @@ class SrtConfig:
             gpu_indices=frozenset(range(local_gpus)),
             gpus_per_node=resources.gpus_per_node,
         )
+        # Validation-only expansion uses a fresh port allocator; it neither
+        # reserves live ports nor consumes the runtime topology's allocations.
         processes = self.backend.endpoints_to_processes(
             [endpoint],
             frontend_type=self.frontend.type,

@@ -143,7 +143,7 @@ class TestProfilingConfig:
 
         profiling = ProfilingConfig(
             type="nsys",
-            decode=ProfilingPhaseConfig(worker_index=2, worker_rank=3),
+            decode=ProfilingPhaseConfig(capture_scope="selected", worker_index=2, worker_rank=3),
         )
 
         assert profiling.selects_process("decode", 2, 3)
@@ -422,7 +422,7 @@ class TestProfilingValidation:
                 resources=ResourceConfig(gpu_type="h100", agg_nodes=1, agg_workers=1),
                 profiling=ProfilingConfig(
                     type="nsys",
-                    aggregated=ProfilingPhaseConfig(start_step=0, stop_step=10, **phase),
+                    aggregated=ProfilingPhaseConfig(capture_scope="selected", start_step=0, stop_step=10, **phase),
                 ),
             )
 
@@ -481,6 +481,7 @@ class TestProfilingValidation:
                         start_step=0,
                         stop_step=10,
                         worker_rank=worker_rank,
+                        capture_scope="selected",
                     ),
                 ),
             )
@@ -709,6 +710,68 @@ class TestVllmNsysProfilerConfig:
 class TestProfilingTargetSelection:
     """Tests for selecting the one physical process controlled by a capture."""
 
+    @pytest.mark.parametrize(
+        ("launch_mode", "expected_ranks"),
+        [("per_gpu", set(range(8))), ("per_node", {0, 4})],
+    )
+    def test_default_scope_captures_allocated_workers_and_ranks(self, monkeypatch, launch_mode, expected_ranks):
+        """Legacy phase configs wrap every process and use every allocated system port."""
+        from types import SimpleNamespace
+
+        from srtctl.backends.vllm import VLLMProtocol, VLLMServerConfig
+        from srtctl.cli.mixins import benchmark_stage
+        from srtctl.cli.mixins.benchmark_stage import BenchmarkStageMixin
+        from srtctl.cli.mixins.worker_stage import WorkerStageMixin
+        from srtctl.core.schema import ModelConfig, ProfilingConfig, ProfilingPhaseConfig, ResourceConfig, SrtConfig
+        from srtctl.core.topology import allocate_endpoints
+
+        class Stage(BenchmarkStageMixin, WorkerStageMixin):
+            @property
+            def backend_processes(self):
+                return self._processes
+
+        backend = VLLMProtocol(
+            dp_launch_mode=launch_mode,
+            vllm_config=VLLMServerConfig(aggregated={"data-parallel-size": 8, "tensor-parallel-size": 1}),
+        )
+        phase = ProfilingPhaseConfig(start_step=10, stop_step=30)
+        config = SrtConfig(
+            name="profiling-default",
+            model=ModelConfig(path="/model", container="/container", precision="fp8"),
+            resources=ResourceConfig(gpu_type="h100", gpus_per_node=4, agg_nodes=4, agg_workers=2),
+            backend=backend,
+            profiling=ProfilingConfig(type="nsys", aggregated=phase),
+        )
+        endpoints = allocate_endpoints(
+            num_prefill=0,
+            num_decode=0,
+            num_agg=2,
+            gpus_per_prefill=4,
+            gpus_per_decode=4,
+            gpus_per_agg=8,
+            gpus_per_node=4,
+            available_nodes=["node-a", "node-b", "node-c", "node-d"],
+        )
+        stage = Stage()
+        stage.config = config
+        stage._processes = backend.endpoints_to_processes(endpoints, base_sys_port=7500)
+        stage.runtime = SimpleNamespace(
+            frontend_port=8000, network_interface="eth0", nodes=SimpleNamespace(head="head")
+        )
+        monkeypatch.setattr(benchmark_stage, "get_hostname_ip", lambda node, _interface: f"{node}.test")
+
+        assert phase.capture_scope == "all"
+        assert {p.endpoint_index for p in stage.backend_processes} == {0, 1}
+        assert config._profiling_worker_ranks("agg") == expected_ranks
+        for worker_index in (0, 1):
+            assert {p.node_rank for p in stage.backend_processes if p.endpoint_index == worker_index} == expected_ranks
+        assert all(stage._profiling_selects_process(p) for p in stage.backend_processes)
+        controls = stage._profiling_worker_endpoints()
+        assert controls == [("agg", f"{p.node}.test", p.sys_port) for p in stage.backend_processes]
+        assert [port for _, _, port in controls] == list(range(7500, 7500 + 2 * len(expected_ranks)))
+        env = stage._get_benchmark_profiling_env(get_runner("sa-bench"), controls)
+        assert env["PROFILE_AGG_ENDPOINTS"] == ",".join(f"{host}:{port}" for _, host, port in controls)
+
     def test_worker_wrapper_targets_only_selected_process(self):
         from types import SimpleNamespace
 
@@ -721,7 +784,7 @@ class TestProfilingTargetSelection:
             backend=SimpleNamespace(type="vllm"),
             profiling=ProfilingConfig(
                 type="nsys",
-                aggregated=ProfilingPhaseConfig(worker_index=1, worker_rank=2),
+                aggregated=ProfilingPhaseConfig(capture_scope="selected", worker_index=1, worker_rank=2),
             ),
         )
         selected = Process(
@@ -760,7 +823,7 @@ class TestProfilingTargetSelection:
         stage.config.backend.type = "trtllm"
         stage.config.profiling = ProfilingConfig(
             type="nsys",
-            aggregated=ProfilingPhaseConfig(worker_index=1, worker_rank=2),
+            aggregated=ProfilingPhaseConfig(capture_scope="selected", worker_index=1, worker_rank=2),
         )
         assert stage._profiling_selects_process(selected)
         assert stage._profiling_selects_process(other)
@@ -807,6 +870,7 @@ class TestProfilingTargetSelection:
                     start_step=4,
                     stop_step=12,
                     worker_index=1,
+                    capture_scope="selected",
                 ),
             ),
             served_model_name="model",
@@ -905,7 +969,7 @@ class TestProfilingTargetSelection:
 
         stage.config.profiling = ProfilingConfig(
             type="nsys",
-            aggregated=ProfilingPhaseConfig(worker_rank=1),
+            aggregated=ProfilingPhaseConfig(capture_scope="selected", worker_rank=1),
         )
         with pytest.raises(ValueError, match="does not expose its own control endpoint"):
             stage._profiling_worker_endpoints()
@@ -939,7 +1003,7 @@ class TestProfilingTargetSelection:
             dynamo=SimpleNamespace(sidecar=False),
             profiling=ProfilingConfig(
                 type="nsys",
-                aggregated=ProfilingPhaseConfig(worker_rank=1),
+                aggregated=ProfilingPhaseConfig(capture_scope="selected", worker_rank=1),
             ),
         )
         stage.runtime = SimpleNamespace(frontend_port=9000, network_interface="eth0")

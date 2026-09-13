@@ -528,6 +528,7 @@ def show_config_details(config: SrtConfig) -> None:
             details.add_row("benchmark", "container_image", config.benchmark.container_image)
 
         profiling = config.profiling
+        # Other extensions can enable this section without enabling profiling.
         if profiling.enabled:
             details.add_row("profiling", "type", profiling.type)
             if profiling.is_nsys:
