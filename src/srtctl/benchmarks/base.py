@@ -20,6 +20,9 @@ SCRIPTS_DIR = Path(__file__).parent / "scripts"
 
 # BenchmarkConfig fields every type may set: where the client runs, sweeps, aiperf
 # plumbing, and post-processing. Everything else belongs to specific runners.
+# ``concurrencies`` is shared because power telemetry (``telemetry.enabled``)
+# derives its expected measurement windows from it for every benchmark type,
+# including ``custom`` clients that read the value from their own env.
 SHARED_BENCHMARK_FIELDS: frozenset[str] = frozenset(
     {
         "type",
@@ -29,6 +32,7 @@ SHARED_BENCHMARK_FIELDS: frozenset[str] = frozenset(
         "sweep",
         "aiperf_package",
         "aiperf_args",
+        "concurrencies",
     }
 )
 

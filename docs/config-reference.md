@@ -812,7 +812,7 @@ shows the publication flag selected for Dynamo TRT-LLM workers.
 
 Benchmark configuration. The `type` field determines which benchmark runner is used and what additional fields are available.
 
-**Per-type fields (schema 2).** Every type accepts the shared fields (`client_placement`, `client_dedicated_node`, `colocate_with_frontend`, `sweep`, `aiperf_package`, `aiperf_args`) plus the fields its runner reads:
+**Per-type fields (schema 2).** Every type accepts the shared fields (`client_placement`, `client_dedicated_node`, `colocate_with_frontend`, `sweep`, `aiperf_package`, `aiperf_args`, and `concurrencies`, which power telemetry reads for its measurement windows whatever the type) plus the fields its runner reads:
 
 | `type` | Fields |
 | --- | --- |

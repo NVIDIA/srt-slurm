@@ -372,3 +372,21 @@ def test_cli_in_place_directory_continues_past_an_unreadable_recipe(tmp_path: Pa
     assert "1 migrated, 1 not migrated" in out
     assert yaml.safe_load(good.read_text())["schema"] == 2
     assert "schema" not in bad.read_text()
+
+
+def test_custom_benchmark_with_power_telemetry_keeps_its_concurrencies() -> None:
+    """Power telemetry builds its measurement windows from benchmark.concurrencies for every
+    type, so the per-type strip must leave it alone even for a custom client."""
+    text = (
+        "name: p\nmodel:\n  path: /m\n  container: /c\n  precision: fp4\n"
+        "resources:\n  gpu_type: gb300\n  gpus_per_node: 4\n  agg_nodes: 1\n  agg_workers: 1\n  gpus_per_agg: 4\n"
+        "backend:\n  type: trtllm\n"
+        "benchmark:\n  type: custom\n  command: bash run.sh\n  concurrencies: '4'\n  use_chat_template: true\n"
+        "telemetry:\n  enabled: true\n  dcgm_exporter:\n    container_image: dcgm\n    port: 9401\n"
+    )
+    result = migrate_recipe_text(text)
+    doc = yaml.safe_load(result.text)
+    assert doc["benchmark"] == {"type": "custom", "command": "bash run.sh", "concurrencies": "4"}
+    assert "removed benchmark.use_chat_template (unused by type custom)" in result.notes
+    verified = verify_migration_text(text)
+    assert verified.status == "ok", verified.detail

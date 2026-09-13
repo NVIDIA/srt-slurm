@@ -87,8 +87,17 @@ def test_schema_2_rejects_a_field_the_type_does_not_use() -> None:
     assert "fields it accepts" in str(exc.value)
     with pytest.raises(ValueError, match="'sa-bench' does not use num_shots"):
         _load("benchmark:\n  type: sa-bench\n  isl: 1\n  osl: 1\n  concurrencies: '1'\n  num_shots: 5\n")
-    with pytest.raises(ValueError, match="'manual' does not use concurrencies, isl, osl"):
+    with pytest.raises(ValueError, match="'manual' does not use isl, osl"):
         _load("benchmark:\n  type: manual\n  isl: 1\n  osl: 1\n  concurrencies: '1'\n")
+
+
+def test_concurrencies_is_shared_because_power_telemetry_reads_it() -> None:
+    """A custom client with DCGM power telemetry: the windows come from benchmark.concurrencies."""
+    config = _load(
+        "benchmark:\n  type: custom\n  command: bash run.sh\n  concurrencies: '4'\n"
+        "telemetry:\n  enabled: true\n  dcgm_exporter:\n    container_image: dcgm\n    port: 9401\n"
+    )
+    assert config.benchmark.get_concurrency_list() == [4]
 
 
 def test_schema_1_only_warns(caplog) -> None:
