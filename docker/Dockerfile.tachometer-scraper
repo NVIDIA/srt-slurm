@@ -26,6 +26,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY src/tachometer/tachometer-writer/Cargo.toml src/tachometer/tachometer-writer/Cargo.toml
 COPY src/tachometer/tachometer-scraper/Cargo.toml src/tachometer/tachometer-scraper/Cargo.toml
+COPY src/cpu-power-exporter/Cargo.toml src/cpu-power-exporter/Cargo.toml
+# Empty sibling source satisfies the workspace manifest without compiling it.
+RUN mkdir -p src/cpu-power-exporter/src && echo 'fn main(){}' > src/cpu-power-exporter/src/main.rs
 COPY src/tachometer/tachometer-writer/src src/tachometer/tachometer-writer/src
 COPY src/tachometer/tachometer-scraper/src src/tachometer/tachometer-scraper/src
 

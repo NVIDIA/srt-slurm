@@ -115,7 +115,16 @@ jobs:
           set -euo pipefail
           # The tag exists before the wheel or the binaries are built, so
           # hatch-vcs and SRTCTL_RELEASE_VERSION both see the same number.
-          gh api "repos/${GH_REPO}/git/refs" -f ref="refs/tags/${TAG}" -f sha="$TARGET" >/dev/null
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::release $TAG already exists; the bump computed the wrong version"; exit 1
+          fi
+          if existing=$(gh api "repos/${GH_REPO}/git/ref/tags/${TAG}" --jq .object.sha 2>/dev/null); then
+            # A tag with no release is what a failed earlier run leaves behind; move it to this commit.
+            echo "Tag $TAG exists at $existing without a release; moving it to $TARGET"
+            gh api -X PATCH "repos/${GH_REPO}/git/refs/tags/${TAG}" -f sha="$TARGET" -F force=true >/dev/null
+          else
+            gh api "repos/${GH_REPO}/git/refs" -f ref="refs/tags/${TAG}" -f sha="$TARGET" >/dev/null
+          fi
           echo "Tagged $TARGET as $TAG"
 
   build-tachometer-scraper:
