@@ -765,9 +765,43 @@ backend:
 | `prefill_environment` | dict   | {}      | Environment variables for prefill       |
 | `decode_environment`  | dict   | {}      | Environment variables for decode        |
 | `trtllm_config`       | object | null    | TRTLLM CLI configuration per mode       |
+| `publish_metrics` | bool | true | Pass `--publish-metrics` to Dynamo TRT-LLM workers; does not enable KV events |
+| `publish_events_and_metrics` | bool or null | unset | `false`: disable both publication flags; `true`: enable the combined flag; unset/null: inherit defaults |
+
+With `frontend.type: dynamo`, prefill, decode, and aggregated workers publish engine metrics
+by default using `--publish-metrics`, regardless of whether observability is enabled. Without
+observability, this does not enable KV events. `observability.enabled: true` retains its existing
+superset behavior: it additionally enables `--publish-events-and-metrics` when the combined
+setting is omitted or null. Explicitly requesting the combined flag also works without
+observability.
+
+**An explicit `backend.publish_events_and_metrics: false` is a master opt-out:** neither
+publication flag is passed, even if `publish_metrics` is true or observability is enabled.
+This differs from omitting the combined setting, which keeps metrics on by default. Unset
+values remain null through config serialization so a saved config does not acquire an opt-out.
+
+| `publish_events_and_metrics` | Observability | Default publication flags |
+| --- | --- | --- |
+| omitted / null | disabled / omitted | `--publish-metrics` |
+| omitted / null | enabled | `--publish-metrics --publish-events-and-metrics` |
+| `false` | either | none |
+| `true` | either | `--publish-metrics --publish-events-and-metrics` |
+
+**Compatibility:** the metrics-only flag requires a Dynamo build containing
+[ai-dynamo/dynamo#12162](https://github.com/ai-dynamo/dynamo/pull/12162) or equivalent support.
+Older builds (including Dynamo v1.4.2) reject the flag. Set `backend.publish_metrics: false`
+to omit only the new flag, including when observability is enabled; this does not disable a
+combined flag enabled by observability or the recipe. Set `backend.publish_events_and_metrics: false`
+to omit **both** flags. srt-slurm does not substitute the combined flag as an automatic
+compatibility fallback, because that would enable KV events. Omitting the flag does
+not override metrics-related environment variables supplied by the user. Metrics collection
+adds engine telemetry work; metrics-only does not mean zero overhead.
+
+These options do not change native `trtllm_serve` or sidecar worker commands. `srtctl dry-run`
+shows the publication flag selected for Dynamo TRT-LLM workers.
 
 **Key differences from SGLang backend**:
-- No aggregated mode support (prefill/decode only)
+- Supports prefill, decode, and aggregated workers
 - Uses MPI-style launching (one srun per endpoint with all nodes)
 - Uses `trtllm-llmapi-launch` for distributed launching
 - Automatically sets `TRTLLM_EPLB_SHM_NAME` with unique UUID per endpoint
@@ -862,9 +896,14 @@ their URLs are appended to `AIPERF_SERVER_METRICS_URLS` after the logical worker
 
 Two caveats for `AIPERF_SERVER_METRICS_URLS`:
 
-- **TRT-LLM worker URLs are omitted when the workers publish no metrics.** A Dynamo TRT-LLM worker
-  launched without `--publish-events-and-metrics` (the default; `observability.enabled` turns it
-  on) serves nothing on its sys-port `/metrics`, so those URLs are not advertised. With
+- **Dynamo TRT-LLM worker URLs are advertised when engine metrics are enabled.** This is the
+  default via `backend.publish_metrics: true` (`--publish-metrics`) when the combined setting
+  is omitted; `backend.publish_events_and_metrics: true` also enables them. Explicit
+  `backend.publish_events_and_metrics: false` suppresses both publication flags and worker
+  URLs, regardless of the metrics-only setting. URLs are also omitted when no flag is enabled
+  (for example, metrics-only false and the combined setting omitted without observability).
+  This applies to built-in AIPerf and custom benchmarks, excluding sidecars, whose behavior is
+  unchanged. Runtime-only metrics may still exist but do not constitute an engine-metrics capture. With
   `frontend.type: trtllm_serve` the gate is the worker's own engine config instead: its
   `/prometheus/metrics` URL is advertised when that mode's `return_perf_metrics` is true (the
   srtctl default for trtllm_serve recipes; an explicit `false` drops the URL). KVBM URLs are
@@ -1416,7 +1455,9 @@ observability:
   enabled: true
 ```
 
-Tachometer scrapes the **complement** of what the benchmark client polls: worker endpoints that appear in `AIPERF_SERVER_METRICS_URLS` are left to the client (a worker endpoint is never double-polled — the extra scrape load has previously made a submission irreproducible), while the frontend, DCGM, and node-exporter endpoints are always Tachometer's. On runs whose benchmark has no aiperf client (sa-bench, lm-eval, serve-only, manual), the complement expands to every endpoint.
+The capture window aligns with the load, the same window the benchmark client's own `AIPERF_SERVER_METRICS_URLS` polling covers: on benchmark runs the scraper starts once the server passes the health gate (bring-up produces only dead-endpoint noise while workers load) and is stopped **gracefully** when the client exits, with a configurable grace period for compacting `final.parquet` before post-processing reads it. Runs without a discrete load window (serve-only, `manual`, eval-only) capture the whole serve session as before. Signal handlers and the critical-process monitor still use the process registry’s existing teardown budget; the benchmark shutdown grace does not override those paths.
+
+Tachometer scrapes all configured worker, frontend, DCGM, and node-exporter endpoints, independently of the benchmark client's `AIPERF_SERVER_METRICS_URLS` polling. This keeps the raw capture complete even when the client also collects metrics.
 
 The legacy in-job Python RAW scraper is retired: a recipe still carrying `scrape_metrics`, `scrape_interval_seconds`, or `scrape_output` fails validation at submit time. Historical `raw_prometheus.jsonl` artifacts remain readable by the post-processing ingest.
 
@@ -1429,7 +1470,7 @@ The legacy in-job Python RAW scraper is retired: a recipe still carrying `scrape
 
 The component perf dashboard is **not** configured here. It is built in post-processing on every run; `enabled` decides which capture legs exist and therefore which tabs the page carries. See [Component Performance Dashboard](component-dashboard.md).
 
-Tachometer collects every worker rank, frontend, DCGM, and node metrics by default (minus the client-polled complement described above) — the exporters launch from pinned multi-arch registry images with no configuration. Air-gapped clusters override the images via the `containers:` alias map in `srtslurm.yaml`; `default_exporters: false` disables the built-ins:
+Tachometer collects every worker rank, frontend, DCGM, node, and process metrics by default (minus the client-polled complement described above) — the exporters launch from pinned multi-arch registry images with no configuration. Air-gapped clusters override the images via the `containers:` alias map in `srtslurm.yaml`; `default_exporters: false` disables the built-ins:
 
 ```yaml
 observability:
@@ -1448,6 +1489,10 @@ observability:
     node_exporter:
       container_image: /containers/node-exporter.sqsh
       port: 9100
+    process_exporter:
+      binary: /opt/srt/configs/process-exporter   # host-native (default mode); or set container_image instead
+      container_image: ""
+      port: 9256
 ```
 
 | Tachometer field | Type | Default | Description |
@@ -1456,14 +1501,20 @@ observability:
 | `binary_path` | string | `tachometer-scraper` | Scraper command or path on the compute nodes |
 | `collect_interval_ms` | int | `1000` | Milliseconds between scrapes of every endpoint; the single cadence knob — it also drives the launched DCGM exporter's `--collect-interval` (an explicit `dcgm_exporter.command` wins) and the host sampler. Values below `1000` speed up DCGM NVML sampling and are warned about at launch: 100ms sampling measured ~2% decode ITL overhead on GB300. Replaces the retired Hz-based `default_frequency` |
 | `sync_interval_secs` | int | `120` | Interval for intermediate Parquet compaction; `0` disables it |
+| `shutdown_grace_secs` | float | `120.0` | Time the scraper gets after SIGTERM to flush and compact `final.parquet` before it is killed; compaction scales with the data accumulated since the last periodic sync |
 | `compaction_threads` | int | `4` | Value passed as `POLARS_MAX_THREADS` |
 | `storage_subdir` | string | `tachometer` | Output directory below the run log directory |
 | `extra_metadata` | dict | `{}` | Static string metadata added to every endpoint |
-| `default_exporters` | bool | `true` | Launch the built-in DCGM + node exporters when no explicit blocks are set (sweep path only) |
+| `default_exporters` | bool | `true` | Imply the built-in DCGM + node + process exporters when no explicit blocks are set. The exporters are [services](services.md#implicit-services) (`dcgm-exporter`, `node-exporter`, `process-exporter`); declaring one under `services:` by that name overrides it, and `srtctl dry-run` lists them |
 | `dcgm_exporter` | object/null | built-in | Defaults to `nvcr.io#nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04` on port 9401; an explicit block overrides |
-| `node_exporter` | object/null | built-in | Defaults to `quay.io#prometheus/node-exporter:v1.8.2` on port 9101; an explicit block overrides |
+| `node_exporter` | object/null | built-in | Defaults to `quay.io#prometheus/node-exporter:v1.8.2` on port 9101 with the `cpu`, `infiniband`, `meminfo`, `processes`, `stat`, `vmstat`, `pressure` and `meminfo_numa` collectors on worker nodes. Includes major faults and page-reclaim counters; retains process-state and NUMA-node identity. An explicit block overrides |
+| `process_exporter` | object/null | built-in | Defaults to the **host-native** `configs/process-exporter` binary (ncabatoff/process-exporter 0.8.7, installed by `make setup` for the compute arch, like `configs/nats-server` and `configs/etcd`) on port 9256, launched with plain `srun` (no container) on every allocated node (the `process-exporter` service, `placement.node: all`). Reads the host `/proc` and publishes per-process-group CPU seconds by mode, thread count, per-thread-name CPU and count (`-threads=true`), context switches, RSS and open fds. The passthrough filter retains metric names and labels, including summary sum/count suffixes, and attaches hostname and run metadata to raw rows. Groups (frontend, `dynamo_trtllm` / `dynamo_sglang` / `dynamo_vllm` handlers, `trtllm_engine` children, launcher, client, infra daemons) come from `<log_dir>/process-exporter.yml`, written at launch. If the binary is missing the leg is skipped with a warning (submit warns too). An explicit block may set `binary` (absolute, or relative to the srtctl checkout) or instead a `container_image` with `binary` unset to run it containerized; the upstream `FROM scratch` image is not used by default because pyxis/enroot on some clusters cannot start shell-less images |
 
-`make setup ARCH=<compute_arch>` downloads and checksum-verifies the matching Tachometer binary from the latest srt-slurm release. The scraper runs as a native `srun` process on the head node; configured exporters remain containerized on worker nodes. Run `make tachometer-scraper` to build from source instead.
+Every exporter block accepts `container_image`, `port`, `command` and `binary`. `binary` selects host-native launch (the executable runs directly under `srun`, `container_image` is ignored and may be `""`); without it the exporter runs from `container_image`. One of the two must be set.
+
+`make setup ARCH=<compute_arch>` downloads and checksum-verifies the matching Tachometer binary from the latest srt-slurm release and installs the process-exporter binary for the same arch. The scraper and the process exporter run as native `srun` processes; the DCGM and node exporters remain containerized on worker nodes. Run `make tachometer-scraper` to build the scraper from source instead. The process-exporter passthrough filter and node process-state/NUMA-label preservation require a scraper built from this revision or a release containing it; rebuild the scraper when using an older downloaded binary.
+
+The pressure collector reports PSI only when the host exposes the corresponding `/proc/pressure` files; missing metrics indicate unavailable data. NUMA memory and allocation metrics retain the exported `node` label as `numa_node` in raw metric names, separately from host metadata. With `observability.enabled: true`, the existing local host sampler also records cumulative PSI stall totals in microseconds in its `psi` JSONL field. That optional sampler covers the sweep/orchestrator host only; it does not extend exporter placement to dedicated frontend or client nodes. Collector overhead has not been measured for this change.
 
 Tachometer writes its Parquet stream under `<log_dir>/<storage_subdir>/raw/scrape/` (the leaf is created by the scraper itself — srtctl pre-creates only the parent, because the scraper refuses a pre-existing storage directory), compacting to `final.parquet` there on shutdown. Intermediate files remain in `<log_dir>/<storage_subdir>/local` until shutdown compaction completes. Rows carry an epoch `timestamp_ns` column, so they join directly with AIPerf records and Dynamo spans; the post-processing ingest converts the Parquet into the dashboard's `server_metrics_export.jsonl`.
 
@@ -1486,18 +1537,59 @@ telemetry:
   dcgm_exporter:
     container_image: /containers/dcgm-exporter.sqsh
     port: 9400
+  cpu_power_exporter:
+    port: 9405
+    source: auto
 ```
 
 | Field | Type | Default | Description |
 | ----- | ---- | ------- | ----------- |
 | `enabled` | bool | `false` | Enable DCGM power collection |
 | `dcgm_exporter` | object/null | `null` | DCGM exporter image, port, and optional command; required when enabled |
-| `collect_interval_ms` | int | `1000` | Milliseconds between collector cycles; must be at most `3000` (replaces the retired `default_frequency`, which was seconds despite its name) |
+| `collect_interval_ms` | int | `1000` | Milliseconds between collector cycles (shared by the DCGM and CPU legs); must be at most `3000` (replaces the retired `default_frequency`, which was seconds despite its name) |
 | `storage_subdir` | string | `power` | Output directory below the run log directory |
-| `required` | bool | `false` | Fail the benchmark when publishable power artifacts cannot be produced |
-| `startup_timeout_seconds` | float | `30.0` | Exporter readiness timeout |
-| `request_timeout_seconds` | float | `2.0` | Per-request exporter timeout |
+| `required` | bool | `false` | Fail the benchmark when publishable DCGM power artifacts cannot be produced (CPU power is always best-effort; see below) |
+| `startup_timeout_seconds` | float | `30.0` | Exporter readiness timeout (shared by the DCGM and CPU legs) |
+| `request_timeout_seconds` | float | `2.0` | Per-request exporter timeout (shared by the DCGM and CPU legs) |
 | `collector_join_timeout_seconds` | float/null | `null` | Shutdown join timeout; defaults from `request_timeout_seconds` |
+| `cpu_power_exporter` | object/null | `null` | Enables the independent CPU power leg; see below |
+
+### CPU power
+
+`telemetry.cpu_power_exporter` is an independent, best-effort leg: its
+presence (not a separate `enabled` flag) turns CPU power collection on, and it
+can run with or without `dcgm_exporter` alongside it. On each worker node,
+srtctl launches a `cpu-power-exporter` process directly on the bare host
+(outside the model container, so it can read host power interfaces) and
+exposes it on `cpu_power_exporter.port`. It resolves the bundled Rust binary
+installed by `make setup` first, falling back to the ACPI-only Python stdlib
+exporter (`srtctl.core.cpu_power_exporter`) when that binary is absent. A
+head-node collector scrapes every worker's exporter on the shared
+`collect_interval_ms`/`request_timeout_seconds` cadence and writes per-sample
+rows plus a manifest under `<log_dir>/<storage_subdir>/cpu/`
+(`samples.csv`, `cpu_manifest.json`).
+
+| CPU power exporter field | Type | Default | Description |
+| ------------------------- | ---- | ------- | ----------- |
+| `port` | int | `9405` | Port the exporter listens on and the head-node collector scrapes |
+| `source` | `auto`/`acpi`/`dcgm` | `auto` | Passed through to the bundled binary's own `--source` flag; `auto` tries DCGM first and falls back to ACPI. Has no effect on the Python fallback exporter, which is ACPI-only |
+
+`samples.csv` carries one row per sensor reading, with columns
+`schema_version, timestamp_unix, hostname, source, sensor, socket_id, power_w,
+total_power_w`. In ACPI mode, `total_power_w` is **not** a sum of the
+`cpu`- and `sysio`-kind rails; whenever a `grace`-kind channel exists for a
+socket, that channel alone is the node-level total (real hardware traces show
+`grace` at roughly 93-104W against `cpu`+`sysio` combined at roughly 53-58W for
+the same socket, i.e. `grace` measures the whole Grace SoC power boundary, not
+literally `cpu + sysio`). When no `grace` channel is present for a scrape,
+`total_power_w` is left blank for that row rather than guessed from the
+component rails; per-socket `power_w` values are always populated regardless.
+In DCGM mode, `total_power_w` is the single already-aggregate value DCGM
+reports per socket.
+
+Because collection is always best-effort, there is no `required` knob for the
+CPU leg: a node that fails to expose its exporter (or fails to publish
+readings) simply produces gaps in `samples.csv`, and the run continues.
 
 ---
 
@@ -1999,7 +2091,7 @@ services:
 | `args` | list[string] | `[]` | Appended to `command` |
 | `container` | string | type fallback, then job container | Image or `srtslurm.yaml` alias |
 | `env` | dict | `{}` | Service environment; placeholders like `{node_ip}` are substituted |
-| `placement.node` | string | type default | One instance for `head`/`infra`/`dedicated` (`dedicated` reserves a node); one per node for `prefill`/`decode`/`agg`/`workers` |
+| `placement.node` | string | type default | One instance for `head`/`infra`/`dedicated` (`dedicated` reserves a node); one per node for `prefill`/`decode`/`agg`/`workers`; every allocated node for `all` |
 | `start` | string | type default | `infra` (etcd, nats), `before_workers` (mooncake-master, mooncake-store), `after_frontend` (generic, exporters) |
 | `readiness` | object | type default | One probe (`port`/`tcp`, `http`, or `log`) plus `timeout_seconds` and `interval_seconds`; the job waits for it on every service node. Typed kinds gate on their well-known ports by default |
 | `inherit_discovery_env` | bool | `true` | Inject the Dynamo discovery env |

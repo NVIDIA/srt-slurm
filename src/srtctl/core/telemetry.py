@@ -9,6 +9,7 @@ import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from srtctl.core.ip_utils import url_host
 from srtctl.core.slurm import get_hostname_ip
 from srtctl.ports import FRONTEND_PUBLIC_PORT
 
@@ -143,7 +144,7 @@ def generate_tachometer_config(
             port = process.http_port
         else:
             port = process.sys_port
-        url = f"http://{node_ip}:{port}{metrics_path}"
+        url = f"http://{url_host(node_ip)}:{port}{metrics_path}"
         node_metadata = {
             "hostname": process.node,
             "worker_index": str(process.endpoint_index),
@@ -184,12 +185,33 @@ def generate_tachometer_config(
         endpoints.append(
             TelemetryEndpoint(
                 name=f"frontend{frontend_index}",
-                url=f"http://{node_ip}:{frontend_metrics_port or frontend_topology.frontend_port}{metrics_path}",
+                url=f"http://{url_host(node_ip)}:{frontend_metrics_port or frontend_topology.frontend_port}{metrics_path}",
                 collect_interval_ms=tachometer.collect_interval_ms,
                 filter="frontend",
                 node_metadata=node_metadata,
             )
         )
+
+    process_exporter = tachometer.resolved_process_exporter
+    if process_exporter is not None:
+        # Per-process / per-thread host telemetry on every node that hosts a
+        # backend rank OR a frontend replica. The frontend node is the one the
+        # other exporters can miss (a dedicated or `orchestrator_placement:
+        # head` frontend hosts no backend process), and it is where frontend
+        # CPU pathologies live. Preserve metric names and labels while
+        # attaching host and run metadata to the raw rows.
+        for node in sorted(set(physical_nodes) | set(frontend_nodes)):
+            node_metadata = {"hostname": node, "job_id": runtime.job_id, "run_name": runtime.run_name}
+            node_metadata.update(tachometer.extra_metadata)
+            endpoints.append(
+                TelemetryEndpoint(
+                    name=f"process_exporter_{node}",
+                    url=f"http://{node}:{process_exporter.port}/metrics",
+                    collect_interval_ms=tachometer.collect_interval_ms,
+                    filter="passthrough",
+                    node_metadata=node_metadata,
+                )
+            )
 
     return _dump_toml(
         endpoints=endpoints,

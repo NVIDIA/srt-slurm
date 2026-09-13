@@ -170,7 +170,7 @@ The v1 spellings still load and mean the same thing: `infra.etcd_nats_dedicated_
 `dedicated` reserves a node for the infra services (the job asks Slurm for one more node) and is
 accepted by `etcd`, `nats`, and `mooncake-master`. `prefill`, `decode`, and `agg` launch one instance
 per distinct node that role's workers use, so two TP1 decode workers on one node share one service.
-`workers` launches one instance per worker node.
+`workers` launches one instance per worker node; `all` one per allocated node (head, infra, benchmark client, and workers).
 
 When a service launches on more than one node its processes and logs get a node suffix:
 `service_<name>_<node>`. Two services that declare the same `readiness.port` and land on the same
@@ -271,6 +271,7 @@ environment its process needs; the launch path is shared by every kind. Register
 | `mooncake-master` | `mooncake_master` with the RPC, HTTP metadata, and metrics ports srtctl owns | `before_workers` | `true` | Implied by `backend.mooncake_kv_store`; declaring it is the 2.0 spelling. `args` are appended. Container falls back to `mooncake_kv_store.container`. Supports `dedicated` and `external`. |
 | `dcgm-exporter` | `dcgm-exporter --collect-interval=<ms> --address :9401` in `nvcr.io/nvidia/k8s/dcgm-exporter` | `after_frontend` | `false` | Implied on worker nodes while tachometer runs. Shell-less (distroless image). `options`: `port`, `collect_interval_ms`. |
 | `node-exporter` | `/bin/node_exporter` with the cpu, infiniband, and meminfo collectors on 9101 in `quay.io/prometheus/node-exporter` | `after_frontend` | `false` | Implied on worker nodes while tachometer runs. Shell-less. `options`: `port`. |
+| `process-exporter` | `configs/process-exporter -config.path <log_dir>/process-exporter.yml -web.listen-address=:9256 -threads=true ...` on the bare node | `after_frontend` | `false` | Implied on every allocated node (`placement.node: all`) while tachometer runs. Host-native from the static binary `make setup` installs; skipped with a warning when it is missing. A declared `container` switches to the image's `/bin/process-exporter` with the group file under `/logs`. `options`: `port`, `binary`. |
 | `mooncake-store` | `python -m mooncake.mooncake_store_service` | `before_workers` | `true` | Requires a Mooncake master (either spelling). Container falls back to the master's. Injects the master's address. |
 
 The bespoke launch paths these replace (`start_head_infrastructure` with its own readiness loop, a

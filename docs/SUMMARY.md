@@ -10,6 +10,7 @@
 
 - [Configuration Reference](config-reference.md)
 - [Schema Reference (generated)](schema-reference.md)
+- [Deferred DCGM 4.7 runtime support](dcgm-4.7-runtime-support.md)
 - [Parameter Sweeps](sweeps.md)
 - [Config Overrides](config-reference.md#config-overrides)
 
@@ -30,6 +31,7 @@
 
 - [Monitoring](monitoring.md)
 - [GPU Power Telemetry](power-telemetry.md)
+- [CPU Power Telemetry](cpu-power-telemetry.md)
 - [Component Performance Dashboard](component-dashboard.md)
 - [SLURM FAQ](slurm-faq.md)
 

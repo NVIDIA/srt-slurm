@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 # Where a service runs. head / infra are one node; prefill / decode / agg are the
 # distinct physical nodes the role's workers land on; workers is every worker node.
-SERVICE_PLACEMENTS: tuple[str, ...] = ("head", "infra", "dedicated", "prefill", "decode", "agg", "workers")
+SERVICE_PLACEMENTS: tuple[str, ...] = ("head", "infra", "dedicated", "prefill", "decode", "agg", "workers", "all")
 SINGLE_NODE_PLACEMENTS: frozenset[str] = frozenset({"head", "infra", "dedicated"})
 
 # When a service starts relative to the rest of the job. ``infra`` is the discovery

@@ -1,0 +1,44 @@
+num_serve_frontends: 4
+max_batch_size: 128
+max_num_tokens: 8192
+max_seq_len: 147456
+tensor_parallel_size: 4
+moe_expert_parallel_size: 4
+enable_attention_dp: true
+pipeline_parallel_size: 1
+enable_chunked_prefill: true
+print_iter_log: true
+cuda_graph_config: null
+enable_autotuner: true
+disable_overlap_scheduler: false
+moe_config:
+  backend: MEGAMOE_CUTEDSL
+kv_cache_config:
+  enable_block_reuse: true
+  free_gpu_memory_fraction: 0.4
+  dtype: fp8
+  host_cache_size: 107374182400
+  pool_ratio:
+  - 0.45
+  - 0.3
+  - 0.25
+cache_transceiver_config:
+  max_tokens_in_buffer: 147456
+  backend: NIXL
+  transceiver_runtime: PYTHON
+  kv_transfer_timeout_ms: 600000
+scheduler_config:
+  capacity_scheduler_policy: MAX_UTILIZATION
+attention_dp_config:
+  enable_kv_cache_aware_routing: false
+  kv_cache_routing_conversation_affinity: true
+  kv_cache_routing_max_sessions: 65536
+return_perf_metrics: false
+enable_iter_perf_stats: false
+enable_iter_req_stats: false
+nvfp4_gemm_config:
+  allowed_backends:
+  - cutlass
+  - cublaslt
+  - cutedsl
+  - cuda_core

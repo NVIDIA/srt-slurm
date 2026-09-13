@@ -29,6 +29,7 @@ NATS_SERVICE_NAME = "nats"
 MOONCAKE_MASTER_SERVICE_NAME = "mooncake-master"
 DCGM_EXPORTER_SERVICE_NAME = "dcgm-exporter"
 NODE_EXPORTER_SERVICE_NAME = "node-exporter"
+PROCESS_EXPORTER_SERVICE_NAME = "process-exporter"
 
 
 @dataclass(frozen=True)
@@ -117,6 +118,27 @@ def implied_services(config: SrtConfig) -> list[EffectiveService]:
                         container=node.container_image,
                         command=node.command.format(port=node.port).split() if node.command else None,
                         options={"port": node.port},
+                    ),
+                    implicit=True,
+                    reason="observability.tachometer default exporters",
+                )
+            )
+        proc = tachometer.resolved_process_exporter
+        if proc is not None:
+            # `binary` set (the default) is the host-native launch; a container_image
+            # without a binary is the container launch. Both spellings map onto the
+            # service: container -> container mode, options.binary -> host-native.
+            options: dict = {"port": proc.port}
+            if proc.binary:
+                options["binary"] = proc.binary
+            implied.append(
+                EffectiveService(
+                    ServiceConfig(
+                        name=PROCESS_EXPORTER_SERVICE_NAME,
+                        type="process-exporter",
+                        container=(proc.container_image or None) if not proc.binary else None,
+                        command=proc.command.format(port=proc.port).split() if proc.command else None,
+                        options=options,
                     ),
                     implicit=True,
                     reason="observability.tachometer default exporters",

@@ -296,7 +296,9 @@ pub fn samples_to_rows(samples: Vec<ParsedSample>, scraper_endpoint: &str) -> Ve
 }
 
 /// Format a ParsedSample as a metric name string for display
-fn format_sample_as_metric_name(sample: &ParsedSample) -> (String, Vec<(String, String)>) {
+pub(crate) fn format_sample_as_metric_name(
+    sample: &ParsedSample,
+) -> (String, Vec<(String, String)>) {
     // Add suffix based on metric type
     let base_name = match sample.metric_type {
         MetricType::HistogramCount => format!("{}_count", sample.metric_name),

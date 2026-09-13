@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, patch
 
 from srtctl.backends import SGLangProtocol, SGLangServerConfig
 from srtctl.cli.mixins.frontend_stage import FrontendTopology
-from srtctl.cli.mixins.telemetry_stage import TACHOMETER_TERMINATE_TIMEOUT_SECONDS
+from srtctl.core.schema import TachometerConfig
 from srtctl.core.processes import ManagedProcess, ProcessRegistry
 from srtctl.core.schema import DynamoConfig, TachometerConfig
 from srtctl.core.slurm import start_srun_process
@@ -191,4 +191,4 @@ def test_registry_cleanup_uses_the_process_terminate_timeout() -> None:
     popen.terminate.assert_called_once()
     # The wait runs against a deadline set when SIGTERM went out, so it is the timeout minus a few ms.
     assert 89.0 < popen.wait.call_args.kwargs["timeout"] <= 90.0
-    assert TACHOMETER_TERMINATE_TIMEOUT_SECONDS == 90.0
+    assert TachometerConfig().shutdown_grace_secs == 120.0  # what the tachometer step gets to compact

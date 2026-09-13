@@ -242,6 +242,8 @@ DCGM power telemetry for benchmark measurement windows.
 | `startup_timeout_seconds` | float | `30.0` |  |
 | `request_timeout_seconds` | float | `2.0` |  |
 | `collector_join_timeout_seconds` | float \| None | `None` | None derives a safe shutdown budget from request_timeout_seconds. |
+| `cpu_power_exporter` | [CpuPowerExporterConfig](#cpupowerexporterconfig) \| None | `None` |  |
+| `cpu_power` | [CpuPowerConfig](#cpupowerconfig) | `CpuPowerConfig()` |  |
 
 ### FormattablePath
 
@@ -361,12 +363,14 @@ Native Tachometer collection for an observability-enabled run.
 | `binary_path` | str | `'tachometer-scraper'` |  |
 | `collect_interval_ms` | int | `1000` | Milliseconds between scrapes of every endpoint — the same unit and name as dcgm-exporter's --collect-interval. Replaces the retired Hz-based ``default_frequency`` (1000ms == the old 1.0 Hz default). |
 | `sync_interval_secs` | int | `120` |  |
+| `shutdown_grace_secs` | float | `120.0` | How long the scraper gets after SIGTERM to flush + compact final.parquet before the SIGKILL escalation. Compaction time scales with the arrow WAL accumulated since the last periodic sync. |
 | `compaction_threads` | int | `4` |  |
 | `storage_subdir` | str | `'tachometer'` |  |
 | `extra_metadata` | dict[str, str] | `{}` |  |
 | `default_exporters` | bool | `True` |  |
 | `dcgm_exporter` | [TelemetryExporterConfig](#telemetryexporterconfig) \| None | `None` |  |
 | `node_exporter` | [TelemetryExporterConfig](#telemetryexporterconfig) \| None | `None` |  |
+| `process_exporter` | [TelemetryExporterConfig](#telemetryexporterconfig) \| None | `None` |  |
 
 ### TelemetryExporterConfig
 
@@ -377,6 +381,29 @@ Configuration for a metrics exporter deployed on worker nodes.
 | `container_image` | str | required |  |
 | `port` | int | required |  |
 | `command` | str \| None | `None` |  |
+| `binary` | str \| None | `None` |  |
+
+### CpuPowerExporterConfig
+
+Best-effort CPU power collection via the cpu-power-exporter binary.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `port` | int | `9405` |  |
+| `source` | str | `'auto'` |  |
+
+### CpuPowerConfig
+
+Host-side CPU power collection on every worker node.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `False` | Master switch for this leg. Default: False. |
+| `source` | one of `'auto'`, `'acpi'`, `'dcgm'` | `'auto'` | ``auto`` tries ACPI then DCGM and is best-effort; naming ``acpi`` or ``dcgm`` explicitly makes that provider mandatory. |
+| `sample_interval_seconds` | float | `0.1` | Read period on each node, in seconds. |
+| `startup_timeout_seconds` | float | `30.0` | How long to wait for every node's collector to publish its ready marker before giving up on readiness. |
+| `required` | bool | `False` | Fail the job when the leg does not become ready or does not produce a valid publication. |
+| `storage_subdir` | str | `'cpu_power'` | Directory below the run log directory that holds the CPU samples and manifest. Must differ from ``telemetry.storage_subdir``. |
 
 ### SourceConfig
 
@@ -526,7 +553,8 @@ TRTLLM protocol - implements BackendProtocol.
 | `aggregated_extra_args` | list[str] | `[]` |  |
 | `trtllm_config` | [TRTLLMServerConfig](#trtllmserverconfig) \| None | `None` |  |
 | `served_model_name` | str \| None | `None` | The name clients must use in a request's "model" field. Defaults to the checkpoint directory name. backend: type: trtllm served_model_name: "deepseek-ai/deepseek-r1" Set it when the client cannot be told which name to ask for. agentperf takes the name as a flag, so it never needs this; the MLPerf harness has it fixed in the benchmark definition, so the server must match or every request 404s. Top-level rather than a trtllm_config key because trtllm_config is dumped straight into the engine's YAML file, and this is a launcher flag the engine does not recognise. |
-| `publish_events_and_metrics` | bool | `False` | Whether dynamo.trtllm workers pass `--publish-events-and-metrics`. Enables the worker to publish KV-cache events (add/evict) + metrics, which the dynamo frontend consumes for KV-cache-aware routing (router-mode: kv). This may impact performance so should be disabled if exact KV aware routing is not needed. |
+| `publish_metrics` | bool | `True` | Publish TRT-LLM engine metrics without enabling KV-cache events. Requires a Dynamo build supporting --publish-metrics; set False to omit the flag for older builds. Native trtllm-serve and sidecars are unaffected. |
+| `publish_events_and_metrics` | bool \| None | `None` | None means unspecified: metrics default on, events off (observability promotes this to True). Explicit False is a master opt-out of BOTH publication flags, even when publish_metrics is True. Preserve None in schema round-trips so an omitted value never becomes an explicit opt-out. |
 | `sequential_node_start` | int | `0` | Controls batched startup of workers that share the same node. 0 = start all workers in parallel (no constraint). 1 = fully sequential: one worker at a time, each must be ready before the next. N > 1 = start N workers simultaneously per batch, wait for all to be ready, then next batch. For trtllm_serve: readiness is an HTTP 200 on the worker's http_port. For dynamo.trtllm: readiness is a TCP connection on the worker's sys_port. |
 | `numa_memory_bind` | bool \| None | `None` | Whether to prefix the trtllm worker command with `numactl -m 0,1`. None (default) preserves the existing auto-detected behavior (enabled only for gb200/gb300). True/False forces numactl on/off regardless of gpu_type. |
 | `numa_cpu_bind` | bool | `False` | Optional stricter NUMA CPU affinity for the worker process, in addition to numa_memory_bind. A previous post-hoc `taskset -pc <cpuset> $PPID` approach (see bind-b300-prefill-cpus.sh) only pins the leader PID *after* launch, so secondary threads spawned by Python/UCX/MPI/TRT-LLM can still land cross-socket. When true, srtctl instead: 1. sets TLLM_NUMA_AWARE_WORKER_AFFINITY=0 (disables TRT-LLM's own internal NUMA thread-pinning, which fights with the OS-level mask) 2. wraps the worker command (prefill/decode/agg) in `taskset -c <cpu_list>`, applied *before* exec so every spawned thread inherits the mask. The CPU list is discovered at runtime (configs/numa_cpu_bind.sh) from the physical GPU this task owns, not a static SLURM_LOCALID table — a static table assumes SLURM_LOCALID is a node-wide GPU ordinal, which breaks when two endpoints share a node (each gets its own srun step, so LOCALID restarts at 0 for both). |
@@ -551,6 +579,7 @@ vLLM protocol - implements BackendProtocol.
 | `allow_prefill_decode_colocation` | bool | `False` | Allow prefill and decode workers to share one node when the combined GPU request fits within gpus_per_node. Defaults off to preserve existing P/D node separation. |
 | `allow_prefill_decode_colocation_across_nodes` | bool | `False` | Extend P/D colocation to multi-node topologies. When enabled together with allow_prefill_decode_colocation, workers are packed contiguously across the minimum number of nodes instead of reserving separate P/D node pools. Defaults off to preserve the original one-node-only policy. |
 | `dp_launch_mode` | one of `'per_gpu'`, `'per_node'` | `'per_node'` | DP process layout. Per-node lets vLLM manage the node-local portion of a DP x TP x PP topology in one CUDA namespace and derives cross-node TP/PP rendezvous when a replica is larger than the node-local GPU allocation. Per-GPU remains available as a deprecated compatibility layout. |
+| `vllm_serve_binary` | str | `'vllm'` | Executable used by direct aggregate frontend.type=vllm jobs. This can be set to vllm-rs (or its absolute path) to use the Rust OpenAI frontend. |
 
 ### MockerProtocol
 

@@ -51,6 +51,7 @@ bin/
 configs/nats-server
 configs/etcd
 configs/etcdctl
+configs/process-exporter
 configs/*.whl
 configs/*.deb
 configs/*.tar.gz

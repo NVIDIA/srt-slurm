@@ -94,6 +94,7 @@ def test_registered_kinds() -> None:
         "mooncake-store",
         "nats",
         "node-exporter",
+        "process-exporter",
     ]
 
 
@@ -681,12 +682,23 @@ services:
     assert ("mooncake-master", False) in _names(config)
 
 
-def test_tachometer_exporters_are_implied_on_every_worker_node(tmp_path: Path) -> None:
+HOST_BINARY = "srtctl.services.exporters.resolve_host_binary"
+
+
+def test_tachometer_exporters_are_implied_on_every_worker_node(tmp_path: Path, caplog) -> None:
     config = _load("frontend:\n  type: sglang\n", head=TACHOMETER_HEAD)
-    assert _names(config) == [("dcgm-exporter", True), ("node-exporter", True)]
+    assert _names(config) == [("dcgm-exporter", True), ("node-exporter", True), ("process-exporter", True)]
     orchestrator = _orchestrator(config, tmp_path)
-    with patch(SRUN, return_value=_proc()) as srun, patch(HOST_IP, return_value="10.0.0.11"):
+    with (
+        patch(SRUN, return_value=_proc()) as srun,
+        patch(HOST_IP, return_value="10.0.0.11"),
+        patch(HOST_BINARY, return_value=None),  # a checkout whose make setup predates the process exporter
+        caplog.at_level("WARNING", logger="srtctl.cli.mixins.service_stage"),
+    ):
         procs = orchestrator.start_services("after_frontend")
+
+    # The process exporter is skipped with a pointer to make setup; the rest runs as before.
+    assert any("configs/process-exporter" in record.getMessage() for record in caplog.records)
 
     assert [p.name for p in procs] == [
         "service_dcgm-exporter_node1",
@@ -717,8 +729,12 @@ def test_declared_exporter_overrides_the_container(tmp_path: Path) -> None:
         "    container: /mirror/dcgm.sqsh\n  - name: node-exporter\n    type: node-exporter\n    enabled: false\n",
         head=TACHOMETER_HEAD,
     )
-    assert _names(config) == [("dcgm-exporter", False)]
-    with patch(SRUN, return_value=_proc()) as srun, patch(HOST_IP, return_value="10.0.0.11"):
+    assert _names(config) == [("dcgm-exporter", False), ("process-exporter", True)]
+    with (
+        patch(SRUN, return_value=_proc()) as srun,
+        patch(HOST_IP, return_value="10.0.0.11"),
+        patch(HOST_BINARY, return_value=None),
+    ):
         _orchestrator(config, tmp_path).start_services("after_frontend")
     assert srun.call_count == 3
     assert srun.call_args.kwargs["container_image"] == "/mirror/dcgm.sqsh"
@@ -730,4 +746,82 @@ def test_power_telemetry_owns_the_dcgm_exporter() -> None:
         "  dcgm_exporter:\n    container_image: dcgm-exporter\n    port: 9401\n",
         head=TACHOMETER_HEAD.replace("benchmark:\n  type: manual\n", ""),
     )
-    assert _names(config) == [("node-exporter", True)]
+    assert _names(config) == [("node-exporter", True), ("process-exporter", True)]
+
+
+def test_process_exporter_runs_host_native_on_every_allocated_node(tmp_path: Path) -> None:
+    """No container, no mounts: the static binary from make setup reads host /proc and the
+    group file at its host path. Every node, since the frontend's node hosts no backend rank."""
+    config = _load(
+        "frontend:\n  type: sglang\nservices:\n  - name: dcgm-exporter\n    type: dcgm-exporter\n    enabled: false\n"
+        "  - name: node-exporter\n    type: node-exporter\n    enabled: false\n",
+        head=TACHOMETER_HEAD,
+    )
+    assert _names(config) == [("process-exporter", True)]
+    orchestrator = _orchestrator(config, tmp_path)
+    with (
+        patch(SRUN, return_value=_proc()) as srun,
+        patch(HOST_IP, return_value="10.0.0.11"),
+        patch(HOST_BINARY, return_value=Path("/srt/configs/process-exporter")),
+    ):
+        procs = orchestrator.start_services("after_frontend")
+
+    # placement `all`: head/infra/bench (node0) once, then the workers.
+    assert [p.node for p in procs] == ["node0", "node1", "node2", "node3"]
+    assert [p.name for p in procs][:2] == ["service_process-exporter_node0", "service_process-exporter_node1"]
+    assert not any(p.critical for p in procs)
+    launch = srun.call_args_list[0].kwargs
+    assert launch["container_image"] is None
+    assert launch["container_mounts"] is None
+    assert launch["use_bash_wrapper"] is False
+    assert launch["command"][:3] == [
+        "/srt/configs/process-exporter",
+        "-config.path",
+        str(tmp_path / "process-exporter.yml"),
+    ]
+    assert "-web.listen-address=:9256" in launch["command"]
+    assert "-threads=true" in launch["command"]
+    # The group file is written once, before the first launch.
+    assert "dynamo\\.frontend" in (tmp_path / "process-exporter.yml").read_text()
+
+
+def test_process_exporter_with_a_declared_container_launches_in_it(tmp_path: Path) -> None:
+    config = _load(
+        "frontend:\n  type: sglang\nservices:\n  - name: process-exporter\n    type: process-exporter\n"
+        "    container: pe-with-shell:latest\n    placement:\n      node: head\n",
+        head=TACHOMETER_HEAD,
+    )
+    orchestrator = _orchestrator(config, tmp_path)
+    with (
+        patch(SRUN, return_value=_proc()) as srun,
+        patch(HOST_IP, return_value="10.0.0.10"),
+        patch(HOST_BINARY, side_effect=AssertionError("not consulted")),
+    ):
+        procs = orchestrator.start_services("after_frontend")
+    launch = [call.kwargs for call in srun.call_args_list if "process-exporter" in call.kwargs["command"][0]][0]
+    assert launch["container_image"] == "pe-with-shell:latest"
+    assert launch["container_mounts"] == {}
+    assert launch["command"][:3] == ["/bin/process-exporter", "-config.path", "/logs/process-exporter.yml"]
+    assert "service_process-exporter" in [p.name for p in procs]
+
+
+def test_resolve_host_binary(tmp_path: Path, monkeypatch) -> None:
+    """Absolute paths verbatim; relative ones against SRTCTL_SOURCE_DIR (the checkout root the
+    sbatch script exports); missing or non-executable -> None."""
+    from srtctl.services import exporters
+
+    monkeypatch.setenv("SRTCTL_SOURCE_DIR", str(tmp_path))
+    # Keep the checkout fallback inside the fixture too: developer machines may
+    # already have installed configs/process-exporter via make setup.
+    monkeypatch.setattr(exporters, "__file__", str(tmp_path / "src/srtctl/services/exporters.py"))
+
+    assert exporters.resolve_host_binary("configs/process-exporter") is None
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    binary = configs / "process-exporter"
+    binary.write_text("#!/bin/sh\n")
+    assert exporters.resolve_host_binary("configs/process-exporter") is None  # not executable yet
+    binary.chmod(0o755)
+    assert exporters.resolve_host_binary("configs/process-exporter") == binary
+    assert exporters.resolve_host_binary(str(binary)) == binary
+    assert exporters.resolve_host_binary("/nonexistent/process-exporter") is None

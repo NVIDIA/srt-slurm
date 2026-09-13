@@ -1,0 +1,53 @@
+tensor_parallel_size: 32
+moe_expert_parallel_size: 32
+enable_attention_dp: true
+enable_lm_head_tp_in_adp: true
+pipeline_parallel_size: 1
+max_batch_size: 16
+max_num_tokens: 128
+max_seq_len: 147456
+print_iter_log: true
+enable_autotuner: false
+kv_cache_config:
+  enable_block_reuse: false
+  free_gpu_memory_fraction: 0.7
+  dtype: fp8
+  host_cache_size: 0
+  avg_seq_len: 39040
+moe_config:
+  backend: MEGAMOE_CUTEDSL
+  use_low_precision_moe_combine: true
+  load_balancer: /lustre/fsw/portfolios/coreai/projects/team/users/bench-user/eplb/moe_load_balancer_gen_ep32_slots384_dspark.yaml
+cache_transceiver_config:
+  max_tokens_in_buffer: 147456
+  backend: NIXL
+  transceiver_runtime: PYTHON
+  kv_transfer_timeout_ms: 600000
+stream_interval: 100
+num_postprocess_workers: 8
+cuda_graph_config:
+  enable_padding: true
+  batch_sizes:
+  - 1
+  - 2
+  - 4
+  - 8
+  - 16
+  - 32
+  - 64
+speculative_config:
+  decoding_type: DSpark
+  speculative_model: /lustre/fsw/portfolios/coreai/projects/model-ci/artifacts/model/nvidia_deepseek-v4-pro-nvfp4-dspark/hf/hf-318bf60_orig
+  max_draft_len: 6
+  block_size: 6
+nvfp4_gemm_config:
+  allowed_backends:
+  - cutlass
+  - cublaslt
+  - cutedsl
+  - cuda_core
+sparse_attention_config:
+  algorithm: deepseek_v4
+return_perf_metrics: false
+enable_iter_perf_stats: false
+enable_iter_req_stats: false

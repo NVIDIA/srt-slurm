@@ -112,6 +112,17 @@ class ServiceKind:
         """Environment srtctl owns for this kind; it overrides the recipe's ``env``."""
         return {}
 
+    def host_native(self, service: ServiceConfig) -> bool:
+        """True to run the command straight on the node, with no container (a static host binary)."""
+        return False
+
+    def prepare(self, service: ServiceConfig, runtime: RuntimeContext) -> None:
+        """Write anything the command needs into the run's log dir; called once per service, before launch."""
+
+    def skip_reason(self, service: ServiceConfig, runtime: RuntimeContext) -> str | None:
+        """A reason not to launch this service in this job (a missing host binary); None to launch."""
+        return None
+
 
 _SERVICE_KINDS: dict[str, ServiceKind] = {}
 

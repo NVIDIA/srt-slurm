@@ -67,6 +67,7 @@ def _dataclass_default(item: dataclasses.Field) -> Any:
 # never imports the power package; equality is pinned by tests.
 _BENCHMARK_TYPE_SA_BENCH = "sa-bench"
 _DCGM_POWER_MAX_SAMPLE_GAP_SECONDS = 3.0
+_CPU_POWER_MAX_SAMPLE_GAP_SECONDS = 3.0
 _DCGM_POWER_COLLECT_CYCLE_TIMEOUT_GRACE_SECONDS = 1.0
 
 
@@ -1114,11 +1115,25 @@ class ProfilingConfig:
 
 @dataclass(frozen=True)
 class TelemetryExporterConfig:
-    """Configuration for a metrics exporter deployed on worker nodes."""
+    """Configuration for a metrics exporter deployed on worker nodes.
+
+    Two launch modes. With ``binary`` unset the exporter runs as a pyxis
+    container from ``container_image``. With ``binary`` set it runs
+    **host-native** -- the executable is started by ``srun`` directly on the
+    node with no container; ``container_image`` is ignored (set it to ``""``).
+    Relative ``binary`` paths resolve against the srtctl checkout root, which is
+    where ``make setup`` installs the host binaries (``configs/nats-server``,
+    ``configs/etcd``, ``configs/process-exporter``). Host-native exists because
+    some enroot deployments cannot start shell-less ``FROM scratch`` images
+    (observed on hecate: ``enroot-switchroot: failed to change directory: /root``,
+    then ``/bin/sh: No such file or directory`` with the home mounted), and a
+    static Go exporter needs no container at all.
+    """
 
     container_image: str
     port: int
     command: str | None = None
+    binary: str | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -1143,6 +1158,25 @@ DEFAULT_NODE_EXPORTER = TelemetryExporterConfig(
     container_image="quay.io#prometheus/node-exporter:v1.8.2",
     port=9101,
 )
+# Per-process and per-thread host telemetry from /proc: CPU seconds by mode,
+# thread count and thread CPU by thread name, context switches, RSS, open fds --
+# for the frontend, the worker handlers, the engine ranks and the client, grouped
+# by command line (see services.exporters.process_exporter_config_yaml). This is the
+# signal the Prometheus surface cannot carry: Dynamo publishes no process_* or
+# thread metrics, and node_exporter only sees the machine.
+#
+# Launched HOST-NATIVE from the static Go binary `make setup` installs at
+# configs/process-exporter (ncabatoff/process-exporter release tarball for the
+# compute arch), like nats-server and etcd. The upstream image is FROM scratch
+# (no shell, no /root) and pyxis/enroot on hecate refuses to start it; the binary
+# needs neither a container nor privileges and reads the host /proc directly. A
+# recipe may still point `process_exporter.container_image` at an image that has
+# a shell and leave `binary` unset to get the container launch.
+DEFAULT_PROCESS_EXPORTER = TelemetryExporterConfig(
+    container_image="",
+    port=9256,
+    binary="configs/process-exporter",
+)
 
 
 @dataclass(frozen=True)
@@ -1156,10 +1190,11 @@ class TachometerConfig:
     observability expansion is what turns their content on); the frontend
     and the exporters are always worth capturing.
 
-    DCGM and node exporters default ON via the ``resolved_*`` properties
-    (sweep path only): an explicit ``dcgm_exporter``/``node_exporter`` block
-    always wins, ``default_exporters: false`` disables the built-ins, and the
-    raw fields stay ``None`` unless the recipe set them — which is what the
+    DCGM, node and process exporters default ON via the ``resolved_*``
+    properties (sweep path only): an explicit ``dcgm_exporter`` /
+    ``node_exporter`` / ``process_exporter`` block always wins,
+    ``default_exporters: false`` disables the built-ins, and the raw fields
+    stay ``None`` unless the recipe set them — which is what the
     power-telemetry sharing validation and the --bash gate key on.
     """
 
@@ -1170,12 +1205,17 @@ class TachometerConfig:
     # ``default_frequency`` (1000ms == the old 1.0 Hz default).
     collect_interval_ms: int = 1000
     sync_interval_secs: int = 120
+    # How long the scraper gets after SIGTERM to flush + compact final.parquet
+    # before the SIGKILL escalation. Compaction time scales with the arrow WAL
+    # accumulated since the last periodic sync.
+    shutdown_grace_secs: float = 120.0
     compaction_threads: int = 4
     storage_subdir: str = "tachometer"
     extra_metadata: dict[str, str] = field(default_factory=dict)
     default_exporters: bool = True
     dcgm_exporter: TelemetryExporterConfig | None = None
     node_exporter: TelemetryExporterConfig | None = None
+    process_exporter: TelemetryExporterConfig | None = None
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -1192,6 +1232,13 @@ class TachometerConfig:
         if self.node_exporter is not None:
             return self.node_exporter
         return DEFAULT_NODE_EXPORTER if self.default_exporters else None
+
+    @property
+    def resolved_process_exporter(self) -> TelemetryExporterConfig | None:
+        """User-configured process exporter, else the built-in default."""
+        if self.process_exporter is not None:
+            return self.process_exporter
+        return DEFAULT_PROCESS_EXPORTER if self.default_exporters else None
 
 
 @dataclass(frozen=True)
@@ -1211,8 +1258,10 @@ class ObservabilityConfig:
     having to remember six independent flags. It expands (at config-load time,
     via :func:`srtctl.core.config.expand_observability`) into:
 
-    * ``backend.publish_events_and_metrics: true`` -- the worker/frontend
-      Prometheus ``/metrics`` surface exists at all.
+    * ``backend.publish_events_and_metrics: true`` -- enable KV-cache events
+      and TRT-LLM engine metrics. Metrics-only publication already defaults on
+      independently via ``backend.publish_metrics``. An explicit
+      ``publish_events_and_metrics: false`` disables both publication flags.
     * ``enable_iter_perf_stats`` + ``return_perf_metrics`` on every engine
       config -- the ``trtllm_kv_cache_*`` occupancy gauges and per-request
       histograms appear on that surface.
@@ -1225,16 +1274,17 @@ class ObservabilityConfig:
       client does not already poll (see ``TelemetryStageMixin.start_tachometer``
       and ``tachometer`` below).
 
-    Every expansion uses setdefault semantics: an explicit value in the recipe
-    always wins, so ``observability.enabled`` is safe to switch on globally.
+    Expansion preserves explicit recipe values; the tri-state combined
+    publishing setting treats null as unset. Explicit False is never replaced.
 
     Scope is deliberately server-side. The knob configures what the workers and
     frontend *emit*, and captures that surface by scraping the endpoints
     directly. It never asks the benchmark client to re-export what the servers
     already publish. (One indirect exception: on TRT-LLM the client's
     ``AIPERF_SERVER_METRICS_URLS`` worker list exists only when
-    ``publish_events_and_metrics`` gives those endpoints content, and this knob
-    is one way that flag gets set — see ``BenchmarkStageMixin``.)
+    the effective publication flags give those endpoints engine metrics,
+    respecting the explicit combined-setting opt-out — see
+    ``BenchmarkStageMixin``.)
 
     It does **not** decide whether the component perf dashboard is built. That
     happens on every run (see :mod:`srtctl.analysis.perf_dashboard`); ``enabled``
@@ -1280,6 +1330,66 @@ class ObservabilityConfig:
 
 
 @dataclass(frozen=True)
+class CpuPowerConfig:
+    """Host-side CPU power collection on every worker node.
+
+    This is the in-job Python collector (``srtctl.core.cpu_power``): one
+    process per backend node reads Linux ACPI ``power_meter`` hwmon channels
+    (or DCGM CPU entity field 1130) directly on the bare host and writes its
+    own per-node CSV, which the head node aggregates at teardown into
+    ``<storage_subdir>/samples.csv`` plus a manifest.
+
+    It is independent of ``cpu_power_exporter`` (the head-node scraper over a
+    per-node ``/metrics`` exporter): a recipe may enable either, both, or
+    neither. The two legs share no ports and write to different directories.
+
+    Attributes:
+        enabled: Master switch for this leg. Default: False.
+        source: ``auto`` tries ACPI then DCGM and is best-effort; naming
+            ``acpi`` or ``dcgm`` explicitly makes that provider mandatory.
+        sample_interval_seconds: Read period on each node, in seconds.
+        startup_timeout_seconds: How long to wait for every node's collector
+            to publish its ready marker before giving up on readiness.
+        required: Fail the job when the leg does not become ready or does not
+            produce a valid publication.
+        storage_subdir: Directory below the run log directory that holds the
+            CPU samples and manifest. Must differ from ``telemetry.storage_subdir``.
+    """
+
+    enabled: bool = False
+    source: Literal["auto", "acpi", "dcgm"] = "auto"
+    sample_interval_seconds: float = 0.1
+    startup_timeout_seconds: float = 30.0
+    required: bool = False
+    storage_subdir: str = "cpu_power"
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
+class CpuPowerExporterConfig:
+    """Best-effort CPU power collection via the cpu-power-exporter binary.
+
+    Presence of this block (not a separate enabled flag) is what turns CPU
+    power collection on. Unlike dcgm_exporter/node_exporter, this is not
+    containerized -- cpu-power-exporter is a bundled binary installed by
+    make setup, launched directly on the bare worker host, with a fallback
+    to the Python stdlib exporter when the binary is absent.
+    """
+
+    port: int = 9405
+    source: str = "auto"
+    """Power reading back-end passed through to the bundled Rust binary's own
+    ``--source`` flag (``auto`` | ``acpi`` | ``dcgm``). ``auto`` tries DCGM
+    first and falls back to ACPI when libdcgm.so is absent or reports no CPU
+    entities. Has no effect when the Python stdlib fallback exporter is used
+    instead of the binary -- that fallback is ACPI-only.
+    """
+
+    Schema: ClassVar[type[Schema]] = Schema
+
+
+@dataclass(frozen=True)
 class TelemetryConfig:
     """DCGM power telemetry for benchmark measurement windows."""
 
@@ -1295,6 +1405,8 @@ class TelemetryConfig:
     request_timeout_seconds: float = 2.0
     # None derives a safe shutdown budget from request_timeout_seconds.
     collector_join_timeout_seconds: float | None = None
+    cpu_power_exporter: CpuPowerExporterConfig | None = None
+    cpu_power: CpuPowerConfig = field(default_factory=CpuPowerConfig)
 
     Schema: ClassVar[type[Schema]] = Schema
 
@@ -2477,7 +2589,7 @@ class SrtConfig:
         if not 1 <= exporter.port <= 65535:
             raise ValidationError("telemetry.dcgm_exporter.port must be in 1..65535")
 
-        for name in ("startup_timeout_seconds", "request_timeout_seconds"):
+        for name in ("startup_timeout_seconds",):
             if not _is_finite_positive(getattr(telemetry, name)):
                 raise ValidationError(f"telemetry.{name} must be finite and positive")
         if telemetry.collect_interval_ms <= 0:
@@ -2489,25 +2601,14 @@ class SrtConfig:
                 "every window would fail sample_gap_exceeded. Set it to the intended collector "
                 "period (e.g. 1000)."
             )
-        worst_case_join_seconds = 2 * (
-            2 * telemetry.request_timeout_seconds + _DCGM_POWER_COLLECT_CYCLE_TIMEOUT_GRACE_SECONDS
-        )
-        collector_join_timeout_seconds = telemetry.resolved_collector_join_timeout_seconds
-        if (
-            not _is_finite_positive(collector_join_timeout_seconds)
-            or collector_join_timeout_seconds <= worst_case_join_seconds
-        ):
-            raise ValidationError(
-                "telemetry.collector_join_timeout_seconds must be finite, positive, "
-                "and greater than two full collector cycles "
-                "(2 * (2 * telemetry.request_timeout_seconds + 1 second))"
-            )
 
         if not _is_safe_relative_subpath(telemetry.storage_subdir):
             raise ValidationError("telemetry.storage_subdir must be a safe relative path below the run log directory")
 
-        if self.benchmark.type != _BENCHMARK_TYPE_SA_BENCH:
-            raise ValidationError(f"telemetry requires benchmark.type: {_BENCHMARK_TYPE_SA_BENCH}")
+        supported_benchmarks = {_BENCHMARK_TYPE_SA_BENCH, "agentic", "agentx", "custom"}
+        if self.benchmark.type not in supported_benchmarks:
+            supported = ", ".join(sorted(supported_benchmarks))
+            raise ValidationError(f"telemetry requires benchmark.type to be one of: {supported}")
         if self.benchmark.client_placement != "head":
             raise ValidationError("telemetry requires benchmark.client_placement: head")
 
@@ -2523,13 +2624,129 @@ class SrtConfig:
         if not concurrencies or len(set(concurrencies)) != len(concurrencies) or any(c <= 0 for c in concurrencies):
             raise ValidationError("telemetry requires a non-empty list of unique positive benchmark.concurrencies")
 
+    def _dynamo_system_ports(self) -> set[int]:
+        """System-status ports that backend launches actually bind on worker nodes."""
+        if self.frontend.type != "dynamo":
+            return set()
+
+        resources = self.resources
+        nodes = [f"validation-worker-{index}" for index in range(self.total_nodes)]
+        endpoints = self.backend.allocate_endpoints(
+            num_prefill=resources.num_prefill,
+            num_decode=resources.num_decode,
+            num_agg=resources.num_agg,
+            gpus_per_prefill=resources.gpus_per_prefill,
+            gpus_per_decode=resources.gpus_per_decode,
+            gpus_per_agg=resources.gpus_per_agg,
+            gpus_per_node=resources.gpus_per_node,
+            available_nodes=nodes,
+            spread_workers=resources.spread_workers,
+        )
+        processes = self.backend.endpoints_to_processes(
+            endpoints,
+            frontend_type=self.frontend.type,
+            dynamo_sidecar=self.dynamo.sidecar,
+        )
+        if self.backend.get_srun_config().launch_per_endpoint:
+            processes = [process for process in processes if process.node_rank == 0]
+        return {process.sys_port for process in processes}
+
+    def _validate_collector_budget(self) -> None:
+        """Validate the scrape and join budget every enabled leg's collector uses.
+
+        Both the DCGM and CPU legs poll with ``request_timeout_seconds`` and are
+        joined with ``collector_join_timeout_seconds``, so a leg running alone
+        needs these checked just as much as the pair does.
+        """
+        telemetry = self.telemetry
+        if not _is_finite_positive(telemetry.request_timeout_seconds):
+            raise ValidationError("telemetry.request_timeout_seconds must be finite and positive")
+        worst_case_join_seconds = 2 * (
+            2 * telemetry.request_timeout_seconds + _DCGM_POWER_COLLECT_CYCLE_TIMEOUT_GRACE_SECONDS
+        )
+        collector_join_timeout_seconds = telemetry.resolved_collector_join_timeout_seconds
+        if (
+            not _is_finite_positive(collector_join_timeout_seconds)
+            or collector_join_timeout_seconds <= worst_case_join_seconds
+        ):
+            raise ValidationError(
+                "telemetry.collector_join_timeout_seconds must be finite, positive, "
+                "and greater than two full collector cycles "
+                "(2 * (2 * telemetry.request_timeout_seconds + 1 second))"
+            )
+
+    def _validate_cpu_power_exporter(self) -> None:
+        """Validate the independent, best-effort CPU power exporter, if configured."""
+        exporter = self.telemetry.cpu_power_exporter
+        if exporter is None:
+            return
+        if not 1 <= exporter.port <= 65535:
+            raise ValidationError("telemetry.cpu_power_exporter.port must be in 1..65535")
+        if exporter.source not in ("auto", "acpi", "dcgm"):
+            raise ValidationError('telemetry.cpu_power_exporter.source must be one of: "auto", "acpi", "dcgm"')
+
+        neighbours = [("telemetry.dcgm_exporter", self.telemetry.dcgm_exporter)]
+        if self.observability.tachometer_enabled:
+            tachometer = self.observability.tachometer
+            # Compare against the *resolved* exporters: with no explicit block the
+            # tachometer still launches its built-in DCGM/node exporters (#358).
+            neighbours += [
+                ("observability.tachometer.dcgm_exporter", tachometer.resolved_dcgm_exporter),
+                ("observability.tachometer.node_exporter", tachometer.resolved_node_exporter),
+            ]
+        for name, neighbour_exporter in neighbours:
+            if neighbour_exporter is not None and neighbour_exporter.port == exporter.port:
+                raise ValidationError(
+                    f"telemetry.cpu_power_exporter.port={exporter.port} collides with "
+                    f"{name}.port; both run on every worker node"
+                )
+
+        if exporter.port in self._dynamo_system_ports():
+            raise ValidationError(
+                f"telemetry.cpu_power_exporter.port={exporter.port} collides with a Dynamo system port "
+                "assigned to a backend process on a worker node"
+            )
+
+    def _validate_cpu_power(self) -> None:
+        """Validate the host-side CPU power collector leg (``telemetry.cpu_power``)."""
+        cpu_power = self.telemetry.cpu_power
+        for name in ("sample_interval_seconds", "startup_timeout_seconds"):
+            if not _is_finite_positive(getattr(cpu_power, name)):
+                raise ValidationError(f"telemetry.cpu_power.{name} must be finite and positive")
+        if cpu_power.sample_interval_seconds > _CPU_POWER_MAX_SAMPLE_GAP_SECONDS:
+            raise ValidationError(
+                f"telemetry.cpu_power.sample_interval_seconds={cpu_power.sample_interval_seconds} exceeds the "
+                f"{_CPU_POWER_MAX_SAMPLE_GAP_SECONDS}s max sample gap; every window would fail sample_gap_exceeded"
+            )
+
+        if not _is_safe_relative_subpath(cpu_power.storage_subdir):
+            raise ValidationError(
+                "telemetry.cpu_power.storage_subdir must be a safe relative path below the run log directory"
+            )
+        if cpu_power.storage_subdir == self.telemetry.storage_subdir:
+            raise ValidationError(
+                "telemetry.cpu_power.storage_subdir must differ from telemetry.storage_subdir; "
+                "the two legs write their own samples and manifest"
+            )
+
+    def _reject_inert_cpu_power_demand(self) -> None:
+        """Reject mandatory CPU power semantics that nothing will act on."""
+        cpu_power = self.telemetry.cpu_power
+        if cpu_power.required:
+            raise ValidationError("telemetry.cpu_power.required has no effect unless telemetry.cpu_power.enabled")
+        if cpu_power.source != "auto":
+            raise ValidationError(
+                f'telemetry.cpu_power.source: "{cpu_power.source}" has no effect unless telemetry.cpu_power.enabled; '
+                "it names a mandatory provider for a leg that will not run"
+            )
+
     def _validate_observability(self):
         """Validate Tachometer collection under observability."""
         observability = self.observability
         tachometer = observability.tachometer
         if not observability.tachometer_enabled:
             return
-        if self.telemetry.enabled and tachometer.dcgm_exporter is not None:
+        if self.telemetry.enabled and self.telemetry.dcgm_exporter is not None and tachometer.dcgm_exporter is not None:
             raise ValidationError(
                 "configure the shared DCGM exporter under telemetry, not observability.tachometer, "
                 "when DCGM power telemetry is enabled"
@@ -2539,12 +2756,14 @@ class SrtConfig:
                 "observability.tachometer.storage_subdir and telemetry.storage_subdir must be different"
             )
 
-        for name in ("dcgm_exporter", "node_exporter"):
+        for name in ("dcgm_exporter", "node_exporter", "process_exporter"):
             exporter = getattr(tachometer, name)
             if exporter is None:
                 continue
-            if not exporter.container_image:
-                raise ValidationError(f"observability.tachometer.{name}.container_image must be non-empty")
+            if not exporter.container_image and not exporter.binary:
+                raise ValidationError(
+                    f"observability.tachometer.{name}: set container_image (container launch) or binary (host-native)"
+                )
             if not 1 <= exporter.port <= 65535:
                 raise ValidationError(f"observability.tachometer.{name}.port must be in 1..65535")
         if not tachometer.binary_path:
@@ -2561,11 +2780,39 @@ class SrtConfig:
             )
 
     def _validate_telemetry(self):
-        """Validate DCGM power telemetry."""
+        """Validate telemetry config.
+
+        ``cpu_power_exporter`` (head-node scraper) and ``cpu_power`` (host-side
+        collector) are independent legs: each is validated whenever telemetry
+        is enabled, regardless of which provider (dcgm-power today) is
+        configured. Either is also sufficient on its own -- a recipe may
+        enable telemetry for CPU power alone, with no ``dcgm_exporter`` at all.
+        """
         telemetry = self.telemetry
-        if telemetry is None or not telemetry.enabled:
+        if telemetry is None:
             return
-        self._validate_dcgm_power()
+        if not telemetry.enabled:
+            if telemetry.cpu_power.enabled:
+                raise ValidationError("telemetry.cpu_power.enabled requires telemetry.enabled")
+            self._reject_inert_cpu_power_demand()
+            return
+        if telemetry.cpu_power.enabled:
+            if not _is_safe_relative_subpath(telemetry.storage_subdir):
+                raise ValidationError(
+                    "telemetry.storage_subdir must be a safe relative path below the run log directory"
+                )
+            self._validate_cpu_power()
+        else:
+            self._reject_inert_cpu_power_demand()
+        if telemetry.dcgm_exporter is not None:
+            self._validate_dcgm_power()
+        elif telemetry.cpu_power_exporter is None and not telemetry.cpu_power.enabled:
+            raise ValidationError(
+                "telemetry.enabled requires telemetry.dcgm_exporter, telemetry.cpu_power_exporter, "
+                "or telemetry.cpu_power.enabled; otherwise there is nothing to collect"
+            )
+        self._validate_collector_budget()
+        self._validate_cpu_power_exporter()
 
     @classmethod
     def from_yaml(cls, yaml_path: Path) -> "SrtConfig":

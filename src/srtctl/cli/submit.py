@@ -60,6 +60,7 @@ from srtctl.core.schema import SrtConfig, installs_dynamo
 from srtctl.core.status import create_job_record
 from srtctl.core.validation import preflight_config_variants
 from srtctl.ports import MOONCAKE_MASTER_PORT
+from srtctl.runtime_scripts.dynamo_wheels import arch_from_binary, detect_target_arch
 
 console = Console()
 logger = logging.getLogger(__name__)
@@ -225,6 +226,28 @@ def show_config_details(config: SrtConfig) -> None:
     environment variables (global and backend per-mode) so users can verify their
     config is correct before submitting.
     """
+    if config.frontend.type == "dynamo" and not config.dynamo.sidecar:
+        from srtctl.backends.trtllm import TRTLLMProtocol
+
+        if isinstance(config.backend, TRTLLMProtocol):
+            descriptions = {
+                "--publish-metrics": "metrics only",
+                "--publish-events-and-metrics": "metrics and KV events",
+            }
+            publication = [f"{flag} ({descriptions[flag]})" for flag in config.backend.dynamo_metrics_flags]
+            disabled_by = (
+                "publish_events_and_metrics"
+                if config.backend.publish_events_and_metrics is False
+                else "publish_metrics"
+            )
+            console.print(
+                Panel(
+                    "\n".join(publication) or f"No publication flag (backend.{disabled_by}: false)",
+                    title="Dynamo TRT-LLM Metrics",
+                    border_style="cyan",
+                )
+            )
+
     if config.frontend.type == "vllm":
         from srtctl.backends.vllm import VLLMProtocol, find_vllm_orchestration_recipe_flags
 
@@ -517,6 +540,10 @@ def show_config_details(config: SrtConfig) -> None:
             if tachometer.resolved_node_exporter is not None:
                 node = tachometer.resolved_node_exporter
                 details.add_row("observability", "node_exporter", f"{node.container_image} :{node.port}")
+            if tachometer.resolved_process_exporter is not None:
+                proc = tachometer.resolved_process_exporter
+                launch = f"host binary {proc.binary}" if proc.binary else proc.container_image
+                details.add_row("observability", "process_exporter", f"{launch} :{proc.port}")
 
         if config.telemetry.enabled:
             exporter = config.telemetry.dcgm_exporter
@@ -525,6 +552,21 @@ def show_config_details(config: SrtConfig) -> None:
             details.add_row("telemetry", "artifacts", f"<log_dir>/{config.telemetry.storage_subdir}")
             if exporter is not None:
                 details.add_row("telemetry", "dcgm_exporter", f"{exporter.container_image} (port {exporter.port})")
+
+            cpu_exporter = config.telemetry.cpu_power_exporter
+            if cpu_exporter is not None:
+                details.add_row(
+                    "telemetry", "cpu_power_exporter", f"{cpu_exporter.port} (source {cpu_exporter.source})"
+                )
+
+            cpu_power = config.telemetry.cpu_power
+            if cpu_power.enabled:
+                details.add_row(
+                    "telemetry",
+                    "cpu_power",
+                    f"host collector (source {cpu_power.source}, <log_dir>/{cpu_power.storage_subdir}"
+                    f"{', required' if cpu_power.required else ''})",
+                )
 
         if mooncake_cfg is not None:
             details.add_row("mooncake", "container", mooncake_cfg.container or "<job container>")
@@ -552,11 +594,37 @@ def show_config_details(config: SrtConfig) -> None:
         console.print(Panel(details, border_style="blue"))
 
 
-def validate_setup(srtctl_source: Path) -> None:
+def _cpu_power_exporter_problem(srtctl_source: Path) -> str | None:
+    """Why the installed exporter could not run on the compute nodes, if it could not.
+
+    Existence alone is not enough: a partial download leaves a file srun cannot
+    execute, and a checkout carried between architectures leaves one built for
+    the wrong machine. Either way the failure surfaces only once the allocation
+    is already running. The intended architecture is the compute architecture
+    make setup ARCH= installed, not this submit host, which is routinely a
+    different machine; when neither can be read, nothing is claimed.
+    """
+    label = "bin/cpu-power-exporter (compute-arch ACPI CPU power exporter)"
+    exporter = srtctl_source / "bin" / "cpu-power-exporter"
+    if not exporter.is_file():
+        return label
+    if not os.access(exporter, os.X_OK):
+        return f"{label} — present but not executable"
+    installed = arch_from_binary(exporter)
+    target = detect_target_arch(srtctl_source)
+    if installed is not None and installed != target:
+        return f"{label} — built for {installed}, but the compute nodes are {target}"
+    return None
+
+
+def validate_setup(srtctl_source: Path, config: SrtConfig | None = None) -> None:
     """Validate that make setup has been run and required binaries exist.
 
     Checks for NATS, etcd, Tachometer, and compute-arch uv binaries. Raises SystemExit
     with a clear error message if anything is missing.
+
+    cpu-power-exporter is only required by recipes that configure
+    telemetry.cpu_power_exporter; every other recipe submits without it.
     """
     missing = []
 
@@ -569,6 +637,13 @@ def validate_setup(srtctl_source: Path) -> None:
         missing.append("bin/uv (compute-arch uv)")
     if not (srtctl_source / "bin" / "tachometer-scraper").exists():
         missing.append("bin/tachometer-scraper (compute-arch Tachometer scraper)")
+    cpu_power_enabled = (
+        config is not None and config.telemetry.enabled and config.telemetry.cpu_power_exporter is not None
+    )
+    if cpu_power_enabled:
+        problem = _cpu_power_exporter_problem(srtctl_source)
+        if problem is not None:
+            missing.append(problem)
 
     if missing:
         console.print(f"\n[red bold]ERROR:[/] Required binaries not found in {srtctl_source}:")
@@ -579,6 +654,15 @@ def validate_setup(srtctl_source: Path) -> None:
         console.print("  make setup ARCH=aarch64  [dim]# for GB200/Grace compute nodes[/]")
         console.print("  make setup ARCH=x86_64   [dim]# for x86_64 compute nodes[/]\n")
         raise SystemExit(1)
+
+    # Optional: the default process exporter is host-native and skipped at launch
+    # (with a warning in the sweep log) when its binary is absent. Surface that at
+    # submit time so the gap is not discovered after the run.
+    if not (configs_dir / "process-exporter").exists():
+        console.print(
+            "[yellow]WARNING:[/] configs/process-exporter not found; Tachometer will run without per-process/"
+            "per-thread CPU telemetry. Re-run [bold]make setup ARCH=<compute_arch>[/] to install it."
+        )
 
 
 def generate_minimal_sbatch_script(

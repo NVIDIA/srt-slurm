@@ -103,6 +103,9 @@ class ServiceStageMixin:
             return [self.runtime.nodes.infra]
         if where == "workers":
             return list(self.runtime.nodes.worker)
+        if where == "all":
+            nodes = self.runtime.nodes
+            return list(dict.fromkeys((nodes.head, nodes.infra, nodes.bench, *nodes.worker)))
         seen: dict[str, None] = {}
         for endpoint in self.endpoints:
             if endpoint.mode == where:
@@ -261,13 +264,15 @@ class ServiceStageMixin:
         log_file = self.runtime.log_dir / f"{step_name}.out"
 
         env = self._service_environment(service, ctx)
+        # Host-native kinds (a static Go exporter) run on the bare node: no image, no mounts.
+        host_native = kind.host_native(service)
         logger.info("Starting service %s (%s) on %s: %s", service.name, service.type, ctx.node, shlex.join(command))
         popen = start_srun_process(
             command=command,
             nodelist=[ctx.node],
             output=str(log_file),
-            container_image=self._service_container(service),
-            container_mounts=self.runtime.container_mounts,
+            container_image=None if host_native else self._service_container(service),
+            container_mounts=None if host_native else self.runtime.container_mounts,
             # Without the bash wrapper there is no `export`; srun --export carries the env instead.
             env_to_set=env if kind.use_bash_wrapper else None,
             srun_export_env=None if kind.use_bash_wrapper else env,
@@ -355,6 +360,12 @@ class ServiceStageMixin:
                     continue
                 if entry.implicit:
                     logger.info("Service %s (%s) implied by %s", service.name, service.type, entry.reason)
+                kind = get_service_kind(service.type)
+                skip = kind.skip_reason(service, self.runtime)
+                if skip:
+                    logger.warning("services[%s]: %s; skipping", service.name, skip)
+                    continue
+                kind.prepare(service, self.runtime)
                 work_dir = self._clone_service_source(service, nodes[0], registry)
                 if work_dir is not None:
                     self._build_service_source(service, nodes[0], work_dir, registry)
