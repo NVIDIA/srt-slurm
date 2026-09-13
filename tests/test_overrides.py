@@ -29,7 +29,7 @@ PLAIN = {
     "model": {"path": "hf:fake/mock-model", "container": "nvcr.io/fake:latest", "precision": "fp8"},
     "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1, "agg_workers": 1},
     "backend": {"type": "sglang", "sglang_config": {"aggregated": {"tp-size": 1}}},
-    "frontend": {"type": "sglang", "enable_multiple_frontends": False},
+    "frontend": {"type": "sglang-router", "enable_multiple_frontends": False},
     "health_check": {"max_attempts": 180, "interval_seconds": 10},
     "benchmark": {"type": "custom", "command": "echo hi"},
 }

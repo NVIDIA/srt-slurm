@@ -1,7 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""SGLang Model Gateway router frontend."""
+"""SGLang Model Gateway router frontend (`frontend.type: sglang-router`).
+
+The router-free single-replica mode is `frontend.type: sglang`; see sglang_direct.py.
+"""
 
 from typing import Any, ClassVar
 
@@ -20,10 +23,10 @@ def router_metrics_port(frontend_args: dict[str, Any] | None) -> int:
     return SGLANG_ROUTER_METRICS_PORT
 
 
-class SGLangFrontend(StaticRouterFrontend):
-    """SGLang Model Gateway static router."""
+class SGLangRouterFrontend(StaticRouterFrontend):
+    """SGLang Model Gateway static router (`frontend.type: sglang-router`)."""
 
-    type: ClassVar[str] = "sglang"
+    type: ClassVar[str] = "sglang-router"
     backend_type: ClassVar[str] = "sglang"
     executable: ClassVar[tuple[str, ...]] = ("python", "-m", "sglang_router.launch_router")
     pd_flag: ClassVar[str] = "--pd-disaggregation"

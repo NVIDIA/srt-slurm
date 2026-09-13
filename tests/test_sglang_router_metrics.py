@@ -24,7 +24,7 @@ from srtctl.core.schema import DynamoConfig, TachometerConfig
 from srtctl.core.slurm import start_srun_process
 from srtctl.core.telemetry import generate_tachometer_config
 from srtctl.core.topology import Process
-from srtctl.frontends.sglang import SGLangFrontend, router_metrics_port
+from srtctl.frontends.sglang import SGLangRouterFrontend, router_metrics_port
 from srtctl.ports import SGLANG_ROUTER_METRICS_PORT
 
 
@@ -59,7 +59,7 @@ def test_sglang_router_targets_worker_http_ports_and_gateway_prometheus_port(_ip
         frontend_topology=topology,
         runtime=runtime,
         tachometer=TachometerConfig(enabled=True, default_exporters=False),
-        frontend_type="sglang",
+        frontend_type="sglang-router",
         frontend_metrics_port=SGLANG_ROUTER_METRICS_PORT,
     )
 
@@ -75,7 +75,7 @@ def test_sglang_router_targets_worker_http_ports_and_gateway_prometheus_port(_ip
 
 
 def test_gateway_gets_prometheus_flags_unless_the_recipe_set_them() -> None:
-    frontend = SGLangFrontend()
+    frontend = SGLangRouterFrontend()
     config = SimpleNamespace(frontend=SimpleNamespace(args={"policy": "cache_aware"}))
     assert frontend.get_managed_frontend_args(config, None, []) == [
         "--prometheus-port",

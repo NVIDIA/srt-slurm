@@ -587,7 +587,7 @@ def test_dynamo_frontend_implies_etcd_and_nats_on_the_infra_node(tmp_path: Path)
 
 
 def test_static_frontend_implies_no_discovery_plane(tmp_path: Path) -> None:
-    config = _load("frontend:\n  type: sglang\n")
+    config = _load("frontend:\n  type: sglang-router\n")
     assert _names(config) == []
     assert not uses_discovery_plane(config)
     with patch(SRUN) as srun:
@@ -686,7 +686,7 @@ HOST_BINARY = "srtctl.services.exporters.resolve_host_binary"
 
 
 def test_tachometer_exporters_are_implied_on_every_worker_node(tmp_path: Path, caplog) -> None:
-    config = _load("frontend:\n  type: sglang\n", head=TACHOMETER_HEAD)
+    config = _load("frontend:\n  type: sglang-router\n", head=TACHOMETER_HEAD)
     assert _names(config) == [("dcgm-exporter", True), ("node-exporter", True), ("process-exporter", True)]
     orchestrator = _orchestrator(config, tmp_path)
     with (
@@ -725,7 +725,7 @@ def test_tachometer_exporters_are_implied_on_every_worker_node(tmp_path: Path, c
 
 def test_declared_exporter_overrides_the_container(tmp_path: Path) -> None:
     config = _load(
-        "frontend:\n  type: sglang\nservices:\n  - name: dcgm-exporter\n    type: dcgm-exporter\n"
+        "frontend:\n  type: sglang-router\nservices:\n  - name: dcgm-exporter\n    type: dcgm-exporter\n"
         "    container: /mirror/dcgm.sqsh\n  - name: node-exporter\n    type: node-exporter\n    enabled: false\n",
         head=TACHOMETER_HEAD,
     )
@@ -742,7 +742,7 @@ def test_declared_exporter_overrides_the_container(tmp_path: Path) -> None:
 
 def test_power_telemetry_owns_the_dcgm_exporter() -> None:
     config = _load(
-        "frontend:\n  type: sglang\nbenchmark:\n  type: sa-bench\n  concurrencies: [4]\ntelemetry:\n  enabled: true\n"
+        "frontend:\n  type: sglang-router\nbenchmark:\n  type: sa-bench\n  concurrencies: [4]\ntelemetry:\n  enabled: true\n"
         "  dcgm_exporter:\n    container_image: dcgm-exporter\n    port: 9401\n",
         head=TACHOMETER_HEAD.replace("benchmark:\n  type: manual\n", ""),
     )
@@ -753,7 +753,7 @@ def test_process_exporter_runs_host_native_on_every_allocated_node(tmp_path: Pat
     """No container, no mounts: the static binary from make setup reads host /proc and the
     group file at its host path. Every node, since the frontend's node hosts no backend rank."""
     config = _load(
-        "frontend:\n  type: sglang\nservices:\n  - name: dcgm-exporter\n    type: dcgm-exporter\n    enabled: false\n"
+        "frontend:\n  type: sglang-router\nservices:\n  - name: dcgm-exporter\n    type: dcgm-exporter\n    enabled: false\n"
         "  - name: node-exporter\n    type: node-exporter\n    enabled: false\n",
         head=TACHOMETER_HEAD,
     )
@@ -787,7 +787,7 @@ def test_process_exporter_runs_host_native_on_every_allocated_node(tmp_path: Pat
 
 def test_process_exporter_with_a_declared_container_launches_in_it(tmp_path: Path) -> None:
     config = _load(
-        "frontend:\n  type: sglang\nservices:\n  - name: process-exporter\n    type: process-exporter\n"
+        "frontend:\n  type: sglang-router\nservices:\n  - name: process-exporter\n    type: process-exporter\n"
         "    container: pe-with-shell:latest\n    placement:\n      node: head\n",
         head=TACHOMETER_HEAD,
     )

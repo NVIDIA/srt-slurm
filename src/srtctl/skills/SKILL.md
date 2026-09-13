@@ -29,7 +29,7 @@ resources:
   gpus_per_node: 8
 
 frontend:
-  type: dynamo                # dynamo | sglang | vllm-router | vllm | trtllm_serve
+  type: dynamo                # dynamo | sglang-router | vllm-router | sglang | vllm | trtllm_serve (last three: direct, one worker)
   args:
     router-mode: "kv"
 

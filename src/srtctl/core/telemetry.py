@@ -123,7 +123,7 @@ def generate_tachometer_config(
         # Every rank is a target (vLLM agg followers excepted below): follower
         # metadata columns keep rows distinguishable, and rank coverage is
         # exactly what the physical-process client list provides for vLLM DP.
-        if frontend_type == "vllm" and process.endpoint_mode == "agg" and not process.is_leader:
+        if frontend_type in ("vllm", "sglang") and process.endpoint_mode == "agg" and not process.is_leader:
             continue
         if frontend_type == "vllm-router" and process.http_port <= 0:
             continue
@@ -133,14 +133,15 @@ def generate_tachometer_config(
             # (the one agg worker binds the public frontend port instead of
             # process.http_port).
             continue
-        if frontend_type == "sglang" and (not process.is_leader or process.http_port <= 0):
+        if frontend_type == "sglang-router" and (not process.is_leader or process.http_port <= 0):
             # Native sglang.launch_server: only the leader rank of a worker binds
             # the HTTP server that carries /metrics.
             continue
         node_ip = get_hostname_ip(process.node, runtime.network_interface)
-        if frontend_type == "vllm" and process.endpoint_mode == "agg":
+        if frontend_type in ("vllm", "sglang") and process.endpoint_mode == "agg":
+            # Direct modes: the aggregate leader binds the public port itself.
             port = FRONTEND_PUBLIC_PORT
-        elif frontend_type in ("vllm-router", "trtllm_serve", "sglang"):
+        elif frontend_type in ("vllm-router", "trtllm_serve", "sglang-router"):
             port = process.http_port
         else:
             port = process.sys_port
@@ -163,8 +164,8 @@ def generate_tachometer_config(
         )
 
     frontend_nodes = frontend_topology.frontend_nodes
-    if frontend_type == "vllm":
-        # Direct vLLM has no separate frontend process. Its public endpoint is
+    if frontend_type in ("vllm", "sglang"):
+        # Direct vLLM / SGLang have no separate frontend process. The public endpoint is
         # the aggregate leader, which may differ from the Slurm/orchestrator
         # head recorded in FrontendTopology.
         agg_leader_nodes = [

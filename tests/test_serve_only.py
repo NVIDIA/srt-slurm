@@ -34,7 +34,7 @@ CONFIG = {
         "agg_workers": 1,
     },
     "backend": {"type": "sglang"},
-    "frontend": {"type": "sglang", "enable_multiple_frontends": False},
+    "frontend": {"type": "sglang-router", "enable_multiple_frontends": False},
     "benchmark": {"type": "sa-bench", "isl": 128, "osl": 128, "concurrencies": [1]},
 }
 

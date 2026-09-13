@@ -559,11 +559,35 @@ def _fold_engine(variant: CommentedMap, base: CommentedMap, label: str) -> list[
 # --- entry points -----------------------------------------------------------------------
 
 
+def _rename_schema1_frontends(doc: CommentedMap) -> list[str]:
+    """``frontend.type: sglang`` (schema 1, the router) -> ``sglang-router`` in every variant."""
+    from srtctl.core.config import SCHEMA1_FRONTEND_RENAMES
+
+    notes: list[str] = []
+    for label, variant in _variants(doc):
+        frontend = variant.get("frontend")
+        if not isinstance(frontend, CommentedMap):
+            continue
+        old_value = frontend.get("type")
+        renamed = SCHEMA1_FRONTEND_RENAMES.get(old_value)
+        if renamed:
+            frontend["type"] = renamed
+            prefix = f"{label}: " if label else ""
+            notes.append(f"{prefix}frontend.type: {old_value} -> {renamed} (the router)")
+    return notes
+
+
 def migrate_recipe_text(text: str) -> MigrationResult:
     """Migrate one YAML document (plain, override, sweep, or lock format) to the current schema."""
     doc = load_yaml_text_with_comments(text)
     from_version = _declared_version(doc)
     notes: list[str] = []
+
+    # Renamed values are NOT re-spellings: in schema 1 `frontend.type: sglang`
+    # was the router, in schema 2 it is the router-free worker. Only a schema 1
+    # document gets the rename.
+    if from_version < 2:
+        notes.extend(_rename_schema1_frontends(doc))
 
     # The v2 layout folds are pure re-spellings, so they apply to a schema: 2
     # document that still uses the legacy layout as well (a no-op once folded).

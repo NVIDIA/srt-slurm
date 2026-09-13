@@ -41,6 +41,14 @@ Recipes without `schema: 2` (or with `schema: 1`) use the pre-2.0 layout: worker
 | `backend.vllm_config` | `roles.<role>.args` (one mapping per role; the `prefill` / `decode` / `aggregated` keys) |
 | `backend.mocker_config` | `roles.<role>.args` (one mapping per role; the `prefill` / `decode` / `aggregated` keys) |
 
+## v1 values that changed meaning
+
+These keys exist in both layouts, but the value means something else in 2.0. A schema 1 recipe keeps its historical meaning at load; `srtctl migrate` writes the 2.0 spelling.
+
+| Key | schema 1 value | 2.0 spelling | 2.0 meaning of the old value |
+|---|---|---|---|
+| `frontend.type` | `sglang` (the SGLang Model Gateway router) | `sglang-router` | `sglang` is the router-free single `sglang.launch_server` worker |
+
 ## Legacy fields in retained sections
 
 ### resources (ResourceConfig)

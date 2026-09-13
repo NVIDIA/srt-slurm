@@ -1,14 +1,14 @@
-# Torch profiling of an aggregated SGLang worker.
+# SGLang single replica, no router: `frontend.type: sglang`.
 #
-# `profiling:` captures a torch profile between `start_step` and `stop_step` for
-# each worker role while the configured benchmark drives traffic. Traces land
-# under `<log_dir>/profiles/<role>/`. `type` may be `torch`, `nsys`, or
-# `nsys-time`; see docs/profiling.md.
+# One TP1 `sglang.launch_server` worker binds the public port itself; srtctl starts
+# no frontend process. Readiness is the worker's /health and /v1/models, tachometer
+# scrapes its /metrics. For several replicas use `sglang-router`; for KV-aware
+# routing use `dynamo`.
 #
 # Aliases (`qwen3-0.6b`, `sglang`) resolve through srtslurm.yaml; see examples/README.md.
 
 schema: 2
-name: "qwen3-0.6b-profiling"
+name: "qwen3-0.6b-sglang-direct-agg"
 
 slurm:
   time_limit: "00:30:00"
@@ -21,14 +21,9 @@ model:
 resources:
   gpu_type: "h100"
   gpus_per_node: 8
-profiling:
-  type: "torch"
-  aggregated:
-    start_step: 0
-    stop_step: 20
 
 frontend:
-  type: sglang-router
+  type: sglang
   enable_multiple_frontends: false
 
 engine: sglang
@@ -44,10 +39,9 @@ roles:
       tensor-parallel-size: 1
       mem-fraction-static: 0.5
       context-length: 4096
-      disable-piecewise-cuda-graph: true
 
 benchmark:
   type: "sa-bench"
   isl: 128
   osl: 128
-  concurrencies: "4"
+  concurrencies: "4x8"

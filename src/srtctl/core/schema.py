@@ -1920,8 +1920,11 @@ class FrontendConfig:
     """Frontend/router configuration.
 
     Attributes:
-        type: Frontend type - "dynamo" (default), "sglang", "vllm-router",
-            "trtllm_serve", or direct "vllm"
+        type: Frontend type - "dynamo" (default); "sglang-router" (SGLang Model
+            Gateway) and "vllm-router" (static routers); "sglang", "vllm", and
+            "trtllm_serve" (direct: the single aggregate worker binds the public
+            port, no router process). In schema 1 recipes "sglang" still means
+            the router and loads as "sglang-router".
         enable_multiple_frontends: Scale with nginx + multiple routers.
             When ``True`` (default), srtctl stands up nginx and fans out
             to ``num_additional_frontends + 1`` router replicas. When
@@ -2117,6 +2120,7 @@ class SrtConfig:
         self._validate_dedicated_node_placement()
         self._validate_trtllm_serve()
         self._validate_vllm_frontend()
+        self._validate_sglang_direct_frontend()
         self._validate_static_router_frontend()
         self._validate_dynamo_sidecar()
         self._validate_host_setup()
@@ -2282,9 +2286,41 @@ class SrtConfig:
                 "worker across nodes with resources.agg_nodes."
             )
 
+    def _validate_sglang_direct_frontend(self):
+        """Catch direct-SGLang frontend misconfigurations at load time.
+
+        ``frontend.type: sglang`` means the one aggregate ``sglang.launch_server``
+        owns the public port itself. Several replicas or a prefill/decode layout
+        need ``sglang-router`` (or ``dynamo``); a schema 2 recipe that still says
+        ``sglang`` for those is an old router recipe and is rejected rather than
+        silently run unbalanced.
+        """
+        if self.frontend.type != "sglang":
+            return
+        if self.backend_type != "sglang":
+            raise ValidationError(f"frontend.type: sglang requires engine sglang; got {self.backend_type!r}")
+        if self.frontend.enable_multiple_frontends:
+            raise ValidationError(
+                "frontend.type: sglang binds sglang.launch_server directly; set frontend.enable_multiple_frontends: false"
+            )
+        if self.resources.is_disaggregated:
+            raise ValidationError(
+                "frontend.type: sglang supports one aggregate worker only, not a prefill/decode layout. "
+                "The SGLang router is frontend.type: sglang-router (renamed in 2.0; `srtctl migrate` rewrites "
+                "schema 1 recipes)."
+            )
+        if self.resources.num_agg != 1:
+            raise ValidationError(
+                f"frontend.type: sglang supports exactly one aggregate worker, got {self.resources.num_agg}. "
+                "sglang.launch_server owns the public port directly and there is no router to balance "
+                "replicas. Use frontend.type: sglang-router (the SGLang Model Gateway, renamed in 2.0) or dynamo."
+            )
+        if self.dynamo.sidecar:
+            raise ValidationError("frontend.type: sglang does not support dynamo.sidecar; use frontend.type: dynamo")
+
     def _validate_static_router_frontend(self):
         """Validate static-router/backend pairings and vLLM DP ownership."""
-        required_backend = {"sglang": "sglang", "vllm-router": "vllm"}.get(self.frontend.type)
+        required_backend = {"sglang-router": "sglang", "vllm-router": "vllm"}.get(self.frontend.type)
         if required_backend is None:
             return
         if self.backend_type != required_backend:

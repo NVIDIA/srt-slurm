@@ -35,7 +35,7 @@ def _legacy_sglang_disagg() -> dict:
                 "decode": {"tensor-parallel-size": 2, "disaggregation-mode": "decode"},
             },
         },
-        "frontend": {"type": "sglang", "enable_multiple_frontends": False},
+        "frontend": {"type": "sglang-router", "enable_multiple_frontends": False},
         "benchmark": {"type": "sa-bench", "isl": 128, "osl": 128, "concurrencies": "4"},
     }
 
@@ -63,7 +63,7 @@ def _roles_sglang_disagg() -> dict:
                 "args": {"tensor-parallel-size": 2, "disaggregation-mode": "decode"},
             },
         },
-        "frontend": {"type": "sglang", "enable_multiple_frontends": False},
+        "frontend": {"type": "sglang-router", "enable_multiple_frontends": False},
         "benchmark": {"type": "sa-bench", "isl": 128, "osl": 128, "concurrencies": "4"},
     }
 

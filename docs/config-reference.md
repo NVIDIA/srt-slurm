@@ -248,7 +248,7 @@ Valid types are `sglang`, `vllm`, `trtllm`, and `mocker`. Everything that is per
 
 | Engine | Engine-wide knobs |
 | --- | --- |
-| `sglang` | none beyond `type` |
+| `sglang-router` | none beyond `type` |
 | `vllm` | `connector` (default `nixl`), `dp_launch_mode`, `vllm_serve_binary`, `set_cuda_visible_devices`, `allow_prefill_decode_colocation`, `allow_prefill_decode_colocation_across_nodes` |
 | `trtllm` | `served_model_name`, `publish_metrics`, `publish_events_and_metrics`, `sequential_node_start`, `numa_memory_bind`, `numa_cpu_bind` |
 | `mocker` | the simulation parameters: `engine_type`, `speedup_ratio`, `decode_speedup_ratio`, `num_gpu_blocks_override`, `max_num_seqs`, `max_num_batched_tokens`, `block_size`, `data_parallel_size`, ... |
@@ -502,7 +502,7 @@ Frontend/router configuration.
 
 ```yaml
 frontend:
-  # Frontend type: "dynamo" (default), "sglang", "vllm-router", "trtllm_serve", or "vllm"
+  # Frontend type: "dynamo" (default), "sglang-router", "vllm-router", or direct "sglang", "vllm", "trtllm_serve"
   type: dynamo
 
   # Where it runs; see placement
@@ -520,7 +520,7 @@ frontend:
   # CLI args passed to the frontend/router
   args:
     router-mode: "kv"                 # dynamo: router-mode
-    policy: "cache_aware"             # sglang: policy
+    policy: "cache_aware"             # sglang-router: policy
     no-kv-events: true                # boolean flags
 
   # Environment variables for frontend processes
@@ -533,7 +533,7 @@ frontend:
 
 | Field                       | Type | Default       | Description                         |
 | --------------------------- | ---- | ------------- | ----------------------------------- |
-| `type`                      | str  | dynamo        | Frontend type: "dynamo", "sglang", "vllm-router", "trtllm_serve", or "vllm" |
+| `type`                      | str  | dynamo        | `dynamo`; static routers `sglang-router`, `vllm-router`; direct (one aggregate worker binds the public port, no router process) `sglang`, `vllm`, `trtllm_serve` |
 | `placement.node`            | str  | head          | `head`, `first_decode`, or `dedicated`; see [placement](#placement) |
 | `enable_multiple_frontends` | bool | true          | Scale with nginx + multiple routers |
 | `num_additional_frontends`  | int  | 9             | Additional routers beyond master    |
@@ -864,7 +864,7 @@ benchmark:
 
 ### router
 
-Router performance benchmark with prefix caching. **Requires `frontend.type: sglang`**.
+Router performance benchmark with prefix caching. **Requires `frontend.type: sglang-router`**.
 
 ```yaml
 benchmark:
@@ -1959,7 +1959,7 @@ slurm:
   time_limit: "02:00:00"
 
 frontend:
-  type: sglang
+  type: sglang-router
   enable_multiple_frontends: false
   args:
     policy: "cache_aware"

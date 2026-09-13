@@ -591,7 +591,7 @@ class TestArtifactErrors:
                 slow_down_wait_time=1.0,
             ),
             telemetry=harness.config.telemetry,
-            frontend=FrontendConfig(type="sglang"),
+            frontend=FrontendConfig(type="sglang-router"),
             profiling=ProfilingConfig(
                 type="nsys",
                 prefill=ProfilingPhaseConfig(start_step=1, stop_step=2),

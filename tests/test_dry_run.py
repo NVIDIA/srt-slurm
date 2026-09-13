@@ -643,7 +643,7 @@ class TestDryRunServices:
 
     def test_no_services_omits_the_panel(self, capsys):
         # No discovery plane (static frontend), no tachometer: nothing declared, nothing implied.
-        config = _make_config({"frontend": {"type": "sglang"}, "observability": {"tachometer": {"enabled": False}}})
+        config = _make_config({"frontend": {"type": "sglang-router"}, "observability": {"tachometer": {"enabled": False}}})
         show_config_details(config)
         assert "Services:" not in capsys.readouterr().out
 
@@ -770,7 +770,7 @@ class TestDryRunRemapRoot:
         assert "ENROOT_REMAP_ROOT" in output
 
     def test_remap_root_absent_for_sglang_frontend(self, capsys):
-        config = _make_config({"frontend": {"type": "sglang"}})
+        config = _make_config({"frontend": {"type": "sglang-router"}})
         show_config_details(config)
         output = capsys.readouterr().out
         assert "ENROOT_REMAP_ROOT" not in output

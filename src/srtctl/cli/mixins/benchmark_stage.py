@@ -184,7 +184,7 @@ class BenchmarkStageMixin:
 
     def _public_api_node(self) -> str:
         """Node hosting the public OpenAI HTTP endpoint clients should probe."""
-        if self.config.frontend.type == "vllm" and self.config.resources.num_agg > 0:
+        if self.config.frontend.type in ("vllm", "sglang") and self.config.resources.num_agg > 0:
             agg_leaders = sorted(
                 (p for p in self.backend_processes if p.endpoint_mode == "agg" and p.is_leader),
                 key=lambda p: p.endpoint_index,
@@ -225,7 +225,7 @@ class BenchmarkStageMixin:
                 continue
             if self.config.frontend.type == "dynamo" and not self.config.dynamo.sidecar:
                 port = process.sys_port
-            elif self.config.frontend.type == "vllm":
+            elif self.config.frontend.type in ("vllm", "sglang"):
                 port = self.runtime.frontend_port
             else:
                 port = process.http_port
@@ -583,8 +583,8 @@ class BenchmarkStageMixin:
                 "benchmark slow_down: slow_down_sleep_time and slow_down_wait_time must be positive; skipping"
             )
             return {}
-        if self.config.frontend.type != "sglang":
-            logger.warning("benchmark.slow_down_* ignored: frontend.type is not sglang")
+        if self.config.frontend.type != "sglang-router":
+            logger.warning("benchmark.slow_down_* ignored: frontend.type is not sglang-router")
             return {}
 
         decode_urls: list[str] = []
@@ -651,9 +651,13 @@ class BenchmarkStageMixin:
             if self.config.dynamo.sidecar or not dynamo_trtllm_metrics_disabled:
                 urls = [f"http://{host}:{port}{metrics_path}" for _, host, port in logical_endpoints]
         else:
-            if self.config.frontend.type in {"vllm", "vllm-router"}:
+            if self.config.frontend.type in {"vllm", "sglang", "vllm-router"}:
                 for process in self.backend_processes:
-                    if self.config.frontend.type == "vllm" and process.endpoint_mode == "agg" and process.is_leader:
+                    if (
+                        self.config.frontend.type in {"vllm", "sglang"}
+                        and process.endpoint_mode == "agg"
+                        and process.is_leader
+                    ):
                         host = get_hostname_ip(process.node, self.runtime.network_interface)
                         urls.append(f"http://{host}:{FRONTEND_PUBLIC_PORT}/metrics")
                     elif self.config.frontend.type == "vllm-router" and process.http_port > 0:

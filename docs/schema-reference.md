@@ -112,7 +112,7 @@ Frontend/router configuration.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `type` | str | `'dynamo'` | Frontend type - "dynamo" (default), "sglang", "vllm-router", "trtllm_serve", or direct "vllm" |
+| `type` | str | `'dynamo'` | Frontend type - "dynamo" (default); "sglang-router" (SGLang Model Gateway) and "vllm-router" (static routers); "sglang", "vllm", and "trtllm_serve" (direct: the single aggregate worker binds the public port, no router process). In schema 1 recipes "sglang" still means the router and loads as "sglang-router". |
 | `enable_multiple_frontends` | bool | `True` | Scale with nginx + multiple routers. When ``True`` (default), srtctl stands up nginx and fans out to ``num_additional_frontends + 1`` router replicas. When ``False``, there is NO nginx proxy — the benchmark must target the single master router (or a worker) directly at ``http://localhost:<port>``. ``benchmark.command`` has no placeholder substitution, so write the URL out literally. |
 | `num_additional_frontends` | int | `9` | Additional routers beyond master (default: 9) |
 | `nginx_container` | str | `'nginx:1.27.4'` | Custom nginx container image (default: nginx:1.27.4) |

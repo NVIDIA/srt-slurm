@@ -25,7 +25,7 @@ This page explains the sglang router mode for prefill-decode (PD) disaggregation
 
 By default, srtctl uses **Dynamo frontends** to coordinate between prefill and decode workers. This requires NATS/ETCD infrastructure and the `dynamo` package.
 
-**SGLang Router** is an alternative that uses sglang's native `sglang_router` for PD disaggregation.
+**SGLang Router** (`frontend.type: sglang-router`) is an alternative that uses sglang's native `sglang_router` (Model Gateway) for aggregated replicas or PD disaggregation. For a single aggregate worker with no router at all, use `frontend.type: sglang`: the worker binds the public port itself (see `examples/sglang/sglang-direct-agg.yaml`). In schema 1 recipes `frontend.type: sglang` meant the router; `srtctl migrate` rewrites it.
 
 | Feature        | Dynamo Frontends           | SGLang Router              |
 | -------------- | -------------------------- | -------------------------- |
@@ -39,7 +39,7 @@ Enable sglang router in your recipe's `frontend` section:
 
 ```yaml
 frontend:
-  type: sglang
+  type: sglang-router
 ```
 
 That's it. The workers will launch with `sglang.launch_server` instead of `dynamo.sglang`, and the router will handle request distribution.
@@ -50,7 +50,7 @@ Pass extra CLI args to the router:
 
 ```yaml
 frontend:
-  type: sglang
+  type: sglang-router
   args:
     kv-overlap-score-weight: 1
     router-temperature: 0
@@ -74,7 +74,7 @@ Pass environment variables to frontend processes:
 
 ```yaml
 frontend:
-  type: sglang
+  type: sglang-router
   env:
     MY_CUSTOM_VAR: "value"
 ```
@@ -87,7 +87,7 @@ The simplest mode - one router on node 0, no nginx:
 
 ```yaml
 frontend:
-  type: sglang
+  type: sglang-router
   enable_multiple_frontends: false
 ```
 
@@ -111,7 +111,7 @@ Nginx load balances across multiple router instances:
 
 ```yaml
 frontend:
-  type: sglang
+  type: sglang-router
   enable_multiple_frontends: true # default
   num_additional_frontends: 9 # default, total = 1 + 9 = 10 routers
 ```
@@ -190,7 +190,7 @@ Tachometer (on by default) scrapes this frontend like any other, but the Model G
   `frontend.args` set `prometheus-port` / `prometheus-host`, and points tachometer's `frontend*`
   target at that port, not at the routing port.
 - Workers serve Prometheus `/metrics` on their HTTP port only with `--enable-metrics`. srtctl adds it
-  to every `sglang.launch_server` launch under `frontend.type: sglang` unless the role's `args`
+  to every `sglang.launch_server` launch under `frontend.type: sglang-router` unless the role's `args`
   already set `enable-metrics`. Only the leader rank of a multi-node worker binds the HTTP server, so
   followers are not targeted.
 
@@ -214,7 +214,7 @@ resources:
   gpus_per_node: 4
 
 frontend:
-  type: sglang
+  type: sglang-router
   enable_multiple_frontends: true
   num_additional_frontends: 3 # 4 total routers
 

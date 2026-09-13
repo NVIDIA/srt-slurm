@@ -21,7 +21,7 @@ PLAIN = {
     "model": {"path": "hf:fake/mock-model", "container": "nvcr.io/fake:latest", "precision": "fp8"},
     "resources": {"gpu_type": "h100", "gpus_per_node": 8, "agg_nodes": 1, "agg_workers": 1},
     "backend": {"type": "sglang"},
-    "frontend": {"type": "sglang", "enable_multiple_frontends": False},
+    "frontend": {"type": "sglang-router", "enable_multiple_frontends": False},
     "benchmark": {"type": "custom", "command": "echo hi"},
 }
 

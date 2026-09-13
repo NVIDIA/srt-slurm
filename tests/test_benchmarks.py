@@ -401,7 +401,7 @@ class TestCustomBenchmarkRunner:
             Process("node-a", frozenset(range(4)), 7500, 6100, "agg", 0, node_rank=0),
             Process("node-b", frozenset(range(4)), 7501, 0, "agg", 0, node_rank=1),
         ]
-        stage = self._benchmark_stage("sglang", processes)
+        stage = self._benchmark_stage("sglang-router", processes)
 
         with patch(
             "srtctl.cli.mixins.benchmark_stage.get_hostname_ip",
@@ -414,6 +414,17 @@ class TestCustomBenchmarkRunner:
         assert "SRT_PREFILL_ENDPOINTS" not in env
         assert "SRT_DECODE_ENDPOINTS" not in env
         assert env["AIPERF_SERVER_METRICS_URLS"] == "http://ip-node-a:6100/metrics"
+
+        # Direct sglang: the one aggregate worker is the public endpoint on the frontend port.
+        direct = self._benchmark_stage("sglang", processes)
+        with patch(
+            "srtctl.cli.mixins.benchmark_stage.get_hostname_ip",
+            side_effect=lambda node, interface: f"ip-{node}",
+        ):
+            env = direct._get_benchmark_env(CustomBenchmarkRunner())
+        port = direct.runtime.frontend_port
+        assert env["SRT_AGG_ENDPOINTS"] == f"ip-node-a:{port}"
+        assert env["AIPERF_SERVER_METRICS_URLS"] == f"http://ip-node-a:{port}/metrics"
 
     def test_trtllm_serve_custom_endpoints_use_prometheus_path(self):
         """Custom benchmarks against trtllm-serve advertise worker leaders'

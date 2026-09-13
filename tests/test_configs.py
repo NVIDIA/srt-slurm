@@ -516,7 +516,7 @@ class TestSidecarValidation:
         from marshmallow import ValidationError
 
         with pytest.raises(ValidationError, match="dynamo.sidecar: true requires frontend.type: dynamo"):
-            self._config(frontend_type="sglang")
+            self._config(frontend_type="sglang-router")
 
     def test_sidecar_rejects_unsupported_backend(self) -> None:
         from marshmallow import ValidationError

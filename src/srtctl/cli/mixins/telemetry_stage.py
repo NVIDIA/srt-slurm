@@ -530,7 +530,7 @@ class TelemetryStageMixin:
 
     def _frontend_metrics_port(self) -> int | None:
         """Frontends whose Prometheus listener is not the routing port: the SGLang Model Gateway."""
-        if self.config.frontend.type == "sglang":
+        if self.config.frontend.type == "sglang-router":
             from srtctl.frontends.sglang import router_metrics_port
 
             return router_metrics_port(self.config.frontend.args)

@@ -144,6 +144,23 @@ def resolve_container_aliases(config: dict[str, Any], containers: Mapping[str, s
     return notes
 
 
+# Renamed frontend types: {schema-1 value: schema-2 value}. In schema 1 recipes
+# ``frontend.type: sglang`` was the SGLang Model Gateway; in 2.0 that router is
+# ``sglang-router`` and ``sglang`` is the router-free single worker.
+SCHEMA1_FRONTEND_RENAMES: dict[str, str] = {"sglang": "sglang-router"}
+
+
+def apply_schema1_frontend_rename(config: dict[str, Any]) -> dict[str, Any]:
+    """Give a schema 1 recipe its historical frontend meaning, in place."""
+    version = config.get("schema", 1)
+    frontend = config.get("frontend")
+    if isinstance(version, int) and not isinstance(version, bool) and version < 2 and isinstance(frontend, dict):
+        renamed = SCHEMA1_FRONTEND_RENAMES.get(frontend.get("type"))
+        if renamed:
+            frontend["type"] = renamed
+    return config
+
+
 def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: dict[str, Any] | None) -> dict[str, Any]:
     """
     Resolve user config by applying cluster defaults and aliases.
@@ -174,6 +191,7 @@ def resolve_config_with_defaults(user_config: dict[str, Any], cluster_config: di
     expand_roles(config)
     expand_placement(config)
     expand_services(config)
+    apply_schema1_frontend_rename(config)
 
     if cluster_config is None:
         return config

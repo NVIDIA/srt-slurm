@@ -302,7 +302,8 @@ class SGLangProtocol:
             process: The process to start
             endpoint_processes: All processes for this endpoint (for multi-node)
             runtime: Runtime context with paths and settings
-            frontend_type: Frontend type - "sglang" uses sglang.launch_server, "dynamo" uses dynamo.sglang
+            frontend_type: Frontend type - "sglang" (direct) and "sglang-router" use
+                sglang.launch_server, "dynamo" uses dynamo.sglang
             nsys_prefix: Optional nsys profiling command prefix
             dump_config_path: Path to dump config JSON
         """
@@ -345,7 +346,7 @@ class SGLangProtocol:
         dist_init_port = SGLANG_DIST_INIT_PORT_BASE
 
         # Choose Python module based on frontend type
-        use_sglang = frontend_type == "sglang"
+        use_sglang = frontend_type in ("sglang", "sglang-router")
         python_module = "sglang.launch_server" if use_sglang else "dynamo.sglang"
 
         # Get served model name from config
@@ -373,8 +374,11 @@ class SGLangProtocol:
             ]
         )
 
-        # Always pass --port when using sglang.launch_server or dynamo.sglang
-        cmd.extend(["--port", str(process.http_port)])
+        # Always pass --port when using sglang.launch_server or dynamo.sglang.
+        # Direct mode (frontend.type: sglang): the single aggregate worker is the
+        # public endpoint, so it binds the frontend port instead of its own.
+        api_port = runtime.frontend_port if frontend_type == "sglang" and mode == "agg" else process.http_port
+        cmd.extend(["--port", str(api_port)])
         cmd.extend(["--nccl-port", str(nccl_port)])
 
         if use_sglang:
@@ -416,7 +420,7 @@ class SGLangProtocol:
             )
 
         # Add config dump path (not when using sglang frontend)
-        if dump_config_path and frontend_type != "sglang":
+        if dump_config_path and not use_sglang:
             cmd.extend(["--dump-config-to", str(dump_config_path)])
 
         # Add kv-events-config if enabled for this mode and we have an allocated port

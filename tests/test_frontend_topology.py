@@ -291,7 +291,7 @@ class TestStartFrontendIntegration:
         mock_mixin_srun.return_value = MagicMock()
         mock_sglang_srun.return_value = MagicMock()
 
-        config = make_config(enable_multiple_frontends=True, frontend_type="sglang")
+        config = make_config(enable_multiple_frontends=True, frontend_type="sglang-router")
         runtime = make_runtime(["node0"])
         orchestrator = SweepOrchestrator(config=config, runtime=runtime)
         orchestrator._backend_processes = []  # No workers for this test
@@ -395,7 +395,7 @@ class TestStartFrontendIntegration:
         mock_mixin_srun.return_value = MagicMock()
         mock_sglang_srun.return_value = MagicMock()
 
-        config = make_config(enable_multiple_frontends=True, frontend_type="sglang")
+        config = make_config(enable_multiple_frontends=True, frontend_type="sglang-router")
         runtime = make_runtime(["node0", "node1", "node2"])
         # Use tmp_path for log_dir so nginx config can be written
         runtime = RuntimeContext(
