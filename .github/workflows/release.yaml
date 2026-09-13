@@ -1,11 +1,9 @@
 name: Release
 
-# pull_request_target runs in the base repository context, which supplies the
-# write-capable token that creates the release. Build jobs check out only the
-# merged main-branch commit, after GitHub reports the pull request as merged.
+# Build only commits pushed to trusted main. A pull_request_target event still
+# identifies merged fork code as untrusted to checkout's fork protection.
 on:
-  pull_request_target:
-    types: [closed]
+  push:
     branches: [main]
 
 permissions:
@@ -18,69 +16,100 @@ concurrency:
 
 jobs:
   version:
-    if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     outputs:
-      tag: ${{ steps.ver.outputs.tag }}
-      target: ${{ github.event.pull_request.merge_commit_sha }}
-      tachometer_changed: ${{ steps.changed.outputs.tachometer }}
-      cpu_power_exporter_changed: ${{ steps.changed.outputs.cpu_power_exporter }}
+      publish: ${{ steps.plan.outputs.publish }}
+      tag: ${{ steps.plan.outputs.tag }}
+      target: ${{ github.sha }}
+      previous: ${{ steps.plan.outputs.previous }}
+      tachometer_changed: ${{ steps.plan.outputs.tachometer }}
+      cpu_power_exporter_changed: ${{ steps.plan.outputs.cpu_power_exporter }}
     steps:
-      - name: Detect changed binaries
-        id: changed
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Plan release from the last published version
+        id: plan
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          TARGET: ${{ github.sha }}
         run: |
           set -euo pipefail
-          files=$(gh api --paginate "repos/${GH_REPO}/pulls/${PR_NUMBER}/files?per_page=100" --jq '.[].filename')
+          releases=$(gh release list --limit 1000 --json tagName,isDraft)
+          latest=$(jq -r '.[].tagName' <<< "$releases" | sort -V | tail -n1)
+          previous=$(jq -r '.[] | select(.isDraft == false) | .tagName' <<< "$releases" | sort -V | tail -n1)
+          echo "previous=$previous" >> "$GITHUB_OUTPUT"
 
-          if printf '%s\n' "$files" | grep -Eq '^(Cargo\.(toml|lock)|rust-toolchain\.toml|src/tachometer/|docker/Dockerfile\.tachometer-scraper$|\.dockerignore$|\.github/workflows/release\.yaml$)'; then
-            tachometer=true
-          else
-            tachometer=false
+          tachometer=true
+          cpu_power_exporter=true
+          if [ -n "$previous" ]; then
+            # Resolve the tag itself: a release's target_commitish can be a
+            # moving branch. Failed releases must leave their changes pending.
+            baseline=$(git rev-parse --verify "refs/tags/$previous^{commit}")
+            if git merge-base --is-ancestor "$TARGET" "$baseline"; then
+              echo "Target $TARGET is already covered by $previous; skipping"
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if ! git merge-base --is-ancestor "$baseline" "$TARGET"; then
+              echo "::error::Release $previous is not an ancestor of $TARGET"
+              exit 1
+            fi
+            changed() {
+              if git diff --quiet --no-renames "$baseline" "$TARGET" -- "$@"; then
+                echo false
+              else
+                status=$?
+                [ "$status" -eq 1 ] || return "$status"
+                echo true
+              fi
+            }
+            # Full local history avoids API file limits and detects deletions
+            # and renames out of an input directory, including earlier failed runs.
+            common=(Cargo.toml Cargo.lock rust-toolchain.toml .dockerignore .github/workflows/release.yaml)
+            tachometer=$(changed "${common[@]}" src/tachometer/ docker/Dockerfile.tachometer-scraper)
+            cpu_power_exporter=$(changed "${common[@]}" src/cpu-power-exporter/ docker/Dockerfile.cpu-power-exporter)
           fi
-          echo "Tachometer changed: $tachometer"
-          echo "tachometer=$tachometer" >> "$GITHUB_OUTPUT"
 
-          if printf '%s\n' "$files" | grep -Eq '^(Cargo\.(toml|lock)|rust-toolchain\.toml|src/cpu-power-exporter/|docker/Dockerfile\.cpu-power-exporter$|\.dockerignore$|\.github/workflows/release\.yaml$)'; then
-            cpu_power_exporter=true
-          else
-            cpu_power_exporter=false
-          fi
-          echo "cpu-power-exporter changed: $cpu_power_exporter"
-          echo "cpu_power_exporter=$cpu_power_exporter" >> "$GITHUB_OUTPUT"
+          # Recover the label from the merged PR associated with this exact push.
+          # A direct push has no matching PR and receives the usual patch bump.
+          prs=$(gh api --paginate "repos/${GH_REPO}/commits/${TARGET}/pulls?per_page=100" | jq -s 'add')
+          feature=$(jq -r --arg target "$TARGET" --arg repo "$GH_REPO" '
+            any(.[]; .merged_at != null and .merge_commit_sha == $target and
+              .base.ref == "main" and .base.repo.full_name == $repo and
+              any(.labels[]?; .name == "new-feature"))' <<< "$prs")
 
-      - name: Compute next version
-        id: ver
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          # "true" when the merged PR carries the new-feature label -> minor bump.
-          IS_FEATURE: ${{ contains(github.event.pull_request.labels.*.name, 'new-feature') }}
-        run: |
-          set -euo pipefail
-          # Bump from the HIGHEST existing GitHub Release (independent of the
-          # in-code version). A PR labeled "new-feature" bumps the MINOR and
-          # resets patch (v1.0.5 -> v1.1.0); otherwise the PATCH bumps
-          # (v1.0.5 -> v1.0.6). MAJOR is never bumped automatically -- publish a
-          # higher major by hand and the next merge continues from there.
-          # First run only (no release yet): seed v1.0.0.
-          latest=$(gh release list --limit 1000 --json tagName --jq '.[].tagName' | sort -V | tail -n1)
+          # Preserve the highest-version release convention, minor bump for
+          # new-feature, patch otherwise, and v1.0.0 for the first release.
           if [ -z "$latest" ]; then
-            next="v1.0.0"
+            next=v1.0.0
           else
             core=${latest#v}; core=${core%%.post*}; core=${core%%-*}
-            IFS='.' read -r major minor patch <<< "$core"
-            if [ "$IS_FEATURE" = "true" ]; then
+            if [[ ! "$core" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+              echo "::error::Cannot increment release version $latest"
+              exit 1
+            fi
+            major=$((10#${BASH_REMATCH[1]}))
+            minor=$((10#${BASH_REMATCH[2]}))
+            patch=$((10#${BASH_REMATCH[3]}))
+            if [ "$feature" = true ]; then
               next="v${major}.$((minor + 1)).0"
             else
               next="v${major}.${minor}.$((patch + 1))"
             fi
           fi
-          echo "Latest release: ${latest:-none}  new-feature: $IS_FEATURE  Next: $next"
-          echo "tag=$next" >> "$GITHUB_OUTPUT"
+          echo "Baseline: ${previous:-none}; target: $TARGET; next: $next; new-feature: $feature"
+          echo "Tachometer changed: $tachometer; cpu-power-exporter changed: $cpu_power_exporter"
+          {
+            echo "publish=true"
+            echo "tag=$next"
+            echo "tachometer=$tachometer"
+            echo "cpu_power_exporter=$cpu_power_exporter"
+          } >> "$GITHUB_OUTPUT"
 
   build-tachometer-scraper:
     needs: version
@@ -99,6 +128,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.version.outputs.target }}
+          persist-credentials: false
 
       - uses: docker/setup-qemu-action@v3
 
@@ -141,6 +171,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.version.outputs.target }}
+          persist-credentials: false
 
       - uses: docker/setup-qemu-action@v3
 
@@ -171,12 +202,19 @@ jobs:
     if: >-
       always() &&
       needs.version.result == 'success' &&
+      needs.version.outputs.publish == 'true' &&
       (needs.build-tachometer-scraper.result == 'success' || needs.build-tachometer-scraper.result == 'skipped') &&
       (needs.build-cpu-power-exporter.result == 'success' || needs.build-cpu-power-exporter.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.target }}
+          fetch-depth: 0
+          persist-credentials: false
+
       - uses: actions/download-artifact@v4
         if: needs.version.outputs.tachometer_changed == 'true'
         with:
@@ -196,29 +234,70 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          PREVIOUS: ${{ needs.version.outputs.previous }}
           TACHOMETER_CHANGED: ${{ needs.version.outputs.tachometer_changed }}
           CPU_POWER_EXPORTER_CHANGED: ${{ needs.version.outputs.cpu_power_exporter_changed }}
         run: |
           set -euo pipefail
-          previous=$(gh release list --limit 1000 --json tagName --jq '.[].tagName' | sort -V | tail -n1)
           mkdir -p dist
           # Every merge cuts a release, so an unchanged binary is re-uploaded
           # from the previous one to keep each release self-contained. A gap is
           # a warning, not a failure: the first-ever release has nothing to
           # carry forward, and a binary added later is absent from older ones.
           carry() {
-            if [ -z "$previous" ]; then
+            if [ -z "$PREVIOUS" ]; then
               echo "::warning::No previous release to carry $1 forward from; this release omits it"
               return 0
             fi
-            if ! gh release download "$previous" --pattern "$1-*" --dir dist; then
-              echo "::warning::Previous release $previous has no $1 assets; this release omits them"
+            if ! gh release download "$PREVIOUS" --pattern "$1-*" --dir dist; then
+              echo "::warning::Previous release $PREVIOUS has no $1 assets; this release omits them"
             fi
           }
           [ "$TACHOMETER_CHANGED" = "true" ] || carry tachometer-scraper
           [ "$CPU_POWER_EXPORTER_CHANGED" = "true" ] || carry cpu-power-exporter
 
+      - name: Recheck publication after builds or a partial rerun
+        id: guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TARGET: ${{ needs.version.outputs.target }}
+          TAG: ${{ needs.version.outputs.tag }}
+          PREVIOUS: ${{ needs.version.outputs.previous }}
+        run: |
+          set -euo pipefail
+          releases=$(gh release list --limit 1000 --json tagName,isDraft)
+          previous=$(jq -r '.[] | select(.isDraft == false) | .tagName' <<< "$releases" | sort -V | tail -n1)
+          if [ -n "$previous" ]; then
+            baseline=$(git rev-parse --verify "refs/tags/$previous^{commit}")
+            if git merge-base --is-ancestor "$TARGET" "$baseline"; then
+              echo "Target $TARGET is already covered by $previous; skipping publication"
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if ! git merge-base --is-ancestor "$baseline" "$TARGET"; then
+              echo "::error::Release $previous is not an ancestor of $TARGET"
+              exit 1
+            fi
+          fi
+          # A failed-job-only rerun can reuse an old version decision. Require
+          # a complete workflow rerun if its version/carry-forward baseline moved.
+          if [ "$previous" != "$PREVIOUS" ]; then
+            echo "::error::Published baseline changed from $PREVIOUS to $previous; rerun all jobs"
+            exit 1
+          fi
+          # gh release create ignores --target when the tag already exists.
+          if git show-ref --verify --quiet "refs/tags/$TAG"; then
+            tagged=$(git rev-parse --verify "refs/tags/$TAG^{commit}")
+            if [ "$tagged" != "$TARGET" ]; then
+              echo "::error::Tag $TAG already points to $tagged instead of $TARGET"
+              exit 1
+            fi
+          fi
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+
       - name: Create release
+        if: steps.guard.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
