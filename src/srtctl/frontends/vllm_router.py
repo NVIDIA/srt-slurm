@@ -9,6 +9,7 @@ import shlex
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from srtctl.frontends.static_router import StaticRouterFrontend
+from srtctl.ports import VLLM_DISCOVERY_PORT
 
 if TYPE_CHECKING:
     from srtctl.core.topology import Process
@@ -118,7 +119,40 @@ class VLLMRouterFrontend(StaticRouterFrontend):
             managed_args.extend(["--worker-startup-timeout-secs", str(timeout_seconds)])
         return managed_args
 
+    def uses_dynamic_worker_discovery(self, backend: Any) -> bool:
+        """Use ZMQ registration for connector-managed P/D workers."""
+        return backend.uses_moriio()
+
+    def build_router_command(
+        self,
+        workers: list[Any],
+        host: str,
+        port: int,
+        *,
+        dynamic_discovery: bool = False,
+    ) -> list[str]:
+        """Add vLLM Router's MoRI-IO discovery contract when requested."""
+        command = super().build_router_command(
+            workers,
+            host,
+            port,
+            dynamic_discovery=dynamic_discovery,
+        )
+        if not dynamic_discovery:
+            return command
+
+        insertion = command.index("--host")
+        command[insertion:insertion] = [
+            "--kv-connector",
+            "moriio",
+            "--vllm-discovery-address",
+            f"0.0.0.0:{VLLM_DISCOVERY_PORT}",
+        ]
+        return command
+
     def worker_bootstrap_port(self, backend: Any, process: Process) -> int | None:
-        """Advertise vLLM's NIXL side-channel port for P/D routing."""
-        del backend
+        """Advertise vLLM's NIXL side-channel port for static P/D routing."""
+        uses_moriio = getattr(backend, "uses_moriio", None)
+        if callable(uses_moriio) and uses_moriio() is True:
+            return None
         return process.nixl_port

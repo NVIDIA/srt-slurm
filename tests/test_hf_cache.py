@@ -3,7 +3,7 @@
 
 """Tests for HuggingFace cache management in SweepOrchestrator.
 
-Tests _get_hf_home(), _clean_stale_hf_locks(), and _ensure_model_cached().
+Tests cache path resolution, stale-lock cleanup, and model prefetch.
 """
 
 import os
@@ -83,6 +83,7 @@ backend:
   type: vllm
   prefill_environment:
     HF_HOME: "/cache/hub"
+    HF_HUB_CACHE: "/cache/canonical-hub"
   vllm_config:
     prefill:
       tensor-parallel-size: 1
@@ -99,6 +100,7 @@ resources:
         )
         orch = _make_orchestrator(str(config_file))
         assert orch._get_hf_home() == "/cache/hub"
+        assert orch._get_hf_cache_dir() == "/cache/canonical-hub"
 
     def test_returns_none_when_not_set(self, tmp_path: Path):
         """No HF_HOME in any environment config should return None."""
@@ -128,6 +130,7 @@ resources:
         )
         orch = _make_orchestrator(str(config_file))
         assert orch._get_hf_home() is None
+        assert orch._get_hf_cache_dir() is None
 
 
 # Tests for _clean_stale_hf_locks
@@ -330,7 +333,7 @@ resources:
             with caplog.at_level(logging.WARNING):
                 orch._ensure_model_cached()
             mock_srun.assert_not_called()
-            assert "HF_HOME is not set" in caplog.text
+            assert "no Hugging Face cache is set" in caplog.text
 
     def test_skips_when_model_already_cached(self, tmp_path: Path):
         """Pre-download should skip if huggingface_hub reports model is cached."""
@@ -379,6 +382,9 @@ resources:
             orch._ensure_model_cached()
             mock_srun.assert_not_called()
             fake_hf_hub.snapshot_download.assert_called_once()
+            assert fake_hf_hub.snapshot_download.call_args.kwargs["cache_dir"] == str(
+                tmp_path / "cache" / "hub"
+            )
 
     def test_runs_srun_on_single_node(self, tmp_path: Path):
         """Pre-download should run huggingface-cli on exactly one node."""
@@ -394,6 +400,7 @@ backend:
   type: vllm
   prefill_environment:
     HF_HOME: "{tmp_path / "cache"}"
+    HF_HUB_CACHE: "{tmp_path / "shared-hub-cache"}"
   vllm_config:
     prefill:
       tensor-parallel-size: 1
@@ -426,13 +433,15 @@ resources:
             cmd_str = " ".join(kwargs["command"])
             assert "huggingface-cli download" in cmd_str
             assert "nvidia/Kimi-K2.5-NVFP4" in cmd_str
-            assert str(tmp_path / "cache") in cmd_str
+            assert str(tmp_path / "shared-hub-cache") in cmd_str
 
             # Should use the container image
             assert kwargs["container_image"] == "test-image:latest"
 
             # Should pass HF env vars to srun
             assert "HF_HOME" in kwargs["env_to_set"]
+            assert kwargs["env_to_set"]["HF_HUB_CACHE"] == str(tmp_path / "shared-hub-cache")
+            assert kwargs["use_bash_wrapper"] is True
 
             # Should wait with a timeout
             mock_proc.wait.assert_called_once()

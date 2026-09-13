@@ -11,7 +11,7 @@ import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from srtctl.core.health import WorkerHealthResult, check_static_router_health
+from srtctl.core.health import WorkerHealthResult, check_static_router_health, wait_for_http_endpoints
 from srtctl.core.slurm import get_hostname_ip, start_srun_process
 
 if TYPE_CHECKING:
@@ -142,7 +142,29 @@ class StaticRouterFrontend:
         del backend, backend_processes, network_interface
         return []
 
-    def build_router_command(self, workers: list[RouterWorker], host: str, port: int) -> list[str]:
+    def get_pre_start_backend_health_urls(
+        self,
+        backend: Any,
+        backend_processes: list[Process],
+        network_interface: str | None = None,
+    ) -> list[str]:
+        """Return backend URLs that must be ready before router startup."""
+        del backend, backend_processes, network_interface
+        return []
+
+    def uses_dynamic_worker_discovery(self, backend: Any) -> bool:
+        """Whether workers register dynamically instead of using static URLs."""
+        del backend
+        return False
+
+    def build_router_command(
+        self,
+        workers: list[RouterWorker],
+        host: str,
+        port: int,
+        *,
+        dynamic_discovery: bool = False,
+    ) -> list[str]:
         """Build the router CLI for aggregate or prefill/decode topologies."""
         aggregate = [worker for worker in workers if worker.mode == "agg"]
         prefills = [worker for worker in workers if worker.mode == "prefill"]
@@ -155,12 +177,13 @@ class StaticRouterFrontend:
             if not prefills or not decodes:
                 raise ValueError("Disaggregated static router topology requires prefill and decode workers")
             cmd.append(self.pd_flag)
-            for worker in prefills:
-                cmd.extend(["--prefill", worker.url])
-                if worker.bootstrap_port is not None:
-                    cmd.append(str(worker.bootstrap_port))
-            for worker in decodes:
-                cmd.extend(["--decode", worker.url])
+            if not dynamic_discovery:
+                for worker in prefills:
+                    cmd.extend(["--prefill", worker.url])
+                    if worker.bootstrap_port is not None:
+                        cmd.append(str(worker.bootstrap_port))
+                for worker in decodes:
+                    cmd.extend(["--decode", worker.url])
         else:
             if not aggregate:
                 if self.allow_empty_workers:
@@ -182,7 +205,6 @@ class StaticRouterFrontend:
         backend_processes: list[Process],
         stop_event: threading.Event | None = None,
     ) -> list[ManagedProcess]:
-        del stop_event  # Static routers return immediately after launch.
         from srtctl.core.processes import FRONTEND_TERMINATE_TIMEOUT_SECONDS, ManagedProcess
 
         configured_backend = getattr(getattr(config, "backend", None), "type", self.backend_type)
@@ -192,10 +214,37 @@ class StaticRouterFrontend:
             )
 
         workers = self.collect_workers(backend, backend_processes, runtime.network_interface)
+        pre_start_health_urls = self.get_pre_start_backend_health_urls(
+            backend,
+            backend_processes,
+            runtime.network_interface,
+        )
+        health_check = getattr(config, "health_check", None)
+        if pre_start_health_urls and health_check is not None:
+            logger.info(
+                "Waiting for %d advertised backend endpoints before starting %s",
+                len(pre_start_health_urls),
+                self.type,
+            )
+            if not wait_for_http_endpoints(
+                pre_start_health_urls,
+                poll_interval=float(health_check.interval_seconds),
+                timeout=float(health_check.max_attempts * health_check.interval_seconds),
+                report_every=60.0,
+                stop_event=stop_event,
+            ):
+                raise RuntimeError(f"Advertised backend endpoints did not become ready before {self.type} startup")
+
+        dynamic_discovery = self.uses_dynamic_worker_discovery(backend)
         processes: list[ManagedProcess] = []
         for idx, node in enumerate(topology.frontend_nodes):
             router_log = runtime.log_dir / f"{node}_{self.log_label or self.type}_{idx}.out"
-            cmd = self.build_router_command(workers, "0.0.0.0", topology.frontend_port)
+            cmd = self.build_router_command(
+                workers,
+                "0.0.0.0",
+                topology.frontend_port,
+                dynamic_discovery=dynamic_discovery,
+            )
             cmd.extend(self.get_managed_frontend_args(config, backend, backend_processes))
             cmd.extend(self.get_frontend_args_list(config.frontend.args))
             logger.info("Starting %s %d on %s: %s", self.type, idx, node, shlex.join(cmd))
@@ -214,6 +263,7 @@ class StaticRouterFrontend:
                 bash_preamble=self.build_bash_preamble(config),
                 het_group=runtime.nodes.het_group_for(node),
                 step_name=step_name,
+                srun_options=getattr(runtime, "srun_options", None),
             )
             processes.append(
                 ManagedProcess(

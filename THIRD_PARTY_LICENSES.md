@@ -336,8 +336,8 @@ limitations under the License.
 
 ## D3
 
-**License:** ISC  
-**Version:** v7.9.0 (vendored at `src/visualization/d3.v7.min.js`, inlined into rendered dashboards)  
+**License:** ISC
+**Version:** v7.9.0 (vendored at `src/visualization/d3.v7.min.js`, inlined into rendered dashboards)
 **URL:** https://github.com/d3/d3
 
 ```

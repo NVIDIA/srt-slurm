@@ -14,6 +14,7 @@ Usage:
 """
 
 import argparse
+import base64
 import contextlib
 import json
 import logging
@@ -37,6 +38,7 @@ from rich.syntax import Syntax
 from rich.table import Table
 
 from srtctl.core.config import (
+    find_cluster_config_path,
     generate_override_configs,
     get_srtslurm_setting,
     load_cluster_config,
@@ -573,13 +575,14 @@ def show_config_details(config: SrtConfig) -> None:
             details.add_row("mooncake", "master_port", f"{MOONCAKE_MASTER_PORT} (auto)")
             if mooncake_cfg.master_extra_args:
                 details.add_row("mooncake", "master_extra_args", shlex.join(mooncake_cfg.master_extra_args))
-            if hasattr(backend, "build_mooncake_store_config"):
+            build_store_config = getattr(backend, "build_mooncake_store_config", None)
+            if callable(build_store_config):
                 # vLLM workers need MOONCAKE_CONFIG_PATH pointing at a JSON file
                 # — srtslurm writes this at job start. Show the resolved JSON
                 # so operators can sanity-check protocol/device_name/sizes
                 # before submitting. infra IP is unknown until allocation, so
                 # use a placeholder for master_server_address.
-                store_cfg = backend.build_mooncake_store_config("<infra_ip>")
+                store_cfg = build_store_config("<infra_ip>")
                 details.add_row(
                     "mooncake",
                     "store_config",
@@ -628,14 +631,21 @@ def validate_setup(srtctl_source: Path, config: SrtConfig | None = None) -> None
     """
     missing = []
 
+    from srtctl.services.implicit import effective_services
+
     configs_dir = srtctl_source / "configs"
-    if not (configs_dir / "nats-server").exists():
-        missing.append("configs/nats-server")
-    if not (configs_dir / "etcd").exists():
-        missing.append("configs/etcd")
+    local_service_types = (
+        {"nats", "etcd"}
+        if config is None
+        else {entry.service.type for entry in effective_services(config) if not entry.service.external}
+    )
+    for service_type, binary in (("nats", "nats-server"), ("etcd", "etcd")):
+        if service_type in local_service_types and not (configs_dir / binary).exists():
+            missing.append(f"configs/{binary}")
     if not (srtctl_source / "bin" / "uv").exists():
         missing.append("bin/uv (compute-arch uv)")
-    if not (srtctl_source / "bin" / "tachometer-scraper").exists():
+    tachometer_enabled = config is None or config.observability.tachometer_enabled
+    if tachometer_enabled and not (srtctl_source / "bin" / "tachometer-scraper").exists():
         missing.append("bin/tachometer-scraper (compute-arch Tachometer scraper)")
     cpu_power_enabled = (
         config is not None and config.telemetry.enabled and config.telemetry.cpu_power_exporter is not None
@@ -649,16 +659,21 @@ def validate_setup(srtctl_source: Path, config: SrtConfig | None = None) -> None
         console.print(f"\n[red bold]ERROR:[/] Required binaries not found in {srtctl_source}:")
         for m in missing:
             console.print(f"  [red]✗[/] {m}")
-        console.print("\nRun [bold]make setup ARCH=<compute_arch>[/] first:")
+        target = (
+            "setup"
+            if local_service_types & {"nats", "etcd"} or tachometer_enabled or cpu_power_enabled
+            else "setup-compute"
+        )
+        console.print(f"\nRun [bold]make {target} ARCH=<compute_arch>[/] first:")
         console.print(f"  cd {srtctl_source}")
-        console.print("  make setup ARCH=aarch64  [dim]# for GB200/Grace compute nodes[/]")
-        console.print("  make setup ARCH=x86_64   [dim]# for x86_64 compute nodes[/]\n")
+        console.print(f"  make {target} ARCH=aarch64  [dim]# for ARM compute nodes[/]")
+        console.print(f"  make {target} ARCH=x86_64   [dim]# for x86_64 compute nodes[/]\n")
         raise SystemExit(1)
 
     # Optional: the default process exporter is host-native and skipped at launch
     # (with a warning in the sweep log) when its binary is absent. Surface that at
     # submit time so the gap is not discovered after the run.
-    if not (configs_dir / "process-exporter").exists():
+    if tachometer_enabled and not (configs_dir / "process-exporter").exists():
         console.print(
             "[yellow]WARNING:[/] configs/process-exporter not found; Tachometer will run without per-process/"
             "per-thread CPU telemetry. Re-run [bold]make setup ARCH=<compute_arch>[/] to install it."
@@ -671,6 +686,8 @@ def generate_minimal_sbatch_script(
     setup_script: str | None = None,
     output_dir: Path | None = None,
     runtime_config_filename: str = "config.yaml",
+    runtime_config_text: str | None = None,
+    source_config_text: str | None = None,
     serve_only: bool = False,
 ) -> str:
     """Generate minimal sbatch script that calls the Python orchestrator.
@@ -684,6 +701,11 @@ def generate_minimal_sbatch_script(
         setup_script: Optional setup script override (passed via env var)
         output_dir: Custom output directory (CLI flag, highest priority)
         runtime_config_filename: Config file name under OUTPUT_DIR used by do_sweep
+        runtime_config_text: Exact runtime YAML to embed when the cluster uses
+            the ``embedded`` runtime config transport. Read from config_path
+            when omitted.
+        source_config_text: Original source YAML to preserve as config.yaml for
+            resolved override jobs using the embedded transport.
         serve_only: Keep the inference endpoint running without launching a benchmark
 
     Returns:
@@ -696,8 +718,15 @@ def generate_minimal_sbatch_script(
     template_dir = Path(__file__).parent.parent / "templates"
 
     srtctl_root = get_srtslurm_setting("srtctl_root")
-    # srtctl source is the parent of src/srtctl (i.e., the repo root)
-    srtctl_source = Path(srtctl_root) if srtctl_root else Path(__file__).parent.parent.parent.parent
+    runtime_source_override = os.environ.get("SRTCTL_RUNTIME_SOURCE_DIR")
+    # The submitter checkout may be login-node-local while compute nodes use a
+    # separately staged source tree. Keep that runtime override distinct from
+    # SRTCTL_SOURCE_DIR, which the generated job exports for its child processes.
+    if runtime_source_override:
+        srtctl_source = Path(os.path.expandvars(runtime_source_override)).expanduser()
+    else:
+        # srtctl source is the parent of src/srtctl (i.e., the repo root)
+        srtctl_source = Path(srtctl_root) if srtctl_root else Path(__file__).parent.parent.parent.parent
 
     # Determine output base directory
     # Priority: CLI -o flag > srtslurm.yaml output_dir > srtctl_root/outputs
@@ -755,6 +784,44 @@ def generate_minimal_sbatch_script(
     config_environment = config.dynamo.get_wheel_environment()
     config_environment.update(config.environment)
 
+    gpu_sbatch_directive = get_srtslurm_setting("gpu_sbatch_directive")
+    if gpu_sbatch_directive is None:
+        # Backward compatibility for existing cluster configurations.
+        gpu_sbatch_directive = "gpus-per-node" if get_srtslurm_setting("use_gpus_per_node_directive", True) else "none"
+
+    runtime_config_transport = (
+        get_srtslurm_setting("runtime_config_transport", "shared-filesystem") or "shared-filesystem"
+    )
+    embedded_config_files: list[dict[str, str]] = []
+    embedded_cluster_config_filename: str | None = None
+    if runtime_config_transport == "embedded":
+        if runtime_config_text is None:
+            runtime_config_text = config_path.read_text()
+        if source_config_text is not None and runtime_config_filename != "config.yaml":
+            embedded_config_files.append(
+                {
+                    "filename": "config.yaml",
+                    "payload": base64.b64encode(source_config_text.encode()).decode("ascii"),
+                }
+            )
+        embedded_config_files.append(
+            {
+                "filename": runtime_config_filename,
+                "payload": base64.b64encode(runtime_config_text.encode()).decode("ascii"),
+            }
+        )
+        cluster_config_path = find_cluster_config_path()
+        if cluster_config_path is not None:
+            embedded_cluster_config_filename = "srtslurm.yaml"
+            embedded_config_files.append(
+                {
+                    "filename": embedded_cluster_config_filename,
+                    "payload": base64.b64encode(cluster_config_path.read_bytes()).decode("ascii"),
+                }
+            )
+    elif runtime_config_transport != "shared-filesystem":
+        raise ValueError(f"Unsupported runtime config transport: {runtime_config_transport}")
+
     rendered = template.render(
         job_name=job_name,
         total_nodes=total_nodes,
@@ -766,8 +833,10 @@ def generate_minimal_sbatch_script(
         time_limit=config.slurm.time_limit or "01:00:00",
         config_path=str(config_path.resolve()),
         runtime_config_filename=runtime_config_filename,
+        embedded_config_files=embedded_config_files,
+        embedded_cluster_config_filename=embedded_cluster_config_filename,
         timestamp=timestamp,
-        use_gpus_per_node_directive=get_srtslurm_setting("use_gpus_per_node_directive", True),
+        gpu_sbatch_directive=gpu_sbatch_directive,
         use_segment_sbatch_directive=get_srtslurm_setting("use_segment_sbatch_directive", True),
         use_exclusive_sbatch_directive=get_srtslurm_setting("use_exclusive_sbatch_directive", False),
         sbatch_directives=config.sbatch_directives,
@@ -890,6 +959,8 @@ def submit_with_orchestrator(
         setup_script=setup_script,
         output_dir=output_dir,
         runtime_config_filename=runtime_config_filename,
+        runtime_config_text=resolved_runtime_config_text,
+        source_config_text=source_config_path.read_text() if source_config_path else None,
         serve_only=serve_only,
     )
 
@@ -925,7 +996,7 @@ def submit_with_orchestrator(
     # Validate setup before submitting (not during dry-run)
     srtctl_root = get_srtslurm_setting("srtctl_root")
     srtctl_source = Path(srtctl_root) if srtctl_root else Path(__file__).parent.parent.parent.parent
-    validate_setup(srtctl_source)
+    validate_setup(srtctl_source, config)
 
     # Write script to temp file
     fd, script_path = tempfile.mkstemp(suffix=".slurm", prefix="srtctl_", text=True)
@@ -961,11 +1032,13 @@ def submit_with_orchestrator(
                 job_output_dir = srtctl_source / "outputs" / job_id
         job_output_dir.mkdir(parents=True, exist_ok=True)
 
-        shutil.copy(source_config_path or config_path, job_output_dir / "config.yaml")
-        if source_config_path:
-            assert resolved_runtime_config_text is not None
-            runtime_config_path = job_output_dir / runtime_config_filename
-            runtime_config_path.write_text(resolved_runtime_config_text)
+        runtime_config_transport = get_srtslurm_setting("runtime_config_transport", "shared-filesystem")
+        if runtime_config_transport != "embedded":
+            shutil.copy(source_config_path or config_path, job_output_dir / "config.yaml")
+            if source_config_path:
+                assert resolved_runtime_config_text is not None
+                runtime_config_path = job_output_dir / runtime_config_filename
+                runtime_config_path.write_text(resolved_runtime_config_text)
         shutil.copy(script_path, job_output_dir / "sbatch_script.sh")
         git_sources = git_snapshot_sources_from_extra_mounts(config)
         if git_sources:
@@ -1764,6 +1837,10 @@ def main():
     )
     add_override_args(preflight_parser)
 
+    wait_parser = subparsers.add_parser("wait", help="Wait for a submitted Slurm job and return its exit status")
+    wait_parser.add_argument("job_id", help="Slurm job ID returned by apply --json")
+    wait_parser.add_argument("--log-file", type=Path, help="Stream this shared-filesystem log while waiting")
+
     monitor_parser = subparsers.add_parser("monitor", help="Live dashboard for srt-slurm jobs", add_help=False)
     monitor_parser.add_argument("args", nargs=argparse.REMAINDER)
 
@@ -2055,6 +2132,23 @@ def main():
             sys.exit(1)
         restore_console()
         return
+
+    if args.command == "wait":
+        from srtctl.core.slurm import wait_for_job
+
+        try:
+            result = wait_for_job(args.job_id, log_path=args.log_file)
+        except (ValueError, OSError) as error:
+            console.print(f"[bold red]Error:[/] {error}")
+            restore_console()
+            sys.exit(1)
+        except KeyboardInterrupt:
+            console.print("Stopped observing; the Slurm job has not been cancelled.")
+            restore_console()
+            sys.exit(130)
+        console.print(f"Job {result.job_id}: {result.state} ({result.exit_code}:{result.signal})")
+        restore_console()
+        sys.exit(result.returncode)
 
     if args.command == "monitor":
         from srtctl.cli.monitor import main as _monitor_main
