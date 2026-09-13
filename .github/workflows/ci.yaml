@@ -11,6 +11,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # hatch-vcs derives the version from tags
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
@@ -36,6 +38,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # hatch-vcs derives the version from tags
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
@@ -56,6 +60,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # hatch-vcs derives the version from tags
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
@@ -91,6 +97,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # hatch-vcs derives the version from tags
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
@@ -190,6 +198,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # hatch-vcs derives the version from tags
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
@@ -239,6 +249,8 @@ jobs:
       GOLDEN_RECIPES_COMMIT: e6e9d8b9bee3e6c85e6f121eb4dacd88d8ca1d2c  # full SHA; git fetch by SHA needs all 40 chars
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # hatch-vcs derives the version from tags
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4

@@ -1659,9 +1659,15 @@ def main():
   srtctl migrate -f config.yaml --in-place       # Upgrade a recipe to the current schema version
   srtctl migrate -f recipes/ --verify            # Prove v1 and migrated v2 recipes resolve identically
   srtctl skill --target claude                   # Install the srtctl agent skill into this project
+  srtctl --version                               # Version (from the git tag), commit, schema and lockfile versions
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+
+    # `srtctl --version`: package version (from the git tag), commit, and the protocol versions.
+    from srtctl.version import version_info
+
+    parser.add_argument("--version", action="version", version=str(version_info()))
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 

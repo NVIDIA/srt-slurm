@@ -3,6 +3,9 @@
 FROM --platform=$BUILDPLATFORM rust:1.90-slim-bookworm AS builder
 
 ARG TARGETARCH
+# Release tag without the leading v; baked into --version by option_env!("SRTCTL_RELEASE_VERSION").
+ARG SRTCTL_RELEASE_VERSION
+ENV SRTCTL_RELEASE_VERSION=${SRTCTL_RELEASE_VERSION}
 
 WORKDIR /app
 

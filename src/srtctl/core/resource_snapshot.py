@@ -184,6 +184,9 @@ def collect_resource_snapshot(
 ) -> dict[str, Any]:
     """Build a JSON-serializable snapshot of the job's effective resources."""
     env = os.environ if environ is None else environ
+    from srtctl.version import package_version, source_commit
+
+    tool = {"srtctl_version": package_version(), "srtctl_commit": source_commit()}
     node_names = tuple(dict.fromkeys((runtime.nodes.infra, *runtime.nodes.worker)))
     node_count = len(node_names)
     configured_gpu_count = node_count * config.resources.gpus_per_node
@@ -269,6 +272,7 @@ def collect_resource_snapshot(
         "version": 1,
         "captured_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "job_id": runtime.job_id,
+        "tool": tool,
         "hardware": {
             "architecture": platform.machine(),
             "cpu_model": _cpu_model(),

@@ -113,9 +113,15 @@ enum SourceMode {
     Auto,
 }
 
+/// The release tag (without `v`) when built by the release workflow, else the crate version.
+const VERSION: &str = match option_env!("SRTCTL_RELEASE_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 #[derive(Parser)]
 #[command(
-    version,
+    version = VERSION,
     about = "Grace CPU power exporter for Prometheus / AIPerf server-metrics"
 )]
 struct Args {

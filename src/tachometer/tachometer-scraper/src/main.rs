@@ -11,8 +11,14 @@ use tokio::signal;
 use tokio::signal::unix::{signal as unix_signal, SignalKind};
 use url::Url;
 
+/// The release tag (without `v`) when built by the release workflow, else the crate version.
+const VERSION: &str = match option_env!("SRTCTL_RELEASE_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 #[derive(Parser, Debug)]
-#[command(name = "tachometer-scraper")]
+#[command(name = "tachometer-scraper", version = VERSION)]
 #[command(about = "Scrapes Prometheus metrics and logs them to Tachometer")]
 struct Args {
     #[command(subcommand)]

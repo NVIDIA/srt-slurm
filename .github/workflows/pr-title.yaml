@@ -1,0 +1,22 @@
+name: PR title
+
+# The merged PR title decides the release bump (see release.yaml), so it has
+# to be a conventional commit. Runs on every edit so a fix shows up at once.
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  conventional-title:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+      - name: Check the title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: bash .github/scripts/check_pr_title.sh "$TITLE"
