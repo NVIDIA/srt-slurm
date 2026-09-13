@@ -234,14 +234,14 @@ src/srtctl/core/
 
 #### schema.py - Configuration Dataclasses
 
-All configs are **frozen dataclasses** with marshmallow validation:
+All configs are **frozen dataclasses** with marshmallow validation. The recipe a user writes is the `schema: 2` layout (`engine:`, `roles:`, `placement:`, `services:`, `dynamo.source:`); `load_config` normalizes it into these dataclasses before validation (see [Config Loading Flow](#config-loading-flow)).
 
 | Class             | Purpose             | Key Fields                                            |
 | ----------------- | ------------------- | ----------------------------------------------------- |
-| `SrtConfig`       | Main job config     | name, model, resources, backend, frontend, benchmark  |
+| `SrtConfig`       | Main job config     | name, model, resources, backend, frontend, benchmark, services |
 | `ModelConfig`     | Model settings      | path, container, precision                            |
-| `ResourceConfig`  | GPU/node allocation | gpu_type, gpus_per_node, prefill/decode nodes/workers |
-| `BackendConfig`   | Polymorphic backend | type, sglang_config, environment per mode             |
+| `ResourceConfig`  | GPU/node allocation | gpu_type, gpus_per_node, plus the per-role node/worker/GPU counts filled from `roles:` |
+| `BackendConfig`   | Polymorphic backend | type, engine-wide knobs, plus the per-role args/env filled from `roles:` |
 | `FrontendConfig`  | Router settings     | type, enable_multiple_frontends, nginx_raise_ulimit, args, env |
 | `BenchmarkConfig` | Benchmark params    | type, isl, osl, concurrencies, sweep                  |
 | `ProfilingConfig` | Profiling settings  | type (nsys/torch), phase configs                      |
@@ -301,45 +301,42 @@ class BackendProtocol(Protocol):
     ) -> list[str]: ...
 ```
 
+#### Authoring surface: `engine:` and `roles:`
+
+The user-facing API for a backend is the 2.0 recipe, not the protocol dataclass. `engine:` names the engine (a string, or a mapping with engine-wide knobs such as vLLM `connector` and `dp_launch_mode`, or TRT-LLM `served_model_name`), and `roles:` holds everything that is per worker role:
+
+```yaml
+engine: sglang
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    gpus: 4            # GPUs per worker
+    env:               # environment for this role's workers
+      PYTHONUNBUFFERED: "1"
+    args:              # engine CLI flags for this role
+      tensor-parallel-size: 4
+    kv_events: true    # optional; the engine's KV events publisher
+    # extra_args: []   # TRT-LLM only: raw CLI args appended to the launch
+  decode:
+    nodes: colocate    # share the prefill nodes' spare GPUs; gpus: is then required on both roles
+    workers: 1
+    gpus: 4
+    args:
+      tensor-parallel-size: 4
+```
+
+`srtctl.core.roles.expand_roles` (with `expand_engine`, `srtctl.core.placement.expand_placement`, and `srtctl.services.normalize`) rewrites this into the internal fields the runtime reads: the per-role node, worker, and GPU counts on `ResourceConfig`, and per-mode `args`, `env`, `extra_args`, and `kv_events` on the engine's protocol dataclass. `nodes: colocate` becomes the internal shared-node sentinel, and the loader rejects a colocated split that does not fit on the prefill nodes. Those internal fields have the same names as the v1 recipe layout and are documented in [legacy-v1.md](legacy-v1.md); `srtctl migrate` rewrites a v1 recipe into `roles:`.
+
 #### SGLangProtocol
 
-Implements BackendProtocol for SGLang with P/D disaggregation:
-
-```python
-@dataclass(frozen=True)
-class SGLangProtocol:
-    type: Literal["sglang"] = "sglang"
-
-    # Per-mode environment
-    prefill_environment: dict[str, str]
-    decode_environment: dict[str, str]
-    aggregated_environment: dict[str, str]
-
-    # SGLang CLI config per mode
-    sglang_config: SGLangServerConfig | None = None
-
-    # KV events config
-    kv_events_config: bool | dict[str, Any] | None = None
-```
+Implements BackendProtocol for SGLang with P/D disaggregation. Its fields are the per-mode `env` and `args` from `roles.prefill`, `roles.decode`, and `roles.agg`, plus `kv_events`. `get_config_for_mode(mode)` and `get_environment_for_mode(mode)` hand them to the launch path.
 
 **Launch strategy**: Per-process srun launching (one srun per worker process).
 
 #### TRTLLMProtocol
 
-Implements BackendProtocol for TRTLLM with MPI-style launching:
-
-```python
-@dataclass(frozen=True)
-class TRTLLMProtocol:
-    type: Literal["trtllm"] = "trtllm"
-
-    # Per-mode environment
-    prefill_environment: dict[str, str]
-    decode_environment: dict[str, str]
-
-    # TRTLLM CLI config per mode
-    trtllm_config: TRTLLMServerConfig | None = None
-```
+Implements BackendProtocol for TRTLLM with MPI-style launching. Its fields are the per-mode `env`, `args`, and `extra_args` from `roles.prefill` and `roles.decode`, plus the engine-wide `served_model_name` from `engine:`.
 
 **Launch strategy**: MPI-style launching (one srun per endpoint with all nodes together). Uses `trtllm-llmapi-launch` for distributed launching.
 
@@ -474,12 +471,14 @@ src/srtctl/core/
 ### Config Loading Flow
 
 ```
-+------------+     +-------------+     +--------------+
-| YAML Config| --> | load_config | --> | SrtConfig    |
-+------------+     +-------------+     | (frozen DC)  |
-                                       +--------------+
-                                              |
-                                              v
++------------+     +-------------+     +------------------+     +--------------+
+| YAML Config| --> | load_config | --> | expand_engine    | --> | SrtConfig    |
+| (schema 2) |     +-------------+     | expand_roles     |     | (frozen DC)  |
++------------+                         | expand_placement |     +--------------+
+                                       | normalize        |            |
+                                       | services         |            |
+                                       +------------------+            |
+                                                                       v
 +------------+     +------------------+     +----------------+
 | SLURM Env  | --> | RuntimeContext   | <-- | SrtConfig      |
 | (job_id,   |     | .from_config()   |     |                |

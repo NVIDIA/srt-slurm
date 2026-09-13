@@ -152,6 +152,7 @@ containers:
 Create `configs/my-job.yaml`:
 
 ```yaml
+schema: 2
 name: "my-benchmark"
 
 model:
@@ -165,27 +166,28 @@ extra_mount: # add this if you need to mount extra directories to the container
 
 resources:
   gpu_type: "gb200"
-  prefill_nodes: 1
-  decode_nodes: 2
-  prefill_workers: 1
-  decode_workers: 1
   gpus_per_node: 4
 
 slurm:
   time_limit: "02:00:00"
 
-backend:
-  prefill_environment:
-    TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: "1800"
-  decode_environment:
-    TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: "1800"
-
-  sglang_config:
-    prefill:
+engine: sglang
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    env:
+      TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: "1800"
+    args:
       kv-cache-dtype: "fp8_e4m3"
       mem-fraction-static: 0.84
       tensor-parallel-size: 4
-    decode:
+  decode:
+    nodes: 2
+    workers: 1
+    env:
+      TORCH_DISTRIBUTED_DEFAULT_TIMEOUT: "1800"
+    args:
       kv-cache-dtype: "fp8_e4m3"
       mem-fraction-static: 0.83
       tensor-parallel-size: 8
@@ -201,7 +203,7 @@ benchmark:
   req_rate: "inf"
 ```
 
-See [Configuration Reference](config-reference.md) for all available options.
+Every recipe starts with `schema: 2`: `engine:` names the engine and `roles:` holds each worker role's node count, worker count, `env`, and `args`. See [Configuration Reference](config-reference.md) for all available options; the v1 layout is documented in [legacy-v1.md](legacy-v1.md), and `srtctl migrate -f <recipe>` rewrites it.
 
 ## Submit the Job
 

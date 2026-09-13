@@ -52,13 +52,13 @@ services:
   - name: etcd
     type: etcd
     placement:
-      node: dedicated       # reserve a node for the discovery plane (v1: infra.etcd_nats_dedicated_node)
+      node: dedicated       # reserve a node for the discovery plane
   - name: nats
     type: nats
     placement:
       node: dedicated       # etcd and nats share the infra node, so both say dedicated
     options:
-      max_payload_mb: 24    # v1: infra.nats_max_payload_mb
+      max_payload_mb: 24
   # Point at a discovery plane that is already running instead of launching one:
   # - name: etcd
   #   type: etcd

@@ -19,7 +19,7 @@ vLLM remains responsible for the DP/TP/PP engine topology inside each worker.
   backend and benchmark logs. `frontend.container_image` can select a separate
   Router image; otherwise the model container is reused.
 
-DP recipes must use upstream's default `backend.dp_launch_mode: per_node`.
+DP recipes must use upstream's default `engine.dp_launch_mode: per_node`.
 The deprecated `per_gpu` mode launches Dynamo registrations rather than
 independently routable API servers and is rejected for vLLM Router DP.
 
@@ -38,14 +38,14 @@ frontend:
     policy: consistent_hash
 
 resources:
-  agg_nodes: 1
-  agg_workers: 1
   gpus_per_node: 8
 
-backend:
-  type: vllm
-  vllm_config:
-    aggregated:
+engine: vllm
+roles:
+  agg:
+    nodes: 1
+    workers: 1
+    args:
       tensor-parallel-size: 8
 ```
 
@@ -57,9 +57,12 @@ the expanded ranks.
 
 ```yaml
 resources:
-  agg_nodes: 4
-  agg_workers: 4
   gpus_per_node: 8
+
+roles:
+  agg:
+    nodes: 4
+    workers: 4
 ```
 
 ### Node-local data parallelism
@@ -70,14 +73,14 @@ adds `--intra-node-data-parallel-size 4`, exposing all eight DP ranks.
 
 ```yaml
 resources:
-  agg_nodes: 2
-  agg_workers: 1
   gpus_per_node: 4
 
-backend:
-  type: vllm
-  vllm_config:
-    aggregated:
+engine: vllm
+roles:
+  agg:
+    nodes: 2
+    workers: 1
+    args:
       data-parallel-size: 8
       enable-expert-parallel: true
 ```
@@ -90,14 +93,14 @@ Router; the remaining processes stay headless.
 
 ```yaml
 resources:
-  agg_nodes: 2
-  agg_workers: 1
   gpus_per_node: 4
 
-backend:
-  type: vllm
-  vllm_config:
-    aggregated:
+engine: vllm
+roles:
+  agg:
+    nodes: 2
+    workers: 1
+    args:
       tensor-parallel-size: 8
 ```
 
@@ -116,19 +119,21 @@ frontend:
     policy: consistent_hash
 
 resources:
-  prefill_nodes: 1
-  prefill_workers: 1
-  decode_nodes: 2
-  decode_workers: 2
   gpus_per_node: 4
 
-backend:
+engine:
   type: vllm
   connector: nixl
-  vllm_config:
-    prefill:
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    args:
       data-parallel-size: 4
-    decode:
+  decode:
+    nodes: 2
+    workers: 2
+    args:
       data-parallel-size: 4
 ```
 

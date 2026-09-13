@@ -605,7 +605,7 @@ class ResourceConfig:
 
     # If True, place each partial-node worker on its own node instead of
     # packing multiple onto the same node. Caller must reserve enough nodes
-    # (e.g. set decode_nodes=decode_workers when gpus_per_decode<gpus_per_node).
+    # (e.g. give roles.decode as many nodes as workers when its gpus < gpus_per_node).
     spread_workers: bool = False
 
     # SLURM heterogeneous-job opt-in. Tri-state: None defers to the cluster
@@ -789,12 +789,12 @@ class BenchmarkConfig:
     # together with resources.het_jobs: true.
     # Default: False.
     client_dedicated_node: bool = False
-    # Governs how the dedicated-node flags combine when more than one of
-    # client_dedicated_node, frontend.dedicated_node, and
-    # infra.etcd_nats_dedicated_node is set. If True (default), every
-    # requested role shares a single reserved node. If False, each requested
-    # role gets its own reserved node (requires enough total nodes: worker
-    # count + number of dedicated roles).
+    # Governs how dedicated placements combine when more than one of the
+    # benchmark client, the frontend, and the etcd/nats services asks for
+    # placement.node: dedicated. If True (default), every requested role
+    # shares a single reserved node. If False, each requested role gets its
+    # own reserved node (requires enough total nodes: worker count + number
+    # of dedicated roles).
     colocate_with_frontend: bool = True
     sweep: Annotated[SweepConfig, SweepConfigField(allow_none=True, load_default=None, dump_default=None)] | None = None
     # Accuracy benchmark fields
@@ -1751,9 +1751,7 @@ class DynamoConfig:
     hash: str | None = None
     top_of_tree: bool = False
     wheel: str | None = None
-    # The 2.0 way to say which Dynamo: one of git+rev, pypi, or wheel. Mapped onto
-    # the legacy fields above in __post_init__, so every consumer keeps reading
-    # hash / version / wheel / cargo_patches unchanged.
+    # Which Dynamo to install: exactly one of git+rev, pypi, or wheel.
     source: DynamoSourceConfig | None = None
     request_plane: str = "tcp"
     event_plane: str | None = None
@@ -2496,9 +2494,9 @@ class SrtConfig:
 
             if not (prefill_ok or decode_ok):
                 raise ValidationError(
-                    "mooncake_kv_store is set but neither sglang_config.prefill nor "
-                    "sglang_config.decode has 'disaggregation-transfer-backend: mooncake'. "
-                    "Add it to both modes (and 'disaggregation-ib-device') so workers "
+                    "a mooncake-master service is configured but neither roles.prefill.args nor "
+                    "roles.decode.args has 'disaggregation-transfer-backend: mooncake'. "
+                    "Add it to both roles (and 'disaggregation-ib-device') so workers "
                     "actually use the mooncake master srtslurm launches for you."
                 )
         elif backend_type == "vllm":
@@ -2523,8 +2521,8 @@ class SrtConfig:
 
             if not (prefill_ok or decode_ok):
                 raise ValidationError(
-                    "mooncake_kv_store is set but neither vllm_config.prefill nor "
-                    "vllm_config.decode has a kv-transfer-config that references a "
+                    "a mooncake-master service is configured but neither roles.prefill.args nor "
+                    "roles.decode.args has a kv-transfer-config that references a "
                     "Mooncake connector. Set kv-transfer-config to a JSON value whose "
                     "kv_connector is MooncakeStoreConnector (or MultiConnector wrapping "
                     "one) so workers actually use the mooncake master srtslurm launches "

@@ -162,8 +162,8 @@ Press Enter to keep current value, or type new value
 
 **Modifiable fields:**
 - `name` - Job name
-- `resources.prefill_workers` - Number of prefill workers
-- `resources.decode_workers` - Number of decode workers
+- Prefill workers - Number of prefill workers (`roles.prefill.workers` in the recipe)
+- Decode workers - Number of decode workers (`roles.decode.workers` in the recipe)
 - `benchmark.isl` - Input sequence length
 - `benchmark.osl` - Output sequence length
 
@@ -219,7 +219,7 @@ $ srtctl
 $ srtctl
 > Select: examples/vllm/dynamo-agg.yaml
 > Action: ✏️  Modify parameters
-  > Change decode_workers: 8
+  > Change decode workers: 8
   > Change isl: 2048
 > Action: 🚀 Submit job(s)
 > Confirm: y
@@ -268,7 +268,7 @@ srtctl apply -f examples/sglang/sglang-router-disagg.yaml
 
 # Tweak a recipe from a script without editing it
 srtctl apply -f config.yaml --set health_check.max_attempts=720 --unset sbatch_directives.exclude
-srtctl apply -f config.yaml --set 'backend.sglang_config.decode.speculative-config={"method": "eagle"}'
+srtctl apply -f config.yaml --set 'roles.decode.args.speculative-config={"method": "eagle"}'
 srtctl dry-run -f config.yaml --set benchmark.concurrencies=[4,8]
 
 # Serve the same recipe without running its configured benchmark

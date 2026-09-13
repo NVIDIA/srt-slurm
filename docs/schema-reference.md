@@ -2,7 +2,7 @@
 
 <!-- GENERATED FILE. Do not edit by hand. Regenerate with `srtctl schema-docs`; CI fails when this file is stale. -->
 
-Field-level reference for recipe YAML (`SrtConfig`) and the cluster config `srtslurm.yaml` (`ClusterConfig`), generated from the dataclasses in `srtctl.core.schema` and `srtctl.backends`. Each table lists the YAML key, the type, the default (`required` when there is none), and a description taken from the class docstring or the comment on the field. Nested types link to their own table. For prose, examples, and semantics see [config-reference.md](config-reference.md).
+Field-level reference for the 2.0 recipe layout (`schema: 2`) and the cluster config `srtslurm.yaml` (`ClusterConfig`), generated from `srtctl.core.roles`, `srtctl.core.placement`, and the dataclasses in `srtctl.core.schema` and `srtctl.backends`. Each table lists the YAML key, the type, the default (`required` when there is none), and a description taken from the class docstring or the comment on the field. Nested types link to their own table. The v1 layout and the internal fields it maps onto are documented in [legacy-v1.md](legacy-v1.md); for prose, examples, and semantics see [config-reference.md](config-reference.md).
 
 ## Recipe
 
@@ -13,16 +13,16 @@ Top-level keys of a recipe YAML.
 | `name` | str | required |  |
 | `model` | [ModelConfig](#modelconfig) | required |  |
 | `resources` | [ResourceConfig](#resourceconfig) | required |  |
-| `schema` | int | `1` | Recipe schema version (YAML key `schema`). Absent means 1, the pre-2.0 layout. `schema: 2` selects the 2.0 layout; `srtctl migrate` upgrades a recipe in place. Both versions load on main. |
+| `engine` | str \| mapping | required | The engine type (`sglang`, `trtllm`, `vllm`, `mocker`) as a string, or a mapping with `type` plus the engine-wide knobs listed under [Engine types](#engine-types). |
+| `roles` | mapping of role -> [Role](#roles) | required | One block per worker role (`prefill`, `decode`, `agg`): topology, env, and engine args. |
+| `schema` | int | `2` | Recipe schema version. Write `schema: 2` for this layout. |
 | `slurm` | [SlurmConfig](#slurmconfig) | `SlurmConfig()` |  |
-| `backend` | [SGLangProtocol](#sglangprotocol) \| [TRTLLMProtocol](#trtllmprotocol) \| [VLLMProtocol](#vllmprotocol) \| [MockerProtocol](#mockerprotocol) | `SGLangProtocol()` |  |
 | `frontend` | [FrontendConfig](#frontendconfig) | `FrontendConfig()` |  |
 | `dynamo` | [DynamoConfig](#dynamoconfig) | `DynamoConfig()` |  |
 | `benchmark` | [BenchmarkConfig](#benchmarkconfig) | `BenchmarkConfig()` |  |
 | `profiling` | [ProfilingConfig](#profilingconfig) | `ProfilingConfig()` |  |
 | `output` | [OutputConfig](#outputconfig) | `OutputConfig()` |  |
 | `health_check` | [HealthCheckConfig](#healthcheckconfig) | `HealthCheckConfig()` |  |
-| `infra` | [InfraConfig](#infraconfig) | `InfraConfig()` |  |
 | `observability` | [ObservabilityConfig](#observabilityconfig) | `ObservabilityConfig()` |  |
 | `telemetry` | [TelemetryConfig](#telemetryconfig) | `TelemetryConfig()` |  |
 | `environment` | dict[str, str] | `{}` |  |
@@ -37,6 +37,40 @@ Top-level keys of a recipe YAML.
 | `post_eval` | [PostEvalConfig](#postevalconfig) | `PostEvalConfig()` | Post-benchmark / eval-only evaluation dispatch: extra env forwarded into the eval process and an optional command override. Replaces the downstream source patch that used to extend the passthrough list in do_sweep.py. |
 | `identity` | [IdentityConfig](#identityconfig) | `IdentityConfig()` | Virtual identity — declares what *should* be running (verified against fingerprint) |
 | `reporting` | [ReportingConfig](#reportingconfig) \| None | `None` | Reporting configuration (status API, future: logs to S3, etc.) |
+
+## Authoring surface
+
+Three vocabularies are specific to the 2.0 layout. They are normalized into the internal fields before validation (see [legacy-v1.md](legacy-v1.md) for those fields), so they are exactly equivalent to the v1 spelling and cannot be combined with it for the same block.
+
+### engine
+
+`engine: <type>` or `engine: {type: <type>, ...}`. `type` is one of `sglang`, `trtllm`, `vllm`, `mocker`; the remaining keys are that engine's knobs, listed under [Engine types](#engine-types).
+
+### roles
+
+`roles.<role>` for `prefill`, `decode`, `agg`. The `agg` role is the aggregated deployment.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `nodes` | int \| `colocate` | required | Nodes reserved for this role. `colocate` (decode only) reserves none and packs the decode workers onto the prefill nodes' free GPUs; `gpus` is then required on both roles and the loader rejects a split that does not fit. |
+| `workers` | int | required | Number of workers of this role. |
+| `gpus` | int | `nodes * gpus_per_node // workers` | GPUs per worker. Required when decode colocates. |
+| `env` | dict[str, str] | `{}` | Environment for every worker of this role. |
+| `args` | mapping | `{}` | The engine's own CLI flags for this role, as a mapping (`tensor-parallel-size: 4`). |
+| `extra_args` | list[str] | `[]` | Raw extra CLI arguments (TRT-LLM). |
+| `engine` | str | top-level `engine` | Optional; must equal the top-level engine type. |
+| `kv_events` | bool \| mapping | `None` | `true` for the default ZMQ publisher, or a mapping with `publisher` / `topic`. |
+| `sidecar` | bool | `False` | Run the native engine with a Dynamo sidecar; every role must agree. |
+
+### placement
+
+| Key | Values | Default |
+|---|---|---|
+| `frontend.placement.node` | `head` \| `first_decode` \| `dedicated` | `head` |
+| `benchmark.placement.node` | `head` \| `last_decode` \| `dedicated` | `head` |
+| `services[].placement.node` | `head` \| `infra` \| `dedicated` \| `prefill` \| `decode` \| `agg` \| `workers` | type default |
+
+`dedicated` reserves a node for that component. The discovery plane (etcd, NATS) is placed through its `services:` entries; see [services.md](services.md).
 
 ## Recipe sections
 
@@ -59,17 +93,8 @@ Resource allocation configuration.
 |---|---|---|---|
 | `gpu_type` | str \| None | `None` | GPU type (h100, gb200, ...). Cluster fact, not a topology choice. Optional: a recipe that omits it inherits `default_gpu_type` from srtslurm.yaml, and `gpus_per_node` inherits the cluster `gpus_per_node`. Both are still worth setting in a recipe so it is self-describing for result rollups. |
 | `gpus_per_node` | int | `4` |  |
-| `prefill_nodes` | int \| None | `None` | Disaggregated mode |
-| `decode_nodes` | int \| None | `None` |  |
-| `prefill_workers` | int \| None | `None` |  |
-| `decode_workers` | int \| None | `None` |  |
-| `agg_nodes` | int \| None | `None` | Aggregated mode |
-| `agg_workers` | int \| None | `None` |  |
-| `spread_workers` | bool | `False` | If True, place each partial-node worker on its own node instead of packing multiple onto the same node. Caller must reserve enough nodes (e.g. set decode_nodes=decode_workers when gpus_per_decode<gpus_per_node). |
+| `spread_workers` | bool | `False` | If True, place each partial-node worker on its own node instead of packing multiple onto the same node. Caller must reserve enough nodes (e.g. give roles.decode as many nodes as workers when its gpus < gpus_per_node). |
 | `het_jobs` | bool \| None | `None` | SLURM heterogeneous-job opt-in. Tri-state: None defers to the cluster default `use_het_jobs` on ClusterConfig; True/False overrides per recipe. When effectively True (and we are in disaggregated mode), the prefill and decode sides are submitted as two het components each with their own `--segment`. See HetComponent above and docs/slurm-faq.md. |
-| `gpus_per_prefill` | int \| None | `None` | Explicit GPUs per worker (override computed values) Use data_key to map from YAML field names to internal attribute names |
-| `gpus_per_decode` | int \| None | `None` |  |
-| `gpus_per_agg` | int \| None | `None` |  |
 
 ### SlurmConfig
 
@@ -101,8 +126,6 @@ Frontend/router configuration.
 | `ctx_router` | dict[str, Any] \| None | `None` | trtllm_serve orchestrator (ser.yaml) options; ignored by other frontends. |
 | `gen_router` | dict[str, Any] \| None | `None` | generation_servers.router |
 | `server_config_extra` | dict[str, Any] \| None | `None` | extra top-level ser.yaml keys |
-| `orchestrator_placement` | str | `'head'` | trtllm_serve: which node runs the disaggregated orchestrator. "head" (default) -> nodes.head (first prefill/CTX node) "first_decode" -> first decode/GEN worker-leader node |
-| `dedicated_node` | bool | `False` | If True, reserve a node exclusively for the frontend/orchestrator instead of running it on a worker node. Requires at least 2 nodes. Not supported together with resources.het_jobs: true. Default: False. |
 
 ### DynamoConfig
 
@@ -111,11 +134,7 @@ Dynamo installation configuration.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `install` | bool | `True` |  |
-| `version` | str \| None | `'0.8.0'` |  |
-| `hash` | str \| None | `None` |  |
-| `top_of_tree` | bool | `False` |  |
-| `wheel` | str \| None | `None` |  |
-| `source` | [DynamoSourceConfig](#dynamosourceconfig) \| None | `None` | The 2.0 way to say which Dynamo: one of git+rev, pypi, or wheel. Mapped onto the legacy fields above in __post_init__, so every consumer keeps reading hash / version / wheel / cargo_patches unchanged. |
+| `source` | [DynamoSourceConfig](#dynamosourceconfig) \| None | `None` | Which Dynamo to install: exactly one of git+rev, pypi, or wheel. |
 | `request_plane` | str | `'tcp'` |  |
 | `event_plane` | str \| None | `None` |  |
 | `sidecar` | bool | `False` |  |
@@ -124,7 +143,6 @@ Dynamo installation configuration.
 | `sidecar_startup_timeout` | int | `1200` |  |
 | `sidecar_context_length` | int \| None | `None` |  |
 | `sidecar_args` | list[str] | `[]` |  |
-| `cargo_patches` | list[str] \| None | `None` | Optional dependency-declaration overrides applied to the dynamo Cargo.toml tree before a source build (requires `hash`). Each entry is a full `<crate> = <spec>` TOML line, e.g. 'dynamo-tokenizers = { git = "https://github.com/ai-dynamo/frontend-crates", branch = "..." }' The crate's existing declaration is replaced tree-wide, letting a source build pull a crate from an unmerged branch without waiting for a crates.io release. |
 
 ### BenchmarkConfig
 
@@ -137,9 +155,7 @@ Benchmark configuration.
 | `osl` | int \| None | `None` |  |
 | `concurrencies` | list[int] \| str \| None | `None` |  |
 | `req_rate` | str \| int \| None | `'inf'` |  |
-| `client_placement` | str | `'head'` | Which node runs the benchmark client: "head" (default) -> nodes.head (co-located with orchestrator by default) "last_decode" -> last decode/GEN worker-leader node (isolate the client off the CTX/orchestrator node). When the client lands on a different node than the orchestrator, use the injected $SRT_FRONTEND_HOST env in the benchmark command's URL. |
-| `client_dedicated_node` | bool | `False` | If True, reserve a node exclusively for the benchmark client instead of running it on a worker node. Requires at least 2 nodes. Not supported together with resources.het_jobs: true. Default: False. |
-| `colocate_with_frontend` | bool | `True` | Governs how the dedicated-node flags combine when more than one of client_dedicated_node, frontend.dedicated_node, and infra.etcd_nats_dedicated_node is set. If True (default), every requested role shares a single reserved node. If False, each requested role gets its own reserved node (requires enough total nodes: worker count + number of dedicated roles). |
+| `colocate_with_frontend` | bool | `True` | Governs how dedicated placements combine when more than one of the benchmark client, the frontend, and the etcd/nats services asks for placement.node: dedicated. If True (default), every requested role shares a single reserved node. If False, each requested role gets its own reserved node (requires enough total nodes: worker count + number of dedicated roles). |
 | `sweep` | [SweepConfig](#sweepconfig) \| None | `None` |  |
 | `num_examples` | int \| None | `None` | Accuracy benchmark fields |
 | `max_tokens` | int \| None | `None` |  |
@@ -208,15 +224,6 @@ Health check configuration.
 | `max_attempts` | int | `180` | 30 minutes default (large models take time to load) |
 | `interval_seconds` | int | `10` |  |
 
-### InfraConfig
-
-Infrastructure configuration for etcd/nats placement.
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `etcd_nats_dedicated_node` | bool | `False` | If True, run etcd and nats on a dedicated node instead of the head node. This reserves the first node exclusively for infrastructure services. Default: False. |
-| `nats_max_payload_mb` | int \| None | `None` | Maximum NATS message payload in MB. Default: None (uses NATS default of 1MB). Set to 24+ for disaggregated serving with long ISL (e.g. 65K+ tokens where prompt data exceeds 1MB in NATS messages). |
-
 ### ObservabilityConfig
 
 Observability configuration for OTEL tracing.
@@ -275,7 +282,7 @@ One entry of the top-level ``services:`` list.
 | `type` | str | `'generic'` | Service kind. ``generic`` (default) launches exactly what you wrote; ``mooncake-store`` runs a standalone Mooncake Store wired to the managed master. See ``docs/services.md`` for the kinds. |
 | `command` | list[str] \| None | `None` | Argv to launch (not shell-interpreted). Required for ``generic``; typed kinds supply a default. |
 | `args` | list[str] | `[]` | Extra argv appended to ``command``. |
-| `container` | str \| None | `None` | Container image or ``srtslurm.yaml`` alias. Defaults to the kind's fallback (Mooncake's ``mooncake_kv_store.container``), then the job container. |
+| `container` | str \| None | `None` | Container image or ``srtslurm.yaml`` alias. Defaults to the kind's fallback image, then the job container. |
 | `env` | dict[str, str] | `{}` | Environment for the service process, on top of what the kind injects. |
 | `source` | [SourceConfig](#sourceconfig) \| None | `None` | Optional git source to clone before ``build_command`` and ``command`` run. Single-node placements only. |
 | `build_command` | list[str] \| None | `None` | Argv run once inside the service container, from the clone, before ``command`` starts. Only meaningful with ``source``. |
@@ -331,9 +338,9 @@ Where Dynamo comes from. Exactly one of ``git``, ``pypi``, or ``wheel``.
 | `git` | str \| None | `None` | Repository URL to build from (default upstream when ``rev`` is set without it). Builds ``ai-dynamo-runtime`` with maturin and installs ``ai-dynamo`` from the checkout; cached on ``/configs`` by commit. |
 | `rev` | str \| None | `None` | Immutable ref in ``git``: commit SHA, tag, or ``refs/pull/<n>/head``. |
 | `sha` | str \| None | `None` | The commit ``rev`` resolved to; filled in by ``srtctl apply``. |
-| `patches` | list[str] \| None | `None` | Cargo dependency replacements applied tree-wide before the build (the legacy ``cargo_patches``). |
-| `pypi` | str \| None | `None` | Release version from PyPI (the legacy ``version``). |
-| `wheel` | str \| None | `None` | Staged nightly ``ai-dynamo`` version (the legacy ``wheel``). |
+| `patches` | list[str] \| None | `None` | Cargo dependency replacements applied tree-wide before the build. |
+| `pypi` | str \| None | `None` | Release version from PyPI. |
+| `wheel` | str \| None | `None` | Staged nightly ``ai-dynamo`` version. |
 
 ### SweepConfig
 
@@ -515,13 +522,13 @@ Ready when the service's log file contains a line matching the regular expressio
 |---|---|---|---|
 | `pattern` | str | required |  |
 
-## Backend types
+## Engine types
 
-`backend.type` selects one of the following; the remaining `backend` keys are that type's fields.
+`engine.type` selects one of the following; the remaining `engine` keys are that type's knobs.
 
 ### SGLangProtocol
 
-`backend.type: sglang`
+`engine.type: sglang`
 
 SGLang protocol - implements BackendProtocol.
 
@@ -529,30 +536,17 @@ SGLang protocol - implements BackendProtocol.
 |---|---|---|---|
 | `type` | one of `'sglang'` | `'sglang'` |  |
 | `gpu_type` | str \| None | `None` |  |
-| `prefill_environment` | dict[str, str] | `{}` | Environment variables per mode |
-| `decode_environment` | dict[str, str] | `{}` |  |
-| `aggregated_environment` | dict[str, str] | `{}` |  |
-| `sglang_config` | [SGLangServerConfig](#sglangserverconfig) \| None | `None` | SGLang server CLI config per mode |
-| `kv_events_config` | bool \| dict[str, Any] \| None | `None` | KV events config - enables --kv-events-config with auto-allocated ports Per-mode: {"prefill": true, "decode": {"publisher": "zmq", "topic": "custom"}} Or global: true (enables for prefill+decode with defaults) |
-| `mooncake_kv_store` | [MooncakeKVStoreConfig](#mooncakekvstoreconfig) \| None | `None` | Mooncake KV store - launches mooncake_master on infra node and injects MOONCAKE_MASTER env var on all workers automatically |
 
 ### TRTLLMProtocol
 
-`backend.type: trtllm`
+`engine.type: trtllm`
 
 TRTLLM protocol - implements BackendProtocol.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `type` | one of `'trtllm'` | `'trtllm'` |  |
-| `prefill_environment` | dict[str, str] | `{}` |  |
-| `decode_environment` | dict[str, str] | `{}` |  |
-| `aggregated_environment` | dict[str, str] | `{}` |  |
-| `prefill_extra_args` | list[str] | `[]` | Extra `trtllm-serve` CLI flags per mode, appended verbatim to the worker command (frontend.type: trtllm_serve only -- dynamo.trtllm takes a different CLI). `trtllm_config` already covers everything that belongs in the engine YAML, which is nearly everything: trtllm-serve merges that file into LlmArgs. But a few of its options configure the OpenAI SERVER layer rather than the engine and have no LlmArgs field, so no YAML key can reach them. The one that matters in practice is `--tool_parser` (a click.Choice consumed directly by the server constructor); note that its sibling `--reasoning_parser` IS forwarded into get_llm_args() and so remains settable from `trtllm_config`. backend: type: trtllm prefill_extra_args: ["--tool_parser", "glm47"] decode_extra_args: ["--tool_parser", "glm47"] |
-| `decode_extra_args` | list[str] | `[]` |  |
-| `aggregated_extra_args` | list[str] | `[]` |  |
-| `trtllm_config` | [TRTLLMServerConfig](#trtllmserverconfig) \| None | `None` |  |
-| `served_model_name` | str \| None | `None` | The name clients must use in a request's "model" field. Defaults to the checkpoint directory name. backend: type: trtllm served_model_name: "deepseek-ai/deepseek-r1" Set it when the client cannot be told which name to ask for. agentperf takes the name as a flag, so it never needs this; the MLPerf harness has it fixed in the benchmark definition, so the server must match or every request 404s. Top-level rather than a trtllm_config key because trtllm_config is dumped straight into the engine's YAML file, and this is a launcher flag the engine does not recognise. |
+| `served_model_name` | str \| None | `None` | The name clients must use in a request's "model" field. Defaults to the checkpoint directory name. engine: type: trtllm served_model_name: "deepseek-ai/deepseek-r1" Set it when the client cannot be told which name to ask for. agentperf takes the name as a flag, so it never needs this; the MLPerf harness has it fixed in the benchmark definition, so the server must match or every request 404s. Top-level rather than a trtllm_config key because trtllm_config is dumped straight into the engine's YAML file, and this is a launcher flag the engine does not recognise. |
 | `publish_metrics` | bool | `True` | Publish TRT-LLM engine metrics without enabling KV-cache events. Requires a Dynamo build supporting --publish-metrics; set False to omit the flag for older builds. Native trtllm-serve and sidecars are unaffected. |
 | `publish_events_and_metrics` | bool \| None | `None` | None means unspecified: metrics default on, events off (observability promotes this to True). Explicit False is a master opt-out of BOTH publication flags, even when publish_metrics is True. Preserve None in schema round-trips so an omitted value never becomes an explicit opt-out. |
 | `sequential_node_start` | int | `0` | Controls batched startup of workers that share the same node. 0 = start all workers in parallel (no constraint). 1 = fully sequential: one worker at a time, each must be ready before the next. N > 1 = start N workers simultaneously per batch, wait for all to be ready, then next batch. For trtllm_serve: readiness is an HTTP 200 on the worker's http_port. For dynamo.trtllm: readiness is a TCP connection on the worker's sys_port. |
@@ -561,21 +555,15 @@ TRTLLM protocol - implements BackendProtocol.
 
 ### VLLMProtocol
 
-`backend.type: vllm`
+`engine.type: vllm`
 
 vLLM protocol - implements BackendProtocol.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `type` | one of `'vllm'` | `'vllm'` |  |
-| `prefill_environment` | dict[str, str] | `{}` | Environment variables per mode |
-| `decode_environment` | dict[str, str] | `{}` |  |
-| `aggregated_environment` | dict[str, str] | `{}` |  |
-| `vllm_config` | [VLLMServerConfig](#vllmserverconfig) \| None | `None` | vLLM server CLI config per mode |
 | `set_cuda_visible_devices` | bool | `False` | Legacy device binding for vLLM builds without --device-ids. |
-| `connector` | str \| None | `'nixl'` | Default KV connector: "nixl", "lmcache", or a raw JSON string for --kv-transfer-config. Can be overridden per mode by setting "connector" in vllm_config.prefill/decode/aggregated. dynamo 1.0.0+: translated to --kv-transfer-config (--connector was removed). |
-| `mooncake_kv_store` | [VLLMMooncakeKVStoreConfig](#vllmmooncakekvstoreconfig) \| None | `None` | Mooncake KV store — when set, srtslurm launches mooncake_master on the infra node and auto-injects MOONCAKE_MASTER / MOONCAKE_TE_META_DATA_SERVER / MOONCAKE_LOCAL_HOSTNAME on every vLLM worker. |
-| `kv_events_config` | bool \| dict[str, Any] \| None | `None` | KV events config - enables --kv-events-config with auto-allocated ports. Required for Dynamo's event-driven KV-aware routing. Global true enables defaults for prefill and decode workers. Per-mode: {"prefill": true, "decode": {"topic": "custom"}} |
+| `connector` | str \| None | `'nixl'` | Default KV connector: "nixl", "lmcache", or a raw JSON string for --kv-transfer-config. Can be overridden per role by setting "connector" in roles.<role>.args. dynamo 1.0.0+: translated to --kv-transfer-config (--connector was removed). |
 | `allow_prefill_decode_colocation` | bool | `False` | Allow prefill and decode workers to share one node when the combined GPU request fits within gpus_per_node. Defaults off to preserve existing P/D node separation. |
 | `allow_prefill_decode_colocation_across_nodes` | bool | `False` | Extend P/D colocation to multi-node topologies. When enabled together with allow_prefill_decode_colocation, workers are packed contiguously across the minimum number of nodes instead of reserving separate P/D node pools. Defaults off to preserve the original one-node-only policy. |
 | `dp_launch_mode` | one of `'per_gpu'`, `'per_node'` | `'per_node'` | DP process layout. Per-node lets vLLM manage the node-local portion of a DP x TP x PP topology in one CUDA namespace and derives cross-node TP/PP rendezvous when a replica is larger than the node-local GPU allocation. Per-GPU remains available as a deprecated compatibility layout. |
@@ -583,7 +571,7 @@ vLLM protocol - implements BackendProtocol.
 
 ### MockerProtocol
 
-`backend.type: mocker`
+`engine.type: mocker`
 
 Dynamo Mocker protocol - implements BackendProtocol.
 
@@ -605,71 +593,6 @@ Dynamo Mocker protocol - implements BackendProtocol.
 | `enable_prefix_caching` | bool | `True` |  |
 | `enable_chunked_prefill` | bool | `True` |  |
 | `preemption_mode` | str \| None | `None` |  |
-| `prefill_environment` | dict[str, str] | `{}` | Environment variables per mode |
-| `decode_environment` | dict[str, str] | `{}` |  |
-| `aggregated_environment` | dict[str, str] | `{}` |  |
-| `mocker_config` | [MockerServerConfig](#mockerserverconfig) \| None | `None` | Per-mode CLI overrides |
-
-### SGLangServerConfig
-
-SGLang server CLI configuration per mode (prefill/decode/aggregated).
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `prefill` | dict[str, Any] \| None | `None` |  |
-| `decode` | dict[str, Any] \| None | `None` |  |
-| `aggregated` | dict[str, Any] \| None | `None` |  |
-
-### MooncakeKVStoreConfig
-
-Mooncake KV store configuration.
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `container` | str \| None | `None` |  |
-| `env` | dict[str, str] | `{}` |  |
-| `master_extra_args` | list[str] | `[]` |  |
-
-### TRTLLMServerConfig
-
-SGLang server CLI configuration per mode (prefill/decode/aggregated).
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `prefill` | dict[str, Any] \| None | `None` |  |
-| `decode` | dict[str, Any] \| None | `None` |  |
-| `aggregated` | dict[str, Any] \| None | `None` |  |
-
-### VLLMServerConfig
-
-vLLM server CLI configuration per mode (prefill/decode/aggregated).
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `prefill` | dict[str, Any] \| None | `None` |  |
-| `decode` | dict[str, Any] \| None | `None` |  |
-| `aggregated` | dict[str, Any] \| None | `None` |  |
-
-### VLLMMooncakeKVStoreConfig
-
-Mooncake KV store config for the vLLM backend.
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `container` | str \| None | `None` |  |
-| `env` | dict[str, str] | `{}` |  |
-| `master_extra_args` | list[str] | `[]` |  |
-| `store_config` | dict[str, Any] \| None | `None` | ``store_config`` values are JSON-serialized into MOONCAKE_CONFIG_PATH and parsed by vLLM's ``MooncakeStoreConfig`` dataclass — fields are a mix of str (e.g. ``protocol``), int (e.g. ``port``), and human-readable sizes (e.g. ``"4GB"``). Type as ``dict[str, Any]`` to avoid forcing users to quote numeric values. |
-
-### MockerServerConfig
-
-Mocker CLI configuration per mode (prefill/decode/aggregated).
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `prefill` | dict[str, Any] \| None | `None` |  |
-| `decode` | dict[str, Any] \| None | `None` |  |
-| `aggregated` | dict[str, Any] \| None | `None` |  |
 
 ## Cluster config
 

@@ -29,7 +29,7 @@ jobs:
       - name: Run ruff format check
         run: uv run ruff format --check src/srtctl/
 
-      - name: Check docs/schema-reference.md is regenerated
+      - name: Check docs/schema-reference.md and docs/legacy-v1.md are regenerated
         run: uv run srtctl schema-docs --check
 
   typecheck:

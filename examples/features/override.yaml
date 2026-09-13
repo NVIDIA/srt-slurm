@@ -27,22 +27,22 @@ base:
   resources:
     gpu_type: "h100"
     gpus_per_node: 8
-    agg_nodes: 1
-    agg_workers: 2
-    gpus_per_agg: 1
-
   frontend:
     type: sglang
     enable_multiple_frontends: false
     args:
       policy: "cache_aware"
 
-  backend:
-    type: sglang
-    aggregated_environment:
-      PYTHONUNBUFFERED: "1"
-    sglang_config:
-      aggregated:
+  engine: sglang
+  roles:
+    agg:
+      nodes: 1
+      workers: 2
+      gpus: 1
+
+      env:
+        PYTHONUNBUFFERED: "1"
+      args:
         served-model-name: "Qwen/Qwen3-0.6B"
         tensor-parallel-size: 1
         mem-fraction-static: 0.5
@@ -57,23 +57,23 @@ base:
 
 # One TP2 worker instead of two TP1 workers. Only the changed leaves are listed.
 override_tp2:
-  resources:
-    agg_workers: 1
-    gpus_per_agg: 2
-  backend:
-    sglang_config:
-      aggregated:
+  resources: {}
+  roles:
+    agg:
+      workers: 1
+      gpus: 2
+      args:
         tensor-parallel-size: 2
 
 # Two variants zipped in parallel: the i-th element of every list goes to variant i.
 # A length-1 list broadcasts; a list of lists gives each variant a literal list.
 zip_override_context:
   name:
-  - "qwen3-0.6b-override-ctx2k"
-  - "qwen3-0.6b-override-ctx8k"
-  backend:
-    sglang_config:
-      aggregated:
+    - "qwen3-0.6b-override-ctx2k"
+    - "qwen3-0.6b-override-ctx8k"
+  roles:
+    agg:
+      args:
         context-length: [2048, 8192]
         mem-fraction-static: [0.5]
   benchmark:

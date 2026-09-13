@@ -1655,7 +1655,7 @@ def main():
   srtctl monitor                                 # Live job dashboard
   srtctl monitor --outputs /path/to/outputs      # Dashboard with custom outputs dir
   srtctl view /path/to/run-output                # Local ruter route-decision viewer
-  srtctl schema-docs [--check]                   # Regenerate (or verify) docs/schema-reference.md
+  srtctl schema-docs [--check]                   # Regenerate (or verify) docs/schema-reference.md + docs/legacy-v1.md
   srtctl migrate -f config.yaml --in-place       # Upgrade a recipe to the current schema version
   srtctl migrate -f recipes/ --verify            # Prove v1 and migrated v2 recipes resolve identically
   srtctl skill --target claude                   # Install the srtctl agent skill into this project
@@ -1807,18 +1807,18 @@ def main():
     # Generated schema reference: srtctl schema-docs [--check] [--output PATH]
     schema_docs_parser = subparsers.add_parser(
         "schema-docs",
-        help="Regenerate docs/schema-reference.md from the config dataclasses",
+        help="Regenerate docs/schema-reference.md (2.0 layout) and docs/legacy-v1.md (v1 layout) from the code",
     )
     schema_docs_parser.add_argument(
         "--check",
         action="store_true",
-        help="Exit 1 if the checked-in reference is stale instead of rewriting it (used by CI)",
+        help="Exit 1 if either checked-in document is stale instead of rewriting them (used by CI)",
     )
     schema_docs_parser.add_argument(
         "--output",
         type=Path,
         default=None,
-        help="Write to this path instead of docs/schema-reference.md",
+        help="Write the schema reference to this path instead of docs/schema-reference.md (legacy-v1.md lands beside it)",
     )
 
     # Recipe migration: srtctl migrate -f recipe.yaml [--in-place | --output PATH]
@@ -1965,19 +1965,27 @@ def main():
         sys.exit(1 if all_results else 0)
 
     if args.command == "schema-docs":
-        from srtctl.core.schema_docs import DEFAULT_OUTPUT, schema_reference_is_current, write_schema_reference
+        from srtctl.core.schema_docs import (
+            DEFAULT_OUTPUT,
+            legacy_output_for,
+            schema_reference_is_current,
+            write_schema_reference,
+        )
 
         output = args.output or DEFAULT_OUTPUT
         if args.check:
             if schema_reference_is_current(output):
-                console.print(f"[green]✓[/] {output} is up to date")
+                console.print(f"[green]✓[/] {output} and {legacy_output_for(output)} are up to date")
                 restore_console()
                 return
-            console.print(f"[bold red]✗[/] {output} is stale; run `srtctl schema-docs` and commit the result")
+            console.print(
+                f"[bold red]✗[/] {output} or {legacy_output_for(output)} is stale; "
+                "run `srtctl schema-docs` and commit the result"
+            )
             restore_console()
             sys.exit(1)
         written = write_schema_reference(output)
-        console.print(f"[green]✓[/] Wrote {written}")
+        console.print(f"[green]✓[/] Wrote {written} and {legacy_output_for(written)}")
         restore_console()
         return
 

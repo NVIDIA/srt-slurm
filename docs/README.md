@@ -1,6 +1,6 @@
 # Introduction
 
-`srtctl` is a command-line tool for running distributed LLM inference benchmarks on SLURM clusters or a single direct GPU host. It replaces complex shell scripts and 50+ CLI flags with clean, declarative YAML configuration files.
+`srtctl` is a command-line tool for running distributed LLM inference benchmarks on SLURM clusters. It replaces complex shell scripts and 50+ CLI flags with one declarative `schema: 2` YAML recipe: `engine:` names the inference engine (SGLang, vLLM, TRT-LLM), `roles:` describes each worker role (prefill, decode, agg) with its node and GPU counts, `env`, and `args`, `frontend:` picks the router, `benchmark:` the load, and `services:` anything else launched next to the job.
 
 ## Table of Contents
 
@@ -25,9 +25,9 @@ Running large language models across multiple GPUs and nodes requires orchestrat
 
 When you run `srtctl apply -f config.yaml`, the tool:
 
-1. Validates your configuration against the schema
-2. Resolves any aliases from your cluster config (`srtslurm.yaml`)
-3. Generates a SLURM batch script and SGLang configuration files
+1. Resolves aliases from your cluster config (`srtslurm.yaml`) and normalizes `engine:`, `roles:`, `placement:`, and `services:` into the internal config
+2. Validates the result against the schema (a colocated decode split that does not fit, a benchmark field the type does not use, and a moving `dynamo.source.rev` are all rejected here)
+3. Generates a SLURM batch script and the per-role engine configuration
 4. Submits to SLURM
 
 The `srtctl-mcp` server has two halves. The schema tools (`schema_summary`,
@@ -52,6 +52,7 @@ Once allocated, workers launch inside containers, discover each other through ET
 | `srtctl apply -f <config> --tags tag1,tag2`        | Submit with tags for filtering          |
 | `srtctl dry-run -f <config>`                       | Validate and preview without submitting |
 | `srtctl validate -f <config>`                      | Alias for dry-run                       |
+| `srtctl migrate -f <config>`                       | Rewrite a v1 recipe into the 2.0 layout |
 
 ## Next Steps
 
@@ -62,3 +63,5 @@ Once allocated, workers launch inside containers, discover each other through ET
 - [Profiling](profiling.md) - Performance analysis with torch/nsys
 - [SGLang Router](sglang-router.md) - Alternative to Dynamo for PD disaggregation
 - [Services](services.md) - Sidecars and standalone stores launched next to the job
+- [Configuration Reference](config-reference.md) - Every recipe section, with the generated field tables in [Schema Reference](schema-reference.md)
+- [Legacy (v1) layout](legacy-v1.md) - The old `backend:` recipe layout; `srtctl migrate` rewrites it

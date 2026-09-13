@@ -22,11 +22,11 @@ test:
 test-cov:
 	uv run pytest tests/ --cov=srtctl --cov-report=term-missing --cov-report=html
 
-# Regenerate docs/schema-reference.md from the config dataclasses
+# Regenerate docs/schema-reference.md (2.0) and docs/legacy-v1.md (v1) from the code
 schema-docs:
 	uv run srtctl schema-docs
 
-# Fail if docs/schema-reference.md is stale (also enforced by CI and tests/test_schema_docs.py)
+# Fail if docs/schema-reference.md or docs/legacy-v1.md is stale (also enforced by CI and tests/test_schema_docs.py)
 schema-docs-check:
 	uv run srtctl schema-docs --check
 

@@ -2,7 +2,7 @@
 #
 # Two TP1 `dynamo.vllm` workers on one node register with etcd/NATS; the Dynamo
 # frontend routes with `--router-mode kv`. Dynamo is pip-installed into the engine
-# container at job start (`dynamo.version`); set `dynamo.install: false` when the
+# container at job start (`dynamo.source`); set `dynamo.install: false` when the
 # container already ships it.
 #
 # Aliases (`qwen3-0.6b`, `vllm`) resolve through srtslurm.yaml; see examples/README.md.

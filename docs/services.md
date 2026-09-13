@@ -116,12 +116,12 @@ value) are left alone.
 
 ## Implicit Services
 
-Three things the recipe asks for elsewhere are services the job runs without an entry:
+Two things the recipe asks for elsewhere are services the job runs without an entry; the Mooncake master is the one built-in kind that is always declared:
 
 | Implied by | Services | Where |
 | --- | --- | --- |
 | `frontend.type: dynamo` | `etcd`, `nats` | the infra node, phase `infra` |
-| `backend.mooncake_kv_store` (v1) or a declared `mooncake-master` | `mooncake-master` | the infra node, phase `before_workers` |
+| a declared `mooncake-master` entry (see [Mooncake KV Store](mooncake-kv-store.md)) | `mooncake-master` | the infra node, phase `before_workers` |
 | tachometer on (the default; `observability.tachometer.enabled`) | `dcgm-exporter`, `node-exporter` | every worker node, phase `after_frontend` |
 
 `srtctl dry-run` lists them next to the declared ones, marked `implied by:`. A declared entry with
@@ -160,9 +160,7 @@ services:
 The power-telemetry path (`telemetry.enabled`) launches and owns its own DCGM exporter; the implied
 `dcgm-exporter` steps aside when it is on.
 
-The v1 spellings still load and mean the same thing: `infra.etcd_nats_dedicated_node` and
-`infra.nats_max_payload_mb` are the etcd/nats entries above, `backend.mooncake_kv_store` is a
-`mooncake-master` entry plus Mooncake env on the roles. `srtctl migrate` rewrites them.
+The v1 layout (`infra:` and `backend.mooncake_kv_store`) is documented in [legacy-v1.md](legacy-v1.md); `srtctl migrate` rewrites it into the entries above.
 
 ## Placement
 
@@ -268,11 +266,11 @@ environment its process needs; the launch path is shared by every kind. Register
 | `generic` | none (required) | `after_frontend` | `false` | Launches exactly what you wrote. |
 | `etcd` | `/configs/etcd` from the job container, advertising the node's IP | `infra` | `true` | Implied by the Dynamo frontend. Placement `head`, `infra`, or `dedicated`; supports `external`. Fresh data dir on node-local `/tmp` each job. |
 | `nats` | `/configs/nats-server -js` from the job container | `infra` | `true` | Implied by the Dynamo frontend. `options.max_payload_mb` writes a server config. Same placements as etcd; supports `external`. |
-| `mooncake-master` | `mooncake_master` with the RPC, HTTP metadata, and metrics ports srtctl owns | `before_workers` | `true` | Implied by `backend.mooncake_kv_store`; declaring it is the 2.0 spelling. `args` are appended. Container falls back to `mooncake_kv_store.container`. Supports `dedicated` and `external`. |
+| `mooncake-master` | `mooncake_master` with the RPC, HTTP metadata, and metrics ports srtctl owns | `before_workers` | `true` | Declared by name; see [Mooncake KV Store](mooncake-kv-store.md). `args` are appended; `options.store_config` is the vLLM connector JSON. Container falls back to the job container. Supports `dedicated` and `external`. |
 | `dcgm-exporter` | `dcgm-exporter --collect-interval=<ms> --address :9401` in `nvcr.io/nvidia/k8s/dcgm-exporter` | `after_frontend` | `false` | Implied on worker nodes while tachometer runs. Shell-less (distroless image). `options`: `port`, `collect_interval_ms`. |
 | `node-exporter` | `/bin/node_exporter` with the cpu, infiniband, and meminfo collectors on 9101 in `quay.io/prometheus/node-exporter` | `after_frontend` | `false` | Implied on worker nodes while tachometer runs. Shell-less. `options`: `port`. |
 | `process-exporter` | `configs/process-exporter -config.path <log_dir>/process-exporter.yml -web.listen-address=:9256 -threads=true ...` on the bare node | `after_frontend` | `false` | Implied on every allocated node (`placement.node: all`) while tachometer runs. Host-native from the static binary `make setup` installs; skipped with a warning when it is missing. A declared `container` switches to the image's `/bin/process-exporter` with the group file under `/logs`. `options`: `port`, `binary`. |
-| `mooncake-store` | `python -m mooncake.mooncake_store_service` | `before_workers` | `true` | Requires a Mooncake master (either spelling). Container falls back to the master's. Injects the master's address. |
+| `mooncake-store` | `python -m mooncake.mooncake_store_service` | `before_workers` | `true` | Requires a `mooncake-master` entry. Container falls back to the master's. Injects the master's address. |
 
 The bespoke launch paths these replace (`start_head_infrastructure` with its own readiness loop, a
 Mooncake-master stage, exporter launches inside the tachometer stage) are gone; every one of these is
@@ -316,25 +314,27 @@ per-node stores own the DRAM segments. Decode nodes contribute host memory witho
 HiCache pool. One entry per role gives each role its own segment size:
 
 ```yaml
-backend:
-  type: sglang
-  prefill_environment:
-    MOONCAKE_PROTOCOL: rdma
-    MOONCAKE_DEVICE: "mlx5_0,mlx5_1"
-    MOONCAKE_GLOBAL_SEGMENT_SIZE: "0"
-  decode_environment:
-    MOONCAKE_PROTOCOL: rdma
-    MOONCAKE_DEVICE: "mlx5_0,mlx5_1"
-    MOONCAKE_GLOBAL_SEGMENT_SIZE: "0"
-  mooncake_kv_store:
-    container: mooncake        # the master; also the stores' default container
-  sglang_config:
-    prefill:
+engine: sglang
+roles:
+  prefill:
+    env:
+      MOONCAKE_PROTOCOL: rdma
+      MOONCAKE_DEVICE: "mlx5_0,mlx5_1"
+      MOONCAKE_GLOBAL_SEGMENT_SIZE: "0"
+    args:
       disaggregation-transfer-backend: mooncake
-    decode:
+  decode:
+    env:
+      MOONCAKE_PROTOCOL: rdma
+      MOONCAKE_DEVICE: "mlx5_0,mlx5_1"
+      MOONCAKE_GLOBAL_SEGMENT_SIZE: "0"
+    args:
       disaggregation-transfer-backend: mooncake
 
 services:
+  - name: mooncake-master
+    type: mooncake-master
+    container: mooncake        # the master; also the stores' default container
   - name: store-prefill
     type: mooncake-store
     placement:
@@ -386,8 +386,7 @@ Rejected at load time, so `srtctl dry-run` catches them:
 - `placement.node` or `start` outside their vocabularies; `dedicated` or `external` on a kind that does
   not support them; an `options` key the kind does not know.
 - `source` with a moving `rev`, or with a multi-node placement.
-- `type: mooncake-store` without a Mooncake master; two `mooncake-master` entries; a `mooncake-master`
-  entry next to `backend.mooncake_kv_store`.
+- `type: mooncake-store` without a `mooncake-master` entry; two `mooncake-master` entries.
 - `etcd` and `nats` disagreeing on `dedicated` (they share the infra node).
 
 Rejected at launch, before any service starts: two services listening on the same port on one node.

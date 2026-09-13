@@ -91,7 +91,7 @@ class TRTLLMProtocol:
     # The name clients must use in a request's "model" field.
     # Defaults to the checkpoint directory name.
     #
-    #     backend:
+    #     engine:
     #       type: trtllm
     #       served_model_name: "deepseek-ai/deepseek-r1"
     #

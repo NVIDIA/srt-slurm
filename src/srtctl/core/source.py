@@ -131,9 +131,9 @@ class DynamoSourceConfig:
         rev: Immutable ref in ``git``: commit SHA, tag, or ``refs/pull/<n>/head``.
         sha: The commit ``rev`` resolved to; filled in by ``srtctl apply``.
         patches: Cargo dependency replacements applied tree-wide before the
-            build (the legacy ``cargo_patches``).
-        pypi: Release version from PyPI (the legacy ``version``).
-        wheel: Staged nightly ``ai-dynamo`` version (the legacy ``wheel``).
+            build.
+        pypi: Release version from PyPI.
+        wheel: Staged nightly ``ai-dynamo`` version.
     """
 
     DEFAULT_GIT: ClassVar[str] = "https://github.com/ai-dynamo/dynamo.git"

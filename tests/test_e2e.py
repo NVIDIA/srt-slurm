@@ -622,7 +622,7 @@ backend:
         try:
             SrtConfig.Schema().load(raw)
         except ValidationError as e:
-            assert "mooncake_kv_store" in str(e)
+            assert "mooncake-master service" in str(e)
             assert "disaggregation-transfer-backend" in str(e)
         else:
             raise AssertionError("expected ValidationError")

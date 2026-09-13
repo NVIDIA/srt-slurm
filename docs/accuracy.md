@@ -53,7 +53,7 @@ benchmark:
     OPENAI_API_KEY: "EMPTY"       # ns/litellm requires it set; value is unused
     HF_TOKEN: "${HF_TOKEN}"       # for gated HF datasets via ns prepare_data
     # Optional knob overrides — defaults match the upstream reasoning-eval reference:
-    # MODEL: "dspro"           # must match served-model-name from sglang_config
+    # MODEL: "dspro"           # must match served-model-name in the roles' args
     # DATASET: "aime25"        # aime24 | aime25 | aime26
     # REPEAT: "16"             # pass@k samples per problem
     # MAX_TOKENS: "400000"     # generous ceiling for reasoning traces
@@ -81,13 +81,15 @@ these the model emits non-reasoning answers and AIME pass@k drops ~30 points
 below what the model can do.
 
 ```yaml
-backend:
-  prefill_environment:
-    SGLANG_ENABLE_THINKING: "1"
-    SGLANG_REASONING_EFFORT: "max"
-  decode_environment:
-    SGLANG_ENABLE_THINKING: "1"
-    SGLANG_REASONING_EFFORT: "max"
+roles:
+  prefill:
+    env:
+      SGLANG_ENABLE_THINKING: "1"
+      SGLANG_REASONING_EFFORT: "max"
+  decode:
+    env:
+      SGLANG_ENABLE_THINKING: "1"
+      SGLANG_REASONING_EFFORT: "max"
 ```
 
 ### What the script does
@@ -195,7 +197,7 @@ benchmark:
 |-----------|------|---------|-------------|
 | `max_context_length` | int | 128000 | Maximum context length for evaluation. Should not exceed model's trained context window. |
 | `num_threads` | int | 16 | Number of concurrent threads for parallel evaluation. Increase for faster throughput on high-capacity endpoints. |
-| `max_tokens` | int | 16384 | Maximum tokens for model output. Must be less than `context-length` in sglang_config. |
+| `max_tokens` | int | 16384 | Maximum tokens for model output. Must be less than `context-length` in the roles' `args`. |
 | `num_examples` | int | all | Limit the number of examples to evaluate. Useful for quick validation runs. |
 | `categories` | list | all | Specific task categories to run. Omit to run all categories. |
 
@@ -215,6 +217,7 @@ LongBench-V2 includes the following task categories:
 Run complete LongBench-V2 evaluation with all categories:
 
 ```yaml
+schema: 2
 name: "longbench-v2-eval"
 
 model:
@@ -224,16 +227,20 @@ model:
 
 resources:
   gpu_type: "gb200"
-  prefill_nodes: 2
-  decode_nodes: 4
+  gpus_per_node: 4
 
-backend:
-  type: sglang
-  sglang_config:
-    prefill:
+engine: sglang
+roles:
+  prefill:
+    nodes: 2
+    workers: 2
+    args:
       context-length: 131072  # Must exceed max_tokens
       tensor-parallel-size: 4
-    decode:
+  decode:
+    nodes: 4
+    workers: 2
+    args:
       context-length: 131072
       tensor-parallel-size: 8
 
@@ -286,7 +293,7 @@ The output includes per-category scores and aggregate metrics:
 
 ### Important Notes
 
-1. **Context Length**: Ensure `context-length` in your sglang_config exceeds `max_tokens` for the benchmark
+1. **Context Length**: Ensure `context-length` in your roles' `args` exceeds `max_tokens` for the benchmark
 2. **Memory**: Long-context evaluation requires significant GPU memory. Use appropriate `mem-fraction-static` settings
 3. **Throughput**: Increase `num_threads` for faster evaluation, but monitor for OOM errors
 4. **Categories**: Running specific categories is useful for targeted validation (e.g., just testing summarization capabilities)

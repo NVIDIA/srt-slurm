@@ -267,7 +267,7 @@ class VLLMProtocol:
     set_cuda_visible_devices: bool = False
 
     # Default KV connector: "nixl", "lmcache", or a raw JSON string for --kv-transfer-config.
-    # Can be overridden per mode by setting "connector" in vllm_config.prefill/decode/aggregated.
+    # Can be overridden per role by setting "connector" in roles.<role>.args.
     # dynamo 1.0.0+: translated to --kv-transfer-config (--connector was removed).
     connector: str | None = "nixl"
 

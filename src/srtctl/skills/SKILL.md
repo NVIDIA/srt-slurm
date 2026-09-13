@@ -54,7 +54,7 @@ benchmark:
 
 - `dynamo.source` chooses how Dynamo is installed: `pypi: "1.4.2"`, `wheel: <path>`, or `git: <url>` with `rev: <sha, tag, or refs/pull/N/head>`; `srtctl apply` pins the rev to a commit.
 - `placement.node: dedicated` on `frontend` or `benchmark` reserves a node for it.
-- `services:` declares sidecars. etcd and NATS (Dynamo), the Mooncake master (`backend.mooncake_kv_store`), and the DCGM and node exporters (tachometer) are implied; declare one by name only to change it (`placement.node: dedicated`, `container`, `options`, `external: <address>`, `enabled: false`).
+- `services:` declares sidecars. etcd and NATS (Dynamo), the Mooncake master (when a `mooncake-master` service is declared), and the DCGM and node exporters (tachometer) are implied; declare one by name only to change it (`placement.node: dedicated`, `container`, `options`, `external: <address>`, `enabled: false`).
 - `--set KEY=VALUE` and `--unset KEY` on `apply` and `dry-run` override any recipe key without editing the file: `--set resources.gpu_type=b200 --set roles.agg.gpus=2`.
 - `srtctl migrate -f <recipe> --in-place` rewrites a v1 recipe (`backend:`, `*_environment`, `infra:`) to this shape; `--verify` proves the two resolve identically.
 

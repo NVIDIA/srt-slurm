@@ -38,3 +38,4 @@
 ## Reference
 
 - [Status API Spec](status-api-spec.md)
+- [Legacy (v1) layout](legacy-v1.md)

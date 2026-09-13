@@ -107,7 +107,7 @@ The directory name follows the pattern: `{job_id}_{prefill}P_{decode}D_{timestam
 logs/4459_4P_1D_20251122_041341/
 │
 ├── config.yaml                              # Resolved job configuration
-├── sglang_config.yaml                       # SGLang worker configuration
+├── {node}_config.json                       # Engine args dumped by each worker leader
 ├── sbatch_script.sh                         # Generated SLURM script
 ├── nginx.conf                               # Load balancer configuration
 ├── 4459.json                                # Job metadata

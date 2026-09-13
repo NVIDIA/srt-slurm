@@ -188,8 +188,7 @@ class ServiceConfig:
             ``generic``; typed kinds supply a default.
         args: Extra argv appended to ``command``.
         container: Container image or ``srtslurm.yaml`` alias. Defaults to the
-            kind's fallback (Mooncake's ``mooncake_kv_store.container``), then
-            the job container.
+            kind's fallback image, then the job container.
         env: Environment for the service process, on top of what the kind injects.
         source: Optional git source to clone before ``build_command`` and
             ``command`` run. Single-node placements only.

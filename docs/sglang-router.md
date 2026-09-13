@@ -163,12 +163,13 @@ nodes_per_router = ceil((total_nodes - 1) / num_additional_frontends)
 The sglang router needs the **disaggregation bootstrap port** to connect to prefill workers. This must match the `disaggregation-bootstrap-port` in your sglang config:
 
 ```yaml
-backend:
-  sglang_config:
-    prefill:
+roles:
+  prefill:
+    args:
       disaggregation-bootstrap-port: 30001 # Must match
       # ... other config
-    decode:
+  decode:
+    args:
       disaggregation-bootstrap-port: 30001 # Must match
       # ... other config
 ```
@@ -200,6 +201,7 @@ Dynamo workers are unaffected: they expose metrics on their system port without 
 Here's a full recipe using sglang router:
 
 ```yaml
+schema: 2
 name: "deepseek-r1-sglang-router"
 
 model:
@@ -210,27 +212,28 @@ model:
 resources:
   gpu_type: "gb300"
   gpus_per_node: 4
-  prefill_nodes: 2
-  prefill_workers: 2
-  decode_nodes: 2
-  decode_workers: 2
 
 frontend:
   type: sglang
   enable_multiple_frontends: true
   num_additional_frontends: 3 # 4 total routers
 
-backend:
-  sglang_config:
-    prefill:
+engine: sglang
+roles:
+  prefill:
+    nodes: 2
+    workers: 2
+    args:
       model-path: /model/
       tensor-parallel-size: 4
       disaggregation-mode: prefill
       disaggregation-bootstrap-port: 30001
       disaggregation-transfer-backend: nixl
       # ... other prefill settings
-
-    decode:
+  decode:
+    nodes: 2
+    workers: 2
+    args:
       model-path: /model/
       tensor-parallel-size: 4
       disaggregation-mode: decode
