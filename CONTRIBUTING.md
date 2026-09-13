@@ -93,7 +93,7 @@ make check
 3. Follow existing code style (ruff enforced)
 4. Include SPDX headers in all new source files
 5. Sign off all commits with `git commit -s`
-6. Give the PR a conventional-commit title (see below); `pr-title.yaml` rejects anything else
+6. Give the PR a conventional-commit title (see below); `pr-title.yaml` (amannn/action-semantic-pull-request) rejects anything else
 
 ## Versioning
 
