@@ -200,6 +200,10 @@ Profiling configuration.
 |---|---|---|---|
 | `type` | str | `'none'` | "none", "nsys", "nsys-time", or "torch" |
 | `extra_nsys_args` | list[str] \| None | `None` | Extra arguments passed to nsys profile (appended before `-o`; see get_nsys_prefix) |
+| `nsys_trace` | str | `'cuda,nvtx'` | Non-TRT-LLM Nsight activity domains. ``cuda-sw`` can be selected explicitly where software tracing is preferred over hardware tracing. |
+| `trace_fork_before_exec` | bool \| None | `None` | None preserves the existing Dynamo-specific default. Set explicitly for worker launchers that require or cannot tolerate child-process injection. |
+| `capture_range_end` | str | `'stop'` | Non-TRT-LLM behavior when cudaProfilerStop closes a capture range. |
+| `nsys_library_paths` | list[str] \| None | `None` | Optional paths prepended to LD_LIBRARY_PATH for the Nsight wrapper and profiled worker, for containers that do not discover the host libcuda. |
 | `prefill` | [ProfilingPhaseConfig](#profilingphaseconfig) \| None | `None` | Phase-specific profiling step configs (not used for nsys-time) |
 | `decode` | [ProfilingPhaseConfig](#profilingphaseconfig) \| None | `None` |  |
 | `aggregated` | [ProfilingPhaseConfig](#profilingphaseconfig) \| None | `None` |  |
@@ -359,6 +363,9 @@ Profiling config for a single phase (prefill/decode/aggregated).
 |---|---|---|---|
 | `start_step` | int \| None | `None` | Step to start profiling |
 | `stop_step` | int \| None | `None` | Step to stop profiling |
+| `capture_scope` | one of `'selected'`, `'all'` | `'all'` |  |
+| `worker_index` | int | `0` | Logical worker within the phase |
+| `worker_rank` | int | `0` | Physical process rank within that worker |
 
 ### TachometerConfig
 
