@@ -43,6 +43,8 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, get_args, get_origin, get_type_hints
 
 from srtctl.backends import (
+    AtomProtocol,
+    AtomServerConfig,
     MockerProtocol,
     MockerServerConfig,
     SGLangProtocol,
@@ -79,6 +81,7 @@ GENERATED_NOTICE = (
 
 # backend.type value -> dataclass. Order is the documentation order.
 BACKEND_TYPES: tuple[tuple[str, type], ...] = (
+    ("atom", AtomProtocol),
     ("sglang", SGLangProtocol),
     ("trtllm", TRTLLMProtocol),
     ("vllm", VLLMProtocol),
@@ -103,7 +106,7 @@ _V2_TOP_LEVEL_ROWS = (
         type_label="str \\| mapping",
         default="required",
         description=(
-            "The engine type (`sglang`, `trtllm`, `vllm`, `mocker`) as a string, or a mapping with `type` "
+            "The engine type (`atom`, `sglang`, `trtllm`, `vllm`, `mocker`) as a string, or a mapping with `type` "
             "plus the engine-wide knobs listed under [Engine types](#engine-types)."
         ),
     ),
@@ -401,6 +404,7 @@ LEGACY_FIELDS: dict[type, dict[str, str]] = {
         "top_of_tree": "`dynamo.source.git` + `dynamo.source.top_of_tree: true`",
         "cargo_patches": "`dynamo.source.patches`",
     },
+    AtomProtocol: _present(AtomProtocol, _backend_legacy_fields(ENGINE_CONFIG_KEY["atom"])),
     SGLangProtocol: _present(SGLangProtocol, _backend_legacy_fields(ENGINE_CONFIG_KEY["sglang"])),
     TRTLLMProtocol: _present(TRTLLMProtocol, _backend_legacy_fields(ENGINE_CONFIG_KEY["trtllm"])),
     VLLMProtocol: _present(VLLMProtocol, _backend_legacy_fields(ENGINE_CONFIG_KEY["vllm"])),
@@ -417,6 +421,7 @@ LEGACY_TOP_LEVEL: dict[str, str] = {
 LEGACY_CLASSES: frozenset[type] = frozenset(
     {
         InfraConfig,
+        AtomServerConfig,
         SGLangServerConfig,
         TRTLLMServerConfig,
         VLLMServerConfig,

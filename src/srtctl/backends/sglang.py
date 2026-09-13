@@ -177,6 +177,31 @@ class SGLangProtocol:
         """
         return {}
 
+    def get_frontend_integration_environment(
+        self,
+        mode: str,
+        frontend_type: str,
+        frontend_args: dict[str, Any],
+    ) -> dict[str, str]:
+        """Bridge SGLang Model Gateway's DP routing to P/D KV bootstrap.
+
+        A DP-aware external router supplies ``routed_dp_rank`` independently
+        for prefill and decode. SGLang's P/D bootstrap must therefore register
+        the actual selected prefill rank instead of deriving it from the
+        bootstrap-room modulo. The environment variable activates SGLang's
+        supported register/query path on both sides of the transfer.
+        """
+        if frontend_type != "sglang-router" or mode not in ("prefill", "decode"):
+            return {}
+        if not frontend_args.get("dp-aware", frontend_args.get("dp_aware", False)):
+            return {}
+
+        mode_config = self.get_config_for_mode(mode)
+        dp_size = mode_config.get("dp-size", mode_config.get("dp_size", 1))
+        if int(dp_size or 1) <= 1:
+            return {}
+        return {"SGLANG_DISAGGREGATION_FORCE_QUERY_PREFILL_DP_RANK": "1"}
+
     def get_mooncake_worker_env(self, infra_node_ip: str, local_hostname: str) -> dict[str, str]:
         """Get mooncake env vars to inject on a specific worker.
 
@@ -345,7 +370,7 @@ class SGLangProtocol:
         is_multi_node = len(endpoint_nodes) > 1
 
         # Get leader IP for distributed init
-        leader_ip = get_hostname_ip(endpoint_nodes[0])
+        leader_ip = get_hostname_ip(endpoint_nodes[0], runtime.network_interface)
         dist_init_port = SGLANG_DIST_INIT_PORT_BASE
 
         # Choose Python module based on frontend type

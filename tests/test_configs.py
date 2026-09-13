@@ -551,6 +551,41 @@ class TestSGLangProtocol:
         assert config.get_environment_for_mode("decode") == {"DECODE_VAR": "1"}
         assert config.get_environment_for_mode("agg") == {}
 
+    @pytest.mark.parametrize(
+        ("mode", "frontend_type", "frontend_args", "dp_size", "expected"),
+        [
+            ("prefill", "sglang-router", {"dp-aware": True}, 8, True),
+            ("decode", "sglang-router", {"dp_aware": True}, 8, True),
+            ("prefill", "sglang-router", {"dp-aware": True}, 1, False),
+            ("prefill", "sglang-router", {}, 8, False),
+            ("prefill", "dynamo", {"dp-aware": True}, 8, False),
+            ("agg", "sglang-router", {"dp-aware": True}, 8, False),
+        ],
+    )
+    def test_dp_aware_router_bootstrap_rank_environment(
+        self,
+        mode,
+        frontend_type,
+        frontend_args,
+        dp_size,
+        expected,
+    ):
+        config = SGLangProtocol(
+            sglang_config=SGLangServerConfig(
+                prefill={"dp-size": dp_size},
+                decode={"dp-size": dp_size},
+                aggregated={"dp-size": dp_size},
+            )
+        )
+
+        environment = config.get_frontend_integration_environment(
+            mode,
+            frontend_type,
+            frontend_args,
+        )
+
+        assert (environment.get("SGLANG_DISAGGREGATION_FORCE_QUERY_PREFILL_DP_RANK") == "1") is expected
+
     def test_kv_events_config_global_bool(self):
         """Test kv_events_config=True enables prefill+decode+aggregated with defaults."""
         config = SGLangProtocol(kv_events_config=True)
@@ -646,8 +681,10 @@ class TestSGLangProtocol:
         assert config.is_grpc_mode("decode") is True
         assert config.is_grpc_mode("agg") is False
 
-    def test_worker_command_assigns_deterministic_nccl_port(self):
-        """Each SGLang server gets a unique rendezvous port from its sys port."""
+    @pytest.mark.parametrize("node_count", [1, 2])
+    def test_worker_command_assigns_network_endpoints(self, node_count):
+        """Use a unique NCCL port and the configured interface for distributed init."""
+        from dataclasses import replace
         from unittest.mock import MagicMock, patch
 
         from srtctl.core.topology import Process
@@ -664,11 +701,19 @@ class TestSGLangProtocol:
         runtime = MagicMock()
         runtime.model_path = Path("/model")
         runtime.is_hf_model = False
+        runtime.network_interface = "management0"
+        processes = [replace(process, node=f"node{rank}", node_rank=rank) for rank in range(node_count)]
 
-        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1"):
-            command = SGLangProtocol().build_worker_command(process, [process], runtime)
+        with patch("srtctl.core.slurm.get_hostname_ip", return_value="10.0.0.1") as resolve_ip:
+            command = SGLangProtocol().build_worker_command(processes[-1], processes, runtime)
 
+        resolve_ip.assert_called_once_with("node0", "management0")
         assert command[command.index("--nccl-port") + 1] == str(SGLANG_NCCL_PORT_BASE + 5)
+        if node_count == 2:
+            assert command[command.index("--dist-init-addr") + 1] == "10.0.0.1:8300"
+            assert command[command.index("--node-rank") + 1] == "1"
+        else:
+            assert "--dist-init-addr" not in command
 
 
 class TestServedModelName:

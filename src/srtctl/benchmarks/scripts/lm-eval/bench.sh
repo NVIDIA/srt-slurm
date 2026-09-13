@@ -17,6 +17,83 @@ PORT=$(echo "$ENDPOINT" | sed -E 's|.*:([0-9]+).*|\1|')
 
 echo "lm-eval Config: endpoint=${ENDPOINT}; host=${HOST}; port=${PORT}; workspace=${INFMAX_WORKSPACE}"
 
+# Serving images commonly make their system Python environment read-only.  The
+# InferenceX eval harness installs a pinned lm-eval runtime before executing, so
+# give it a job-local writable environment while retaining the serving image's
+# already-installed framework dependencies.  Prepending the venv to PATH keeps
+# benchmark_lib.sh's existing `python3 -m ...` interface unchanged.
+LM_EVAL_RUNTIME_DIR="${SRTCTL_LM_EVAL_RUNTIME_DIR:-${TMPDIR:-/tmp}/srtctl-lm-eval-${SLURM_JOB_ID:-$$}}"
+LM_EVAL_VENV="${LM_EVAL_RUNTIME_DIR}/venv"
+LM_EVAL_CACHE_DIR="${SRTCTL_LM_EVAL_CACHE_DIR:-${LM_EVAL_RUNTIME_DIR}/cache}"
+LM_EVAL_RESULT_DIR="${SRTCTL_LM_EVAL_RESULT_DIR:-}"
+
+# Serving containers often expose the host user's home and shared model cache
+# read-only. lm-eval still needs writable Hugging Face and XDG caches for task
+# datasets, even when model weights are already present. Keep all client-side
+# downloads inside the disposable job-local runtime instead of mutating the
+# serving cache or relying on $HOME/.cache.
+export XDG_CACHE_HOME="${LM_EVAL_CACHE_DIR}/xdg"
+export HF_HOME="${LM_EVAL_CACHE_DIR}/huggingface"
+export HF_HUB_CACHE="${HF_HOME}/hub"
+export HUGGINGFACE_HUB_CACHE="${HF_HUB_CACHE}"
+export HF_DATASETS_CACHE="${HF_HOME}/datasets"
+mkdir -p "${XDG_CACHE_HOME}" "${HF_HUB_CACHE}" "${HF_DATASETS_CACHE}"
+
+# The Slurm step can receive a reduced PATH even when the serving image keeps
+# its ROCm/PyTorch environment under /opt/venv.  lm-eval imports torch for its
+# API client helpers, so preserve the framework environment's site-packages in
+# the disposable eval venv instead of downloading a second (and potentially
+# incompatible) torch build.  Prefer an explicit override, then the standard
+# SGLang image environment, and finally the Python visible on PATH.
+LM_EVAL_FRAMEWORK_PYTHON="${SRTCTL_LM_EVAL_FRAMEWORK_PYTHON:-}"
+if [[ -z "${LM_EVAL_FRAMEWORK_PYTHON}" ]]; then
+    for candidate in /opt/venv/bin/python3 "$(command -v python3)"; do
+        if [[ -x "${candidate}" ]] && "${candidate}" -c 'import torch' >/dev/null 2>&1; then
+            LM_EVAL_FRAMEWORK_PYTHON="${candidate}"
+            break
+        fi
+    done
+fi
+if [[ -z "${LM_EVAL_FRAMEWORK_PYTHON}" ]]; then
+    echo "ERROR: no serving-image Python with torch is available for lm-eval" >&2
+    exit 1
+fi
+LM_EVAL_FRAMEWORK_SITE_PACKAGES="$("${LM_EVAL_FRAMEWORK_PYTHON}" - <<'PY'
+import sys
+
+print("\n".join(path for path in sys.path if "site-packages" in path))
+PY
+)"
+
+if [[ ! -x "${LM_EVAL_VENV}/bin/python3" ]]; then
+    rm -rf "${LM_EVAL_VENV}"
+    mkdir -p "${LM_EVAL_RUNTIME_DIR}"
+    python3 -m venv --system-site-packages "${LM_EVAL_VENV}"
+fi
+LM_EVAL_SITE_PACKAGES="$("${LM_EVAL_VENV}/bin/python3" -c 'import site; print(site.getsitepackages()[0])')"
+printf '%s\n' "${LM_EVAL_FRAMEWORK_SITE_PACKAGES}" > "${LM_EVAL_SITE_PACKAGES}/srtctl-framework.pth"
+export PATH="${LM_EVAL_VENV}/bin:${PATH}"
+hash -r
+
+if [[ "$(python3 -c 'import sys; print(sys.prefix)')" != "${LM_EVAL_VENV}" ]]; then
+    echo "ERROR: failed to activate writable lm-eval runtime at ${LM_EVAL_VENV}" >&2
+    exit 1
+fi
+echo "lm-eval Runtime: python=$(command -v python3); prefix=${LM_EVAL_VENV}"
+python3 -c 'import torch' || {
+    echo "ERROR: job-local lm-eval runtime cannot import serving-image torch" >&2
+    exit 1
+}
+
+# Some serving images seed virtual environments with a pip version old enough
+# that it does not recognize --break-system-packages.  InferenceX's shared eval
+# installer passes that option, so make the job-local pip understand it before
+# handing control to benchmark_lib.sh.  This only mutates the disposable venv.
+if ! python3 -m pip install --help 2>/dev/null | grep -q -- '--break-system-packages'; then
+    echo "lm-eval Runtime: upgrading job-local pip for --break-system-packages support"
+    python3 -m pip install --upgrade 'pip>=23.0'
+fi
+
 # Auto-discover the served model name from /v1/models if MODEL_NAME is not set.
 # This ensures we use the exact name the server recognizes, regardless of what
 # $MODEL (the HuggingFace ID from the workflow) is set to.
@@ -68,6 +145,17 @@ echo "Copying eval artifacts to /logs/eval_results/..."
 cp -v meta_env.json /logs/eval_results/ 2>/dev/null || true
 cp -v results*.json /logs/eval_results/ 2>/dev/null || true
 cp -v sample*.jsonl /logs/eval_results/ 2>/dev/null || true
+
+# Integrations that maintain a separate result tree can request an additional
+# copy without coupling this benchmark to a particular host mount layout. The
+# default remains /logs/eval_results for existing srt-slurm consumers.
+if [[ -n "${LM_EVAL_RESULT_DIR}" ]]; then
+    mkdir -p "${LM_EVAL_RESULT_DIR}"
+    echo "Copying eval artifacts to ${LM_EVAL_RESULT_DIR}/..."
+    cp -v meta_env.json "${LM_EVAL_RESULT_DIR}/" 2>/dev/null || true
+    cp -v results*.json "${LM_EVAL_RESULT_DIR}/" 2>/dev/null || true
+    cp -v sample*.jsonl "${LM_EVAL_RESULT_DIR}/" 2>/dev/null || true
+fi
 
 if [[ "$eval_rc" -ne 0 ]]; then
     echo "lm-eval evaluation failed with exit code ${eval_rc}"

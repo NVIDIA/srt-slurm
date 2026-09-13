@@ -31,6 +31,7 @@ Recipes without `schema: 2` (or with `schema: 1`) use the pre-2.0 layout: worker
 | `backend.prefill_environment` | `roles.prefill.env` |
 | `backend.decode_environment` | `roles.decode.env` |
 | `backend.aggregated_environment` | `roles.agg.env` |
+| `backend.atom_config` | `roles.<role>.args` (one mapping per role; the `prefill` / `decode` / `aggregated` keys) |
 | `backend.sglang_config` | `roles.<role>.args` (one mapping per role; the `prefill` / `decode` / `aggregated` keys) |
 | `backend.kv_events_config` | `roles.<role>.kv_events` |
 | `backend.mooncake_kv_store` | a `services:` entry of type `mooncake-master` plus the worker env on `roles.<role>.env` (see [mooncake-kv-store.md](mooncake-kv-store.md)) |
@@ -93,6 +94,17 @@ These keys exist in both layouts, but the value means something else in 2.0. A s
 
 `backend.type` selected the engine; the 2.0 layout writes `engine:` instead and moves the per-mode keys below onto `roles.<role>`. The engine-wide knobs (everything not listed here) are unchanged and documented under Engine types in [schema-reference.md](schema-reference.md#engine-types).
 
+### AtomProtocol
+
+`backend.type: atom`
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `prefill_environment` | dict[str, str] | `{}` |  |
+| `decode_environment` | dict[str, str] | `{}` |  |
+| `aggregated_environment` | dict[str, str] | `{}` |  |
+| `atom_config` | [AtomServerConfig](#atomserverconfig) \| None | `None` |  |
+
 ### SGLangProtocol
 
 `backend.type: sglang`
@@ -143,6 +155,16 @@ These keys exist in both layouts, but the value means something else in 2.0. A s
 | `decode_environment` | dict[str, str] | `{}` |  |
 | `aggregated_environment` | dict[str, str] | `{}` |  |
 | `mocker_config` | [MockerServerConfig](#mockerserverconfig) \| None | `None` | Per-mode CLI overrides |
+
+### AtomServerConfig
+
+Native ATOM CLI arguments for each serving role.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `prefill` | dict[str, Any] \| None | `None` |  |
+| `decode` | dict[str, Any] \| None | `None` |  |
+| `aggregated` | dict[str, Any] \| None | `None` |  |
 
 ### SGLangServerConfig
 
