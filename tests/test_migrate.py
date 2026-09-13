@@ -97,6 +97,25 @@ def test_migrate_folds_roles_placement_source_and_strips_unused_benchmark_fields
     assert keys.index("roles") == keys.index("engine") + 1
 
 
+def test_migrate_spells_shared_node_decode_as_colocate() -> None:
+    # 1 node x 8 GPUs: 1 prefill x 4 + 1 decode x 4 fits on the shared node
+    legacy = LEGACY.replace("  decode_nodes: 1", "  decode_nodes: 0  # share the prefill node").replace(
+        "  prefill_workers: 2", "  prefill_workers: 1\n  gpus_per_prefill: 4"
+    )
+    result = migrate_recipe_text(legacy)
+    doc = yaml.safe_load(result.text)
+    assert doc["roles"]["decode"]["nodes"] == "colocate"
+    # the derived split is written out: prefill kept its explicit 4, decode inherited it
+    assert doc["roles"]["prefill"]["gpus"] == 4
+    assert doc["roles"]["decode"]["gpus"] == 4
+    assert list(doc["roles"]["decode"])[:3] == ["nodes", "workers", "gpus"]
+    assert "decode_nodes" not in doc.get("resources", {})
+    assert any("nodes: colocate" in note for note in result.notes)
+    # and the migrated document resolves to the same config as the v1 text
+    verified = verify_migration_text(legacy)
+    assert verified.status == "ok", verified.detail
+
+
 def test_migrate_is_idempotent_and_layout_folds_apply_to_schema_2_documents() -> None:
     once = migrate_recipe_text(LEGACY)
     twice = migrate_recipe_text(once.text)

@@ -15,7 +15,7 @@ A recipe can group everything about a worker role under one block::
         args:
           tensor-parallel-size: 2
       decode:
-        nodes: 0
+        nodes: colocate
         workers: 2
         gpus: 2
         args:
@@ -31,6 +31,13 @@ migrate a v1 recipe and to prove the two forms are equivalent.
 Role names are ``prefill``, ``decode``, and ``agg``. The aggregated role is
 ``agg`` here (matching ``resources.agg_*``); it maps to the ``aggregated`` key in
 ``backend.aggregated_environment`` and ``backend.<engine>_config.aggregated``.
+
+``decode.nodes: colocate`` places the decode workers on the prefill nodes' spare
+GPUs instead of reserving nodes for them. It normalizes to the v1 sentinel
+``resources.decode_nodes: 0``; under ``roles:`` the sentinel itself is rejected
+so the intent is always spelled out. A colocated recipe must give ``gpus`` on
+both prefill and decode, and :class:`~srtctl.core.schema.SrtConfig` rejects a
+colocated layout whose workers do not fit on the prefill nodes.
 
 The engine itself is a top-level ``engine:`` key in 2.0 (a string, or a mapping
 with ``type`` plus engine-wide knobs such as vLLM's ``connector``); it maps onto
@@ -56,6 +63,9 @@ _ALL_ENGINE_CONFIG_KEYS = frozenset(ENGINE_CONFIG_KEY.values())
 # roles: role name -> the mode name used in backend env / engine-config keys.
 ROLE_TO_MODE: dict[str, str] = {"prefill": "prefill", "decode": "decode", "agg": "aggregated"}
 ROLE_NAMES: tuple[str, ...] = ("prefill", "decode", "agg")
+
+# ``roles.decode.nodes`` value meaning "share the prefill nodes"; expands to ``decode_nodes: 0``.
+COLOCATE = "colocate"
 
 # Per-role spec keys.
 _ROLE_SPEC_KEYS = frozenset({"nodes", "workers", "gpus", "env", "args", "extra_args", "engine", "kv_events", "sidecar"})
@@ -144,6 +154,29 @@ def _legacy_targets_present(config: dict[str, Any]) -> list[str]:
     return present
 
 
+def _expand_nodes(role_name: str, value: Any) -> int:
+    """Map ``roles.<role>.nodes`` onto ``resources.<role>_nodes``.
+
+    ``colocate`` is only meaningful for ``decode`` (share the prefill nodes) and
+    becomes the v1 sentinel ``0``. The bare ``0`` is rejected under ``roles:``.
+    """
+    if isinstance(value, str):
+        if value.strip().lower() == COLOCATE:
+            if role_name != "decode":
+                raise ValueError(f"roles.{role_name}.nodes: only the decode role can colocate (on the prefill nodes)")
+            return 0
+        raise ValueError(f"roles.{role_name}.nodes must be a positive integer or 'colocate'; got {value!r}")
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"roles.{role_name}.nodes must be a positive integer or 'colocate'; got {value!r}")
+    if value == 0:
+        if role_name == "decode":
+            raise ValueError("roles.decode.nodes: 0 is not accepted; write nodes: colocate to share the prefill nodes")
+        raise ValueError(f"roles.{role_name}.nodes must be at least 1; got 0")
+    if value < 0:
+        raise ValueError(f"roles.{role_name}.nodes must be at least 1; got {value}")
+    return value
+
+
 def expand_roles(config: dict[str, Any]) -> dict[str, Any]:
     """Normalize a ``roles:`` block into the existing internal fields, in place.
 
@@ -178,7 +211,7 @@ def expand_roles(config: dict[str, Any]) -> dict[str, Any]:
 
         mode = ROLE_TO_MODE[role_name]
         if "nodes" in spec:
-            resources[f"{role_name}_nodes"] = spec["nodes"]
+            resources[f"{role_name}_nodes"] = _expand_nodes(role_name, spec["nodes"])
         if "workers" in spec:
             resources[f"{role_name}_workers"] = spec["workers"]
         if "gpus" in spec:
@@ -195,6 +228,17 @@ def expand_roles(config: dict[str, Any]) -> dict[str, Any]:
             if not isinstance(kv_events, dict):
                 raise ValueError("roles.*.kv_events cannot be combined with a boolean backend.kv_events_config")
             kv_events[mode] = spec["kv_events"]
+
+    decode_spec = roles.get("decode")
+    if isinstance(decode_spec, dict) and resources.get("decode_nodes") == 0:
+        # A colocated split cannot be derived: the per-node formula would hand prefill every GPU
+        # and the decode size would silently inherit it. Both roles must state their worker size.
+        missing = [role for role in ("prefill", "decode") if "gpus" not in (roles.get(role) or {})]
+        if missing:
+            raise ValueError(
+                "roles.decode.nodes: colocate requires an explicit gpus: on both prefill and decode "
+                f"(missing on {', '.join(missing)}); the GPU split is validated against the prefill nodes at load"
+            )
 
     sidecars = {bool(spec["sidecar"]) for spec in roles.values() if isinstance(spec, dict) and "sidecar" in spec}
     if len(sidecars) > 1:
@@ -223,7 +267,8 @@ def roles_from_legacy(config: dict[str, Any]) -> dict[str, Any]:
         mode = ROLE_TO_MODE[role_name]
         spec: dict[str, Any] = {}
         if f"{role_name}_nodes" in resources:
-            spec["nodes"] = resources[f"{role_name}_nodes"]
+            nodes = resources[f"{role_name}_nodes"]
+            spec["nodes"] = COLOCATE if role_name == "decode" and nodes == 0 else nodes
         if f"{role_name}_workers" in resources:
             spec["workers"] = resources[f"{role_name}_workers"]
         if f"gpus_per_{role_name}" in resources:

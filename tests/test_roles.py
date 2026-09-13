@@ -56,7 +56,7 @@ def _roles_sglang_disagg() -> dict:
                 "args": {"tensor-parallel-size": 2, "disaggregation-mode": "prefill"},
             },
             "decode": {
-                "nodes": 0,
+                "nodes": "colocate",
                 "workers": 2,
                 "gpus": 2,
                 "env": {"PYTHONUNBUFFERED": "1"},
@@ -137,11 +137,82 @@ def test_no_roles_block_is_a_no_op() -> None:
     assert expand_roles(copy.deepcopy(legacy)) == legacy
 
 
-def test_decode_nodes_zero_shared_node_survives() -> None:
-    config = {"backend": {"type": "sglang"}, "roles": {"decode": {"nodes": 0, "workers": 2}}}
+def test_decode_colocate_expands_to_the_v1_sentinel() -> None:
+    config = {
+        "backend": {"type": "sglang"},
+        "roles": {
+            "prefill": {"nodes": 1, "workers": 1, "gpus": 4},
+            "decode": {"nodes": "colocate", "workers": 2, "gpus": 2},
+        },
+    }
     expand_roles(config)
     assert config["resources"]["decode_nodes"] == 0
     assert config["resources"]["decode_workers"] == 2
+    assert config["resources"]["gpus_per_decode"] == 2
+
+
+def test_colocate_requires_explicit_gpus_on_both_roles() -> None:
+    for prefill, decode, missing in (
+        ({"nodes": 1, "workers": 1}, {"nodes": "colocate", "workers": 1, "gpus": 2}, "prefill"),
+        ({"nodes": 1, "workers": 1, "gpus": 2}, {"nodes": "colocate", "workers": 1}, "decode"),
+        ({"nodes": 1, "workers": 1}, {"nodes": "colocate", "workers": 1}, "prefill, decode"),
+    ):
+        with pytest.raises(ValueError, match=f"explicit gpus: on both prefill and decode \\(missing on {missing}\\)"):
+            expand_roles({"backend": {"type": "sglang"}, "roles": {"prefill": prefill, "decode": decode}})
+
+
+def test_roles_reject_the_bare_zero_and_colocate_outside_decode() -> None:
+    with pytest.raises(ValueError, match="nodes: colocate"):
+        expand_roles({"backend": {"type": "sglang"}, "roles": {"decode": {"nodes": 0, "workers": 2}}})
+    with pytest.raises(ValueError, match="only the decode role can colocate"):
+        expand_roles({"backend": {"type": "sglang"}, "roles": {"prefill": {"nodes": "colocate", "workers": 1}}})
+    with pytest.raises(ValueError, match="at least 1"):
+        expand_roles({"backend": {"type": "sglang"}, "roles": {"prefill": {"nodes": 0, "workers": 1}}})
+    with pytest.raises(ValueError, match="positive integer or 'colocate'"):
+        expand_roles({"backend": {"type": "sglang"}, "roles": {"decode": {"nodes": "shared", "workers": 1}}})
+
+
+def test_legacy_decode_nodes_zero_migrates_to_colocate() -> None:
+    as_roles = roles_from_legacy(_legacy_sglang_disagg())
+    assert as_roles["roles"]["decode"]["nodes"] == "colocate"
+    assert as_roles["roles"]["prefill"]["nodes"] == 2
+
+
+def _colocated(
+    prefill_nodes: int, prefill_workers: int, prefill_gpus: int, decode_workers: int, decode_gpus: int
+) -> dict:
+    config = _roles_sglang_disagg()
+    config["roles"]["prefill"].update({"nodes": prefill_nodes, "workers": prefill_workers, "gpus": prefill_gpus})
+    config["roles"]["decode"].update({"workers": decode_workers, "gpus": decode_gpus})
+    return expand_roles(config)
+
+
+def test_colocated_decode_that_fits_loads() -> None:
+    # 1 node x 8 GPUs: 1 prefill x 4 + 2 decode x 2 = 8
+    cfg = SrtConfig.Schema().load(_colocated(1, 1, 4, 2, 2))
+    assert cfg.resources.total_nodes == 1
+    # legacy spelling keeps working
+    legacy = _legacy_sglang_disagg()
+    legacy["resources"].update({"prefill_nodes": 1, "prefill_workers": 1, "gpus_per_prefill": 4})
+    assert SrtConfig.Schema().load(legacy).resources.decode_nodes == 0
+
+
+def test_colocated_decode_that_oversubscribes_is_rejected_at_load() -> None:
+    from marshmallow import ValidationError
+
+    # 1 node x 8 GPUs: 1 prefill x 6 + 1 decode x 4 = 10 > 8
+    with pytest.raises(ValidationError, match="do not fit on the prefill nodes.*10 GPU"):
+        SrtConfig.Schema().load(_colocated(1, 1, 6, 1, 4))
+    # 2 nodes x 8 GPUs: 2 prefill x 5 leave 3 free per node; a 4-GPU decode worker cannot be packed
+    with pytest.raises(ValidationError, match="cannot be packed onto the prefill nodes"):
+        SrtConfig.Schema().load(_colocated(2, 2, 5, 1, 4))
+    # the same layout with legacy fields is rejected too (it would die in the job otherwise)
+    legacy = _legacy_sglang_disagg()
+    legacy["resources"].update(
+        {"prefill_nodes": 1, "prefill_workers": 1, "gpus_per_prefill": 6, "gpus_per_decode": 4, "decode_workers": 1}
+    )
+    with pytest.raises(ValidationError, match="do not fit"):
+        SrtConfig.Schema().load(legacy)
 
 
 def test_preflight_topology_reads_expanded_roles(tmp_path) -> None:

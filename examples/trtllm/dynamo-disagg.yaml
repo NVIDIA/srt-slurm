@@ -1,7 +1,7 @@
 # TRT-LLM disaggregated prefill/decode behind the Dynamo frontend.
 #
 # One TP1 prefill and one TP1 decode `dynamo.trtllm` worker sharing a node
-# (`decode_nodes: 0` places decode on the prefill node's spare GPUs). KV moves
+# (`nodes: colocate` places decode on the prefill node's spare GPUs). KV moves
 # through the UCX cache transceiver; the Dynamo frontend routes with
 # `--router-mode kv`. Dynamo TRT-LLM runtime images already ship `ai-dynamo`.
 #
@@ -54,7 +54,7 @@ roles:
       cache_transceiver_config:
         backend: "UCX"
   decode:
-    nodes: 0
+    nodes: colocate
     workers: 1
     gpus: 1
     env:

@@ -1,6 +1,6 @@
 # SGLang disaggregated prefill/decode behind the Dynamo frontend.
 #
-# One TP1 prefill worker and one TP1 decode worker sharing a node (`decode_nodes: 0`
+# One TP1 prefill worker and one TP1 decode worker sharing a node (`nodes: colocate`
 # places decode on the prefill node's spare GPUs). Both run `dynamo.sglang`; the
 # Dynamo frontend routes with `--router-mode kv` and dispatches prefill to the
 # prefill pool. srtctl adds `--disaggregation-mode` and the bootstrap port.
@@ -46,7 +46,7 @@ roles:
       context-length: 4096
       disable-piecewise-cuda-graph: true
   decode:
-    nodes: 0
+    nodes: colocate
     workers: 1
     gpus: 1
     env:

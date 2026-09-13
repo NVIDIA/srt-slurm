@@ -1,7 +1,7 @@
 # vLLM disaggregated prefill/decode behind the Dynamo frontend.
 #
 # One TP1 prefill and one TP1 decode `dynamo.vllm` worker sharing a node
-# (`decode_nodes: 0` places decode on the prefill node's spare GPUs). KV moves over
+# (`nodes: colocate` places decode on the prefill node's spare GPUs). KV moves over
 # the NIXL connector; the Dynamo frontend routes with `--router-mode kv`.
 #
 # Aliases (`qwen3-0.6b`, `vllm`) resolve through srtslurm.yaml; see examples/README.md.
@@ -47,7 +47,7 @@ roles:
       gpu-memory-utilization: 0.5
       max-model-len: 4096
   decode:
-    nodes: 0
+    nodes: colocate
     workers: 1
     gpus: 1
     env:

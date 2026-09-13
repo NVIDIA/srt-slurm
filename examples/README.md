@@ -16,7 +16,7 @@ Small, runnable starting points, one per frontend and topology. Every example se
 - **Router-free direct**: one worker owns the public port. `frontend.type: vllm` and `frontend.type: trtllm_serve` in aggregate mode launch no router process.
 - **Mocker**: `dynamo.mocker` stands in for an engine, so the whole orchestration path runs without loading weights. The fastest way to validate a cluster config.
 
-Aggregated examples run two TP1 workers; disaggregated examples run one TP1 prefill and one TP1 decode worker on the same node (`decode_nodes: 0` places decode on the prefill node's spare GPUs).
+Aggregated examples run two TP1 workers; disaggregated examples run one TP1 prefill and one TP1 decode worker on the same node (`decode.nodes: colocate` places decode on the prefill node's spare GPUs).
 
 Every example is written in the 2.0 layout: `engine:` names the engine (a string, or a mapping with engine-wide knobs), `roles:` holds everything about each worker role, and there is no `backend:` block. `features/override.yaml` is the exception, kept in the v1 layout to show that it still loads.
 

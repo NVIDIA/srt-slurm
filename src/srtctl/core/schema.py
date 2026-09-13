@@ -2115,6 +2115,7 @@ class SrtConfig:
         self._validate_telemetry()
         self._validate_mooncake_kv_store()
         self._validate_het_jobs()
+        self._validate_colocated_decode()
         self._validate_dedicated_node_placement()
         self._validate_trtllm_serve()
         self._validate_vllm_frontend()
@@ -2398,6 +2399,52 @@ class SrtConfig:
                 "frontend.dedicated_node/benchmark.client_dedicated_node are not supported together with "
                 "het_jobs=true (a dedicated frontend/client node is not carved out of a het allocation)"
             )
+
+    def _validate_colocated_decode(self) -> None:
+        """A colocated decode layout (``decode_nodes: 0``, ``roles.decode.nodes: colocate``)
+        reserves no nodes of its own, so every decode worker has to fit on the GPUs the
+        prefill workers leave free. Run the backend's real packer against a placeholder
+        node list of ``prefill_nodes`` entries and turn its failure into a load-time error
+        instead of a ``Not enough nodes`` crash inside the SLURM job.
+        """
+        res = self.resources
+        if not res.is_disaggregated or res.decode_nodes != 0 or not res.num_decode:
+            return
+        if (res.prefill_nodes or 0) < 1 or not res.num_prefill:
+            raise ValidationError(
+                "decode colocation (roles.decode.nodes: colocate / resources.decode_nodes: 0) needs at least "
+                "one prefill node and one prefill worker to share"
+            )
+        if self.total_nodes != res.total_nodes:
+            return  # the backend packs prefill and decode across extra nodes itself (vLLM)
+        capacity = res.prefill_nodes * res.gpus_per_node
+        demand = res.prefill_gpus + res.decode_gpus
+        layout = (
+            f"{res.num_prefill} prefill x {res.gpus_per_prefill} GPU(s) + "
+            f"{res.num_decode} decode x {res.gpus_per_decode} GPU(s) = {demand} GPU(s) on "
+            f"{res.prefill_nodes} node(s) x {res.gpus_per_node} GPU(s) = {capacity} GPU(s)"
+        )
+        if demand > capacity:
+            raise ValidationError(f"colocated decode workers do not fit on the prefill nodes: {layout}")
+        try:
+            self.backend.allocate_endpoints(
+                num_prefill=res.num_prefill,
+                num_decode=res.num_decode,
+                num_agg=0,
+                gpus_per_prefill=res.gpus_per_prefill,
+                gpus_per_decode=res.gpus_per_decode,
+                gpus_per_agg=res.gpus_per_agg,
+                gpus_per_node=res.gpus_per_node,
+                available_nodes=[f"node{i}" for i in range(res.prefill_nodes)],
+                spread_workers=res.spread_workers,
+            )
+        except (ValueError, IndexError) as exc:
+            # The packer raises ValueError when it runs out of nodes and IndexError when a
+            # partial-node worker overflows the last node; both mean "does not fit".
+            detail = str(exc) or "ran out of free GPUs on the prefill nodes"
+            raise ValidationError(
+                f"colocated decode workers cannot be packed onto the prefill nodes ({layout}): {detail}"
+            ) from exc
 
     def _validate_dedicated_node_placement(self):
         """A dedicated node is wasted if a placement override routes the

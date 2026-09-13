@@ -36,7 +36,7 @@ from typing import Any
 
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
-from srtctl.core.roles import ENGINE_CONFIG_KEY, ROLE_NAMES, ROLE_TO_MODE
+from srtctl.core.roles import COLOCATE, ENGINE_CONFIG_KEY, ROLE_NAMES, ROLE_TO_MODE
 from srtctl.core.schema import CURRENT_SCHEMA_VERSION, SUPPORTED_SCHEMA_VERSIONS
 from srtctl.core.yaml_utils import dump_yaml_with_comments, load_yaml_text_with_comments
 
@@ -64,6 +64,15 @@ def _move(src: CommentedMap, key: str, dst: CommentedMap, new_key: str) -> None:
     dst[new_key] = value
     if key in src.ca.items:
         dst.ca.items[new_key] = src.ca.items.pop(key)
+
+
+def _insert_after(mapping: CommentedMap, anchor: str, key: str, value: Any) -> None:
+    """Insert ``key`` right after ``anchor`` (or append when the anchor is absent)."""
+    keys = list(mapping.keys())
+    if anchor in keys:
+        mapping.insert(keys.index(anchor) + 1, key, value)
+    else:
+        mapping[key] = value
 
 
 def _child_map(parent: CommentedMap, key: str, *, after: str | None = None) -> CommentedMap:
@@ -208,6 +217,30 @@ def _fold_roles(variant: CommentedMap, engine_key: str, label: str) -> list[str]
                 src.ca.items.pop(legacy, None)
                 continue
             _move(src, legacy, spec, new)
+        if role == "decode" and spec.get("nodes") == 0:
+            # roles: spells shared-node decode as `nodes: colocate`; the bare v1 sentinel is rejected there,
+            # and a colocated split must state gpus on both roles. Materialize what v1 derived implicitly:
+            # prefill = prefill_nodes * gpus_per_node // prefill_workers, decode inherits prefill.
+            spec["nodes"] = COLOCATE
+            notes.append(f"{label}rewrote roles.decode.nodes: 0 as nodes: colocate")
+            prefill_spec = roles.get("prefill") if roles is not None else None
+            gpus_per_node = resources.get("gpus_per_node") if resources is not None else None
+            if isinstance(prefill_spec, CommentedMap) and isinstance(gpus_per_node, int):
+                if "gpus" not in prefill_spec:
+                    prefill_nodes, prefill_workers = prefill_spec.get("nodes"), prefill_spec.get("workers")
+                    if isinstance(prefill_nodes, int) and isinstance(prefill_workers, int) and prefill_workers > 0:
+                        _insert_after(
+                            prefill_spec, "workers", "gpus", (prefill_nodes * gpus_per_node) // prefill_workers
+                        )
+                        notes.append(f"{label}materialized roles.prefill.gpus: {prefill_spec['gpus']} (v1 derived it)")
+                if "gpus" not in spec and "gpus" in prefill_spec:
+                    _insert_after(spec, "workers", "gpus", prefill_spec["gpus"])
+                    notes.append(f"{label}materialized roles.decode.gpus: {spec['gpus']} (v1 inherited prefill)")
+            elif "gpus" not in spec or not (isinstance(prefill_spec, CommentedMap) and "gpus" in prefill_spec):
+                notes.append(
+                    f"{label}roles.decode.nodes: colocate needs gpus: on prefill and decode; "
+                    "set them by hand (gpus_per_node is not in this recipe)"
+                )
         notes.append(f"{label}folded {role} fields into roles.{role}")
 
     if backend is not None:
@@ -636,6 +669,14 @@ def _resolved_dump(raw: dict[str, Any]) -> dict[str, Any]:
         backend["kv_events_config"] = {
             mode: loaded.backend.get_kv_events_config_for_mode(mode) for mode, count in active.items() if count > 0
         }
+    # Worker GPU sizes are compared by effect: v1 derived them from nodes / workers
+    # (and let colocated decode inherit prefill); the migrator writes the same
+    # numbers out explicitly for `nodes: colocate`, which the job launches identically.
+    resources = dumped.get("resources")
+    if isinstance(resources, dict):
+        for role in ("prefill", "decode", "agg"):
+            if getattr(loaded.resources, f"num_{role}", 0):
+                resources[f"gpus_per_{role}"] = getattr(loaded.resources, f"gpus_per_{role}")
     # services are compared by effect: the list the job would run, implied ones
     # included, so `infra:` and declared etcd/nats entries (or mooncake_kv_store
     # and a declared master) resolve to the same thing.

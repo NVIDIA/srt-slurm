@@ -1,7 +1,7 @@
 # TRT-LLM disaggregated prefill/decode, fronted by `trtllm-serve disaggregated`.
 #
 # One TP1 context (prefill) and one TP1 generation (decode) `trtllm-serve` worker
-# sharing a node (`decode_nodes: 0` places decode on the prefill node's spare
+# sharing a node (`nodes: colocate` places decode on the prefill node's spare
 # GPUs). srtctl writes the static ser.yaml listing both server URLs and launches
 # `trtllm-serve disaggregated --config ser.yaml` on the head node as the router.
 # KV moves through the UCX cache transceiver. No Dynamo, NATS, or etcd.
@@ -50,7 +50,7 @@ roles:
       cache_transceiver_config:
         backend: "UCX"
   decode:
-    nodes: 0
+    nodes: colocate
     workers: 1
     gpus: 1
     env:

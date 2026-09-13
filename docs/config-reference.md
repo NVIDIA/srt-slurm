@@ -249,7 +249,7 @@ roles:
       tensor-parallel-size: 2
       disaggregation-mode: prefill
   decode:
-    nodes: 0          # 0 shares the prefill node's spare GPUs
+    nodes: colocate   # share the prefill nodes' spare GPUs (-> resources.decode_nodes: 0)
     workers: 2
     gpus: 2
     env:
@@ -261,7 +261,7 @@ roles:
 
 `env` and `args` are ordinary YAML mappings, written exactly as `backend.prefill_environment` and `backend.sglang_config.prefill` were. Nothing needs JSON or inline `{}` syntax.
 
-Role names are `prefill`, `decode`, and `agg`. The aggregated role is `agg` (matching `resources.agg_*`); its `env` and `args` map to `backend.aggregated_environment` and `backend.<engine>_config.aggregated`. Per-role `extra_args` maps to `backend.<mode>_extra_args` (TRT-LLM). `roles:` is normalized into those fields before validation, so it is exactly equivalent to writing them directly; you cannot set both for the same role.
+Role names are `prefill`, `decode`, and `agg`. The aggregated role is `agg` (matching `resources.agg_*`); its `env` and `args` map to `backend.aggregated_environment` and `backend.<engine>_config.aggregated`. Per-role `extra_args` maps to `backend.<mode>_extra_args` (TRT-LLM). `roles:` is normalized into those fields before validation, so it is exactly equivalent to writing them directly; you cannot set both for the same role. `nodes` is a positive integer, or `colocate` on the decode role only: decode then reserves no nodes and is packed onto the prefill nodes' free GPUs (`resources.decode_nodes: 0`); a bare `nodes: 0` is rejected under `roles:`. A colocated recipe must set `gpus` on both prefill and decode (the per-node formula cannot derive a split), and loading fails if that split does not fit on the prefill nodes.
 
 Two more per-role keys replace job-wide knobs:
 
@@ -345,7 +345,7 @@ resources:
 
 **Notes**:
 
-- Set `decode_nodes: 0` to have decode workers share nodes with prefill workers.
+- Set `decode_nodes: 0` (v1) or `roles.decode.nodes: colocate` (2.0) to have decode workers share nodes with prefill workers. Loading fails if the decode workers do not fit on the GPUs the prefill workers leave free, using the backend's real packing, so an oversubscribed layout is caught by `srtctl dry-run` instead of by the job.
 - Either use disaggregated mode (prefill_nodes/decode_nodes) OR aggregated mode (agg_nodes), not both.
 - GPUs per worker are computed automatically: `(nodes * gpus_per_node) / workers`
 - Use `gpus_per_prefill`, `gpus_per_decode`, `gpus_per_agg` to explicitly override the computed values
