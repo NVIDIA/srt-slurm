@@ -211,6 +211,18 @@ class VLLMMooncakeKVStoreConfig:
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
+    def validate_device_mapping(self, gpus_per_node: int) -> None:
+        """Validate an opt-in physical GPU map before allocation and at launch."""
+        devices = self.device_names_by_gpu
+        if not devices:
+            return
+        if len(devices) != gpus_per_node:
+            raise ValueError("mooncake device_names_by_gpu must have one entry per physical GPU on each node")
+        if any(not isinstance(d, str) or not d or any(c.isspace() for c in d) or "," in d for d in devices):
+            raise ValueError(
+                "mooncake device_names_by_gpu entries must be single nonempty device names without whitespace"
+            )
+
 
 @dataclass(frozen=True)
 class VLLMServerConfig:
@@ -551,11 +563,8 @@ class VLLMProtocol:
         """
         if self.mooncake_kv_store is None or not self.mooncake_kv_store.device_names_by_gpu:
             return None
+        self.mooncake_kv_store.validate_device_mapping(gpus_per_node)
         devices = self.mooncake_kv_store.device_names_by_gpu
-        if len(devices) != gpus_per_node:
-            raise ValueError("mooncake device_names_by_gpu must have one entry per physical GPU on each node")
-        if any(not d.strip() or d != d.strip() or "," in d for d in devices):
-            raise ValueError("mooncake device_names_by_gpu entries must be single nonempty device names")
         gpu_ids = sorted(process.gpu_indices)
         if not gpu_ids or any(gpu < 0 or gpu >= len(devices) for gpu in gpu_ids):
             raise ValueError(f"mooncake device_names_by_gpu does not cover physical GPUs {gpu_ids}")

@@ -71,5 +71,8 @@ def expand_services(config: dict[str, Any]) -> dict[str, Any]:
         store_config = (master.get("options") or {}).get("store_config")
         if store_config:
             mapped["store_config"] = store_config
+        options = master.get("options") or {}
+        if "device_names_by_gpu" in options:
+            mapped["device_names_by_gpu"] = options["device_names_by_gpu"]
         backend["mooncake_kv_store"] = mapped
     return config

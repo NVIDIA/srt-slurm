@@ -2689,6 +2689,11 @@ class SrtConfig:
         mooncake_cfg = getattr(self.backend, "mooncake_kv_store", None)
         if mooncake_cfg is None:
             return
+        if isinstance(self.backend, VLLMProtocol):
+            try:
+                mooncake_cfg.validate_device_mapping(self.resources.gpus_per_node)
+            except ValueError as exc:
+                raise ValidationError(str(exc)) from exc
         if not self.resources.is_disaggregated:
             return
 
