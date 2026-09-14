@@ -140,7 +140,7 @@ Dynamo installation configuration.
 | `sidecar` | bool | `False` |  |
 | `sidecar_port` | int | `50051` |  |
 | `sidecar_binary` | str \| None | `None` |  |
-| `sidecar_startup_timeout` | int | `1200` |  |
+| `sidecar_startup_timeout` | int | `3600` |  |
 | `sidecar_context_length` | int \| None | `None` |  |
 | `sidecar_args` | list[str] | `[]` |  |
 

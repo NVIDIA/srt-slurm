@@ -1033,7 +1033,7 @@ dynamo:
 | `sidecar_port`           | int          | 50051   | Base loopback gRPC port; co-located workers receive deterministic offsets |
 | `sidecar_binary`         | string/null  | null    | Optional standalone executable; null uses `python3 -m dynamo.<framework>.sidecar` |
 | `sidecar_args`           | list[string] | []      | Extra arguments passed to the sidecar launcher         |
-| `sidecar_startup_timeout` | int         | 1200    | Seconds to wait for the native gRPC endpoint            |
+| `sidecar_startup_timeout` | int         | 3600    | Seconds to wait for the native gRPC endpoint (1 hour)   |
 | `sidecar_context_length` | int/null     | null    | TRT-LLM context length override                         |
 
 | `source` key | Meaning |
