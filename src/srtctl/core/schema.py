@@ -336,6 +336,13 @@ class ClusterConfig:
     # Username" auth-prompt failures). See git_clone_command_prefix() in
     # core/config.py -- applied to every git clone/fetch srtctl performs.
     git_http_version: str | None = None
+    # Run the pre-submit model.path / model.container / telemetry filesystem
+    # checks on ``srtctl apply``. Set false on clusters whose model or image
+    # paths exist only on compute nodes (node-local NVMe such as /raid), where
+    # the login node cannot stat them; every apply then behaves as if
+    # --no-preflight had been passed. The framework still fails loudly at
+    # runtime if a path is genuinely missing on the compute node.
+    preflight: bool = True
 
     Schema: ClassVar[type[Schema]] = Schema
 

@@ -124,6 +124,10 @@ use_gpus_per_node_directive: true # Set false if cluster doesn't support --gpus-
 use_segment_sbatch_directive: true # Set false if cluster doesn't support --segment
 use_exclusive_sbatch_directive: false # Set true if cluster requires --exclusive
 
+# Pre-submit path checks. Set false when model/container paths exist only on
+# compute nodes (node-local NVMe), where the login node cannot stat them.
+preflight: true
+
 # Path to srtctl repo root (auto-set by make setup)
 srtctl_root: "/path/to/srtctl"
 

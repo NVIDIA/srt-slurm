@@ -4,6 +4,7 @@
 """Tests for configuration loading and validation."""
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -5179,3 +5180,56 @@ class TestBenchmarkTypeValidation:
         import srtctl.core.schema as schema_mod
 
         assert not hasattr(schema_mod, "BenchmarkType")
+
+
+class TestClusterConfigPreflight:
+    """`preflight: false` in srtslurm.yaml must be a declared key (an unknown key
+    rejects the whole file) and must switch the pre-submit check off in apply."""
+
+    def test_cluster_schema_accepts_the_key_and_defaults_on(self):
+        from srtctl.core.schema import ClusterConfig
+
+        assert ClusterConfig.Schema().load({}).preflight is True
+        assert ClusterConfig.Schema().load({"preflight": False}).preflight is False
+
+    def test_apply_skips_preflight_when_cluster_file_says_so(self, tmp_path, monkeypatch):
+        from unittest.mock import patch
+
+        import yaml
+
+        from srtctl.cli import submit as submit_cli
+
+        monkeypatch.delenv("SRTSLURM_CONFIG", raising=False)
+
+        cfg = tmp_path / "cfg.yaml"
+        cfg.write_text(
+            yaml.safe_dump(
+                {
+                    "schema": 2,
+                    "name": "cluster-preflight-off",
+                    "model": {"path": "/raid/only-on-compute", "container": "/c.sqsh", "precision": "fp8"},
+                    "resources": {"gpu_type": "h100", "gpus_per_node": 8},
+                    "frontend": {"type": "sglang", "enable_multiple_frontends": False},
+                    "engine": "sglang",
+                    "roles": {"agg": {"nodes": 1, "workers": 1, "gpus": 8}},
+                    "benchmark": {"type": "manual"},
+                }
+            )
+        )
+
+        def setting(key, default=None):
+            return False if key == "preflight" else default
+
+        seen = {}
+
+        def fake_submit(config_path, **kwargs):
+            seen.update(kwargs)
+            return None
+
+        monkeypatch.setattr(sys, "argv", ["srtctl", "apply", "-f", str(cfg), "-y"])
+        with (
+            patch("srtctl.cli.submit.get_srtslurm_setting", side_effect=setting),
+            patch("srtctl.cli.submit.submit_single", side_effect=fake_submit),
+        ):
+            submit_cli.main()
+        assert seen["enforce_preflight"] is False

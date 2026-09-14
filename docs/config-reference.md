@@ -142,6 +142,7 @@ The `srtslurm.yaml` file can contain the following fields:
 | `default_bash_preamble`         | string | Shell snippet prepended to every container srun       |
 | `default_host_setup`            | object | Commands run on every node's bare host, outside the container |
 | `nginx_raise_ulimit`          | bool   | Optional default for `frontend.nginx_raise_ulimit`  |
+| `preflight`                     | bool   | `false` skips the pre-submit path checks on every `apply` (default `true`) |
 
 **output_dir**: When set, job logs are written to `output_dir/{job_id}/logs` instead of `srtctl_root/outputs/{job_id}/logs`. Useful for CI/CD and ephemeral environments.
 
@@ -150,6 +151,8 @@ The `srtslurm.yaml` file can contain the following fields:
 **default_bash_preamble**: A shell snippet (e.g. `"ulimit -n 1048576 -s unlimited -u 1048576"`) prepended to every container srun launched by srtctl: workers, frontends, telemetry, benchmark, postprocess. Runs before per-call `bash_preamble` and the main command, so cluster-wide ulimits apply to everything downstream. Silently dropped for distroless containers (e.g. `prom/node-exporter`) that bypass the bash wrapper; a WARNING log is emitted in that case.
 
 **default_host_setup**: A [`host_setup`](#host_setup) block applied to every job on the cluster, for node state that has to be set outside the container, such as locking GPU clocks. A recipe that sets its own `host_setup:` block replaces it entirely; `host_setup: {commands: []}` opts a single run out.
+
+**preflight**: `srtctl apply` normally stats `model.path`, `model.container` and the telemetry images on the submitting node before calling sbatch. On clusters where those live only on compute nodes (node-local NVMe such as `/raid/models`), that check can never pass from the login node; set `preflight: false` and every `apply` behaves as if `--no-preflight` had been passed, with an INFO line saying so. Paths are still resolved at runtime and the framework fails loudly on the compute node if one is genuinely missing.
 
 **nginx_raise_ulimit**: When set to `true` or `false`, this value is applied to jobs that omit `frontend.nginx_raise_ulimit` in the recipe. Use `true` on clusters where raising the nginx container's open-file limit is allowed; leave unset if each job should rely on the frontend default (`false`). A recipe that sets `frontend.nginx_raise_ulimit` always wins.
 

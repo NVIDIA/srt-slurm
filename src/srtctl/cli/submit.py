@@ -2138,7 +2138,12 @@ def main():
             # to False on those subcommands; dry-run already implies no
             # enforcement via the is_dry_run branch below.
             no_preflight = getattr(args, "no_preflight", False)
-            enforce_preflight = not (mock_mode or is_dry_run or no_preflight)
+            # srtslurm.yaml `preflight: false` turns the check off cluster-wide
+            # (paths that exist only on compute nodes); same effect as the flag.
+            cluster_preflight = get_srtslurm_setting("preflight", True)
+            if cluster_preflight is False and not (mock_mode or is_dry_run or no_preflight):
+                logger.info("preflight skipped: srtslurm.yaml sets preflight: false")
+            enforce_preflight = not (mock_mode or is_dry_run or no_preflight or cluster_preflight is False)
 
             # Handle directory input
             if effective_config_path.is_dir():

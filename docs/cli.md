@@ -257,6 +257,7 @@ srtctl apply -f <config.yaml> [options]
 | `--set KEY=VALUE` | Override one recipe value by dotted path before validation (repeatable). Also on `dry-run`, `preflight`, `resolve-override` |
 | `--unset KEY` | Remove one recipe key by dotted path before validation (repeatable) |
 | `-y, --yes` | Skip confirmation prompts |
+| `--no-preflight` | Skip the pre-submit `model.path` / `model.container` / telemetry filesystem checks for this run. `preflight: false` in `srtslurm.yaml` does the same for every run on a cluster whose paths exist only on compute nodes |
 
 `--set` and `--unset` are the supported way to tweak a recipe from a script instead of editing the YAML. Paths are dotted, `[N]` indexes a list, and quotes protect a segment that contains dots (`container_mounts."/a/b.c"`). Values parse as YAML: `720` is an int, `"720"` a string, `[4, 8]` a list; a mapping such as `{"rope_type": "yarn"}` stays a literal string because that is how engine flags take JSON. Overrides are applied to the raw document before cluster defaults, sweep expansion, and validation, so an explicit `--set` always wins and `{placeholder}` values still expand. On an override file the value is written into `base` and every `override_*` / `zip_override_*` variant, so no variant can shadow it. The applied overrides are listed in each `--json` record as `applied_overrides`, and the `config.yaml` copied into the job directory reflects them. The source file is never modified.
 
