@@ -9,6 +9,7 @@ Implements BackendProtocol for SGLang inference serving with prefill/decode disa
 
 import builtins
 import json
+import logging
 from collections.abc import Sequence
 from dataclasses import field
 from pathlib import Path
@@ -30,6 +31,8 @@ from srtctl.ports import (
     SGLANG_DIST_INIT_PORT_BASE,
     SGLANG_NCCL_PORT_BASE,
 )
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from srtctl.backends.base import SrunConfig
@@ -521,6 +524,17 @@ class SGLangProtocol:
             kv_cfg["endpoint"] = f"tcp://*:{process.kv_events_port}"
             engine.extend(["--kv-events-config", json.dumps(kv_cfg)])
 
+        if not any(key in config for key in ("incremental-streaming-output", "incremental_streaming_output")):
+            # The Dynamo sidecar treats every gRPC chunk as a delta. Without this flag this SGLang
+            # build streams the cumulative text per chunk, so clients receive repeated prefixes and
+            # token counts balloon. Force delta streaming unless the recipe set the flag itself.
+            engine.append("--incremental-streaming-output")
+            logger.info(
+                "sglang %s worker %d: adding --incremental-streaming-output (required by the Dynamo sidecar; "
+                "set the role's args.incremental-streaming-output explicitly to override)",
+                mode,
+                process.endpoint_index,
+            )
         engine.extend(_config_to_cli_args(config))
         if not is_leader:
             return engine
