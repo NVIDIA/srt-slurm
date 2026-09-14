@@ -41,7 +41,7 @@ that has its `srtslurm.yaml`. `srtctl skill --target claude|codex|cursor` instal
 the in-package agent skill (how to author, validate, submit, and read back a run)
 into a project.
 
-Once allocated, workers launch inside containers, discover each other through ETCD and NATS, and begin serving. If you've configured a benchmark, it runs automatically against the serving endpoint and saves results to the log directory.
+Once allocated, workers launch inside containers, discover each other through etcd (NATS only when a recipe selects a NATS request or event plane), and begin serving. If you've configured a benchmark, it runs automatically against the serving endpoint and saves results to the log directory.
 
 ## Commands
 
