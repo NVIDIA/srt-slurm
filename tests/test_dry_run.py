@@ -648,12 +648,13 @@ class TestDryRunServices:
         assert "Services:" not in capsys.readouterr().out
 
     def test_implicit_services_are_listed_and_marked(self, capsys):
-        config = _make_config({"frontend": {"type": "dynamo"}})
+        config = _make_config({"frontend": {"type": "dynamo"}, "dynamo": {"request_plane": "nats"}})
         show_config_details(config)
         output = capsys.readouterr().out
         assert "Services:" in output
         assert "etcd" in output and "nats" in output
         assert "implied by: frontend.type dynamo" in output
+        assert "implied by: dynamo.request_plane nats" in output
         assert "/configs/etcd" in output
         assert "dcgm-exporter" in output and "node-exporter" in output
         assert "implied by: observability.tachometer default exporters" in output

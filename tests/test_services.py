@@ -220,7 +220,7 @@ services:
     assert kw["command"] == ["python3", "-m", "router", "--node", "node0", "--infra", "10.0.0.10"]
     assert kw["container_image"] == "/job.sqsh"
     assert kw["env_to_set"]["ETCD_ENDPOINTS"] == "http://node0:2379"
-    assert kw["env_to_set"]["NATS_SERVER"] == "nats://node0:4222"
+    assert "NATS_SERVER" not in kw["env_to_set"]  # tcp request plane, direct-ZMQ events: no NATS runs
     assert kw["env_to_set"]["LOG_LEVEL"] == "debug"
     assert kw["bash_preamble"] is None
     (proc,) = procs
@@ -550,10 +550,18 @@ def _names(config: SrtConfig) -> list[tuple[str, bool]]:
 
 
 def test_dynamo_frontend_implies_etcd_and_nats_on_the_infra_node(tmp_path: Path) -> None:
-    config = _load("")  # frontend defaults to dynamo
-    assert _names(config) == [("etcd", True), ("nats", True)]
+    config = _load("")  # frontend defaults to dynamo; request plane defaults to tcp
+    assert _names(config) == [("etcd", True)]
     assert uses_discovery_plane(config)
+    # NATS is implied only when a plane rides on it.
+    for extra in ("dynamo:\n  request_plane: nats\n", "dynamo:\n  event_plane: nats\n"):
+        with_nats = _load(extra)
+        assert _names(with_nats) == [("etcd", True), ("nats", True)]
+        reasons = {e.service.name: e.reason for e in effective_services(with_nats)}
+        assert reasons["nats"].startswith("dynamo.")
 
+    # With a NATS request plane both discovery services launch on the infra node.
+    config = _load("dynamo:\n  request_plane: nats\n")
     orchestrator = _orchestrator(config, tmp_path)
     with (
         patch(SRUN, return_value=_proc()) as srun,
@@ -597,7 +605,7 @@ def test_static_frontend_implies_no_discovery_plane(tmp_path: Path) -> None:
 
 def test_declared_etcd_takes_over_and_external_is_not_launched(tmp_path: Path) -> None:
     config = _load("services:\n  - name: etcd\n    type: etcd\n    external: http://etcd.shared:2379\n")
-    assert _names(config) == [("etcd", False), ("nats", True)]
+    assert _names(config) == [("etcd", False)]
     orchestrator = _orchestrator(config, tmp_path)
     with (
         patch(SRUN, return_value=_proc()) as srun,
@@ -605,12 +613,9 @@ def test_declared_etcd_takes_over_and_external_is_not_launched(tmp_path: Path) -
         patch(WAIT, return_value=True),
     ):
         procs = orchestrator.start_services("infra")
-    assert [p.name for p in procs] == ["service_nats"]
-    assert srun.call_count == 1
-    assert discovery_env(config, orchestrator.runtime) == {
-        "ETCD_ENDPOINTS": "http://etcd.shared:2379",
-        "NATS_SERVER": "nats://node0:4222",
-    }
+    assert procs == []  # external etcd, and no NATS on the default tcp plane
+    assert srun.call_count == 0
+    assert discovery_env(config, orchestrator.runtime) == {"ETCD_ENDPOINTS": "http://etcd.shared:2379"}
 
 
 def test_enabled_false_drops_an_implicit_service() -> None:

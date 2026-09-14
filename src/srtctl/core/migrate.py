@@ -280,6 +280,20 @@ def _uses_discovery_plane(variant: CommentedMap, base: CommentedMap) -> bool:
     return True
 
 
+def _wants_nats(variant: CommentedMap, base: CommentedMap, infra: Any) -> bool:
+    """Whether the migrated recipe should declare a ``nats`` service at all.
+
+    Mirrors :func:`srtctl.services.implicit.nats_implied_reasons`: only a NATS request or
+    event plane, or a ``nats_max_payload_mb`` knob, means NATS was in use. Everything else
+    ran NATS for nothing under v1 and gets etcd alone in 2.0.
+    """
+    for source in (variant, base):
+        dynamo = source.get("dynamo") if isinstance(source, dict) else None
+        if isinstance(dynamo, dict) and (dynamo.get("request_plane") == "nats" or dynamo.get("event_plane") == "nats"):
+            return True
+    return isinstance(infra, dict) and infra.get("nats_max_payload_mb") is not None
+
+
 def _fold_infra_services(variant: CommentedMap, base: CommentedMap, label: str, *, is_override: bool) -> list[str]:
     """``infra:`` -> ``etcd`` and ``nats`` services.
 
@@ -319,9 +333,10 @@ def _fold_infra_services(variant: CommentedMap, base: CommentedMap, label: str, 
     if infra is None:
         if is_override:
             services = _services_list(variant, near="infra")
-            for name in ("etcd", "nats"):
+            names = ("etcd", "nats") if _wants_nats(variant, base, base.get("infra")) else ("etcd",)
+            for name in names:
                 _child_map(_service_entry(services, name), "placement")["node"] = "infra"
-            notes.append(f"{label}infra: null -> services etcd/nats placement.node: infra")
+            notes.append(f"{label}infra: null -> services {'/'.join(names)} placement.node: infra")
         variant.pop("infra")
         variant.ca.items.pop("infra", None)
         return notes
@@ -343,11 +358,13 @@ def _fold_infra_services(variant: CommentedMap, base: CommentedMap, label: str, 
 
     if dedicated or payload is not None or (dedicated is False and is_override):
         services = _services_list(variant, near="infra")
+        wants_nats = payload is not None or _wants_nats(variant, base, {"nats_max_payload_mb": payload})
+        names = ("etcd", "nats") if wants_nats else ("etcd",)
         if dedicated is not None:
             node = "dedicated" if dedicated else "infra"
-            for name in ("etcd", "nats"):
+            for name in names:
                 _child_map(_service_entry(services, name), "placement")["node"] = node
-            notes.append(f"{label}infra.etcd_nats_dedicated_node -> services etcd/nats placement.node: {node}")
+            notes.append(f"{label}infra.etcd_nats_dedicated_node -> services {'/'.join(names)} placement.node: {node}")
         if payload is not None:
             _child_map(_service_entry(services, "nats"), "options")["max_payload_mb"] = payload
             notes.append(f"{label}infra.nats_max_payload_mb -> services nats options.max_payload_mb")

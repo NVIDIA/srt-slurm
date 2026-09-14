@@ -81,7 +81,6 @@ def test_migrate_folds_roles_placement_source_and_strips_unused_benchmark_fields
     assert "infra" not in doc
     assert doc["services"] == [
         {"name": "etcd", "type": "etcd", "placement": {"node": "dedicated"}},
-        {"name": "nats", "type": "nats", "placement": {"node": "dedicated"}},
     ]
     assert doc["dynamo"] == {"install": True, "source": {"rev": "abc1234", "patches": ["x = 1"]}}
     assert doc["benchmark"] == {"type": "gsm8k", "num_examples": 100, "placement": {"node": "last_decode"}}
@@ -230,10 +229,9 @@ override_deleted:
   infra: null
 """
     doc = yaml.safe_load(migrate_recipe_text(text).text)
-    assert doc["base"]["services"][0]["placement"] == {"node": "dedicated"}
+    assert doc["base"]["services"] == [{"name": "etcd", "type": "etcd", "placement": {"node": "dedicated"}}]
     assert doc["override_shared"]["services"] == [
         {"name": "etcd", "type": "etcd", "placement": {"node": "infra"}},
-        {"name": "nats", "type": "nats", "placement": {"node": "infra"}},
     ]
     assert doc["override_deleted"]["services"] == doc["override_shared"]["services"]
     assert "infra" not in doc["override_deleted"]

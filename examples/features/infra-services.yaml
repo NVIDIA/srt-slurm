@@ -1,11 +1,13 @@
 # The discovery plane and the metrics exporters as services.
 #
-# Under the Dynamo frontend, etcd and NATS are implied: the job runs them on the
-# infra node without a word in the recipe. With tachometer on (the default), the
-# DCGM and node exporters it scrapes are implied on every worker node. Declaring
-# a service by the implied name takes it over: here etcd and NATS move to a
-# dedicated node (the job asks Slurm for one more) and NATS raises its payload
-# limit. `srtctl dry-run` lists every service, marking the implied ones.
+# Under the Dynamo frontend, etcd is implied: the job runs it on the infra node
+# without a word in the recipe. NATS is implied only when a plane rides on it
+# (dynamo.request_plane or event_plane: nats); the default request plane is tcp.
+# With tachometer on (the default), the DCGM and node exporters it scrapes are
+# implied on every worker node. Declaring a service by name takes over an implied
+# one or adds it: here etcd moves to a dedicated node (the job asks Slurm for one
+# more) and a NATS server is declared with a raised payload limit.
+# `srtctl dry-run` lists every service, marking the implied ones.
 #
 # Aliases (`qwen3-0.6b`, `sglang`) resolve through srtslurm.yaml; see examples/README.md.
 

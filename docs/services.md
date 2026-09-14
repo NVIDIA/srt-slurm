@@ -116,11 +116,12 @@ value) are left alone.
 
 ## Implicit Services
 
-Two things the recipe asks for elsewhere are services the job runs without an entry; the Mooncake master is the one built-in kind that is always declared:
+Things the recipe asks for elsewhere are services the job runs without an entry; the Mooncake master is the one built-in kind that is always declared. NATS is not implied by the Dynamo frontend alone: the default request plane is `tcp` and KV events travel over direct ZMQ, so a plain Dynamo job runs etcd only. Declare a `nats` service to run one regardless.
 
 | Implied by | Services | Where |
 | --- | --- | --- |
-| `frontend.type: dynamo` | `etcd`, `nats` | the infra node, phase `infra` |
+| `frontend.type: dynamo` | `etcd` | the infra node, phase `infra` |
+| `dynamo.request_plane: nats`, `dynamo.event_plane: nats`, or a `nats_max_payload_mb` knob | `nats` | the infra node, phase `infra` |
 | a declared `mooncake-master` entry (see [Mooncake KV Store](mooncake-kv-store.md)) | `mooncake-master` | the infra node, phase `before_workers` |
 | tachometer on (the default; `observability.tachometer.enabled`) | `dcgm-exporter`, `node-exporter` | every worker node, phase `after_frontend` |
 

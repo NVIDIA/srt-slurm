@@ -424,7 +424,7 @@ benchmark:
 
 `node: dedicated` reserves a node for that component: the job asks Slurm for one more node and nothing else runs there. Any other value names an existing node: `head` is the first allocated node (where the orchestrator runs), `first_decode` and `last_decode` are the first and last node of the decode role. The default for both blocks is `head`. `telemetry` requires the benchmark client on `head`.
 
-The discovery plane (etcd, NATS) is placed through its services: an `etcd` or `nats` entry under [`services`](#services) with `placement.node: dedicated`. See [Implicit Services](services.md#implicit-services).
+The discovery plane (etcd, and NATS when a plane uses it) is placed through its services: an `etcd` or `nats` entry under [`services`](#services) with `placement.node: dedicated`. See [Implicit Services](services.md#implicit-services).
 
 The v1 spelling of this (`frontend.orchestrator_placement`, `frontend.dedicated_node`, `benchmark.client_placement`, `benchmark.client_dedicated_node`) is documented in [legacy-v1.md](legacy-v1.md); `srtctl migrate` rewrites it.
 
@@ -650,7 +650,7 @@ roles:
 
 The default remains `vllm`, so existing recipes continue to use the Python frontend. This setting only changes direct `frontend.type: vllm` jobs; Dynamo, sidecar, and `vllm-router` launch paths are unchanged.
 
-Compare with `frontend.type: dynamo` + `engine: vllm`, which keeps Dynamo as the request router and uses `python3 -m dynamo.vllm` workers with NATS/etcd.
+Compare with `frontend.type: dynamo` + `engine: vllm`, which keeps Dynamo as the request router and uses `python3 -m dynamo.vllm` workers discovered through etcd.
 
 ### vllm-router frontend
 
