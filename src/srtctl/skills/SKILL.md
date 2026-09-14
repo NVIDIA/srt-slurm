@@ -17,7 +17,7 @@ uv sync --no-dev                      # Python 3.10+; the system interpreter is 
 make setup ARCH=aarch64               # the COMPUTE nodes' arch (aarch64 for Grace/Vera, x86_64 otherwise)
 ```
 
-`make setup` downloads etcd, nats-server, uv and the tachometer binaries into the checkout (keep the checkout on a filesystem the compute nodes mount) and writes a first `srtslurm.yaml` after prompting for account, partition and GPUs per node (`touch srtslurm.yaml` first to skip the prompt and write the file yourself). Model weights go on storage the compute nodes see, e.g. `uvx --from huggingface_hub hf download Qwen/Qwen3-0.6B --local-dir /shared/models/Qwen3-0.6B`. Then edit `srtslurm.yaml` so every recipe can stay portable:
+`make setup` downloads etcd, nats-server, uv and the tachometer binaries into the checkout (keep the checkout on a filesystem the compute nodes mount) and writes a first `srtslurm.yaml` after prompting for account, partition and GPUs per node (`touch srtslurm.yaml` first to skip the prompt and write the file yourself). Before writing `model_paths`, find out where model weights already live on this cluster: ask the user, and look at the usual shared or node-local locations (`/models`, `/shared`, `/lustre`, `/raid`, `/data`, the existing `srtslurm.yaml` of a colleague); never download weights without being asked. Then edit `srtslurm.yaml` so every recipe can stay portable:
 
 ```yaml
 default_partition: "batch"            # default_account too, if the cluster enforces one
