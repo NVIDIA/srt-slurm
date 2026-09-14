@@ -13,6 +13,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Any
 
+from srtctl.backends.vllm import VLLMProtocol
 from srtctl.core.fingerprint import generate_capture_script
 from srtctl.core.health import wait_for_health
 from srtctl.core.processes import ManagedProcess, NamedProcesses
@@ -66,6 +67,23 @@ class WorkerStageMixin:
     # Type hints for mixin dependencies
     config: "SrtConfig"
     runtime: "RuntimeContext"
+
+    def _apply_mooncake_process_config(self, process: "Process", environment: dict[str, str]) -> None:
+        if not isinstance(self.backend, VLLMProtocol):
+            return
+        local_config = self.backend.build_mooncake_process_config(
+            process, self.runtime.infra_node_ip, self.runtime.gpus_per_node
+        )
+        if local_config is not None:
+            filename, payload = local_config
+            environment["MOONCAKE_CONFIG_PATH"] = f"/logs/{filename}"
+            logger.info(
+                "Mooncake process config: node=%s physical_gpus=%s device_name=%s path=%s",
+                process.node,
+                sorted(process.gpu_indices),
+                payload["device_name"],
+                environment["MOONCAKE_CONFIG_PATH"],
+            )
 
     @property
     def backend(self) -> Any:
@@ -275,6 +293,8 @@ class WorkerStageMixin:
                 process.node, self.runtime.network_interface
             )
             env_to_set.update(self.backend.get_mooncake_worker_env(self.runtime.infra_node_ip, local_hostname))
+
+        self._apply_mooncake_process_config(process, env_to_set)
 
         # Add profiling environment variables last.
         if profiling.enabled and profiling_selects_process:

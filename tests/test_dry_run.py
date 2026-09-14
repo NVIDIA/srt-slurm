@@ -652,6 +652,33 @@ class TestDryRunExecutionExtensions:
         assert "P2PHANDSHAKE" in output
         assert "100GB" in output
 
+    def test_vllm_process_local_mooncake_map_in_dry_run(self, capsys):
+        config = _make_config(
+            {
+                "backend": {
+                    "type": "vllm",
+                    "mooncake_kv_store": {
+                        "device_names_by_gpu": [f"mlx5_{i}" for i in range(8)],
+                        "store_config": {"global_segment_size": "150GB"},
+                    },
+                    "vllm_config": {
+                        "prefill": {
+                            "kv-transfer-config": '{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both"}'
+                        },
+                        "decode": {
+                            "kv-transfer-config": '{"kv_connector":"MooncakeStoreConnector","kv_role":"kv_both"}'
+                        },
+                    },
+                },
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "device_names_by_gpu" in output
+        assert "mlx5_7" in output
+        assert "mooncake_store_config_gpu" in output
+        assert "process config" in output
+
 
 class TestDryRunServices:
     """services: command, env, source, and readiness must be visible before submitting."""
