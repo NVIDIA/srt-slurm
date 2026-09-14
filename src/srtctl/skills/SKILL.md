@@ -116,7 +116,20 @@ roles:
 - Disaggregated (`roles.prefill` + `roles.decode`): `roles.decode.nodes: colocate` shares the prefill nodes (give both roles an explicit `gpus`; the loader rejects a split that does not fit). `roles.<role>.sidecar: true` runs the engine's own server with a Dynamo sidecar instead of the Python `dynamo.<engine>` worker (`frontend.type: dynamo` only).
 - `services:` declares sidecars. etcd (Dynamo; NATS only when `dynamo.request_plane` or `event_plane` is `nats`), the Mooncake master (when a `mooncake-master` service is declared), and the DCGM and node exporters (tachometer) are implied; declare one by name only to change it (`placement.node: dedicated`, `container`, `options`, `external: <address>`, `enabled: false`).
 - `--set KEY=VALUE` and `--unset KEY` on `apply` and `dry-run` override any recipe key without editing the file: `--set resources.gpu_type=b200 --set roles.agg.gpus=2`.
-- `srtctl migrate -f <recipe> --in-place` rewrites a v1 recipe (`backend:`, `*_environment`, `infra:`) to this shape; `--verify` proves the two resolve identically.
+## Moving a v1 recipe to schema 2
+
+A recipe without `schema: 2` is v1: worker counts under `resources.prefill_nodes` / `decode_workers` / `gpus_per_decode`, engine flags under `backend.sglang_config.<mode>` with `backend.<mode>_environment`, the discovery plane under `infra:`, and `dynamo.version` / `hash` / `wheel`. Do not translate it by hand; the migrator is deterministic and keeps comments and key order.
+
+```bash
+srtctl migrate -f old.yaml                 # print the schema-2 document, file untouched
+srtctl migrate -f old.yaml --in-place      # rewrite it (a directory is walked recursively)
+srtctl migrate -f old.yaml --verify        # prove v1 and v2 resolve to the identical config
+srtctl dry-run -f old.yaml                 # then render the migrated recipe as usual
+```
+
+What it rewrites: `resources.<role>_nodes/_workers` and `gpus_per_<role>` into `roles.<role>` (`decode_nodes: 0` becomes `nodes: colocate` with an explicit `gpus` on both roles); `backend.type` into `engine:`; `backend.<engine>_config.<mode>` into `roles.<role>.args`; `backend.<mode>_environment` into `roles.<role>.env`; `infra.etcd_nats_dedicated_node` and `nats_max_payload_mb` into `services:`; `dynamo.version` / `hash` / `wheel` into `dynamo.source`; and `frontend.type: sglang` (the v1 name for the SGLang router) into `sglang-router`. Benchmark fields the recipe's benchmark type never reads are dropped, because schema 2 rejects them.
+
+What it leaves for you, and says so in its notes: `dynamo.top_of_tree` (pick a commit for `source.rev`), `infra.etcd_nats_dedicated_node` under a frontend that runs no etcd, and a v1 recipe that never named a Dynamo to install (v1 pip-installed PyPI 0.8.0 implicitly; decide between `dynamo.source` and `dynamo.install: false`). Read the notes, apply them, run `--verify` and `dry-run`, then delete the v1 copy.
 
 ## Commands
 

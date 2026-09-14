@@ -30,6 +30,8 @@ def test_skill_ships_with_the_package_and_covers_the_workflow() -> None:
         "preflight: false",
         "nodes: colocate",
         "Total generated tokens",
+        "srtctl migrate -f",
+        "--verify",
     ):
         assert needle in text, needle
 
