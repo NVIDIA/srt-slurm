@@ -545,6 +545,9 @@ frontend:
 | `args`                      | dict | null          | CLI args for the frontend           |
 | `env`                       | dict | null          | Env vars for frontend processes     |
 | `container_image`           | str  | null          | Static-router image; falls back to `model.container` |
+| `router_policy`             | str  | two-tier      | Dynamo frontend with `args.router-mode: kv` only. `two-tier` passes srtctl's `configs/router-policies/dynamo-two-tier.yaml` (Dynamo's shipped `dynamo-two-tier-cost-fn`: active-request load first, then KV prefix overlap); `default` keeps Dynamo's built-in additive cost model; any other value is a container path to your own `--router-policy-config` YAML. Skipped when `args` already set `router-policy-config`, `router-prefill-policy` or `router-decode-policy`, and, with a warning, when the pinned `dynamo.source` predates ai-dynamo 1.5.0.dev20260908 |
+
+`srtctl dry-run` prints the selected router policy as `dynamo router policy:`. To tune the two-tier thresholds (`cache_threshold`, `balance_abs_threshold`, `balance_rel_threshold`), copy the shipped file, edit its `parameters`, and point `router_policy` at the copy.
 
 See [SGLang Router](sglang-router.md) for detailed architecture.
 
