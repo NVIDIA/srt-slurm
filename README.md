@@ -16,7 +16,7 @@ make setup ARCH=aarch64  # or ARCH=x86_64
 
 ## Documentation
 
-**Full documentation:** https://srtctl.gitbook.io/srtctl-docs/
+**Full documentation:** https://nvidia.github.io/srt-slurm/
 
 - [Installation](docs/installation.md) - Setup and configuration
 - [Examples](examples/README.md) - Runnable 2.0 recipes, one per frontend and topology
