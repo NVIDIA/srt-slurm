@@ -2,17 +2,26 @@
 
 ## Per-process vLLM device selection
 
-For nodes with a known physical-GPU-to-HCA mapping, opt in under
-`backend.mooncake_kv_store`:
+For nodes with a known physical-GPU-to-HCA mapping, opt in through the
+v2 `mooncake-master` service options:
 
 ```yaml
-device_names_by_gpu: [mlx5_0, mlx5_1, mlx5_2, mlx5_3]
-store_config:
-  metadata_server: P2PHANDSHAKE
-  global_segment_size: 150GB
-  local_buffer_size: 4GB
-  protocol: rdma
+services:
+  - name: mooncake-master
+    type: mooncake-master
+    options:
+      device_names_by_gpu: [mlx5_0, mlx5_1, mlx5_2, mlx5_3]
+      store_config:
+        metadata_server: P2PHANDSHAKE
+        global_segment_size: 150GB
+        local_buffer_size: 4GB
+        protocol: rdma
 ```
+
+The same fields are supported under `engine.mooncake_kv_store` (or legacy
+`backend.mooncake_kv_store`), but do not combine that form with a declared
+`mooncake-master` service. `srtctl migrate` moves the legacy mapping into the
+service's `options.device_names_by_gpu` without changing its meaning.
 
 This mapping is indexed by **physical GPU ID on each node**, not by the CUDA
 ordinal inside a container. A process on GPU 2 receives `device_name: mlx5_2`;
@@ -20,9 +29,13 @@ two TP2 processes on GPUs `[0,1]` and `[2,3]` receive disjoint device subsets.
 Only the configs needed by the allocated processes are generated in `/logs`,
 and each worker receives its own `MOONCAKE_CONFIG_PATH`. Other store settings,
 including segment capacity and the managed master address, are preserved.
+When the map is nonempty, it overrides `store_config.device_name` in each
+process-local JSON; the original shared configuration is not mutated.
 The map must cover every physical GPU on the node; repeated HCA names are
 allowed for machines where multiple GPUs share an HCA. Without the option,
-the existing shared JSON behavior is unchanged.
+or with an empty list, the existing shared JSON behavior is unchanged. Config
+loading (including dry-run) rejects wrong-length maps and entries that are
+empty, contain whitespace, or contain a comma, before allocating nodes.
 
 This is **process-local**, not nested-rank-local: all TP ranks spawned inside
 one process still inherit its subset. A one-HCA-per-nested-rank policy requires
