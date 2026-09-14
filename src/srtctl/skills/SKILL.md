@@ -17,7 +17,7 @@ uv sync --no-dev                      # Python 3.10+; the system interpreter is 
 make setup ARCH=aarch64               # the COMPUTE nodes' arch (aarch64 for Grace/Vera, x86_64 otherwise)
 ```
 
-`make setup` downloads etcd, nats-server, uv and the tachometer binaries into the checkout (keep the checkout on a filesystem the compute nodes mount) and writes a first `srtslurm.yaml` after prompting for account, partition and GPUs per node. Then edit `srtslurm.yaml` so every recipe can stay portable:
+`make setup` downloads etcd, nats-server, uv and the tachometer binaries into the checkout (keep the checkout on a filesystem the compute nodes mount) and writes a first `srtslurm.yaml` after prompting for account, partition and GPUs per node (`touch srtslurm.yaml` first to skip the prompt and write the file yourself). Model weights go on storage the compute nodes see, e.g. `uvx --from huggingface_hub hf download Qwen/Qwen3-0.6B --local-dir /shared/models/Qwen3-0.6B`. Then edit `srtslurm.yaml` so every recipe can stay portable:
 
 ```yaml
 default_partition: "batch"            # default_account too, if the cluster enforces one
@@ -45,13 +45,15 @@ Containers: `model.container` is a registry reference pulled by pyxis at job sta
 
 ## The 2.0 recipe shape
 
+Start from `examples/<engine>/*.yaml` (one per frontend and topology) and change the model, container, `gpu_type`, `gpus_per_node` and the role sizes. Engine `args` are the engine's own CLI flags as they appear on the model card; srtctl adds `--model-path`, `--served-model-name`, `--host`, `--port`, the NCCL port and metrics flags, and in disaggregated runs the disaggregation mode and bootstrap port.
+
 ```yaml
 schema: 2
 name: "qwen3-0.6b-sglang-dynamo-agg"
 
 model:
   path: "qwen3-0.6b"          # alias from srtslurm.yaml, an hf:<repo> spec, or a path
-  container: "sglang"         # alias or image
+  container: "lmsysorg/sglang:latest"   # registry reference or /path/to/image.sqsh
   precision: "bf16"
 
 resources:
@@ -82,6 +84,33 @@ benchmark:
   concurrencies: "4x8"
 ```
 
+Disaggregated, with Dynamo routing between a prefill and a decode worker (add `sidecar: true` to both roles to run stock engine servers with Dynamo sidecars):
+
+```yaml
+frontend:
+  type: dynamo
+  args:
+    router-mode: "kv"
+dynamo:
+  install: false              # or dynamo.source when the image lacks Dynamo
+engine: sglang
+roles:
+  prefill:
+    nodes: 1
+    workers: 1
+    gpus: 4
+    args:
+      tensor-parallel-size: 4
+      disaggregation-transfer-backend: "nixl"
+  decode:
+    nodes: 1                  # or `colocate` to share the prefill nodes
+    workers: 1
+    gpus: 4
+    args:
+      tensor-parallel-size: 4
+      disaggregation-transfer-backend: "nixl"
+```
+
 - `dynamo.source` chooses how Dynamo is installed: `pypi: "1.4.2"`, `wheel: <path>`, or `git: <url>` with `rev: <sha, tag, or refs/pull/N/head>`; `srtctl apply` pins the rev to a commit.
 - `placement.node: dedicated` on `frontend` or `benchmark` reserves a node for it.
 - Disaggregated (`roles.prefill` + `roles.decode`): `roles.decode.nodes: colocate` shares the prefill nodes (give both roles an explicit `gpus`; the loader rejects a split that does not fit). `roles.<role>.sidecar: true` runs the engine's own server with a Dynamo sidecar instead of the Python `dynamo.<engine>` worker (`frontend.type: dynamo` only).
@@ -96,6 +125,7 @@ srtctl dry-run -f recipe.yaml [--set K=V ...]
 srtctl apply -f recipe.yaml -y --json          # one JSON line per submission: slurm_job_id, output_dir
 srtctl apply -f recipe.yaml --serve-only        # keep the endpoint up, no benchmark
 srtctl monitor                                  # live view of your jobs
+tail -f outputs/<job_id>/logs/sweep_<job_id>.log   # watch one job: workers, "Model is ready", benchmark, cleanup
 srtctl migrate -f recipes/ --verify
 squeue --me ; sacct -j <id> -X ; scancel <id>
 ```
@@ -104,7 +134,7 @@ squeue --me ; sacct -j <id> -X ; scancel <id>
 
 Everything is under `outputs/<job_id>/`:
 
-- `logs/sweep_<job_id>.log`: the orchestrator. Stages in order: services (infra), workers, frontend, health, benchmark, cleanup. `[ERROR]` lines and `Critical process ... exited` tell you what died.
+- `logs/sweep_<job_id>.log`: the orchestrator. Stages in order: services (infra), workers, frontend, health, benchmark, cleanup. `Model is not ready` repeats while weights load and CUDA graphs are captured (minutes for large models); `Model is ready` (with worker counts under Dynamo) starts the benchmark. `[ERROR]` lines and `Critical process ... exited` tell you what died.
 - `logs/<node>_<mode>_w<i>.out`: one per worker. `logs/<node>_frontend_0.out`, `logs/<node>_router_0.out`: the frontend.
 - `logs/service_<name>.out`: etcd, nats, dcgm-exporter, node-exporter, mooncake-master, and declared services.
 - `logs/benchmark.out` and `logs/benchmark-rollup.json`: the client and its normalized result. A run is only good if `Total generated tokens` in `benchmark.out` is plausible: sa-bench reports success even when every response is empty. In disaggregated runs, `Decode transfer failed` lines in the decode worker log mean the KV transfer is broken.
