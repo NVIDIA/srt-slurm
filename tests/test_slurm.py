@@ -440,6 +440,48 @@ def test_trtllm_sidecar_endpoint_kills_step_on_rank_failure(tmp_path: Path) -> N
     }
 
 
+def test_sglang_sidecar_trusts_the_bundled_rust_extension(tmp_path: Path) -> None:
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
+    mixin.config.backend.type = "sglang"
+    mixin.config.dynamo.sidecar = True
+
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
+    ):
+        mock_srun.return_value = MagicMock()
+        mixin.start_worker(process, [process])
+
+    assert mock_srun.call_args.kwargs["env_to_set"]["SGLANG_RUST_BUILD_MODE"] == "never"
+
+
+def test_sglang_sidecar_rust_build_mode_respects_the_recipe(tmp_path: Path) -> None:
+    mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
+    mixin.config.backend.type = "sglang"
+    mixin.config.dynamo.sidecar = True
+    mixin.runtime.environment = {"SGLANG_RUST_BUILD_MODE": "auto"}
+
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
+    ):
+        mock_srun.return_value = MagicMock()
+        mixin.start_worker(process, [process])
+
+    assert mock_srun.call_args.kwargs["env_to_set"]["SGLANG_RUST_BUILD_MODE"] == "auto"
+
+    mixin_off, process_off = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
+    mixin_off.config.backend.type = "sglang"
+    mixin_off.config.dynamo.sidecar = False
+    with (
+        patch("srtctl.cli.mixins.worker_stage.generate_capture_script", return_value="fingerprint || true"),
+        patch("srtctl.cli.mixins.worker_stage.start_srun_process") as mock_srun,
+    ):
+        mock_srun.return_value = MagicMock()
+        mixin_off.start_worker(process_off, [process_off])
+    assert "SGLANG_RUST_BUILD_MODE" not in mock_srun.call_args.kwargs["env_to_set"]
+
+
 def test_vllm_sidecar_disables_plugins_by_default(tmp_path: Path) -> None:
     mixin, process = _remap_worker_mixin(tmp_path, frontend_type="dynamo", dynamo_install=False)
     mixin.config.backend.type = "vllm"

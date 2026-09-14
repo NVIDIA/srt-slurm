@@ -134,6 +134,15 @@ class WorkerStageMixin:
             # Installed plugins may replace native engine output types and
             # break the fixed Rust/Python MessagePack contract used by vllm-rs.
             environment.setdefault("VLLM_PLUGINS", "")
+        if getattr(self.config.dynamo, "sidecar", False) is True and self.backend.type == "sglang":
+            # The sidecar talks to SGLang's native gRPC server, a prebuilt Rust extension. In
+            # images that run SGLang from a source checkout (the nightlies), the extension
+            # loader's default "auto" mode ignores the bundled .so and tries to rebuild it
+            # with cargo, which those images do not ship, so the engine dies before gRPC is up.
+            # "never" trusts the bundled build. Mode env and the global environment override.
+            # TODO: drop once the SGLang loader prefers a bundled extension over a rebuild
+            #       (sglang.srt.utils.load_rust_extension, auto mode in source checkouts).
+            environment.setdefault("SGLANG_RUST_BUILD_MODE", "never")
         if self.backend.type == "sglang":
             # SGLang treats its own exit after SIGTERM as a crash: it drains in a few
             # seconds, then tries py-spy (needs root) and waits 60s for CUDA
