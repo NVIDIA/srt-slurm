@@ -18,6 +18,9 @@
   - [srtctl apply](#srtctl-apply)
   - [srtctl dry-run](#srtctl-dry-run)
   - [srtctl resolve-override](#srtctl-resolve-override)
+  - [srtctl migrate](#srtctl-migrate)
+  - [srtctl monitor](#srtctl-monitor)
+  - [srtctl skill](#srtctl-skill)
 - [Output](#output)
 - [Sweep Support](#sweep-support)
 - [Config Override Support](#config-override-support)
@@ -369,6 +372,19 @@ srtctl resolve-override -f config.yaml:zip_override_tp_sweep[0] --stdout
 The resolved YAML preserves the field order and comments from the source file. Base fields appear first in their original order; override-only fields are appended at the end. Output files follow the same `{stem}_{suffix}.yaml` naming convention used by `apply`.
 
 See [Config Overrides — Resolving Without Submitting](overrides.md#resolving-overrides-without-submitting) for details.
+
+### `srtctl migrate`
+
+Rewrites a v1 recipe (no `schema: 2`; `backend:`, `backend.<mode>_environment`, `infra:`, `resources.<role>_nodes` / `_workers` / `gpus_per_<role>`, `dynamo.version` / `hash` / `wheel`) into the 2.0 layout. The rewrite is deterministic and keeps comments and key order; do not translate by hand.
+
+```bash
+srtctl migrate -f old.yaml                 # print the schema-2 document, file untouched
+srtctl migrate -f old.yaml --in-place      # rewrite it; a directory is walked recursively
+srtctl migrate -f old.yaml --output new.yaml
+srtctl migrate -f old.yaml --verify        # migrate in memory and prove v1 and v2 resolve identically
+```
+
+The key-by-key mapping is in [legacy-v1.md](legacy-v1.md). Notable rewrites: `decode_nodes: 0` becomes `roles.decode.nodes: colocate` with an explicit `gpus` on both roles; v1 `frontend.type: sglang` (the router) becomes `sglang-router`; `infra` becomes `services:` entries; benchmark fields the recipe's type never reads are removed because schema 2 rejects them. The migrator prints a note for each change and for what it deliberately leaves to you: `dynamo.top_of_tree` (pin a commit in `source.rev`), a dedicated etcd node under a frontend that runs no etcd, and a v1 recipe that never named a Dynamo to install (v1 pip-installed PyPI 0.8.0 implicitly; choose `dynamo.source` or `dynamo.install: false`). Finish with `--verify` and a `dry-run`.
 
 ### `srtctl monitor`
 

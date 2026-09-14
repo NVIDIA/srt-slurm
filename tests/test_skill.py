@@ -21,17 +21,13 @@ def test_skill_ships_with_the_package_and_covers_the_workflow() -> None:
         "srtctl dry-run",
         "srtctl apply",
         "schema: 2",
-        "roles:",
-        "services:",
-        "sweep_<job_id>.log",
-        "srtctl-mcp",
-        "make setup",
-        "srtslurm.yaml",
-        "preflight: false",
-        "nodes: colocate",
+        "docs/installation.md",
+        "docs/config-reference.md",
+        "docs/cli.md",
+        "docs/monitoring.md",
+        "srtctl migrate",
         "Total generated tokens",
-        "srtctl migrate -f",
-        "--verify",
+        "srtctl-mcp",
     ):
         assert needle in text, needle
 
