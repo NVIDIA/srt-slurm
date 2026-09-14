@@ -130,6 +130,67 @@ class TestDryRunDynamoMetrics:
         assert "Dynamo TRT-LLM Metrics" not in capsys.readouterr().out
 
 
+class TestDryRunTrtllmEngineStatistics:
+    """The engine-yaml statistics keys srtctl defaults at load time are shown for
+    every TRT-LLM backend, so a run that expects the iteration-level trtllm_*
+    gauges can see before submitting that enable_iter_perf_stats is off."""
+
+    def test_dynamo_shows_iteration_stats_off_per_mode(self, capsys):
+        config = _make_config({"backend": {"type": "trtllm"}, "frontend": {"type": "dynamo"}})
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "TRT-LLM Engine Statistics" in output
+        assert "prefill: enable_iter_perf_stats=false, return_perf_metrics=unset" in output
+        assert "decode: enable_iter_perf_stats=false, return_perf_metrics=unset" in output
+
+    def test_trtllm_serve_shows_both_defaults(self, capsys):
+        config = _make_config(
+            {"backend": {"type": "trtllm"}, "frontend": {"type": "trtllm_serve", "enable_multiple_frontends": False}}
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "TRT-LLM Engine Statistics" in output
+        assert "prefill: enable_iter_perf_stats=false, return_perf_metrics=true" in output
+        assert "decode: enable_iter_perf_stats=false, return_perf_metrics=true" in output
+
+    def test_observability_shows_iteration_stats_on(self, capsys):
+        config = _make_config(
+            {"backend": {"type": "trtllm"}, "frontend": {"type": "dynamo"}, "observability": {"enabled": True}}
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "prefill: enable_iter_perf_stats=true, return_perf_metrics=true" in output
+
+    def test_aggregated_layout_shows_the_agg_section(self, capsys):
+        # ResourceConfig.is_disaggregated is `prefill_nodes is not None or
+        # decode_nodes is not None`, so the agg layout needs the pair unset.
+        config = _make_config(
+            {
+                "backend": {"type": "trtllm", "trtllm_config": {"aggregated": {"max_seq_len": 8192}}},
+                "frontend": {"type": "dynamo"},
+                "dynamo": {"sidecar": True},
+                "resources": {
+                    "prefill_nodes": None,
+                    "decode_nodes": None,
+                    "prefill_workers": None,
+                    "decode_workers": None,
+                    "agg_nodes": 1,
+                    "agg_workers": 1,
+                },
+            }
+        )
+        show_config_details(config)
+        output = capsys.readouterr().out
+        assert "TRT-LLM Engine Statistics" in output
+        assert "agg: enable_iter_perf_stats=false" in output
+        assert "prefill: enable_iter_perf_stats" not in output
+
+    def test_non_trtllm_backend_has_no_engine_statistics_panel(self, capsys):
+        config = _make_config({"backend": {"type": "sglang"}, "frontend": {"type": "dynamo"}})
+        show_config_details(config)
+        assert "TRT-LLM Engine Statistics" not in capsys.readouterr().out
+
+
 class TestDryRunMounts:
     """Test that container mounts from all sources appear in dry-run output."""
 
@@ -643,7 +704,9 @@ class TestDryRunServices:
 
     def test_no_services_omits_the_panel(self, capsys):
         # No discovery plane (static frontend), no tachometer: nothing declared, nothing implied.
-        config = _make_config({"frontend": {"type": "sglang-router"}, "observability": {"tachometer": {"enabled": False}}})
+        config = _make_config(
+            {"frontend": {"type": "sglang-router"}, "observability": {"tachometer": {"enabled": False}}}
+        )
         show_config_details(config)
         assert "Services:" not in capsys.readouterr().out
 

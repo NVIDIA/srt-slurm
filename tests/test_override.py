@@ -377,6 +377,25 @@ class TestSubmitOverride:
         assert "1 variant" in out
         assert "test-job_small" in out
 
+    def test_dry_run_applies_the_engine_config_defaults(self, tmp_path: Path, capsys: Any) -> None:
+        """The override path builds its SrtConfig from the resolved dict directly, so
+        it must run the same engine-config expansions load_config does; otherwise
+        dry-run reports enable_iter_perf_stats as unset for a job that runs with false."""
+        raw = {
+            "base": {**MINIMAL_CONFIG, "backend": {"type": "trtllm"}, "frontend": {"type": "dynamo"}},
+            "override_small": {"resources": {"decode_nodes": 2}},
+        }
+        cfg = tmp_path / "test.yaml"
+        cfg.write_text(yaml.dump(raw, default_flow_style=False))
+
+        with patch("srtctl.cli.submit._assert_preflight_passed"):
+            submit_override(cfg, selector="override_small", dry_run=True)
+        out = capsys.readouterr().out
+        assert "TRT-LLM Engine Statistics" in out
+        assert "prefill: enable_iter_perf_stats=false" in out
+        assert "decode: enable_iter_perf_stats=false" in out
+        assert "enable_iter_perf_stats=unset" not in out
+
     def test_sbatch_call_counts(self, tmp_path: Path) -> None:
         """submit_override calls sbatch the right number of times for each selector."""
         cfg = _write_config(

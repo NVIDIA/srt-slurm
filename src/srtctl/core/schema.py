@@ -1496,6 +1496,27 @@ TRTLLM_SERVE_ENGINE_DEFAULTS: dict[str, bool] = {
     "return_perf_metrics": True,
 }
 
+# Engine-config default baked in for every TRT-LLM engine section a recipe
+# uses, under both the ``dynamo`` and the ``trtllm_serve`` frontend and
+# independent of ``observability.enabled``. ``dynamo.trtllm`` derives
+# ``enable_iter_perf_stats`` from ``--publish-metrics``, which
+# ``backend.publish_metrics`` passes by default, so without this every Dynamo
+# worker would run TensorRT-LLM's per-iteration statistics (KV-cache stats and
+# CUDA-event step timing on every executor loop) for gauges no benchmark client
+# reads. The request-level ``trtllm_*`` Prometheus series (request latency,
+# TTFT, TPOT, queue / prefill / decode time, token counters) only need the
+# per-request perf metrics, which ``--publish-metrics`` (Dynamo) and
+# ``return_perf_metrics: true`` (trtllm-serve) enable on their own. The engine
+# YAML is merged over the worker's derived arguments and wins on conflicts
+# (TensorRT-LLM ``update_llm_args_with_extra_dict``), so this explicit
+# ``false`` keeps that surface and drops the statistics. ``expand_observability``
+# runs first and setdefaults ``True`` for analytics runs, which keep their
+# iteration-level ``trtllm_kv_cache_*`` gauges; an explicit recipe value
+# always wins.
+TRTLLM_ENGINE_DEFAULTS: dict[str, bool] = {
+    "enable_iter_perf_stats": False,
+}
+
 
 # /configs/dynamo-wheels is the lustre-mounted cache for hash-pinned dynamo
 # source builds. The bench/frontend container always mounts srtslurm's
@@ -2904,7 +2925,7 @@ class SrtConfig:
 
     @classmethod
     def from_yaml(cls, yaml_path: Path) -> "SrtConfig":
-        from srtctl.core.config import expand_observability, expand_trtllm_serve_defaults
+        from srtctl.core.config import expand_engine_config_defaults
         from srtctl.core.placement import expand_placement
         from srtctl.core.roles import expand_roles
         from srtctl.services.normalize import expand_services
@@ -2914,8 +2935,7 @@ class SrtConfig:
         expand_roles(data)
         expand_placement(data)
         expand_services(data)
-        expand_observability(data)
-        expand_trtllm_serve_defaults(data)
+        expand_engine_config_defaults(data)
         schema = cls.Schema()
         return schema.load(data)
 

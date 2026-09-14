@@ -37,6 +37,7 @@ from rich.syntax import Syntax
 from rich.table import Table
 
 from srtctl.core.config import (
+    expand_engine_config_defaults,
     generate_override_configs,
     get_srtslurm_setting,
     load_cluster_config,
@@ -219,6 +220,11 @@ def _host_setup_source(config: SrtConfig) -> str:
     return "recipe"
 
 
+def _engine_bool(value: object) -> str:
+    """Render an engine-yaml boolean the way the YAML file will spell it."""
+    return "unset" if value is None else str(value).lower()
+
+
 def show_config_details(config: SrtConfig) -> None:
     """Display container mounts and environment variables for dry-run verification.
 
@@ -247,6 +253,28 @@ def show_config_details(config: SrtConfig) -> None:
                     border_style="cyan",
                 )
             )
+
+    from srtctl.backends.trtllm import TRTLLMProtocol
+
+    if isinstance(config.backend, TRTLLMProtocol):
+        # Engine-yaml statistics keys srtctl defaults at config load
+        # (expand_trtllm_engine_defaults, expand_trtllm_serve_defaults,
+        # expand_observability). Shown for both frontends so a run that expects
+        # the iteration-level trtllm_* gauges can see before submitting that
+        # enable_iter_perf_stats is off.
+        modes = ("prefill", "decode") if config.resources.is_disaggregated else ("agg",)
+        rows = []
+        for mode in modes:
+            section = config.backend.get_config_for_mode(mode)
+            rows.append(
+                f"{mode}: enable_iter_perf_stats={_engine_bool(section.get('enable_iter_perf_stats'))}, "
+                f"return_perf_metrics={_engine_bool(section.get('return_perf_metrics'))}"
+            )
+        rows.append(
+            "(engine yaml; the iteration-level trtllm_* gauges and the dashboard's KV-utilisation panels "
+            "need enable_iter_perf_stats: true)"
+        )
+        console.print(Panel("\n".join(rows), title="TRT-LLM Engine Statistics", border_style="cyan"))
 
     if config.frontend.type == "vllm":
         from srtctl.backends.vllm import VLLMProtocol, find_vllm_orchestration_recipe_flags
@@ -1552,6 +1580,9 @@ def submit_override(
         logger.info(f"Override variant: {variant_label} -> {job_name}")
 
         resolved_config = resolve_config_with_defaults(yaml.safe_load(runtime_config_text), load_cluster_config())
+        # Same expansions load_config applies, so the dry-run details and the
+        # sbatch-time config match what the in-job loader will run with.
+        expand_engine_config_defaults(resolved_config)
         config = SrtConfig.Schema().load(resolved_config)
 
         if "sweep" in config_cm:

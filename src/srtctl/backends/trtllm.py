@@ -108,6 +108,10 @@ class TRTLLMProtocol:
     # Publish TRT-LLM engine metrics without enabling KV-cache events.
     # Requires a Dynamo build supporting --publish-metrics; set False to omit
     # the flag for older builds. Native trtllm-serve and sidecars are unaffected.
+    # Iteration statistics stay off regardless: srtctl bakes
+    # enable_iter_perf_stats: false into every engine section unless the recipe
+    # or observability sets it (TRTLLM_ENGINE_DEFAULTS), so this flag costs the
+    # per-request perf metrics only.
     publish_metrics: bool = True
 
     # None means unspecified: metrics default on, events off (observability
