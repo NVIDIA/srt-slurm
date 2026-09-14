@@ -112,6 +112,9 @@ def implied_services(config: SrtConfig) -> list[EffectiveService]:
         store_config = getattr(mooncake_cfg, "store_config", None)
         if store_config:
             options["store_config"] = dict(store_config)
+        devices = getattr(mooncake_cfg, "device_names_by_gpu", None)
+        if devices:
+            options["device_names_by_gpu"] = list(devices)
         implied.append(
             EffectiveService(
                 ServiceConfig(
