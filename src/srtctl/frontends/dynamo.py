@@ -70,6 +70,49 @@ class DynamoFrontend:
                 result.extend([f"--{key}", str(value)])
         return result
 
+    ROUTER_POLICY_ARGS: tuple[str, ...] = (
+        "router-policy-config",
+        "router_policy_config",
+        "router-prefill-policy",
+        "router_prefill_policy",
+        "router-decode-policy",
+        "router_decode_policy",
+    )
+    TWO_TIER_POLICY_PATH = "/configs/router-policies/dynamo-two-tier.yaml"
+
+    @classmethod
+    def router_policy_path(cls, config: Any) -> str | None:
+        """The --router-policy-config file srtctl adds for a KV-routed Dynamo frontend, if any.
+
+        ``frontend.router_policy`` selects it: "two-tier" (default) is the shipped
+        two-tier cost function from srtctl's configs/ mount, "default" keeps Dynamo's
+        built-in selector, anything else is a path the user supplies. Nothing is added
+        when the recipe already sets a router-policy argument, when the router is not in
+        kv mode, or when the pinned Dynamo predates the shipped policies.
+        """
+        frontend = config.frontend
+        if getattr(frontend, "type", "dynamo") != "dynamo":
+            return None
+        args = frontend.args or {}
+        if any(key in args for key in cls.ROUTER_POLICY_ARGS):
+            return None
+        router_mode = args.get("router-mode", args.get("router_mode"))
+        if router_mode != "kv":
+            return None
+        policy = getattr(frontend, "router_policy", "two-tier")
+        if policy == "default":
+            return None
+        if policy == "two-tier":
+            if not config.dynamo.supports_shipped_router_policies():
+                logger.warning(
+                    "frontend.router_policy: two-tier needs ai-dynamo 1.5.0.dev20260908 or newer; the pinned "
+                    "Dynamo is older, so the router keeps Dynamo's built-in selector (set "
+                    "frontend.router_policy: default to silence this)"
+                )
+                return None
+            return cls.TWO_TIER_POLICY_PATH
+        return policy
+
     def start_frontends(
         self,
         topology: Any,  # FrontendTopology
@@ -90,6 +133,15 @@ class DynamoFrontend:
             frontend_log = runtime.log_dir / f"{node}_frontend_{idx}.out"
             cmd = ["python3", "-m", "dynamo.frontend", f"--http-port={topology.frontend_port}"]
             cmd.extend(self.get_frontend_args_list(config.frontend.args))
+            policy_path = self.router_policy_path(config)
+            if policy_path is not None:
+                cmd.extend(["--router-policy-config", policy_path])
+                if idx == 0:
+                    logger.info(
+                        "dynamo frontend: --router-policy-config %s (frontend.router_policy: %s)",
+                        policy_path,
+                        config.frontend.router_policy,
+                    )
 
             env_to_set = {
                 **discovery_env(config, runtime),

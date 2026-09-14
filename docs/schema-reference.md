@@ -123,6 +123,7 @@ Frontend/router configuration.
 | `args` | dict[str, Any] \| None | `None` | CLI arguments passed to the frontend/router process |
 | `env` | dict[str, str] \| None | `None` | Environment variables for frontend processes |
 | `container_image` | str \| None | `None` | Optional router-specific image. Static routers use the model/backend image when omitted. |
+| `router_policy` | str | `'two-tier'` | Dynamo frontend, args.router-mode: kv only. Which worker-selection policy the KV router runs: "two-tier" (default) passes srtctl's configs/router-policies/dynamo-two-tier.yaml (Dynamo's shipped dynamo-two-tier-cost-fn: active-request load first, then KV prefix overlap); "default" keeps Dynamo's built-in additive cost model; any other value is a path (inside the container) to your own --router-policy-config YAML. Ignored when args already carry router-policy-config, router-prefill-policy, or router-decode-policy. The two-tier policy needs ai-dynamo 1.5.0.dev20260908 or newer; with an older pinned pypi/wheel version srtctl logs a warning and leaves the built-in selector in place. |
 | `ctx_router` | dict[str, Any] \| None | `None` | trtllm_serve orchestrator (ser.yaml) options; ignored by other frontends. |
 | `gen_router` | dict[str, Any] \| None | `None` | generation_servers.router |
 | `server_config_extra` | dict[str, Any] \| None | `None` | extra top-level ser.yaml keys |
