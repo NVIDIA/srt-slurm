@@ -1,0 +1,2607 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+      
+      
+        <link rel="canonical" href="https://nvidia.github.io/srt-slurm/cli/">
+      
+      
+        <link rel="prev" href="../installation/">
+      
+      
+        <link rel="next" href="../config-reference/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>CLI Reference - srt-slurm</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#cli-reference" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="srt-slurm" class="md-header__button md-logo" aria-label="srt-slurm" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            srt-slurm
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              CLI Reference
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/NVIDIA/srt-slurm" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NVIDIA/srt-slurm
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href=".." class="md-tabs__link">
+          
+  
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../config-reference/" class="md-tabs__link">
+          
+  
+  
+  Configuration
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../architecture/" class="md-tabs__link">
+          
+  
+  
+  Architecture & Frontends
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../accuracy/" class="md-tabs__link">
+          
+  
+  
+  Benchmarking
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../power-telemetry/" class="md-tabs__link">
+          
+  
+  
+  Telemetry
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../monitoring/" class="md-tabs__link">
+          
+  
+  
+  Operations
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../status-api-spec/" class="md-tabs__link">
+          
+  
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="srt-slurm" class="md-nav__button md-logo" aria-label="srt-slurm" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    srt-slurm
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/NVIDIA/srt-slurm" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NVIDIA/srt-slurm
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_1" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_1" id="__nav_1_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_1_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Introduction
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Reference
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#table-of-contents" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Table of Contents
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#quick-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quick Start
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#interactive-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Interactive Mode
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Interactive Mode">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#example-browser" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Example Browser
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#configuration-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration Summary
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#interactive-actions-menu" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Interactive Actions Menu
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sbatch-preview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sbatch Preview
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#parameter-modification" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Parameter Modification
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sweep-preview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sweep Preview
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#submission-confirmation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Submission Confirmation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#workflow-examples" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Workflow Examples
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#commands" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Commands
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Commands">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#srtctl-apply" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        srtctl apply
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#srtctl-dry-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        srtctl dry-run
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#srtctl-resolve-override" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        srtctl resolve-override
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#srtctl-migrate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        srtctl migrate
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#srtctl-monitor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        srtctl monitor
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#srtctl-skill" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        srtctl skill
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#srtctl-mcp" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        srtctl-mcp
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#output" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Output
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sweep-support" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sweep Support
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#config-override-support" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Config Override Support
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#debugging-running-jobs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Debugging Running Jobs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#tips" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tips
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Configuration
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../config-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../schema-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Schema Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../overrides/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Config Overrides
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sweeps/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Parameter Sweeps
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../legacy-v1/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Legacy (v1) Recipe Layout
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture & Frontends
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture & Frontends
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sglang-router/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SGLang Router
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../vllm-router/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    vLLM Router
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../mooncake-kv-store/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mooncake KV Store
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../services/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Services
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmarking
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Benchmarking
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../accuracy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Accuracy Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../profiling/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Profiling
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Telemetry
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Telemetry
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../power-telemetry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GPU Power Telemetry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cpu-power-telemetry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CPU Power Telemetry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dcgm-4.7-runtime-support/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DCGM 4.7 Runtime Support
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operations
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operations
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../monitoring/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Monitoring
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../component-dashboard/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Component Performance Dashboard
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ruter/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Router Post-Processing (ruter)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../slurm-faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SLURM FAQ
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../status-api-spec/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Status API Spec
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#table-of-contents" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Table of Contents
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#quick-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quick Start
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#interactive-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Interactive Mode
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Interactive Mode">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#example-browser" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Example Browser
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#configuration-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration Summary
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#interactive-actions-menu" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Interactive Actions Menu
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sbatch-preview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sbatch Preview
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#parameter-modification" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Parameter Modification
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sweep-preview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sweep Preview
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#submission-confirmation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Submission Confirmation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#workflow-examples" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Workflow Examples
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#commands" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Commands
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Commands">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#srtctl-apply" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        srtctl apply
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#srtctl-dry-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        srtctl dry-run
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#srtctl-resolve-override" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        srtctl resolve-override
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#srtctl-migrate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        srtctl migrate
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#srtctl-monitor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        srtctl monitor
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#srtctl-skill" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        srtctl skill
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#srtctl-mcp" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        srtctl-mcp
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#output" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Output
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sweep-support" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sweep Support
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#config-override-support" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Config Override Support
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#debugging-running-jobs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Debugging Running Jobs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#tips" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tips
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/NVIDIA/srt-slurm/edit/main/docs/cli.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="cli-reference">CLI Reference<a class="headerlink" href="#cli-reference" title="Permanent link">&para;</a></h1>
+<p><code>srtctl</code> is the main command-line interface for submitting benchmark jobs to SLURM.</p>
+<h2 id="table-of-contents">Table of Contents<a class="headerlink" href="#table-of-contents" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="#quick-start">Quick Start</a></li>
+<li><a href="#interactive-mode">Interactive Mode</a></li>
+<li><a href="#example-browser">Example Browser</a></li>
+<li><a href="#configuration-summary">Configuration Summary</a></li>
+<li><a href="#interactive-actions-menu">Interactive Actions Menu</a></li>
+<li><a href="#sbatch-preview">sbatch Preview</a></li>
+<li><a href="#parameter-modification">Parameter Modification</a></li>
+<li><a href="#sweep-preview">Sweep Preview</a></li>
+<li><a href="#submission-confirmation">Submission Confirmation</a></li>
+<li><a href="#workflow-examples">Workflow Examples</a></li>
+<li><a href="#commands">Commands</a></li>
+<li><a href="#srtctl-apply">srtctl apply</a></li>
+<li><a href="#srtctl-dry-run">srtctl dry-run</a></li>
+<li><a href="#srtctl-resolve-override">srtctl resolve-override</a></li>
+<li><a href="#srtctl-migrate">srtctl migrate</a></li>
+<li><a href="#srtctl-monitor">srtctl monitor</a></li>
+<li><a href="#srtctl-skill">srtctl skill</a></li>
+<li><a href="#output">Output</a></li>
+<li><a href="#sweep-support">Sweep Support</a></li>
+<li><a href="#config-override-support">Config Override Support</a></li>
+<li><a href="#tips">Tips</a></li>
+</ul>
+<hr />
+<h2 id="quick-start">Quick Start<a class="headerlink" href="#quick-start" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><span class="c1"># Interactive mode - browse examples, preview, and submit</span>
+srtctl
+
+<span class="c1"># Submit a job directly</span>
+srtctl<span class="w"> </span>apply<span class="w"> </span>-f<span class="w"> </span>examples/sglang/sglang-router-disagg.yaml
+
+<span class="c1"># Deploy the recipe and keep its inference endpoint available until cancellation</span>
+srtctl<span class="w"> </span>apply<span class="w"> </span>-f<span class="w"> </span>examples/sglang/sglang-router-disagg.yaml<span class="w"> </span>--serve-only
+
+<span class="c1"># Preview without submitting</span>
+srtctl<span class="w"> </span>dry-run<span class="w"> </span>-f<span class="w"> </span>config.yaml
+
+<span class="c1"># Live dashboard - monitor all jobs in one place</span>
+srtctl<span class="w"> </span>monitor
+</code></pre></div>
+<h2 id="interactive-mode">Interactive Mode<a class="headerlink" href="#interactive-mode" title="Permanent link">&para;</a></h2>
+<p>Running <code>srtctl</code> with no arguments launches an interactive TUI (Text User Interface) powered by Rich and Questionary:</p>
+<div class="highlight"><pre><span></span><code>srtctl
+<span class="c1"># or explicitly:</span>
+srtctl<span class="w"> </span>-i
+</code></pre></div>
+<p>Interactive mode is ideal for:
+- Exploring curated examples without memorizing paths
+- Previewing and tweaking configurations before submission
+- Understanding what a sweep will expand to
+- Quick experimentation and validation</p>
+<h3 id="example-browser">Example Browser<a class="headerlink" href="#example-browser" title="Permanent link">&para;</a></h3>
+<p>On launch, interactive mode scans the <code>examples/</code> directory and presents curated configurations organized by subdirectory:</p>
+<div class="highlight"><pre><span></span><code>? Select an example:
+  ── examples/sglang ──
+    dynamo-agg.yaml
+    dynamo-disagg.yaml
+    sglang-router-agg.yaml
+    sglang-router-disagg.yaml
+  ── examples/vllm ──
+    dynamo-agg.yaml
+    ...
+  ──────────────
+  📁 Browse for file...
+</code></pre></div>
+<p><strong>Features:</strong>
+- Examples grouped by parent directory for easy navigation
+- Arrow keys to navigate, Enter to select
+- "Browse for file..." option for configs outside <code>examples/</code>
+- If no examples are found, prompts for manual path entry</p>
+<h3 id="configuration-summary">Configuration Summary<a class="headerlink" href="#configuration-summary" title="Permanent link">&para;</a></h3>
+<p>After selecting an example, you'll see a tree-style summary:</p>
+<div class="highlight"><pre><span></span><code>📋 Configuration
+┌─────────────────────────────────────────────────────────────┐
+│ deepseek-r1-1p4d                                            │
+└─────────────────────────────────────────────────────────────┘
+
+deepseek-r1-1p4d
+├── 📦 Model
+│   ├── path: deepseek-r1
+│   ├── container: latest
+│   └── precision: fp8
+├── 🖥️  Resources
+│   ├── gpu_type: gb200
+│   ├── prefill: 1 workers
+│   ├── decode: 4 workers
+│   └── gpus_per_node: 4
+├── 📊 Benchmark
+│   ├── type: sa-bench
+│   ├── isl: 1024, osl: 1024
+│   └── concurrencies: [128, 256, 512]
+└── 🔄 Sweep Parameters (if present)
+    ├── chunked_prefill_size: [4096, 8192]
+    └── max_total_tokens: [8192, 16384]
+</code></pre></div>
+<h3 id="interactive-actions-menu">Interactive Actions Menu<a class="headerlink" href="#interactive-actions-menu" title="Permanent link">&para;</a></h3>
+<p>After viewing the config summary, you'll see an action menu:</p>
+<div class="highlight"><pre><span></span><code>? What would you like to do?
+  🚀 Submit job(s)          - Submit to SLURM cluster
+  👁️  Preview sbatch script  - View generated SLURM script with syntax highlighting
+  ✏️  Modify parameters      - Interactively change values before submission
+  🔍 Dry-run                - Full dry-run preview without submission
+  📁 Select different config - Choose a different example
+  ❌ Exit                   - Exit interactive mode
+</code></pre></div>
+<h3 id="sbatch-preview">sbatch Preview<a class="headerlink" href="#sbatch-preview" title="Permanent link">&para;</a></h3>
+<p>The "Preview sbatch script" option shows the exact SLURM script that will be submitted:</p>
+<div class="highlight"><pre><span></span><code>┌─<span class="w"> </span>Generated<span class="w"> </span>sbatch<span class="w"> </span>Script<span class="w"> </span>────────────────────────────────────────────────────┐
+│<span class="w">  </span><span class="m">1</span><span class="w"> </span>│<span class="w"> </span><span class="c1">#!/bin/bash                                                             │</span>
+│<span class="w">  </span><span class="m">2</span><span class="w"> </span>│<span class="w"> </span><span class="c1">#SBATCH --job-name=deepseek-r1-1p4d                                     │</span>
+│<span class="w">  </span><span class="m">3</span><span class="w"> </span>│<span class="w"> </span><span class="c1">#SBATCH --nodes=5                                                       │</span>
+│<span class="w">  </span><span class="m">4</span><span class="w"> </span>│<span class="w"> </span><span class="c1">#SBATCH --gpus-per-node=4                                               │</span>
+│<span class="w">  </span><span class="m">5</span><span class="w"> </span>│<span class="w"> </span><span class="c1">#SBATCH --time=04:00:00                                                 │</span>
+│<span class="w">  </span><span class="m">6</span><span class="w"> </span>│<span class="w"> </span><span class="c1">#SBATCH --partition=batch                                               │</span>
+│<span class="w">  </span><span class="m">7</span><span class="w"> </span>│<span class="w"> </span>...<span class="w">                                                                     </span>│
+└──────────────────────────────────────────────────────────────────────────────┘
+</code></pre></div>
+<p>The script is syntax-highlighted with line numbers for easy reading.</p>
+<h3 id="parameter-modification">Parameter Modification<a class="headerlink" href="#parameter-modification" title="Permanent link">&para;</a></h3>
+<p>The "Modify parameters" option lets you interactively change key settings:</p>
+<div class="highlight"><pre><span></span><code>Modify Configuration
+Press Enter to keep current value, or type new value
+
+? Job name [deepseek-r1-1p4d]: my-experiment
+? Prefill workers [1]:
+? Decode workers [4]: 8
+? Input sequence length [1024]: 2048
+? Output sequence length [1024]: 2048
+</code></pre></div>
+<p><strong>Modifiable fields:</strong>
+- <code>name</code> - Job name
+- Prefill workers - Number of prefill workers (<code>roles.prefill.workers</code> in the recipe)
+- Decode workers - Number of decode workers (<code>roles.decode.workers</code> in the recipe)
+- <code>benchmark.isl</code> - Input sequence length
+- <code>benchmark.osl</code> - Output sequence length</p>
+<p>Modified configs are saved to a temporary file and used for submission.</p>
+<h3 id="sweep-preview">Sweep Preview<a class="headerlink" href="#sweep-preview" title="Permanent link">&para;</a></h3>
+<p>For configs with a <code>sweep:</code> section, interactive mode shows an expansion table:</p>
+<div class="highlight"><pre><span></span><code>┌─ Sweep Jobs ────────────────────────────────────────────────────────────────┐
+│ #  │ Job Name                           │ Parameters                        │
+├────┼────────────────────────────────────┼───────────────────────────────────┤
+│ 1  │ deepseek-r1-1p4d_cps4096_mtt8192   │ chunked_prefill_size=4096,        │
+│    │                                    │ max_total_tokens=8192              │
+│ 2  │ deepseek-r1-1p4d_cps4096_mtt16384  │ chunked_prefill_size=4096,        │
+│    │                                    │ max_total_tokens=16384             │
+│ 3  │ deepseek-r1-1p4d_cps8192_mtt8192   │ chunked_prefill_size=8192,        │
+│    │                                    │ max_total_tokens=8192              │
+│ 4  │ deepseek-r1-1p4d_cps8192_mtt16384  │ chunked_prefill_size=8192,        │
+│    │                                    │ max_total_tokens=16384             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+Total jobs: 4
+</code></pre></div>
+<h3 id="submission-confirmation">Submission Confirmation<a class="headerlink" href="#submission-confirmation" title="Permanent link">&para;</a></h3>
+<p>Before submitting, you'll be asked to confirm:</p>
+<div class="highlight"><pre><span></span><code>? Submit to SLURM? (y/N)
+</code></pre></div>
+<p>For sweeps, the confirmation shows:
+- Full configuration summary
+- Sweep expansion table
+- Total job count</p>
+<h3 id="workflow-examples">Workflow Examples<a class="headerlink" href="#workflow-examples" title="Permanent link">&para;</a></h3>
+<p><strong>Exploring a curated example:</strong>
+<div class="highlight"><pre><span></span><code>$ srtctl
+&gt; Select: examples/sglang/sglang-router-disagg.yaml
+&gt; Action: 👁️  Preview sbatch script  (review generated script)
+&gt; Action: 🔍 Dry-run                 (full dry-run)
+&gt; Action: 📁 Select different config (try another)
+</code></pre></div></p>
+<p><strong>Quick experiment with modifications:</strong>
+<div class="highlight"><pre><span></span><code>$ srtctl
+&gt; Select: examples/vllm/dynamo-agg.yaml
+&gt; Action: ✏️  Modify parameters
+  &gt; Change decode workers: 8
+  &gt; Change isl: 2048
+&gt; Action: 🚀 Submit job(s)
+&gt; Confirm: y
+</code></pre></div></p>
+<p><strong>Sweep validation:</strong>
+<div class="highlight"><pre><span></span><code>$ srtctl
+&gt; Select: configs/my-sweep.yaml
+&gt; View: Sweep table showing 16 jobs
+&gt; Action: 🔍 Dry-run (saves all expanded configs to dry-runs/)
+&gt; Review generated configs
+&gt; Action: 🚀 Submit job(s)
+</code></pre></div></p>
+<h2 id="commands">Commands<a class="headerlink" href="#commands" title="Permanent link">&para;</a></h2>
+<h3 id="srtctl-apply"><code>srtctl apply</code><a class="headerlink" href="#srtctl-apply" title="Permanent link">&para;</a></h3>
+<p>Submit a job or sweep to SLURM.</p>
+<div class="highlight"><pre><span></span><code>srtctl<span class="w"> </span>apply<span class="w"> </span>-f<span class="w"> </span>&lt;config.yaml&gt;<span class="w"> </span><span class="o">[</span>options<span class="o">]</span>
+</code></pre></div>
+<p><strong>Options:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-f, --file</code></td>
+<td>Path to YAML config file, directory, or <code>file:selector</code> for overrides (required)</td>
+</tr>
+<tr>
+<td><code>--sweep</code></td>
+<td>Force sweep mode (usually auto-detected)</td>
+</tr>
+<tr>
+<td><code>--setup-script</code></td>
+<td>Custom setup script from <code>configs/</code></td>
+</tr>
+<tr>
+<td><code>--tags</code></td>
+<td>Comma-separated tags for the run</td>
+</tr>
+<tr>
+<td><code>--serve-only</code></td>
+<td>Deploy the endpoint without running a benchmark; serve until cancellation</td>
+</tr>
+<tr>
+<td><code>--set KEY=VALUE</code></td>
+<td>Override one recipe value by dotted path before validation (repeatable). Also on <code>dry-run</code>, <code>preflight</code>, <code>resolve-override</code></td>
+</tr>
+<tr>
+<td><code>--unset KEY</code></td>
+<td>Remove one recipe key by dotted path before validation (repeatable)</td>
+</tr>
+<tr>
+<td><code>-y, --yes</code></td>
+<td>Skip confirmation prompts</td>
+</tr>
+<tr>
+<td><code>--no-preflight</code></td>
+<td>Skip the pre-submit <code>model.path</code> / <code>model.container</code> / telemetry filesystem checks for this run. <code>preflight: false</code> in <code>srtslurm.yaml</code> does the same for every run on a cluster whose paths exist only on compute nodes</td>
+</tr>
+</tbody>
+</table>
+<p><code>--set</code> and <code>--unset</code> are the supported way to tweak a recipe from a script instead of editing the YAML. Paths are dotted, <code>[N]</code> indexes a list, and quotes protect a segment that contains dots (<code>container_mounts."/a/b.c"</code>). Values parse as YAML: <code>720</code> is an int, <code>"720"</code> a string, <code>[4, 8]</code> a list; a mapping such as <code>{"rope_type": "yarn"}</code> stays a literal string because that is how engine flags take JSON. Overrides are applied to the raw document before cluster defaults, sweep expansion, and validation, so an explicit <code>--set</code> always wins and <code>{placeholder}</code> values still expand. On an override file the value is written into <code>base</code> and every <code>override_*</code> / <code>zip_override_*</code> variant, so no variant can shadow it. The applied overrides are listed in each <code>--json</code> record as <code>applied_overrides</code>, and the <code>config.yaml</code> copied into the job directory reflects them. The source file is never modified.</p>
+<p><strong>Examples:</strong></p>
+<div class="highlight"><pre><span></span><code><span class="c1"># Submit single job</span>
+srtctl<span class="w"> </span>apply<span class="w"> </span>-f<span class="w"> </span>examples/sglang/sglang-router-disagg.yaml
+
+<span class="c1"># Tweak a recipe from a script without editing it</span>
+srtctl<span class="w"> </span>apply<span class="w"> </span>-f<span class="w"> </span>config.yaml<span class="w"> </span>--set<span class="w"> </span>health_check.max_attempts<span class="o">=</span><span class="m">720</span><span class="w"> </span>--unset<span class="w"> </span>sbatch_directives.exclude
+srtctl<span class="w"> </span>apply<span class="w"> </span>-f<span class="w"> </span>config.yaml<span class="w"> </span>--set<span class="w"> </span><span class="s1">'roles.decode.args.speculative-config={"method": "eagle"}'</span>
+srtctl<span class="w"> </span>dry-run<span class="w"> </span>-f<span class="w"> </span>config.yaml<span class="w"> </span>--set<span class="w"> </span>benchmark.concurrencies<span class="o">=[</span><span class="m">4</span>,8<span class="o">]</span>
+
+<span class="c1"># Serve the same recipe without running its configured benchmark</span>
+srtctl<span class="w"> </span>apply<span class="w"> </span>-f<span class="w"> </span>examples/sglang/sglang-router-disagg.yaml<span class="w"> </span>--serve-only
+
+<span class="c1"># Submit sweep (auto-detected from sweep: section)</span>
+srtctl<span class="w"> </span>apply<span class="w"> </span>-f<span class="w"> </span>configs/my-sweep.yaml
+
+<span class="c1"># Submit all override variants (base + overrides)</span>
+srtctl<span class="w"> </span>apply<span class="w"> </span>-f<span class="w"> </span>config.yaml
+
+<span class="c1"># Submit only a specific override variant</span>
+srtctl<span class="w"> </span>apply<span class="w"> </span>-f<span class="w"> </span>config.yaml:override_tp64
+
+<span class="c1"># Submit only the base config (ignore overrides)</span>
+srtctl<span class="w"> </span>apply<span class="w"> </span>-f<span class="w"> </span>config.yaml:base
+
+<span class="c1"># With tags</span>
+srtctl<span class="w"> </span>apply<span class="w"> </span>-f<span class="w"> </span>config.yaml<span class="w"> </span>--tags<span class="w"> </span><span class="s2">"experiment-1,baseline"</span>
+</code></pre></div>
+<p><code>--serve-only</code> submits the recipe normally, waits until the configured workers and frontend are healthy, prints
+the frontend URL in the sweep log, and keeps the service running until the job is cancelled or reaches its Slurm
+time limit. It ignores the recipe's configured benchmark for that submission. Use <code>scancel &lt;job-id&gt;</code> to stop the
+service; srtctl then cleans up the processes it started.</p>
+<h3 id="srtctl-dry-run"><code>srtctl dry-run</code><a class="headerlink" href="#srtctl-dry-run" title="Permanent link">&para;</a></h3>
+<p>Preview what would be submitted without actually submitting.</p>
+<div class="highlight"><pre><span></span><code>srtctl<span class="w"> </span>dry-run<span class="w"> </span>-f<span class="w"> </span>&lt;config.yaml&gt;<span class="w"> </span><span class="o">[</span>options<span class="o">]</span>
+</code></pre></div>
+<p><strong>Options:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-f, --file</code></td>
+<td>Path to YAML config file, directory, or <code>file:selector</code> for overrides (required)</td>
+</tr>
+<tr>
+<td><code>--sweep</code></td>
+<td>Force sweep mode</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Examples:</strong></p>
+<div class="highlight"><pre><span></span><code><span class="c1"># Preview single job - shows sbatch script</span>
+srtctl<span class="w"> </span>dry-run<span class="w"> </span>-f<span class="w"> </span>config.yaml
+
+<span class="c1"># Preview sweep - shows job table and saves configs</span>
+srtctl<span class="w"> </span>dry-run<span class="w"> </span>-f<span class="w"> </span>sweep-config.yaml
+
+<span class="c1"># Preview all override variants</span>
+srtctl<span class="w"> </span>dry-run<span class="w"> </span>-f<span class="w"> </span>override-config.yaml
+
+<span class="c1"># Preview a specific override variant</span>
+srtctl<span class="w"> </span>dry-run<span class="w"> </span>-f<span class="w"> </span>override-config.yaml:override_tp64
+</code></pre></div>
+<p>Dry-run output includes:
+- Syntax-highlighted sbatch script
+- Container mounts table (labeled by source: built-in, srtslurm.yaml, configuration)
+- Environment variables table (grouped by scope: global, prefill, decode, aggregated)
+- srun options (if configured)
+- For sweeps: table of all jobs with parameters
+- Generated configs saved to <code>dry-runs/</code> folder</p>
+<h3 id="srtctl-resolve-override"><code>srtctl resolve-override</code><a class="headerlink" href="#srtctl-resolve-override" title="Permanent link">&para;</a></h3>
+<p>Expand an override config and write the specialised YAML file(s) without submitting.</p>
+<div class="highlight"><pre><span></span><code>srtctl<span class="w"> </span>resolve-override<span class="w"> </span>-f<span class="w"> </span>&lt;config.yaml&gt;<span class="w"> </span><span class="o">[</span>options<span class="o">]</span>
+</code></pre></div>
+<p><strong>Options:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-f, --file</code></td>
+<td>Override YAML file, or <code>file:selector</code> to resolve a specific variant (required)</td>
+</tr>
+<tr>
+<td><code>--stdout</code></td>
+<td>Print resolved YAML to stdout instead of writing files</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Examples:</strong></p>
+<div class="highlight"><pre><span></span><code><span class="c1"># Write all variants next to the source file</span>
+srtctl<span class="w"> </span>resolve-override<span class="w"> </span>-f<span class="w"> </span>config.yaml
+
+<span class="c1"># Write a single override variant</span>
+srtctl<span class="w"> </span>resolve-override<span class="w"> </span>-f<span class="w"> </span>config.yaml:override_lowmem
+
+<span class="c1"># Print to stdout</span>
+srtctl<span class="w"> </span>resolve-override<span class="w"> </span>-f<span class="w"> </span>config.yaml:override_lowmem<span class="w"> </span>--stdout
+
+<span class="c1"># Inspect a single zip variant</span>
+srtctl<span class="w"> </span>resolve-override<span class="w"> </span>-f<span class="w"> </span>config.yaml:zip_override_tp_sweep<span class="o">[</span><span class="m">0</span><span class="o">]</span><span class="w"> </span>--stdout
+</code></pre></div>
+<p>The resolved YAML preserves the field order and comments from the source file. Base fields appear first in their original order; override-only fields are appended at the end. Output files follow the same <code>{stem}_{suffix}.yaml</code> naming convention used by <code>apply</code>.</p>
+<p>See <a href="../overrides/#resolving-overrides-without-submitting">Config Overrides — Resolving Without Submitting</a> for details.</p>
+<h3 id="srtctl-migrate"><code>srtctl migrate</code><a class="headerlink" href="#srtctl-migrate" title="Permanent link">&para;</a></h3>
+<p>Rewrites a v1 recipe (no <code>schema: 2</code>; <code>backend:</code>, <code>backend.&lt;mode&gt;_environment</code>, <code>infra:</code>, <code>resources.&lt;role&gt;_nodes</code> / <code>_workers</code> / <code>gpus_per_&lt;role&gt;</code>, <code>dynamo.version</code> / <code>hash</code> / <code>wheel</code>) into the 2.0 layout. The rewrite is deterministic and keeps comments and key order; do not translate by hand.</p>
+<div class="highlight"><pre><span></span><code>srtctl<span class="w"> </span>migrate<span class="w"> </span>-f<span class="w"> </span>old.yaml<span class="w">                 </span><span class="c1"># print the schema-2 document, file untouched</span>
+srtctl<span class="w"> </span>migrate<span class="w"> </span>-f<span class="w"> </span>old.yaml<span class="w"> </span>--in-place<span class="w">      </span><span class="c1"># rewrite it; a directory is walked recursively</span>
+srtctl<span class="w"> </span>migrate<span class="w"> </span>-f<span class="w"> </span>old.yaml<span class="w"> </span>--output<span class="w"> </span>new.yaml
+srtctl<span class="w"> </span>migrate<span class="w"> </span>-f<span class="w"> </span>old.yaml<span class="w"> </span>--verify<span class="w">        </span><span class="c1"># migrate in memory and prove v1 and v2 resolve identically</span>
+</code></pre></div>
+<p>The key-by-key mapping is in <a href="../legacy-v1/">legacy-v1.md</a>. Notable rewrites: <code>decode_nodes: 0</code> becomes <code>roles.decode.nodes: colocate</code> with an explicit <code>gpus</code> on both roles; v1 <code>frontend.type: sglang</code> (the router) becomes <code>sglang-router</code>; <code>infra</code> becomes <code>services:</code> entries; benchmark fields the recipe's type never reads are removed because schema 2 rejects them. The migrator prints a note for each change and for what it deliberately leaves to you: <code>dynamo.top_of_tree</code> (pin a commit in <code>source.rev</code>), a dedicated etcd node under a frontend that runs no etcd, and a v1 recipe that never named a Dynamo to install (v1 pip-installed PyPI 0.8.0 implicitly; choose <code>dynamo.source</code> or <code>dynamo.install: false</code>). Finish with <code>--verify</code> and a <code>dry-run</code>.</p>
+<h3 id="srtctl-monitor"><code>srtctl monitor</code><a class="headerlink" href="#srtctl-monitor" title="Permanent link">&para;</a></h3>
+<p>Live terminal dashboard for all your jobs. See <a href="../monitoring/">Monitoring</a> for full documentation.</p>
+<div class="highlight"><pre><span></span><code>srtctl<span class="w"> </span>monitor<span class="w">                          </span><span class="c1"># Active + recently completed jobs</span>
+srtctl<span class="w"> </span>monitor<span class="w"> </span>--all<span class="w">                    </span><span class="c1"># Include older jobs from outputs/</span>
+srtctl<span class="w"> </span>monitor<span class="w"> </span>--interval<span class="w"> </span><span class="m">10</span><span class="w">            </span><span class="c1"># Refresh every 10s (default: 5)</span>
+srtctl<span class="w"> </span>monitor<span class="w"> </span>--once<span class="w">                   </span><span class="c1"># Snapshot and exit</span>
+srtctl<span class="w"> </span>monitor<span class="w"> </span>--resume<span class="w"> </span>KEY<span class="w">             </span><span class="c1"># Resume a previous session</span>
+</code></pre></div>
+<h3 id="srtctl-skill"><code>srtctl skill</code><a class="headerlink" href="#srtctl-skill" title="Permanent link">&para;</a></h3>
+<p>Install the in-package agent skill, one document that teaches a coding agent how to drive srtctl (the 2.0 recipe shape, dry-run before apply, where a run's logs and artifacts live, the MCP tools):</p>
+<div class="highlight"><pre><span></span><code>srtctl<span class="w"> </span>skill<span class="w"> </span>--target<span class="w"> </span>claude<span class="w">            </span><span class="c1"># .claude/skills/srtctl/SKILL.md</span>
+srtctl<span class="w"> </span>skill<span class="w"> </span>--target<span class="w"> </span>codex<span class="w">             </span><span class="c1"># .codex/skills/srtctl/SKILL.md</span>
+srtctl<span class="w"> </span>skill<span class="w"> </span>--target<span class="w"> </span>cursor<span class="w">            </span><span class="c1"># .cursor/rules/srtctl.mdc</span>
+srtctl<span class="w"> </span>skill<span class="w"> </span>--target<span class="w"> </span>claude<span class="w"> </span>--root<span class="w"> </span>/path/to/project
+srtctl<span class="w"> </span>skill<span class="w"> </span>--target<span class="w"> </span>claude<span class="w"> </span>--print<span class="w">    </span><span class="c1"># to stdout</span>
+</code></pre></div>
+<h3 id="srtctl-mcp"><code>srtctl-mcp</code><a class="headerlink" href="#srtctl-mcp" title="Permanent link">&para;</a></h3>
+<p>The MCP server (<code>srtctl-mcp</code>, stdio by default, <code>SRTCTL_MCP_TRANSPORT=streamable-http</code> with <code>SRTCTL_MCP_HOST</code> / <code>SRTCTL_MCP_PORT</code> for HTTP) exposes the schema tools anywhere and the job lifecycle tools (<code>submit_job</code>, <code>dry_run</code>, <code>job_status</code>, <code>job_logs</code>, <code>list_jobs</code>, <code>cancel_job</code>) when it runs on a Slurm login node in a checkout with <code>srtslurm.yaml</code>. <code>job_status</code> returns the Slurm accounting row, the job metadata, the orchestrator's current stage, any <code>[ERROR]</code> lines, the benchmark rollup, and the sweep-log tail; <code>job_logs</code> lists <code>outputs/&lt;job_id&gt;/logs</code> or tails one file.</p>
+<h2 id="output">Output<a class="headerlink" href="#output" title="Permanent link">&para;</a></h2>
+<p>When you submit a job, <code>srtctl</code> creates an output directory:</p>
+<div class="highlight"><pre><span></span><code>outputs/&lt;job_id&gt;/
+├── config.yaml         # Copy of submitted config
+├── sbatch_script.sh    # Generated SLURM script
+└── &lt;job_id&gt;.json       # Job metadata
+</code></pre></div>
+<h2 id="sweep-support">Sweep Support<a class="headerlink" href="#sweep-support" title="Permanent link">&para;</a></h2>
+<p>Configs with a <code>sweep:</code> section are automatically detected and expanded:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">sweep</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">chunked_prefill_size</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">4096</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">8192</span><span class="p p-Indicator">]</span>
+<span class="w">  </span><span class="nt">max_total_tokens</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">8192</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">16384</span><span class="p p-Indicator">]</span>
+</code></pre></div>
+<p>This creates 4 jobs (2 × 2 Cartesian product). See <a href="../sweeps/">Parameter Sweeps</a> for details.</p>
+<h2 id="config-override-support">Config Override Support<a class="headerlink" href="#config-override-support" title="Permanent link">&para;</a></h2>
+<p>Configs with a <code>base</code> top-level key are automatically detected as override configs. Each <code>override_&lt;suffix&gt;</code> section is deep-merged with base and submitted as a separate job.</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># Submit all variants (base + all overrides)</span>
+srtctl<span class="w"> </span>apply<span class="w"> </span>-f<span class="w"> </span>override-config.yaml
+
+<span class="c1"># Submit only the tp64 override variant</span>
+srtctl<span class="w"> </span>apply<span class="w"> </span>-f<span class="w"> </span>override-config.yaml:override_tp64
+
+<span class="c1"># Submit only the base (ignoring overrides)</span>
+srtctl<span class="w"> </span>apply<span class="w"> </span>-f<span class="w"> </span>override-config.yaml:base
+</code></pre></div>
+<p>The <code>:selector</code> syntax works with <code>apply</code>, <code>dry-run</code>, and <code>resolve-override</code>. If the selector is used on a non-override config, a warning is logged and the config is processed normally.</p>
+<p>Override configs also work with directory submission — override files in the directory are auto-detected and expanded.</p>
+<p>To inspect the resolved YAML before submitting (preserving field order and comments), use <code>resolve-override</code>:</p>
+<div class="highlight"><pre><span></span><code>srtctl<span class="w"> </span>resolve-override<span class="w"> </span>-f<span class="w"> </span>override-config.yaml<span class="w"> </span>--stdout
+</code></pre></div>
+<p>See <a href="../overrides/">Config Overrides</a> for full YAML syntax, merge semantics, and field-order / comment-preservation behaviour.</p>
+<h2 id="debugging-running-jobs">Debugging Running Jobs<a class="headerlink" href="#debugging-running-jobs" title="Permanent link">&para;</a></h2>
+<p>The full srun command (with all container mounts, environment variables, and flags) is logged at INFO level in the sweep log:</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># Find the full srun commands for a running job</span>
+grep<span class="w"> </span><span class="s2">"srun command"</span><span class="w"> </span>outputs/&lt;job_id&gt;/logs/sweep_&lt;job_id&gt;.log
+
+<span class="c1"># Per-worker env vars and inner commands are also logged</span>
+grep<span class="w"> </span>-E<span class="w"> </span><span class="s2">"Env:|Command:"</span><span class="w"> </span>outputs/&lt;job_id&gt;/logs/sweep_&lt;job_id&gt;.log
+</code></pre></div>
+<h2 id="tips">Tips<a class="headerlink" href="#tips" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Use <code>srtctl</code> (no args) for exploring curated examples interactively</li>
+<li>Use <code>srtctl apply -f</code> for scripting and CI pipelines</li>
+<li>Always <code>dry-run</code> first for sweeps to check job count</li>
+<li>Check <code>outputs/&lt;job_id&gt;/</code> for submitted configs and metadata</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.instant", "navigation.tracking", "navigation.tabs", "navigation.sections", "navigation.top", "search.suggest", "search.highlight", "content.code.copy", "content.action.edit"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

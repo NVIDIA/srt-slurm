@@ -1,0 +1,2471 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+      
+      
+        <link rel="canonical" href="https://nvidia.github.io/srt-slurm/services/">
+      
+      
+        <link rel="prev" href="../mooncake-kv-store/">
+      
+      
+        <link rel="next" href="../accuracy/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Services - srt-slurm</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#services" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="srt-slurm" class="md-header__button md-logo" aria-label="srt-slurm" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            srt-slurm
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Services
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/NVIDIA/srt-slurm" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NVIDIA/srt-slurm
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href=".." class="md-tabs__link">
+          
+  
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../config-reference/" class="md-tabs__link">
+          
+  
+  
+  Configuration
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../architecture/" class="md-tabs__link">
+          
+  
+  
+  Architecture & Frontends
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../accuracy/" class="md-tabs__link">
+          
+  
+  
+  Benchmarking
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../power-telemetry/" class="md-tabs__link">
+          
+  
+  
+  Telemetry
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../monitoring/" class="md-tabs__link">
+          
+  
+  
+  Operations
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../status-api-spec/" class="md-tabs__link">
+          
+  
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="srt-slurm" class="md-nav__button md-logo" aria-label="srt-slurm" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    srt-slurm
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/NVIDIA/srt-slurm" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NVIDIA/srt-slurm
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_1" id="__nav_1_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Introduction
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Configuration
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../config-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../schema-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Schema Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../overrides/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Config Overrides
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sweeps/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Parameter Sweeps
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../legacy-v1/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Legacy (v1) Recipe Layout
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture & Frontends
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture & Frontends
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sglang-router/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SGLang Router
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../vllm-router/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    vLLM Router
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../mooncake-kv-store/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mooncake KV Store
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Services
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Services
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#table-of-contents" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Table of Contents
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#quick-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quick Start
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration-reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration Reference
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#implicit-services" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Implicit Services
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#placement" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Placement
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#start-order-and-readiness" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Start Order and Readiness
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#environment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Environment
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#building-from-source" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Building From Source
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#service-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Service Types
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#example-a-router-from-a-pr" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Example: a router from a PR
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#example-standalone-mooncake-stores" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Example: standalone Mooncake stores
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#validation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cleanup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cleanup
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#limitations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Limitations
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmarking
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Benchmarking
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../accuracy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Accuracy Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../profiling/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Profiling
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Telemetry
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Telemetry
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../power-telemetry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GPU Power Telemetry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cpu-power-telemetry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CPU Power Telemetry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dcgm-4.7-runtime-support/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DCGM 4.7 Runtime Support
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operations
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operations
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../monitoring/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Monitoring
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../component-dashboard/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Component Performance Dashboard
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ruter/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Router Post-Processing (ruter)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../slurm-faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SLURM FAQ
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../status-api-spec/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Status API Spec
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#table-of-contents" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Table of Contents
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#quick-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quick Start
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration-reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration Reference
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#implicit-services" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Implicit Services
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#placement" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Placement
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#start-order-and-readiness" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Start Order and Readiness
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#environment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Environment
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#building-from-source" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Building From Source
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#service-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Service Types
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#example-a-router-from-a-pr" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Example: a router from a PR
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#example-standalone-mooncake-stores" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Example: standalone Mooncake stores
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#validation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cleanup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cleanup
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#limitations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Limitations
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/NVIDIA/srt-slurm/edit/main/docs/services.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="services">Services<a class="headerlink" href="#services" title="Permanent link">&para;</a></h1>
+<p>The top-level <code>services:</code> block declares long-running processes that srtctl launches and tracks next
+to the inference workers, the frontend, and the benchmark client. One list, one shape, for everything
+that is not a worker or the frontend: the discovery plane (etcd, NATS), the Mooncake master, the
+metrics exporters tachometer scrapes, an experimental router built from an unmerged PR, a standalone
+Mooncake Store per worker node, a debugging HTTP server. The built-in ones are implied by the rest of
+the recipe and need no entry; declaring one by name takes it over. Adding a new one is a recipe
+change, not a code change.</p>
+<h2 id="table-of-contents">Table of Contents<a class="headerlink" href="#table-of-contents" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="#quick-start">Quick Start</a></li>
+<li><a href="#configuration-reference">Configuration Reference</a></li>
+<li><a href="#implicit-services">Implicit Services</a></li>
+<li><a href="#placement">Placement</a></li>
+<li><a href="#start-order-and-readiness">Start Order and Readiness</a></li>
+<li><a href="#environment">Environment</a></li>
+<li><a href="#building-from-source">Building From Source</a></li>
+<li><a href="#service-types">Service Types</a></li>
+<li><a href="#example-a-router-from-a-pr">Example: a router from a PR</a></li>
+<li><a href="#example-standalone-mooncake-stores">Example: standalone Mooncake stores</a></li>
+<li><a href="#validation">Validation</a></li>
+<li><a href="#limitations">Limitations</a></li>
+</ul>
+<h2 id="quick-start">Quick Start<a class="headerlink" href="#quick-start" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><span class="nt">services</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-sidecar</span>
+<span class="w">    </span><span class="nt">command</span><span class="p">:</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">python3</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">-m</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my_package.my_sidecar</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">--port</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">"9000"</span>
+<span class="w">    </span><span class="nt">readiness</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">9000</span>
+</code></pre></div>
+<p><code>name</code> and <code>command</code> are the only required fields for the default <code>generic</code> type. The service runs in
+the job container on the head node, starts once workers and the frontend are healthy, and the job
+waits until port 9000 answers before moving on. Its log is <code>service_my-sidecar.out</code> in the job's log
+directory. <code>examples/features/services.yaml</code> is a runnable version of this.</p>
+<h2 id="configuration-reference">Configuration Reference<a class="headerlink" href="#configuration-reference" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><span class="nt">services</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-sidecar</span><span class="w">             </span><span class="c1"># required, unique across the list</span>
+<span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">generic</span><span class="w">                </span><span class="c1"># generic (default) | etcd | nats | mooncake-master | dcgm-exporter | node-exporter | mooncake-store</span>
+<span class="w">    </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span><span class="w">                </span><span class="c1"># false drops the service (the way to switch an implied one off)</span>
+<span class="w">    </span><span class="nt">external</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">null</span><span class="w">               </span><span class="c1"># typed kinds only: use an instance that already runs at this address</span>
+<span class="w">    </span><span class="nt">command</span><span class="p">:</span><span class="w">                     </span><span class="c1"># argv, not shell-interpreted; required for generic</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">python3</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">-m</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">pkg</span>
+<span class="w">    </span><span class="nt">args</span><span class="p">:</span><span class="w">                        </span><span class="c1"># appended to command</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">--flag</span>
+<span class="w">    </span><span class="nt">container</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-image</span><span class="w">          </span><span class="c1"># image or srtslurm.yaml alias; default: job container</span>
+<span class="w">    </span><span class="nt">env</span><span class="p">:</span><span class="w">                         </span><span class="c1"># environment for the service process</span>
+<span class="w">      </span><span class="nt">MY_FLAG</span><span class="p">:</span><span class="w"> </span><span class="s">"1"</span>
+<span class="w">    </span><span class="nt">options</span><span class="p">:</span><span class="w">                     </span><span class="c1"># kind-specific knobs (nats: max_payload_mb; exporters: port, collect_interval_ms)</span>
+<span class="w">      </span><span class="nt">max_payload_mb</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">24</span>
+<span class="w">    </span><span class="nt">placement</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">node</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">head</span><span class="w">                 </span><span class="c1"># head | infra | dedicated | prefill | decode | agg | workers</span>
+<span class="w">    </span><span class="nt">start</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">after_frontend</span><span class="w">        </span><span class="c1"># infra | before_workers | after_frontend</span>
+<span class="w">    </span><span class="nt">readiness</span><span class="p">:</span><span class="w">                   </span><span class="c1"># optional probe, checked on every service node; typed kinds have default ports</span>
+<span class="w">      </span><span class="nt">port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">9000</span><span class="w">                 </span><span class="c1"># or tcp: {port} / http: {port, path, status} / log: {pattern}</span>
+<span class="w">      </span><span class="nt">timeout_seconds</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">120</span>
+<span class="w">      </span><span class="nt">interval_seconds</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+<span class="w">    </span><span class="nt">inherit_discovery_env</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span><span class="w">  </span><span class="c1"># inject ETCD_ENDPOINTS / NATS_SERVER</span>
+<span class="w">    </span><span class="nt">critical</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span><span class="w">              </span><span class="c1"># a crash fails the run when true</span>
+<span class="w">    </span><span class="nt">preamble</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span><span class="w">                  </span><span class="c1"># shell run before command, inside the container</span>
+<span class="w">      </span><span class="no">ulimit -n 1048576</span>
+<span class="w">    </span><span class="nt">cpus_per_task</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8</span><span class="w">             </span><span class="c1"># srun --cpus-per-task</span>
+<span class="w">    </span><span class="nt">cpu_bind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">none</span><span class="w">               </span><span class="c1"># srun --cpu-bind</span>
+<span class="w">    </span><span class="nt">srun_options</span><span class="p">:</span><span class="w">                </span><span class="c1"># extra srun options for this service only</span>
+<span class="w">      </span><span class="nt">exclusive</span><span class="p">:</span><span class="w"> </span><span class="s">""</span>
+<span class="w">    </span><span class="nt">source</span><span class="p">:</span><span class="w">                      </span><span class="c1"># clone before build/launch; single-node placements only</span>
+<span class="w">      </span><span class="nt">git</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">https://github.com/org/repo</span>
+<span class="w">      </span><span class="nt">rev</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">&lt;commit-sha, tag, or refs/pull/N/head&gt;</span>
+<span class="w">      </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">subdir</span>
+<span class="w">    </span><span class="nt">build_command</span><span class="p">:</span><span class="w">               </span><span class="c1"># run once from the clone, inside the container</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">bash</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">-lc</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">pip install -e .</span>
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Default</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td>required</td>
+<td>Unique. Names <code>service_&lt;name&gt;.out</code> and the tracked process.</td>
+</tr>
+<tr>
+<td><code>type</code></td>
+<td><code>generic</code></td>
+<td>Selects a <a href="#service-types">service type</a> that supplies defaults, and for the typed kinds the command.</td>
+</tr>
+<tr>
+<td><code>enabled</code></td>
+<td><code>true</code></td>
+<td><code>false</code> drops the service. Declaring an implied name with <code>enabled: false</code> switches it off.</td>
+</tr>
+<tr>
+<td><code>external</code></td>
+<td>none</td>
+<td><code>etcd</code>, <code>nats</code>, <code>mooncake-master</code> only: an address of an already-running instance. Nothing launches; the address is injected where the job's own would have been.</td>
+</tr>
+<tr>
+<td><code>options</code></td>
+<td><code>{}</code></td>
+<td>Kind-specific knobs; unknown keys are rejected. <code>nats</code>: <code>max_payload_mb</code>. <code>dcgm-exporter</code>, <code>node-exporter</code>: <code>port</code>, <code>collect_interval_ms</code>. <code>mooncake-master</code>: <code>store_config</code> (vLLM).</td>
+</tr>
+<tr>
+<td><code>command</code></td>
+<td>type default</td>
+<td>Argv passed directly to the process. <code>generic</code> has no default, so it is required there.</td>
+</tr>
+<tr>
+<td><code>args</code></td>
+<td><code>[]</code></td>
+<td>Appended to <code>command</code>. Handy with typed services that supply the command.</td>
+</tr>
+<tr>
+<td><code>container</code></td>
+<td>type fallback, then job container</td>
+<td>Aliases resolve through <code>srtslurm.yaml</code> like every other container key.</td>
+</tr>
+<tr>
+<td><code>env</code></td>
+<td><code>{}</code></td>
+<td>Merged over the type's defaults; see <a href="#environment">Environment</a>.</td>
+</tr>
+<tr>
+<td><code>placement.node</code></td>
+<td>type default</td>
+<td><code>generic</code>: <code>head</code>. See <a href="#placement">Placement</a>.</td>
+</tr>
+<tr>
+<td><code>start</code></td>
+<td>type default</td>
+<td><code>etcd</code>, <code>nats</code>: <code>infra</code>. <code>mooncake-master</code>, <code>mooncake-store</code>: <code>before_workers</code>. <code>generic</code> and the exporters: <code>after_frontend</code>.</td>
+</tr>
+<tr>
+<td><code>readiness</code></td>
+<td>type default</td>
+<td>One probe per node: <code>port</code> / <code>tcp</code>, <code>http</code>, or <code>log</code>, plus <code>timeout_seconds</code> and <code>interval_seconds</code>. The typed kinds gate on their well-known ports when no probe is written. See <a href="#start-order-and-readiness">Start Order and Readiness</a>. Timing out terminates what this stage started and fails the job.</td>
+</tr>
+<tr>
+<td><code>inherit_discovery_env</code></td>
+<td><code>true</code></td>
+<td>Inject the same <code>ETCD_ENDPOINTS</code> / <code>NATS_SERVER</code> the Dynamo frontend gets.</td>
+</tr>
+<tr>
+<td><code>critical</code></td>
+<td>type default</td>
+<td><code>generic</code>: <code>false</code>. <code>mooncake-store</code>: <code>true</code>.</td>
+</tr>
+<tr>
+<td><code>preamble</code></td>
+<td>none</td>
+<td>Shell run after the environment is exported and before <code>command</code>.</td>
+</tr>
+<tr>
+<td><code>cpus_per_task</code>, <code>cpu_bind</code>, <code>srun_options</code></td>
+<td>none</td>
+<td>Pass-through srun knobs for this service's launches.</td>
+</tr>
+<tr>
+<td><code>source</code>, <code>build_command</code></td>
+<td>none</td>
+<td>See <a href="#building-from-source">Building From Source</a>.</td>
+</tr>
+<tr>
+<td><code>build_timeout_seconds</code></td>
+<td><code>1800</code></td>
+<td><code>build_command</code> is killed when this runs out, so a hung build cannot hold the allocation.</td>
+</tr>
+</tbody>
+</table>
+<p><code>command</code>, <code>args</code>, <code>env</code> values, and <code>preamble</code> may use these placeholders: <code>{node}</code>, <code>{node_ip}</code>,
+<code>{node_id}</code> (position in the worker list), <code>{index}</code> (instance index within the service), <code>{role}</code>
+(the <code>placement.node</code> value), <code>{head_node}</code>, <code>{head_ip}</code>, <code>{infra_node}</code>, <code>{infra_ip}</code>,
+<code>{master_port}</code>, <code>{metadata_port}</code>. Only those names are substituted; other braces (JSON in an env
+value) are left alone.</p>
+<h2 id="implicit-services">Implicit Services<a class="headerlink" href="#implicit-services" title="Permanent link">&para;</a></h2>
+<p>Things the recipe asks for elsewhere are services the job runs without an entry; the Mooncake master is the one built-in kind that is always declared. NATS is not implied by the Dynamo frontend alone: the default request plane is <code>tcp</code> and KV events travel over direct ZMQ, so a plain Dynamo job runs etcd only. Declare a <code>nats</code> service to run one regardless.</p>
+<table>
+<thead>
+<tr>
+<th>Implied by</th>
+<th>Services</th>
+<th>Where</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>frontend.type: dynamo</code></td>
+<td><code>etcd</code></td>
+<td>the infra node, phase <code>infra</code></td>
+</tr>
+<tr>
+<td><code>dynamo.request_plane: nats</code>, <code>dynamo.event_plane: nats</code>, or a <code>nats_max_payload_mb</code> knob</td>
+<td><code>nats</code></td>
+<td>the infra node, phase <code>infra</code></td>
+</tr>
+<tr>
+<td>a declared <code>mooncake-master</code> entry (see <a href="../mooncake-kv-store/">Mooncake KV Store</a>)</td>
+<td><code>mooncake-master</code></td>
+<td>the infra node, phase <code>before_workers</code></td>
+</tr>
+<tr>
+<td>tachometer on (the default; <code>observability.tachometer.enabled</code>)</td>
+<td><code>dcgm-exporter</code>, <code>node-exporter</code></td>
+<td>every worker node, phase <code>after_frontend</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>srtctl dry-run</code> lists them next to the declared ones, marked <code>implied by:</code>. A declared entry with
+the same <code>name</code> replaces the implied one, so the recipe only says what differs:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">services</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">etcd</span>
+<span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">etcd</span>
+<span class="w">    </span><span class="nt">placement</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">node</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dedicated</span><span class="w">             </span><span class="c1"># reserve a node for the discovery plane</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">nats</span>
+<span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">nats</span>
+<span class="w">    </span><span class="nt">placement</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">node</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dedicated</span><span class="w">             </span><span class="c1"># etcd and nats share the infra node: both or neither</span>
+<span class="w">    </span><span class="nt">options</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">max_payload_mb</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">24</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dcgm-exporter</span>
+<span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dcgm-exporter</span>
+<span class="w">    </span><span class="nt">container</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mirror/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04</span><span class="w">   </span><span class="c1"># air-gapped cluster</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">node-exporter</span>
+<span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">node-exporter</span>
+<span class="w">    </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span><span class="w">                </span><span class="c1"># drop it</span>
+</code></pre></div>
+<p><code>external</code> uses an instance that already runs: nothing launches, and the workers and frontend get its
+address in <code>ETCD_ENDPOINTS</code> / <code>NATS_SERVER</code> (or <code>MOONCAKE_MASTER</code>) instead of the infra node's.</p>
+<div class="highlight"><pre><span></span><code><span class="nt">services</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">etcd</span>
+<span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">etcd</span>
+<span class="w">    </span><span class="nt">external</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">http://etcd.shared.example:2379</span>
+</code></pre></div>
+<p>The power-telemetry path (<code>telemetry.enabled</code>) launches and owns its own DCGM exporter; the implied
+<code>dcgm-exporter</code> steps aside when it is on.</p>
+<p>The v1 layout (<code>infra:</code> and <code>backend.mooncake_kv_store</code>) is documented in <a href="../legacy-v1/">legacy-v1.md</a>; <code>srtctl migrate</code> rewrites it into the entries above.</p>
+<h2 id="placement">Placement<a class="headerlink" href="#placement" title="Permanent link">&para;</a></h2>
+<p><code>placement.node</code> picks the physical nodes. <code>head</code>, <code>infra</code>, and <code>dedicated</code> launch one instance;
+<code>dedicated</code> reserves a node for the infra services (the job asks Slurm for one more node) and is
+accepted by <code>etcd</code>, <code>nats</code>, and <code>mooncake-master</code>. <code>prefill</code>, <code>decode</code>, and <code>agg</code> launch one instance
+per distinct node that role's workers use, so two TP1 decode workers on one node share one service.
+<code>workers</code> launches one instance per worker node; <code>all</code> one per allocated node (head, infra, benchmark client, and workers).</p>
+<p>When a service launches on more than one node its processes and logs get a node suffix:
+<code>service_&lt;name&gt;_&lt;node&gt;</code>. Two services that declare the same <code>readiness.port</code> and land on the same
+node are rejected before anything launches; give them disjoint placements or ports.</p>
+<h2 id="start-order-and-readiness">Start Order and Readiness<a class="headerlink" href="#start-order-and-readiness" title="Permanent link">&para;</a></h2>
+<p>Services launch in three phases; within a phase, implied services first, then declared ones in
+declaration order:</p>
+<ul>
+<li><code>infra</code>: the discovery plane (etcd, NATS). Nothing else should need this phase.</li>
+<li><code>before_workers</code>: after the discovery plane, before any worker. The Mooncake master, standalone
+  stores, anything workers connect to at startup.</li>
+<li><code>after_frontend</code>: once workers and the frontend are healthy, before the scraper. The exporters,
+  sidecars that register into a running job.</li>
+</ul>
+<p>Within a phase, a service with <code>readiness</code> blocks until its probe passes on each of its nodes. The
+typed kinds gate on their well-known ports by default (etcd 2379, NATS 4222, the Mooncake master
+8700, 8701, and 8702, the exporters none); a <code>generic</code> service without a probe is considered started
+when its <code>srun</code> is launched. Three probes are available, and a <code>readiness</code> block names exactly one:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">readiness</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">9000</span><span class="w">                 </span><span class="c1"># shorthand for tcp</span>
+<span class="w">  </span><span class="nt">timeout_seconds</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">120</span><span class="w">       </span><span class="c1"># per node; the job fails when it runs out</span>
+<span class="w">  </span><span class="nt">interval_seconds</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span><span class="w">        </span><span class="c1"># between attempts</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><span class="nt">readiness</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">tcp</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">9000</span><span class="w">               </span><span class="c1"># a TCP connection is accepted</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><span class="nt">readiness</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">http</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8000</span>
+<span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/ready</span><span class="w">             </span><span class="c1"># GET http://&lt;node&gt;:8000/ready</span>
+<span class="w">    </span><span class="nt">status</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">200</span><span class="w">              </span><span class="c1"># returns this status</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><span class="nt">readiness</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">log</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">pattern</span><span class="p">:</span><span class="w"> </span><span class="s">'Uvicorn</span><span class="nv"> </span><span class="s">running</span><span class="nv"> </span><span class="s">on</span><span class="nv"> </span><span class="s">.*:\d+'</span><span class="w">   </span><span class="c1"># a regex matched against service_&lt;name&gt;.out</span>
+</code></pre></div>
+<p>The probe is re-run every <code>interval_seconds</code> until it passes. Between attempts the stage checks that
+the process is still alive, so a service that crashes fails the job at once with its exit code rather
+than after the full timeout. Ongoing health is the shared
+<code>ProcessRegistry</code> monitor, the same as every other process in the job. It tears the run down only for
+<code>critical: true</code> services. Anything other components register under or route through should be
+critical: a router that dies mid-run otherwise leaves the frontend silently talking to the raw
+backend and the benchmark measuring something other than what it claims.</p>
+<h2 id="environment">Environment<a class="headerlink" href="#environment" title="Permanent link">&para;</a></h2>
+<p>The service process environment is built in layers, later ones winning:</p>
+<ol>
+<li>Discovery env, when <code>inherit_discovery_env</code> is true: <code>ETCD_ENDPOINTS=http://&lt;infra&gt;:2379</code>,
+   <code>NATS_SERVER=nats://&lt;infra&gt;:4222</code> (or the <code>external</code> addresses). etcd and NATS themselves never get
+   it.</li>
+<li>The type's defaults (<code>mooncake-store</code> sets <code>MOONCAKE_LOCAL_HOSTNAME</code> to the node's IP).</li>
+<li>The recipe's <code>env</code>, with placeholders substituted.</li>
+<li>Values srtctl owns for the type (<code>mooncake-store</code>: <code>MOONCAKE_MASTER</code>, <code>MOONCAKE_TE_META_DATA_SERVER</code>).
+   A recipe value for these is ignored.</li>
+</ol>
+<h2 id="building-from-source">Building From Source<a class="headerlink" href="#building-from-source" title="Permanent link">&para;</a></h2>
+<p><code>source</code> plus <code>build_command</code> clone and build once before launch. The clone runs on the bare host of
+the service node (git and network access are host concerns, and the job container may lack git) into
+<code>&lt;log_dir&gt;/services/&lt;name&gt;/src</code>, which every container sees at <code>/logs/services/&lt;name&gt;/src</code>.
+<code>build_command</code> and <code>command</code> then run inside the service container from that directory (or
+<code>source.path</code> under it).</p>
+<p><code>rev</code> must be immutable: a commit SHA, a tag, or <code>refs/pull/&lt;n&gt;/head</code> while iterating on an open
+PR. <code>main</code>, <code>master</code>, and <code>HEAD</code> are rejected at load time. Because the build installs into one
+container instance, <code>source</code> is only allowed with single-node placements (<code>head</code>, <code>infra</code>).</p>
+<p><code>source</code> is the same shape <code>dynamo.source</code> uses. At submit time <code>srtctl apply</code> resolves a non-commit
+<code>rev</code> with <code>git ls-remote</code> and records the commit as <code>source.sha</code> in the submitted <code>config.yaml</code>
+(the recipe on disk is untouched), so the job checks out exactly the commit the lockfile names even
+if the PR is pushed to again while the job waits in the queue. <code>--json</code> output lists what was pinned
+under <code>pinned_sources</code>. <code>srtctl dry-run</code> never touches the network.</p>
+<h2 id="service-types">Service Types<a class="headerlink" href="#service-types" title="Permanent link">&para;</a></h2>
+<p><code>type</code> selects a registered <code>ServiceKind</code> (<code>src/srtctl/services/</code>). A kind supplies defaults and the
+environment its process needs; the launch path is shared by every kind. Register a new one with
+<code>@register_service("&lt;name&gt;")</code>, the same pattern as <code>@register_benchmark</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Type</th>
+<th>Default command</th>
+<th>Start</th>
+<th>Critical</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>generic</code></td>
+<td>none (required)</td>
+<td><code>after_frontend</code></td>
+<td><code>false</code></td>
+<td>Launches exactly what you wrote.</td>
+</tr>
+<tr>
+<td><code>etcd</code></td>
+<td><code>/configs/etcd</code> from the job container, advertising the node's IP</td>
+<td><code>infra</code></td>
+<td><code>true</code></td>
+<td>Implied by the Dynamo frontend. Placement <code>head</code>, <code>infra</code>, or <code>dedicated</code>; supports <code>external</code>. Fresh data dir on node-local <code>/tmp</code> each job.</td>
+</tr>
+<tr>
+<td><code>nats</code></td>
+<td><code>/configs/nats-server -js</code> from the job container</td>
+<td><code>infra</code></td>
+<td><code>true</code></td>
+<td>Implied by the Dynamo frontend. <code>options.max_payload_mb</code> writes a server config. Same placements as etcd; supports <code>external</code>.</td>
+</tr>
+<tr>
+<td><code>mooncake-master</code></td>
+<td><code>mooncake_master</code> with the RPC, HTTP metadata, and metrics ports srtctl owns</td>
+<td><code>before_workers</code></td>
+<td><code>true</code></td>
+<td>Declared by name; see <a href="../mooncake-kv-store/">Mooncake KV Store</a>. <code>args</code> are appended; <code>options.store_config</code> is the vLLM connector JSON. Container falls back to the job container. Supports <code>dedicated</code> and <code>external</code>.</td>
+</tr>
+<tr>
+<td><code>dcgm-exporter</code></td>
+<td><code>dcgm-exporter --collect-interval=&lt;ms&gt; --address :9401</code> in <code>nvcr.io/nvidia/k8s/dcgm-exporter</code></td>
+<td><code>after_frontend</code></td>
+<td><code>false</code></td>
+<td>Implied on worker nodes while tachometer runs. Shell-less (distroless image). <code>options</code>: <code>port</code>, <code>collect_interval_ms</code>.</td>
+</tr>
+<tr>
+<td><code>node-exporter</code></td>
+<td><code>/bin/node_exporter</code> with the cpu, infiniband, and meminfo collectors on 9101 in <code>quay.io/prometheus/node-exporter</code></td>
+<td><code>after_frontend</code></td>
+<td><code>false</code></td>
+<td>Implied on worker nodes while tachometer runs. Shell-less. <code>options</code>: <code>port</code>.</td>
+</tr>
+<tr>
+<td><code>process-exporter</code></td>
+<td><code>configs/process-exporter -config.path &lt;log_dir&gt;/process-exporter.yml -web.listen-address=:9256 -threads=true ...</code> on the bare node</td>
+<td><code>after_frontend</code></td>
+<td><code>false</code></td>
+<td>Implied on every allocated node (<code>placement.node: all</code>) while tachometer runs. Host-native from the static binary <code>make setup</code> installs; skipped with a warning when it is missing. A declared <code>container</code> switches to the image's <code>/bin/process-exporter</code> with the group file under <code>/logs</code>. <code>options</code>: <code>port</code>, <code>binary</code>.</td>
+</tr>
+<tr>
+<td><code>mooncake-store</code></td>
+<td><code>python -m mooncake.mooncake_store_service</code></td>
+<td><code>before_workers</code></td>
+<td><code>true</code></td>
+<td>Requires a <code>mooncake-master</code> entry. Container falls back to the master's. Injects the master's address.</td>
+</tr>
+</tbody>
+</table>
+<p>The bespoke launch paths these replace (<code>start_head_infrastructure</code> with its own readiness loop, a
+Mooncake-master stage, exporter launches inside the tachometer stage) are gone; every one of these is
+a <code>ManagedProcess</code> from the same stage, with the same registry, cleanup, and dry-run output.</p>
+<h2 id="example-a-router-from-a-pr">Example: a router from a PR<a class="headerlink" href="#example-a-router-from-a-pr" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><span class="nt">frontend</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dynamo</span>
+
+<span class="nt">services</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">thunderagent-router</span>
+<span class="w">    </span><span class="nt">source</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">git</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">https://github.com/ai-dynamo/dynamo</span>
+<span class="w">      </span><span class="nt">rev</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">refs/pull/14000/head</span><span class="w">      </span><span class="c1"># switch to a commit SHA once merged</span>
+<span class="w">    </span><span class="nt">build_command</span><span class="p">:</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">bash</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">-lc</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">"cd</span><span class="nv"> </span><span class="s">lib/bindings/python</span><span class="nv"> </span><span class="s">&amp;&amp;</span><span class="nv"> </span><span class="s">maturin</span><span class="nv"> </span><span class="s">develop</span><span class="nv"> </span><span class="s">--uv</span><span class="nv"> </span><span class="s">&amp;&amp;</span><span class="nv"> </span><span class="s">cd</span><span class="nv"> </span><span class="s">../../..</span><span class="nv"> </span><span class="s">&amp;&amp;</span><span class="nv"> </span><span class="s">pip</span><span class="nv"> </span><span class="s">install</span><span class="nv"> </span><span class="s">-e</span><span class="nv"> </span><span class="s">."</span>
+<span class="w">    </span><span class="nt">command</span><span class="p">:</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">python3</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">-m</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dynamo.thunderagent_router</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">--endpoint</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dyn://namespace.component.endpoint</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">--model-name</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-model</span>
+<span class="w">    </span><span class="c1"># The router is the thing under test: other components register under its</span>
+<span class="w">    </span><span class="c1"># endpoint, so running without it must fail the run, not degrade it.</span>
+<span class="w">    </span><span class="nt">critical</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+</code></pre></div>
+<p><code>inherit_discovery_env</code> defaults to true, so the router sees the same etcd/NATS as the Dynamo
+frontend and workers with no extra configuration.</p>
+<h2 id="example-standalone-mooncake-stores">Example: standalone Mooncake stores<a class="headerlink" href="#example-standalone-mooncake-stores" title="Permanent link">&para;</a></h2>
+<p>Inference workers run embedded Mooncake clients with <code>MOONCAKE_GLOBAL_SEGMENT_SIZE=0</code> while dedicated
+per-node stores own the DRAM segments. Decode nodes contribute host memory without an in-process
+HiCache pool. One entry per role gives each role its own segment size:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">engine</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sglang</span>
+<span class="nt">roles</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">prefill</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">env</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">MOONCAKE_PROTOCOL</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">rdma</span>
+<span class="w">      </span><span class="nt">MOONCAKE_DEVICE</span><span class="p">:</span><span class="w"> </span><span class="s">"mlx5_0,mlx5_1"</span>
+<span class="w">      </span><span class="nt">MOONCAKE_GLOBAL_SEGMENT_SIZE</span><span class="p">:</span><span class="w"> </span><span class="s">"0"</span>
+<span class="w">    </span><span class="nt">args</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">disaggregation-transfer-backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake</span>
+<span class="w">  </span><span class="nt">decode</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">env</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">MOONCAKE_PROTOCOL</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">rdma</span>
+<span class="w">      </span><span class="nt">MOONCAKE_DEVICE</span><span class="p">:</span><span class="w"> </span><span class="s">"mlx5_0,mlx5_1"</span>
+<span class="w">      </span><span class="nt">MOONCAKE_GLOBAL_SEGMENT_SIZE</span><span class="p">:</span><span class="w"> </span><span class="s">"0"</span>
+<span class="w">    </span><span class="nt">args</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">disaggregation-transfer-backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake</span>
+
+<span class="nt">services</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake-master</span>
+<span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake-master</span>
+<span class="w">    </span><span class="nt">container</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake</span><span class="w">        </span><span class="c1"># the master; also the stores' default container</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">store-prefill</span>
+<span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake-store</span>
+<span class="w">    </span><span class="nt">placement</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">node</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">prefill</span>
+<span class="w">    </span><span class="nt">args</span><span class="p">:</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">--port</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">"8800"</span>
+<span class="w">    </span><span class="nt">env</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">MOONCAKE_PROTOCOL</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">rdma</span>
+<span class="w">      </span><span class="nt">MOONCAKE_DEVICE</span><span class="p">:</span><span class="w"> </span><span class="s">"mlx5_0,mlx5_1"</span>
+<span class="w">      </span><span class="nt">MOONCAKE_GLOBAL_SEGMENT_SIZE</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">100gb</span>
+<span class="w">    </span><span class="nt">preamble</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
+<span class="w">      </span><span class="no">ulimit -n 1048576</span>
+<span class="w">      </span><span class="no">ulimit -l unlimited</span>
+<span class="w">    </span><span class="nt">cpus_per_task</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8</span>
+<span class="w">    </span><span class="nt">readiness</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8800</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">store-decode</span>
+<span class="w">    </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mooncake-store</span>
+<span class="w">    </span><span class="nt">placement</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">node</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">decode</span>
+<span class="w">    </span><span class="nt">args</span><span class="p">:</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">--port</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">"8800"</span>
+<span class="w">    </span><span class="nt">env</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">MOONCAKE_PROTOCOL</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">rdma</span>
+<span class="w">      </span><span class="nt">MOONCAKE_DEVICE</span><span class="p">:</span><span class="w"> </span><span class="s">"mlx5_0,mlx5_1"</span>
+<span class="w">      </span><span class="nt">MOONCAKE_GLOBAL_SEGMENT_SIZE</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">400gb</span>
+<span class="w">    </span><span class="nt">preamble</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
+<span class="w">      </span><span class="no">ulimit -n 1048576</span>
+<span class="w">      </span><span class="no">ulimit -l unlimited</span>
+<span class="w">    </span><span class="nt">cpus_per_task</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8</span>
+<span class="w">    </span><span class="nt">readiness</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8800</span>
+</code></pre></div>
+<p>Stores start after the master is healthy and before workers. Each store gets <code>MOONCAKE_MASTER</code>,
+<code>MOONCAKE_TE_META_DATA_SERVER</code>, and <code>MOONCAKE_LOCAL_HOSTNAME</code> from the runtime. If prefill and decode
+share a node, the two entries above collide on port 8800 and the job fails before launching; use one
+entry with <code>placement.node: workers</code> and a single segment size instead. See
+<a href="../mooncake-kv-store/">Mooncake KV Store</a> for the worker side.</p>
+<h2 id="validation">Validation<a class="headerlink" href="#validation" title="Permanent link">&para;</a></h2>
+<p>Rejected at load time, so <code>srtctl dry-run</code> catches them:</p>
+<ul>
+<li>Empty or duplicate <code>name</code>; unknown <code>type</code>.</li>
+<li><code>generic</code> without <code>command</code>; a <code>command</code>/<code>args</code> entry that is blank; <code>build_command: []</code>.</li>
+<li><code>placement.node</code> or <code>start</code> outside their vocabularies; <code>dedicated</code> or <code>external</code> on a kind that does
+  not support them; an <code>options</code> key the kind does not know.</li>
+<li><code>source</code> with a moving <code>rev</code>, or with a multi-node placement.</li>
+<li><code>type: mooncake-store</code> without a <code>mooncake-master</code> entry; two <code>mooncake-master</code> entries.</li>
+<li><code>etcd</code> and <code>nats</code> disagreeing on <code>dedicated</code> (they share the infra node).</li>
+</ul>
+<p>Rejected at launch, before any service starts: two services listening on the same port on one node.</p>
+<p><code>srtctl dry-run</code> prints every service's type, placement, start phase, criticality, command,
+container, source, readiness, and env.</p>
+<h2 id="cleanup">Cleanup<a class="headerlink" href="#cleanup" title="Permanent link">&para;</a></h2>
+<p>Nothing a service launches outlives the job:</p>
+<ul>
+<li>Every long-running service is a named Slurm step (<code>service_&lt;name&gt;</code>), so cleanup delivers SIGTERM
+  through <code>scancel --signal=TERM</code> and the process gets 30 seconds to flush (etcd its WAL, a scraper
+  its parquet) before the step is killed. Signalling the <code>srun</code> client directly would have killed
+  the task outright.</li>
+<li>Every <code>srun</code> the stage starts, including the one-shot clone and build steps, is registered with the
+  job's <code>ProcessRegistry</code> the moment it exists, not when the stage returns. The registry's cleanup
+  runs on normal completion, on any failed stage, from the SIGTERM handler (<code>scancel</code>), and from the
+  crash monitor when a critical process dies, and it terminates then kills each tracked <code>srun</code>. Slurm
+  cancels the step, which kills the whole step cgroup inside the container, so forked or daemonized
+  children of the service go with it.</li>
+<li>A readiness gate that fails, or a signal that arrives during one, terminates everything the stage
+  already launched before the error propagates.</li>
+<li>A service whose process exits before its readiness port answers fails immediately with its exit
+  code instead of waiting out the readiness timeout.</li>
+<li>The clone step is bounded by the <code>timeout</code> on each git command (600s each) and the build step by
+  <code>build_timeout_seconds</code>; a step that overruns is killed and the job fails with a pointer to its log.</li>
+<li>When the batch script exits, Slurm releases the allocation and reaps any remaining step, so even a
+  cleanup path srtctl never reaches cannot leave a service running on a compute node.</li>
+</ul>
+<h2 id="limitations">Limitations<a class="headerlink" href="#limitations" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Declared order is launch order, and <code>readiness</code> is the only wait. A service that needs another
+  service to be ready polls for it in its own <code>command</code>.</li>
+<li><code>source</code> builds are single-node only.</li>
+<li>Services run on the sbatch/SLURM path only; there is no local dev mode in 2.0.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.instant", "navigation.tracking", "navigation.tabs", "navigation.sections", "navigation.top", "search.suggest", "search.highlight", "content.code.copy", "content.action.edit"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>
