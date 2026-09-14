@@ -308,7 +308,7 @@ One entry of the top-level ``services:`` list.
 | `build_timeout_seconds` | int | `1800` | Kill ``build_command`` after this many seconds. |
 | `enabled` | bool | `True` | ``false`` drops the service, including an implicit one (``etcd`` / ``nats`` under the Dynamo frontend, the default exporters) declared here by name. |
 | `external` | str \| None | `None` | For discovery-plane kinds (``etcd``, ``nats``, ``mooncake-master``): use this already-running endpoint and launch nothing; the URL is what the job's processes are pointed at. |
-| `options` | dict[str, Any] | `{}` | Kind-specific settings (``nats``: ``max_payload_mb``; ``mooncake-master``: ``store_config`` for vLLM). Unknown keys are rejected by the kind. |
+| `options` | dict[str, Any] | `{}` | Kind-specific settings (``nats``: ``max_payload_mb``; ``mooncake-master``: ``store_config`` and ``device_names_by_gpu`` for vLLM). Unknown keys are rejected by the kind. |
 | `metrics` | list[[ServiceMetricsConfig](#servicemetricsconfig)] | `[]` | Prometheus endpoints this service serves: one mapping or a list of ``{port, path, nodes, name}`` (``path`` defaults to ``/metrics``, ``nodes`` to ``all``). Tachometer scrapes each on every node the service runs on, or on its first node with ``nodes: first``, as endpoint ``<name>_<node>`` where ``name`` defaults to the service name. The exporter kinds declare theirs; write it for a generic service that publishes metrics, or on a ``ray`` service whose head serves a trainer's collector and router. |
 
 ### PostEvalConfig

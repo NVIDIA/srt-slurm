@@ -293,8 +293,8 @@ class ServiceConfig:
             ``mooncake-master``): use this already-running endpoint and launch
             nothing; the URL is what the job's processes are pointed at.
         options: Kind-specific settings (``nats``: ``max_payload_mb``;
-            ``mooncake-master``: ``store_config`` for vLLM). Unknown keys are
-            rejected by the kind.
+            ``mooncake-master``: ``store_config`` and ``device_names_by_gpu``
+            for vLLM). Unknown keys are rejected by the kind.
         metrics: Prometheus endpoints this service serves: one mapping or a
             list of ``{port, path, nodes, name}`` (``path`` defaults to
             ``/metrics``, ``nodes`` to ``all``). Tachometer scrapes each on every
