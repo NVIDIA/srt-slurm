@@ -204,6 +204,10 @@ class VLLMMooncakeKVStoreConfig:
     # (e.g. ``"4GB"``). Type as ``dict[str, Any]`` to avoid forcing users to
     # quote numeric values.
     store_config: dict[str, Any] | None = None
+    # Optional physical-GPU-indexed HCA names. Each launched process receives
+    # a JSON config restricted to the devices assigned to its physical GPUs.
+    # This does not assign different configs to nested vLLM TP ranks.
+    device_names_by_gpu: list[str] = field(default_factory=list)
 
     Schema: ClassVar[builtins.type[Schema]] = Schema
 
@@ -535,6 +539,33 @@ class VLLMProtocol:
             result.update(self.mooncake_kv_store.store_config)
         result["master_server_address"] = f"{infra_node_ip}:{MOONCAKE_MASTER_PORT}"
         return result
+
+    def build_mooncake_process_config(
+        self, process: Process, infra_node_ip: str, gpus_per_node: int
+    ) -> tuple[str, dict[str, Any]] | None:
+        """Return an opt-in process-local filename/payload, using physical GPU IDs.
+
+        GPU numbering restarts on each node; filenames are reusable across nodes
+        with the same mapping. Multi-GPU processes receive the HCA subset, not a
+        per-nested-rank binding. The shared-config default is unchanged.
+        """
+        if self.mooncake_kv_store is None or not self.mooncake_kv_store.device_names_by_gpu:
+            return None
+        devices = self.mooncake_kv_store.device_names_by_gpu
+        if len(devices) != gpus_per_node:
+            raise ValueError("mooncake device_names_by_gpu must have one entry per physical GPU on each node")
+        if any(not d.strip() or d != d.strip() or "," in d for d in devices):
+            raise ValueError("mooncake device_names_by_gpu entries must be single nonempty device names")
+        gpu_ids = sorted(process.gpu_indices)
+        if not gpu_ids or any(gpu < 0 or gpu >= len(devices) for gpu in gpu_ids):
+            raise ValueError(f"mooncake device_names_by_gpu does not cover physical GPUs {gpu_ids}")
+        # Sharing an HCA between physical GPUs is legal. Avoid duplicating its
+        # name when a process spans multiple GPUs mapped to the same HCA.
+        process_devices = list(dict.fromkeys(devices[gpu] for gpu in gpu_ids))
+        payload = self.build_mooncake_store_config(infra_node_ip)
+        payload["device_name"] = ",".join(process_devices)
+        filename = "mooncake_store_config_gpu" + "-".join(map(str, gpu_ids)) + ".json"
+        return filename, payload
 
     def get_served_model_name(self, default: str) -> str:
         """Get served model name from vLLM config, or return default."""

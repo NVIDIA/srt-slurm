@@ -194,6 +194,7 @@ Mooncake KV store config for the vLLM backend.
 | `env` | dict[str, str] | `{}` |  |
 | `master_extra_args` | list[str] | `[]` |  |
 | `store_config` | dict[str, Any] \| None | `None` | ``store_config`` values are JSON-serialized into MOONCAKE_CONFIG_PATH and parsed by vLLM's ``MooncakeStoreConfig`` dataclass — fields are a mix of str (e.g. ``protocol``), int (e.g. ``port``), and human-readable sizes (e.g. ``"4GB"``). Type as ``dict[str, Any]`` to avoid forcing users to quote numeric values. |
+| `device_names_by_gpu` | list[str] | `[]` | Optional physical-GPU-indexed HCA names. Each launched process receives a JSON config restricted to the devices assigned to its physical GPUs. This does not assign different configs to nested vLLM TP ranks. |
 
 ### MockerServerConfig
 

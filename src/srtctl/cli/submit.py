@@ -570,6 +570,10 @@ def show_config_details(config: SrtConfig) -> None:
 
         if mooncake_cfg is not None:
             details.add_row("mooncake", "container", mooncake_cfg.container or "<job container>")
+            device_map = getattr(mooncake_cfg, "device_names_by_gpu", [])
+            if device_map:
+                details.add_row("mooncake", "device_names_by_gpu", str(device_map))
+                details.add_row("mooncake", "process config", "/logs/mooncake_store_config_gpu<physical-ids>.json")
             details.add_row("mooncake", "master_port", f"{MOONCAKE_MASTER_PORT} (auto)")
             if mooncake_cfg.master_extra_args:
                 details.add_row("mooncake", "master_extra_args", shlex.join(mooncake_cfg.master_extra_args))
