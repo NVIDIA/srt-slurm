@@ -1293,12 +1293,11 @@ class ObservabilityConfig:
     respecting the explicit combined-setting opt-out — see
     ``BenchmarkStageMixin``.)
 
-    It does **not** decide whether the component perf dashboard is built. That
-    happens on every run (see :mod:`srtctl.analysis.perf_dashboard`); ``enabled``
-    only decides which capture legs exist and therefore which tabs the page
-    carries. Keeping the two separate is deliberate: a run that captured nothing
-    server-side still renders from the client export and the per-iteration log,
-    and that is the shape most runs have.
+    It does **not** gate UI creation. Dynamo+TRT-LLM and native TRT-LLM Serve
+    build the raw Tachometer dashboard after capture shutdown, including when
+    ``enabled`` is false. Missing raw data is reported explicitly; client exports
+    and logs are never substituted. Other backends retain the legacy component
+    UI, which is scheduled for deprecation. See ``docs/tachometer-dashboard.md``.
 
     Attributes:
         enabled: Master analytics knob. Default: False.

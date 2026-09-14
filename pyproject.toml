@@ -23,6 +23,7 @@ dependencies = [
     "ruamel.yaml>=0.18.0",
     "matplotlib>=3.7.0",
     "pyarrow>=25.0.0",
+    "numpy>=1.24",
 ]
 
 [project.optional-dependencies]
@@ -37,6 +38,7 @@ srtctl-sweep = "srtctl.cli.do_sweep:main"
 srtctl-setup-head = "srtctl.cli.setup_head:main"
 srtctl-mcp = "srtctl.mcp.server:main"
 srtctl-validate-power = "srtctl.cli.validate_power_artifacts:main"
+srtctl-dashboard = "srtctl.analysis.tachometer_dashboard.__main__:main"
 ruter = "srtctl.ruter.__main__:main"
 
 [tool.hatch.build.targets.wheel]

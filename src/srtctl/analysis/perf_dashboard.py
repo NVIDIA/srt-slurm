@@ -1,21 +1,17 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Post-run bridge: a finished run's log dir -> component perf dashboard.
+"""Legacy component UI — scheduled for deprecation.
 
-Runs on **every** job, with no opt-in. Reading a run used to mean hand-driving two
-scripts from a checkout against a log dir; this module runs them at the end of the
-job instead, so one submission produces the page.
+Dynamo+TRT-LLM and native TRT-LLM Serve workflows now generate dashboard.html
+through srtctl.analysis.tachometer_dashboard, using raw Tachometer files only.
+This bridge remains available for historical bundles and other backends during
+migration. See docs/tachometer-dashboard.md for the replacement. No removal
+release has been scheduled.
 
-Unconditional because the page is not a special-occasion artifact: the question it
-answers -- where did the time go, which component was the ceiling -- is the one
-asked of every run, and it is asked *after* the run, when opting in is no longer
-possible. A knob would only ever be discovered by the person who already knew.
-
-``observability.enabled`` decides which capture legs exist and therefore which tabs
-the page carries; it never decides whether the page exists. A run with no
-server-side capture at all still renders from the client's own metrics export, the
-per-iteration log and the frontend log -- which is the shape most runs have.
+The legacy page combines raw metrics with client exports, request traces,
+iteration logs and frontend logs. Its inputs and calculations are separate
+from the new raw-only dashboard.
 
 It drives the two vendored layers as SUBPROCESSES:
 
@@ -246,6 +242,10 @@ def try_build(config: SrtConfig, runtime: RuntimeContext) -> Path | None:
     third-party rendering code and the post-processing of a benchmark that has
     already produced its results -- so it stays broad on purpose.
     """
+    logger.warning(
+        "Legacy component dashboard is scheduled for deprecation; "
+        "use srtctl-dashboard for raw Tachometer captures (docs/tachometer-dashboard.md)"
+    )
     try:
         return build(config, runtime)
     except Exception as e:  # noqa: BLE001 - visualisation is never fatal

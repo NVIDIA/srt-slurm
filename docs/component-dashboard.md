@@ -1,4 +1,6 @@
-# Component Performance Dashboard
+# Legacy Component Performance Dashboard — scheduled for deprecation
+
+> Dynamo+TRT-LLM and native TRT-LLM Serve now generate the [raw Tachometer dashboard](tachometer-dashboard.md) as their automatic run UI. This legacy implementation remains available for historical bundles and other backends during migration. No removal release is scheduled.
 
 A single self-contained HTML page with **Overview / Frontend / Router / Engine /
 Session / Log analysis** tabs, built offline from the artifacts an srt-slurm job
@@ -23,7 +25,7 @@ from a repo checkout.
 
 ## Quick start — nothing to turn on
 
-**Every job builds its own dashboard.** There is no knob and nothing to remember:
+**Other backends still build this legacy dashboard automatically.** Dynamo+TRT-LLM and native TRT-LLM Serve produce `dashboard.html` instead. For the legacy path,
 post-processing writes, into the run's log dir:
 
 ```

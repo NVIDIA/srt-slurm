@@ -174,7 +174,13 @@ class PostProcessStageMixin:
         # Copy config into log directory so it's included in S3 upload
         self._copy_config_to_logs()
 
-        # Generate rollup first (benchmark-specific normalization). This writes
+        # Capture shutdown has finished before postprocess. The raw UI does not
+        # depend on result/log analysis and must survive failures in those stages.
+        raw_dashboard = self._uses_raw_dashboard()
+        if raw_dashboard:
+            self._build_run_dashboard()
+
+        # Generate rollup (benchmark-specific normalization). This writes
         # benchmark-rollup.json into the log dir; consumers pull it from S3.
         self._generate_rollup()
 
@@ -200,11 +206,9 @@ class PostProcessStageMixin:
         # Keep the prepared bundle inside logs/ so the existing S3 sync below
         # transfers it with the raw benchmark artifacts.
         self._normalize_ruter()
-        # Build the component perf dashboard. Deliberately ordered BEFORE the S3 sync
-        # below: the sync ships the whole log dir, so building here is what gets
-        # perf_dashboard.{html,json} and its bundle off the cluster. Building after
-        # would leave them behind on a node whose /lustre scratch is transient.
-        self._build_perf_dashboard()
+        # Other backends keep the legacy builder's existing input preparation order.
+        if not raw_dashboard:
+            self._build_run_dashboard()
 
         # Best-effort CPU/GPU energy-per-token report. Same ordering
         # requirement as the perf dashboard above: must land before the S3
@@ -250,26 +254,25 @@ class PostProcessStageMixin:
         except Exception as error:  # noqa: BLE001
             logger.warning("ruter normalization failed: %s", error)
 
-    def _build_perf_dashboard(self) -> None:
-        """Render the component perf dashboard from this run's own artifacts.
+    def _uses_raw_dashboard(self) -> bool:
+        return self.config.backend.type == "trtllm" and self.config.frontend.type in {"dynamo", "trtllm_serve"}
 
-        Turns whatever the run captured — the tachometer parquet or the client's own
-        metrics export, SPAN_CLOSED lines, the request trace, the per-iteration log —
-        into `<log_dir>/perf_dashboard.{html,json}` plus the intermediate bundle, so
-        one submission yields the page with no second hand-driven step from a
-        checkout.
+    def _build_run_dashboard(self) -> None:
+        """Build the run UI, using raw Tachometer data for TRT-LLM serving.
 
-        Runs on every job; `observability.enabled` changes which tabs the page carries,
-        not whether it is built. Best-effort: `try_build` swallows its own failures,
-        and the extra guard here means even an import error cannot fail a benchmark
-        that has already produced results.
+        The legacy component UI is scheduled for deprecation. Other backends
+        retain it until they migrate; missing raw data in a TRT-LLM run never
+        triggers a fallback to logs, processed JSONL, or client measurements.
         """
         try:
-            from srtctl.analysis.perf_dashboard import try_build
+            if self._uses_raw_dashboard():
+                from srtctl.analysis.tachometer_dashboard.pipeline import try_build
+            else:
+                from srtctl.analysis.perf_dashboard import try_build
 
             try_build(self.config, self.runtime)
         except Exception as e:  # noqa: BLE001 - visualisation is never fatal
-            logger.warning("Perf dashboard build skipped: %s", e)
+            logger.warning("Run dashboard build skipped: %s", e)
 
     def _build_power_energy_report(self) -> None:
         """Best-effort CPU/GPU trapezoidal energy report, written next to the samples.
